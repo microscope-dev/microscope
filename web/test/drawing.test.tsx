@@ -1,8 +1,3 @@
-// The page draws a checked picture as SVG, or past 2,000 shapes on a
-// canvas that it hit-tests itself, so a renderer never has to choose:
-// either way a shape's title is its hover text and its select opens it,
-// and an image says which of its pixels is under the pointer.
-
 import { cleanup, render } from "@testing-library/react";
 import { useCallback, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,7 +22,6 @@ import {
   settled,
 } from "./sandboxes";
 
-// Cards read the tab's focus, and change its look, through these.
 const focus = vi.hoisted(() => ({ current: null as unknown }));
 const looked = vi.hoisted(() => [] as unknown[]);
 vi.mock("../src/ui/Workspace", () => ({ useFocus: () => focus.current }));
@@ -35,7 +29,7 @@ vi.mock("../src/ui/navigation", async (original) => ({
   ...(await original<typeof import("../src/ui/navigation")>()),
   useLook: () => (change: unknown) => looked.push(change),
 }));
-// The renderer frame the server would serve, as the test chooses.
+
 const served = vi.hoisted(() => ({ frame: "" }));
 vi.mock("../src/target", async (original) => {
   const target = await original<typeof import("../src/target")>();
@@ -62,8 +56,6 @@ function show(picture: unknown, selected: string[] = []): HTMLElement {
   return holder;
 }
 
-/** Moves the pointer to picture units `x`, `y` of `target`, which shows a
- * picture `width` units wide. */
 function hover(target: Element, width: number, x: number, y: number, type = "mousemove"): void {
   const box = target.getBoundingClientRect();
   const scale = box.width / width;
@@ -78,7 +70,6 @@ function hover(target: Element, width: number, x: number, y: number, type = "mou
 
 const tip = (holder: HTMLElement) => holder.querySelector<HTMLElement>("[role=tooltip]");
 
-/** A 50 × 50 grid of titled, selectable cells: 2,500 shapes. */
 function grid(extra: unknown[] = []) {
   const shapes: unknown[] = [];
   for (let index = 0; index < 2_500; index++) {
@@ -128,7 +119,6 @@ describe("buildPicture", () => {
   it("paints a canvas as the SVG would, groups and all", () => {
     const holder = show(
       grid([
-        // A group's fill is its shapes' fill, and it moves and scales them.
         {
           type: "group",
           x: 220,
@@ -161,7 +151,7 @@ describe("buildPicture", () => {
     const refused = { type: "picture", width: 1, height: 1, shapes: looping };
     expect(() => validate(refused)).toThrow("groups nest more than 32 deep");
     closeImages(refused);
-    // A closed bitmap has no pixels left.
+
     expect(rendered.width).toBe(0);
   });
 
@@ -190,14 +180,14 @@ describe("buildPicture", () => {
     const selected: string[] = [];
     const holder = show(grid(), selected);
     const canvas = holder.querySelector("canvas.picture") as HTMLCanvasElement;
-    // Cell 51 is the second cell of the second row.
+
     hover(canvas, 300, 6, 6);
     expect(tip(holder)?.hidden).toBe(false);
     expect(tip(holder)?.textContent).toBe("cell 51");
     expect(canvas.style.cursor).toBe("pointer");
     hover(canvas, 300, 6, 6, "click");
     expect(selected).toEqual(["[51]"]);
-    // Nothing is under the pointer beside the grid.
+
     hover(canvas, 300, 250, 190);
     expect(tip(holder)?.hidden).toBe(true);
     expect(canvas.style.cursor).toBe("");
@@ -219,7 +209,7 @@ describe("buildPicture", () => {
       columns: 4,
       rows: 2,
     };
-    // Marks four times finer than the board's pixels, which say nothing.
+
     const overlay = {
       ...image,
       title: undefined,
@@ -284,7 +274,6 @@ describe("the page's sandbox", () => {
 
 const at = { stop: 3, thread: 1, frame: 0 };
 
-/** The Drawings view at stop 3, with `look`, its server the test. */
 async function drawings(look: Look): Promise<FakeServer> {
   const server = await fakeServer();
   focus.current = { session: "s1", state: {}, at, look, trace: undefined, stale: null } as Focus;
@@ -376,7 +365,6 @@ describe("a card", () => {
     await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
     await expect.element(button).toHaveFocus();
 
-    // A click elsewhere closes it too.
     await userEvent.click(button);
     await expect.element(item(/chess/u)).toHaveFocus();
     document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));

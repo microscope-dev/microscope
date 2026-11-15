@@ -1,8 +1,3 @@
-// The menu bar: File, Edit, View and the rest, each listing the commands the
-// registry puts in it. It has no items of its own. A command that cannot run
-// now stays listed, disabled, and says why. It works as an ARIA menubar: the
-// arrow keys move along the bar and down a menu, Enter runs, Escape closes.
-
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 
 import { assert } from "../assert";
@@ -30,7 +25,6 @@ interface Props<Id extends string> {
   run(id: Id): void;
 }
 
-/** The id the bar's first menu button goes by, so a command can focus it. */
 export const MENU_BAR = "menu-bar";
 
 export function MenuBar<Id extends string>({ registry, availability, run }: Props<Id>) {
@@ -38,7 +32,6 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
   const bar = useRef<HTMLDivElement>(null);
   const menus = MENUS.filter((menu) => registry.ids.some((id) => registry.get(id).menu === menu));
 
-  // A click elsewhere closes the menu.
   useEffect(() => {
     if (!open) {
       return;
@@ -65,7 +58,6 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
   const show = (menu: Menu, focusItem: "first" | "last" | null) => {
     setOpen(menu);
     if (focusItem) {
-      // After the menu renders.
       requestAnimationFrame(() => {
         const listed = items();
         (focusItem === "first" ? listed[0] : listed.at(-1))?.focus();

@@ -1,7 +1,7 @@
-// Odin's maps and core containers, which the built-in views present. Each
-// `VIEW:` marker says what its expression must show, evaluated in main()
-// where barrier() is called; `problem:` says the view must refuse the
-// value, and why.
+
+
+
+
 package containers
 
 import "base:intrinsics"
@@ -15,12 +15,12 @@ barrier :: #force_no_inline proc(fixture: rawptr) {
 	intrinsics.volatile_store(&sink, fixture)
 }
 
-// Larger than a cache line, so each takes a cell of its own.
+
 Big :: struct {
 	words: [9]u64,
 }
 
-// Two to a cache line, with room left over.
+
 Triple :: struct {
 	a, b, c: u64,
 }
@@ -36,7 +36,7 @@ main :: proc() {
 	for i in 0 ..< 300 {
 		many[u32(i)] = u32(i * 2)
 	}
-	// A deleted entry leaves its slot's hash marked.
+
 	pruned := make(map[int]int) // VIEW: pruned => len=1 {2: 20}
 	defer delete(pruned)
 	pruned[1] = 10
@@ -47,14 +47,14 @@ main :: proc() {
 	for i in 0 ..< 20 {
 		triples[i64(i)] = {u64(i), 0, 0}
 	}
-	// Keys larger than a cell.
+
 	bigs := make(map[Big]u8) // VIEW: bigs => count: 3
 	defer delete(bigs)
 	for i in 0 ..< 3 {
 		bigs[Big{words = {0 = u64(i)}}] = u8(i)
 	}
 
-	// A queue whose elements wrap around the end of its ring.
+
 	ring: queue.Queue(int) // VIEW: ring => len=3 [7, 8, 9]
 	queue.init(&ring, 4)
 	defer queue.destroy(&ring)
@@ -65,7 +65,7 @@ main :: proc() {
 	queue.pop_front(&ring)
 	queue.push_back(&ring, 8)
 	queue.push_back(&ring, 9)
-	// A queue whose count passes its ring's.
+
 	broken: queue.Queue(int) // VIEW: broken => problem: check
 	broken.len = 5
 

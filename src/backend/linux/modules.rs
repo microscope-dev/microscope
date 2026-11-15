@@ -1,5 +1,3 @@
-//! The registry of shared objects mapped into the inferior.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::ops::Range;
@@ -23,7 +21,6 @@ use super::native::{InspectionOps, LinuxTraceOps};
 use super::vdso::{VDSO_NAME, vdso_mapping};
 use super::{Controller, LinuxError, RuntimeModule, backend_error};
 
-/// One file-backed mapping from `/proc/<pid>/maps`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ModuleMapping {
     pub(super) path: PathBuf,
@@ -31,14 +28,10 @@ pub(super) struct ModuleMapping {
     pub(super) start: u64,
     pub(super) file_offset: u64,
 
-    /// Whether the file was unlinked or replaced after it was mapped, so the
-    /// path may now name a different file or none.
     pub(super) deleted: bool,
     pub(super) executable: bool,
 }
 
-/// A module observed for the first time: its file, load bias, and the
-/// identifiers it is given.
 type NewModule = (PathBuf, LoadBias, crate::ModuleId, ModuleImageId);
 
 impl<P: InspectionOps> Controller<P> {
@@ -66,9 +59,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Records how the C library identifies each module's TLS block, from
-    /// the loader's link maps in list order, once the registry holds every
-    /// module the loader lists.
     pub(super) fn locate_tls_modules(&mut self, link_maps: &[(LoadBias, VirtualAddress)]) {
         let has_tls = self
             .modules
@@ -80,7 +70,6 @@ impl<P: InspectionOps> Controller<P> {
                 )
             })
             .collect();
-        // The main module is registered from launch or attach on.
         let Some(main) = self.modules.get(&self.main.id) else {
             return;
         };
@@ -96,7 +85,6 @@ impl<P: InspectionOps> Controller<P> {
     }
 
     pub(super) fn unregister_module(&mut self, id: crate::ModuleId) {
-        // An unregistered module has nothing to unregister.
         let Some(module) = self.modules.remove(&id) else {
             return;
         };
@@ -123,8 +111,6 @@ impl<P: InspectionOps> Controller<P> {
             self.unregister_module(id);
         }
 
-        // Without the main module there is nothing to reset. Launches register
-        // it before any stop, so this only guards a state that cannot arise.
         let Some(main) = self.modules.get_mut(&self.main.id) else {
             return;
         };
@@ -142,17 +128,9 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Synchronizes the module registry with the shared objects mapped at a
-    /// coherent stop, the vDSO among them. A mapping whose file cannot be
-    /// identified, such as a deleted library or JIT code, contributes no
-    /// module instead of failing the stop; its frames stay unnamed. Sites
-    /// whose memory changed are forgotten first, as they must be before a
-    /// moved vDSO is read again; returns whether a breakpoint lost a
-    /// location to them.
     pub(super) fn refresh_modules(&mut self) -> Result<bool> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
 
-        // The leader may have exited before the rest of its process.
         let pid = inferior.memory_thread();
         let main_loaded = inferior.loaded_module;
         let link_maps = loader_link_maps(&self.ptrace, pid, &self.main.image, main_loaded)?;
@@ -170,7 +148,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         observed.dedup();
 
         let observed_modules = observed.iter().cloned().collect::<BTreeSet<_>>();
-        // A module of anonymous code goes with its mapping, below.
         let anonymous_modules = self.anonymous_code_modules();
         let unloaded = self
             .modules
@@ -194,8 +171,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .into_iter();
 
         for (path, load_bias, module_id, image_id) in new {
-            // A file that is no module the debugger can describe leaves its
-            // frames unnamed.
             let debug = match loads
                 .next()
                 .ok_or_else(|| Error::internal("a load for each new module"))?
@@ -251,8 +226,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// The files mapped as modules other than the executable, with their
-    /// load biases. Each mapping's file is remembered for the next refresh.
     fn observe_files(
         &mut self,
         files: Vec<ModuleMapping>,
@@ -272,8 +245,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let executable_inode = self.main.identity.inode;
 
-        // A library with no code maps nothing executable; the loader lists
-        // an object at its first page, which holds image address zero.
         let code_less = headers
             .into_iter()
             .filter(|mapping| {
@@ -301,8 +272,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         observed
     }
 
-    /// Numbers each of the `observed` modules not yet registered, in the
-    /// order they were observed, whether or not it will load.
     fn number_new_modules(&mut self, observed: Vec<(PathBuf, LoadBias)>) -> Result<Vec<NewModule>> {
         let known = self.known_modules();
         let unknown = observed
@@ -313,8 +282,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let mut new = Vec::new();
 
-        // A file an earlier session loaded keeps its image's id, unless a
-        // module bound whole holds it already: a file mapped twice.
         let mut bound = self
             .modules
             .values()
@@ -350,7 +317,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(new)
     }
 
-    /// Each registered module's path and load bias.
     fn known_modules(&self) -> BTreeSet<(&Path, LoadBias)> {
         self.modules
             .values()
@@ -358,8 +324,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .collect()
     }
 
-    /// The code that moved since the modules were refreshed, as the memory
-    /// map shows it now.
     pub(super) fn moved_code_now(&self, pid: Pid) -> Result<Vec<MovedCode>> {
         let mappings = self.ptrace.module_mappings(pid)?;
         let files = mappings
@@ -378,9 +342,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(self.moved_code(&files, mappings.vdso.as_ref()))
     }
 
-    /// The code of each registered library that is now mapped elsewhere:
-    /// the vDSO wherever its name is, or a file mapped at one new place and
-    /// no longer at its old one. `files` are the files observed mapped.
     fn moved_code(
         &self,
         files: &[(PathBuf, LoadBias)],
@@ -426,10 +387,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .collect()
     }
 
-    /// Loads the metadata of new modules, each result where its module is
-    /// in `new`: the vDSO's from `vdso_image` and each JIT compiler's
-    /// object's from `jit_objects`, read from memory, and every other's
-    /// from its file, all at once.
     fn load_observed(
         &self,
         new: &[NewModule],
@@ -459,8 +416,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        // Stamped before they load, so that a file that changes meanwhile
-        // is loaded again next time.
         let stamps = self.kept.as_ref().map(|_| {
             files
                 .iter()
@@ -502,9 +457,6 @@ pub(super) fn load_bias(
     load_bias_in(&read_maps(pid)?, executable, image_base, identity)
 }
 
-/// The load bias of the executable `identity` names in a process whose
-/// memory map is `maps`, where `image_base` is the lowest address any of
-/// its segments loads at.
 pub(super) fn load_bias_in(
     maps: &str,
     executable: &Path,
@@ -519,9 +471,6 @@ pub(super) fn load_bias_in(
         .ok_or_else(|| backend_error(LinuxError::LoadBias(executable.to_owned())))
 }
 
-/// Reads a process's memory map. A leader that exited before the rest of
-/// its process keeps its `/proc` directory but no memory, so its map reads
-/// empty, and a live thread's describes the process instead.
 pub(super) fn read_maps(pid: Pid) -> std::io::Result<String> {
     let maps = fs::read_to_string(format!("/proc/{pid}/maps"))?;
     if !maps.is_empty() {
@@ -538,31 +487,21 @@ pub(super) fn read_maps(pid: Pid) -> std::io::Result<String> {
         .unwrap_or(maps))
 }
 
-/// Returns the executable mappings of files, which identify loaded modules.
 pub(super) fn module_mappings(pid: Pid) -> Result<Vec<ModuleMapping>> {
     Ok(process_mappings_in(&read_maps(pid)?)?.files)
 }
 
-/// The mappings of one process that hold loaded modules.
 #[derive(Debug, Default)]
 pub(super) struct ProcessMappings {
-    /// Executable mappings of files.
     pub(super) files: Vec<ModuleMapping>,
 
-    /// Other mappings of files' first pages. A library with no code maps
-    /// only these, so one is a module where the loader lists one.
     pub(super) headers: Vec<ModuleMapping>,
 
-    /// The vDSO, which no file backs.
     pub(super) vdso: Option<Range<u64>>,
 
-    /// Anonymous memory the process may execute, with whether it may
-    /// write it too: a copy of a module's code, or code a runtime made.
     pub(super) anonymous_code: Vec<AnonymousCode>,
 }
 
-/// The mappings holding loaded modules in a process whose memory map is
-/// `maps`.
 pub(super) fn process_mappings_in(maps: &str) -> Result<ProcessMappings> {
     let (files, headers) = parse_maps(maps)?
         .into_iter()
@@ -576,15 +515,12 @@ pub(super) fn process_mappings_in(maps: &str) -> Result<ProcessMappings> {
     })
 }
 
-/// A mapping of anonymous memory the process may execute.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AnonymousCode {
     pub(super) range: Range<u64>,
     pub(super) writable: bool,
 }
 
-/// The mappings of `maps` that no file backs and that may be executed:
-/// those with no name, or a name an `anon:` prefix gives.
 fn anonymous_code(maps: &str) -> Vec<AnonymousCode> {
     maps.lines()
         .filter_map(|line| {
@@ -607,16 +543,11 @@ fn anonymous_code(maps: &str) -> Vec<AnonymousCode> {
         .collect()
 }
 
-/// Resolves the file behind a module mapping and the load bias it was mapped
-/// with. Returns `None` when the file on disk cannot be proven to be the
-/// mapped one.
 pub(super) fn identify_mapped_module(mapping: &ModuleMapping) -> Option<(PathBuf, LoadBias)> {
     if mapping.deleted {
         return None;
     }
 
-    // `/proc/<pid>/root` reads as `/`, so resolving a path through it would
-    // leave the process's root; such paths name the mapped file already.
     let path = if mapping.path.starts_with("/proc") {
         mapping.path.clone()
     } else {
@@ -631,10 +562,6 @@ pub(super) fn identify_mapped_module(mapping: &ModuleMapping) -> Option<(PathBuf
     Some((path, bias))
 }
 
-/// Each module's load bias and loader `link_map`, in the loader's list
-/// order, found through the `DT_DEBUG` rendezvous in the executable's
-/// `.dynamic` section, which `image` describes. A program without one has
-/// none.
 pub(super) fn loader_link_maps(
     ptrace: &impl InspectionOps,
     pid: Pid,
@@ -680,9 +607,6 @@ pub(super) fn loader_link_maps(
         return Ok(Vec::new());
     };
 
-    // The public ELF loader rendezvous begins with r_version followed by the
-    // aligned r_map pointer. Each public link_map begins with l_addr and ends
-    // its debugger-visible prefix with l_next/l_prev.
     let mut current = VirtualAddress::new(read_word_offset(ptrace, pid, rendezvous.get(), 8)?);
     let mut visited = BTreeSet::new();
     let mut result = Vec::new();
@@ -706,18 +630,12 @@ fn read_word_offset(ptrace: &impl InspectionOps, pid: Pid, base: u64, offset: u6
     ptrace.read_word(pid, base.checked_add(offset).ok_or(Error::AddressOverflow)?)
 }
 
-/// Parses the file-backed mappings of `/proc/<pid>/maps`, sorted and
-/// deduplicated.
 pub(super) fn parse_maps(maps: &str) -> Result<Vec<ModuleMapping>> {
     let mut mappings = Vec::new();
 
     for line in maps.lines() {
         let invalid = || backend_error(LinuxError::InvalidMapping(line.to_owned()));
 
-        // The pathname is the sixth field and may itself contain spaces, so it
-        // must be taken as the untouched remainder of the line rather than one
-        // whitespace-delimited token. The kernel escapes control characters but
-        // not spaces in this field.
         let mut fields = line.splitn(6, char::is_whitespace);
         let (Some(range), Some(permissions), Some(offset), Some(_device), Some(inode)) = (
             fields.next(),
@@ -760,7 +678,6 @@ pub(super) fn parse_maps(maps: &str) -> Result<Vec<ModuleMapping>> {
 
 pub(super) fn mapped_module_load_bias(mapping: &ModuleMapping) -> Result<LoadBias> {
     const PAGE_MASK: u64 = !0xfff;
-    // Only the headers are read, not the whole file.
     let file = object::ReadCache::new(fs::File::open(&mapping.path)?);
     let object =
         object::File::parse(&file).map_err(|error| Error::backend(LinuxError::Object(error)))?;
@@ -771,8 +688,6 @@ pub(super) fn mapped_module_load_bias(mapping: &ModuleMapping) -> Result<LoadBia
             continue;
         }
 
-        // Linkers such as mold start segments of different permissions in
-        // one page of the file; the mapping maps the one with its own.
         let executable = matches!(
             segment.flags(),
             object::SegmentFlags::Elf { p_flags } if p_flags & object::elf::PF_X != 0

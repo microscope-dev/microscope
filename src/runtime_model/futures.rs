@@ -1,18 +1,3 @@
-//! A future's chain of awaits, read from memory: from a task's root future
-//! through each coroutine's awaited future to the leaf it waits on.
-//!
-//! The walk follows no runtime's scheduling. It knows the shapes futures
-//! take in debug information: a coroutine, whose state says where it waits
-//! and which of its members it awaits; a pointer to a future, such as a
-//! `Box`; a pinned one, as Rust's `Pin` wraps it; a trait object, whose
-//! vtable says what it holds; a record whose only member is a coroutine,
-//! which can await nothing but that coroutine; and the few types known by
-//! name to hold a future beside what is none, such as tracing's
-//! `Instrumented`, some in the variant that holds it while there is one,
-//! as tokio's task-local scope holds its future in an `Option`. Any other
-//! future is a leaf, which the runtime or a view describes. Every way the
-//! walk can end is said, never guessed past.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -22,25 +7,10 @@ use crate::{
     TypeReference, VirtualAddress,
 };
 
-/// The most futures one chain is followed through, so that corrupted
-/// memory cannot make the walk run on.
 pub const MAX_DEPTH: usize = 256;
 
-/// The most wrappers followed to reach a type's representation.
 const MAX_WRAPPERS: usize = 16;
 
-/// The Rust types that hold a future beside what is no future, by their
-/// path and name, with the way to the future within: each step a member's
-/// name, or within a sum type the name of the variant that holds the
-/// future while there is one. They are the spans tracing keeps around
-/// futures: in a build with `tokio_unstable` and tokio's `tracing`
-/// feature, as `tokio-console` needs, tracing's `Instrumented` wraps every
-/// task tokio spawns, keeping its future in std's `ManuallyDrop` (which
-/// recent releases of Rust lay out around a `MaybeDangling`), and tokio's
-/// `InstrumentedAsyncOp` wraps what its locks, semaphores, and barriers
-/// are awaited through. Then tokio's task-local scopes, and the futures
-/// crate's `map` and `catch_unwind`, which programs spawn their futures
-/// through.
 const HOLDERS: [(&[&str], &str, &[&str]); 9] = [
     (&["tracing", "instrument"], "Instrumented", &["inner"]),
     (&["tracing", "instrument"], "WithDispatch", &["inner"]),
@@ -77,10 +47,8 @@ const HOLDERS: [(&[&str], &str, &[&str]); 9] = [
     ),
 ];
 
-/// One future of a chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AsyncFrame {
-    /// Where the future is.
     pub object: VirtualAddress,
     pub ty: TypeReference,
     pub kind: AsyncFrameKind,
@@ -88,52 +56,38 @@ pub struct AsyncFrame {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AsyncFrameKind {
-    /// A coroutine, in the state with this number: where it waits, has
-    /// not begun, or has ended.
     Coroutine {
         state: u64,
         kind: CoroutineStateKind,
         location: Option<SourceLocation>,
     },
 
-    /// A future that is no coroutine, which the chain waits on.
     Leaf,
 }
 
-/// A chain of futures, the innermost first, and why it ends where it does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AwaitChain {
     pub frames: Vec<AsyncFrame>,
     pub end: ChainEnd,
 }
 
-/// Why a chain ends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChainEnd {
-    /// At a leaf, the future the chain waits on.
     Leaf,
 
-    /// At a coroutine that has not begun, and so awaits nothing.
     Unresumed,
 
-    /// At a coroutine that has returned or panicked.
     Finished,
 
-    /// At a suspended coroutine whose awaited future its debug information
-    /// does not name.
     NoAwaitee,
 
-    /// The chain could not be followed further, for this reason.
     Broken(Arc<str>),
 
-    /// The chain went on past [`MAX_DEPTH`] futures.
     TooDeep,
 
-    /// The chain came back to a future it had passed.
     Cycle,
 }
 
-/// The chain of awaits that begins at the future of type `ty` at `future`.
 pub fn walk(
     image: &dyn RuntimeImage,
     stop: &dyn RuntimeStop,
@@ -143,29 +97,15 @@ pub fn walk(
     walk_choosing(image, stop, future, ty, &mut |_, _, _| StateChoice::Stored)
 }
 
-/// Which state the walk reads a coroutine in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateChoice {
-    /// The state its future stores.
     Stored,
 
-    /// The state of this value, as a caller knows the coroutine to be
-    /// running in it.
     Chosen(u64),
 
-    /// One the caller cannot say, so the chain ends there.
     Unknown,
 }
 
-/// The chain of awaits of the future at `future`, as [`walk`] reads it,
-/// with the state of the `n`th coroutine from the outermost, at `object`,
-/// read as `choose(n, object, coroutine)` says.
-///
-/// A coroutine that is running stores the state it last suspended in, not
-/// the await it has gone on to, until it suspends there; one whose frame
-/// is on the stack is in the await its frame's line is at. A chain read
-/// down from a task's future through coroutines that are running takes
-/// each one's state from its frame, as a caller that has the frames says.
 pub fn walk_choosing(
     image: &dyn RuntimeImage,
     stop: &dyn RuntimeStop,
@@ -304,13 +244,10 @@ fn follow(
     ChainEnd::TooDeep
 }
 
-/// The end of a chain whose next future would lie past the end of memory.
 fn past_the_end(object: VirtualAddress) -> ChainEnd {
     ChainEnd::Broken(format!("the future at {object:#x} holds no address").into())
 }
 
-/// The state the coroutine at `object` is read in, as `choice` says, or
-/// why it cannot be.
 fn state_number(
     stop: &dyn RuntimeStop,
     object: VirtualAddress,
@@ -335,8 +272,6 @@ fn state_number(
     }
 }
 
-/// The future the trait object at `object` holds, with its data pointer
-/// and vtable at those offsets, and its type, which the vtable says.
 fn held(
     image: &dyn RuntimeImage,
     stop: &dyn RuntimeStop,
@@ -365,7 +300,6 @@ fn held(
     Ok((pointer, held))
 }
 
-/// The future a holder of type `ty` at `object` holds, along its steps.
 fn held_within(
     image: &dyn RuntimeImage,
     stop: &dyn RuntimeStop,
@@ -399,12 +333,10 @@ fn held_within(
     Ok((object, ty))
 }
 
-/// How the walk passes through a future of some type.
 enum Shape {
     /// A pointer to the future of the target type.
     Pointer(TypeReference),
 
-    /// A pin around a pointer of this type, which lies there.
     Pinned {
         pointer: TypeReference,
         layout: RecordMemberLayout,
@@ -423,8 +355,6 @@ enum Shape {
     Other,
 }
 
-/// The type that lays out a value of `ty`, through names and qualifiers,
-/// and how the walk passes through it.
 fn representation(
     image: &dyn RuntimeImage,
     mut ty: TypeReference,
@@ -499,8 +429,6 @@ fn representation(
     None
 }
 
-/// Whether a value of type `ty` is a coroutine, through names and
-/// qualifiers.
 fn is_coroutine(image: &dyn RuntimeImage, mut ty: TypeReference) -> bool {
     for _ in 0..MAX_WRAPPERS {
         match image.type_info(ty).map(|info| &info.kind) {
@@ -519,17 +447,12 @@ fn is_coroutine(image: &dyn RuntimeImage, mut ty: TypeReference) -> bool {
     false
 }
 
-/// Whether a value of type `ty` is a pinned pointer to a future, which
-/// stays where it is until it is dropped: what a variable that holds a
-/// future being polled must be, since the memory a future moved from goes
-/// on looking like a future.
 pub fn pinned(image: &dyn RuntimeImage, ty: TypeReference) -> bool {
     representation(image, ty)
         .and_then(|(ty, _)| image.type_info(ty))
         .is_some_and(is_pin)
 }
 
-/// Whether a type is Rust's `Pin`.
 fn is_pin(info: &crate::TypeInfo) -> bool {
     info.identity.as_ref().is_some_and(|identity| {
         identity.language == SourceLanguage::Rust
@@ -538,7 +461,6 @@ fn is_pin(info: &crate::TypeInfo) -> bool {
     })
 }
 
-/// The way to the future, if a type is one of [`HOLDERS`].
 fn holder(info: &crate::TypeInfo) -> Option<&'static [&'static str]> {
     let identity = info.identity.as_ref()?;
     if identity.language != SourceLanguage::Rust {
@@ -551,7 +473,6 @@ fn holder(info: &crate::TypeInfo) -> Option<&'static [&'static str]> {
     })
 }
 
-/// Whether a pointer type points to a trait object's data.
 fn points_to_dyn(image: &dyn RuntimeImage, ty: TypeReference) -> bool {
     let Some(TypeKind::Pointer {
         target: Some(target),
@@ -566,9 +487,6 @@ fn points_to_dyn(image: &dyn RuntimeImage, ty: TypeReference) -> bool {
         .is_some_and(|target| trait_object(&target.name).is_some())
 }
 
-/// A trait object's type's name, without the parentheses rustc puts
-/// around one with several traits, as in `(dyn Future<Output = ()> +
-/// Send)`; `None` for another type's.
 pub fn trait_object(name: &str) -> Option<&str> {
     let name = name
         .strip_prefix('(')

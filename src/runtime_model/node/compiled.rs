@@ -1,19 +1,3 @@
-//! Where in its script a frame of V8's compiled code is.
-//!
-//! A frame of compiled code names its function, not its code. The code it
-//! runs is one of the function's: its current code, through the dispatch
-//! table from 13.6 or the function itself before; its baseline (Sparkplug)
-//! code; or optimized code it entered on a loop (OSR). A feedback vector
-//! may replace its OSR code while an old activation still runs it. If the
-//! function no longer holds that code, its instruction stream is found
-//! by a bounded search, checked against its code's back-reference and range.
-//!
-//! Optimized (Maglev and Turbofan) code maps an instruction to a source
-//! position, which may lie in a function its code inlined; the code's
-//! deoptimization data names each, as V8's `InliningStack` reads them.
-//! Baseline code maps an instruction to the bytecode it compiled, whose
-//! own position table gives the place.
-
 use super::Statics;
 use super::objects::{Object, Problem, Reader};
 use super::positions::{self, Encoding};
@@ -21,17 +5,10 @@ use super::translation::{self, Offset};
 use crate::image::v8::{Constant, DispatchTable, Field};
 use crate::runtime_model::CodeFrame;
 
-/// The most feedback slots searched for a function's OSR code.
 const MAX_FEEDBACK_SLOTS: u64 = 1 << 16;
 
-/// The most bytes searched before a PC for an uncached instruction stream.
-/// Larger code remains explicitly undescribed when no cache names it.
 const MAX_CODE_SEARCH: u64 = 1 << 20;
 
-/// The prefixes that widen the operands of the bytecode after them, by
-/// their bytecode number, with the operand scale's index each selects:
-/// `Wide`, `ExtraWide`, `DebugBreakWide`, and `DebugBreakExtraWide`, the
-/// first four bytecodes on 12.4, 13.6, and 14.6.
 pub(super) const PREFIXES: [usize; 4] = [1, 2, 1, 2];
 
 #[expect(
@@ -46,11 +23,8 @@ const _: () = {
     }
 };
 
-/// A function a frame runs, by its `SharedFunctionInfo`, and its offset
-/// in its script, or why it has none.
 pub(super) type Place = (Object, Result<u64, Problem>);
 
-/// A `Code` object, with the facts of it every reading needs.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Code {
     object: Object,
@@ -64,22 +38,17 @@ impl Code {
         self.start <= address && address - self.start < self.size
     }
 
-    /// Whether the code is baseline (Sparkplug) code, whose frames keep
-    /// their variables in the interpreter's registers.
     pub(super) fn is_baseline(&self, reader: &Reader<'_>) -> Result<bool, Problem> {
         Ok(self.kind == reader.constant(Constant::CodeKindBaseline)?)
     }
 }
 
-/// The code of `function` (`shared` its `SharedFunctionInfo`) whose
-/// instructions hold the compiled frame `frame`'s.
 pub(super) fn running(
     reader: &Reader<'_>,
     statics: &Statics,
     frame: &CodeFrame<'_>,
     (function, shared): (Object, Object),
 ) -> Result<Code, Problem> {
-    // A caller's instruction is its return address, past its call.
     let lookup = frame
         .instruction
         .get()
@@ -115,8 +84,6 @@ pub(super) fn running(
     Err(reason.into())
 }
 
-/// Finds active code no function cache still names, proving the stream's
-/// type, code, back-reference, instruction start, and range all agree.
 fn containing_code(reader: &Reader<'_>, lookup: u64) -> Result<Option<Code>, Problem> {
     let alignment = reader.constant(Constant::CodeAlignment)?.cast_unsigned();
     let header = reader.offset(Field::InstructionStreamInstructions)?;
@@ -150,8 +117,6 @@ fn containing_code(reader: &Reader<'_>, lookup: u64) -> Result<Option<Code>, Pro
     Ok(None)
 }
 
-/// The functions a frame running `code` of `shared`'s function runs at its
-/// instruction `pc`, innermost first, each with the offset in its script.
 pub(super) fn places(
     reader: &Reader<'_>,
     encoding: Encoding,
@@ -185,8 +150,6 @@ pub(super) fn places(
     .into())
 }
 
-/// The function's codes a frame of it may run, each an object or why it
-/// could not be found.
 fn candidates(
     reader: &Reader<'_>,
     statics: &Statics,
@@ -209,14 +172,12 @@ fn candidates(
     candidates
 }
 
-/// The code `function` runs when called now.
 fn current_code(
     reader: &Reader<'_>,
     statics: &Statics,
     frame: &CodeFrame<'_>,
     function: Object,
 ) -> Result<Object, Problem> {
-    // Before 13.6 a function holds its code.
     if reader.layout.has(Field::JSFunctionCode) {
         let object = reader
             .object(reader.field(function, Field::JSFunctionCode)?)?
@@ -282,7 +243,6 @@ fn current_code(
         .ok_or_else(|| "the dispatch entry holds no code".into())
 }
 
-/// The code `object` is, through its wrapper where it is one.
 fn unwrap_code(reader: &Reader<'_>, object: Object) -> Result<Object, Problem> {
     if reader.is(object, Constant::CodeWrapperType)? {
         return reader.typed_field(object, Field::CodeWrapperCode, Constant::CodeType);
@@ -290,8 +250,6 @@ fn unwrap_code(reader: &Reader<'_>, object: Object) -> Result<Object, Problem> {
     Ok(object)
 }
 
-/// The optimized code `function`'s feedback vector caches: its OSR code,
-/// held weakly in its slots, and on 12.4 its optimized code.
 fn cached_code(reader: &Reader<'_>, function: Object) -> Result<Vec<Object>, Problem> {
     let cell = reader.typed_field(
         function,
@@ -334,8 +292,6 @@ fn cached_code(reader: &Reader<'_>, function: Object) -> Result<Vec<Object>, Pro
     Ok(found)
 }
 
-/// The object a weak reference holds, or `None` for a word that is none
-/// or one cleared.
 fn weak(reader: &Reader<'_>, word: u64) -> Result<Option<Object>, Problem> {
     let tag_mask = reader
         .constant(Constant::HeapObjectTagMask)?
@@ -355,7 +311,6 @@ fn weak(reader: &Reader<'_>, word: u64) -> Result<Option<Object>, Problem> {
     reader.object(word & !mask)
 }
 
-/// The facts of the `Code` object `object`, proven one.
 pub(super) fn code(reader: &Reader<'_>, object: Object) -> Result<Code, Problem> {
     if !reader.is(object, Constant::CodeType)? {
         return Err(format!("{:#x} is no Code", object.0).into());
@@ -381,10 +336,6 @@ pub(super) fn code(reader: &Reader<'_>, object: Object) -> Result<Code, Problem>
     })
 }
 
-/// The functions optimized `code` runs at the frame's pc, `pc_offset`
-/// bytes into it, innermost first, with their script offsets: the frames
-/// its deoptimization translation stands for there, each at its bytecode's
-/// position, as V8's `OptimizedJSFrame::Summarize` gives them.
 fn optimized_places(
     reader: &Reader<'_>,
     encoding: Encoding,
@@ -398,8 +349,6 @@ fn optimized_places(
         .map(|frame| {
             let offset = match frame.offset {
                 Offset::Bytecode(offset) => offset,
-                // V8 places a builtin's continuation in the builtin's code,
-                // which no script holds.
                 Offset::Builtin(_) => {
                     return Ok((
                         frame.shared,
@@ -418,8 +367,6 @@ fn optimized_places(
         .collect()
 }
 
-/// The bytecode baseline `code` compiled, and the offset in it of the
-/// bytecode whose code holds the instruction `offset` bytes into `code`.
 pub(super) fn baseline_offset(
     reader: &Reader<'_>,
     code: &Code,
@@ -457,10 +404,6 @@ pub(super) fn baseline_offset(
     Ok((bytecode, bytecode_at(&table, &bytes, sizes, offset)?))
 }
 
-/// The offset of the bytecode whose baseline code holds the instruction
-/// `offset` bytes into it, as V8's `BytecodeOffsetIterator` walks
-/// `table`: each entry the size of one bytecode's code, in the order of
-/// `bytecodes`, after the function's entry.
 fn bytecode_at(table: &[u8], bytecodes: &[u8], sizes: &[u8], offset: u64) -> Result<i64, Problem> {
     let count = sizes.len() / 3;
     let mut at = 0;
@@ -516,8 +459,6 @@ mod tests {
     use super::{bytecode_at, cached_code};
     use crate::image::v8::{Constant, Field};
 
-    /// A feedback vector whose slots end at the top of memory has no slot
-    /// past it: its read is a reason, not an overflow.
     #[test]
     fn a_feedback_vector_at_the_top_of_memory_ends_there() {
         let layout = layout();
@@ -534,8 +475,6 @@ mod tests {
         let vector_map = map(&mut heap, 0x2000, ty(Constant::FeedbackVectorType));
         let (function, cell) = (0x3000, 0x4000);
 
-        // The vector's first slot is the last word of memory, which reads,
-        // and it has two.
         let vector = u64::MAX - 7 - field(Field::FeedbackVectorRawFeedbackSlots);
         heap.word(vector, vector_map);
         heap.word(vector + field(Field::FeedbackVectorLength), 2);
@@ -551,8 +490,6 @@ mod tests {
         assert!(cached_code(&reader, Object(function + 1)).is_err());
     }
 
-    /// Sizes for a made-up set of five bytecodes at each scale: the four
-    /// prefixes, then one whose operand widens from 1 byte to 2 and 4.
     const SIZES: [u8; 15] = [1, 1, 1, 1, 2, 1, 1, 1, 1, 3, 1, 1, 1, 1, 5];
 
     #[test]
@@ -562,15 +499,9 @@ mod tests {
         }
     }
 
-    /// The bytecode whose code holds an instruction is the one whose
-    /// entry's end is at or past it, after the function's entry, with a
-    /// widened bytecode counted with its prefix.
     #[test]
     fn a_baseline_instruction_is_in_the_bytecode_whose_code_holds_it() {
-        // Bytecodes: 4 at 0 (2 bytes), Wide 4 at 2 (1 + 3), ExtraWide 4
-        // at 6 (1 + 5), and 4 at 12.
         let bytecodes = [4, 7, 0, 4, 7, 7, 1, 4, 7, 7, 7, 7, 4, 7];
-        // The entry's code is 10 bytes, then each bytecode's: 4, 6, 8, 3.
         let table = [10, 4, 6, 8, 3];
         let at = |offset| bytecode_at(&table, &bytecodes, &SIZES, offset).unwrap();
         assert_eq!(at(5), -1);

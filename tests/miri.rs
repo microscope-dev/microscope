@@ -1,7 +1,3 @@
-//! The tests of microscope's unsafe code, which `just miri` runs under Miri
-//! as well as natively. They are a test target of their own so that Miri
-//! checks only this file, not the whole crate, each time it runs them.
-
 #![allow(unsafe_code, reason = "these tests drive unsafe code directly")]
 
 mod allocator {
@@ -12,17 +8,12 @@ mod allocator {
         Allocated, Counting, PEAK_GRANULARITY, start_totals, stop_totals, thread_counts, totals,
     };
 
-    /// Where the tests' blocks come from: the system's allocator; under
-    /// Miri, Rust's, which Miri serves itself and so checks that every
-    /// block is freed with the layout it was allocated with, which the
-    /// system's `free` would not.
     #[cfg(not(miri))]
     type Blocks = std::alloc::System;
 
     #[cfg(miri)]
     type Blocks = Rust;
 
-    /// Rust's global allocator.
     #[cfg(miri)]
     struct Rust;
 
@@ -53,7 +44,6 @@ mod allocator {
         }
     }
 
-    /// Allocates from [`Blocks`], but refuses to grow any block.
     struct NoGrowth;
 
     // SAFETY: allocation forwards to `Blocks`; refusing a reallocation by
@@ -74,7 +64,6 @@ mod allocator {
         }
     }
 
-    /// Refuses every request.
     struct Refusing;
 
     // SAFETY: refusing an allocation by returning null is allowed, and no
@@ -91,8 +80,6 @@ mod allocator {
         unsafe fn dealloc(&self, _: *mut u8, _: Layout) {}
     }
 
-    /// Serves any request, however large, with a dangling block that has no
-    /// memory behind it, so that a test can count more bytes than exist.
     struct Pretending;
 
     // SAFETY: not a real allocator. Its blocks are aligned and non-null but
@@ -106,17 +93,11 @@ mod allocator {
         unsafe fn dealloc(&self, _: *mut u8, _: Layout) {}
     }
 
-    /// Counters that pass their range wrap instead of panicking, since a
-    /// panic in an allocator aborts the process. A thread's growth of the
-    /// heap overflows here, and comes back to where it was once the blocks
-    /// are freed.
     #[test]
     fn counts_past_their_range_wrap_instead_of_aborting() {
         let allocator = Counting::new(Pretending);
         let huge = Layout::from_size_align(isize::MAX.unsigned_abs(), 1).expect("a layout");
 
-        // A thread of its own, whose counts start from zero, so that only
-        // its growth passes the range.
         std::thread::scope(|scope| {
             scope
                 .spawn(|| {
@@ -157,10 +138,6 @@ mod allocator {
         assert_eq!(own(), before);
     }
 
-    /// This thread's counts, from its slot. Other threads of a test
-    /// process, such as the harness's, may allocate while a test measures,
-    /// and their counts can reach it late, so tests read their own threads'
-    /// counts exactly and the process's totals only as bounds.
     fn own() -> (Allocated, i64) {
         thread_counts().expect("a slot of the thread's own")
     }
@@ -169,16 +146,12 @@ mod allocator {
     fn totals_follow_blocks_across_threads_and_failed_growth() {
         let allocator = Counting::new(NoGrowth);
 
-        // A block that moves the peak by more than a thread's step, so the
-        // harness's own allocations cannot hide it.
         let size = 2 * usize::try_from(PEAK_GRANULARITY).expect("a small size");
         let bytes = u64::try_from(size).expect("a small size");
         let layout = Layout::from_size_align(size, 8).expect("a layout");
         start_totals();
         let before = totals();
 
-        // Another thread allocates while this one measures the process's
-        // totals, as the test harness's own threads may.
         let other_layout = Layout::from_size_align(48, 8).expect("a layout");
         let other = std::thread::scope(|scope| {
             scope
@@ -210,8 +183,6 @@ mod allocator {
             "a failed growth allocates nothing"
         );
 
-        // Another thread frees the block, and the heap shrinks all the
-        // same.
         let block = AtomicPtr::new(block);
         let (start, end) = std::thread::scope(|scope| {
             scope
@@ -301,8 +272,6 @@ mod ring {
 
     use microscope::unsafe_parts::{DATA_HEAD, DATA_TAIL, HEAP_DATA, RingMemory};
 
-    /// What the kernel does to a ring: writes records past the head, then
-    /// publishes the head, and reuses only bytes the tail has passed.
     struct Kernel {
         base: NonNull<u8>,
         size: u64,
@@ -324,7 +293,6 @@ mod ring {
             self.word(DATA_TAIL).load(Ordering::Acquire)
         }
 
-        /// Writes `bytes` past the head, wrapping, unpublished.
         fn write(&mut self, bytes: &[u8]) {
             assert!(self.head + bytes.len() as u64 - self.tail() <= self.size);
 
@@ -378,7 +346,6 @@ mod ring {
         assert_eq!(memory.drain(&mut out), 48);
         assert_eq!(kernel.tail(), 48);
 
-        // 16 bytes to the end, then 24 from the start.
         kernel.write(&bytes(48, 40));
         kernel.publish();
         assert_eq!(memory.drain(&mut out), 40);
@@ -416,9 +383,6 @@ mod ring {
         assert_eq!(memory.untrusted(), 0);
     }
 
-    /// A head further ahead than the ring holds cannot be trusted: the
-    /// ring reads nothing, skips its tail to the head so that the kernel
-    /// can go on writing, and counts the span it skipped.
     #[test]
     fn a_head_past_a_whole_ring_is_skipped_and_counted() {
         let (mut memory, mut kernel) = ring(64);
@@ -437,7 +401,6 @@ mod ring {
         assert_eq!(memory.untrusted(), 1, "a trusted head counts nothing");
     }
 
-    /// A tail past the head is not one the reader wrote: the same.
     #[test]
     fn a_tail_past_the_head_is_skipped_and_counted() {
         let (mut memory, kernel) = ring(64);
@@ -450,9 +413,6 @@ mod ring {
         assert_eq!(memory.untrusted(), 1);
     }
 
-    /// The kernel writes as the ring drains: every record arrives once,
-    /// whole, in order. Run with many seeds, Miri tries the orderings the
-    /// memory model allows.
     #[test]
     fn concurrent_records_arrive_once_whole_and_in_order() {
         const RECORDS: u8 = 24;

@@ -1,6 +1,3 @@
-// Sandboxes whose frame is the real frame script, from a blob, with the
-// same sandbox the server's page gets; each test's end disposes of them.
-
 import { afterEach, expect } from "vitest";
 
 import frameSource from "../src/visualize/frame.js?raw";
@@ -21,29 +18,22 @@ afterEach(() => {
   }
 });
 
-/** The URL of a frame page, as the server would serve it. */
 export const pageUrl = (page: string) =>
   URL.createObjectURL(new Blob([page], { type: "text/html" }));
 
-/** The real frame's page, its workers running `worker`. */
 export const framePage = (worker: string = workerSource) =>
   `<!doctype html><script>const WORKER_SOURCE = ${JSON.stringify(worker).replaceAll("<", "\\u003c")};\n${frameSource}</script>`;
 
-/** A sandbox whose frame is `page`, the real frame unless a test stands in
- * one of its own. */
 export function framed(page: string = framePage()): Sandbox {
   const created = new Sandbox(pageUrl(page));
   sandboxes.push(created);
   return created;
 }
 
-/** A sandbox whose workers run `worker`, the real worker script unless a
- * test stands in one of its own. */
 export function sandbox(worker: string = workerSource): Sandbox {
   return framed(framePage(worker));
 }
 
-/** The frame of the sandbox made last. */
 export function lastFrame(): HTMLIFrameElement {
   const frames = document.querySelectorAll<HTMLIFrameElement>('iframe[title="renderers"]');
   const frame = frames.item(frames.length - 1);
@@ -53,8 +43,6 @@ export function lastFrame(): HTMLIFrameElement {
   return frame;
 }
 
-/** What `promise` has settled with so far: undefined until it does, so a
- * test can check a draw without waiting on one that never ends. */
 export function settled<T>(promise: Promise<T>): { value: T | undefined } {
   const state = { value: undefined as T | undefined };
   void (async () => {
@@ -63,7 +51,6 @@ export function settled<T>(promise: Promise<T>): { value: T | undefined } {
   return state;
 }
 
-/** A frame's page that loads but never says it is ready. */
 export const SILENT_PAGE = "<!doctype html><title>silent</title>";
 
 export const renderer = (name: string, source: string) => ({ name, digest: name, source });
@@ -87,7 +74,6 @@ type Heard =
   | { type: "select"; path: string }
   | { type: "failed"; failure: LiveFailure };
 
-/** A live session and what it said, one message at a time. */
 export class Watched {
   readonly session: LiveSession;
   private readonly heard: Heard[] = [];
@@ -128,7 +114,6 @@ export class Watched {
     return this.heard.shift() as Heard;
   }
 
-  /** The next message of `type`, failing on any other. */
   async expect<T extends Heard["type"]>(type: T): Promise<Extract<Heard, { type: T }>> {
     const message = await this.next();
     // oxlint-disable-next-line vitest/no-standalone-expect -- a helper that tests call
@@ -136,13 +121,11 @@ export class Watched {
     return message as Extract<Heard, { type: T }>;
   }
 
-  /** The caption after the next frame. */
   async caption(): Promise<string> {
     return (await this.expect("caption")).text;
   }
 }
 
-/** The color of a frame's pixel, as `#rrggbb`. */
 export function pixel(bitmap: ImageBitmap, x: number, y: number): string {
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
   const canvasContext = canvas.getContext("2d") as OffscreenCanvasRenderingContext2D;

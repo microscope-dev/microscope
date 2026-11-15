@@ -13,9 +13,6 @@ use microscope::{
 };
 use support::Scenario;
 
-/// Every fixture was built from this checkout: a build whose `build/` is
-/// shared with another checkout must not take that checkout's outputs as
-/// its own, whose debug information names the other's sources.
 #[test]
 fn fixtures_were_built_from_this_checkout() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -27,7 +24,6 @@ fn fixtures_were_built_from_this_checkout() {
             .collect::<Vec<_>>()
     };
 
-    // Each output's stamp, and each tokio variant's target directory's.
     let mut stamps = Vec::new();
     let mut directories = vec![root.join("build/test-programs")];
 
@@ -67,7 +63,6 @@ fn fixtures_were_built_from_this_checkout() {
     );
 }
 
-/// The frames fixture across compilers, optimization, and PIE.
 const VARIANTS: [&str; 5] = ["gcc-o0", "gcc-o2", "gcc-o2-nopie", "clang-o0", "clang-o2"];
 
 fn fixture_line(fixture: &str, needle: &str) -> u64 {
@@ -99,7 +94,6 @@ async fn backtrace(scenario: &Scenario) -> Vec<StackFrame> {
         .to_vec()
 }
 
-/// Selects the frame at `level` of the selected thread's backtrace.
 async fn select(scenario: &mut Scenario, level: usize) -> StackFrame {
     let frames = backtrace(scenario).await;
     let frame = frames
@@ -117,7 +111,6 @@ async fn select(scenario: &mut Scenario, level: usize) -> StackFrame {
     selected
 }
 
-/// An integer-like value: an integer, enumerator, boolean, or address.
 fn integer(value: &VariableValue) -> Option<i128> {
     let integer = |value: &IntegerValue| match *value {
         IntegerValue::Signed(value) => Some(value),
@@ -145,9 +138,6 @@ fn available_integer(variable: &Variable) -> Option<i128> {
     }
 }
 
-/// Whether an unavailable value says honestly why: the compiler did not
-/// keep it here, the debugger does not support its description, or a
-/// callee may have overwritten the register holding it.
 const fn honestly_unavailable(reason: &VariableUnavailableReason) -> bool {
     matches!(
         reason,
@@ -159,8 +149,6 @@ const fn honestly_unavailable(reason: &VariableUnavailableReason) -> bool {
     )
 }
 
-/// The value each named variable of the frames fixture holds while
-/// `frames_leaf` runs, when the program determines it.
 fn truth(function: &str, name: &str, recursion: Option<i128>, argc: i128) -> Option<i128> {
     match (function, name) {
         ("frames_leaf", "token") | ("frames_relay", "value") | ("frames_inlined", "doubled") => {
@@ -177,9 +165,6 @@ fn truth(function: &str, name: &str, recursion: Option<i128>, argc: i128) -> Opt
     }
 }
 
-/// The variables a variant must show, beyond never showing a wrong value:
-/// every determined one unoptimized, and those optimized builds keep in
-/// registers the leaf saves and overwrites.
 fn required(variant: &str) -> &'static [(&'static str, &'static str)] {
     match variant {
         "gcc-o0" | "clang-o0" => &[
@@ -213,8 +198,6 @@ fn required(variant: &str) -> &'static [(&'static str, &'static str)] {
     }
 }
 
-/// The source line each frame of the fixture is at, for frames whose
-/// position the program determines.
 fn call_line(function: &str, recursion: Option<i128>) -> Option<u64> {
     match (function, recursion) {
         ("frames_relay", _) => Some(frames_line("int64_t result = frames_leaf(value);")),
@@ -231,8 +214,6 @@ fn call_line(function: &str, recursion: Option<i128>) -> Option<u64> {
     }
 }
 
-/// Selects every frame of the fixture's stopped thread from main inward and
-/// checks that each shows its own values and source position.
 async fn check_frame_truth(scenario: &mut Scenario, variant: &str, argc: i128) {
     let frames = backtrace(scenario).await;
     let names = frames
@@ -250,12 +231,10 @@ async fn check_frame_truth(scenario: &mut Scenario, variant: &str, argc: i128) {
     let mut required = required(variant).to_vec();
     let mut compared = 0;
 
-    // Outer frames first, so each selection moves inward like `down`.
     for level in (0..=main).rev() {
         let frame = select(scenario, level).await;
         let function = names[level].as_str();
 
-        // Unoptimized recursion keeps one frame per call, innermost first.
         let recursion = (function == "frames_recurse" && recursion_frames == 4).then(|| {
             i128::try_from(
                 names[..level]
@@ -332,9 +311,6 @@ async fn check_frame_truth(scenario: &mut Scenario, variant: &str, argc: i128) {
     assert!(compared >= 5, "{variant}: only {compared} values compared");
 }
 
-/// The leaf's caller keeps `doubled` in rdi up to the return address, which
-/// the leaf overwrites without saving. gdb shows the overwritten register as
-/// the caller's value; the debugger must call it unknown.
 async fn check_unsaved_register(scenario: &mut Scenario) {
     let frames = backtrace(scenario).await;
     let inlined = frames
@@ -350,8 +326,6 @@ async fn check_unsaved_register(scenario: &mut Scenario) {
         VariableState::Unavailable(VariableUnavailableReason::RegisterNotSaved("rdi".into()))
     );
 
-    // The frame's registers say the same, while those the unwinder recovered
-    // are the frame's own.
     let registers = scenario
         .operation("caller registers", scenario.handle().registers())
         .await;
@@ -379,7 +353,6 @@ async fn check_unsaved_register(scenario: &mut Scenario) {
     );
     assert!(register("rsp").is_some() && register("fs_base").is_some());
 
-    // The innermost frame still reads the live register.
     select(scenario, 0).await;
     let registers = scenario
         .operation("registers", scenario.handle().registers())
@@ -422,7 +395,6 @@ async fn go_caller_frames_refuse_registers_go_callees_overwrite() {
     scenario.add_breakpoint("main.leaf").await;
     let mut reason = scenario.run_to_stop().await;
 
-    // The Go runtime preempts goroutines with SIGURG.
     while matches!(&reason, StopReason::Exception(exception) if exception.code == 23) {
         reason = scenario.resume_to_stop().await;
     }
@@ -437,8 +409,6 @@ async fn go_caller_frames_refuse_registers_go_callees_overwrite() {
     let frames = backtrace(&scenario).await;
     select(&mut scenario, level_of(&frames, "main.held", 0)).await;
 
-    // held's arguments are described in rax and rbx through its call, which
-    // Go callees overwrite without saving: rbx holds leaf's 2000, not 12.
     for (name, register) in [("a", "rax"), ("b", "rbx")] {
         let variable = scenario
             .operation(name, scenario.handle().variable(name))
@@ -452,7 +422,6 @@ async fn go_caller_frames_refuse_registers_go_callees_overwrite() {
         );
     }
 
-    // A value kept on the stack across the call is still the caller's.
     select(&mut scenario, level_of(&frames, "main.spilled", 0)).await;
     assert_eq!(integer_variable(&scenario, "seed").await, 10);
     scenario.shutdown().await;
@@ -475,7 +444,6 @@ async fn caller_frames_show_their_own_values_in_core_dumps_across_the_compiler_m
     }
 }
 
-/// A value as gdb's oracle records it.
 #[derive(Debug, Clone, PartialEq)]
 enum OracleValue {
     Integer(i128),
@@ -484,14 +452,10 @@ enum OracleValue {
     Error,
     Other,
 
-    /// A structure's members by path, depth first, each judged by its own
-    /// bits.
     Struct(Vec<(String, Self)>),
 }
 
 impl OracleValue {
-    /// What gdb could read of the value: a structure is readable when any
-    /// member is.
     fn readable(&self) -> bool {
         match self {
             Self::OptimizedOut | Self::Error => false,
@@ -507,11 +471,9 @@ struct OracleFrame {
     function: String,
     scope: bool,
 
-    /// Innermost block first.
     variables: Vec<(String, OracleValue)>,
 }
 
-/// Parses gdb's frame variables for every thread of a core, by thread.
 fn parse_oracle(path: &Path) -> BTreeMap<u64, Vec<OracleFrame>> {
     let text = fs::read_to_string(path).unwrap_or_else(|error| {
         panic!(
@@ -581,8 +543,6 @@ fn oracle_value(state: &str, value: &str) -> OracleValue {
     }
 }
 
-/// Decodes a value the way the oracle records it, or `None` for one the
-/// oracle does not compare.
 fn oracle_view(value: &VariableValue) -> Option<OracleValue> {
     if let Some(integer) = integer(value) {
         return Some(OracleValue::Integer(integer));
@@ -599,8 +559,6 @@ fn oracle_view(value: &VariableValue) -> Option<OracleValue> {
     }
 }
 
-/// Whether a frame names the function gdb names, which gdb may qualify with
-/// the function's namespace or package.
 fn same_function(ours: &StackFrame, gdb: &str) -> bool {
     function_name(ours).is_some_and(|name| {
         name == gdb || gdb.ends_with(&format!("::{name}")) || gdb.ends_with(&format!(".{name}"))
@@ -609,11 +567,8 @@ fn same_function(ours: &StackFrame, gdb: &str) -> bool {
 
 #[derive(Default, Debug)]
 struct Agreement {
-    /// Values both debuggers read and found equal.
     equal: usize,
 
-    /// Values only gdb read, which this debugger reports as unknowable or
-    /// unsupported instead.
     declined: usize,
 }
 
@@ -662,8 +617,6 @@ async fn compare_frame(
     our_names.sort();
     gdb_names.sort();
 
-    // gdb shows a Go local before the line declaring it has run; microscope,
-    // like Delve, only past it.
     if go {
         gdb_names.retain(|name| our_names.contains(name));
     }
@@ -672,7 +625,6 @@ async fn compare_frame(
 
     let mut seen = Vec::new();
     for (name, expected) in &oracle.variables {
-        // The innermost of several equal names is the one a lookup finds.
         if seen.contains(name) || !gdb_names.contains(name) {
             continue;
         }
@@ -691,7 +643,6 @@ async fn compare_frame(
         };
 
         for (path, expected) in members {
-            // A nested structure's own members follow it.
             if matches!(expected, OracleValue::Struct(_)) {
                 continue;
             }
@@ -714,8 +665,6 @@ async fn compare_frame(
     }
 }
 
-/// Compares one value, judging a structure ours cannot read by whether gdb
-/// can read any of it.
 fn compare_value(
     state: &VariableState,
     expected: &OracleValue,
@@ -733,7 +682,6 @@ fn compare_value(
                     panic!("{context}: gdb cannot read {value:?}")
                 }
 
-                // Pointers and aggregates have no numeric view to compare.
                 _ => {}
             }
         }
@@ -755,7 +703,6 @@ fn compare_value(
     }
 }
 
-/// Cores whose every thread and frame gdb described, with their executables.
 const ORACLE_CORES: [&str; 23] = [
     "frames-gcc-o0.core",
     "frames-gcc-o2.core",
@@ -802,9 +749,6 @@ async fn every_frame_of_every_dumped_thread_agrees_with_gdb() {
             for frame in frames {
                 let context = format!("{core} thread {tid} frame {}", frame.level);
 
-                // gdb unwinds past code no module describes, where ours
-                // stops, and past the frame a runtime declares its stack's
-                // first, into the code that started the thread.
                 let Some(our_frame) = ours.get(frame.level) else {
                     let outermost = ours
                         .last()
@@ -831,7 +775,6 @@ async fn every_frame_of_every_dumped_thread_agrees_with_gdb() {
     assert!(total.equal >= 200, "too few values compared: {total:?}");
 }
 
-/// Launches a frames fixture and stops in its leaf.
 async fn stop_in_leaf(variant: &str) -> Scenario {
     let mut scenario = Scenario::launch(&format!("frames-{variant}"));
     scenario
@@ -844,8 +787,6 @@ async fn stop_in_leaf(variant: &str) -> Scenario {
     scenario
 }
 
-/// The level of the `nth` frame, counting outward from the innermost, that
-/// runs `function`.
 fn level_of(frames: &[StackFrame], function: &str, nth: usize) -> usize {
     frames
         .iter()
@@ -892,8 +833,6 @@ async fn frame_selection_lasts_until_the_next_stop() {
     );
     assert_eq!(integer_variable(&scenario, "depth").await, 0);
 
-    // The backtrace describes the thread, whatever is selected, while the
-    // registers are the selected frame's own.
     assert_eq!(backtrace(&scenario).await, frames);
     assert_eq!(
         scenario
@@ -929,7 +868,6 @@ async fn frame_selection_lasts_until_the_next_stop() {
     assert_eq!(innermost_function(&scenario).await, "main");
     assert_eq!(integer_variable(&scenario, "total").await, 769);
 
-    // A frame of the previous stop's deeper stack does not exist now.
     let shallow = backtrace(&scenario).await;
     assert!(matches!(
         scenario.handle().select_frame(outermost).await,
@@ -1011,7 +949,6 @@ async fn explicit_contexts_inspect_any_frame_without_selecting_it() {
             .get()
     );
 
-    // The view leaves the selection alone.
     assert_eq!(
         scenario.snapshot().await.selected_frame,
         Some(StackFrameId::INNERMOST)
@@ -1031,7 +968,6 @@ async fn explicit_contexts_inspect_any_frame_without_selecting_it() {
         Err(Error::UnknownThread(_))
     ));
 
-    // Every request through a view of an earlier stop fails.
     scenario
         .add_source_breakpoint("frames.c", frames_line("frames_sink = total;"))
         .await;
@@ -1099,7 +1035,6 @@ async fn each_thread_keeps_its_own_selected_frame() {
     let snapshot = scenario.snapshot().await;
     assert_eq!(snapshot.selected_frame.map(StackFrameId::get), Some(1));
 
-    // Names resolve in main's frame, not the crashing callee's.
     assert!(matches!(
         scenario.handle().variable("depth").await,
         Err(Error::VariableNotFound(_))
@@ -1109,9 +1044,6 @@ async fn each_thread_keeps_its_own_selected_frame() {
 
 #[tokio::test]
 async fn value_capabilities_evaluate_in_the_frame_that_produced_them() {
-    // gcc -O2 describes `kept_pointer` by its target, `kept`, which lives in
-    // a register the leaf saved and overwrote: dereferencing it reads the
-    // register in the producing frame, not the stopped thread's.
     let core = Scenario::fixture("frames-gcc-o2.core");
     let mut scenario = Scenario::open_core("gcc-o2", &CoreDumpOptions::new(core));
     let frames = backtrace(&scenario).await;
@@ -1141,7 +1073,6 @@ async fn value_capabilities_evaluate_in_the_frame_that_produced_them() {
     assert_eq!(integer(value), Some(16));
     scenario.shutdown().await;
 
-    // Unoptimized aggregates expand their members from the producing frame.
     let core = Scenario::fixture("frames-gcc-o0.core");
     let mut scenario = Scenario::open_core("gcc-o0", &CoreDumpOptions::new(core));
     let frames = backtrace(&scenario).await;
@@ -1181,8 +1112,6 @@ async fn value_capabilities_evaluate_in_the_frame_that_produced_them() {
 
 #[tokio::test]
 async fn finish_runs_until_the_selected_frame_returns() {
-    // The selected recursion frame's return address is reached first by its
-    // callee's return into it; only its own return completes the step.
     for variant in ["gcc-o0", "clang-o2"] {
         let mut scenario = stop_in_leaf(variant).await;
         let frames = backtrace(&scenario).await;
@@ -1211,7 +1140,6 @@ async fn finish_runs_until_the_selected_frame_returns() {
         );
         assert_eq!(integer_variable(&scenario, "depth").await, 2, "{variant}");
 
-        // Optimized code may attribute the return address to another line.
         if variant == "gcc-o0" {
             assert_eq!(
                 after[0].source.as_ref().map(|source| source.line.get()),
@@ -1228,7 +1156,6 @@ async fn finish_runs_until_the_selected_frame_returns() {
         scenario.shutdown().await;
     }
 
-    // A physical frame whose inline callee is selectable separately.
     let mut scenario = stop_in_leaf("gcc-o0").await;
     let frames = backtrace(&scenario).await;
     select(&mut scenario, level_of(&frames, "frames_keep", 0)).await;
@@ -1249,8 +1176,6 @@ async fn finish_runs_until_the_selected_frame_returns() {
         Some(frames_line("return frames_keep(seed) + level;"))
     );
 
-    // Leaving main returns into the C library, which has no source, so the
-    // step runs on to the exit.
     let frames = backtrace(&scenario).await;
     select(&mut scenario, level_of(&frames, "main", 0)).await;
     assert_eq!(
@@ -1311,7 +1236,6 @@ async fn stepping_from_a_selected_outer_frame_is_explicit() {
     let mut scenario = stop_in_leaf("gcc-o0").await;
     let frames = backtrace(&scenario).await;
 
-    // Only stepping out names a frame other than the innermost one.
     let snapshot = scenario.snapshot().await;
     let (stop, thread) = (
         snapshot.stop_id.expect("stopped"),
@@ -1343,15 +1267,12 @@ async fn stepping_from_a_selected_outer_frame_is_explicit() {
 
     assert_eq!(scenario.snapshot().await.stop_id, Some(stop), "nothing ran");
 
-    // An inline frame of an outer activation has no return of its own to
-    // run to.
     select(&mut scenario, level_of(&frames, "frames_inlined", 0)).await;
     assert!(matches!(
         scenario.handle().step(StepKind::Out).await,
         Err(Error::FrameStepUnsupported(_))
     ));
 
-    // Every other step begins at the innermost frame.
     select(&mut scenario, level_of(&frames, "frames_recurse", 2)).await;
     assert_eq!(
         scenario.step_to_stop(StepKind::OverSource).await,
@@ -1369,7 +1290,6 @@ async fn stepping_from_a_selected_outer_frame_is_explicit() {
     assert_eq!(after.len(), frames.len());
     scenario.shutdown().await;
 
-    // Stepping out applies only to frames of the main executable.
     let mut scenario = Scenario::launch("module-frames-gcc-o0");
     scenario.add_breakpoint("module_callback").await;
     assert!(matches!(
@@ -1390,7 +1310,6 @@ async fn a_caller_frames_local_can_be_watched_until_its_activation_ends() {
     let mut scenario = stop_in_leaf("gcc-o0").await;
     let frames = backtrace(&scenario).await;
 
-    // Not visible in the stopped frame, only in the selected caller.
     assert!(matches!(
         scenario.handle().variable("below").await,
         Err(Error::VariableNotFound(_))
@@ -1410,8 +1329,6 @@ async fn a_caller_frames_local_can_be_watched_until_its_activation_ends() {
 
     assert!(target.address() < activation);
 
-    // The same name in a deeper activation is other storage, bounded by
-    // that activation, on x86-64's downward-growing stack.
     select(&mut scenario, level_of(&frames, "frames_recurse", 0)).await;
     let inner = scenario
         .operation(
@@ -1440,7 +1357,6 @@ async fn a_caller_frames_local_can_be_watched_until_its_activation_ends() {
         .await;
     assert_eq!(watchpoint.address, target.address());
 
-    // depth 1 stores what depth 0 returned: frames_keep's 149 plus 5.
     let reason = scenario.resume_to_stop().await;
     let StopReason::Watchpoint { hits } = &reason else {
         panic!("expected the store to below, got {reason:?}");
@@ -1455,8 +1371,6 @@ async fn a_caller_frames_local_can_be_watched_until_its_activation_ends() {
     assert_eq!(innermost_function(&scenario).await, "frames_recurse");
     assert_eq!(integer_variable(&scenario, "depth").await, 1);
 
-    // Once depth 1 returns, its storage belongs to nothing being watched:
-    // the next stop, whatever stops first, ends the watchpoint.
     scenario
         .add_source_breakpoint("frames.c", frames_line("frames_sink = total;"))
         .await;
@@ -1489,8 +1403,6 @@ async fn shared_library_and_c_library_caller_frames_are_selectable() {
     scenario.add_breakpoint("compare_values").await;
     scenario.add_breakpoint("module_callback").await;
 
-    // qsort calls the comparison from the C library, which has no debug
-    // information; its frames still lead to the main image's caller.
     assert!(matches!(
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
@@ -1508,7 +1420,6 @@ async fn shared_library_and_c_library_caller_frames_are_selectable() {
         Ok(location) if location.image.source.is_none()
     ));
 
-    // Globals stay visible from any frame.
     assert_eq!(integer_variable(&scenario, "frames_sink").await, 0);
     select(&mut scenario, sort).await;
     let values = scenario
@@ -1545,7 +1456,6 @@ async fn shared_library_and_c_library_caller_frames_are_selectable() {
         "qsort permutes in place"
     );
 
-    // The shared library's frame reads its own locals and source.
     scenario.remove_all_breakpoints().await;
     scenario.add_breakpoint("module_callback").await;
     assert!(matches!(
@@ -1604,8 +1514,6 @@ async fn revealing_an_inline_frame_without_running_selects_the_innermost_frame()
     let frames = backtrace(&scenario).await;
     select(&mut scenario, level_of(&frames, "main", 0)).await;
 
-    // Stepping into the inline call hidden at the stop publishes a new stop
-    // without running the inferior.
     assert_eq!(
         scenario.step_to_stop(StepKind::IntoSource).await,
         StopReason::Step {
@@ -1630,35 +1538,21 @@ async fn revealing_an_inline_frame_without_running_selects_the_innermost_frame()
     scenario.shutdown().await;
 }
 
-/// glibc's `clone3` has no call-frame information from its system call to
-/// its return, which both threads run: the caller as the call returns,
-/// unwinding through `pthread_create` to `main`, and the new thread from its
-/// first instruction, on a stack that holds nothing else.
 #[tokio::test]
 async fn both_threads_of_glibcs_clone_unwind_whole_from_its_system_call() {
     both_threads_of_clone_unwind_whole("threads", "clone3").await;
 }
 
-/// musl's `__clone` has no call-frame information at all. The caller
-/// returns from it with the stack it called it with; the new thread clears
-/// rbp, pops its argument, and calls its start function, which never
-/// returns to it.
 #[tokio::test]
 async fn both_threads_of_musls_clone_unwind_whole_from_its_system_call() {
     both_threads_of_clone_unwind_whole("threads-musl", "clone").await;
 }
 
-/// The same, with musl linked into the program.
 #[tokio::test]
 async fn both_threads_of_a_static_musls_clone_unwind_whole_from_its_system_call() {
     both_threads_of_clone_unwind_whole("threads-musl-static", "clone").await;
 }
 
-/// Runs `fixture`, a build of `threads.c`, and unwinds each thread that
-/// stops right after the system call `call` a thread is created with, and
-/// each worker at `worker_breakpoint`. Every stack ends whole: the creating
-/// thread's in `main`, the new thread's at its one frame, and a worker's
-/// through its start.
 async fn both_threads_of_clone_unwind_whole(fixture: &str, call: &str) {
     use microscope::syscalls::{Abi, SyscallId};
     use microscope::{BreakpointSpec, CatchPhase, InferiorState, StopContext, UnwindTermination};
@@ -1682,8 +1576,6 @@ async fn both_threads_of_clone_unwind_whole(fixture: &str, call: &str) {
         .instruction
         .expect("a thread's frame has an instruction");
 
-    // Each thread at the system call's return, by whether it is the new one,
-    // where the call returned zero.
     let (mut parent, mut child, mut workers) = (0, 0, 0);
     let mut caught = false;
     loop {
@@ -1742,7 +1634,6 @@ async fn both_threads_of_clone_unwind_whole(fixture: &str, call: &str) {
             break;
         }
 
-        // The second thread's creation passes the same instruction.
         if !caught {
             caught = true;
             scenario

@@ -1,10 +1,10 @@
-// Runs code in the vDSO, the shared object the kernel maps into every process.
-// `vdso clock` faults inside the unexported helper behind clock_gettime, which
-// libc calls; `vdso time` faults inside the vDSO's own time, to which libc's
-// indirect function binds the program directly; `vdso calls` makes both calls
-// with valid arguments and exits; `vdso move` moves the vDSO, as a checkpoint
-// restore does, calling its getcpu before and after, and then unmaps it;
-// `vdso replace` maps fresh memory over it.
+
+
+
+
+
+
+
 #define _GNU_SOURCE
 #include <elf.h>
 #include <stdio.h>
@@ -13,12 +13,12 @@
 #include <sys/mman.h>
 #include <time.h>
 
-// Nothing is mapped at low addresses, so the vDSO's first store faults.
+
 #define UNMAPPED ((void *)16)
 
-// Callees may change a global, so each caller reads it before its call and
-// keeps the value for after it in a register every callee, the vDSO
-// included, must preserve.
+
+
+
 long vdso_depth = 42;
 struct timespec vdso_clock_value;
 time_t vdso_time_value;
@@ -35,7 +35,7 @@ __attribute__((noinline)) long vdso_time(time_t *destination) {
     return now + depth;
 }
 
-// Where the vDSO is mapped, as the process's own memory map says.
+
 static int vdso_mapping(unsigned long *start, unsigned long *end) {
     FILE *maps = fopen("/proc/self/maps", "r");
     if (maps == NULL) {
@@ -50,8 +50,8 @@ static int vdso_mapping(unsigned long *start, unsigned long *end) {
     return found;
 }
 
-// The offset of a function in the vDSO, which is linked at zero, from the
-// dynamic symbols its section headers describe.
+
+
 static unsigned long vdso_offset(const char *name) {
     const unsigned char *image = (const unsigned char *)getauxval(AT_SYSINFO_EHDR);
     const Elf64_Ehdr *header = (const Elf64_Ehdr *)image;
@@ -74,8 +74,8 @@ static unsigned long vdso_offset(const char *name) {
 
 typedef long (*getcpu_function)(unsigned *cpu, unsigned *node, void *cache);
 
-// Calls the vDSO's getcpu wherever the vDSO is. It reads no kernel data
-// page, so it runs as well after the vDSO moves without them.
+
+
 __attribute__((noinline)) long vdso_getcpu(unsigned long base, unsigned long offset) {
     unsigned cpu = 0;
     return ((getcpu_function)(base + offset))(&cpu, NULL, NULL);
@@ -89,8 +89,8 @@ __attribute__((noinline)) void vdso_unmapped(void) {
     __asm__ volatile("" : : : "memory");
 }
 
-// libc keeps the vDSO's first address, so only this program calls it once
-// moved.
+
+
 static int move_vdso(void) {
     unsigned long start = 0;
     unsigned long end = 0;
@@ -122,8 +122,8 @@ __attribute__((noinline)) void vdso_replaced(void *address) {
     __asm__ volatile("" : : "r"(address) : "memory");
 }
 
-// Maps fresh memory over the vDSO, which a debugger's trap in the vDSO must
-// not reach.
+
+
 static int replace_vdso(void) {
     unsigned long start = 0;
     unsigned long end = 0;

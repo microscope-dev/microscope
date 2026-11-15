@@ -1,7 +1,7 @@
-// D's associative arrays and Phobos containers, which the built-in views
-// present. Each `VIEW:` marker says what its expression must show,
-// evaluated in main() where barrier() is called; `problem:` says the view
-// must refuse the value, and why.
+
+
+
+
 module containers;
 
 import std.array : Appender, appender;
@@ -14,7 +14,7 @@ struct Triple
     ulong a, b, c;
 }
 
-// Takes every value at once, so that each is complete where it stops.
+
 pragma(inline, false) void barrier(const(void)*[] fixtures...)
 {
     foreach (fixture; fixtures)
@@ -40,12 +40,12 @@ void main()
     uint[uint] many; // VIEW: many => count: 300
     foreach (i; 0 .. 300)
         many[i] = i * 2;
-    // A removed entry leaves its bucket marked deleted.
+
     int[int] pruned; // VIEW: pruned => len=1 {2: 20}
     pruned[1] = 10;
     pruned[2] = 20;
     pruned.remove(1);
-    // Values stored apart from their keys' alignment.
+
     Triple[ubyte] triples; // VIEW: triples => count: 20
     foreach (ubyte i; 0 .. 20)
         triples[i] = Triple(i, 0, 0);

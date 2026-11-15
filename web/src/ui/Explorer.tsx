@@ -1,6 +1,3 @@
-// Explorer lists what this page is connected to and the profiles its
-// microscope serves.
-
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useMemo } from "react";
 

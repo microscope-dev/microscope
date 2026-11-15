@@ -17,8 +17,6 @@ pub(super) const DISPATCH: &str = "_ZN4node9inspector12_GLOBAL__N_126SameThreadI
 pub(super) const STOP: &str = "_ZN4node9inspector5Agent4StopEv";
 const CONNECT: &str = "_ZN4node9inspector5Agent7ConnectESt10unique_ptrINS0_24InspectorSessionDelegateESt14default_deleteIS3_EEb";
 
-// The supported GCC constructor returns its new InspectorSession through the saved sret.
-// Relative operands vary; the allocation, both vptr stores, and return paths do not.
 const SESSION: &[u8] = &[
     0xbf, 0x20, 0, 0, 0, 0xe8, 0x38, 0xc7, 0xb2, 0xff, 0xf3, 0x41, 0x0f, 0x6f, 0x47, 0x08, 0x48,
     0x89, 0xc3, 0x0f, 0x12, 0xf0, 0x66, 0x49, 0x0f, 0x7e, 0xf4, 0x4d, 0x85, 0xe4, 0x0f, 0x84, 0x6e,
@@ -196,7 +194,6 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
             _ => return None,
         }
     }
-    // GCC saves the incoming sret in this private frame slot, never its address.
     constructor_shape(
         object,
         start,
@@ -257,7 +254,6 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
         let Some(session) = constructor_shape(object, at, SESSION) else {
             continue;
         };
-        // The template fixes the instruction count, so these are all there.
         let allocation = session.get(1)?;
         let empty_branch = session.get(7)?;
         let vtable_load = session.get(11)?;
@@ -321,7 +317,6 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
         {
             return None;
         }
-        // The atomic weak-count path rejoins the same overflow check and publication.
         let atomic = constructor_shape(
             object,
             atomic_branch.near_branch_target(),
@@ -342,7 +337,6 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
         {
             return None;
         }
-        // No branch may bypass the allocation or enter a constructor instruction's middle.
         for branch in &body {
             if branch.flow_control() == FlowControl::Return && branch.ip() != session.last()?.ip() {
                 return None;
@@ -365,7 +359,6 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
                 return None;
             }
             if target == at.checked_add(0x8e)? && branch.ip() != empty.last()?.ip() {
-                // The only other return is the permission/uninitialized null session.
                 constructor_shape(
                     object,
                     branch.ip().checked_sub(18)?,
@@ -408,7 +401,6 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
         {
             return None;
         }
-        // Itanium's two destructor entries precede InspectorSession::Dispatch.
         let dispatch = relative_pointer(object, vtable.checked_add(16)?)?;
         let destructor = relative_pointer(object, vtable)?;
         image_bytes(object, destructor, 1, true)?;
@@ -843,18 +835,18 @@ mod tests {
                 .unwrap()
         };
         let mutations = [
-            (0x0085_98c0, 0xb5), // The frame no longer saves the incoming sret.
-            (0x0085_9fcf, 0x30), // Allocation has the wrong object size.
-            (0x0085_9fe0, 0xc1), // The returned object no longer comes from new.
-            (0x0085_9fee, 0x6f), // The empty-client branch enters an instruction.
-            (0x0085_a004, 0x98), // The two constructors disagree about their vptr.
-            (0x0085_a012, 0x0b), // The vptr is stored from a different register.
+            (0x0085_98c0, 0xb5),
+            (0x0085_9fcf, 0x30),
+            (0x0085_9fe0, 0xc1),
+            (0x0085_9fee, 0x6f),
+            (0x0085_a004, 0x98),
+            (0x0085_a012, 0x0b),
             (0x0085_a171, 0x0b),
-            (0x0085_a052, 0x19), // The session is not published through sret.
-            (0x0085_a02c, 0xe1), // The atomic branch enters an instruction.
-            (0x0085_a41d, 0x1d), // The atomic path skips the overflow comparison.
-            (0x0085_a18f, 0xca), // The empty-client return skips an instruction.
-            (0x0085_bc80, 0x90), // The selected entry is no longer the proven prologue.
+            (0x0085_a052, 0x19),
+            (0x0085_a02c, 0xe1),
+            (0x0085_a41d, 0x1d),
+            (0x0085_a18f, 0xca),
+            (0x0085_bc80, 0x90),
         ]
         .map(|(address, byte)| (offset(address), byte));
         let rela = object.section_by_name(".rela.dyn").unwrap();
@@ -873,8 +865,8 @@ mod tests {
                 relocation + 8,
                 u8::try_from(object::elf::R_X86_64_64).unwrap(),
             ),
-            (relocation + 16, 0x81), // Relocation and the stored addend disagree.
-            (relocation - 24, 0xa8), // Duplicate relocation of the Dispatch slot.
+            (relocation + 16, 0x81),
+            (relocation - 24, 0xa8),
         ]) {
             let original = bytes[offset];
             assert_ne!(original, byte);

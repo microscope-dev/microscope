@@ -1,17 +1,6 @@
-//! D's mangled names, as the D ABI's name mangling specifies them: what a
-//! symbol names, without its type. A function's parameters and a template
-//! instance's arguments are left out, the arguments as `!(…)`, so that
-//! `_D3std5stdio__T7writelnTAyaZQnFNfQjZv` names `std.stdio.writeln!(…)`.
-//! A name that does not follow the grammar exactly, or uses a part of it
-//! this reader does not know, is not decoded at all.
-
-/// Bounds nesting, so that adversarial names cannot exhaust the stack.
 const DEPTH_LIMIT: u32 = 64;
 
-/// What a D symbol names, scopes joined by dots, or `None` when `mangled`
-/// is not a D name this reader decodes exactly.
 pub fn qualified_name(mangled: &str) -> Option<String> {
-    // The program's main function.
     if mangled == "_Dmain" {
         return Some("D main".to_owned());
     }
@@ -62,7 +51,6 @@ impl<'a> Reader<'a> {
             .is_some_and(|rest| rest.starts_with(prefix))
     }
 
-    /// Runs `read` one level deeper, failing past the limit.
     fn nested<T>(&mut self, read: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
         if self.depth >= DEPTH_LIMIT {
             return None;
@@ -74,8 +62,6 @@ impl<'a> Reader<'a> {
         read
     }
 
-    /// `_D`, a qualified name, then the symbol's type, or `Z` for a symbol
-    /// the compiler generates, such as a class's `__vtbl`.
     fn mangled_name(&mut self) -> Option<String> {
         if !self.starts_with(b"_D") {
             return None;
@@ -91,8 +77,6 @@ impl<'a> Reader<'a> {
         Some(name)
     }
 
-    /// A symbol's type: a member function's `this`, and how it is
-    /// qualified, then the type.
     fn symbol_type(&mut self) -> Option<()> {
         if self.eat(b'M') {
             self.modifiers();
@@ -101,8 +85,6 @@ impl<'a> Reader<'a> {
         self.read_type()
     }
 
-    /// A symbol a template argument or value names: `_D`, its name, and
-    /// its type.
     fn symbol(&mut self) -> Option<()> {
         if !self.starts_with(b"_D") {
             return None;
@@ -113,10 +95,6 @@ impl<'a> Reader<'a> {
         self.symbol_type()
     }
 
-    /// Symbol names joined by dots. A function holding the next symbol is
-    /// followed by its type, without its return type; what follows a
-    /// symbol's last name is its own type, which may also begin as a
-    /// function's does, so a type is a parent's only when a name follows.
     fn qualified_name(&mut self) -> Option<String> {
         self.nested(|reader| {
             let mut name = String::new();
@@ -147,8 +125,6 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// Whether a symbol name begins here: a length, a template instance,
-    /// or a back reference to an identifier.
     fn starts_symbol_name(&self) -> bool {
         match self.peek() {
             Some(b'1'..=b'9') => true,
@@ -169,7 +145,6 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// One symbol name, appended to `name`.
     fn symbol_name(&mut self, name: &mut String) -> Option<()> {
         if self.starts_with(b"__T") || self.starts_with(b"__U") {
             self.at += 3;
@@ -182,7 +157,6 @@ impl<'a> Reader<'a> {
         Some(())
     }
 
-    /// An identifier, or a back reference to one written before.
     fn named(&mut self) -> Option<&'a str> {
         if self.peek() != Some(b'Q') {
             return self.identifier();
@@ -198,9 +172,6 @@ impl<'a> Reader<'a> {
         referred.identifier()
     }
 
-    /// An identifier: a decimal length, then that many characters of an
-    /// identifier. An identifier that is itself a template instance, as
-    /// older compilers wrote them, is not read.
     fn identifier(&mut self) -> Option<&'a str> {
         if !self.peek()?.is_ascii_digit() || self.peek() == Some(b'0') {
             return None;
@@ -237,8 +208,6 @@ impl<'a> Reader<'a> {
         (self.at > start).then_some(value)
     }
 
-    /// `Q` and a position before it, in base 26 written with upper-case
-    /// letters for its higher digits and a lower-case one for its last.
     fn back_reference(&mut self) -> Option<usize> {
         let at = self.at;
         if !self.eat(b'Q') {
@@ -263,7 +232,6 @@ impl<'a> Reader<'a> {
         (distance != 0 && distance <= at).then(|| at - distance)
     }
 
-    /// Template arguments, through the `Z` that closes them.
     fn template_arguments(&mut self) -> Option<()> {
         self.nested(|reader| {
             loop {
@@ -293,8 +261,6 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// The letter that says what kind of type begins here, past its
-    /// modifiers and any back reference to it.
     fn type_kind(&self) -> Option<u8> {
         let mut probe = Reader {
             text: self.text,
@@ -311,7 +277,6 @@ impl<'a> Reader<'a> {
         probe.peek()
     }
 
-    /// A template argument's value.
     fn value(&mut self, associative: bool) -> Option<()> {
         self.nested(|reader| match reader.next()? {
             b'n' => Some(()),
@@ -358,14 +323,10 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// A value within an array or struct literal, whose own type is not
-    /// written: one that is itself an associative array is not read.
     fn element_value(&mut self) -> Option<()> {
         self.value(false)
     }
 
-    /// `NAN`, `INF`, `NINF`, or hexadecimal digits with an exponent, each
-    /// part possibly negative.
     fn hex_float(&mut self) -> Option<()> {
         for special in [&b"NAN"[..], b"NINF", b"INF"] {
             if self.starts_with(special) {
@@ -391,7 +352,6 @@ impl<'a> Reader<'a> {
         self.number().map(drop)
     }
 
-    /// Type modifiers: const, immutable, shared, and inout.
     fn modifiers(&mut self) {
         loop {
             if self.eat(b'x') || self.eat(b'y') || self.eat(b'O') {
@@ -418,7 +378,6 @@ impl<'a> Reader<'a> {
                 }
             }
 
-            // Modifiers, arrays, and pointers.
             b'x' | b'y' | b'O' | b'A' | b'P' => {
                 reader.at += 1;
                 reader.read_type()
@@ -463,14 +422,11 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// A function type with its return type.
     fn function(&mut self) -> Option<()> {
         self.function_without_return()?;
         self.read_type()
     }
 
-    /// A calling convention, attributes, parameters, and how the
-    /// parameters close.
     fn function_without_return(&mut self) -> Option<()> {
         if !call_convention(self.next()?) {
             return None;
@@ -491,16 +447,12 @@ impl<'a> Reader<'a> {
                     return Some(());
                 }
                 _ => {
-                    // Scope, and return.
                     self.eat(b'M');
                     if self.starts_with(b"Nk") {
                         self.at += 2;
                     }
 
                     if matches!(self.peek()?, b'I' | b'J' | b'K' | b'L') {
-                        // A storage class: in, out, ref, or lazy. `I` also
-                        // begins an identifier's type, which is read when
-                        // no type follows it.
                         let class = self.at;
                         self.at += 1;
                         if self.read_type().is_some() {
@@ -517,15 +469,10 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The letters of D's basic types.
 const BASIC_TYPES: &[u8] = b"vghstiklmfdeopjqrcbauwn";
 
-/// The second letters of a function's attributes: pure, nothrow, ref,
-/// property, trusted, safe, nogc, return, scope, and live.
 const ATTRIBUTES: &[u8] = b"abcdefijlm";
 
-/// Whether a byte begins a function type: D's, C's, Windows', Pascal's,
-/// C++'s, or Objective-C's calling convention.
 const fn call_convention(byte: u8) -> bool {
     matches!(byte, b'F' | b'U' | b'W' | b'V' | b'R' | b'Y')
 }

@@ -26,7 +26,7 @@ struct Holder {
 };
 
 volatile std::int32_t Holder::member = 131;
-}  // namespace fixture
+}
 
 __attribute__((noinline)) void inspect_globals() {
     global_sink = fixture::inline_value + fixture::namespace_static +

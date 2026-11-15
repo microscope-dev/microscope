@@ -18,8 +18,6 @@ fn at(file: u32, line: u64) -> SourceLocation {
     }
 }
 
-/// Line rows in line-program order, and calls inlined into instance 0 in
-/// instance order.
 struct Fake {
     rows: Vec<(AddressRange<ImageAddress>, SourceLocation)>,
     calls: Vec<(AddressRange<ImageAddress>, Option<SourceLocation>)>,
@@ -63,8 +61,6 @@ fn declared(location: SourceLocation) -> GoDeclaration {
 
 #[test]
 fn a_go_local_is_visible_only_past_its_declarations_line() {
-    // Lines 10, 11 (the declaration), 12, a call inlined at line 9, a row
-    // of another file, line 13, and code with no line.
     let code = Fake {
         rows: vec![
             (range(0x10, 0x20), at(0, 10)),
@@ -93,7 +89,6 @@ fn location() -> impl Strategy<Value = Option<SourceLocation>> {
     proptest::option::of((0_u32..2, 1_u64..6).prop_map(|(file, line)| at(file, line)))
 }
 
-/// Line ranges in address order, with gaps no line describes between some.
 fn lines() -> impl Strategy<Value = Vec<(AddressRange<ImageAddress>, SourceLocation)>> {
     proptest::collection::vec((0_u64..6, 1_u64..12, 0_u32..2, 1_u64..6), 0..8).prop_map(|rows| {
         let mut end = 0;
@@ -108,8 +103,6 @@ fn lines() -> impl Strategy<Value = Vec<(AddressRange<ImageAddress>, SourceLocat
     })
 }
 
-/// A call inlined into instance 0, or into the first call, with its code
-/// and where it was called from.
 #[derive(Debug, Clone)]
 struct Call {
     code: AddressRange<ImageAddress>,
@@ -135,9 +128,6 @@ fn calls() -> impl Strategy<Value = Vec<Call>> {
     })
 }
 
-/// An image whose line tables hold `lines`, and whose instance 0 covers
-/// the 64 bytes of code with `calls` inlined into it: each call is
-/// instance one past its index.
 fn image(
     lines: &[(AddressRange<ImageAddress>, SourceLocation)],
     calls: &[Call],

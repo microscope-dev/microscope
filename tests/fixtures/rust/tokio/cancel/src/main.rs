@@ -1,19 +1,19 @@
-//! A task whose await never finishes, because its future goes away while
-//! it waits at a gate that never opens. Once the task waits there, a plain
-//! thread ends the wait in one of five ways, the program's argument:
-//!
-//! - `abort`: the task's `JoinHandle::abort`;
-//! - `select`: another branch of the `select!` that awaits it finishes;
-//! - `timeout`: the timeout around it elapses;
-//! - `shutdown`: the runtime shuts down;
-//! - `current-shutdown`: a current-thread runtime, which the main thread
-//!   runs until the task waits, shuts down.
-//!
-//! With `hold`, the gate opens instead, once a line arrives on standard
-//! input, and the task finishes; or, when the line is `exit`, the program
-//! exits with status 3 while the task still waits. Before reading, the
-//! program says `held` once its worker has nothing to run, so that no
-//! thread runs the task.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 use std::hint::black_box;
 use std::io::BufRead as _;
@@ -37,8 +37,8 @@ async fn alone(gate: oneshot::Receiver<u64>) -> u64 {
 
 async fn selecting(gate: oneshot::Receiver<u64>, other: oneshot::Receiver<()>) -> u64 {
     let me = truth::start();
-    // Biased, the branches are polled in order, whose code an optimized
-    // build then has one copy of.
+
+
     let picked = tokio::select! {
         biased;
         got = waiting(me, gate) => got, // AWAIT: select
@@ -55,7 +55,7 @@ async fn timing(gate: oneshot::Receiver<u64>) -> u64 {
     black_box(timed.unwrap_or(0))
 }
 
-/// Waits until the task waits at its gate.
+
 fn parked() {
     while truth::parked_at("gate") != 1 {
         std::thread::yield_now();
@@ -124,6 +124,6 @@ fn main() {
         other => panic!("unknown mode {other}"),
     };
     truth::line(&[&"result", &result]);
-    // The gate stays shut until here.
+
     drop(open);
 }

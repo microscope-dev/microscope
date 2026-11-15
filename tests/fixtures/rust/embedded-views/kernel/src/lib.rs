@@ -1,14 +1,14 @@
-//! The values of a tree whose nodes keep their children in a list, each
-//! node before its children, for the view of `Tree` in main.views. Its
-//! arguments are where the root is kept and where a node keeps its first
-//! child and its next sibling; it yields each node's address.
+
+
+
+
 
 #![no_std]
 
 use microscope_views::kernel::{arguments, emit, load};
 
-/// The deepest tree it walks: a node waits here for each ancestor whose
-/// next sibling is still to come.
+
+
 const MAX_DEPTH: usize = 64;
 
 /// Walks the tree.

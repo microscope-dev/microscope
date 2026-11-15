@@ -1,14 +1,3 @@
-//! Interpreted frames in a thread's backtrace. A runtime that interprets
-//! code, as CPython does, names the frames each thread runs, cut into the
-//! segments each activation of its interpreter's loop runs. The innermost
-//! activation runs the innermost segment, and so on out: each segment shows
-//! before its activation, which stays, as a driven future's chain shows
-//! before the frame that polls it.
-//!
-//! Where the activations and segments differ in number, no segment's place
-//! is known: they all show after the thread's machine frames, and a note
-//! says why. A segment is never placed by its position alone.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -39,25 +28,18 @@ use crate::{
     ViewProblem, VirtualAddress,
 };
 
-/// An interpreted frame of a trace, and the runtime that interprets it.
 #[derive(Debug, Clone)]
 pub(super) struct Placed {
     pub(super) runtime: RuntimeId,
     pub(super) frame: InterpretedFrame,
 }
 
-/// Where a thread's interpreted frames go in its backtrace.
 #[derive(Debug, Default)]
 pub(super) struct Placement {
-    /// The segment each activation of an interpreter's loop runs,
-    /// innermost first, by the activation's frame in the trace.
     pub(super) placed: BTreeMap<usize, Vec<Placed>>,
 
-    /// Why the segment the activation at each frame of the trace runs is
-    /// shown in part, where it is.
     pub(super) notes: BTreeMap<usize, Arc<str>>,
 
-    /// The frames whose place is unknown, innermost first, and why.
     pub(super) unplaced: Vec<Placed>,
     pub(super) unplaced_reason: Option<Arc<str>>,
 }
@@ -67,8 +49,6 @@ impl Placement {
         self.placed.is_empty() && self.notes.is_empty() && self.unplaced.is_empty()
     }
 
-    /// Adds where another runtime's frames go. Two runtimes' frames whose
-    /// place is unknown follow each other, the first's first.
     pub(super) fn merge(&mut self, other: Self) {
         self.placed.extend(other.placed);
         self.notes.extend(other.notes);
@@ -80,13 +60,10 @@ impl Placement {
     }
 }
 
-/// The interpreted frames a runtime names at a stop, read once for a
-/// published stop.
 pub(super) type InterpretedCache =
     std::cell::RefCell<BTreeMap<RuntimeId, Option<Arc<Partial<InterpretedStacks>>>>>;
 
 impl<P: InspectionOps> Controller<P> {
-    /// The frames `runtime` interprets on the stop's threads.
     fn interpreted(
         &self,
         inferior: &Inferior,
@@ -115,8 +92,6 @@ impl<P: InspectionOps> Controller<P> {
         found
     }
 
-    /// Whether a runtime interprets frames on the thread whose stack
-    /// `root` begins.
     pub(super) fn interprets_on(&self, inferior: &Inferior, root: &StackRoot) -> bool {
         let Some(thread) = root.thread().map(debug_thread_id) else {
             return false;
@@ -128,11 +103,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Where the frames each of `runtimes` interprets go in the trace of
-    /// the stack `root` begins, given the trace's `drivers`, each with
-    /// what it drives and the index of the runtime that says so. Every
-    /// runtime that interprets code names its threads' frames, which show
-    /// even where no activation of its loop is found.
     pub(super) fn placement(
         &self,
         inferior: &Inferior,
@@ -153,9 +123,6 @@ impl<P: InspectionOps> Controller<P> {
         placement
     }
 
-    /// Where the interpreted frames of the thread whose stack `root`
-    /// begins go, given the frames of its trace that are activations of
-    /// `runtime`'s loop, innermost first.
     fn place_interpreted(
         &self,
         inferior: &Inferior,
@@ -199,8 +166,6 @@ impl<P: InspectionOps> Controller<P> {
 
         let [interpreted] = threads.as_slice() else {
             if threads.is_empty() {
-                // A thread in the loop with no frames it names: the loop
-                // may be entering or leaving, or its threads unread.
                 if let (Some(&innermost), false) = (activations.first(), stacks.gaps.is_empty()) {
                     placement.notes.insert(innermost, gaps().into());
                 }
@@ -257,8 +222,6 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// The frame of the backtrace that shows an interpreted frame, on the
-/// stack `segment`.
 pub(super) fn interpreted_frame(frame: &InterpretedFrame, segment: StackSegment) -> StackFrame {
     let mut built = StackFrame::from_parts(
         0,
@@ -281,15 +244,12 @@ pub(super) fn interpreted_frame(frame: &InterpretedFrame, segment: StackSegment)
         first_line: frame.first_line,
         declared_in: None,
         generated: None,
-        // A segment's problem notes the activation that runs it.
         problem: None,
     });
 
     built
 }
 
-/// The backtrace of a suspended task whose interpreter keeps its frames,
-/// or `None` for any other stack.
 pub(super) fn task_backtrace(root: &StackRoot) -> Result<Option<Backtrace>> {
     let RootOrigin::Interpreted { frames, end, .. } = &root.origin else {
         return Ok(None);
@@ -311,8 +271,6 @@ pub(super) fn task_backtrace(root: &StackRoot) -> Result<Option<Backtrace>> {
     }))
 }
 
-/// One frame of a suspended task whose interpreter keeps its frames, and
-/// what evaluates its variables, or `None` for any other stack.
 pub(super) fn resolve_task_frame(
     root: &StackRoot,
     id: StackFrameId,
@@ -345,8 +303,6 @@ pub(super) fn resolve_task_frame(
     )))
 }
 
-/// The frame at `level` of a suspended task's backtrace that shows
-/// `frame`.
 fn task_frame(level: usize, frame: &InterpretedFrame) -> Result<StackFrame> {
     let level = frame_level(level)?;
     let mut built = interpreted_frame(frame, StackSegment::Task);
@@ -359,9 +315,6 @@ fn frame_level(level: usize) -> Result<u32> {
     u32::try_from(level).map_err(|_| Error::internal("a stack has more frames than u32 levels"))
 }
 
-/// An interpreted frame, as its inspection sees it: it has no registers,
-/// no place on a machine stack, and no code in an image; its interpreter
-/// keeps its variables.
 pub(super) fn resolved(
     id: StackFrameId,
     frame: StackFrame,
@@ -398,22 +351,15 @@ fn plural(count: usize, noun: &str) -> String {
     }
 }
 
-/// The children of an interpreter's object, which a value's capability
-/// pages: only this backend reads them, through the runtime that
-/// interprets the object.
 #[derive(Debug)]
 pub(super) struct InterpretedChildren {
     runtime: RuntimeId,
     object: InterpretedHandle,
 
-    /// The part of the object whose children these are, and the numbers
-    /// it keeps as an array, if it keeps them so.
     part: Arc<[u64]>,
     pub(super) array: Option<Arc<InterpretedArray>>,
 }
 
-/// Where an interpreted frame's values are read, for their children's
-/// capabilities.
 struct Origin {
     stop: StopId,
     context: ExecutionContext,
@@ -421,7 +367,6 @@ struct Origin {
     runtime: RuntimeId,
     module: LoadedModule,
 
-    /// The language whose values the runtime interprets.
     language: SourceLanguage,
 }
 
@@ -435,8 +380,6 @@ impl<P: InspectionOps> Controller<P> {
             })
     }
 
-    /// The variables of the interpreted frame `resolved`, which `runtime`
-    /// keeps at `frame`, that `query` names.
     #[allow(
         clippy::too_many_arguments,
         reason = "the stop, the frame, and what the runtime names it"
@@ -469,8 +412,6 @@ impl<P: InspectionOps> Controller<P> {
                 continue;
             }
 
-            // Once a read has exhausted the budget, the rest of the locals
-            // show that they were not read, as they were not.
             if machine.budget.exhaustion().is_none()
                 && machine.budget.consume_variable_value().is_err()
             {
@@ -499,8 +440,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(variables)
     }
 
-    /// The page `query` asks for of the children of the interpreter's
-    /// object `reference` names.
     pub(super) fn interpreted_children(
         &self,
         inferior: &Inferior,
@@ -585,9 +524,6 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// The type and state the debugger presents a slot's value as, which
-/// `runtime`, of `module`, read at the frame `frame` of `context` at the
-/// stop `stop`.
 pub(super) fn present_slot(
     (stop, context, frame): (StopId, ExecutionContext, StackFrameId),
     runtime: &BoundRuntime,
@@ -604,10 +540,6 @@ pub(super) fn present_slot(
     .slot(slot)
 }
 
-/// The capability of the children of the object `object`, at its address
-/// if it has one, which `runtime` read at the frame `frame` of `context` at
-/// the stop `stop`: its `elements` elements or entries, then its `fields`
-/// attributes.
 pub(super) fn children_reference(
     (stop, context, frame): (StopId, ExecutionContext, StackFrameId),
     runtime: &BoundRuntime,
@@ -625,8 +557,6 @@ pub(super) fn children_reference(
     .children(object, (Arc::from([]), None), (elements, fields))
 }
 
-/// A children capability's storage: the object's memory, or empty computed
-/// bytes when it has none. Reads go through the object's handle instead.
 fn interpreted_storage(address: Option<VirtualAddress>) -> ValueStorage {
     address.map_or_else(
         || ValueStorage::Bytes {
@@ -641,7 +571,6 @@ fn interpreted_storage(address: Option<VirtualAddress>) -> ValueStorage {
 }
 
 impl Origin {
-    /// The type and state the debugger presents a slot's value as.
     fn slot(&self, slot: InterpretedSlot) -> (Option<TypeInfo>, VariableState) {
         let value = match slot {
             InterpretedSlot::Value(value) => value,
@@ -720,8 +649,6 @@ impl Origin {
             visualizers: Arc::from([]),
         };
 
-        // A value with no memory, such as a V8 small integer, is computed
-        // from its handle.
         let unaddressed = || {
             value
                 .address
@@ -747,9 +674,6 @@ impl Origin {
         (Some(interpreted_type(self.language, &value)), state)
     }
 
-    /// The type and state the debugger presents a number an object keeps
-    /// as the machine does as: the number as stored, written in the
-    /// runtime's notation.
     fn number(&self, number: &InterpretedNumber) -> (Option<TypeInfo>, VariableState) {
         let (encoding, byte_size) = match number.element {
             ArrayElement::Bool => (BaseTypeEncoding::Boolean, 1),
@@ -816,10 +740,6 @@ impl Origin {
         (Some(type_info), state)
     }
 
-    /// The capability of the children of the object `object`, at its
-    /// address if it has one, or of its part at `part`, which keeps
-    /// `array`: its `elements` elements or entries, then its `fields`
-    /// attributes.
     fn children(
         &self,
         (object, address): (InterpretedHandle, Option<VirtualAddress>),
@@ -854,8 +774,6 @@ impl Origin {
     }
 }
 
-/// The type of an interpreter's object of `language`, named by its module
-/// and its name there, with no layout the debugger computes with.
 fn interpreted_type(language: SourceLanguage, value: &InterpretedValue) -> TypeInfo {
     let name = match value.module.as_deref() {
         Some(module) if module != "builtins" => format!("{module}.{}", value.type_name),
@@ -880,7 +798,6 @@ fn interpreted_type(language: SourceLanguage, value: &InterpretedValue) -> TypeI
     }
 }
 
-/// The type of a child whose slot holds no object.
 fn untyped() -> TypeInfo {
     TypeInfo {
         reference: UNIDENTIFIED,
@@ -891,7 +808,6 @@ fn untyped() -> TypeInfo {
     }
 }
 
-/// The language of an interpreter's values, as messages name it.
 const fn language_name(language: SourceLanguage) -> &'static str {
     match language {
         SourceLanguage::JavaScript => "JavaScript",
@@ -900,7 +816,6 @@ const fn language_name(language: SourceLanguage) -> &'static str {
     }
 }
 
-/// The view name for an interpreter's values that no program view presents.
 fn header(language: SourceLanguage) -> String {
     match language {
         SourceLanguage::Python => "Python objects".to_owned(),

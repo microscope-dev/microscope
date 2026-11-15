@@ -1,18 +1,4 @@
 // @ts-check
-// The built-in scatter-plot: a dot per pair of numbers.
-//
-//   x, y     numbers, one each per point; or
-//   values   points, each a pair or a record whose first two members are
-//            numbers
-//   group    optional, one per point: up to three groups get their own
-//            hues, and the rest are "other"
-//   labels   optional, one per point, for its title
-//
-// Up to 10,000 points, each is a dot titled with its index and its exact
-// coordinates, which opens it when clicked. Past that, the points are one
-// image whose pixels darken with how many points fall in them. Points
-// with a NaN or ±∞ are counted, not drawn. Up to 2,000 points, each one
-// that moved since the stop before trails a line from where it was.
 
 const HEIGHT = 300;
 const LEFT = 56;
@@ -38,7 +24,7 @@ microscope.draw((input, { previous, width, paths }) => {
   let xhi = Number.NEGATIVE_INFINITY;
   let ylo = Number.POSITIVE_INFINITY;
   let yhi = Number.NEGATIVE_INFINITY;
-  // Where the extremes are, to state them exactly.
+
   const at = { xlo: 0, xhi: 0, ylo: 0, yhi: 0 };
   for (let i = 0; i < n; i++) {
     const x = points.x[i];
@@ -102,7 +88,6 @@ microscope.draw((input, { previous, width, paths }) => {
   const hue = (g) => (g < 0 ? theme.ink3 : theme.series[g]);
 
   if (n > MOST_DOTS) {
-    // One image: each pixel's count of points, as the hue's opacity.
     const columns = Math.max(1, Math.round(right - LEFT));
     const rows = Math.max(1, Math.round(bottom - TOP));
     const counts = new Uint32Array(columns * rows);
@@ -140,7 +125,6 @@ microscope.draw((input, { previous, width, paths }) => {
       }),
     );
   } else {
-    // Trails from where moved points were at the stop before.
     const drawTrails = (before) => {
       for (let i = 0; i < n; i++) {
         const x0 = before.x[i];
@@ -166,9 +150,7 @@ microscope.draw((input, { previous, width, paths }) => {
       try {
         const before = pointsOf(previous);
         if (before.x.length === n) drawTrails(before);
-      } catch {
-        // The stop before had no points this chart reads.
-      }
+      } catch {}
     }
     const select = points.path === null || points.path === undefined ? null : points.path;
     for (let i = 0; i < n; i++) {
@@ -192,7 +174,6 @@ microscope.draw((input, { previous, width, paths }) => {
     }
   }
 
-  // A legend for groups.
   if (groups.names.length > 0) {
     let lx = LEFT;
     const keys = groups.names.map((name, g) => ({ name, fill: hue(g) }));
@@ -269,7 +250,6 @@ microscope.draw((input, { previous, width, paths }) => {
   }
 });
 
-/** Up to three groups by their first appearance, and the rest as other. */
 function groupsOf(group, n) {
   if (group === undefined || group === null) {
     return { names: [], of: new Int8Array(n), counts: [], other: 0, label: () => "" };
@@ -282,7 +262,7 @@ function groupsOf(group, n) {
   const counts = [0, 0, 0];
   let other = 0;
   const seen = Array.from(group, nameOf);
-  // Hues follow names: the three most common, in name order.
+
   const tally = new Map();
   for (const name of seen) tally.set(name, (tally.get(name) ?? 0) + 1);
   const chosen = [...tally.entries()]
@@ -342,8 +322,6 @@ function exact(values, raw, i) {
   return String(v);
 }
 
-/** A caption's number: integers whole, floats to six significant digits;
- * titles and the Table have every digit. */
 function brief(text) {
   return /^-?\d*\.\d{7,}|e/iu.test(text) && Number.isFinite(Number(text))
     ? String(Number(Number(text).toPrecision(6)))

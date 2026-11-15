@@ -1,5 +1,3 @@
-//! Reading attributes from DIEs and the origins they inherit from.
-
 use crate::debug_info::dwarf::DwarfSet;
 use crate::image::lines::Files;
 use std::sync::Arc;
@@ -111,17 +109,10 @@ pub(super) fn copy_name(
     string_attribute(dwarf, unit, entry, gimli::DW_AT_name)
 }
 
-/// Zig's attribute for the type or namespace a declaration is in, which its
-/// self-hosted backend writes instead of nesting the declaration's DIE.
 pub(super) const DW_AT_ZIG_PARENT: gimli::DwAt = gimli::DwAt(0x2ccd);
 
-/// How many parents a Zig name is qualified through.
 const MAX_ZIG_PARENTS: usize = 16;
 
-/// A self-hosted Zig type's name after the names of the parents its
-/// `DW_AT_ZIG_parent` chain leads through, as `hash_map.HashMap(…).Header`,
-/// the way the LLVM backend spells it. A parent whose own name is
-/// qualified, or has no parent, ends the chain.
 pub(super) fn zig_qualified_name(
     dwarf: &DwarfSet<'_>,
     units: &Units<'_>,
@@ -133,8 +124,6 @@ pub(super) fn zig_qualified_name(
     let mut visited = HashSet::new();
     let mut current = die_reference(entry.attr_value(DW_AT_ZIG_PARENT), unit_index, units)?;
 
-    // A cycle, or a chain longer than any Zig nests, names nothing; a
-    // partial name would be a wrong one.
     while let Some(key) = current {
         if !visited.insert(key) {
             return Err(DwarfError::ReferenceCycle);
@@ -167,8 +156,6 @@ pub(super) fn zig_qualified_name(
     Ok(parts.join(".").into())
 }
 
-/// A string attribute of a DIE or, failing that, of the first origin that
-/// has it.
 pub(super) fn string_with_origins(
     dwarf: &DwarfSet<'_>,
     units: &Units<'_>,
@@ -195,8 +182,6 @@ pub(super) fn string_with_origins(
     Ok(None)
 }
 
-/// The `DW_AT_type` of a DIE or of its first origin that has one, with the
-/// index of the unit holding it.
 pub(super) fn type_with_origins<'data>(
     unit_index: usize,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -215,7 +200,6 @@ pub(super) fn type_with_origins<'data>(
         .unwrap_or((unit_index, None))
 }
 
-/// A DIE's offset in `.debug_info`, which implicit pointers name it by.
 pub(super) fn debug_info_offset(
     units: &Units<'_>,
     unit_index: usize,
@@ -244,12 +228,6 @@ pub(super) fn flag_with_origins(
     })
 }
 
-/// Follows `DW_AT_abstract_origin`/`DW_AT_specification` references
-/// transitively, rejecting cycles, so concrete inline-instance DIEs can
-/// inherit name, type, and declaration metadata from their origins.
-///
-/// Each origin is read once: reading a DIE decodes all its attributes into
-/// a vector of their own, and this runs for most DIEs a load reads.
 pub(super) fn origin_chain<'data>(
     units: &Units<'data>,
     unit_index: usize,
@@ -276,16 +254,8 @@ pub(super) fn origin_chain<'data>(
     Ok(chain)
 }
 
-/// How many links [`Seen`] compares in place before it keeps a set.
 const SEEN_IN_PLACE: usize = 8;
 
-/// What a chain of references, between DIEs or types, has reached, to
-/// stop at a cycle.
-///
-/// Chains are nearly always one or two links, and a hash set allocates on
-/// its first insertion, so the first links are compared in place; a longer
-/// chain, which only malformed input makes, moves to a set so that it stays
-/// linear however long it is.
 pub(in crate::debug_info::dwarf) struct Seen<K = DieKey> {
     few: [Option<K>; SEEN_IN_PLACE],
     many: HashSet<K>,
@@ -301,7 +271,6 @@ impl<K> Default for Seen<K> {
 }
 
 impl<K: Copy + Eq + std::hash::Hash> Seen<K> {
-    /// Adds `key`, or returns false when the chain has reached it before.
     pub(in crate::debug_info::dwarf) fn insert(&mut self, key: K) -> bool {
         for slot in &mut self.few {
             match slot {
@@ -351,13 +320,9 @@ pub(super) fn declaration_with_origins<'data>(
     Ok(declared_source(dwarf, units, unit, entry, chain)?.map(|declared| declared.intern(files)))
 }
 
-/// Where a DIE says it is declared, with its file as a path that is not
-/// yet interned, so that declarations can be read in parallel and their
-/// files interned in order.
 pub(super) struct DeclaredSource {
     path: std::path::PathBuf,
 
-    /// Whether the path is a type unit's, which names it as a suffix.
     suffix: bool,
     line: LineNumber,
     column: Option<ColumnNumber>,
@@ -377,7 +342,6 @@ impl DeclaredSource {
     }
 }
 
-/// [`declaration_with_origins`] without interning its file.
 pub(super) fn declared_source<'data>(
     dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
@@ -401,20 +365,9 @@ pub(super) fn declared_source<'data>(
     })
 }
 
-/// The files declarations name, by the unit whose line program names each
-/// and its index there.
-///
-/// Most of a unit's variables are declared in a few files, and each
-/// declaration spelled its file's path from the line program again only
-/// for interning to find the path it already holds.
 #[derive(Default)]
 pub(super) struct DeclaredFiles(HashMap<(usize, u64), SourceFileId>);
 
-/// [`declaration_with_origins`], finding each file `files` interned for a
-/// declaration before in `declared` rather than spelling its path again:
-/// interning a path again names the file it named first. A type unit's
-/// relative path is not remembered, as the file it names depends on the
-/// files interned by then.
 pub(super) fn declaration_remembering_files<'data>(
     dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
@@ -447,9 +400,6 @@ pub(super) fn declaration_remembering_files<'data>(
     .map(|declared| declared.map(|(file, line, column)| SourceLocation { file, line, column }))
 }
 
-/// Where a DIE says it is declared, with its file as `file` makes it of
-/// the unit whose line program names it, that program's header, the
-/// file's entry, and its index there.
 fn declared_with<'a, 'data, F>(
     units: &'a Units<'data>,
     unit: &'a gimli::Unit<Reader<'data>>,
@@ -462,10 +412,6 @@ fn declared_with<'a, 'data, F>(
         u64,
     ) -> std::result::Result<F, DwarfError>,
 ) -> std::result::Result<Option<(F, LineNumber, Option<ColumnNumber>)>, DwarfError> {
-    // DWARF inherits declaration attributes individually: each of decl_file,
-    // decl_line, and decl_column comes from the first DIE in the chain that
-    // supplies it. decl_file indexes the line program of the unit that owns
-    // the DIE supplying it.
     let dies =
         || {
             std::iter::once((unit, entry)).chain(chain.iter().map(|(origin_unit, origin_entry)| {
@@ -513,8 +459,6 @@ fn declared_with<'a, 'data, F>(
     )))
 }
 
-/// Returns a member's offset when it is constant: a constant form, or the
-/// expression `DW_OP_plus_uconst N` that DWARF 2 and 3 producers emit.
 pub(super) fn constant_member_offset(attribute: &gimli::Attribute<Reader<'_>>) -> Option<u64> {
     if let Some(offset) = attribute.udata_value() {
         return Some(offset);
@@ -529,9 +473,6 @@ pub(super) fn constant_member_offset(attribute: &gimli::Attribute<Reader<'_>>) -
     bytes.is_empty().then_some(offset)
 }
 
-/// Decodes a constant array bound. Fixed-size data forms carry no sign of
-/// their own and follow the subrange's index type, which is unsigned for C
-/// arrays: GCC writes the upper bound of `char[256]` as the byte 0xff.
 pub(super) fn array_bound(
     attribute: &gimli::Attribute<Reader<'_>>,
     signed_index: bool,
@@ -550,12 +491,10 @@ pub(super) fn array_bound(
             }
         }
 
-        // A reference or expression describes a bound known only at run time.
         _ => None,
     }
 }
 
-/// Whether a subrange's index type is a signed integer.
 pub(super) fn index_type_is_signed(
     unit: &gimli::Unit<Reader<'_>>,
     subrange: &gimli::DebuggingInformationEntry<Reader<'_>>,
@@ -575,39 +514,26 @@ pub(super) fn index_type_is_signed(
     })
 }
 
-/// The classified form of a `DW_AT_byte_size` attribute.
 pub(super) enum ByteSize {
-    /// The attribute is not present; a default size may apply.
     Absent,
 
-    /// A constant unsigned size in bytes.
     Constant(u64),
 
-    /// A valid constant above `u64::MAX`.
     Unsupported(Arc<str>),
 
-    /// A location expression or DIE reference, known only at run time.
     Dynamic,
 
-    /// A form DWARF does not permit for a byte size.
     Malformed,
 }
 
-/// The classified form of an attribute expected to hold an unsigned integer
-/// constant.
 pub(super) enum UnsignedConstant {
-    /// A representable constant value.
     Value(u64),
 
-    /// A valid `DW_FORM_data16` constant above `u64::MAX`.
     Oversized,
 
-    /// A form that is not an integer constant.
     NonConstant,
 }
 
-/// Classifies an attribute expected to be an unsigned integer constant,
-/// including `DW_FORM_data16`, which `udata_value` does not decode.
 pub(super) fn unsigned_constant(attribute: &gimli::Attribute<Reader<'_>>) -> UnsignedConstant {
     if let Some(value) = attribute.udata_value() {
         return UnsignedConstant::Value(value);
@@ -621,8 +547,6 @@ pub(super) fn unsigned_constant(attribute: &gimli::Attribute<Reader<'_>>) -> Uns
     }
 }
 
-/// Extracts a base type's `DW_AT_encoding` as a one-byte `DW_ATE_*` value;
-/// anything else is malformed.
 pub(super) fn base_type_encoding(
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
 ) -> std::result::Result<u8, Arc<str>> {
@@ -655,8 +579,6 @@ pub(super) fn byte_size_attribute(
             ByteSize::Unsupported("constant DW_AT_byte_size exceeds the supported u64 range".into())
         }
 
-        // DWARF also permits an expression or a DIE reference, which are
-        // valid but not statically sizable; any other form is malformed.
         UnsignedConstant::NonConstant => match attribute.value() {
             gimli::AttributeValue::Exprloc(_)
             | gimli::AttributeValue::Block(_)

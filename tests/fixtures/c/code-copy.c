@@ -1,7 +1,7 @@
-// Copies a function's machine code into anonymous memory, as V8 copies its
-// embedded builtins, and calls the copy, which calls back into the program.
-// With an argument, the callback aborts, leaving a core whose stack runs
-// through the copy.
+
+
+
+
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <string.h>
@@ -19,8 +19,8 @@ __attribute__((noinline)) int copy_callback(int value) {
     return value + 1;
 }
 
-// Begins a page, as code a runtime copies whole does, and reaches the rest
-// of the program only through its argument, so it runs at any address.
+
+
 __attribute__((noinline, aligned(4096))) int copied_twice(int (*callback)(int), int value) {
     return callback(value) * 2;
 }

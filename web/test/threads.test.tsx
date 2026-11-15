@@ -1,5 +1,3 @@
-// The thread list: each thread with what its runtime says of it.
-
 import { afterEach, expect, it } from "vitest";
 import { page } from "vitest/browser";
 

@@ -1,6 +1,3 @@
-// `/join#TOKEN`, the address a join link opens: it trades the token for a
-// cookie, then opens the page the link names.
-
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 
@@ -8,8 +5,6 @@ import { tradeOnce } from "../connection";
 import { isPagePath } from "../focus";
 import { useConnection } from "../store";
 
-// The token leaves the address bar before anything else can copy it, so it
-// is kept here for a second render, or another try if the server was away.
 let token: string | null = null;
 const trade = tradeOnce();
 
@@ -24,7 +19,6 @@ function join(): Promise<boolean> {
 const CARD = { width: "min(560px, 100%)" };
 const NO_MARGIN = { margin: 0 };
 
-/** `/join#TOKEN`: trades the token for a cookie, then opens the link. */
 export function Join() {
   const connection = useConnection();
   const navigate = useNavigate();
@@ -39,7 +33,7 @@ export function Join() {
         return;
       }
       connection.start();
-      // `href`, since the link holds a query of its own.
+
       void navigate({ href: isPagePath(to) ? to : "/", replace: true });
     };
     attempt().catch(() => setFailed("unreachable"));

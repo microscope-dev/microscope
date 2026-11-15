@@ -1,10 +1,3 @@
-//! JavaScript variables given values through V8's inspector where V8
-//! paused their thread: each kind of binding a frame reaches, given each
-//! kind of value, reaches the program, which prints it after the stop the
-//! assignment published; the value read again from memory is the one V8
-//! lists. What V8 does not assign, or not exactly, is refused and nothing
-//! runs.
-
 use microscope::{
     BreakpointOptions, BreakpointSpec, Error, Evaluation, EvaluationMode, Expression,
     ExpressionErrorKind, InferiorState, InspectionLimits, LineNumber, SourceLanguage, StopContext,
@@ -16,7 +9,6 @@ use crate::support::node;
 
 const FIXTURE: &str = "assignments.js";
 
-/// The line of the fixture that carries `marker`.
 fn line_of(marker: &str) -> LineNumber {
     let text = std::fs::read_to_string(node::fixture(FIXTURE)).expect("read the fixture");
     let index = text
@@ -51,7 +43,6 @@ async fn stop_id(session: &NodeSession) -> microscope::StopId {
     }
 }
 
-/// Assigns with `text` in `context`, or in the selected frame.
 async fn assign(
     session: &NodeSession,
     context: Option<StopContext>,
@@ -78,7 +69,6 @@ async fn assign(
     session.scenario.attempt(text, request).await
 }
 
-/// The summary of what `text` reads in the selected frame.
 async fn read(session: &NodeSession, text: &str) -> String {
     let expression = Expression::parse(text).expect("an expression");
     match session.scenario.handle().evaluate(&expression).await {
@@ -93,8 +83,6 @@ async fn read(session: &NodeSession, text: &str) -> String {
     }
 }
 
-/// How the variable `text` gave presents, read again where the stop the
-/// assignment published, which selects the variable's frame, `function`.
 async fn assigned(session: &NodeSession, text: &str, function: &str) -> String {
     let context = session.context();
     let before = stop_id(session).await;
@@ -144,8 +132,6 @@ async fn assigned(session: &NodeSession, text: &str, function: &str) -> String {
     }
 }
 
-/// Checks `text` is refused as `kind`, with `reason` in its message,
-/// leaving the stop as it was.
 async fn refused(
     session: &NodeSession,
     context: Option<StopContext>,
@@ -166,8 +152,6 @@ async fn refused(
     );
 }
 
-/// Checks V8 refuses `text`, which it was asked to make, with `reason` in
-/// the refusal.
 async fn refused_by_v8(session: &NodeSession, text: &str, reason: &str) {
     let name = session.context();
     match assign(session, None, text).await {
@@ -179,8 +163,6 @@ async fn refused_by_v8(session: &NodeSession, text: &str, reason: &str) {
     }
 }
 
-/// Selects the frame of the JavaScript function `function` on the stop's
-/// thread, and returns its context.
 async fn select(session: &NodeSession, function: &str) -> StopContext {
     let handle = session.scenario.handle();
     let trace = session
@@ -218,7 +200,6 @@ async fn select(session: &NodeSession, function: &str) -> StopContext {
     }
 }
 
-/// The name of a register V8 names no variable in the selected frame.
 async fn unnamed_register(session: &NodeSession) -> String {
     let handle = session.scenario.handle();
     let snapshot = session
@@ -264,14 +245,11 @@ pub async fn each_binding_takes_each_value(entry: &str) {
         (inner("captured = 50"), "50"),
         (inner("tally = 7"), "7"),
         (inner("holder = other"), "{ b: 2 }"),
-        // In the same pause: V8's listing of the scope still names the
-        // object the variable held as it paused.
         (inner("holder = holder"), "{ b: 2 }"),
         (inner("box = other"), "{ b: 2 }"),
     ] {
         let summary = assigned(session, text, function).await;
         assert_eq!(summary, shown, "{context}: `{text}`");
-        // V8's own listing, read anew, agrees with memory.
         assert_eq!(
             read(session, text.split(' ').next().expect("a name")).await,
             shown,
@@ -280,7 +258,6 @@ pub async fn each_binding_takes_each_value(entry: &str) {
     }
 
     let kind = ExpressionErrorKind::Assignment;
-    // The stop the first assignment was made at is gone.
     match assign(session, Some(first), "param = 1").await {
         Err(Error::StaleStop) => {}
         other => panic!("{context}: a stale assignment is refused: {other:?}"),
@@ -303,11 +280,7 @@ pub async fn each_binding_takes_each_value(entry: &str) {
     .await;
     let register = unnamed_register(session).await;
     refused(session, None, &format!("{register} = 1"), kind, "register").await;
-    // outer()'s frame reaches the context inner() gave `box` through,
-    // whose value no listing of the pause names.
     select(session, "outer").await;
-    // The refusal comes once V8 listed the frame's scopes, which the
-    // program resumed to answer.
     match assign(session, None, "box = box").await {
         Err(Error::Expression(error))
             if error.kind == kind && error.message.contains("during this pause") => {}
@@ -329,14 +302,10 @@ pub async fn each_binding_takes_each_value(entry: &str) {
     owned.shutdown().await;
 }
 
-/// At the stop in `callee()`: `hot()`'s frame runs Turbofan code, whose
-/// context V8 assigns and whose registers it does not; then, at a stop V8
-/// did not pause, nothing is assigned.
 async fn elsewhere(session: &mut NodeSession) {
     let context = session.context();
     let kind = ExpressionErrorKind::Assignment;
     let output = session.output();
-    // hot() runs Turbofan code: its context is assigned, its registers are not.
     assert!(
         output.contains("HOT TIER turbofan"),
         "{context}: hot() is optimized: {output}"
@@ -344,8 +313,6 @@ async fn elsewhere(session: &mut NodeSession) {
     select(session, "hot").await;
     refused_by_v8(session, "kept = 1", "optimized code keeps").await;
     select(session, "hot").await;
-    // Microscope cannot read an optimized frame's variables back; the
-    // answer says so, and the program shows the value given.
     match assign(session, None, "shared = 100").await {
         Ok(Evaluation::Value { value, .. }) => assert!(
             matches!(&value.state, VariableState::Unavailable(reason)
@@ -364,7 +331,6 @@ async fn elsewhere(session: &mut NodeSession) {
         "{context}: the optimized frame uses the value given: {output}"
     );
 
-    // V8 has not paused the thread, which waits in a read.
     select(session, "parks").await;
     refused(session, None, "tally = 2", kind, "only where it paused").await;
     session.proceed().await;

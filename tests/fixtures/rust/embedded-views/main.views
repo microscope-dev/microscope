@@ -1,18 +1,18 @@
 microscope-views 1
 
-# Tags, as the names they hold.
+
 view rust embedded_views::Tags {
     show value(names)
 }
 
-# A temperature, a newtype around its degrees.
+
 view rust embedded_views::Celsius {
     show value(self.0)
     summary "{self.0}°C"
 }
 
-# A tree whose nodes keep their children in a list, which the tree kernel
-# the program carries walks, each node before its children.
+
+
 view rust embedded_views::Tree {
     show sequence(count) for at in kernel("tree", &root, offsetof(embedded_views::Node, child), offsetof(embedded_views::Node, sibling))
         => (at as *embedded_views::Node)->value

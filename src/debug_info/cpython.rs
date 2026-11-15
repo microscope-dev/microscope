@@ -1,12 +1,3 @@
-//! Identifies CPython by `.PyRuntime` in libpython, a static executable, or an embedder.
-//!
-//! From 3.13, `_Py_DebugOffsets` begins the section; [`schemas`] defines each minor's order.
-//! Release builds ship no DWARF. Missing fields and constants come from [`layouts`],
-//! generated from the matrix's headers; 3.12, which has no table, uses these entirely.
-//! Versions without a layout are refused by name, never read with the nearest version's.
-//!
-//! Also assigns code roles to the evaluation loop and its call machinery.
-
 mod schemas;
 
 #[rustfmt::skip]
@@ -27,15 +18,10 @@ use crate::image::python::{
 };
 use crate::{AddressRange, CodeRole, FunctionInfo, ImageAddress, SymbolInfo};
 
-/// The section CPython's runtime state is in, which it names so that
-/// debuggers can find it.
 pub(super) const RUNTIME_SECTION: &str = ".PyRuntime";
 
-/// What `_Py_DebugOffsets` begins with.
 const COOKIE: &[u8; 8] = b"xdebugpy";
 
-/// Where the table's offsets begin: past the cookie, the version, and
-/// the free-threaded flag.
 const TABLE_START: usize = 24;
 
 const _: () = assert!(
@@ -98,12 +84,9 @@ const _: () = {
     }
 };
 
-/// A layout generated from one interpreter's headers.
 pub(super) struct Generated {
-    /// The interpreter's name in the matrix, as `3.12`.
     pub name: &'static str,
 
-    /// `PY_VERSION_HEX`.
     pub version: u32,
     pub free_threaded: bool,
     pub fields: &'static [(Field, u32)],
@@ -125,8 +108,6 @@ impl Generated {
     }
 }
 
-/// The layout generated for the interpreter the matrix names `name`, as
-/// `3.14t`.
 #[cfg(test)]
 pub(super) fn generated(name: &str) -> Option<PythonLayout> {
     layouts::GENERATED
@@ -135,7 +116,6 @@ pub(super) fn generated(name: &str) -> Option<PythonLayout> {
         .map(Generated::layout)
 }
 
-/// The fields without which no thread's frames can be read.
 const REQUIRED: [Field; 34] = [
     Field::RuntimeInterpretersHead,
     Field::InterpreterNext,
@@ -173,7 +153,6 @@ const REQUIRED: [Field; 34] = [
     Field::UnicodeCompactSize,
 ];
 
-/// Whether the module carries a Python runtime.
 pub(super) fn carries_runtime(object: &object::File<'_>) -> bool {
     runtime_section(object).is_some()
 }
@@ -186,8 +165,6 @@ fn runtime_section<'data, 'file, R: object::ReadRef<'data>>(
         .filter(|section| section.size() > 0)
 }
 
-/// The Python runtime the module carries, read from the module's own
-/// file: a separate debug file keeps no data sections' bytes.
 pub(super) fn runtime<'data, R: object::ReadRef<'data>>(
     object: &object::File<'data, R>,
 ) -> Option<PythonRuntime> {
@@ -225,9 +202,6 @@ pub(super) fn runtime<'data, R: object::ReadRef<'data>>(
     })
 }
 
-/// The runtime's version, how its layout was found, and the layout or
-/// why it cannot be: from `bytes`, the `.PyRuntime` section's, when it
-/// holds a table, and `symbol`, the module's `Py_Version`.
 fn describe(
     bytes: Option<&[u8]>,
     symbol: Option<u32>,
@@ -301,8 +275,6 @@ fn describe(
     (version, flags, from_table(version, free_threaded, table))
 }
 
-/// Completes a 3.13+ table with a same-minor generated layout agreeing on every shared field.
-/// Patch releases can change omitted fields; refuses matching builds whose layouts differ.
 fn from_table(
     version: PyVersion,
     free_threaded: bool,
@@ -332,9 +304,6 @@ fn from_table(
             continue;
         };
 
-        // Only a free-threaded build has thread-local bytecode, or a GIL
-        // that may be off: a build with the GIL names 0 for those fields,
-        // which it lacks.
         if !free_threaded
             && matches!(
                 field,
@@ -344,7 +313,6 @@ fn from_table(
             continue;
         }
 
-        // `u32::MAX` is how a layout says it lacks a field.
         let offset = u64::from_le_bytes(*bytes);
         if offset >= u64::from(u32::MAX) {
             return Err(format!("its table puts {name} at {offset}, past any structure").into());
@@ -359,8 +327,6 @@ fn from_table(
         named.push((field, offset));
     }
 
-    // A prerelease's table may differ from its final release's, as
-    // 3.15.0b3's lacks a field 3.15.0's has.
     let candidates = if version.is_final() {
         let candidates = layouts::GENERATED
             .iter()
@@ -416,7 +382,6 @@ fn from_table(
     Ok(layout)
 }
 
-/// The layout generated for exactly `version`.
 fn generated_exactly(version: PyVersion, free_threaded: bool) -> Result<PythonLayout, Arc<str>> {
     layouts::GENERATED
         .iter()
@@ -452,8 +417,6 @@ fn unsupported(version: PyVersion) -> Arc<str> {
     format!("CPython {version} is not supported: microscope reads 3.12 through 3.15").into()
 }
 
-/// The fields a free-threaded build since 3.14 needs as well, which find
-/// the copy of the bytecode a frame runs.
 const THREAD_LOCAL_BYTECODE: [Field; 4] = [
     Field::FrameTlbcIndex,
     Field::CodeTlbc,
@@ -461,8 +424,6 @@ const THREAD_LOCAL_BYTECODE: [Field; 4] = [
     Field::CodeArrayEntries,
 ];
 
-/// The sizes of the structures the model reads whole, which a table in
-/// the process may make anything.
 const READ_WHOLE: [Field; 6] = [
     Field::ThreadSize,
     Field::FrameSize,
@@ -472,8 +433,6 @@ const READ_WHOLE: [Field; 6] = [
     Field::DictUnicodeEntrySize,
 ];
 
-/// The layout, once each field it needs is there and lies within its
-/// structure, and no structure read whole is larger than [`MAX_STRUCTURE`].
 fn validated(
     version: PyVersion,
     free_threaded: bool,
@@ -554,8 +513,6 @@ fn validated(
     Ok(layout)
 }
 
-/// The size field of the structure a field is in, for those whose size
-/// a layout records.
 const fn structure_size(field: Field) -> Option<Field> {
     use Field::{
         CodeArgcount, CodeFilename, CodeFirstlineno, CodeFlags, CodeKwonlyargcount, CodeLinetable,
@@ -576,8 +533,6 @@ const fn structure_size(field: Field) -> Option<Field> {
         | CodeKwonlyargcount | CodeLocalsplusnames | CodeLocalspluskinds | CodeTlbc | CodeFlags
         | CodeNlocalsplus => Some(CodeSize),
 
-        // The locals follow the frame and the bytecode follows the code
-        // object, each from its structure's last member on.
         _ => None,
     }
 }
@@ -610,11 +565,7 @@ const _: () = {
     }
 };
 
-/// The module's `Py_Version`, the version it was built as, which every
-/// version since 3.11 exports.
 fn py_version<'data, R: object::ReadRef<'data>>(object: &object::File<'data, R>) -> Option<u32> {
-    // An exported `Py_Version` is found among the few dynamic symbols
-    // before the many others.
     let symbol = object
         .dynamic_symbols()
         .chain(object.symbols())
@@ -625,8 +576,6 @@ fn py_version<'data, R: object::ReadRef<'data>>(object: &object::File<'data, R>)
     Some(u32::from_le_bytes(bytes.try_into().ok()?))
 }
 
-/// Whether the module is `_asyncio`, CPython's accelerator for asyncio,
-/// which defines the extension's init function, built in or loaded.
 pub(super) fn is_asyncio(object: &object::File<'_>) -> bool {
     object
         .symbols()
@@ -634,9 +583,6 @@ pub(super) fn is_asyncio(object: &object::File<'_>) -> bool {
         .any(|symbol| symbol.name() == Ok("PyInit__asyncio") && symbol.is_definition())
 }
 
-/// Gives the interpreter's functions and symbols their role in a module
-/// whose names `role` knows to be CPython's code: one that carries a Python
-/// runtime, or `_asyncio`.
 pub(super) fn assign_roles(
     functions: &mut [FunctionInfo],
     symbols: &mut [SymbolInfo],
@@ -665,9 +611,6 @@ mod tests {
 
     const V3_12_13: u32 = 0x030c_0df0;
 
-    /// A table: the cookie, the version, the flag, and each of the first
-    /// `fields` of `schema` where `layout` puts it, or else at a distinct
-    /// offset, its position.
     fn table(
         version: u32,
         free_threaded: bool,
@@ -688,7 +631,6 @@ mod tests {
         bytes
     }
 
-    /// The table of the build the matrix names `name`, by its layout.
     fn table_of(name: &str, schema: &[&str]) -> (u32, Vec<u8>) {
         let generated = layouts::GENERATED
             .iter()
@@ -705,10 +647,6 @@ mod tests {
         (generated.version, bytes)
     }
 
-    /// The build whose layout agrees with a table on every field both name
-    /// completes it, whichever patch release of its minor version it is,
-    /// as 3.14.8's interpreter state outgrew 3.14.4's; one no build agrees
-    /// with is refused, not read by the nearest.
     #[test]
     fn a_table_is_completed_by_the_build_it_agrees_with() {
         let static_types = |name| {
@@ -748,9 +686,6 @@ mod tests {
         );
     }
 
-    /// A table's offset past every structure is refused, though it fits a
-    /// `u32`, rather than read as a field the version lacks; so is a flag
-    /// that is neither 0 nor 1.
     #[test]
     fn a_table_that_names_no_offset_or_flag_is_refused() {
         let (version, mut bytes) = table_of("3.14", schemas::V3_14);
@@ -827,9 +762,6 @@ mod tests {
         assert!(layout.has(Field::CframeCurrentFrame));
     }
 
-    /// Every interpreter in the matrix is read by the layout generated
-    /// from its own headers, and a table it carries agrees with them on
-    /// every field.
     #[test]
     fn each_interpreter_in_the_matrix_agrees_with_its_headers() {
         let root = std::env::var_os("MICROSCOPE_CPYTHON")

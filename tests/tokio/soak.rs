@@ -1,9 +1,3 @@
-//! microscope attached to the `server` fixture for minutes while clients load
-//! it: paused and inspected over and over, stopped by a conditional
-//! breakpoint in the handler, and detached and attached again, with every
-//! invariant checked at every stop. It runs only through `just stress` with
-//! `SOAK_MINUTES` set, which says for how long in `MICROSCOPE_SOAK_SECONDS`.
-
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -17,26 +11,17 @@ use crate::invariants::check_tokio_stop;
 use crate::stops::{integer, line};
 use crate::support::{ExternalProcess, Scenario};
 
-/// The clients, each with a connection of its own.
 const CLIENTS: u64 = 4;
 
-/// The lines the clients send between one pause and the next.
 const LINES_PER_ROUND: u64 = 64;
 
-/// How long a client waits for an answer, however long the server is
-/// stopped.
 const ANSWER_TIMEOUT: Duration = Duration::from_mins(2);
 
-/// How long the server may take to serve a round's lines.
 const ROUND_TIMEOUT: Duration = Duration::from_mins(1);
 
-/// The rounds before the debugger's memory is first sampled, and how much
-/// it may grow after.
 const WARM_UP_ROUNDS: u64 = 20;
 const MEMORY_MARGIN: u64 = 16 << 20;
 
-/// Clients sending lines to the server and checking each answer, until
-/// stopped.
 struct Load {
     stop: Arc<AtomicBool>,
     answered: Arc<AtomicU64>,
@@ -93,7 +78,6 @@ impl Load {
         self.answered.load(Ordering::Relaxed)
     }
 
-    /// Stops the clients, and fails if any answer was wrong or missing.
     fn finish(self) -> u64 {
         self.stop.store(true, Ordering::Relaxed);
         for client in self.clients {
@@ -107,10 +91,6 @@ impl Load {
     }
 }
 
-/// The live heap of the test process, almost all of it the debugger's.
-///
-/// Resident memory is not used: across rounds it rose and fell while the live
-/// heap stayed flat, so it does not show leaks.
 fn live_heap() -> u64 {
     u64::try_from(microscope::timings::alloc::totals().live_bytes).expect("a live heap")
 }
@@ -119,8 +99,6 @@ async fn attach(server: &ExternalProcess) -> Scenario {
     Scenario::attached("server", server.attach().await).checking_stops(check_tokio_stop)
 }
 
-/// Checks the stop the debugger is at, as a run-control request's would
-/// be.
 async fn check(scenario: &Scenario, round: u64) {
     if let Err(problem) = check_tokio_stop(scenario.handle().clone()).await {
         panic!("round {round}: {problem}");
@@ -163,8 +141,6 @@ async fn soak() {
 
         check(&scenario, round).await;
 
-        // Every third round, a breakpoint in the handler stops the server
-        // at one line in 97, and the next round takes it out.
         if round.is_multiple_of(3) {
             let added = scenario
                 .add_source_breakpoint("server/src/main.rs", answer)
@@ -183,8 +159,6 @@ async fn soak() {
             scenario.remove_breakpoint(id).await;
         }
 
-        // The server runs until the clients have their round's answers, or
-        // the breakpoint stops it.
         let before = load.answered();
         let mut running = scenario.start_resuming().await;
         let round_deadline = Instant::now() + ROUND_TIMEOUT;
@@ -194,7 +168,6 @@ async fn soak() {
             }
 
             if load.answered() >= before + LINES_PER_ROUND {
-                // The breakpoint may stop the server first.
                 match scenario.handle().pause().await {
                     Ok(_) | Err(microscope::Error::AlreadyStopped) => {}
                     Err(error) => panic!("round {round}: pause: {error}"),

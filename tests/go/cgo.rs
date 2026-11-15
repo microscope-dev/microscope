@@ -1,9 +1,3 @@
-//! A Go program that calls C, which calls back into Go, built with each C
-//! compiler. C runs on the thread's system stack, and the Go it calls back
-//! on the goroutine's own; backtraces show both, and steps go between them
-//! as they go between functions of one language. cgo's own code between
-//! them is a wrapper, which steps pass through.
-
 use std::process::Stdio;
 
 use microscope::{LanguageExceptionKind, LaunchOptions, StackSegment, StepKind, StopReason};
@@ -16,8 +10,6 @@ const BUILDS: [&str; 2] = ["cgo-go-gcc", "cgo-go-clang"];
 const SOURCE: &str = "tests/fixtures/go/cgo/main.go";
 const CALLBACK: &str = "tests/fixtures/go/cgo/callback.go";
 
-/// The selected thread's backtrace, as runs of function names by stack.
-/// cgo names its code with a hash, here `#`.
 pub async fn segments(scenario: &Scenario) -> Vec<(StackSegment, Vec<String>)> {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
@@ -38,7 +30,6 @@ pub async fn segments(scenario: &Scenario) -> Vec<(StackSegment, Vec<String>)> {
     segments
 }
 
-/// A cgo name with its package hash replaced by `#`.
 fn unhashed(name: &str) -> String {
     for prefix in ["_cgo_", "_cgoexp_"] {
         if let Some(rest) = name.strip_prefix(prefix)
@@ -55,8 +46,6 @@ pub fn names(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| (*name).to_owned()).collect()
 }
 
-/// A scenario stopped at the first breakpoint on the function `location`,
-/// or on a line of the fixture's main file given as `main.go:LINE`.
 async fn stopped_at(fixture: &str, location: &str) -> Scenario {
     let mut scenario = checked(fixture);
     match location.strip_prefix("main.go:") {
@@ -123,7 +112,6 @@ async fn go_that_c_called_shows_the_c_between_and_finishes_into_it() {
             panic!("{context}");
         };
 
-        // Optimized, the export inlines the callback.
         assert!(
             callback.starts_with(&names(&["main.callback"])),
             "{context}"
@@ -160,8 +148,6 @@ async fn go_that_c_called_shows_the_c_between_and_finishes_into_it() {
             "{context}"
         );
 
-        // Finishing the callback returns to the C that called it. Optimized,
-        // the instruction after the call may begin the next line.
         let reason = scenario.step_to_stop(StepKind::Out).await;
         assert_eq!(
             reason,
@@ -192,8 +178,6 @@ async fn steps_go_from_go_into_c_and_back() {
             "{fixture}"
         );
 
-        // Out of C, through cgo's code and the runtime's, to the Go after
-        // the call.
         let mut function = String::new();
         for _ in 0..8 {
             scenario.step_to_stop(StepKind::OverSource).await;
@@ -219,7 +203,6 @@ async fn steps_c_into_the_go_it_calls() {
         let mut scenario = stopped_at(fixture, &format!("main.go:{line}")).await;
         scenario.step_to_stop(StepKind::IntoSource).await;
 
-        // Unoptimized, Go enters a function on its declaration's line.
         let marker = if fixture.ends_with("gcc") {
             "// GO: entered"
         } else {
@@ -236,8 +219,6 @@ async fn steps_c_into_the_go_it_calls() {
     }
 }
 
-/// Only Go code can panic, so a fault in C is fatal, at the C that
-/// faulted, and the program then ends as it does alone.
 #[tokio::test]
 async fn a_fault_in_c_is_fatal_where_it_faulted() {
     for fixture in BUILDS {

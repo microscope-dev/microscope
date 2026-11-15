@@ -1,7 +1,3 @@
-// Expressions in source text: what a hover evaluates, and the names and
-// member chains whose values show beside the lines just run. Python source,
-// which its path names, is read by Python's words, comments, and strings.
-
 import { assert } from "./assert";
 import { isPythonPath, PYTHON_KEYWORDS, pythonKeywordHolds } from "./python";
 
@@ -18,12 +14,11 @@ const KEYWORDS = new Set(
   ).split(" "),
 );
 
-/** Words that name a type, not a value, when they come next. */
 const TAGS = new Set(["struct", "enum", "union", "class"]);
 
 export interface Found {
   text: string;
-  /** Where the expression starts and ends in the line. */
+
   from: number;
   to: number;
 }
@@ -31,8 +26,6 @@ export interface Found {
 const isNameCharacter = (character: string | undefined) =>
   character !== undefined && /[A-Za-z0-9_]/u.test(character);
 
-/** Whether `word`, at `from` to `to` in `line` of the source at `path`, is
- * a keyword there. */
 function isKeyword(word: string, line: string, from: number, to: number, path?: string): boolean {
   if (!isPythonPath(path)) {
     return KEYWORDS.has(word);
@@ -40,11 +33,6 @@ function isKeyword(word: string, line: string, from: number, to: number, path?: 
   return PYTHON_KEYWORDS.has(word) && pythonKeywordHolds(word, line.slice(0, from), line.slice(to));
 }
 
-/**
- * The expression a hover at `column` names: the name under it, with the
- * members and pointers before it, such as `req->value`. Null over anything
- * that is not a value's name.
- */
 export function expressionAt(line: string, column: number, path?: string): Found | null {
   if (!isNameCharacter(line[column])) {
     return null;
@@ -61,7 +49,7 @@ export function expressionAt(line: string, column: number, path?: string): Found
   if (/^\d/u.test(word) || isKeyword(word, line, from, to, path)) {
     return null;
   }
-  // The members before it: `a.b->` then the name.
+
   let start = from;
   for (;;) {
     const before = line.slice(0, start);
@@ -81,9 +69,6 @@ export function expressionAt(line: string, column: number, path?: string): Found
   return { text: line.slice(start, to), from: start, to };
 }
 
-/** The line without comments, strings, and characters, each string or
- * character a space; in Python, without `#` comments, nor the prefixes, as
- * the `f` of an f-string, that strings begin with. */
 function code(line: string, python: boolean): string {
   let result = "";
   let index = 0;
@@ -116,11 +101,6 @@ function code(line: string, python: boolean): string {
   return result;
 }
 
-/**
- * The values a line uses, in order and once each: names and member chains,
- * leaving out calls, keywords, types after `struct`, and constants written
- * in capitals.
- */
 export function expressionsIn(line: string, path?: string): string[] {
   const python = isPythonPath(path);
   const text = code(line, python);

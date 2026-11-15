@@ -1,7 +1,3 @@
-//! Interrupts request a pause in every isolate before stopping all threads
-//! natively, including those running no JavaScript. Pause requests cannot
-//! be withdrawn; late V8 pauses are absorbed.
-
 use super::super::Controller;
 use super::super::cdp::{Connection, Session};
 use super::super::native::LinuxTraceOps;
@@ -10,13 +6,10 @@ use crate::Result;
 use crate::runtime_model::inspector_protocol;
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Requests pauses in all connected isolates and arms the native-stop
-    /// deadline. Returns whether any pause was requested.
     pub(in crate::backend::linux) fn interrupt_javascript(&mut self) -> bool {
         let Some(inferior) = self.session.inferior_mut() else {
             return false;
         };
-        // A second interrupt does not wait again.
         if inferior.inspectors.end_interrupt() {
             return false;
         }
@@ -35,8 +28,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         asked
     }
 
-    /// Stops all threads natively if V8 has not paused before the deadline,
-    /// as when no JavaScript runs.
     pub(in crate::backend::linux) fn interrupt_expired(
         &mut self,
         now: std::time::Instant,
@@ -60,8 +51,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// Requests a pause, deferred until resume completes if needed.
-/// Returns whether the request was sent or deferred.
 pub(super) fn ask_pause(connection: &Connection, session: &Session, isolate: &mut Isolate) -> bool {
     if isolate.resuming {
         isolate.pause = PauseRequest::Deferred;
@@ -80,6 +69,4 @@ pub(super) fn ask_pause(connection: &Connection, session: &Session, isolate: &mu
     sent
 }
 
-/// How long an interrupt waits for V8 to pause running JavaScript, which
-/// takes about a millisecond (F19), before every thread stops natively.
 const INTERRUPT_WAIT: std::time::Duration = std::time::Duration::from_millis(50);

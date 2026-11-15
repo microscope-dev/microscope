@@ -1,9 +1,9 @@
-// A worker runs `step`, where tests stop it at a breakpoint, signal it and
-// move it, then waits for the main thread, which releases it only once the
-// worker has run on. A worker the debugger runs alone, holding the main
-// thread stopped, never returns. The program exits with `status`, which
-// shows which lines of `step` ran: 111 when all of them, 100 when a jump
-// skipped the first two.
+
+
+
+
+
+
 
 #include <pthread.h>
 #include <sched.h>

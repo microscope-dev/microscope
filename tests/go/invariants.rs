@@ -1,14 +1,3 @@
-//! What holds at every stop of a Go program, whatever a test is about.
-//! A scenario from [`checked`] runs [`check_go_stop`] after each stop, so
-//! a bug surfaces in whichever test reaches it.
-//!
-//! - Every thread is accounted for: it runs a goroutine, the runtime's
-//!   code for one, or nothing; its state is never unreadable.
-//! - Every backtrace, of every thread and every parked goroutine, ends
-//!   properly: complete at an outermost frame, or with a typed reason. It
-//!   names every frame of the image carrying the runtime, the program's or
-//!   a library's, and changes stacks only where the runtime switches them.
-
 use std::future::Future;
 use std::pin::Pin;
 
@@ -19,15 +8,12 @@ use microscope::{
 
 use crate::support::Scenario;
 
-/// The most tasks a stop's check reads.
 const MAX_TASKS: usize = 4096;
 
-/// A scenario of `fixture` that checks every stop.
 pub fn checked(fixture: &str) -> Scenario {
     Scenario::launch(fixture).checking_stops(check_go_stop)
 }
 
-/// Checks the invariants of the stop the debugger is at.
 pub fn check_go_stop(
     handle: DebuggerHandle,
 ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
@@ -44,7 +30,6 @@ async fn check(handle: &DebuggerHandle) -> Result<(), String> {
         return Ok(());
     };
 
-    // Before a library carrying the runtime loads, no image is checked.
     let Some(main) = go_module(handle).await? else {
         return Ok(());
     };
@@ -62,7 +47,6 @@ async fn check(handle: &DebuggerHandle) -> Result<(), String> {
         check_backtrace(&trace, main).map_err(|problem| format!("{context:?}: {problem}"))?;
     }
 
-    // A goroutine on a thread was checked as its thread's.
     let mut from = None;
     let mut read = 0;
 
@@ -89,7 +73,6 @@ async fn check(handle: &DebuggerHandle) -> Result<(), String> {
     }
 }
 
-/// The loaded module whose image carries Go's runtime.
 async fn go_module(handle: &DebuggerHandle) -> Result<Option<ModuleId>, String> {
     let modules = handle
         .loaded_modules()
@@ -125,18 +108,9 @@ async fn backtrace(
         .map_err(|error| format!("{execution:?}'s backtrace: {error}"))
 }
 
-/// Whether a backtrace ends properly, names every frame of the image
-/// carrying the runtime, loaded as `main`, and changes stacks only where
-/// the runtime switches them.
 pub fn check_backtrace(trace: &Backtrace, main: ModuleId) -> Result<(), String> {
     let role = |index: usize| Some(trace.frames[index].role);
 
-    // A runtime's stack may also end where it switched from a task that
-    // has since gone elsewhere, as an idle thread's does at `mcall`, and a
-    // thread the kernel just started, before its runtime gives it a stack,
-    // has only the frame it began in. Code outside the runtime's image,
-    // such as the C library's that starts a thread, ends a stack where its
-    // call-frame information says it does.
     if trace.termination == UnwindTermination::Complete {
         let last = trace.frames.len().checked_sub(1).ok_or("no frames")?;
         let switched_from = role(last) == Some(CodeRole::StackSwitch)
@@ -182,8 +156,6 @@ pub fn check_backtrace(trace: &Backtrace, main: ModuleId) -> Result<(), String> 
     Ok(())
 }
 
-/// The checks fail on backtraces with the faults they look for: a frame
-/// dropped where the stack switched, or at its end, and an unnamed frame.
 #[tokio::test]
 async fn the_checks_fail_on_the_faults_they_look_for() {
     let mut scenario = checked("stacks-go-o0");

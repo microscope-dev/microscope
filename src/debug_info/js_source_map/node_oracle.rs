@@ -1,18 +1,3 @@
-//! Lookups compared with Node's own decoder, `SourceMap` from `node:module`,
-//! for each official build in the dev shell's matrix, on hand-written maps
-//! and generated ones.
-//!
-//! Node and this decoder disagree in two places, both counted and checked
-//! to be nothing else:
-//!
-//! - Node's `findEntry` answers a position before its line's first segment
-//!   with the last segment of an earlier line. This decoder answers none,
-//!   as Mozilla's `source-map` does: the segment ended with its line.
-//! - Node reads past the end of `mappings` when its last segment has 1 or
-//!   4 fields, as if the missing characters were zero digits, which gives
-//!   a 1-field segment the source of the segment before it and either one
-//!   a name. ECMA-426 gives such a segment no source or no name.
-
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -43,8 +28,6 @@ struct Case {
     name: String,
     json: String,
 
-    /// The generated start of each section's last segment, where Node's
-    /// reading past the end shows.
     finals: Vec<Position>,
     lines: u32,
     columns: u32,
@@ -67,8 +50,6 @@ impl Rng {
     }
 }
 
-/// Lines of segments in column order, as generators write them, with
-/// repeated columns, unmapped segments, and names.
 fn random_lines(rng: &mut Rng) -> Vec<Vec<Written>> {
     (0..=rng.below(7))
         .map(|_| {
@@ -189,8 +170,6 @@ fn generated() -> Vec<Case> {
     cases
 }
 
-/// A segment's original place as Node reports it: source URL, line,
-/// column, and name, each `null` where it has none.
 fn ours(map: &SourceMap, place: Option<OriginalPlace>) -> Value {
     let Some(place) = place else {
         return Value::Null;
@@ -308,8 +287,6 @@ fn compare(
 
         tally.agreed += 1;
         if let Some(place) = covering.original {
-            // findOrigin takes and gives one-based numbers, the column
-            // extended from the segment's start.
             let expected_column = place.column.0 + (column - start) + 1;
             let expected_line = place.line.one_based();
             if origin["lineNumber"] == json!(expected_line)
@@ -344,8 +321,6 @@ fn lookups_agree_with_nodes_decoder() {
             .flat_map(|line| (0..case.columns).map(move |column| (line, column)))
             .collect();
 
-        // Each position a breakpoint on an original line takes, which Node
-        // must map back to that line.
         for (source, _) in map.sources() {
             for line in 0..20 {
                 for found in map.generated_for_line(source, Line(line)) {

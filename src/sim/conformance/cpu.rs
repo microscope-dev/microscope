@@ -1,21 +1,3 @@
-//! The interpreter, single-stepped beside the real CPU.
-//!
-//! Each golden program starts natively under ptrace, stopped at its first
-//! instruction. Its registers and memory are copied into the interpreter,
-//! then both execute one instruction at a time. After each, the general
-//! registers, `rip`, and the flags the instruction defines must agree; the
-//! flags it leaves undefined are copied from the CPU. At a system call the
-//! kernel's result is copied in and writable memory must agree. The test
-//! fails at the first instruction that diverges, and prints it.
-//!
-//! Threads take turns: the current one runs until it makes a system call
-//! other than `fork`, then the next in creation order runs. Every other thread waits in a
-//! ptrace-stop meanwhile, so the program interleaves on the CPU exactly as
-//! in the interpreter. A new thread starts from the registers Linux gave
-//! it, which the kernel's conformance tests check. A fork child takes its
-//! turn too, in a copy of the interpreter's memory, and its exit sends its
-//! parent a SIGCHLD the program ignores.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use iced_x86::{Code, Instruction, RflagsBits};
@@ -31,7 +13,6 @@ use crate::sim::cpu::{
 use crate::sim::kernel::{Tid, WaitStatus};
 use crate::sim::memory::{AddressSpace, Backing, Protection};
 
-/// More instructions than any golden run executes.
 const MAX_STEPS: u64 = 1_000_000;
 const SYS_CLONE: u64 = 56;
 const SYS_FORK: u64 = 57;
@@ -39,9 +20,6 @@ const SYS_EXIT: u64 = 60;
 const SYS_WAIT4: u64 = 61;
 const SYS_EXIT_GROUP: u64 = 231;
 
-/// Every golden program, in every variant and with every argument list its
-/// manifest names, executes identically in the interpreter and on the CPU,
-/// and together they execute every instruction form the model implements.
 #[test]
 fn the_interpreter_executes_every_golden_program_as_the_cpu_does() {
     let corpus = Corpus::load().expect("load the golden corpus");
@@ -56,9 +34,6 @@ fn the_interpreter_executes_every_golden_program_as_the_cpu_does() {
         })
         .collect::<Vec<_>>();
 
-    // Each run waits on single steps far more than it computes, so runs
-    // share the CPUs: each on a thread of its own, which traces what it
-    // spawns and waits for its own tracees alone.
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |count| count.get().min(4));
     let (checked, executed) = std::thread::scope(|scope| {
@@ -100,9 +75,6 @@ fn the_interpreter_executes_every_golden_program_as_the_cpu_does() {
     });
     assert!(checked > 0, "no instruction was checked");
 
-    // The model implements exactly the forms checked here, so a form the
-    // corpus stops executing, or one added without a program that
-    // executes it, fails. (The model refuses any other, so none ran.)
     let unexecuted = cpu::IMPLEMENTED
         .iter()
         .filter(|&code| !executed.contains(code) && !cpu::PROBED_THROUGH_THE_KERNEL.contains(code))
@@ -114,7 +86,6 @@ fn the_interpreter_executes_every_golden_program_as_the_cpu_does() {
     );
 }
 
-/// A thread the lockstep runs, in the process it belongs to.
 #[derive(Clone, Copy)]
 struct Stepped {
     tid: Tid,
@@ -122,9 +93,6 @@ struct Stepped {
     registers: Registers,
 }
 
-/// Runs one program in lockstep to its exit, and every child it forks to
-/// theirs, returning how many instructions were compared. Adds the form
-/// of each instruction that completed to `executed`.
 #[expect(
     clippy::too_many_lines,
     reason = "one loop follows every way a step can end, as the CPU reports it"
@@ -142,8 +110,6 @@ fn lockstep(
 
     let failed = |error: nix::errno::Errno| error.to_string();
 
-    // Trace clones, forks, and exits, so that every thread stops where the
-    // interpreter's does.
     native.set_options(leader, true).map_err(failed)?;
     let mut threads = vec![Stepped {
         tid: leader,
@@ -168,8 +134,6 @@ fn lockstep(
         native.resume(tid, None, true).map_err(failed)?;
         let mut status = native.wait(tid);
 
-        // A child's end, which the program ignores, stops the thread before
-        // the instruction runs.
         while status == WaitStatus::Stopped(tid, libc::SIGCHLD) {
             native
                 .resume(tid, Some(libc::SIGCHLD), true)
@@ -232,8 +196,6 @@ fn lockstep(
                         }
 
                         if threads.iter().all(|thread| thread.process != process) {
-                            // The leader reports last, with how the last
-                            // thread ended.
                             let ended = native.wait(process);
                             if ended != WaitStatus::Exited(process, code) {
                                 return Err(format!("{at}: the process ended {ended}"));
@@ -267,7 +229,6 @@ fn lockstep(
                                     Tid::try_from(message).map_err(|error| error.to_string())
                                 })?;
 
-                        // The step completes at the call's exit.
                         native.resume(tid, None, true).map_err(failed)?;
                         status = native.wait(tid);
                         let started = native.wait(child);
@@ -276,8 +237,6 @@ fn lockstep(
                         }
 
                         let child_process = if event == libc::PTRACE_EVENT_FORK {
-                            // A fork child starts in a copy of its parent's
-                            // memory, as it was at the call.
                             let copy = memories[&process].clone();
                             memories.insert(child, copy);
                             child
@@ -294,8 +253,6 @@ fn lockstep(
                     _ => {}
                 }
 
-                // The kernel served the call natively; take its result, and
-                // what it stored for the program.
                 let result = native.registers(tid).map_err(failed)?.general[RAX];
                 registers.general[RAX] = result;
                 if before.general[RAX] == SYS_WAIT4 && result == before.general[RDI] {
@@ -319,8 +276,6 @@ fn lockstep(
             compare_memory(&native, process, &memories[&process])
                 .map_err(|difference| format!("{at}: {difference}"))?;
 
-            // A forking thread keeps its turn, so that it waits for its
-            // child before the child runs as well as after.
             if before.general[RAX] != SYS_FORK {
                 current = (current + 1) % threads.len();
             }
@@ -330,8 +285,6 @@ fn lockstep(
     Err(format!("still running after {MAX_STEPS} instructions"))
 }
 
-/// Copies `length` bytes the kernel stored at `address` in `process` into
-/// the interpreter's memory, as a system call's result.
 fn copy_stored(
     native: &NativeTracee,
     process: Tid,
@@ -356,7 +309,6 @@ fn copy_stored(
     }
 }
 
-/// Requires `status` to be `tid`'s exit event for an exit with `code`.
 fn expect_exit_event(
     native: &NativeTracee,
     tid: Tid,
@@ -379,8 +331,6 @@ fn expect_exit_event(
     Ok(())
 }
 
-/// Compares the interpreter's registers with the CPU's after
-/// `instruction`, then copies in the flags it leaves undefined.
 fn compare(
     instruction: &Instruction,
     registers: &mut Registers,
@@ -414,7 +364,6 @@ fn compare(
     Ok(())
 }
 
-/// The flags an instruction leaves undefined, as `rflags` bits.
 fn undefined_flags(instruction: &Instruction) -> u64 {
     let iced = instruction.rflags_undefined();
     [
@@ -430,7 +379,6 @@ fn undefined_flags(instruction: &Instruction) -> u64 {
     .fold(0, |flags, (_, flag)| flags | flag)
 }
 
-/// The memory of `process`, mapped as `/proc/<pid>/maps` describes it.
 fn copy_memory(native: &NativeTracee, process: Tid) -> AddressSpace {
     let mut memory = AddressSpace::default();
     for region in regions(native, process) {
@@ -446,7 +394,6 @@ fn copy_memory(native: &NativeTracee, process: Tid) -> AddressSpace {
         );
         let length = usize::try_from(region.end - region.start).expect("a mapping fits usize");
 
-        // The kernel refuses reads of some special mappings, such as vvar.
         if let Some(bytes) = native.read_memory(process, region.start, length) {
             assert!(
                 memory.poke_bytes(region.start, &bytes),
@@ -458,8 +405,6 @@ fn copy_memory(native: &NativeTracee, process: Tid) -> AddressSpace {
     memory
 }
 
-/// Requires the interpreter's writable memory of `process` to equal the
-/// tracee's.
 fn compare_memory(
     native: &NativeTracee,
     process: Tid,

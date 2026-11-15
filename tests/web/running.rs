@@ -1,6 +1,3 @@
-//! Running and stepping a program from the page, and the stacks, sources,
-//! and breakpoints it shows along the way.
-
 use serde_json::{Value, json};
 
 use crate::support::Scenario;
@@ -10,7 +7,6 @@ fn fixture(name: &str) -> String {
     Scenario::fixture(name).display().to_string()
 }
 
-/// The fixture source file whose path ends with `name`.
 fn source_named(files: &Value, name: &str) -> String {
     files["files"]
         .as_array()
@@ -22,7 +18,6 @@ fn source_named(files: &Value, name: &str) -> String {
         .to_owned()
 }
 
-/// Steps `thread` at `stop` and waits for the stop it ends in.
 async fn step(tab: &mut Client, stop: &Value, thread: &Value, kind: &str) -> Value {
     tab.ok(
         "step",
@@ -42,11 +37,9 @@ async fn a_breakpoint_set_before_running_stops_there_and_steps_walk_the_source()
     tab.state("the program loaded", |state| state["session"].is_string())
         .await;
 
-    // Sources come from the debug information before the program runs.
     let files = tab.ok("sources", json!(null)).await;
     let path = source_named(&files, "basic.c");
 
-    // A page opens a program that has not run on its main function.
     assert_eq!(files["entry"]["path"], path.as_str());
     assert_eq!(files["entry"]["line"], 9);
     let source = tab.ok("source", json!({"path": path})).await;
@@ -86,8 +79,6 @@ async fn a_breakpoint_set_before_running_stops_there_and_steps_walk_the_source()
         Some(&inferior["stop"])
     );
 
-    // A run is credited once its request is answered, which a quick stop
-    // can come before.
     let stop = inferior["stop"].clone();
     let credited = tab
         .state("the stop credited", |state| {
@@ -115,7 +106,6 @@ async fn a_breakpoint_set_before_running_stops_there_and_steps_walk_the_source()
     assert_eq!(top["source"]["path"], path.as_str());
     assert_eq!(top["source"]["line"], 10);
 
-    // Into the call, out again, and over the next line.
     let into = step(&mut tab, &stop, &thread, "into").await;
     assert_eq!(
         into["inferior"]["place"]["function"], "breakpoint_target",
@@ -129,7 +119,6 @@ async fn a_breakpoint_set_before_running_stops_there_and_steps_walk_the_source()
     assert_eq!(over["inferior"]["reason"]["kind"], "step");
     assert_eq!(over["inferior"]["place"]["line"], 11, "{over}");
 
-    // An earlier stop can no longer be stepped.
     let (kind, _) = tab
         .request(
             "step",
@@ -179,8 +168,6 @@ async fn breakpoints_change_their_conditions_and_go_before_the_program_runs() {
         .expect_err("a function no module has");
     assert_eq!(kind, "failed");
 
-    // Python code loads only as the program imports it, so a Python
-    // breakpoint waits for it rather than being refused.
     for location in ["app.py:12", "py:main"] {
         tab.ok("addBreakpoint", json!({"location": location})).await;
     }
@@ -213,7 +200,6 @@ async fn a_logpoint_writes_its_message_instead_of_stopping() {
         .await["id"]
         .clone();
 
-    // The message changes in place: the same breakpoint, never a second one.
     tab.ok(
         "editBreakpoint",
         json!({"id": id, "logMessage": "call {call}", "hitCondition": "%20"}),
@@ -239,13 +225,11 @@ async fn what_the_console_types_is_the_programs_input() {
     let web = Web::start("input", &["--run", &fixture("output-streams")]);
     let mut tab = web.control("tab").await;
 
-    // The program flushes these lines, then waits to read.
     tab.output_until("stdout", "out 3").await;
     tab.ok("input", json!({"text": "y\n"})).await;
     tab.output_until("stdout", "stdin: data").await;
     tab.inferior("exited").await;
 
-    // Each run gets its own input, which closing ends.
     tab.ok("continue", json!({})).await;
     tab.output_until("stdout", "out 3").await;
     tab.ok("input", json!({"text": "", "eof": true})).await;
@@ -290,14 +274,12 @@ async fn a_viewer_reads_stacks_and_sources_but_cannot_step_or_break() {
         assert_eq!(kind, "forbidden", "{method}");
     }
 
-    // Only files the debug information names can be read.
     let (kind, _) = viewer
         .request("source", json!({"path": "/etc/passwd"}))
         .await
         .expect_err("a file no module names");
     assert_eq!(kind, "invalid");
 
-    // Where each person looks is part of everyone's presence.
     viewer
         .ok(
             "setFocus",
@@ -315,8 +297,6 @@ async fn a_viewer_reads_stacks_and_sources_but_cannot_step_or_break() {
         })
         .await;
 
-    // Another person's focus and a link's target are opened by others, so
-    // neither may lead off this page: a browser reads `//` and `/\` as a host.
     for url in [
         "//elsewhere.example/",
         "/\\elsewhere.example/",
@@ -335,9 +315,6 @@ async fn a_viewer_reads_stacks_and_sources_but_cannot_step_or_break() {
     }
 }
 
-/// Breakpoints in code without debug information are placed and shown by
-/// their symbols: an indirect function's at the implementation its
-/// resolver chose.
 #[tokio::test]
 async fn breakpoints_without_debug_information_show_the_symbols_they_stop_in() {
     let web = Web::start("symbols", &[&fixture("measure-gcc-nodebug")]);
@@ -388,9 +365,6 @@ async fn breakpoints_without_debug_information_show_the_symbols_they_stop_in() {
     assert!(function.starts_with("__strlen_"), "{stopped}");
 }
 
-/// A tab moves a thread, without running it, to a line of its function, and
-/// every tab follows it to a new stop there; the innermost frame's
-/// registers change through their rows.
 #[tokio::test]
 async fn a_thread_jumps_to_a_line_and_registers_change_through_their_rows() {
     let web = Web::start("jump", &[&fixture("jump")]);
@@ -467,7 +441,6 @@ async fn a_thread_jumps_to_a_line_and_registers_change_through_their_rows() {
         .clone();
     assert_eq!(rbx["value"], "0x000000000000002a", "{rbx}");
 
-    // Only `status += 100` ran.
     tab.ok("continue", json!({"stop": moved["inferior"]["stop"]}))
         .await;
     let exited = tab.inferior("exited").await;
@@ -477,9 +450,6 @@ async fn a_thread_jumps_to_a_line_and_registers_change_through_their_rows() {
     );
 }
 
-/// A tab runs one thread of a stop until it reaches a line, as the
-/// terminal's `advance` does, and an advance from an old stop or to no
-/// place is refused.
 #[tokio::test]
 async fn a_thread_advances_to_a_line() {
     let web = Web::start("advance", &[&fixture("kvstore")]);
@@ -495,7 +465,6 @@ async fn a_thread_advances_to_a_line() {
         stopped["inferior"]["stop"].clone(),
         stopped["inferior"]["thread"].clone(),
     );
-    // Another worker reaching the breakpoint would end the advance first.
     tab.ok("removeBreakpoint", json!({"id": breakpoint["id"]}))
         .await;
 
@@ -531,8 +500,6 @@ async fn a_thread_advances_to_a_line() {
     assert_eq!(kind, "staleStop");
 }
 
-/// A step into one call of a line goes into that call, running the
-/// line's others to their returns.
 #[tokio::test]
 async fn a_step_goes_into_the_call_the_tab_chose() {
     let web = Web::start("step targets", &[&fixture("step-targets-gcc-o0")]);
@@ -575,9 +542,6 @@ async fn a_step_goes_into_the_call_the_tab_chose() {
     assert_eq!(into["inferior"]["reason"]["kind"], "step", "{into}");
 }
 
-/// A program that executes another is followed into it from the page: a
-/// breakpoint only the new program has waits for it, the page says the
-/// process executed it, and the stop shows the new program's source.
 #[tokio::test]
 async fn the_page_follows_a_program_into_one_it_executes() {
     let web = Web::start("exec", &[&fixture("exec-other")]);

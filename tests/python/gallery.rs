@@ -1,8 +1,3 @@
-//! Python's values gallery: at each checkpoint, a native breakpoint in the
-//! C function the gallery reaches it in stops only where a condition over
-//! the function's Python argument holds, and every value the gallery
-//! printed is what microscope shows in the Python frame that called it.
-
 use microscope::{
     BreakpointOptions, BreakpointSpec, Condition, ConditionOwner, DebuggerEvent, ExecutionContext,
     FrameKind, InferiorState, StackFrameId, StopContext, StopReason,
@@ -13,12 +8,8 @@ use crate::extension::{INTERPRETERS, extension_directory};
 use crate::locals::Stop;
 use crate::session::PythonSession;
 
-/// The checkpoints the gallery stops at, in order, past the one its
-/// breakpoint's condition skips.
 const CHECKPOINTS: [&str; 5] = ["scalars", "text", "containers", "objects", "library"];
 
-/// A breakpoint on the gallery's `reached`, pending until the extension
-/// loads, that stops where `condition` holds.
 fn reached(condition: &str) -> Vec<(BreakpointSpec, BreakpointOptions)> {
     vec![(
         BreakpointSpec::Function("reached".to_owned()),
@@ -30,8 +21,6 @@ fn reached(condition: &str) -> Vec<(BreakpointSpec, BreakpointOptions)> {
     )]
 }
 
-/// Where the gallery is stopped: the stop, and its thread's innermost
-/// frame, `reached`, and the Python frame that called it.
 async fn stopped(session: &mut PythonSession) -> (Stop<'_>, StopContext, StopContext) {
     let snapshot = session.scenario.snapshot().await;
     let InferiorState::Stopped {
@@ -72,9 +61,6 @@ async fn stopped(session: &mut PythonSession) -> (Stop<'_>, StopContext, StopCon
     (stop, at(StackFrameId::INNERMOST), caller)
 }
 
-/// The gallery stops at each checkpoint but the one its condition over
-/// the C function's Python argument skips, and each value it printed
-/// there is what microscope shows in the function's Python caller.
 #[tokio::test]
 async fn each_value_is_what_the_gallery_says_where_a_python_condition_stops_it() {
     for interpreter in INTERPRETERS {
@@ -141,8 +127,6 @@ async fn each_value_is_what_the_gallery_says_where_a_python_condition_stops_it()
     }
 }
 
-/// A condition over a Python value that cannot be judged, as comparing a
-/// `str` with an `int`, stops at the first hit and says why.
 #[tokio::test]
 async fn a_python_condition_that_cannot_be_judged_stops_and_says_why() {
     let interpreter = INTERPRETERS[1];

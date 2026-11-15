@@ -1,19 +1,4 @@
 // @ts-check
-// The built-in bits: integers as grids of their set and clear bits.
-//
-//   values   integers: one, or a sequence of up to 4,096
-//   columns  optional: bits a row, 8 by default
-//   origin   optional: "top-left" (the default) puts bit 0 at the top left;
-//            "bottom-left" puts it at the bottom left, so a u64 bitboard
-//            reads as a chess board from white's side
-//   labels   optional, one per integer, or one string for one integer
-//   width    optional: the bits an integer has, when its type does not
-//            say, as a single integer's does not; 32, or 64 for bigints
-//
-// Each integer's width comes from its type when it arrives as an array of
-// them: a u64 has 64 bits, a u8 has 8.
-// Bits that changed since the stop before are outlined, each bit's title
-// names its index, and each grid gives its integer in hexadecimal.
 
 const MOST = 4_096;
 const CELL = 14;
@@ -33,7 +18,7 @@ microscope.draw((input, { previous, width, paths }) => {
   const origin = input.origin ?? "top-left";
   if (origin !== "top-left" && origin !== "bottom-left")
     throw new TypeError('`origin` is "top-left" or "bottom-left"');
-  // One label may name one integer.
+
   const given = typeof input.labels === "string" ? [input.labels] : input.labels;
   const labels =
     given === undefined || given === null
@@ -49,9 +34,7 @@ microscope.draw((input, { previous, width, paths }) => {
     try {
       const old = wordsOf(previous.values, previous.width);
       if (old.words.length === words.length && old.bits === bits) before = old.words;
-    } catch {
-      // The stop before had no integers this chart reads.
-    }
+    } catch {}
   }
   const rows = Math.ceil(bits / columns);
   const gridWidth = columns * CELL;
@@ -146,7 +129,6 @@ microscope.draw((input, { previous, width, paths }) => {
   });
 });
 
-/** The integers as unsigned bigints, their width, and their exact text. */
 function wordsOf(values, width) {
   /** @type {[Function, number][]} */
   const widths = [

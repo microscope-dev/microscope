@@ -1,6 +1,3 @@
-// Read-only CodeMirror view with breakpoint, frame, and selection markers.
-// Letter keys run debugger commands instead of moving the text cursor.
-
 // oxlint-disable-next-line max-classes-per-file -- CodeMirror markers and widgets are small classes
 import {
   Compartment,
@@ -31,30 +28,27 @@ import { highlighting, language } from "./languages";
 
 export type MarkKind = "plain" | "conditional" | "log" | "pending";
 
-/** A value shown at the end of a line, such as `e = 0x5555` . */
 export interface InlineValue {
   text: string;
   changed: boolean;
 }
 
 export interface Marks {
-  /** Breakpoints by line. */
   breakpoints: ReadonlyMap<number, MarkKind>;
-  /** Lines a breakpoint can stop at. */
+
   breakable: ReadonlySet<number>;
-  /** Where the shown thread stopped, when this file has it. */
+
   pc: number | null;
-  /** Where the shown outer frame is, when this file has it. */
+
   frame: number | null;
-  /** The lines the link selects. */
+
   selection: { line: number; end: number } | null;
-  /** Values beside the lines that compute them. */
+
   inline: ReadonlyMap<number, readonly InlineValue[]>;
-  /** Stop reason, displayed below its source line. */
+
   note: { line: number; text: string } | null;
 }
 
-/** What a hover shows: a value and its type. */
 interface Hovered {
   text: string;
   type: string | null;
@@ -64,12 +58,12 @@ interface SourceViewProps {
   path: string;
   text: string;
   marks: Marks;
-  /** Scroll so this line shows; changes of it scroll again. */
+
   reveal: number | null;
   onGutter(line: number): void;
   onLineNumber(line: number, extend: boolean): void;
   onCursor(line: number): void;
-  /** Evaluates what the pointer rests on; absent when values are not shown. */
+
   onHover?: ((expression: string) => Promise<Hovered | null>) | undefined;
 }
 
@@ -162,14 +156,12 @@ class Values extends WidgetType {
     }
     return span;
   }
-  // A click on a line's values puts the cursor on that line, as one beside
-  // them does.
+
   override ignoreEvent(): boolean {
     return false;
   }
 }
 
-/** Why the program stopped, as a line of its own under the one it stopped at. */
 class Note extends WidgetType {
   readonly text: string;
 
@@ -250,7 +242,6 @@ function lineDecorations(state: EditorState): DecorationSet {
 
 const decorations = EditorView.decorations.compute([marksField, "doc"], lineDecorations);
 
-/** Reports the cursor's line as it moves. */
 function cursorReporter(report: (line: number) => void): Extension {
   return ViewPlugin.fromClass(
     class {
@@ -276,11 +267,11 @@ export function SourceView({
   const parent = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const languageSlot = useRef(new Compartment());
-  // The text the view was last moved to a line in.
+
   const revealedIn = useRef<string | null>(null);
-  // Handlers change every render; the editor calls through these.
+
   const handlers = useRef({ onGutter, onLineNumber, onCursor, onHover });
-  // The path the text is of, which says how to read a hovered word.
+
   const shownPath = useRef(path);
   useLayoutEffect(() => {
     handlers.current = { onGutter, onLineNumber, onCursor, onHover };
@@ -375,7 +366,6 @@ export function SourceView({
     };
   }, []);
 
-  // A new file replaces the text and its language.
   useEffect(() => {
     const editor = view.current;
     assert(editor !== null, "new text for a source view with no editor");
@@ -393,14 +383,12 @@ export function SourceView({
   useEffect(() => {
     const editor = view.current;
     assert(editor !== null, "revealing a line in a source view with no editor");
-    // The text arriving is a reason to look for the line again.
+
     if (!text || reveal === null || reveal < 1 || reveal > editor.state.doc.lines) {
       return;
     }
     const line = editor.state.doc.line(reveal);
-    // Only a line out of sight moves the view, so stepping nearby keeps it
-    // still. Text the editor has not yet shown has only estimated heights,
-    // which can place a line below the fold within sight, so it always moves.
+
     const shown = revealedIn.current === text;
     revealedIn.current = text;
     const block = editor.lineBlockAt(line.from);

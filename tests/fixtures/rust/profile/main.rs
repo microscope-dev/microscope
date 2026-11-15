@@ -1,6 +1,6 @@
-//! A sampling profiler's call tree, drawn by the built-in flame-graph
-//! through profile.views beside this file: once as nodes that name their
-//! parents, and once as folded stacks with counts. Each pass samples more.
+
+
+
 
 use std::hint::black_box;
 
@@ -14,7 +14,7 @@ struct Profile {
     nodes: Vec<Node>,
 }
 
-/// Folded stacks: "a;b;c" and how many samples ended there.
+
 struct Folded(Vec<(String, u64)>);
 
 const TREE: [(&str, u64, usize); 12] = [

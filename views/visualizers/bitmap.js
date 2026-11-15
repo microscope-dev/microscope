@@ -1,24 +1,9 @@
 // @ts-check
-// The built-in bitmap: bytes as an image.
-//
-//   pixels   bytes (as bytes(PTR, LEN) reads them) or numbers, row by row,
-//            or an array of rows; `values` may hold them instead
-//   columns  pixels a row, unless pixels are rows
-//   format   optional: "gray8" (the default), "rgba8", "rgb565" (two bytes
-//            a pixel, little-endian), or "bits" (a bit a pixel, the
-//            highest bit of each byte first, rows padded to whole bytes)
-//
-// The image is zoomed by a whole number with smoothing off, so each pixel
-// stays a sharp square; hovering one names its column and row, and the
-// Table lists the bytes. An overlay outlines the pixels that changed since
-// the stop before, so the image still shows where all of them did; pixels
-// too small to outline are tinted instead.
 
 const MOST_WIDTH = 1200;
 const MOST_HEIGHT = 640;
 const FORMATS = { gray8: 1, rgba8: 4, rgb565: 2, bits: 0 };
-// The least zoom at which changed pixels are outlined, and how many marks
-// an outline's image has each way to a pixel.
+
 const OUTLINE = 4;
 const MARKS = 4;
 
@@ -32,9 +17,7 @@ microscope.draw((input, { previous, width, theme: mode }) => {
     try {
       const old = imageOf(previous);
       if (old.columns === columns && old.rows === rows && old.format === image.format) before = old;
-    } catch {
-      // The stop before had no image this chart reads.
-    }
+    } catch {}
   }
   const room = Math.min(Math.max(width, 160), MOST_WIDTH);
   const zoom = Math.max(1, Math.floor(Math.min(room / columns, MOST_HEIGHT / rows)));
@@ -53,7 +36,7 @@ microscope.draw((input, { previous, width, theme: mode }) => {
     }),
   ];
   let changes = 0;
-  // Outlines need a few screen pixels to each image pixel.
+
   const outlined = zoom >= OUTLINE;
   if (before !== null) {
     const changed = new Uint8Array(columns * rows);
@@ -101,7 +84,6 @@ microscope.draw((input, { previous, width, theme: mode }) => {
   return microscope.picture({ width: W, height: H, shapes, caption: caption.join(" · ") });
 });
 
-/** The image as RGBA pixels, from its bytes in its format. */
 function imageOf(input) {
   const source = input.pixels ?? input.values;
   if (source === undefined || source === null) {
@@ -171,7 +153,6 @@ function imageOf(input) {
   return { columns, rows, format, rgba };
 }
 
-/** Bytes from bytes, or from numbers that are each a byte. */
 function byteRow(value, row) {
   const where = row === null ? "`pixels`" : `row ${row}`;
   if (
@@ -194,13 +175,10 @@ function byteRow(value, row) {
   throw new TypeError(`${where} must be bytes or numbers`);
 }
 
-/** The changed pixels' color: orange, which no gray is. */
 function markColor(mode) {
   return mode === "dark" ? [255, 170, 102, 255] : [196, 90, 0, 255];
 }
 
-/** An image of MARKS × MARKS marks a pixel, set along each edge a changed
- * pixel shares with an unchanged one or the image's border. */
 function outline(changed, columns, rows, mode) {
   const across = columns * MARKS;
   const down = rows * MARKS;
@@ -226,7 +204,6 @@ function outline(changed, columns, rows, mode) {
   return { pixels, columns: across, rows: down };
 }
 
-/** A light tint over each changed pixel, light enough to see through. */
 function tint(changed, columns, rows, mode) {
   const pixels = new Uint8ClampedArray(changed.length * 4);
   const [red, green, blue] = markColor(mode);

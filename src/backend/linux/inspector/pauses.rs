@@ -1,14 +1,3 @@
-//! V8's pauses under the all-stop: each isolate's pause lists its frames'
-//! variables while its thread can answer (G5), then is judged once every
-//! thread is stopped. The main isolate runs on the process's main thread;
-//! a worker's pause is placed on the thread whose script frames are the
-//! ones V8 listed. A pause that stops for nothing microscope asked for is
-//! resumed as though it never happened, and one whose stop another
-//! outranked stays held, to be published at a stop of its own.
-//!
-//! Steps are V8's, owned by the isolate they began in; interrupts ask
-//! every isolate to pause and fall back to the native all-stop.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -23,97 +12,65 @@ use super::{Inspector, Isolate, PauseRequest, protocol, send};
 use crate::runtime_model::{ReportedLocal, ReportedValue, inspector_protocol};
 use crate::{Error, Result, RuntimeId, StopReason, VirtualAddress};
 
-/// A pause V8 reported.
 #[derive(Debug)]
 pub(super) struct Paused {
-    /// The ids of V8's breakpoints the pause hit.
     hits: Vec<Arc<str>>,
 
-    /// The managed locations set where a sentinel paused, before V8 could
-    /// count them hit.
     placed_here: Vec<u64>,
 
-    /// The thread V8 holds, once found at an all-stop.
     pub(super) thread: Option<Pid>,
 
-    /// Whether the pause has been judged, at an all-stop.
     judged: bool,
 
-    /// Why it stops, once judged; `None` for one that stops for nothing
-    /// microscope asked for.
     reason: Option<StopReason>,
 
-    /// Whether its stop was published. One that was not stays held when
-    /// its thread resumes, to be published at a stop of its own.
     published: bool,
 
-    /// The paused thread's frames, innermost first, as V8 listed them.
     pub(super) frames: Vec<PausedFrame>,
 
-    /// Which of `frames` each interpreted frame of the thread's stack is,
-    /// by the frame's address, once bound at an all-stop.
     pub(super) bound: BTreeMap<VirtualAddress, usize>,
 
-    /// The scope listings asked for and not yet answered, by the frame and
-    /// scope each lists. The pause is judged once all are answered: the
-    /// paused thread answers only until every thread is stopped.
     pub(super) listing: BTreeMap<RequestId, (usize, usize)>,
 
-    /// The exception V8 paused at, if it paused at one.
     exception: Option<Thrown>,
 
-    /// What it answers, when it answers no breakpoint, step, or exception.
     answers: Answers,
 }
 
-/// What a pause answers besides microscope's breakpoints, steps, and
-/// exceptions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Answers {
-    /// A client's interrupt.
     Interrupt,
 
-    /// A `debugger` statement.
     Statement,
 
-    /// Nothing: an interrupt's late pause, which is absorbed.
     Nothing,
 }
 
 impl Paused {
-    /// Forgets the interrupt a pause still listing its variables would
-    /// answer, once another stop answered it. A listed pause is judged at
-    /// the all-stop under way and keeps answering it.
     pub(super) fn interrupt_answered(&mut self) {
         if !self.listing.is_empty() && self.answers == Answers::Interrupt {
             self.answers = Answers::Nothing;
         }
     }
 
-    /// Whether the pause waits to be judged: its variables are listed.
     fn ready(&self) -> bool {
         !self.judged && self.listing.is_empty()
     }
 
-    /// How many frames the pause has, once judged to hold `thread`.
     pub(super) fn depth_holding(&self, thread: crate::ThreadId) -> Option<usize> {
         (self.judged && self.thread.map(debug_thread_id) == Some(thread))
             .then_some(self.frames.len())
     }
 }
 
-/// An exception a pause reported.
 #[derive(Debug)]
 struct Thrown {
-    /// Whether V8 found nothing that catches it.
     uncaught: bool,
 
-    /// V8's description of the value: an error's stack, or the value.
     description: Arc<str>,
 }
 
 impl Thrown {
-    /// The exception a pause `params` describes, if it paused at one.
     fn of(params: &serde_json::Value) -> Option<Self> {
         if !matches!(
             params["reason"].as_str(),
@@ -134,37 +91,21 @@ impl Thrown {
     }
 }
 
-/// A frame of a pause, as V8 listed it.
 #[derive(Debug)]
 pub(super) struct PausedFrame {
-    /// The frame as the pause reported it: its `callFrameId` and scope
-    /// chain, which name it to V8 while the pause lasts.
     pub(super) reported: serde_json::Value,
 
     path: Option<Arc<str>>,
 
-    /// Its place: zero-based line and column.
     line: u64,
     column: u64,
 
-    /// Its local scope and then its block scopes, outermost first, which
-    /// is the order V8 declares their variables in; each with its
-    /// variables once listed.
     scopes: Vec<Option<std::result::Result<Vec<ReportedLocal>, Arc<str>>>>,
 
-    /// Each variable given a value during the pause, by the index in the
-    /// frame's chain of the scope V8 set it in and its name, with the
-    /// `CallArgument` it was given and how V8 reports that value. V8's
-    /// listings of the scopes still name the value each held as it paused.
     pub(super) given: Vec<(usize, Arc<str>, serde_json::Value, ReportedValue)>,
 }
 
 impl PausedFrame {
-    /// Notes that V8 gave the variable `name` of the scope at `scope` in
-    /// the frame's chain `argument`, which it reports as `value`. V8's
-    /// listing of a scope is a copy made as it paused, which listing again
-    /// would repeat; the binding checks the value given against the
-    /// frame's slots as it checks V8's own.
     pub(super) fn assigned(
         &mut self,
         scope: usize,
@@ -185,7 +126,6 @@ impl PausedFrame {
             .iter()
             .position(|&index| index == scope)
         else {
-            // A context's variables are read from the context.
             return;
         };
         if let Some(Some(Ok(listed))) = self.scopes.get_mut(position) {
@@ -195,8 +135,6 @@ impl PausedFrame {
         }
     }
 
-    /// The frame's variables in declaration order, or why they are not
-    /// known.
     fn locals(&self) -> crate::runtime_model::ReportedLocals {
         let chain = self
             .reported
@@ -223,8 +161,6 @@ impl PausedFrame {
     }
 }
 
-/// A script frame of a thread's stack: its one-based place, and the
-/// interpreted frame it is, when the runtime places it.
 struct ScriptFrame {
     path: Arc<str>,
     line: u64,
@@ -232,13 +168,9 @@ struct ScriptFrame {
     frame: Option<VirtualAddress>,
 }
 
-/// Which pause in which isolate.
 pub(super) type PauseKey = (RuntimeId, Session);
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Asks V8 for the variables of each frame of the pause it reported in
-    /// the isolate `session` reaches, while the paused thread can still
-    /// answer (G5), and has the pause judged once they are listed.
     pub(super) fn inspector_paused(
         &mut self,
         runtime: RuntimeId,
@@ -257,14 +189,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return Ok(());
         };
-        // A worker that waited for its debugger pauses before its first
-        // statement, for nothing microscope asked for.
         if params["reason"] == inspector_protocol::BREAK_ON_START && hits.is_empty() {
             self.let_v8_go(runtime, session);
             return Ok(());
         }
-        // A pause for no reason V8 names, and not the one asked for, is
-        // at a `debugger` statement.
         let asked = self
             .isolate_mut(runtime, session)
             .is_some_and(|isolate| std::mem::take(&mut isolate.pause) == PauseRequest::Sent);
@@ -279,10 +207,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         {
             return Ok(());
         }
-        // Any pause answers an interrupt: once V8 holds a thread, the
-        // all-stop that judges the pause publishes it. The deadline stays,
-        // as a worker's listing passes through the main thread, which may
-        // be blocked outside JavaScript and never pass it on.
         let interrupted = self
             .session
             .inferior()
@@ -340,11 +264,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Takes the isolate's sentinel out of `hits`, those of the pause V8
-    /// reported at `location`. Returns whether the pause is at the
-    /// sentinel, with the managed locations a source map set there, or
-    /// `None` when it is at nothing else and V8 is let go: the script runs
-    /// on with its mapped breakpoints set.
     fn sentinel_pause(
         &mut self,
         runtime: RuntimeId,
@@ -365,8 +284,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Some((false, Vec::new()));
         }
         hits.retain(|hit| Some(hit) != sentinel.as_ref());
-        // The script's functions are compiled, and its declarations bound,
-        // as it starts: a search finds them before any runs.
         if let Some(script) = location["scriptId"].as_str()
             && isolate.searched.insert(script.into())
         {
@@ -391,7 +308,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Some((true, placed_here))
     }
 
-    /// Resumes the isolate `session` reaches from a pause no one sees.
     fn let_v8_go(&self, runtime: RuntimeId, session: &Session) {
         if let Some(link) = self
             .session
@@ -408,8 +324,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Keeps the variables V8 listed for a scope of a pause in `runtime`,
-    /// and has the pause judged once every scope is listed.
     pub(super) fn scope_listed(
         &mut self,
         runtime: RuntimeId,
@@ -449,8 +363,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Has the pauses whose variables are listed judged: at once while the
-    /// program runs, or as it resumes when it is stopped.
     fn judge_inspector_pause(&mut self) -> Result<()> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         if inferior.run.stop().is_none() && inferior.run.execution().is_some() {
@@ -460,8 +372,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Judges every pause V8 reported whose variables are listed, once
-    /// every thread is stopped.
     #[cfg_attr(
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")
@@ -470,8 +380,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(inferior) = self.session.inferior() else {
             return;
         };
-        // The main isolate's first, so that its thread is known before a
-        // worker's is looked for.
         let mut ready = Vec::new();
         for (&runtime, inspector) in &inferior.inspectors.records {
             for (session, isolate) in inspector.status.isolates() {
@@ -481,8 +389,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
         ready.sort_by_key(|(_, session)| session.path().len());
-        // A worker's code may be in memory mapped since modules were last
-        // read, and its frames cannot be unwound without it.
         if !ready.is_empty()
             && let Err(error) = self.refresh_libraries()
         {
@@ -493,10 +399,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Judges the pause `key` names: it stops for the breakpoints it hit
-    /// whose conditions hold, the step it ends, the exception or statement
-    /// it paused at, or the interrupt it answers; or else the program
-    /// resumes as though it never paused.
     #[cfg_attr(
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")
@@ -509,8 +411,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         paused.judged = true;
         paused.thread = thread.as_ref().ok().copied();
-        // A pause held over from an earlier stop keeps the reason it was
-        // judged to have, and counts no hit again.
         let decided = paused.reason.clone();
         let (pid, reason) = match thread {
             Ok(pid) => {
@@ -552,7 +452,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Why the pause `key` names, on `pid`, stops, if it does.
     fn pause_reason(&mut self, key: &PauseKey, pid: Pid) -> Option<StopReason> {
         let (runtime, session) = key;
         let inferior = self.session.inferior()?;
@@ -613,16 +512,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         let answered = match answers {
             Answers::Statement => Some(StopReason::ProgramBreakpoint { address: None }),
             Answers::Interrupt => Some(StopReason::Pause),
-            // An interrupt's pause that V8 took after the program stopped
-            // otherwise, or one that could not be withdrawn.
             Answers::Nothing => None,
         };
         self.inspector_step_end(key, pid, depth).or(answered)
     }
 
-    /// The thread the pause `key` names holds: the process's main thread
-    /// for the main isolate, and for a worker the one thread no other
-    /// pause holds whose script frames are the ones V8 listed.
     fn paused_thread(&self, key: &PauseKey) -> std::result::Result<Pid, Arc<str>> {
         let inferior = self.session.inferior().ok_or("the process is gone")?;
         if key.1.path().is_empty() {
@@ -663,7 +557,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// The script frames of `pid`'s stack, innermost first.
     fn script_frames(&self, pid: Pid) -> Result<Vec<ScriptFrame>> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let presentation = self.presentation_for_thread(pid, None)?;
@@ -685,7 +578,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .iter()
             .filter(|frame| protocol::is_script_frame(frame))
         {
-            // V8 places frames in the scripts it runs.
             let Some(place) = frame
                 .recorded
                 .as_ref()
@@ -710,9 +602,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(frames)
     }
 
-    /// Binds the variables V8 listed for the frames of the pause `key`
-    /// names to the interpreted frames of `pid`'s stack, pairing them
-    /// innermost first while their places agree.
     pub(super) fn bind_paused_frames(&mut self, key: &PauseKey, pid: Pid) -> Result<()> {
         let frames = self.script_frames(pid)?;
         let Some(paused) = self.paused(key) else {
@@ -747,8 +636,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Notes that the stop published is the pause V8 holds `pid` in, if
-    /// it is one.
     pub(in crate::backend::linux) fn mark_published_pause(
         &mut self,
         pid: Pid,
@@ -768,9 +655,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Lets go the threads V8 holds paused among `resumed`, which have just
-    /// been resumed. A pause not yet judged, or one whose stop was not the
-    /// one published, stays held and is judged at an internal stop.
     pub(in crate::backend::linux) fn resume_inspectors(
         &mut self,
         resumed: &BTreeSet<Pid>,
@@ -795,12 +679,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 continue;
             };
             for (session, isolate) in isolates.iter_mut() {
-                // The isolate an assignment is made in stays paused while
-                // the program runs, and is asked to make it.
                 if let Some(assignment) = inspector_assigning(assigning, session, isolate, resumed)
                 {
                     super::assignments::begin(&link.connection, session, isolate, assignment);
-                    // One that could not be begun ends at once.
                     ended |= assignment.ended();
                     continue;
                 }
@@ -812,15 +693,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             {
                 pause_for_step(&link.connection, isolate, step.as_mut(), gate.as_mut());
             }
-            // A function compiled while the program ran is found as it
-            // runs on.
             if super::functions::wanted(desired) {
                 for (session, isolate) in isolates.iter_mut() {
                     super::functions::search(&link.connection, session, isolate);
                 }
             }
         }
-        // Names hold only while their thread stays where V8 paused it.
         let judged = inferior.inspectors.records.values().any(|inspector| {
             inspector
                 .status
@@ -870,8 +748,6 @@ impl<P: InspectionOps> Controller<P> {
             .map(|(_, isolate)| isolate)
     }
 
-    /// Whether V8 holds thread `thread` paused, where its innermost
-    /// JavaScript frame is the stop's.
     pub(in crate::backend::linux) fn inspector_holds(&self, thread: crate::ThreadId) -> bool {
         self.session.inferior().is_some_and(|inferior| {
             inferior
@@ -885,8 +761,6 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// The managed locations `isolate` set by a source map at `location`, a
-/// place V8 paused at.
 fn placed_at(isolate: &Isolate, location: &serde_json::Value) -> Vec<u64> {
     let (Some(script), Some(line), Some(column)) = (
         location["scriptId"].as_str(),
@@ -915,8 +789,6 @@ fn placed_at(isolate: &Isolate, location: &serde_json::Value) -> Vec<u64> {
         .collect()
 }
 
-/// The assignment not yet begun that `assigning` asks of the isolate
-/// `session` reaches, whose paused thread is among `resumed`.
 fn inspector_assigning<'a>(
     assigning: &'a mut Option<super::assignments::Assigning>,
     session: &Session,
@@ -934,10 +806,6 @@ fn inspector_assigning<'a>(
     })
 }
 
-/// Lets go the pause of the isolate `session` reaches, if V8 holds one
-/// on a thread among `resumed`, with the step it runs if `step` began
-/// there, or `Debugger.resume`. Returns whether the pause stays held: one
-/// not yet judged, or whose stop was not published.
 fn resume_isolate(
     connection: &Connection,
     session: &Session,
@@ -949,10 +817,8 @@ fn resume_isolate(
         return false;
     };
     if !paused.judged {
-        // A pause still listing its variables is judged once they are.
         return paused.listing.is_empty();
     }
-    // A pause no thread was found for is let go with any.
     if paused
         .thread
         .is_some_and(|thread| !resumed.contains(&thread))
@@ -972,8 +838,6 @@ fn resume_isolate(
         }
         None => continue_through(through.as_ref(), session, paused),
     };
-    // A step microscope runs, or a resume, ends the step V8 ran back
-    // from an addon.
     if command != inspector_protocol::STEP_OUT
         && through
             .as_ref()
@@ -986,11 +850,6 @@ fn resume_isolate(
     false
 }
 
-/// How V8 goes on from `paused`, in the isolate `session` reaches, which
-/// no step of microscope's runs: a pause no one claimed in a function an
-/// addon calls, deeper than the JavaScript step that entered the addon
-/// began, continues V8's step back out of it (`through`); any other
-/// resumes.
 fn continue_through(
     through: Option<&super::addons::Through>,
     session: &Session,
@@ -1009,10 +868,6 @@ fn continue_through(
     }
 }
 
-/// The scopes of a frame whose variables are its stack locals, by their
-/// index in its scope chain, in the order they are listed: the local
-/// scope, then the blocks inside it from the outermost. V8 gives the chain
-/// innermost first.
 fn listed_scopes(chain: &[serde_json::Value]) -> Vec<usize> {
     let local = chain
         .iter()
@@ -1028,8 +883,6 @@ fn listed_scopes(chain: &[serde_json::Value]) -> Vec<usize> {
     (local..chain.len().min(local + 1)).chain(blocks).collect()
 }
 
-/// The frame `frame` of a pause, the `index`th, whose scopes' variables
-/// are asked for over `connection`, each request entered in `listing`.
 fn list_frame(
     connection: &Connection,
     session: &Session,

@@ -25,13 +25,11 @@ fn error(text: &str) -> ExpressionError {
     }
 }
 
-/// The error's kind and the text it points at.
 fn points_at(text: &str) -> (ErrorKind, &str) {
     let error = error(text);
     (error.kind, error.span.text(text))
 }
 
-/// The text's normal form.
 fn normal(text: &str) -> String {
     parse(text).to_string()
 }
@@ -123,7 +121,6 @@ fn malformed_literals_point_at_themselves_and_suggest_fixes() {
     assert!(error("17UL").hint.unwrap().contains("17 as unsigned long"));
     assert!(error("naïve").hint.unwrap().contains("backticks"));
     assert_eq!(error("nullptr").hint.as_deref(), Some("write `null`"));
-    // Text in single quotes, as Python and JavaScript write it.
     assert_eq!(
         error("d['nut']").hint.as_deref(),
         Some("text goes in double quotes, as in `\"nut\"`")
@@ -131,8 +128,6 @@ fn malformed_literals_point_at_themselves_and_suggest_fixes() {
     assert_eq!(error("'ab").hint, None);
 }
 
-/// Precedence levels from loosest to tightest, as the reference lists them,
-/// written independently of the parser's table.
 const LEVELS: &[&[&str]] = &[
     &["||"],
     &["&&"],
@@ -152,8 +147,6 @@ fn level(op: &str) -> usize {
         .expect("a listed operator")
 }
 
-/// Every ordered pair of binary operators groups as the table says, which
-/// the fully parenthesized text pins down.
 #[test]
 fn every_pair_of_binary_operators_groups_by_the_table() {
     let operators: Vec<&str> = LEVELS
@@ -179,8 +172,6 @@ fn every_pair_of_binary_operators_groups_by_the_table() {
             assert_eq!(normal(&grouped), text, "`{grouped}` needs no parentheses");
         }
 
-        // Prefix operators bind tighter than every binary operator, and `as`
-        // tighter than every binary operator but looser than prefixes.
         for prefix in ["-", "!", "~", "*", "&"] {
             let text = format!("{prefix}a {first} b");
             assert!(
@@ -265,7 +256,6 @@ fn casts_are_read_from_their_spelling() {
         assert_eq!(cast(text), (ty.to_owned(), form), "`{text}`");
     }
 
-    // A trailing `*` after `as` multiplies; `(*p)` dereferences.
     let product = tree("x as T * 2");
     assert!(matches!(
         product.kind(product.root()),
@@ -287,8 +277,6 @@ fn casts_are_read_from_their_spelling() {
         }
     ));
 
-    // A parenthesized name before anything that cannot begin an operand
-    // only groups.
     for text in [
         "(n) + 1",
         "(n)[0]",
@@ -314,8 +302,6 @@ fn casts_are_read_from_their_spelling() {
     assert_eq!(points_at("(int) + 1"), (ErrorKind::Syntax, "+"));
 }
 
-/// A parenthesized name before `-`, `*`, or `&` has a reading for each of
-/// what the name may be, and the readings group what follows differently.
 #[test]
 fn a_parenthesized_name_before_an_operator_has_both_readings() {
     for (text, as_value, as_type) in [
@@ -368,7 +354,6 @@ fn a_parenthesized_name_before_an_operator_has_both_readings() {
             .same_shape(&tree("a - (b)(-c)"))
     );
 
-    // Not a parenthesized name: no ambiguity.
     for text in [
         "(int) - 1",
         "(n.0) - 1",
@@ -384,8 +369,6 @@ fn a_parenthesized_name_before_an_operator_has_both_readings() {
     assert_eq!(error("(a)-(b)-(c)-(d)-(e)-f").span.start, 16);
 }
 
-/// A view's expressions may call the views' built-in functions; the
-/// console's may not, and in neither is a built-in's name reserved.
 #[test]
 fn only_views_call_built_in_functions() {
     let view = |text: &str| {
@@ -401,7 +384,6 @@ fn only_views_call_built_in_functions() {
         expression.to_string()
     );
 
-    // A parenthesized name after a built-in is its operand, not a cast.
     let expression = view("inner(x) - 1");
     assert!(expression.ambiguities().is_empty());
     let tree = expression.tree().expect("one reading");
@@ -419,8 +401,6 @@ fn only_views_call_built_in_functions() {
     assert_eq!(unclosed.kind, ErrorKind::Syntax);
 }
 
-/// A tuple is written in parentheses with commas, or in brackets with
-/// commas, and a single parenthesized expression still only groups.
 #[test]
 fn tuples_are_read_in_parentheses_and_in_brackets() {
     let items = |text: &str| {
@@ -466,7 +446,6 @@ fn tuples_are_read_in_parentheses_and_in_brackets() {
     assert!(!parse("d[(1)]").same_shape(&parse("d[(1,)]")));
     assert!(!parse("(1, 2)").same_shape(&parse("(1, 2, 3)")));
 
-    // One parenthesized expression groups, and a cast is still a cast.
     assert!(matches!(
         tree("(a)").kind(tree("(a)").root()),
         NodeKind::Name(_)
@@ -514,7 +493,6 @@ fn tuples_are_read_in_parentheses_and_in_brackets() {
         assert_eq!(points_at(text), (ErrorKind::Syntax, pointed), "`{text}`");
     }
 
-    // A view's expressions never hold tuples.
     for text in ["(1, 2)", "m[1, 2]", "()", "(a,)"] {
         let error = Expression::parse_view(text).expect_err(text);
         assert_eq!(error.kind, ErrorKind::Syntax, "`{text}`");
@@ -624,27 +602,19 @@ fn normal_form_spaces_operators_and_keeps_needed_parentheses() {
     }
 }
 
-/// Spacing between tokens: none, or any of the kinds the lexer skips.
 fn gap() -> impl Strategy<Value = &'static str> {
     prop::sample::select(vec!["", "", " ", " ", "  ", "\t", "\n "])
 }
 
-/// Spacing before an operand that starts with a prefix operator, which
-/// without it would join the operator before: `a - -b` is not `a--b`.
 fn gap_before(operand: &str) -> impl Strategy<Value = &'static str> + use<> {
     let joins = operand.starts_with(['-', '!', '~', '*', '&']);
     gap().prop_map(move |gap| if joins && gap.is_empty() { " " } else { gap })
 }
 
-/// Whether text holds an assignment, which may only be a whole
-/// expression and so must be parenthesized in a conditional's middle.
 fn assigns(text: &str) -> bool {
     text.replace("==", "").contains('=')
 }
 
-/// An operand of `op`, parenthesized where it may hold a comparison and
-/// `op` binds at least as tightly as one: comparisons do not chain, and
-/// `a < b & c == d` is `a < (b & c) == d`.
 fn operand_of(op: &str, text: String) -> String {
     let compares = text.contains("==") || text.replace("<<", "").contains('<');
     let looser = matches!(op, "&&" | "||" | "=" | "+=");
@@ -655,8 +625,6 @@ fn operand_of(op: &str, text: String) -> String {
     }
 }
 
-/// Text from a small grammar of the language, with random spacing and
-/// parentheses.
 fn expression_text() -> impl Strategy<Value = String> {
     let leaf = prop_oneof![
         Just("a".to_owned()),
@@ -758,11 +726,6 @@ fn expression_text() -> impl Strategy<Value = String> {
     })
 }
 
-/// Found by the round trip below: a cast of a parenthesized name inside a
-/// subtraction, and an assignment in a conditional under `sizeof`. The
-/// parser now refuses the unparenthesized `sizeof(a ? a = a : a)`, which
-/// `check_invariants` passes as an error, so the assignment is in
-/// parentheses here.
 #[test]
 fn printed_casts_and_nested_assignments_read_back_the_same() {
     for text in ["(n) - ((a) as int) as int", "sizeof(a ? (a = a) : a)"] {
@@ -771,9 +734,6 @@ fn printed_casts_and_nested_assignments_read_back_the_same() {
     }
 }
 
-/// Found by the round trip below: comparisons joined by an operator that
-/// binds tighter than they do chain, as in Rust, so the generator now
-/// parenthesizes them; parenthesized, they read back the same.
 #[test]
 fn comparisons_joined_by_a_tighter_operator_chain() {
     let error = Expression::parse("(8)->g.0 <1.5 &ns::d==  $rax")
@@ -791,7 +751,6 @@ fn comparisons_joined_by_a_tighter_operator_chain() {
 proptest! {
     #[test]
     fn the_normal_form_reads_back_the_same(text in expression_text()) {
-        // The grammar is the console's; views refuse its tuples.
         if let Err(error) = Expression::parse(&text) {
             prop_assert!(false, "`{}`: {}", text, error);
         }

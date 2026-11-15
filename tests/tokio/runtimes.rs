@@ -1,10 +1,3 @@
-//! Two runtimes, two `LocalSet`s, and a thread of the program's own in one
-//! process: every task of each is listed, whether its set is running or
-//! waits in the frame that drives it, each named by the runtime or set
-//! that holds it; a thread runs a task exactly when its set runs it. A
-//! set whose driving future an optimized build loses is said to be
-//! missing, never silently left out.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::process::Stdio;
@@ -27,13 +20,10 @@ const BUILDS: [&str; 4] = [
     "tokio-runtimes-1.52-o3",
 ];
 
-/// What the program reported: each task's runtime, and its threads.
 #[derive(Debug, Default)]
 struct Truth {
-    /// Each task's id and the runtime or set the program says holds it.
     tasks: BTreeMap<u64, String>,
 
-    /// Each of the program's named threads.
     threads: BTreeMap<String, ThreadId>,
 }
 
@@ -60,13 +50,6 @@ impl Truth {
         truth
     }
 
-    /// Fails unless the list holds each of the program's tasks once, with
-    /// one runtime label for each runtime or set and different labels for
-    /// different ones, and in the state `state` gives it.
-    ///
-    /// An optimized build may lose the future the thread `shared` drives,
-    /// and with it the set that future runs: then the list says so, and
-    /// leaves out exactly that set's tasks.
     fn check_tasks(
         &self,
         tasks: &[TaskSnapshot],
@@ -146,7 +129,6 @@ impl Truth {
     }
 }
 
-/// The program stopped at `function`, with its truth so far.
 async fn stopped_at(fixture: &str, function: &str) -> (Scenario, Truth, ScratchDir) {
     let scratch = ScratchDir::new("runtimes");
     let output = scratch.path().join("stdout");
@@ -173,8 +155,6 @@ async fn stopped_at(fixture: &str, function: &str) -> (Scenario, Truth, ScratchD
     (scenario, truth, scratch)
 }
 
-/// Fails unless no thread runs a task, the program's threads are its own,
-/// and the multi-thread runtime's workers are idle.
 fn check_parked_threads(
     activities: &BTreeMap<ThreadId, ThreadActivity>,
     truth: &Truth,
@@ -196,8 +176,6 @@ fn check_parked_threads(
     );
 }
 
-/// At the checkpoint neither set runs, and their tasks are found from the
-/// futures their threads drive.
 #[tokio::test]
 async fn every_runtimes_and_sets_tasks_are_listed() {
     for fixture in BUILDS {
@@ -212,7 +190,6 @@ async fn every_runtimes_and_sets_tasks_are_listed() {
     }
 }
 
-/// A core of the checkpoint lists them all as a live program does.
 #[tokio::test]
 async fn a_cores_runtimes_and_sets_are_listed() {
     for fixture in BUILDS {
@@ -232,9 +209,6 @@ async fn a_cores_runtimes_and_sets_are_listed() {
     }
 }
 
-/// A set's task stopped at a breakpoint runs on the thread that runs the
-/// set, which blocks on the multi-thread runtime; it runs no blocking
-/// closure, and the set's other task and every other task are listed too.
 #[tokio::test]
 async fn a_running_sets_task_runs_on_its_thread() {
     for fixture in BUILDS {
@@ -242,7 +216,6 @@ async fn a_running_sets_task_runs_on_its_thread() {
         let shared = truth.threads["shared"];
         let (tasks, gaps) = tasks(&scenario, 4096).await;
 
-        // The set runs, so its thread names it, whatever its frames lose.
         assert!(gaps.is_empty(), "{fixture}: {gaps:?}");
 
         let running = tasks
@@ -276,8 +249,6 @@ async fn a_running_sets_task_runs_on_its_thread() {
     }
 }
 
-/// The program stopped at its checkpoint with nothing read at the stop,
-/// which a checked scenario reads in full as the stop arrives.
 async fn stopped_unread(fixture: &str) -> Scenario {
     let mut scenario = Scenario::launch(fixture);
     scenario
@@ -296,9 +267,6 @@ async fn stopped_unread(fixture: &str) -> Scenario {
     scenario
 }
 
-/// Moves the stack and frame pointers of the thread that runs the second
-/// set down into its unused stack, where unwinding it no longer finds the
-/// frame that drives the set. Returns the thread.
 async fn move_shared_stack(scenario: &mut Scenario) -> ThreadId {
     let snapshot = scenario.snapshot().await;
     let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {
@@ -340,7 +308,6 @@ async fn move_shared_stack(scenario: &mut Scenario) -> ThreadId {
     shared
 }
 
-/// The task numbers listed in order, and the gaps.
 async fn listing(scenario: &Scenario) -> (Vec<u64>, Vec<String>) {
     let (tasks, gaps) = tasks(scenario, 4096).await;
     let mut numbers = tasks.iter().map(|task| task.id.number).collect::<Vec<_>>();
@@ -348,10 +315,6 @@ async fn listing(scenario: &Scenario) -> (Vec<u64>, Vec<String>) {
     (numbers, gaps)
 }
 
-/// A set's tasks are found from the stack of the thread that drives it, so
-/// moving that stack changes the list at the same stop. Listed before the
-/// move or not, the list is the one read only after it, which says that
-/// the thread's stack ends before the frame that drives the set.
 #[tokio::test]
 async fn a_register_write_changes_the_tasks_found_on_a_threads_stack() {
     let fixture = "tokio-runtimes-o0";
@@ -377,10 +340,6 @@ async fn a_register_write_changes_the_tasks_found_on_a_threads_stack() {
     scenario.shutdown().await;
 }
 
-/// glibc's `clone3` has no call-frame information after its system call.
-/// The thread that runs the first set starts a thread from it. Stopped as
-/// that call returns, its stack unwinds whole, through the frame that
-/// drives the set, and the list holds the set's tasks with no gap.
 #[tokio::test]
 async fn a_thread_stopped_in_clone_still_shows_the_set_it_runs() {
     use microscope::CatchPhase;
@@ -405,9 +364,6 @@ async fn a_thread_stopped_in_clone_still_shows_the_set_it_runs() {
             })
             .await;
 
-        // The clone the thread `local` makes. Another thread's catch can
-        // share the stop and be the one it names, so every thread's own
-        // reason is read, as dev/syscalls.md says.
         let local = loop {
             assert!(
                 matches!(reason, StopReason::Syscall(_)),
@@ -462,9 +418,6 @@ async fn a_thread_stopped_in_clone_still_shows_the_set_it_runs() {
     }
 }
 
-/// A set run in one branch of a `join!` is idle while the other branch
-/// runs, so no thread's context names it. It is found in the future the
-/// thread drives, where the `join!` holds it.
 #[tokio::test]
 async fn a_set_a_join_holds_is_listed_while_its_sibling_runs() {
     for fixture in BUILDS {
@@ -510,7 +463,6 @@ async fn a_set_a_join_holds_is_listed_while_its_sibling_runs() {
             .count();
         assert_eq!(in_set, 2, "{fixture}: {tasks:#?}");
 
-        // The set runs none of its tasks while the other branch runs.
         let activities = activities(&mut scenario).await;
         assert!(
             activities

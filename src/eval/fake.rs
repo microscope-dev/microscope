@@ -1,6 +1,3 @@
-//! A deterministic world of types, variables, memory, and registers that
-//! the evaluator runs against in tests: a stand-in for data access with the
-//! simplest layouts, not a second debug-info provider.
 #![cfg_attr(
     not(test),
     allow(dead_code, reason = "the view fuzzer uses only part of the world")
@@ -60,7 +57,6 @@ struct Object {
     storage: Storage,
 }
 
-/// Where a value of the world is.
 #[derive(Debug, Clone)]
 pub enum Place {
     Memory {
@@ -73,7 +69,6 @@ pub enum Place {
         ty: TypeReference,
     },
 
-    /// A value of a dynamic type, by its index in [`World::dynamic`].
     Dynamic(usize),
 }
 
@@ -94,8 +89,6 @@ pub enum Step {
         ty: TypeReference,
     },
 
-    /// To the member of one variant of a tagged union whose tag is the byte
-    /// at its start, inactive unless the tag is `tag`.
     VariantMember {
         tag: u8,
         name: Arc<str>,
@@ -112,78 +105,56 @@ pub enum Step {
         ty: TypeReference,
     },
 
-    /// To a variable, from anywhere: a view's `global(NAME)`.
     Global(usize),
 
-    /// To the value for a key of a map, `{K *keys; V *values; u64 n}`.
     Entry {
         key: TypeReference,
         value: TypeReference,
     },
 
-    /// To what a shared pointer, `{u64 count; V *value}`, points to, as
-    /// the view that presents it would.
     Presented(TypeReference),
 
-    /// To an attribute of a value of a dynamic type.
     Attribute(Arc<str>),
 
-    /// To an item of a value of a dynamic type, by its key or index.
     Item,
 }
 
-/// A world the evaluator binds and runs in.
 #[derive(Debug, Clone, Default)]
 pub struct World {
     types: Vec<TypeInfo>,
     objects: Vec<Object>,
 
-    /// Mapped regions by their first address.
     memory: BTreeMap<u64, Vec<u8>>,
 
-    /// Ranges that reading fails the test: what a short circuit skips.
     poisoned: Vec<(u64, u64)>,
     registers: BTreeMap<&'static str, Option<u128>>,
 
-    /// Pointer types that stand for containers.
     containers: Vec<TypeReference>,
     next: u64,
 
-    /// Every memory read, in order.
     pub reads: Vec<(u64, usize)>,
 
-    /// Units of work left, when limited.
     pub work: Option<u64>,
 
-    /// Maps, `{K *keys; V *values; u64 n}`, with their key and value types.
     maps: Vec<(TypeReference, TypeReference, TypeReference)>,
 
-    /// Shared pointers, `{u64 count; V *value}`, with their value types.
     shared: Vec<(TypeReference, TypeReference)>,
 
-    /// The id of the task the stopped thread runs, when the program has
-    /// tasks.
     pub task: Option<u64>,
 
-    /// The system call that stopped the thread, when one did.
     pub call: Option<super::target::CallValues>,
 
-    /// Generic functions, by the address their code begins at, with their
-    /// type arguments by their parameters' names.
     functions: BTreeMap<u64, Vec<(Arc<str>, TypeReference)>>,
 
-    /// Values of a dynamic type, as Python's are.
     dynamic: Vec<Dynamic>,
 }
 
-/// A value of a dynamic type, with Python's built-in types.
 #[derive(Debug, Clone)]
 pub enum Dynamic {
     Nothing,
     Bool(bool),
     Int(i128),
 
-    /// An int beyond 128 bits.
     BigInt(&'static str),
     Float(f64),
     Str(&'static str),
@@ -191,8 +162,7 @@ pub enum Dynamic {
     List(Vec<usize>),
     Tuple(Vec<usize>),
     Dict(Vec<(usize, usize)>),
-    /// An instance of a class, named as its module qualifies it, as
-    /// `app.Point` is, deriving from `bases`, named so too.
+
     Instance {
         type_name: &'static str,
         bases: Vec<&'static str>,
@@ -288,7 +258,6 @@ impl World {
         record
     }
 
-    /// Gives a record its base classes, each at a byte offset.
     pub fn set_bases(&mut self, record: TypeReference, bases: &[(TypeReference, u64)]) {
         let bases: Vec<crate::BaseClass> = bases
             .iter()
@@ -308,8 +277,6 @@ impl World {
         *existing = bases.into();
     }
 
-    /// Every path from `from` through its bases to a base of type `target`,
-    /// as the offset it is at.
     fn base_offsets(&self, from: TypeReference, target: TypeReference, at: u64) -> Vec<u64> {
         let TypeKind::Record { bases, .. } = &self.info(from).kind else {
             return Vec::new();
@@ -331,8 +298,6 @@ impl World {
         found
     }
 
-    /// Replaces a record's members, as a record that points to its own type
-    /// needs.
     pub fn set_members(&mut self, record: TypeReference, members: &[(&str, TypeReference, u64)]) {
         let members: Vec<RecordMember> = members
             .iter()
@@ -355,8 +320,6 @@ impl World {
         *existing = members.into();
     }
 
-    /// A generic function whose code is at `address`, instantiated with
-    /// `generics`, each by its parameter's name.
     pub fn function(&mut self, address: u64, generics: &[(&str, TypeReference)]) {
         self.functions.insert(
             address,
@@ -367,9 +330,6 @@ impl World {
         );
     }
 
-    /// A tagged union, as a Rust enum is, whose tag is the byte at its
-    /// start: the `i`th variant holds its one member, named for the
-    /// variant, when the tag is `i`.
     pub fn variant(
         &mut self,
         name: &str,
@@ -483,8 +443,6 @@ impl World {
         )
     }
 
-    /// A slice whose descriptor records its capacity after its length, as
-    /// Go's does.
     pub fn slice_with_capacity(&mut self, element: TypeReference) -> TypeReference {
         let name = format!("[]{} with room", self.info(element).name);
         self.add(
@@ -498,7 +456,6 @@ impl World {
         )
     }
 
-    /// A map `{K *keys; V *values; u64 n}`, which a view would present.
     pub fn map_type(
         &mut self,
         name: &str,
@@ -517,8 +474,6 @@ impl World {
         map
     }
 
-    /// A shared pointer `{u64 count; V *value}`, which a view would present
-    /// as what it points to.
     pub fn shared_type(&mut self, name: &str, value: TypeReference) -> TypeReference {
         let u64 = self.base("u64", BaseTypeEncoding::Unsigned, 8);
         let pointer = self.pointer(Some(value));
@@ -527,7 +482,6 @@ impl World {
         shared
     }
 
-    /// A map's bytes, with its keys and values allocated.
     pub fn map_bytes(&mut self, keys: &[u8], values: &[u8], count: u64) -> Vec<u8> {
         let keys = self.allocate(keys);
         let values = self.allocate(values);
@@ -575,7 +529,6 @@ impl World {
         )
     }
 
-    /// Gives a type the identity a view's pattern matches.
     pub fn identify(
         &mut self,
         ty: TypeReference,
@@ -600,8 +553,6 @@ impl World {
         }));
     }
 
-    /// Changes an identified type's identity, as a language's debug
-    /// information adds to it.
     pub fn edit_identity(
         &mut self,
         ty: TypeReference,
@@ -615,12 +566,10 @@ impl World {
         edit(Arc::make_mut(identity));
     }
 
-    /// Makes a pointer type stand for a container a view presents.
     pub fn container(&mut self, ty: TypeReference) {
         self.containers.push(ty);
     }
 
-    /// Marks where an identified type's template parameter pack begins.
     pub fn pack(&mut self, ty: TypeReference, start: usize) {
         let identity = self
             .info_mut(ty)
@@ -655,7 +604,6 @@ impl World {
         )
     }
 
-    /// Maps `bytes` at a fresh address, returning it.
     pub fn allocate(&mut self, bytes: &[u8]) -> u64 {
         let address = self.next;
         self.memory.insert(address, bytes.to_vec());
@@ -663,12 +611,10 @@ impl World {
         address
     }
 
-    /// Maps `bytes` at `address`, which nothing else may use.
     pub fn map(&mut self, address: u64, bytes: &[u8]) {
         self.memory.insert(address, bytes.to_vec());
     }
 
-    /// A variable in memory, returning its address.
     pub fn variable(&mut self, name: &str, ty: TypeReference, bytes: &[u8]) -> u64 {
         let address = self.allocate(bytes);
         self.objects.push(Object {
@@ -708,7 +654,6 @@ impl World {
         self.registers.insert(name, Some(value));
     }
 
-    /// Stores an assignment's bytes in the register a scope named.
     pub fn write_register(&mut self, register: &Register, bytes: &[u8]) {
         let value = self
             .registers
@@ -720,19 +665,16 @@ impl World {
         *value = Some(u128::from_le_bytes(wide));
     }
 
-    /// A register unwinding could not recover.
     pub fn lost_register(&mut self, name: &'static str) {
         self.registers.insert(name, None);
     }
 
-    /// Replaces a variable's bytes in memory.
     pub fn set(&mut self, name: &str, bytes: &[u8]) {
         let address = self.address_of(name);
         let region = self.memory.get_mut(&address).expect("a mapped variable");
         region[..bytes.len()].copy_from_slice(bytes);
     }
 
-    /// Stores bytes at a place, as the debugger would.
     pub fn write(&mut self, at: &Place, bytes: &[u8]) {
         match at {
             Place::Memory { address, .. } => {
@@ -760,12 +702,10 @@ impl World {
         }
     }
 
-    /// Makes reading `[address, address + size)` fail the test.
     pub fn poison(&mut self, address: u64, size: u64) {
         self.poisoned.push((address, address + size));
     }
 
-    /// The type of the variable `name`.
     pub fn type_of(&self, name: &str) -> TypeReference {
         self.objects
             .iter()
@@ -959,7 +899,6 @@ impl World {
         )
     }
 
-    /// The bytes up to a NUL from `address`, at most `limit`.
     fn c_string(&mut self, address: u64, limit: usize) -> TextSummary {
         let mut bytes = Vec::new();
         for offset in 0..limit {
@@ -994,8 +933,6 @@ impl World {
 }
 
 impl World {
-    /// The step from a shared pointer of type `info` to the value it points to,
-    /// as a view presents it.
     fn plan_presented(&self, info: &TypeInfo) -> Result<Planned<Step>, Refusal> {
         let (_, value) = self
             .shared
@@ -1009,7 +946,6 @@ impl World {
         })
     }
 
-    /// The member `name` of a tagged union's variant.
     fn plan_variant_member(
         info: &TypeInfo,
         variants: &[crate::Variant],
@@ -1078,8 +1014,6 @@ impl TypeSource for World {
         .c_base_type(ty)
     }
 
-    /// Types with identities are one type when their identities are, as
-    /// copies of one type in several units are.
     fn same_type(&self, left: TypeReference, right: TypeReference) -> bool {
         if left == right {
             return true;
@@ -1306,8 +1240,6 @@ impl Scope for World {
         }
     }
 
-    /// A world of dynamic values has an interpreter, whose objects `py`
-    /// casts an address to.
     fn dynamic_type(&self, name: &str) -> bool {
         name == "py" && !self.dynamic.is_empty()
     }
@@ -1368,7 +1300,6 @@ impl Machine for World {
     type Step = Step;
     type Place = Place;
 
-    /// Runs out of work as an inspection's budget does.
     fn charge(&mut self) -> Result<(), Stop> {
         match &mut self.work {
             Some(0) => Err(Stop::missing(VariableState::Unavailable(
@@ -1673,8 +1604,6 @@ impl Machine for World {
             return Ok(None);
         };
 
-        // The world's tuples are named as rustc names Rust's, by their
-        // elements' types.
         let info = self.representation(*ty);
         let TypeKind::Record { members, .. } = &info.kind else {
             return Ok(None);
@@ -1871,19 +1800,16 @@ impl Machine for World {
     }
 }
 
-/// Where the world says a value of a dynamic type is.
 const fn dynamic_address(index: usize) -> u64 {
     0x7f00_0000 + index as u64 * 0x40
 }
 
 impl World {
-    /// A value of a dynamic type, by the index it has.
     pub fn dynamic(&mut self, value: Dynamic) -> usize {
         self.dynamic.push(value);
         self.dynamic.len() - 1
     }
 
-    /// The value the variable `name` of a dynamic type holds, if it is one.
     pub fn dynamic_index(&self, name: &str) -> Option<usize> {
         self.objects
             .iter()
@@ -1894,9 +1820,6 @@ impl World {
             })
     }
 
-    /// The classes of the value at `index`, each named as its module
-    /// qualifies it: its own, then each it derives from, in Python's order,
-    /// ending at `builtins.object`. A built-in type is `builtins`'.
     pub fn lineage(&self, index: usize) -> Vec<String> {
         let value = &self.dynamic[index];
         let bases = match value {
@@ -1916,7 +1839,6 @@ impl World {
             .collect()
     }
 
-    /// A variable of a dynamic type, holding the value at `index`.
     pub fn dynamic_variable(&mut self, name: &str, index: usize) {
         self.objects.push(Object {
             name: name.to_owned(),
@@ -1925,7 +1847,6 @@ impl World {
         });
     }
 
-    /// Gives the variable `name` of a dynamic type another value.
     pub fn replace_dynamic(&mut self, name: &str, value: Dynamic) {
         let object = self
             .objects
@@ -1963,7 +1884,6 @@ impl World {
             })
     }
 
-    /// A map's key as the debugger presents it to compare, with its text.
     fn presented_key(&mut self, place: &Place) -> Result<InspectedValue, Stop> {
         let mut candidate = self.present(place)?;
         let read = self.text(place)?;
@@ -1974,16 +1894,12 @@ impl World {
         Ok(candidate)
     }
 
-    /// The index of the value of a dynamic type at an address.
     fn dynamic_at_address(&self, address: u64) -> usize {
         (0..self.dynamic.len())
             .find(|index| dynamic_address(*index) == address)
             .expect("an object of the world's")
     }
 
-    /// A value of a dynamic type as the key an expression would write for
-    /// it, its tuples' items being the world's objects; one of another
-    /// type is refused, as Python's runtime refuses it.
     fn as_key(&self, index: usize) -> Result<Key, Stop> {
         Ok(match &self.dynamic[index] {
             Dynamic::Nothing => Key::Nothing,
@@ -2006,8 +1922,6 @@ impl World {
         })
     }
 
-    /// The item of a sequence at an index, from its end when negative, or
-    /// of a dict for a key, as Python's indexing finds it.
     fn item(&self, index: usize, key: &Key) -> Result<Place, Stop> {
         let value = &self.dynamic[index];
         let held = match key {
@@ -2076,9 +1990,6 @@ impl World {
         }
     }
 
-    /// Whether a dict's key equals the key written, as Python's `==` says:
-    /// the very object the key was `held` as, or its value, a tuple's item
-    /// by item.
     fn equals(&self, entry: usize, key: &Key, held: Option<usize>) -> bool {
         if held == Some(entry) {
             return true;
@@ -2127,8 +2038,6 @@ impl World {
         }
     }
 
-    /// A value of a dynamic type as inspection presents it: by its text in
-    /// Python's notation.
     fn present_dynamic(&self, index: usize) -> InspectedValue {
         let value = &self.dynamic[index];
         let scalar = match value {
@@ -2187,7 +2096,6 @@ impl World {
         )
     }
 
-    /// A value's text in Python's notation.
     fn repr(&self, index: usize) -> String {
         let items = |items: &[usize]| {
             items
@@ -2222,7 +2130,6 @@ impl World {
     }
 }
 
-/// A world by the name an example block gives.
 pub fn world(name: &str) -> World {
     match name {
         "scalars" => scalars(),
@@ -2233,7 +2140,6 @@ pub fn world(name: &str) -> World {
     }
 }
 
-/// A Python frame's variables, whose types only their values know.
 pub fn python() -> World {
     let mut world = World::new();
     let variable = |world: &mut World, name: &str, value: Dynamic| {
@@ -2294,8 +2200,6 @@ pub fn python() -> World {
         Dynamic::Dict(vec![(one, one_text), (none, none_text)]),
     );
 
-    // A dict keyed by tuples, and a tuple equal to one of its keys that is
-    // another object.
     let tuple = |world: &mut World, items: &[Dynamic]| {
         let items = items
             .iter()
@@ -2333,8 +2237,6 @@ pub fn python() -> World {
     world
 }
 
-/// A thread stopped as `openat(AT_FDCWD, "/etc/hosts", O_RDONLY)` returned
-/// `-ENOENT`.
 pub fn syscall() -> World {
     World {
         call: Some(super::target::CallValues {
@@ -2346,7 +2248,6 @@ pub fn syscall() -> World {
     }
 }
 
-/// Scalars of every C width, named as GCC names them.
 pub fn scalars() -> World {
     use BaseTypeEncoding as E;
     let mut world = World::new();
@@ -2373,7 +2274,6 @@ pub fn scalars() -> World {
     world.variable("f", float, &1.5_f32.to_le_bytes());
     world.variable("d", double, &10.0_f64.to_le_bytes());
 
-    // 1.25 in x87 extended precision, padded to sixteen bytes.
     let mut extended = 0xa000_0000_0000_0000_u64.to_le_bytes().to_vec();
     extended.extend_from_slice(&0x3fff_u16.to_le_bytes());
     extended.resize(16, 0);
@@ -2382,9 +2282,6 @@ pub fn scalars() -> World {
     world
 }
 
-/// Records, one of them zero-sized, pointers, arrays, a slice, text,
-/// enumerations, a typedef, a constant, a reference, values in a register or
-/// optimized out, and names that need qualifying.
 pub fn memory() -> World {
     use BaseTypeEncoding as E;
     let mut world = World::new();
@@ -2450,25 +2347,20 @@ pub fn memory() -> World {
     world.set_register("rsp", 0x7ffe_0000);
     world.lost_register("rbp");
 
-    // Text that runs into unmapped memory before it ends.
     let cut = world.allocate(b"hel");
     world.variable("partial", char_pointer, &cut.to_le_bytes());
 
-    // Two variables of one name, and an enumerator two enumerations share.
     world.variable("twice", int, &1_i32.to_le_bytes());
     world.variable("twice", int, &2_i32.to_le_bytes());
     let light = world.enumeration("Light", uint, &[("RED", 10), ("AMBER", 11)]);
     world.variable("light", light, &11_u32.to_le_bytes());
 
-    // Names C reserves, which Go, Rust, and Zig programs may use.
     world.variable("long", int, &3_i32.to_le_bytes());
     let words = world.record("Words", 8, &[("int", int, 0), ("class", int, 4)]);
     let mut words_bytes = 4_i32.to_le_bytes().to_vec();
     words_bytes.extend(6_i32.to_le_bytes());
     world.variable("words", words, &words_bytes);
 
-    // C++ classes: a Tile is a Named and a Shape, and a Twice holds two
-    // Shapes, its own and its Tile's.
     let shape = world.record("Shape", 4, &[("id", int, 0)]);
     let named = world.record("Named", 8, &[("tag", long, 0)]);
     let tile = world.record("Tile", 16, &[("row", int, 12)]);
@@ -2484,7 +2376,6 @@ pub fn memory() -> World {
     twice_bytes.extend(bytes);
     world.variable("twice_shaped", twice, &twice_bytes);
 
-    // A Rust `Option<i32>` holding 5, and one holding nothing.
     let some = world.record("Some", 8, &[("__0", int, 4)]);
     let none = world.record("None", 0, &[]);
     let option = world.variant("Option<i32>", 8, &[("None", none, 0), ("Some", some, 0)]);
@@ -2498,7 +2389,6 @@ pub fn memory() -> World {
     world
 }
 
-/// A slice with room for two more, and maps by integer and by text.
 fn containers(world: &mut World, int: TypeReference, char_pointer: TypeReference) {
     let spare = world.slice_with_capacity(int);
     let room: Vec<u8> = [1_i32, 2, 3, 0, 0]
@@ -2535,8 +2425,6 @@ fn containers(world: &mut World, int: TypeReference, char_pointer: TypeReference
     let bytes = world.map_bytes(&keys, &values, 2);
     world.variable("ages", ages, &bytes);
 
-    // A map keyed by tuples, as Rust's are, a tuple variable equal to one
-    // of its keys, and a map keyed by a struct.
     let pair = world.record("(int, int)", 8, &[("__0", int, 0), ("__1", int, 4)]);
     let grid = world.map_type("Grid", pair, int);
     let keys: Vec<u8> = [1_i32, 2, 2, 3]

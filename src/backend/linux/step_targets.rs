@@ -1,9 +1,3 @@
-//! Stepping into one chosen call of a line. The line's calls are its
-//! code's call instructions from the stopped instruction on. A step into
-//! one of them steps in as usual, but at any other call instruction it
-//! runs the call to its return, as a step over a call instruction does,
-//! and goes on from there.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -21,12 +15,9 @@ use super::memory::read_logical_memory;
 use super::native::{InspectionOps, LinuxTraceOps};
 use super::{ActiveKind, Controller, Inferior, ResumeGuard};
 
-/// The most code of one line decoded for its calls.
 const MOST_LINE_BYTES: u64 = 64 * 1024;
 
 impl<P: InspectionOps> Controller<P> {
-    /// The calls of the line thread `pid` is stopped at, in its selected
-    /// frame's code, from the stopped instruction on, in address order.
     pub(super) fn step_targets(&self, stop_id: StopId, pid: Pid) -> Result<Arc<[StepTarget]>> {
         let inferior = self.stopped_inferior(stop_id, pid)?;
         let registers = self.ptrace.registers(pid)?;
@@ -125,8 +116,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(targets.into())
     }
 
-    /// The name of the function a call calls: its debug information's, or
-    /// else its symbol's, without a procedure linkage table's `@plt`.
     fn callee_name(
         &self,
         inferior: &Inferior,
@@ -151,8 +140,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Which call a step into is to go into, after checking that it is one
-    /// of the line's.
     pub(super) fn chosen_call(
         &self,
         stop_id: StopId,
@@ -170,8 +157,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// For a step into a chosen call stopped at another call instruction,
-    /// runs that call to its return. Returns whether it did.
     pub(super) fn pass_unchosen_call(&mut self, pid: Pid) -> Result<bool> {
         if !self.guard_unchosen_call(pid)? {
             return Ok(false);
@@ -181,9 +166,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(true)
     }
 
-    /// For a step into a chosen call stopped at another call instruction,
-    /// guards the call's return address, where the step resumes once the
-    /// call's own activation returns. Returns whether it did.
     pub(super) fn guard_unchosen_call(&mut self, pid: Pid) -> Result<bool> {
         let Some(chosen) = self
             .session
@@ -227,7 +209,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// Where an address of the main executable is in its image.
 fn locate<P: InspectionOps>(
     controller: &Controller<P>,
     inferior: &Inferior,

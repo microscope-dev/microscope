@@ -1,9 +1,3 @@
-//! A large real program: gofmt, built from the pinned toolchain's own
-//! sources, formatting a file the test wrote. Its breakpoints are named by
-//! package, its stacks run through many of the standard library's
-//! packages, its values are what it parsed from that file, and it formats
-//! the file under the debugger as it does alone.
-
 use std::process::{Command, Stdio};
 
 use microscope::{
@@ -18,7 +12,6 @@ use crate::support::{Scenario, ScratchDir};
 const BUILDS: [&str; 2] = ["gofmt-go-o0", "gofmt-go-o2"];
 const INPUT: &str = "tests/fixtures/go/gofmt/sample.go";
 
-/// Go's keywords, which `go/token` maps to their tokens.
 const KEYWORDS: [&str; 25] = [
     "break",
     "case",
@@ -47,7 +40,6 @@ const KEYWORDS: [&str; 25] = [
     "var",
 ];
 
-/// The names of the stop's frames, innermost first.
 async fn frames(scenario: &Scenario) -> Vec<String> {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
@@ -75,8 +67,6 @@ async fn evaluate(scenario: &Scenario, text: &str) -> VariableState {
     }
 }
 
-/// A value as the debugger writes it: a string quoted, a constant by its
-/// name, or the summary its view gives.
 fn written(state: &VariableState) -> String {
     match state {
         VariableState::Available {
@@ -94,7 +84,6 @@ fn written(state: &VariableState) -> String {
     }
 }
 
-/// Checks the file gofmt parsed, at the printer's entry.
 async fn check_parsed(scenario: &Scenario, fixture: &str) {
     assert_eq!(
         written(&evaluate(scenario, "src.Name.Name").await),
@@ -107,8 +96,6 @@ async fn check_parsed(scenario: &Scenario, fixture: &str) {
         "{fixture}"
     );
 
-    // Each declaration is an interface, shown as what it holds. A
-    // position is one past the offset of the keyword that begins it.
     let source = std::fs::read_to_string(INPUT).expect("read the input");
     let position = |keyword: &str| {
         source
@@ -134,8 +121,6 @@ async fn check_parsed(scenario: &Scenario, fixture: &str) {
     );
 }
 
-/// Checks `go/token`'s map of keywords: every keyword, each once, mapped
-/// to the token its own name spells.
 async fn check_keywords(scenario: &Scenario, fixture: &str) {
     let map = evaluate(scenario, "`go/token.keywords`").await;
     let VariableState::Available {
@@ -192,8 +177,6 @@ async fn check_keywords(scenario: &Scenario, fixture: &str) {
     assert_eq!(entries, expected, "{fixture}");
 }
 
-/// The lines of the body of the function the stop is at the start of,
-/// through its closing brace.
 async fn body(scenario: &Scenario) -> std::ops::RangeInclusive<u64> {
     let context = scenario
         .operation("source", scenario.handle().source_context(32))
@@ -207,9 +190,6 @@ async fn body(scenario: &Scenario) -> std::ops::RangeInclusive<u64> {
     declaration + 1..=closing.number.get()
 }
 
-/// Steps over the printer's statements for a file, which stay in its
-/// function and goroutine until it returns to its caller, and returns the
-/// lines they stopped at.
 async fn walk_the_printer(scenario: &mut Scenario, fixture: &str) -> Vec<u64> {
     let task = integer(scenario, "$task").await;
     let mut lines = Vec::new();
@@ -250,7 +230,6 @@ async fn gofmt_formats_under_the_debugger_as_it_does_alone() {
         let output = scratch.path().join("stdout");
         let mut scenario = checked(fixture);
 
-        // One by its package's path, one by its package's name.
         let printer = scenario.add_breakpoint("go/printer.(*printer).file").await;
         let parser = scenario.add_breakpoint("parser.ParseFile").await;
 
@@ -306,9 +285,6 @@ async fn gofmt_formats_under_the_debugger_as_it_does_alone() {
         check_parsed(&scenario, fixture).await;
         check_keywords(&scenario, fixture).await;
 
-        // Unoptimized, the walk is the body's lines in order; optimized,
-        // it may go back to a line whose work was interleaved with
-        // another's, but it stops at every line of the body and no other.
         let body = body(&scenario).await;
         let walked = walk_the_printer(&mut scenario, fixture).await;
         if fixture.ends_with("o0") {

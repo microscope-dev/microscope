@@ -1,11 +1,8 @@
-//! Data breakpoints: stopping when watched values change.
-
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Profile, Stopped, breakpoints, fixture};
 
 fn stopped_in(dap: &mut Dap, program: &str, function: &str) -> (Stopped, Value) {
-    // The fixture's forked writer is the program's own business.
     let started = dap.launch(
         Profile::VsCode,
         &fixture(program),
@@ -22,7 +19,6 @@ fn stopped_in(dap: &mut Dap, program: &str, function: &str) -> (Stopped, Value) 
     (stop, frame)
 }
 
-/// Continues and returns the data breakpoint stop's description.
 fn next_change(dap: &mut Dap, thread: i64, id: &Value) -> String {
     let resumed = dap.send("continue", json!({"threadId": thread}));
     dap.success(resumed);
@@ -63,7 +59,6 @@ fn write_data_breakpoints_stop_when_the_value_changes_and_say_how() {
         "watch_i32 changed from 0 to 1"
     );
 
-    // Re-sending the same data breakpoint keeps it and its id.
     let again = dap.request(
         "setDataBreakpoints",
         json!({"breakpoints": [{"dataId": info["dataId"], "accessType": "write"}]}),
@@ -74,15 +69,11 @@ fn write_data_breakpoints_stop_when_the_value_changes_and_say_how() {
         "watch_i32 changed from 1 to 2"
     );
 
-    // Clients present `write` as "Break on Value Change": the store of 2
-    // over 2 does not stop.
     assert_eq!(
         next_change(&mut dap, stop.thread, &id),
         "watch_i32 changed from 2 to 42"
     );
 
-    // An access data breakpoint stops at the load in the next phase that
-    // touches the value.
     let frame =
         dap.request("stackTrace", json!({"threadId": stop.thread}))["stackFrames"][0].clone();
     let info = dap.request(
@@ -101,8 +92,6 @@ fn write_data_breakpoints_stop_when_the_value_changes_and_say_how() {
         "watch_i32 was accessed; it is 42"
     );
 
-    // Cleared, it no longer stops: the next stop is the next phase's
-    // breakpoint, although later phases store to the value again.
     dap.request("setDataBreakpoints", json!({"breakpoints": []}));
     dap.request("setExceptionBreakpoints", json!({"filters": []}));
     dap.request(
@@ -130,7 +119,6 @@ fn watching_a_local_from_the_variables_view_ends_with_its_frame() {
         .clone();
     dap.request("variables", json!({"variablesReference": locals}));
 
-    // VS Code asks about a variable by its list and name.
     let info = dap.request(
         "dataBreakpointInfo",
         json!({"variablesReference": locals, "name": "local"}),
@@ -150,7 +138,6 @@ fn watching_a_local_from_the_variables_view_ends_with_its_frame() {
     assert!(next_change(&mut dap, stop.thread, &id).ends_with("from 10 to 11"));
     assert!(next_change(&mut dap, stop.thread, &id).ends_with("from 11 to 13"));
 
-    // Once the function returns, the watch ends and the client hears so.
     let resumed = dap.send("continue", json!({"threadId": stop.thread}));
     dap.success(resumed);
     let removed = dap.event(resumed.mark, "breakpoint", |body| {
@@ -162,7 +149,6 @@ fn watching_a_local_from_the_variables_view_ends_with_its_frame() {
             .contains("its frame or block is no longer active")
     );
 
-    // The stack slot's next use stops once to say the watch ended.
     let ended = dap.stopped(resumed.mark);
     assert_eq!(ended.reason, "data breakpoint");
     assert_eq!(
@@ -172,8 +158,6 @@ fn watching_a_local_from_the_variables_view_ends_with_its_frame() {
     dap.finish();
 }
 
-/// Values that cannot be watched say why without failing the request, and
-/// leave no data breakpoint set.
 fn unwatchable_values_say_why(dap: &mut Dap, frame: &Value) {
     let missing = dap.request(
         "dataBreakpointInfo",
@@ -191,14 +175,12 @@ fn unwatchable_values_say_why(dap: &mut Dap, frame: &Value) {
     );
     assert_eq!(unknown_row["dataId"], Value::Null);
 
-    // An address and size can be watched directly.
     let info = dap.request(
         "dataBreakpointInfo",
         json!({"name": "0x1000", "asAddress": true, "bytes": 4}),
     );
     assert_eq!(info["description"], "4 bytes at 0x1000");
 
-    // Watching reads alone is something x86 cannot do.
     let set = dap.request(
         "setDataBreakpoints",
         json!({"breakpoints": [
@@ -252,7 +234,6 @@ fn addresses_are_watched_as_memory_a_client_names_by_address() {
     let change = next_change(&mut dap, stop.thread, &id);
     assert!(change.contains("changed"), "{change}");
 
-    // A name that is no address cannot be watched as one.
     let refused = dap.request(
         "dataBreakpointInfo",
         json!({"name": "watch_i32", "asAddress": true}),
@@ -323,8 +304,6 @@ fn data_breakpoints_the_console_disables_or_removes_stay_so_in_the_client() {
     );
     let id = breakpoints(&set)[0]["id"].clone();
 
-    // A disabled data breakpoint stays the client's, unverified, through
-    // the client's next update of the same set.
     let mark = dap.mark();
     dap.request(
         "evaluate",
@@ -365,11 +344,9 @@ fn data_breakpoints_the_console_disables_or_removes_stay_so_in_the_client() {
     let removed = dap.event(mark, "breakpoint", |body| body["reason"] == "removed");
     assert_eq!(removed["breakpoint"]["id"], id);
 
-    // The client's next update has nothing left to release.
     let cleared = dap.request("setDataBreakpoints", json!({"breakpoints": []}));
     assert_eq!(cleared, json!({"breakpoints": []}));
 
-    // The program's later phases raise signals of their own.
     dap.request("setExceptionBreakpoints", json!({"filters": []}));
     let resumed = dap.send("continue", json!({"threadId": stop.thread}));
     dap.success(resumed);
@@ -400,7 +377,6 @@ fn data_breakpoints_before_a_program_is_loaded_wait_unverified() {
     dap.finish();
 }
 
-/// The value of `call` in the innermost frame of a stopped thread.
 fn call_of(dap: &mut Dap, thread: i64) -> String {
     let trace = dap.request("stackTrace", json!({"threadId": thread, "levels": 1}));
     let frame = trace["stackFrames"][0]["id"].clone();
@@ -435,8 +411,6 @@ fn conditions_and_hit_counts_choose_which_changes_stop_and_are_amended_in_place(
     );
     assert_eq!(call_of(&mut dap, stop.thread), "10");
 
-    // New conditions apply to the same data breakpoint, which keeps its id
-    // and its count: the hit condition counts every change since it was set.
     let set = dap.request(
         "setDataBreakpoints",
         json!({"breakpoints": [
@@ -450,7 +424,6 @@ fn conditions_and_hit_counts_choose_which_changes_stop_and_are_amended_in_place(
         "last_call changed from 14 to 15"
     );
 
-    // A condition that cannot be evaluated stops and says why.
     dap.request(
         "setDataBreakpoints",
         json!({"breakpoints": [{"dataId": calls, "condition": "no_such_value > 1"}]}),
@@ -468,8 +441,6 @@ fn conditions_and_hit_counts_choose_which_changes_stop_and_are_amended_in_place(
     );
     assert_eq!(call_of(&mut dap, stop.thread), "16");
 
-    // Conditions that do not parse leave their data breakpoints unverified
-    // and unarmed, so the program runs to its end.
     let frame =
         dap.request("stackTrace", json!({"threadId": stop.thread}))["stackFrames"][0].clone();
     let totals = dap.request(
@@ -512,8 +483,6 @@ fn conditions_and_hit_counts_choose_which_changes_stop_and_are_amended_in_place(
     dap.finish();
 }
 
-/// Debug registers are scarce, so a data breakpoint whose new conditions
-/// leave it unarmed releases its register before new ones are armed.
 #[test]
 fn conditions_that_unarm_a_data_breakpoint_free_its_register_for_new_ones() {
     let mut dap = Dap::start("data breakpoint registers");
@@ -527,7 +496,6 @@ fn conditions_that_unarm_a_data_breakpoint_free_its_register_for_new_ones() {
         .to_owned();
     let address = u64::from_str_radix(reference.trim_start_matches("0x"), 16).expect("hex");
 
-    // Each byte takes a register of its own.
     let mut bytes = (0..5)
         .map(|offset| {
             let info = dap.request(
@@ -546,7 +514,6 @@ fn conditions_that_unarm_a_data_breakpoint_free_its_register_for_new_ones() {
     );
     let id = breakpoints(&set)[0]["id"].clone();
 
-    // The new data breakpoint comes first.
     bytes[0]["condition"] = json!("last_call = 3");
     bytes.rotate_right(1);
     let set = dap.request("setDataBreakpoints", json!({"breakpoints": bytes}));

@@ -1,18 +1,18 @@
-"""Python's values, where this program says they are. Before each checkpoint
-the program prints its own truth, one tab-separated line per value,
 
-    TRUTH  CHECKPOINT  PATH  summary  VALUE
 
-and then calls the extension's reached(CHECKPOINT), a C function; the tests
-stop there and read the values in its caller. A path is an expression in
-the caller's frame, written as both Python and microscope read it: a
-variable, or an item, a key, an attribute, or a length of one. VALUE is truth.canonical() of what CPython's eval() of the
-path gives, the text microscope must show. The first checkpoint, skipped,
-is one a breakpoint's condition over its Python argument must pass by.
 
-The first argument is the directory of the extension built for the
-interpreter.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
 
 import collections
 import dataclasses
@@ -33,7 +33,7 @@ reached = microscope_extension.reached
 
 
 def say(checkpoint, frame_locals, paths):
-    """Prints the truth of each path in the caller's frame."""
+
     for path in paths:
         value = eval(path, globals(), frame_locals)  # noqa: S307
         truth.report(checkpoint, path, "summary", truth.canonical(value))

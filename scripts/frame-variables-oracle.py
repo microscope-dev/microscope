@@ -1,24 +1,24 @@
-# Records gdb's view of every frame's variables in a core dump, for
-# differential tests of frame selection. Run inside gdb:
-#
-#   MICROSCOPE_FRAME_ORACLE=ORACLE \
-#     gdb -batch -x scripts/frame-variables-oracle.py PROGRAM CORE
-#
-# The oracle is line-oriented and tab-separated:
-#
-#   thread  <lwp>
-#   frame   <level>  <function or empty>  <scope|noscope>
-#   var     <name>   <argument|local>  <state>  [value]
-#   member  <path>   <state>  [value]
-#
-# A frame's variables are those of its innermost block outward to its
-# function, innermost first, so the first of several equal names is the one
-# a lookup finds. A state is `int` (a decimal integer, pointer, enumerator,
-# boolean, or character), `float` (Python's repr of the value), `optimized-out`,
-# `error`, `struct` for a C or C++ structure, whose members follow, or `other`
-# for values the tests do not compare. gdb calls a structure optimized out
-# when any of its bits are, so each member is judged by its own: a member's
-# path is an expression naming it from the variable, such as `pair.first`.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import os
 
@@ -33,12 +33,12 @@ SCALAR_CODES = {
 }
 
 
-# Zig describes itself as C, so a frame's language is its source's.
+
 C_SOURCES = (".c", ".cc", ".cpp", ".cxx", ".h", ".hpp")
 
 
 def describe(value, c_source):
-    """A value's state and text, and its members' lines, if it has any."""
+
     try:
         code = value.type.strip_typedefs().code
         if code == gdb.TYPE_CODE_STRUCT and c_source:
@@ -49,7 +49,7 @@ def describe(value, c_source):
             return ("int", str(int(value)), [])
         if code == gdb.TYPE_CODE_FLT:
             return ("float", repr(float(value)), [])
-        # Reading the value proves it is readable.
+
         value.fetch_lazy()
         return ("other", "", [])
     except gdb.error:
@@ -57,7 +57,7 @@ def describe(value, c_source):
 
 
 def members(value):
-    """(path, state, text) for each named member of a structure, depth first."""
+
     for field in value.type.strip_typedefs().fields():
         if not field.name or field.is_base_class or not hasattr(field, "bitpos"):
             continue

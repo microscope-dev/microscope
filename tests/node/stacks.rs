@@ -1,7 +1,3 @@
-//! Node fixtures parked under the debugger, and in core dumps, where they
-//! said they would be: the threads the fixtures name, with the JavaScript
-//! frames V8 reported, unwinding natively to where each began.
-
 use std::collections::BTreeMap;
 
 use microscope::{CoreDumpOptions, InferiorState, StateSnapshot, ThreadId};
@@ -13,8 +9,6 @@ use crate::support::Scenario;
 use crate::support::truth::Report;
 use crate::truth::{Thread, check_threads, functions_in, threads, unavailable};
 
-/// Each thread of `stacks.js`: its name, its functions from the innermost
-/// out, and the value it names.
 const STACKS: [(&str, &[&str], (&str, &str)); 3] = [
     (
         "main",
@@ -33,8 +27,6 @@ const STACKS: [(&str, &[&str], (&str, &str)); 3] = [
     ),
 ];
 
-/// Holds what `stacks.js` reported to the threads, frames, and values the
-/// fixture parks with.
 fn check_stacks(context: &str, reported: &[Thread]) {
     assert_eq!(reported.len(), STACKS.len(), "{context}: {reported:#?}");
     for (thread, (name, functions, (value, text))) in reported.iter().zip(STACKS) {
@@ -52,11 +44,7 @@ fn check_stacks(context: &str, reported: &[Thread]) {
     }
 }
 
-/// Holds what `tiers.js` reported on the build `entry` to a frame of each
-/// tier that build can put on the stack, and the rest reported unavailable.
 pub fn check_tiers(context: &str, entry: &str, report: &Report, lines: &[Vec<String>]) {
-    // Node 22's V8 runs no Maglev code unless told to, so its OSR is to
-    // Turbofan and its maglev frame stays interpreted.
     let maglev = major(entry) >= 24;
     let expected: [(&str, Option<&str>); 8] = [
         ("ignition", Some("ignition")),
@@ -92,7 +80,6 @@ pub fn check_tiers(context: &str, entry: &str, report: &Report, lines: &[Vec<Str
     assert_eq!(unavailable(report), missing, "{context}");
 }
 
-/// Every thread `reported` names is one the debugger lists at the stop.
 fn check_listed(context: &str, reported: &[Thread], listed: &[u64]) {
     for thread in reported {
         assert!(
@@ -104,10 +91,6 @@ fn check_listed(context: &str, reported: &[Thread], listed: &[u64]) {
     }
 }
 
-/// The isolate each thread `reported`, which runs JavaScript, is labelled
-/// with at the stop `snapshot` lists, by thread id: each its own number,
-/// the main thread's 1. Any other thread has no label, or the label of the
-/// isolate it works for as a V8 helper.
 pub fn check_isolates(
     context: &str,
     reported: &[Thread],
@@ -153,11 +136,6 @@ pub fn check_isolates(
     isolates
 }
 
-/// On every build, `stacks.js` parks its main thread and two workers in
-/// the functions it names, each thread one the stop lists and labelled with
-/// its isolate, the same at a second stop, and the process ends with the
-/// debugger. Each thread's JavaScript frames are the ones V8 reported, and
-/// it unwinds natively through the interpreter's frames to where it began.
 #[tokio::test]
 async fn each_builds_threads_park_where_the_fixture_says() {
     let mut lies = Vec::new();
@@ -226,10 +204,6 @@ async fn each_builds_threads_park_where_the_fixture_says() {
     assert_truthful(&lies);
 }
 
-/// Each core dump holds every thread its fixture reported just before it
-/// aborted, each labelled with its isolate, with the JavaScript frames V8
-/// reported, and the main thread unwinds to its start; the report beside
-/// it says what the live one does.
 #[tokio::test]
 async fn a_cores_threads_are_the_ones_node_reported() {
     let mut wrong_frames = Vec::new();
@@ -265,8 +239,6 @@ async fn a_cores_threads_are_the_ones_node_reported() {
                 "{name}: Node's own threads: {listed:?}"
             );
 
-            // The post-mortem reader reads Node's own scripts' source from
-            // the executable. A frame's tier is no fact a backtrace reports.
             let mut untiered = reported.clone();
             for frame in untiered.iter_mut().flat_map(|thread| &mut thread.frames) {
                 frame.tier = None;
@@ -276,8 +248,6 @@ async fn a_cores_threads_are_the_ones_node_reported() {
                 wrong_frames.push(format!("{name}: {lie}"));
             }
 
-            // The dump saved the builtins' copies and the compiled code, so
-            // the main thread unwinds as the live process's does.
             scenario
                 .operation(
                     "select",

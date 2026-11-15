@@ -1,7 +1,3 @@
-//! The perf event system calls and the ring buffers events write to, and
-//! the one BPF map update aya cannot make. The profiler's only unsafe code
-//! is here.
-
 #![allow(unsafe_code, reason = "perf events are system calls and shared memory")]
 
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
@@ -9,7 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nix::libc;
 
-/// `struct perf_event_attr` to its eighth version.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Attr {
@@ -38,7 +33,6 @@ pub struct Attr {
     pub config3: u64,
 }
 
-/// The size `perf_event_open` takes for [`Attr`].
 pub const ATTR_SIZE: u32 = 136;
 const _: () = assert!(std::mem::size_of::<Attr>() == ATTR_SIZE as usize);
 
@@ -48,19 +42,15 @@ pub const TYPE_BREAKPOINT: u32 = 5;
 
 pub const COUNT_SW_CPU_CLOCK: u64 = 0;
 
-/// An event that counts nothing, for the records of mappings and threads.
 pub const COUNT_SW_DUMMY: u64 = 9;
 
-/// An event BPF programs write records through.
 pub const COUNT_SW_BPF_OUTPUT: u64 = 10;
 
-/// A write breakpoint, which only the simulator's conformance tests set.
 #[cfg(test)]
 pub const BREAKPOINT_WRITE: u32 = 2;
 
 pub const BREAKPOINT_EXECUTE: u32 = 4;
 
-/// `perf_event_attr` flag bits.
 pub mod flag {
     pub const DISABLED: u64 = 1 << 0;
 
@@ -93,7 +83,6 @@ pub mod flag {
     pub const CONTEXT_SWITCH: u64 = 1 << 26;
 }
 
-/// `perf_event_attr.sample_type` bits.
 pub mod sample {
     pub const TID: u64 = 1 << 1;
 
@@ -119,20 +108,14 @@ const IOC_ENABLE: libc::Ioctl = 0x2400;
 const IOC_DISABLE: libc::Ioctl = 0x2401;
 const IOC_SET_OUTPUT: libc::Ioctl = 0x2405;
 
-/// `_IOR('$', 7, __u64 *)`.
 const IOC_ID: libc::Ioctl = 0x8008_2407_u32 as libc::Ioctl;
 
-/// `_IOW('$', 8, __u32)`.
 const IOC_SET_BPF: libc::Ioctl = 0x4004_2408;
 
 const BPF_MAP_UPDATE_ELEM: libc::c_long = 2;
 
-/// `read_format`: each read also gives how many samples the event lost.
 pub const FORMAT_LOST: u64 = 1 << 4;
 
-/// An event's count, with those of the events inherited from it, and what
-/// it has lost: every sample it and they found no room for, whether or not
-/// a loss record has said so yet. The event reads [`FORMAT_LOST`].
 pub fn counts(fd: &OwnedFd) -> std::io::Result<(u64, u64)> {
     let mut bytes = [0_u8; 16];
     let read = rustix::io::read(fd, &mut bytes[..])?;
@@ -167,10 +150,7 @@ pub fn counts(fd: &OwnedFd) -> std::io::Result<(u64, u64)> {
     ))
 }
 
-/// Opens an event for `pid` on `cpu`.
 pub fn open(attr: &Attr, pid: i32, cpu: i32) -> std::io::Result<OwnedFd> {
-    // The kernel writes its own size into the attributes it was given when
-    // it refuses them as too large, so it gets a copy of its own.
     let mut attr = *attr;
 
     // SAFETY: `attr` is a valid, initialized perf_event_attr of the size
@@ -198,8 +178,6 @@ pub fn open(attr: &Attr, pid: i32, cpu: i32) -> std::io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-/// `struct procmap_query`, Linux 6.11's question about one address of a
-/// process's memory map.
 #[repr(C)]
 #[derive(Debug, Default)]
 struct ProcmapQuery {
@@ -220,13 +198,11 @@ struct ProcmapQuery {
     build_id_addr: u64,
 }
 
-/// `_IOWR('f', 17, struct procmap_query)`.
 const PROCMAP_QUERY: libc::Ioctl = 0xC068_6611_u32 as libc::Ioctl;
 
 const VMA_WRITABLE: u64 = 0x02;
 const VMA_EXECUTABLE: u64 = 0x04;
 
-/// One region of a process's memory map.
 pub struct Vma {
     pub start: u64,
     pub end: u64,
@@ -234,12 +210,9 @@ pub struct Vma {
     pub inode: u64,
     pub writable: bool,
 
-    /// What the map's last column says, empty for anonymous memory.
     pub name: Vec<u8>,
 }
 
-/// The executable region of the memory map open as `maps` that holds
-/// `address`, if any. A kernel without the query fails with `ENOTTY`.
 pub fn executable_vma(maps: &std::fs::File, address: u64) -> std::io::Result<Option<Vma>> {
     let mut name = vec![0_u8; 4096];
     let mut query = ProcmapQuery {
@@ -263,7 +236,6 @@ pub fn executable_vma(maps: &std::fs::File, address: u64) -> std::io::Result<Opt
         };
     }
 
-    // The size counts the terminating zero.
     name.truncate(query.vma_name_size.saturating_sub(1) as usize);
     Ok(Some(Vma {
         start: query.vma_start,
@@ -275,7 +247,6 @@ pub fn executable_vma(maps: &std::fs::File, address: u64) -> std::io::Result<Opt
     }))
 }
 
-/// Enables or disables an event.
 pub fn enable(fd: &OwnedFd, enabled: bool) -> std::io::Result<()> {
     let request = if enabled { IOC_ENABLE } else { IOC_DISABLE };
 
@@ -289,8 +260,6 @@ pub fn enable(fd: &OwnedFd, enabled: bool) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Sends an event's records to the ring of `ring`'s event, which must be
-/// on the same CPU.
 pub fn set_output(fd: &OwnedFd, ring: &OwnedFd) -> std::io::Result<()> {
     // SAFETY: the request takes the descriptor of another perf event, and
     // both descriptors are perf events this process owns.
@@ -302,8 +271,6 @@ pub fn set_output(fd: &OwnedFd, ring: &OwnedFd) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The kernel's identifier of an event, which each of its samples that
-/// asks for it begins with.
 pub fn id(fd: &OwnedFd) -> std::io::Result<u64> {
     let mut id = 0_u64;
 
@@ -318,8 +285,6 @@ pub fn id(fd: &OwnedFd) -> std::io::Result<u64> {
     Ok(id)
 }
 
-/// Runs the BPF program `program` as the event takes each sample, before
-/// the kernel writes it. Events inherited from the event later run it too.
 pub fn set_bpf(fd: &OwnedFd, program: BorrowedFd<'_>) -> std::io::Result<()> {
     // SAFETY: the request takes a program's descriptor as an integer, and
     // both descriptors are open and this process's.
@@ -331,7 +296,6 @@ pub fn set_bpf(fd: &OwnedFd, program: BorrowedFd<'_>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// `union bpf_attr` as `BPF_MAP_UPDATE_ELEM` reads it.
 #[repr(C)]
 struct MapUpdate {
     map_fd: u32,
@@ -341,8 +305,6 @@ struct MapUpdate {
     flags: u64,
 }
 
-/// Puts the event `event` in slot `slot` of the perf event array `map`, so
-/// that a program's output for that CPU goes through it.
 pub fn set_output_slot(map: BorrowedFd<'_>, slot: u32, event: &OwnedFd) -> std::io::Result<()> {
     let value = u32::try_from(event.as_raw_fd()).map_err(|_| std::io::Error::other("fd"))?;
     let attr = MapUpdate {
@@ -372,8 +334,6 @@ pub fn set_output_slot(map: BorrowedFd<'_>, slot: u32, event: &OwnedFd) -> std::
     Ok(())
 }
 
-/// An event's ring buffer: one metadata page, then a power of two of data
-/// pages the kernel writes records to.
 #[derive(Debug)]
 pub struct Ring {
     fd: OwnedFd,
@@ -381,7 +341,6 @@ pub struct Ring {
 }
 
 impl Ring {
-    /// Maps `pages` data pages, a power of two, for an event.
     pub fn map(fd: OwnedFd, pages: usize) -> std::io::Result<Self> {
         let page = page_size();
         let length = (pages + 1) * page;
@@ -422,8 +381,6 @@ impl Ring {
         &self.fd
     }
 
-    /// Appends every record the kernel has written since the last drain
-    /// to `out` and returns their bytes to the kernel.
     pub fn drain(&self, out: &mut Vec<u8>) -> usize {
         self.memory
             .lock()
@@ -431,8 +388,6 @@ impl Ring {
             .drain(out)
     }
 
-    /// How many times the ring's head could not be trusted, so that the
-    /// ring skipped what lay before it.
     pub fn untrusted(&self) -> u64 {
         self.memory
             .lock()
@@ -441,29 +396,21 @@ impl Ring {
     }
 }
 
-/// The memory a ring shares with the kernel: a metadata page whose words
-/// at [`DATA_HEAD`] and [`DATA_TAIL`] say what it holds, then its data,
-/// a power of two of bytes.
 #[derive(Debug)]
 pub struct RingMemory {
     base: std::ptr::NonNull<u8>,
 
-    /// Where the data begins.
     data: usize,
     size: usize,
     owner: Owner,
 
-    /// Heads [`RingMemory::drain`] could not trust.
     untrusted: u64,
 }
 
-/// What a ring's memory is, and so how it is freed.
 #[derive(Debug)]
 enum Owner {
-    /// The kernel's mapping, of this many bytes.
     Mapping { length: usize },
 
-    /// A block from [`RingMemory::heap`].
     Heap(std::ptr::NonNull<[AtomicU64]>),
 }
 
@@ -475,19 +422,13 @@ enum Owner {
 // from this side goes through `&mut self`.
 unsafe impl Send for RingMemory {}
 
-/// `perf_event_mmap_page` offsets.
 pub const DATA_HEAD: usize = 1024;
 
 pub const DATA_TAIL: usize = 1032;
 
-/// Where a heap ring's data begins: just past its metadata words.
 pub const HEAP_DATA: usize = DATA_TAIL + 8;
 
 impl RingMemory {
-    /// A ring over a heap block of [`HEAP_DATA`] bytes of metadata, then
-    /// `size` bytes of data, a power of two, all zero. What the kernel
-    /// does to a ring, a test does through the returned pointer to the
-    /// block's start, with the same orderings.
     #[doc(hidden)]
     #[must_use]
     pub fn heap(size: usize) -> (Self, std::ptr::NonNull<u8>) {
@@ -517,14 +458,6 @@ impl RingMemory {
         unsafe { AtomicU64::from_ptr(self.base.as_ptr().add(offset).cast::<u64>()) }
     }
 
-    /// Appends every record the kernel has written since the last drain
-    /// to `out` and returns their bytes to the kernel. Records are whole:
-    /// the kernel publishes its head only after a record is complete.
-    ///
-    /// A head more than a whole ring past the tail, or behind it, is not
-    /// one the kernel and this reader could have left. The ring reads
-    /// nothing of it, moves its tail to the head so that the kernel can go
-    /// on writing, and counts it in [`RingMemory::untrusted`].
     pub fn drain(&mut self, out: &mut Vec<u8>) -> usize {
         let head = self.word(DATA_HEAD).load(Ordering::Acquire);
         let tail = self.word(DATA_TAIL).load(Ordering::Relaxed);
@@ -562,7 +495,6 @@ impl RingMemory {
         available
     }
 
-    /// How many heads [`RingMemory::drain`] could not trust.
     #[must_use]
     pub const fn untrusted(&self) -> u64 {
         self.untrusted
@@ -586,12 +518,10 @@ impl Drop for RingMemory {
     }
 }
 
-/// The system's page size.
 pub fn page_size() -> usize {
     rustix::param::page_size()
 }
 
-/// `CLOCK_MONOTONIC` in nanoseconds, the clock samples are stamped with.
 pub fn monotonic() -> u64 {
     nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC).map_or(0, |time| {
         u64::try_from(time.tv_sec()).unwrap_or(0) * 1_000_000_000
@@ -599,7 +529,6 @@ pub fn monotonic() -> u64 {
     })
 }
 
-/// The CPU time this thread has taken.
 pub fn thread_cpu() -> std::time::Duration {
     nix::time::clock_gettime(nix::time::ClockId::CLOCK_THREAD_CPUTIME_ID).map_or(
         std::time::Duration::ZERO,
@@ -612,8 +541,6 @@ pub fn thread_cpu() -> std::time::Duration {
     )
 }
 
-/// Whether `fd` is readable within `timeout`, as a process descriptor is
-/// once its process has exited.
 pub fn readable(fd: &OwnedFd, timeout: std::time::Duration) -> bool {
     use rustix::event::{PollFd, PollFlags, Timespec};
     let mut fds = [PollFd::new(fd, PollFlags::IN)];
@@ -623,15 +550,12 @@ pub fn readable(fd: &OwnedFd, timeout: std::time::Duration) -> bool {
         && fds[0].revents().contains(PollFlags::IN)
 }
 
-/// Waits until `fd` is readable, as a process's descriptor is once it
-/// has exited.
 pub fn wait_readable(fd: &OwnedFd) {
     use rustix::event::{PollFd, PollFlags};
     let mut fds = [PollFd::new(fd, PollFlags::IN)];
     while rustix::event::poll(&mut fds, None) == Err(rustix::io::Errno::INTR) {}
 }
 
-/// Waits until one of `rings` has data past its watermark, or `timeout`.
 pub fn poll(rings: &[Ring], timeout: std::time::Duration) {
     use rustix::event::{PollFd, PollFlags, Timespec};
     let mut fds: Vec<PollFd<'_>> = rings
@@ -642,16 +566,11 @@ pub fn poll(rings: &[Ring], timeout: std::time::Duration) {
     let _ = rustix::event::poll(&mut fds, timeout.as_ref());
 }
 
-/// Rings to wait on, registered with the kernel once: asking each of 32
-/// CPUs' rings afresh on every wait was most of what an idle recording
-/// cost. An eventfd beside them ends every wait once [`Poller::wake`]
-/// writes it, so that stopping need not wait out a long timeout.
 pub struct Poller {
     epoll: OwnedFd,
     wake: OwnedFd,
 }
 
-/// What the wake eventfd is registered as; each ring is its index.
 const WAKE: u64 = u64::MAX;
 
 impl Poller {
@@ -671,16 +590,10 @@ impl Poller {
         Ok(Self { epoll: fd, wake })
     }
 
-    /// Ends the wait in progress and every later one at once.
     pub fn wake(&self) {
         let _ = rustix::io::write(&self.wake, &1u64.to_ne_bytes());
     }
 
-    /// Waits until one of `rings`, those the poller was made with, has
-    /// data past its watermark, the poller is woken, or `timeout`. A ring
-    /// whose event has ended, as when its thread exits, stays ready for
-    /// good, so it is waited on no longer; what it still gets, as from
-    /// other threads' events, is read when a wait times out.
     pub fn wait(&self, rings: &[Ring], timeout: std::time::Duration) {
         use rustix::event::{Timespec, epoll};
         let mut ready = [std::mem::MaybeUninit::<epoll::Event>::uninit(); 8];
@@ -703,7 +616,6 @@ impl Poller {
     }
 }
 
-/// The time-stamp counter.
 pub fn tsc() -> u64 {
     // SAFETY: RDTSC reads no memory. Every x86-64 processor has it; a
     // process that `PR_SET_TSC` forbade it faults, which microscope never

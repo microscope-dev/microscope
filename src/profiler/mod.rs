@@ -1,7 +1,3 @@
-//! A sampling profiler: records where a program's threads spend their
-//! time, from outside the program, into a capture that can be saved,
-//! loaded, and queried.
-
 mod annotate;
 pub mod budget;
 mod calls;
@@ -29,11 +25,8 @@ mod zones;
 
 pub use crate::capture::records::GapReason;
 
-/// The task row of a sample no task snapshot named, as queries and lanes
-/// give it.
 pub const NO_TASK: u32 = NONE;
 
-/// A key no path holds: a focus on it keeps nothing.
 pub const NO_KEY: u32 = NONE;
 pub use crate::capture::records::MarkerKind;
 pub use crate::unwind::sample::CHAIN_LIMIT;
@@ -60,23 +53,17 @@ use crate::backend::perf;
 use crate::capture::records::{AccountKind, FrameKind, NONE, Truncation};
 use crate::capture::{Capture, file};
 
-/// How much a recording costs the program, and how much it sees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Preset {
-    /// For production: 49 samples a second and a small stack copy.
     Production,
 
-    /// For development: 999 samples a second and a stack copy deep enough
-    /// to unwind code without frame pointers.
     #[default]
     Development,
 
-    /// The most the kernel allows.
     Maximum,
 }
 
 impl Preset {
-    /// Samples per second of CPU time, per thread.
     #[must_use]
     pub const fn rate(self) -> u32 {
         match self {
@@ -86,16 +73,11 @@ impl Preset {
         }
     }
 
-    /// Whether a recording says when each thread leaves its CPU and comes
-    /// back: a record of every context switch, which a program that
-    /// switches often pays for.
     #[must_use]
     pub const fn off_cpu(self) -> bool {
         !matches!(self, Self::Production)
     }
 
-    /// The CPU time microscope may spend recording: in production, one
-    /// percent of a CPU; elsewhere, whatever it takes.
     #[must_use]
     pub const fn budget(self) -> Option<budget::Budget> {
         match self {
@@ -104,7 +86,6 @@ impl Preset {
         }
     }
 
-    /// How much stack each sample copies.
     #[must_use]
     pub const fn stack_copy(self) -> StackCopy {
         match self {
@@ -115,52 +96,29 @@ impl Preset {
     }
 }
 
-/// Bytes of stack a sample copies where the frame-pointer chain carries
-/// stacks: enough to unwind the innermost frames exactly.
 pub const SMALL_STACK_COPY: u32 = 512;
 
-/// Bytes of stack a sample copies where call-frame information alone
-/// unwinds, as `--preset dev` always does: deep enough for most stacks.
-///
-/// Half as much ends three in four of rustc's samples short of `main`, and
-/// nearly every sample of a tokio service holding 7 KiB in its futures.
 pub const DEEP_STACK_COPY: u32 = 32 * 1024;
 
-/// Bytes of stack each sample copies at `--preset max`: at its rate, a copy
-/// of [`DEEP_STACK_COPY`] fills perf's rings before they are drained, and
-/// the kernel drops samples.
 pub const MAX_RATE_STACK_COPY: u32 = 16 * 1024;
 
-/// The most stack perf copies per sample: it rejects 65536 and up, and
-/// anything not a multiple of eight.
 pub const MOST_STACK_COPY: u32 = 65528;
 
-/// How much stack each sample copies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StackCopy {
-    /// The least that unwinds the program: [`SMALL_STACK_COPY`] when its
-    /// code keeps the frame-pointer chain where it calls, which a program
-    /// linked statically shows before it runs, and [`DEEP_STACK_COPY`]
-    /// otherwise. The profile says which, and why.
     Auto,
 
-    /// This many bytes, rounded up to a multiple of eight.
     Bytes(u32),
 }
 
-/// What makes a sample.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SampleSource {
-    /// CPU time, at `rate` samples a second.
     Clock { rate: u32 },
 
-    /// Each execution of the first instruction of the function a symbol of
-    /// the program names. The program runs without address randomization.
     Function { symbol: String },
 }
 
 impl SampleSource {
-    /// What a sample weighs: nanoseconds of CPU time, or one execution.
     #[must_use]
     pub const fn unit(&self) -> &'static str {
         match self {
@@ -179,23 +137,12 @@ impl std::fmt::Display for SampleSource {
     }
 }
 
-/// How a recording reads where a Python program's threads are. Each is
-/// chosen; a recording never switches from one to another by itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PythonEngine {
-    /// A BPF program walks each sampled thread's Python frames as the
-    /// sample is taken, which then holds them among its native frames: it
-    /// needs `CAP_BPF` and `CAP_PERFMON`.
     Bpf,
 
-    /// Stops the program this often, through the debugger's attach, and
-    /// reads each thread's stack, its Python frames among its native ones,
-    /// as a task of its own, with the labels its runtime gives it.
     Snapshot { every: std::time::Duration },
 
-    /// Reads each thread's Python frames this often as the program runs,
-    /// leaving out, and counting, each thread whose frames change as they
-    /// are read.
     Live { every: std::time::Duration },
 }
 
@@ -213,23 +160,15 @@ impl std::fmt::Display for PythonEngine {
     }
 }
 
-/// What a recording keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cuts {
-    /// All of it.
     Whole,
 
-    /// Only what happened in the last span this long, which a trigger
-    /// saves: a recording's memory then holds no more.
     Window(std::time::Duration),
 
-    /// Segments this long, each a complete profile of its span alone,
-    /// which the watch's save takes as it ends, or early when triggered.
-    /// The recording's own profile is the last.
     Segments(std::time::Duration),
 }
 
-/// How to record.
 #[derive(Debug, Clone, PartialEq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -239,64 +178,36 @@ pub struct RecordOptions {
     pub source: SampleSource,
     pub stack: StackCopy,
 
-    /// Calls between function stack samples; counting remains exact.
-    /// Go stack checks need every hit to distinguish retries from calls.
     pub function_period: u64,
 
-    /// Include kernel CPU time, attributed to the interrupted user stack.
     pub kernel_stacks: bool,
 
-    /// The most frames a stack keeps, at least one.
     pub max_frames: usize,
 
-    /// Pages each CPU's ring holds: the most a burst of samples can write
-    /// before they are drained. Fewer lose more samples, every one counted.
     pub ring_pages: usize,
 
-    /// The most events an attach may open: one per thread per CPU.
     pub max_events: usize,
 
-    /// Whether to record each interval a thread spends off its CPU.
     pub off_cpu: bool,
 
-    /// The CPU time microscope may spend recording, which it holds to by
-    /// sampling less of each period: none bounds it.
     pub budget: Option<budget::Budget>,
 
-    /// Whether to keep all of the recording, only its last span, or
-    /// segments of it.
     pub cuts: Cuts,
 
-    /// How often to stop the program, through the debugger's attach, to
-    /// read where its tasks wait: none never does.
     pub task_snapshots: Option<std::time::Duration>,
 
-    /// Whether task snapshots read the program as it runs, without
-    /// stopping it, leaving out each task that changes while read.
     pub live_snapshots: bool,
 
-    /// How to read where a Python program's threads are, beside its
-    /// samples: none never does.
     pub python: Option<PythonEngine>,
 
-    /// The instrumentation sites to switch on in a program built with
-    /// microscope's probes SDK.
     pub probes: ProbeSelection,
 
-    /// How long a program goes on writing its instrumentation once microscope
-    /// stops reading it, as when microscope is killed, before it switches
-    /// every site off.
     pub probe_timeout: std::time::Duration,
 
-    /// Directories searched for separate debug files.
     pub debug_directories: Vec<PathBuf>,
 
-    /// Whether to leave symbolizing to whoever opens the profile, which
-    /// then holds only modules' build ids and addresses: for hosts that
-    /// keep no debug information.
     pub symbols_later: bool,
 
-    /// The system calls to record beside the samples.
     pub syscalls: SyscallOptions,
 }
 
@@ -334,7 +245,6 @@ impl Default for RecordOptions {
     }
 }
 
-/// Why a recording failed.
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {
     #[error(transparent)]
@@ -358,8 +268,6 @@ pub enum RecordError {
     #[error("the calls of '{name}' cannot be counted exactly: {why}")]
     Uncountable { name: String, why: String },
 
-    /// The function exists, but every call of it was inlined, leaving no
-    /// code of its own: `copies` copies, into the functions `into` names.
     #[error(
         "'{name}' has no code of its own: every call of it was inlined, {copies} {}, into {}; count the calls of one of those instead",
         if *copies == 1 { "copy" } else { "copies" },
@@ -383,29 +291,21 @@ pub enum RecordError {
     Misplaced { expected: u64, actual: u64 },
 }
 
-/// A frame by its function, file, and line.
 pub type SourceFrame<'a> = (&'a str, &'a str, u32);
 
-/// A recorded profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
     capture: Capture,
 }
 
-/// The evidence available to identify a recorded process's command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandIdentity<'a> {
-    /// Arguments read from `/proc/PID/cmdline`, joined with spaces.
     Argv(&'a str),
 
-    /// The kernel task name, which can be renamed and is often truncated
-    /// to 15 bytes. It is not an executable path or an argument list.
     Comm(&'a str),
 }
 
 impl<'a> CommandIdentity<'a> {
-    /// The recorded text, without a source label. Renderers must label
-    /// `Comm` explicitly rather than displaying it as argv.
     #[must_use]
     pub const fn text(self) -> &'a str {
         match self {
@@ -414,7 +314,6 @@ impl<'a> CommandIdentity<'a> {
     }
 }
 
-/// The query of every sample, seen as `view` shows stacks.
 fn query(view: StackView) -> Query {
     Query {
         look: match view {
@@ -426,16 +325,13 @@ fn query(view: StackView) -> Query {
     }
 }
 
-/// How a stack ends.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StackEnding {
     Complete,
 
-    /// Short of its outermost frame, for this reason.
     Truncated(String),
 }
 
-/// One sample's stack, as names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SampledStack {
     pub pid: u32,
@@ -443,134 +339,92 @@ pub struct SampledStack {
     pub time: i64,
     pub weight: u64,
 
-    /// Function names, innermost first, each inlined function a frame of
-    /// its own; a frame without symbols is its module's address.
     pub functions: Vec<String>,
     pub ending: StackEnding,
 
-    /// The number of the task it ran, when task snapshots before and after
-    /// it agree on which that was.
     pub task: Option<u64>,
 }
 
-/// A task of a language runtime that task snapshots found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileTask {
-    /// Its row, which queries select it by.
     pub row: u32,
 
-    /// What its runtime calls a task, and its number.
     pub noun: String,
     pub number: u64,
 
-    /// The labels the program gave it, such as Go's profiler labels.
     pub labels: Vec<(String, String)>,
 
-    /// The weight of the samples that ran it, and the nanoseconds of
-    /// waiting the snapshots found it in.
     pub weight: u64,
     pub waited: u64,
 }
 
-/// Where a task waited at a task snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskWaitStack {
-    /// What its runtime calls a task, and its number.
     pub noun: String,
     pub task: u64,
     pub time: i64,
 
-    /// The nanoseconds of waiting it stands for: since the snapshot before.
     pub weight: u64,
 
-    /// The runtime's words for what it waits for, or its state.
     pub state: String,
 
-    /// Function names, innermost first, as a sample's are.
     pub functions: Vec<String>,
     pub ending: StackEnding,
 }
 
-/// A span a thread spent off its CPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OffCpuInterval {
     pub pid: u32,
     pub tid: u32,
 
-    /// When it left its CPU.
     pub time: i64,
 
-    /// Nanoseconds until it ran again, or until the capture ended.
     pub duration: u64,
 
-    /// Whether it left while it could still run, rather than blocking.
     pub preempted: bool,
 
-    /// Whether it left before the capture began, which starts it.
     pub began_unseen: bool,
 
-    /// Whether it was still off its CPU when the capture ended, which ends
-    /// it.
     pub ended_unseen: bool,
 }
 
-/// What a function costs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionCost {
     pub name: String,
 
-    /// The weight of samples it was the innermost function of.
     pub own: u64,
 
-    /// The weight of samples it was anywhere on the stack of.
     pub total: u64,
 }
 
-/// How a profile's stacks are shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StackView {
-    /// Each async task's frames as a stack of their own, rooted under the
-    /// runtime's dispatch, with wrappers folded away.
     #[default]
     Logical,
 
-    /// The frames as the thread ran them: an interpreter's frames are not
-    /// among them, as its own frames that run them stand for them.
     Native,
 
-    /// As [`Self::Logical`], with each stack from its outermost
-    /// interpreted frame in, without the interpreter's own frames, which
-    /// run them: a stack as a Python programmer reads it, with the native
-    /// code it calls.
     Python,
 }
 
-/// A thread a profile sampled, or saw leave its CPU.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileThread {
-    /// The thread's row, by which a [`Query`] selects it.
     pub row: u32,
 
-    /// Its process's row, by which [`Profile::command`] finds its
-    /// command line.
     pub process: u32,
     pub pid: u32,
     pub tid: u32,
 
-    /// The name it last had, if the kernel reported one.
     pub name: Option<String>,
     pub samples: u64,
     pub weight: u64,
 
-    /// How many zones it recorded.
     pub zones: u64,
 
-    /// Nanoseconds it spent off its CPU, blocked and preempted.
     pub blocked: u64,
     pub preempted: u64,
 }
 
-/// A function called from its parent's node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallNode {
     pub parent: Option<usize>,
@@ -579,22 +433,16 @@ pub struct CallNode {
     pub total: u64,
 }
 
-/// What reading a profile file found.
 #[derive(Debug)]
 pub struct ReadProfile {
     pub profile: Profile,
 
-    /// Whether the file was cut short, as by a crash, and only its complete
-    /// parts were read.
     pub truncated: bool,
 
-    /// The parts read.
     pub chunks: usize,
 }
 
 impl Profile {
-    /// Reads a profile file, or a directory of a continuous recording's
-    /// segments.
     pub fn read(path: &Path) -> Result<ReadProfile, ProfileFileError> {
         if path.is_dir() {
             return Self::read_segments(path);
@@ -603,10 +451,6 @@ impl Profile {
         Self::from_bytes(&std::fs::read(path)?)
     }
 
-    /// A profile of one thread's samples at time 0, each stack given
-    /// outermost frame first with its weight, in `unit`, each function
-    /// declared at line 1 of its file: for tests that need exactly these
-    /// stacks.
     #[doc(hidden)]
     #[must_use]
     pub fn of_stacks(unit: &str, stacks: &[(&[SourceFrame<'_>], u64)]) -> Self {
@@ -646,13 +490,11 @@ impl Profile {
         }
     }
 
-    /// Whether `bytes` begin as a profile file does.
     #[must_use]
     pub fn is_profile(bytes: &[u8]) -> bool {
         bytes.starts_with(&file::FILE_MAGIC)
     }
 
-    /// Reads the bytes of a profile file.
     pub fn from_bytes(bytes: &[u8]) -> Result<ReadProfile, ProfileFileError> {
         let read =
             file::read(bytes).map_err(|error| ProfileFileError::Invalid(error.to_string()))?;
@@ -665,14 +507,12 @@ impl Profile {
         })
     }
 
-    /// The profile as a file holds it.
     pub fn to_bytes(&self) -> std::io::Result<Vec<u8>> {
         let mut bytes = Vec::new();
         file::write(&self.capture, &mut bytes)?;
         Ok(bytes)
     }
 
-    /// Writes the profile to a file.
     pub fn write(&self, path: &Path) -> std::io::Result<()> {
         let out = std::io::BufWriter::new(std::fs::File::create(path)?);
         file::write(&self.capture, out)
@@ -683,13 +523,11 @@ impl Profile {
         self.capture.samples.len()
     }
 
-    /// A setting the recording recorded, such as `program`.
     #[must_use]
     pub fn setting(&self, key: &str) -> Option<&str> {
         self.capture.setting(key)
     }
 
-    /// Every setting the recording recorded, by key.
     #[must_use]
     pub fn settings(&self) -> Vec<(&str, &str)> {
         let capture = &self.capture;
@@ -705,15 +543,11 @@ impl Profile {
             .collect()
     }
 
-    /// The first and last times the recording saw, in nanoseconds of
-    /// `CLOCK_MONOTONIC`.
     #[must_use]
     pub fn span(&self) -> (i64, i64) {
         self.capture.span()
     }
 
-    /// The weight of every sample: nanoseconds of CPU time for a clock
-    /// source, and executions for a function source.
     #[must_use]
     pub fn total_weight(&self) -> u64 {
         self.capture
@@ -723,15 +557,11 @@ impl Profile {
             .sum()
     }
 
-    /// The keys frames stand for at `granularity`, through which every
-    /// query of the profile runs.
     #[must_use]
     pub fn keys(&self, granularity: Granularity) -> Keys<'_> {
         Keys::new(&self.capture, granularity)
     }
 
-    /// Each thread that was sampled, left its CPU, or recorded zones, by its row, which
-    /// queries name.
     #[must_use]
     pub fn threads(&self) -> Vec<ProfileThread> {
         let capture = &self.capture;
@@ -783,9 +613,6 @@ impl Profile {
         threads.into_values().collect()
     }
 
-    /// The command line read from `/proc` for process row `process`, with
-    /// arguments separated by spaces. Lifecycle records read it early;
-    /// the first sample refreshes it if the process is still alive.
     #[must_use]
     pub fn command(&self, process: u32) -> Option<&str> {
         self.capture
@@ -793,8 +620,6 @@ impl Profile {
             .filter(|command| !command.is_empty())
     }
 
-    /// The command line if read, otherwise the recorded process or leader
-    /// task name. The fallback is explicitly `Comm`, never inferred argv.
     #[must_use]
     pub fn command_identity(&self, process: u32) -> Option<CommandIdentity<'_>> {
         if let Some(command) = self.command(process) {
@@ -816,21 +641,17 @@ impl Profile {
             .map(CommandIdentity::Comm)
     }
 
-    /// How many times the kernel throttled sampling.
     #[must_use]
     pub fn throttles(&self) -> u64 {
         self.capture
             .account(crate::capture::records::AccountKind::Throttles as u32)
     }
 
-    /// What each function costs, most expensive first.
     #[must_use]
     pub fn top(&self, view: StackView) -> Vec<FunctionCost> {
         self.top_of(view, Source::Samples, Granularity::Function)
     }
 
-    /// What each function, or what `granularity` tells apart, costs of
-    /// `source`, most expensive first.
     #[must_use]
     pub fn top_of(
         &self,
@@ -853,17 +674,11 @@ impl Profile {
         .collect()
     }
 
-    /// The call tree, from the outermost callers in; parents come before
-    /// their children.
     #[must_use]
     pub fn call_tree(&self, view: StackView) -> Vec<CallNode> {
         self.call_tree_of(view, Source::Samples, Granularity::Function, false)
     }
 
-    /// The call tree of `source`, its frames told apart as `granularity`
-    /// says, from the outermost callers in, or with `invert` from the
-    /// innermost frames out to their callers; parents come before their
-    /// children.
     #[must_use]
     pub fn call_tree_of(
         &self,
@@ -892,16 +707,12 @@ impl Profile {
             .collect()
     }
 
-    /// Samples the kernel dropped.
     #[must_use]
     pub fn lost_samples(&self) -> u64 {
         self.capture
             .account(crate::capture::records::AccountKind::LostSamples as u32)
     }
 
-    /// What the kernel dropped of the samples it tried to write, as
-    /// "the kernel dropped N of M samples (x%)", in calls for a recording
-    /// that counts executions: none when it dropped nothing.
     #[must_use]
     #[expect(
         clippy::cast_precision_loss,
@@ -925,49 +736,36 @@ impl Profile {
         ))
     }
 
-    /// Samples whose stack copy the recorder cut short while it was behind
-    /// processing.
     #[must_use]
     pub fn shortened_stacks(&self) -> u64 {
         self.capture
             .account(crate::capture::records::AccountKind::ShortenedStacks as u32)
     }
 
-    /// Times a thread left its CPU and its return was among the records
-    /// the kernel dropped: these are no interval.
     #[must_use]
     pub fn off_cpu_lost(&self) -> u64 {
         self.capture
             .account(crate::capture::records::AccountKind::OffCpuLost as u32)
     }
 
-    /// Records other than samples the kernel dropped: of mappings, names,
-    /// threads, and context switches.
     #[must_use]
     pub fn lost_records(&self) -> u64 {
         self.capture
             .account(crate::capture::records::AccountKind::LostRecords as u32)
     }
 
-    /// What the events counted, in the weight's unit, sampled or not: the
-    /// CPU time the program ran, or each execution of a breakpoint's
-    /// instruction. A thread's time on each CPU is sampled only once a whole
-    /// period of it has passed there, so a short recording at a low rate
-    /// samples less of it.
     #[must_use]
     pub fn counted(&self) -> u64 {
         self.capture
             .account(crate::capture::records::AccountKind::Counted as u32)
     }
 
-    /// Breakpoint samples set aside as repeats within one call.
     #[must_use]
     pub fn repeats(&self) -> u64 {
         self.capture
             .account(crate::capture::records::AccountKind::Repeats as u32)
     }
 
-    /// How many stacks ended short of their outermost frame, by reason.
     #[must_use]
     pub fn truncations(&self) -> Vec<(String, u64)> {
         record::truncation_counts(&self.capture)
@@ -976,22 +774,17 @@ impl Profile {
             .collect()
     }
 
-    /// How many stacks ended because unwinding reached the end of the stack
-    /// their sample copied.
     #[must_use]
     pub fn stack_copy_exhausted(&self) -> u64 {
         self.capture
             .account(AccountKind::Truncated as u32 + Truncation::StackCopyExhausted as u32)
     }
 
-    /// How long each thread `query` selects was off its CPU in each of
-    /// `buckets` slices of its range.
     #[must_use]
     pub fn off_cpu_lanes(&self, query: &Query, buckets: usize) -> Vec<OffCpuLane> {
         crate::analysis::off_cpu(&self.capture, query, buckets)
     }
 
-    /// Each thread's calls over `buckets` slices of the query's range.
     #[must_use]
     pub fn kernel_lanes(
         &self,
@@ -1002,8 +795,6 @@ impl Profile {
         crate::analysis::kernel_lanes(&self.capture, keys, query, buckets)
     }
 
-    /// Each span the recording did not sample, as its start and end, in
-    /// time order.
     #[must_use]
     pub fn gaps(&self) -> Vec<(i64, i64)> {
         self.capture
@@ -1013,7 +804,6 @@ impl Profile {
             .collect()
     }
 
-    /// Each span sampling paused for `reason`, in time order.
     #[must_use]
     pub fn paused(&self, reason: GapReason) -> Vec<(i64, i64)> {
         self.capture
@@ -1024,13 +814,11 @@ impl Profile {
             .collect()
     }
 
-    /// Each time the budget changed how much was sampled, and what it says.
     #[must_use]
     pub fn budget_changes(&self) -> Vec<(i64, String)> {
         self.markers(MarkerKind::Budget)
     }
 
-    /// Each time a task snapshot failed or missed tasks, and why.
     #[must_use]
     pub fn task_snapshot_problems(&self) -> Vec<(i64, String)> {
         self.markers(MarkerKind::TaskSnapshot)
@@ -1051,8 +839,6 @@ impl Profile {
             .collect()
     }
 
-    /// Nanoseconds of CPU time microscope spent recording, and the part of it
-    /// spent reading programs' debug information.
     #[must_use]
     pub fn recorder_cpu(&self) -> (u64, u64) {
         (
@@ -1061,15 +847,11 @@ impl Profile {
         )
     }
 
-    /// Nanoseconds of [`Profile::recorder_cpu`] spent setting up before the
-    /// program was recorded, such as loading BPF programs; 0 in a profile
-    /// that does not say.
     #[must_use]
     pub fn recorder_setup(&self) -> u64 {
         self.capture.account(AccountKind::RecorderSetup as u32)
     }
 
-    /// Every interval a thread spent off its CPU, by thread and then time.
     #[must_use]
     pub fn off_cpu(&self) -> Vec<OffCpuInterval> {
         let capture = &self.capture;
@@ -1100,7 +882,6 @@ impl Profile {
         intervals
     }
 
-    /// Every sample's stack, by thread and then time.
     #[must_use]
     pub fn stacks(&self) -> Vec<SampledStack> {
         let capture = &self.capture;
@@ -1129,7 +910,6 @@ impl Profile {
         stacks
     }
 
-    /// Every wait of a task snapshot, in time order.
     #[must_use]
     pub fn task_waits(&self) -> Vec<TaskWaitStack> {
         let capture = &self.capture;
@@ -1152,7 +932,6 @@ impl Profile {
             .collect()
     }
 
-    /// Every task task snapshots found, with its labels and weights.
     #[must_use]
     pub fn tasks(&self) -> Vec<ProfileTask> {
         let capture = &self.capture;
@@ -1198,14 +977,11 @@ impl Profile {
             .collect()
     }
 
-    /// How many samples task snapshots gave the task they ran.
     #[must_use]
     pub fn task_samples(&self) -> u64 {
         self.capture.account(AccountKind::TaskSamples as u32)
     }
 
-    /// How many task snapshots were taken, how many nanoseconds they held
-    /// the program stopped, and how many failed, or failed to read a task.
     #[must_use]
     pub fn task_snapshots(&self) -> (u64, u64, u64) {
         let account = |kind: AccountKind| self.capture.account(kind as u32);
@@ -1216,8 +992,6 @@ impl Profile {
         )
     }
 
-    /// Whether any stack holds a frame an interpreter runs, which the
-    /// [`StackView::Python`] look shows as its code sees it.
     #[must_use]
     pub fn interpreted(&self) -> bool {
         self.capture
@@ -1226,9 +1000,6 @@ impl Profile {
             .any(|frame| frame.kind == FrameKind::Interpreted as u8)
     }
 
-    /// How many task snapshots read the program as it ran, how many
-    /// waiting tasks and threads they read, and how many of those they
-    /// left out because they changed while read.
     #[must_use]
     pub fn live_snapshots(&self) -> (u64, u64, u64) {
         let account = |kind: AccountKind| self.capture.account(kind as u32);
@@ -1239,7 +1010,6 @@ impl Profile {
         )
     }
 
-    /// A stack's function names, innermost first, and how it ends.
     fn names(&self, stack: u32) -> (Vec<String>, StackEnding) {
         let capture = &self.capture;
         let mut functions = Vec::new();
@@ -1266,7 +1036,6 @@ impl Profile {
         (functions, ending)
     }
 
-    /// A frame without symbols, as `module+0xoffset`.
     fn address_name(&self, frame: u32) -> String {
         let record = self.capture.frame(frame);
         let module = record.module.get();
@@ -1281,15 +1050,12 @@ impl Profile {
         format!("{name}+{:#x}", record.address.get())
     }
 
-    /// Whether every mapping of `program` has the bias a breakpoint
-    /// source assumed.
     fn check_bias(&self, program: &Path, expected: crate::LoadBias) -> Result<(), RecordError> {
         let program =
             session::which(program).and_then(|program| std::fs::canonicalize(program).ok());
         let capture = &self.capture;
 
         for mapping in &capture.mappings {
-            // A mapping may name no module.
             let Some(module) = capture.modules.get(mapping.module.get() as usize) else {
                 continue;
             };
@@ -1306,7 +1072,6 @@ impl Profile {
     }
 }
 
-/// The name of function row `function`, as a line or a line key names it.
 #[expect(
     clippy::indexing_slicing,
     reason = "Capture::validate checks every line's function, and line keys come from lines"
@@ -1320,32 +1085,23 @@ fn function_name(capture: &Capture, function: u32) -> &str {
     capture.string(capture.functions[function as usize].name.get())
 }
 
-/// The pid and tid of thread row `thread`, which `Capture::validate`
-/// checked.
 fn ids_of(capture: &Capture, thread: u32) -> (u32, u32) {
     let row = capture.thread(thread);
     (capture.process(row.process.get()).pid.get(), row.tid.get())
 }
 
-/// The setting that holds the command line of the process of row
-/// `process`.
 #[must_use]
 pub fn command_setting(process: u32) -> String {
     format!("command {process}")
 }
 
-/// The key of the arguments the recording ran its program with, as a JSON
-/// array of strings. The `program` setting is only a path or a joined line.
 pub const ARGUMENTS: &str = "arguments";
 
-/// The key of process row `process`'s arguments, each kept whole, which
-/// its command setting joins with spaces.
 #[must_use]
 pub fn arguments_setting(process: u32) -> String {
     format!("arguments {process}")
 }
 
-/// Arguments as the JSON array of strings the arguments settings hold.
 #[must_use]
 pub fn encode_arguments<A: AsRef<std::ffi::OsStr>>(
     arguments: impl IntoIterator<Item = A>,
@@ -1357,9 +1113,6 @@ pub fn encode_arguments<A: AsRef<std::ffi::OsStr>>(
     serde_json::to_string(&arguments).unwrap_or_default()
 }
 
-/// A `/proc/PID/cmdline`'s arguments, encoded. The NULs that end it, and
-/// pad an argv a program rewrote, are not arguments; an empty argument
-/// between others is.
 #[must_use]
 pub fn encode_cmdline(cmdline: &[u8]) -> String {
     use std::os::unix::ffi::OsStrExt as _;
@@ -1376,13 +1129,11 @@ pub fn encode_cmdline(cmdline: &[u8]) -> String {
     )
 }
 
-/// Why a profile file could not be read.
 #[derive(Debug, thiserror::Error)]
 pub enum ProfileFileError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
-    /// The file is not a profile, or is damaged.
     #[error("{0}")]
     Invalid(String),
 }
@@ -1394,8 +1145,6 @@ mod tests {
     use crate::capture::records::{AccountKind, FrameKind, NONE};
     use crate::model::{Pid, Tid};
 
-    /// A profile of `kept` samples weighted by `weight`, of which the
-    /// kernel dropped `lost` more.
     fn lossy(weight: &str, kept: u64, lost: u64) -> Profile {
         let mut builder = CaptureBuilder::new();
         builder.setting("weight", weight);
@@ -1409,9 +1158,6 @@ mod tests {
         Profile::from_capture(builder.finish())
     }
 
-    /// The kernel's loss is said in calls for a recording that counts
-    /// executions, as in samples for one weighted by time, of all it
-    /// tried to write: the samples kept and those dropped.
     #[test]
     fn dropped_samples_are_said_in_the_recordings_unit() {
         assert_eq!(

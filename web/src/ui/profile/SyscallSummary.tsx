@@ -18,7 +18,6 @@ const GROUPS: { group: SyscallGroup; label: string }[] = [
   { group: "site", label: "by call site" },
 ];
 
-/** The table, and the selected call's detail. */
 export function Summary({
   summary,
   query,
@@ -63,7 +62,6 @@ export function Summary({
           {summary.data ? (
             <Table rows={summary.data.rows} group={group} />
           ) : summary.error ? null : (
-            // The selection's error shows beside it.
             <p className="muted pad">Reading the summary…</p>
           )}
         </div>
@@ -75,8 +73,6 @@ export function Summary({
 
 type Sort = "total" | "calls" | "errors" | "p99" | "name";
 
-/** Every row with `-c`'s columns and percentiles, sortable; a call's row
- * selects it. */
 function Table({ rows, group }: { rows: SyscallRow[]; group: SyscallGroup }) {
   const selectable = group === "syscall";
   const { look, setLook } = useProfile();
@@ -137,7 +133,6 @@ function Table({ rows, group }: { rows: SyscallRow[]; group: SyscallGroup }) {
   );
 }
 
-/** A column's head, which sorts by it. */
 function SortHeader({
   column,
   numeric = true,
@@ -214,7 +209,6 @@ function SummaryRow({
             </button>
           ) : null}
           {select ? (
-            // The whole row selects for a pointer; the name does for a keyboard.
             <button
               type="button"
               className="link-button"
@@ -255,8 +249,6 @@ function SummaryRow({
   );
 }
 
-/** Shows the flame graph of the samples taken during the calls of one row,
- * as `GROUP:KEY` names it, or of every selected call. */
 export function SamplesDuring({
   during,
   name,
@@ -267,8 +259,7 @@ export function SamplesDuring({
   children?: string;
 }) {
   const { setLook, summary } = useProfile();
-  // Samples of user code alone never fall inside a call, so the calls' own
-  // time stands in for them, under the stacks that made them.
+
   const kernel = sampledKernel(summary.settings);
   const show = useCallback(
     (event: MouseEvent) => {

@@ -1,15 +1,15 @@
-//! Two runtimes in one process, two `LocalSet`s, and a thread of the
-//! program's own. A multi-thread runtime has two tasks parked; a
-//! current-thread runtime, which a thread of its own blocks on, has two;
-//! a `LocalSet` that another current-thread runtime's thread runs has two,
-//! and one that a thread blocking on the multi-thread runtime runs has
-//! two, which no runtime lists. A plain thread waits on a channel.
-//!
-//! Once every task has registered its await and every thread is parked,
-//! the program reports its truth and stops at the checkpoint `parked`,
-//! where neither set is running. Then it wakes the second set's task `go`,
-//! which stops at `task_reached` while the set runs it, and releases
-//! everything.
+
+
+
+
+
+
+
+
+
+
+
+
 
 use std::sync::Arc;
 use std::sync::mpsc as channel;
@@ -19,8 +19,8 @@ use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{Notify, oneshot};
 use tokio::task::LocalSet;
 
-/// A task that reports which runtime runs it, then waits at `tag` for
-/// `wait`.
+
+
 async fn parked(runtime: &'static str, tag: &'static str, wait: impl Future<Output = ()>) {
     let me = truth::start();
     truth::value(me, "runtime", runtime);
@@ -29,12 +29,12 @@ async fn parked(runtime: &'static str, tag: &'static str, wait: impl Future<Outp
     truth::end(me);
 }
 
-/// An hour's sleep, which the program never waits out.
+
 async fn sleep() {
     tokio::time::sleep(Duration::from_secs(3600)).await;
 }
 
-/// A current-thread runtime with its timer.
+
 fn current() -> Runtime {
     Builder::new_current_thread()
         .enable_time()
@@ -42,7 +42,7 @@ fn current() -> Runtime {
         .expect("a runtime")
 }
 
-/// Runs `body` on a thread of its own, after sending the thread's id.
+
 fn thread(name: &str, body: impl FnOnce() + Send + 'static) -> (i32, std::thread::JoinHandle<()>) {
     let (started, tid) = channel::channel();
     let handle = std::thread::Builder::new()
@@ -56,9 +56,9 @@ fn thread(name: &str, body: impl FnOnce() + Send + 'static) -> (i32, std::thread
 }
 
 fn main() {
-    // With the argument `clone`, the thread that runs the first set also
-    // starts a thread from it. With `join`, that thread runs the set in a
-    // `join!` whose other branch calls `join_sibling` while the set waits.
+
+
+
     let argument = std::env::args().nth(1);
     let clone = argument.as_deref() == Some("clone");
     let join = argument.as_deref() == Some("join");
@@ -74,11 +74,11 @@ fn main() {
         async move { notify.notified().await }
     }));
 
-    // Tokio numbers tasks as they are spawned, so each thread spawns its
-    // own before the next starts, and every run numbers them alike.
+
+
     let (spawned, all_spawned) = channel::channel::<()>();
 
-    // A current-thread runtime, which its thread blocks on until released.
+
     let (release_current, released) = oneshot::channel::<()>();
     let (sent, received) = oneshot::channel::<()>();
     let (current_tid, current_thread) = thread("current", {
@@ -96,8 +96,8 @@ fn main() {
     });
     all_spawned.recv().expect("the thread spawns");
 
-    // A set of local tasks, which its thread runs on a current-thread
-    // runtime until released.
+
+
     let (release_local, local_released) = oneshot::channel::<()>();
     let (local_tid, local_thread) = thread("local", {
         let spawned = spawned.clone();
@@ -125,9 +125,9 @@ fn main() {
                     std::hint::black_box(());
                 }
 
-                // The block holds the set only through the branch the
-                // `join!` keeps. No other thread starts until the sibling
-                // has run.
+
+
+
                 let mut branch = std::pin::pin!(local.run_until(body));
                 current().block_on(async {
                     tokio::join!(biased; branch.as_mut(), async {
@@ -142,7 +142,7 @@ fn main() {
     });
     all_spawned.recv().expect("the thread spawns");
 
-    // Another, which a thread blocking on the multi-thread runtime runs.
+
     let (release_shared, shared_released) = oneshot::channel::<()>();
     let go = Arc::new(Notify::new());
     let (went, gone) = channel::channel::<()>();
@@ -171,7 +171,7 @@ fn main() {
     });
     all_spawned.recv().expect("the thread spawns");
 
-    // A thread of the program's own.
+
     let (stop_plain, plain_stopped) = channel::channel::<()>();
     let (plain_tid, plain_thread) = thread("plain", move || {
         let _ = plain_stopped.recv();
@@ -191,7 +191,7 @@ fn main() {
     truth::line(&[&"thread", &"plain", &plain_tid]);
     truth::checkpoint("parked", Some(multi.handle()));
 
-    // The set runs its task `go`, which stops where it is reached.
+
     go.notify_one();
     gone.recv().expect("the set runs its task");
 

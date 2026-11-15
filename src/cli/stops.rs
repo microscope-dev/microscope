@@ -1,7 +1,3 @@
-//! What a stop prints: a header that says where, then the sections
-//! `[stop] show` names, with the values that changed since the last stop
-//! marked.
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -18,18 +14,15 @@ use super::format;
 use super::terminal::{Role, plain};
 use super::{Cli, value};
 
-/// An expression printed at every stop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Display {
     pub id: u64,
 
-    /// The format letters written after `display/`, as `print` takes them.
     pub format: String,
     pub expression: String,
 }
 
 impl Display {
-    /// The display as `display` takes it.
     pub fn command(&self) -> String {
         if self.format.is_empty() {
             self.expression.clone()
@@ -39,7 +32,6 @@ impl Display {
     }
 }
 
-/// The session's displays, numbered in the order they were added.
 #[derive(Debug, Default)]
 pub struct Displays {
     added: u64,
@@ -59,8 +51,6 @@ impl Displays {
         display
     }
 
-    /// Removes the displays numbered `ids`, or every display for `None`,
-    /// returning how many it removed.
     fn remove(&mut self, ids: Option<&[u64]>) -> Result<usize> {
         let Some(ids) = ids else {
             return Ok(std::mem::take(&mut self.list).len());
@@ -78,8 +68,6 @@ impl Displays {
     }
 }
 
-/// One activation of a function at one stop, which the values a stop
-/// shows are compared within.
 #[derive(Clone, Debug)]
 pub struct Activation {
     stop: StopId,
@@ -90,8 +78,6 @@ pub struct Activation {
 
 type Key = (ExecutionContext, String, VirtualAddress, String);
 
-/// The values the last stop showed and those this one has, as text, keyed
-/// by activation and name.
 #[derive(Debug, Default)]
 pub struct Changes {
     stop: Option<StopId>,
@@ -100,8 +86,6 @@ pub struct Changes {
 }
 
 impl Changes {
-    /// Records that `name` reads `text` in `activation`, and returns
-    /// whether the last stop showed it reading otherwise.
     pub fn changed(&mut self, activation: &Activation, name: &str, text: &str) -> bool {
         if self.stop != Some(activation.stop) {
             self.before = std::mem::take(&mut self.shown);
@@ -120,8 +104,6 @@ impl Changes {
     }
 }
 
-/// Whether a stop is in the program's code, so that it says where and
-/// prints its sections.
 const fn in_code(reason: &StopReason) -> bool {
     matches!(
         reason,
@@ -154,8 +136,6 @@ const fn section_name(section: Section) -> &'static str {
 }
 
 impl Cli {
-    /// Formats a stop: its header, saying where and after how long, then,
-    /// for a stop in the program's code, its sections.
     pub(super) async fn stop_report(&self, reason: &StopReason, elapsed: Duration) -> String {
         if matches!(reason, StopReason::Exec { followed: false }) {
             self.unfollowed_exec
@@ -184,7 +164,6 @@ impl Cli {
                 );
             }
 
-            // The task the stopped thread runs, as the thread list shows it.
             if let Some(snapshot) = &snapshot
                 && let Some(ExecutionContext::Thread(thread)) = snapshot.selected
                 && let Some(ThreadActivity::Task { task, .. }) = snapshot
@@ -255,8 +234,6 @@ impl Cli {
         output
     }
 
-    /// A line for each thread besides the stop's that the stop found at a
-    /// breakpoint or watchpoint of its own, with the task it runs.
     async fn co_hits(&self, snapshot: &StateSnapshot) -> Vec<String> {
         let renderer = self.renderers.stdout;
         let (InferiorState::Stopped { thread_id, .. }, Some(stop)) =
@@ -309,9 +286,6 @@ impl Cli {
         lines
     }
 
-    /// The sections `[stop] show` names, in order, each of which that
-    /// fails giving its error, and the displays after them when the list
-    /// leaves them out. At a stop, the header has said where.
     pub(super) async fn sections(&self, at_stop: bool) -> String {
         let renderer = self.renderers.stdout;
         let stop = &self.settings.config.stop;
@@ -382,8 +356,6 @@ impl Cli {
         parts.join("\n")
     }
 
-    /// The activation the selected frame is, when its function and frame
-    /// address identify it.
     async fn activation(
         &self,
         stop: StopId,
@@ -402,7 +374,6 @@ impl Cli {
         })
     }
 
-    /// Whether `name`, shown as `line`, changed since the last stop.
     fn changed(&self, activation: Option<&Activation>, name: &str, line: &str) -> bool {
         activation.is_some_and(|activation| {
             self.changes
@@ -412,8 +383,6 @@ impl Cli {
         })
     }
 
-    /// The source around the selected frame's line; at a stop, without the
-    /// location the header gave, and nothing where no line is known.
     async fn source_section(&self, at_stop: bool) -> Result<String> {
         match self.source_context().await {
             Ok(context) => Ok(self.source_listing(&context, !at_stop).await),
@@ -448,8 +417,6 @@ impl Cli {
         lines.join("\n")
     }
 
-    /// A display's value, as `print` shows it after the display's number,
-    /// or its error, dimmed.
     pub(super) async fn display_line(
         &self,
         display: &Display,
@@ -525,8 +492,6 @@ impl Cli {
         Ok(lines.join("\n"))
     }
 
-    /// The instructions around the selected frame's, as many as
-    /// `[stop] disassembly-instructions` says.
     async fn disassembly_section(&self) -> Result<String> {
         let (_, marked) = self.selected_code().await?;
         let count = self.settings.config.stop.disassembly_instructions;
@@ -542,7 +507,6 @@ impl Cli {
         self.render_disassembly(&disassembly, marked).await
     }
 
-    /// Prints the stop's sections again, in the selected frame.
     pub(super) async fn context(&self) -> Result<String> {
         if self.debugger().snapshot().await?.stop_id.is_none() {
             anyhow::bail!("the program is not stopped");
@@ -551,9 +515,7 @@ impl Cli {
         Ok(self.sections(false).await)
     }
 
-    /// Adds a display, showing its value when the program is stopped.
     pub(super) async fn add_display(&self, format: &str, expression: &str) -> Result<String> {
-        // A display's format is checked once, when it is added.
         self.layout(Command::Print, format)?;
 
         if expression.is_empty() {
@@ -585,7 +547,6 @@ impl Cli {
         ))
     }
 
-    /// Lists the displays as `display` takes them.
     pub(super) fn list_displays(&self) -> String {
         let renderer = self.renderers.stdout;
         let displays = self
@@ -611,7 +572,6 @@ impl Cli {
             .join("\n")
     }
 
-    /// Removes the displays `words` number, or every display for `all`.
     pub(super) fn undisplay(&self, words: &[&str], spec: &CommandSpec) -> Result<String> {
         let mut displays = self
             .displays

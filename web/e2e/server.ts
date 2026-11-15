@@ -1,6 +1,3 @@
-// Each test gets its own `microscope web`, started from the development build
-// (which serves build/web from disk), and stopped when the test ends.
-
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
@@ -16,10 +13,6 @@ export function fixture(name: string): string {
   return path.join(root, "build", "test-programs", name);
 }
 
-/** Records each of the stacks fixture's six calls of `symbol` to `file`,
- * and returns how many samples it kept. The kernel may drop some when
- * other recordings shrink this one's rings; then the recording says how
- * many, and those it kept and those it dropped are the six. */
 export function recordCalls(file: string, symbol: string): number {
   const recorded = spawnSync(
     path.join(root, "target", "debug", "microscope"),
@@ -31,9 +24,7 @@ export function recordCalls(file: string, symbol: string): number {
       symbol,
       "--function-period",
       "1",
-      // A small copy, as the Rust tests' recordings of leaf take: six deep
-      // ones overfill the rings a recording gets while others hold perf
-      // memory.
+
       "--stack-bytes",
       "512",
       "--",
@@ -55,21 +46,18 @@ export function recordCalls(file: string, symbol: string): number {
 }
 
 export interface Microscope {
-  /** The server's origin, such as `http://127.0.0.1:41234`. */
   origin: string;
-  /** The link `microscope web` printed, which gives control. */
+
   link: string;
-  /** Starts another `microscope web` with these arguments. */
+
   start(args: string[]): Promise<Microscope>;
-  /** Everything the server printed so far, for failure messages. */
+
   log: string[];
   stop(): Promise<void>;
 }
 
-/** Starts `microscope web`, flight-recording to `recording`. */
 export async function startMicroscope(args: string[], recording: string): Promise<Microscope> {
   const child = spawn(
-    // A release build can stand in, to see how fast a large program is.
     process.env.MICROSCOPE_WEB_BINARY ?? path.join(root, "target", "debug", "microscope"),
     ["web", "--port", "0", ...args],
     {
@@ -110,26 +98,17 @@ function stopChild(child: ChildProcess): Promise<void> {
   }
   return new Promise((resolve) => {
     child.on("exit", () => resolve());
-    // SIGINT ends the session the way Ctrl+C does, killing its program.
+
     child.kill("SIGINT");
   });
 }
 
-/**
- * `microscope` serves `program`. A failing test keeps each server's output and
- * flight recording in its output directory.
- */
 export const test = base.extend<{ program: string[]; microscope: Microscope; quiet: void }>({
-  // Every page stays free of console errors, such as a blocked font or a
-  // failed request, unless a test expects one.
   quiet: [
     async ({ context }, provide) => {
       const errors: string[] = [];
       const watch = (page: Page) => {
         page.on("console", (message) => {
-          // A failed request is recorded once, by its response, below. Firefox
-          // also reports a font download it aborted as the page went away
-          // (NS_BINDING_ABORTED), which no blocked or missing font causes.
           const aborted = /downloadable font: download failed.*status=2152398850/u.test(
             message.text(),
           );
@@ -177,8 +156,7 @@ export const test = base.extend<{ program: string[]; microscope: Microscope; qui
         return another;
       },
     });
-    // Pages go before their server, so none sees it vanish and reconnects
-    // while the test's errors are counted.
+
     for (const page of context.pages()) {
       await page.close();
     }
@@ -197,38 +175,27 @@ export const test = base.extend<{ program: string[]; microscope: Microscope; qui
 
 const expectedErrors = new Map<string, (string | RegExp)[]>();
 
-/** Declares the errors this test's pages will show, in order, as text or
- * as patterns. */
 export function expectErrors(...errors: (string | RegExp)[]): void {
   expectedErrors.set(test.info().testId, errors);
 }
 
 const allowedErrors = new Map<string, RegExp[]>();
 
-/** Declares errors this test's pages may show any number of times, which
- * `expectErrors` then leaves out. */
 export function allowErrors(...errors: RegExp[]): void {
   allowedErrors.set(test.info().testId, errors);
 }
 
-/** Opens the join link and waits until the page shows the session, or
- * the profile it links to. */
-/** Chooses an item from a menu on the menu bar. */
 export async function menu(page: Page, name: string, item: string): Promise<void> {
   await page.getByRole("menuitem", { name, exact: true }).click();
   await page.getByRole("menu", { name }).getByRole("menuitem", { name: item, exact: true }).click();
 }
 
-/** The tab strip of the documents group: the open files, Disassembly,
- * Memory, and Drawings. */
 export function documents(page: Page) {
   return page
     .getByRole("tablist")
     .filter({ has: page.getByRole("tab", { name: "Disassembly", exact: true }) });
 }
 
-/** Opens a join link and waits for where it leads: the session, the
- * profile the server serves, or else Account. */
 export async function join(page: Page, link: string): Promise<void> {
   await page.goto(link);
   const start = page.getByRole("tab", { name: "Account", exact: true });
@@ -238,8 +205,6 @@ export async function join(page: Page, link: string): Promise<void> {
   }).toPass();
 }
 
-/** Shows a profile's view by its tab, opening it from the View menu if
- * it is closed. `profile` names the file when several profiles show. */
 export async function showView(page: Page, label: string, profile?: string): Promise<void> {
   const titled = page.getByRole("tab").filter({
     has: page.locator("[data-part=tab-title]", { hasText: new RegExp(`^${label}$`, "u") }),

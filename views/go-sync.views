@@ -1,10 +1,10 @@
 microscope-views 1
 
-# Go's sync and sync/atomic packages. Verified against Go 1.27.1, by
-# tests/fixtures/go/stdlib.
 
-# A mutex's state word holds its locked, woken, and starving bits, then the
-# count of goroutines waiting for it (internal/sync/mutex.go).
+
+
+
+
 view go sync.Mutex {
     let state = mu.state
     show match state {
@@ -19,10 +19,10 @@ view go sync.Mutex {
     }
 }
 
-# A read-write mutex counts its readers in readerCount, less 1 << 30 while
-# a writer holds it or waits for the readers holding it, readerWait of
-# them, to leave; the readers counted beyond those wait for the writer.
-# Writers wait for one another on w (rwmutex.go).
+
+
+
+
 view go sync.RWMutex {
     let readers = readerCount.v
     let writer = readers < 0
@@ -39,7 +39,7 @@ view go sync.RWMutex {
     }
 }
 
-# Atomic values are the values they hold.
+
 view go `sync/atomic`.Int32 {
     show value(v)
 }
@@ -72,8 +72,8 @@ view go `sync/atomic`.Value {
     show value(v)
 }
 
-# A wait group's state word holds its counter in its top 32 bits and the
-# goroutines waiting for it in its low 31 (waitgroup.go).
+
+
 view go sync.WaitGroup {
     show record { counter = state.v >> 32, waiters = state.v & 0x7fffffff }
 }

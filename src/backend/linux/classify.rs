@@ -1,5 +1,3 @@
-//! Classification of raw native stops into the events run control handles.
-
 use std::collections::BTreeSet;
 
 use super::signals::Signal;
@@ -26,7 +24,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .session
             .inferior()
             .and_then(|inferior| inferior.threads.get(&pid));
-        // A thread single-steps over its trap, or for the user's step.
         let stepping = thread.is_some_and(|thread| {
             thread.trap.repairing().is_some()
                 || matches!(thread.expected, ExpectedStop::UserStep { .. })
@@ -49,9 +46,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             WatchStatus::Absent
         };
 
-        // Only an int3 reports SI_KERNEL. Watchpoint traps and SIGTRAPs sent
-        // by a process also stop after an instruction, and rewinding the PC
-        // for them would execute that instruction twice.
         let trap = signal == Signal::SIGTRAP && !expected_trace && code == Some(libc::SI_KERNEL);
         let breakpoint = trap.then(|| self.normalize_breakpoint_pc(pid)).flatten();
         let removed = trap && breakpoint.is_none() && self.rewind_removed_trap(pid);
@@ -76,8 +70,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             watch,
         ) {
             ClassifiedStop::RemovedTrap if carried => ClassifiedStop::CarriedTrap,
-            // SIGKILL may have taken the thread out of its stop while the
-            // evidence was read, which then could not all be read.
             ClassifiedStop::Unclassifiable(_)
                 if is_superseded(&self.ptrace.signal_metadata(pid)) =>
             {
@@ -87,9 +79,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Reads and clears DR6 at a stop a debug exception raised. The kernel
-    /// resets its virtual DR6 only at the next debug exception, so at an
-    /// int3, signal, or syscall-step stop it still describes an earlier hit.
     pub(super) fn watch_status(&self, pid: Pid, code: Option<i32>) -> WatchStatus {
         let Some(inferior) = self.session.inferior() else {
             return WatchStatus::Absent;
@@ -145,11 +134,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Some(address)
     }
 
-    /// Rewinds a thread over a trap whose site was removed after the thread
-    /// executed it, as when a step's plan ends while siblings run through
-    /// the same address, so that the restored instruction runs when it
-    /// resumes. Only a site's own trap can stop there: the program's code
-    /// held another byte. Returns whether the thread was rewound.
     pub(super) fn rewind_removed_trap(&self, pid: Pid) -> bool {
         let rewind = || {
             let inferior = self.session.inferior()?;
@@ -167,11 +151,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         rewind().is_some()
     }
 
-    /// The address of the trap instruction a thread just executed, when it
-    /// is the program's own: the byte before the thread's instruction is
-    /// an `int3` that no breakpoint site of the debugger's put there. A
-    /// site's own trap gets here when SIGKILL took the thread out of its
-    /// stop before it could be rewound.
     pub(super) fn program_trap(&self, pid: Pid) -> Option<VirtualAddress> {
         let address = VirtualAddress::new(self.ptrace.registers(pid).ok()?.rip.checked_sub(1)?);
         let ours = self
@@ -189,11 +168,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         (byte == BREAKPOINT_OPCODE).then_some(address)
     }
 
-    /// Rewinds a thread over a trap that code carried when it moved, as the
-    /// vDSO does under mremap(2), where an installed site's trap lands; the
-    /// module refresh that follows takes the trap out before the thread
-    /// runs the code's own instruction there. Returns whether the thread
-    /// was rewound.
     pub(super) fn rewind_carried_trap(&self, pid: Pid) -> bool {
         let rewind = || {
             let inferior = self.session.inferior()?;
@@ -221,10 +195,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// Ranks coincident stop reasons; the highest is published, and the rest
-/// stay with their threads. Control completions outrank exceptions, so that
-/// resuming from a signal never silently consumes a breakpoint hit or a
-/// completed step.
 pub(super) const fn visible_stop_priority(reason: &StopReason) -> u8 {
     match reason {
         StopReason::Attach | StopReason::Entry | StopReason::Pause | StopReason::Jump => 0,
@@ -256,16 +226,12 @@ pub(super) const fn is_stopping_signal(signal: Signal) -> bool {
     )
 }
 
-/// DR6 evidence for one SIGTRAP stop.
 #[derive(Debug)]
 pub(super) enum WatchStatus {
-    /// No debug exception reported a watchpoint slot.
     Absent,
 
-    /// These watchpoints own the reported slots.
     Hits(BTreeSet<WatchpointId>),
 
-    /// The status could not be read or names an unowned slot.
     Unknown(String),
 }
 
@@ -360,10 +326,6 @@ pub(super) fn classify_stop_evidence(
     }
 }
 
-/// Returns whether SIGKILL woke the thread from the stop just reported.
-/// Nothing else ends a ptrace-stop the tracer did not resume, so its
-/// siginfo is gone while it exits, or describes its exit event once it
-/// stops there.
 pub(super) fn is_superseded(siginfo: &std::result::Result<SignalMetadata, Errno>) -> bool {
     const EXIT_EVENT: i32 = libc::SIGTRAP | (libc::PTRACE_EVENT_EXIT << 8);
     match siginfo {
@@ -372,9 +334,6 @@ pub(super) fn is_superseded(siginfo: &std::result::Result<SignalMetadata, Errno>
     }
 }
 
-/// Returns whether a SIGTRAP reports a completed single step. x86 Linux
-/// reports a step across a `syscall` instruction from the system call's exit
-/// path as `TRAP_BRKPT`; an `int3` reports `SI_KERNEL` instead.
 pub(super) const fn is_single_step_trap(metadata: &SignalMetadata) -> bool {
     matches!(
         metadata.code,

@@ -1,11 +1,11 @@
-//! Every tokio type with a view, in each state its view tells apart.
-//!
-//! The program holds its values in `main`'s locals and prints a `VIEW:`
-//! marker for each, saying what microscope must show, before each call to
-//! `barrier`; tests/debugger stops there and checks them in `main`'s frame.
-//! Markers name task ids and times, which only the program knows. With
-//! `TRUTH_CORE` set, the program traps after its first barrier, for a core
-//! of that stop.
+
+
+
+
+
+
+
+
 
 use std::future::Future;
 use std::hint::black_box;
@@ -22,37 +22,37 @@ use tokio::runtime::Runtime;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore, broadcast, mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
-/// Where a debugger stops to check the markers printed before it.
+
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub extern "C" fn barrier() {
     black_box(());
 }
 
-/// Prints one marker.
+
 fn view(expression: &str, shows: impl std::fmt::Display) {
     println!("VIEW: {expression} => {shows}");
 }
 
-/// Waiters that have started, each about to wait.
+
 static STARTED: AtomicUsize = AtomicUsize::new(0);
 
-/// Waits until `count` waiters have started and every worker is parked,
-/// so that each waiter's poll has returned and it waits in its queue.
+
+
 fn until_waiting(runtime: &Runtime, count: usize) {
     while STARTED.load(Ordering::SeqCst) < count || !truth::workers_parked(runtime.handle()) {
         std::thread::yield_now();
     }
 }
 
-/// Waits until a task has finished.
+
 fn until_finished<T>(handle: &JoinHandle<T>) {
     while !handle.is_finished() {
         std::thread::yield_now();
     }
 }
 
-/// Spawns a task that starts, then waits for `future`.
+
 fn waiter<F: Future + Send + 'static>(runtime: &Runtime, future: F) -> JoinHandle<F::Output>
 where
     F::Output: Send,
@@ -63,13 +63,13 @@ where
     })
 }
 
-/// How a waker or a waitlist names a task.
+
 fn task<T>(handle: &JoinHandle<T>) -> String {
     format!("task {}", handle.id())
 }
 
-/// A count of nanoseconds as microscope writes a duration, as Go does:
-/// `1h2m3.5s`, `1m0s`, `1.5s`, or `0s`; never under a second here.
+
+
 fn duration(nanoseconds: u128) -> String {
     const SECOND: u128 = 1_000_000_000;
     let (hours, minutes) = (nanoseconds / (3600 * SECOND), nanoseconds / (60 * SECOND) % 60);
@@ -92,8 +92,8 @@ fn duration(nanoseconds: u128) -> String {
     text
 }
 
-/// A monotonic instant as its time since boot, from what std's `Debug`
-/// writes of it: `Instant { tv_sec: S, tv_nsec: N }`.
+
+
 fn since_boot(instant: std::time::Instant) -> String {
     let text = format!("{instant:?}");
     let number = |name: &str| -> u128 {
@@ -117,7 +117,7 @@ fn main() {
         .expect("a runtime");
     let _entered = runtime.enter();
 
-    // Join handles in each state, and errors of joined tasks.
+
     let (release, released) = oneshot::channel::<u32>();
     let pending = runtime.spawn(async move { released.await.unwrap_or(0) });
     let finished = runtime.spawn(async { 42_u32 });
@@ -147,7 +147,7 @@ fn main() {
     let woken_id = woken.id();
     let waker = runtime.block_on(woken).expect("the task's waker");
 
-    // Locks: free, held, and held with waiters.
+
     let unlocked = Mutex::new(1_u32);
     let held = Mutex::new(2_u32);
     let guard = held.try_lock().expect("the lock is free");
@@ -182,7 +182,7 @@ fn main() {
     let shut = Semaphore::new(3);
     shut.close();
 
-    // Notifications: none, one stored, and a task waiting.
+
     let quiet = Notify::new();
     let notified = quiet.notified();
     let stored = Notify::new();
@@ -194,7 +194,7 @@ fn main() {
     });
     until_waiting(&runtime, 5);
 
-    // Channels.
+
     let (bounded, mut bounded_receiver) = mpsc::channel::<u32>(4);
     bounded.try_send(10).expect("room");
     bounded.try_send(20).expect("room");
@@ -233,7 +233,7 @@ fn main() {
         flood.send(value).expect("a receiver");
     }
 
-    // Time, measured by each runtime's clock.
+
     let instant = tokio::time::Instant::now();
     let sleep = tokio::time::sleep(Duration::from_secs(90));
     let elapsed = tokio::time::sleep_until(early);
@@ -251,7 +251,7 @@ fn main() {
         tokio::time::sleep(Duration::from_secs(80))
     };
 
-    // Tasks in sets: two pending, and one pending beside one finished.
+
     let mut set = JoinSet::new();
     let first = set.spawn(std::future::pending::<u32>()).id();
     let second = set.spawn(std::future::pending::<u32>()).id();
@@ -262,8 +262,8 @@ fn main() {
         std::thread::yield_now();
     }
 
-    // Sockets, their halves, buffers around them, and futures that read and
-    // write them, which nothing polls.
+
+
     let listener = runtime
         .block_on(TcpListener::bind("127.0.0.1:0"))
         .expect("a port to listen on");
@@ -413,8 +413,8 @@ fn main() {
     barrier();
     truth::dump_core_if_asked();
 
-    // Each value after it changed: a task finished, a lock passed to its
-    // waiter, a message received, and a value sent.
+
+
     release.send(11).expect("a receiver");
     until_finished(&pending);
     drop(contended_guard);

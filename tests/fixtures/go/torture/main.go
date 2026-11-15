@@ -1,9 +1,9 @@
-// Workers that run the same function at once while everything that makes
-// run control hard happens around them: each yields every round, so the
-// scheduler moves it between threads; its calls grow its stack; it sends
-// the process SIGURG, as the runtime's preemption does; and a collector
-// runs again and again, shrinking stacks it scans. The program checks its
-// own work and says so.
+
+
+
+
+
+
 package main
 
 import (
@@ -20,12 +20,12 @@ const (
 	rounds  = 200
 )
 
-// sink keeps allocations the compiler would otherwise drop.
+
 var sink []byte
 
-// deep recurses with a large frame, so a goroutine's stack grows the first
-// time it reaches each new depth.
-//
+
+
+
 //go:noinline
 func deep(depth int) int {
 	var pad [256]int
@@ -36,8 +36,8 @@ func deep(depth int) int {
 	return deep(depth-1) + pad[depth%len(pad)]
 }
 
-// step is one round of a worker's work.
-//
+
+
 //go:noinline
 func step(id, round int, total *int) {
 	*total += deep(round % 32) // TORTURE: step
@@ -57,7 +57,7 @@ func work(id int) int {
 	return total
 }
 
-// expected is what work computes, without the program's goroutines.
+
 func expected(id int) int {
 	total := 0
 	for round := 0; round < rounds; round++ {

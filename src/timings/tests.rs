@@ -99,7 +99,6 @@ fn nothing_is_measured_without_a_recording() {
     count("idle", 1);
     drop(span);
 
-    // Spans begun before a recording are not reported by it.
     let before = crate::span!("before");
     let recording = Recording::start(Options::default()).expect("no other recording");
     drop(before);
@@ -107,9 +106,6 @@ fn nothing_is_measured_without_a_recording() {
     assert!(report.phases.is_empty(), "{:?}", report.phases);
 }
 
-/// A thread keeps the spans it finished inside an open one until that one
-/// ends. When it ends under a later recording, the spans belong to the
-/// recording that ended, not to the later one.
 #[test]
 fn a_later_recording_reports_no_span_of_an_earlier_one() {
     let (finished_inner, inner_finished) = std::sync::mpsc::channel();

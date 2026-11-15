@@ -1,5 +1,3 @@
-//! Loads through the image cache, against the loads that wrote it.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,7 +11,6 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// A directory removed when the test ends.
 struct ScratchDir(PathBuf);
 
 impl ScratchDir {
@@ -28,7 +25,6 @@ impl ScratchDir {
         self.0.join(name)
     }
 
-    /// A copy of `from`, a file or a directory, at `name`.
     fn copy(&self, from: &Path, name: &str) -> PathBuf {
         let to = self.join(name);
         let status = std::process::Command::new("cp")
@@ -79,8 +75,6 @@ fn load(
 fn answers(info: &DebugInfo) -> String {
     let mut out = Vec::new();
 
-    // The bytes agree, so this checks what binding adds, not every
-    // address: the slowest sections, which ask about each, are left out.
     let options = Options {
         sections: Section::ALL
             .into_iter()
@@ -187,26 +181,17 @@ fn collection_does_not_traverse_malformed_unit_dwarf() {
     ));
 }
 
-/// A load that hits the cache reads the bytes the load that missed wrote,
-/// and answers every question as a load without a cache does, whether the
-/// image came from the program's own file, a separate debug file, or one
-/// that could not be used, and whether or not its DWARF shares a
-/// supplementary file.
 #[test]
 fn a_cached_load_answers_as_an_uncached_one() {
     let split = fixture("split/basic-build-id");
     let root = fixture("split/debug-root");
     let altlink = fixture("split/altlink-root");
 
-    // Binding is the same for every program, so small ones suffice: a
-    // dump's cost grows with the program.
     let cases = [
         (fixture("variables-cpp-clang-o2"), search(&[])),
         (fixture("callers-go-stripped"), search(&[])),
         (split.clone(), search(&[&root])),
         (split, search(&[&altlink])),
-        // DWARF sharing a dwz supplementary file, in a separate debug file
-        // and in the program's own.
         (
             fixture("dwz/gcc-o2/split/shapes"),
             search(&[&fixture("dwz/gcc-o2/debug-root")]),
@@ -235,10 +220,6 @@ fn a_cached_load_answers_as_an_uncached_one() {
     }
 }
 
-/// An image's bytes name none of what binds it to a session: a copy of a
-/// program at another path, given another identifier, with its debug file
-/// found in another directory, reads the same entry, bound to its own
-/// path, identifier, and debug file.
 #[test]
 fn one_image_serves_every_binding() {
     let dir = ScratchDir::new("cached-bindings");
@@ -271,9 +252,6 @@ fn one_image_serves_every_binding() {
     }
 }
 
-/// The cache never hides a debug file: one found after a load without it
-/// is another input, so another entry, and the entry without it serves
-/// again once it is gone.
 #[test]
 fn a_debug_file_found_later_is_another_entry() {
     let dir = ScratchDir::new("cached-debug-later");
@@ -299,8 +277,6 @@ fn a_debug_file_found_later_is_another_entry() {
     assert_eq!(gone.image.image_bytes(), alone.image.image_bytes());
 }
 
-/// A supplementary file is an input too: a debug file refused for want of
-/// its supplementary file is read once the file is found.
 #[test]
 fn a_supplementary_file_found_later_is_another_entry() {
     let dir = ScratchDir::new("cached-supplementary-later");
@@ -325,9 +301,6 @@ fn a_supplementary_file_found_later_is_another_entry() {
     assert_eq!(again.image.image_bytes(), found.image.image_bytes());
 }
 
-/// An entry that cannot be bound, as an image built without the debug
-/// file its key names cannot, is unusable: the load replaces it with what
-/// it builds.
 #[test]
 fn an_entry_that_disagrees_with_its_binding_is_replaced() {
     let dir = ScratchDir::new("cached-unbound");
@@ -351,9 +324,6 @@ fn an_entry_that_disagrees_with_its_binding_is_replaced() {
     assert_eq!(hit.image.image_bytes(), replaced.image.image_bytes());
 }
 
-/// An entry names its inputs' bytes, not their build-id or path: a program
-/// rebuilt in place, or changed in any byte, is another entry, and the
-/// original's still serves an unchanged copy.
 #[test]
 fn a_changed_program_is_another_entry() {
     let dir = ScratchDir::new("cached-changed");
@@ -363,8 +333,6 @@ fn a_changed_program_is_another_entry() {
     let (before, outcome) = load(&program, 0, &search(&[]), Some(&cache));
     assert_eq!(outcome, CacheOutcome::Miss);
 
-    // Bytes past every section and segment change nothing the loader reads,
-    // not even the build-id.
     let mut data = fs::read(&program).unwrap();
     data.extend_from_slice(b"rebuilt");
     fs::write(&program, &data).unwrap();

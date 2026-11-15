@@ -1,8 +1,3 @@
-//! The standard library's values, each shown as its type's own `repr`
-//! writes it: the types only C defines, which microscope reads itself, and
-//! those Python defines, through the built-in views. Their items are their
-//! children, and expressions reach into them as Python's own lookups do.
-
 use std::collections::BTreeMap;
 
 use microscope::{ExpressionErrorKind, ValueChild, ValueChildRelationship, VariableState};
@@ -13,9 +8,7 @@ use crate::expressions::{
 use crate::locals::{Stop, presented, reported_locals};
 use crate::session::{PythonSession, VERSIONS};
 
-/// Every expression the fixture evaluates in its frame of `values`.
 const CASES: &[Case] = &[
-    // A deque's items, across its blocks, and its length.
     agrees("len(queue)"),
     agrees("queue[0]"),
     agrees("queue[-1]"),
@@ -30,8 +23,6 @@ const CASES: &[Case] = &[
     agrees("queue_sub[1]"),
     agrees("len(queue_sub)"),
     agrees("queue_sub.label"),
-    // A defaultdict's and an OrderedDict's keys, as a dict's; a key a
-    // defaultdict holds no value for makes one, by code.
     agrees("grouped[\"a\"]"),
     agrees("len(grouped)"),
     agrees("ordered[\"d\"]"),
@@ -40,8 +31,6 @@ const CASES: &[Case] = &[
     agrees("len(empty_ordered)"),
     agrees("ordered_sub[\"x\"]"),
     refuses("no_factory[\"zz\"]", ExpressionErrorKind::Unsupported),
-    // Values of their own, which have no items, and whose fields their
-    // types' code computes.
     agrees("day"),
     agrees("zoned"),
     agrees("price"),
@@ -49,15 +38,12 @@ const CASES: &[Case] = &[
     agrees("price[0]"),
     refuses("day.year", ExpressionErrorKind::Unsupported),
     refuses("queue.maxlen", ExpressionErrorKind::Unsupported),
-    // Values the built-in views present, and their attributes.
     agrees("color"),
     agrees("color._value_"),
     agrees("half._numerator"),
     agrees("mixed[2]"),
 ];
 
-/// The children CPython reported of each local of a collection type, by
-/// its name: each child's key, or `-` for an element, and its text.
 fn reported_children(truth: &[Vec<String>]) -> BTreeMap<&str, Vec<(&str, &str)>> {
     let mut locals: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
     for fields in truth.iter().filter(|fields| fields[0] == "child") {
@@ -70,8 +56,6 @@ fn reported_children(truth: &[Vec<String>]) -> BTreeMap<&str, Vec<(&str, &str)>>
     locals
 }
 
-/// Each element's or entry's key, `-` for an element, and its text: the
-/// children that are items, before any attributes.
 fn shown_items(children: &[ValueChild]) -> Vec<(String, String)> {
     let text = |state: &VariableState| {
         presented(state).map_or_else(|| format!("{state:?}"), str::to_owned)
@@ -88,10 +72,6 @@ fn shown_items(children: &[ValueChild]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Every local is shown as CPython's canonical text, every collection's
-/// items are its children in its own order, and every expression gives
-/// what CPython gave, or is refused as its case says, on every version and
-/// GIL mode.
 #[tokio::test]
 async fn each_library_value_is_shown_as_its_own_repr_writes_it() {
     let texts: Vec<&str> = CASES.iter().map(|case| case.python).collect();

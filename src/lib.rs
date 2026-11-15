@@ -1,5 +1,3 @@
-// Production code returns errors instead of panicking; see dev/assertions.md.
-// Tests may unwrap.
 #![cfg_attr(
     not(test),
     deny(
@@ -13,9 +11,6 @@
     )
 )]
 
-/// Appends a line to the flight recorder of a development build. Release
-/// builds drop the arguments unevaluated, so they may use code that only
-/// development builds compile.
 macro_rules! record {
     ($($argument:tt)*) => {{
         #[cfg(debug_assertions)]
@@ -23,8 +18,6 @@ macro_rules! record {
     }};
 }
 
-// The library's own tests share support code with the integration tests,
-// which name the library `microscope`.
 #[cfg(test)]
 extern crate self as microscope;
 
@@ -55,7 +48,6 @@ mod protocol;
 mod runtime_model;
 mod rust_names;
 
-// The simulator is a test harness, which may panic.
 #[cfg(any(test, feature = "sim"))]
 #[doc(hidden)]
 #[allow(
@@ -71,7 +63,6 @@ pub mod suggest;
 mod sync;
 pub mod syscalls;
 
-/// The engines that trace system calls into [`syscalls`]' events.
 pub use backend::syscall_engines;
 #[cfg(test)]
 mod test_memory;
@@ -79,15 +70,11 @@ mod test_memory;
 pub(crate) mod test_strategies;
 pub mod timings;
 
-/// Exports for `tests/miri.rs`, a separate target so Miri need not run the
-/// whole crate's tests.
 #[doc(hidden)]
 pub mod unsafe_parts {
     pub use crate::backend::perf::sys::{DATA_HEAD, DATA_TAIL, HEAP_DATA, RingMemory};
 }
 
-/// Exports for `tests/python`, which runs the Python agent's scripts in
-/// interpreters without the debugger.
 #[doc(hidden)]
 pub mod python_agent {
     pub use crate::runtime_model::{
@@ -201,7 +188,6 @@ pub use view::summary::{
 
 pub use view::syntax::Error as ViewFileError;
 
-/// The views built into microscope, in the order they are tried.
 #[must_use]
 pub fn built_in_views() -> Vec<Arc<ViewName>> {
     view::ViewSet::built_in()
@@ -211,21 +197,15 @@ pub fn built_in_views() -> Vec<Arc<ViewName>> {
         .collect()
 }
 
-/// One recorded kernel run, replayed without a program.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayedRun {
     pub kernel: String,
 
-    /// The reads and items the recording holds.
     pub events: usize,
 
-    /// How many of them the kernel reproduced, or the first difference.
     pub outcome: std::result::Result<usize, String>,
 }
 
-/// Replays the kernel runs `text` records, as `record_kernels` writes them,
-/// with the kernel module `wasm` when one is given, and otherwise with the
-/// built-in kernel each run names.
 pub fn replay_kernel_runs(
     text: &str,
     wasm: Option<&[u8]>,
@@ -255,8 +235,6 @@ pub fn replay_kernel_runs(
     Ok(replayed)
 }
 
-/// Whether a view is one microscope builds in, rather than one loaded for the
-/// session or carried by a module.
 #[must_use]
 pub fn is_built_in_view(name: &ViewName) -> bool {
     view::ViewSet::built_in()
@@ -265,91 +243,66 @@ pub fn is_built_in_view(name: &ViewName) -> bool {
         .any(|view| view.source == name.source && view.line == name.line)
 }
 
-/// The processes `name` names exactly.
-///
-/// A name matches the command name the platform records, the file name the
-/// process was started as, a title it set, or the file name of a script it
-/// runs. The calling process is never one of them.
 pub fn processes_named(name: &str) -> Result<Vec<NamedProcess>> {
     backend::processes_named(name)
 }
 
-/// Finds a signal's exception code by name, with or without its `SIG`
-/// prefix and in any case, or by number: `SIGUSR1`, `usr1`, `10`, `SIG34`.
 #[must_use]
 pub fn signal_named(name: &str) -> Option<u64> {
     backend::signal_named(name)
 }
 
-/// Names the signal with an exception code, such as `SIGSEGV`. Real-time
-/// signals are named by number, as gdb does: `SIG34`.
 #[must_use]
 pub fn signal_name(code: u64) -> Option<String> {
     backend::signal_name(code)
 }
 
-/// The exception codes of every signal this target defines, in order.
 pub fn signal_codes() -> impl Iterator<Item = u64> {
     backend::signal_codes()
 }
 
-/// Exercises core-dump parsing and memory reads for the fuzz harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_core_dump(data: &[u8]) {
     backend::fuzz_core_dump(data);
 }
 
-/// Exercises image validation, and every lookup in an image it accepts,
-/// for the fuzz harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_image(data: &[u8]) {
     image::sample::fuzz(data);
 }
 
-/// Decodes perf ring records for the fuzz harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_perf_records(data: &[u8]) {
     backend::perf::decode::fuzz(data);
 }
 
-/// Reads a capture file with its chunks resealed, and queries one it
-/// accepts, for the fuzz harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_capture(data: &[u8]) {
     capture::file::fuzz(data);
 }
 
-/// Decodes one message from Node's inspector, workers' tunnels included,
-/// for the fuzz harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_cdp_message(data: &[u8]) {
     backend::fuzz_cdp_message(data);
 }
 
-/// Exercises debug-register planning invariants for the fuzz harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_debug_register_plan(data: &[u8]) {
     backend::fuzz_debug_register_plan(data);
 }
 
-/// Loads a module's debug information from its file's bytes, or from a
-/// file the bytes describe, and asks the loaded image every question the
-/// dump tool does, for the fuzz harness.
 #[cfg(all(feature = "fuzzing", feature = "tools"))]
 #[doc(hidden)]
 pub fn fuzz_dwarf_load(data: &[u8]) {
     debug_info::fuzz_dwarf_load(data);
 }
 
-/// Asks a language runtime's model everything a session asks at a stop,
-/// over memory of a real image the bytes write, for the fuzz harness: Go's
-/// goroutines, tokio's tasks and Rust's futures, CPython's frames, or V8's.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_runtime_model(runtime: FuzzedRuntime, data: &[u8]) {
@@ -362,64 +315,48 @@ mod runtime_fuzz;
 #[doc(hidden)]
 pub use runtime_fuzz::Runtime as FuzzedRuntime;
 
-/// Reads a perf map and a JIT compiler's list of objects from hostile
-/// bytes, and unwinds the code the map names, for the fuzz harness.
 #[cfg(all(feature = "fuzzing", target_arch = "x86_64"))]
 #[doc(hidden)]
 pub fn fuzz_jit_code(data: &[u8]) {
     debug_info::fuzz_jit_code(data);
 }
 
-/// Exercises ELF symbol-table normalization and symbol lookup invariants for
-/// the fuzz harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_elf_symbols(data: &[u8]) {
     debug_info::fuzz_elf_symbols(data);
 }
 
-/// Exercises the decoding of a coroutine's dispatch on its state on
-/// hostile code for the fuzz harness.
 #[cfg(all(feature = "fuzzing", target_arch = "x86_64"))]
 #[doc(hidden)]
 pub fn fuzz_dispatch(data: &[u8]) {
     debug_info::fuzz_dispatch(data);
 }
 
-/// Exercises Go function-table decoding on hostile bytes for the fuzz
-/// harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_gopclntab(data: &[u8]) {
     debug_info::fuzz_gopclntab(data);
 }
 
-/// Exercises source map decoding and lookups on hostile bytes for the fuzz
-/// harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_js_source_map(data: &[u8]) {
     debug_info::fuzz_js_source_map(data);
 }
 
-/// Exercises disassembly boundary and decoding invariants for the fuzz
-/// harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_disassembly(data: &[u8]) {
     disassembly::fuzz(data);
 }
 
-/// Runs every built-in view, and a view file made of the input's tail,
-/// over memory made of its bytes, for the fuzz harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_views(data: &[u8]) {
     view::fuzz::hostile(data);
 }
 
-/// Checks the expression parser's invariants on `text` for the fuzz
-/// harness, panicking when one fails.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 #[allow(clippy::panic, reason = "a fuzz harness reports a bug by panicking")]
@@ -429,15 +366,12 @@ pub fn fuzz_expression_parse(text: &str) {
     }
 }
 
-/// Exercises bounded DWARF-expression parsing for the fuzz harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_dwarf_expression(data: &[u8]) {
     debug_info::fuzz_dwarf_expression(data);
 }
 
-/// How `event` ends `execution`, if it does: with a stop or an exit, or, as
-/// a detach does any execution, cancelled.
 fn execution_end(event: DebuggerEvent, execution: ExecutionId) -> Option<Result<StopReason>> {
     match event {
         DebuggerEvent::InferiorStopped {
@@ -459,9 +393,6 @@ const REQUEST_CAPACITY: usize = 32;
 const EVENT_CAPACITY: usize = 256;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The number of events a subscriber of a session or a group may fall
-/// behind by before it misses some. `MICROSCOPE_EVENT_CAPACITY` lowers it so
-/// tests can make clients lag.
 fn event_capacity() -> usize {
     std::env::var("MICROSCOPE_EVENT_CAPACITY")
         .ok()
@@ -470,27 +401,16 @@ fn event_capacity() -> usize {
         .unwrap_or(EVENT_CAPACITY)
 }
 
-/// A debug session, owning the controller thread that serves its requests.
-///
-/// Dropping a debugger requests shutdown without waiting for it; prefer
-/// [`Debugger::shutdown`], which reports whether cleanup succeeded.
 pub struct Debugger {
     handle: DebuggerHandle,
     controller: Option<backend::ControllerJoin>,
     shutdown_permit: Option<mpsc::OwnedPermit<ControllerMessage>>,
 }
 
-/// A clonable client of a running [`Debugger`].
-///
-/// Requests are queued to the controller, which acknowledges each one.
-/// Execution control is acknowledged before the stop it eventually causes;
-/// subscribe to events, or use the methods that wait, to observe the stop.
 #[derive(Clone)]
 pub struct DebuggerHandle {
-    /// The program the process runs, which an exec replaces.
     program: watch::Receiver<Arc<ModuleImage>>,
 
-    /// The program the session was made for, which a launch executes.
     launched: Arc<PathBuf>,
     core_dump: Option<Arc<CoreDumpInfo>>,
     source_paths: Arc<SourcePathMap>,
@@ -498,11 +418,6 @@ pub struct DebuggerHandle {
     events: broadcast::Sender<DebuggerEvent>,
 }
 
-/// A native executable and its debug information, read once.
-///
-/// Every debugger made from it with [`Debugger::for_program`] shares what
-/// was read, which is immutable, so debugging the same program again does
-/// not read it again.
 #[derive(Clone)]
 pub struct Program {
     executable: backend::Executable,
@@ -510,19 +425,12 @@ pub struct Program {
 }
 
 impl Program {
-    /// Reads a native executable and its debug information, finding its
-    /// modules' separate debug files as `debug_files` says.
     pub fn load(executable: impl AsRef<Path>, debug_files: &DebugFileOptions) -> Result<Self> {
         let mut executable = backend::executable_source(executable.as_ref())?;
         executable.debug_files = debug_info::DebugFileSearch::new(debug_files);
         Self::from_executable_source(executable)
     }
 
-    /// Reads the program process `process` runs, from `executable` when
-    /// given, finding its modules' separate debug files as `debug_files`
-    /// says. The read runs on a blocking thread: debug information takes
-    /// seconds to read for a large program, and a FIFO never ends, either
-    /// of which would hold up every other task on a runtime thread.
     async fn of_process(
         process: ProcessId,
         executable: Option<&Path>,
@@ -542,9 +450,6 @@ impl Program {
         .map_err(|_| Error::internal("reading the program to attach to panicked"))?
     }
 
-    /// Keeps the debug information each session of this program, or of a
-    /// copy of it, loads from module files, so that a later session takes
-    /// it instead of loading a file again while the file is unchanged.
     #[must_use]
     pub fn keeping_modules(mut self) -> Self {
         self.executable.kept = Some(backend::KeptModules::default());
@@ -566,19 +471,14 @@ impl Program {
 }
 
 impl Debugger {
-    /// Creates a debugger for a native executable and starts its backend controller.
     pub fn new(executable: impl AsRef<Path>) -> Result<Self> {
         Self::new_with(executable, &DebugFileOptions::default())
     }
 
-    /// Creates a debugger for a native executable whose modules' separate
-    /// debug files are found as `debug_files` says.
     pub fn new_with(executable: impl AsRef<Path>, debug_files: &DebugFileOptions) -> Result<Self> {
         Self::for_program(Program::load(executable, debug_files)?)
     }
 
-    /// Creates a debugger for a program already read and starts its
-    /// backend controller.
     pub fn for_program(program: Program) -> Result<Self> {
         let Program {
             executable,
@@ -593,8 +493,6 @@ impl Debugger {
         })
     }
 
-    /// Creates the root session of a process group for `program`, whose
-    /// tracer thread follows the processes it starts as `policy` says.
     fn for_group(program: Program, policy: FollowPolicy) -> Result<(Self, backend::GroupBackend)> {
         let Program {
             executable,
@@ -622,8 +520,6 @@ impl Debugger {
         Ok((debugger, group))
     }
 
-    /// The debugger of a process that joined a group, and the stop it
-    /// joins in, which it publishes before it runs an instruction.
     fn joined(joined: backend::Joined) -> Result<(Self, backend::Started)> {
         let backend::Joined {
             requests,
@@ -656,12 +552,10 @@ impl Debugger {
         ))
     }
 
-    /// Attaches to an existing local process and returns once it is coherently stopped.
     pub async fn attach(process: ProcessId) -> Result<Self> {
         Self::attach_with(process, None, &DebugFileOptions::default()).await
     }
 
-    /// Attaches using an explicitly supplied executable when automatic discovery is unavailable.
     pub async fn attach_with_executable(
         process: ProcessId,
         executable: impl AsRef<Path>,
@@ -674,9 +568,6 @@ impl Debugger {
         .await
     }
 
-    /// Attaches to an existing local process, reading its executable from
-    /// `executable` when given, and finding its modules' separate debug
-    /// files as `debug_files` says.
     pub async fn attach_with(
         process: ProcessId,
         executable: Option<&Path>,
@@ -700,14 +591,6 @@ impl Debugger {
         Ok(debugger)
     }
 
-    /// Opens a post-mortem core dump as one permanent stopped snapshot.
-    ///
-    /// Every recorded module file must be proven to match the dump unless
-    /// [`CoreDumpOptions::allow_module_mismatch`] is set. The files of a dump
-    /// written on another machine are found through
-    /// [`CoreDumpOptions::sysroot`] and [`CoreDumpOptions::module_paths`].
-    /// Execution control, memory writes, and breakpoints fail with
-    /// [`Error::PostMortemTarget`].
     pub fn open_core(options: &CoreDumpOptions) -> Result<Self> {
         Self::start(Arc::new(options.core.clone()), |channels| {
             let session = backend::open_core(options, channels)?;
@@ -720,8 +603,6 @@ impl Debugger {
         })
     }
 
-    /// Creates the request and event channels and starts a controller that
-    /// serves them, reserving request capacity so shutdown can always be sent.
     fn start(
         launched: Arc<PathBuf>,
         spawn: impl FnOnce(
@@ -761,14 +642,11 @@ impl Debugger {
         })
     }
 
-    /// Returns a clonable handle for sending requests to the debugger.
     #[must_use]
     pub fn handle(&self) -> DebuggerHandle {
         self.handle.clone()
     }
 
-    /// Ends the session and joins the backend controller. A launched inferior
-    /// is killed and reaped; an attached one is detached and left running.
     pub async fn shutdown(mut self) -> Result<()> {
         let (send, mut receive) = oneshot::channel();
         self.shutdown_permit
@@ -778,12 +656,6 @@ impl Debugger {
                 reply: send,
             }));
 
-        // A controller that ends on its own closes its queue before it
-        // answers the shutdowns left in it. One that panicked dropped its
-        // queue, so a request sent after that is never read, and never
-        // dropped while this handle can still send. Either way, once the
-        // queue is closed, the answer is there when the controller has
-        // ended, or never comes.
         let replied = timeout(SHUTDOWN_TIMEOUT, async {
             tokio::select! {
                 biased;
@@ -817,59 +689,42 @@ impl Drop for Debugger {
 }
 
 impl DebuggerHandle {
-    /// Returns this handle reading source files through `source_paths`.
-    /// Other handles of the same debugger keep their own maps.
     #[must_use]
     pub fn with_source_paths(mut self, source_paths: SourcePathMap) -> Self {
         self.source_paths = Arc::new(source_paths);
         self
     }
 
-    /// Returns the canonical path of the program the process runs, which
-    /// an exec into another program changes.
     #[must_use]
     pub fn executable(&self) -> PathBuf {
         self.program.borrow().path().to_owned()
     }
 
-    /// Returns the program the session was made for, which a launch
-    /// executes: a script rather than its interpreter, for one.
     #[must_use]
     pub fn launched(&self) -> &Path {
         &self.launched
     }
 
-    /// Returns the immutable debug metadata of the program the process
-    /// runs, which an exec into another program replaces, as
-    /// [`DebuggerEvent::ProgramChanged`] reports.
     #[must_use]
     pub fn module_image(&self) -> Arc<ModuleImage> {
         Arc::clone(&self.program.borrow())
     }
 
-    /// Describes the opened core dump, or `None` for a live session.
     #[must_use]
     pub const fn core_dump(&self) -> Option<&Arc<CoreDumpInfo>> {
         self.core_dump.as_ref()
     }
 
-    /// Subscribes to debugger state and lifecycle events.
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<DebuggerEvent> {
         self.events.subscribe()
     }
 
-    /// Adds a logical breakpoint that stops at every hit and returns all
-    /// locations resolved by the backend. Adding the spec of an existing
-    /// breakpoint without a hit condition returns that breakpoint.
     pub async fn add_breakpoint(&self, spec: BreakpointSpec) -> Result<Breakpoint> {
         self.add_breakpoint_with(spec, BreakpointOptions::default())
             .await
     }
 
-    /// Adds a logical breakpoint that stops or logs at the hits `options`
-    /// select. Adding the spec and options of an existing breakpoint
-    /// returns that breakpoint, with the hits it already counted.
     pub async fn add_breakpoint_with(
         &self,
         spec: BreakpointSpec,
@@ -883,9 +738,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Adds a logical breakpoint that stops only at hits meeting
-    /// `hit_condition`. Adding the spec and condition of an existing
-    /// breakpoint returns that breakpoint, with the hits it already counted.
     pub async fn add_breakpoint_with_hit_condition(
         &self,
         spec: BreakpointSpec,
@@ -901,10 +753,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Replaces which hits of a breakpoint stop execution; `None` stops at
-    /// every hit. The hits already counted are kept. Unlike adding and
-    /// removing breakpoints, this needs no stop and works while the inferior
-    /// runs, taking effect from the next hit.
     pub async fn set_breakpoint_hit_condition(
         &self,
         id: BreakpointId,
@@ -918,8 +766,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Replaces a breakpoint's condition; `None` removes it. Like a hit
-    /// condition, this needs no stop and applies from the next hit.
     pub async fn set_breakpoint_condition(
         &self,
         id: BreakpointId,
@@ -933,9 +779,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Replaces the message a breakpoint logs instead of stopping; `None`
-    /// makes it stop again. Like a condition, this needs no stop and applies
-    /// from the next hit.
     pub async fn set_breakpoint_log_message(
         &self,
         id: BreakpointId,
@@ -949,9 +792,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Enables or disables a breakpoint, keeping its definition and count.
-    /// Like adding and removing breakpoints, this stops every running
-    /// thread briefly, without a reported stop.
     pub async fn set_breakpoint_enabled(
         &self,
         id: BreakpointId,
@@ -961,26 +801,21 @@ impl DebuggerHandle {
             .await
     }
 
-    /// Removes one logical breakpoint and returns its prior definition.
     pub async fn remove_breakpoint(&self, id: BreakpointId) -> Result<Breakpoint> {
         self.request(|reply| Request::RemoveBreakpoint { id, reply })
             .await
     }
 
-    /// Removes every logical breakpoint and returns their prior definitions.
     pub async fn remove_all_breakpoints(&self) -> Result<Arc<[Breakpoint]>> {
         self.request(|reply| Request::RemoveAllBreakpoints { reply })
             .await
     }
 
-    /// Describes what this platform's debug hardware can watch.
     #[must_use]
     pub fn watchpoint_capabilities(&self) -> WatchpointCapabilities {
         backend::watchpoint_capabilities()
     }
 
-    /// Resolves an expression in the selected thread's selected frame to the
-    /// memory it occupies and the lifetime of that storage.
     pub async fn resolve_watch_target(&self, expression: &Expression) -> Result<WatchTarget> {
         self.selected()
             .await?
@@ -988,11 +823,6 @@ impl DebuggerHandle {
             .await
     }
 
-    /// Arms a hardware watchpoint that stops at every hit on every thread
-    /// of the stopped process.
-    ///
-    /// Arming is atomic: on failure no thread is left armed and no event is
-    /// published.
     pub async fn add_watchpoint(
         &self,
         spec: WatchpointSpec,
@@ -1002,7 +832,6 @@ impl DebuggerHandle {
             .await
     }
 
-    /// Arms a hardware watchpoint that stops at the hits `options` select.
     pub async fn add_watchpoint_with(
         &self,
         spec: WatchpointSpec,
@@ -1018,14 +847,11 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Resolves an expression at the current stop and watches its memory.
     pub async fn watch(&self, expression: &Expression, access: WatchAccess) -> Result<Watchpoint> {
         self.watch_with(expression, access, WatchpointOptions::default())
             .await
     }
 
-    /// Resolves an expression at the current stop and watches its memory,
-    /// stopping at the hits `options` select.
     pub async fn watch_with(
         &self,
         expression: &Expression,
@@ -1037,9 +863,6 @@ impl DebuggerHandle {
             .await
     }
 
-    /// Replaces which hits of a watchpoint stop execution; `None` stops at
-    /// every hit. As for breakpoints, the hits already counted are kept, and
-    /// this needs no stop: it applies from the next hit.
     pub async fn set_watchpoint_hit_condition(
         &self,
         id: WatchpointId,
@@ -1053,8 +876,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Replaces a watchpoint's condition; `None` removes it. This needs no
-    /// stop and applies from the next hit.
     pub async fn set_watchpoint_condition(
         &self,
         id: WatchpointId,
@@ -1068,9 +889,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Enables or disables a watchpoint. A disabled one releases its debug
-    /// registers; enabling it plans them again, and fails, leaving it
-    /// disabled, when other watchpoints hold them.
     pub async fn set_watchpoint_enabled(
         &self,
         id: WatchpointId,
@@ -1080,16 +898,11 @@ impl DebuggerHandle {
             .await
     }
 
-    /// Disarms one watchpoint and returns its prior definition.
     pub async fn remove_watchpoint(&self, id: WatchpointId) -> Result<Watchpoint> {
         self.request(|reply| Request::RemoveWatchpoint { id, reply })
             .await
     }
 
-    /// Stops threads at `calls`, every call when empty, at the phase
-    /// given, when `condition` holds. While any catchpoint exists, every
-    /// thread stops at each of its calls, which costs microseconds a call.
-    /// Catchpoints outlive the process, as breakpoints do.
     pub async fn add_catchpoint(
         &self,
         calls: Arc<[syscalls::SyscallId]>,
@@ -1105,28 +918,21 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Removes a catchpoint and returns its prior definition.
     pub async fn remove_catchpoint(&self, id: CatchpointId) -> Result<Catchpoint> {
         self.request(|reply| Request::RemoveCatchpoint { id, reply })
             .await
     }
 
-    /// Disarms every watchpoint and returns their prior definitions.
     pub async fn remove_all_watchpoints(&self) -> Result<Arc<[Watchpoint]>> {
         self.request(|reply| Request::RemoveAllWatchpoints { reply })
             .await
     }
 
-    /// Returns how the debugger handles a signal, named by its exception
-    /// code.
     pub async fn signal_policy(&self, signal: u64) -> Result<SignalPolicy> {
         self.request(|reply| Request::SignalPolicy { signal, reply })
             .await
     }
 
-    /// Changes how the debugger handles a signal and returns the previous
-    /// policy. The change applies at once, also while the inferior runs, and
-    /// lasts for the whole session.
     pub async fn set_signal_policy(
         &self,
         signal: u64,
@@ -1140,46 +946,28 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Changes which exceptions a language runtime reports stop the
-    /// inferior, and returns the previous choice. The change applies at
-    /// once and lasts for the whole session.
     pub async fn set_exception_stops(&self, stops: ExceptionStops) -> Result<ExceptionStops> {
         self.request(|reply| Request::SetExceptionStops { stops, reply })
             .await
     }
 
-    /// Chooses whether the process stops when it executes a program, as
-    /// gdb's `catch exec` does, and returns the previous choice. Without
-    /// it, a continued process that executes a program it is followed into
-    /// runs on, with [`DebuggerEvent::ProgramChanged`] sent when the
-    /// program is another; a step that executes one ends there either way.
     pub async fn set_exec_stops(&self, stops: bool) -> Result<bool> {
         self.request(|reply| Request::SetExecStops { stops, reply })
             .await
     }
 
-    /// Kills the inferior and waits until it is gone, keeping the session:
-    /// the program can be launched again, or another process attached.
     pub async fn kill(&self) -> Result<()> {
         self.request(|reply| Request::Kill { reply }).await
     }
 
-    /// Asks the inferior to end, as with `SIGTERM` on Linux, and returns once
-    /// the request is sent. The request itself never stops the inferior,
-    /// whatever the signal's policy, and a stopped inferior is resumed to
-    /// receive it; the program then exits, or stops for a breakpoint or
-    /// signal while ending, as events report.
     pub async fn terminate(&self) -> Result<()> {
         self.request(|reply| Request::Terminate { reply }).await
     }
 
-    /// Launches the inferior and acknowledges once native execution has started.
     pub async fn launch(&self) -> Result<ExecutionId> {
         self.launch_with(LaunchOptions::default()).await
     }
 
-    /// Launches the inferior as `options` describe and acknowledges once
-    /// native execution has started, or once it stopped at its entry.
     pub async fn launch_with(&self, options: LaunchOptions) -> Result<ExecutionId> {
         self.request(|reply| Request::Launch {
             options: Box::new(options),
@@ -1188,14 +976,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Launches through a process that is waiting to exec this debugger's
-    /// executable, such as a launcher started in a terminal, and
-    /// acknowledges as [`Self::launch_with`] does once it has.
-    ///
-    /// The process must be single-threaded. `release` runs once it is
-    /// traced and must then let it exec; until it does, the process runs
-    /// and receives signals as it would untraced. Exiting first fails the
-    /// launch.
     pub async fn launch_by_exec(
         &self,
         process_id: ProcessId,
@@ -1211,7 +991,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Attaches to an existing process and returns its coherent initial stop.
     pub async fn attach_process(&self, process_id: ProcessId) -> Result<StopId> {
         self.request(|reply| Request::Attach {
             process_id,
@@ -1221,11 +1000,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Attaches to an existing process only to read it, and returns its
-    /// coherent initial stop. The session plants none of the breakpoints
-    /// through which the debugger follows libraries, runtimes, and
-    /// inspectors, so it writes nothing to the process's memory, and it sees
-    /// the process as it was at the stop.
     pub async fn observe_process(&self, process_id: ProcessId) -> Result<StopId> {
         self.request(|reply| Request::Attach {
             process_id,
@@ -1235,13 +1009,10 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Launches the inferior and waits until that execution stops or exits.
     pub async fn run(&self) -> Result<StopReason> {
         self.run_with(LaunchOptions::default()).await
     }
 
-    /// Launches the inferior as `options` describe and waits until that
-    /// execution stops or exits.
     pub async fn run_with(&self, options: LaunchOptions) -> Result<StopReason> {
         let mut events = self.subscribe();
         let execution = self.launch_with(options).await?;
@@ -1249,7 +1020,6 @@ impl DebuggerHandle {
         self.wait_for_execution(&mut events, execution).await
     }
 
-    /// Continues the stopped inferior and acknowledges once threads have resumed.
     pub async fn continue_execution(
         &self,
         stop_id: StopId,
@@ -1271,12 +1041,10 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Continues every thread until the inferior stops or exits.
     pub async fn resume(&self) -> Result<StopReason> {
         self.resume_with_exception(ExceptionDisposition::Pass).await
     }
 
-    /// Continues every thread with an explicit pending-exception disposition.
     pub async fn resume_with_exception(
         &self,
         exception: ExceptionDisposition,
@@ -1294,16 +1062,6 @@ impl DebuggerHandle {
         self.wait_for_execution(&mut events, execution).await
     }
 
-    /// Starts stepping one thread or task.
-    ///
-    /// [`StepKind::Out`] runs until `frame` returns to its caller; every
-    /// other kind steps from the innermost frame, which `frame` must be.
-    ///
-    /// With [`ResumeScope::Process`], every other thread runs while the step
-    /// does, so a step over a call that waits for another thread completes.
-    /// Another thread's stop, such as a breakpoint or a signal, then ends
-    /// the step before it completes. [`ResumeScope::Thread`] naming the
-    /// stepping thread keeps every other thread stopped.
     pub async fn start_step(
         &self,
         stop_id: StopId,
@@ -1330,11 +1088,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Starts a step into the one call of the stopped line at `call`, a
-    /// [`StepTarget`] of the innermost frame, which runs the line's other
-    /// calls to their returns. It stops as [`StepKind::IntoSource`] does:
-    /// in the called function, or, when the line ends first or the callee
-    /// has no source, where a step in would.
     pub async fn start_step_into(
         &self,
         stop_id: StopId,
@@ -1360,8 +1113,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Steps the selected thread into the call at `call` on its line,
-    /// running every other thread too, and waits for the step's stop.
     pub async fn step_into(&self, call: VirtualAddress) -> Result<StopReason> {
         let selection = self.stopped_selection().await?;
         let mut events = self.subscribe();
@@ -1377,21 +1128,12 @@ impl DebuggerHandle {
         self.wait_for_execution(&mut events, execution).await
     }
 
-    /// The calls a step into the selected thread's line could go into.
     pub async fn step_targets(&self) -> Result<Arc<[StepTarget]>> {
         self.selected().await?.step_targets().await
     }
 
-    /// Steps the selected thread, running every other thread too, and waits
-    /// until the operation stops or exits.
-    ///
-    /// Stepping out leaves the selected frame; every other step begins at
-    /// the innermost frame, whichever frame is selected.
     pub async fn step(&self, kind: StepKind) -> Result<StopReason> {
         let selection = self.stopped_selection().await?;
-        // A native step by lines begins at the innermost frame; a runtime
-        // steps the frame it interprets that is selected, as pdb's `next`
-        // after `up` does.
         let frame = if kind == StepKind::Out || selection.interpreted {
             selection.frame
         } else {
@@ -1413,10 +1155,6 @@ impl DebuggerHandle {
         self.wait_for_execution(&mut events, execution).await
     }
 
-    /// Runs, every thread with it, until the selected thread reaches a
-    /// location `spec` resolves to, stopping with [`StepKind::Advance`], or
-    /// the selected frame returns first, stopping as [`StepKind::Out`]
-    /// does. Nothing it plants outlives the stop that ends it.
     pub async fn advance(&self, spec: BreakpointSpec) -> Result<StopReason> {
         let selection = self.stopped_selection().await?;
         let mut events = self.subscribe();
@@ -1434,9 +1172,6 @@ impl DebuggerHandle {
         self.wait_for_execution(&mut events, execution).await
     }
 
-    /// Starts an advance from one stop, as [`Self::advance`] does from the
-    /// selection: the thread of `context` runs until it reaches `spec`, or
-    /// `frame` returns first.
     pub async fn start_advance(
         &self,
         stop_id: StopId,
@@ -1462,13 +1197,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Moves one stopped thread, without running it, to resume at the one
-    /// location `spec` resolves to in the function it is stopped in, and
-    /// publishes the stop again there with [`StopReason::Jump`] under a new
-    /// stop. A breakpoint at the new location stops the thread as it
-    /// resumes, before it runs anything. A location with no code in the function, or with code in
-    /// several places of it, is refused; to move a thread anywhere, assign
-    /// `$pc`.
     pub async fn start_jump(
         &self,
         stop_id: StopId,
@@ -1488,8 +1216,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Moves the selected thread to resume at `spec`, as
-    /// [`Self::start_jump`] does, and waits for the stop it publishes.
     pub async fn jump(&self, spec: BreakpointSpec) -> Result<StopReason> {
         let selection = self.stopped_selection().await?;
         let mut events = self.subscribe();
@@ -1499,10 +1225,6 @@ impl DebuggerHandle {
         self.wait_for_execution(&mut events, execution).await
     }
 
-    /// Pauses a running process and waits for a coherent all-stop snapshot.
-    ///
-    /// A process that is still launching stops at its initial exec stop
-    /// instead of running first.
     pub async fn pause(&self) -> Result<StopReason> {
         if self.core_dump.is_some() {
             return Err(Error::PostMortemTarget);
@@ -1525,11 +1247,6 @@ impl DebuggerHandle {
         self.wait_for_execution(&mut events, execution).await
     }
 
-    /// Reads a bounded byte range from a stopped inferior.
-    ///
-    /// Readable bytes are returned as one contiguous prefix. Target memory
-    /// becoming inaccessible is represented by `MemoryRead::completion`;
-    /// debugger and process-control failures remain errors.
     pub async fn read_memory(
         &self,
         address: VirtualAddress,
@@ -1539,9 +1256,6 @@ impl DebuggerHandle {
         self.read_memory_at(stop, address, byte_count).await
     }
 
-    /// Reads memory as [`Self::read_memory`] does, but only at `stop`: once
-    /// the program has left it, the read fails with [`Error::StaleStop`]
-    /// instead of reading a later stop's memory.
     pub async fn read_memory_at(
         &self,
         stop: StopId,
@@ -1560,7 +1274,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Reads one little-endian 64-bit word from a stopped inferior.
     pub async fn read_word(&self, address: VirtualAddress) -> Result<u64> {
         let read = self.read_memory(address, 8).await?;
         match read.completion {
@@ -1578,8 +1291,6 @@ impl DebuggerHandle {
         }
     }
 
-    /// Writes one little-endian 64-bit word into a stopped inferior; see
-    /// [`Self::write_memory`].
     pub async fn write_word(&self, address: VirtualAddress, value: u64) -> Result<()> {
         let written = self.write_memory(address, &value.to_le_bytes()).await?;
         if written < 8 {
@@ -1591,18 +1302,11 @@ impl DebuggerHandle {
         Ok(())
     }
 
-    /// Writes bytes into a stopped inferior and returns how many were
-    /// written: all of them, or those before memory that cannot be written,
-    /// which fails when it is the first. Debugger breakpoint traps stay in
-    /// place, hiding the written bytes as they hid the old ones.
     pub async fn write_memory(&self, address: VirtualAddress, bytes: &[u8]) -> Result<u64> {
         let stop = self.stopped_selection().await?.stop;
         self.write_memory_at(stop, address, bytes).await
     }
 
-    /// Writes memory as [`Self::write_memory`] does, but only at `stop`:
-    /// once the program has left it, the write fails with
-    /// [`Error::StaleStop`].
     pub async fn write_memory_at(
         &self,
         stop: StopId,
@@ -1621,12 +1325,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Resolves a linker symbol to its address in the running process.
-    ///
-    /// The symbol may be any loaded module's, named as
-    /// [`SymbolInfo::answers_to`] reads names. Where several modules define
-    /// the name, the first in load order that exports it wins, as the
-    /// dynamic loader binds it; otherwise the name must be one address's.
     pub async fn runtime_address(&self, name: &str) -> Result<VirtualAddress> {
         let loaded = self.loaded_module().await?;
         let mut modules = vec![(loaded, self.module_image())];
@@ -1644,7 +1342,6 @@ impl DebuggerHandle {
         for (module, image) in &modules {
             let symbols = image.symbols_answering(name).collect::<Vec<_>>();
 
-            // A versioned name's default version is the one the loader binds.
             if let Some(exported) = symbols
                 .iter()
                 .filter(|symbol| symbol.exported())
@@ -1667,12 +1364,6 @@ impl DebuggerHandle {
         }
     }
 
-    /// Describes a process address by the loaded module, section, and symbol
-    /// containing it at the current stop.
-    ///
-    /// A code address is named by the symbol whose extent contains it, and a
-    /// data address only by a symbol whose declared storage contains it; the
-    /// nearest preceding symbol is never substituted.
     pub async fn describe_address(&self, address: VirtualAddress) -> Result<AddressDescription> {
         let selection = self.stopped_selection().await?;
 
@@ -1684,32 +1375,18 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Disassembles code at the current stop as the selected thread sees it.
-    ///
-    /// Bytes come from the stopped process or core dump with debugger
-    /// breakpoint traps hidden. Instructions are decoded only forward from
-    /// proven instruction starts, among them the selected thread's program
-    /// counter; see [`Disassembly`] for how unproven, unreadable, and
-    /// conflicting code is reported. Indirect branches name the targets the
-    /// stopped state gives them; see [`IndirectTarget`].
     pub async fn disassemble(&self, query: DisassemblyQuery) -> Result<Disassembly> {
         self.selected().await?.disassemble(query).await
     }
 
-    /// Resolves the selected frame's location to normalized function and
-    /// source metadata: where execution stopped in the innermost frame, and
-    /// the call in progress in an outer one.
     pub async fn current_location(&self) -> Result<ExecutionLocation> {
         self.selected().await?.location().await
     }
 
-    /// Lazily reads source lines surrounding the selected frame's location,
-    /// from the first place this handle's [`SourcePathMap`] finds the file.
     pub async fn source_context(&self, radius: u32) -> Result<SourceContext> {
         self.selected().await?.source_context(radius).await
     }
 
-    /// Reads source lines surrounding a source location of `module`.
     async fn source_context_at(
         &self,
         module: ModuleId,
@@ -1718,8 +1395,6 @@ impl DebuggerHandle {
     ) -> Result<SourceContext> {
         let location = location.ok_or(Error::SourceLocationUnavailable)?;
 
-        // Source files are identified within the image of the module that
-        // contains the frame's code.
         let file = self
             .loaded_module_image(module)
             .await?
@@ -1731,8 +1406,6 @@ impl DebuggerHandle {
             .await
     }
 
-    /// Reads the source lines within `radius` of `line` of the file at the
-    /// `recorded` path.
     async fn source_around(
         &self,
         recorded: Arc<PathBuf>,
@@ -1785,24 +1458,14 @@ impl DebuggerHandle {
         })
     }
 
-    /// Reads a source file a module image names, through the handle's
-    /// [`SourcePathMap`], returning the path read and its contents. Only
-    /// files the debug information names can be read this way.
     pub async fn read_source_file(&self, file: &SourceFile) -> Result<(PathBuf, String)> {
         self.read_source(&file.path).await
     }
 
-    /// Reads the source file at the `recorded` path a language runtime gave
-    /// one of the program's frames, as [`StackFrame::recorded`] has it, or
-    /// will give it, through the handle's [`SourcePathMap`]. A client that
-    /// serves files to others reads only paths its frames named this way,
-    /// or that are the program's own by rules it can state.
     pub async fn read_recorded_source(&self, recorded: &Path) -> Result<(PathBuf, String)> {
         self.read_source(recorded).await
     }
 
-    /// Reads the first candidate for a recorded source path that exists. A
-    /// file that exists but cannot be read is an error rather than skipped.
     async fn read_source(&self, recorded: &Path) -> Result<(PathBuf, String)> {
         let candidates = self.source_paths.candidates(recorded);
 
@@ -1825,28 +1488,18 @@ impl DebuggerHandle {
         })
     }
 
-    /// Returns an immutable snapshot of the debugger's current state.
     pub async fn snapshot(&self) -> Result<StateSnapshot> {
         self.request(|reply| Request::Snapshot { reply }).await
     }
 
-    /// One page of the tasks every language runtime in the stopped process
-    /// schedules, such as Go's goroutines, beginning at `from` or at the
-    /// first. A page holds at most `limit` tasks, and says why it may be
-    /// incomplete.
     pub async fn tasks(&self, from: Option<TaskCursor>, limit: usize) -> Result<TaskPage> {
         self.task_page(from, limit, false).await
     }
 
-    /// One page of the tasks that run the program's code, as
-    /// [`Self::tasks`] gives, leaving out those a runtime runs for its own
-    /// work before paging, so a page holds only the program's.
     pub async fn program_tasks(&self, from: Option<TaskCursor>, limit: usize) -> Result<TaskPage> {
         self.task_page(from, limit, true).await
     }
 
-    /// One page of the program's tasks, as [`Self::program_tasks`] gives,
-    /// at `stop`, which must still be the current stop.
     pub async fn program_tasks_at(
         &self,
         stop: StopId,
@@ -1880,23 +1533,19 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Reconstructs the selected thread's stack frames.
     pub async fn backtrace(&self) -> Result<Backtrace> {
         self.selected().await?.backtrace().await
     }
 
-    /// Reads the general register set of the selected frame.
     pub async fn registers(&self) -> Result<RegisterSnapshot> {
         self.selected().await?.registers().await
     }
 
-    /// Inspects every visible parameter and local variable in the selected frame.
     pub async fn variables(&self) -> Result<VariableSnapshot> {
         self.variables_with_limits(InspectionLimits::default())
             .await
     }
 
-    /// Inspects visible variables under explicit bounded resource limits.
     pub async fn variables_with_limits(
         &self,
         limits: InspectionLimits,
@@ -1904,7 +1553,6 @@ impl DebuggerHandle {
         self.selected().await?.variables_with_limits(limits).await
     }
 
-    /// Inspects the innermost visible data object with the supplied name.
     pub async fn variable(&self, name: impl Into<String>) -> Result<Variable> {
         let name = name.into();
         let snapshot = self
@@ -1923,14 +1571,10 @@ impl DebuggerHandle {
             .ok_or(Error::VariableNotFound(name))
     }
 
-    /// Evaluates an expression in the selected frame of the selected
-    /// stopped thread, reading only.
     pub async fn evaluate(&self, expression: &Expression) -> Result<Evaluation> {
         self.selected().await?.evaluate(expression).await
     }
 
-    /// Evaluates an expression in the selected frame, assigning when `mode`
-    /// allows, under explicit resource limits.
     pub async fn evaluate_with(
         &self,
         expression: &Expression,
@@ -1943,31 +1587,18 @@ impl DebuggerHandle {
             .await
     }
 
-    /// The type an expression has in the selected frame, reading no memory.
     pub async fn expression_type(&self, expression: &Expression) -> Result<TypeInfo> {
         self.selected().await?.expression_type(expression).await
     }
 
-    /// Why an expression's value in the selected frame is presented as it
-    /// is: the views its type matched, and how the one that binds presents
-    /// it.
     pub async fn explain_view(&self, expression: &Expression) -> Result<ViewExplanation> {
         self.selected().await?.explain_view(expression).await
     }
 
-    /// Presents an expression's value in the selected frame, and its first
-    /// page of children, and returns a recording of each kernel run that
-    /// took, as text that `microscope views replay` replays without a program.
     pub async fn record_kernels(&self, expression: &Expression) -> Result<Vec<String>> {
         self.selected().await?.record_kernels(expression).await
     }
 
-    /// Presents values with these view files ahead of the views modules
-    /// embed and the built-in views, replacing any loaded before, with the
-    /// kernels and renderers beside them, and returns what kept parts of
-    /// them out. Files are parsed, and kernels loaded, here, before the
-    /// debugger sees them; a kernel or renderer whose name an earlier one
-    /// has is left out.
     pub async fn load_views(
         &self,
         files: &[(&str, &str)],
@@ -2002,53 +1633,36 @@ impl DebuggerHandle {
         Ok(errors)
     }
 
-    /// The views whose patterns name the types `name` means in each loaded
-    /// module, and why each did not bind, with no process needed.
     pub async fn explain_type(&self, name: &str) -> Result<Vec<TypeViews>> {
         let name = name.to_owned();
         self.request(|reply| Request::ExplainType { name, reply })
             .await
     }
 
-    /// How every loaded module's types are presented: each type a view's
-    /// pattern names, with the views tried, and the loaded and embedded
-    /// views that present no type. Needs no process.
     pub async fn check_views(&self) -> Result<ViewCheck> {
         self.request(|reply| Request::CheckViews { reply }).await
     }
 
-    /// Turns presenting values with views on or off.
     pub async fn enable_views(&self, enabled: bool) -> Result<()> {
         self.request(|reply| Request::EnableViews { enabled, reply })
             .await
     }
 
-    /// Chooses whether steps stop in a language runtime's own code, as
-    /// they otherwise pass through it to the program's code it calls, and
-    /// returns the previous choice. The choice applies to the steps that
-    /// begin after it and lasts for the whole session. Frames keep their
-    /// roles either way: backtraces fold the runtime's frames as before.
     pub async fn set_step_into_runtime(&self, enter: bool) -> Result<bool> {
         self.request(|reply| Request::SetStepIntoRuntime { enter, reply })
             .await
     }
 
-    /// Chooses the source files steps pass through without stopping, as
-    /// they pass through a runtime's own code, for the steps that begin
-    /// after it. Steps through Node's inspector honor it.
     pub async fn set_step_skips(&self, skips: StepSkips) -> Result<()> {
         self.request(|reply| Request::SetStepSkips { skips, reply })
             .await
     }
 
-    /// Evaluates an expression in the selected frame for its value, reading
-    /// only. A range has no single value; evaluate it for its elements.
     pub async fn inspect(&self, expression: &Expression) -> Result<InspectedValue> {
         self.inspect_with_limits(expression, InspectionLimits::default())
             .await
     }
 
-    /// Evaluates an expression for its value under explicit resource limits.
     pub async fn inspect_with_limits(
         &self,
         expression: &Expression,
@@ -2060,9 +1674,6 @@ impl DebuggerHandle {
             .await
     }
 
-    /// Inspects one global of the main executable image as the selected
-    /// thread sees it. A [`GlobalVariableId`] is unique only within its
-    /// image; use [`Self::loaded_global`] for a shared library's.
     pub async fn main_global(&self, id: GlobalVariableId) -> Result<Variable> {
         let module = self.loaded_module().await?;
 
@@ -2074,8 +1685,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Inspects one exact global in a specific loaded module as the selected
-    /// thread sees it.
     pub async fn loaded_global(&self, global: GlobalVariableReference) -> Result<Variable> {
         self.selected()
             .await?
@@ -2083,8 +1692,6 @@ impl DebuggerHandle {
             .await
     }
 
-    /// Explicitly dereferences a pointer or reference value produced at the
-    /// current stopped snapshot.
     pub async fn dereference(
         &self,
         reference: Box<DereferenceReference>,
@@ -2093,7 +1700,6 @@ impl DebuggerHandle {
             .await
     }
 
-    /// Dereferences a value under explicit bounded resource limits.
     pub async fn dereference_with_limits(
         &self,
         reference: Box<DereferenceReference>,
@@ -2107,7 +1713,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Evaluates one arbitrary bounded page from an aggregate child capability.
     pub async fn value_children(
         &self,
         reference: Arc<ValueChildrenReference>,
@@ -2117,7 +1722,6 @@ impl DebuggerHandle {
             .await
     }
 
-    /// Evaluates one child page under explicit bounded resource limits.
     pub async fn value_children_with_limits(
         &self,
         reference: Arc<ValueChildrenReference>,
@@ -2133,9 +1737,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Reads the inputs of one drawing a value's view offers, at the stop
-    /// its reference names, under explicit bounded resource limits. Only
-    /// the web page draws.
     pub async fn visualizer_inputs(
         &self,
         reference: Arc<VisualizerReference>,
@@ -2149,10 +1750,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Reads the elements of a sequence of numbers at once, when they lie
-    /// next to each other in memory and take at most `most_bytes`, as an
-    /// array's, a slice's, and a view's of the form `range(n) => p[i]` do.
-    /// `None` means they do not, and are read as children.
     pub async fn numbers(
         &self,
         reference: Arc<ValueChildrenReference>,
@@ -2166,40 +1763,24 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Every renderer drawings may name, in the order a name is looked up:
-    /// the session's, each module's own, then the built-in ones.
     pub async fn renderers(&self) -> Result<Arc<[Arc<Renderer>]>> {
         self.request(|reply| Request::Renderers { reply }).await
     }
 
-    /// Lists one filtered, bounded page of immutable global metadata.
     pub async fn globals(&self, query: GlobalVariableQuery) -> Result<GlobalVariablePage> {
         self.request(|reply| Request::Globals { query, reply })
             .await
     }
 
-    /// Returns the process-wide loaded-module registry.
     pub async fn loaded_modules(&self) -> Result<LoadedModuleSnapshot> {
         self.request(|reply| Request::LoadedModules { reply }).await
     }
 
-    /// Returns the immutable debug metadata of one loaded module, such as the
-    /// module owning a backtrace frame.
     pub async fn loaded_module_image(&self, module: ModuleId) -> Result<Arc<ModuleImage>> {
         self.request(|reply| Request::ModuleImage { module, reply })
             .await
     }
 
-    /// Selects a frame of the selected thread, numbered as
-    /// [`Self::backtrace`] presents it, for implicit inspection commands:
-    /// variables, expressions, watch targets, the current location and its
-    /// source, and stepping out. Every new stop selects the innermost frame.
-    ///
-    /// Values in an outer frame come from the registers its callees saved.
-    /// A register a callee may overwrite without saving it is unknown there,
-    /// so a value held in one is
-    /// [unavailable](VariableUnavailableReason::RegisterNotSaved) rather
-    /// than read from the stopped thread.
     pub async fn select_frame(&self, frame: StackFrameId) -> Result<StackFrame> {
         let selection = self.stopped_selection().await?;
 
@@ -2212,8 +1793,6 @@ impl DebuggerHandle {
         .await
     }
 
-    /// Selects the stopped thread or task used by implicit inspection
-    /// commands.
     pub async fn select_context(&self, context: impl Into<ExecutionContext>) -> Result<()> {
         let selection = self.stopped_selection().await?;
         let context = context.into();
@@ -2230,8 +1809,6 @@ impl DebuggerHandle {
         self.request(|reply| Request::LoadedModule { reply }).await
     }
 
-    /// Returns a view of the selected frame of the selected thread at the
-    /// current stop.
     async fn selected(&self) -> Result<StopView<'_>> {
         let selection = self.stopped_selection().await?;
         Ok(self.at(StopContext {
@@ -2241,9 +1818,6 @@ impl DebuggerHandle {
         }))
     }
 
-    /// Inspects one frame of one thread at one stop, independently of the
-    /// selected thread and frame. Every request through the view fails with
-    /// [`Error::StaleStop`] once execution has left that stop.
     #[must_use]
     pub const fn at(&self, context: StopContext) -> StopView<'_> {
         StopView {
@@ -2257,27 +1831,10 @@ impl DebuggerHandle {
             .await
     }
 
-    /// Waits for the stop or exit that ends `execution`.
-    ///
-    /// The wait is cancelled if the inferior is detached first, such as by a
-    /// concurrent shutdown, or if the controller exits. Every handle keeps
-    /// the event channel open, so the controller's request queue closing is
-    /// what reveals its exit.
-    ///
-    /// Falling behind loses the oldest events, and the one that ends
-    /// `execution` is most likely newer: a burst of them, as a stop that
-    /// loads many modules sends, comes before it. So a lag asks the
-    /// controller whether `execution` still runs. If it does, its end is
-    /// still to come; if not, every event before the answer is already
-    /// sent, and those still held are searched for its end, which fails
-    /// only where it was lost.
-    /// Waits for the controller to end, as it does once shut down, or once
-    /// it panicked and released or killed its process.
     pub(crate) async fn ended(&self) {
         self.requests.closed().await;
     }
 
-    /// Whether the controller has ended, as [`Self::ended`] waits for.
     #[cfg(any(test, feature = "sim"))]
     pub(crate) fn has_ended(&self) -> bool {
         self.requests.is_closed()
@@ -2347,24 +1904,15 @@ impl DebuggerHandle {
     }
 }
 
-/// Names one frame of one thread or task at one stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StopContext {
-    /// The stop the frame belongs to.
     pub stop: StopId,
 
-    /// The thread or task whose stack holds the frame.
     pub execution: ExecutionContext,
 
-    /// The frame, numbered as [`DebuggerHandle::backtrace`] presents it.
     pub frame: StackFrameId,
 }
 
-/// Inspects one explicit frame of one stopped thread; see
-/// [`DebuggerHandle::at`].
-///
-/// Values in an outer frame come from the registers its callees saved, as
-/// for [`DebuggerHandle::select_frame`].
 #[derive(Clone, Copy)]
 pub struct StopView<'a> {
     handle: &'a DebuggerHandle,
@@ -2372,8 +1920,6 @@ pub struct StopView<'a> {
 }
 
 impl StopView<'_> {
-    /// Reconstructs the thread's stack frames; the view's frame does not
-    /// limit them.
     pub async fn backtrace(&self) -> Result<Backtrace> {
         let context = self.context;
         self.handle
@@ -2385,7 +1931,6 @@ impl StopView<'_> {
             .await
     }
 
-    /// Reads the frame's general registers.
     pub async fn registers(&self) -> Result<RegisterSnapshot> {
         let context = self.context;
         self.handle
@@ -2398,9 +1943,6 @@ impl StopView<'_> {
             .await
     }
 
-    /// The calls of the line the frame's thread is stopped at that a step
-    /// into could go into, in address order. Only the innermost frame has
-    /// any.
     pub async fn step_targets(&self) -> Result<Arc<[StepTarget]>> {
         let context = self.context;
         if context.frame != StackFrameId::INNERMOST {
@@ -2418,7 +1960,6 @@ impl StopView<'_> {
             .await
     }
 
-    /// Resolves the frame's location to function and source metadata.
     pub async fn location(&self) -> Result<ExecutionLocation> {
         let context = self.context;
         self.handle
@@ -2431,16 +1972,11 @@ impl StopView<'_> {
             .await
     }
 
-    /// Lazily reads source lines surrounding the frame's location through
-    /// the handle's [`SourcePathMap`].
     pub async fn source_context(&self, radius: u32) -> Result<SourceContext> {
         let (module, source) = match self.location().await {
             Ok(location) if location.image.source.is_some() => {
                 (location.module, location.image.source)
             }
-            // A runtime's frame can run code its image has no source for,
-            // such as V8's interpreter or compiled code; the runtime
-            // recorded where it is.
             Ok(location) => {
                 let frame = self.selected_trace_frame().await?;
                 if let Some(context) = self.recorded_source(&frame, radius).await {
@@ -2448,9 +1984,6 @@ impl StopView<'_> {
                 }
                 (location.module, location.image.source)
             }
-            // A suspended task's frame with no code to locate still waits
-            // at a line, and an interpreted frame runs one its runtime
-            // recorded.
             Err(Error::FrameSuspended | Error::FrameInterpreted) => {
                 let frame = self.selected_trace_frame().await?;
                 if let Some(context) = self.recorded_source(&frame, radius).await {
@@ -2467,7 +2000,6 @@ impl StopView<'_> {
         self.handle.source_context_at(module, source, radius).await
     }
 
-    /// The selected frame, as the backtrace presents it.
     async fn selected_trace_frame(&self) -> Result<StackFrame> {
         let trace = self.backtrace().await?;
         trace
@@ -2478,8 +2010,6 @@ impl StopView<'_> {
             .ok_or(Error::SourceLocationUnavailable)
     }
 
-    /// The source around the place `frame`'s runtime recorded, or `None`
-    /// where it recorded none.
     async fn recorded_source(
         &self,
         frame: &StackFrame,
@@ -2503,13 +2033,11 @@ impl StopView<'_> {
         )
     }
 
-    /// Inspects every visible parameter and local variable of the frame.
     pub async fn variables(&self) -> Result<VariableSnapshot> {
         self.variables_with_limits(InspectionLimits::default())
             .await
     }
 
-    /// Inspects the frame's variables under explicit resource limits.
     pub async fn variables_with_limits(
         &self,
         limits: InspectionLimits,
@@ -2517,8 +2045,6 @@ impl StopView<'_> {
         self.variable_query(VariableQuery::All, limits).await
     }
 
-    /// Inspects one exact global as the frame's thread sees it, such as its
-    /// instance of a thread-local variable.
     pub async fn global_with_limits(
         &self,
         global: GlobalVariableReference,
@@ -2553,7 +2079,6 @@ impl StopView<'_> {
             .await
     }
 
-    /// Evaluates an expression in the frame, reading only.
     pub async fn evaluate(&self, expression: &Expression) -> Result<Evaluation> {
         self.evaluate_with(
             expression,
@@ -2563,8 +2088,6 @@ impl StopView<'_> {
         .await
     }
 
-    /// Evaluates an expression in the frame, assigning when `mode` allows,
-    /// under explicit resource limits.
     pub async fn evaluate_with(
         &self,
         expression: &Expression,
@@ -2587,7 +2110,6 @@ impl StopView<'_> {
             .await
     }
 
-    /// Why an expression's value in the frame is presented as it is.
     pub async fn explain_view(&self, expression: &Expression) -> Result<ViewExplanation> {
         let context = self.context;
         let expression = expression.clone();
@@ -2603,8 +2125,6 @@ impl StopView<'_> {
             .await
     }
 
-    /// Presents an expression's value in the frame, and its first page of
-    /// children, and records each kernel run that took.
     pub async fn record_kernels(&self, expression: &Expression) -> Result<Vec<String>> {
         let context = self.context;
         let expression = expression.clone();
@@ -2620,7 +2140,6 @@ impl StopView<'_> {
             .await
     }
 
-    /// The type an expression has in the frame, reading no memory.
     pub async fn expression_type(&self, expression: &Expression) -> Result<TypeInfo> {
         let context = self.context;
         let expression = expression.clone();
@@ -2636,7 +2155,6 @@ impl StopView<'_> {
             .await
     }
 
-    /// Evaluates an expression for its value under explicit resource limits.
     pub async fn inspect_with_limits(
         &self,
         expression: &Expression,
@@ -2653,8 +2171,6 @@ impl StopView<'_> {
         }
     }
 
-    /// Resolves an expression in the frame to the memory it occupies and
-    /// the lifetime of that storage.
     pub async fn resolve_watch_target(&self, expression: &Expression) -> Result<WatchTarget> {
         let context = self.context;
         let expression = expression.clone();
@@ -2670,8 +2186,6 @@ impl StopView<'_> {
             .await
     }
 
-    /// Disassembles code as the thread sees it at the stop; see
-    /// [`DebuggerHandle::disassemble`].
     pub async fn disassemble(&self, query: DisassemblyQuery) -> Result<Disassembly> {
         let context = self.context;
         self.handle
@@ -2685,8 +2199,6 @@ impl StopView<'_> {
     }
 }
 
-/// The stop that implicit inspection reads and the thread and frame selected
-/// in it.
 #[derive(Clone, Copy)]
 pub(crate) struct StoppedSelection {
     pub(crate) process: ProcessId,
@@ -2694,8 +2206,6 @@ pub(crate) struct StoppedSelection {
     pub(crate) execution: ExecutionContext,
     pub(crate) frame: StackFrameId,
 
-    /// Whether the selected frame is one a runtime interprets, which it
-    /// steps from wherever the frame is.
     pub(crate) interpreted: bool,
 }
 
@@ -2709,8 +2219,6 @@ mod shutdown_tests {
 
     use super::{ControllerMessage, Debugger, Error, Request, backend};
 
-    /// A debugger whose controller is the thread `start` makes, given the
-    /// queue it serves.
     fn debugger(
         start: impl FnOnce(mpsc::Receiver<ControllerMessage>) -> JoinHandle<()>,
     ) -> Debugger {
@@ -2735,8 +2243,6 @@ mod shutdown_tests {
         .expect("start the debugger")
     }
 
-    /// The controller closes its queue, then answers the shutdown it held:
-    /// the caller, woken by the close, still gets the answer.
     #[tokio::test]
     async fn a_shutdown_answered_after_its_queue_closed_succeeds() {
         let debugger = debugger(|mut queue| {
@@ -2752,8 +2258,6 @@ mod shutdown_tests {
         assert!(matches!(debugger.shutdown().await, Ok(())));
     }
 
-    /// A controller that ended without answering drops the request: the
-    /// shutdown is cancelled.
     #[tokio::test]
     async fn a_shutdown_dropped_unanswered_is_cancelled() {
         let debugger = debugger(|mut queue| thread::spawn(move || drop(queue.blocking_recv())));
@@ -2763,9 +2267,6 @@ mod shutdown_tests {
         ));
     }
 
-    /// A controller that panicked dropped its queue before the shutdown
-    /// came, so nothing ever reads the request: the shutdown says the
-    /// controller panicked, at once, rather than timing out.
     #[tokio::test]
     async fn a_shutdown_after_the_controller_panicked_says_so() {
         let debugger = debugger(|queue| {

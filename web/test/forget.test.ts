@@ -1,6 +1,3 @@
-// What a tab forgets of its cached answers as the session, the stop, the
-// program's values, its settings, or the connection change.
-
 import { describe, expect, it } from "vitest";
 
 import type { Connection } from "../src/connection";
@@ -9,7 +6,6 @@ import { forget, type Marks } from "../src/forget";
 import { type Method, RequestError } from "../src/protocol";
 import { Recall } from "../src/tree";
 
-/** A cache whose every request is counted by method. */
 function counted() {
   const asked = new Map<string, number>();
   const connection = {
@@ -20,7 +16,7 @@ function counted() {
   } as unknown as Connection;
   const answers = new Cache();
   const ask = (method: Method) => answers.get(connection, method, { stop: 1 });
-  /** The methods whose answers were forgotten, by asking each again. */
+
   const forgotten = (methods: readonly Method[]) =>
     methods.filter((method) => {
       const before = asked.get(method) ?? 0;
@@ -124,7 +120,6 @@ describe("forgetting cached answers", () => {
   });
 
   it("forgets every answer when another process is selected, keeping values", () => {
-    // Each process has its own stops, so its answers may share another's keys.
     const { cleared, forgot, values } = forgets({ member: 2 });
     expect(cleared).toBe(false);
     expect(forgot).toEqual(METHODS);
@@ -150,7 +145,7 @@ describe("the answer cache", () => {
       answers.get(connection, "scopes", { stop });
     }
     expect(asked).toBe(401);
-    // The newest is kept and the oldest went first.
+
     answers.get(connection, "scopes", { stop: 400 });
     expect(asked).toBe(401);
     answers.get(connection, "scopes", { stop: 0 });
@@ -165,7 +160,7 @@ describe("the answer cache", () => {
     answers.forget("scopes ");
     expect(answers.version()).toBe(version + 1);
     expect(forgotten(["scopes", "sources"])).toEqual(["scopes"]);
-    // Forgetting nothing changes nothing.
+
     answers.forget("nothing ");
     expect(answers.version()).toBe(version + 1);
   });
@@ -186,8 +181,6 @@ describe("the answer cache", () => {
     expect((await failed.promise).ok).toBe(false);
     const version = answers.version();
 
-    // The drop itself does not tell readers to ask again, or they would
-    // ask in a loop while the server is away.
     expect(answers.version()).toBe(version);
 
     up = true;

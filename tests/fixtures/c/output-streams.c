@@ -1,5 +1,5 @@
-// Writes interleaved lines to stdout and stderr, bytes that are not UTF-8,
-// a burst larger than a pipe holds, and what it read from stdin.
+
+
 #include <stdio.h>
 #include <string.h>
 

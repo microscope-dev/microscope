@@ -1,10 +1,3 @@
-//! What a Go fixture reports about itself, and a session that collects it.
-//!
-//! A fixture prints tab-separated `TRUTH` lines at each checkpoint, then
-//! calls `main.reached`, where the session stops. The lines come from the
-//! runtime's own goroutine dump, so they stay right when the toolchain
-//! moves.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -14,27 +7,19 @@ use microscope::{LaunchOptions, StopReason, TaskPage, TaskSnapshot, TaskState};
 use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 
-/// One goroutine as the runtime's dump shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DumpedTask {
-    /// Its status: the reason it waits, or a word such as `running`.
     pub status: String,
 
-    /// Its frames, innermost first, without the runtime's own: each a
-    /// function and its `file:line`.
     pub frames: Vec<(String, String)>,
 }
 
-/// What the program reported at one checkpoint.
 #[derive(Debug, Default)]
 pub struct Checkpoint {
-    /// `runtime.NumGoroutine()`.
     pub count: usize,
 
-    /// The goroutine that reached the checkpoint, and its thread.
     pub main: (u64, u64),
 
-    /// Every goroutine the program started, by id.
     pub tasks: BTreeMap<u64, DumpedTask>,
 }
 
@@ -69,10 +54,6 @@ impl Checkpoint {
         checkpoint
     }
 
-    /// Whether the program's goroutines among `tasks` are exactly those
-    /// the runtime dumped, each in the state the dump gives it. The
-    /// runtime's own goroutines, which the dump leaves out, are not
-    /// compared.
     pub fn check_tasks(&self, tasks: &[TaskSnapshot]) -> Result<(), String> {
         let program = tasks
             .iter()
@@ -98,8 +79,6 @@ impl Checkpoint {
         for task in program {
             let dumped = &self.tasks[&task.id.number];
 
-            // The runtime describes a goroutine by what it waits for, or
-            // by its status.
             if task.detail.as_deref() != Some(dumped.status.as_str()) {
                 return Err(format!("describes {task:?} unlike {dumped:?}"));
             }
@@ -120,8 +99,6 @@ impl Checkpoint {
 }
 
 impl DumpedTask {
-    /// Whether frames shown as functions and `file:line`, innermost first,
-    /// are those the dump shows.
     pub fn check_frames(&self, shown: &[(String, String)]) -> Result<(), String> {
         if shown == self.frames.as_slice() {
             Ok(())
@@ -131,7 +108,6 @@ impl DumpedTask {
     }
 }
 
-/// A debugged Go program and what it printed.
 pub struct GoSession {
     pub scenario: Scenario,
     pub fixture: String,
@@ -140,7 +116,6 @@ pub struct GoSession {
 }
 
 impl GoSession {
-    /// Launches a fixture that stops at each of its checkpoints.
     pub async fn launch(fixture: &str) -> Self {
         let scratch = ScratchDir::new("go");
         let output = scratch.path().join("stdout");
@@ -168,8 +143,6 @@ impl GoSession {
         }
     }
 
-    /// What the program reported at its latest checkpoint, which must be
-    /// `name`.
     pub fn checkpoint(&self, name: &str) -> Checkpoint {
         let report = Report::read(&self.output);
         let (latest, lines) = report
@@ -179,7 +152,6 @@ impl GoSession {
         Checkpoint::parse(lines)
     }
 
-    /// Every task of the stopped program, read a page at a time.
     pub async fn tasks(&self, page: usize) -> (Vec<TaskSnapshot>, Vec<String>) {
         let mut tasks = Vec::new();
         let mut gaps = Vec::new();
@@ -221,8 +193,6 @@ fn fields(line: &[&str]) -> Vec<String> {
     line.iter().map(ToString::to_string).collect()
 }
 
-/// The shared reader of `TRUTH` lines, which every suite's comparisons
-/// rest on.
 #[test]
 fn a_checkpoint_holds_the_lines_up_to_the_next() {
     let report = Report::parse(PRINTED);

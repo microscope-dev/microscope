@@ -1,16 +1,4 @@
 // @ts-check
-// The built-in line-plot: numbers in order, joined by straight segments.
-//
-//   values   numbers, or
-//   series   a map or record of up to eight names to numbers
-//   x        optional numbers, one per value, for the horizontal axis
-//   log      optional; true draws the vertical axis in powers of ten
-//
-// Past one value a pixel column, each column keeps its first, lowest,
-// highest, and last value (M4), so a one-sample spike still shows, and a
-// band shades each column's range. NaN leaves a gap and ±∞ is an arrow at
-// the edge, both counted in the caption. Each column's title lists every
-// value there. A faint ghost is the line at the stop before.
 
 const HEIGHT = 260;
 const TOP = 26;
@@ -32,7 +20,6 @@ microscope.draw((input, { previous, width, paths }) => {
   const bottom = HEIGHT - BOTTOM;
   const columns = Math.max(1, Math.floor(right - LEFT));
 
-  // The vertical axis fits every finite value, now and at the stop before.
   let lo = Number.POSITIVE_INFINITY;
   let hi = Number.NEGATIVE_INFINITY;
   let nonPositive = 0;
@@ -61,7 +48,6 @@ microscope.draw((input, { previous, width, paths }) => {
     return bottom - t * (bottom - TOP);
   };
 
-  // The horizontal axis: the given x, or each value's index.
   let xlo = 0;
   let xhi = Math.max(1, count - 1);
   let sorted = true;
@@ -91,8 +77,7 @@ microscope.draw((input, { previous, width, paths }) => {
   const decimated = count > columns && sorted;
   const column = (i) => Math.min(columns - 1, Math.max(0, Math.floor(toX(i) - LEFT)));
   const columnX = (c) => LEFT + c + 0.5;
-  // Each pixel column's values, first to last, when there are more values
-  // than columns.
+
   const spans = [];
   if (decimated) {
     for (let i = 0; i < count; i++) {
@@ -107,7 +92,7 @@ microscope.draw((input, { previous, width, paths }) => {
   }
 
   const shapes = [];
-  // Gridlines and ticks, recessive.
+
   for (const tick of axis.ticks) {
     const y = toY(tick);
     shapes.push(
@@ -143,7 +128,6 @@ microscope.draw((input, { previous, width, paths }) => {
     );
   }
 
-  // The stop before, as a faint line beneath.
   let ghosted = false;
   for (const ghost of ghosts) {
     const now = series.find((line) => line.name === ghost.name);
@@ -175,7 +159,7 @@ microscope.draw((input, { previous, width, paths }) => {
     for (const points of drawn.lines) {
       shapes.push(microscope.polyline({ points, stroke: color, strokeWidth: 2 }));
     }
-    // Markers, when points stand at least 6 px apart.
+
     if (!decimated && count > 1 && (right - LEFT) / (count - 1) >= 6) {
       for (let i = 0; i < line.values.length; i++) {
         const v = line.values[i];
@@ -207,7 +191,6 @@ microscope.draw((input, { previous, width, paths }) => {
     }
   }
 
-  // Every column, or every value, is a mark whose title lists what is there.
   const marks = decimated
     ? spans
     : Array.from({ length: count }, (_, i) => ({ column: i, first: i, last: i }));
@@ -246,8 +229,6 @@ microscope.draw((input, { previous, width, paths }) => {
     );
   }
 
-  // A legend for several series or a ghost, and each line's last value at
-  // its end.
   if (series.length > 1 || ghosted) {
     const keys = traced.map(({ line }) => ({ name: line.name, stroke: theme.series[line.hue] }));
     if (ghosted) keys.push({ name: "stop before", stroke: theme.ink3 });
@@ -306,7 +287,6 @@ microscope.draw((input, { previous, width, paths }) => {
     );
   }
 
-  // The caption: how many, the extremes, and what is not drawn as a value.
   const caption = [series.length > 1 ? `${series.length} series × ${count}` : `n=${count}`];
   /** @type {{ line: (typeof series)[number], at: number }[]} */
   const lows = [];
@@ -348,7 +328,6 @@ microscope.draw((input, { previous, width, paths }) => {
   return microscope.picture({ width: W, height: HEIGHT, shapes, caption: caption.join(" · ") });
 });
 
-/** The series to draw: their names, numbers, and hues, which follow names. */
 function seriesOf(input) {
   if (input.values !== undefined && input.values !== null) {
     return [{ name: "values", values: numbers(input.values, "values"), raw: input.values, hue: 0 }];
@@ -371,7 +350,6 @@ function seriesOf(input) {
   }));
 }
 
-/** The previous stop's series, or none when its inputs no longer read. */
 function safeSeries(previous) {
   try {
     return seriesOf(previous);
@@ -388,7 +366,6 @@ function seriesCount(series) {
   }
 }
 
-/** A map's [key, value] pairs, or a record's members. */
 function entries(value, what) {
   if (Array.isArray(value) && value.every((entry) => Array.isArray(entry) && entry.length === 2)) {
     return value;
@@ -436,8 +413,6 @@ function describe(value) {
   return typeof value === "object" ? "a record" : `a ${typeof value}`;
 }
 
-/** The value at `i` exactly as the program holds it: a 64-bit integer
- * whole, a float as the shortest text that reads back as it. */
 function exact(v, raw, i) {
   const held = raw !== undefined && raw !== null && typeof raw === "object" ? raw[i] : undefined;
   if (typeof held === "bigint") return String(held);
@@ -451,16 +426,12 @@ function exact(v, raw, i) {
   return String(v);
 }
 
-/** A caption's number: integers whole, floats to six significant digits;
- * titles and the Table have every digit. */
 function brief(text) {
   return /^-?\d*\.\d{7,}|e/iu.test(text) && Number.isFinite(Number(text))
     ? String(Number(Number(text).toPrecision(6)))
     : text;
 }
 
-/** The polylines, bands, and edges of one series, decimated by column
- * when `spans` lists each column's values. */
 function trace(values, toX, toY, spans, columnX, log) {
   const lines = [];
   const bands = [];
@@ -528,7 +499,6 @@ function trace(values, toX, toY, spans, columnX, log) {
   return { lines, bands, infinities, nans };
 }
 
-/** Where the lowest and highest finite values of `first..=last` are. */
 function extremes(values, first, last) {
   let min = -1;
   let max = -1;
@@ -560,7 +530,6 @@ function meanOf(values) {
   return n === 0 ? null : total / n;
 }
 
-/** Round ticks that cover lo..hi: steps of 1, 2, or 5 times a power of ten. */
 function nice(lo, hi, count = 5) {
   if (lo === hi) {
     const pad = Math.abs(lo) / 10 || 1;
@@ -592,7 +561,6 @@ function logTicks(lo, hi) {
   return { lo: start, hi: end === start ? start * 10 : end, ticks };
 }
 
-/** A tick's label: short, with K, M, or G past ten thousand. */
 function label(v) {
   const a = Math.abs(v);
   if (a >= 1e4) {

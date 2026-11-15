@@ -1,6 +1,3 @@
-//! A dependency-free ELF64 transport. The hook preserves argument registers
-//! and returns. A separate reader loads the published command sequence in
-//! one aligned native instruction; command data occupies a writable segment.
 pub const SYMBOL: &str = "microscope_python_hook";
 pub const SEQUENCE_SYMBOL: &str = "microscope_python_sequence";
 pub const CONTROL_SYMBOL: &str = "microscope_python_control";
@@ -9,8 +6,6 @@ pub const CONTROL_HEADER: usize = 32;
 pub const CONTROL_CAPACITY: u32 = 64 * 1024;
 pub const CONTROL_SIZE: usize = CONTROL_HEADER + CONTROL_CAPACITY as usize;
 pub const CONTROL_MAGIC: &[u8; 8] = b"MICPYC02";
-/// glibc before 2.35 relocates the dynamic section in place, so it follows
-/// the command slot in the writable segment.
 const DYNAMIC_OFFSET: usize = CONTROL_OFFSET + CONTROL_SIZE;
 const DYNAMIC_SIZE: usize = 96;
 
@@ -102,11 +97,9 @@ pub fn library() -> Vec<u8> {
 
     put(512, &[0xf3, 0x0f, 0x1e, 0xfa, 0xc3]);
 
-    // ENDBR64; one aligned 64-bit load of the published sequence; RET.
     put(528, &[0xf3, 0x0f, 0x1e, 0xfa, 0x48, 0x8b, 0x05]);
     put(535, &(4104_i32 - 539).to_le_bytes());
     put(539, &[0xc3]);
-    // Null symbol at 544; the function at 568; the control object at 592.
     put(568, &1_u32.to_le_bytes());
     put(572, &[0x12, 0]);
     put(574, &1_u16.to_le_bytes());

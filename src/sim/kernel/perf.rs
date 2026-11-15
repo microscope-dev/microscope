@@ -1,52 +1,28 @@
-//! Perf samples (K-PERF-*): what the kernel writes when it samples a
-//! thread in user code, for the events microscope's profiler opens, byte for
-//! byte as the recorder's decoder reads them.
-//!
-//! The kernel takes no sample of its own accord. A probe arms an execute
-//! breakpoint, which samples every thread of a process each time it
-//! reaches an address, as `PERF_TYPE_BREAKPOINT` does; the world samples
-//! threads where they are, as a clock event's tick would find them.
-
 use super::{Kernel, Tgid, Tid};
 use crate::sim::cpu::{RBP, RSP, Registers};
 use crate::sim::memory::AddressSpace;
 
-/// `PERF_RECORD_SAMPLE`, and the `misc` of one taken in user code.
 const RECORD_SAMPLE: u32 = 9;
 const MISC_USER: u16 = 2;
 
-/// The callchain's mark before the user addresses.
 const CONTEXT_USER: u64 = (-512_i64).cast_unsigned();
 
-/// `PERF_SAMPLE_REGS_ABI_64`.
 const ABI_64: u64 = 2;
 
-/// The most addresses a chain holds: the events' `sample_max_stack`.
 const MAX_STACK: usize = 127;
 
-/// The end of user memory, `TASK_SIZE_MAX`.
 const TASK_SIZE: u64 = 0x7fff_ffff_f000;
 
-/// An execute breakpoint sampling every thread of one process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Breakpoint {
     pub tgid: Tgid,
     pub address: u64,
     pub stack_bytes: u32,
 
-    /// The records written so far, as a ring holds them.
     pub records: Vec<u8>,
 }
 
 impl Kernel {
-    /// The record of a sample of `tid` where it is now, in user code,
-    /// copying at most `stack_bytes` of its stack, which is a multiple of
-    /// eight.
-    ///
-    /// K-PERF-1: the sample's fields are in the order of the events'
-    /// `sample_type`. Its chain is `PERF_CONTEXT_USER`, the instruction
-    /// pointer, and the frame-pointer walk (K-PERF-2); its registers are
-    /// the thread's, in perf's numbering; its stack is K-PERF-3's copy.
     pub fn sample(&mut self, tid: Tid, stack_bytes: u32) -> Vec<u8> {
         let thread = &self.threads[&tid];
         let space = &self.processes[&thread.tgid].space;
@@ -104,8 +80,6 @@ impl Kernel {
         record
     }
 
-    /// Samples `tid` if an armed breakpoint covers the instruction it is
-    /// about to execute (K-PERF-4).
     pub(super) fn sample_breakpoint(&mut self, tid: Tid) {
         let thread = &self.threads[&tid];
         let Some(breakpoint) = &self.perf else {
@@ -123,10 +97,6 @@ impl Kernel {
     }
 }
 
-/// K-PERF-2: the kernel's walk from `link`: while the two words at the
-/// link lie below the end of user memory in present pages, the upper is
-/// the next return address and the lower the next link. A walk that fills
-/// the chain stops there, which no probe pins.
 fn walk_frames(space: &AddressSpace, mut link: u64, chain: &mut Vec<u64>) {
     while chain.len() - 1 < MAX_STACK {
         if link.checked_add(16).is_none_or(|end| end > TASK_SIZE) || space.present(link, 16) < 16 {
@@ -142,8 +112,6 @@ fn walk_frames(space: &AddressSpace, mut link: u64, chain: &mut Vec<u64>) {
     }
 }
 
-/// The registers [`decode::REGISTERS`] asks for, in perf's order: ax, bx,
-/// cx, dx, si, di, bp, sp, ip, flags, then r8 to r15.
 pub fn perf_registers(registers: &Registers) -> impl Iterator<Item = u64> + '_ {
     let general = &registers.general;
     [
@@ -162,9 +130,6 @@ pub fn perf_registers(registers: &Registers) -> impl Iterator<Item = u64> + '_ {
     .chain(general[8..].iter().copied())
 }
 
-/// K-PERF-3: the bytes of stack a sample asks for: what the event asks,
-/// no more than reach the end of user memory, and, where the record would
-/// pass 64 KiB, what still fits, rounded up to a word.
 fn stack_size(asked: u32, header: usize, sp: u64) -> u64 {
     let header = header + 16;
     let fits = u64::from(u16::MAX).min(TASK_SIZE.saturating_sub(sp));
@@ -176,8 +141,6 @@ fn stack_size(asked: u32, header: usize, sp: u64) -> u64 {
     }
 }
 
-/// Reports the return address in each slot a call pushed one, within the
-/// copy, as the next address.
 #[cfg(test)]
 fn skew_return_addresses(shadow: &super::shadow::Shadow, sp: u64, stack: &mut [u8]) {
     for call in &shadow.calls {

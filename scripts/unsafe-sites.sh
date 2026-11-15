@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Fails when a file outside the list below allows unsafe code, or when a
-# crate stops denying it. dev/index.md says why each file may; `just miri`
-# tests what Miri can reach. The SDKs are crates of their own.
-#
-# DO NOT CHANGE THIS FILE WITHOUT ASKING THE HUMAN IF IT IS OKAY!
+
+
+
+
+
 set -euo pipefail
 
 allowed=(

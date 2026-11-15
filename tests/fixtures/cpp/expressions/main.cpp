@@ -1,7 +1,7 @@
-// Prints `EXPECT\t<expression>\t<kind>\t<value>` for each expression the
-// debugger must agree with, then calls barrier(). A kind of `text` is the
-// text a string holds, `range` the elements of a range, and `error` the
-// kind of error the expression must be.
+
+
+
+
 
 #include <cstdint>
 #include <cstdio>
@@ -17,10 +17,10 @@ struct Inner {
     short s;
     long long ll;
 };
-}  // namespace shapes
+}
 
-// A member of a base class or of an anonymous member is named as the
-// record's own, and a virtual base shared along two paths is one object.
+
+
 struct Base {
     int base_value;
 };
@@ -73,8 +73,8 @@ struct Fixture : Base {
     std::printf("EXPECT\t%s\ttext\t%s\n", expression, std::string(native).c_str())
 #define EXPECT_ERROR(expression, kind) std::printf("EXPECT\t%s\terror\t%s\n", expression, kind)
 
-// Library containers, which views present: maps are indexed by key, and a
-// vector's capacity is its view's.
+
+
 struct Library {
     std::map<int, int> squares;
     std::map<std::string, int> ages;
@@ -90,7 +90,7 @@ int main() {
     diamond.left_value = 2;
     diamond.right_value = 3;
     diamond.own_value = 4;
-    // Its address escapes, so its stores happen before barrier() is called.
+
     __asm__ volatile("" : : "r"(&diamond) : "memory");
     int &ref = f.arr[1];
     Library library{{{1, 1}, {2, 4}, {3, 9}}, {{"ann", 30}, {"bob", 41}}, {}, "hello"};

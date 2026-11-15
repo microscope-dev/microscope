@@ -1,18 +1,3 @@
-//! Formats an error's stack from the raw call sites V8 captured, the way
-//! Node does the first time `stack` is read (Q8).
-//!
-//! V8's getter passes the call sites to Node's `prepareStackTraceCallback`
-//! (`lib/internal/errors.js`), which calls the realm's
-//! `Error.prepareStackTrace` (Node's `ErrorPrepareStackTrace` by default),
-//! which calls the module's `internalPrepareStackTrace`
-//! (`defaultPrepareStackTrace` by default). That writes the error's own
-//! line, then `\n    at ` and each call site as
-//! `CallSite.prototype.toString` writes it (`SerializeCallSiteInfo` in
-//! `objects/call-site-info.cc`). microscope checks that each step is the
-//! default and names the one that is not. It also refuses WebAssembly
-//! call sites and those in V8's builtins. A call site it can't read gets
-//! an error on its own line.
-
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
@@ -32,26 +17,18 @@ use super::variables;
 use crate::image::v8::{Constant, Field};
 use crate::runtime_model::StopMemory;
 
-/// Prototype chains are a few objects long; stop after this many.
 const MAX_PROTOTYPES: usize = 64;
 
-/// The most contexts followed up a closure's chain.
 const MAX_CONTEXTS: usize = 256;
 
-/// The most nested `eval` scripts followed in one eval origin.
 const MAX_EVALS: usize = 64;
 
-/// The most call sites read from one error. `Error.stackTraceLimit` is 10
-/// by default.
 const MAX_SITES: i64 = 1 << 16;
 
-/// The script that holds Node's error formatting.
 const NODE_ERRORS: &str = "node:internal/errors";
 
-/// A string as UTF-16 code units.
 type Units = Vec<u16>;
 
-/// Formats `error.stack` from the call sites in `sites`, as Node would.
 pub(super) fn format(
     builder: &Builder<'_>,
     error: Object,
@@ -83,15 +60,12 @@ fn push(text: &mut Units, more: &str) {
     text.extend(more.encode_utf16());
 }
 
-/// The realm an error was created in: its native context and global object.
 struct Realm {
     native: Object,
     global: Object,
 }
 
 impl Realm {
-    /// Finds `error`'s realm through the meta map of its map, which holds
-    /// the native context, as V8's `GetCreationContext` does.
     fn of(reader: &Reader<'_>, error: Object) -> Result<Self, Problem> {
         let native = access::native_context(reader, reader.map(error)?)?;
         let global = reader
@@ -109,8 +83,6 @@ impl Realm {
         Ok(Self { native, global })
     }
 
-    /// Errors unless `CallSite.prototype.toString` is V8's builtin. Node's
-    /// `ArrayPrototypeJoin` calls it on each call site.
     fn check_call_site_to_string(&self, reader: &Reader<'_>) -> Result<(), Problem> {
         let constructor = reader
             .object(access::slot(
@@ -134,10 +106,6 @@ impl Realm {
     }
 }
 
-/// Looks up `globalThis.Error`. First probes the global dictionary as V8's
-/// `HashTable::FindEntry` does, with the hash of `%Error%`'s name (the
-/// internalized "Error"), then falls back to [`lookup::find`], which reads
-/// every global property.
 fn global_error(reader: &Reader<'_>, realm: &Realm) -> Result<Found, Problem> {
     if let Some(found) = probe_global(reader, realm)? {
         return Ok(found);
@@ -145,9 +113,6 @@ fn global_error(reader: &Reader<'_>, realm: &Realm) -> Result<Found, Problem> {
     lookup::find(reader, realm.global, Key::Name("Error"))
 }
 
-/// The global object's own `Error`, found by probing its dictionary with
-/// the name's hash. `None` on a miss, which does not prove it is absent:
-/// microscope probes without the table's hash function.
 fn probe_global(reader: &Reader<'_>, realm: &Realm) -> Result<Option<Found>, Problem> {
     let Some(function) = reader
         .object(access::slot(
@@ -203,8 +168,6 @@ fn probe_global(reader: &Reader<'_>, realm: &Realm) -> Result<Option<Found>, Pro
         + reader.constant(Constant::GlobalDictionaryShapePrefixSize)?;
     let size = reader.constant(Constant::GlobalDictionaryShapeEntrySize)?;
     let key = reader.constant(Constant::HashTableEntryKeyIndex)?;
-    // `FirstProbe` and `NextProbe`. A global dictionary does not spread
-    // the hash.
     let mut entry = hash & (capacity - 1);
     for count in 1..=capacity {
         let word = reader.element(table, first + entry * size + key)?;
@@ -237,22 +200,14 @@ fn probe_global(reader: &Reader<'_>, realm: &Realm) -> Result<Option<Found>, Pro
     Ok(None)
 }
 
-/// The largest global dictionary capacity microscope probes.
 const MAX_PROBES: i64 = 1 << 20;
 
-/// What default formatting uses from Node's `internal/errors` module.
 struct Node {
-    /// `kIsNodeError`, the symbol that marks a Node error.
     is_node_error: Object,
 }
 
 impl Node {
-    /// Checks that `realm` formats errors with Node's defaults:
-    /// `globalThis.Error.prepareStackTrace` is Node's
-    /// `ErrorPrepareStackTrace`, its module uses `defaultPrepareStackTrace`,
-    /// and no error's stack is overridden.
     fn find(reader: &Reader<'_>, realm: &Realm) -> Result<Self, Problem> {
-        // `globalThis.Error?.prepareStackTrace`, in `prepareStackTraceCallback`.
         let constructor = match global_error(reader, realm)? {
             Found::Data(word) => reader
                 .object(word)?
@@ -323,8 +278,6 @@ impl Node {
             );
         }
 
-        // `prepareStackTraceCallback` first checks whether Node overrides
-        // this error's stack. Refuse if Node overrides any stack.
         let overrides = local("overrideStackTrace")?;
         if !reader.is(overrides, Constant::JSWeakMapType)? {
             return Err("Node's overrideStackTrace is not a WeakMap".into());
@@ -356,9 +309,6 @@ impl Node {
         Ok(Self { is_node_error })
     }
 
-    /// The first line `defaultPrepareStackTrace` writes for `error`:
-    /// ``${name} [${code}]: ${message}`` for a Node error, else what
-    /// `Error.prototype.toString` gives.
     fn header(&self, reader: &Reader<'_>, error: Object) -> Result<Units, Problem> {
         if has_symbol(reader, error, self.is_node_error)? {
             let mut text = Units::new();
@@ -374,7 +324,6 @@ impl Node {
             return Ok(text);
         }
 
-        // V8's `ErrorUtils::ToString`, as `Error.prototype.toString` calls it.
         let name = get(reader, error, "name")?.unwrap_or_else(|| "Error".encode_utf16().collect());
         let message = get(reader, error, "message")?.unwrap_or_default();
         if name.is_empty() {
@@ -390,7 +339,6 @@ impl Node {
     }
 }
 
-/// `ToString(object[name])` without calling getters; `None` for undefined.
 fn get(reader: &Reader<'_>, object: Object, name: &str) -> Result<Option<Units>, Problem> {
     match lookup::get(reader, object, Key::Name(name))? {
         None => Ok(None),
@@ -399,8 +347,6 @@ fn get(reader: &Reader<'_>, object: Object, name: &str) -> Result<Option<Units>,
     }
 }
 
-/// `ToString(word)` for values where it runs no program code; `None` for
-/// undefined.
 fn to_string(reader: &Reader<'_>, word: u64) -> Result<Option<Units>, Problem> {
     if let Some(integer) = reader.smi(word)? {
         return Ok(Some(integer.to_string().encode_utf16().collect()));
@@ -442,8 +388,6 @@ fn to_string(reader: &Reader<'_>, word: u64) -> Result<Option<Units>, Problem> {
     Ok(Some(text.encode_utf16().collect()))
 }
 
-/// `Number::toString` for NaN, the infinities, and whole numbers below
-/// 10^21. Refuses the rest.
 fn number_to_string(value: f64) -> Result<String, Problem> {
     if value.is_nan() {
         return Ok("NaN".to_owned());
@@ -461,7 +405,6 @@ fn number_to_string(value: f64) -> Result<String, Problem> {
     Err("microscope does not format fractional numbers".into())
 }
 
-/// Whether `symbol in object`. Refuses proxies, whose `has` trap would run.
 fn has_symbol(reader: &Reader<'_>, object: Object, symbol: Object) -> Result<bool, Problem> {
     let mut holder = object;
     for _ in 0..MAX_PROTOTYPES {
@@ -482,7 +425,6 @@ fn has_symbol(reader: &Reader<'_>, object: Object, symbol: Object) -> Result<boo
     Err(format!("the prototypes of {:#x} are too many", object.0).into())
 }
 
-/// Whether `function` is the function `name` of Node's `internal/errors`.
 fn is_node_function(reader: &Reader<'_>, function: Object, name: &str) -> Result<bool, Problem> {
     if !is_function(reader, function)? {
         return Ok(false);
@@ -503,8 +445,6 @@ fn is_node_function(reader: &Reader<'_>, function: Object, name: &str) -> Result
         )?)
 }
 
-/// The values of the variables `wanted` as `function`'s closure sees them,
-/// each from the innermost context that binds it.
 fn closure_locals(
     reader: &Reader<'_>,
     function: Object,
@@ -537,24 +477,17 @@ fn closure_locals(
     Ok(found)
 }
 
-/// What V8 captured of one call site.
 #[derive(Debug, Clone, Copy)]
 struct Site {
     receiver: u64,
     function: u64,
 
-    /// The code its offset is in: a `BytecodeArray`, a `Code`, or neither.
     code: Option<Object>,
 
-    /// The offset in `code`, or the source position, or a promise's index.
     offset: i64,
     flags: i64,
 }
 
-/// Reads each call site in `sites`, or why it can't be read. From V8 14.6
-/// they are raw data, as `CallSiteInfo::ConstructFromRawData` reads it,
-/// with baseline frames resolved as `ExpandDeferredFrames` does; before
-/// that they are `CallSiteInfo` objects.
 fn read_sites(
     reader: &Reader<'_>,
     sites: Object,
@@ -564,8 +497,6 @@ fn read_sites(
     if !(0..=MAX_SITES).contains(&length) {
         return Err(format!("an error claims {length} call sites").into());
     }
-    // Node took V8's raw-data patch later than V8 14.6, so Node 26.5 on
-    // V8 14.6 still keeps `CallSiteInfo` objects.
     let objects = length == 0
         || reader
             .object(reader.element(sites, 0)?)?
@@ -591,7 +522,6 @@ fn read_sites(
         .collect())
 }
 
-/// The call site in the `CallSiteInfo` at `word`.
 fn call_site_info(reader: &Reader<'_>, word: u64) -> Result<Site, Problem> {
     let info = reader
         .object(word)?
@@ -613,7 +543,6 @@ fn call_site_info(reader: &Reader<'_>, word: u64) -> Result<Site, Problem> {
     })
 }
 
-/// The call site whose raw data begins at `base` of `sites`.
 fn raw_site(reader: &Reader<'_>, sites: Object, base: i64) -> Result<Site, Problem> {
     let at =
         |slot| -> Result<u64, Problem> { reader.element(sites, base + reader.constant(slot)?) };
@@ -652,8 +581,6 @@ fn raw_site(reader: &Reader<'_>, sites: Object, base: i64) -> Result<Site, Probl
 
     let deferred = reader.constant(Constant::CallSiteInfoIsDeferredBaselineFrameMask)?;
     if site.flags & deferred != 0 {
-        // `ExpandDeferredFrames`: replace the baseline pc offset and code
-        // with the matching bytecode offset and bytecode.
         let code = compiled::code(reader, code.ok_or("a deferred call site has no code")?)?;
         if code.kind != reader.constant(Constant::CodeKindBaseline)? {
             return Err("a deferred call site's code is not baseline code".into());
@@ -672,7 +599,6 @@ fn raw_site(reader: &Reader<'_>, sites: Object, base: i64) -> Result<Site, Probl
     Ok(site)
 }
 
-/// The `JSFunction` at `word`.
 fn function_of(reader: &Reader<'_>, word: u64) -> Result<Object, Problem> {
     reader
         .object(word)?
@@ -680,7 +606,6 @@ fn function_of(reader: &Reader<'_>, word: u64) -> Result<Object, Problem> {
         .ok_or_else(|| "a call site's function is not a JSFunction".into())
 }
 
-/// The call site flags that serialization reads.
 #[derive(Debug, Clone, Copy)]
 struct Flags {
     constructor: bool,
@@ -706,14 +631,12 @@ impl Flags {
     }
 }
 
-/// A line and a column, each from 0, as `Script::PositionInfo` has them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Position {
     line: i64,
     column: i64,
 }
 
-/// One JavaScript call site, as V8's `CallSiteInfo` methods read it.
 struct Frame<'r> {
     reader: &'r Reader<'r>,
     sources: &'r Sources,
@@ -740,7 +663,6 @@ impl<'r> Frame<'r> {
         })
     }
 
-    /// `SerializeJSStackFrame`.
     fn serialize(&self) -> Result<Units, Problem> {
         let function_name = self.function_name()?;
         let mut text = Units::new();
@@ -780,7 +702,6 @@ impl<'r> Frame<'r> {
         Ok(text)
     }
 
-    /// `AppendMethodCall`.
     fn append_method_call(&self, text: &mut Units, function_name: &[u16]) -> Result<(), Problem> {
         if function_name.is_empty() {
             let type_name = self.type_name()?;
@@ -813,7 +734,6 @@ impl<'r> Frame<'r> {
         Ok(())
     }
 
-    /// `AppendFileLocation`.
     fn append_file_location(&self, text: &mut Units) -> Result<(), Problem> {
         let name = match self.script {
             Some(script) => name_or_source_url(self.reader, script)?,
@@ -837,7 +757,6 @@ impl<'r> Frame<'r> {
         let info = position_info(self.reader, self.sources, script, position, true)?;
         let url = has_source_url_comment(self.reader, script)?;
         let line_offset = self.reader.smi_field(script, Field::ScriptLineOffset)?;
-        // `GetLineNumber` and `GetColumnNumber`: 0 is no line, or no column.
         let mut line = info.line + 1;
         if url {
             line -= line_offset;
@@ -856,9 +775,6 @@ impl<'r> Frame<'r> {
         Ok(())
     }
 
-    /// `GetFunctionName`: a builtin's name for stack traces, else the
-    /// function's debug name, else `eval` for an eval's code; empty for
-    /// none.
     fn function_name(&self) -> Result<Units, Problem> {
         if let Some(id) = builtin_id(self.reader, self.shared)?
             && let Some(name) = name_for_stack_trace(self.reader, self.function, self.shared, id)?
@@ -877,8 +793,6 @@ impl<'r> Frame<'r> {
         Ok(Units::new())
     }
 
-    /// `GetMethodName`: the name of the receiver's property that holds the
-    /// function; `None` for none.
     fn method_name(&self) -> Result<Option<Units>, Problem> {
         let reader = self.reader;
         if is_null_or_undefined(reader, self.site.receiver)? {
@@ -900,8 +814,6 @@ impl<'r> Frame<'r> {
         if prefixed {
             name.drain(..4);
         } else if name.is_empty() {
-            // The name V8 inferred, as `o.foo` for `o.foo = function () {}`,
-            // past its last dot.
             let mut inferred: Units = names::inferred_name(reader, self.shared, scope)?
                 .encode_utf16()
                 .collect();
@@ -916,9 +828,6 @@ impl<'r> Frame<'r> {
         infer_method_name(reader, receiver, self.function)
     }
 
-    /// Whether `receiver[name]` is this function, or an accessor pair with
-    /// it as getter or setter. Looks it up as a `LookupIterator` that skips
-    /// interceptors does.
     fn holds_function(&self, receiver: Object, name: &[u16]) -> Result<bool, Problem> {
         let reader = self.reader;
         let text =
@@ -953,15 +862,12 @@ impl<'r> Frame<'r> {
         Err("the receiver has too many prototypes".into())
     }
 
-    /// `GetTypeName`, for a method call.
     fn type_name(&self) -> Result<Units, Problem> {
         let reader = self.reader;
         let receiver = self.receiver_object()?;
         if reader.is(receiver, Constant::JSProxyType)? {
             return Ok("Proxy".encode_utf16().collect());
         }
-        // From 13.6 `GetTypeName` uses a function receiver's debug name; in
-        // 12.4 `AppendMethodCall` does that only for class constructors.
         let named = if (reader.version.major, reader.version.minor) >= (13, 6) {
             is_function(reader, receiver)?
         } else {
@@ -976,8 +882,6 @@ impl<'r> Frame<'r> {
         constructors::constructor_name(reader, receiver)
     }
 
-    /// The receiver as an object. Refuses a primitive, which
-    /// `Object::ToObject` would wrap.
     fn receiver_object(&self) -> Result<Object, Problem> {
         let reader = self.reader;
         reader
@@ -990,8 +894,6 @@ impl<'r> Frame<'r> {
             })
     }
 
-    /// `IsMethodCall`: a call that is neither top-level nor a constructor
-    /// call.
     fn is_method_call(&self) -> Result<bool, Problem> {
         let receiver = self.site.receiver;
         let top_level = is_null_or_undefined(self.reader, receiver)?
@@ -1002,7 +904,6 @@ impl<'r> Frame<'r> {
         Ok(!top_level && !self.flags.constructor)
     }
 
-    /// `IsPromiseAll`, `IsPromiseAllSettled`, or `IsPromiseAny`.
     fn is_promise_combinator(&self) -> Result<bool, Problem> {
         let reader = self.reader;
         let native = access::native_context(reader, reader.map(self.function)?)?;
@@ -1018,8 +919,6 @@ impl<'r> Frame<'r> {
         Ok(false)
     }
 
-    /// `GetSourcePosition`: the position V8 already computed, or else the
-    /// one the code's position table maps the offset to.
     fn source_position(&self) -> Result<i64, Problem> {
         if self.flags.position_computed {
             return Ok(self.site.offset);
@@ -1032,8 +931,6 @@ impl<'r> Frame<'r> {
     }
 }
 
-/// `SourcePosition` of `bytecode` at `offset`: the script offset of the
-/// last position at or before it, or 0 if there is none.
 fn bytecode_position(reader: &Reader<'_>, bytecode: Object, offset: i64) -> Result<i64, Problem> {
     let table = reader
         .object(reader.field(bytecode, Field::BytecodeArraySourcePositionTable)?)?
@@ -1054,7 +951,6 @@ fn bytecode_position(reader: &Reader<'_>, bytecode: Object, offset: i64) -> Resu
     let mask = reader.constant(Constant::SourcePositionScriptOffsetMask)?;
     let shift = reader.constant(Constant::SourcePositionScriptOffsetShift)?;
     let mut position = 0;
-    // `SourcePositionTableIterator`, `kJavaScriptOnly`.
     for entry in entries
         .iter()
         .filter(|entry| entry.position & external == 0)
@@ -1067,9 +963,6 @@ fn bytecode_position(reader: &Reader<'_>, bytecode: Object, offset: i64) -> Resu
     Ok(position)
 }
 
-/// `Script::GetPositionInfo` of `position` in `script`, plus the script's
-/// line and column offsets if `with_offset`. Line and column are -1 if the
-/// script has no such position.
 fn position_info(
     reader: &Reader<'_>,
     sources: &Sources,
@@ -1097,11 +990,6 @@ fn position_info(
     Ok(info)
 }
 
-/// The 0-based line `position` is on in `script`, and the offset where that
-/// line starts. Uses the line ends `String::CalculateLineEnds` gives: the
-/// script's cached ones, or else ones computed from its source, the last
-/// one past its end. `None` if the position is past the last line or the
-/// script has no source.
 fn line_start(
     reader: &Reader<'_>,
     sources: &Sources,
@@ -1121,7 +1009,6 @@ fn line_start(
         if count == 0 || end(count - 1)? < position {
             return Ok(None);
         }
-        // The first line whose end is at or past the position.
         let (mut low, mut high) = (0, count - 1);
         while low < high {
             let middle = low + (high - low) / 2;
@@ -1145,7 +1032,6 @@ fn line_start(
     if position > length {
         return Ok(None);
     }
-    // Read one unit past the position to tell a lone "\r" from "\r\n".
     let wanted = (position + 1).min(length);
     let units = sources.prefix(reader, source, wanted.cast_unsigned())?;
     let (mut line, mut start) = (0, 0);
@@ -1155,7 +1041,6 @@ fn line_start(
             .copied()
             .zip(units.iter().copied().skip(1))
             .chain(
-                // The source's last unit ends a line as if a NUL followed it.
                 units
                     .last()
                     .filter(|_| wanted == length)
@@ -1173,18 +1058,12 @@ fn line_start(
     Ok(Some((line, start)))
 }
 
-/// Prefixes of the script sources read while formatting one stack, so call
-/// sites in the same script read its source once.
 #[derive(Default)]
 struct Sources(RefCell<BTreeMap<u64, Units>>);
 
 impl Sources {
-    /// More new units than this are read in one piece rather than one read
-    /// per block. Fewer are read by block, and the stop keeps those blocks
-    /// for the other errors' stacks.
     const BY_BLOCKS: u64 = 16 * 1024;
 
-    /// The first `wanted` units of the string `source`, or all it has.
     fn prefix(
         &self,
         reader: &Reader<'_>,
@@ -1199,7 +1078,6 @@ impl Sources {
                 let piece = if wanted - have > Self::BY_BLOCKS {
                     wanted - have
                 } else {
-                    // A block holds half as many two-byte units as bytes.
                     (StopMemory::BLOCK / 2) as u64
                 };
                 let mut at = have;
@@ -1222,8 +1100,6 @@ impl Sources {
     }
 }
 
-/// V8's `IsLineTerminatorSequence`: a line feed, a carriage return not
-/// before a line feed, or a line or paragraph separator.
 const fn is_line_terminator_sequence(unit: u16, next: u16) -> bool {
     match unit {
         0x0a | 0x2028 | 0x2029 => true,
@@ -1232,8 +1108,6 @@ const fn is_line_terminator_sequence(unit: u16, next: u16) -> bool {
     }
 }
 
-/// `Script::GetNameOrSourceURL`: its source URL if it has one, else its
-/// name; `None` if that is not a string.
 fn name_or_source_url(reader: &Reader<'_>, script: Object) -> Result<Option<Units>, Problem> {
     let url = reader.field(script, Field::ScriptSourceUrl)?;
     let word = if is_undefined(reader, url)? {
@@ -1247,7 +1121,6 @@ fn name_or_source_url(reader: &Reader<'_>, script: Object) -> Result<Option<Unit
     }
 }
 
-/// `Script::HasSourceURLComment`: its source URL is a non-empty string.
 fn has_source_url_comment(reader: &Reader<'_>, script: Object) -> Result<bool, Problem> {
     match reader.object(reader.field(script, Field::ScriptSourceUrl)?)? {
         Some(url) if is_string(reader, url)? => {
@@ -1257,7 +1130,6 @@ fn has_source_url_comment(reader: &Reader<'_>, script: Object) -> Result<bool, P
     }
 }
 
-/// Whether `script` is an `eval`'s.
 fn is_eval(reader: &Reader<'_>, script: Object) -> Result<bool, Problem> {
     let flags = reader.smi_field(script, Field::ScriptFlags)?;
     let kind = properties::part(
@@ -1269,7 +1141,6 @@ fn is_eval(reader: &Reader<'_>, script: Object) -> Result<bool, Problem> {
     Ok(kind == reader.constant(Constant::ScriptCompilationTypeEval)?)
 }
 
-/// `FormatEvalOrigin` of the eval script `script`, nested `depth` deep.
 fn eval_origin(
     reader: &Reader<'_>,
     sources: &Sources,
@@ -1322,7 +1193,6 @@ fn eval_origin(
     Ok(text)
 }
 
-/// The function whose code created the eval script `script`, if known.
 fn eval_from_shared(reader: &Reader<'_>, script: Object) -> Result<Option<Object>, Problem> {
     let word = reader.field(script, Field::ScriptEvalFromSharedOrWrappedArguments)?;
     Ok(reader.object(word)?.filter(|shared| {
@@ -1332,9 +1202,6 @@ fn eval_from_shared(reader: &Reader<'_>, script: Object) -> Result<Option<Object
     }))
 }
 
-/// `Script::GetEvalPosition`: where in the caller's script the eval
-/// happened. A negative position is a caller bytecode offset not yet
-/// translated.
 fn eval_position(reader: &Reader<'_>, script: Object) -> Result<i64, Problem> {
     let position = reader.smi_field(script, Field::ScriptEvalFromPosition)?;
     if position >= 0 {
@@ -1348,18 +1215,14 @@ fn eval_position(reader: &Reader<'_>, script: Object) -> Result<i64, Problem> {
     bytecode_position(reader, bytecode, -position)
 }
 
-/// `JSFunction::GetDebugName` of `function`.
 fn debug_name(reader: &Reader<'_>, function: Object) -> Result<Units, Problem> {
     let shared = shared(reader, function)?;
     if let Some(name) = initializer_name(reader, shared)? {
-        // Programs can't reach an initializer, so its `name` accessor is
-        // never replaced and V8 names it from its shared info.
         return Ok(name.encode_utf16().collect());
     }
     whole(&names::debug_name(reader, function, shared)?)
 }
 
-/// `SharedFunctionInfo::DebugName` of `shared`.
 fn shared_debug_name(reader: &Reader<'_>, shared: Object) -> Result<Units, Problem> {
     if let Some(name) = initializer_name(reader, shared)? {
         return Ok(name.encode_utf16().collect());
@@ -1367,8 +1230,6 @@ fn shared_debug_name(reader: &Reader<'_>, shared: Object) -> Result<Units, Probl
     whole(&names::function_name(reader, shared)?)
 }
 
-/// `name` as units. Refused if it may have been cut off: names are read to
-/// at most [`MAX_STRING`] characters.
 fn whole(name: &str) -> Result<Units, Problem> {
     let units: Units = name.encode_utf16().collect();
     if u64::try_from(units.len()).is_ok_and(|length| length < MAX_STRING) {
@@ -1377,12 +1238,9 @@ fn whole(name: &str) -> Result<Units, Problem> {
     Err("a function name too long to read in full".into())
 }
 
-/// The name `DebugName` gives a class field initializer.
 fn initializer_name(reader: &Reader<'_>, shared: Object) -> Result<Option<&'static str>, Problem> {
     let kind = function_kind(reader, shared)?;
     let first = reader.constant(Constant::FunctionKindClassMembersInitializerFunction)?;
-    // 14.6 adds a second kind of each initializer, for when the other kind
-    // precedes it.
     let instance = reader
         .constant(Constant::FunctionKindClassMembersInitializerFunctionPrecededByStatic)
         .unwrap_or(first);
@@ -1396,9 +1254,6 @@ fn initializer_name(reader: &Reader<'_>, shared: Object) -> Result<Option<&'stat
     }))
 }
 
-/// Whether `shared` is a class field initializer:
-/// `IsClassMembersInitializerFunction` through 13.6,
-/// `IsClassInitializerFunction` from 14.6.
 fn is_class_initializer(reader: &Reader<'_>, shared: Object) -> Result<bool, Problem> {
     let kind = function_kind(reader, shared)?;
     let first = reader.constant(Constant::FunctionKindClassMembersInitializerFunction)?;
@@ -1418,8 +1273,6 @@ fn function_kind(reader: &Reader<'_>, shared: Object) -> Result<i64, Problem> {
     )
 }
 
-/// The number of the V8 builtin `shared` runs, if any (`HasBuiltinId`): a
-/// builtin's function data is its number as a Smi.
 pub(super) fn builtin_id(reader: &Reader<'_>, shared: Object) -> Result<Option<i64>, Problem> {
     let field = if reader
         .layout
@@ -1434,8 +1287,6 @@ pub(super) fn builtin_id(reader: &Reader<'_>, shared: Object) -> Result<Option<i
         .filter(|id| *id >= 0))
 }
 
-/// The `DataView.prototype` methods `Builtins::NameForStackTrace` names.
-/// The list is the same in 12.4, 13.6, and 14.6.
 const DATA_VIEW_METHODS: [&str; 22] = [
     "getBigInt64",
     "getBigUint64",
@@ -1461,11 +1312,6 @@ const DATA_VIEW_METHODS: [&str; 22] = [
     "setUint32",
 ];
 
-/// `Builtins::NameForStackTrace` of builtin `id`, which `function` runs;
-/// `None` if it has no such name. Each builtin it names is installed once,
-/// on `DataView.prototype` or `String.prototype` under its shared name, so
-/// comparing `id` with that property's builtin in `function`'s realm tells
-/// whether this is the named one.
 fn name_for_stack_trace(
     reader: &Reader<'_>,
     function: Object,
@@ -1539,15 +1385,11 @@ fn name_for_stack_trace(
     }
 }
 
-/// `InferMethodName`: the one enumerable string key on the receiver or its
-/// prototypes whose value or accessor is `function`; `None` if there are
-/// none or several.
 fn infer_method_name(
     reader: &Reader<'_>,
     receiver: Object,
     function: Object,
 ) -> Result<Option<Units>, Problem> {
-    /// What the walk has found so far.
     enum Inferred {
         Undefined,
         Null,
@@ -1598,7 +1440,6 @@ fn infer_method_name(
                 Inferred::Key(_) | Inferred::Null => Inferred::Null,
             };
         }
-        // `PrototypeIterator::Advance`: follow map prototypes until null.
         match reader.object(reader.field(reader.map(current)?, Field::MapPrototype)?)? {
             Some(next) if !reader.is(next, Constant::OddballType)? => current = next,
             _ => break,
@@ -1610,8 +1451,6 @@ fn infer_method_name(
     })
 }
 
-/// Whether the accessor `accessor` is a pair whose getter or setter is
-/// `function`.
 fn pair_holds(reader: &Reader<'_>, accessor: Object, function: Object) -> Result<bool, Problem> {
     if !reader.is(accessor, Constant::AccessorPairType)? {
         return Ok(false);
@@ -1622,7 +1461,6 @@ fn pair_holds(reader: &Reader<'_>, accessor: Object, function: Object) -> Result
     )
 }
 
-/// Whether `object`'s map asks for an access check.
 fn access_check_needed(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     let bits = i64::from(reader.byte_field(reader.map(object)?, Field::MapBitField)?);
     Ok(properties::part(
@@ -1633,7 +1471,6 @@ fn access_check_needed(reader: &Reader<'_>, object: Object) -> Result<bool, Prob
     )? != 0)
 }
 
-/// Errors if a lookup would stop at `object` for an access check.
 fn refuse_access_checks(reader: &Reader<'_>, object: Object) -> Result<(), Problem> {
     if reader.is(object, Constant::JSGlobalProxyType)? || access_check_needed(reader, object)? {
         return Err("the object needs an access check, and microscope does not do those".into());
@@ -1641,8 +1478,6 @@ fn refuse_access_checks(reader: &Reader<'_>, object: Object) -> Result<(), Probl
     Ok(())
 }
 
-/// `StringEndsWithMethodName`: whether `subject` is `pattern`, or ends with
-/// it after a `.` or a space.
 fn ends_with_method_name(subject: &[u16], pattern: &[u16]) -> bool {
     if subject == pattern {
         return true;
@@ -1653,9 +1488,6 @@ fn ends_with_method_name(subject: &[u16], pattern: &[u16]) -> bool {
         .is_some_and(|unit| [u16::from(b'.'), u16::from(b' ')].contains(unit))
 }
 
-/// `String::IsIdentifier` for Latin-1 names, with `$`, `_`, and `\` allowed
-/// in any position. Beyond Latin-1 V8 uses ICU's tables, which microscope
-/// lacks, so such names are refused.
 fn is_identifier(name: &[u16]) -> Result<bool, Problem> {
     let Some((first, rest)) = name.split_first() else {
         return Ok(false);
@@ -1679,7 +1511,6 @@ fn is_identifier(name: &[u16]) -> Result<bool, Problem> {
     Ok(start(*first) && rest.iter().all(|unit| part(*unit)))
 }
 
-/// Every unit of the string `string`.
 fn whole_string(reader: &Reader<'_>, string: Object) -> Result<Units, Problem> {
     let mut units = Units::new();
     reader.string_into(string, 0, u64::from(u32::MAX), 0, &mut units)?;
@@ -1694,7 +1525,6 @@ fn shared(reader: &Reader<'_>, function: Object) -> Result<Object, Problem> {
     )
 }
 
-/// Whether `object` is a `JSFunction`.
 fn is_function(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     let ty = reader.instance_type(object)?;
     Ok((reader.constant(Constant::FirstJSFunctionType)?
@@ -1706,7 +1536,6 @@ fn is_string(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     Ok(reader.instance_type(object)? < reader.constant(Constant::FirstNonstringType)?)
 }
 
-/// Whether `object` is a `JSReceiver`, an object in the JavaScript sense.
 fn is_receiver(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     let ty = reader.instance_type(object)?;
     Ok((reader.constant(Constant::FirstJSReceiverType)?
@@ -1726,7 +1555,6 @@ fn is_null_or_undefined(reader: &Reader<'_>, word: u64) -> Result<bool, Problem>
     )
 }
 
-/// Whether `word` is an oddball of one of the kinds `kinds`.
 fn oddball_is(reader: &Reader<'_>, word: u64, kinds: &[Constant]) -> Result<bool, Problem> {
     let Some(object) = reader.object(word)? else {
         return Ok(false);

@@ -1,7 +1,3 @@
-// The keyboard in a tree or list of virtual rows. The container keeps
-// focus and names the row it is on with aria-activedescendant, since a
-// row scrolled out of view is not rendered and could not hold focus.
-
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { useId, useState } from "react";
 
@@ -20,11 +16,10 @@ export function useActiveRow(count: number, virtual: Virtualizer<HTMLDivElement,
   return {
     active,
     move,
-    /** Makes a row active without scrolling, as a click does. */
+
     choose: (index: number) => setChosen(clamp(index)),
     rowId: (index: number) => `${id}-row-${index}`,
-    /** Up, Down, Home, and End move; any other key goes to `other`, which
-     * says whether it took it. */
+
     onKeyDown(event: React.KeyboardEvent, other: (key: string) => boolean) {
       if (count === 0) {
         return;

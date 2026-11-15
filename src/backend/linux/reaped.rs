@@ -1,45 +1,23 @@
-//! The exit statuses of children whose owners wait for them, which another
-//! thread may reap first. Any thread of a process may wait for any of its
-//! children, and a debugger in this process waits for any child, as a
-//! tracee may be one it has not met yet: a recording's task snapshot
-//! attaches to the program the recording started.
-//!
-//! Two rules keep both sides whole. Each wait in this process leaves the
-//! status of a watched child here, so that an owner who finds its child
-//! reaped takes the status from here. And an owner reaps no child that a
-//! debugger in this process holds, as a stopped snapshot holds the program
-//! while it may trace it: a tracee its tracer did not see exit would leave
-//! the tracer waiting for it.
-
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// How often an owner looks for a status another thread is leaving, or
-/// for the holds on its child to end.
 const LOOK_EVERY: Duration = Duration::from_millis(1);
 
-/// One watched child.
 #[derive(Debug)]
 struct Watched {
     pid: u32,
 
-    /// Its wait status, once another thread has reaped it.
     status: Option<i32>,
 
-    /// How many holds keep its owner from reaping it.
     holds: u32,
 }
 
-/// The watched children.
 pub struct Reaped {
     watched: Mutex<Vec<Watched>>,
 }
 
-/// Every watched child of this process.
 pub static REAPED: Reaped = Reaped::new();
 
-/// A hold on a watched child, which its owner does not reap until every
-/// hold ends.
 #[must_use = "the hold ends when it is dropped"]
 pub struct Hold<'a> {
     reaped: &'a Reaped,
@@ -73,7 +51,6 @@ impl Reaped {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Watches child `pid`, which must not yet have exited.
     pub fn watch(&self, pid: u32) {
         let mut watched = self.lock();
         debug_assert!(
@@ -87,7 +64,6 @@ impl Reaped {
         });
     }
 
-    /// Holds `pid`, if it is watched, until the hold is dropped.
     pub fn hold(&self, pid: u32) -> Hold<'_> {
         if let Some(watched) = self.lock().iter_mut().find(|known| known.pid == pid) {
             watched.holds += 1;
@@ -96,7 +72,6 @@ impl Reaped {
         Hold { reaped: self, pid }
     }
 
-    /// Waits until no hold keeps `pid`'s owner from reaping it.
     pub fn wait_unheld(&self, pid: u32) {
         while self
             .lock()
@@ -107,22 +82,16 @@ impl Reaped {
         }
     }
 
-    /// Leaves the wait status `status` of `pid`, which the caller reaped,
-    /// for its owner, if it is watched.
     pub fn leave(&self, pid: u32, status: i32) {
         if let Some(watched) = self.lock().iter_mut().find(|known| known.pid == pid) {
             watched.status = Some(status);
         }
     }
 
-    /// Stops watching `pid`, whose owner reaped it.
     pub fn forget(&self, pid: u32) {
         self.lock().retain(|known| known.pid != pid);
     }
 
-    /// Takes the wait status of `pid`, which another thread reaped, and
-    /// stops watching it: `None` if none is left within `patience`, as
-    /// when a wait outside this process's took it.
     pub fn take(&self, pid: u32, patience: Duration) -> Option<i32> {
         let deadline = Instant::now() + patience;
 
@@ -154,8 +123,6 @@ mod tests {
 
     use super::Reaped;
 
-    /// A watched child's status, left by the thread that reaped it, is its
-    /// owner's to take once, while an unwatched child's is no one's.
     #[test]
     fn a_status_left_for_a_watched_child_is_taken_once() {
         let reaped = Reaped::new();
@@ -179,8 +146,6 @@ mod tests {
         assert_eq!(reaped.take(9, Duration::ZERO), None);
     }
 
-    /// An owner waits to reap its child until every hold on it ends; a
-    /// hold on a child no one watches holds nothing.
     #[test]
     fn an_owner_waits_out_every_hold() {
         let reaped = Reaped::new();

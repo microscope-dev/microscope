@@ -1,7 +1,7 @@
-// Makes COUNT getppid calls, paced to RATE calls a second when RATE is
-// given and as fast as it can otherwise, then prints how many it made and
-// the nanoseconds each took on average: the work `microscope-tools
-// syscall-overhead` times bare and under each engine.
+
+
+
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +21,7 @@ int main(int argc, char **argv) {
     double start = now();
     for (long call = 0; call < count; call++) {
         syscall(SYS_getppid);
-        // Pacing reads the vDSO clock, which makes no system call.
+
         if (rate > 0 && call % 64 == 0) {
             double due = start + (double)call * 1e9 / rate;
             while (now() < due) {

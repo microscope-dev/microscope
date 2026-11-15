@@ -1,5 +1,3 @@
-// Links name a focus exactly: what goes into the address bar comes back out.
-
 import { describe, expect, it } from "vitest";
 
 import {
@@ -40,7 +38,7 @@ describe("a link's query", () => {
     expect(
       validateLook(parseSearch("src=nofile&asm=main&mem=0x10&view=hex&w=&x=args/a&src=b.c:2")),
     ).toEqual({ mem: "0x10", x: ["args/a"] });
-    // Memory may say how many bytes the value it shows occupies.
+
     expect(validateLook(parseSearch("mem=0x10:16&view=memory"))).toEqual({
       mem: "0x10:16",
       view: "memory",
@@ -65,7 +63,7 @@ describe("places and paths", () => {
       "/home/me/kv/lib/a.c",
       "/home/me/kvstore/a.c",
       "/usr/include/stdio.h",
-      // Compilers can record a path relative to where they ran.
+
       "lib/a.c",
       "gen/table.c",
     ];
@@ -74,10 +72,10 @@ describe("places and paths", () => {
     );
     expect(linkPath("/home/me/kv/src/server.c", cwd, files)).toBe("src/server.c");
     expect(linkPath("/home/me/kvstore/a.c", cwd, files)).toBe("/home/me/kvstore/a.c");
-    // A short form that names another recorded file stays long.
+
     expect(linkPath("/home/me/kv/lib/a.c", cwd, files)).toBe("/home/me/kv/lib/a.c");
     expect(linkPath("gen/table.c", cwd, files)).toBe("gen/table.c");
-    // Until the files are known, links stay whole and relative ones name nothing.
+
     const noFiles = undefined;
     expect(linkPath("/home/me/kv/src/server.c", cwd, noFiles)).toBe("/home/me/kv/src/server.c");
     expect(recordedPath("src/server.c", cwd, noFiles)).toBeNull();
@@ -114,7 +112,6 @@ describe("places and paths", () => {
   });
 
   it("keeps a task number above 2^53 exact, apart from its neighbour", () => {
-    // A Node pool job's number: bit 62 and its thread's id.
     const job = "4611686018429272115";
     const next = "4611686018429272116";
     const at = { stop: 7, thread: 0, task: { runtime: 2, number: job }, frame: 0 };

@@ -1,10 +1,3 @@
-// Connecting and signing in. A page served on its own is told which
-// microscope to use by a join link; a page `microscope web` serves is
-// connected to it already. Signing in to the services backend is optional:
-// a join link works without an account. The Account pane is also where a
-// page with nothing open starts, so it offers what can be done from here.
-// Each action is a command, offered and refused as it is in the menus.
-
 import {
   type ChangeEvent,
   type FormEvent,
@@ -51,7 +44,6 @@ import { COMMANDS, type CommandId, useCommands } from "./commands";
 import { Organizations, useRun } from "./Orgs";
 import { ContinueWith, OrgLink, SignInMethods } from "./SingleSignOn";
 
-/** Why the microscope the page last connected to sent it back, if it did. */
 function refused(): string | null {
   const last = remote();
   return last
@@ -123,7 +115,6 @@ export function ConnectBody() {
   );
 }
 
-/** How the page is getting on with the microscope it was given. */
 const CONNECTION: Record<"open" | "connecting" | "reconnecting" | "incompatible", string> = {
   open: "Connected to",
   connecting: "Connecting to",
@@ -144,7 +135,7 @@ function ConnectForm() {
         return;
       }
       setRemote({ server: joined.server, token: joined.token });
-      // A fresh page, so nothing from another server lingers.
+
       window.location.assign(isPagePath(joined.to) ? joined.to : "/");
     },
     [link],
@@ -181,7 +172,6 @@ function ConnectForm() {
   );
 }
 
-/** Where signing in or up has got to. */
 type Step =
   | { kind: "sign-in" }
   | { kind: "sign-up" }
@@ -197,7 +187,7 @@ export function AccountBody() {
   const [error, setError] = useState<string | null>(null);
   const [everywhere, setEverywhere] = useState(false);
   const [step, setStep] = useState<Step>({ kind: "sign-in" });
-  // What an emailed link did stops mattering once the person moves on.
+
   const go = useCallback((next: Step) => {
     account.setState({ notice: null });
     setStep(next);
@@ -205,13 +195,13 @@ export function AccountBody() {
   useEffect(() => {
     void checkAccount();
   }, []);
-  // Whoever signs in or out starts over next time.
+
   const [kind, setKind] = useState(now.kind);
   if (kind !== now.kind) {
     setKind(now.kind);
     setStep({ kind: "sign-in" });
   }
-  // Single sign-on came back for a code from the account's authenticator app.
+
   const challenge = useStore(account, (state) => state.challenge);
   useEffect(() => {
     if (challenge !== null && now.kind === "out") {
@@ -232,7 +222,7 @@ export function AccountBody() {
   }, []);
   const askEverywhere = useCallback(() => setEverywhere(true), []);
   const cancelEverywhere = useCallback(() => setEverywhere(false), []);
-  // A password reset link asks for the new password first, signed in or not.
+
   const reset = useStore(account, (state) => state.reset);
 
   return (
@@ -317,7 +307,7 @@ const ACTIONS: readonly CommandId[] = ["launch", "attach", "core", "record"];
 
 function Actions() {
   const commands = useCommands();
-  // Read whenever anything the actions depend on changes.
+
   useModel((model) => [model.hello?.role, model.link, model.state?.session].join());
 
   const offered = ACTIONS.flatMap((id) => {
@@ -364,8 +354,6 @@ function Action({
   );
 }
 
-/** A form's fields and its one request: whether it is in flight, and what
- * went wrong with it. */
 function useSubmit(send: () => Promise<void>) {
   const { working, error, run } = useRun();
   const submit = (event: FormEvent) => {
@@ -382,7 +370,7 @@ function Field(props: {
   note?: string;
   type?: "email" | "password";
   autoComplete: string;
-  /** Focused when the form opens. */
+
   first?: boolean;
   code?: boolean;
 }) {
@@ -417,8 +405,6 @@ function Field(props: {
   );
 }
 
-/** Signing in with a passkey: the button's, and the username field's
- * autofill while the form is open, which the button stops first. */
 function usePasskeySignIn(on: boolean) {
   const { working, error, run, fail } = useRun();
   const autofill = useRef<AbortController | null>(null);
@@ -460,7 +446,7 @@ function SignIn({ go }: { go: Go }) {
       go({ kind: signed.method === "totp" ? "totp" : "code", challenge: signed.challenge });
     }
   });
-  // Services says so only once the password is right.
+
   const unconfirmed = error instanceof Refused && error.status === 403;
   const forgot = useCallback(
     () => go({ kind: "forgot", email: name.includes("@") ? name.trim() : "" }),
@@ -542,7 +528,6 @@ function SignUp({ go }: { go: Go }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const { working, error, submit } = useSubmit(async () => {
-    // The button waits for the features, so they are here.
     const confirming = offered?.email === true;
     await signUp(username, email, password, confirming);
     if (confirming) {
@@ -593,7 +578,6 @@ function SignUp({ go }: { go: Go }) {
   );
 }
 
-/** After signing up: the account waits for its email to be confirmed. */
 function Sent({ email, go }: { email: string; go: Go }) {
   return (
     <Resend email={email} go={go} fixed>
@@ -605,7 +589,6 @@ function Sent({ email, go }: { email: string; go: Go }) {
   );
 }
 
-/** Asks for another confirmation link, to an address given or to type. */
 function Resend(props: { email: string; go: Go; fixed?: boolean; children: ReactNode }) {
   const [email, setEmail] = useState(props.email);
   const [sent, setSent] = useState(false);
@@ -643,7 +626,6 @@ function Resend(props: { email: string; go: Go; fixed?: boolean; children: React
   );
 }
 
-/** Asks for a password reset link. */
 function Forgot(props: { email: string; go: Go }) {
   const [email, setEmail] = useState(props.email);
   const [sent, setSent] = useState<string | null>(null);
@@ -680,7 +662,6 @@ function Forgot(props: { email: string; go: Go }) {
 
 const cancelReset = () => account.setState({ reset: null });
 
-/** After following a password reset link. */
 function NewPassword({ token }: { token: string }) {
   const [password, setPassword] = useState("");
   const { working, error, submit } = useSubmit(() => resetPassword(token, password));
@@ -710,7 +691,6 @@ function NewPassword({ token }: { token: string }) {
   );
 }
 
-/** After a right password, when services emails a code to finish with. */
 function Code({ challenge, go }: { challenge: string; go: Go }) {
   const [code, setCode] = useState("");
   const { working, error, submit } = useSubmit(async () => {
@@ -739,7 +719,6 @@ function Code({ challenge, go }: { challenge: string; go: Go }) {
   );
 }
 
-/** After a right password, for an account with two-factor authentication. */
 function Totp({ challenge, go }: { challenge: string; go: Go }) {
   const [code, setCode] = useState("");
   const { working, error, submit } = useSubmit(async () => {
@@ -747,7 +726,7 @@ function Totp({ challenge, go }: { challenge: string; go: Go }) {
   });
   const recover = useCallback(() => go({ kind: "recovery", challenge }), [go, challenge]);
   const startOver = useCallback(() => go({ kind: "sign-in" }), [go]);
-  // Too many wrong codes today: only a recovery code gets in now.
+
   const locked = error instanceof Refused && error.status === 429;
   return (
     <form className="pane-form" onSubmit={submit}>
@@ -813,7 +792,6 @@ function Recovery({ challenge, go }: { challenge: string; go: Go }) {
   );
 }
 
-/** Where turning two-factor authentication on or off has got to. */
 type Setup =
   | { kind: "idle" }
   | { kind: "password" }
@@ -821,8 +799,6 @@ type Setup =
   | { kind: "codes"; codes: string[]; enabling: boolean }
   | { kind: "reauth"; action: "disable" | "codes" };
 
-/** Two-factor authentication for the signed-in account: off, being set up,
- * or on, with the forms that change it. */
 function TwoFactor({ user }: { user: User }) {
   const offered = useFeatures();
   const [setup, setSetup] = useState<Setup>({ kind: "idle" });
@@ -837,8 +813,7 @@ function TwoFactor({ user }: { user: User }) {
   const newCodes = useCallback(() => setSetup({ kind: "reauth", action: "codes" }), []);
   const turnOff = useCallback(() => setSetup({ kind: "reauth", action: "disable" }), []);
   const start = useCallback(() => setSetup({ kind: "password" }), []);
-  // A server without TOTP has nothing to offer here, unless the account
-  // turned it on before, which it can still turn off with a recovery code.
+
   if (!offered || (!offered.totp && !user.totp_enabled)) {
     return null;
   }
@@ -961,9 +936,6 @@ function Scan(props: { secret: string; uri: string; next: Next; cancel: () => vo
   );
 }
 
-/** The otpauth:// address as a QR code, drawn here so the secret never
- * leaves the page. Black on white in either theme, which every camera
- * reads. */
 function Qr({ text }: { text: string }) {
   const qr = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.MEDIUM);
   const quiet = 4;
@@ -991,8 +963,6 @@ function Qr({ text }: { text: string }) {
   );
 }
 
-/** A button that copies `text`, where the browser allows it: only pages
- * served over HTTPS or from localhost can write to the clipboard. */
 function Copy({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   const copy = useCallback(() => {
@@ -1053,8 +1023,6 @@ function RecoveryCodes({ codes, done }: { codes: string[]; done: () => void }) {
   );
 }
 
-/** Turning it off or replacing the recovery codes takes the password and a
- * second factor, so a stolen session alone can do neither. */
 function Reauthenticate(props: { action: "disable" | "codes"; next: Next; cancel: () => void }) {
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");

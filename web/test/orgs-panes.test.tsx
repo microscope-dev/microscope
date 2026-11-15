@@ -1,7 +1,3 @@
-// The Projects, Organization, and Account panes against a stand-in for
-// services: each shows only the controls its person may use, and says why
-// when services refuses.
-
 import { render } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { type Locator, page, userEvent } from "vitest/browser";
@@ -20,8 +16,6 @@ const ME: User = { id: 1, username: "ana", email: "ana@example.com", totp_enable
 
 type Answer = [number, unknown?];
 
-/** Services as these tests need it: an answer per method and path, and
- * every request kept. `/api/users/me` says who is signed in. */
 function services(routes: Record<string, Answer | ((body: unknown) => Answer)>) {
   const asked: string[] = [];
   const real = globalThis.fetch;
@@ -66,7 +60,6 @@ afterEach(() => {
 const acme = (role: Org["role"]): Org => ({ id: 7, name: "acme", base_permission: "read", role });
 const inAcme = { id: 7, name: "acme" };
 
-/** What a part of the page says, its parts run together. */
 const text = (locator: Locator) => locator.query()?.textContent ?? "";
 
 const orgPane = (org: Org) => (
@@ -95,9 +88,9 @@ it("lists the person's own projects first, then each organization's, with their 
   await expect.element(own.getByRole("button", { name: "Rename" })).toBeVisible();
   const shared = page.getByRole("list", { name: "acme projects" });
   await expect.poll(() => text(shared)).toMatch(/api\s*Write/u);
-  // Write is not admin: no renaming or deleting.
+
   expect(shared.getByRole("button").elements()).toHaveLength(0);
-  // Owning no organization, a new project can only be the person's own.
+
   await userEvent.click(page.getByRole("button", { name: "New project" }));
   await expect.element(page.getByLabelText("Project name")).toHaveFocus();
   expect(page.getByLabelText("Owner").elements()).toHaveLength(0);
@@ -121,12 +114,11 @@ it("asks an owner whose new project it is, and shows services' reason when it re
   await userEvent.selectOptions(page.getByLabelText("Owner"), "acme");
   await userEvent.click(page.getByRole("button", { name: "Create project" }));
   await expect.element(page.getByRole("alert")).toHaveTextContent("a project of that name exists");
-  // The form stays, so the name can be changed and tried again.
+
   await expect.element(page.getByLabelText("Project name")).toHaveValue("api");
   expect(asked.filter((each) => each === "POST /api/projects")).toHaveLength(1);
 });
 
-/** An owner's view of acme, open at `section`. */
 async function asOwner(section: string) {
   services({
     "GET /api/orgs": [200, [acme("owner")]],
@@ -294,7 +286,6 @@ it("lists sign-in methods only when there is one to connect or one connected", a
   const off = { google: false, github: false, saml: true };
   const saml = { id: 3, provider: "saml", email: ME.email, org_id: 7, org_name: "acme" };
 
-  // Nothing to connect, and nothing connected: no section at all.
   const asked = await showSignInMethods(off, []);
   await expect
     .poll(() => asked)
@@ -306,13 +297,11 @@ it("lists sign-in methods only when there is one to connect or one connected", a
   expect(page.getByRole("heading", { name: "Sign-in methods" }).elements()).toHaveLength(0);
   unmountPane();
 
-  // An organization's single sign-on, connected, still shows and can go.
   await showSignInMethods(off, [saml]);
   await expect.poll(() => text(methods())).toMatch(/^Password\s*acme's single sign-on/u);
   await expect.element(methods().getByRole("button", { name: "Disconnect" })).toBeVisible();
   unmountPane();
 
-  // GitHub offered: something to connect.
   await showSignInMethods({ ...off, github: true }, []);
   await expect.poll(() => text(methods())).toBe("Password");
   await expect.element(page.getByRole("button", { name: "Connect GitHub" })).toBeVisible();
@@ -320,7 +309,6 @@ it("lists sign-in methods only when there is one to connect or one connected", a
   expect(page.getByRole("button", { name: "Add a passkey" }).elements()).toHaveLength(0);
   unmountPane();
 
-  // Passkeys offered: something to add.
   await showSignInMethods(off, [], true);
   await expect.element(page.getByRole("button", { name: "Add a passkey" })).toBeVisible();
 });
@@ -362,7 +350,6 @@ it("lists passkeys, and keeps the last way in", async () => {
     .toHaveTextContent(`Passkey: YubiKeyLast used ${day(1_792_000_000)}Remove`);
   unmountPane();
 
-  // Its only way in has nothing to remove it with.
   await showPasskeys(false, [{ ...PASSKEY, last_used_at: null }]);
   await expect.poll(() => text(methods())).toMatch(/^Passkey: Mac/u);
   expect(methods().getByRole("button").elements()).toHaveLength(0);
@@ -480,7 +467,6 @@ it("offers two-factor authentication only when the server can keep its secrets",
   expect(twoFactorHeading().elements()).toHaveLength(0);
   unmountPane();
 
-  // An account that turned it on before can still see it, to turn it off.
   await showTwoFactor(false, { ...ME, totp_enabled: true });
   await expect.element(twoFactorHeading()).toBeVisible();
   unmountPane();
@@ -575,7 +561,7 @@ it("an account without a password proves who it is by signing in again", async (
     .element(prove.getByRole("link", { name: "Sign in again with GitHub" }))
     .toHaveAttribute("href", "/api/sso/github/start");
   expect(prove.getByLabelText("Password").elements()).toHaveLength(0);
-  // The refusal is a question, not an error.
+
   expect(page.getByRole("alert").elements()).toHaveLength(0);
   expect(asked.filter((each) => each.startsWith("DELETE"))).toHaveLength(1);
 
@@ -611,7 +597,6 @@ it("shows the next person only their own projects, even while the last person's 
         return jsonResponse(who);
       }
       if (who?.id === ME.id) {
-        // Ana's questions are still out when Bo signs in, and answer afterwards.
         await new Promise<void>((resolve) => {
           held.push(resolve);
         });
@@ -627,8 +612,7 @@ it("shows the next person only their own projects, even while the last person's 
   account.setState({ now: { kind: "in", user: ME }, notice: null });
   render(<ProjectsBody />);
   await vi.waitFor(() => expect(held.length).toBeGreaterThan(0));
-  // The pane's own check of who is signed in settles first, as it would
-  // before a real sign-in.
+
   await checkAccount();
 
   account.setState({ now: { kind: "in", user: bo }, notice: null });

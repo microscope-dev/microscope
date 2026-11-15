@@ -1,6 +1,6 @@
 microscope-views 1
 
-# A binary search tree kept in an array, drawn by tree.js beside this file.
+
 extend c++ Tree {
     visualize "tree" {
         nodes = pool

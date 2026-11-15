@@ -1,6 +1,3 @@
-// How the connection behaves when the server goes away, refuses the
-// browser, or speaks another version.
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -32,7 +29,6 @@ const answering = (status: number) =>
     vi.fn(() => Promise.resolve(new Response(null, { status }))),
   );
 
-/** A connection whose every attempt is recorded and driven by the test. */
 function harness(authorized: () => Promise<boolean> = () => Promise.resolve(true)) {
   const attempts: TransportHandlers[] = [];
   const sent: string[] = [];
@@ -73,7 +69,6 @@ describe("a dropped connection", () => {
     expect(links().at(-1)).toBe("reconnecting");
     await expect(connection.request("pause")).rejects.toMatchObject({ kind: "disconnected" });
 
-    // The first retry waits the first delay, and the next the longer one.
     await vi.advanceTimersByTimeAsync(99);
     expect(attempts).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
@@ -84,7 +79,6 @@ describe("a dropped connection", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(attempts).toHaveLength(3);
 
-    // A hello starts the delays over.
     attempts[2]?.open();
     attempts[2]?.message(hello());
     attempts[2]?.close();
@@ -116,7 +110,6 @@ describe("a dropped connection", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(links()).toEqual(["connecting", "unreachable"]);
 
-    // Up, but its socket closes before it says hello: still never reached.
     up = true;
     await vi.advanceTimersByTimeAsync(100);
     attempts[0]?.close();
@@ -131,7 +124,6 @@ describe("a dropped connection", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(links().at(-1)).toBe("reconnecting");
 
-    // Started again, it has to reach the server anew.
     connection.stop();
     connection.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -167,7 +159,7 @@ describe("a refused browser", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(attempts).toHaveLength(1);
     expect(links()).toEqual(["connecting", "incompatible"]);
-    // The model never sees the foreign server's hello.
+
     expect(events.some((event) => event.type === "message")).toBe(false);
   });
 });
@@ -201,7 +193,6 @@ describe("a page the browser keeps to come back to", () => {
     attempts[0]?.open();
     attempts[0]?.message(hello());
 
-    // Leaving for good closes the socket anyway; only a kept page pauses.
     page.dispatchEvent(transition("pagehide", false));
     const asked = connection.request("pause");
     page.dispatchEvent(transition("pagehide", true));
@@ -262,8 +253,6 @@ describe("a join link", () => {
   });
 });
 
-/** Like a browser socket: closing only asks, the close event comes
- * later, and sending while not open throws. */
 function lateHarness() {
   const sockets: { handlers: TransportHandlers; open: boolean; sent: number }[] = [];
   const events: ModelEvent[] = [];
@@ -334,7 +323,6 @@ describe("a socket that closes late", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(sockets).toHaveLength(2);
 
-    // Asking before the new socket opens is refused, not thrown.
     await expect(connection.request("pause")).rejects.toMatchObject({ kind: "disconnected" });
 
     opened(1);

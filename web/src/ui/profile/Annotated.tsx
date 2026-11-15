@@ -38,7 +38,6 @@ import { useAnswer, useProfile } from "./context";
 import { ownTone, Share, Unanswered } from "./parts";
 import { COLUMN_HELP } from "./TreeView";
 
-/** A function's samples on its source lines, by file, as each reads now. */
 export function SourceLines({ name }: { name: string }) {
   const { query } = useProfile();
   const answer = useAnswer(
@@ -104,16 +103,13 @@ export function SourceLines({ name }: { name: string }) {
   );
 }
 
-/** A function's instructions beside the source they were compiled from,
- * or why its code is unknown. */
 export function Code({ name }: { name: string }) {
   const { query } = useProfile();
   const answer = useAnswer(
     "profileCode",
     useMemo(() => ({ ...query, function: name }), [query, name]),
   );
-  // The function the answer shown is of, which stays the one before while
-  // another's is read.
+
   const answered = useRef(name);
   if (answer.current) {
     // oxlint-disable-next-line react/refs -- follows the answer without a second render
@@ -131,8 +127,7 @@ export function Code({ name }: { name: string }) {
   if (code.blocks.length === 0 && code.unplaced.length === 0) {
     return <div className="empty">No selected sample ran an instruction of {name}.</div>;
   }
-  // A kept answer of the function shown before stays as it is while this
-  // one's is read, and leaves no selection behind once it arrives.
+
   return (
     <Split
       key={`${shownName}\n${code.blocks[0]?.symbol ?? ""}`}
@@ -143,26 +138,16 @@ export function Code({ name }: { name: string }) {
   );
 }
 
-/** The line chosen, by its key in the inline tree, which of its runs, and
- * the instruction clicked. A null run is the hottest; a null row is the
- * run's first. */
 interface Chosen {
   line: string;
   run: number | null;
   row: number | null;
 }
 
-/** Source on the left, instructions on the right. The source is the
- * function's own lines; under a line, the functions the compiler inlined
- * there open as a tree. The hottest lines have tints their instructions
- * share, each run of instructions inlined from another function is
- * bracketed with its name, and the chosen line's instructions are
- * selected and its runs stepped through. */
 function Split({ name, code, current }: { name: string; code: ProfileCode; current: boolean }) {
   const rows = useMemo(() => codeRows(code), [code]);
   const tree = useMemo(() => inlineTree(rows), [rows]);
-  // A function with no code of its own opens on its lines, not those of
-  // the function it was inlined into.
+
   const opening = useMemo(
     () =>
       openingLine(tree, rows, code.files, code.inlined_into ? code.functions.indexOf(name) : -1),
@@ -197,8 +182,6 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
     [entries],
   );
 
-  // The listing's items: its rows, each block's symbol before its first
-  // when there are several blocks.
   const items = useMemo(
     () =>
       rows.flatMap((row, index): Item[] =>
@@ -235,8 +218,6 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
     [rows],
   );
 
-  // Each run of instructions inlined from one function, by row: its
-  // first row, and whether it holds a chosen instruction.
   const brackets = useMemo(() => {
     const firsts: number[] = [];
     const holds = new Set<number>();
@@ -260,7 +241,6 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
     }
   }, [lineKey, shown, entryOf, itemOf]);
 
-  /** Chooses `to`, opening the lines it was inlined under. */
   const choose = useCallback((to: TreeLine, at: number | null, row: number | null) => {
     const above = linesAbove(to);
     setOpen((was) => (above.every((key) => was.has(key)) ? was : new Set([...was, ...above])));
@@ -330,8 +310,7 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
     () => new Map(rows.map((row, index) => [row.instruction.address, index])),
     [rows],
   );
-  // An instruction chooses its innermost line of the program's own code,
-  // as its bracket names it.
+
   const pickRow = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
       const target = event.target as Element;
@@ -351,7 +330,7 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
 
   const counted = runs.reduce((sum, [first, last]) => sum + last - first + 1, 0);
   const clicked = chosen?.row === null || chosen === null ? undefined : rows[chosen.row];
-  // Each pane's numbers take as many characters as its widest one.
+
   const lineDigits = useMemo(() => {
     const widest = Math.max(1, ...[...tree.lines.values()].map((each) => each.line));
     return { "--digits": String(widest).length } as CSSProperties;
@@ -482,7 +461,7 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
                     </>
                   ) : (
                     <>
-                      {/* The jump's address gives way to its offset, a button to it. */}
+                      {}
                       <AsmTokens tokens={instruction.tokens.slice(0, -1)} />
                       <button type="button" className="asm-target" data-jump={row.jump}>
                         +{(rows[indexOf.get(row.jump) ?? index]?.offset ?? 0).toString(16)}
@@ -547,8 +526,6 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
   );
 }
 
-/** Colors a line of the answer's files, each file's lines together the
- * first time one is shown. */
 function painter(
   files: readonly ProfileSourceFile[],
 ): (file: number, number: number) => Painted | undefined {
@@ -564,13 +541,10 @@ function painter(
   };
 }
 
-/** A row's tint as the style that draws it. */
 function tinted(tint: number | undefined): CSSProperties | undefined {
   return tint === undefined ? undefined : ({ "--tint": tint } as CSSProperties);
 }
 
-/** A row of the source pane: a line with code, a line without, a fold of
- * lines without, or the head of a function inlined at the line above. */
 function SourceRow({
   entry,
   code,
@@ -727,10 +701,8 @@ function SourceRow({
   );
 }
 
-/** How many of the functions inlined at a closed line it names. */
 const INLINES_NAMED = 3;
 
-/** The guides that indent a row as deep as the functions it is inlined in. */
 function Indent({ depth }: { depth: number }) {
   return depth > 0 ? (
     <span className="code-indent" aria-hidden="true">
@@ -741,8 +713,6 @@ function Indent({ depth }: { depth: number }) {
   ) : null;
 }
 
-/** An instruction's part of the bracket around its run of code inlined
- * from one function, named on the run's first row. */
 function Bracket({
   code,
   from,
@@ -773,8 +743,6 @@ function Bracket({
   );
 }
 
-/** A line's place, as the foot names it: its number, and the function it
- * is in when that was inlined. */
 function whereOf(code: ProfileCode, line: TreeLine): string {
   const number = line.line > 0 ? `line ${line.line}` : "no line";
   return line.call.at
@@ -782,7 +750,6 @@ function whereOf(code: ProfileCode, line: TreeLine): string {
     : number;
 }
 
-/** An entry's text as wide as it is drawn, for the pane's width. */
 function entryText(entry: SourceEntry, code: ProfileCode): string {
   const indent = "  ".repeat(entry.depth);
   if (entry.kind === "text") {
@@ -796,8 +763,6 @@ function entryText(entry: SourceEntry, code: ProfileCode): string {
   return indent;
 }
 
-/** Where an instruction came from, innermost inlined function first, as
- * `step app.c:8 ← scan app.c:14`, its names shortened or in full. */
 function chainOf(code: ProfileCode, row: CodeRow, short: boolean): string {
   const instruction = row.instruction;
   const where = instruction.lines.map(([function_, file, line]) => {
@@ -810,7 +775,6 @@ function chainOf(code: ProfileCode, row: CodeRow, short: boolean): string {
   return `+${row.offset.toString(16)} ${where.join(" ← ")}`;
 }
 
-/** A source line's text in its token colors, or plain until they are known. */
 function Tokens({ runs, text }: { runs: Painted | undefined; text: string }) {
   if (!runs) {
     return text;
@@ -828,8 +792,6 @@ function Tokens({ runs, text }: { runs: Painted | undefined; text: string }) {
   );
 }
 
-/** An instruction's text, colored by what each piece is, as the debugger's
- * disassembly colors it. */
 function AsmTokens({ tokens }: { tokens: readonly ProfileToken[] }) {
   return tokens.map(([kind, text], at) => (
     // oxlint-disable-next-line react/no-array-index-key -- an instruction's pieces in order, never reordered
@@ -839,8 +801,6 @@ function AsmTokens({ tokens }: { tokens: readonly ProfileToken[] }) {
   ));
 }
 
-/** The columns' names, pinned over a code pane's rows, with that of the
- * functions code was inlined from when the listing brackets them. */
 function CostHead({ from = false }: { from?: boolean }) {
   return (
     <div className="code-row code-head" aria-hidden="true">
@@ -857,14 +817,10 @@ function CostHead({ from = false }: { from?: boolean }) {
   );
 }
 
-/** A code pane's row height, as `--row` sets it. */
 const ROW = 20;
 
-/** An item of the listing: an instruction's row, or a block's symbol. */
 type Item = { row: number } | { symbol: string };
 
-/** A code pane's rows, of which only those in view and near it are drawn.
- * They follow the column head, which takes one row's height. */
 function usePane(count: number, pane: RefObject<HTMLDivElement | null>) {
   // oxlint-disable-next-line react/incompatible-library -- the app is not built with the React Compiler
   return useVirtualizer({
@@ -876,7 +832,6 @@ function usePane(count: number, pane: RefObject<HTMLDivElement | null>) {
   });
 }
 
-/** The room the rows not drawn take, before or after those drawn. */
 function Gap({
   list,
   side,
@@ -893,10 +848,6 @@ function Gap({
   return <div style={style} aria-hidden="true" />;
 }
 
-/** A hidden row as wide as a pane's longest line, which widens the pane's
- * one column to it, so the pane scrolls sideways as far as any row reaches
- * though most are not drawn. CSS draws the line, which keeps it out of the
- * page's text and searches. */
 function Sizer({ text, from = false }: { text: string; from?: boolean }) {
   return (
     <div className="code-row code-sizer" aria-hidden="true">
@@ -912,7 +863,6 @@ function Sizer({ text, from = false }: { text: string; from?: boolean }) {
   );
 }
 
-/** The longest of `lines`, its tabs as wide as a tab can be. */
 function longest(lines: readonly string[]): string {
   let most = "";
   for (const line of lines) {
@@ -924,8 +874,6 @@ function longest(lines: readonly string[]): string {
   return most;
 }
 
-/** Scrolls `pane` to center its item `index` below the column head when
- * the item is out of view. */
 function reveal(pane: HTMLElement | null, index: number): void {
   if (!pane || index < 0) {
     return;
@@ -936,8 +884,6 @@ function reveal(pane: HTMLElement | null, index: number): void {
   }
 }
 
-/** A line's or instruction's own and total shares as bars, as the
- * functions list draws a function's; blank where nothing ran there. */
 function Costs({
   own,
   total,
@@ -962,13 +908,10 @@ function Costs({
   );
 }
 
-/** The class of the row that weighs `total` when it weighs the most. */
 function hottest(total: number | undefined, most: number): string {
   return most > 0 && total === most ? "hottest" : "";
 }
 
-/** Brings the hottest row into view once each function's own rows
- * arrive; until then the rows shown are another function's. */
 function useHottestInView(body: RefObject<HTMLDivElement | null>, name: string, current: boolean) {
   const shown = useRef<string | null>(null);
   useEffect(() => {

@@ -1,8 +1,3 @@
-// Accounts against the real services backend with email turned on: signing
-// up, confirming the address by its emailed link, and signing in with the
-// password and then the emailed code or link. Services comes from its own
-// repository, built, with its database up (`just up` there).
-
 import { randomBytes } from "node:crypto";
 
 import type { Page } from "@playwright/test";
@@ -12,13 +7,11 @@ import { haveServices, type Services, servicesBinary, startServices } from "./se
 
 const test = base.extend<{ services: Services }>({
   services: async ({ context }, provide, info) => {
-    // Services' answer when nobody is signed in, which each pane asks as it opens.
     allowErrors(/GET \S+\/api\/users\/me: 401$/u);
     const services = await startServices();
     try {
       await provide(services);
     } finally {
-      // Pages go before services, so none sees it vanish.
       for (const page of context.pages()) {
         await page.close();
       }
@@ -35,7 +28,6 @@ test.skip(!haveServices, `services is not built at ${servicesBinary}`);
 const account = (page: Page) => page.getByRole("tabpanel", { name: "Account" });
 const projects = (on: Page) => on.getByRole("tabpanel", { name: "Projects" });
 
-/** A new person's name, unique in the shared database. */
 function person(): { username: string; email: string; password: string } {
   const username = `e2e-${randomBytes(6).toString("hex")}`;
   return { username, email: `${username}@example.com`, password: "correct horse battery" };
@@ -65,8 +57,6 @@ test("signs up, confirms the email by its link, and signs in with the emailed co
   expect(confirmation.subject).toBe("Confirm your Microscope email address");
   expect(confirmation.link).toMatch(new RegExp(`^${services.origin}/confirm-email#token=`, "u"));
 
-  // Until the address is confirmed, the password is not enough, and the
-  // pane offers another link.
   await account(page).getByRole("button", { name: "Sign in" }).click();
   await signIn(page, who.email, who.password);
   await expect(account(page)).toContainText("email address is not confirmed");
@@ -75,7 +65,6 @@ test("signs up, confirms the email by its link, and signs in with the emailed co
   const another = await services.mail(who.email);
   expect(another.link).not.toBe(confirmation.link);
 
-  // The first link still works, and leaves no token in the address bar.
   await page.goto(confirmation.link);
   await expect(account(page)).toContainText("Your email address is confirmed");
   await expect(page).toHaveURL(`${services.origin}/`);
@@ -97,7 +86,6 @@ test("signs up, confirms the email by its link, and signs in with the emailed co
     `Welcome, ${who.username}`,
   );
 
-  // The session is services' cookie, which outlives the page.
   await page.reload();
   await expect(account(page)).toContainText(`Signed in as ${who.username}`);
   await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
@@ -118,7 +106,6 @@ test("the link in a login email signs in the browser that opens it, once", async
     /POST \S+\/api\/login\/link: 401$/u,
   );
 
-  // A link that is not one says so.
   await page.goto(`${services.origin}/confirm-email#token=0123`);
   await expect(account(page)).toContainText(
     "Could not confirm: confirmation link is invalid or has expired.",
@@ -137,12 +124,10 @@ test("the link in a login email signs in the browser that opens it, once", async
   const login = await services.mail(who.email);
   expect(login.link).toMatch(new RegExp(`^${services.origin}/login-link#token=`, "u"));
 
-  // Another device: its own browser, with nothing of this one's.
   const phone = await browser.newContext();
   try {
     const other = await phone.newPage();
-    // While the link is held, whatever the page asks services about who is
-    // signed in must not show the form: the pane waits for the link.
+
     const asked: Promise<unknown>[] = [];
     other.on("request", (request) => {
       if (request.url().endsWith("/api/users/me")) {
@@ -165,7 +150,7 @@ test("the link in a login email signs in the browser that opens it, once", async
     await other.goto(login.link);
     await holding;
     await expect(account(other)).toContainText("Checking whether you are signed in");
-    // Two frames, so every pane's effects have asked what they will.
+
     await other.evaluate(
       () =>
         new Promise((done) => {
@@ -180,12 +165,11 @@ test("the link in a login email signs in the browser that opens it, once", async
     await other.unroute("**/api/login/link");
     await expect(other).toHaveURL(`${services.origin}/`);
 
-    // The link finished the login, so neither it nor the code works again.
     await other.goto(login.link);
     await expect(account(other)).toContainText(
       "Could not sign in: login link is invalid or has expired.",
     );
-    // That page's cookie is still good.
+
     await expect(account(other)).toContainText(`Signed in as ${who.username}`);
   } finally {
     await phone.close();
@@ -201,8 +185,6 @@ test("the link in a login email signs in the browser that opens it, once", async
   await expect(account(page)).toContainText("Could not sign in: login link is invalid");
 });
 
-/** Signs a new person up, confirms their address, and signs them in with
- * the emailed code. */
 async function join(page: Page, services: Services, who: ReturnType<typeof person>) {
   await page.goto(`${services.origin}/`);
   await account(page).getByRole("button", { name: "Create one" }).click();
@@ -226,14 +208,13 @@ test("a forgotten password is reset by its emailed link, which signs out every d
   services,
 }) => {
   const who = person();
-  // The short password, then the link used a second time.
+
   expectErrors(
     /POST \S+\/api\/password-resets\/complete: 400$/u,
     /POST \S+\/api\/password-resets\/complete: 400$/u,
     /POST \S+\/api\/login: 401$/u,
   );
 
-  // Signed in on another device, which the reset signs out.
   const laptop = await browser.newContext();
   try {
     const other = await laptop.newPage();
@@ -253,7 +234,6 @@ test("a forgotten password is reset by its emailed link, which signs out every d
       new RegExp(`^${services.origin}/reset-password#token=[0-9a-f]{64}$`, "u"),
     );
 
-    // The token leaves the address bar as soon as the page has it.
     await page.goto(mail.link);
     await expect(page).toHaveURL(`${services.origin}/`);
     const field = account(page).getByLabel("New password");
@@ -268,7 +248,6 @@ test("a forgotten password is reset by its emailed link, which signs out every d
     await other.reload();
     await expect(account(other).getByLabel("Username or email")).toBeVisible();
 
-    // The link works once.
     await page.goto(mail.link);
     await account(page).getByLabel("New password").fill("yet another password");
     await account(page).getByRole("button", { name: "Change password" }).click();
@@ -306,7 +285,6 @@ test("signing out everywhere ends the account's sessions on every device", async
     await account(page).getByRole("button", { name: "Sign in" }).click();
     await expect(account(page)).toContainText(`Signed in as ${who.username}`);
 
-    // It asks first, and backing out changes nothing.
     await account(page).getByRole("button", { name: "Sign out everywhere" }).click();
     await expect(account(page)).toContainText("Sign out on every device?");
     await account(page).getByRole("button", { name: "Cancel" }).click();
@@ -342,7 +320,6 @@ test("an owner shares a project with a team, and a member sees the access it giv
   try {
     const other = await elsewhere.newPage();
 
-    // Someone makes a project of their own.
     await join(other, services, user);
     await menu(other, "File", "New project…");
     await projects(other).getByLabel("Project name").fill("notes");
@@ -351,7 +328,6 @@ test("an owner shares a project with a team, and a member sees the access it giv
       /notes\s*Admin/u,
     );
 
-    // An owner makes an organization and a project in it, and invites them.
     await join(page, services, owner);
     await menu(page, "File", "New organization…");
     await account(page).getByLabel("Organization name").fill(org);
@@ -369,7 +345,6 @@ test("an owner shares a project with a team, and a member sees the access it giv
     await orgPane(page).getByRole("button", { name: "Invite" }).click();
     await expect(orgPane(page).getByRole("list", { name: "Invited" })).toContainText(user.username);
 
-    // They accept.
     await other.reload();
     await menu(other, "File", "Account");
     const invitations = account(other).getByRole("list", { name: "Invitations" });
@@ -382,7 +357,6 @@ test("an owner shares a project with a team, and a member sees the access it giv
     );
     await expect(invitations).toHaveCount(0);
 
-    // The owner makes a team, puts them in it, and gives it write.
     await section(page, "Teams").click();
     await orgPane(page).getByRole("button", { name: "New team" }).click();
     await orgPane(page).getByLabel("Team name").fill("core");
@@ -405,8 +379,6 @@ test("an owner shares a project with a team, and a member sees the access it giv
       "write",
     );
 
-    // They see both projects, with what each lets them do, and nothing of
-    // anyone's own projects but theirs.
     await other.reload();
     await menu(other, "File", "Projects");
     await expect(projects(other).getByRole("list", { name: "Your projects" })).toHaveText(

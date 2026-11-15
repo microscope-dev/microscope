@@ -1,46 +1,21 @@
-//! What loading one module's debug information may cost: the bytes of the
-//! records the loader builds before sealing the image, which are type
-//! entries, data objects, and symbolic names. Every one comes from a DIE,
-//! so the budget grows with the debug information: information that is
-//! sound fits, and information describing far more than its own size fails
-//! with [`DwarfError::Budget`] before it exhausts memory. A load that fails
-//! so is read again without its locals and parameters, and is left out
-//! only when the rest does not fit either.
-
 use super::DwarfError;
 
-/// How a module's budget follows from its debug information.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LoadLimits {
-    /// Bytes the loader may build for each byte of uncompressed debug
-    /// information.
     pub per_input_byte: u64,
 
-    /// What any module may build, however little debug information it has.
     pub floor: u64,
 
-    /// How many units past those added to the image each worker may walk
-    /// to: what is walked waits in memory until the units before it are
-    /// added.
     pub walk_ahead: usize,
 
-    /// The most bytes one file's compressed sections may claim to
-    /// decompress to, checked before any is decompressed.
     pub most_decompressed: u64,
 }
 
 impl Default for LoadLimits {
-    /// Programs of the corpus build at most 4.4 bytes of these records
-    /// for each byte of their debug information (optimized Go), and
-    /// microscope's own debug build 2.1; the smallest build some 40 KB in all.
-    /// Thirty-two leaves room for producers that repeat themselves more.
     fn default() -> Self {
         Self {
             per_input_byte: 32,
             floor: 32 << 20,
-            // Walking 64 units ahead of the adding takes ThinLTO-built vlpds
-            // 0.5 s longer than walking without bound, and its peak holds
-            // 0.8 GB less.
             walk_ahead: 64,
             most_decompressed: crate::debug_info::compressed::MOST_PER_FILE,
         }
@@ -48,7 +23,6 @@ impl Default for LoadLimits {
 }
 
 impl LoadLimits {
-    /// The budget of a module with `input` bytes of debug information.
     pub const fn budget(self, input: u64) -> Meter {
         let scaled = input.saturating_mul(self.per_input_byte);
         Meter {
@@ -63,19 +37,15 @@ impl LoadLimits {
     }
 }
 
-/// Spending against one module's budget.
 #[derive(Debug, Clone)]
 pub struct Meter {
     limit: u64,
     spent: u64,
 
-    /// The first charge the budget refused.
     exceeded: Option<(&'static str, u64)>,
 }
 
 impl Meter {
-    /// Spends `bytes` on `what`, or refuses when the budget cannot afford
-    /// them, which every later [`Self::check`] reports.
     pub fn charge(&mut self, what: &'static str, bytes: usize) -> Result<(), DwarfError> {
         let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
         let Some(spent) = self
@@ -91,7 +61,6 @@ impl Meter {
         Ok(())
     }
 
-    /// Fails when any charge was refused, naming the first.
     pub const fn check(&self) -> Result<(), DwarfError> {
         match self.exceeded {
             Some((what, requested)) => Err(DwarfError::Budget {
@@ -103,17 +72,14 @@ impl Meter {
         }
     }
 
-    /// The bytes spent so far.
     pub const fn spent(&self) -> u64 {
         self.spent
     }
 
-    /// What may still be spent.
     pub const fn left(&self) -> u64 {
         self.limit - self.spent
     }
 
-    /// A meter for work done apart, allowed what this one has left.
     pub const fn remaining(&self) -> Self {
         Self {
             limit: self.limit - self.spent,
@@ -122,8 +88,6 @@ impl Meter {
         }
     }
 
-    /// What this meter spent since it had spent `mark`, as a meter of its
-    /// own that refused what this one has.
     pub const fn since(&self, mark: u64) -> Self {
         Self {
             limit: self.limit,
@@ -132,8 +96,6 @@ impl Meter {
         }
     }
 
-    /// Charges what `apart`, split from this meter, spent, when it refused
-    /// nothing and what it spent is still left here; otherwise nothing.
     pub fn absorb(&mut self, apart: &Self) -> bool {
         let Some(spent) = self
             .spent
@@ -152,8 +114,6 @@ impl Meter {
 mod tests {
     use super::*;
 
-    /// A budget spends what it can afford and refuses the rest, reporting
-    /// its first refusal from then on, even after a later charge fits.
     #[test]
     fn a_budget_reports_the_first_charge_it_refused() {
         let limits = LoadLimits {

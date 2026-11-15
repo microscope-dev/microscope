@@ -1,23 +1,13 @@
-//! The loader's worker pool: one per process, shared by every load.
-//!
-//! Worker count precedence: [`configure`]'s option, `MICROSCOPE_JOBS`, the
-//! `jobs` configuration setting, then available CPUs capped at
-//! [`MAX_DEFAULT_JOBS`] (two under nextest, which runs tests concurrently).
-//! Work already running on a pool, such as a test's own, stays there.
-
 use std::num::NonZeroUsize;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-/// The most workers the pool starts with when nothing says how many.
 pub const MAX_DEFAULT_JOBS: usize = 16;
 const DEFAULT_JOBS: NonZeroUsize = NonZeroUsize::new(MAX_DEFAULT_JOBS).expect("a positive default");
 const TEST_JOBS: NonZeroUsize = NonZeroUsize::new(2).expect("a positive default");
 
-/// The environment variable that sets the number of workers.
 pub const JOBS_VARIABLE: &str = "MICROSCOPE_JOBS";
 
-/// Why the pool could not be configured.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum JobsError {
     #[error("{JOBS_VARIABLE} must be a positive number of workers, not {0:?}")]
@@ -32,17 +22,10 @@ pub enum JobsError {
 
 static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
-/// One worker, for loads too small to share: woken for each object a JIT
-/// compiler registers, the whole pool's workers spun looking for work,
-/// seconds of CPU time over a two-second program, on its own cores.
 static SMALL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
-/// The CPU-time clock of every worker either pool started.
 static CLOCKS: Mutex<Vec<nix::time::ClockId>> = Mutex::new(Vec::new());
 
-/// Registers the calling worker's CPU-time clock, as glibc's
-/// `pthread_getcpuclockid` names a thread's: its id, inverted, shifted,
-/// and marked a thread's scheduler clock.
 fn register_worker() {
     let tid = nix::unistd::gettid().as_raw();
     let clock = nix::time::ClockId::from_raw((!tid << 3) | 6);
@@ -52,8 +35,6 @@ fn register_worker() {
         .push(clock);
 }
 
-/// The CPU time every worker of the loader has spent so far, whichever
-/// load it worked for.
 pub fn cpu() -> Duration {
     CLOCKS
         .lock()
@@ -64,9 +45,6 @@ pub fn cpu() -> Duration {
         .sum()
 }
 
-/// How many workers to run: `option`, else the variable's value `variable`,
-/// else `config`, else `cpus` up to [`MAX_DEFAULT_JOBS`], or two when
-/// `under_test`.
 pub fn resolve(
     option: Option<NonZeroUsize>,
     variable: Option<&str>,
@@ -93,7 +71,6 @@ pub fn resolve(
     Ok(cpus.min(most))
 }
 
-/// Resolves the number of workers from the process's environment.
 fn resolve_here(
     option: Option<NonZeroUsize>,
     config: Option<NonZeroUsize>,
@@ -116,15 +93,11 @@ fn start(jobs: NonZeroUsize) -> Result<&'static rayon::ThreadPool, JobsError> {
         .build()
         .map_err(|error| JobsError::Start(error.to_string()))?;
 
-    // Start every worker before measuring, excluding startup allocations.
     pool.broadcast(|_| ());
 
-    // Another thread may have started one first; either is the pool.
     Ok(POOL.get_or_init(|| pool))
 }
 
-/// Starts the pool with [`resolve`]'s worker count and returns that count.
-/// Fails if the pool already runs a different count.
 pub fn configure(
     option: Option<NonZeroUsize>,
     config: Option<NonZeroUsize>,
@@ -141,8 +114,6 @@ pub fn configure(
     Ok(running)
 }
 
-/// Runs `work` on the pool, starting it if nothing has, unless `work`
-/// already runs on a pool, whose workers it keeps using.
 pub(crate) fn install<R: Send>(work: impl FnOnce() -> R + Send) -> Result<R, JobsError> {
     if rayon::current_thread_index().is_some() {
         return Ok(work());
@@ -156,8 +127,6 @@ pub(crate) fn install<R: Send>(work: impl FnOnce() -> R + Send) -> Result<R, Job
     Ok(pool.install(work))
 }
 
-/// Runs `work`, a load too small to share, on a pool of one worker, as
-/// [`install`] runs work on the shared pool.
 pub(crate) fn install_small<R: Send>(work: impl FnOnce() -> R + Send) -> Result<R, JobsError> {
     if rayon::current_thread_index().is_some() {
         return Ok(work());

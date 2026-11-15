@@ -1,9 +1,3 @@
-//! CPython version and validated layouts for threads, frames, code, and objects.
-//! One row per module with `.PyRuntime` (see `crate::debug_info::cpython`).
-//!
-//! [`Field`] offsets and [`Constant`] values are enum-indexed, keeping version-specific
-//! numbers and names out of the runtime model.
-
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -11,8 +5,6 @@ use super::strings::{StrId, StringsBuilder};
 use super::{Builder, Image, NONE, Record, TableKind};
 use crate::{AddressRange, ImageAddress};
 
-/// Defines an enum of a layout's entries, each with the name CPython's
-/// `_Py_DebugOffsets` or headers give it.
 macro_rules! entries {
     ($(#[$meta:meta])* $kind:ident { $($(#[$doc:meta])* $variant:ident = $name:literal,)* }) => {
         $(#[$meta])*
@@ -23,13 +15,9 @@ macro_rules! entries {
         }
 
         impl $kind {
-            /// Every entry, in order.
             pub const ALL: &[Self] = &[$(Self::$variant,)*];
             pub const COUNT: usize = Self::ALL.len();
 
-            /// The entry's name: `struct.member` for a field, as
-            /// `_Py_DebugOffsets` spells it where it has the field, or the
-            /// C name of a constant.
             #[must_use]
             pub const fn name(self) -> &'static str {
                 match self {
@@ -37,7 +25,6 @@ macro_rules! entries {
                 }
             }
 
-            /// The entry `name` names.
             #[must_use]
             pub fn named(name: &str) -> Option<Self> {
                 Self::ALL.iter().copied().find(|entry| entry.name() == name)
@@ -487,29 +474,18 @@ entries! {
     }
 }
 
-/// The largest fixed structure read whole: a thread state, including its
-/// remote-debugger buffer. Headers and target tables are checked against it.
 pub const MAX_STRUCTURE: u64 = 1 << 13;
 
-/// The function each activation of CPython's evaluation loop runs in.
 pub const EVALUATION_LOOP: &str = "_PyEval_EvalFrameDefault";
 
-/// What a build of CPython whose evaluation loop tail-calls a function for
-/// each instruction names those functions: each activation of the loop is
-/// the instruction's it runs.
 pub const TAIL_CALL_PREFIX: &str = "_TAIL_CALL_";
 
-/// An offset no field has: the version does not have the field.
 const ABSENT: u32 = u32::MAX;
 
-/// The runtime is CPython's free-threaded build.
 pub const FREE_THREADED: u16 = 1;
 
-/// Its layout came from the runtime's own `_Py_DebugOffsets`.
 pub const TARGET_TABLE: u16 = 2;
 
-/// Its layout, or the part the runtime's table leaves out, came from
-/// microscope's table generated from the version's headers.
 pub const GENERATED_TABLE: u16 = 4;
 
 const _: () = assert!(
@@ -527,23 +503,18 @@ const _: () = assert!(
     "a structure's size fits a layout without reading as absent"
 );
 
-/// The Python runtime a module carries.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct PythonRuntimeRecord {
-    /// `PY_VERSION_HEX`.
     pub version: U32,
     pub flags: U16,
     pub reserved: U16,
 
-    /// The `.PyRuntime` section, where `_PyRuntime` is.
     pub runtime_start: U64,
     pub runtime_end: U64,
 
-    /// Why the module's runtime cannot be read, a string, or [`NONE`]
-    /// when its layout is complete.
     pub problem: U32,
     pub offsets: [U32; Field::COUNT],
     pub constants: [u8; Constant::COUNT],
@@ -553,7 +524,6 @@ impl Record for PythonRuntimeRecord {
     const KIND: TableKind = TableKind::PythonRuntime;
 }
 
-/// A CPython version, as `PY_VERSION_HEX` encodes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PyVersion(pub u32);
 
@@ -573,7 +543,6 @@ impl PyVersion {
         (self.0 >> 8) & 0xff
     }
 
-    /// Whether it is a final release, not an alpha, beta, or candidate.
     #[must_use]
     pub const fn is_final(self) -> bool {
         (self.0 >> 4) & 0xf == 0xf
@@ -599,7 +568,6 @@ impl std::fmt::Display for PyVersion {
     }
 }
 
-/// Where each field is, and each constant's value, for one version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PythonLayout {
     offsets: [u32; Field::COUNT],
@@ -616,8 +584,6 @@ impl Default for PythonLayout {
 }
 
 impl PythonLayout {
-    /// The field's offset, or its structure's size; `None` when the
-    /// version does not have it.
     #[must_use]
     #[expect(
         clippy::indexing_slicing,
@@ -639,7 +605,6 @@ impl PythonLayout {
         self.constants[constant.index()]
     }
 
-    /// Sets a field, or leaves it absent when its offset does not fit.
     #[expect(
         clippy::indexing_slicing,
         reason = "an entry's index is its place in `ALL`, which `COUNT` is the length of"
@@ -664,24 +629,19 @@ impl PythonLayout {
         self.constants[constant.index()] = value;
     }
 
-    /// Whether the version has the field.
     #[must_use]
     pub const fn has(&self, field: Field) -> bool {
         self.field(field).is_some()
     }
 }
 
-/// What a module's loader found of its Python runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PythonRuntime {
     pub version: PyVersion,
     pub flags: u16,
 
-    /// The `.PyRuntime` section.
     pub runtime: AddressRange<ImageAddress>,
 
-    /// The layout, or why the runtime cannot be read, as for a version
-    /// microscope does not know.
     pub layout: Result<PythonLayout, std::sync::Arc<str>>,
 }
 
@@ -692,12 +652,10 @@ impl PythonRuntime {
     }
 }
 
-/// Why a runtime could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the Python runtime does not fit an image")]
 pub struct TooLarge;
 
-/// Adds the module's Python runtime, if it has one, to `builder`.
 pub fn add_to(
     builder: &mut Builder<'_>,
     strings: &mut StringsBuilder,
@@ -743,7 +701,6 @@ pub fn add_to(
     Ok(())
 }
 
-/// The Python runtime of a validated image, if it has one.
 #[must_use]
 pub fn runtime(image: &Image) -> Option<PythonRuntime> {
     let record: &PythonRuntimeRecord = image.table().first()?;
@@ -782,9 +739,6 @@ pub fn runtime(image: &Image) -> Option<PythonRuntime> {
     })
 }
 
-/// Checks that an image has at most one runtime, which sets only the
-/// flags this format defines, whose problem names a string, and whose
-/// section is a range.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     let records: &[PythonRuntimeRecord] = image.table();
     if records.len() > 1 {

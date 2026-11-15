@@ -1,7 +1,7 @@
-// A program whose threads leave their CPUs in both ways. The sleeper runs
-// a moment and then sleeps, ROUNDS times, so it blocks. The two spinners
-// hold themselves to one CPU, meet, and spin there side by side, so each
-// is preempted by the other. Each thread names itself.
+
+
+
+
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <sched.h>

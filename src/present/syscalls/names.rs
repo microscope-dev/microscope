@@ -1,7 +1,3 @@
-//! Error and signal names and messages, as strace prints them: generated
-//! once from glibc: `strerrorname_np`, `strerror`, and `sigabbrev_np`.
-
-/// Error numbers with their names and messages, by number.
 pub const ERRNOS: &[(u16, &str, &str)] = &[
     (1, "EPERM", "Operation not permitted"),
     (2, "ENOENT", "No such file or directory"),
@@ -156,7 +152,6 @@ pub const ERRNOS: &[(u16, &str, &str)] = &[
     (133, "EHWPOISON", "Memory page has hardware error"),
 ];
 
-/// Signals by number, without their SIG prefix.
 pub const SIGNALS: &[(i32, &str)] = &[
     (1, "HUP"),
     (2, "INT"),

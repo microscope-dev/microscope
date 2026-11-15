@@ -1,7 +1,3 @@
-//! A recording's report: JSON for scripts and for trace viewers, which
-//! open its `traceEvents` as Chrome trace events, and compact text for
-//! people and agents in a terminal.
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -10,10 +6,8 @@ use serde::{Deserialize, Serialize};
 use super::Event;
 use super::alloc::Totals;
 
-/// The report format's version, which readers check.
 pub const SCHEMA: u32 = 1;
 
-/// The most phases a summary lists unless asked for all.
 const SUMMARY_ROWS: usize = 40;
 
 pub(super) enum CounterStatus {
@@ -35,25 +29,19 @@ pub(super) struct Raw {
     pub instructions: CounterStatus,
 }
 
-/// What one recording measured.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
     pub schema: u32,
     pub summary: Summary,
 
-    /// Every span name's totals, the longest first.
     pub phases: Vec<Phase>,
 
-    /// Each thread's busy time.
     pub threads: Vec<ThreadBusy>,
 
-    /// Every counter's total over the whole recording.
     pub counters: BTreeMap<String, u64>,
 
-    /// Marked instants, in milliseconds since the recording began.
     pub marks: BTreeMap<String, f64>,
 
-    /// Spans the recording had no room for.
     pub dropped_events: u64,
 
     #[serde(rename = "traceEvents")]
@@ -64,23 +52,17 @@ pub struct Report {
 pub struct Summary {
     pub wall_ms: f64,
 
-    /// Every thread's CPU time over the recording.
     pub cpu_ms: f64,
 
-    /// When the session was ready for its first command, if it got there.
     pub ready_ms: Option<f64>,
 
-    /// The process's peak resident set over its whole life.
     pub peak_rss_bytes: Option<u64>,
 
-    /// Absent unless the binary counts its allocations.
     pub allocations: Option<u64>,
     pub allocated_bytes: Option<u64>,
 
-    /// The most the heap grew during the recording.
     pub peak_heap_growth_bytes: Option<i64>,
 
-    /// `off`, `counted`, `multiplexed`, or why they could not be counted.
     pub instructions: String,
 }
 
@@ -100,24 +82,19 @@ pub struct Phase {
 pub struct ThreadBusy {
     pub thread: u32,
 
-    /// The wall time of the thread's outermost spans.
     pub busy_ms: f64,
     pub cpu_ms: f64,
     pub spans: u64,
 
-    /// Its longest outermost span.
     pub longest: Option<String>,
     pub longest_ms: f64,
 }
 
-/// One Chrome trace event: a complete span (`X`), an instant (`i`), or
-/// a thread's name (`M`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceEvent {
     pub name: String,
     pub ph: String,
 
-    /// Microseconds since the recording began.
     pub ts: f64,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,8 +217,6 @@ impl Report {
             *counters.entry((*name).to_owned()).or_default() += amount;
         }
 
-        // Threads that found every allocation-counting slot taken contend
-        // on one cache line for each allocation.
         if raw.allocations.sharing_threads > 0 {
             counters.insert(
                 "alloc_sharing_threads".to_owned(),
@@ -311,7 +286,6 @@ impl Report {
         }
     }
 
-    /// Reads a report `--timings` wrote.
     pub fn from_json(text: &str) -> Result<Self, String> {
         let report: Self = serde_json::from_str(text).map_err(|error| error.to_string())?;
         if report.schema != SCHEMA {
@@ -328,7 +302,6 @@ impl Report {
         serde_json::to_string(self)
     }
 
-    /// The report as text: its summary, then its phases, the longest first.
     #[must_use]
     pub fn text(&self, all: bool) -> String {
         let mut text = String::new();
@@ -403,8 +376,6 @@ impl Report {
         text
     }
 
-    /// Each thread's busy time and longest span, and how parallel the
-    /// recording was.
     #[must_use]
     pub fn threads_text(&self) -> String {
         let mut text = String::new();
@@ -444,8 +415,6 @@ impl Report {
             );
         }
 
-        // The spans that ran for another, grouped by the span they ran for:
-        // the parent waits for the last of them, which bounds its time.
         let mut children = BTreeMap::<u64, Vec<&TraceEvent>>::new();
         let mut by_id = BTreeMap::<u64, &TraceEvent>::new();
 
@@ -489,8 +458,6 @@ impl Report {
         text
     }
 
-    /// What changed from `base` to this report: every summary measure and
-    /// every phase whose wall time, instructions, or allocations moved.
     #[must_use]
     pub fn diff_text(&self, base: &Self, all: bool) -> String {
         let mut text = String::new();

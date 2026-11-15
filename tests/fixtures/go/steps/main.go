@@ -1,11 +1,11 @@
-// Lines whose work goes through Go's runtime. Stepping in stops only in
-// code the program wrote: it passes over the runtime's own machinery, the
-// wrappers the compiler generates, and the stack check that grows a
-// goroutine's stack. A step into a function stops at its declaration, as
-// Go's line table ends the prologue there.
+
+
+
+
+
 package main
 
-// sink keeps calls the compiler would otherwise drop.
+
 var sink int
 
 type shape interface {
@@ -21,9 +21,9 @@ func (s square) area() int { // STEP: area
 	return s.side * s.side
 }
 
-// fresh has a frame too large for a new goroutine's stack, so its
-// prologue's stack check calls into the runtime to grow the stack.
-//
+
+
+
 //go:noinline
 func fresh(seed int) int { // STEP: fresh
 	var pad [4096]int
@@ -53,7 +53,7 @@ func run(done chan int) {
 func main() {
 	done := make(chan int)
 	finished := make(chan struct{})
-	// run begins on a new goroutine's small stack.
+
 	go func() { // STEP: start
 		run(done) // STEP: body
 		close(finished)

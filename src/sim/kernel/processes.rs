@@ -1,13 +1,3 @@
-//! Processes: fork, how a process ends and who reaps it, and what a child's
-//! end tells its parent (K-FORK-1 to K-FORK-3).
-//!
-//! The tracer reaps a traced thread first. Once a process's last thread is
-//! gone, its parent reaps it: the tracer, which launched it; whatever
-//! started it untraced, at once; the process that forked it, with `wait4`,
-//! after SIGCHLD; or, the parent gone, init, at once. A thread that exits
-//! hands the children it forked to another of its group, or, the last, to
-//! init.
-
 use nix::errno::Errno;
 use nix::libc;
 
@@ -19,16 +9,12 @@ use super::{
 
 use crate::sim::cpu::RAX;
 
-/// `wait4`'s option to return at once when no child has exited.
 const WNOHANG: u64 = 1;
 
-/// The process id `getppid` reports once init has taken a process on.
 pub(super) const INIT: Tid = 1;
 
-/// The process id of whatever started a program untraced.
 const LAUNCHER: Tid = 2;
 
-/// The status `wait4` stores for a child that ended this way.
 const fn wait_word(status: ExitStatus) -> i32 {
     match status {
         ExitStatus::Code(code) => (code & 0xff) << 8,
@@ -36,7 +22,6 @@ const fn wait_word(status: ExitStatus) -> i32 {
     }
 }
 
-/// SIGCHLD's `si_code` for a child that ended this way.
 const fn child_code(status: ExitStatus) -> i32 {
     match status {
         ExitStatus::Code(_) => libc::CLD_EXITED,
@@ -46,14 +31,6 @@ const fn child_code(status: ExitStatus) -> i32 {
 }
 
 impl Kernel {
-    /// `fork()` by `tid`. The child is a process of its own with one
-    /// thread, a copy of the caller returning zero from the call, in a copy
-    /// of the caller's memory, traps included. A caller tracing forks stops
-    /// at `PTRACE_EVENT_FORK` inside the call, and the child, traced with
-    /// the caller's options, first stops for a SIGSTOP nobody sent; neither
-    /// order of the two stops is fixed. Otherwise the child is untraced
-    /// (K-FORK-1). Made with a signal pending, it forks nothing, to be made
-    /// again (K-SYS-7).
     pub(super) fn fork(&mut self, tid: Tid) {
         if self.signal_pending(tid) {
             self.fail_to_restart(tid);
@@ -65,8 +42,6 @@ impl Kernel {
         let traced = caller.traced() && caller.options.trace_fork;
         let group = caller.tgid;
 
-        // The child returns through its parent's calls, on its own copy of
-        // the stack.
         let shadow = caller.shadow.clone();
         let thread = Thread::created(
             caller,
@@ -112,11 +87,6 @@ impl Kernel {
         }
     }
 
-    /// `wait4(pid, status, options, NULL)` by `tid`, for one child, with
-    /// `WNOHANG`: reaps the child if it ended, storing its status, and
-    /// returns its id; returns zero while it lives, and `ECHILD` for a
-    /// process that is not the caller's child. Returns the result as `rax`
-    /// holds it.
     pub(super) fn wait4(&mut self, tid: Tid, pid: u64, status: u64, options: u64) -> u64 {
         let Ok(child) = Tid::try_from(pid.cast_signed()) else {
             return failure(Errno::ECHILD);
@@ -144,8 +114,6 @@ impl Kernel {
                     .get_mut(&group)
                     .expect("the caller's process");
 
-                // Linux reaps the child before it stores the status, and
-                // then fails with EFAULT; no probe pins that.
                 if process.space.write(status, &word.to_ne_bytes()).is_err() {
                     self.gap("wait4 storing a status where it cannot");
                     return failure(Errno::ENOSYS);
@@ -177,7 +145,6 @@ impl Kernel {
         if lives { 0 } else { failure(Errno::ECHILD) }
     }
 
-    /// `getppid()` by `tid`.
     pub(super) fn parent_of(&self, tid: Tid) -> u64 {
         let parent = match self.processes[&self.threads[&tid].tgid].parent {
             Parent::Tracer => self.tracer,
@@ -189,8 +156,6 @@ impl Kernel {
         u64::try_from(parent).expect("process ids are positive")
     }
 
-    /// The children `tid` forked that their parent has not reaped, as
-    /// `/proc/<tgid>/task/<tid>/children` lists them.
     #[must_use]
     pub fn children(&self, tid: Tid) -> Vec<Tid> {
         let live = self
@@ -208,9 +173,6 @@ impl Kernel {
         children
     }
 
-    /// Hands the children `tid` forked to another live thread of its
-    /// group, as a thread exits, or, none being left, to init, which reaps
-    /// those that ended (K-FORK-3).
     pub(super) fn forget_children(&mut self, tid: Tid) {
         let group = self.threads[&tid].tgid;
         let heir = self
@@ -248,8 +210,6 @@ impl Kernel {
         }
     }
 
-    /// Ends a process whose last thread is gone: its parent reaps it (see
-    /// the module documentation).
     pub(super) fn end_process(&mut self, group: Tgid, exit: ExitStatus) {
         let process = self.processes.remove(&group).expect("the process");
         match process.parent {
@@ -305,12 +265,6 @@ impl Kernel {
         self.happenings.push(Happening::ReapedOrphan { tgid });
     }
 
-    /// `tracer` exits, releasing every thread it still traces (K-WAIT-3).
-    /// A running or exiting one runs on untraced, one at its exit event
-    /// finishes exiting, and a zombie, which no request reaches, joins its
-    /// process's end as though never traced. A thread held in another
-    /// ptrace-stop, or `PTRACE_O_EXITKILL` ending live threads, is not
-    /// modeled.
     pub fn forget_tracer(&mut self, tracer: i32) {
         let tracees = self
             .threads
@@ -329,7 +283,6 @@ impl Kernel {
                 return;
             }
 
-            // Only a thread that runs on can meet a trap left in its code.
             let planted = matches!(thread.state, State::Running)
                 .then(|| self.planted(group))
                 .flatten();
@@ -343,7 +296,6 @@ impl Kernel {
             thread.tracing = Tracing::Untraced;
             thread.single_step = false;
 
-            // K-SYS-6: an untraced thread stops at no call.
             thread.syscall_stops = false;
             thread.options = super::Options::default();
             thread.report = None;
@@ -359,9 +311,6 @@ impl Kernel {
         }
     }
 
-    /// Ends an untraced thread that became a zombie: one other than its
-    /// group's leader is reaped at once, and a leader, once alone, ends its
-    /// process.
     pub(super) fn reap_untraced(&mut self, tid: Tid) {
         let thread = &self.threads[&tid];
         let group = thread.tgid;
@@ -372,8 +321,6 @@ impl Kernel {
         self.end_with_untraced_leader(group);
     }
 
-    /// Ends `group` when only its leader is left, an untraced zombie, which
-    /// its parent then reaps (K-EXIT-5).
     pub(super) fn end_with_untraced_leader(&mut self, group: Tgid) {
         let leader_alone = self
             .threads

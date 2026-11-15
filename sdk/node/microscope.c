@@ -1,12 +1,12 @@
-// Node-API bridge from index.js to the probes SDK's run-time sites
-// (sdk/rust-probes/src/c.rs).
-//
-// The library is found at MICROSCOPE_PROBES_LIBRARY, or else next to this
-// addon. Without it, or with one that has no run-time sites, the addon
-// still loads: its `problem` says why, and every call does nothing.
-//
-// Sites are program-lifetime pointers passed to JavaScript as BigInts;
-// 0n means no site. The context-aware addon shares one library across workers.
+
+
+
+
+
+
+
+
+
 
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -20,7 +20,7 @@
 
 #include <node_api.h>
 
-// The run-time site ABI this addon calls.
+
 #define ABI 2
 
 typedef const void *site_t;
@@ -40,11 +40,11 @@ static struct {
 	void (*message)(site_t, const char *, size_t);
 } library;
 
-// Why the library cannot be used, or empty.
+
 static char problem[512];
 static pthread_once_t loaded = PTHREAD_ONCE_INIT;
 
-// The library next to the file that holds `symbol`, into `path`.
+
 static void beside(const void *symbol, char *path, size_t size)
 {
 	Dl_info info;
@@ -105,7 +105,7 @@ static void load(void)
 	}
 }
 
-// The site an argument passes, or NULL.
+
 static site_t site_of(napi_env env, napi_value value)
 {
 	uint64_t address = 0;
@@ -115,8 +115,8 @@ static site_t site_of(napi_env env, napi_value value)
 	return (site_t)(uintptr_t)address;
 }
 
-// The UTF-8 bytes of a string argument, which the caller frees, and their
-// length; NULL where it is none.
+
+
 static char *text_of(napi_env env, napi_value value, size_t *length)
 {
 	if (napi_get_value_string_utf8(env, value, NULL, 0, length) != napi_ok)
@@ -129,7 +129,7 @@ static char *text_of(napi_env env, napi_value value, size_t *length)
 	return text;
 }
 
-// The arguments of a call, up to `wanted`.
+
 static size_t arguments(napi_env env, napi_callback_info info, napi_value *values, size_t wanted)
 {
 	size_t count = wanted;
@@ -164,7 +164,7 @@ static napi_value found(napi_env env, napi_callback_info info)
 	return boolean(env, library.found && library.found());
 }
 
-// define(kind, name, file, line): the site, or 0n.
+
 static napi_value define(napi_env env, napi_callback_info info)
 {
 	napi_value values[4];
@@ -186,7 +186,7 @@ static napi_value define(napi_env env, napi_callback_info info)
 	return result;
 }
 
-// A call of the library on the site its first argument passes.
+
 #define SITE_CALL(function, call)                                                     \
 	static napi_value function(napi_env env, napi_callback_info info)             \
 	{                                                                             \
@@ -202,7 +202,7 @@ SITE_CALL(zone_end, if (site && library.zone_end) library.zone_end(site); return
 SITE_CALL(label_end, if (site && library.label_end) library.label_end(site); return nothing(env))
 SITE_CALL(event, if (site && library.event) library.event(site); return nothing(env))
 
-// labelBegin(site, text): whether it began, and so must end.
+
 static napi_value label_begin(napi_env env, napi_callback_info info)
 {
 	napi_value values[2];
@@ -218,7 +218,7 @@ static napi_value label_begin(napi_env env, napi_callback_info info)
 	return boolean(env, began);
 }
 
-// plot(site, value)
+
 static napi_value plot(napi_env env, napi_callback_info info)
 {
 	napi_value values[2];
@@ -232,7 +232,7 @@ static napi_value plot(napi_env env, napi_callback_info info)
 	return nothing(env);
 }
 
-// message(site, text)
+
 static napi_value message(napi_env env, napi_callback_info info)
 {
 	napi_value values[2];
@@ -247,7 +247,7 @@ static napi_value message(napi_env env, napi_callback_info info)
 	return nothing(env);
 }
 
-NAPI_MODULE_INIT(/* napi_env env, napi_value exports */)
+NAPI_MODULE_INIT( )
 {
 	pthread_once(&loaded, load);
 	napi_property_descriptor properties[] = {

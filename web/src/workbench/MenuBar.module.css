@@ -1,5 +1,3 @@
-/* The menu bar: a menu per menu name, each listing its commands. */
-
 .menu-bar {
   display: flex;
   align-items: center;
@@ -25,8 +23,6 @@
   background: var(--surface-2);
 }
 
-/* Menus are above the dock, so they and floating windows alone cast a
-   shadow. */
 .menu {
   position: absolute;
   z-index: 30;

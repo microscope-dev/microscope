@@ -1,5 +1,3 @@
-//! Command-line arguments and parsing for the microscope binary.
-
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -375,8 +373,6 @@ pub enum ConfigCommand {
 pub fn parse_args() -> Args {
     let mut arguments = std::env::args_os().collect::<Vec<_>>();
 
-    // Alone, microscope starts the project's launch configuration, or, with
-    // none, shows its short help.
     if arguments.len() == 1 && !project_launches() {
         arguments.push("-h".into());
     }
@@ -387,9 +383,6 @@ pub fn parse_args() -> Args {
     Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
 }
 
-/// Whether the project of the working directory describes how to start
-/// its program, so that `microscope` alone starts it. Settings that cannot be
-/// read describe nothing here; starting reports why.
 fn project_launches() -> bool {
     let Ok(start) = std::env::current_dir() else {
         return false;

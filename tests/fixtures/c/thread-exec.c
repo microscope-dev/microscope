@@ -1,7 +1,7 @@
-/* A second thread executes a copy of /bin/true from a memfd once the
- * leader sleeps in pause. The new program's file, which /proc names
- * "/memfd:true (deleted)", cannot be read by any path, so a debugger
- * cannot load it. */
+
+
+
+
 #define _GNU_SOURCE
 #include <elf.h>
 #include <fcntl.h>
@@ -13,7 +13,7 @@
 #include <time.h>
 #include <unistd.h>
 
-/* Whether the leader sleeps in pause, as its /proc files say. */
+
 static int leader_paused(void) {
     char text[512];
     FILE *file;
@@ -43,7 +43,7 @@ static int leader_paused(void) {
     return number == SYS_pause;
 }
 
-/* A memfd holding a copy of /bin/true, or -1. */
+
 static int copy_true(void) {
     char buffer[65536];
     ssize_t length;
@@ -62,8 +62,8 @@ static int copy_true(void) {
     return length == 0 ? to : -1;
 }
 
-/* A valid interpreter header without loadable segments fails only after
- * begin_new_exec has changed the worker's id. */
+
+
 static int break_interpreter(int program) {
     Elf64_Ehdr header = {
         .e_ident = {ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3,
@@ -105,8 +105,8 @@ static int break_interpreter(int program) {
     return -1;
 }
 
-/* Executes the copy once the leader sleeps in pause, failing if it never
- * does within the deadline. */
+
+
 static void *replace_image(void *argument) {
     char *const arguments[] = {"true", NULL};
     char *const environment[] = {NULL};

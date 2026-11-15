@@ -32,8 +32,6 @@ const ORDERS: { order: Order; label: string }[] = [
   { order: "longest", label: "longest" },
 ];
 
-/** Every zone site and label key, and the chosen one's spread of lengths,
- * which picks the samples the views read. */
 export function ZonesPane() {
   const { summary, look, setLook } = useProfile();
   const [order, setOrder] = useState<Order>("total");
@@ -45,7 +43,6 @@ export function ZonesPane() {
   const choose = useCallback(
     (name: string) =>
       setLook((prev) => {
-        // The zone selected, if any, is one of the old site's.
         const rest = withoutSite(prev);
         return prev.zs === name ? rest : { ...rest, zs: name };
       }, true),
@@ -158,9 +155,6 @@ const SCOPES: { zf: ProfileLook["zf"]; label: string; title: string }[] = [
   },
 ];
 
-/** One site's zones in the range: their percentiles, a histogram of
- * lengths to pick a band from, which samples the views read, the longest
- * in the band, and for a label, its values, each a filter. */
 function ZoneStats({ site }: { site: ProfileZoneSite }) {
   const { profile, query, look, setLook, summary } = useProfile();
   const range = useMemo(() => rangeOf({ range: look.range }), [look.range]);
@@ -369,9 +363,6 @@ function ScopeButton({
   );
 }
 
-/** Lengths in buckets of equal ratio. A click picks one bucket's lengths
- * as the band, and a drag across several picks theirs; the band's buckets
- * stand out, and the selected zone's length is marked. */
 function Histogram({
   stats,
   band,
@@ -394,8 +385,7 @@ function Histogram({
     [stats],
   );
   const bars = useRef<HTMLDivElement>(null);
-  // Read by each event as it comes, not as the last render saw it, so a
-  // release in the same frame as a move ends where the move did.
+
   const drag = useRef<[number, number] | null>(null);
   const [dragging, setDragging] = useState<[number, number] | null>(null);
   const bucket = useCallback(
@@ -441,7 +431,7 @@ function Histogram({
     setLook((prev) => {
       const same = prev.zb === formatBand(picked);
       const { zb: _zb, bz: _bz, ...rest } = prev;
-      // Picking the band again lets it go; a scope of the band follows it.
+
       if (same) {
         const { zf: _zf, ...unscoped } = rest;
         return rest.zf === "band" ? unscoped : rest;
@@ -506,7 +496,7 @@ function Bar({
   low: number;
   count: number;
   most: number;
-  /** In the band, out of it, or no band. */
+
   state: boolean | null;
   here: boolean;
 }) {
@@ -524,8 +514,6 @@ function Bar({
   );
 }
 
-/** A zone's length, which selects it: the views read its span, and the
- * lanes show it. */
 function ZoneSpan({
   thread,
   start,
@@ -555,7 +543,6 @@ function ZoneSpan({
   );
 }
 
-/** A label's value, which keeps only the samples that carry it. */
 function LabelValue({ label, on }: { label: string; on: boolean }) {
   const { setLook } = useProfile();
   const toggle = useCallback(
@@ -580,7 +567,6 @@ function LabelValue({ label, on }: { label: string; on: boolean }) {
   );
 }
 
-/** Why a site's stats hold no zones: what the views read leaves them out. */
 function emptyWhy(ranged: boolean, threads: number): string {
   const where = [
     ...(ranged ? ["in the range"] : []),

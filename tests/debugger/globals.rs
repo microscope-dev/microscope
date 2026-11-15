@@ -1,5 +1,3 @@
-//! Global variables, the global catalog, and thread-local storage.
-
 use super::*;
 
 #[tokio::test]
@@ -89,7 +87,6 @@ async fn global_catalogs_normalize_qualification_and_optimized_storage_and_list_
             }
         }
 
-        // Listing is filtered, paged, and ordered by name.
         if fixture == "globals-go-o0" {
             let page = |offset, limit| {
                 handle.globals(microscope::GlobalVariableQuery {
@@ -680,8 +677,6 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
 
     assert_variable_value(&tls_value, ScalarValue::Signed(213));
 
-    // glibc's descriptors find a loaded library's TLS block in the DTV or
-    // in static TLS space the loader set aside.
     assert_eq!(tls_location_by_name(&scenario, "dso_tls").await.1, 213);
     let mut saw_load = false;
 
@@ -750,7 +745,6 @@ async fn shared_library_globals_track_load_unload_reload_and_stale_identity() {
 
     assert_variable_value(&reloaded_value, ScalarValue::Signed(211));
 
-    // Reloading reuses the module's TLS slot under a newer generation.
     assert_eq!(tls_location_by_name(&scenario, "dso_tls").await.1, 213);
 
     assert_eq!(
@@ -839,8 +833,6 @@ async fn tls_globals_resolve_per_selected_thread_for_gcc_and_clang() {
 
             values.push(*value);
 
-            // The variable found by name is the storage whose address the
-            // thread stored in its own pointer.
             let (address, by_name) = tls_location_by_name(&scenario, "tls_value").await;
             assert_eq!(by_name, *value, "{fixture}");
             let pointer = scenario
@@ -922,12 +914,6 @@ async fn tls_globals_resolve_per_selected_thread_for_gcc_and_clang() {
 
 #[tokio::test]
 async fn tls_of_every_module_resolves_per_thread_on_glibc_and_musl() {
-    // Each build, whether it loads a plugin, and its thread count. Builds
-    // with a plugin are dynamically linked, with the library and the plugin
-    // as separate TLS modules. Statically linked glibc builds without threads
-    // lack glibc's thread library. The builds for Ubuntu's glibc run on it:
-    // 2.27 and 2.31 describe their thread structures in libpthread, 2.35 in
-    // libc.
     for (fixture, plugin, threads) in [
         ("tls-modules-gcc", true, 3),
         ("tls-modules-gcc-static", false, 3),
@@ -952,9 +938,6 @@ async fn tls_of_every_module_resolves_per_thread_on_glibc_and_musl() {
 
         assert_eq!(entry, StopReason::Entry, "{fixture}");
 
-        // Before the C library sets the thread pointer up, no thread has TLS.
-        // Only dynamically linked glibc needs its loader to identify the
-        // executable's TLS, and its loader has not run yet.
         let dynamic_glibc = fixture == "tls-modules-gcc" || fixture.contains("-glibc");
         if !dynamic_glibc {
             let early = scenario
@@ -992,8 +975,6 @@ async fn tls_of_every_module_resolves_per_thread_on_glibc_and_musl() {
     }
 }
 
-/// A library with no code maps nothing executable, but it is a module all
-/// the same, with globals and TLS of its own.
 #[tokio::test]
 async fn a_library_with_no_code_is_a_module_with_its_globals_and_tls() {
     let fixture = "data-library";
@@ -1032,9 +1013,6 @@ async fn a_library_with_no_code_is_a_module_with_its_globals_and_tls() {
     assert_eq!(scenario.shutdown().await, Some(ExitStatus::Code(0)));
 }
 
-/// glibc before 2.34 describes its thread structures only in libpthread, so
-/// the TLS of a program that never loads it cannot be found, which microscope
-/// says rather than guessing at the C library's layout.
 #[tokio::test]
 async fn tls_on_glibc_before_2_34_without_libpthread_is_unavailable_with_its_reason() {
     let fixture = "tls-modules-single-thread-glibc2.31";
@@ -1071,7 +1049,6 @@ async fn tls_on_glibc_before_2_34_without_libpthread_is_unavailable_with_its_rea
     assert_eq!(scenario.shutdown().await, Some(ExitStatus::Code(0)));
 }
 
-/// The address and value of a TLS variable in the selected thread.
 fn tls_location(variable: &microscope::Variable) -> (u64, i128) {
     match &variable.state {
         VariableState::Available {
@@ -1083,7 +1060,6 @@ fn tls_location(variable: &microscope::Variable) -> (u64, i128) {
     }
 }
 
-/// The address and value of the TLS variable `name` in the selected thread.
 pub async fn tls_location_by_name(scenario: &Scenario, name: &str) -> (u64, i128) {
     tls_location(
         &scenario

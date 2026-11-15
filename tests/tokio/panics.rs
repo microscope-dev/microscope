@@ -1,7 +1,3 @@
-//! Rust panics stop where the program panicked, before anything catches
-//! them, with the message the program's own panic hook was given. The
-//! fixture runs one case per launch and prints what its hook saw.
-
 use std::fs::File;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -19,8 +15,6 @@ use crate::support::{Scenario, ScratchDir};
 const SOURCE: &str = "panics/src/main.rs";
 const SIGABRT: u64 = 6;
 
-/// One case of the fixture, launched to its first stop, with what it
-/// prints going to a file.
 struct Launched {
     scenario: Scenario,
     reason: StopReason,
@@ -60,7 +54,6 @@ async fn launched(fixture: &str, case: &str, stops: Option<ExceptionStops>) -> L
 }
 
 impl Launched {
-    /// The `TRUTH` lines the fixture printed so far, each split at tabs.
     fn truth(&self) -> Vec<Vec<String>> {
         Report::read(&self.output)
             .lines()
@@ -68,8 +61,6 @@ impl Launched {
             .collect()
     }
 
-    /// The message and line the fixture's panic hook saw last, and the
-    /// task that panicked, if one did.
     fn hooked(&self) -> (String, u64, Option<u64>) {
         let truth = self.truth();
 
@@ -89,7 +80,6 @@ impl Launched {
     }
 }
 
-/// The exception a stop reports.
 fn exception(reason: &StopReason, context: &str) -> String {
     let StopReason::LanguageException(exception) = reason else {
         panic!("{context}: {reason:?}");
@@ -99,7 +89,6 @@ fn exception(reason: &StopReason, context: &str) -> String {
     exception.message.to_string()
 }
 
-/// The selected frame's source file and line.
 async fn selected(scenario: &Scenario) -> (String, u64) {
     let location = scenario
         .operation("location", scenario.handle().current_location())
@@ -116,8 +105,6 @@ async fn selected(scenario: &Scenario) -> (String, u64) {
     (path, source.line.get())
 }
 
-/// Checks the stop is the panic the hook saw, at the marked line, in the
-/// frame selected, on a thread that runs the task that panicked.
 async fn check_panic(launched: &mut Launched, context: &str, message: &str, marker: &str) {
     let (hooked, at, task) = launched.hooked();
     assert_eq!(hooked, message, "{context}");
@@ -153,9 +140,6 @@ async fn check_panic(launched: &mut Launched, context: &str, message: &str, mark
     assert_eq!(runs, task, "{context}: {activity:?}");
 }
 
-/// A panic stops where the program panicked, with the message its hook
-/// saw; the program then goes on as it would have, and whatever caught the
-/// panic recovers from it.
 async fn stops_where_the_program_panicked(case: &str, message: &str, ending: &str) {
     let marker = format!("// PANIC: {case}");
     for fixture in ["tokio-panics-o0", "tokio-panics-o3"] {
@@ -189,8 +173,6 @@ async fn a_formatted_message_stops_where_it_panicked() {
     stops_where_the_program_panicked("format", "formatted 7 times", "joined").await;
 }
 
-/// A legacy symbol names no generic arguments and ends in a hash, yet
-/// the panic hook is found and the panic read as in a v0 build.
 #[tokio::test]
 async fn a_panic_stops_where_it_panicked_under_legacy_mangling() {
     let message = "formatted 7 times";
@@ -199,8 +181,6 @@ async fn a_panic_stops_where_it_panicked_under_legacy_mangling() {
     launched.scenario.shutdown().await;
 }
 
-/// `unwrap` is `#[track_caller]`, as `expect` is: the frame selected is the
-/// program's that called it, not the standard library's.
 #[tokio::test]
 async fn an_unwrap_stops_at_its_caller() {
     let message = "called `Option::unwrap()` on a `None` value";
@@ -217,8 +197,6 @@ async fn a_local_task_panic_stops_where_it_panicked() {
     stops_where_the_program_panicked("local", "local", "joined").await;
 }
 
-/// A current-thread runtime polls its tasks on the thread that blocks on
-/// it, which runs the task as it panics.
 #[tokio::test]
 async fn a_current_thread_task_panic_stops_where_it_panicked() {
     stops_where_the_program_panicked("current", "current", "joined").await;
@@ -246,8 +224,6 @@ async fn a_panic_in_main_stops_and_then_exits_as_rust_does() {
     }
 }
 
-/// A panic's value of a type with no message is named by its type, and an
-/// expression reaches it.
 #[tokio::test]
 async fn a_panic_with_a_value_names_its_type() {
     for fixture in ["tokio-panics-o0", "tokio-panics-o3"] {
@@ -279,7 +255,6 @@ async fn a_panic_with_a_value_names_its_type() {
     }
 }
 
-/// `resume_unwind` raises a caught panic again, without the hook.
 #[tokio::test]
 async fn a_resumed_panic_stops_again_as_a_resumption() {
     for fixture in ["tokio-panics-o0", "tokio-panics-o3"] {
@@ -299,8 +274,6 @@ async fn a_resumed_panic_stops_again_as_a_resumption() {
     }
 }
 
-/// A panic in `Drop` while unwinding stops too; unwinding out of the
-/// destructor cannot go on, so Rust then aborts without another stop.
 #[tokio::test]
 async fn a_panic_while_unwinding_stops_then_aborts() {
     for fixture in ["tokio-panics-o0", "tokio-panics-o3"] {
@@ -326,7 +299,6 @@ async fn a_panic_while_unwinding_stops_then_aborts() {
     }
 }
 
-/// With `panic = "abort"`, a panic stops before the abort it ends in.
 #[tokio::test]
 async fn an_aborting_panic_stops_before_it_aborts() {
     let mut launched = launched("tokio-panics-abort", "format", None).await;
@@ -347,8 +319,6 @@ async fn an_aborting_panic_stops_before_it_aborts() {
     launched.scenario.shutdown().await;
 }
 
-/// With Rust's panics chosen not to stop, the program runs as it does on
-/// its own.
 #[tokio::test]
 async fn panics_chosen_not_to_stop_run_as_natively() {
     let fixture = "tokio-panics-o0";
@@ -372,8 +342,6 @@ async fn panics_chosen_not_to_stop_run_as_natively() {
     launched.scenario.shutdown().await;
 }
 
-/// std's and core's code that raises a panic is the runtime's panic
-/// machinery, marked as such in a backtrace.
 #[tokio::test]
 async fn the_panic_machinery_is_marked() {
     let launched = launched("tokio-panics-o0", "format", None).await;

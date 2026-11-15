@@ -1,14 +1,14 @@
 microscope-views 1
 
-# Rust's standard library. Verified against rustc nightly 2026-07-10, by
-# tests/fixtures/rust/containers.rs.
-#
-# Since Rust 1.84 a vector's buffer holds an erased pointer, so its element
-# type comes from the pattern. inner() steps through the wrapper layers std
-# adds and removes: RawVec, RawVecInner's Unique and NonNull, and Cap.
-#
-# Zero-sized elements need no room, so std stores no capacity for them and
-# reports the largest, as these views do.
+
+
+
+
+
+
+
+
+
 
 view rust alloc::vec::Vec<T, _> {
     let data = inner(inner(buf).ptr) as *T
@@ -18,7 +18,7 @@ view rust alloc::vec::Vec<T, _> {
     field capacity = capacity
 }
 
-# A ring buffer: element i is at (head + i) modulo the capacity.
+
 view rust alloc::collections::vec_deque::VecDeque<T, _> {
     let data = inner(inner(buf).ptr) as *T
     let capacity = sizeof(T) == 0 ? (usize)-1 : inner(inner(buf).cap)
@@ -35,8 +35,8 @@ view rust alloc::string::String {
     field capacity = capacity
 }
 
-# An OsString, and a PathBuf around one, hold their bytes in a Vec<u8>,
-# which inner() reaches through std's platform layers.
+
+
 view rust std::**::OsString {
     let bytes = inner(self)
     show text(inner(inner(bytes.buf).ptr), bytes.len)
@@ -47,15 +47,15 @@ view rust std::**::PathBuf {
     show text(inner(inner(bytes.buf).ptr), bytes.len)
 }
 
-# A CString's bytes end with its NUL, which is not part of its text.
+
 view rust alloc::**::CString {
     check len(inner) >= 1
     show text(inner, len(inner) - 1)
 }
 
-# hashbrown's table, under std::collections::HashMap and HashSet. A bucket
-# is full when its control byte's top bit is clear, and the buckets lie
-# just below the control bytes, the first nearest.
+
+
+
 view rust std::collections::hash::map::HashMap<K, V, _> {
     let table = base.table.table
     type Pair = arg(typeof(base.table), 0)
@@ -78,10 +78,10 @@ view rust std::collections::hash::set::HashSet<T, _> {
         => (control as *Pair)[-1 - i].0
 }
 
-# A BTreeMap's entries are in its nodes, each holding up to eleven keys and
-# values, and in order among them, which the rust-btree kernel walks
-# (views/kernels/rust-btree.zig). An empty map may have no root, and a set
-# is a map of keys to nothing.
+
+
+
+
 view rust alloc::collections::btree::map::BTreeMap<K, V, _> {
     type Leaf = alloc::collections::btree::node::LeafNode<K, V>
     type Internal = alloc::collections::btree::node::InternalNode<K, V>
@@ -103,16 +103,16 @@ view rust alloc::collections::btree::set::BTreeSet<T, _> {
         => *(key as *T)
 }
 
-# A Box is a pointer to what it holds. A Box of a slice, str, or trait
-# object is a wider pointer, which needs no view.
+
+
 view rust alloc::**::Box<T, _> {
     show value(*self)
 }
 
-# An Rc points at its counts and its value. Its owners together hold one
-# weak reference, which the weak count leaves out, as Rc::weak_count does.
-# An Rc of a slice or str points with a wider pointer, which this view does
-# not bind to.
+
+
+
+
 view rust alloc::**::Rc<T, _> {
     let shared = inner(ptr)
     show value(shared->value)
@@ -120,8 +120,8 @@ view rust alloc::**::Rc<T, _> {
     field weak = inner(shared->weak) - 1
 }
 
-# An Rc or Arc of str points with a wider pointer, whose length counts the
-# text after the counts.
+
+
 view rust alloc::**::Rc<str, _> {
     type Shared = typeof(*inner(ptr).data_ptr)
     let shared = inner(ptr)
@@ -147,12 +147,12 @@ view rust alloc::**::Arc<T, _> {
     field weak = weak == (usize)-1 ? 0 : weak - 1
 }
 
-# A Weak from Weak::new points nowhere, at usize::MAX; one whose owners are
-# gone holds a dropped value. Rc's and Arc's are one view: their shared
-# boxes differ only in the member that holds the value. `**` matches their
-# modules wherever std defines them: alloc::rc and alloc::sync through Rust
-# 1.97, and alloc::rcs::rc and alloc::rcs::arc in nightlies after, which is
-# where debug information names them.
+
+
+
+
+
+
 view rust alloc::**::Weak<T, _> {
     let shared = inner(ptr)
     let dangling = shared as usize == (usize)-1
@@ -169,7 +169,7 @@ view rust alloc::**::Weak<T, _> {
     field weak = dangling ? 0 : inner(shared->weak) - (strong > 0 ? 1 : 0)
 }
 
-# An UnsafeCell is what it holds; every other cell and lock wraps one.
+
 view rust core::cell::UnsafeCell<T> {
     show value(value)
 }
@@ -178,22 +178,22 @@ view rust core::cell::Cell<T> {
     show value(value.value)
 }
 
-# A RefCell's borrow counts its shared borrows, or is negative while it is
-# borrowed mutably.
+
+
 view rust core::cell::RefCell<T> {
     show value(value.value)
     field borrow = inner(borrow)
 }
 
-# On Linux, a Mutex is a futex word: 0 when unlocked.
+
 view rust std::**::Mutex<T> {
     show value(data.value)
     field locked = inner(inner.futex) != 0
     field poisoned = inner(poison.failed) != 0
 }
 
-# A RwLock is a futex word whose low 30 bits count its readers, or are all
-# set while it is locked for writing.
+
+
 view rust std::**::RwLock<T> {
     let state = inner(inner.state) & 0x3fffffff
     show value(data.value)
@@ -202,19 +202,19 @@ view rust std::**::RwLock<T> {
     field poisoned = inner(poison.failed) != 0
 }
 
-# A OnceCell is the Option OnceCell::get returns.
+
 view rust core::**::OnceCell<T> {
     show value(inner.value)
 }
 
-# A OnceLock holds its value once its Once's state, the low two bits of a
-# futex word, is 0, complete.
+
+
 view rust std::**::OnceLock<T> {
     let held = value.value.value.value.0 or value.value.value.value
     show if (inner(once.inner.state_and_queued) & 3) == 0 { value(held) } else { empty("uninitialized") }
 }
 
-# An atomic is the value it holds; a bool is stored as a byte.
+
 view rust core::**::Atomic<bool> {
     show value(inner(v) != 0)
 }
@@ -235,8 +235,8 @@ view rust core::**::Pin<_> {
     show value(pointer)
 }
 
-# A Duration is seconds and nanoseconds; a SystemTime is a reading of the
-# realtime clock, and an Instant of the monotonic one, each a timespec.
+
+
 view rust core::**::Duration {
     show value(secs * 1000000000 + inner(nanos))
     format self as duration(ns)
@@ -254,8 +254,8 @@ view rust std::**::Instant {
     format self as duration(ns)
 }
 
-# A LinkedList's links are Option<NonNull<Node>>, a pointer that is null
-# for None.
+
+
 view rust alloc::**::LinkedList<T, _> {
     type Node = alloc::collections::linked_list::Node<T>
     check sizeof(head) == sizeof(usize)

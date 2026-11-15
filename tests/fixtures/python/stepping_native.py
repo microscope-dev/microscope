@@ -1,12 +1,12 @@
-"""Steps between Python and the C functions it calls: into an extension's
-function its debug information describes, out of it and over its last
-line back to the Python that called it, and through what nothing
-describes, a builtin and a stripped extension's function, to the next
-line; out of the extension's function from a breakpoint there, where
-the agent watches no line; and over the lines of an extension's function,
-one of which calls back into Python. The first argument is the directory of the
-extensions built for the interpreter.
-"""
+
+
+
+
+
+
+
+
+
 
 import sys
 

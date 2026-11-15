@@ -12,8 +12,8 @@ unexpected_cfgs = { level = "deny", check-cfg = ["cfg(loom)"] }
 [dependencies]
 loom = "0.7"
 
-# Loom runs each model thousands of times, so optimizing is worth more than
-# the build time it costs. Assertions and overflow checks stay on.
+
+
 [profile.dev]
 opt-level = 3
 

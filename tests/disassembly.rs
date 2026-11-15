@@ -17,7 +17,6 @@ use microscope::{
 use object::{Object, ObjectSection, ObjectSymbol, ObjectSymbolTable};
 use support::Scenario;
 
-/// GNU objdump's decoding of one ELF file, by image address.
 struct Objdump {
     instructions: BTreeMap<u64, ObjdumpInstruction>,
 }
@@ -35,7 +34,6 @@ impl Objdump {
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         let mut instructions = BTreeMap::new();
         for line in text.lines() {
-            // "  ADDRESS:\tBYTES\tTEXT", where a wide listing pads BYTES.
             let mut fields = line.split('\t');
             let (Some(address), Some(bytes)) = (fields.next(), fields.next()) else {
                 continue;
@@ -63,8 +61,6 @@ impl Objdump {
 }
 
 impl ObjdumpInstruction {
-    /// The target of a direct jump or call, which objdump prints as a bare
-    /// hexadecimal operand.
     fn branch_target(&self) -> Option<u64> {
         const PREFIXES: [&str; 7] = ["bnd", "notrack", "rep", "repz", "repnz", "data16", "addr32"];
         let mut tokens = self
@@ -83,8 +79,6 @@ impl ObjdumpInstruction {
             .flatten()
     }
 
-    /// The address objdump computes for a program-counter-relative operand,
-    /// which it prints after `#`.
     fn computed_address(&self) -> Option<u64> {
         let (_, comment) = self.text.split_once('#')?;
         let address = comment.split_whitespace().next()?;
@@ -134,7 +128,6 @@ fn decoded(instruction: &DisassembledInstruction) -> &microscope::DecodedInstruc
     }
 }
 
-/// The modules of one stopped process with their images.
 struct Modules {
     records: Vec<LoadedModuleRecord>,
     images: BTreeMap<microscope::ModuleId, Arc<ModuleImage>>,
@@ -177,7 +170,6 @@ impl Modules {
         (record, &self.images[&record.module.id])
     }
 
-    /// Returns the runtime address of a uniquely named symbol.
     fn symbol(&self, file_name: &str, name: &str) -> u64 {
         let (record, image) = self.named(file_name);
         let symbol = image
@@ -188,10 +180,6 @@ impl Modules {
     }
 }
 
-/// Pages through every executable section of a module with windows that
-/// each begin where the last ended, then compares every instruction with
-/// objdump: the same instruction starts, the same bytes, and the same
-/// encoded addresses. No known instruction start may conflict.
 async fn assert_module_matches_objdump(
     scenario: &Scenario,
     modules: &Modules,
@@ -218,8 +206,6 @@ async fn assert_module_matches_objdump(
                 "{context}: {address:#x} is inside an instruction: {boundary:?}"
             );
 
-            // Decoding past the section's end may cross padding into the next
-            // section; only conflicts inside the section matter.
             let conflicts = block
                 .conflicts
                 .iter()
@@ -300,14 +286,11 @@ async fn assert_module_matches_objdump(
     compared
 }
 
-/// Pairs ascending decoded instructions with objdump's at the same image
-/// addresses, which must be exactly the same set of instruction starts.
 fn pair_with_objdump<'a, 'b>(
     decoded: impl Iterator<Item = (u64, &'a DisassembledInstruction)>,
     expected: impl Iterator<Item = (&'b u64, &'b ObjdumpInstruction)>,
     context: &str,
 ) -> Vec<(u64, &'a DisassembledInstruction, &'b ObjdumpInstruction)> {
-    // Both listings ascend, so one merge pairs every start they share.
     let mut expected = expected.peekable();
     let (mut missing, mut invented, mut pairs) = (Vec::new(), Vec::new(), Vec::new());
     let mut previous = None;
@@ -338,9 +321,6 @@ fn pair_with_objdump<'a, 'b>(
     pairs
 }
 
-/// Launches a fixture that faults, installs breakpoints at code symbols so
-/// that traps are present in the compared code, and returns at the fault,
-/// or at the panic a runtime turns it into.
 async fn faulted_with_breakpoints(fixture: &str) -> (Scenario, Modules) {
     let mut scenario = Scenario::launch(fixture);
     let stop = scenario.run_to_stop().await;
@@ -377,7 +357,6 @@ async fn c_programs_and_libraries_decode_like_objdump() {
     for fixture in ["crash-gcc-o0", "crash-gcc-o2-nopie", "crash-clang-o2"] {
         let (scenario, modules) = faulted_with_breakpoints(fixture).await;
         assert_module_matches_objdump(&scenario, &modules, fixture, fixture).await;
-        // Every fixture loads the same library.
         if fixture == "crash-gcc-o0" {
             assert_module_matches_objdump(&scenario, &modules, "libcrash.so", fixture).await;
         }
@@ -387,7 +366,6 @@ async fn c_programs_and_libraries_decode_like_objdump() {
 
 #[tokio::test]
 async fn a_zig_program_decodes_like_objdump() {
-    // Another toolchain's layout, and 1.3 MB of text across many windows.
     let (scenario, modules) = faulted_with_breakpoints("crash-zig-o0").await;
     assert_module_matches_objdump(&scenario, &modules, "crash-zig-o0", "crash-zig-o0").await;
     scenario.shutdown().await;
@@ -415,8 +393,6 @@ async fn core_dumps_decode_verified_files_like_objdump() {
     }
 }
 
-/// Checks one function disassembly against its image and objdump: one block
-/// per range, every instruction as objdump decodes it, and no conflicts.
 fn assert_function_blocks(
     disassembly: &Disassembly,
     ranges: &[(u64, u64)],
@@ -488,7 +464,6 @@ async fn functions_cover_every_debug_information_range() {
                 .collect::<Vec<_>>();
             ranges.sort_unstable();
 
-            // Every range resolves to the same function.
             for (start, _) in &ranges {
                 let disassembly = disassemble(
                     &scenario,
@@ -534,7 +509,6 @@ async fn functions_cover_every_debug_information_range() {
     }
 }
 
-/// Each range of a split `main` is named by its own symbol.
 async fn assert_split_main_names_each_range(scenario: &Scenario, modules: &Modules, fixture: &str) {
     let main = modules.symbol(fixture, "main");
     let disassembly = disassemble(
@@ -592,8 +566,6 @@ async fn functions_known_only_by_symbols_use_their_extents() {
             panic!("not a function");
         };
 
-        // The preferred symbol at the start may be an alias or an
-        // enclosing function.
         let named = image
             .symbolize(extent.range.start)
             .expect("code at a symbol is named");
@@ -634,7 +606,6 @@ async fn functions_known_only_by_symbols_use_their_extents() {
         );
     }
 
-    // Code that no symbol or debug information names has no function.
     let text = image
         .sections()
         .iter()
@@ -656,8 +627,6 @@ async fn functions_known_only_by_symbols_use_their_extents() {
     scenario.shutdown().await;
 }
 
-/// A code symbol inside the movabs that decoding from the entry produces is
-/// a known start, so decoding resumes there.
 async fn assert_marked_data(scenario: &Scenario, marked: u64, context: &str) {
     let disassembly = disassemble(
         scenario,
@@ -680,8 +649,6 @@ async fn assert_marked_data(scenario: &Scenario, marked: u64, context: &str) {
         .collect::<Vec<_>>();
     assert_eq!(starts, [0, 2, 4, 9], "{context}");
 
-    // The marker is a code symbol and, where the assembler describes
-    // assembly functions, a debug-information function too.
     let [conflict] = &block.conflicts[..] else {
         panic!("{context}: {:?}", block.conflicts);
     };
@@ -705,7 +672,6 @@ async fn assert_marked_data(scenario: &Scenario, marked: u64, context: &str) {
     );
     assert_eq!(block.completion, BlockCompletion::Complete);
 
-    // The marker proves its own address, but nothing before it.
     let (boundary, leading, _) = into_window(disassemble(scenario, window(marked + 4, 2, 1)).await);
     assert_eq!(boundary, TargetBoundary::Known(evidence));
     assert!(matches!(
@@ -725,9 +691,6 @@ async fn assert_marked_data(scenario: &Scenario, marked: u64, context: &str) {
     assert_eq!(block.instructions[0].address.get(), marked + 4);
 }
 
-/// Without a marker, the movabs runs past the declared end, and asking for
-/// the real code after the data says that the address lies inside an
-/// instruction and proves nothing before it.
 async fn assert_hidden_data(scenario: &Scenario, hidden: u64, context: &str) {
     let disassembly = disassemble(
         scenario,
@@ -776,8 +739,6 @@ async fn assert_hidden_data(scenario: &Scenario, hidden: u64, context: &str) {
     assert_eq!(texts, ["mov $1, %eax", "ret"], "{context}");
 }
 
-/// Stops at the hidden code, where the program counter proves it, and the
-/// trap installed there is never shown.
 async fn assert_hidden_data_at_its_stop(scenario: &mut Scenario, hidden: u64) {
     scenario
         .add_breakpoint_spec(BreakpointSpec::Address(VirtualAddress::new(hidden + 4)))
@@ -802,8 +763,6 @@ async fn assert_hidden_data_at_its_stop(scenario: &mut Scenario, hidden: u64) {
     assert_eq!(*block.instructions[0].bytes, [0xb8, 1, 0, 0, 0]);
 }
 
-/// Disassembles a function in both syntaxes and checks that only the text
-/// differs, returning the Intel rendering.
 async fn assert_syntaxes_agree(
     scenario: &Scenario,
     function: VirtualAddress,
@@ -852,7 +811,6 @@ async fn assert_syntaxes_agree(
     intel
 }
 
-/// Returns each direct call's target with the section and symbol naming it.
 fn call_targets(
     instructions: &[DisassembledInstruction],
 ) -> Vec<(u64, Option<String>, Option<String>)> {
@@ -881,8 +839,6 @@ fn call_targets(
         .collect()
 }
 
-/// Calls and operands in `main` and its helper name their targets, and debug
-/// information places `main`'s instructions in its source.
 async fn assert_named_targets(scenario: &Scenario, modules: &Modules, fixture: &str) {
     let helper = modules.symbol(fixture, "disasm_helper");
     let main = assert_syntaxes_agree(
@@ -891,8 +847,6 @@ async fn assert_named_targets(scenario: &Scenario, modules: &Modules, fixture: &
     )
     .await;
 
-    // A function is named by its symbol, and the C library's entry through
-    // the linkage table by the stub binutils names after it.
     let calls = call_targets(&main);
     assert!(
         calls.contains(&(
@@ -912,7 +866,6 @@ async fn assert_named_targets(scenario: &Scenario, modules: &Modules, fixture: &
         "{fixture}: {calls:?}"
     );
 
-    // The helper's operand names the global it reads.
     let disassembly = disassemble(
         scenario,
         query(DisassemblyRange::Function(VirtualAddress::new(helper))),
@@ -966,7 +919,6 @@ async fn assert_named_targets(scenario: &Scenario, modules: &Modules, fixture: &
 
 #[tokio::test]
 async fn code_that_no_verified_file_or_dump_holds_is_unreadable() {
-    // The library's file was deleted after the dump, which saved no code.
     let core = "core-missing-library/crash.core";
     let scenario = Scenario::open_core(core, &CoreDumpOptions::new(Scenario::fixture(core)));
     let info = scenario
@@ -990,7 +942,6 @@ async fn code_that_no_verified_file_or_dump_holds_is_unreadable() {
         .address();
     let address = missing.start.get() + text;
 
-    // Whatever module precedes the library, nothing proven reaches its code.
     let (boundary, leading, block) =
         into_window(disassemble(&scenario, window(address, 2, 4)).await);
     assert!(
@@ -1010,8 +961,6 @@ async fn code_that_no_verified_file_or_dump_holds_is_unreadable() {
     assert!(block.instructions.is_empty());
     scenario.shutdown().await;
 
-    // A dump that saved no memory cannot verify its executable, which then
-    // lends its metadata but never its bytes.
     let options = CoreDumpOptions {
         allow_module_mismatch: true,
         ..CoreDumpOptions::new(Scenario::fixture("crash-gcc-o0-memoryless.core"))
@@ -1043,7 +992,6 @@ async fn code_that_no_verified_file_or_dump_holds_is_unreadable() {
         BlockCompletion::Unreadable { address, .. } if address == pc
     ));
 
-    // The function's ranges come from the metadata; its bytes do not.
     let function = disassemble(&unverified, query(DisassemblyRange::Function(pc))).await;
     let DisassemblyView::Function { function, blocks } = function.view else {
         panic!("not a function");
@@ -1086,7 +1034,6 @@ async fn requests_are_validated() {
         Err(Error::NoFunctionContainsAddress(address)) if address.get() == 8
     ));
 
-    // Outside every module, nothing is readable or known.
     let (boundary, _, block) = into_window(disassemble(&scenario, window(8, 1, 1)).await);
     assert_eq!(
         boundary,
@@ -1096,13 +1043,11 @@ async fn requests_are_validated() {
     scenario.shutdown().await;
 }
 
-/// Returns the instruction a window decodes at an address.
 async fn instruction_at(scenario: &Scenario, address: u64) -> DisassembledInstruction {
     let (_, _, block) = into_window(disassemble(scenario, window(address, 0, 1)).await);
     block.instructions[0].clone()
 }
 
-/// Returns every instruction of the function containing an address.
 async fn function_instructions(scenario: &Scenario, address: u64) -> Vec<DisassembledInstruction> {
     let disassembly = disassemble(
         scenario,
@@ -1126,7 +1071,6 @@ fn indirect_target(instruction: &DisassembledInstruction) -> &IndirectTarget {
         .unwrap_or_else(|| panic!("{:#x} is not an indirect branch", instruction.address))
 }
 
-/// Returns the slot and target of a target loaded from memory.
 fn loaded(target: &IndirectTarget) -> (&AddressDescription, &AddressDescription) {
     match target {
         IndirectTarget::Memory { slot, target } => (slot, target),
@@ -1148,8 +1092,6 @@ fn symbol(description: &AddressDescription) -> Option<(&str, u64)> {
     Some((symbol.name.as_ref(), symbol.offset))
 }
 
-/// Returns the call in `main` to the procedure linkage table stub for
-/// `printf`, the program's only call through one.
 async fn printf_call(
     scenario: &Scenario,
     modules: &Modules,
@@ -1171,7 +1113,6 @@ async fn printf_call(
     call.clone()
 }
 
-/// Returns the stub's jump through its global offset table slot.
 async fn stub_jump(scenario: &Scenario, call: &DisassembledInstruction) -> DisassembledInstruction {
     let stub = decoded(call).references[0].address.get();
     let (_, _, block) = into_window(disassemble(scenario, window(stub, 0, 4)).await);
@@ -1199,7 +1140,6 @@ fn register(registers: &microscope::RegisterSnapshot, name: &str) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-/// Each labeled indirect branch in indirect.S, in execution order.
 const INDIRECT_BRANCHES: [&str; 7] = [
     "disasm_call_slot",
     "disasm_call_method",
@@ -1210,8 +1150,6 @@ const INDIRECT_BRANCHES: [&str; 7] = [
     "disasm_return",
 ];
 
-/// Away from the stop, only a target loaded from memory that the instruction
-/// alone addresses is known.
 async fn assert_targets_away_from_the_stop(scenario: &Scenario, modules: &Modules, fixture: &str) {
     let symbol_address = |name| modules.symbol(fixture, name);
     let targets = function_instructions(scenario, symbol_address("disasm_indirect"))
@@ -1241,7 +1179,6 @@ async fn assert_targets_away_from_the_stop(scenario: &Scenario, modules: &Module
     assert_eq!(symbol(slot), Some(("disasm_slot", 0)));
     assert_eq!(symbol(target), Some(("disasm_target_one", 0)));
 
-    // The dynamic loader filled the slot at startup.
     let (slot, target) = loaded(&targets[&symbol_address("disasm_call_got")]);
     assert_eq!(
         (section(slot), target.address.get()),
@@ -1287,8 +1224,6 @@ async fn assert_targets_away_from_the_stop(scenario: &Scenario, modules: &Module
     );
 }
 
-/// Stops at each labeled branch, where the registers resolve its target,
-/// and steps it to check that execution reaches that target.
 async fn assert_targets_at_each_stop(scenario: &mut Scenario, modules: &Modules, fixture: &str) {
     let symbol_address = |name| modules.symbol(fixture, name);
     let return_site = function_instructions(scenario, symbol_address("main"))
@@ -1325,7 +1260,6 @@ async fn assert_targets_at_each_stop(scenario: &mut Scenario, modules: &Modules,
             .first()
             .map(|reference| reference.address.get());
 
-        // The slot holding each target, and the target.
         let expected = match label {
             "disasm_call_slot" => (encoded, symbol_address("disasm_target_one")),
             "disasm_call_method" => (
@@ -1333,7 +1267,6 @@ async fn assert_targets_at_each_stop(scenario: &mut Scenario, modules: &Modules,
                 symbol_address("disasm_target_two"),
             ),
             "disasm_call_register" => (None, symbol_address("disasm_target_four")),
-            // The thread's slot lies just below its thread pointer.
             "disasm_call_thread" => (
                 Some(register(&registers, "fs_base") - 8),
                 symbol_address("disasm_target_two"),
@@ -1379,9 +1312,6 @@ async fn assert_targets_at_each_stop(scenario: &mut Scenario, modules: &Modules,
     }
 }
 
-/// The fixture's code names its targets in both syntaxes, reports the data
-/// hidden inside it, and resolves each indirect branch's target at its stop.
-/// `main` calls the data functions before the indirect branches and printf.
 #[tokio::test]
 async fn code_names_its_targets_and_reports_data_inside_it() {
     for fixture in ["disassembly-gcc-o0", "disassembly-clang-o2-nopie"] {
@@ -1400,8 +1330,6 @@ async fn code_names_its_targets_and_reports_data_inside_it() {
         assert_hidden_data(&scenario, hidden, fixture).await;
         assert_targets_away_from_the_stop(&scenario, &modules, fixture).await;
 
-        // Lazy binding leaves a linkage stub's slot pointing back into the
-        // stub until the first call resolves it.
         let call = printf_call(&scenario, &modules, fixture).await;
         let jump = stub_jump(&scenario, &call).await;
 
@@ -1414,7 +1342,6 @@ async fn code_names_its_targets_and_reports_data_inside_it() {
         assert_hidden_data_at_its_stop(&mut scenario, hidden).await;
         assert_targets_at_each_stop(&mut scenario, &modules, fixture).await;
 
-        // After the first call, the slot holds the C library's function.
         scenario
             .add_breakpoint_spec(BreakpointSpec::Address(call.end()))
             .await;
@@ -1435,9 +1362,6 @@ async fn code_names_its_targets_and_reports_data_inside_it() {
     }
 }
 
-/// Returns every indirect jump, call, and return in a module's executable
-/// sections, decoded as the objdump comparisons check, outside the extents
-/// of the `skipped` symbols.
 async fn indirect_branch_sites(
     scenario: &Scenario,
     modules: &Modules,
@@ -1492,13 +1416,6 @@ async fn indirect_branch_sites(
     sites
 }
 
-/// Runs a fixture from `main` to its exit, stopping at every indirect jump,
-/// call, and return in its own code, the C library, and the dynamic loader,
-/// and checks that executing each one transfers control where its target
-/// said. Returns how many branches of each kind were checked.
-///
-/// `library_sites` keeps each shared library's sites by image address, so a
-/// library that several fixtures load is decoded once.
 async fn assert_executed_targets(
     fixture: &str,
     library_sites: &mut BTreeMap<Arc<PathBuf>, BTreeSet<u64>>,
@@ -1508,7 +1425,6 @@ async fn assert_executed_targets(
     scenario.run_to_stop().await;
     let modules = Modules::load(&scenario).await;
 
-    // The functions of layout.S hide data in code, which decoding misreads.
     let layout = ["disasm_marked_data", "disasm_hidden_data"];
     let mut sites = indirect_branch_sites(&scenario, &modules, fixture, &layout).await;
     for library in ["libc.so.6", "ld-linux-x86-64.so.2"] {
@@ -1553,7 +1469,6 @@ async fn assert_executed_targets(
             other => panic!("{fixture}: unexpected stop {other:?}"),
         };
 
-        // A step may land on another site, which resuming would skip.
         if !sites.contains(&pc) {
             stop = scenario.resume_to_stop().await;
             continue;
@@ -1600,8 +1515,6 @@ async fn assert_executed_targets(
     verified
 }
 
-/// Executing an indirect branch reaches the target read at its stop, for
-/// every one a program runs through lazy binding, formatted output, and exit.
 #[tokio::test]
 async fn indirect_targets_are_where_execution_goes() {
     let mut library_sites = BTreeMap::new();
@@ -1621,8 +1534,6 @@ async fn indirect_targets_are_where_execution_goes() {
     }
 }
 
-/// Maps each slot of an ELF file that the dynamic loader fills to the name of
-/// the symbol it holds, by image address.
 fn dynamic_slots(file_name: &str) -> BTreeMap<u64, String> {
     let data = fs::read(Scenario::fixture(file_name)).expect("read fixture");
     let file = object::File::parse(data.as_slice()).expect("parse fixture");
@@ -1641,8 +1552,6 @@ fn dynamic_slots(file_name: &str) -> BTreeMap<u64, String> {
         .collect()
 }
 
-/// Returns each linkage stub's jump through its slot, by the name of the
-/// symbol the slot holds.
 async fn linkage_jumps(
     scenario: &Scenario,
     modules: &Modules,
@@ -1675,7 +1584,6 @@ async fn linkage_jumps(
                 other => panic!("{file_name}: {other:?}"),
             };
 
-            // The first stub jumps to the lazy-binding resolver.
             if let Some(name) = slots.get(&slot) {
                 jumps.insert(name.clone(), instruction.clone());
             }
@@ -1687,8 +1595,6 @@ async fn linkage_jumps(
 
 #[tokio::test]
 async fn core_dumps_name_the_targets_their_saved_slots_hold() {
-    // The program had called every stub it uses except abort's before it
-    // crashed, and lazy binding had resolved those.
     let core = "crash-gcc-o0-segv.core";
     let scenario = Scenario::open_core(core, &CoreDumpOptions::new(Scenario::fixture(core)));
     let modules = Modules::load(&scenario).await;
@@ -1717,14 +1623,10 @@ async fn core_dumps_name_the_targets_their_saved_slots_hold() {
         );
     }
 
-    // crash-gcc-o0 links with lazy binding, so abort's slot still points
-    // back into its stub.
     assert_eq!(target("abort").address, jumps["abort"].end());
     assert_eq!(jumps.len(), 7, "{jumps:#?}");
     scenario.shutdown().await;
 
-    // A dump that saved only file headers holds no slots, while the stubs
-    // themselves come from the verified file.
     let core = "crash-gcc-o0-headers-only.core";
     let scenario = Scenario::open_core(core, &CoreDumpOptions::new(Scenario::fixture(core)));
     let modules = Modules::load(&scenario).await;
@@ -1745,7 +1647,6 @@ async fn core_dumps_name_the_targets_their_saved_slots_hold() {
 async fn a_register_that_a_restarted_system_call_replaces_is_never_used() {
     let child = support::ExternalProcess::spawn(&Scenario::fixture("attach-restart"));
 
-    // Attaching must interrupt pause(2).
     support::wait_for_system_call(child.process_id(), 34);
     let debugger = child.attach().await;
     let handle = debugger.handle();
@@ -1766,8 +1667,6 @@ async fn a_register_that_a_restarted_system_call_replaces_is_never_used() {
         executable.module.load_bias.get() + jump.address().get()
     );
 
-    // The kernel will restart the call, which replaces rax, so the jump
-    // through it has no known target even at the stop.
     let registers = handle.registers().await.expect("registers");
     assert_eq!(register(&registers, "orig_rax"), 34);
     assert_eq!(register(&registers, "rax"), (-514_i64).cast_unsigned());

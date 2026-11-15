@@ -1,6 +1,3 @@
-//! A program whose allocator records into the SDK, as a tracking allocator
-//! or a traced `malloc` does, re-enters it while the SDK allocates. The
-//! program must neither hang nor crash.
 #![cfg(feature = "enabled")]
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -35,8 +32,6 @@ unsafe impl GlobalAlloc for Recording {
 #[global_allocator]
 static ALLOCATOR: Recording = Recording;
 
-/// Runs `run` on a new thread whose allocator calls `hook`, and fails if
-/// it doesn't finish.
 fn reentering(what: &str, hook: fn(), run: fn()) {
     let (done, finished) = mpsc::channel();
     std::thread::spawn(move || {
@@ -51,7 +46,6 @@ fn reentering(what: &str, hook: fn(), run: fn()) {
     );
 }
 
-/// One test, since the steps share the process's one arming.
 #[test]
 fn an_allocator_that_records_never_hangs_or_crashes_the_program() {
     // SAFETY: the only test in this binary sets it before any thread reads
@@ -63,7 +57,6 @@ fn an_allocator_that_records_never_hangs_or_crashes_the_program() {
         );
     }
 
-    // Arming reads the environment, which allocates.
     reentering(
         "arming",
         || {
@@ -75,7 +68,6 @@ fn an_allocator_that_records_never_hangs_or_crashes_the_program() {
     );
     assert!(microscope_probes::listening(), "the recording armed it");
 
-    // Defining a site copies its texts while it holds the definitions.
     reentering(
         "defining",
         || {
@@ -87,8 +79,6 @@ fn an_allocator_that_records_never_hangs_or_crashes_the_program() {
         },
     );
 
-    // A thread's first event allocates its ring. An event in there must
-    // not take another ring, and another inside that, until none are left.
     reentering(
         "a thread's first event",
         || microscope_probes::plot!("allocations", 1.0),
@@ -97,8 +87,6 @@ fn an_allocator_that_records_never_hangs_or_crashes_the_program() {
     assert_eq!(rings(), 1, "the thread took one ring");
 }
 
-/// How many of the registry's rings threads took, from the control block
-/// as microscope reads it.
 fn rings() -> u32 {
     unsafe extern "C" {
         static __start_microscope_probe_control: AtomicU32;

@@ -1,5 +1,3 @@
-//! An in-memory code source for tests and fuzzing.
-
 use std::collections::BTreeMap;
 
 use super::{BoundaryEvidence, CodeRead, CodeSource};
@@ -9,23 +7,17 @@ use crate::{
     VirtualAddress,
 };
 
-/// Bytes at a base address, readable only within the given ranges, with
-/// known instruction starts.
 pub struct FakeSource {
     pub base: u64,
     pub bytes: Vec<u8>,
 
-    /// Readable address ranges; every other address is unreadable.
     pub readable: Vec<AddressRange<u64>>,
     pub starts: BTreeMap<VirtualAddress, BoundaryEvidence>,
 
-    /// The address of the instruction the selected thread is about to
-    /// execute, with its registers.
     pub stopped: Option<(VirtualAddress, RegisterFile)>,
 }
 
 impl FakeSource {
-    /// Makes every byte readable.
     pub fn new(base: u64, bytes: Vec<u8>) -> Self {
         let end = base + bytes.len() as u64;
         Self {

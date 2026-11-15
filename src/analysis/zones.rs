@@ -1,13 +1,8 @@
-//! Zones as views draw and measure them: each thread's tracks folded to
-//! what a width of pixels can show, and the spread of one site's lengths.
-
 use std::collections::BTreeMap;
 
 use crate::capture::Capture;
 use crate::capture::records::{NONE, OffCpu};
 
-/// What a view draws of one thread's zones at one depth: one zone, or a
-/// run of zones too narrow to tell apart, drawn as one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZoneBlock {
     pub thread: u32,
@@ -15,40 +10,27 @@ pub struct ZoneBlock {
     pub start: i64,
     pub end: i64,
 
-    /// The zone's site, or for a run, its zones' site, or [`NONE`] when
-    /// they are of several.
     pub site: u32,
 
-    /// A label's value, or [`NONE`], as for a run of several values.
     pub value: u32,
 
-    /// How many zones it draws.
     pub count: u32,
 
-    /// The `ZONE_` flags of any of them.
     pub flags: u32,
 
-    /// Nanoseconds inside its zones, and of those, how many its thread
-    /// spent off its CPU blocked and preempted.
     pub covered: i64,
     pub blocked: i64,
     pub preempted: i64,
 
-    /// Whether its zones are the ones chosen. A run never holds zones
-    /// chosen and not, so a fold of chosen zones shows as one.
     pub chosen: bool,
 }
 
-/// The zones a view picks out: those of `sites`, and of a length within
-/// `band` when there is one.
 #[derive(Debug, Clone, Copy)]
 pub struct ChosenZones<'a> {
     pub sites: &'a [u32],
     pub band: Option<(u64, u64)>,
 }
 
-/// A thread's time off its CPU inside `[start, end)`: blocked, then
-/// preempted. Its spans do not overlap, so their ends are in order too.
 fn off_cpu_within(spans: &[OffCpu], (start, end): (i64, i64)) -> (i64, i64) {
     let ends = |span: &OffCpu| span.time.get().saturating_add_unsigned(span.duration.get());
     let first = spans.partition_point(|span| ends(span) <= start);
@@ -70,11 +52,6 @@ fn off_cpu_within(spans: &[OffCpu], (start, end): (i64, i64)) -> (i64, i64) {
     (blocked, preempted)
 }
 
-/// The zones in `range` of the threads `threads` selects, by thread and
-/// depth, each run of zones narrower than `fold` that fits in `fold` drawn
-/// as one block. A run never grows wider, so a thousand short zones in a
-/// row still show where they are dense, and never mixes zones `chosen`
-/// picks out with others, so they show at every width.
 pub fn zone_blocks(
     capture: &Capture,
     range: (i64, i64),
@@ -105,7 +82,6 @@ pub fn zone_blocks(
 
         let row = capture.range_zones(zones);
 
-        // One depth's zones do not overlap, so their ends are in order too.
         let first = row.partition_point(|zone| zone.end.get() <= range.0);
         let last = row.partition_point(|zone| zone.start.get() < range.1);
         #[expect(
@@ -168,7 +144,6 @@ pub fn zone_blocks(
     blocks
 }
 
-/// One zone, where it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZoneAt {
     pub thread: u32,
@@ -177,7 +152,6 @@ pub struct ZoneAt {
     pub value: u32,
 }
 
-/// The spread of one site's zone lengths, in nanoseconds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ZoneStats {
     pub count: u64,
@@ -189,32 +163,20 @@ pub struct ZoneStats {
     pub p99: u64,
     pub max: u64,
 
-    /// Lengths in buckets of equal ratio from the shortest to the longest:
-    /// each its lowest length and count, the last bucket to `max`.
     pub histogram: Vec<(u64, u64)>,
 
-    /// The longest in the band, longest first.
     pub longest: Vec<ZoneAt>,
 
-    /// How many are in the band, and their time.
     pub banded: (u64, u64),
 
-    /// How many are shorter than the length asked about.
     pub shorter: u64,
 
-    /// Each label value's time and count, most time first: for a label's
-    /// sites.
     pub values: Vec<(u32, u64, u64)>,
 }
 
-/// How many buckets a histogram has, and how many longest zones are kept.
 const BUCKETS: usize = 32;
 const LONGEST: usize = 10;
 
-/// The spread of the lengths of the zones of `sites` that overlap
-/// `range`, of the threads `threads` selects: those around a span chosen
-/// in it too. The longest and `banded` are of those whose lengths are in
-/// `band`, or of all; `shorter` counts those shorter than `rank_of`.
 pub fn zone_stats(
     capture: &Capture,
     sites: &[u32],
@@ -253,7 +215,6 @@ pub fn zone_stats(
         return ZoneStats::default();
     };
 
-    // The length below which `share` of them are.
     #[expect(
         clippy::indexing_slicing,
         reason = "`lengths` is not empty, and the rank is clamped to its length"
@@ -313,8 +274,6 @@ pub fn zone_stats(
     }
 }
 
-/// Sorted lengths in [`BUCKETS`] buckets of equal ratio from `min` to
-/// `max`, or one bucket when they are all one length.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -352,30 +311,22 @@ fn histogram(lengths: &[u64], min: u64, max: u64) -> Vec<(u64, u64)> {
     buckets
 }
 
-/// One plotted series in a range: every plot site of one name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlotSeries {
-    /// Its name's string.
     pub name: u32,
 
-    /// How many values it drew, and how many were not finite.
     pub values: u64,
     pub unshown: u64,
 
-    /// By time, each a bin's values.
     pub bins: Vec<PlotBin>,
 
-    /// The last value drawable before the range, which holds into it.
     pub held: Option<f64>,
 
-    /// Whether a value follows the range, so the last one holds to its end.
     pub continues: bool,
 }
 
-/// The values a series plotted in one bin of time.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlotBin {
-    /// Its first value's time.
     pub time: i64,
     pub first: f64,
     pub last: f64,
@@ -383,9 +334,6 @@ pub struct PlotBin {
     pub high: f64,
 }
 
-/// Each series' values in `range`, of the threads `threads` selects, by
-/// name, in `bins` bins of equal time, with what holds at either end. A
-/// series with no values in `range` is there when one holds into it.
 pub fn plot_series(
     capture: &Capture,
     range: (i64, i64),
@@ -399,7 +347,6 @@ pub fn plot_series(
             .filter(|plot| threads.is_none_or(|threads| threads.contains(&plot.thread.get())))
     };
 
-    // A plot of no site is of no name.
     let name_of = |site: u32| {
         if site == NONE {
             NONE
@@ -408,8 +355,6 @@ pub fn plot_series(
         }
     };
 
-    // By name: the last drawable value before the range, and whether any
-    // value follows it.
     let mut edges: BTreeMap<u32, (Option<(i64, f64)>, bool)> = BTreeMap::new();
 
     for plot in chosen() {
@@ -503,7 +448,6 @@ pub fn plot_series(
     series
 }
 
-/// The sites `name` names, of zones or labels.
 pub fn sites_named(capture: &Capture, name: &str) -> Vec<u32> {
     (0..)
         .zip(&capture.sites)

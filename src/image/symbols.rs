@@ -1,9 +1,3 @@
-//! Linker symbols, allocated sections, and the GOT slots the loader fills.
-//!
-//! Symbols carry their rank among the code symbols and among the data
-//! symbols, by the preferences that choose one of several symbols naming
-//! an address, so that a lookup compares numbers, not names.
-
 use std::sync::Arc;
 
 use zerocopy::little_endian::{U32, U64};
@@ -17,7 +11,6 @@ use crate::{
     SymbolBinding, SymbolExtent, SymbolExtentProvenance, SymbolId, SymbolInfo, SymbolKind,
 };
 
-/// One linker symbol.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -26,14 +19,10 @@ pub struct SymbolRecord {
     pub name: U32,
     pub address: U64,
 
-    /// Where the symbol's extent or storage ends; its address when it has
-    /// neither.
     pub end: U64,
 
-    /// The symbol's place among code symbols by preference, or [`NONE`].
     pub extent_rank: U32,
 
-    /// The symbol's place among data symbols by preference, or [`NONE`].
     pub storage_rank: U32,
     pub kind: u8,
     pub binding: u8,
@@ -45,13 +34,11 @@ impl Record for SymbolRecord {
     const KIND: TableKind = TableKind::Symbols;
 }
 
-/// [`SymbolRecord::flags`].
 pub mod symbol_flags {
     pub const EXPORTED: u8 = 1 << 0;
 
     pub const EXTENT: u8 = 1 << 1;
 
-    /// The extent was inferred, not declared.
     pub const INFERRED: u8 = 1 << 2;
 
     pub const STORAGE: u8 = 1 << 3;
@@ -59,7 +46,6 @@ pub mod symbol_flags {
     pub const ALL: u8 = EXPORTED | EXTENT | INFERRED | STORAGE;
 }
 
-/// One allocated section.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -75,7 +61,6 @@ impl Record for SectionRecord {
     const KIND: TableKind = TableKind::Sections;
 }
 
-/// [`SectionRecord::flags`].
 pub mod section_flags {
     pub const EXECUTABLE: u8 = 1 << 0;
 
@@ -84,7 +69,6 @@ pub mod section_flags {
     pub const ALL: u8 = EXECUTABLE | WRITABLE;
 }
 
-/// One GOT slot: an import by name, or an indirect function's resolver.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -92,10 +76,8 @@ pub mod section_flags {
 pub struct GotRecord {
     pub address: U64,
 
-    /// The resolver's address, for an indirect function.
     pub target: U64,
 
-    /// The imported name, or [`NONE`].
     pub name: U32,
     pub kind: u8,
 }
@@ -135,7 +117,6 @@ const ROLES: [CodeRole; 10] = [
     CodeRole::Interpreter,
 ];
 
-/// A code role's number in a table.
 pub(super) fn role_code(role: CodeRole) -> Option<u8> {
     ROLES
         .iter()
@@ -143,7 +124,6 @@ pub(super) fn role_code(role: CodeRole) -> Option<u8> {
         .and_then(|code| u8::try_from(code).ok())
 }
 
-/// The code role a number names; validation checked it names one.
 #[expect(
     clippy::indexing_slicing,
     reason = "symbol and function validation reject every role that fails `valid_role`"
@@ -153,7 +133,6 @@ pub(super) fn role(code: u8) -> CodeRole {
     ROLES[usize::from(code)]
 }
 
-/// Whether `code` names a code role.
 pub(super) const fn valid_role(code: u8) -> bool {
     (code as usize) < ROLES.len()
 }
@@ -165,13 +144,10 @@ fn code_of<T: PartialEq>(known: &[T], value: &T) -> Option<u8> {
         .and_then(|code| u8::try_from(code).ok())
 }
 
-/// Why symbols could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("a symbol's or section's name holds a NUL, or the names do not fit")]
 pub struct BadName;
 
-/// Adds `symbols`, `sections`, and `slots`, with their indexes, to
-/// `builder`, pooling their names in `strings`.
 pub fn add_to(
     builder: &mut Builder<'_>,
     strings: &mut StringsBuilder,
@@ -357,8 +333,6 @@ fn leading_underscores(name: &str) -> usize {
     name.bytes().take_while(|byte| *byte == b'_').count()
 }
 
-/// Each symbol's place in the order `key` gives the symbols that have
-/// one, or [`NONE`].
 fn ranks<K: Ord>(symbols: &[SymbolInfo], key: impl Fn(&SymbolInfo) -> Option<K>) -> Vec<u32> {
     let mut keyed = symbols
         .iter()
@@ -376,7 +350,6 @@ fn ranks<K: Ord>(symbols: &[SymbolInfo], key: impl Fn(&SymbolInfo) -> Option<K>)
     ranks
 }
 
-/// One linker symbol of a validated image.
 #[derive(Clone, Copy)]
 pub struct Symbol<'a> {
     strings: Strings<'a>,
@@ -404,19 +377,16 @@ impl<'a> Symbol<'a> {
         self.id
     }
 
-    /// The linker-visible symbol name.
     #[must_use]
     pub fn name(self) -> &'a str {
         self.strings.get(StrId(self.record.name.get()))
     }
 
-    /// The symbol's image address.
     #[must_use]
     pub const fn address(self) -> ImageAddress {
         ImageAddress::new(self.record.address.get())
     }
 
-    /// What the symbol names.
     #[must_use]
     #[expect(
         clippy::indexing_slicing,
@@ -426,7 +396,6 @@ impl<'a> Symbol<'a> {
         SYMBOL_KINDS[usize::from(self.record.kind)]
     }
 
-    /// The symbol's linkage visibility.
     #[must_use]
     #[expect(
         clippy::indexing_slicing,
@@ -436,14 +405,11 @@ impl<'a> Symbol<'a> {
         BINDINGS[usize::from(self.record.binding)]
     }
 
-    /// Whether the module's dynamic symbol table exports the symbol.
     #[must_use]
     pub const fn exported(self) -> bool {
         self.record.flags & symbol_flags::EXPORTED != 0
     }
 
-    /// The code the symbol names, for a code symbol whose extent lies
-    /// within one executable section.
     #[must_use]
     pub const fn extent(self) -> Option<SymbolExtent> {
         if self.record.flags & symbol_flags::EXTENT == 0 {
@@ -460,7 +426,6 @@ impl<'a> Symbol<'a> {
         })
     }
 
-    /// The storage a data symbol names; empty for an unsized symbol.
     #[must_use]
     pub const fn storage(self) -> Option<AddressRange<ImageAddress>> {
         if self.record.flags & symbol_flags::STORAGE == 0 {
@@ -470,8 +435,6 @@ impl<'a> Symbol<'a> {
         Some(self.range())
     }
 
-    /// Where the symbol's extent or storage ends; its address when it has
-    /// neither.
     #[cfg(any(test, feature = "fuzzing"))]
     pub(super) const fn range_end(self) -> ImageAddress {
         self.range().end
@@ -484,7 +447,6 @@ impl<'a> Symbol<'a> {
         }
     }
 
-    /// What the code the symbol names is to unwinding and stepping.
     #[must_use]
     pub fn role(self) -> CodeRole {
         role(self.record.role)
@@ -498,17 +460,11 @@ impl<'a> Symbol<'a> {
         self.record.storage_rank.get()
     }
 
-    /// The source-level spelling of a Rust, C++, or D mangled name, or `None`
-    /// when the name is not mangled in a recognized scheme.
     #[must_use]
     pub fn demangled_name(self) -> Option<String> {
         crate::demangle::demangle(self.name())
     }
 
-    /// Whether a name a person writes names the symbol: its linker name,
-    /// that name without its version, or its demangled spelling, with or
-    /// without a C++ function's parameters, as `shapes::scale` names
-    /// `_ZN6shapes5scaleEd`, `shapes::scale(double)`.
     #[must_use]
     pub fn answers_to(self, name: &str) -> bool {
         self.name() == name
@@ -516,8 +472,6 @@ impl<'a> Symbol<'a> {
             || crate::demangle::spells(self.name(), name)
     }
 
-    /// The name without the version that tells it apart from other
-    /// definitions of the name, as `memcpy` for `memcpy@GLIBC_2.2.5`.
     #[must_use]
     pub fn unversioned_name(self) -> &'a str {
         let name = self.name();
@@ -529,7 +483,6 @@ impl<'a> Symbol<'a> {
         }
     }
 
-    /// The symbol as a record of its own.
     #[must_use]
     pub fn info(self) -> SymbolInfo {
         SymbolInfo {
@@ -546,7 +499,6 @@ impl<'a> Symbol<'a> {
     }
 }
 
-/// The symbol tables of a validated image.
 #[derive(Clone, Copy)]
 pub struct SymbolView<'a> {
     strings: Strings<'a>,
@@ -588,7 +540,6 @@ impl<'a> SymbolView<'a> {
             })
     }
 
-    /// The symbols named `name`, in identifier order.
     pub fn named(self, name: &str) -> impl Iterator<Item = Symbol<'a>> + 'a {
         index::named(self.strings, self.names, name).filter_map(move |id| {
             let symbol = self.get(SymbolId::new(id));
@@ -597,13 +548,10 @@ impl<'a> SymbolView<'a> {
         })
     }
 
-    /// The preferred code symbol whose extent contains `address`.
     pub fn code_at(self, address: ImageAddress) -> Option<Symbol<'a>> {
         self.preferred(self.extents, address, Symbol::extent_rank)
     }
 
-    /// The preferred data symbol whose storage contains `address`, or else
-    /// an unsized one at `address`.
     pub fn data_at(self, address: ImageAddress) -> Option<Symbol<'a>> {
         self.preferred(self.storage, address, Symbol::storage_rank)
             .or_else(|| self.preferred(self.unsized_data, address, Symbol::storage_rank))
@@ -621,7 +569,6 @@ impl<'a> SymbolView<'a> {
     }
 }
 
-/// The sections of a validated image.
 pub fn sections(image: &Image) -> Vec<SectionInfo> {
     let strings = image.strings();
     image
@@ -641,7 +588,6 @@ pub fn sections(image: &Image) -> Vec<SectionInfo> {
         .collect()
 }
 
-/// The GOT slots of a validated image.
 pub fn got_slots(image: &Image) -> Vec<GotSlot> {
     let strings = image.strings();
     image
@@ -658,7 +604,6 @@ pub fn got_slots(image: &Image) -> Vec<GotSlot> {
         .collect()
 }
 
-/// Checks the symbol, section, and GOT tables.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     validate_symbols(image)?;
     validate_sections(image)
@@ -674,8 +619,6 @@ fn validate_symbols(image: &Image) -> Result<(), String> {
             .count()
     };
 
-    // Each of the symbols with a rank holds a different one below their
-    // count, so together they hold every rank.
     let mut extent_ranks = vec![false; count(symbol_flags::EXTENT)];
     let mut storage_ranks = vec![false; count(symbol_flags::STORAGE)];
 
@@ -686,7 +629,6 @@ fn validate_symbols(image: &Image) -> Result<(), String> {
         let storage = flags & symbol_flags::STORAGE != 0;
         let kind = SYMBOL_KINDS.get(usize::from(symbol.kind));
         let shape = match (extent, storage) {
-            // An untyped entry point names code too (see `elf::entry_label`).
             (true, false) => {
                 (matches!(
                     kind,
@@ -726,8 +668,6 @@ fn validate_symbols(image: &Image) -> Result<(), String> {
         }
     }
 
-    // Each entry is its symbol's own interval, so with as many entries as
-    // indexed symbols, and no entry twice, each symbol is indexed once.
     let index = |kind, flag: fn(&SymbolRecord) -> bool| {
         let intervals = image.shared::<Interval>(kind);
         index::valid_intervals(intervals, symbols.len())

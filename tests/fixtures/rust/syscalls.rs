@@ -1,6 +1,6 @@
-// Opens a file that is not there through the standard library, from a
-// function of the program's own, so that a traced call's site is the
-// program's function, past std's frames and the C library's.
+
+
+
 
 use std::hint::black_box;
 

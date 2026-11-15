@@ -1,7 +1,7 @@
-// Steady work for measuring what recording costs: each of THREADS threads,
-// the first argument and 4 by default, runs units of work of about a
-// millisecond, through calls deep enough to unwind, and writes a line as
-// each ends. A measurer counts the lines in a window.
+
+
+
+
 #include <pthread.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -28,7 +28,7 @@ __attribute__((noinline)) void unit(void) {
 
 static void *work(void *unused) {
     (void)unused;
-    // Writing fails once the measurer stops reading.
+
     do {
         unit();
     } while (write(STDOUT_FILENO, "u\n", 2) == 2);

@@ -1,13 +1,3 @@
-//! System call tracing's neutral model; see `dev/syscalls.md`.
-//!
-//! It holds the events both engines produce, the call tables and argument specs that drive
-//! decoding, strace's selection language, and what follows from a stream
-//! of events: descriptor tables, the process tree, and statistics.
-//!
-//! Everything here is pure. Engines live at the edge, in
-//! `backend::linux::syscalls`, and formatting in the binary's
-//! `present::syscalls`.
-
 mod argnames;
 pub mod blobs;
 pub mod captures;

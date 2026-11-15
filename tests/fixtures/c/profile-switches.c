@@ -1,8 +1,8 @@
-// Two threads hand a byte back and forth through pipes ROUNDS times, each
-// blocking until the other answers: many context switches for little CPU
-// time, which fill a ring with records that are not samples. Then SPINNERS
-// threads, the main one among them, spin in their own code for SPIN_MS,
-// where they are sampled.
+
+
+
+
+
 #include <pthread.h>
 #include <stdlib.h>
 #include <time.h>

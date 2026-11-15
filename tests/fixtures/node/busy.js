@@ -1,26 +1,26 @@
-// CPU time spent in JavaScript frames of each tier, for
-// --allow-natives-syntax: the main thread spins in an interpreted frame,
-// which calls a Sparkplug frame, which calls a Turbofan frame, each
-// spinning a while itself before its call; a worker spins in an
-// interpreted frame. Before spinning, each thread prints the stack V8's
-// own call sites give for its innermost frame's call, and each frame's
-// tier:
-//
-//     TRUTH  spin   NATIVE-ID  NAME
-//     TRUTH  frame  NATIVE-ID  DEPTH  FUNCTION  FILE  LINE  TIER
-//
-// NAME is main or worker. DEPTH 0 is the innermost spinning frame, at the
-// line it called tierOf() on; each outer frame's LINE is that of its call.
-// TIER is truth.tierOf()'s, or - for a frame no tier is asked of. Each
-// spinning function's loop is one line of its own, between its function
-// line and its closing brace, so a sample in it is on a line within them.
-// With --depth DEPTH, the main thread spins under DEPTH more interpreted
-// frames of nest(), for a walk of the deepest stacks.
-// With --pool, a thread of libuv's pool derives a key with PBKDF2 for
-// about as long, which runs no JavaScript, so it is in no isolate.
-// The program spins for --seconds SECONDS, 3 by default, then exits. Run
-// it with --sparkplug-filter=sparkplugSpin, which keeps V8 from compiling
-// the interpreted frames' functions with Sparkplug as they grow hot.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 'use strict';
 
@@ -33,7 +33,7 @@ const argv = process.argv.slice(2);
 const seconds = Number(argv[argv.indexOf('--seconds') + 1]) || 3;
 const depth = argv.includes('--depth') ? Number(argv[argv.indexOf('--depth') + 1]) : 0;
 
-// How many rounds each frame spins between its calls: about a millisecond.
+
 const ROUNDS = 200000;
 
 function escape(text) {
@@ -48,11 +48,11 @@ function nativeId() {
   return Number(fs.readlinkSync('/proc/thread-self').split('/').pop());
 }
 
-/**
- * Prints, when `print` is set, the stack of the caller of `report`, named
- * `name`, with `tiers`. Warm-up calls it unprinted, so that optimized code
- * has seen the call.
- */
+
+
+
+
+
 function report(print, name, tiers) {
   if (!print) {
     return;
@@ -79,7 +79,7 @@ function report(print, name, tiers) {
   fs.writeSync(1, text);
 }
 
-// Whether the next spin of the innermost frame reports its stack.
+
 let reporting = false;
 
 function turbofanSpin(acc) {
@@ -120,7 +120,7 @@ function spinFor(spin, end) {
 
 %NeverOptimizeFunction(spinFor);
 
-// Runs `fn` under `levels` frames of its own.
+
 function nest(levels, fn) {
   return levels > 0 ? nest(levels - 1, fn) : fn();
 }
@@ -142,7 +142,7 @@ function main() {
   ignitionSpin(0);
   reporting = true;
   if (argv.includes('--pool')) {
-    // About a million rounds a second, past the spin's end.
+
     crypto.pbkdf2('secret', 'salt', (seconds + 1) * 1000000, 64, 'sha512', () => {});
   }
   new threads.Worker(__filename, {argv});

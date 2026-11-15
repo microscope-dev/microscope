@@ -1,6 +1,3 @@
-//! The program below its source: disassembly, memory, registers,
-//! watchpoints, signals, and modules.
-
 use std::fmt::Write as _;
 use std::str::FromStr as _;
 
@@ -21,14 +18,11 @@ use super::protocol::{
 use super::session::Failure;
 use crate::cli::format::{code_name, reference_name, register_bytes};
 
-/// Instructions shown around an address no function holds.
 const WINDOW_BEFORE: u32 = 32;
 const WINDOW_AFTER: u32 = 96;
 
-/// The most bytes one request reads or writes.
 const MOST_BYTES: u64 = 16 * 1024;
 
-/// The hexadecimal digits after a `0x` or `0X` prefix.
 fn hex_digits(text: &str) -> Option<&str> {
     let digits = text
         .strip_prefix("0x")
@@ -48,9 +42,6 @@ pub fn address(text: &str) -> Result<VirtualAddress, Failure> {
         })
 }
 
-/// The function holding an address, or the instructions around it: the
-/// frame's own code when no address is given, marking the frame's
-/// instruction.
 pub async fn disassemble(
     handle: &DebuggerHandle,
     images: &Images,
@@ -66,7 +57,6 @@ pub async fn disassemble(
         .position(|frame| frame.id == context.frame)
         .ok_or_else(|| Failure::new(ErrorKind::Invalid, "the frame is gone"))?;
 
-    // The frame's own code is marked where it is; other code, nowhere.
     let (shown, marked) = if let Some(text) = &request.address {
         (address(text)?, None)
     } else {
@@ -153,12 +143,6 @@ pub async fn disassemble(
     })
 }
 
-/// An address inside the instruction a frame is executing. The innermost
-/// activation and one a signal interrupted are at their instruction; any
-/// other returns past its call, so the call holds the byte before. Inline
-/// frames share their activation's address, and frames with no registers,
-/// which a runtime's frame drives, show before it but call nothing. A
-/// suspended task's frame resumes at its instruction, if it has one.
 fn executing(frames: &[microscope::StackFrame], index: usize) -> Option<VirtualAddress> {
     let activation = frames
         .get(index..)?
@@ -301,7 +285,6 @@ pub async fn read_memory(
         ));
     }
 
-    // A read stops at the end of the address space rather than overflowing it.
     let count = request.count.min(u64::MAX - start.get());
     let read = handle
         .read_memory_at(StopId::new(request.stop), start, count)
@@ -323,7 +306,6 @@ pub async fn read_memory(
     })
 }
 
-/// Writes bytes, returning how many were written.
 pub async fn write_memory(
     handle: &DebuggerHandle,
     request: &protocol::WriteMemory,
@@ -377,7 +359,6 @@ pub async fn registers(handle: &DebuggerHandle, at: FrameAt) -> Result<Vec<Regis
         .collect())
 }
 
-/// Adds a watchpoint on an expression in a frame, or on `0xADDRESS:BYTES`.
 pub async fn add_watchpoint(
     handle: &DebuggerHandle,
     request: protocol::AddWatchpoint,
@@ -457,7 +438,6 @@ pub async fn edit_watchpoint(
     Ok(())
 }
 
-/// Text that says something, or none for blank text.
 fn given(text: Option<String>) -> Option<String> {
     text.map(|text| text.trim().to_owned())
         .filter(|text| !text.is_empty())
@@ -485,7 +465,6 @@ pub async fn set_signal(handle: &DebuggerHandle, policy: &SignalPolicy) -> Resul
             policy.signal,
             microscope::SignalPolicy {
                 stop: policy.stop,
-                // A signal that stops is said, as the terminal debugger says it.
                 print: policy.print || policy.stop,
                 pass: policy.pass,
             },
@@ -498,7 +477,6 @@ pub async fn set_signal(handle: &DebuggerHandle, policy: &SignalPolicy) -> Resul
 pub async fn modules(handle: &DebuggerHandle, images: &Images) -> Result<Vec<Module>, Failure> {
     let loaded = match handle.loaded_modules().await {
         Ok(loaded) => loaded,
-        // Nothing runs, so nothing is loaded.
         Err(microscope::Error::NotRunning) => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
     };

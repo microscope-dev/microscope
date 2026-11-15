@@ -1,8 +1,3 @@
-//! System-call catchpoints. While any exists, every thread resumes to stop
-//! at each of its calls' entries and exits; a call a catchpoint catches,
-//! whose condition holds, stops every thread, and any other call resumes
-//! at once.
-
 use std::sync::Arc;
 
 use nix::unistd::Pid;
@@ -22,8 +17,6 @@ use crate::syscalls::{Capture, CaptureState, Outcome, ReadAt, SyscallId};
 use crate::{CatchPhase, Catchpoint, CatchpointId, Condition, Error, Result, VirtualAddress};
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Adds a catchpoint under `id`, another member's of the group, or
-    /// under a new id, which a group's members share.
     pub(super) fn add_catchpoint(
         &mut self,
         id: Option<CatchpointId>,
@@ -67,9 +60,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         });
     }
 
-    /// Whether a stopped thread's next instruction step makes a system
-    /// call: it is inside one, stopped at its entry or at an event, inside
-    /// one the kernel will restart, or about to execute `syscall`.
     pub(super) fn steps_into_call(&self, pid: Pid) -> Result<bool> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let thread = inferior.thread(pid)?;
@@ -94,10 +84,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(read.bytes == SYSCALL)
     }
 
-    /// A thread stopped at a system call's entry or exit. It stops every
-    /// thread when a catchpoint catches the call and its condition holds,
-    /// or resumes as it would have. A step that made the call ends at its
-    /// exit, where a single step across `syscall` would have.
     pub(super) fn handle_syscall_stop(&mut self, pid: Pid) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let thread = inferior.thread_mut(pid)?;
@@ -108,9 +94,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             Ok(info) if info.op == OP_ENTRY => (info, false),
             Ok(info) if info.op == OP_EXIT => (info, true),
             other => {
-                // SIGKILL or a group exit took the thread out of its stop
-                // since it was reported: it is gone, or at its exit event,
-                // which follows.
                 let metadata = match other {
                     Err(nix::errno::Errno::ESRCH) => Err(nix::errno::Errno::ESRCH),
                     _ => self.ptrace.signal_metadata(pid),
@@ -182,8 +165,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             catchpoint.hit_count += 1;
             let condition = catchpoint.condition.clone();
 
-            // A condition that cannot be judged stops, as a breakpoint's
-            // does.
             if let Some(condition) = condition
                 && self.judge_condition(
                     pid,
@@ -202,8 +183,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.resume_uncaught(pid, in_step, exit);
         }
 
-        // A step over a breakpoint's trap that made the call is past the
-        // trap, which the stop puts back.
         if self.repairs(pid) {
             self.session
                 .inferior_mut()
@@ -215,10 +194,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.begin_visible_stop(pid, stop(stopping.into()))
     }
 
-    /// Goes on from a call no catchpoint stopped at. A step over a
-    /// breakpoint's trap that made the call is done at its entry, being
-    /// past the trap, and the user's step at its exit, where a single step
-    /// across `syscall` ends; anything else resumes as it would have.
     fn resume_uncaught(&mut self, pid: Pid, stepping: bool, exit: bool) -> Result<()> {
         if stepping && (exit || self.repairs(pid)) {
             return self.handle_classified_stop(
@@ -232,16 +207,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.restart_after_internal(pid)
     }
 
-    /// The call a thread stopped in, its arguments, and what was read at
-    /// its entry: at an entry, as the kernel reports them, and at an exit,
-    /// as the thread's entry stop did, or as its registers hold them if the
-    /// debugger missed the entry, as when the thread was in a call when
-    /// catching began.
     fn stopped_call(&mut self, pid: Pid, info: &info::SyscallInfo, exit: bool) -> Result<Entered> {
         if !exit {
             let call = info::call_id(info);
 
-            // Only a caught call's memory is read.
             let captured =
                 if self.catchpoints.values().any(|catchpoint| {
                     catchpoint.catches(call, false) || catchpoint.catches(call, true)
@@ -276,8 +245,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    /// Reads a call's pointer arguments at `phase` as the syscall tracer
-    /// does, with its default limits.
     fn capture(
         &self,
         pid: Pid,
@@ -308,10 +275,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// The `syscall` instruction.
 const SYSCALL: [u8; 2] = [0x0f, 0x05];
 
-/// A thread's call as its entry stop saw it.
 #[derive(Debug, Clone)]
 pub(super) struct Entered {
     call: SyscallId,
@@ -319,30 +284,23 @@ pub(super) struct Entered {
     captured: Vec<Capture>,
 }
 
-/// Where a thread stands with respect to a system call.
 #[derive(Debug, Clone, Default)]
 pub(super) enum CallPosition {
     #[default]
     Outside,
 
-    /// Past the entry stop of a call, until its exit stop.
     Entered(Entered),
 
-    /// At an event stop inside a call whose entry went unseen, which
-    /// returns when the thread next runs.
     AtEvent,
 }
 
 impl CallPosition {
-    /// The thread stopped at a ptrace event inside the call it makes.
     pub(super) fn at_event(&mut self) {
         if matches!(self, Self::Outside) {
             *self = Self::AtEvent;
         }
     }
 
-    /// The thread resumes, to its next system-call stop when `to_call`.
-    /// Only that resume reaches a call's exit stop.
     pub(super) fn resume(&mut self, to_call: bool) {
         if !to_call || matches!(self, Self::AtEvent) {
             *self = Self::Outside;
@@ -350,7 +308,6 @@ impl CallPosition {
     }
 }
 
-/// A stopped thread's memory, with breakpoint traps hidden.
 struct StopMemory<'a, P> {
     ptrace: &'a P,
     pid: Pid,
@@ -375,7 +332,6 @@ impl<P: LinuxTraceOps> captures::Memory for StopMemory<'_, P> {
     }
 }
 
-/// The path a call names, from what was read of its path argument.
 fn path_of(call: SyscallId, captured: &[Capture]) -> Option<Arc<str>> {
     let spec = specs::spec(call)?;
     let index = spec.args.iter().position(|arg| matches!(arg, Arg::Path))?;

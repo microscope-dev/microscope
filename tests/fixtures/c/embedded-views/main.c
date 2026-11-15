@@ -1,6 +1,6 @@
-// A program that carries views for its own types in .debug_microscope_views,
-// and links a library that carries a view for its own `struct point`, which
-// must present the library's points and never the program's.
+
+
+
 
 #include "microscope_views.h"
 

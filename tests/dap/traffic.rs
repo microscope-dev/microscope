@@ -1,13 +1,3 @@
-//! Replays the traffic of real clients against the adapter.
-//!
-//! `just uat-vscode` and `just uat-nvim` record what VS Code and nvim-dap
-//! exchange with the adapter while driving it as users do. Replaying a
-//! recording sends each client message in its recorded order, once the
-//! responses and stops the client had seen by then have arrived, with the
-//! live adapter's thread, frame, and variable ids in place of the recorded
-//! ones. The harness validates every live message as in every scenario, and
-//! each request must succeed or fail as it did when recorded.
-
 use std::collections::HashMap;
 
 use serde_json::Value;
@@ -15,18 +5,14 @@ use serde_json::Value;
 use crate::dap::{Dap, Sent, fixture};
 use crate::support::ExternalProcess;
 
-/// Fields whose values the adapter assigns and the client echoes.
 const ID_FIELDS: [&str; 3] = ["threadId", "frameId", "variablesReference"];
 
-/// Events a client waits for before its next requests.
 const AWAITED_EVENTS: [&str; 4] = ["initialized", "stopped", "exited", "terminated"];
 
-/// Recorded ids and the live ids that stand for them.
 #[derive(Default)]
 struct Ids(HashMap<i64, i64>);
 
 impl Ids {
-    /// Learns the live ids in a live message shaped like a recorded one.
     fn learn(&mut self, recorded: &Value, live: &Value, field: &str, in_list: &str) {
         match (recorded, live) {
             (Value::Object(recorded), Value::Object(live)) => {
@@ -59,7 +45,6 @@ impl Ids {
         }
     }
 
-    /// Replaces the recorded ids a client message echoes.
     fn rewrite(&self, message: &mut Value) {
         match message {
             Value::Object(map) => {
@@ -78,15 +63,11 @@ impl Ids {
     }
 }
 
-/// A process a recording attached to, released to reach its breakpoint
-/// when the recording stopped there.
 struct Target {
     process: ExternalProcess,
     released: bool,
 }
 
-/// Waits for the live counterpart of a recorded adapter message and
-/// learns its ids.
 fn await_live(
     dap: &mut Dap,
     sent: &HashMap<u64, Sent>,
@@ -129,9 +110,6 @@ fn await_live(
     }
 }
 
-/// What a client shows of a message: where a stop is and why, each
-/// frame's function and line, each variable's name and value, and what an
-/// expression evaluated to. Ids, which differ from run to run, are left out.
 fn shown(body: &Value) -> Vec<String> {
     let mut shown = Vec::new();
     for key in ["reason", "result"] {
@@ -158,10 +136,6 @@ fn replay(name: &str) {
     replay_with(name, None);
 }
 
-/// A recording's messages, each marked whether its client sent it: the
-/// session's own, and those of the forked child's session if it followed
-/// one. A client's own recording of the child's session is the `.child`
-/// recording beside it; the adapter's log labels the child's messages.
 fn recording(name: &str, target: Option<&Target>) -> (Messages, Option<Messages>) {
     let read = |name: &str| {
         std::fs::read_to_string(
@@ -206,14 +180,10 @@ fn recording(name: &str, target: Option<&Target>) -> (Messages, Option<Messages>
     (session, child)
 }
 
-/// The label the adapter's log gives the first member session's messages.
 const CHILD_LABEL: &str = "[member session 1] ";
 
 type Messages = Vec<(bool, Value)>;
 
-/// The request that removed a session's breakpoints, as the command and
-/// how many requests for it the session had sent by then, counting it: the
-/// first that empties a list an earlier request for it filled.
 fn removal(messages: &Messages) -> Option<(String, usize)> {
     let mut counts = HashMap::<&str, usize>::new();
     let mut filled = std::collections::HashSet::new();
@@ -235,8 +205,6 @@ fn removal(messages: &Messages) -> Option<(String, usize)> {
         })
 }
 
-/// A child's recording with the live member's process and socket in place
-/// of the recorded ones, which its attach names.
 fn as_live_member(mut messages: Messages, live: &Value) -> Messages {
     for (from_client, message) in &mut messages {
         if *from_client && message["command"] == "attach" {
@@ -249,17 +217,13 @@ fn as_live_member(mut messages: Messages, live: &Value) -> Messages {
     messages
 }
 
-/// One session's recording, replayed from where it was left.
 struct Replay {
     messages: Messages,
     ids: Ids,
     sent: HashMap<u64, Sent>,
-    /// The adapter messages before this one have been awaited.
     seen: usize,
-    /// The client messages before this one have been sent.
     next: usize,
 
-    /// How many requests for each command have been sent.
     counts: HashMap<String, usize>,
 }
 
@@ -275,13 +239,7 @@ impl Replay {
         }
     }
 
-    /// Sends the client's requests in order, each once the messages the
-    /// client had seen by then have arrived, up to the `before.1`th request
-    /// for command `before.0`, which it leaves unsent; without `before`, to
-    /// the end.
     fn run(&mut self, dap: &mut Dap, target: &mut Option<Target>, before: Option<(&str, usize)>) {
-        // The adapter messages a client waits for: responses, and the
-        // events that change what it may ask.
         let awaited = |message: &Value| {
             message["type"] == "response"
                 || AWAITED_EVENTS.contains(&message["event"].as_str().unwrap_or_default())
@@ -290,7 +248,6 @@ impl Replay {
         while self.next < self.messages.len() {
             let index = self.next;
             let (from_client, message) = &self.messages[index];
-            // The harness answers the adapter's reverse requests itself.
             if !from_client || message["type"] != "request" {
                 self.next += 1;
                 continue;
@@ -318,7 +275,6 @@ impl Replay {
                 .insert(seq, dap.send_raw(seq, command, &message.to_string()));
             self.next += 1;
 
-            // Anything a client sends after it disconnects reaches no adapter.
             if command == "disconnect" {
                 self.seen = index;
                 self.next = self.messages.len();
@@ -334,13 +290,6 @@ impl Replay {
     }
 }
 
-/// Replays a recording; one that attached is given a live process in place
-/// of the recorded one. A recording with a `.child` recording beside it
-/// followed a forked child in a session of its own, which the replay
-/// connects to the socket the adapter names. The two sessions' requests go
-/// in the order their client sent them: each session to its stop, then
-/// each one's breakpoint removal, then the child to its end, and then the
-/// parent, which waited for it.
 fn replay_with(name: &str, mut target: Option<Target>) {
     let (messages, child) = recording(name, target.as_ref());
 
@@ -365,12 +314,10 @@ fn replay_with(name: &str, mut target: Option<Target>) {
     }
     parent.run(&mut dap, &mut target, None);
 
-    // The recording ends with its client's disconnect.
     dap.close_stdin();
     dap.finish();
 
     if let Some(target) = target {
-        // Detached, the process finishes on its own.
         assert_eq!(target.process.wait().code(), Some(23));
     }
 }
@@ -397,8 +344,6 @@ fn vscode_attaching_to_a_process() {
 
 #[test]
 fn vscode_following_a_forked_child() {
-    // The child's session runs it to its end, and then the parent's, which
-    // waited for it.
     replay("vscode-fork");
 }
 

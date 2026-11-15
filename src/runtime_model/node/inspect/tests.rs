@@ -1,6 +1,3 @@
-//! Trees for the values Node printed in `tests/expected.rs`, checked against
-//! that text.
-
 mod expected;
 
 use super::{
@@ -71,7 +68,6 @@ fn props(entries: Vec<(&str, Value)>) -> Vec<Property> {
         .collect()
 }
 
-/// `count` frames `    at g0 (/a.js:0:1)`, ... as `c.js` wrote them.
 fn frames(count: usize) -> String {
     (0..count)
         .map(|i| format!("    at g{i} (/a.js:{i}:1)"))
@@ -79,7 +75,6 @@ fn frames(count: usize) -> String {
         .join("\n")
 }
 
-/// The release of each line whose text `tests/expected.rs` holds.
 fn release(major: u32) -> NodeRelease {
     let (minor, patch) = match major {
         22 => (23, 4),
@@ -94,7 +89,6 @@ fn release(major: u32) -> NodeRelease {
     }
 }
 
-/// Builds a graph, handing out addresses.
 struct Graph {
     graph: ValueGraph,
     next: u64,
@@ -114,7 +108,6 @@ impl Graph {
         Value::Object(id)
     }
 
-    /// A row to fill in later, so that what fills it can refer to it.
     fn reserve(&mut self) -> ObjectId {
         self.next += 0x20;
         let object = Object {
@@ -198,7 +191,6 @@ impl Graph {
         self.add(named("Array"), kind, Vec::new())
     }
 
-    /// An array at level 3, whose elements the reader leaves out.
     fn array_header(&mut self, constructor: &str, length: u32) -> Value {
         let kind = Kind::Array(Array {
             length,
@@ -247,7 +239,6 @@ impl Graph {
         self.add(constructor, Kind::Error(details), properties)
     }
 
-    /// `c.js`'s `mk(stack)`: an `Error('x')` whose stack is `stack`.
     fn mk(&mut self, stack: &str) -> Value {
         self.error_with(
             named("Error"),
@@ -259,7 +250,6 @@ impl Graph {
         )
     }
 
-    /// `mk(stack)` with a non-enumerable own `cause`.
     fn mk_cause(&mut self, stack: &str, cause: Value) -> Value {
         self.error_with(
             named("Error"),
@@ -337,7 +327,6 @@ fn bytes_le<const N: usize>(values: impl IntoIterator<Item = [u8; N]>) -> Vec<u8
     values.into_iter().flatten().collect()
 }
 
-/// The value `b.js`, `c.js`, or `d.js` printed under `label`.
 #[allow(clippy::too_many_lines, reason = "one tree per value")]
 fn build(g: &mut Graph, label: &str) -> Value {
     match label {
@@ -426,7 +415,6 @@ fn build(g: &mut Graph, label: &str) -> Value {
             g.plain(vec![("a", a)])
         }
         "depth3b" => {
-            // Level 3: the reader leaves the property's value out.
             let c = g.plain(vec![(
                 "d",
                 Value::Unreadable("beyond the depth".to_owned()),
@@ -1073,8 +1061,6 @@ fn build(g: &mut Graph, label: &str) -> Value {
             }
         }
         "headers" => {
-            // Every value here is at level 3, so the reader gives only the
-            // headers: no elements, entries, bytes, or property values.
             let skipped = || Value::Unreadable("beyond the depth".to_owned());
             let keyed = || vec![prop("k", Value::Unreadable("beyond the depth".to_owned()))];
             let entries = vec![
@@ -1351,8 +1337,6 @@ fn build(g: &mut Graph, label: &str) -> Value {
     }
 }
 
-/// Labels whose text in some version is not a formatted value, because that
-/// version lacks the type or threw.
 fn node_lacks(label: &str, major: u32) -> bool {
     matches!(
         (label, major),
@@ -1360,7 +1344,6 @@ fn node_lacks(label: &str, major: u32) -> bool {
     )
 }
 
-/// The labels whose arrays hold characters whose widths Node takes from ICU.
 fn needs_icu(label: &str) -> bool {
     matches!(label, "wide" | "strings")
 }
@@ -1408,7 +1391,6 @@ fn a_proxy_of_a_proxy_is_unsupported_before_node_26() {
 #[test]
 fn a_string_past_ten_thousand_units_says_how_many_more() {
     let graph = Graph::new();
-    // The reader reads only the units inspect shows.
     let external = Value::String(JsString::new(vec![u16::from(b'x'); 10_000], 1_100_000));
     let expected = format!("'{}'... 1090000 more characters", "x".repeat(10_000));
     assert_eq!(graph.inspect(&external, 26).text, expected);
@@ -1445,8 +1427,6 @@ fn what_the_reader_could_not_read_prints_visibly() {
     );
 }
 
-/// What `util.inspect(value, { customInspect: false, compact: true,
-/// breakLength: Infinity })` printed under each Node, where it differs.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1578,9 +1558,6 @@ fn values_print_on_one_line_as_node_prints_them() {
         None,
     ));
 
-    // Releases before `isBelowBreakLength`'s infinite `breakLength` early
-    // return print as 22 does: 24.20.0 and 26.7.0 (the last without it),
-    // and 24.16.0 and 26.5.0 (nixpkgs builds).
     let before = |major, minor| NodeRelease {
         major,
         minor,

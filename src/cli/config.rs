@@ -1,14 +1,3 @@
-//! The CLI's settings: TOML files layered over the defaults.
-//!
-//! The user's file applies to every project; a project's
-//! `.microscope/config.toml`, usually committed, and
-//! `.microscope/config.local.toml`, one person's, override it there. Each file
-//! is checked strictly on its own, so an error names its file, line, and
-//! column, and the valid files are then merged key by key. Startup commands
-//! accumulate instead, and launch configurations merge by name. A project's
-//! startup commands, aliases, and launch configurations act, so they apply only
-//! once the user trusts them; see [`TrustStore`].
-
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read as _;
@@ -22,13 +11,10 @@ use super::DisassemblySyntax;
 use super::terminal::{ColorChoice, PathStyle, ThemeName, ThemeOverrides};
 use microscope::suggest;
 
-/// The defaults, as the file `microscope config init` writes commented out.
 pub const DEFAULTS: &str = include_str!("default-config.toml");
 
-/// The largest settings or state file read.
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
 
-/// Every setting, with its default.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
@@ -60,7 +46,6 @@ pub struct Config {
     pub launch: Vec<Launch>,
 }
 
-/// Auto-detected, or forced on or off.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Toggle {
@@ -79,7 +64,6 @@ pub struct Ui {
     pub hyperlinks: Toggle,
     pub paths: PathStyle,
 
-    /// `auto`, `never`, or a command.
     pub pager: String,
     pub editor: String,
     pub prompt: String,
@@ -105,7 +89,6 @@ impl Default for Ui {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Source {
-    /// Lines shown before and after the current line.
     #[serde(deserialize_with = "context")]
     pub context: [u32; 2],
     pub highlight: bool,
@@ -124,7 +107,6 @@ impl Default for Source {
     }
 }
 
-/// What a stop prints after its header.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Section {
@@ -180,10 +162,8 @@ pub enum Radix {
     Hexadecimal,
 }
 
-/// The width pretty printing fits values to.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Width {
-    /// The terminal's, or 80 when output is not a terminal.
     #[default]
     Terminal,
     Columns(u16),
@@ -235,18 +215,14 @@ impl Default for Disassembly {
     }
 }
 
-/// How steps treat a language runtime's own code.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Stepping {
     pub runtime: StepRuntime,
 
-    /// Globs of the source files steps pass through.
     pub skip: Vec<String>,
 }
 
-/// Whether steps pass over a runtime's code to the program's code it
-/// calls, or stop in it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StepRuntime {
@@ -255,16 +231,12 @@ pub enum StepRuntime {
     Enter,
 }
 
-/// How backtraces show a language runtime's and an interpreter's own
-/// frames.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Backtraces {
     pub runtime: RuntimeFrames,
 }
 
-/// Whether a backtrace folds each run of a runtime's frames into a line,
-/// or shows every frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeFrames {
@@ -285,19 +257,13 @@ impl Default for Breakpoints {
     }
 }
 
-/// Where separate debug files are found.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DebugInfo {
-    /// Debug directories searched before the system's, relative to the
-    /// project root.
     pub directories: Vec<PathBuf>,
 
-    /// Download debug files no directory holds from debuginfod servers.
     pub debuginfod: bool,
 
-    /// How many threads load debug information, unless `MICROSCOPE_JOBS` says;
-    /// by default, one per CPU up to 16.
     pub jobs: Option<std::num::NonZeroUsize>,
 }
 
@@ -314,22 +280,17 @@ impl Default for History {
     }
 }
 
-/// Which processes a program starts the session debugs too.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Follow {
     pub mode: FollowMode,
 
-    /// Programs debugged besides those `mode` chooses, by file name, where
-    /// `*` matches any run of characters and `?` any one.
     pub programs: Vec<String>,
 
-    /// What a stop in one process stops.
     pub stop: FollowStop,
 }
 
 impl Follow {
-    /// The policy a group follows, with `programs` named too.
     pub fn policy(&self, programs: &[String]) -> microscope::FollowPolicy {
         microscope::FollowPolicy {
             mode: match self.mode {
@@ -349,30 +310,23 @@ impl Follow {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FollowMode {
-    /// The program, programs of a runtime microscope models, and those
-    /// named; others are watched until they execute one of those.
     #[default]
     Auto,
 
-    /// Every process the program starts.
     All,
 
-    /// Only the program's own process.
     None,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FollowStop {
-    /// Every process stops with the one that stopped.
     #[default]
     Group,
 
-    /// Only the process that stopped.
     Process,
 }
 
-/// A signal's actions as `handle` takes them, such as `nostop noprint pass`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignalActions(String);
 
@@ -424,11 +378,9 @@ pub struct Startup {
     pub commands: Vec<String>,
 }
 
-/// Whether a project's acting settings apply.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Trust {
-    /// Ask once, and again whenever they change.
     #[default]
     Ask,
     Always,
@@ -441,7 +393,6 @@ pub struct Projects {
     pub trust: Trust,
 }
 
-/// A process to attach to: its id, or its name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AttachTarget {
     Pid(u64),
@@ -495,7 +446,6 @@ impl Serialize for AttachTarget {
     }
 }
 
-/// How a project's program is debugged, as `launch.json` describes it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Launch {
@@ -535,8 +485,6 @@ pub struct Launch {
     pub views: Vec<PathBuf>,
 }
 
-/// What a launch configuration starts, with its paths resolved against the
-/// project root.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LaunchTarget {
     Program(PathBuf),
@@ -545,7 +493,6 @@ pub enum LaunchTarget {
 }
 
 impl Launch {
-    /// Checks the keys make one coherent target, after merging.
     fn check(&self) -> Result<(), String> {
         let name = &self.name;
         match (&self.program, &self.attach, &self.core) {
@@ -604,7 +551,6 @@ impl Launch {
         Ok(())
     }
 
-    /// What the configuration starts.
     pub fn target(&self, root: &Path) -> Result<LaunchTarget, ConfigError> {
         let program = self.program.as_ref().map(|path| root.join(path));
         Ok(match (&self.attach, &self.core) {
@@ -623,7 +569,6 @@ impl Launch {
     }
 }
 
-/// Reads an integer and refuses one outside `MIN..=MAX`.
 fn bounded<'de, D, T, const MIN: u64, const MAX: u64>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
@@ -670,7 +615,6 @@ fn sections<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Section>, 
     Ok(sections)
 }
 
-/// A unit variant's name as settings files spell it.
 fn serde_name(value: &impl Serialize) -> String {
     toml::Value::try_from(value)
         .ok()
@@ -729,7 +673,6 @@ impl Serialize for Width {
     }
 }
 
-/// Which of the three files a setting was read from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FileKind {
     User,
@@ -747,7 +690,6 @@ impl FileKind {
     }
 }
 
-/// Where a setting in effect came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {
     Default,
@@ -767,12 +709,10 @@ impl fmt::Display for Origin {
     }
 }
 
-/// A settings file that could not be used, and where.
 #[derive(Debug)]
 pub struct ConfigError {
     pub file: Option<PathBuf>,
 
-    /// The one-based line and column.
     pub position: Option<(usize, usize)>,
     pub message: String,
 }
@@ -811,7 +751,6 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// The one-based line and column of a byte offset.
 fn position(text: &str, offset: usize) -> (usize, usize) {
     let offset = offset.min(text.len());
     let before = &text[..text.floor_char_boundary(offset)];
@@ -825,9 +764,6 @@ fn position(text: &str, offset: usize) -> (usize, usize) {
     (line, column)
 }
 
-/// Rewrites serde's message for a settings file's reader: `unknown field`
-/// becomes `unknown key` with a suggestion, and a value's error names its
-/// key.
 fn explain(message: &str, path: &str) -> String {
     let quoted = |text: &str| {
         text.split('`')
@@ -843,8 +779,6 @@ fn explain(message: &str, path: &str) -> String {
             return message.to_owned();
         };
 
-        // The path ends at the table holding the unknown key, or at the
-        // key itself.
         let table = if path == key {
             ""
         } else {
@@ -892,14 +826,12 @@ fn explain(message: &str, path: &str) -> String {
     }
 }
 
-/// One key of a path into a TOML document.
 #[derive(Clone, Copy)]
 enum Step<'a> {
     Key(&'a str),
     Index(usize),
 }
 
-/// The span of a key, or of an array element, at `path` in a document.
 fn locate(text: &str, path: &[Step<'_>]) -> Option<Range<usize>> {
     let document = toml::de::DeTable::parse(text).ok()?;
     let mut table = document.get_ref();
@@ -934,7 +866,6 @@ fn locate(text: &str, path: &[Step<'_>]) -> Option<Range<usize>> {
     span
 }
 
-/// One settings file that was read and is valid on its own.
 #[derive(Clone, Debug)]
 pub struct File {
     pub kind: FileKind,
@@ -943,39 +874,29 @@ pub struct File {
     table: toml::Table,
 }
 
-/// The files a session's settings come from.
 #[derive(Clone, Debug)]
 pub struct Files {
     pub root: PathBuf,
 
-    /// The user's file, if any is to be read.
     pub user: Option<PathBuf>,
     pub project: PathBuf,
     pub local: PathBuf,
 
-    /// Whether any file is read at all.
     pub enabled: bool,
 
-    /// The files that exist, from the lowest precedence to the highest.
     pub read: Vec<File>,
 }
 
-/// Which user file a session reads.
 #[derive(Clone, Debug)]
 pub enum UserFile {
-    /// None, and no project file either.
     Disabled,
 
-    /// The standard one, if it exists.
     Standard,
 
-    /// A file named by `--config` or `MICROSCOPE_CONFIG`, which must exist.
     Named(PathBuf),
 }
 
 impl UserFile {
-    /// `--no-config` and `--config`, then `MICROSCOPE_CONFIG`, which is empty
-    /// to read no files.
     pub fn choose(no_config: bool, config: Option<&Path>) -> Self {
         if no_config {
             return Self::Disabled;
@@ -993,7 +914,6 @@ impl UserFile {
     }
 }
 
-/// `MICROSCOPE_CONFIG`, as the process started with it.
 static ENVIRONMENT: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
 
 /// Takes `MICROSCOPE_CONFIG` out of the environment, keeping its value for
@@ -1013,8 +933,6 @@ pub unsafe fn take_environment() {
     unsafe { std::env::remove_var(VARIABLE) };
 }
 
-/// The user's configuration directory, `$XDG_CONFIG_HOME/microscope` or
-/// `~/.config/microscope`.
 pub fn user_directory() -> Option<PathBuf> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|path| !path.is_empty())
@@ -1023,9 +941,6 @@ pub fn user_directory() -> Option<PathBuf> {
     Some(config.join("microscope"))
 }
 
-/// The user's state directory, `$XDG_STATE_HOME/microscope` or
-/// `~/.local/state/microscope`. A relative `XDG_STATE_HOME` is ignored, as the
-/// XDG specification says.
 pub fn state_directory() -> Option<PathBuf> {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
@@ -1034,11 +949,6 @@ pub fn state_directory() -> Option<PathBuf> {
         .map(|state| state.join("microscope"))
 }
 
-/// The project a directory belongs to: the nearest directory, from `start`
-/// upwards, holding `.microscope/` or `.git`, else `start` itself. A
-/// repository's root ends the search, so a repository inside another
-/// project, as a git worktree often is, never takes the outer one's
-/// settings or saved state.
 pub fn project_root(start: &Path) -> PathBuf {
     start
         .ancestors()
@@ -1047,8 +957,6 @@ pub fn project_root(start: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-/// Reads a file of at most [`MAX_FILE_BYTES`], or `None` if it does not
-/// exist.
 pub fn read_text(path: &Path) -> Result<Option<String>, String> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
@@ -1072,7 +980,6 @@ pub fn read_text(path: &Path) -> Result<Option<String>, String> {
 }
 
 impl Files {
-    /// Finds and checks the files a session started in `start` reads.
     pub fn read(start: &Path, user: &UserFile) -> Result<Self, ConfigError> {
         let root = project_root(start);
         let mut files = Self {
@@ -1115,8 +1022,6 @@ impl Files {
         Ok(files)
     }
 
-    /// The acting settings of the project's files, as TOML, or `None` when
-    /// they set none.
     pub fn acting(&self) -> Option<String> {
         let mut acting = toml::Table::new();
 
@@ -1142,8 +1047,6 @@ impl Files {
         })
     }
 
-    /// The policy for a project's acting settings, which only the user's
-    /// file sets.
     pub fn trust_policy(&self) -> Trust {
         self.read
             .iter()
@@ -1154,8 +1057,6 @@ impl Files {
             .unwrap_or_default()
     }
 
-    /// Merges the files over the defaults. Unless `trusted`, a project's
-    /// acting settings are left out.
     pub fn settings(&self, trusted: bool) -> Result<Settings, ConfigError> {
         let mut merged = toml::Table::new();
         let mut origins = BTreeMap::new();
@@ -1218,12 +1119,8 @@ impl Files {
     }
 }
 
-/// The settings that act rather than present, which a project's files set
-/// only once trusted.
 const ACTING: [&str; 3] = ["startup", "aliases", "launch"];
 
-/// Merges `source` into `target` key by key, recording where each setting
-/// came from. A value that is not a table replaces the one before.
 fn merge_table(
     target: &mut toml::Table,
     source: &toml::Table,
@@ -1270,8 +1167,6 @@ fn record_leaves(
     }
 }
 
-/// Merges launch configurations by name: a later file's keys override an
-/// earlier configuration of the same name, and new names are added.
 fn merge_launches(
     merged: &mut toml::Table,
     launches: Vec<toml::Value>,
@@ -1328,7 +1223,6 @@ fn merge_launches(
 }
 
 impl File {
-    /// Checks one file on its own.
     fn parse(kind: FileKind, path: PathBuf, text: String) -> Result<Self, ConfigError> {
         let document = toml::Deserializer::parse(&text).map_err(|error| {
             ConfigError::at(&path, &text, error.span(), error.message().trim_end())
@@ -1369,7 +1263,6 @@ impl File {
         ConfigError::at(&self.path, &self.text, locate(&self.text, steps), message)
     }
 
-    /// The checks that need more than one value's type.
     fn check(&self) -> Result<(), ConfigError> {
         let config: Config = self
             .table
@@ -1432,7 +1325,6 @@ impl File {
     }
 }
 
-/// Checks an alias is one new word standing for a command line.
 fn check_alias(alias: &str, expansion: &str) -> Result<(), String> {
     use super::commands::{COMMANDS, command_named};
     if alias.is_empty() || alias.contains(char::is_whitespace) || alias.contains('/') {
@@ -1463,31 +1355,24 @@ fn check_alias(alias: &str, expansion: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// One startup command, and where it came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartupCommand {
-    /// Names the command in an error, as `FILE [startup] command 2`.
     pub label: String,
     pub origin: Origin,
     pub text: String,
 }
 
-/// The settings in effect.
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub config: Config,
     pub root: PathBuf,
 
-    /// The startup commands of every file, in order.
     pub startup: Vec<StartupCommand>,
 
-    /// Where each setting a file set came from, by dotted key; every other
-    /// setting is a default.
     pub origins: BTreeMap<String, Origin>,
 }
 
 impl Settings {
-    /// The defaults, for clients that read no files.
     pub fn defaults(root: PathBuf) -> Self {
         Self {
             config: Config::default(),
@@ -1497,7 +1382,6 @@ impl Settings {
         }
     }
 
-    /// Where a dotted key's value came from.
     pub fn origin(&self, key: &str) -> Origin {
         let mut key = key;
 
@@ -1513,15 +1397,11 @@ impl Settings {
         }
     }
 
-    /// Sets the color choice from a flag or the environment, which outrank
-    /// every file.
     pub fn override_color(&mut self, choice: ColorChoice, origin: Origin) {
         self.config.ui.color = choice;
         self.origins.insert("ui.color".to_owned(), origin);
     }
 
-    /// Sets which processes are followed from `--follow`: a mode, or
-    /// programs to debug besides those the mode chooses.
     pub fn override_follow(&mut self, follow: &[String]) {
         if follow.is_empty() {
             return;
@@ -1546,7 +1426,6 @@ impl Settings {
         }
     }
 
-    /// Sets the disassembly syntax from `--disassembly-syntax`.
     pub fn override_syntax(&mut self, syntax: DisassemblySyntax) {
         self.config.disassembly.syntax = syntax;
         self.origins.insert(
@@ -1555,7 +1434,6 @@ impl Settings {
         );
     }
 
-    /// The launch configuration named `name`.
     pub fn launch(&self, name: &str) -> Result<&Launch, String> {
         self.config
             .launch
@@ -1579,8 +1457,6 @@ impl Settings {
             })
     }
 
-    /// Every setting in effect, one per line, with where it came from, as
-    /// `microscope config show` prints it.
     pub fn show(&self) -> String {
         let mut table = match toml::Value::try_from(&self.config) {
             Ok(toml::Value::Table(table)) => table,
@@ -1588,7 +1464,6 @@ impl Settings {
             Err(error) => return format!("the settings cannot be shown: {error}"),
         };
 
-        // Startup commands are listed one by one, each from its own file.
         table.remove("startup");
         let mut lines = Vec::new();
         flatten(&toml::Value::Table(table), "", &mut lines);
@@ -1620,8 +1495,6 @@ impl Settings {
     }
 }
 
-/// Lists a value's settings as dotted keys, naming launch configurations by
-/// their names.
 fn flatten(value: &toml::Value, path: &str, lines: &mut Vec<(String, String, Option<Origin>)>) {
     let join = |key: &str| {
         if path.is_empty() {
@@ -1652,10 +1525,6 @@ fn flatten(value: &toml::Value, path: &str, lines: &mut Vec<(String, String, Opt
     }
 }
 
-/// The projects whose acting settings the user trusts, kept in
-/// `$XDG_STATE_HOME/microscope/trust.toml`. Each holds the settings it trusted,
-/// not a hash, so the file can be read to see what was allowed, and a
-/// change to them asks again.
 #[derive(Clone, Debug, Default)]
 pub struct TrustStore {
     path: Option<PathBuf>,
@@ -1676,7 +1545,6 @@ struct TrustedProject {
 }
 
 impl TrustStore {
-    /// Reads the record; a missing one trusts nothing.
     pub fn load() -> Result<Self, ConfigError> {
         let path = state_directory().map(|directory| directory.join("trust.toml"));
         let Some(path) = path else {
@@ -1696,7 +1564,6 @@ impl TrustStore {
         })
     }
 
-    /// Whether `root`'s acting settings are trusted as they are now.
     pub fn trusts(&self, root: &Path, acting: &str) -> bool {
         self.record
             .project
@@ -1704,7 +1571,6 @@ impl TrustStore {
             .any(|project| project.root == root && project.settings == acting)
     }
 
-    /// Trusts `root`'s acting settings as they are now.
     pub fn trust(&mut self, root: &Path, acting: &str) -> Result<(), String> {
         self.record.project.retain(|project| project.root != root);
         self.record.project.push(TrustedProject {
@@ -1715,7 +1581,6 @@ impl TrustStore {
         self.save()
     }
 
-    /// Forgets `root`, returning whether it was trusted.
     pub fn untrust(&mut self, root: &Path) -> Result<bool, String> {
         let before = self.record.project.len();
         self.record.project.retain(|project| project.root != root);
@@ -1727,7 +1592,6 @@ impl TrustStore {
         Ok(removed)
     }
 
-    /// The trusted project roots.
     pub fn roots(&self) -> impl Iterator<Item = &Path> {
         self.record
             .project
@@ -1750,8 +1614,6 @@ impl TrustStore {
     }
 }
 
-/// Writes a file through a temporary file renamed into place, so no reader
-/// sees half of it.
 pub fn write_atomically(path: &Path, text: &str) -> Result<(), String> {
     let describe = |error: std::io::Error| format!("cannot write {}: {error}", path.display());
 
@@ -1768,19 +1630,14 @@ pub fn write_atomically(path: &Path, text: &str) -> Result<(), String> {
     })
 }
 
-/// The answer to whether to trust a project.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Answer {
-    /// Trust it until its acting settings change.
     Yes,
 
-    /// Trust it for this session.
     Once,
     No,
 }
 
-/// Shows a project's acting settings and asks whether to trust them,
-/// until the answer is one of yes, once, or no. End of input is no.
 pub fn ask_trust(
     root: &Path,
     acting: &str,
@@ -1820,8 +1677,6 @@ pub fn ask_trust(
     }
 }
 
-/// The user's file with every setting commented out at its default, as
-/// `microscope config init` writes it.
 pub fn commented_defaults() -> String {
     DEFAULTS
         .lines()
@@ -1855,7 +1710,6 @@ mod tests {
         let config: Config = parsed.table.try_into().expect("the defaults deserialize");
         assert_eq!(config, Config::default());
 
-        // Commented out, it sets nothing.
         let commented = parse(FileKind::User, &commented_defaults()).expect("comments parse");
         assert!(commented.table.is_empty(), "{:?}", commented.table);
     }
@@ -1980,7 +1834,6 @@ mod tests {
         );
         assert_eq!(settings.origin("ui.color"), Origin::Default);
 
-        // Untrusted, the project's acting settings are left out.
         let untrusted = files.settings(false).expect("valid settings");
         assert_eq!(untrusted.startup.len(), 1);
         assert!(untrusted.config.launch.is_empty());

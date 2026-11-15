@@ -1,20 +1,3 @@
-//! The state machines compilers generate for code that can suspend, read
-//! once from the normalized types into [`CoroutineInfo`].
-//!
-//! rustc describes the future of an `async fn` or `async` block as a type
-//! named `{async_fn_env#N}`, `{async_block_env#N}`, or
-//! `{async_closure_env#N}`: a variant part keyed on an artificial
-//! `__state` member, each of whose variants holds one member, named by its
-//! number, of a record named for the state. `Unresumed` holds the captures
-//! alone; `Returned` and `Panicked` hold them too; `SuspendN` holds the
-//! variables live across the `N`th await, the future it awaits in
-//! `__awaitee`, and the captures, which come last. Each state's member
-//! carries the source line the state is at: the function's header before
-//! it starts, an await's line, or the closing brace once it has finished.
-//!
-//! A type that is named as a coroutine but laid out otherwise is refused
-//! with the reason, never read by guess.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -24,7 +7,6 @@ use crate::{
     VariantSelection, VariantSelector,
 };
 
-/// What kind of coroutine a type's name says it is, for rustc's names.
 pub fn coroutine_kind(name: &str) -> Option<CoroutineKind> {
     let name = without_arguments(name)?;
     let name = name.rsplit("::").next().unwrap_or(name);
@@ -45,9 +27,6 @@ pub fn coroutine_kind(name: &str) -> Option<CoroutineKind> {
     }
 }
 
-/// Every record its name says is a coroutine, with what it is or why its
-/// layout cannot be read as one. A pointer to one, whose name ends as the
-/// coroutine's does, is not one.
 pub fn normalize(types: &[TypeNode]) -> BTreeMap<TypeId, Result<CoroutineInfo, Arc<str>>> {
     let by_id = |id: TypeId| match types.get(id.index()) {
         Some(TypeNode::Resolved(info)) => Some(info),
@@ -57,8 +36,6 @@ pub fn normalize(types: &[TypeNode]) -> BTreeMap<TypeId, Result<CoroutineInfo, A
     found(types.iter().map(|node| node.reference().id), &by_id)
 }
 
-/// Every coroutine of `table`, as [`normalize`] finds them, decoding only
-/// the types named as coroutines and those their states hold.
 pub fn in_table(
     table: &crate::image::types::TypeTable,
 ) -> BTreeMap<TypeId, Result<CoroutineInfo, Arc<str>>> {
@@ -77,8 +54,6 @@ pub fn in_table(
     )
 }
 
-/// The records and variants among `ids` that their names say are
-/// coroutines, with what each is.
 fn found<'a>(
     ids: impl Iterator<Item = TypeId>,
     types: &impl Fn(TypeId) -> Option<&'a TypeInfo>,
@@ -135,8 +110,6 @@ fn coroutine<'a>(
         .map(|variant| read_state(variant, types))
         .collect::<Result<Vec<_>, Arc<str>>>()?;
 
-    // `Unresumed` holds the captures alone; every other state ends with
-    // them, by name.
     let unresumed = states
         .iter_mut()
         .find(|state| state.kind == CoroutineStateKind::Unresumed)
@@ -198,8 +171,6 @@ fn coroutine<'a>(
     })
 }
 
-/// The coroutine a `Pin<&mut C>` parameter points to, as the body of an
-/// `async fn` is passed its future.
 pub fn pinned_coroutine(types: &[TypeNode], ty: TypeId) -> Option<TypeId> {
     let resolved = |id: TypeId| match types.get(id.index()) {
         Some(TypeNode::Resolved(info)) => Some(info),
@@ -231,8 +202,6 @@ pub fn pinned_coroutine(types: &[TypeNode], ty: TypeId) -> Option<TypeId> {
     coroutine_kind(&resolved(target.id)?.name).map(|_| target.id)
 }
 
-/// One state, with every member it holds, laid out from the coroutine's
-/// start.
 fn read_state<'a>(
     variant: &crate::Variant,
     types: &impl Fn(TypeId) -> Option<&'a TypeInfo>,
@@ -290,7 +259,6 @@ fn read_state<'a>(
     })
 }
 
-/// What a state's record name says it is.
 fn state_kind(name: &str) -> Option<CoroutineStateKind> {
     match name {
         "Unresumed" => Some(CoroutineStateKind::Unresumed),
@@ -306,13 +274,6 @@ fn state_kind(name: &str) -> Option<CoroutineStateKind> {
     }
 }
 
-/// The name a debugger shows for the function that runs a coroutine,
-/// which rustc names `{async_fn#N}`, `{async_block#N}`, or
-/// `{async_closure#N}` within the namespace of the function that wrote it:
-/// an `async fn`'s body is that function, and a block or closure is
-/// numbered within it. `namespace` is the enclosing names, outermost
-/// first and joined by `::`, and a block within another coroutine's body
-/// is named within that body's name.
 pub fn body_name(name: &str, namespace: &str) -> Option<Arc<str>> {
     if !name.starts_with("{async_") {
         return None;
@@ -342,9 +303,6 @@ pub fn body_name(name: &str, namespace: &str) -> Option<Arc<str>> {
     }
 }
 
-/// A name without the generic arguments that end it, as rustc names an
-/// instance of a generic function or its coroutine, `{async_fn#0}<u32>`;
-/// `None` when the arguments are unbalanced.
 pub fn without_arguments(name: &str) -> Option<&str> {
     if !name.ends_with('>') {
         return Some(name);
@@ -354,7 +312,6 @@ pub fn without_arguments(name: &str) -> Option<&str> {
 
     for (at, character) in name.char_indices().rev() {
         match character {
-            // A function type's arrow closes nothing.
             '>' if name[..at].ends_with('-') => {}
             '>' => depth += 1,
             '<' => {
@@ -370,21 +327,7 @@ pub fn without_arguments(name: &str) -> Option<&str> {
     None
 }
 
-/// The full name of the coroutine type whose future the body named `name`
-/// within `namespace` runs, by rustc's naming alone: the body
-/// `{async_fn#N}<A>` of a function runs `{async_fn_env#N}<A>`, which rustc
-/// declares in the same namespace, and likewise for a block's and a
-/// closure's. `None` for a function that is no async body.
-///
-/// The debug information of an async body says which coroutine it runs
-/// only through the type of the unnamed parameter that passes it its
-/// future, which rustc first describes in Rust 1.93. A program built by an
-/// older Rust has bodies that name no coroutine but by this name, without
-/// which none of their resume points, their awaits' steps, or their
-/// futures' frames can be found.
 pub fn body_future(name: &str, namespace: &str) -> Option<String> {
-    // Every Rust function is asked while loading, almost none of them a
-    // body, so a name that is none is turned away before any allocation.
     if namespace.is_empty() || !name.starts_with("{async_") {
         return None;
     }
@@ -404,7 +347,6 @@ pub fn body_future(name: &str, namespace: &str) -> Option<String> {
     Some(format!("{namespace}::{env}{number}}}{arguments}"))
 }
 
-/// Whether rustc names a function as the body of an `async fn`.
 pub fn is_async_fn_body(name: &str) -> bool {
     without_arguments(name)
         .and_then(|name| name.strip_prefix("{async_fn#"))
@@ -432,8 +374,6 @@ mod tests {
             Some("leaf::{async closure#0}")
         );
 
-        // A block in an async function's body, or in another block, is
-        // named within the function that wrote it.
         let within = "steps::leaf::{async_fn#0}";
         assert_eq!(
             body_name("{async_block#1}", within).as_deref(),
@@ -453,7 +393,6 @@ mod tests {
         );
         assert_eq!(coroutine_kind("{closure_env#1}"), None);
 
-        // A generic function's names end in its arguments.
         assert_eq!(
             body_name("{async_fn#0}<alloc::sync::Arc<u32>>", namespace).as_deref(),
             Some("leaf")
@@ -470,10 +409,6 @@ mod tests {
         assert_eq!(coroutine_kind("{async_fn_env#0}<u32"), None);
     }
 
-    /// Before Rust 1.93 a body names its coroutine only by rustc's naming:
-    /// the same number, the same namespace, and the same arguments, with
-    /// `_env` added. A body of one kind never names a coroutine of
-    /// another, and a number never changes on the way.
     #[test]
     fn a_body_names_its_future_by_rustcs_naming() {
         let namespace = "steps::leaf";
@@ -490,20 +425,16 @@ mod tests {
             Some("steps::leaf::{async_closure_env#3}")
         );
 
-        // A generic body's arguments are its coroutine's, nested ones too.
         assert_eq!(
             body_future("{async_fn#1}<alloc::sync::Arc<u32>, u8>", "a::b").as_deref(),
             Some("a::b::{async_fn_env#1}<alloc::sync::Arc<u32>, u8>")
         );
 
-        // A block within a body is declared within the body's namespace.
         assert_eq!(
             body_future("{async_block#0}", "steps::leaf::{async_fn#0}").as_deref(),
             Some("steps::leaf::{async_fn#0}::{async_block_env#0}")
         );
 
-        // Neither a closure, a coroutine's own type, a malformed number,
-        // unbalanced arguments, nor a body outside any namespace.
         for name in [
             "{closure#0}",
             "{async_fn_env#0}",

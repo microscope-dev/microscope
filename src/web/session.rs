@@ -1,20 +1,3 @@
-//! The one debugging session a `microscope web` server holds, shared by every
-//! connected tab.
-//!
-//! The session owns at most one target at a time: a process group for a
-//! launched or attached program, which follows the processes it starts as
-//! the settings' `[follow]` says, or a [`Debugger`] for a core dump.
-//! Choosing something else to debug ends the current one first: a launched
-//! program is killed and an attached one detached. Each target gets a new
-//! session id, so links to an earlier one say it ended instead of opening
-//! something else. Requests act on the group's selected member; see
-//! [`super::group`].
-//!
-//! State is pushed: a task per target turns its events into whole
-//! [`State`]s published through a watch channel, so a burst of events sends
-//! only the newest state, and a lagged event stream costs nothing but a
-//! fresh snapshot.
-
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -51,30 +34,20 @@ use crate::cli::{Cli, LaunchSettings, Renderers};
 use crate::dap::output;
 use crate::present::{self, Code};
 
-/// The most program output kept for tabs that join later.
 const OUTPUT_HISTORY: usize = 256 * 1024;
 
-/// The most bytes one `output` message carries.
 const OUTPUT_CHUNK: usize = 32 * 1024;
 
-/// How long a tab's input may wait for room in the program's queue.
 const INPUT_WAIT: Duration = Duration::from_secs(5);
 
-/// The most inputs queued for a program that is not reading them.
 const INPUT_QUEUE: usize = 16;
 
-/// A lock held across awaits, so that requests take turns: one at a time
-/// changes what is debugged, or runs a console command. A holder that
-/// stopped partway would leave the next one its half-done change, so each
-/// holder runs on a request task of its own (see `connection::dispatch`),
-/// which nothing cancels.
 #[expect(
     clippy::disallowed_types,
     reason = "no holder is cancelled: each runs on a request task of its own"
 )]
 type Turns<T> = tokio::sync::Mutex<T>;
 
-/// How a launched program starts.
 #[derive(Debug, Clone, Default)]
 pub struct LaunchSpec {
     pub program: PathBuf,
@@ -84,7 +57,6 @@ pub struct LaunchSpec {
     pub stop_at_entry: bool,
 }
 
-/// What to debug.
 #[derive(Debug, Clone)]
 pub enum Start {
     Launch { spec: LaunchSpec, run: bool },
@@ -92,7 +64,6 @@ pub enum Start {
     Core(CoreDumpOptions),
 }
 
-/// A request's failure, as the page receives it.
 pub struct Failure(ErrorBody);
 
 impl Failure {
@@ -111,8 +82,6 @@ impl Failure {
 impl From<microscope::Error> for Failure {
     fn from(error: microscope::Error) -> Self {
         use microscope::Error;
-        // The page says what the program is doing, in its own words: a
-        // second pause or continue, as racing keys send, finds it so.
         let run = match error {
             Error::NotStopped => Some("the program is not stopped"),
             Error::NotRunning => Some("the program is not running"),
@@ -126,8 +95,6 @@ impl From<microscope::Error> for Failure {
 
         let kind = match error {
             Error::StaleStop => ErrorKind::StaleStop,
-            // A frame the interpreter or a suspended task holds has no
-            // machine state, which is how such a frame is, not a failure.
             Error::PostMortemTarget
             | Error::FrameInterpreted
             | Error::FrameSuspended
@@ -159,112 +126,72 @@ impl From<microscope::Error> for Failure {
 
 type Answer = Result<Value, Failure>;
 
-/// What a picker request produced: an answer, or a change to announce.
 enum Chosen {
     Answer(Value),
     Notice(String),
 }
 
-/// The session every connection shares.
 pub struct Session {
     cwd: PathBuf,
     home: Option<PathBuf>,
 
-    /// The view files given for every program the session debugs, before
-    /// the project's and the user's.
     views: Vec<PathBuf>,
 
-    /// Where every program's separate debug files are found.
     debug_files: microscope::DebugFileOptions,
 
-    /// What links begin with, such as `http://127.0.0.1:7341/`, or the
-    /// public URL a proxy serves the page at.
     link_base: String,
     tokens: Tokens,
     default_name: String,
 
-    /// The current debugger; locked across a change of what is debugged, so
-    /// changes happen one at a time.
     target: Turns<Option<Target>>,
     state: Arc<watch::Sender<Arc<State>>>,
 
-    /// Output, presence, and notices, already serialized.
     messages: broadcast::Sender<Arc<str>>,
 
-    /// Recent output; its lock also orders publishing output, so a joining
-    /// tab sees each piece exactly once.
     history: Arc<Mutex<History>>,
     people: Mutex<BTreeMap<u32, Person>>,
     next_connection: AtomicU32,
 
-    /// Who started each recent run, for the stop the run ends at.
     credits: Arc<Credits>,
 
-    /// Each connection's handles to values it was shown.
     handles: values::Handles,
 
-    /// Whether a process attached to runs on at once rather than staying
-    /// stopped at the attach.
     resume_attached: AtomicBool,
 
-    /// Which processes a launched or attached program starts are debugged
-    /// too.
     follow: Mutex<FollowPolicy>,
 
-    /// Whether the server is stopping, which ends a program's load and
-    /// refuses any new target.
     stopping: watch::Sender<bool>,
 }
 
 struct Target {
-    /// The session id, which a new target replaces.
     id: String,
 
-    /// A core dump's debugger.
     debugger: Option<Debugger>,
 
-    /// A launched or attached program's processes.
     group: Option<ProcessGroup>,
 
-    /// The program's own process: the group's root, whose breakpoints are
-    /// the group's, or the core dump's.
     root: DebuggerHandle,
 
-    /// The member requests act on.
     selection: Arc<Selection>,
 
-    /// The member the console last selected, or 0 when not known.
     console_member: Arc<AtomicU32>,
     launch: Option<LaunchSpec>,
 
-    /// The launched program's standard input, once it has one.
     input: Option<Input>,
     pump: JoinHandle<()>,
     readers: Vec<output::Forwarder>,
     name: String,
 
-    /// Runs the console's commands, one at a time: each selects the tab's
-    /// frame first, so the selection never changes under another's.
     console: Arc<Turns<Cli>>,
 
-    /// Counts the changes tabs make to the program's values.
     writes: Arc<AtomicU64>,
 
-    /// Counts changes to settings no event announces, such as signal
-    /// policies.
     settings: Arc<AtomicU64>,
 }
 
-/// A launched program's standard input, which a task of its own writes. A
-/// tab's text is queued and reaches the program whole and in order whenever
-/// it reads. A write stopped partway, as a timeout around it stops it,
-/// would give the program part of the text while the tab heard that none
-/// of it went.
 struct Input {
     queue: mpsc::Sender<protocol::Input>,
 
-    /// Dropped with the target, which closes the input even while the
-    /// program is not reading: what it would read is no one's now.
     _open: oneshot::Sender<()>,
 }
 
@@ -305,7 +232,6 @@ struct History {
     bytes: usize,
 }
 
-/// What a joining connection receives before anything else.
 pub struct Joined {
     pub connection: u32,
     pub name: String,
@@ -351,22 +277,14 @@ impl Session {
         })
     }
 
-    /// Gives up a load in progress, and any to come: the server is
-    /// stopping. A load reads files and starts nothing, so nothing is left
-    /// half done; an attach, which a stop could leave with its traps in the
-    /// process, runs to its end.
     pub fn stop_loading(&self) {
         self.stopping.send_replace(true);
     }
 
-    /// Follows the processes programs debugged from now on start as
-    /// `policy` says.
     pub fn follow(&self, policy: FollowPolicy) {
         *self.follow.lock().unwrap_or_else(PoisonError::into_inner) = policy;
     }
 
-    /// Lets every process attached to from now on run on at once: a
-    /// service someone inspects shouldn't wait for a tab to continue it.
     pub fn resume_attached(&self, resume: bool) {
         self.resume_attached.store(resume, Ordering::Relaxed);
     }
@@ -379,7 +297,6 @@ impl Session {
         &self.cwd
     }
 
-    /// The link that joins this server with `role`.
     pub fn join_link(&self, role: Role, to: &str) -> String {
         let to = if to == "/" || to.is_empty() {
             String::new()
@@ -390,7 +307,6 @@ impl Session {
         format!("{}join{to}#{}", self.link_base, self.tokens.token(role))
     }
 
-    /// Adds a connection to the presence list.
     pub fn join(&self, role: Role) -> Joined {
         let connection = self.next_connection.fetch_add(1, Ordering::Relaxed);
         let name = match role {
@@ -473,15 +389,12 @@ impl Session {
         }));
     }
 
-    /// The inputs of a drawing, and the bytes their numbers and bytes lie
-    /// in, which go to the tab before the answer.
     pub async fn draw(&self, request: &protocol::Draw) -> Result<(Value, Vec<u8>), Failure> {
         let handle = self.current_handle().await?;
         let drawn = draw::draw(&handle, request).await?;
         Ok((to_value(&drawn.drawing), drawn.bytes))
     }
 
-    /// Answers a request about the renderers drawings name.
     async fn renderers(&self, request: Request) -> Answer {
         match request {
             Request::Renderer(protocol::RendererRef { digest }) => Ok(to_value(
@@ -497,8 +410,6 @@ impl Session {
         }
     }
 
-    /// Reads the session's view files, and the renderers beside them,
-    /// again, and has every tab read its values again.
     async fn reload_views(&self, connection: u32) -> Result<(), Failure> {
         let console = self
             .target
@@ -529,7 +440,6 @@ impl Session {
         Ok(())
     }
 
-    /// Serves one request from `connection`.
     pub async fn handle(&self, connection: u32, role: Role, request: Request) -> Answer {
         let reads = matches!(
             request,
@@ -624,7 +534,6 @@ impl Session {
         Ok(Value::Null)
     }
 
-    /// Answers a request that changes nothing in the program.
     async fn read(&self, connection: u32, role: Role, request: Request) -> Answer {
         match request {
             Request::SetName(protocol::SetName { name }) => {
@@ -723,7 +632,6 @@ impl Session {
         }
     }
 
-    /// Serves the picker: what there is to debug, and choosing it.
     async fn choose(&self, connection: u32, request: Request) -> Result<Chosen, Failure> {
         Ok(Chosen::Notice(match request {
             Request::CompletePath(protocol::CompletePath { text }) => {
@@ -774,8 +682,6 @@ impl Session {
         }))
     }
 
-    /// Starts what the picker chose. Tabs on a session that a failed
-    /// replacement ended learn why it ended.
     async fn choose_target(
         &self,
         connection: u32,
@@ -796,7 +702,6 @@ impl Session {
             })
     }
 
-    /// Runs, stops, or feeds the program, returning what to tell others.
     async fn control(&self, connection: u32, request: Request) -> Result<Option<String>, Failure> {
         Ok(Some(match request {
             Request::Continue(protocol::Continue { stop }) => self.resume(connection, stop).await?,
@@ -828,7 +733,6 @@ impl Session {
         }))
     }
 
-    /// Changes the group's breakpoints, which are its root's.
     async fn breakpoints(&self, connection: u32, request: Request) -> Answer {
         let handle = self.root_handle().await?;
 
@@ -881,7 +785,6 @@ impl Session {
         Ok(Value::Null)
     }
 
-    /// Changes memory, watchpoints, or signal policies, and says so.
     async fn low_level(&self, connection: u32, request: Request) -> Answer {
         let handle = self.current_handle().await?;
 
@@ -928,13 +831,10 @@ impl Session {
         Ok(Value::Null)
     }
 
-    /// Credits `run`, which connection `connection`'s request started, to
-    /// it, for the stop the run ends at.
     fn credit(&self, connection: u32, run: Run, action: &str) {
         self.credits.started(run, self.cause(connection, action));
     }
 
-    /// Who did `action`, as the stops they cause say.
     fn cause(&self, connection: u32, action: &str) -> Cause {
         Cause {
             name: self.name_of(connection),
@@ -1098,7 +998,6 @@ impl Session {
         };
         let queue = queue.ok_or_else(closed)?;
 
-        // A wait for room that gives up has queued nothing.
         let permit = tokio::time::timeout(INPUT_WAIT, queue.reserve())
             .await
             .map_err(|_| Failure::new(ErrorKind::Failed, "the program is not reading its input"))?
@@ -1207,8 +1106,6 @@ impl Session {
         Ok(format!("ended the {name} session"))
     }
 
-    /// Continues the stop named, and with it every process of the group,
-    /// or starts a launched program that is not running.
     async fn resume(&self, connection: u32, stop: Option<u64>) -> Result<String, Failure> {
         let (handle, launch, started) = self.current_launch().await?;
         if let Some(stop) = stop {
@@ -1225,8 +1122,6 @@ impl Session {
                 })
                 .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?;
 
-            // The group resumes the member shown at the stop the tab saw,
-            // or nothing: another tab may have moved it on since.
             if let Some(group) = group {
                 let execution = group
                     .continue_from((view.member, StopId::new(stop)))
@@ -1289,8 +1184,6 @@ impl Session {
             Err(error) => return Err(error.into()),
         }
         if let Some(group) = group {
-            // The group runs again, rather than staying stopped where it
-            // was killed; with every member gone, this resumes none.
             for _ in 0..group.members().len() {
                 if group.continue_all().await.is_err() {
                     break;
@@ -1307,10 +1200,7 @@ impl Session {
         Ok(())
     }
 
-    /// Pauses the program: in a group, every process, once one is running.
     async fn pause(&self, connection: u32) -> Result<(), Failure> {
-        // A pause is credited with the stop it ends a run at, which its
-        // answer may come after.
         let Some(group) = self.group_handle().await else {
             let View { member, handle, .. } = self.current_view().await?;
             let running = match handle.snapshot().await?.inferior {
@@ -1340,7 +1230,6 @@ impl Session {
         Ok(())
     }
 
-    /// Kills the program: in a group, every process it debugs.
     async fn kill(&self) -> Result<(), Failure> {
         let group = self.group_handle().await;
         let handle = self.root_handle().await?;
@@ -1349,8 +1238,6 @@ impl Session {
             .map_err(Failure::from)
     }
 
-    /// Selects member `number` of the group, which every tab then shows and
-    /// requests act on.
     async fn select_member(&self, number: MemberNumber) -> Result<String, Failure> {
         let (group, selection) = self.group_selection().await?;
         let handle = group.member(number).ok_or_else(|| {
@@ -1377,7 +1264,6 @@ impl Session {
             ))
     }
 
-    /// Lets member `number`'s process run on without microscope.
     async fn detach_member(&self, number: MemberNumber) -> Result<String, Failure> {
         let (group, _) = self.group_selection().await?;
         if number == 1 {
@@ -1404,7 +1290,6 @@ impl Session {
         ))
     }
 
-    /// The group and its selection, for requests that only a group has.
     async fn group_selection(&self) -> Result<(GroupHandle, Arc<Selection>), Failure> {
         let found = self.target.lock().await.as_ref().map(|target| {
             (
@@ -1427,7 +1312,6 @@ impl Session {
             .and_then(|target| target.group.as_ref().map(ProcessGroup::handle))
     }
 
-    /// The program's own process, whose breakpoints are the group's.
     async fn root_handle(&self) -> Result<DebuggerHandle, Failure> {
         self.target
             .lock()
@@ -1449,8 +1333,6 @@ impl Session {
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))
     }
 
-    /// Where a launched Python program's own files are, as its interpreter
-    /// begins `sys.path`; none for any other program, or one attached to.
     async fn python_project(&self) -> Option<crate::present::python_files::Project> {
         let (handle, spec) =
             self.target.lock().await.as_ref().and_then(|target| {
@@ -1464,7 +1346,6 @@ impl Session {
             Some(cwd) => cwd,
             None => std::env::current_dir().ok()?,
         };
-        // The program's environment is this one, with the launch's changes.
         let pythonpath = spec
             .environment
             .iter()
@@ -1480,12 +1361,10 @@ impl Session {
         ))
     }
 
-    /// The selected member's handle, which requests act on.
     async fn current_handle(&self) -> Result<DebuggerHandle, Failure> {
         self.current_view().await.map(|view| view.handle)
     }
 
-    /// The selected member, which requests about the program act on.
     async fn current_view(&self) -> Result<View, Failure> {
         self.target
             .lock()
@@ -1495,7 +1374,6 @@ impl Session {
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))
     }
 
-    /// The calls on the line a thread stopped at, which a step can go into.
     async fn step_targets(
         &self,
         at: &protocol::ThreadAt,
@@ -1517,8 +1395,6 @@ impl Session {
         })
     }
 
-    /// The frame the stop `at` names selected on its thread, which the
-    /// thread's frames fold around; a task's stack selects none of its own.
     fn stop_frame(&self, at: &protocol::ThreadAt) -> u32 {
         if at.task.is_some() {
             return 0;
@@ -1532,8 +1408,6 @@ impl Session {
             .map_or(0, |entry| entry.frame)
     }
 
-    /// The exceptions runtimes report, and whether each stops, as this
-    /// session's console keeps them.
     async fn exceptions(&self) -> Result<protocol::Exceptions, Failure> {
         let console = self.shared_console().await?;
         let stops = console.lock().await.exception_stops();
@@ -1552,8 +1426,6 @@ impl Session {
         })
     }
 
-    /// Chooses whether one filter's exceptions stop, as the console's
-    /// `catch` does, and says so.
     async fn set_exception(&self, choice: &protocol::ExceptionChoice) -> Result<String, Failure> {
         let console = self.shared_console().await?;
         console
@@ -1575,7 +1447,6 @@ impl Session {
         ))
     }
 
-    /// The session's console, which keeps what `catch` chose.
     async fn shared_console(&self) -> Result<Arc<Turns<Cli>>, Failure> {
         self.target
             .lock()
@@ -1585,7 +1456,6 @@ impl Session {
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))
     }
 
-    /// Reads values for `connection` from the current session.
     async fn reader(&self, connection: u32) -> Result<values::Reader<'_>, Failure> {
         let (handle, images, session) = self
             .target
@@ -1609,14 +1479,11 @@ impl Session {
         })
     }
 
-    /// Tells every tab that values it read at this stop may have changed.
     async fn wrote(&self) {
         self.count(|target| &target.writes, |state, count| state.writes = count)
             .await;
     }
 
-    /// Bumps one of the target's counters into the state, so tabs that read
-    /// what it counts read again.
     async fn count(&self, counter: fn(&Target) -> &Arc<AtomicU64>, set: fn(&mut State, u64)) {
         let Some(counter) = self
             .target
@@ -1633,16 +1500,11 @@ impl Session {
         self.state.send_modify(|state| {
             let mut next = State::clone(state);
 
-            // Read under the state's lock, so that a count bumped after
-            // this one and published first is not published back down.
             set(&mut next, counter.load(Ordering::Relaxed));
             *state = Arc::new(next);
         });
     }
 
-    /// Runs a console line: an expression, unless it is a command the
-    /// frame does not know as a name, so that `x`, `n`, or `list` read as
-    /// themselves. Viewers evaluate without assigning, and run no commands.
     async fn console(
         &self,
         connection: u32,
@@ -1697,7 +1559,6 @@ impl Session {
             .await
         {
             Ok(evaluation) => evaluation,
-            // The frame does not know the command's name, so it is the command.
             Err(microscope::Error::Expression(failure))
                 if command.is_some_and(|(_, name)| present::names_only(&failure, name)) =>
             {
@@ -1725,7 +1586,6 @@ impl Session {
         })
     }
 
-    /// Runs one of microscope's commands in the frame `at`.
     async fn command(
         &self,
         role: Role,
@@ -1757,7 +1617,6 @@ impl Session {
         let handle = view.handle;
         let console = console.lock().await;
 
-        // The console acts on the member the tabs show.
         if group.is_some() && synced.load(Ordering::Relaxed) != view.member {
             console
                 .console(&format!("process {}", view.member))
@@ -1781,8 +1640,6 @@ impl Session {
             })?;
         drop(console);
 
-        // `set` changes values the tabs show, `catch` which exceptions
-        // stop, and `process` which member the tabs show.
         match crate::cli::commands::line_command(text).map(|(spec, _)| spec.command) {
             Some(crate::cli::commands::Command::Set) => self.wrote().await,
             Some(crate::cli::commands::Command::Process) => {
@@ -1798,7 +1655,6 @@ impl Session {
                     selection.select(number, handle);
                 }
             }
-            // It may select another member.
             Some(crate::cli::commands::Command::Detach) => synced.store(0, Ordering::Relaxed),
             Some(crate::cli::commands::Command::Catch) => {
                 self.count(
@@ -1816,8 +1672,6 @@ impl Session {
         })
     }
 
-    /// The handle, the launch spec of a launched program, and whether the
-    /// program is running or stopped, rather than not started or ended.
     async fn current_launch(&self) -> Result<(DebuggerHandle, Option<LaunchSpec>, bool), Failure> {
         let current = self.target.lock().await.as_ref().map(|target| {
             (
@@ -1829,7 +1683,6 @@ impl Session {
         let (handle, launch, group) =
             current.ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?;
 
-        // A group's program has started while its own process runs.
         let started = if group {
             handle.snapshot().await?.inferior.live_process().is_some()
         } else {
@@ -1841,7 +1694,6 @@ impl Session {
         Ok((handle, launch, started))
     }
 
-    /// Says that `start` is under way, before anything is debugged.
     pub fn loading(&self, start: &Start) {
         let busy = match start {
             Start::Launch { spec, .. } => format!("Loading {}", spec.program.display()),
@@ -1852,21 +1704,15 @@ impl Session {
         self.state.send_replace(Arc::new(State::idle(Some(busy))));
     }
 
-    /// Makes `start` the session's target, ending a current one when
-    /// `replace` allows.
     pub async fn start(&self, start: Start, replace: bool) -> Result<(), Failure> {
         self.replace(start, replace)
             .await
             .map_err(|(failure, _)| failure)
     }
 
-    /// Starts debugging `start`, ending the current target first when
-    /// `replace` allows it. A failure names the session it ended, if any.
     async fn replace(&self, start: Start, replace: bool) -> Result<(), (Failure, Option<String>)> {
         let mut target = self.target.lock().await;
 
-        // The server ends its target under this lock as it stops, and
-        // exits next, so nothing would end a target opened after that.
         if *self.stopping.borrow() {
             return Err((
                 Failure::new(ErrorKind::Busy, "the server is stopping"),
@@ -1886,9 +1732,6 @@ impl Session {
             ));
         }
 
-        // Only one target can be traced at a time, so the current one ends
-        // before the new one opens. What can fail without tracing is
-        // checked first, so a mistyped path leaves the current session be.
         let program = if target.is_some() {
             match prepare(&start, &self.debug_files, self.stopping.subscribe()).await {
                 Ok(program) => program,
@@ -1952,8 +1795,6 @@ impl Session {
         };
         let members = group.as_ref().map(ProcessGroup::handle);
 
-        // The new session's state goes out before the request is answered,
-        // so a page can open it; the pump takes every later change.
         let events = handle.subscribe();
         self.credits.clear();
 
@@ -1978,9 +1819,6 @@ impl Session {
                 protocol::Joined::Launched
             },
         );
-        // A debugger that ended as it started leaves nothing debugged: the
-        // page stops showing the load, and the session has let go of its
-        // process before another can be traced.
         let Some(first) = pump.first_state().await else {
             let _ = shut_down(debugger, group).await;
             self.state.send_replace(Arc::new(State::idle(None)));
@@ -2026,17 +1864,12 @@ impl Session {
         Ok(())
     }
 
-    /// The console for a session whose program's own process is `root`,
-    /// in `group` when it has one, with the views that apply, saying what
-    /// it could not read.
     async fn console_for(
         &self,
         root: &DebuggerHandle,
         group: Option<&GroupHandle>,
         outlet: &Outlet,
     ) -> Cli {
-        // The console's commands read no settings files, as the debug
-        // adapter's do not.
         let project = crate::cli::config::project_root(&self.cwd);
         let mut console = Cli::new(
             root.clone(),
@@ -2051,8 +1884,6 @@ impl Session {
             outlet.publish(Stream::Log, &format!("warning: {warning}\n"));
         }
 
-        // The session's, the project's, and the user's views apply, as in
-        // the terminal.
         for warning in console.load_view_sources(&self.cwd, &self.views).await {
             outlet.publish(Stream::Log, &format!("views: {warning}\n"));
         }
@@ -2060,8 +1891,6 @@ impl Session {
         console
     }
 
-    /// Starts a launched program, recording its output readers and input.
-    /// Launches `spec`, returning the execution its first stop ends.
     async fn run(
         &self,
         handle: &DebuggerHandle,
@@ -2123,7 +1952,6 @@ impl Session {
         }
     }
 
-    /// Forwards a program stream to every tab until its writers close it.
     fn read_output(&self, read: OwnedFd, stream: Stream) -> std::io::Result<output::Forwarder> {
         let mut receiver = pipe::Receiver::from_owned_fd(read)?;
         let outlet = self.outlet();
@@ -2145,11 +1973,7 @@ impl Session {
         }))
     }
 
-    /// Ends a target: a launched program is killed, an attached one
-    /// detached.
     async fn end(&self, mut target: Target) -> Result<(), Failure> {
-        // The pump publishes whole states and changes nothing else, and the
-        // state after the end is published once the target has ended.
         #[expect(
             clippy::disallowed_methods,
             reason = "the pump changes nothing a cancellation leaves half done"
@@ -2158,8 +1982,6 @@ impl Session {
         let _ = (&mut target.pump).await;
         let shutdown = shut_down(target.debugger.take(), target.group.take()).await;
 
-        // The program's end closes its streams; a reader still waiting is
-        // on a stream a forked child kept open.
         for reader in &target.readers {
             reader.stop();
         }
@@ -2167,8 +1989,6 @@ impl Session {
         shutdown.map_err(Failure::from)
     }
 
-    /// Ends whatever is being debugged, as the server exits, and starts
-    /// nothing after.
     pub async fn shutdown(&self) {
         self.stop_loading();
         let current = self.target.lock().await.take();
@@ -2195,8 +2015,6 @@ impl History {
     }
 }
 
-/// Kills `root`'s program, and in a group every process it debugs, the
-/// root's last.
 async fn kill_program(
     group: Option<&GroupHandle>,
     root: &DebuggerHandle,
@@ -2272,7 +2090,6 @@ async fn edit_breakpoint(
     Ok(())
 }
 
-/// What is being debugged, and how a launched program starts.
 fn describe_target(
     start: Start,
     handle: &DebuggerHandle,
@@ -2317,7 +2134,6 @@ fn describe_target(
     }
 }
 
-/// Breakpoint options from the page's text, where empty text means none.
 fn options(
     condition: Option<String>,
     hit_condition: Option<String>,
@@ -2345,7 +2161,6 @@ fn options(
     })
 }
 
-/// Encodes a message. One that cannot encode goes out as an error.
 pub(super) fn encode(message: &impl serde::Serialize) -> String {
     serde_json::to_string(message)
         .unwrap_or_else(|error| json!({ "error": error.to_string() }).to_string())
@@ -2355,7 +2170,6 @@ fn to_value<T: serde::Serialize>(value: &T) -> Value {
     serde_json::to_value(value).unwrap_or_else(|error| json!({ "error": error.to_string() }))
 }
 
-/// Lets a process attached to run on: in a group, every member.
 async fn resume_attached(
     group: Option<&GroupHandle>,
     handle: &DebuggerHandle,
@@ -2383,15 +2197,12 @@ async fn resume_attached(
     Ok(())
 }
 
-/// What a session debugs: a launched or attached program's processes, or
-/// a core dump.
 enum Opened {
     Group(ProcessGroup),
     Single(Debugger),
 }
 
 impl Opened {
-    /// The program's own process.
     fn handle(&self) -> DebuggerHandle {
         match self {
             Self::Group(group) => group.root(),
@@ -2400,12 +2211,6 @@ impl Opened {
     }
 }
 
-/// Opens what `start` describes, off the async threads where it loads debug
-/// information. A launched or attached program's processes are followed as
-/// `policy` says.
-/// Checks what `start` can fail at without tracing anything: a launched
-/// program loads, a core dump can be read, and a process exists. A launched
-/// program's load is kept, to open it with.
 async fn prepare(
     start: &Start,
     debug_files: &microscope::DebugFileOptions,
@@ -2448,7 +2253,6 @@ async fn load(
     .map_err(|error| format!("failed to load {}: {error}", spec.program.display()))
 }
 
-/// Opens `start`, with its program when `prepare` loaded it already.
 async fn open(
     start: &Start,
     program: Option<microscope::Program>,
@@ -2488,8 +2292,6 @@ async fn open(
     }
 }
 
-/// Ends a target's debugger: a launched program is killed, an attached
-/// one detached.
 async fn shut_down(
     debugger: Option<Debugger>,
     group: Option<ProcessGroup>,
@@ -2501,9 +2303,6 @@ async fn shut_down(
     }
 }
 
-/// What `load` read, unless the server stops first. A load can block for
-/// good, as on a FIFO no one writes, and its thread cannot be interrupted:
-/// a stopping server leaves it behind.
 async fn loaded<T>(
     stopping: &mut watch::Receiver<bool>,
     load: tokio::task::JoinHandle<T>,
@@ -2516,8 +2315,6 @@ async fn loaded<T>(
     }
 }
 
-/// Where program output and logged messages go: every tab, and the history
-/// a tab that joins later receives.
 #[derive(Clone)]
 pub(super) struct Outlet {
     history: Arc<Mutex<History>>,
@@ -2526,7 +2323,6 @@ pub(super) struct Outlet {
 
 #[cfg(test)]
 impl Outlet {
-    /// An outlet no tab reads.
     pub(super) fn unread() -> Self {
         Self {
             history: Arc::new(Mutex::new(History {
@@ -2547,8 +2343,6 @@ impl Outlet {
             });
             let text: Arc<str> = encode(&message).into();
 
-            // Publishing under the lock keeps joining tabs from missing or
-            // repeating a piece.
             let mut history = self.history.lock().unwrap_or_else(PoisonError::into_inner);
             history.push(Arc::clone(&text));
             let _ = self.messages.send(text);
@@ -2557,9 +2351,6 @@ impl Outlet {
     }
 }
 
-/// Publishes `next` unless it changes nothing, with the counts as they are
-/// now. Read under the state's lock, they are never lower than what a
-/// count published before.
 pub(super) fn publish(
     state: &watch::Sender<Arc<State>>,
     mut next: State,
@@ -2578,9 +2369,6 @@ pub(super) fn publish(
     });
 }
 
-/// Adds a breakpoint, and returns whether it waits pending for a program
-/// the process may execute because nothing loaded has it. A name that
-/// looks meant for Python is refused with that hint instead.
 async fn add_breakpoint(
     handle: &DebuggerHandle,
     spec: microscope::BreakpointSpec,
@@ -2623,8 +2411,6 @@ async fn add_breakpoint(
     Ok((handle.add_breakpoint_with(spec, options).await?, true))
 }
 
-/// Notes what a member's event means for its state, and says what its
-/// logpoints, conditions, and signals report, each line after `tag`.
 pub(super) fn observe(describer: &Describer, outlet: &Outlet, event: &DebuggerEvent, tag: &str) {
     let log = |text: String| outlet.publish(Stream::Log, &format!("{tag}{text}\n"));
     let renderer = Renderer::new(false);
@@ -2674,16 +2460,12 @@ pub(super) fn observe(describer: &Describer, outlet: &Outlet, event: &DebuggerEv
     }
 }
 
-/// Whether `text` names a path on this page, never another host: browsers
-/// read `//host` and `/\\host` as one.
 fn is_page_path(text: &str) -> bool {
     text.starts_with('/')
         && !text[1..].starts_with(['/', '\\'])
         && !text.contains(|c: char| c.is_control())
 }
 
-/// Escapes a query value: a page path's own query holds `&`, `#`, and `+`.
-/// `/` and `:` stay readable, as the page writes them.
 fn escape_query(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for byte in text.bytes() {
@@ -2697,7 +2479,6 @@ fn escape_query(text: &str) -> String {
     escaped
 }
 
-/// A frame named by a request's optional parts, when all are there.
 fn frame_at(
     stop: Option<u64>,
     thread: Option<u64>,
@@ -2716,10 +2497,6 @@ fn frame_at(
 mod tests {
     use super::*;
 
-    /// A tab's request can start a program while the server stops, after
-    /// the server ended what it debugged and before it exits. Nothing would
-    /// end that program: an attached one would be left with microscope's
-    /// traps in it, and die at the next.
     #[tokio::test]
     async fn nothing_starts_once_the_session_is_shut_down() {
         struct Killed(std::process::Child);
@@ -2755,9 +2532,6 @@ mod tests {
         assert!(started.is_err(), "the attach fails");
     }
 
-    /// A tab can count a change while the pump builds a state from the
-    /// counts before it. Publishing that state keeps the newer count, so
-    /// tabs never see a count go back.
     #[test]
     fn a_state_built_before_a_count_publishes_the_count() {
         let (writes, settings) = (AtomicU64::new(1), AtomicU64::new(1));

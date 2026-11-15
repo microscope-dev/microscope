@@ -1,8 +1,3 @@
-//! The facts the controller's state keeps between messages, checked after
-//! each one in development builds. A fact here must hold even when a ptrace
-//! request failed partway through an operation, as a tracee killed from
-//! outside makes one do. See `dev/assertions.md`.
-
 use std::collections::BTreeSet;
 
 use super::session::Session;
@@ -10,14 +5,9 @@ use super::trap::{Lift, Trap};
 use super::{BreakpointOwner, Controller, Inferior, NativeThreadState, debug_thread_id};
 use crate::backend::linux::native::InspectionOps;
 
-/// The state size up to which every message is followed by a check.
-/// Beyond it, checks are spaced out so that their cost per message stays
-/// about that of checking this much state, and a session with thousands of
-/// breakpoints runs at its usual speed.
 const CHECKED_EVERY_MESSAGE: usize = 256;
 
 impl<P: InspectionOps> Controller<P> {
-    /// How many messages pass between checks of the current state.
     pub(super) fn invariant_check_stride(&self) -> u64 {
         let size = self.breakpoints.len()
             + self.modules.len()
@@ -29,7 +19,6 @@ impl<P: InspectionOps> Controller<P> {
         u64::try_from(size / CHECKED_EVERY_MESSAGE).map_or(u64::MAX, |stride| stride.max(1))
     }
 
-    /// Panics if the controller's state contradicts itself.
     pub(super) fn check_invariants(&self) {
         self.check_modules();
         self.check_user_breakpoints();
@@ -45,8 +34,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// Once launched or attached, and until shutdown, the inferior is
-    /// always running an execution, gathering a stop, or stopped.
     fn check_run_phase(&self, inferior: &Inferior) {
         debug_assert!(
             !inferior.run.is_idle() || self.shutdown.is_some() || self.session.starting(),
@@ -55,9 +42,6 @@ impl<P: InspectionOps> Controller<P> {
         );
     }
 
-    /// Each managed location is owned by enabled breakpoints that list it,
-    /// and while sites are live, each location an enabled breakpoint lists
-    /// is owned by it.
     fn check_managed(&self, inferior: &Inferior) {
         let lists = |breakpoint: &crate::Breakpoint, location: &crate::ManagedLocation| {
             super::breakpoints::managed_locations(breakpoint).any(|listed| listed == location)
@@ -120,8 +104,6 @@ impl<P: InspectionOps> Controller<P> {
                 module.loaded.image,
                 self.next_image_id
             );
-            // A copy of a module's code binds its image a second time,
-            // through a window; the image's own mapping binds it whole once.
             if let Some(window) = module.loaded.window {
                 debug_assert!(
                     !window.is_empty(),
@@ -222,8 +204,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl Inferior {
-    /// Panics if the inferior's breakpoint, thread, stop, and watch state
-    /// contradict each other.
     fn check_invariants(&self, shutting_down: bool) {
         self.check_sites();
         self.check_traps(shutting_down);
@@ -322,11 +302,6 @@ impl Inferior {
         }
     }
 
-    /// Each trap is in memory unless a vfork child runs there or one thread
-    /// steps over it, and each thread at a trap stands at a site. Whether
-    /// the other threads are stopped during a repair cannot be checked
-    /// here: a thread SIGKILL took out of its stop counts as running until
-    /// its exit arrives.
     fn check_traps(&self, shutting_down: bool) {
         let mut lifted_for_repair = None;
         for (&address, site) in &self.breakpoints {
@@ -454,9 +429,6 @@ impl Inferior {
         }
     }
 
-    /// A watchpoint holds debug-register slots exactly while it is enabled
-    /// and its task's stack is not moving. A stop in progress may still be
-    /// about to follow a move.
     fn check_watches(&self) {
         let plan = &self.watch.plan;
 

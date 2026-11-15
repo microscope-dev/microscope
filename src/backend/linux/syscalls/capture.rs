@@ -1,6 +1,3 @@
-//! Records a system call trace in a capture, the profiler's file, on its
-//! clock: `CLOCK_MONOTONIC` nanoseconds.
-
 use crate::capture::builder::CaptureBuilder;
 use crate::capture::records::{
     AccountKind, CallOutcome, NONE, NoteKind, Syscall, SyscallErrno, SyscallNote, SyscallStat,
@@ -19,7 +16,6 @@ use crate::syscalls::{
 use super::Sink;
 use super::stacks::SharedStacks;
 
-/// Turns a trace's events into a capture's rows as they come.
 pub struct SyscallCapture {
     builder: CaptureBuilder,
     stacks: Option<SharedStacks>,
@@ -40,7 +36,6 @@ const fn signed(time: u64) -> i64 {
     time.cast_signed()
 }
 
-/// A note at `time` that says nothing yet.
 const fn blank(time: i64) -> SyscallNote {
     SyscallNote {
         time: I64::new(time),
@@ -59,7 +54,6 @@ const fn blank(time: i64) -> SyscallNote {
     }
 }
 
-/// An end as `wait(2)` encodes it.
 const fn status(end: ProcessEnd) -> i64 {
     match end {
         ProcessEnd::Exited(code) => ((code & 0xff) << 8) as i64,
@@ -68,8 +62,6 @@ const fn status(end: ProcessEnd) -> i64 {
 }
 
 impl SyscallCapture {
-    /// A capture that names stacks' frames through `stacks`, which the
-    /// engine unwinds them with.
     #[must_use]
     pub fn new(stacks: Option<SharedStacks>) -> Self {
         Self {
@@ -81,12 +73,10 @@ impl SyscallCapture {
         }
     }
 
-    /// Records a setting, such as the command traced.
     pub fn setting(&mut self, key: &str, value: &str) {
         self.builder.setting(key, value);
     }
 
-    /// Says the capture spans `start` to `end`, whatever its events do.
     pub fn span(&mut self, start: u64, end: u64) {
         self.saw(start);
         self.saw(end);
@@ -108,7 +98,6 @@ impl SyscallCapture {
         }
     }
 
-    /// Records one event.
     pub fn event(&mut self, event: &TraceEvent) {
         let time = event.time();
         self.saw(time);
@@ -180,7 +169,6 @@ impl SyscallCapture {
         self.builder.syscall_note(note, bytes);
     }
 
-    /// A note of a process or thread begun or ended, or of records lost.
     fn life(&mut self, event: &TraceEvent, note: &mut SyscallNote, at: i64) {
         match event {
             TraceEvent::Spawn {
@@ -256,7 +244,6 @@ impl SyscallCapture {
         }
     }
 
-    /// Records one call.
     pub fn call(&mut self, call: &SyscallEvent) {
         let at = signed(call.time());
         let thread = self.builder.thread(call.process, call.thread, at);
@@ -320,8 +307,6 @@ impl SyscallCapture {
         self.blob = blob;
     }
 
-    /// Records statistics the kernel counted, for a trace that kept no
-    /// calls.
     pub fn counted(&mut self, stats: &Folded) {
         let at = signed(self.last);
         for (&(process, thread, call), stats) in &stats.by_call {
@@ -366,7 +351,6 @@ impl SyscallCapture {
         }
     }
 
-    /// The capture so far, as a profile to show while the trace goes on.
     #[must_use]
     pub fn snapshot(&self) -> Profile {
         Self {
@@ -379,7 +363,6 @@ impl SyscallCapture {
         .finish()
     }
 
-    /// The capture, as a profile to write or show.
     #[must_use]
     pub fn finish(mut self) -> Profile {
         let first = self.first.unwrap_or(0);

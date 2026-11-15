@@ -1,11 +1,11 @@
-// A Node addon whose function V8 may call as a fast API call, straight from
-// optimized code with no exit frame, that blocks in read(2). V8's C++ API
-// is not ABI-stable, so it is built once per Node build, against the
-// build's headers and the fast API header of its V8.
-//
-// read(fd): reads one byte from fd and returns read's result.
-// nap(microseconds): sleeps that long in nanosleep(2).
-// fastCalls(): how many calls of either took the fast path.
+
+
+
+
+
+
+
+
 
 #include <node.h>
 #include <unistd.h>
@@ -43,7 +43,7 @@ void FastCalls(const v8::FunctionCallbackInfo<v8::Value>& info) {
 const v8::CFunction fast_read = v8::CFunction::Make(FastRead);
 const v8::CFunction fast_nap = v8::CFunction::Make(FastNap);
 
-}  // namespace
+}
 
 NODE_MODULE_INIT() {
   v8::Isolate* isolate = v8::Isolate::GetCurrent();

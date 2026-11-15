@@ -1,9 +1,9 @@
-//! A line server on a multi-thread runtime, one task per connection: each
-//! line a client sends comes back with the count of lines served so far.
-//! It prints `READY <address>` once it listens on a port of its own,
-//! answers `fd` with the connection's file descriptor, and exits when a
-//! client sends `quit`. It is the program a debugger attaches to while
-//! clients load it.
+
+
+
+
+
+
 
 use std::hint::black_box;
 use std::os::fd::AsRawFd;
@@ -13,16 +13,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
-/// The answer to one line.
+
 #[inline(never)]
 fn answer(line: &str, served: u64) -> String {
     format!("{line} {served}\n") // SERVED: answer
 }
 
-/// Answers a connection's lines until the client closes it.
+
 async fn serve(stream: TcpStream, served: Arc<AtomicU64>) {
-    // Each answer goes out as it is written, not after the client's
-    // acknowledgement of the one before, when a client asks many at once.
+
+
     stream.set_nodelay(true).ok();
     let connection = stream.as_raw_fd();
     let (reader, mut writer) = stream.into_split();
@@ -43,7 +43,7 @@ async fn serve(stream: TcpStream, served: Arc<AtomicU64>) {
     }
 }
 
-/// Accepts connections, each served by a task of its own.
+
 async fn listen(listener: TcpListener) {
     let served = Arc::new(AtomicU64::new(0));
     loop {

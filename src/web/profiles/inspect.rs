@@ -1,5 +1,3 @@
-//! What Inspect shows of a profile, as the page reads it.
-
 use microscope::profiler::{InspectedCommand, Profile};
 
 use crate::web::protocol::{

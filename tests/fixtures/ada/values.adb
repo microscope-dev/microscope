@@ -1,13 +1,13 @@
---  Ada's values, where this program says they are. Before each checkpoint
---  the program prints its own truth, one tab-separated line per value,
---
---  TRUTH  <checkpoint>  <path>  <kind>  <value>
---
---  and then calls Reached (Checkpoint); the tests read the values in
---  Reached's caller. A path names a variable as GNAT does, in lower case,
---  and then its components and elements, an element by its indices in
---  parentheses. Floats are their bits in hexadecimal; kind `summary` is how
---  microscope writes the value.
+
+
+
+
+
+
+
+
+
+
 
 with Ada.Characters.Latin_1;
 with Ada.Command_Line;
@@ -41,7 +41,7 @@ procedure Values is
 
    Tab : constant Character := Ada.Characters.Latin_1.HT;
 
-   --  Reaches a checkpoint once every truth before it is written.
+
    procedure Reached (Checkpoint : String) with No_Inline;
    procedure Reached (Checkpoint : String) is
    begin
@@ -66,7 +66,7 @@ procedure Values is
    function Decimal (Value : Long_Long_Integer) return String is
      (Ada.Strings.Fixed.Trim (Long_Long_Integer'Image (Value), Ada.Strings.Left));
 
-   --  Writes bits as Rust's `{:#x}` does.
+
    function Hexadecimal (Bits : Unsigned_64) return String is
       Digits_Of : constant String := "0123456789abcdef";
       Text      : String (1 .. 16);
@@ -93,9 +93,9 @@ procedure Values is
       return Total;
    end Add;
 
-   --  What functions return: a checkpoint named `returned-` is about what
-   --  the function that reached it returns, which is named for the
-   --  function.
+
+
+
    function Returns_Int (N : Integer) return Integer with No_Inline;
    function Returns_Int (N : Integer) return Integer is
       Value : constant Integer := N * (-11);
@@ -123,7 +123,7 @@ procedure Values is
       return Value;
    end Returns_Boolean;
 
-   --  Arguments the compiler cannot know.
+
    N : constant Integer := Ada.Command_Line.Argument_Count + 3;
 
    procedure Scalars with No_Inline;
@@ -178,8 +178,8 @@ procedure Values is
       Keep (Shifted'Address); Keep (Table'Address); Keep (Shade'Address);
    end Records;
 
-   --  Arrays bounded at run time: parameters of unconstrained types, and a
-   --  local whose bounds are theirs.
+
+
    procedure Bounded (Text : String; Items : Vector) with No_Inline;
    procedure Bounded (Text : String; Items : Vector) is
       Copy : aliased Vector (Items'First .. Items'Last) := Items;

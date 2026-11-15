@@ -1,37 +1,21 @@
-//! What each run-control request and thread event does in each phase of a
-//! run: stopped, running, gathering a stop for a hit, a pause or an edit,
-//! stepping a thread over a trap, launching, and attaching.
-//!
-//! Every phase is reached, and every event made, through the controller's
-//! messages and wait statuses. A small fake kernel answers what the
-//! controller asked of it, read from the native calls it made: a thread
-//! asked to stop stops, a thread stepped traps, and a thread let go to its
-//! exit exits. So the table holds however the controller keeps its phase.
-
 use std::collections::BTreeSet;
 
 use super::lifecycle::{ATTACHED, LAUNCHED, Reader, attach, idle, launch, reader, send};
 use super::*;
 
-/// The second thread, which hits and exits while the first runs.
 pub(super) const OTHER: Pid = Pid::from_raw(5001);
 
-/// Where a breakpoint is added while the program runs.
 pub(super) const ADDED_SITE: u64 = 0x50;
 
-/// What the fake kernel knows of each thread.
 #[derive(Default)]
 pub(super) struct Kernel {
     pub(super) running: BTreeSet<Pid>,
     pub(super) stepping: BTreeSet<Pid>,
 
-    /// Threads sent a SIGSTOP not yet delivered.
     pub(super) stop_requested: BTreeSet<Pid>,
 
-    /// Threads interrupted and not yet stopped.
     pub(super) interrupted: BTreeSet<Pid>,
 
-    /// Threads at their exit event, which exit once let go.
     pub(super) exiting: BTreeSet<Pid>,
 }
 
@@ -39,11 +23,8 @@ pub(super) struct Run {
     pub(super) harness: WatchHarness,
     pub(super) kernel: Kernel,
 
-    /// The native calls the controller made, other than debug-register
-    /// and memory traffic.
     pub(super) calls: Vec<String>,
 
-    /// Addresses whose word writes are kept among the calls.
     pub(super) shown_writes: BTreeSet<u64>,
 }
 
@@ -57,7 +38,6 @@ impl Run {
         }
     }
 
-    /// Reads the calls the controller made since last asked.
     pub(super) fn take_calls(&mut self) {
         for call in self.harness.trace().take_actions() {
             let mut words = call.split(' ');
@@ -103,8 +83,6 @@ impl Run {
         self.take_calls();
     }
 
-    /// Reports a stop of `pid` the program made itself. A SIGSTOP sent to
-    /// it waits behind the stop, as Linux queues it.
     pub(super) fn program_stop(&mut self, status: WaitEvent) {
         let pid = status.pid();
         if self.kernel.stop_requested.remove(&pid) {
@@ -113,14 +91,12 @@ impl Run {
         self.wait(status);
     }
 
-    /// `pid` executes the trap at [`HIT_SITE`].
     pub(super) fn hit(&mut self, pid: Pid) {
         self.harness.trace().set_pc(pid, HIT_SITE + 1);
         self.signal_info(pid, libc::SI_KERNEL);
         self.program_stop(WaitEvent::Stopped(pid, Signal::SIGTRAP));
     }
 
-    /// `pid` reaches its exit, where a SIGSTOP sent to it dies with it.
     pub(super) fn exit(&mut self, pid: Pid) {
         self.kernel.stop_requested.remove(&pid);
         self.harness.trace().queued_stops.borrow_mut().remove(&pid);
@@ -132,7 +108,6 @@ impl Run {
         ));
     }
 
-    /// `pid` stops for `signal`, which a process sent it.
     pub(super) fn signal(&mut self, pid: Pid, signal: libc::c_int) {
         self.signal_info(pid, libc::SI_USER);
         let signal = Signal::new(signal).expect("a signal");
@@ -167,9 +142,6 @@ impl Run {
         );
     }
 
-    /// Answers what the controller asked of the kernel until it asks for
-    /// nothing more, delivering one status at a time. Steps finish only
-    /// when `steps` says so.
     pub(super) fn settle(&mut self, steps: bool) {
         self.take_calls();
         for _ in 0..64 {
@@ -179,8 +151,6 @@ impl Run {
             };
 
             if let Some((pid, status)) = queued {
-                // Only the debugger sends a SIGSTOP here, and Linux names
-                // the tracer as its sender.
                 if status == WaitEvent::Stopped(pid, Signal::SIGSTOP) {
                     self.signal_info(pid, libc::SI_TKILL);
                 }
@@ -281,7 +251,6 @@ impl Run {
         reader(receiver)
     }
 
-    /// The run's state, and what it published, since last asked.
     pub(super) fn describe(&mut self) -> String {
         let state = match self.snapshot().inferior {
             InferiorState::NotStarted => "not started".to_owned(),
@@ -357,8 +326,6 @@ fn reason_text(reason: &StopReason) -> String {
     }
 }
 
-/// Two threads stopped at a pause, with a breakpoint at [`HIT_SITE`] that
-/// stops every hit, or none when `declining`.
 pub(super) fn stopped(declining: bool) -> Run {
     let mut run = Run::new(watch_harness(2));
     let mut added = run.add(HIT_SITE, declining.then_some("==1000"));
@@ -375,8 +342,6 @@ pub(super) fn running(declining: bool) -> Run {
     run
 }
 
-/// Builds the phase `name`, with the replies it waits to give and what
-/// the kernel reports once the event is made, as a first stop.
 fn phase(name: &str) -> (Run, Vec<(&'static str, Reader)>, Option<WaitEvent>) {
     let mut waiting = Vec::new();
     let mut first_stop = None;
@@ -408,8 +373,6 @@ fn phase(name: &str) -> (Run, Vec<(&'static str, Reader)>, Option<WaitEvent>) {
             run
         }
         "stepping over a trap" => {
-            // A hit the breakpoint declines is stepped over while the
-            // other thread is held.
             let mut run = running(true);
             run.hit(Pid::from_raw(5000));
             run.settle(false);
@@ -464,11 +427,8 @@ const EVENTS: [&str; 6] = [
     "other exits",
 ];
 
-/// One event in one phase: what the request was answered, and where the
-/// run settles once the kernel has answered everything asked of it.
 fn outcome(name: &str, event: &str) -> Option<String> {
     let (mut run, mut waiting, first_stop) = phase(name);
-    // Only a running thread hits a trap or reaches its exit.
     let other_runs = run.kernel.running.contains(&OTHER);
     let mut asked: Reader = match event {
         "pause" => run.pause(),
@@ -503,10 +463,6 @@ fn outcome(name: &str, event: &str) -> Option<String> {
     Some(format!("{name} / {event}: {replies} -> {}", run.describe()))
 }
 
-/// Each run-control request and thread event, in each phase of a run, is
-/// answered and ends as it always has: which stop is published, from which
-/// thread and for which execution, and which threads the controller asks
-/// the kernel to run, step, or stop on the way.
 #[test]
 fn each_run_control_event_settles_the_same_in_each_phase() {
     let actual: Vec<String> = PHASES

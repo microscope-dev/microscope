@@ -1,25 +1,15 @@
-//! Which bytes to copy from behind a call's pointer arguments, and when.
-//!
-//! The rules follow each call's spec. An engine that reads the traced process's memory
-//! itself, as the ptrace engine does, supplies a reader; the BPF engine's
-//! programs follow the same rules in the kernel.
-
 use std::sync::Arc;
 
 use super::blobs;
 use super::model::{Abi, Capture, CaptureState, Outcome, ReadAt, SyscallId};
 use super::specs::{self, Arg, Count, Direction, MemKind, Struct};
 
-/// How much to copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// Bytes of a string or buffer (`-s`), past which it is truncated.
     pub string: usize,
 
-    /// Bytes of a buffer whose every byte is wanted, as `-e read=` wants.
     pub dump: usize,
 
-    /// Elements of an array of strings, as `argv`.
     pub elements: usize,
 }
 
@@ -33,28 +23,19 @@ impl Default for Limits {
     }
 }
 
-/// The longest path a call takes.
 pub const PATH_MAX: usize = 4096;
 
-/// Elements of an array of structures copied at most.
 const MOST_ELEMENTS: usize = 64;
 
-/// Elements of an iovec array copied at most.
 const MOST_IOVECS: usize = 16;
 
-/// Pointers of an environment counted at most.
 const MOST_COUNTED: usize = 4096;
 
-/// Reads the traced process's memory.
 pub trait Memory {
-    /// Reads up to `buffer.len()` bytes at `address`: how many it read,
-    /// which an unmapped page may cut short.
     fn read(&mut self, address: u64, buffer: &mut [u8]) -> std::io::Result<usize>;
 }
 
-/// When an argument is best read.
 fn read_at(call: &str, direction: Direction) -> ReadAt {
-    // An `execve` that succeeds leaves no old memory to read at its exit.
     if matches!(direction, Direction::In) || call.starts_with("execve") {
         ReadAt::Entry
     } else {
@@ -96,8 +77,6 @@ fn bytes(
     }
 }
 
-/// A NUL-terminated string of at most `limit` bytes, read a page at a time
-/// so that a string ending before an unmapped page is still read.
 fn string(memory: &mut dyn Memory, address: u64, limit: usize) -> (Vec<u8>, CaptureState) {
     let mut out = Vec::new();
     let mut at = address;
@@ -126,7 +105,6 @@ fn string(memory: &mut dyn Memory, address: u64, limit: usize) -> (Vec<u8>, Capt
         }
 
         if read < take {
-            // The string runs into memory that cannot be read.
             return if out.is_empty() {
                 (Vec::new(), CaptureState::Unreadable)
             } else {
@@ -144,8 +122,6 @@ fn word(memory: &mut dyn Memory, address: u64, size: usize) -> Option<u64> {
     (read == size).then(|| u64::from_le_bytes(buffer))
 }
 
-/// An array of strings, as `argv`: its first `most` elements, each cut at
-/// `limit` bytes, and its length when its end was found.
 fn strings(
     memory: &mut dyn Memory,
     address: u64,
@@ -242,51 +218,37 @@ fn as_count(value: u64) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)
 }
 
-/// The most bytes one capture holds, which the BPF engine's scratch record
-/// bounds.
 pub const MOST_BYTES: usize = 4096;
 
-/// Bytes kept of each element of an array of strings or of iovecs.
 pub const MOST_ELEMENT_BYTES: usize = 510;
 
-/// How a copy reads its argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyKind {
     Path,
     String,
 
-    /// An array of strings, its elements read.
     Strings,
 
-    /// An array of strings only counted, as an environment.
     StringsCounted,
     Bytes,
     Iovec,
     Sockaddr,
     Struct,
 
-    /// A `select` set, as long as its first argument says.
     FdSet,
 }
 
-/// How to copy the memory behind one argument. Both engines follow the
-/// same list: the ptrace engine here, the BPF engine's programs from the
-/// table microscope fills with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArgCopy {
     pub arg: u8,
     pub kind: CopyKind,
     pub when: ReadAt,
 
-    /// Whether the call writes it, so that a failed call leaves nothing.
     pub writes: bool,
     pub count: Count,
 
-    /// One structure's bytes.
     pub size: u32,
 
-    /// The most bytes kept: of a string, a buffer, the whole array, or
-    /// each element of an array of strings or iovecs.
     pub limit: u32,
 }
 
@@ -294,7 +256,6 @@ fn limit(bytes: usize) -> u32 {
     u32::try_from(bytes.min(MOST_BYTES)).unwrap_or(u32::MAX)
 }
 
-/// What to copy of a call's arguments, in argument order.
 #[must_use]
 pub fn copies(call: SyscallId, limits: Limits, verbose: bool) -> Vec<ArgCopy> {
     let Some(spec) = specs::spec(call) else {
@@ -314,8 +275,6 @@ pub fn copies(call: SyscallId, limits: Limits, verbose: bool) -> Vec<ArgCopy> {
         #[expect(clippy::cast_possible_truncation, reason = "six arguments")]
         let arg_index = index as u8;
         let (direction, kind, count, size, most) = match *arg {
-            // A string's terminator, and the byte that shows it was cut,
-            // fit in the most bytes.
             Arg::Path => (
                 Direction::In,
                 CopyKind::Path,
@@ -338,7 +297,6 @@ pub fn copies(call: SyscallId, limits: Limits, verbose: bool) -> Vec<ArgCopy> {
                 CopyKind::Strings,
                 Count::One,
                 0,
-                // One byte past the limit shows the element was longer.
                 (limits.string + 1).min(MOST_ELEMENT_BYTES),
             ),
             Arg::Mem {
@@ -362,7 +320,6 @@ pub fn copies(call: SyscallId, limits: Limits, verbose: bool) -> Vec<ArgCopy> {
                     (direction, CopyKind::Bytes, count, 1, MOST_BYTES)
                 }
 
-                // Its length grows with the kernel's features.
                 MemKind::Struct(Struct::Rseq) => (direction, CopyKind::Bytes, count, 1, 64),
                 MemKind::Struct(Struct::FdSet) => (direction, CopyKind::FdSet, count, 0, 128),
                 MemKind::Struct(structure) => {
@@ -393,7 +350,6 @@ pub fn copies(call: SyscallId, limits: Limits, verbose: bool) -> Vec<ArgCopy> {
     copies
 }
 
-/// Argument `number` of a call, as a copy from [`copies`] names it.
 #[expect(
     clippy::indexing_slicing,
     reason = "specs::parse rejects a seventh argument and argument numbers past five"
@@ -403,9 +359,6 @@ fn arg(args: &[u64; 6], number: u8) -> u64 {
     args[usize::from(number)]
 }
 
-/// Copies the arguments a call reads at `phase`. At exit, `outcome` says
-/// how the call ended, which output arguments depend on: a failed call
-/// wrote nothing.
 #[must_use]
 pub fn capture(
     call: SyscallId,
@@ -429,7 +382,6 @@ pub fn capture(
             continue;
         }
 
-        // What a call writes is there only once it succeeded.
         if phase == ReadAt::Exit && copy.writes && returned.is_none() {
             continue;
         }
@@ -454,8 +406,6 @@ pub fn capture(
             ),
             CopyKind::Bytes => bytes(memory, address, length, limit),
             CopyKind::Iovec => {
-                // What a reading call filled is its result; a write sends
-                // all it names.
                 let budget = if copy.writes { result() } else { usize::MAX };
                 iovecs(memory, address, length, budget, call.abi, limit)
             }
@@ -475,7 +425,6 @@ pub fn capture(
                 limit,
             ),
             CopyKind::FdSet => {
-                // The set covers the descriptors below the first argument.
                 let wanted = as_count(args[0] & 0xffff_ffff).div_ceil(64) * 8;
                 bytes(memory, address, wanted, limit)
             }
@@ -498,7 +447,6 @@ mod tests {
 
     use super::*;
 
-    /// Memory of a few mapped pages.
     struct Pages(BTreeMap<u64, Vec<u8>>);
 
     impl Memory for Pages {
@@ -597,12 +545,10 @@ mod tests {
 
     #[test]
     fn strings_stop_at_unmapped_pages_and_limits() {
-        // A string that ends just before an unmapped page.
         let mut memory = pages(&[(0x1ffa, b"short\0")]);
         let (text, state) = string(&mut memory, 0x1ffa, PATH_MAX);
         assert_eq!((&text[..], state), (&b"short"[..], CaptureState::Complete));
 
-        // One that runs into it.
         let mut memory = pages(&[(0x1ffa, b"abcdef")]);
         let (text, state) = string(&mut memory, 0x1ffa, PATH_MAX);
         assert_eq!(
@@ -644,8 +590,6 @@ mod tests {
         let (count, elements) = blobs::strings(&entry[1].bytes);
         assert_eq!((count, elements), (Some(2), vec![&b"ls"[..], &b"-l"[..]]));
 
-        // execveat's argv is its third argument, and its environment, which
-        // only counts, its fourth.
         let exec_at = [3, 0x3000, 0x1000, 0x1000, 0, 0];
         let entry = capture(
             id("execveat"),

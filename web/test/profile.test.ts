@@ -1,6 +1,3 @@
-// A profile's view: its address round-trips, and its call tree's columns
-// decode into geometry that nests, as real servers' answers do.
-
 import { describe, expect, it } from "vitest";
 
 import { parseSearch, stringifySearch } from "../src/focus";
@@ -130,7 +127,7 @@ describe("a profile's address", () => {
       },
       syscallLeaves: true,
     });
-    // A base range alone is of the profile itself.
+
     expect(queryOf("p", { br: "5-90" }).base).toEqual({ profile: "p", range: [5, 90] });
   });
 
@@ -201,7 +198,6 @@ describe("a profile's address", () => {
   });
 });
 
-/** The columns of a tree of `nodes`, each [name, own, total, depth]. */
 function encode(nodes: [string, number, number, number][]): CallTree {
   const names = [...new Set(nodes.map(([name]) => name))];
   const keys: ProfileKey[] = names.map((name) => ({
@@ -247,7 +243,7 @@ describe("a call tree's geometry", () => {
 
   it("nests every node inside its caller, siblings side by side", () => {
     const rects = layout(tree, null, 0);
-    // In twelfths of the width, the weight of everything.
+
     expect(rects.map(({ node, x, width }) => [node, twelfths(x), twelfths(width)])).toEqual([
       [0, 0, 10],
       [1, 0, 6],
@@ -308,7 +304,6 @@ const lightness = (fill: string) => Number(/(\d+(?:\.\d+)?)%\)$/u.exec(fill)?.[1
 
 describe("a search of a call tree", () => {
   it("marks every match, nested ones too, but counts a nested one's samples once", () => {
-    // main (10) holds leaf (4); thread (2) holds leaf (2): of 12, all of it.
     const found = matching(tree, (name) => name.includes("a"));
     expect([...found.nodes].toSorted()).toEqual([0, 2, 4, 5]);
     expect(found.weight).toBe(12);
@@ -317,7 +312,7 @@ describe("a search of a call tree", () => {
 
   it("opens every caller of each match, and nothing else", () => {
     expect([...revealed(tree, new Set(), [2])].toSorted()).toEqual([0, 1]);
-    // An open caller under a closed one still opens the closed one.
+
     const open = new Set([1]);
     expect([...revealed(tree, open, [2, 5])].toSorted()).toEqual([0, 1, 4]);
     expect([...open]).toEqual([1]);
@@ -336,7 +331,7 @@ describe("a diff's colors", () => {
 
 describe("a diff in time", () => {
   const s = 1e9;
-  // V8's scavenger in the ESLint diff: less time, in a smaller profile.
+
   const after = [29.323 * s, 222.541 * s] as const;
   const before = [30.322 * s, 280 * s] as const;
 
@@ -369,7 +364,7 @@ describe("a diff in time", () => {
     expect(hueOf(changeFill("share", after, before, false))).toBe(0);
     expect(hueOf(changeFill("time", [s, 1], [0, 1], false))).toBe(0);
     expect(hueOf(changeFill("time", [0, 1], [s, 1], true))).toBe(215);
-    // Twice the time is as strong a change at any scale, and less than all new.
+
     expect(changeFill("time", [2, 9], [1, 9], false)).toBe(
       changeFill("time", [2 * s, 9], [s, 9], false),
     );
@@ -426,7 +421,6 @@ describe("a real server's call trees", () => {
 
 describe("a zones answer", () => {
   it("decodes its columns, and finds the block at a time in each thread's row", () => {
-    // [start, end, covered, blocked, preempted, thread, depth, name, count, flags, chosen]
     const blocks: number[][] = [
       [0, 100, 100, 60, 10, 4, 0, 0, 1, 0, 0],
       [10, 40, 30, 0, 0, 4, 1, 1, 1, 2, 0],
@@ -472,14 +466,14 @@ describe("a zones answer", () => {
     ]);
     expect(blockAt(zones, index, 4, 1, 20, 0)).toBe(1);
     expect(blockAt(zones, index, 4, 1, 45, 0)).toBeNull();
-    // Slack reaches the nearer of two blocks, never the farther.
+
     expect(blockAt(zones, index, 4, 1, 45, 6)).toBe(2);
     expect(blockAt(zones, index, 4, 1, 44, 4)).toBe(1);
-    // Another thread's block at the same time and depth is not this one's.
+
     expect(blockAt(zones, index, 9, 0, 20, 0)).toBe(3);
     expect(blockAt(zones, index, 9, 1, 20, 100)).toBeNull();
     expect(blockAt(zones, index, 7, 0, 20, 100)).toBeNull();
-    // What holds a zone, outermost first; a fold names nothing.
+
     expect(nesting(zones, index, 4, 1, 20)).toEqual(["outer"]);
     expect(nesting(zones, index, 4, 2, 51)).toEqual(["outer"]);
     expect(() =>
@@ -491,8 +485,6 @@ describe("a zones answer", () => {
   });
 
   it("finds the block at a time by bisection, whatever order the blocks came in", () => {
-    // One row of a thousand blocks, each 10 long with a gap of 10, sent
-    // in reverse; a linear oracle agrees at every time and slack.
     const count = 1000;
     const bytes = new Uint8Array(count * 64);
     const view = new DataView(bytes.buffer);
@@ -557,12 +549,11 @@ describe("a zones answer", () => {
     ]);
     expect(bandOf(spans, 1, 1)).toEqual([200, 399]);
     expect(bandOf(spans, 2, 0)).toEqual([100, 900]);
-    // One zone alone: its bucket holds its length.
+
     expect(bucketSpans([[50, 1]], 50)).toEqual([[50, 50]]);
   });
 
   it("a plot's bin strokes from its first value through its extremes to its last, which holds until the next", () => {
-    // Two bins over 100 ns, 100 px wide and 24 tall, of values 0 to 10.
     const path = plotPath(
       [
         [10, 5, 0, 0, 10],
@@ -581,8 +572,7 @@ describe("a zones answer", () => {
     expect(plotPath([[0, 3, 3, 3, 3]], 0, 1, 10, 20, 3, 3)).toBe(
       "M0.0 10.0L0.0 10.0L0.0 10.0L0.0 10.0",
     );
-    // What held before the range starts the line at its left edge, and a
-    // value after the range holds the last to its right.
+
     expect(plotPath([[40, 10, 10, 10, 10]], 0, 100, 100, 24, 0, 10, 0, true)).toBe(
       "M0.0 22.0L40.0 22.0L40.0 2.0L40.0 2.0L40.0 2.0L40.0 2.0L100.0 2.0",
     );
@@ -611,13 +601,12 @@ describe("a weight", () => {
 
 describe("a time in the profile", () => {
   it("reads as finely as what it is shown beside", () => {
-    // A zone of a few milliseconds four seconds in still tells its start.
     expect(formatInstant(4_385_412_363, 30_000)).toBe("4.38541 s");
     expect(formatInstant(84_360_994, 50_000_000)).toBe("84 ms");
     expect(formatInstant(5_082_923_590, 50_000_000)).toBe("5.08 s");
     expect(formatInstant(0, 1000)).toBe("0 s");
     expect(formatInstant(1500, 1)).toBe("1.500 µs");
-    // A ruler's ticks share the unit of its last.
+
     expect(formatInstant(500_000_000, 500_000_000, 5_680_000_000)).toBe("0.5 s");
     expect(formatSpan([4_385_412_363, 4_388_392_651])).toBe("4.38541 s – 4.38839 s (2.98 ms)");
     expect(formatSpan([84_360_994, 5_082_923_590])).toBe("84 ms – 5.08 s (5.00 s)");
@@ -626,9 +615,8 @@ describe("a time in the profile", () => {
 
 describe("the lanes' time", () => {
   it("zooms about the pointer, and never past the profile or below a microsecond", () => {
-    // Zooming in twice at a quarter of the way keeps that time where it was.
     expect(zoomed([0, 1000_000], 250_000, 0.5, 1000_000)).toEqual([125_000, 625_000]);
-    // Out from near an end slides inside the profile rather than past it.
+
     expect(zoomed([0, 600_000], 100_000, 2, 1000_000)).toEqual([0, 1000_000]);
     expect(zoomed([800_000, 1000_000], 900_000, 1.5, 1000_000)).toEqual([700_000, 1000_000]);
     expect(zoomed([500_000, 500_400], 500_200, 0.5, 1000_000)).toEqual([499_700, 500_700]);
@@ -652,7 +640,6 @@ describe("the lanes' time", () => {
 
 describe("the largest value", () => {
   it("reads more values than a call can take as arguments", () => {
-    // A lane per thread of 2048 buckets, for 300 threads.
     const values = Array.from({ length: 300 * 2048 }, () => 1);
     values[123_456] = 7;
     expect(largest(values, 0)).toBe(7);
@@ -676,7 +663,7 @@ describe("a share", () => {
     expect(formatChange(null)).toBe("–");
     expect(formatChange(25)).toBe("+25.0 pp");
     expect(formatChange(-2.5)).toBe("−2.50 pp");
-    // Too small to print is no change, of either sign.
+
     expect(formatChange(0.001)).toBe("±0");
     expect(formatChange(-0.001)).toBe("±0");
     expect(formatChange(0)).toBe("±0");
@@ -758,7 +745,7 @@ describe("zones in the address", () => {
       range: [100, 200],
       zones: { name: "drain", band: [5, 9], outside: true },
     });
-    // The rest takes the place of another profile.
+
     expect(queryOf("p", { zs: "drain", zb: "5-9", bz: "rest", bp: "q" }).base?.profile).toBe("p");
   });
 
@@ -791,7 +778,7 @@ describe("zones in the address", () => {
     expect(cleared({ zs: "drain", zb: "5-9", zf: "all" })).toEqual({ zs: "drain", zf: "all" });
     const thrice = cleared(twice);
     expect(thrice).toEqual({ range: "0-9" });
-    // Nothing left to clear is the same look, so Escape does nothing.
+
     expect(cleared(thrice)).toBe(thrice);
   });
 
@@ -872,7 +859,6 @@ describe("a zone's thread", () => {
   });
 });
 
-/** The nanoseconds of a breakdown's parts, together. */
 function partsSum(parts: [string, number][]): number {
   return parts.reduce((total, [, each]) => total + each, 0);
 }
@@ -913,7 +899,6 @@ describe("inspect", () => {
     ]);
     expect(partsSum(split)).toBe(100);
 
-    // Reading after exit is part of reading at all, never more than it.
     const over = recorderBreakdown(100, 20, 10, 50);
     expect(over[2]).toEqual(["Debug info after exit", 20]);
     expect(over[3]).toEqual(["Other debug info", 0]);
@@ -930,7 +915,6 @@ describe("inspect", () => {
   });
 
   it("marks round times under a chart and its end, leaving out one too near the end", () => {
-    // 539 ms: a 100 ms step, and 500 ms is past 90% of the way, so only the end shows there.
     expect(timeTicks([0, 539e6], 600)).toEqual([
       { at: 0, label: "0" },
       { at: 100 / 539, label: "100 ms" },
@@ -939,7 +923,7 @@ describe("inspect", () => {
       { at: 400 / 539, label: "400 ms" },
       { at: 1, label: "539 ms" },
     ]);
-    // 2.6 s: a half-second step, and 2.5 s is too near the end.
+
     expect(timeTicks([0, 2.6e9], 600).map(({ label }) => label)).toEqual([
       "0",
       "0.5 s",
@@ -949,20 +933,19 @@ describe("inspect", () => {
       "2.60 s",
     ]);
     expect(timeTicks([0, 0], 600)).toEqual([]);
-    // A view into the profile ends on its own time, not on its length.
+
     expect(
       timeTicks([1e9, 1.5e9], 600)
         .map(({ label }) => label)
         .at(-1),
     ).toBe("1.5 s");
-    // Twice as wide, twice as many: a 50 ms step over the same 539 ms.
+
     expect(timeTicks([0, 539e6], 1200).map(({ label }) => label)).toEqual([
       "0",
       ...[50, 100, 150, 200, 250, 300, 350, 400, 450].map((ms) => `${ms} ms`),
       "539 ms",
     ]);
-    // Rounded to the step, a view's end can read as the round time before
-    // it: that one is left out, so no two marks read alike.
+
     expect(timeTicks([3_827_129_872, 4_244_501_091], 344).map(({ label }) => label)).toEqual([
       "4.0 s",
       "4.2 s",

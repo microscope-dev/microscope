@@ -1,15 +1,3 @@
-//! The simulated user: an async task that drives the real
-//! [`DebuggerHandle`], chooses what to do from the `Client` stream, and
-//! checks every answer against what the protocol promises.
-//!
-//! The client is the only actor besides the program, so it knows what
-//! state the debugger is in when it asks; an error the request cannot
-//! legitimately produce in that state fails the run. The world polls the
-//! task by hand, so it never runs except as a scheduled action.
-//!
-//! The session loop and the program's lifecycle live here; the user's
-//! breakpoints and watchpoints in `breakpoints`, and what the client
-//! inspects at a stop for the semantic oracles in `stops`.
 #![expect(
     clippy::future_not_send,
     reason = "the world polls the client by hand on its one thread"
@@ -46,10 +34,8 @@ mod breakpoints;
 mod catches;
 mod stops;
 
-/// The most bytes one memory read asks for.
 const MAX_READ: u64 = 64;
 
-/// What the client knows about the program it debugs.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each is a feature of the run the swarm chose"
@@ -61,127 +47,74 @@ pub struct Script {
     pub launches: u64,
     pub early_breakpoints: u64,
 
-    /// Whether to favor watching memory.
     pub watching: bool,
 
-    /// Functions the program defines in some variant.
     pub functions: Vec<String>,
 
-    /// Functions this variant defines, which must resolve.
     pub defined: Vec<String>,
     pub source: PathBuf,
     pub source_lines: u64,
 
-    /// The source's markers, by line.
     pub markers: BTreeMap<u64, Marker>,
 
-    /// In unoptimized code, the image addresses where a row of a marker's
-    /// line starts, with the line: where its condition holds at every hit.
     pub marker_rows: BTreeMap<u64, u64>,
 
-    /// The image, whose code memory reads must show unchanged.
     pub image: Arc<Image>,
 
-    /// Small objects the program defines, which it may watch: name, image
-    /// address, and size.
     pub globals: Vec<(String, u64, u64)>,
 
-    /// The views the program's types are presented with, which the client
-    /// loads into the session.
     pub views: Option<Arc<str>>,
 
-    /// How the kernel answers debug-register requests.
     pub debug: DebugBehavior,
 
-    /// The program the world started untraced, which the client attaches
-    /// to rather than launching it first.
     pub attach: Option<ProcessId>,
 
-    /// Whether the client stops at system calls.
     pub catching: bool,
 
-    /// Whether the client sometimes sends a lifecycle request before the
-    /// last one is answered.
     pub overlap: bool,
 
-    /// The source's lines with a statement row at each image address
-    /// binutils list one at: where a line's breakpoint may stop.
     pub statements: BTreeMap<u64, BTreeSet<u64>>,
 
-    /// The functions the symbol table defines, with their image ranges, in
-    /// unoptimized code, where each function's code lies within its own
-    /// range.
     pub unoptimized_functions: Option<Vec<(String, std::ops::Range<u64>)>>,
 }
 
-/// What the client shares with the world.
 #[derive(Clone, Default)]
 pub struct Shared {
-    /// What the client did, for the trace.
     pub notes: Rc<RefCell<Vec<String>>>,
 
-    /// Processes something outside the session killed, which the world
-    /// records when its fault fires.
     pub killed: Rc<RefCell<BTreeSet<Tgid>>>,
 
-    /// Processes that began to end as a whole, killed or exiting their
-    /// group, which the world records as it happens.
     pub ending: Rc<RefCell<BTreeSet<Tgid>>>,
 
-    /// The user's breakpoints the debugger said it made enabled, and the
-    /// client has not asked to remove or disable, with the image addresses
-    /// of their locations. Temporary ones, which a stop may delete, are not
-    /// among them.
     pub breakpoints: Rc<RefCell<BTreeMap<u64, BTreeSet<u64>>>>,
 
-    /// The temporary breakpoints the debugger said it made enabled, until
-    /// a stop shows them gone, with the image addresses of their
-    /// locations: a thread may not execute one's location without a trap,
-    /// but the controller may delete it at a stop the client has yet to
-    /// see.
     pub temporaries: Rc<RefCell<BTreeMap<u64, BTreeSet<u64>>>>,
 
-    /// The breakpoints the debugger said are disabled, which the client has
-    /// not asked to enable or remove since.
     pub disabled: Rc<RefCell<BTreeSet<u64>>>,
 
-    /// What the client saw that the world's oracles judge, in order.
     pub observations: Rc<RefCell<Vec<Observation>>>,
 
-    /// The events about breakpoint hits the debugger published, which the
-    /// world's auditor counts.
     pub published: Rc<RefCell<Published>>,
 
-    /// The watchpoints the debugger said it armed, and the client has not
-    /// asked to remove, by identifier.
     pub watches: Rc<RefCell<BTreeMap<u64, Intent>>>,
 
-    /// The catchpoints the debugger said it made, and the client has not
-    /// asked to remove, by identifier, with what each stops.
     pub catches: Rc<RefCell<BTreeMap<u64, super::kernel::catching::UserCatch>>>,
 }
 
-/// Something the client saw that an oracle judges against the simulation.
 #[derive(Debug)]
 pub enum Observation {
     /// A backtrace taken at a stop.
     Backtrace { stop: StopId, backtrace: Backtrace },
 
-    /// A step of the selected thread, about to be requested, from where the
-    /// debugger presented it.
     StepBegins {
         thread: ThreadId,
         kind: StepKind,
         presentation: Option<FramePresentation>,
 
-        /// For an advance, the image addresses it runs to.
         targets: BTreeSet<u64>,
 
-        /// For a step into one call of a line, that call's instruction.
         call: Option<u64>,
 
-        /// For a step out of a caller's frame the client selected, how many
-        /// frames below it the step also returns from.
         outer: usize,
     },
 
@@ -189,12 +122,8 @@ pub enum Observation {
     StepEnded(Option<StopReason>),
 
     /// The client continues a thread alone from a stop, or, with none,
-    /// the continue it was about to make was refused, or it released the
-    /// program.
     Alone(Option<(StopId, ThreadId)>),
 
-    /// A write of `length` bytes of code at `address` to `process` that
-    /// wrote only the first `written`.
     ShortWrite {
         process: ProcessId,
         address: u64,
@@ -202,19 +131,14 @@ pub enum Observation {
         written: u64,
     },
 
-    /// The variables of the selected frame at a stop, with the backtrace of
-    /// their thread.
     Variables {
         stop: StopId,
         variables: VariableSnapshot,
         backtrace: Backtrace,
 
-        /// Expressions evaluated in the same frame at the same stop.
         evaluations: Vec<Evaluated>,
     },
 
-    /// The registers of frame `frame` at a stop, with the backtrace of
-    /// their thread.
     Registers {
         stop: StopId,
         frame: StackFrameId,
@@ -222,8 +146,6 @@ pub enum Observation {
         backtrace: Backtrace,
     },
 
-    /// A container a view presents, as a global's value, with its elements
-    /// in one page and in pages of a smaller size.
     Presented {
         stop: StopId,
         name: String,
@@ -233,7 +155,6 @@ pub enum Observation {
     },
 }
 
-/// An expression the client evaluated where it read variables.
 #[derive(Debug)]
 pub struct Evaluated {
     pub purpose: Purpose,
@@ -241,7 +162,6 @@ pub struct Evaluated {
     pub result: Result<crate::Evaluation, String>,
 }
 
-/// What an evaluated expression asks, which decides how it is judged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Purpose {
     /// The condition of the marker on the frame's line, or its negation.
@@ -250,14 +170,12 @@ pub enum Purpose {
     /// What the marker on the frame's line expects.
     Expected,
 
-    /// A variable shown once among the frame's variables: its name, or
     /// the name's address dereferenced.
     Name(String),
 
     /// The address of a variable shown once, in memory.
     Address(String),
 
-    /// An integer variable cast to an integer type `bits` wide.
     Cast {
         name: String,
         bits: u32,
@@ -267,7 +185,6 @@ pub enum Purpose {
     /// An expression no program's types allow.
     IllTyped,
 
-    /// Two integer variables combined: `left operator right`.
     Arithmetic {
         left: String,
         operator: char,
@@ -276,8 +193,6 @@ pub enum Purpose {
 }
 
 impl Shared {
-    /// The user's breakpoints, with their locations where an image loaded
-    /// `bias` above its own addresses puts them.
     #[must_use]
     pub fn intent(&self, bias: u64) -> BTreeMap<u64, BTreeSet<u64>> {
         self.breakpoints
@@ -287,8 +202,6 @@ impl Shared {
             .collect()
     }
 
-    /// Every address where a user breakpoint is certainly enabled, in an
-    /// image loaded `bias` above its own addresses.
     #[must_use]
     pub fn addresses(&self, bias: u64) -> BTreeSet<u64> {
         let temporaries = self.temporaries.borrow();
@@ -307,24 +220,14 @@ pub struct Client {
     pub shared: Shared,
     pub script: Script,
 
-    /// The last execution that resumed one thread alone.
     pub alone: Cell<Option<ExecutionId>>,
 
-    /// The execution of a step the client started without waiting for it,
-    /// until the client sees it end.
     pub stepping: Cell<Option<ExecutionId>>,
 
-    /// What the client saw at the last stop, which the hits since are
-    /// judged against.
     pub baseline: RefCell<Option<Baseline>>,
 
-    /// The watchpoints the debugger said it disabled, with the hits each
-    /// had counted then, which it counts no more.
     pub disabled_watches: RefCell<BTreeMap<u64, (Intent, u64)>>,
 
-    /// Whether the client disabled a watchpoint while the program ran
-    /// since the last stop, freeing slots a thread that could not be
-    /// armed may since have taken.
     pub released_while_running: Cell<bool>,
 }
 
@@ -337,7 +240,6 @@ impl Client {
         self.choices.borrow_mut().below(Stream::Client, bound)
     }
 
-    /// A choice about enabling, temporary breakpoints, or advancing.
     fn control(&self, bound: u64) -> u64 {
         self.choices.borrow_mut().below(Stream::Control, bound)
     }
@@ -346,22 +248,14 @@ impl Client {
         self.shared.notes.borrow_mut().push(note.into());
     }
 
-    /// Whether something outside the session killed `process`.
     fn killed(&self, process: ProcessId) -> bool {
         Tid::try_from(process.get())
             .is_ok_and(|id| self.shared.killed.borrow().contains(&Tgid::new(id)))
     }
 
-    /// Accepts a failure of a request about `process` if the process began
-    /// to end as a whole: killed from outside, or exiting its group. Such a
-    /// process vanishes under requests about it, even from a stop the
-    /// debugger published just before it heard of the end, so a request
-    /// may fail however it fails, except by losing its reply: a controller
-    /// that still runs answers every request.
     fn excuse(&self, process: ProcessId, result: Result<(), Failure>) -> Result<(), Failure> {
         match result {
             Err(failure) if failure.check == "protocol" && self.ending(process) => {
-                // The failure carries only the error's message.
                 if failure.message.contains(&Error::ReplyDropped.to_string())
                     && !self.handle.has_ended()
                 {
@@ -381,9 +275,6 @@ impl Client {
         }
     }
 
-    /// Whether the program the client attached to began to end. A debugger
-    /// whose attached program fails under it, as when killed from outside,
-    /// detaches and exits.
     fn attached_program_ending(&self) -> bool {
         self.script
             .attach
@@ -400,15 +291,13 @@ impl Client {
         Ok(snapshot)
     }
 
-    /// The debugger's state, or `None` once it detached and exited.
     async fn state(&self) -> Result<Option<StateSnapshot>, Failure> {
         match self.handle.snapshot().await {
             Ok(snapshot) => {
                 self.forget_deleted(&snapshot);
                 Ok(Some(snapshot))
             }
-            // A request sent just before the controller exited is dropped
-            // unanswered.
+
             Err(Error::RequestQueueClosed | Error::ReplyDropped)
                 if self.attached_program_ending() && self.handle.has_ended() =>
             {
@@ -419,7 +308,6 @@ impl Client {
         }
     }
 
-    /// Whether `process` began to end as a whole.
     fn ending(&self, process: ProcessId) -> bool {
         Tid::try_from(process.get())
             .is_ok_and(|id| self.shared.ending.borrow().contains(&Tgid::new(id)))
@@ -433,7 +321,6 @@ impl Client {
         self.shared.observations.borrow_mut().push(observation);
     }
 
-    /// Runs the session to its end: requests, then a shutdown.
     pub async fn run(self) -> Result<(), Failure> {
         let mut events = self.handle.subscribe();
         self.load_views().await?;
@@ -509,7 +396,6 @@ impl Client {
 
                         self.judge_hits(process_id, &snapshot, &mut breakpoints)?;
 
-                        // The semantic oracles judge every stop.
                         let result = self.inspect(stop_id).await;
                         self.excuse(process_id, result)?;
 
@@ -519,7 +405,6 @@ impl Client {
                             self.excuse(process_id, result)?;
                         }
 
-                        // A watch from the first stop sees the whole run.
                         if self.script.watching && watched_launch != launches {
                             watched_launch = launches;
                             let result = self.add_watch().await;
@@ -551,9 +436,6 @@ impl Client {
         self.shutdown().await
     }
 
-    /// Ends the step the client began without waiting for it, if one runs,
-    /// at the first stop since, whatever stopped it, or as the program
-    /// ended.
     fn end_unwaited_step(&self, reason: Option<&StopReason>) {
         if self.stepping.take().is_some() {
             self.observe(Observation::StepEnded(reason.cloned()));
@@ -561,9 +443,6 @@ impl Client {
         }
     }
 
-    /// What the client asks for before the program starts: its early
-    /// breakpoints, returned, and maybe a catchpoint, which sees the calls
-    /// a program makes first, as the clones that start its threads.
     async fn prepare(&self) -> Result<Vec<Added>, Failure> {
         let mut breakpoints = Vec::new();
         for _ in 0..self.script.early_breakpoints {
@@ -577,8 +456,6 @@ impl Client {
         Ok(breakpoints)
     }
 
-    /// Loads the views the program's types are presented with, if it has
-    /// any.
     async fn load_views(&self) -> Result<(), Failure> {
         let Some(views) = &self.script.views else {
             return Ok(());
@@ -598,8 +475,6 @@ impl Client {
         }
     }
 
-    /// Marks what a new stop reports, failing on what no golden program
-    /// does.
     fn note_stop(
         &self,
         stop_id: StopId,
@@ -611,15 +486,14 @@ impl Client {
             StopReason::Breakpoint { .. } => self.mark(Mark::BreakpointStop),
             StopReason::Step { .. } => self.mark(Mark::StepStop),
             StopReason::Pause => self.mark(Mark::PauseStop),
-            // No golden program raises a signal or does
-            // anything the debugger cannot classify.
+
             StopReason::Exception(_) | StopReason::Unclassifiable { .. }
                 if !self.killed(process_id) =>
             {
                 return Err(protocol(format!("stop {stop_id} reports {reason:?}")));
             }
             StopReason::Watchpoint { .. } => self.mark(Mark::WatchpointStop),
-            // Only slots others hold refuse a new thread.
+
             StopReason::WatchpointArmFailed { .. } => {
                 if !matches!(self.script.debug, DebugBehavior::Contended(_)) {
                     return Err(protocol(format!("stop {stop_id} reports {reason:?}")));
@@ -636,8 +510,6 @@ impl Client {
         Ok(())
     }
 
-    /// Attaches to the program running untraced, which may have begun to
-    /// end before the client asked.
     async fn attach(&self, process: ProcessId) -> Result<(), Failure> {
         let killed = self.shared.killed.borrow().len();
         let overlapped = self.overlaps(Mark::KillDuringAttach);
@@ -675,9 +547,6 @@ impl Client {
     }
 
     async fn launch(&self) -> Result<(), Failure> {
-        // A process's watchpoints end with it, and a stop the client never
-        // judged, as one a kill overtook, may have deleted a temporary
-        // breakpoint the new process must not have.
         self.shared.watches.borrow_mut().clear();
         self.snapshot().await?;
 
@@ -710,8 +579,7 @@ impl Client {
             Err(error) if overlapped && exited_before_first_stop(&error) => {
                 self.note("the kill sent with the launch ended it before its first stop");
             }
-            // Killed from outside before its first stop, the program never
-            // finishes launching.
+
             Err(error) if self.shared.killed.borrow().len() > killed => {
                 self.note(format!("the program was killed from outside: {error}"));
             }
@@ -721,8 +589,6 @@ impl Client {
         Ok(())
     }
 
-    /// Whether to send this lifecycle request with another, as the swarm
-    /// may ask, marking `mark` if so.
     fn overlaps(&self, mark: Mark) -> bool {
         let overlaps = self.script.overlap && self.draw(3) == 0;
         if overlaps {
@@ -731,14 +597,6 @@ impl Client {
         overlaps
     }
 
-    /// Judges a kill sent right after a launch or attach, which reaches the
-    /// controller while the start waits for its first stop. A start that
-    /// made a process has the kill answered once the process is gone; one
-    /// that made none, or whose process something outside killed first,
-    /// leaves nothing to kill, as does one `held` while the last program's
-    /// children were released, which the kill reaches before the process
-    /// exists. `killed` is how many processes something outside had killed
-    /// before the start.
     fn judge_kill_while_starting<T>(
         &self,
         started: &crate::Result<T>,
@@ -811,7 +669,7 @@ impl Client {
                 match self.handle.pause().await {
                     Ok(reason) => self.note(format!("paused: {reason:?}")),
                     Err(Error::EventStreamLagged(_)) => self.mark(Mark::ClientLagged),
-                    // The program may stop or end before the pause arrives.
+
                     Err(Error::AlreadyStopped | Error::NotRunning) => {}
                     Err(error) => return Err(protocol(format!("pause failed: {error}"))),
                 }
@@ -836,9 +694,6 @@ impl Client {
             4 => self.amend_breakpoint(breakpoints).await?,
             7 => self.amend_watch().await?,
             _ => {
-                // A thread running alone may wait forever for a sibling
-                // that stays stopped, as the program's own lock would make
-                // it, so only an execution of every thread is waited for.
                 if let Some(execution) = execution
                     && self.alone.get() != Some(execution)
                 {
@@ -868,10 +723,6 @@ impl Client {
             unreachable!("the client acts while stopped on a stopped snapshot")
         };
 
-        // From the first stop of a program that starts threads, a third of
-        // the actions resume a thread alone, often its main one, before any
-        // other move lets the main thread exit among the others: an
-        // execution of the main thread alone ends in its exit.
         if matches!(reason, StopReason::Entry | StopReason::Attach)
             && self
                 .script
@@ -966,8 +817,6 @@ impl Client {
         Ok(())
     }
 
-    /// Selects one of the stopped threads, which later steps, backtraces,
-    /// and reads use.
     async fn select_thread(&self, snapshot: &StateSnapshot) -> Result<(), Failure> {
         let thread = self
             .choices
@@ -987,11 +836,7 @@ impl Client {
         Ok(())
     }
 
-    /// Resumes one stopped thread alone. Its execution may never end by
-    /// itself, so the client does not wait for it.
     async fn continue_thread(&self, snapshot: &StateSnapshot, stop: StopId) -> Result<(), Failure> {
-        // Half the time the main thread, whose exit alone ends its
-        // execution differently from any other thread's.
         let main = match snapshot.inferior {
             InferiorState::Stopped { process_id, .. } => snapshot
                 .threads
@@ -1042,7 +887,6 @@ impl Client {
         Ok(())
     }
 
-    /// The load bias of the main executable.
     async fn main_bias(&self) -> Result<crate::LoadBias, Failure> {
         let modules = self
             .handle
@@ -1070,12 +914,6 @@ impl Client {
         Ok(bias)
     }
 
-    /// Reads code, which must show the program's own bytes whatever traps
-    /// the debugger planted. Half the reads aim at a breakpoint's trap.
-    ///
-    /// Half are made after writing the program's own bytes there, which
-    /// changes nothing the program does: the write must keep the traps in
-    /// place, as code integrity judges, and hide them from the read.
     async fn read_code(&self, breakpoints: &[Added]) -> Result<(), Failure> {
         let pages = self.script.image.code().collect::<Vec<_>>();
         let traps = breakpoints
@@ -1125,8 +963,6 @@ impl Client {
                 .await
                 .map_err(|error| protocol(format!("writing {address:#x} failed: {error}")))?;
 
-            // A write ends early only where memory cannot be written, as
-            // when SIGKILL took the thread out of its stop.
             if written != length {
                 self.observe(Observation::ShortWrite {
                     process: process_id,
@@ -1170,8 +1006,6 @@ impl Client {
         Ok(())
     }
 
-    /// Kills the program. One that was running may end on its own before
-    /// the kill arrives.
     async fn kill(&self, running: bool) -> Result<(), Failure> {
         self.note("kill");
         match self.handle.kill().await {
@@ -1194,9 +1028,6 @@ impl Client {
         Ok(())
     }
 
-    /// Makes a request scoped to a stop the program has left, which must be
-    /// refused as stale and change nothing: a resume, a step, a jump, a
-    /// memory read or write, or an inspection.
     async fn refuse_stale(
         &self,
         stale: StopId,
@@ -1248,8 +1079,7 @@ impl Client {
                     .await
                     .map(drop),
             ),
-            // The program's own byte, so that a write wrongly made changes
-            // nothing the oracles would blame on something else.
+
             (_, 4) => (
                 "memory write",
                 self.handle
@@ -1286,8 +1116,6 @@ impl Client {
         Ok(())
     }
 
-    /// Waits until `execution` stops or ends. A receiver that lagged may
-    /// have missed it, so the state decides then.
     async fn wait_for(
         &self,
         execution: ExecutionId,
@@ -1328,7 +1156,6 @@ impl Client {
     async fn shutdown(&self) -> Result<(), Failure> {
         self.note("shutdown");
 
-        // Releasing the program ends any thread's running alone.
         self.observe(Observation::Alone(None));
         if self.overlaps(Mark::ShutdownOverlapped) {
             return if self.draw(2) == 0 {
@@ -1344,8 +1171,6 @@ impl Client {
         }
     }
 
-    /// Sends a shutdown and returns its reply, or `None` if the debugger
-    /// already detached from its ending program and exited.
     async fn send_shutdown(&self) -> Result<Option<oneshot::Receiver<crate::Result<()>>>, Failure> {
         let (reply, answer) = oneshot::channel();
         let sent = self
@@ -1362,9 +1187,6 @@ impl Client {
         Ok(Some(answer))
     }
 
-    /// Kills the program as the session shuts down: the kill is queued
-    /// before the shutdown, so both are answered. Sent the other way, the
-    /// kill may still be queued when the controller ends, which drops it.
     async fn kill_with_shutdown(&self) -> Result<(), Failure> {
         self.note("kill with the shutdown");
         let (reply, kill) = oneshot::channel();
@@ -1395,10 +1217,6 @@ impl Client {
         }
     }
 
-    /// Sends two shutdowns, the second queued before the first is
-    /// answered. The first ends the session; the second is refused while
-    /// the first is under way, or answered once the controller ends,
-    /// unless the controller closed its queue first.
     async fn shutdown_twice(&self) -> Result<(), Failure> {
         self.note("two shutdowns");
         let first = self.send_shutdown().await;
@@ -1409,8 +1227,7 @@ impl Client {
 
         let second = match second {
             Ok(Some(answer)) => answer.await,
-            // The controller ended and closed its queue before the second
-            // was sent.
+
             Ok(None) | Err(_) => return Ok(()),
         };
         match second {
@@ -1424,9 +1241,6 @@ impl Client {
     }
 }
 
-/// Whether a start whose events `events` saw was held while the last
-/// program's children were released. A receiver that fell behind cannot
-/// tell, and says so.
 fn held_start(events: &mut broadcast::Receiver<DebuggerEvent>) -> bool {
     loop {
         match events.try_recv() {
@@ -1442,7 +1256,6 @@ fn held_start(events: &mut broadcast::Receiver<DebuggerEvent>) -> bool {
     }
 }
 
-/// A shutdown's answer, which must be that it succeeded.
 fn judge_shutdown(
     answer: std::result::Result<crate::Result<()>, oneshot::error::RecvError>,
 ) -> Result<(), Failure> {
@@ -1451,14 +1264,10 @@ fn judge_shutdown(
         .map_err(|error| protocol(format!("shutdown failed: {error}")))
 }
 
-/// Whether a launch or attach failed because its process ended before its
-/// first stop.
 fn exited_before_first_stop(error: &Error) -> bool {
     error.to_string().contains("exited before its first stop")
 }
 
-/// Once a program was traced, a snapshot says how it ended until the next
-/// one is; before, that nothing started.
 fn check_ended(ended: &InferiorState, launches: u64, traced: bool) -> Result<(), Failure> {
     let started = !matches!(ended, InferiorState::NotStarted);
     if (launches == 0 && started) || (traced && !started) {

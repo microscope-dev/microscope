@@ -1,17 +1,3 @@
-//! tokio's runtime: tasks are the futures its schedulers poll, each in a
-//! heap cell whose header begins with its state and vtable.
-//!
-//! No list names every runtime, so the model finds them through the
-//! threads that entered one: each thread's `CONTEXT` holds the handle of
-//! its runtime, its scheduler when it is a worker, and the task it polls.
-//! A runtime's spawned tasks hang from its `OwnedTasks`, sharded linked
-//! lists through each task's trailer; its blocking pool queues the
-//! closures no thread runs yet. A `LocalSet` keeps its tasks in a list of
-//! its own, which a thread's `CURRENT` names while the thread runs the
-//! set, and which the future a thread drives names while it waits. Every
-//! node is checked before it is read, so a corrupted list is reported,
-//! never followed.
-
 mod future;
 mod layout;
 mod sets;
@@ -32,37 +18,17 @@ use super::{
 use crate::unwind::{RDI, RSI, RegisterFile};
 use crate::{ImageAddress, StackSegment, TaskState, ThreadId, ThreadLocal, VirtualAddress};
 
-/// What tokio calls its tasks.
 pub(super) const TASK_NOUN: (&str, &str) = ("task", "tasks");
 
-/// The releases the contract was checked against, oldest first. Another is
-/// read as the newest of them wherever its debug information binds, and
-/// says it is unverified.
-///
-/// The test fixtures build with tokio 1.52 and 1.53 on every run. 1.51 and
-/// 1.54 were checked by hand, by building the fixtures against them and
-/// running the tokio suite (`dev/runtime-models.md` says how); 1.54 moved
-/// the blocking pool's queue, which the layout binds in either shape. (One
-/// 1.54 check fails by the fixture alone: its optimized build puts the
-/// breakpoint of the line before a spawn after the spawn's call, so the
-/// task exists before `step task` begins.)
-/// tokio 1.47 binds too, but its optimized steps over `yield_now` were not
-/// all found, so it stays unverified.
 const VERIFIED: [(u64, u64); 4] = [(1, 51), (1, 52), (1, 53), (1, 54)];
 
-/// A source file every build of tokio compiles, by which its version is
-/// read from the directory Cargo unpacked it in.
 const VERSIONED_SOURCE: &str = "src/runtime/task/raw.rs";
 
-/// The task state's bits (`runtime/task/state.rs`), which tokio keeps in
-/// constants its debug information does not describe.
 const RUNNING: u64 = 0b1;
 const COMPLETE: u64 = 0b10;
 const NOTIFIED: u64 = 0b100;
 const CANCELLED: u64 = 0b10_0000;
 
-/// Where a task is in its life, from its state word. Complete wins over
-/// the rest, and running over notified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lifecycle {
     Complete,
@@ -71,8 +37,6 @@ enum Lifecycle {
     Idle,
 }
 
-/// A task's state word, decoded. tokio never takes back a cancellation,
-/// so a task cancelled before it completes is cancelled at every state.
 #[derive(Debug, Clone, Copy)]
 struct TaskWord {
     lifecycle: Lifecycle,
@@ -98,34 +62,16 @@ impl TaskWord {
     }
 }
 
-/// The most shards one list may have, and the most tasks one list or
-/// queue is read for, so corrupted memory cannot make the debugger read
-/// without end.
 const MAX_SHARDS: u64 = 1 << 16;
 const MAX_TASKS: u64 = 1 << 24;
 
-/// The function each task's vtable polls it through, which a symbol
-/// mangled in v0 names with its generic arguments and a legacy one
-/// without them.
 const POLL: &str = "tokio::runtime::task::raw::poll";
 
-/// The closure a multi-thread runtime's workers run in the blocking pool,
-/// as a v0 symbol names it and as debug information does.
 const LAUNCH: [&str; 2] = [
     "multi_thread::worker::Launch>::launch::{closure",
     "multi_thread::worker::{impl#0}::launch::{closure_env",
 ];
 
-/// The functions that start tasks, by the name debug information gives
-/// them and the start of their symbol's, and whether each also schedules
-/// woken tasks. A runtime binds each task it spawns to its list in
-/// `OwnedTasks::bind_inner`, the part of `bind` that is the same for every
-/// type of future; a `LocalSet` binds its tasks in a generic function, and
-/// schedules each one it spawns, as each it wakes, in `Shared::schedule`.
-/// Each takes the task as its second argument. The names spell `Arc` as
-/// Rust 1.97 does; [`crate::rust_names::with_each_arc`] spells them as
-/// every release does, since debug information names the type where std
-/// defines it, which later releases moved.
 const STARTERS: [(&str, &str, bool); 3] = [
     (
         "bind_inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, \
@@ -142,16 +88,10 @@ const STARTERS: [(&str, &str, bool); 3] = [
     ("schedule", "tokio::task::local::Shared", true),
 ];
 
-/// tokio, in an image that has its thread-local context.
 pub fn detect(
     image: &Arc<dyn RuntimeImage + Send + Sync>,
 ) -> Option<Result<Arc<dyn RuntimeModel>, super::Unbound>> {
     let Some(tls) = layout::thread_local_storage(image.as_ref(), layout::CONTEXT_SCOPE) else {
-        // A program stripped of its symbols shows no sign of tokio. One
-        // whose debug information describes tokio's context but whose
-        // storage has a name no release this model knows gives it, as a
-        // later Rust may, says so: finding no tasks there would look like
-        // a program that has none.
         if image
             .types_named("tokio::runtime::context::Context")
             .is_empty()
@@ -180,7 +120,6 @@ pub fn detect(
     Some(Ok(Arc::new(TokioRuntime::bind(Arc::clone(image)))))
 }
 
-/// The release a source path names, such as `tokio-1.53.2/src/…`.
 fn version(path: &std::path::Path) -> Option<(u64, u64, Arc<str>)> {
     let mut components = path.components().rev();
     for _ in VERSIONED_SOURCE.split('/') {
@@ -200,58 +139,39 @@ struct TokioRuntime {
     image: Arc<dyn RuntimeImage + Send + Sync>,
     layout: Layout,
 
-    /// Why every result may be wrong: a release the contract was not
-    /// checked against, or one the program does not name.
     caveat: Option<Arc<str>>,
 
-    /// Whether each vtable, by image address, is a task's.
     vtables: Mutex<BTreeMap<ImageAddress, Option<Arc<str>>>>,
 
-    /// Where the future is in the cells of each poll function.
     futures: Mutex<BTreeMap<ImageAddress, Result<future::FutureLayout, Arc<str>>>>,
 
-    /// Where the function that runs each coroutine type begins.
     bodies: Mutex<BTreeMap<crate::TypeReference, Option<ImageAddress>>>,
 
-    /// Whether a value of each type, held by a box or pin or not, may lead
-    /// to a `LocalSet`.
     holds_sets: Mutex<BTreeMap<(crate::TypeReference, bool), bool>>,
 
-    /// Where each function that starts tasks begins, and whether it also
-    /// schedules woken tasks.
     starters: Vec<(ImageAddress, bool)>,
 }
 
-/// One runtime the stop's threads entered, or a `LocalSet` one runs or
-/// drives: its flavor, and its handle's address, or the set's `Shared`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Instance {
     flavor: Flavor,
     handle: VirtualAddress,
 }
 
-/// What one thread's `CONTEXT` says.
 #[derive(Debug, Clone, Copy)]
 struct ThreadContext {
     thread: ThreadId,
     runtime: Option<Instance>,
 
-    /// Whether the thread runs a scheduler: a worker, or the thread a
-    /// current-thread runtime blocks on.
     worker: bool,
 
-    /// Whether the thread entered its runtime: a worker, or a thread that
-    /// blocks on it.
     entered: bool,
 
-    /// The task the thread polls.
     task: Option<u64>,
 
-    /// The `LocalSet` the thread runs, by its `Shared`.
     local: Option<VirtualAddress>,
 }
 
-/// The runtimes at one stop and what each thread does for them.
 #[derive(Debug, Default)]
 struct Census {
     threads: Vec<ThreadContext>,
@@ -259,9 +179,6 @@ struct Census {
     gaps: Vec<Arc<str>>,
 }
 
-/// One runtime's or set's task list, as read at a stop: its shards, or a
-/// set's one head, and the count of a runtime's, which a set keeps none
-/// of.
 #[derive(Debug, Clone, Copy)]
 struct List {
     id: u64,
@@ -271,9 +188,6 @@ struct List {
     counted: bool,
 }
 
-/// Where a page of tasks begins: at the start, at a task of a runtime's
-/// list, or at an index of the blocking pools' tasks. A task's header is
-/// 128-aligned, which leaves the low bit for the index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cursor {
     Start,
@@ -371,8 +285,6 @@ impl TokioRuntime {
             .map_err(Arc::clone)
     }
 
-    /// Every stopped thread's context, and the runtimes they entered in
-    /// the order of their threads, then the sets they run or drive.
     fn census(&self, stop: &dyn RuntimeStop) -> Result<Census, Missing> {
         let context = self.context()?;
         let locals = self.locals();
@@ -420,7 +332,6 @@ impl TokioRuntime {
         Ok(census)
     }
 
-    /// The `Shared` of the set whose `Rc<Context>` points to `context`.
     fn set_shared(
         stop: &dyn RuntimeStop,
         locals: &Locals,
@@ -436,7 +347,6 @@ impl TokioRuntime {
         Ok(shared.wrapping_add(locals.data))
     }
 
-    /// The set a thread's `CURRENT` says it runs, or `None`.
     fn running_set(
         stop: &dyn RuntimeStop,
         locals: &Locals,
@@ -460,8 +370,6 @@ impl TokioRuntime {
         Self::set_shared(stop, locals, context).map(Some)
     }
 
-    /// What a thread's `CONTEXT` says, or `None` when the thread never
-    /// made it.
     fn thread_context(
         stop: &dyn RuntimeStop,
         context: &Context,
@@ -538,7 +446,6 @@ impl TokioRuntime {
             .ok_or_else(|| format!("the {} is unknown", flavor.describe()).into())
     }
 
-    /// A runtime's or set's task list.
     fn list(&self, stop: &dyn RuntimeStop, runtime: Instance) -> Result<List, Arc<str>> {
         if runtime.flavor == Flavor::Local {
             let locals = self.locals()?.ok_or("the program describes no local set")?;
@@ -584,9 +491,6 @@ impl TokioRuntime {
         Ok(list)
     }
 
-    /// Whether the vtable at `vtable` is a task's: its poll function is
-    /// tokio's `raw::poll`. The answer for each vtable is kept, as code
-    /// does not change.
     fn checked_vtable(
         &self,
         stop: &dyn RuntimeStop,
@@ -618,7 +522,6 @@ impl TokioRuntime {
         verdict.map_or(Ok(()), Err)
     }
 
-    /// Whether a task polls the blocking closure a worker runs on.
     fn is_launch(&self, stop: &dyn RuntimeStop, vtable: VirtualAddress) -> bool {
         let Ok(tasks) = self.task_layout() else {
             return false;
@@ -630,8 +533,6 @@ impl TokioRuntime {
 
         let poll = stop.load_bias().wrapping_unload(poll);
 
-        // A legacy symbol names no generic arguments, while the debug
-        // information names them under either mangling.
         [self.image.symbol_at(poll), self.image.function_name(poll)]
             .into_iter()
             .flatten()
@@ -639,7 +540,6 @@ impl TokioRuntime {
     }
 }
 
-/// Where a thread's copy of a thread-local variable is.
 fn thread_local(
     stop: &dyn RuntimeStop,
     tls: &ThreadLocal,
@@ -675,8 +575,6 @@ impl RuntimeModel for TokioRuntime {
                 .push(format!("tokio's tasks cannot be read: {reason}").into()),
         }
 
-        // A running blocking closure's task is known only by its number,
-        // with no header to read where it was spawned from.
         for task in page.value.tasks.iter_mut().filter(|task| task.locator != 0) {
             task.spawned = self.spawned_at(stop, VirtualAddress::new(task.locator));
         }
@@ -693,8 +591,6 @@ impl RuntimeModel for TokioRuntime {
         }
     }
 
-    /// The task the thread's `CONTEXT` names, which tokio sets for each
-    /// poll of a task, its own launches' and blocking closures' too.
     fn current_task(
         &self,
         stop: &dyn RuntimeStop,
@@ -831,10 +727,6 @@ impl RuntimeModel for TokioRuntime {
         TASK_NOUN.0
     }
 
-    /// The `LocalSet`s the futures a thread drives hold: as
-    /// `LocalSet::block_on` and `run_until` drive one through `RunUntil`,
-    /// as the set itself is awaited, or wherever within them a combinator
-    /// such as `join!` keeps one.
     fn held_task_sets(
         &self,
         stop: &dyn RuntimeStop,
@@ -876,10 +768,6 @@ impl RuntimeModel for TokioRuntime {
 
         let (poll, shutdown) = (entry(tasks.poll)?, entry(tasks.shutdown)?);
 
-        // The task's cell is freed as the box that holds it is dropped,
-        // which the glue for `Box<Cell<T, S>>` does for the task's `T` and
-        // `S`, as its poll function's name spells them. The glue has the
-        // name its compiler gives it, which changed in Rust 1.97.
         let frees = self
             .image
             .function_name(stop.load_bias().wrapping_unload(poll))
@@ -922,8 +810,6 @@ impl RuntimeModel for TokioRuntime {
             return false;
         };
 
-        // The functions that run the task are passed its header; the glue
-        // that frees it, the box that holds it.
         if task.frees.contains(&entry) {
             records::word(stop, VirtualAddress::new(argument)) == Some(header)
         } else {
@@ -945,7 +831,6 @@ impl RuntimeModel for TokioRuntime {
         let unreadable = || Arc::<str>::from(format!("task {} is unreadable", task.task.number));
         let word = |address: VirtualAddress| records::word(stop, address).ok_or_else(unreadable);
 
-        // A freed task's place may hold another task, or nothing.
         let vtable = VirtualAddress::new(word(header.wrapping_add(tasks.vtable))?);
         let id = word(header.wrapping_add(word(vtable.wrapping_add(tasks.id_offset))?))?;
         if task.runs.first().map(|poll| poll.get()) != Some(word(vtable.wrapping_add(tasks.poll))?)
@@ -979,7 +864,6 @@ impl RuntimeModel for TokioRuntime {
     }
 }
 
-/// The name of a type of `tokio::task::local`, such as `LocalSet`.
 fn local_type(info: &crate::TypeInfo) -> Option<&str> {
     let identity = info.identity.as_ref()?;
     identity
@@ -990,8 +874,6 @@ fn local_type(info: &crate::TypeInfo) -> Option<&str> {
         .then_some(&*identity.base)
 }
 
-/// Whether a type is a `Box` or a `Pin`, which hold the future they point
-/// to.
 fn holds_pointee(info: &crate::TypeInfo) -> bool {
     info.identity.as_ref().is_some_and(|identity| {
         let path = identity.path.iter().map(AsRef::as_ref);
@@ -1003,12 +885,6 @@ fn holds_pointee(info: &crate::TypeInfo) -> bool {
     })
 }
 
-/// Whether a future of type `ty` may run a `LocalSet` when polled, as its
-/// type says without its value: whether it holds a set, a `RunUntil`, or
-/// a reference to a set, in place or through a box or pin, or a future
-/// whose type only its value says.
-///
-/// A value a box or pin holds, when `boxed`, leads on through its pointer.
 fn may_hold_set(image: &dyn RuntimeImage, ty: crate::TypeReference, boxed: bool) -> bool {
     use crate::TypeKind;
     fn members(
@@ -1050,8 +926,6 @@ fn may_hold_set(image: &dyn RuntimeImage, ty: crate::TypeReference, boxed: bool)
                     return true;
                 }
 
-                // A box or pin holds the future it points to; another
-                // pointer's target is some other future's, or no future.
                 if boxed {
                     pending.push((*target, false));
                 }

@@ -1,6 +1,3 @@
-// A link can name a stop the session has passed or one it has not reached
-// yet, and every pane says which.
-
 import { afterEach, expect, it } from "vitest";
 import { page } from "vitest/browser";
 

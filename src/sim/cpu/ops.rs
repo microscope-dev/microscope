@@ -1,9 +1,3 @@
-//! What each implemented instruction does.
-//!
-//! Every instruction reads all it needs before it writes, and writes memory
-//! before it returns, so one that faults leaves the caller's registers as
-//! they were: [`super::execute`] works on a copy and keeps it only on success.
-
 use std::cell::Cell;
 
 use iced_x86::{Code, Instruction, Mnemonic, OpKind, Register};
@@ -18,12 +12,6 @@ use crate::sim::memory::AddressSpace;
 
 type Step = Result<Outcome, Stop>;
 
-/// Every instruction form the model implements, in iced's order. The
-/// lockstep test (`conformance::cpu`) executes each on the real CPU, but
-/// for [`PROBED_THROUGH_THE_KERNEL`], and requires this list to be
-/// exactly the forms it executes, so a form is added with a golden
-/// program that executes it. Any other form is a gap, though it shares a
-/// mnemonic with one here.
 pub const IMPLEMENTED: [Code; 128] = [
     Code::Add_rm32_r32,
     Code::Add_rm64_r64,
@@ -155,9 +143,6 @@ pub const IMPLEMENTED: [Code; 128] = [
     Code::Xadd_rm64_r64,
 ];
 
-/// The implemented forms the lockstep cannot execute, each pinned by a
-/// kernel probe that runs it through the model instead: no golden program
-/// executes `int3`, which K-TRAP-1's breakpoints do.
 #[cfg(test)]
 pub const PROBED_THROUGH_THE_KERNEL: [Code; 1] = [Code::Int3];
 
@@ -209,10 +194,6 @@ pub(super) fn execute(
     memory: &mut AddressSpace,
     accesses: &Cell<Accesses>,
 ) -> Step {
-    // Each arm below gives a mnemonic its meaning, but only the forms the
-    // lockstep checked are implemented: one that shares the mnemonic but
-    // works on other registers, as SSE's `movsd` shares the string
-    // move's, or on other widths, is a different instruction.
     if IMPLEMENTED.binary_search(&instruction.code()).is_err() {
         return Err(Stop::Unsupported);
     }
@@ -243,7 +224,6 @@ pub(super) fn execute(
         if cpu.holds()? {
             cpu.write(0, value)?;
         } else {
-            // A 32-bit cmov clears the upper half whatever the condition.
             let unchanged = cpu.read(0)?;
             cpu.write(0, unchanged)?;
         }
@@ -254,7 +234,6 @@ pub(super) fn execute(
     match instruction.mnemonic() {
         Mnemonic::Nop => {}
 
-        // Reads zero-extend from the source's width.
         Mnemonic::Mov | Mnemonic::Movzx => {
             let value = cpu.read(1)?;
             cpu.write(0, value)?;
@@ -327,8 +306,6 @@ pub(super) fn execute(
             cpu.set_status(status);
         }
 
-        // A locked exchange-and-add is atomic here as every instruction is:
-        // threads interleave whole instructions.
         Mnemonic::Xadd => {
             let bits = cpu.bits(0)?;
             let (destination, source) = (cpu.read(0)?, cpu.read(1)?);
@@ -365,7 +342,6 @@ pub(super) fn execute(
 
             cpu.write(0, result)?;
 
-            // CF is the one status flag these keep.
             cpu.set_status((status & !CARRY) | (cpu.registers.rflags & CARRY));
         }
         Mnemonic::Neg => {
@@ -393,7 +369,6 @@ pub(super) fn execute(
             let bits = cpu.bits(0)?;
             let count = cpu.shift_count(2, bits)?;
             if count as usize > bits {
-                // The result and flags are undefined.
                 return Err(Stop::Unsupported);
             }
 
@@ -429,7 +404,6 @@ struct Cpu<'a> {
 }
 
 impl Cpu<'_> {
-    /// Records a data access that completed.
     fn accessed(&self, address: u64, size: usize, write: bool) {
         let mut accesses = self.accesses.get();
         accesses.push(Access {
@@ -440,7 +414,6 @@ impl Cpu<'_> {
         self.accesses.set(accesses);
     }
 
-    /// Reads `size` bytes at `address`, zero-extended.
     fn load(&self, address: u64, size: usize) -> Result<u64, Stop> {
         let mut bytes = [0; 8];
         self.memory.read(address, &mut bytes[..size])?;
@@ -448,18 +421,12 @@ impl Cpu<'_> {
         Ok(u64::from_le_bytes(bytes))
     }
 
-    /// Writes the low `size` bytes of `value` at `address`.
     fn store(&mut self, address: u64, size: usize, value: u64) -> Result<(), Stop> {
         self.memory.write(address, &value.to_le_bytes()[..size])?;
         self.accessed(address, size, true);
         Ok(())
     }
 
-    /// One iteration of `rep stosb` or `rep movsb`, or all of one that has
-    /// none left. The CPU traps between iterations, with `rip` still at
-    /// the instruction. Only the forms the lockstep executes are
-    /// implemented: one without `rep`, with `repne`, or with 32-bit
-    /// addresses is another instruction.
     fn repeated_string(&mut self, copies: bool) -> Result<(), Stop> {
         if !self.instruction.has_rep_prefix()
             || self.instruction.has_repne_prefix()
@@ -499,7 +466,6 @@ impl Cpu<'_> {
         Ok(())
     }
 
-    /// The width in bits of an operand.
     fn bits(&self, operand: u32) -> Result<usize, Stop> {
         Ok(match self.instruction.op_kind(operand) {
             OpKind::Register => self.instruction.op_register(operand).size() * 8,
@@ -512,7 +478,6 @@ impl Cpu<'_> {
         })
     }
 
-    /// An operand's value, zero-extended from its width.
     fn read(&self, operand: u32) -> Result<u64, Stop> {
         match self.instruction.op_kind(operand) {
             OpKind::Register => self
@@ -554,7 +519,6 @@ impl Cpu<'_> {
         }
     }
 
-    /// The address a memory operand names.
     fn address(&self, operand: u32) -> Result<u64, Stop> {
         let registers = &*self.registers;
         self.instruction
@@ -584,7 +548,6 @@ impl Cpu<'_> {
         self.registers.rflags = with_status(self.registers.rflags, status);
     }
 
-    /// A shift count, masked as the CPU masks it.
     fn shift_count(&self, operand: u32, bits: usize) -> Result<u32, Stop> {
         let limit = if bits == 64 { 0x3f } else { 0x1f };
         Ok(u32::try_from(self.read(operand)? & limit).expect("masked count fits"))
@@ -604,7 +567,6 @@ impl Cpu<'_> {
         Ok(value)
     }
 
-    /// `imul` in its one-, two-, and three-operand forms.
     fn signed_multiply(&mut self) -> Result<(), Stop> {
         let bits = self.bits(0)?;
         let signed = |value: u64| i128::from(sign_extend(value, bits).cast_signed());
@@ -645,7 +607,6 @@ impl Cpu<'_> {
         Ok(())
     }
 
-    /// One-operand `mul` of RAX, or of the low part of RAX, into RDX:RAX.
     fn unsigned_multiply(&mut self) -> Result<(), Stop> {
         let bits = self.bits(0)?;
         if bits < 16 {
@@ -666,7 +627,6 @@ impl Cpu<'_> {
         Ok(())
     }
 
-    /// One-operand `div` of RDX:RAX, or their low parts, by the operand.
     fn unsigned_divide(&mut self) -> Result<(), Stop> {
         let bits = self.bits(0)?;
         if bits < 16 {
@@ -695,8 +655,6 @@ impl Cpu<'_> {
         Ok(())
     }
 
-    /// Writes the RAX and RDX parts of an operand width, as `mul` and `div`
-    /// leave them.
     fn write_pair(&mut self, bits: usize, rax: u64, rdx: u64) -> Result<(), Stop> {
         let (low_register, high_register) = match bits {
             16 => (Register::AX, Register::DX),

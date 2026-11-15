@@ -1,8 +1,3 @@
-// The console's completions can be chosen without a mouse: Tab and the
-// arrow keys walk the open list, and Enter takes one. A click takes one too.
-// Run-control lines run the page's own actions and say where the program
-// stopped; everything else goes to microscope.
-
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -65,7 +60,7 @@ it("cycles the open completions with Tab and Shift+Tab, and Enter only fills the
 
   await userEvent.keyboard("{Tab}{Tab}{Tab}");
   await expect.element(option("disassemble")).toHaveAttribute("aria-selected", "true");
-  // Past the last, Tab comes round to the first, and Shift+Tab goes back.
+
   await userEvent.keyboard("{Tab}");
   await expect.element(option("disable")).toHaveAttribute("aria-selected", "true");
   await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
@@ -91,7 +86,6 @@ async function type(line: string) {
   await userEvent.type(field(), line ? `${line}{Enter}` : "{Enter}");
 }
 
-/** The program as the server says it is after a run-control request. */
 function moved(server: FakeServer, inferior: Inferior) {
   server.send({ type: "state", ...stoppedState({ revision: 2, inferior }) });
 }

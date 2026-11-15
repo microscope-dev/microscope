@@ -1,9 +1,9 @@
-// Variables microscope gives values through V8's inspector: each kind of
-// binding a paused frame reaches, given each kind of value, which the
-// program prints after the stop that gave them; a captured variable of an
-// optimized frame; and the variables V8 does not assign, which the program
-// prints unchanged. Run it with --allow-natives-syntax, so that hot() runs
-// Turbofan code, as the program reports.
+
+
+
+
+
+
 
 'use strict';
 
@@ -12,14 +12,14 @@ const truth = require('./truth.js');
 
 let tally = 1;
 
-// Closures that keep hot()'s context, so that it is allocated.
+
 const readers = [];
 
 function noop() {}
 
 function outer(seed) {
   let captured = seed * 2;
-  // An object both frames reach through outer()'s context.
+
   let box = {k: 1};
   function inner(param) {
     let local = param + 1;
@@ -31,9 +31,9 @@ function outer(seed) {
     const other = {b: 2};
     {
       let blocked = 3;
-      // A statement that loads no variable given a value: V8's register
-      // optimizer may keep one loaded in the accumulator, whose old value
-      // the statement at the pause then uses.
+
+
+
       noop(); // ASSIGN
       const shown = {param, local, fixed, big, maybe, gone, blocked, captured, tally};
       console.log(`ASSIGNED ${util.inspect(shown, {breakLength: Infinity})}`);

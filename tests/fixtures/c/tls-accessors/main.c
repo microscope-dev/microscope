@@ -1,6 +1,6 @@
-// A program with a thread-local variable of its own, reached by the local
-// exec model, and a library's of every other model, read through each
-// accessor.
+
+
+
 #include <stdio.h>
 
 long tls_general_get(void);

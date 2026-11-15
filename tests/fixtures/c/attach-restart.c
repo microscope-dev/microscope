@@ -1,7 +1,7 @@
-// Waits in pause(2) issued by a raw system call directly followed by an
-// indirect jump through the call's result register. A debugger that attaches
-// finds the thread about to execute that jump while the kernel holds a
-// restart code in the register, which the restarted call replaces.
+
+
+
+
 #define _GNU_SOURCE
 #include <sys/prctl.h>
 #include <unistd.h>
@@ -12,7 +12,7 @@ __asm__(".text\n"
         ".globl attach_restart_wait\n"
         ".type attach_restart_wait, @function\n"
         "attach_restart_wait:\n"
-        "    movl $34, %eax\n" // pause
+        "    movl $34, %eax\n"
         "    syscall\n"
         "attach_restart_jump:\n"
         "    jmp *%rax\n"

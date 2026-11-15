@@ -1,5 +1,5 @@
-// A library with a debugger statement, which stops unless its directory
-// is skipped.
+
+
 'use strict';
 function halt() {
   debugger; // HALT

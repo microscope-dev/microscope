@@ -1,11 +1,11 @@
-// Runs a program whose threads' stacks glibc guards with mappings of their
-// own, as it does where the kernel refuses madvise(MADV_GUARD_INSTALL).
-//
-// From 2.42, glibc guards a thread's stack with a guard region inside the
-// stack's own mapping. No debugger can read a guard region, and gcore saves
-// nothing of a mapping past the first read that fails, so a core of the
-// program would hold no thread's stack. A PROT_NONE guard is a mapping of its
-// own, which gcore leaves out.
+
+
+
+
+
+
+
+
 
 #include <errno.h>
 #include <linux/audit.h>
@@ -27,7 +27,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    // madvise's advice is an int, the low half of its third argument.
+
     struct sock_filter filter[] = {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 0, 4),

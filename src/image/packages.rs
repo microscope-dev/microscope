@@ -1,7 +1,3 @@
-//! Packages, and the functions they define by their names within them,
-//! which breakpoint locations name as their language's programmers write
-//! them (see `crate::model::image::locations`).
-
 use zerocopy::little_endian::U32;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -10,7 +6,6 @@ use super::strings::{StrId, Strings, StringsBuilder};
 use super::{Builder, Image, NONE, Record, TableKind};
 use crate::FunctionId;
 
-/// One package, ordered by its path's bytes.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -24,8 +19,6 @@ impl Record for PackageRecord {
     const KIND: TableKind = TableKind::Packages;
 }
 
-/// One function's package path and local name, or [`NONE`] for both when
-/// no package defines it, function by function.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -39,13 +32,10 @@ impl Record for PackagedRecord {
     const KIND: TableKind = TableKind::PackagedNames;
 }
 
-/// Why packages could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the packages do not fit an image")]
 pub struct TooMany;
 
-/// Adds `packages`, as (path, name) pairs, and each function's package
-/// and local name in `names`, function by function, to `builder`.
 pub fn add_to<'s>(
     builder: &mut Builder<'_>,
     strings: &mut StringsBuilder,
@@ -54,7 +44,6 @@ pub fn add_to<'s>(
 ) -> Result<(), TooMany> {
     let mut push = |text: &str| strings.push(text).ok_or(TooMany);
 
-    // A path named twice keeps its last name.
     let mut paths = packages.into_iter().collect::<Vec<_>>();
     paths.reverse();
     paths.sort_by_key(|(path, _)| *path);
@@ -95,7 +84,6 @@ pub fn add_to<'s>(
     Ok(())
 }
 
-/// The packages of a validated image.
 #[derive(Debug, Clone, Copy)]
 pub struct PackageView<'a> {
     strings: Strings<'a>,
@@ -114,7 +102,6 @@ impl<'a> PackageView<'a> {
         }
     }
 
-    /// The name the package at `path` declares.
     pub fn package_name(self, path: &str) -> Option<&'a str> {
         let index = self
             .packages
@@ -130,8 +117,6 @@ impl<'a> PackageView<'a> {
         )
     }
 
-    /// The path of the package defining `function`, and the function's
-    /// name within it.
     pub fn packaged_name(self, function: FunctionId) -> Option<(&'a str, &'a str)> {
         let record = self.packaged.get(function.index())?;
         (record.local.get() != NONE).then(|| {
@@ -142,13 +127,11 @@ impl<'a> PackageView<'a> {
         })
     }
 
-    /// The functions whose local name is `local`, in order.
     pub fn with_local_name(self, local: &str) -> impl Iterator<Item = FunctionId> + 'a {
         index::named(self.strings, self.locals, local).map(FunctionId::new)
     }
 }
 
-/// Checks the packages and packaged names.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     let strings = image.strings();
     let packages = image.table::<PackageRecord>();
@@ -175,7 +158,6 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
         return Err("a packaged name is malformed".into());
     }
 
-    // The index names each packaged function once, by its local name.
     let locals = image.shared::<NameEntry>(TableKind::LocalNames);
     let named = records
         .iter()

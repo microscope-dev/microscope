@@ -1,7 +1,3 @@
-// Arranging panes by keyboard: what the Window menu does to the focused group
-// and its shown tab. Each says why it cannot act, as its menu item does,
-// so none of it needs a pointer.
-
 import { panelId, tabId } from "./context";
 import { FLOAT_SIZE, floatingRect, rememberSize } from "./drag";
 import { type Direction, neighbor } from "./drop";
@@ -21,10 +17,8 @@ import {
 } from "./layout";
 import { change, workbench } from "./store";
 
-/** Null when the arrangement can be made, or why not. */
 export type Why = string | null;
 
-/** The focused group, and the tab it shows. */
 export function focusedGroup(layout: Layout = workbench.getState().layout): Group | null {
   return groups(layout).find((group) => group.id === layout.focused) ?? null;
 }
@@ -32,18 +26,15 @@ export function focusedGroup(layout: Layout = workbench.getState().layout): Grou
 const floats = (layout: Layout, group: GroupId) =>
   layout.floating.some((window) => window.group.id === group);
 
-/** Puts the keyboard in a pane: in the box it is for, if it has one. */
 export function focusPane(pane: PaneId): void {
   const panel = document.querySelector<HTMLElement>(`#${panelId(pane)}`);
   (panel?.querySelector<HTMLElement>("[data-autofocus]") ?? panel)?.focus();
 }
 
-/** Puts the keyboard on a pane's tab. */
 export function focusTab(pane: PaneId): void {
   document.querySelector<HTMLElement>(`#${tabId(pane)}`)?.focus();
 }
 
-/** The groups on screen, where they are. */
 function onScreen(): Map<GroupId, Rect> {
   const rects = new Map<GroupId, Rect>();
   for (const element of document.querySelectorAll<HTMLElement>("[data-part=dock] [data-group]")) {
@@ -65,7 +56,6 @@ export function besideWhy(direction: Direction): Why {
     : `no group is ${toward(direction)}`;
 }
 
-/** Focuses the group beside the focused one. */
 export function focusBeside(direction: Direction): void {
   const layout = workbench.getState().layout;
   const id = neighbor(onScreen(), layout.focused, direction);
@@ -82,7 +72,6 @@ export function sendWhy(direction: "left" | "right"): Why {
   return group?.active ? besideWhy(direction) : "no tab is shown";
 }
 
-/** Moves the shown tab to the end of the group beside it. */
 export function sendBeside(direction: "left" | "right"): void {
   const layout = workbench.getState().layout;
   const pane = focusedGroup(layout)?.active;
@@ -106,7 +95,6 @@ export function shiftWhy(by: 1 | -1): Why {
   return by === 1 && index === group.tabs.length - 1 ? "the tab is last already" : null;
 }
 
-/** Moves the shown tab one place along its strip. */
 export function shiftTab(by: 1 | -1): void {
   const group = focusedGroup();
   const pane = group?.active;
@@ -114,7 +102,7 @@ export function shiftTab(by: 1 | -1): void {
     return;
   }
   const index = group.tabs.indexOf(pane);
-  // A tab index counts the moving tab where it is now.
+
   const to = by === 1 ? index + 2 : index - 1;
   change((layout) => move(layout, pane, { type: "tab", group: group.id, index: to }));
   focusTab(pane);
@@ -128,7 +116,6 @@ export function splitWhy(layout: Layout = workbench.getState().layout): Why {
   return floats(layout, group.id) ? "a floating window does not split" : null;
 }
 
-/** Moves the shown tab into a new group beside its own. */
 export function splitFocused(side: Side): void {
   const layout = workbench.getState().layout;
   const pane = focusedGroup(layout)?.active;
@@ -145,8 +132,6 @@ export function floatWhy(narrow: boolean): Why {
   return focusedGroup()?.active ? null : "no tab is shown";
 }
 
-/** Floats the shown tab in the middle of the dock, or docks the focused
- * window along the dock's right edge. */
 export function floatOrDock(): void {
   const layout = workbench.getState().layout;
   const group = focusedGroup(layout);
@@ -162,7 +147,7 @@ export function floatOrDock(): void {
     const bounds = box
       ? { x: box.x, y: box.y, width: box.width, height: box.height }
       : { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
-    // Each window a little below and right of the last, so none hides one.
+
     const step = 24 * layout.floating.length;
     const middle = {
       x: bounds.x + (bounds.width - FLOAT_SIZE.width) / 2 + 60 + step,

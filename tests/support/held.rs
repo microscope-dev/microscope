@@ -1,10 +1,3 @@
-//! Fixtures held on their standard input while microscope records them, so
-//! a test waits on what the recording shows rather than on time. The BPF
-//! engine reads a runtime a moment after the program starts, and a frame's
-//! code as it drains, which a program that exited has taken away: the test
-//! asks for the recording's window with SIGUSR2 and lets the fixture go, a
-//! line at a time, as the windows show what it waits for.
-
 use std::io::{BufRead as _, Write as _};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -17,7 +10,6 @@ use serde_json::{Value, json};
 
 use super::released::READY_DEADLINE;
 
-/// The `microscope-bpf` wrapper that `just test-bpf` names.
 pub fn launcher() -> PathBuf {
     std::env::var_os("MICROSCOPE_BPF_LAUNCHER").map_or_else(
         || {
@@ -30,23 +22,16 @@ pub fn launcher() -> PathBuf {
     )
 }
 
-/// microscope, run through the BPF launcher.
 pub fn bpf() -> Command {
     let mut command = Command::new(launcher());
     command.arg(env!("CARGO_BIN_EXE_microscope"));
     command
 }
 
-/// microscope, run as it is.
 pub fn unprivileged() -> Command {
     Command::new(env!("CARGO_BIN_EXE_microscope"))
 }
 
-/// The recording of `program` by `microscope` with `arguments`, held on
-/// its standard input: the test asks for each window in turn and gives the
-/// program as many lines as `lines` says of it, until it has given
-/// `release` of them, or the deadline passes, and then ends its input.
-/// The profile, and what microscope and the program said on standard error.
 pub fn recorded_until(
     mut microscope: Command,
     program: &Command,
@@ -74,8 +59,6 @@ pub fn recorded_until(
         .spawn()
         .expect("run microscope");
 
-    // microscope's lines, each sent as it comes, and all of them once it
-    // ends.
     let (said, heard) = std::sync::mpsc::channel();
     let stderr = std::io::BufReader::new(child.stderr.take().expect("its errors"));
     let reader = std::thread::spawn(move || {
@@ -99,8 +82,6 @@ pub fn recorded_until(
         }
     };
 
-    // The window's saves, and the pid they are asked of, once microscope
-    // handles SIGUSR2.
     let pid = next("microscope: keeping the last ")
         .and_then(|rest| {
             let (_, pid) = rest.split_once("`kill -USR2 ")?;
@@ -125,7 +106,6 @@ pub fn recorded_until(
             .profile;
         let wanted = lines(&window).min(release);
         while given < wanted {
-            // A program that ended on its own has nothing to let go.
             let _ = input.write_all(b"go\n");
             given += 1;
         }
@@ -139,10 +119,6 @@ pub fn recorded_until(
     (profile, stderr)
 }
 
-/// Each call a recording kept, in order, as a record of its path, its
-/// thread, and its stack, innermost first: an interpreted frame as its
-/// function and, where known, its file and line; a native one as its
-/// symbol; and, where the stack ends early, why.
 pub fn records(profile: &Profile) -> Vec<Value> {
     profile
         .syscalls()

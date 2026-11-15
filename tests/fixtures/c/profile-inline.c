@@ -2,7 +2,7 @@
 
 volatile unsigned long sink;
 
-// Inlined into scan, where it does nearly all of the loop's work.
+
 static inline __attribute__((always_inline)) unsigned long step(unsigned long sum,
                                                                 unsigned long i) {
     return sum * 31 + i * i;

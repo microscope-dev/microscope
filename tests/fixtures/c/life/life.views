@@ -1,6 +1,6 @@
 microscope-views 1
 
-# A life board, drawn from its cells' bytes by life.js beside this file.
+
 extend c life {
     visualize "life" {
         cells = bytes(&cells[0][0], sizeof(cells))

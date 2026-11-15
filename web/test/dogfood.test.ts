@@ -1,6 +1,3 @@
-// The built-in renderers use only the API every renderer has: the page
-// never names one, so it cannot treat one specially.
-
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 

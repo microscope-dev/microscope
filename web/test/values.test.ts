@@ -1,6 +1,3 @@
-// The value tree remembers what is open by path, and marks what changed
-// since the stop before; hovers and inline values find expressions in text.
-
 import { describe, expect, it } from "vitest";
 
 import { expressionAt, expressionsIn } from "../src/expressions";
@@ -12,7 +9,7 @@ describe("tree paths", () => {
   it("name each row by its scope and the names above it, whatever they hold", () => {
     expect(childKey("args", "req")).toBe("args/req");
     expect(childKey("args/req", "key")).toBe("args/req/key");
-    // A name holding a slash or a percent sign stays one step.
+
     expect(childKey("w", "a / b")).toBe("w/a %2F b");
     expect(childKey("w", "100%")).toBe("w/100%25");
   });
@@ -20,14 +17,14 @@ describe("tree paths", () => {
   it("tell apart rows with the same name, as shadowed variables have", () => {
     expect(childKey("locals", "i", 1)).toBe("locals/i");
     expect(childKey("locals", "i", 2)).toBe("locals/i~2");
-    // A name that looks like a second one is still the first of its own.
+
     expect(childKey("locals", "i~2", 1)).toBe("locals/i%7E2");
   });
 
   it("open and close a row in the link's list, in the order opened", () => {
     expect(toggled(undefined, "args/req")).toEqual(["args/req"]);
     expect(toggled(["args/req", "locals/e"], "args/req")).toEqual(["locals/e"]);
-    // Closing a row closes what is open beneath it.
+
     expect(toggled(["args/req", "args/req/key", "args/request"], "args/req")).toEqual([
       "args/request",
     ]);
@@ -45,9 +42,9 @@ describe("changed values", () => {
     recall.note(12, "args/m", "5");
     expect(recall.before(12, "args/n")).toBe("1");
     expect(recall.before(12, "args/m")).toBe("5");
-    // A path the earlier stop did not show has nothing to compare.
+
     expect(recall.before(12, "locals/new")).toBeUndefined();
-    // Going back to an older stop compares with the one before it, if seen.
+
     expect(recall.before(10, "args/n")).toBeUndefined();
   });
 
@@ -89,14 +86,14 @@ describe("expressions in source", () => {
     expect(python("    def take(self, name, count):")).toEqual(["self", "name", "count"]);
     expect(python("    total = f'{x}' + rb\"\\d\" + name  # count it")).toEqual(["total", "name"]);
     expect(python("    return lambda y: y + offset")).toEqual(["y", "offset"]);
-    // A soft keyword is a name where it does not begin its statement.
+
     expect(python("    match point:")).toEqual(["point"]);
     expect(python('match = {"case": 1}')).toEqual(["match"]);
     expect(python("type Point = tuple[int, int]")).toEqual(["Point", "tuple", "int"]);
     expect(python("    kind = type")).toEqual(["kind", "type"]);
     expect(expressionAt("    while True:", 11, "app.py")).toBeNull();
     expect(expressionAt("    if done is None:", 16, "app.py")).toBeNull();
-    // Other languages keep their names, though Python's keywords.
+
     expect(expressionsIn("    int from = pass + is;")).toEqual(["from", "pass", "is"]);
   });
 });

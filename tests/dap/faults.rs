@@ -1,7 +1,3 @@
-//! Ending programs in every way a client or the system can: terminate
-//! requests, pauses before the program runs, and programs killed from
-//! outside.
-
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Profile, fixture};
@@ -12,8 +8,6 @@ fn pid(process: u32) -> nix::unistd::Pid {
 
 #[test]
 fn terminate_asks_the_program_to_end_whether_running_or_stopped() {
-    // A program that handles SIGTERM ends as it chooses, once its handler
-    // is in place.
     let mut dap = Dap::start("terminate running");
     let started = dap.launch(
         Profile::VsCode,
@@ -36,7 +30,6 @@ fn terminate_asks_the_program_to_end_whether_running_or_stopped() {
     dap.event(terminated.mark, "terminated", |_| true);
     dap.finish();
 
-    // A stopped program is resumed to receive it, which the client hears.
     let mut dap = Dap::start("terminate stopped");
     let started = dap.launch(
         Profile::VsCode,
@@ -59,7 +52,6 @@ fn terminate_asks_the_program_to_end_whether_running_or_stopped() {
     );
     dap.finish();
 
-    // One that does not handle it dies of it.
     let mut dap = Dap::start("terminate unhandled");
     let started = dap.launch(
         Profile::Neovim,
@@ -79,8 +71,6 @@ fn terminate_asks_the_program_to_end_whether_running_or_stopped() {
 
 #[test]
 fn terminate_lets_a_program_end_by_raising_the_signal_again() {
-    // A program that cleans up after the debugger's SIGTERM and raises it
-    // again, as Go's runtime does, dies of the second without stopping.
     let mut dap = Dap::start("terminate reraised");
     let started = dap.launch(
         Profile::VsCode,
@@ -101,8 +91,6 @@ fn terminate_lets_a_program_end_by_raising_the_signal_again() {
     );
     dap.finish();
 
-    // Once the user has stopped in the handler, the program's own signal is
-    // its policy's again.
     let mut dap = Dap::start("terminate reraised after a stop");
     let started = dap.launch(
         Profile::VsCode,
@@ -138,13 +126,11 @@ fn pausing_before_the_program_runs_is_refused_and_right_after_it_starts_stops_it
     dap.initialize(Profile::Neovim);
     let launch = dap.send("launch", json!({"program": fixture("spin")}));
 
-    // Nothing runs until configuration is done.
     assert_eq!(
         dap.request_error("pause", json!({"threadId": 1})),
         "the program is not running"
     );
 
-    // A pause sent with configurationDone stops the program it starts.
     let done = dap.send("configurationDone", Value::Null);
     let paused = dap.send("pause", json!({"threadId": 1}));
     dap.success(done);
@@ -191,7 +177,6 @@ fn a_program_killed_from_outside_ends_the_session_whether_running_or_stopped() {
         );
         dap.event(mark, "terminated", |_| true);
 
-        // Requests that need a program say there is none.
         assert_eq!(
             dap.request_error("stackTrace", json!({"threadId": 1})),
             "the program is not running"

@@ -1,5 +1,3 @@
-//! Backtraces across modules and call-frame information.
-
 use super::*;
 
 #[tokio::test]
@@ -49,15 +47,12 @@ async fn dwarf_cfi_unwinds_and_finishes_across_the_compiler_and_linker_matrix() 
             "backtrace was truncated: {trace:?}"
         );
 
-        // Unwinding continues through libc's start code to its undefined
-        // return address rather than stopping at the main image's boundary.
         assert_eq!(
             trace.termination,
             UnwindTermination::Complete,
             "unexpected {fixture} backtrace: {trace:?}"
         );
 
-        // Finishing uses the same unwind information to find the caller.
         assert_eq!(
             scenario.step_to_stop(StepKind::Out).await,
             StopReason::Step {
@@ -94,8 +89,6 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
         let comparator = scenario.add_breakpoint("compare_values").await;
         scenario.add_breakpoint("module_callback").await;
 
-        // main -> sort_values -> libc qsort -> compare_values: the comparator's
-        // caller is described only by libc's own call-frame information.
         assert!(matches!(
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
@@ -131,8 +124,6 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
             "{fixture}: no libc frame was reconstructed: {frames:#?}"
         );
 
-        // libc has no debug information, so its symbol tables name every
-        // frame; so too the main image's start code, which has none either.
         for frame in trace.frames.iter() {
             assert!(
                 frame.function.is_some() || frame.symbol.is_some(),
@@ -152,8 +143,6 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
             "{fixture}: {start:#?}"
         );
 
-        // glibc's entry code declares the return address undefined, so a
-        // complete trace proves the walk crossed back through libc into _start.
         assert_eq!(
             trace.termination,
             UnwindTermination::Complete,
@@ -167,7 +156,6 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
             "{fixture}: main's caller must be libc's start code: {frames:#?}"
         );
 
-        // main -> dso_apply (shared library with DWARF) -> module_callback.
         scenario.remove_breakpoint(comparator.id).await;
         assert!(matches!(
             scenario.resume_to_stop().await,
@@ -209,8 +197,6 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
 
         assert_eq!(trace.termination, UnwindTermination::Complete);
 
-        // abort() raises SIGABRT inside libc: the innermost frames have no
-        // main-image metadata, yet the walk must still reach the caller.
         assert!(matches!(
             scenario.resume_to_stop().await,
             StopReason::Exception(exception) if exception.code == 6
@@ -241,7 +227,6 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
             "{fixture}: {trace:#?}"
         );
 
-        // The stop location is described by the module that contains it.
         let location = scenario
             .operation("location", scenario.handle().current_location())
             .await;
@@ -273,10 +258,6 @@ async fn backtraces_unwind_through_shared_libraries_and_libc() {
     }
 }
 
-/// Code the program copied into anonymous memory is the program's code at
-/// another address, as V8's copy of its builtins is: its frame is named and
-/// unwound by the program's own symbols and call-frame information, and the
-/// module that binds the copy holds only what was copied.
 #[tokio::test]
 async fn backtraces_unwind_through_a_copy_of_the_programs_code() {
     let mut scenario = Scenario::launch("code-copy");
@@ -341,9 +322,6 @@ async fn backtraces_unwind_through_a_copy_of_the_programs_code() {
     scenario.shutdown().await;
 }
 
-/// A core's stack runs through the copy as the live process's did: the
-/// dump saved the copy's memory, which proves it a copy as the process's
-/// memory does.
 #[tokio::test]
 async fn a_cores_backtrace_unwinds_through_a_copy_of_the_programs_code() {
     let scenario = Scenario::open_core(
@@ -380,11 +358,6 @@ async fn a_cores_backtrace_unwinds_through_a_copy_of_the_programs_code() {
     );
 }
 
-/// A breakpoint set before the program copies its code is copied with the
-/// code, as V8 copies a builtin a pending breakpoint names. The copy's trap
-/// is the debugger's, not the program's: the program stops at the
-/// breakpoint in the copy, which reads as the code it copied, and runs on
-/// to exit as it would undebugged.
 #[tokio::test]
 async fn a_breakpoint_the_program_copies_with_its_code_stops_in_the_copy() {
     let mut scenario = Scenario::launch("code-copy");
@@ -416,8 +389,6 @@ async fn a_breakpoint_the_program_copies_with_its_code_stops_in_the_copy() {
         .expect("the module is loaded");
     assert!(copy.module.window.is_some(), "{copy:?}");
 
-    // Both the original and the copy hold the breakpoint, and neither
-    // shows its trap.
     let site = support::breakpoint_address(&reason).get();
     let resolved = super::libraries::breakpoint(&mut scenario, copied.id).await;
     assert_eq!(resolved.locations.len(), 2, "{resolved:#?}");
@@ -437,7 +408,6 @@ async fn a_breakpoint_the_program_copies_with_its_code_stops_in_the_copy() {
     scenario.shutdown().await;
 }
 
-/// Resumes past the preemption signals the Go runtime sends itself.
 async fn go_stop(scenario: &mut Scenario, mut reason: StopReason) -> StopReason {
     while matches!(&reason, StopReason::Exception(exception) if exception.code == 23) {
         reason = scenario.resume_to_stop().await;
@@ -446,8 +416,6 @@ async fn go_stop(scenario: &mut Scenario, mut reason: StopReason) -> StopReason 
     reason
 }
 
-/// The frames a Go program recorded with `runtime.CallersFrames`: function,
-/// file, and line, innermost first, inline frames included.
 fn go_truth_frames(output: &str) -> Vec<(String, String, u64)> {
     output
         .lines()
@@ -462,9 +430,6 @@ fn go_truth_frames(output: &str) -> Vec<(String, String, u64)> {
         .collect()
 }
 
-/// Every caller's frame pointer is recovered, and is where its prologue
-/// pointed it: just below the return address its own caller's frame holds,
-/// which the stack table places independently of the saved word.
 async fn check_go_frame_pointers(
     scenario: &Scenario,
     trace: &microscope::Backtrace,
@@ -496,8 +461,6 @@ async fn check_go_frame_pointers(
 
     assert!(physical.len() >= 8, "{fixture}: {trace:#?}");
 
-    // The innermost frame stopped in its prologue, and the outermost has
-    // no caller to check it by.
     for pair in physical[1..].windows(2) {
         let [(frame, rbp, _), (_, _, caller_rsp)] = pair else {
             unreachable!("windows of two")
@@ -513,10 +476,6 @@ async fn check_go_frame_pointers(
     }
 }
 
-/// Function and line breakpoints bind in Go images with DWARF, without it,
-/// and without symbols too, where Go's own function table names and unwinds
-/// every frame. The backtrace at the checkpoint equals the frames the
-/// program recorded itself, inline frames included.
 #[tokio::test]
 async fn go_backtraces_match_the_runtimes_own_frames_with_and_without_dwarf() {
     let source = "tests/fixtures/go/callers/main.go";
@@ -591,8 +550,6 @@ async fn go_backtraces_match_the_runtimes_own_frames_with_and_without_dwarf() {
             })
             .collect::<Vec<_>>();
 
-        // The checkpoint recorded its callers' frames, which follow the
-        // checkpoint's own and that of the function it stopped in.
         assert_eq!(frames[0].0, "main.reached", "{fixture}: {frames:#?}");
         assert_eq!(frames[1].0, "main.checkpoint", "{fixture}: {frames:#?}");
         assert_eq!(
@@ -614,17 +571,11 @@ async fn go_backtraces_match_the_runtimes_own_frames_with_and_without_dwarf() {
     }
 }
 
-/// The kernel maps the vDSO from no file, so its module is read from the
-/// process's memory. Its call-frame information carries the walk out of it
-/// and restores the registers its callers keep values in, and its symbol
-/// table names the code it exports; gdb names the same frames.
 #[tokio::test]
 async fn backtraces_unwind_through_the_vdso() {
     for variant in ["gcc-o0", "gcc-o2", "clang-o2-nopie"] {
         let fixture = format!("vdso-{variant}");
 
-        // clock_gettime faults in an unexported helper that libc calls;
-        // time is the vDSO's own, called straight from the program.
         for (mode, caller) in [("clock", "vdso_clock"), ("time", "vdso_time")] {
             let context = format!("{fixture} {mode}");
             let mut scenario = Scenario::launch(&fixture);
@@ -650,7 +601,6 @@ async fn backtraces_unwind_through_the_vdso() {
                 .await;
             let vdso = support::vdso_module(&modules);
 
-            // The kernel links its vDSO at zero.
             let mapping = support::vdso_mapping(process_id);
             assert_eq!(vdso.module.load_bias.get(), mapping.start, "{context}");
 
@@ -673,7 +623,6 @@ async fn backtraces_unwind_through_the_vdso() {
             let level = position_of(&frames, &fixture, caller);
             let innermost = trace.frames[0].symbol.as_ref();
             if mode == "clock" {
-                // No symbol covers the helper, and none is guessed.
                 assert!(innermost.is_none(), "{context}: {innermost:?}");
                 assert_eq!(level, 2, "{context}: {frames:#?}");
                 assert!(frames[1].0.starts_with("libc.so"), "{context}: {frames:#?}");
@@ -683,7 +632,6 @@ async fn backtraces_unwind_through_the_vdso() {
                     "{context}: {wrapper:?}"
                 );
             } else {
-                // `time` and `__vdso_time` name the same code.
                 let symbol = innermost.expect("a vDSO symbol");
                 assert!(
                     ["time", "__vdso_time"].contains(&symbol.name.as_ref()) && symbol.offset > 0,
@@ -715,7 +663,6 @@ async fn backtraces_unwind_through_the_vdso() {
                 "{context}: {frames:#?}"
             );
 
-            // The stop is located in the vDSO, which has no source.
             let location = scenario
                 .operation("location", scenario.handle().current_location())
                 .await;
@@ -724,8 +671,6 @@ async fn backtraces_unwind_through_the_vdso() {
             assert_eq!(location.image.symbol, trace.frames[0].symbol, "{context}");
             assert!(location.image.source.is_none(), "{context}");
 
-            // Optimized callers keep `depth` in a register the vDSO and libc
-            // saved and restore through their call-frame information.
             scenario
                 .operation(
                     "select caller",
@@ -743,16 +688,12 @@ async fn backtraces_unwind_through_the_vdso() {
     }
 }
 
-/// A C handler returns through glibc's signal trampoline, and the frame
-/// the signal interrupted comes from the registers the kernel saved in the
-/// signal frame; the walk goes on through it to the program's first frame.
 #[tokio::test]
 async fn backtraces_unwind_through_a_signal_handler() {
     let mut scenario = Scenario::launch("signals");
     scenario.add_breakpoint("handle_usr1").await;
     let mut reason = scenario.run_to_stop().await;
 
-    // The signal itself stops first, and goes on to the program.
     while let StopReason::Exception(_) = reason {
         reason = scenario.resume_to_stop().await;
     }
@@ -783,8 +724,6 @@ async fn backtraces_unwind_through_a_signal_handler() {
     let trampoline = position("__restore_rt");
     assert_eq!(trampoline, 1, "{trace:#?}");
 
-    // The trampoline and the interrupted frame are where they are, not
-    // after a call.
     for frame in &trace.frames[trampoline..=trampoline + 1] {
         assert_eq!(frame.kind, microscope::FrameKind::Signal, "{trace:#?}");
     }
@@ -802,10 +741,6 @@ async fn backtraces_unwind_through_a_signal_handler() {
     scenario.shutdown().await;
 }
 
-/// A handler on an alternate signal stack returns through the same trampoline
-/// as one on the interrupted stack, but the frames it unwinds to are not
-/// adjacent on the stack. The walk must still reach the interrupted frames
-/// and the program's first frame.
 #[tokio::test]
 async fn backtraces_unwind_through_a_handler_on_an_alternate_stack() {
     let mut scenario = Scenario::launch("signal-altstack");
@@ -854,11 +789,6 @@ async fn backtraces_unwind_through_a_handler_on_an_alternate_stack() {
     scenario.shutdown().await;
 }
 
-/// GCC describes a function that realigns its stack through a register
-/// holding the incoming stack pointer with call-frame expressions: its
-/// CFA is read through the saved pointer, and its caller's frame pointer
-/// is where a `DW_CFA_expression` rule computes. The walk goes through it,
-/// and the caller's variables, found from its frame pointer, are its own.
 #[tokio::test]
 async fn backtraces_unwind_through_frames_described_by_expressions() {
     for fixture in ["realigned-gcc-o0", "realigned-gcc-o2", "realigned-clang-o2"] {

@@ -1,29 +1,18 @@
-//! How each thread's system calls fall over time, for the kernel lane
-//! drawn under its samples on the timeline.
-
 use super::keys::Keys;
 use super::query::{Query, syscalls};
 use crate::capture::Capture;
 use crate::capture::records::{CallOutcome, UNSEEN};
 
-/// One thread's calls in each slice of a range, and the calls long enough
-/// to span a whole slice, which kept it waiting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelLane {
     pub thread: u32,
 
-    /// Calls that returned in each slice, and of those, the failed.
     pub calls: Vec<u32>,
     pub failed: Vec<u32>,
 
-    /// Each long call's row, and its part of the range, in time order.
     pub long: Vec<(u32, i64, i64)>,
 }
 
-/// The kernel lane of each thread with a call the query keeps, cut into
-/// `buckets` slices of its range. A call counts in the slice it returned
-/// in, or entered in when its return was not seen; one still running at
-/// the end runs to it.
 pub fn kernel_lanes(
     capture: &Capture,
     keys: &Keys<'_>,
@@ -38,7 +27,6 @@ pub fn kernel_lanes(
         return Vec::new();
     };
 
-    // The range is a window onto the calls, not a selection of them.
     let kept = syscalls(
         capture,
         keys,

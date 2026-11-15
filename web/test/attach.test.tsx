@@ -1,5 +1,3 @@
-// The Attach tab's process list when listing fails and then succeeds.
-
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";

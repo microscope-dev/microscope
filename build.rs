@@ -1,12 +1,3 @@
-//! Embeds the web UI's built files in release builds of microscope, names the
-//! sources the loader was built from, and compiles the syscall tracer's BPF
-//! programs with the flake's clang.
-//!
-//! Development builds read `build/web` at run time instead, so rebuilding
-//! the page never rebuilds the crate. Node is never needed to build microscope:
-//! a missing `build/web` embeds nothing, and the page says to run
-//! `just web-build`.
-
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::hash::Hasher as _;
@@ -41,10 +32,6 @@ fn main() {
     std::fs::write(out.join("web_assets.rs"), table).expect("write the asset table");
 }
 
-/// Digests the library's source files and the locked dependencies, so that
-/// images a cache holds are never read by a loader built from other sources:
-/// any change may change what a load produces. The binary's own modules are
-/// left out, so editing them rebuilds neither the library nor its tests.
 fn sources_digest(manifest: &Path) {
     let mut files = Vec::new();
     let binary_only = ["bin", "cli", "dap", "main.rs", "present", "web"];
@@ -72,8 +59,6 @@ fn sources_digest(manifest: &Path) {
 
     files.sort();
 
-    // SipHash with fixed keys: stable for one toolchain, and a toolchain
-    // that changes it only empties caches.
     let mut digest = std::hash::DefaultHasher::new();
     for (name, path) in files {
         let contents = std::fs::read(&path).expect("read a source file");
@@ -88,16 +73,6 @@ fn sources_digest(manifest: &Path) {
     );
 }
 
-/// Compiles `src/backend/linux/bpf/*.bpf.c` into `OUT_DIR`, with the
-/// unwrapped clang and only the headers the flake names, so that the objects
-/// depend on nothing of the host's. Outside the dev shell the build stops
-/// and says which variable is missing; it never looks for another compiler.
-///
-/// Every edit to the library reruns this script, since the sources digest
-/// covers it, so the objects are rebuilt only when what clang reads or how
-/// it is run changed: the compiler, its flags, and the C files beside the
-/// programs. The headers outside come from store paths the flags name,
-/// which change with their contents.
 fn bpf_programs(manifest: &Path, out: &Path) {
     let directory = manifest.join("src/backend/linux/bpf");
     println!("cargo::rerun-if-changed={}", directory.display());
@@ -154,13 +129,9 @@ fn bpf_programs(manifest: &Path, out: &Path) {
         digest.write(&contents);
     }
 
-    // The bpf-walk-timing feature builds a second sampler that times each
-    // walk of JavaScript frames, which only a measurement loads.
     let timing = std::env::var_os("CARGO_FEATURE_BPF_WALK_TIMING").is_some();
     digest.write_u8(u8::from(timing));
 
-    // The bpf-faults feature builds second syscall programs that skip what
-    // tests ask, as the kernel can.
     let faults = std::env::var_os("CARGO_FEATURE_BPF_FAULTS").is_some();
     digest.write_u8(u8::from(faults));
 
@@ -193,7 +164,6 @@ fn bpf_programs(manifest: &Path, out: &Path) {
         return;
     }
 
-    // An interrupted build leaves no stamp, so the next one starts over.
     if stamp.exists() {
         std::fs::remove_file(&stamp).expect("remove the BPF stamp");
     }

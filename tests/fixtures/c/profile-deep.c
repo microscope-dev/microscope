@@ -1,7 +1,7 @@
-// Recursion deeper than the kernel's frame-pointer chain holds, 127
-// addresses, in frames that keep the chain: with a small stack copy, only
-// the chain carries the stack from leaf toward main, and the kernel stops
-// it short.
+
+
+
+
 #include <stdlib.h>
 
 enum { DEPTH = 200 };

@@ -1,32 +1,16 @@
-//! What the text before a debug console's cursor asks to complete.
-//!
-//! Completion reads the text as far as it needs and never more: the part
-//! being completed is the name the cursor ends, and what comes before it
-//! decides what kind of name that is. A member's base is the postfix
-//! expression before its `.` or `->`, which the session evaluates to list
-//! its members. This reads text alone, so a fuzz target includes it.
-
-/// What the text before the cursor asks to complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Completing<'a> {
-    /// A member of the value `base` names, after `.` or `->`.
     Member { base: &'a str },
 
-    /// A register, after `$`.
     Register,
 
-    /// A name inside `qualifier`, after `qualifier::`.
     Qualified { qualifier: &'a str },
 
-    /// A name, or, as the line's first word, a command.
     Name { first: bool },
 
-    /// Nothing: the text ends in an operator no name follows yet.
     Nothing,
 }
 
-/// What the text asks to complete, the part being completed, and the byte
-/// offset where that part starts.
 pub fn completing(typed: &str) -> (Completing<'_>, &str, usize) {
     let start = typed
         .char_indices()
@@ -71,29 +55,21 @@ const fn is_name(character: char) -> bool {
     character.is_ascii_alphanumeric() || character == '_'
 }
 
-/// What joins the names of a postfix expression.
 const JOINERS: [&[u8]; 3] = [b"->", b"::", b"."];
 
-/// Where the postfix expression that ends the text starts: names joined by
-/// `.`, `->`, and `::`, indexed by `[…]`, or a parenthesized expression,
-/// such as `p->items[i].next` or `(*node)`. `None` when the text ends in
-/// none.
 fn base_start(text: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut at = bytes.len();
     loop {
-        // One operand ends at `at`.
         let end = at;
         match bytes.get(at.checked_sub(1)?)? {
             b']' => {
-                // An index needs the operand it indexes.
                 at = opening(bytes, at - 1, b'[', b']')?;
                 continue;
             }
             b')' => {
                 at = opening(bytes, at - 1, b'(', b')')?;
 
-                // A length or size reads as one operand with its name.
                 at -= name_length(bytes.get(..at)?);
             }
             b'`' => {
@@ -114,7 +90,6 @@ fn base_start(text: &str) -> Option<usize> {
 
         let before = bytes.get(..at)?;
         match JOINERS.iter().find(|joiner| before.ends_with(joiner)) {
-            // `::name` names the outermost scope.
             Some(&b"::")
                 if at
                     .checked_sub(3)
@@ -129,7 +104,6 @@ fn base_start(text: &str) -> Option<usize> {
     }
 }
 
-/// The length of the name that ends `bytes`.
 fn name_length(bytes: &[u8]) -> usize {
     bytes
         .iter()
@@ -138,7 +112,6 @@ fn name_length(bytes: &[u8]) -> usize {
         .count()
 }
 
-/// The index of the bracket that opens the group closing at `close`.
 fn opening(bytes: &[u8], close: usize, open: u8, shut: u8) -> Option<usize> {
     let mut depth = 0_usize;
     for (index, &byte) in bytes.get(..=close)?.iter().enumerate().rev() {
@@ -192,7 +165,6 @@ mod tests {
             ("x == ", Completing::Nothing, ""),
             ("1 + .", Completing::Nothing, ""),
             ("a[1.", member("1"), ""),
-            // A range's dots access no member.
             ("a[1..en", Completing::Name { first: false }, "en"),
             ("a)].", Completing::Nothing, ""),
         ] {

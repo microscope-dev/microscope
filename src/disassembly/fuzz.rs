@@ -1,5 +1,3 @@
-//! Fuzzes decoding from known instruction starts over arbitrary bytes,
-//! known starts, unreadable memory, and a thread stopped at a known start.
 #![allow(
     clippy::expect_used,
     clippy::panic,
@@ -22,7 +20,6 @@ use crate::{
     AddressRange, Architecture, ByteOrder, PointerWidth, TargetDescription, VirtualAddress,
 };
 
-/// Places code just below a read-chunk boundary so instructions straddle it.
 const BASE: u64 = 0x10_0000 - 0x40;
 
 pub fn run(data: &[u8]) {
@@ -43,7 +40,6 @@ pub fn run(data: &[u8]) {
     let offset = |value: u16| u64::from(value) % length;
     let mut source = FakeSource::new(BASE, code.to_vec());
 
-    // An unreadable hole, possibly empty, splits the readable bytes.
     let hole_start = BASE + offset(u16::from_le_bytes([header[1], header[2]]));
     let hole_end = (hole_start + u64::from(header[3] % 32)).min(BASE + length);
     source.readable = vec![
@@ -111,9 +107,6 @@ pub fn run(data: &[u8]) {
     check_window(&source, address, before, after, &window);
 }
 
-/// Registers that mostly address the code itself, so that operands computed
-/// from them reach readable and unreadable bytes alike. Without `rax`, the
-/// stopped thread is inside a system call the kernel will restart.
 fn registers(code: &[u8], flags: u8) -> RegisterFile {
     let length = code.len() as u64;
     let value = |register: u16| {
@@ -135,10 +128,6 @@ fn registers(code: &[u8], flags: u8) -> RegisterFile {
     registers
 }
 
-/// Checks that exactly indirect branches have targets, that targets loaded
-/// from memory are the bytes there, and that registers are used only at the
-/// stopped instruction, where a target that does not need them is the one
-/// found without them.
 fn check_indirect(
     source: &FakeSource,
     architecture: &mut dyn InstructionDecoder,
@@ -223,8 +212,6 @@ fn check_indirect(
     }
 }
 
-/// Checks that instructions are ordered, faithful to memory, and tile their
-/// range except where a reported conflict resumes decoding at a known start.
 fn check_block(source: &FakeSource, block: &DisassemblyBlock, bounded: bool) {
     let instructions = &block.instructions;
     for (index, instruction) in instructions.iter().enumerate() {
@@ -245,8 +232,6 @@ fn check_block(source: &FakeSource, block: &DisassemblyBlock, bounded: bool) {
                 let end = instruction.end().get();
                 assert_eq!(source.byte(end), None, "truncation needs unreadable memory");
 
-                // Only a known start inside the truncated bytes resumes
-                // decoding; otherwise truncation ends the block.
                 let resumes = block
                     .conflicts
                     .iter()
@@ -285,9 +270,6 @@ fn check_block(source: &FakeSource, block: &DisassemblyBlock, bounded: bool) {
             continue;
         }
 
-        // Decoding resumes at the boundary unless the conflicting
-        // instruction ends the block: the boundary is unreadable or the
-        // requested count is reached.
         let resumed = instructions
             .iter()
             .any(|instruction| instruction.address == conflict.boundary);
@@ -303,8 +285,6 @@ fn check_block(source: &FakeSource, block: &DisassemblyBlock, bounded: bool) {
     }
 
     if bounded {
-        // Every known start inside the range begins an instruction unless
-        // decoding stopped before reaching it.
         let decoded_end = instructions
             .last()
             .map_or(block.range.start, super::DisassembledInstruction::end);
@@ -346,7 +326,6 @@ fn check_window(
     assert!(leading.len() <= before as usize);
     assert_eq!(shortfall.is_some(), leading.len() < before as usize);
 
-    // Leading instructions are contiguous and end exactly at the address.
     if let Some(last) = leading.last() {
         assert_eq!(last.end(), address, "{block:#?}");
         assert!(

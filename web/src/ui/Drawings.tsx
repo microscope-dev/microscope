@@ -1,8 +1,3 @@
-// The Drawings view: each argument and local of the frame shown that a
-// view draws, then each value the link pins, drawn by its renderer in the
-// sandbox. A card keeps its drawing while the program runs, dimmed and
-// labelled with its stop, and draws again at the next stop it shows.
-
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
@@ -41,31 +36,26 @@ import { hidden } from "./Values";
 import { LocalExpansion, ValueRow } from "./ValueTree";
 import { useFocus } from "./Workspace";
 
-/** One value drawn: where it comes from and which renderers it offers. */
 export interface Card {
   key: string;
   path: string;
-  /** The renderers the value's view offers, or null until known. */
+
   offered: string[] | null;
-  /** The renderer the link names for it, if any. */
+
   chosen: string | null;
-  /** Its place among the link's pinned values, or null for a variable. */
+
   pinned: number | null;
 }
 
 let shared: Sandbox | null = null;
 
-/** The card just pinned, which comes into view when it appears. */
 let reveal: string | null = null;
 
-/** Pins `pinned` to the drawings and brings its card into view. */
 export function pin(pinned: Pinned): (look: Look) => Look {
   reveal = formatPinned(pinned);
   return (look) => drawing(look, pinned);
 }
 
-/** The tab's sandbox, started the first time something is drawn, and
- * started afresh after its frame fails, as when the server was down. */
 export function sandbox(): Sandbox {
   if (shared?.spent) {
     shared.dispose();
@@ -75,17 +65,13 @@ export function sandbox(): Sandbox {
   return shared;
 }
 
-/** The drawings the focus shows: the frame's variables that a view draws,
- * then the values the link pins. */
 export function useCards(): Card[] {
   const focus = useFocus();
   const why = hidden(focus);
   assert(why !== null || focus.at !== null, "values shown with no stop");
   const scopes = useRequest("scopes", why === null ? focus.at : null);
   const pins = focus.look.d;
-  // While the program runs or its stop has passed, and until the next
-  // stop's values arrive, the cards stay as they were, each dimmed until it
-  // draws the stop shown. Replacing them would forget what they drew.
+
   const last = useRef<Card[]>([]);
   return useMemo(() => {
     // oxlint-disable-next-line react/refs -- the cards keep what they drew while values are hidden
@@ -116,7 +102,6 @@ export function useCards(): Card[] {
       const pinned = parsePinned(entry);
       const key = formatPinned(pinned);
       if (seen.has(key)) {
-        // A pin of a variable the frame draws pins that variable's card.
         const card = cards.find((each) => each.key === key);
         assert(card !== undefined, `pin ${index} seen with no card`);
         if (card.pinned === null) {
@@ -167,8 +152,6 @@ export function Drawings() {
   );
 }
 
-/** What a card shows: a picture, or why there is none, from one stop, and
- * the inputs its renderer had when it had any. */
 type Shown =
   | { stop: number; picture: Picture; renderer: Drawing["renderer"]; inputs: Inputs }
   | { stop: number; live: LiveJob; renderer: Drawing["renderer"]; inputs: Inputs }
@@ -176,7 +159,6 @@ type Shown =
 
 type Inputs = Record<string, Value>;
 
-/** A draw a card wants: the latest replaces any that has not started. */
 interface Job {
   stop: number;
   key: string;
@@ -186,15 +168,10 @@ interface Job {
   paths: Record<string, string | null>;
 }
 
-/** How many CSS pixels a card's width changes by before it draws again. */
 const RESIZED = 8;
 
-/** The drawing chosen among a value's several, by session and path, so it
- * stays chosen at the next stop and in another view. */
 const tabs = new Map<string, string>();
 
-/** The inputs a card drew at each stop, for `previous`, by session, path,
- * and renderer: stops count on across sessions. */
 const drawn = new Map<string, { stop: number; inputs: Record<string, Value> }[]>();
 
 function previousInputs(key: string, stop: number): Record<string, Value> | null {
@@ -221,11 +198,8 @@ function outcomeProblem(outcome: Outcome): string | null {
   }
 }
 
-/** Each job a live renderer draws, made once so a job drawn again, as at
- * a new width, is not news to the renderer. */
 const liveJobs = new WeakMap<Job, LiveJob>();
 
-/** What a card shows after a draw: its picture, or why there is none. */
 function shownFor(job: Job, outcome: Outcome): Shown {
   const { stop, inputs } = job;
   const failed = outcomeProblem(outcome);
@@ -265,7 +239,6 @@ function shownFor(job: Job, outcome: Outcome): Shown {
   }
 }
 
-/** A value's path with a part of it, as `select` names one. */
 function partPath(path: string, select: string): string {
   const whole = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\d+\])*$/u.test(path)
     ? path
@@ -286,7 +259,6 @@ function DrawingCard({ card }: { card: Card }) {
   const [selected, setSelected] = useState<string | null>(null);
   const { shown, draw, fail } = useDrawQueue(id, holder, body);
 
-  // A pinned value with no renderer named draws with what its view offers.
   const evaluated = useRequest(
     "evaluate",
     card.offered === null && card.chosen === null && live
@@ -315,7 +287,6 @@ function DrawingCard({ card }: { card: Card }) {
     asked.data && asked.current ? { digest: asked.data.renderer.digest } : null,
   );
 
-  // Only cards on screen draw.
   useEffect(() => {
     const element = holder.current;
     assert(element !== null, "drawing card mounted without its element");
@@ -330,14 +301,12 @@ function DrawingCard({ card }: { card: Card }) {
     return () => observer.disconnect();
   }, [card.key]);
 
-  // Each card has its own worker, which ends with it.
   useEffect(() => () => shared?.release(id), [id]);
 
   const stop = live?.stop ?? null;
   const drawingData = asked.current ? asked.data : undefined;
   const source = code.current ? code.data : undefined;
-  // A request that failed says which and why, rather than leave the card
-  // waiting for a drawing that will not come.
+
   let problem: string | undefined;
   if (evaluated.error) {
     problem = `Cannot evaluate ${card.path}: ${evaluated.error.message}`;
@@ -382,7 +351,6 @@ function DrawingCard({ card }: { card: Card }) {
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- a new theme draws again, in its colors
   }, [stop, drawingData, source, problem, theme, card.path, focus.session, draw, fail]);
 
-  // The page builds the picture's elements itself.
   const picture = shown && "picture" in shown ? shown.picture : null;
   useEffect(() => {
     const element = body.current;
@@ -514,24 +482,20 @@ function RendererTab({
   );
 }
 
-/** A card's draws, one at a time, each started on an animation frame. The
- * latest job replaces any not yet started, so the stops that arrived
- * meanwhile are skipped, and a drawing never replaces one of a later stop.
- * A card whose width changes draws its last job again at the new width. */
 function useDrawQueue(
   id: string,
   holder: RefObject<HTMLElement | null>,
   body: RefObject<HTMLElement | null>,
 ): { shown: Shown | null; draw(job: Job): void; fail(stop: number, problem: string): void } {
   const [shown, setShown] = useState<Shown | null>(null);
-  // What `shown` holds, whose images are freed once it is replaced.
+
   const current = useRef<Shown | null>(null);
   const wanted = useRef<Job | null>(null);
   const busy = useRef(false);
   const frame = useRef<number | null>(null);
   const latest = useRef(-1);
   const mounted = useRef(true);
-  // The draw last started and the width it was offered.
+
   const started = useRef<Job | null>(null);
   const startedWidth = useRef(0);
 
@@ -539,7 +503,7 @@ function useDrawQueue(
     const show = (next: Shown) => {
       if (mounted.current && next.stop >= latest.current) {
         latest.current = next.stop;
-        // The page drew the last picture's images already, if it ever will.
+
         free(current.current);
         current.current = next;
         setShown(next);
@@ -626,14 +590,12 @@ function useDrawQueue(
   return { shown, draw: queue.draw, fail: queue.fail };
 }
 
-/** Frees the images of a picture shown no more. */
 function free(shown: Shown | null): void {
   if (shown !== null && "picture" in shown) {
     closeImages(shown.picture);
   }
 }
 
-/** Copies every input value as CSV, and says so. */
 async function copyCsv(rows: InputRows): Promise<void> {
   if (!(await copyText(csv(rows)))) {
     flash("The browser would not copy");
@@ -642,19 +604,14 @@ async function copyCsv(rows: InputRows): Promise<void> {
   flash(`Copied ${rows.count} ${rows.count === 1 ? "value" : "values"} as CSV`);
 }
 
-/** The height of one of the Table's rows, in pixels. */
 const ROW = 22;
-/** How many of the Table's rows show at once. */
+
 const SHOWN_ROWS = 14;
-/** The tallest the Table's rows may be together, well within what every
- * browser lays out: beyond it, scrolling moves through the rows in
- * proportion. */
+
 const MOST_HEIGHT = 4_000_000;
 const TABLE_STYLE = { maxHeight: ROW * (SHOWN_ROWS + 1) };
 const ROW_STYLE = { height: ROW };
 
-/** Every input value, a path and its value per row, of which only the rows
- * scrolled to are in the page. */
 function InputTable({ rows, label }: { rows: InputRows; label: string }) {
   const [scrolled, setScrolled] = useState(0);
   const height = Math.min(rows.count * ROW, MOST_HEIGHT);
@@ -708,13 +665,10 @@ function InputTable({ rows, label }: { rows: InputRows; label: string }) {
   );
 }
 
-/** Where a renderer comes from, as a card names it. */
 function originLabel(origin: string): string {
   return origin === "built-in" ? "built-in" : (origin.split("/").at(-1) ?? origin);
 }
 
-/** A part of the drawn value, as a row, after a click on its shape. Focus
- * moves into it, and back to where it was when it closes. */
 export function Selected({ at, path, onClose }: { at: At; path: string; onClose(): void }) {
   const value = useRequest("evaluate", { ...at, expression: path });
   const look = useLook();
@@ -754,7 +708,7 @@ export function Selected({ at, path, onClose }: { at: At; path: string; onClose(
       role="dialog"
       aria-label={`Part ${path}`}
       tabIndex={-1}
-      // Escape closes it rather than leave the view.
+
       data-keys="escape"
       onKeyDown={escape}
     >
@@ -782,9 +736,6 @@ export function Selected({ at, path, onClose }: { at: At; path: string; onClose(
   );
 }
 
-/** Draws a value with any renderer, pinning it to the drawings, or shows
- * the memory it points to or is stored in. Renderers are offered only for a
- * value with a path at a stop. */
 export function DrawAs({
   name,
   path,
@@ -813,14 +764,12 @@ export function DrawAs({
     [close, look],
   );
 
-  // Focus moves to the first renderer once the list arrives.
   useEffect(() => {
     if (open && loaded) {
       menu.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
     }
   }, [open, loaded, menu]);
 
-  // A click elsewhere puts it away.
   useEffect(() => {
     if (!open) {
       return;
@@ -901,7 +850,7 @@ export function DrawAs({
           className="popover menu"
           role="menu"
           aria-label={`Draw ${path ?? name} as`}
-          // Escape closes it rather than leave the view.
+
           data-keys="escape"
           onKeyDown={move}
         >
@@ -961,8 +910,6 @@ function RendererItem({
   );
 }
 
-/** The CSS pixels a card's body offers a picture. It is measured on the
- * card, because the body stays hidden until it has a picture. */
 function offeredWidth(card: HTMLElement | null, body: HTMLElement | null): number {
   if (card === null || body === null) {
     return 600;

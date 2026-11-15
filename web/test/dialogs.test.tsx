@@ -1,6 +1,3 @@
-// A dialog takes focus when it opens and gives it back when it closes, so
-// the keyboard stays where the person was.
-
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 

@@ -1,7 +1,3 @@
-//! The frame proofs and epilogue reads checked against a small emulator of
-//! the instructions they reason about, run down every path of generated
-//! code.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use proptest::prelude::*;
@@ -9,19 +5,14 @@ use proptest::prelude::*;
 use super::*;
 use crate::debug_info::x86_64::Epilogues;
 
-/// One instruction of generated code. A jump names the instruction it
-/// goes to by index; past the last is past the code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Op {
     PushRbp,
     PopRbp,
     PushRbx,
     PopRbx,
-    /// `sub rsp, 8 * n`.
     Allocate(u8),
-    /// `add rsp, 8 * n`.
     Free(u8),
-    /// `and rsp, -n`, which aligns rsp down to `n` bytes.
     Align(u8),
     MovRbpRsp,
     MovRspRbp,
@@ -51,7 +42,6 @@ impl Op {
     }
 }
 
-/// Generated code: its instructions, where each starts, and its bytes.
 #[derive(Debug)]
 struct Program {
     ops: Vec<Op>,
@@ -98,17 +88,13 @@ impl Program {
     }
 }
 
-/// Where the stack pointer is at the entry, which holds the return address:
-/// 8 past a multiple of 16, as the ABI leaves it, so aligning moves it.
 const ENTRY_RSP: u64 = 0x7000_0038;
 const RETURN: u64 = 0x4141_4141;
 const CALLER_RBP: u64 = 0x5150_5150;
 const CALLER_RBX: u64 = 0xb0b0_b0b0;
 
-/// What a callee leaves below the stack pointer.
 const CLOBBERED: u64 = 0xdead_0000;
 
-/// The registers and stack of a thread running generated code.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct Machine {
     rsp: u64,
@@ -132,14 +118,12 @@ impl Machine {
         self.stack.insert(self.rsp, value);
     }
 
-    /// Pops a word; one never written is a value of its own.
     fn pop(&mut self) -> u64 {
         let value = self.stack.get(&self.rsp).copied().unwrap_or(!self.rsp);
         self.rsp = self.rsp.wrapping_add(8);
         value
     }
 
-    /// Runs `op`, at `offset`.
     fn run(&mut self, op: Op, offset: u64) {
         match op {
             Op::PushRbp => self.push(self.rbp),
@@ -156,9 +140,6 @@ impl Machine {
                 self.rbp = self.pop();
             }
 
-            // The callee returns with rsp, rbx, and rbp as they were, as
-            // the ABI requires, and may have written anything below rsp:
-            // the call itself writes its return address there.
             Op::Call => {
                 let rsp = self.rsp;
                 for (_, word) in self.stack.range_mut(..rsp) {
@@ -177,8 +158,6 @@ impl MemoryReader for Machine {
     }
 }
 
-/// Whether the proof goes on from the instruction at `offset`, whose frame
-/// is `frame`, to the instructions it may run next.
 fn proof_goes_on(frame: CodeFrame, code: &[u8], offset: u64) -> bool {
     let bytes = &code[usize::try_from(offset).expect("short code")..];
     let instruction = Decoder::with_ip(64, bytes, offset, DecoderOptions::NONE).decode();
@@ -189,12 +168,6 @@ fn proof_goes_on(frame: CodeFrame, code: &[u8], offset: u64) -> bool {
         )
 }
 
-/// Every instruction each path from the entry reaches, by index, with the
-/// machine as it arrives, along the paths the proof follows. Like
-/// call-frame information, the proof assumes a frame is a function of the
-/// instruction, so a path it cannot follow, past code whose frame it does
-/// not know, is assumed to arrive anywhere with the frame proved there.
-/// Paths are cut at `MAX_DEPTH` instructions, so loops end.
 fn reached(program: &Program, frames: &CodeFrames) -> BTreeSet<(usize, Machine)> {
     const MAX_DEPTH: usize = 40;
 
@@ -258,7 +231,6 @@ fn program() -> impl Strategy<Value = Program> {
         .prop_map(Program::new)
 }
 
-/// Bits of `x86_64::CALLEE_SAVED`.
 const KEEPS_RBX: u32 = 1;
 const KEEPS_RBP: u32 = 2;
 
@@ -309,8 +281,6 @@ proptest! {
         let pointer = base + program.offsets[start];
         let mut epilogues = Epilogues::new();
 
-        // Each instruction from `start` in a straight line, until one
-        // that may go elsewhere, with the machine as it arrives.
         let mut machine = Machine::entry();
         let mut line = Vec::new();
         for (at, op) in program.ops.iter().enumerate().skip(start) {

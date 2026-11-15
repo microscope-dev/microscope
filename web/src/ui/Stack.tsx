@@ -11,13 +11,10 @@ import { useFocus } from "./Workspace";
 
 const NONE_OPEN: ReadonlySet<number> = new Set();
 
-/** The call stack of the thread or task shown; choosing a frame moves
- * every pane. */
 export function Stack() {
   const { state, at, trace, stale } = useFocus();
   const go = useGo();
 
-  // The runs opened in this stack; another stack folds afresh.
   const [opened, setOpened] = useState<{
     trace?: Backtrace | undefined;
     runs: ReadonlySet<number>;
@@ -164,7 +161,6 @@ function FrameRow({
   );
 }
 
-/** Whose stack the tab shows: the task's, or the thread's. */
 export function StackBadge() {
   const { state, at } = useFocus();
   if (at?.task) {
@@ -174,10 +170,6 @@ export function StackBadge() {
   return thread ? <span className="count">{threadLabel(thread.id, thread.name)}</span> : null;
 }
 
-/**
- * Where a frame's code is: its file, line, and column where that is known,
- * or its module or address.
- */
 export function where(frame: Frame): string {
   if (frame.source) {
     const column = frame.source.column === null ? "" : `:${frame.source.column}`;

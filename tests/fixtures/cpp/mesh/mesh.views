@@ -1,6 +1,6 @@
 microscope-views 1
 
-# Draw meshes in 3-D with the built-in viewer.
+
 extend c++ engine::Mesh {
     visualize "mesh" {
         vertices = bytes(&vertices[0], len(vertices) * sizeof(engine::Vertex))
@@ -13,7 +13,7 @@ extend c++ engine::Mesh {
     }
 }
 
-# A skeleton's bones, drawn live by bones.js beside this file.
+
 extend c++ engine::Skeleton {
     visualize "bones" {
         bones = bones

@@ -1,8 +1,3 @@
-//! Debug information in separate files, as distributions ship it: found by
-//! `.gnu_debuglink`, by build-id under a debug directory, or downloaded
-//! from a debuginfod server, sharing what a package's files have in common
-//! through a dwz supplementary file.
-
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -18,12 +13,10 @@ fn split(name: &str) -> PathBuf {
     Scenario::fixture(&format!("split/{name}"))
 }
 
-/// The debug directory `basic-build-id`'s debug file is filed under.
 fn debug_root() -> PathBuf {
     split("debug-root")
 }
 
-/// `basic-build-id`'s debug file and the build-id naming it.
 fn build_id_debug_file() -> (PathBuf, String) {
     let ids = debug_root().join(".build-id");
     let directory = fs::read_dir(&ids)
@@ -45,9 +38,6 @@ fn build_id_debug_file() -> (PathBuf, String) {
     (file.clone(), format!("{prefix}{rest}"))
 }
 
-/// Runs `basic`'s copy to `breakpoint_target` and checks its debug
-/// information came from `debug_file`: the stop names the function and its
-/// line, which only DWARF knows in a stripped program.
 async fn stops_with_debug_information(mut scenario: Scenario, debug_file: &Path) {
     let image = scenario.handle().module_image();
     assert_eq!(
@@ -75,8 +65,6 @@ async fn stops_with_debug_information(mut scenario: Scenario, debug_file: &Path)
         .await;
     assert!(location_line(&location).is_some(), "{location:?}");
 
-    // The stripped file's own symbol table is gone; the debug file's names
-    // the function.
     assert!(
         image
             .symbols()
@@ -96,8 +84,6 @@ async fn a_debug_link_beside_the_program_describes_it() {
     stops_with_debug_information(scenario, &debug_file).await;
 }
 
-/// A debug link whose file differs from the one linked, as one left from
-/// an older build, is refused by its checksum, which says why.
 #[tokio::test]
 async fn a_debug_link_to_a_file_from_another_build_is_refused() {
     let scratch = ScratchDir::new("stale-debuglink");
@@ -105,7 +91,6 @@ async fn a_debug_link_to_a_file_from_another_build_is_refused() {
     fs::copy(split("basic-debuglink"), &program).expect("copy the program");
     fs::create_dir(scratch.path().join(".debug")).expect("the .debug directory");
 
-    // Another build's debug information under the linked name.
     fs::copy(
         build_id_debug_file().0,
         scratch.path().join(".debug/basic-debuglink.debug"),
@@ -141,7 +126,6 @@ async fn a_debug_link_to_a_file_from_another_build_is_refused() {
 async fn a_debug_directory_holds_the_debug_file_a_build_id_names() {
     let fixture = split("basic-build-id");
 
-    // Without the directory, nothing describes the program.
     let scenario = Scenario::new("build-id-missing", &fixture);
     assert_eq!(scenario.handle().module_image().functions().len(), 0);
     scenario.shutdown().await;
@@ -155,8 +139,6 @@ async fn a_debug_directory_holds_the_debug_file_a_build_id_names() {
     stops_with_debug_information(scenario, &build_id_debug_file().0).await;
 }
 
-/// A shared library stripped of its debug information takes it from its
-/// separate file as it loads.
 #[tokio::test]
 async fn a_library_loads_its_debug_information_from_its_debug_link() {
     let mut scenario = Scenario::new("library-debuglink", split("module-frames"));
@@ -194,9 +176,6 @@ async fn a_library_loads_its_debug_information_from_its_debug_link() {
     scenario.shutdown().await;
 }
 
-/// A debuginfod server that answers every request for `id` with `body`,
-/// which it counts, and anything else, such as the C library's debug file,
-/// with 404.
 struct Server {
     url: String,
     requests: Arc<AtomicUsize>,
@@ -207,7 +186,6 @@ impl Server {
         Self::serving(vec![(id, body)])
     }
 
-    /// A server that answers for each build-id with its file.
     fn serving(files: Vec<(String, Vec<u8>)>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a port");
         let url = format!("http://{}", listener.local_addr().expect("an address"));
@@ -225,7 +203,6 @@ impl Server {
                     continue;
                 }
 
-                // The headers end at an empty line.
                 let mut line = String::new();
                 while reader.read_line(&mut line).is_ok_and(|read| read > 2) {
                     line.clear();
@@ -261,9 +238,6 @@ impl Server {
     }
 }
 
-/// A debug file no directory holds is downloaded from a debuginfod server
-/// and kept in its cache, from which a later session reads it without
-/// asking. A file the server sends for another build is refused.
 #[tokio::test]
 async fn debuginfod_downloads_debug_files_into_its_cache() {
     let fixture = split("basic-build-id");
@@ -276,7 +250,6 @@ async fn debuginfod_downloads_debug_files_into_its_cache() {
         ..DebugFileOptions::default()
     };
 
-    // Another build's debug file under this build's id.
     let wrong = Server::start(
         id.clone(),
         fs::read(split(".debug/basic-debuglink.debug")).expect("a debug file"),
@@ -296,7 +269,6 @@ async fn debuginfod_downloads_debug_files_into_its_cache() {
     );
     stops_with_debug_information(scenario, &cached).await;
 
-    // The cache answers before any server is asked.
     let scenario = Scenario::with_debug_files("debuginfod-cached", &fixture, &options(&wrong.url));
     stops_with_debug_information(scenario, &cached).await;
     assert_eq!(wrong.requests.load(Ordering::SeqCst), 1);
@@ -306,13 +278,10 @@ fn dwz(name: &str) -> PathBuf {
     Scenario::fixture(&format!("dwz/{name}"))
 }
 
-/// The debug directory the distribution-style shapes debug files are filed
-/// under, with the supplementary file they share in its `.dwz`.
 fn dwz_debug_root() -> PathBuf {
     dwz("gcc-o2/debug-root")
 }
 
-/// The build-id `path` records, in hexadecimal.
 fn build_id(path: &Path) -> String {
     let data = fs::read(path).expect("read the file");
     let object = object::File::parse(data.as_slice()).expect("an object file");
@@ -327,16 +296,12 @@ fn build_id(path: &Path) -> String {
         })
 }
 
-/// The debug file a build-id names under `root`.
 fn filed(root: &Path, id: &str) -> PathBuf {
     root.join(".build-id")
         .join(&id[..2])
         .join(format!("{}.debug", &id[2..]))
 }
 
-/// What a module's debug information says, as text naming nothing a load
-/// chooses: its functions, global variables, types, and line rows, with
-/// the source files they name.
 fn described(image: &ModuleImage) -> BTreeSet<String> {
     let place = |location: Option<SourceLocation>| {
         location.map_or_else(String::new, |location| {
@@ -367,8 +332,6 @@ fn described(image: &ModuleImage) -> BTreeSet<String> {
             other => format!("{other:?}"),
         };
 
-        // An unnamed global, as a string literal, is named by where its
-        // DIE lies, which dwz moves.
         let name = if global.qualified_name.starts_with("<anonymous global at ") {
             "<anonymous global>"
         } else {
@@ -406,12 +369,6 @@ fn described(image: &ModuleImage) -> BTreeSet<String> {
     described
 }
 
-/// dwz changes where debug information is kept, never what it says: with
-/// each compiler, the program and its library describe the same
-/// functions, variables, types, and lines, naming the same files, whether
-/// or not their DWARF shares what they have in common through a
-/// supplementary file, named by `.gnu_debugaltlink` or DWARF 5's
-/// `.debug_sup`.
 #[tokio::test]
 async fn sharing_through_a_supplementary_file_changes_nothing_the_debug_information_says() {
     for variant in ["gcc-o0", "gcc-o2", "clang-o2"] {
@@ -421,7 +378,6 @@ async fn sharing_through_a_supplementary_file_changes_nothing_the_debug_informat
             ("shapes", "dwarf5"),
             ("libshapes.so", "dwarf5"),
         ] {
-            // One process debugs one session at a time.
             let load = async |layout: &str| {
                 let path = dwz(&format!("{variant}/{layout}/{module}"));
                 let scenario = Scenario::new(format!("{variant}-{layout}-{module}"), path);
@@ -446,7 +402,6 @@ async fn sharing_through_a_supplementary_file_changes_nothing_the_debug_informat
     }
 }
 
-/// The function and source file of each frame of a stop's backtrace.
 async fn frame_places(scenario: &Scenario) -> Vec<(String, String)> {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
@@ -491,11 +446,6 @@ async fn evaluated(scenario: &Scenario, text: &str) -> microscope::VariableValue
     }
 }
 
-/// A distribution's program and library, stripped, whose debug files are
-/// filed by build-id and share what they have in common through a dwz
-/// supplementary file beside them: the shared types, the functions inlined
-/// into both, and the declarations of their variables, which name the
-/// header by its path relative to the units that use them.
 #[tokio::test]
 async fn debug_files_read_what_they_share_from_their_supplementary_file() {
     let program = dwz("gcc-o2/split/shapes");
@@ -534,7 +484,6 @@ async fn debug_files_read_what_they_share_from_their_supplementary_file() {
         Some(filed(&dwz_debug_root(), &build_id(&library)).as_path())
     );
 
-    // The library's types are the supplementary file's.
     assert!(matches!(
         evaluated(&scenario, "shape.opposite_.y").await,
         microscope::VariableValue::Scalar(ScalarValue::Signed(4))
@@ -544,8 +493,6 @@ async fn debug_files_read_what_they_share_from_their_supplementary_file() {
         microscope::VariableValue::Scalar(ScalarValue::Signed(0))
     ));
 
-    // `width` and `Span::length`, inlined into `area`, are declared only in
-    // the supplementary file.
     let width = source_line("tests/fixtures/cpp/shapes/shapes.h", "shapes: width");
     scenario
         .add_source_breakpoint("tests/fixtures/cpp/shapes/shapes.h", width)
@@ -606,10 +553,6 @@ async fn debug_files_read_what_they_share_from_their_supplementary_file() {
     scenario.shutdown().await;
 }
 
-/// The supplementary file is found where its debug files name it, by
-/// build-id under a debug directory, or downloaded, and proves it is the
-/// one they name by its build-id. Without it a debug file is refused with
-/// its reason, and its program is described as its own file describes it.
 #[tokio::test]
 async fn a_supplementary_file_must_be_the_one_its_debug_files_name() {
     let program = dwz("gcc-o2/split/shapes");
@@ -618,8 +561,6 @@ async fn a_supplementary_file_must_be_the_one_its_debug_files_name() {
     let debug_file = filed(&dwz_debug_root(), &program_id);
     let scratch = ScratchDir::new("dwz-supplementary");
 
-    // The program's debug file, filed by itself, its supplementary file
-    // where it names it replaced by another build's.
     let root = scratch.path().join("root");
     let copied = filed(&root, &program_id);
     fs::create_dir_all(copied.parent().expect("a directory")).expect("the build-id directory");
@@ -653,7 +594,6 @@ async fn a_supplementary_file_must_be_the_one_its_debug_files_name() {
     refused(&scenario);
     scenario.shutdown().await;
 
-    // Filed by its build-id under another debug directory.
     let other = scratch.path().join("other");
     let filed_supplementary = filed(&other, &build_id(&supplementary));
     fs::create_dir_all(filed_supplementary.parent().expect("a directory"))
@@ -672,7 +612,6 @@ async fn a_supplementary_file_must_be_the_one_its_debug_files_name() {
     assert!(image.functions().any(|function| function.name() == "area"));
     scenario.shutdown().await;
 
-    // Downloaded, with the debug file, and kept in debuginfod's cache.
     let cache = ScratchDir::new("dwz-debuginfod-cache");
     let server = Server::serving(vec![
         (
@@ -708,11 +647,6 @@ async fn a_supplementary_file_must_be_the_one_its_debug_files_name() {
     scenario.shutdown().await;
 }
 
-/// A debug file naming a supplementary file that no directory holds, as
-/// one from a distribution whose `.dwz` files are not installed, is
-/// refused with its reason, and the program is described as its own file
-/// describes it. A program whose own DWARF needs one is described by its
-/// symbols, and says why its DWARF is left out.
 #[tokio::test]
 async fn a_debug_file_whose_supplementary_file_is_missing_is_refused_with_its_reason() {
     let options = DebugFileOptions {
@@ -763,9 +697,6 @@ async fn a_debug_file_whose_supplementary_file_is_missing_is_refused_with_its_re
     scenario.shutdown().await;
 }
 
-/// The supplementary file a module names is input: one that is a FIFO or
-/// a device, which may never end, is not read, and the module's DWARF is
-/// left out as if the file were missing.
 #[tokio::test]
 async fn a_supplementary_file_that_is_no_regular_file_is_not_read() {
     let scratch = ScratchDir::new("dwz-fifo");
@@ -788,8 +719,6 @@ async fn a_supplementary_file_that_is_no_regular_file_is_not_read() {
     scenario.shutdown().await;
 }
 
-/// The checksum a `.debug_sup` records: after its version, flag, and name,
-/// a length and that many bytes.
 fn debug_sup_checksum(path: &Path) -> String {
     let data = fs::read(path).expect("read the file");
     let object = object::File::parse(data.as_slice()).expect("an object file");
@@ -812,10 +741,6 @@ fn debug_sup_checksum(path: &Path) -> String {
         })
 }
 
-/// DWARF 5's `.debug_sup` names a supplementary file by a checksum, which
-/// the file, having no build-id of its own, records in its own
-/// `.debug_sup`: another build's file at the path named is refused, and
-/// the one filed by its checksum under a debug directory is read.
 #[tokio::test]
 async fn a_debug_sup_names_its_supplementary_file_by_checksum() {
     let scratch = ScratchDir::new("debug-sup");

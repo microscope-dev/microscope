@@ -1,13 +1,3 @@
-//! The harness for Debug Adapter Protocol scenarios.
-//!
-//! A [`Dap`] drives the real `microscope dap` binary over its stdin and stdout,
-//! as editors do. It records every message in a transcript that it prints
-//! on failure, bounds every wait with a deadline, and checks every message
-//! the adapter sends against the protocol's JSON schema and against the
-//! ordering rules strict clients depend on. Finishing a scenario
-//! disconnects, checks that the adapter exited cleanly, and that the
-//! program it launched is gone.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
@@ -21,47 +11,31 @@ use serde_json::{Value, json};
 
 use crate::support::flight_recordings;
 
-// A response may wait for the program to load, as `setBreakpoints` sent
-// beside `launch` does, which takes seconds for the largest fixtures under
-// `just stress`, so responses are bounded as events are.
 const REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
 const EVENT_TIMEOUT: Duration = Duration::from_mins(1);
 
-/// A position in the stream of received messages; waits look only after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Mark(usize);
 
 impl Mark {
-    /// The start of the session.
     pub const START: Self = Self(0);
 }
 
-/// A request that was sent.
 #[derive(Debug, Clone, Copy)]
 pub struct Sent {
     pub seq: u64,
 
-    /// The position before the request was sent.
     pub mark: Mark,
 }
 
-/// The order and arguments in which a client starts a session, taken from
-/// each client's source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Profile {
-    /// Sends `launch` without waiting, configures in parallel after
-    /// `initialized`, then `configurationDone` and `threads` at once.
     VsCode,
 
-    /// Sends `launch` from the `initialize` callback and configures one
-    /// request at a time.
     Neovim,
 
-    /// Waits for `initialize`, then launches and configures sequentially.
     Helix,
 
-    /// Configures first and sends `launch` only after `configurationDone`,
-    /// as dape does with `defer-launch-attach`.
     DeferredLaunch,
 }
 
@@ -102,32 +76,24 @@ impl Profile {
     }
 }
 
-/// Breakpoints a client sets while configuring a session.
 #[derive(Debug, Clone, Default)]
 pub struct Configuration {
-    /// Source files and the breakpoint lines in each.
     pub sources: Vec<(PathBuf, Vec<u64>)>,
     pub functions: Vec<String>,
 
-    /// The `setExceptionBreakpoints` arguments; `None` enables the
-    /// advertised default filters.
     pub exceptions: Option<Value>,
 }
 
-/// The responses to a session's start.
 #[derive(Debug)]
 pub struct Started {
     pub capabilities: Value,
 
-    /// Each source's breakpoints, in configuration order.
     pub source_breakpoints: Vec<Vec<Value>>,
     pub function_breakpoints: Vec<Value>,
 
-    /// The position before the first request, to wait for events after.
     pub mark: Mark,
 }
 
-/// A `stopped` event.
 #[derive(Debug, Clone)]
 pub struct Stopped {
     pub thread: i64,
@@ -140,12 +106,10 @@ struct Received {
     consumed: bool,
 }
 
-/// A session with the adapter.
 pub struct Dap {
     name: String,
     child: Option<Child>,
 
-    /// Where requests are written: the adapter's stdin or a socket.
     stdin: Option<Box<dyn std::io::Write + Send>>,
     inbox: Receiver<Result<Value, String>>,
     transcript: Arc<Mutex<Vec<String>>>,
@@ -153,41 +117,29 @@ pub struct Dap {
     seq: u64,
     received: Vec<Received>,
 
-    /// Requests awaiting their response, by `seq`.
     outstanding: BTreeMap<u64, String>,
     checks: Checks,
 
-    /// The process the adapter reported, and whether it was attached.
     process: Option<(u32, bool)>,
     finished: bool,
 
-    /// Whether a failure already printed the transcript.
     reported: std::cell::Cell<bool>,
 
-    /// The programs run for `runInTerminal`, which the harness reaps.
     terminals: Vec<Child>,
 
-    /// What those programs write, a line at a time.
     terminal_output: (mpsc::Sender<String>, Receiver<String>),
 
-    /// The error `runInTerminal` is answered with instead of running.
     refused_terminal: Option<String>,
 
-    /// Whether this is another adapter, compared with but not checked.
     reference: bool,
 
-    /// `runInTerminal` requests held unanswered, when holding them.
     held_terminals: Option<Vec<Value>>,
 
-    /// Where the adapter streams its flight recording.
     recording: Option<PathBuf>,
 
-    /// How `startDebugging` is answered.
     children: Children,
 }
 
-/// The writing side of a member session's socket, which closes the
-/// session when dropped, as a client's closing its connection does.
 struct MemberStream(std::os::unix::net::UnixStream);
 
 impl std::io::Write for MemberStream {
@@ -206,38 +158,23 @@ impl Drop for MemberStream {
     }
 }
 
-/// How a session answers `startDebugging`.
 enum Children {
-    /// It is not expected: the scenario fails.
     Unexpected,
 
-    /// With an error, as a client that cannot start the session does.
     Refused(String),
 
-    /// By starting another adapter for each child session, as a client
-    /// that does not route members' sessions back does, and answering with
-    /// the failure of its attach. The failures are kept, in order.
     Unattachable(Vec<String>),
 
-    /// By starting each child session as microscope's VS Code extension
-    /// does, connected to the socket its configuration names, configured
-    /// so, and answering once it has attached.
     Followed {
         configuration: Configuration,
         started: Vec<Dap>,
 
-        /// Whether each session runs `microscope dap --connect` to reach
-        /// the socket, as nvim-dap's adapter function has it do.
         relayed: bool,
     },
 
-    /// By connecting each child session to the socket its configuration
-    /// names and answering at once, leaving the session's requests to the
-    /// caller, as a replay of the client's recording sends them.
     Routed(Vec<(Dap, Value)>),
 }
 
-/// Ordering rules checked on every message.
 #[derive(Default)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -250,20 +187,16 @@ struct Checks {
     stopped: bool,
     threads: BTreeSet<i64>,
 
-    /// The modules announced and not removed, by id.
     modules: BTreeSet<String>,
 
-    /// Chaos clients race requests with stops on purpose.
     relaxed: bool,
 }
 
 impl Dap {
-    /// Starts `microscope dap` with no session yet.
     pub fn start(name: impl Into<String>) -> Self {
         Self::start_in(name, &[])
     }
 
-    /// Starts `microscope dap` with extra environment variables.
     pub fn start_in(name: impl Into<String>, environment: &[(&str, &str)]) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_microscope"));
         command.arg("dap").envs(environment.iter().copied());
@@ -273,8 +206,6 @@ impl Dap {
         dap
     }
 
-    /// Starts another adapter to compare with, such as gdb's, whose
-    /// messages are not held to this adapter's checks.
     pub fn reference(name: impl Into<String>, command: &mut Command) -> Self {
         let mut dap = Self::spawn(name, command);
         dap.reference = true;
@@ -309,8 +240,6 @@ impl Dap {
         dap
     }
 
-    /// Connects to the socket an adapter serves a group member's session
-    /// on, as an editor routes the member's session there.
     pub fn connect_member(name: impl Into<String>, socket: &std::path::Path) -> Self {
         let stream = std::os::unix::net::UnixStream::connect(socket)
             .unwrap_or_else(|error| panic!("connect to {}: {error}", socket.display()));
@@ -318,7 +247,6 @@ impl Dap {
         Self::over(name, Box::new(MemberStream(stream)), output, None)
     }
 
-    /// Connects to an adapter serving TCP; its process is the caller's.
     pub fn connect(name: impl Into<String>, address: SocketAddr) -> Self {
         let stream = TcpStream::connect(address).expect("connect to the adapter");
         let output = stream.try_clone().expect("clone the socket");
@@ -364,10 +292,6 @@ impl Dap {
         }
     }
 
-    /// Answers `startDebugging` as microscope's VS Code extension does:
-    /// connects to the socket the configuration names, initializes the
-    /// session, attaches it with the requested configuration, sets
-    /// `configuration`'s breakpoints, and answers once it has attached.
     pub fn follow_children(&mut self, configuration: Configuration) {
         self.children = Children::Followed {
             configuration,
@@ -376,10 +300,6 @@ impl Dap {
         };
     }
 
-    /// Answers `startDebugging` as nvim-dap does with the adapter function
-    /// microscope's documentation gives: runs `microscope dap --connect`
-    /// with the socket the configuration names as each child session's
-    /// adapter, and otherwise as [`Self::follow_children`].
     pub fn follow_children_relayed(&mut self, configuration: Configuration) {
         self.children = Children::Followed {
             configuration,
@@ -388,25 +308,18 @@ impl Dap {
         };
     }
 
-    /// Answers `startDebugging` by connecting the child session to its
-    /// socket and nothing more; [`Self::routed_child`] returns it
-    /// unstarted.
     pub fn route_children(&mut self) {
         self.children = Children::Routed(Vec::new());
     }
 
-    /// Answers `startDebugging` with an error.
     pub fn refuse_children(&mut self, message: &str) {
         self.children = Children::Refused(message.to_owned());
     }
 
-    /// Starts each child session in another adapter, whose attach fails,
-    /// and answers `startDebugging` with the failure.
     pub fn fail_children(&mut self) {
         self.children = Children::Unattachable(Vec::new());
     }
 
-    /// Waits for the next child session to fail, and returns its failure.
     pub fn child_failure(&mut self) -> String {
         let deadline = Instant::now() + EVENT_TIMEOUT;
         loop {
@@ -420,8 +333,6 @@ impl Dap {
         }
     }
 
-    /// Waits for the next child session started, and returns it with the
-    /// mark its events follow.
     pub fn child(&mut self) -> (Self, Mark) {
         let deadline = Instant::now() + EVENT_TIMEOUT;
         loop {
@@ -436,9 +347,6 @@ impl Dap {
         }
     }
 
-    /// Waits for the next child session connected by
-    /// [`Self::route_children`], and returns it with the configuration the
-    /// adapter asked it to start with.
     pub fn routed_child(&mut self) -> (Self, Value) {
         let deadline = Instant::now() + EVENT_TIMEOUT;
         loop {
@@ -452,8 +360,6 @@ impl Dap {
         }
     }
 
-    /// Starts a child session for a `startDebugging` request, and answers
-    /// it.
     fn start_debugging(&mut self, request: &Value) {
         let arguments = &request["arguments"];
         let result = match &mut self.children {
@@ -539,20 +445,14 @@ impl Dap {
         self.write(&response.to_string());
     }
 
-    /// Answers `runInTerminal` with an error, as a client whose terminal
-    /// failed does.
     pub fn refuse_terminals(&mut self, message: &str) {
         self.refused_terminal = Some(message.to_owned());
     }
 
-    /// Leaves `runInTerminal` requests unanswered until released, keeping
-    /// the adapter waiting inside the request that sent them.
     pub fn hold_terminals(&mut self) {
         self.held_terminals = Some(Vec::new());
     }
 
-    /// Waits for a held `runInTerminal` request, then answers every held
-    /// one and stops holding them.
     pub fn release_terminals(&mut self) {
         self.held_terminal();
 
@@ -561,7 +461,6 @@ impl Dap {
         }
     }
 
-    /// Waits for a held `runInTerminal` request without answering it.
     pub fn held_terminal(&mut self) {
         let deadline = Instant::now() + EVENT_TIMEOUT;
 
@@ -570,7 +469,6 @@ impl Dap {
         }
     }
 
-    /// Waits for the next line a program run in a terminal writes.
     pub fn terminal_line(&self) -> String {
         self.terminal_output
             .1
@@ -578,8 +476,6 @@ impl Dap {
             .unwrap_or_else(|_| self.fail("no output arrived from the terminal"))
     }
 
-    /// Runs a `runInTerminal` request's command as a terminal would, and
-    /// answers it.
     fn run_in_terminal(&mut self, request: &Value) {
         let arguments = &request["arguments"];
 
@@ -605,7 +501,6 @@ impl Dap {
         self.write(&response.to_string());
     }
 
-    /// Spawns a terminal's command, returning the `runInTerminal` body.
     fn spawn_terminal(&mut self, arguments: &Value) -> Value {
         let args = arguments["args"]
             .as_array()
@@ -620,7 +515,6 @@ impl Dap {
             .current_dir(arguments["cwd"].as_str().expect("cwd"))
             .stdin(Stdio::null());
 
-        // One pipe for both streams, as a terminal has, keeps their order.
         let (output, input) = std::io::pipe().expect("create the terminal's pipe");
 
         command
@@ -636,8 +530,6 @@ impl Dap {
 
         let child = command.spawn().expect("run the terminal's command");
 
-        // The command holds copies of the pipe's input; without them the
-        // pipe ends when the program's copies close.
         drop(command);
 
         let lines = self.terminal_output.0.clone();
@@ -654,7 +546,6 @@ impl Dap {
         json!({"processId": process})
     }
 
-    /// Kills and reaps the programs run in terminals.
     fn reap_terminals(&mut self) {
         for mut child in self.terminals.drain(..) {
             let _ = child.kill();
@@ -662,14 +553,10 @@ impl Dap {
         }
     }
 
-    /// Accepts requests racing stops and stops nobody looks at, as a
-    /// chaos client causes them.
     pub const fn relax_ordering_checks(&mut self) {
         self.checks.relaxed = true;
     }
 
-    /// Sends text as a request with `seq`, which may be malformed, and
-    /// expects one response to it.
     pub fn send_raw(&mut self, seq: u64, command: &str, text: &str) -> Sent {
         let mark = self.mark();
         self.outstanding.insert(seq, command.to_owned());
@@ -695,13 +582,11 @@ impl Dap {
         ));
     }
 
-    /// The position after every message received so far.
     pub fn mark(&mut self) -> Mark {
         self.drain();
         Mark(self.received.len())
     }
 
-    /// Sends a request without waiting for its response.
     pub fn send(&mut self, command: &str, arguments: Value) -> Sent {
         let mark = self.mark();
 
@@ -722,25 +607,21 @@ impl Dap {
         }
     }
 
-    /// Writes raw text as one message, for malformed input.
     pub fn write(&mut self, text: &str) {
         self.record("->", text);
         self.write_bytes(format!("Content-Length: {}\r\n\r\n{text}", text.len()).as_bytes());
     }
 
-    /// Writes raw bytes to the adapter's stdin.
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         let stdin = self.stdin.as_mut().expect("adapter stdin is open");
         stdin.write_all(bytes).expect("write to adapter");
         stdin.flush().expect("flush adapter stdin");
     }
 
-    /// Closes the adapter's stdin, as a client that vanishes does.
     pub fn close_stdin(&mut self) {
         self.stdin = None;
     }
 
-    /// Waits for a request's response.
     pub fn response(&mut self, sent: Sent) -> Value {
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         loop {
@@ -756,13 +637,11 @@ impl Dap {
         }
     }
 
-    /// Sends a request and returns its body, which must be a success.
     pub fn request(&mut self, command: &str, arguments: Value) -> Value {
         let sent = self.send(command, arguments);
         self.success(sent)
     }
 
-    /// Waits for a response that must be a success and returns its body.
     pub fn success(&mut self, sent: Sent) -> Value {
         let response = self.response(sent);
         if response["success"] != true {
@@ -772,13 +651,11 @@ impl Dap {
         response["body"].clone()
     }
 
-    /// Sends a request that must fail and returns its error message.
     pub fn request_error(&mut self, command: &str, arguments: Value) -> String {
         let sent = self.send(command, arguments);
         self.failure(sent)
     }
 
-    /// Waits for a response that must fail and returns its message.
     pub fn failure(&mut self, sent: Sent) -> String {
         let response = self.response(sent);
 
@@ -796,8 +673,6 @@ impl Dap {
             .replace("}}", "}")
     }
 
-    /// Waits for an event after `mark` matching `predicate`, and returns its
-    /// body.
     pub fn event(&mut self, mark: Mark, event: &str, predicate: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + EVENT_TIMEOUT;
         let mut searched = mark.0;
@@ -819,8 +694,6 @@ impl Dap {
         }
     }
 
-    /// Returns every event of a kind received after `mark` so far, without
-    /// waiting.
     pub fn events(&mut self, mark: Mark, event: &str) -> Vec<Value> {
         self.drain();
         let mut bodies = Vec::new();
@@ -834,8 +707,6 @@ impl Dap {
         bodies
     }
 
-    /// Waits for the first unconsumed event after `mark` of any of `kinds`,
-    /// and returns its kind and body.
     pub fn next_event(&mut self, mark: Mark, kinds: &[&str]) -> (String, Value) {
         let deadline = Instant::now() + EVENT_TIMEOUT;
         let mut searched = mark.0;
@@ -858,7 +729,6 @@ impl Dap {
         }
     }
 
-    /// Waits for the next `stopped` event after `mark`.
     pub fn stopped(&mut self, mark: Mark) -> Stopped {
         let body = self.event(mark, "stopped", |_| true);
 
@@ -869,7 +739,6 @@ impl Dap {
         }
     }
 
-    /// Every message received after `mark`, in order.
     pub fn messages_since(&mut self, mark: Mark) -> Vec<Value> {
         self.drain();
 
@@ -879,8 +748,6 @@ impl Dap {
             .collect()
     }
 
-    /// Concatenates the text of `output` events of one category after
-    /// `mark`, waiting until it contains `expected`.
     pub fn output_containing(&mut self, mark: Mark, category: &str, expected: &str) -> String {
         let deadline = Instant::now() + EVENT_TIMEOUT;
         loop {
@@ -896,7 +763,6 @@ impl Dap {
         }
     }
 
-    /// The text of every `output` event of one category after `mark`.
     pub fn output_text(&mut self, mark: Mark, category: &str) -> String {
         self.drain();
 
@@ -963,7 +829,6 @@ impl Dap {
             }
         }
 
-        // An attached program that exits is gone, not left running.
         if message["event"] == "exited" && self.process.is_some_and(|(_, attached)| attached) {
             self.process = None;
         }
@@ -981,7 +846,6 @@ impl Dap {
         });
     }
 
-    /// Checks one message against the schema and the ordering rules.
     fn check(&mut self, message: &Value) -> Result<(), String> {
         validate_schema(message)?;
         check_ids(message)?;
@@ -1039,7 +903,6 @@ impl Dap {
         Ok(())
     }
 
-    /// Checks the ordering rules of one event.
     fn check_event(&mut self, message: &Value) -> Result<(), String> {
         let checks = &mut self.checks;
         let body = &message["body"];
@@ -1053,8 +916,6 @@ impl Dap {
             }
             Some("stopped") => {
                 if !checks.relaxed {
-                    // A thread moved without running stops again, after the
-                    // response to the request that moved it.
                     if checks.stopped && body["reason"] != "goto" {
                         return Err("a second stopped event without a resume between".to_owned());
                     }
@@ -1153,8 +1014,6 @@ impl Dap {
         self.transcript.lock().expect("transcript").join("\n")
     }
 
-    /// Initializes the session as `profile` does and returns the
-    /// capabilities.
     pub fn initialize(&mut self, profile: Profile) -> Value {
         let mark = self.mark();
         let capabilities = self.request("initialize", profile.initialize_arguments());
@@ -1163,9 +1022,6 @@ impl Dap {
         capabilities
     }
 
-    /// Starts a session as `profile` does: initializes, configures
-    /// breakpoints, and launches or attaches with `start` (`"launch"` or
-    /// `"attach"` and its arguments).
     pub fn begin(
         &mut self,
         profile: Profile,
@@ -1177,8 +1033,6 @@ impl Dap {
         let (command, arguments) = start;
         let capabilities = self.success(initialize);
 
-        // All but a deferring client send the start request once
-        // initialize answers.
         let mut launch =
             (profile != Profile::DeferredLaunch).then(|| self.send(command, arguments.clone()));
 
@@ -1259,8 +1113,6 @@ impl Dap {
         }
     }
 
-    /// Launches `program` as `profile` would, with `configuration` set
-    /// before it runs and extra launch arguments merged in.
     pub fn launch(
         &mut self,
         profile: Profile,
@@ -1283,9 +1135,6 @@ impl Dap {
         self.begin(profile, ("launch", arguments), configuration)
     }
 
-    /// Inspects a stop as `profile` does, returning the stopped thread's
-    /// frames. Each client asks for different things on every stop, and
-    /// the adapter must answer each consistently.
     pub fn inspect_as(&mut self, profile: Profile, stopped: &Stopped) -> Vec<Value> {
         match profile {
             Profile::VsCode => {
@@ -1365,29 +1214,22 @@ impl Dap {
         }
     }
 
-    /// The threads the client was told exist.
     pub fn known_threads(&self) -> BTreeSet<i64> {
         self.checks.threads.clone()
     }
 
-    /// The ids of the modules the client was told are loaded.
     pub fn known_modules(&self) -> BTreeSet<String> {
         self.checks.modules.clone()
     }
 
-    /// The process the adapter reported in its `process` event.
     pub fn process_id(&self) -> Option<u32> {
         self.process.map(|(pid, _)| pid)
     }
 
-    /// Disconnects and checks that the adapter exits cleanly, that every
-    /// stop was looked at, and that a launched program is gone and an
-    /// attached one is left running untraced.
     pub fn finish(mut self) {
         self.finish_with(json!({}));
     }
 
-    /// Disconnects with explicit arguments, then checks as [`Self::finish`].
     pub fn finish_with(&mut self, arguments: Value) {
         self.drain();
         if self.stdin.is_some() {
@@ -1402,7 +1244,6 @@ impl Dap {
             self.wait_for_end();
         }
 
-        // Nothing may follow the disconnect response.
         self.drain();
 
         let unexpected_stops = self
@@ -1439,7 +1280,6 @@ impl Dap {
         self.finished = true;
     }
 
-    /// Waits for the adapter to exit, which it must do with status 0.
     pub fn wait_for_exit(&mut self) {
         let mut child = self.child.take().expect("adapter process");
         let pid = child.id();
@@ -1465,8 +1305,6 @@ impl Dap {
         self.wait_for_end();
     }
 
-    /// Waits for the adapter to close its output, as it does when its
-    /// session ends.
     fn wait_for_end(&mut self) {
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         loop {
@@ -1481,7 +1319,6 @@ impl Dap {
         }
     }
 
-    /// Sends a signal to the adapter process.
     pub fn signal(&self, signal: nix::sys::signal::Signal) {
         let pid = self.child.as_ref().expect("adapter process").id();
 
@@ -1492,8 +1329,6 @@ impl Dap {
         .expect("signal the adapter");
     }
 
-    /// Marks the session finished without disconnecting, for scenarios
-    /// that end it some other way and check the outcome themselves.
     pub fn abandon(mut self) {
         self.finished = true;
 
@@ -1527,13 +1362,10 @@ impl Drop for Dap {
     }
 }
 
-/// The breakpoints of a `setBreakpoints`-like response body.
 pub fn breakpoints(body: &Value) -> Vec<Value> {
     body["breakpoints"].as_array().expect("breakpoints").clone()
 }
 
-/// Reads framed messages from the adapter's stdout, reporting anything
-/// that is not a well-formed frame.
 fn read_frames(stdout: impl std::io::Read, send: &mpsc::Sender<Result<Value, String>>) {
     let mut reader = BufReader::new(stdout);
     loop {
@@ -1588,7 +1420,6 @@ fn read_frames(stdout: impl std::io::Read, send: &mpsc::Sender<Result<Value, Str
     }
 }
 
-/// Validates a message against the protocol's schema definition for it.
 fn validate_schema(message: &Value) -> Result<(), String> {
     static VALIDATORS: OnceLock<Mutex<HashMap<String, Arc<jsonschema::Validator>>>> =
         OnceLock::new();
@@ -1605,8 +1436,6 @@ fn validate_schema(message: &Value) -> Result<(), String> {
 
     let definition = match message["type"].as_str() {
         Some("response") if message["success"] == false => "ErrorResponse".to_owned(),
-        // The adapter's own requests, which the protocol allows any adapter
-        // to add, have only the protocol's general shape.
         Some("response") if custom => "Response".to_owned(),
         Some("request") if custom => "Request".to_owned(),
         Some("response") => format!(
@@ -1662,8 +1491,6 @@ fn capitalized(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Checks that every id is a positive 32-bit integer and every reference a
-/// non-negative one, as clients store them.
 fn check_ids(value: &Value) -> Result<(), String> {
     match value {
         Value::Object(object) => {
@@ -1703,21 +1530,18 @@ fn check_ids(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// The path of a built fixture.
 pub fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("build/test-programs")
         .join(name)
 }
 
-/// The path of a fixture source file.
 pub fn source(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(path)
 }
 
-/// The line of the first source line containing `marker`.
 pub fn line_of(path: &Path, marker: &str) -> u64 {
     let text = std::fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));

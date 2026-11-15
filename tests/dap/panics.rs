@@ -1,7 +1,3 @@
-//! A Rust panic, as an editor debugs it: the default filters stop on a
-//! panic in a tokio task, which tokio would catch, with the program's
-//! frame that panicked shown as the exception's.
-
 use serde_json::json;
 
 use crate::dap::{Configuration, Dap, Profile, fixture, line_of, source};
@@ -24,7 +20,6 @@ fn the_default_filters_stop_on_a_task_panic_at_its_caller() {
     );
     assert_eq!(info["breakMode"], "always", "{info}");
 
-    // Clients focus the first frame whose source is not deemphasized.
     let frames = dap.inspect_as(Profile::VsCode, &stop);
     let panicked = frames
         .iter()
@@ -38,7 +33,6 @@ fn the_default_filters_stop_on_a_task_panic_at_its_caller() {
         "{frames:#?}"
     );
 
-    // Only the frames above it are; its callers are shown as they are.
     let caller = &frames[panicked + 1]["source"];
     assert!(
         caller.is_object() && caller.get("presentationHint").is_none(),

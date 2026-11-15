@@ -1,16 +1,3 @@
-//! Stepping into the task a line starts.
-//!
-//! The step runs as a step over its line while it watches the entry of
-//! each runtime's task starter. When the step's own task enters one, the
-//! runtime names the task it starts and where the task begins: from the
-//! starter's arguments at once, or once the starter returns on that
-//! thread. The step then belongs to the new task: it waits at that entry
-//! for the task to run, and goes on from there as a step in, through
-//! wrappers, to the first statement of the program's own code. A task
-//! whose coroutine's body is inlined, as into its runtime's poll, has no
-//! entry: the step waits at the body's statements, and ends at the first
-//! the task runs. A line that starts no task ends as a step over.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use nix::unistd::Pid;
@@ -26,29 +13,19 @@ use super::native::{InspectionOps, LinuxTraceOps};
 use super::registers::x86_64_registers;
 use super::{ActiveKind, Controller, StepOwner, StepStart};
 
-/// A runtime's task starter that a step watches.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Starter {
     runtime: RuntimeId,
 
-    /// Where the starter begins in its image, by which its runtime knows
-    /// it.
     entry: ImageAddress,
 
-    /// Whether the starter names its task as it begins, rather than once
-    /// it returns.
     names_at_entry: bool,
 }
 
-/// How far a step into a new task has followed the task's start.
 #[derive(Debug, Clone)]
 pub(super) enum NewTask {
-    /// Watching for the step's task to enter a runtime's task starter, at
-    /// these entries.
     Watching(BTreeMap<VirtualAddress, Starter>),
 
-    /// The step's task entered `starter` on `thread`, which returns to
-    /// `returns_to` with the stack pointer at `stack`.
     Starting {
         starters: BTreeMap<VirtualAddress, Starter>,
         starter: Starter,
@@ -57,21 +34,15 @@ pub(super) enum NewTask {
         stack: u64,
     },
 
-    /// The task started, and the step waits for it where it begins: at
-    /// its function's entry, or at any statement of its coroutine's
-    /// inlined body, the first of which it runs ends the step.
     Started {
         entries: BTreeSet<VirtualAddress>,
         statements: bool,
     },
 
-    /// The task began, and the step goes on in it as a step in.
     Entered,
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// The entries of the task starters of every runtime loaded, which a
-    /// step into a new task watches.
     pub(super) fn task_starters(&self) -> BTreeMap<VirtualAddress, Starter> {
         let mut starters = BTreeMap::new();
         let Some(inferior) = self.session.inferior() else {
@@ -96,9 +67,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         starters
     }
 
-    /// Follows a step into a new task at one of its plan's breakpoints,
-    /// which the step's task reached. Returns whether the site was one of
-    /// the task's start and has been handled.
     pub(super) fn reach_new_task(&mut self, pid: Pid, address: VirtualAddress) -> Result<bool> {
         let Some(state) = self
             .session
@@ -133,8 +101,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 stack,
                 ..
             } if returns_to == address => {
-                // The return of another call, as of a starter the task's
-                // handler for a signal entered, is not the start's.
                 if thread == pid && self.ptrace.registers(pid)?.rsp == stack {
                     self.return_from_starter(pid, address, starter)?;
                 } else {
@@ -158,8 +124,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(true)
     }
 
-    /// Follows the task a starter that names it as it begins starts, or
-    /// goes on watching when this call starts none.
     fn start_at_entry(
         &mut self,
         pid: Pid,
@@ -176,7 +140,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Waits for the return of the task starter the step's task entered.
     fn enter_starter(
         &mut self,
         pid: Pid,
@@ -204,7 +167,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.repair_when_alone(pid, address)
     }
 
-    /// Moves the step to the task the starter returned.
     fn return_from_starter(
         &mut self,
         pid: Pid,
@@ -221,8 +183,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// The task a starter starts, as its runtime reads it from the
-    /// registers of the thread in the starter.
     fn started_task(
         &self,
         pid: Pid,
@@ -243,8 +203,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
     }
 
-    /// Moves the step to the task a starter started, and waits for the
-    /// task where it begins.
     fn follow_new_task(
         &mut self,
         pid: Pid,
@@ -295,8 +253,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.go_on_without_plan(pid, address, None)
     }
 
-    /// The statements of every copy of `coroutine`'s body inlined into
-    /// other code, less the code that resumes it.
     fn new_task_statements(&self, coroutine: TypeReference) -> Result<BTreeSet<VirtualAddress>> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let mut statements = BTreeSet::new();
@@ -315,8 +271,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(self.without_resume_code(statements))
     }
 
-    /// Ends the step where the new task runs its first statement of its
-    /// coroutine's inlined body.
     fn arrive_in_new_task(&mut self, pid: Pid) -> Result<()> {
         record!("the step's new task begins on thread {pid}");
         let (execution, kind) = self
@@ -337,8 +291,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.begin_visible_stop(pid, StopReason::Step { kind })
     }
 
-    /// Goes on as a step in from where the new task begins, as if the
-    /// task had just called its first function.
     fn enter_new_task(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
         let registers = self.ptrace.registers(pid)?;
         let position = self.stack_position(pid, &registers);
@@ -369,9 +321,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.go_on_without_plan(pid, address, Some(kind))
     }
 
-    /// The stop a step reports for `reason`, naming the kind of step the
-    /// client asked for when the step ran as another kind. Any other stop,
-    /// such as an advance reaching its location, names itself.
     pub(super) fn requested_step_reason(&self, reason: StopReason) -> StopReason {
         let Some((running, requested)) = self
             .session
@@ -409,8 +358,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Ends a step into a new task that cannot follow it, where the step's
-    /// task is.
     fn lose_new_task(&mut self, pid: Pid, description: String) -> Result<()> {
         record!("the step lost its new task: {description}");
         self.begin_visible_stop(
@@ -424,8 +371,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Whether the active step went on into the new task it started,
-    /// whose stop then reveals inline frames as a step in's does.
     pub(super) fn entered_new_task(&self) -> bool {
         self.session
             .inferior()

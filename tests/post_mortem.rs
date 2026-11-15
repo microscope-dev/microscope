@@ -183,8 +183,6 @@ async fn segv_cores_present_the_faulting_frame_across_the_compiler_matrix() {
         assert_eq!(info.process_id, stop.process);
         assert_eq!(info.exception.as_ref(), Some(exception));
 
-        // pr_fname keeps a bounded prefix of the executable name; gdb fills
-        // all 16 bytes while the kernel reserves one for a terminator.
         assert!(
             fixture.starts_with(info.process_name.as_ref())
                 && info.process_name.len() >= fixture.len().min(15),
@@ -192,7 +190,6 @@ async fn segv_cores_present_the_faulting_frame_across_the_compiler_matrix() {
             info.process_name
         );
 
-        // pr_psargs keeps a bounded prefix of the command line.
         let command_line = format!("{} segv", Scenario::fixture(&fixture).display());
         assert!(
             !info.arguments.is_empty() && command_line.starts_with(info.arguments.as_ref()),
@@ -208,8 +205,6 @@ async fn segv_cores_present_the_faulting_frame_across_the_compiler_matrix() {
             &Scenario::fixture(&fixture).canonicalize().unwrap()
         );
 
-        // Build-ids are only linked into the gcc -O0 variant; the others are
-        // proven by their saved read-only bytes. Every library has a build-id.
         let executable_identity = loaded_identity(&info, &fixture);
         if variant == "gcc-o0" {
             assert_eq!(executable_identity, &ModuleIdentity::BuildId);
@@ -265,7 +260,6 @@ async fn segv_cores_present_the_faulting_frame_across_the_compiler_matrix() {
 
         assert_eq!(signed(&variable(&scenario, "depth").await), 3, "{variant}");
 
-        // At -O2 `scale` lives in xmm0, read from the dump's NT_FPREGSET.
         assert!(
             (binary64(&variable(&scenario, "scale").await) - 2.5).abs() < f64::EPSILON,
             "{variant}"
@@ -287,8 +281,6 @@ async fn segv_cores_present_the_faulting_frame_across_the_compiler_matrix() {
             )
             .await;
         if variant == "gcc-o2-nopie" {
-            // GCC describes the dead pointer only by the value its caller
-            // passed, and the call describes none.
             assert!(
                 matches!(
                     &record.state,
@@ -311,7 +303,6 @@ async fn segv_cores_present_the_faulting_frame_across_the_compiler_matrix() {
             );
         }
 
-        // .rodata is never saved by the dump; a verified file supplies it.
         let message = scenario
             .operation(
                 "crash_message address",
@@ -355,7 +346,6 @@ async fn abort_cores_unwind_from_libc_into_the_aborting_caller() {
 
         assert_eq!(exception.code, 6);
 
-        // abort() signals its own thread, so the sender is the process itself.
         assert!(
             exception.description.contains(&format!(
                 "SIGABRT (SI_TKILL) sent by process {}",
@@ -379,7 +369,6 @@ async fn abort_cores_unwind_from_libc_into_the_aborting_caller() {
         );
         assert_eq!(trace.termination, UnwindTermination::Complete);
 
-        // The innermost frame is libc's: no main-image locals are in scope.
         assert!(matches!(
             scenario.handle().variables().await,
             Err(Error::VariableContextUnsupported)
@@ -476,7 +465,6 @@ async fn every_dumped_thread_keeps_its_own_registers_stack_and_tls() {
     stack_pointers.dedup();
     assert_eq!(stack_pointers.len(), 4, "each thread has its own stack");
 
-    // Returning to the faulting thread restores its own frame and values.
     scenario
         .operation("select", scenario.handle().select_context(stop.thread))
         .await;
@@ -600,7 +588,6 @@ async fn post_mortem_targets_reject_execution_modification_and_breakpoints() {
         );
     }
 
-    // Nothing changed: the same stop, revision, and memory remain inspectable.
     let (after_stop, after) = stopped(&mut scenario).await;
     assert_eq!(after.revision, before.revision);
     assert_eq!(after_stop.stop, stop.stop);
@@ -618,7 +605,6 @@ async fn post_mortem_targets_reject_execution_modification_and_breakpoints() {
 
 #[tokio::test]
 async fn module_mismatches_are_fatal_unless_explicitly_allowed() {
-    // A rebuild with the same layout differs only in content and build-id.
     let rebuilt = Debugger::open_core(&options(
         "crash-gcc-o0-segv.core",
         Some("crash-gcc-o0-rebuilt"),
@@ -631,7 +617,6 @@ async fn module_mismatches_are_fatal_unless_explicitly_allowed() {
         rebuilt.err()
     );
 
-    // Without a build-id, saved read-only bytes expose a different program.
     for (core_name, executable) in [
         ("crash-clang-o2-segv.core", "crash-gcc-o2-nopie"),
         ("crash-gcc-o0-segv.core", "crash-clang-o2"),
@@ -645,8 +630,6 @@ async fn module_mismatches_are_fatal_unless_explicitly_allowed() {
         );
     }
 
-    // Allowing the mismatch uses the file's metadata but never its contents:
-    // the dump did not save .rodata, which only a verified file may supply.
     let verified = open_core("crash-gcc-o0-segv.core");
     let message = verified
         .operation(
@@ -687,7 +670,6 @@ async fn module_mismatches_are_fatal_unless_explicitly_allowed() {
         MemoryReadCompletion::Incomplete { .. }
     ));
 
-    // Libraries that do match remain verified and keep their file contents.
     assert_eq!(loaded_identity(&info, "libc.so"), &ModuleIdentity::BuildId);
     allowed.shutdown().await;
 }
@@ -715,7 +697,6 @@ async fn unverifiable_modules_require_permission_and_expose_only_registers() {
         }
     )));
 
-    // Dumps save the vDSO whatever their filter, and it needs no file.
     assert_eq!(
         loaded_identity(&info, "[vdso]"),
         &ModuleIdentity::DumpedMemory
@@ -724,7 +705,6 @@ async fn unverifiable_modules_require_permission_and_expose_only_registers() {
     let (_, snapshot) = stopped(&mut scenario).await;
     assert_eq!(snapshot.threads.len(), 4);
 
-    // Registers survive in notes; every byte of memory is unavailable.
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
@@ -819,7 +799,6 @@ async fn missing_files_are_reported_and_leave_their_images_unavailable() {
         Err(Error::VariableNotFound(_))
     ));
 
-    // The executable's own state is unaffected.
     assert_eq!(signed(&variable(&scenario, "depth").await), 3);
     assert_eq!(signed(&variable(&scenario, "crash_tls").await), 100);
     scenario.shutdown().await;
@@ -848,8 +827,6 @@ async fn missing_files_are_reported_and_leave_their_images_unavailable() {
     explicit.shutdown().await;
 }
 
-/// Writes an edited copy of a fixture, named `name`, which lives until the
-/// returned directory is dropped.
 fn edited(
     test: &str,
     fixture: &str,
@@ -864,13 +841,11 @@ fn edited(
     (directory, path)
 }
 
-/// Offsets of fields in an ELF64 program header.
 const PHDR_OFFSET: usize = 8;
 const PHDR_VADDR: usize = 16;
 const PHDR_FILESZ: usize = 32;
 const PHDR_MEMSZ: usize = 40;
 
-/// Returns the file offset of each `PT_LOAD` header and the address range it maps.
 fn load_headers(bytes: &[u8]) -> Vec<(usize, u64, u64)> {
     let header = elf::FileHeader64::<Endianness>::parse(bytes).expect("core header");
     let endian = header.endian().expect("core endianness");
@@ -892,7 +867,6 @@ fn load_headers(bytes: &[u8]) -> Vec<(usize, u64, u64)> {
         .collect()
 }
 
-/// Returns the file range of the core's note segment.
 fn note_segment(bytes: &[u8]) -> (usize, usize) {
     let header = elf::FileHeader64::<Endianness>::parse(bytes).expect("core header");
     let endian = header.endian().expect("core endianness");
@@ -910,11 +884,8 @@ fn note_segment(bytes: &[u8]) -> (usize, usize) {
         .expect("a note segment")
 }
 
-/// The offset of the general registers in `NT_PRSTATUS`.
 const PRSTATUS_REGISTERS: usize = 112;
 
-/// The file offset of the faulting thread's `NT_PRSTATUS` descriptor, the
-/// first.
 fn first_prstatus(bytes: &[u8]) -> usize {
     let (start, size) = note_segment(bytes);
     let word = |offset: usize| {
@@ -939,12 +910,10 @@ fn first_prstatus(bytes: &[u8]) -> usize {
     panic!("the core has no NT_PRSTATUS note");
 }
 
-/// Rewrites one program header, given the file offset of that header.
 type SegmentEdit = fn(&mut Vec<u8>, usize);
 
 #[tokio::test]
 async fn unsaved_and_truncated_memory_stays_unavailable_rather_than_guessed() {
-    // Locate the faulting thread's stack segment in an intact dump.
     let reference = open_core("crash-gcc-o0-segv.core");
     let stack = register_u64(
         &reference
@@ -955,12 +924,10 @@ async fn unsaved_and_truncated_memory_stays_unavailable_rather_than_guessed() {
     reference.shutdown().await;
 
     let edits: [(&str, SegmentEdit); 2] = [
-        // The kernel's form for pages it chose not to save.
         ("unsaved", |bytes, header| {
             bytes[header + PHDR_FILESZ..header + PHDR_FILESZ + 8]
                 .copy_from_slice(&0_u64.to_le_bytes());
         }),
-        // A dump truncated before the segment's data.
         ("truncated", |bytes, header| {
             let past_end = u64::try_from(bytes.len()).unwrap() + 4096;
             bytes[header + PHDR_OFFSET..header + PHDR_OFFSET + 8]
@@ -1000,7 +967,6 @@ async fn unsaved_and_truncated_memory_stays_unavailable_rather_than_guessed() {
             "{name}: {depth:?}"
         );
 
-        // Memory outside the edited segment is unaffected.
         assert_eq!(
             signed(&variable(&scenario, "crash_counter").await),
             8,
@@ -1010,11 +976,6 @@ async fn unsaved_and_truncated_memory_stays_unavailable_rather_than_guessed() {
     }
 }
 
-/// A stack the dump's producer saved but never wrote is missing, not
-/// empty. gcore does this to a thread whose stack holds one of glibc's
-/// guard regions, which it cannot read: it writes nothing more of the
-/// mapping and leaves a hole in the core file, which reads as zeros. Those
-/// zeros would end the walk at the first frame as if it had no caller.
 #[tokio::test]
 async fn a_stack_the_dump_never_wrote_is_missing_rather_than_empty() {
     use std::io::{Seek as _, SeekFrom, Write as _};
@@ -1031,8 +992,6 @@ async fn a_stack_the_dump_never_wrote_is_missing_rather_than_empty() {
     assert!(intact.frames.len() > 1, "{intact:?}");
     reference.shutdown().await;
 
-    // The stack's segment, written with a hole over every whole block of
-    // it, as gcore leaves one.
     let bytes = fs::read(core("crash-gcc-o0-segv.core")).expect("read fixture");
     let header = elf::FileHeader64::<Endianness>::parse(bytes.as_slice()).expect("core header");
     let endian = header.endian().expect("core endianness");
@@ -1086,12 +1045,10 @@ async fn a_stack_the_dump_never_wrote_is_missing_rather_than_empty() {
         }
     );
 
-    // Memory outside the hole is as the program held it.
     assert_eq!(signed(&variable(&scenario, "crash_counter").await), 8);
     scenario.shutdown().await;
 }
 
-/// Reads `length` bytes and returns them only when the read completed.
 async fn complete_read(
     scenario: &Scenario,
     address: VirtualAddress,
@@ -1112,7 +1069,6 @@ async fn complete_read(
 async fn modified_file_pages_missing_from_a_dump_are_never_read_from_the_file() {
     let message_bytes = b"post-mortem read-only message\0";
 
-    // Each core is a separate randomized run with its own load addresses.
     let addresses = async |scenario: &Scenario| {
         let handle = scenario.handle();
         (
@@ -1134,9 +1090,6 @@ async fn modified_file_pages_missing_from_a_dump_are_never_read_from_the_file() 
     );
     reference.shutdown().await;
 
-    // A dump that saved only header pages omits the modified .data page too.
-    // The file still holds the counter's initial value, which is not the
-    // process's memory.
     let headers_only = open_core("crash-gcc-o0-headers-only.core");
     assert_eq!(
         loaded_identity(&core_info(&headers_only), "crash-gcc-o0"),
@@ -1152,10 +1105,6 @@ async fn modified_file_pages_missing_from_a_dump_are_never_read_from_the_file() 
     assert_eq!(complete_read(&headers_only, headers_counter, 4).await, None);
     headers_only.shutdown().await;
 
-    // A dump cut short inside the saved .data segment loses the counter. Its
-    // header records that the producer saved those bytes, so the file cannot
-    // stand in for them. gcore writes notes last, so the segment's data is
-    // moved to end at the counter instead of truncating the file itself.
     let (_scratch, path) = edited(
         "truncated-data",
         "crash-gcc-o0-segv.core",
@@ -1203,8 +1152,6 @@ async fn allowed_mismatches_keep_the_recorded_placement_or_refuse_to_relocate() 
         .await;
     reference.shutdown().await;
 
-    // A segment extending past the end of the file proves a different file,
-    // but the recorded mapping still places it.
     let (_oversized_scratch, oversized) =
         edited("oversized", "crash-gcc-o0", "crash-gcc-o0", |bytes| {
             let (header, _, _) = *load_headers(bytes).last().expect("a load segment");
@@ -1232,8 +1179,6 @@ async fn allowed_mismatches_keep_the_recorded_placement_or_refuse_to_relocate() 
     );
     allowed.shutdown().await;
 
-    // Linked above the recorded image, the file has no load bias that places
-    // it there. Relocating it anywhere would be a guess.
     let (_unplaceable_scratch, unplaceable) =
         edited("unplaceable", "crash-gcc-o0", "crash-gcc-o0", |bytes| {
             for (header, _, _) in load_headers(bytes) {
@@ -1296,8 +1241,6 @@ async fn invalid_core_files_fail_with_typed_errors() {
     fs::write(&truncated, &source[..64]).unwrap();
     invalid(open(truncated), "program headers are malformed");
 
-    // Truncation inside the note segment loses thread state, which must
-    // never be reconstructed.
     let (notes_offset, notes_size) = note_segment(&source);
     let headless = directory.join("notes-truncated.core");
     fs::write(&headless, &source[..notes_offset + notes_size / 2]).unwrap();
@@ -1328,7 +1271,6 @@ async fn invalid_core_files_fail_with_typed_errors() {
                     let (_, second_start, _) = headers[1];
                     let (first, _, _) = headers[0];
 
-                    // Grow the first segment's memory size over the second.
                     let start = u64::from_le_bytes(
                         bytes[first + PHDR_VADDR..first + PHDR_VADDR + 8]
                             .try_into()
@@ -1344,8 +1286,6 @@ async fn invalid_core_files_fail_with_typed_errors() {
         "overlap",
     );
 
-    // An explicit executable that does not exist is an error naming it, not
-    // a missing module.
     assert!(matches!(
         Debugger::open_core(&options("crash-gcc-o0-segv.core", Some("absent-executable"), false)),
         Err(Error::CoreModuleRead { path, error })
@@ -1353,7 +1293,6 @@ async fn invalid_core_files_fail_with_typed_errors() {
     ));
 }
 
-/// A core file, its innermost expected functions, and selected locals.
 type LanguageCore = (
     &'static str,
     &'static [&'static str],
@@ -1368,7 +1307,6 @@ async fn go_rust_and_zig_cores_present_frames_and_locals() {
             &["main.crashNow", "main.main", "runtime.main"],
             &[("depth", 3), ("doubled", 6)],
         ),
-        // Rust -O0 keeps ptr::write_volatile as a physical frame.
         (
             "crash-rust-o0.core",
             &["write_volatile<i32>", "crash_now", "main"],
@@ -1418,9 +1356,6 @@ async fn go_rust_and_zig_cores_present_frames_and_locals() {
     }
 }
 
-/// lld packs a small program's segments so that its code shares the
-/// header's first file page, and each is mapped from file offset zero. The
-/// mappings are still one image, loaded once at the address of the first.
 #[tokio::test]
 async fn an_image_mapped_from_offset_zero_more_than_once_is_one_module() {
     let core_name = "crash-rust-o0.core";
@@ -1471,14 +1406,11 @@ async fn core_sessions_coexist_with_each_other_and_a_live_session() {
         "stop identifiers are unique across sessions"
     );
 
-    // Dropping a session without an explicit shutdown releases it cleanly.
     drop(second);
     first.shutdown().await;
     live.shutdown().await;
 }
 
-/// File-backed memory ends where a segment's file contents end, which need
-/// not be a word boundary: reads keep every backed byte up to there.
 #[tokio::test]
 async fn core_reads_keep_backed_bytes_that_end_inside_a_word() {
     let scenario = open_core("elf-symbols-gcc-o0.core");
@@ -1497,7 +1429,6 @@ async fn core_reads_keep_backed_bytes_that_end_inside_a_word() {
         )
         .await;
 
-    // .fini ends the executable segment, whose file contents end with it.
     let fini = image
         .sections()
         .iter()
@@ -1539,8 +1470,6 @@ async fn core_reads_keep_backed_bytes_that_end_inside_a_word() {
     scenario.shutdown().await;
 }
 
-/// A core written on "another machine": at its recorded paths this machine
-/// holds different builds of the executable and library, and no C library.
 const FOREIGN_CORE: &str = "core-foreign/crash.core";
 
 fn foreign(update: impl FnOnce(&mut CoreDumpOptions)) -> CoreDumpOptions {
@@ -1549,8 +1478,6 @@ fn foreign(update: impl FnOnce(&mut CoreDumpOptions)) -> CoreDumpOptions {
     options
 }
 
-/// Each module the foreign core records, with the file that was there when
-/// the dump was written.
 async fn foreign_modules() -> Vec<(PathBuf, PathBuf)> {
     let scenario = Scenario::open_core(
         "foreign modules",
@@ -1592,14 +1519,12 @@ fn named(modules: &[(PathBuf, PathBuf)], prefix: &str) -> (PathBuf, PathBuf) {
         .clone()
 }
 
-/// The recorded images files back: all but the vDSO.
 fn file_images(info: &CoreDumpInfo) -> impl Iterator<Item = &microscope::CoreModule> {
     info.modules
         .iter()
         .filter(|module| module.recorded_path.as_os_str() != support::VDSO)
 }
 
-/// Copies `source` to where `recorded` lies under `root`.
 fn place(root: &Path, recorded: &Path, source: &Path) -> PathBuf {
     let target = root.join(recorded.strip_prefix("/").expect("absolute recorded path"));
     fs::create_dir_all(target.parent().expect("recorded parent")).expect("create directories");
@@ -1624,8 +1549,6 @@ fn build_id(path: &Path) -> Vec<u8> {
         .to_vec()
 }
 
-/// The canonical path of the file loaded for the recorded image whose file
-/// name is `name`, and how it was proven.
 fn loaded_from(info: &CoreDumpInfo, name: &str) -> (PathBuf, ModuleIdentity) {
     info.modules
         .iter()
@@ -1643,7 +1566,6 @@ fn loaded_from(info: &CoreDumpInfo, name: &str) -> (PathBuf, ModuleIdentity) {
 
 #[tokio::test]
 async fn cores_from_other_machines_load_every_module_from_a_sysroot() {
-    // This machine has a different build at the executable's recorded path.
     let host = Debugger::open_core(&foreign(|_| {}));
     assert!(
         matches!(&host, Err(Error::CoreModuleMismatch { path, detail })
@@ -1665,8 +1587,6 @@ async fn cores_from_other_machines_load_every_module_from_a_sysroot() {
 
     let options = foreign(|options| options.sysroot = Some(root.path().to_owned()));
 
-    // A module the sysroot lacks is missing even though this machine has a
-    // file at its recorded path; its recorded build-id says what to supply.
     let partial = Scenario::open_core("partial sysroot", &options);
     let info = core_info(&partial);
     let missing = info
@@ -1701,8 +1621,6 @@ async fn cores_from_other_machines_load_every_module_from_a_sysroot() {
         assert_eq!(identity, &ModuleIdentity::BuildId);
         assert!(loaded.path.starts_with(&canonical_root), "{loaded:?}");
 
-        // The build-id read from the dump's saved header is the file's own,
-        // as an independent ELF reader sees it.
         assert_eq!(
             module.build_id.as_deref(),
             Some(build_id(&loaded.path).as_slice())
@@ -1715,14 +1633,11 @@ async fn cores_from_other_machines_load_every_module_from_a_sysroot() {
     assert_eq!(names[2].0, "libc.so.6", "{names:#?}");
     assert_eq!(signed(&variable(&scenario, "depth").await), 3);
 
-    // Saved data is the dump's own; the rebuilt library on this machine
-    // would say 123.
     assert_eq!(
         signed(&variable(&scenario, "crash_library_value").await),
         321
     );
 
-    // Unsaved read-only data comes from the verified sysroot file.
     let message = scenario
         .operation(
             "message",
@@ -1735,8 +1650,6 @@ async fn cores_from_other_machines_load_every_module_from_a_sysroot() {
     assert_eq!(read.completion, MemoryReadCompletion::Complete);
     assert_eq!(&*read.bytes, b"post-mortem read-only message");
 
-    // The other machine's C library describes its own structures, which
-    // locate its TLS.
     assert_eq!(signed(&variable(&scenario, "crash_tls").await), 100);
     scenario.shutdown().await;
 }
@@ -1752,8 +1665,6 @@ async fn sysroot_paths_resolve_inside_the_sysroot_and_open_only_regular_files() 
         place(root.path(), recorded, original);
     }
 
-    // Each link would reach this machine's different build if it escaped the
-    // sysroot; inside it, the link reaches the original.
     let decoy = |name: &str| core(name).strip_prefix("/").expect("absolute").to_owned();
     let absolute = place(root.path(), &core("libcrash-rebuilt.so"), &library_file);
     let relative = place(root.path(), &core("crash-gcc-o0-rebuilt"), &executable_file);
@@ -1788,8 +1699,6 @@ async fn sysroot_paths_resolve_inside_the_sysroot_and_open_only_regular_files() 
     );
     scenario.shutdown().await;
 
-    // Recorded paths can name devices and FIFOs, which are never opened for
-    // reading, so this fails at once instead of blocking.
     let libc_path = root.path().join(libc.strip_prefix("/").unwrap());
     fs::remove_file(&libc_path).unwrap();
     nix::unistd::mkfifo(&libc_path, nix::sys::stat::Mode::S_IRWXU).expect("create FIFO");
@@ -1803,7 +1712,6 @@ async fn sysroot_paths_resolve_inside_the_sysroot_and_open_only_regular_files() 
         fifo.err()
     );
 
-    // Search locations that are not directories fail before any lookup.
     let not_directory = foreign(|options| options.sysroot = Some(core("crash-gcc-o0")));
     assert!(matches!(
         Debugger::open_core(&not_directory),
@@ -1832,7 +1740,6 @@ async fn module_paths_supply_files_by_name_then_by_build_id() {
     let (_, libc_file) = named(&modules, "libc.so.6");
     let canonical = |path: &Path| path.canonicalize().expect("canonical path");
 
-    // Files named as recorded are found after this machine's mismatched ones.
     let by_name = ScratchDir::new("module-path-names");
 
     for (name, source) in [
@@ -1859,7 +1766,6 @@ async fn module_paths_supply_files_by_name_then_by_build_id() {
         );
     }
 
-    // Modules this machine does hold stay at their recorded paths.
     let (pthread, identity) = loaded_from(&info, "libpthread.so.0");
     assert!(!pthread.starts_with(canonical(by_name.path())));
     assert_eq!(identity, ModuleIdentity::BuildId);
@@ -1872,8 +1778,6 @@ async fn module_paths_supply_files_by_name_then_by_build_id() {
     assert_eq!(names[2].0, "libc.so.6", "{names:#?}");
     scenario.shutdown().await;
 
-    // Renamed files are found by build-id, past a same-named different build
-    // and a same-named directory.
     let renamed = ScratchDir::new("module-path-build-ids");
 
     for (name, source) in [
@@ -1918,8 +1822,6 @@ async fn unproven_module_files_are_errors_only_at_their_recorded_paths() {
     let (_, executable_file) = named(&modules, "crash-gcc-o0");
     let (_, libc_file) = named(&modules, "libc.so.6");
 
-    // With no proven file, the earliest equally usable candidate explains
-    // the failure, and is the one used once mismatches are allowed.
     let decoys = ScratchDir::new("module-path-decoys");
     fs::copy(&executable_file, decoys.path().join("crash-gcc-o0")).unwrap();
     fs::copy(&libc_file, decoys.path().join("libc.so.6")).unwrap();
@@ -1957,9 +1859,6 @@ async fn unproven_module_files_are_errors_only_at_their_recorded_paths() {
     );
     allowed.shutdown().await;
 
-    // A file that searching found only shares the name, so where nothing is
-    // at the recorded path, a mismatched one leaves the module missing
-    // unless mismatches are allowed.
     let root = ScratchDir::new("sysroot-without-library");
 
     for (recorded, original) in &modules {
@@ -2009,7 +1908,6 @@ async fn executables_found_nowhere_name_the_search_and_the_build_id_to_supply() 
     let modules = foreign_modules().await;
     let (_, executable_file) = named(&modules, "crash-gcc-o0");
 
-    // An executable found nowhere names what was searched and what to supply.
     let empty = ScratchDir::new("empty-sysroot");
     let unavailable = Debugger::open_core(&foreign(|options| {
         options.sysroot = Some(empty.path().to_owned());
@@ -2025,7 +1923,6 @@ async fn executables_found_nowhere_name_the_search_and_the_build_id_to_supply() 
         unavailable.err()
     );
 
-    // An explicit executable needs no search.
     let explicit = Scenario::open_core(
         "explicit executable with sysroot",
         &foreign(|options| {
@@ -2044,7 +1941,6 @@ async fn executables_found_nowhere_name_the_search_and_the_build_id_to_supply() 
     explicit.shutdown().await;
 }
 
-/// Each thread's TLS variables, with their addresses, ordered by value.
 async fn thread_tls(scenario: &Scenario) -> Vec<[(i128, u64); 2]> {
     let snapshot = scenario
         .operation("snapshot", scenario.handle().snapshot())
@@ -2090,7 +1986,6 @@ async fn core_tls_is_located_through_the_c_librarys_own_descriptors() {
     assert_eq!(tls_values(&thread_tls(&scenario).await), expected);
     scenario.shutdown().await;
 
-    // A thread whose thread pointer is unset has no TLS.
     let (_directory, path) = edited(
         "unset-thread-pointer",
         "crash-gcc-o0-segv.core",
@@ -2112,8 +2007,6 @@ async fn core_tls_is_located_through_the_c_librarys_own_descriptors() {
     );
     unset.shutdown().await;
 
-    // Another machine's build of the C library describes its own structures,
-    // which locate every thread's blocks.
     let modules = foreign_modules().await;
     let originals = ScratchDir::new("foreign-tls");
 
@@ -2129,9 +2022,6 @@ async fn core_tls_is_located_through_the_c_librarys_own_descriptors() {
     foreign_scenario.shutdown().await;
 }
 
-/// The C library's thread structures in the dump locate each thread's TLS,
-/// with or without a dynamic loader: musl's, statically linked glibc's,
-/// and those of Ubuntu's glibc 2.27, 2.31, and 2.35.
 #[tokio::test]
 async fn cores_locate_every_threads_tls_in_every_module_on_each_c_library() {
     for (name, plugin, threads) in [
@@ -2149,10 +2039,6 @@ async fn cores_locate_every_threads_tls_in_every_module_on_each_c_library() {
     }
 }
 
-/// The dump holds the only copy of the vDSO, which no file backs. A dump
-/// that lost its memory, or holds something other than its image there,
-/// lists the vDSO as missing and leaves its frames unnamed rather than
-/// guessed.
 #[tokio::test]
 async fn vdso_images_the_dump_lost_are_missing_rather_than_guessed() {
     const FIXTURE: &str = "vdso-gcc-o0-time.core";
@@ -2182,7 +2068,6 @@ async fn vdso_images_the_dump_lost_are_missing_rather_than_guessed() {
             bytes[header + PHDR_OFFSET..header + PHDR_OFFSET + 8]
                 .copy_from_slice(&past_end.to_le_bytes());
         }),
-        // Saved bytes that are not an ELF image.
         ("overwritten", |bytes, header| {
             let offset = u64::from_le_bytes(
                 bytes[header + PHDR_OFFSET..header + PHDR_OFFSET + 8]
@@ -2208,7 +2093,6 @@ async fn vdso_images_the_dump_lost_are_missing_rather_than_guessed() {
         assert_eq!(missing.state, CoreModuleState::Missing, "{name}");
         assert_eq!(missing.start.get(), start, "{name}");
 
-        // The modules files back are unaffected.
         assert!(
             loaded_identity(&info, "vdso-gcc-o0").is_verified(),
             "{name}: {info:#?}"
@@ -2230,19 +2114,12 @@ async fn vdso_images_the_dump_lost_are_missing_rather_than_guessed() {
     }
 }
 
-/// Each thread's stack in a core ends whole, though the debugger never saw
-/// a thread start; glibc's records bound where a zero return address may
-/// end it. The same core with every thread's stack and frame pointers
-/// moved down into unused stack, where a frame's caller reads zero, has no
-/// stack that ends whole.
 #[tokio::test]
 async fn a_cores_stacks_moved_into_unused_stack_do_not_end_whole() {
     cores_stacks_moved_into_unused_stack_do_not_end_whole("crash-gcc-o0-segv.core", 1 + WORKERS)
         .await;
 }
 
-/// The same under musl, whose records, with the auxiliary vector the core
-/// saved, bound it too.
 #[tokio::test]
 async fn a_musl_cores_stacks_moved_into_unused_stack_do_not_end_whole() {
     cores_stacks_moved_into_unused_stack_do_not_end_whole("tls-modules-musl-gcc-o0.core", 3).await;
@@ -2251,8 +2128,6 @@ async fn a_musl_cores_stacks_moved_into_unused_stack_do_not_end_whole() {
 async fn cores_stacks_moved_into_unused_stack_do_not_end_whole(name: &str, threads: u64) {
     use microscope::{StackFrameId, StopContext};
 
-    /// Where `elf_prstatus` keeps the registers, and where among them
-    /// x86-64's rbp and rsp are.
     const REGISTERS: usize = 112;
     const RBP: usize = 4;
     const RSP: usize = 19;

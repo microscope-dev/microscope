@@ -627,8 +627,6 @@ fn the_schema_is_the_records_layout() {
         .collect::<Vec<_>>();
     assert_eq!(kinds, TableKind::ALL);
 
-    // A changed record has a new fingerprint. The header rejects older
-    // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
         0xe971_7e0d_9917_908b,
@@ -690,14 +688,12 @@ fn symbols_read_back_with_their_preferences() {
     let id = |symbol: Option<symbols::Symbol<'_>>| symbol.map(|symbol| symbol.id().get());
     let at = ImageAddress::new;
 
-    // A declared extent outranks an inferred one where they overlap.
     assert_eq!(id(view.code_at(at(0x1008))), Some(0));
     assert_eq!(id(view.code_at(at(0x1010))), Some(1));
     assert_eq!(id(view.code_at(at(0x1020))), None);
     assert_eq!(id(view.data_at(at(0x3007))), Some(2));
     assert_eq!(id(view.data_at(at(0x3008))), None);
 
-    // An unsized symbol names only its own address.
     assert_eq!(id(view.data_at(at(0x3010))), Some(3));
     assert_eq!(id(view.data_at(at(0x3011))), None);
     let named = |name| {
@@ -741,13 +737,10 @@ fn functions_read_back_with_their_indexes() {
     assert_eq!(ids(&mut function(3).instances()), [2]);
     let named = |name| view.named(name).map(|f| f.id().get()).collect::<Vec<_>>();
 
-    // The main subprogram answers to `main` as well as its own name, and
-    // in place of what is named `main`.
     assert_eq!(named("main"), [2]);
     assert_eq!(named("declared"), [2]);
     assert_eq!(named("missing"), [] as [u32; 0]);
 
-    // Latest start first, each instance once though it names a range twice.
     let at = ImageAddress::new;
     assert_eq!(ids(&mut view.instances_containing(at(0x1006))), [1, 0]);
     assert_eq!(
@@ -755,8 +748,6 @@ fn functions_read_back_with_their_indexes() {
         [] as [u32; 0]
     );
 
-    // A physical instance stops where its prologue ends; an inlined one, or
-    // a coroutine's body, at its own entry; one without an entry nowhere.
     let entries = |id| {
         view.instance(CodeInstanceId::new(id))
             .unwrap()
@@ -824,8 +815,6 @@ fn damage_is_caught_by_the_checksum_or_by_validation() {
                 "byte {at} ^ {flip:#x} passed the checksum"
             );
 
-            // Past the checksum, an image validation accepts must read
-            // without a panic.
             reseal(&mut damaged);
             if let Ok(image) = reopen(&damaged) {
                 read_everything(&image);
@@ -834,7 +823,6 @@ fn damage_is_caught_by_the_checksum_or_by_validation() {
         }
     }
 
-    // Some changes are still valid images, such as another address.
     assert!(accepted > 0);
 }
 
@@ -883,8 +871,6 @@ fn the_header_is_checked() {
         ImageError::Malformed(_)
     ));
 
-    // An image as large as Chrome's with its debug information, 7 GB, is
-    // one an image may be: these bytes are only too few for it.
     assert_eq!(
         header(|header| header.length = (7_u64 << 30).into()),
         ImageError::Truncated
@@ -894,8 +880,6 @@ fn the_header_is_checked() {
     let error = Image::from_bytes(AlignedBytes::copy_of(&bytes).unwrap(), small).unwrap_err();
     assert_eq!(error, ImageError::TooLarge);
 
-    // The padding after each table that does not end at a boundary, and
-    // before the trailer.
     let image = reopen(&bytes).unwrap();
     let mut gaps = image
         .tables
@@ -917,7 +901,6 @@ fn the_header_is_checked() {
     }
 }
 
-/// Every table, indexes included, for sabotage.
 struct Parts {
     tables: LineTables,
     ranges: Vec<LineRange>,
@@ -963,7 +946,6 @@ fn sabotaged(change: impl FnOnce(&mut Parts)) -> ImageError {
     builder.seal(Limits::default()).unwrap_err()
 }
 
-/// A change to the tables, and what validation says about it.
 type Sabotage = (&'static str, &'static str, fn(&mut Parts));
 
 const SABOTAGES: &[Sabotage] = &[
@@ -1053,7 +1035,6 @@ const SABOTAGES: &[Sabotage] = &[
         "a statement's wrong line",
         "statement index disagrees",
         |parts| {
-            // The last key, so that the index stays ordered.
             parts.statements.last_mut().unwrap().line = u64::MAX.into();
         },
     ),
@@ -1103,8 +1084,6 @@ fn validation_rejects_tables_that_disagree() {
     }
 }
 
-/// The sample with `kind`'s records changed and resealed, and what
-/// validation says about it.
 fn tampered<T>(kind: TableKind, change: impl FnOnce(&mut [T])) -> Result<(), ImageError>
 where
     T: zerocopy::FromBytes + zerocopy::IntoBytes + zerocopy::KnownLayout,
@@ -1379,9 +1358,6 @@ fn validation_rejects_functions_that_disagree() {
             "code range index disagrees",
         ),
         (
-            // The second instance names one range twice, which the index
-            // holds once; changing the copy leaves every interval one of
-            // its instance's ranges, but the new range in none.
             "an instance's range missing from the index",
             tampered(TableKind::InstanceRanges, |r: &mut [RangeRecord]| {
                 assert_eq!(r[2], r[3], "the sample repeats a range");
@@ -1413,8 +1389,6 @@ fn validation_rejects_functions_that_disagree() {
     }
 }
 
-/// Functions whose frames are proved are told apart where they abut, and
-/// code in which no frame is proved belongs to none.
 #[test]
 fn proved_functions_read_back_by_where_they_begin() {
     let (tables, files) = sample();
@@ -1450,8 +1424,6 @@ fn unwinding_tables_read_back_as_their_lookups() {
     );
     assert_eq!((view.big_endian(), view.address_size()), (false, 8));
 
-    // The earliest entry in the section wins, unless the section is
-    // malformed before it.
     let eh_frame = view.eh_frame_index();
     let debug_frame = view.debug_frame_index();
 
@@ -1633,7 +1605,6 @@ fn validation_rejects_unwinding_tables_that_disagree() {
     }
 }
 
-/// Strings whose hashes collide are pooled apart, each once.
 #[test]
 fn a_pool_keeps_strings_whose_hashes_collide() {
     let mut pool = super::strings::StringsBuilder::default();
@@ -1657,8 +1628,6 @@ fn a_pool_keeps_strings_whose_hashes_collide() {
     assert_eq!(bytes.len(), "first second third ".len());
 }
 
-/// Two names of one record whose hashes collide are both kept and both
-/// found.
 #[test]
 fn a_name_index_keeps_every_name_whose_hash_collides() {
     let mut seen = std::collections::HashMap::new();
@@ -1704,7 +1673,6 @@ fn types_read_back_with_their_indexes() {
     assert!(view.named("the type's size is negative").next().is_none());
     assert_eq!(ids(view.with_base("Point").collect()), [2]);
 
-    // C's own spelling of a base type finds it too.
     assert_eq!(ids(view.with_base("short").collect()), [18]);
     assert_eq!(ids(view.with_enumerator("Red").collect()), [4]);
     assert!(view.with_enumerator("Blue").next().is_none());
@@ -1718,7 +1686,6 @@ fn types_read_back_with_their_indexes() {
         );
     }
 
-    // A type decodes once, and only when asked for.
     let other = TypeTable::new(image, crate::ModuleImageId::new(7));
     let first = other.node(crate::TypeId::new(2)).unwrap();
     assert_eq!(first.reference().image, crate::ModuleImageId::new(7));
@@ -2099,8 +2066,6 @@ fn facts_read_back_with_thread_locals_by_name() {
     assert_eq!(view.thread_local("zzz"), None);
     assert_eq!(view.address_range(), sample_address_range());
 
-    // The debug file's path is where binding found it, and binding must
-    // name one when the image was built with one.
     let path = std::sync::Arc::new(std::path::PathBuf::from("/elsewhere/a.debug"));
     assert_eq!(
         view.debug_file(Some(path.clone())),
@@ -2260,7 +2225,6 @@ mod snapshot {
         super::super::backing::read_snapshot(path, limit, between, AlignedBytes::zeroed)
     }
 
-    /// A directory removed when the test ends.
     struct ScratchDir(std::path::PathBuf);
 
     impl ScratchDir {
@@ -2308,7 +2272,6 @@ mod snapshot {
         ));
     }
 
-    /// A stream is read to its end, within the limit.
     #[test]
     fn a_fifo_is_read_as_it_is_written() {
         let dir = ScratchDir::new("image-fifo");
@@ -2319,8 +2282,6 @@ mod snapshot {
             let writer = {
                 let (path, contents) = (path.clone(), contents.clone());
                 std::thread::spawn(move || {
-                    // A reader that stops at its limit closes the FIFO
-                    // under the writer.
                     let _ = std::fs::write(path, contents);
                 })
             };
@@ -2350,7 +2311,6 @@ mod snapshot {
         .unwrap();
         assert_eq!(&*bytes, b"second, longer");
 
-        // A file that grows under every read never yields a snapshot.
         let error = read_snapshot_with(&path, 1 << 20, &mut |_| {
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
@@ -2366,8 +2326,6 @@ mod snapshot {
     }
 }
 
-/// Locations read back from an image as they were pooled, and pooling one
-/// again finds it rather than adding a copy.
 #[test]
 #[expect(clippy::too_many_lines, reason = "one check for each field and query")]
 fn locations_read_back_as_they_were_pooled() {
@@ -2428,8 +2386,6 @@ fn locations_read_back_as_they_were_pooled() {
     assert_eq!((second.unit_offset(), read.unit_language(1)), (None, None));
     assert!(read.list(LocationListId(2)).is_empty());
 
-    // The same contents are the same row, however their parts were
-    // ordered; any difference is another.
     let unit = caller.unit();
     let encoding = caller.encoding();
 
@@ -2630,9 +2586,6 @@ fn validation_rejects_locations_that_disagree() {
     }
 }
 
-/// Data objects and functions read back as they were encoded: objects of
-/// one scope share its row and code, and a later entry for an index's key
-/// replaces an earlier one.
 #[test]
 fn variables_read_back_as_they_were_encoded() {
     use super::variables::{
@@ -2645,8 +2598,6 @@ fn variables_read_back_as_they_were_encoded() {
     let image = reopen(seal(&tables, &files).unwrap().as_bytes()).unwrap();
     let view = VariableView::new(&image);
 
-    // x, y, u, and n share a scope; p, g, and f each have their own, and
-    // every scope but the global's shares its code with a function.
     assert_eq!(image.table::<ScopeRecord>().len(), 4);
     assert_eq!(image.table::<CodeRange>().len(), 5);
 
@@ -2747,9 +2698,6 @@ fn variables_read_back_as_they_were_encoded() {
     assert_eq!(view.object(ObjectId(1)).type_id(), None);
 }
 
-/// A function is found at an address as before the image held them: of
-/// the functions whose code begins at or before it, those beginning last
-/// first, the first of them whose code contains it.
 fn functions_are_found_where_their_code_holds_the_address(
     functions: Vec<Vec<(u64, u64)>>,
     addresses: Vec<u64>,
@@ -2787,7 +2735,6 @@ fn functions_are_found_where_their_code_holds_the_address(
     add_to(&mut builder, &mut strings, &input).unwrap();
     builder.bytes(TableKind::Strings, strings.into_bytes());
 
-    // The loader drops empty ranges, and an image refuses them.
     let empty = functions
         .iter()
         .any(|function| function.ranges.iter().any(|range| range.start >= range.end));
@@ -2820,7 +2767,6 @@ fn functions_are_found_where_their_code_holds_the_address(
             proptest::prop_assert_eq!(found, expected, "at {:#x}", address);
         }
 
-        // The loader finds functions as the image does, before sealing.
         let before = index.function_at(ImageAddress::new(address));
         proptest::prop_assert!(
             match (before, expected) {
@@ -2835,8 +2781,6 @@ fn functions_are_found_where_their_code_holds_the_address(
     Ok(())
 }
 
-/// Found by the property below: a function starting inside an earlier
-/// one's range, at an address past the later function's end.
 #[test]
 fn a_later_start_that_ends_first_leaves_the_earlier_function_found() {
     functions_are_found_where_their_code_holds_the_address(
@@ -2848,8 +2792,6 @@ fn a_later_start_that_ends_first_leaves_the_earlier_function_found() {
 
 use proptest::strategy::{Just, Strategy as _};
 
-/// Where a case's code lies: at the bottom of the address space, or with
-/// its last range ending at `u64::MAX`.
 const REGIONS: [u64; 2] = [0, u64::MAX - 86];
 
 proptest::proptest! {
@@ -2874,8 +2816,6 @@ proptest::proptest! {
     }
 }
 
-/// A global reads back its object and the names it answers to beyond the
-/// object's.
 #[test]
 fn globals_read_back_with_their_names() {
     use super::variables::{ObjectId, VariableView};
@@ -3190,8 +3130,6 @@ fn validation_rejects_variables_that_disagree() {
     }
 }
 
-/// Calls read back as they were encoded, and the sites returning to an
-/// address are all found, however many.
 #[test]
 fn calls_read_back_as_they_were_encoded() {
     use super::calls::{CallView, SiteId};
@@ -3241,8 +3179,6 @@ fn calls_read_back_as_they_were_encoded() {
     assert_eq!(returning(0x2000), [0; 0]);
 }
 
-/// Callers number calling functions by the variables' functions, which
-/// validation does not tie to them, so a cached image may lack one.
 #[test]
 fn a_calling_function_the_image_lacks_describes_no_tail_calls() {
     use super::calls::CallView;
@@ -3415,7 +3351,6 @@ fn validation_rejects_calls_that_disagree() {
     }
 }
 
-/// Type facts read back by their keys, whatever order they were given in.
 #[test]
 fn type_facts_read_back_by_their_keys() {
     use super::locations::ExpressionId;
@@ -3542,8 +3477,6 @@ fn validation_rejects_type_facts_that_disagree() {
     }
 }
 
-/// Constants by name and vtables by address read back the last value given
-/// for each, and producers once each in the order first named.
 #[test]
 fn declarations_read_back_by_name_and_address() {
     use super::declarations::DeclarationView;
@@ -3619,8 +3552,6 @@ fn validation_rejects_declarations_that_disagree() {
     }
 }
 
-/// Resume points read back as the loader decoded them, by instance, and
-/// held ranges by entry and state, the later of two for a key.
 #[test]
 fn resumes_read_back_by_instance_and_state() {
     use super::resumes::ResumeView;
@@ -3729,17 +3660,12 @@ fn validation_rejects_resumes_that_disagree() {
         );
     }
 
-    // The ranges themselves are any addresses.
     tampered(TableKind::ResumeRanges, |r: &mut [CodeRange]| {
         r[0].end = 0.into();
     })
     .unwrap();
 }
 
-/// A table finds the coroutines its types hold as the loader does from the
-/// whole graph, decoding only types named as coroutines: a record or a
-/// variant so named is one, readable or not, and a pointer or a malformed
-/// type so named is not.
 #[test]
 fn a_type_table_finds_the_coroutines_the_graph_holds() {
     use std::sync::Arc;
@@ -3818,8 +3744,6 @@ fn a_type_table_finds_the_coroutines_the_graph_holds() {
     }
 }
 
-/// A Python runtime reads back as it was sealed, with its layout or the
-/// reason it has none.
 #[test]
 fn a_python_runtime_reads_back_with_its_layout_or_its_problem() {
     use super::python::{
@@ -3901,8 +3825,6 @@ fn sealed_v8(runtime: Option<&super::v8::V8Runtime>) -> Option<super::v8::V8Runt
     super::v8::runtime(&builder.seal(Limits::default()).unwrap())
 }
 
-/// A V8 runtime reads back as it was sealed, with its layout or the reason
-/// it has none; a field or constant the layout lacks reads back absent.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -4127,7 +4049,6 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
     placed.blob_problem = 7.into();
     assert!(refusal(vec![placed]).contains("is no string"));
 
-    // A blob placed beside the reason it cannot be.
     let mut strings = StringsBuilder::default();
     let problem = strings.push("no accessor").unwrap().0;
     let mut both = record(u32::MAX);
@@ -4142,7 +4063,6 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
         "{refused}"
     );
 
-    // A Node release together with a reason it is missing.
     let mut strings = StringsBuilder::default();
     let problem = strings.push("no napi_get_node_version").unwrap().0;
     let mut both = record(u32::MAX);
@@ -4157,8 +4077,6 @@ fn validation_rejects_a_v8_runtime_that_names_nothing() {
         "{refused}"
     );
 
-    // Where the isolates keep their entries, together with a reason the
-    // code does not say.
     let mut strings = StringsBuilder::default();
     let problem = strings.push("no v8::Isolate::IsInUse").unwrap().0;
     let mut both = record(u32::MAX);

@@ -1,11 +1,3 @@
-// Where every pane sits: a tree of splits whose leaves are groups of tabs,
-// and floating windows above it. A layout is plain data, changed only by the
-// operations below. Each returns a new layout that keeps every rule
-// `checkLayout` lists, or the same layout when the operation makes no sense,
-// such as splitting a group off itself. Pixels are not its business: weights
-// say how a split shares its space, and the frame keeps floating windows on
-// screen where it draws them.
-
 import { assert } from "../assert";
 
 declare const brand: unique symbol;
@@ -34,14 +26,13 @@ export interface Rect {
 
 export type Side = "left" | "right" | "top" | "bottom";
 
-/** A row's children sit side by side; a column's are stacked. */
 export type Axis = "row" | "column";
 
 export interface Group {
   readonly type: "group";
   readonly id: GroupId;
   readonly tabs: readonly PaneId[];
-  /** Null only when there are no tabs. */
+
   readonly active: PaneId | null;
 }
 
@@ -54,7 +45,7 @@ export interface Split {
 
 export interface Child {
   readonly node: Node;
-  /** The share of the split's space, all of them summing to 1. */
+
   readonly weight: number;
 }
 
@@ -67,39 +58,33 @@ export interface Floating {
 
 export interface Pane {
   readonly kind: KindId;
-  /** Tells panes of a kind apart: a file's path, or "" for a kind with one
-   * pane. Opening a kind and key that is open already shows that pane. */
+
   readonly key: string;
-  /** The pane's own state. A `link` names the link it reads. */
+
   readonly params: Json;
 }
 
 export interface Layout {
   readonly root: Node;
-  /** Bottom to top. */
+
   readonly floating: readonly Floating[];
   readonly maximized: GroupId | null;
-  /** Docked nodes put out of sight, such as a side dock hidden to give the
-   * code room. Never one holding the focused group. */
+
   readonly hidden: readonly (GroupId | SplitId)[];
-  /** The group keys and new panes go to. */
+
   readonly focused: GroupId;
   readonly panes: Readonly<Record<PaneId, Pane>>;
-  /** State panes share: each pane whose params name a link reads it, and a
-   * link no pane reads goes. */
+
   readonly links: Readonly<Record<LinkId, Json>>;
-  /** The number the next new id gets, so ids are never reused. */
+
   readonly next: number;
 }
 
-/** Where a pane or a floating window lands. A tab index counts the tabs as
- * the strip shows them, the moving pane among them. */
 export type Target =
   | { readonly type: "tab"; readonly group: GroupId; readonly index: number }
   | { readonly type: "side"; readonly group: GroupId; readonly side: Side }
   | { readonly type: "edge"; readonly side: Side };
 
-/** The share of the dock a pane docked on its edge takes. */
 const EDGE_WEIGHT = 0.25;
 
 export function emptyLayout(): Layout {
@@ -116,12 +101,10 @@ export function emptyLayout(): Layout {
   };
 }
 
-/** Every group: the dock's in reading order, then the floating ones. */
 export function groups(layout: Layout): Group[] {
   return [...docked(layout.root), ...layout.floating.map((window) => window.group)];
 }
 
-/** The link a pane reads, if it reads one. */
 export function linkOf(pane: Pane): LinkId | null {
   const { params } = pane;
   const link =
@@ -131,8 +114,6 @@ export function linkOf(pane: Pane): LinkId | null {
   return typeof link === "string" ? (link as LinkId) : null;
 }
 
-/** Opens a pane, as `open` does, that reads a new link holding `value`;
- * `make` names the link in the pane's params. */
 export function openLinked(
   layout: Layout,
   make: (link: LinkId) => Pane,
@@ -150,7 +131,6 @@ export function openLinked(
   return open(linked, pane, group);
 }
 
-/** Changes what a link holds. */
 export function setLink(layout: Layout, link: LinkId, value: Json): Layout {
   const found = layout.links[link];
   if (found === undefined || JSON.stringify(found) === JSON.stringify(value)) {
@@ -159,8 +139,6 @@ export function setLink(layout: Layout, link: LinkId, value: Json): Layout {
   return { ...layout, links: { ...layout.links, [link]: value } };
 }
 
-/** Puts back links a closed pane read, under their ids, which are never
- * reused, so a pane opened again reads them as it did. */
 export function restoreLinks(layout: Layout, links: Readonly<Record<LinkId, Json>>): Layout {
   const missing = (Object.keys(links) as LinkId[]).filter(
     (link) => layout.links[link] === undefined && Number(link.slice(1)) < layout.next,
@@ -174,7 +152,6 @@ export function restoreLinks(layout: Layout, links: Readonly<Record<LinkId, Json
   };
 }
 
-/** The links these panes read, and what each holds. */
 export function linksOf(layout: Layout, panes: readonly Pane[]): Record<LinkId, Json> {
   return Object.fromEntries(
     panes.flatMap((pane) => {
@@ -199,9 +176,6 @@ function docked(node: Node): Group[] {
   return node.type === "group" ? [node] : node.children.flatMap((child) => docked(child.node));
 }
 
-/** Opens a pane in a group, the focused one unless another is named, after
- * its active tab, or shows the pane of the same kind and key when there is
- * one. */
 export function open(
   layout: Layout,
   pane: Pane,
@@ -222,7 +196,6 @@ export function open(
   return { layout: opened, pane: id };
 }
 
-/** The open pane of a kind and key. */
 export function paneOf(layout: Layout, kind: KindId, key: string): PaneId | null {
   const found = (Object.entries(layout.panes) as [PaneId, Pane][]).find(
     ([, pane]) => pane.kind === kind && pane.key === key,
@@ -230,14 +203,10 @@ export function paneOf(layout: Layout, kind: KindId, key: string): PaneId | null
   return found?.[0] ?? null;
 }
 
-/** A layout to build: a split's children with their shares, or a group's
- * panes, the first of them shown. */
 export type Shape =
   | { readonly axis: Axis; readonly children: readonly (readonly [number, Shape])[] }
   | readonly Pane[];
 
-/** Builds a layout from a shape, its first group focused, holding the links
- * its panes read. */
 export function build(shape: Shape, links: Readonly<Record<LinkId, Json>> = {}): Layout {
   let next = Math.max(0, ...Object.keys(links).map((link) => Number(link.slice(1)) + 1));
   const panes: Record<PaneId, Pane> = {};
@@ -274,7 +243,6 @@ export function build(shape: Shape, links: Readonly<Record<LinkId, Json>> = {}):
   });
 }
 
-/** Closes a pane. Its group shows the tab beside it, or goes when empty. */
 export function close(layout: Layout, pane: PaneId): Layout {
   const group = groupOf(layout, pane);
   if (!group) {
@@ -291,7 +259,6 @@ export function close(layout: Layout, pane: PaneId): Layout {
   });
 }
 
-/** Shows a pane in its group, focuses the group, and raises its window. */
 export function activate(layout: Layout, pane: PaneId): Layout {
   const group = groupOf(layout, pane);
   if (!group) {
@@ -306,7 +273,6 @@ export function activate(layout: Layout, pane: PaneId): Layout {
   return settle({ ...shown, floating, focused: group.id });
 }
 
-/** Moves a pane to a target, focusing the group it lands in. */
 export function move(layout: Layout, pane: PaneId, target: Target): Layout {
   const from = groupOf(layout, pane);
   if (!from || !lands(layout, target, from, from.tabs.length === 1)) {
@@ -329,7 +295,6 @@ export function move(layout: Layout, pane: PaneId, target: Target): Layout {
   return settle({ ...place(lifted, group, target), focused: group.id });
 }
 
-/** Moves a group's active tab into a new group on one side of it. */
 export function split(layout: Layout, group: GroupId, side: Side): Layout {
   const found = groups(layout).find((candidate) => candidate.id === group);
   if (!found?.active || found.tabs.length < 2) {
@@ -338,7 +303,6 @@ export function split(layout: Layout, group: GroupId, side: Side): Layout {
   return move(layout, found.active, { type: "side", group, side });
 }
 
-/** Shares a split's space anew. */
 export function resize(layout: Layout, id: SplitId, weights: readonly number[]): Layout {
   const found = splits(layout.root).find((candidate) => candidate.id === id);
   if (
@@ -356,8 +320,6 @@ export function resize(layout: Layout, id: SplitId, weights: readonly number[]):
   return settle({ ...layout, root: replaceNode(layout.root, id, { ...found, children }) });
 }
 
-/** Floats a pane in a window of its own at `rect`, on top. A pane alone in
- * its window already moves the window instead. */
 export function float(layout: Layout, pane: PaneId, rect: Rect): Layout {
   const from = groupOf(layout, pane);
   if (!from || !validRect(rect)) {
@@ -387,11 +349,9 @@ export function float(layout: Layout, pane: PaneId, rect: Rect): Layout {
   });
 }
 
-/** Gives a pane new params, such as how a profile pane looks at its
- * profile; the same layout when they are the same. */
 export function setParams(layout: Layout, pane: PaneId, params: Json): Layout {
   const found = layout.panes[pane];
-  // A pane keeps the link it reads; what it holds changes with setLink.
+
   if (
     !found ||
     linkOf({ ...found, params }) !== linkOf(found) ||
@@ -402,7 +362,6 @@ export function setParams(layout: Layout, pane: PaneId, params: Json): Layout {
   return { ...layout, panes: { ...layout.panes, [pane]: { ...found, params } } };
 }
 
-/** Moves or resizes a floating window, and raises it. */
 export function reframe(layout: Layout, window: GroupId, rect: Rect): Layout {
   const found = layout.floating.find((candidate) => candidate.group.id === window);
   if (!found || !validRect(rect)) {
@@ -416,8 +375,6 @@ export function reframe(layout: Layout, window: GroupId, rect: Rect): Layout {
   });
 }
 
-/** Docks a floating window's group at a target: its tabs join a group, or
- * the whole group takes a side. */
 export function dock(layout: Layout, window: GroupId, target: Target): Layout {
   const found = layout.floating.find((candidate) => candidate.group.id === window);
   const onto = target.type === "edge" ? null : target.group;
@@ -441,7 +398,6 @@ export function dock(layout: Layout, window: GroupId, target: Target): Layout {
   return settle({ ...place(lifted, found.group, target), focused: found.group.id });
 }
 
-/** Fills the dock with one docked group until `restore`. */
 export function maximize(layout: Layout, group: GroupId): Layout {
   if (!docked(layout.root).some((candidate) => candidate.id === group) || isHidden(layout, group)) {
     return layout;
@@ -453,9 +409,6 @@ export function restore(layout: Layout): Layout {
   return layout.maximized === null ? layout : { ...layout, maximized: null };
 }
 
-/** The dock beside a group's branch of the tree: the node before it in the
- * nearest row that has one (`left`), or after it in the nearest column that
- * has one (`bottom`). Null when there is none. */
 export function dockBeside(layout: Layout, group: GroupId, side: "left" | "bottom"): Node | null {
   const path = pathTo(layout.root, group);
   for (let at = path.length - 2; at >= 0; at--) {
@@ -472,8 +425,6 @@ export function dockBeside(layout: Layout, group: GroupId, side: "left" | "botto
   return null;
 }
 
-/** Hides a docked node, or shows it again. Hiding the one holding the
- * focused group moves the focus to `from`, which must stay in sight. */
 export function toggleHidden(layout: Layout, node: GroupId | SplitId, from: GroupId): Layout {
   if (layout.hidden.includes(node)) {
     return settle({ ...layout, hidden: layout.hidden.filter((id) => id !== node) });
@@ -493,7 +444,6 @@ export function toggleHidden(layout: Layout, node: GroupId | SplitId, from: Grou
   });
 }
 
-/** Whether a docked group is out of sight. */
 export function isHidden(layout: Layout, group: GroupId): boolean {
   return layout.hidden.some((id) => {
     const found = nodeIn(layout.root, id);
@@ -501,7 +451,6 @@ export function isHidden(layout: Layout, group: GroupId): boolean {
   });
 }
 
-/** The nodes from the root down to a group, or none when it is not docked. */
 function pathTo(node: Node, group: GroupId): Node[] {
   if (node.type === "group") {
     return node.id === group ? [node] : [];
@@ -531,9 +480,6 @@ function nodeIn(node: Node, id: GroupId | SplitId): Node | null {
   return null;
 }
 
-/** Whether a pane or window from `from` can land at `target`. A group can't
- * split off itself when that would leave it empty, and floating groups don't
- * split. */
 function lands(layout: Layout, target: Target, from: Group, leavesEmpty: boolean): boolean {
   if (target.type === "edge") {
     return true;
@@ -549,7 +495,6 @@ function lands(layout: Layout, target: Target, from: Group, leavesEmpty: boolean
   return !floats && !(into.id === from.id && leavesEmpty);
 }
 
-/** Puts a new group on a side of a group, or along an edge of the dock. */
 function place(layout: Layout, group: Group, target: Target & { type: "side" | "edge" }): Layout {
   const axis: Axis = target.side === "left" || target.side === "right" ? "row" : "column";
   const first = target.side === "left" || target.side === "top";
@@ -614,8 +559,6 @@ function replaceNode(node: Node, id: GroupId | SplitId, by: Node): Node {
   };
 }
 
-/** Removes empty groups, collapses splits, and restores lost focus to the
- * maximized group or the nearest remaining group in reading order. */
 function settle(layout: Layout): Layout {
   assert(Number.isSafeInteger(layout.next), "layout ids exhausted");
   const before = groups(layout);
@@ -647,8 +590,7 @@ function settle(layout: Layout): Layout {
     (focused === layout.maximized || floating.some((window) => window.group.id === focused))
       ? layout.maximized
       : null;
-  // A node a change took apart is gone, and one holding the focus shows
-  // again, as when a pane in a hidden dock is opened.
+
   const hidden = layout.hidden.filter((id) => {
     const found = nodeIn(root, id);
     return found !== null && found !== root && !docked(found).some((group) => group.id === focused);
@@ -696,10 +638,9 @@ function validRect(rect: Rect): boolean {
   );
 }
 
-/** Every rule the layout breaks; none, after any operation. */
 export function checkLayout(layout: Layout): string[] {
   const broken: string[] = [];
-  // Splitting can allocate both a group and a split.
+
   if (!Number.isSafeInteger(layout.next + 2) || layout.next < 0) {
     broken.push("the next id leaves no room for another split");
   }

@@ -1,6 +1,3 @@
-//! A profile's system call trace, as the Syscalls view reads it: what each
-//! call cost, when, from where, and what it did with files and processes.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -10,8 +7,6 @@ use crate::profiles::{listed, tree};
 use crate::support::{Scenario, ScratchDir, flight_recordings};
 use crate::web::{Client, Web};
 
-/// A recording of the syscalls fixture in `mode`, its calls by the ptrace
-/// engine with stacks, written in `directory`, where the program runs.
 fn trace(directory: &Path, mode: &str) -> PathBuf {
     let path = directory.join(format!("{mode}.usprof"));
     let mut command = Command::new(env!("CARGO_BIN_EXE_microscope"));
@@ -25,7 +20,6 @@ fn trace(directory: &Path, mode: &str) -> PathBuf {
         .stdin(Stdio::null())
         .stdout(Stdio::null());
 
-    // A failing test keeps the tracer's recording beside the server's.
     let recording = flight_recordings::watch_adapter(&mut command);
     let status = command.status().expect("run microscope record");
     if let Some(recording) = &recording {
@@ -36,7 +30,6 @@ fn trace(directory: &Path, mode: &str) -> PathBuf {
     path
 }
 
-/// The tab, and the id of the one profile its server serves.
 async fn serve(web: &Web) -> (Client, String) {
     let mut tab = web.control("tab").await;
     let listed = tab
@@ -49,7 +42,6 @@ async fn serve(web: &Web) -> (Client, String) {
     (tab, id)
 }
 
-/// A line's text, its tokens joined.
 fn text(line: &Value) -> String {
     line["tokens"]
         .as_array()
@@ -68,9 +60,6 @@ fn sum(values: &Value) -> u64 {
         .sum()
 }
 
-/// Every view of one trace agrees with what the program did: it opened,
-/// wrote, read and unlinked one file, failed to open another, and exited
-/// with 3.
 #[tokio::test]
 async fn a_trace_is_served_as_costs_lines_callers_files_and_lanes() {
     let scratch = ScratchDir::new("web-syscalls");
@@ -99,7 +88,6 @@ async fn a_trace_is_served_as_costs_lines_callers_files_and_lanes() {
     assert_eq!(summary["engine"], "ptrace");
     assert!(summary["total"].as_u64() > summary["calls"].as_u64());
 
-    // The failed open, as strace prints it with -y, and expanded.
     let log = tab
         .ok("syscallLog", json!({"profile": id, "filter": "trace=openat status=failed", "offset": 0, "limit": 100}))
         .await;
@@ -118,7 +106,6 @@ async fn a_trace_is_served_as_costs_lines_callers_files_and_lanes() {
     assert_eq!(missing["failed"], true);
     expanded(&mut tab, &id, &missing["event"]).await;
 
-    // The failure is placed at the line that made it.
     let detail = tab
         .ok("syscallDetail", json!({"profile": id, "call": "openat"}))
         .await;
@@ -154,7 +141,6 @@ async fn a_trace_is_served_as_costs_lines_callers_files_and_lanes() {
     tab.save_traffic("syscalls");
 }
 
-/// The failed open, expanded: its arguments, stack, and source line.
 async fn expanded(tab: &mut Client, id: &str, event: &Value) {
     let call = tab
         .ok("syscallCall", json!({"profile": id, "event": event}))
@@ -192,9 +178,6 @@ async fn expanded(tab: &mut Client, id: &str, event: &Value) {
     );
 }
 
-/// The files the program used, and every selected call charted once.
-/// The selection the sample views share picks calls too: a focus on
-/// `files` keeps the calls made under it, and leaves the loader's.
 async fn under_a_function(tab: &mut Client, id: &str) {
     let focused = json!({"profile": id, "transforms": [{"op": "focus", "name": "files"}]});
     let summary = tab.ok("syscallSummary", focused.clone()).await;
@@ -259,7 +242,6 @@ async fn files_and_charts(tab: &mut Client, id: &str, scratch: &Path) {
         (&json!(1), &json!(1))
     );
 
-    // Every selected call lands in the heat map once.
     let selected = json!({"profile": id, "filter": "trace=%file", "buckets": 16});
     let of_files = tab
         .ok(
@@ -270,7 +252,6 @@ async fn files_and_charts(tab: &mut Client, id: &str, scratch: &Path) {
     let heat = tab.ok("syscallHeatmap", selected).await;
     assert_eq!(heat["counts"].as_array().expect("counts").len(), 16 * 40);
     assert_eq!(Some(sum(&heat["counts"])), of_files["calls"].as_u64());
-    // And each failed one in its cell's failures.
     assert_eq!(Some(sum(&heat["failed"])), of_files["errors"].as_u64());
     assert!(
         heat["failed"]
@@ -282,7 +263,6 @@ async fn files_and_charts(tab: &mut Client, id: &str, scratch: &Path) {
         "{heat}"
     );
 
-    // And every call in its thread's kernel lane on the timeline once.
     let all = tab.ok("syscallSummary", json!({"profile": id})).await;
     let timeline = tab
         .ok("profileTimeline", json!({"profile": id, "buckets": 16}))
@@ -294,8 +274,6 @@ async fn files_and_charts(tab: &mut Client, id: &str, scratch: &Path) {
     assert_eq!(Some(failed), all["errors"].as_u64(), "{timeline}");
 }
 
-/// Calls grouped by what they name and where they were made, and a heat
-/// map's row selecting the calls it counts.
 async fn groups_and_bands(tab: &mut Client, id: &str, scratch: &Path) {
     let grouped = |group: &str| json!({"profile": id, "filter": "trace=openat", "group": group});
     let by_path = tab.ok("syscallSummary", grouped("path")).await;
@@ -317,7 +295,6 @@ async fn groups_and_bands(tab: &mut Client, id: &str, scratch: &Path) {
         "{by_site}"
     );
 
-    // Each row of the heat map holds the calls of its latency band.
     let heat = tab
         .ok(
             "syscallHeatmap",
@@ -340,8 +317,6 @@ async fn groups_and_bands(tab: &mut Client, id: &str, scratch: &Path) {
     assert_eq!(&banded["calls"], count, "{banded}");
 }
 
-/// Processes come parents first, each with its threads, calls, and end;
-/// each thread has a lane.
 #[tokio::test]
 async fn a_familys_processes_and_threads_are_served_in_order() {
     let scratch = ScratchDir::new("web-syscalls-family");
@@ -366,7 +341,6 @@ async fn a_familys_processes_and_threads_are_served_in_order() {
         .count();
     assert_eq!(called, 3, "{timeline}");
 
-    // The parent is blocked across the middle of its wait for the child.
     let waits = tab
         .ok(
             "syscallLog",
@@ -374,7 +348,6 @@ async fn a_familys_processes_and_threads_are_served_in_order() {
         )
         .await;
 
-    // Exit lines show whatever the selection, as strace prints them.
     let wait = waits["lines"]
         .as_array()
         .expect("lines")
@@ -412,9 +385,6 @@ async fn a_familys_processes_and_threads_are_served_in_order() {
     );
 }
 
-/// A recording made from the page holds its program's calls as it grows,
-/// says what the program is blocked in, and ends when stopped. ptrace
-/// cannot count, so the production preset's level is refused with it.
 #[tokio::test]
 async fn a_live_trace_shows_what_its_program_is_blocked_in() {
     let web = Web::start("syscalls-live", &[]);
@@ -443,7 +413,6 @@ async fn a_live_trace_shows_what_its_program_is_blocked_in() {
         .await;
     let id = started["profile"].as_str().expect("an id").to_owned();
 
-    // Each revision is read until the pause shows in flight.
     let mut seen = -1;
 
     let blocked = loop {
@@ -489,9 +458,6 @@ async fn a_live_trace_shows_what_its_program_is_blocked_in() {
     crate::web::wait_gone(blocked["pid"].as_u64().expect("a pid"));
 }
 
-/// Calls and samples select each other. Each call as a leaf weighs what no
-/// sample of its thread stands for, under the code that made it; the
-/// samples and leaves during one site's calls are that site's alone.
 #[tokio::test]
 async fn samples_and_calls_are_selected_through_each_other() {
     let scratch = ScratchDir::new("web-syscalls-work");
@@ -507,7 +473,6 @@ async fn samples_and_calls_are_selected_through_each_other() {
         "{plain:?}"
     );
 
-    // Blocked, the program's rests weigh their whole length.
     let leaves = tree(&mut tab, json!({"profile": id, "syscallLeaves": true})).await;
     let ending = |nodes: &[(Vec<String>, u64, u64)], name: &str| -> Vec<Vec<String>> {
         nodes
@@ -533,7 +498,6 @@ async fn samples_and_calls_are_selected_through_each_other() {
             .all(|path| path.iter().any(|name| name == "rest")),
         "{rests:?}"
     );
-    // The loader draws too, as it sets up malloc.
     assert!(
         draws
             .iter()
@@ -541,7 +505,6 @@ async fn samples_and_calls_are_selected_through_each_other() {
         "{draws:?}"
     );
 
-    // The rest's site, as the summary names its row.
     let sites = tab
         .ok(
             "syscallSummary",

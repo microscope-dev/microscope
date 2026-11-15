@@ -1,7 +1,3 @@
-//! The calls a module describes (DWARF 5 section 3.4.1), which recover the
-//! values a function's parameters held on entry from the call that entered
-//! it, and the tail calls that may have entered it since.
-
 use crate::debug_info::dwarf::DwarfSet;
 use std::sync::Arc;
 
@@ -38,41 +34,30 @@ use crate::image::calls::{
 use crate::image::locations::ExpressionId;
 use crate::unwind::DwarfRegister;
 
-/// How many functions a search for tail calls may visit.
 const MAX_TAIL_CALL_FUNCTIONS: usize = 4_096;
 
-/// What a call site entry says it calls: a function entry, which the
-/// catalog resolves once it has seen every function, or a target.
 enum Callee {
     Entry(DieKey),
     Target(SiteTarget),
 }
 
-/// Builds the catalog while the variable catalog walks every entry.
 #[derive(Default)]
 pub(super) struct CallSiteBuilder {
-    /// Each site, with the function entry it calls until that is resolved.
     sites: Vec<(calls::CallSite, Option<DieKey>)>,
     functions: Vec<CallingFunction>,
 
-    /// The first address of each function entry with code.
     starts: DieMap<ImageAddress>,
 
-    /// Each function with code, by its first address.
     code: Vec<(ImageAddress, usize)>,
 
-    /// The abstract origin of each function with code.
     origins: Vec<(DieKey, usize, ImageAddress)>,
 
-    /// Functions with code that other units may call by linkage name.
     external: HashMap<Arc<str>, Vec<usize>>,
 
-    /// The site whose parameters follow, with its entry's depth.
     open: Option<(usize, usize)>,
 }
 
 impl CallSiteBuilder {
-    /// Records the subprogram that the next cataloged function describes.
     pub(super) fn function<'data>(
         &mut self,
         dwarf: &DwarfSet<'data>,
@@ -132,7 +117,6 @@ impl CallSiteBuilder {
         });
     }
 
-    /// Records a call site of the cataloged function `function`.
     #[expect(
         clippy::too_many_arguments,
         reason = "a site is one entry of one unit, read in one walk into one pool"
@@ -171,7 +155,6 @@ impl CallSiteBuilder {
                     Callee::Target(target) => site.target = target,
                 }
 
-                // A tail call returns nowhere, whatever address follows it.
                 site.return_address = return_address.filter(|_| !tail);
                 if tail {
                     site.jump = tail_jump(call, return_address);
@@ -192,7 +175,6 @@ impl CallSiteBuilder {
         self.sites.push((site, entry_called));
     }
 
-    /// Records a parameter of the site whose entry contains it.
     pub(super) fn parameter(
         &mut self,
         dwarf: &DwarfSet<'_>,
@@ -229,15 +211,10 @@ impl CallSiteBuilder {
         self.sites.is_empty() && self.functions.is_empty()
     }
 
-    /// Forgets the site the parameters that follow belong to: a unit's
-    /// parameters belong to its own sites.
     pub(super) const fn begin_unit(&mut self) {
         self.open = None;
     }
 
-    /// Adds what `other` recorded of a later unit, with its functions and
-    /// sites after these, and each list and expression it pooled as
-    /// `pooled` has it here.
     pub(super) fn absorb(&mut self, other: Self, pooled: &super::merge::Pooled) {
         let functions = self.functions.len();
         let sites = self.sites.len();
@@ -305,8 +282,6 @@ impl CallSiteBuilder {
 
         for (site, entry) in &mut self.sites {
             if let Some(key) = entry {
-                // A function with code is entered there; an abstract one
-                // where its one out-of-line instance is.
                 site.target = match (self.starts.get(key), concrete.get(key).map(Vec::as_slice)) {
                     (Some(start), _) | (_, Some([start])) => SiteTarget::Code(*start),
                     _ => SiteTarget::Unknown,
@@ -314,7 +289,6 @@ impl CallSiteBuilder {
             }
         }
 
-        // What each tail call enters, when it stays in this module.
         let function_at = |address: ImageAddress| {
             code.binary_search_by_key(&address, |(start, _)| *start)
                 .ok()
@@ -348,19 +322,14 @@ impl CallSiteBuilder {
     }
 }
 
-/// What a call site entry says of its call.
 struct SiteAttributes {
-    /// The instruction after the call.
     return_address: Option<ImageAddress>,
 
-    /// The call instruction itself.
     call: Option<ImageAddress>,
     tail: bool,
     callee: Callee,
 }
 
-/// Where a tail call jumped from: its instruction, or else within the
-/// instruction before the address after it.
 fn tail_jump(call: Option<ImageAddress>, after: Option<ImageAddress>) -> Option<TailJump> {
     if let Some(call) = call {
         return Some(TailJump {
@@ -507,8 +476,6 @@ fn site_parameter(
     })
 }
 
-/// The name a linker symbol gives a function: its linkage name, or else
-/// its name.
 fn linkage_name<'data>(
     dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
@@ -536,7 +503,6 @@ fn linkage_name<'data>(
     Ok(None)
 }
 
-/// The linkage name of a function other units may call.
 fn external_name<'data>(
     dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
@@ -555,8 +521,6 @@ const fn unavailable(reason: EntryValueUnavailableReason) -> VariableRuntimeErro
     VariableRuntimeError::Unavailable(VariableUnavailableReason::EntryValue(reason))
 }
 
-/// What a call passed for `parameter`: the value, or for a referent the
-/// value at the address passed.
 fn passed(site: Site<'_>, parameter: EntryParameter) -> Result<ExpressionId, VariableRuntimeError> {
     let mut entries = site.parameters().filter(|passed| match parameter {
         EntryParameter::Register(register) | EntryParameter::Referent(register) => {
@@ -579,19 +543,13 @@ fn passed(site: Site<'_>, parameter: EntryParameter) -> Result<ExpressionId, Var
     .ok_or_else(not_passed)
 }
 
-/// The function a tail call enters, which a chain was checked to stay in
-/// the module for.
 fn entered(view: CallView<'_>, site: SiteId) -> Result<u32, VariableRuntimeError> {
     view.site(site)
         .and_then(Site::enters)
         .ok_or_else(|| VariableRuntimeError::Fatal("unchecked tail call site".into()))
 }
 
-/// The chain of tail calls from function `from`, entered by a call, to
-/// function `to`, when exactly one is possible.
 fn tail_path(view: CallView<'_>, from: u32, to: u32) -> Result<Vec<SiteId>, VariableRuntimeError> {
-    // Every function a chain from `from` may reach must describe its tail
-    // calls, each of which must stay within this module.
     let mut reached = vec![from];
     let mut seen = HashSet::from_iter([from]);
     let mut next = 0;
@@ -622,7 +580,6 @@ fn tail_path(view: CallView<'_>, from: u32, to: u32) -> Result<Vec<SiteId>, Vari
         return Err(unavailable(EntryValueUnavailableReason::TargetMismatch));
     }
 
-    // The functions that lead to `to`, by walking tail calls backwards.
     let mut callers = HashMap::<u32, Vec<u32>>::new();
 
     for &function in &reached {
@@ -645,8 +602,6 @@ fn tail_path(view: CallView<'_>, from: u32, to: u32) -> Result<Vec<SiteId>, Vari
         }
     }
 
-    // Count the chains to `to`; a cycle among the functions leading to it
-    // allows endlessly many.
     let mut chains = HashMap::<u32, u64>::new();
     let mut active = HashSet::new();
     count_chains(view, from, to, &leads, &mut chains, &mut active)?;
@@ -710,7 +665,6 @@ fn count_chains(
 }
 
 impl DwarfVariableInfo {
-    /// The image's calls, once [`Self::bind`] has given the image.
     pub(super) fn calls(&self) -> CallView<'_> {
         CallView::new(self.types.tables())
     }
@@ -750,7 +704,6 @@ impl DwarfVariableInfo {
                 return Err(VariableRuntimeError::Malformed(description));
             }
             SiteTarget::Computed(Ok(location)) => {
-                // A target the caller can no longer compute is unknown.
                 let list = self.locations().list(location);
 
                 match self.site_word(site, |address| select(list, address), runtime, budget) {
@@ -826,9 +779,6 @@ impl DwarfVariableInfo {
         self.site_word(site, |_| Ok(Some(expression)), runtime, budget)
     }
 
-    /// Evaluates one of a call site's expressions to a word, in the state of
-    /// the frame that made the call: the value it computes, or the address
-    /// it describes.
     fn site_word<'a>(
         &'a self,
         site: Site<'a>,
@@ -838,7 +788,6 @@ impl DwarfVariableInfo {
         runtime: &mut dyn VariableRuntime,
         budget: &mut InspectionBudget,
     ) -> Result<u64, VariableRuntimeError> {
-        // Within the call instruction, which the caller's frame describes.
         let address = site
             .return_address()
             .and_then(|address| address.get().checked_sub(1))
@@ -886,8 +835,6 @@ impl DwarfVariableInfo {
         }
 
         match &piece.location {
-            // Without DW_OP_stack_value, the address an expression computes
-            // is its value.
             Location::Address { address } => Ok(*address),
             Location::Value { value } => Ok(word(*value)),
             Location::Register { register } => {
@@ -904,7 +851,6 @@ impl DwarfVariableInfo {
     }
 }
 
-/// A DWARF value as the register-sized word that holds it.
 fn word(value: Value) -> u64 {
     match value {
         Value::Generic(value) | Value::U64(value) => value,
@@ -932,7 +878,6 @@ pub(super) fn runtime_error(error: EvaluateError) -> VariableRuntimeError {
 mod tests {
     use super::*;
 
-    /// An image holding `calls`, whose expressions `pool` holds.
     fn sealed(calls: &Calls, pool: &LocationsBuilder) -> crate::image::Image {
         let mut builder = crate::image::Builder::new(crate::TargetDescription::X86_64);
         let mut strings = crate::image::StringsBuilder::default();
@@ -945,9 +890,6 @@ mod tests {
             .expect("the calls are valid")
     }
 
-    /// The calls of functions `0..described.len()`, of which those
-    /// `described` say what tail calls they make: `tail_calls`, from one
-    /// function to another or to code outside the module.
     fn catalog(described: &[bool], tail_calls: &[(u32, Option<u32>)]) -> crate::image::Image {
         let mut functions = described
             .iter()
@@ -977,8 +919,6 @@ mod tests {
         sealed(&Calls { functions, sites }, &LocationsBuilder::default())
     }
 
-    /// What a call passed is what the one parameter entry naming the place
-    /// says; a call that describes one place twice could have passed either.
     #[test]
     fn a_call_passes_what_its_one_parameter_entry_says() {
         let mut pool = super::super::tests::Pool::new([]);
@@ -1049,8 +989,6 @@ mod tests {
         );
     }
 
-    /// What a chain of tail calls from `from` to `to` must be, from every
-    /// chain written out: the one chain if there is exactly one, or why not.
     fn expected_tail_path(
         described: &[bool],
         tail_calls: &[(u32, Option<u32>)],
@@ -1066,8 +1004,6 @@ mod tests {
                 .map(|(site, (_, enters))| (site, *enters))
         };
 
-        // Every function a chain may reach must say where its tail calls go,
-        // and each must go to a function of the module.
         let mut reached = vec![from];
         let mut next = 0;
         while let Some(&function) = reached.get(next) {
@@ -1088,9 +1024,6 @@ mod tests {
             return Err(TargetMismatch);
         }
 
-        // A chain longer than the functions it may pass repeats one, so
-        // goes around a cycle as often as it likes. One around a cycle and
-        // on to `to` is no longer than three calls per function.
         let functions = described.len();
         let mut chains = Vec::new();
         let mut work = vec![(from, Vec::new())];
@@ -1114,8 +1047,6 @@ mod tests {
         }
     }
 
-    /// Up to six functions, most of which describe their tail calls, the
-    /// tail calls they make, and two of them.
     #[expect(
         clippy::type_complexity,
         reason = "what catalog takes, and two functions"

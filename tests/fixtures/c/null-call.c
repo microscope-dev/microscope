@@ -1,5 +1,5 @@
-// Calls through a null function pointer, so the fault happens at an
-// instruction address that no loaded module contains.
+
+
 #include <stddef.h>
 
 typedef void (*callback_fn)(void);

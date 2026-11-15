@@ -1,5 +1,5 @@
-// Calls a library function, moves the library's code elsewhere as a
-// checkpoint restore may, and at once calls the function where its code went.
+
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
@@ -8,7 +8,7 @@
 
 int moved_answer(int value);
 
-// Where the library's code is mapped, as the process's own memory map says.
+
 static int code_mapping(unsigned long *start, unsigned long *end) {
     FILE *maps = fopen("/proc/self/maps", "r");
     if (maps == NULL) {
@@ -39,6 +39,6 @@ int main(void) {
         return 3;
     }
     int (*moved)(int) = (int (*)(int))(target + ((unsigned long)&moved_answer - start));
-    // The library's destructors stayed behind with its old address.
+
     _exit(moved(20) == 41 ? 0 : 4);
 }

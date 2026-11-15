@@ -1,5 +1,3 @@
-//! The flight recordings a development build keeps of failing DAP tests.
-
 use std::fs;
 use std::thread;
 
@@ -8,9 +6,6 @@ use serde_json::json;
 use crate::dap::{Configuration, Dap, Profile, fixture};
 use crate::support::flight_recordings::recording_path;
 
-/// An adapter's recording is set aside when its session ends, and written
-/// back if the test fails afterward, as a comparison of finished sessions
-/// does.
 #[test]
 fn failures_after_a_session_ended_keep_the_adapters_recording() {
     let failing = thread::Builder::new()

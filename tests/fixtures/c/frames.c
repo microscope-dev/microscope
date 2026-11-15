@@ -1,16 +1,16 @@
-// Caller frames whose variables live in every kind of storage the unwinder
-// must reconstruct. `frames crash` faults in frames_leaf; without arguments
-// the program returns normally, so breakpoints can stop at the same place.
+
+
+
 #include <stdint.h>
 #include <string.h>
 
 volatile int64_t frames_sink;
-// Read at run time so optimized builds cannot fold the values.
+
 volatile int64_t frames_seed = 5;
 volatile int frames_crash;
 int64_t *volatile frames_poison;
 
-// Keeps each function a real activation with its declared signature.
+
 #ifdef __clang__
 #define FRAMES_OPAQUE __attribute__((noinline))
 #else
@@ -24,9 +24,9 @@ struct frames_pair {
 
 FRAMES_OPAQUE int64_t frames_leaf(int64_t token) {
     int64_t leaf_local = token * 10;
-    // Overwrite every callee-saved register after the prologue saved them, so
-    // a caller's values in those registers survive only in this frame's
-    // save slots. Frame-pointer builds keep rbp.
+
+
+
     __asm__ volatile(
         "mov $0x5ca1ab1e, %%rbx\n\t"
         "mov $0x5ca1ab1e, %%r12\n\t"
@@ -48,11 +48,11 @@ FRAMES_OPAQUE int64_t frames_leaf(int64_t token) {
     return leaf_local + 1;
 }
 
-// Uses no callee-saved register, so its callers' values in those registers
-// are unchanged here and its call-frame information never mentions them.
+
+
 FRAMES_OPAQUE int64_t frames_relay(int64_t value) {
     int64_t result = frames_leaf(value);
-    // Keeps the call out of tail position.
+
     __asm__ volatile("");
     return result;
 }
@@ -64,12 +64,12 @@ static inline __attribute__((always_inline)) int64_t frames_inlined(int64_t base
 }
 
 FRAMES_OPAQUE int64_t frames_keep(int64_t seed) {
-    // Live across the call, so optimized builds keep it in a callee-saved
-    // register that frames_relay leaves alone and frames_leaf saves and
-    // overwrites.
+
+
+
     int64_t kept = seed * 3 + 1;
-    // Optimized builds describe the pointer by its target instead of an
-    // address, so dereferencing it reads `kept` in this frame.
+
+
     int64_t *kept_pointer = &kept;
     struct frames_pair pair = {.left = seed, .right = -seed};
     int64_t result = frames_inlined(seed + 1);

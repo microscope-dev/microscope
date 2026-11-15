@@ -1,8 +1,3 @@
-//! What the debug information declares of a module beyond its types and
-//! variables: integer constants by name, such as a Go package's `const`s,
-//! the concrete type each Rust trait object's vtable is for, and the
-//! compilers that produced it.
-
 use std::sync::Arc;
 
 use zerocopy::little_endian::{U32, U64};
@@ -13,18 +8,12 @@ use super::types::Item;
 use super::{Builder, Image, NONE, Record, TableKind};
 use crate::{ImageAddress, IntegerValue, TypeId};
 
-/// What [`add_to`] encodes.
 #[derive(Debug, Clone, Default)]
 pub struct Declarations {
-    /// Integer constants by name; a later one replaces an earlier one of
-    /// the same name.
     pub constants: Vec<(Arc<str>, IntegerValue)>,
 
-    /// Rust trait objects' vtables, by address, with the concrete type
-    /// each is for; a later one replaces an earlier one at its address.
     pub vtables: Vec<(ImageAddress, TypeId)>,
 
-    /// The producers, in the order they were first named.
     pub producers: Vec<Arc<str>>,
 }
 
@@ -35,10 +24,8 @@ pub struct Declarations {
 pub struct NamedConstantRecord {
     pub name: U32,
 
-    /// The value's two's-complement bytes, little-endian.
     pub value: [u8; 16],
 
-    /// Whether the value is signed.
     pub signed: u8,
 }
 
@@ -59,12 +46,10 @@ impl Record for VtableRecord {
     const KIND: TableKind = TableKind::Vtables;
 }
 
-/// Why declarations could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the declarations do not fit an image")]
 pub struct TooMany;
 
-/// Adds the declarations to `builder`, pooling names in `strings`.
 pub fn add_to(
     builder: &mut Builder<'_>,
     strings: &mut StringsBuilder,
@@ -117,7 +102,6 @@ pub fn add_to(
     Ok(())
 }
 
-/// The declarations of an image.
 #[derive(Debug, Clone, Copy)]
 pub struct DeclarationView<'a> {
     strings: Strings<'a>,
@@ -148,7 +132,6 @@ impl<'a> DeclarationView<'a> {
         self.strings.get(StrId(record.name.get()))
     }
 
-    /// The value of the integer constant `name`.
     pub fn constant(self, name: &str) -> Option<IntegerValue> {
         let found = self
             .constants
@@ -157,7 +140,6 @@ impl<'a> DeclarationView<'a> {
         Some(value(self.constants.get(found)?))
     }
 
-    /// Every integer constant, by name.
     #[cfg(any(test, feature = "tools", feature = "fuzzing"))]
     pub fn constants(self) -> impl ExactSizeIterator<Item = (&'a str, IntegerValue)> + 'a {
         self.constants
@@ -165,7 +147,6 @@ impl<'a> DeclarationView<'a> {
             .map(move |record| (self.name(record), value(record)))
     }
 
-    /// The concrete type the vtable at `address` is for.
     pub fn vtable(self, address: ImageAddress) -> Option<TypeId> {
         let found = self
             .vtables
@@ -174,7 +155,6 @@ impl<'a> DeclarationView<'a> {
         Some(TypeId::new(self.vtables.get(found)?.ty.get()))
     }
 
-    /// Every vtable, by address.
     #[cfg(any(test, feature = "tools", feature = "fuzzing"))]
     pub fn vtables(self) -> impl ExactSizeIterator<Item = (ImageAddress, TypeId)> + 'a {
         self.vtables.iter().map(|record| {
@@ -185,7 +165,6 @@ impl<'a> DeclarationView<'a> {
         })
     }
 
-    /// The distinct producers, in the order they were first named.
     pub fn producers(self) -> impl ExactSizeIterator<Item = &'a str> + 'a {
         self.producers
             .iter()
@@ -193,7 +172,6 @@ impl<'a> DeclarationView<'a> {
     }
 }
 
-/// Checks the declarations.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     let view = DeclarationView::new(image);
     let strings = view.strings;

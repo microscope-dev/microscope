@@ -1,9 +1,3 @@
-// A profile's panes in the workbench. Its overview, flame graph, call
-// tree, functions, kernel data and zones each are a pane of their own, and
-// every pane that looks at the profile the same way reads one link: which
-// profile, which of its samples, and what is selected. What a pane draws
-// on its own, such as the flame graph's zoom, it keeps in its params.
-
 import { KIND } from "../../documents";
 import {
   type OwnLook,
@@ -32,7 +26,6 @@ import {
   setParams,
 } from "../../workbench/layout";
 
-/** Each view's pane kind; the overview's is KIND.profile. */
 const VIEW_KINDS: Readonly<Record<ProfileView, KindId>> = {
   flame: KIND.profileFlame,
   tree: KIND.profileTree,
@@ -51,13 +44,10 @@ const KIND_VIEWS: ReadonlyMap<KindId, ProfileView | null> = new Map<KindId, Prof
   ),
 ]);
 
-/** The view a profile's pane shows, null for its overview, or undefined
- * for a pane of no profile. */
 export function viewOf(pane: Pane): ProfileView | null | undefined {
   return KIND_VIEWS.get(pane.kind);
 }
 
-/** The wide views, which open together as tabs below the overview. */
 const STACKS: ReadonlySet<ProfileView> = new Set([
   "flame",
   "tree",
@@ -66,18 +56,15 @@ const STACKS: ReadonlySet<ProfileView> = new Set([
   "details",
 ]);
 
-/** What a profile's link holds. */
 export interface ProfileLink {
   readonly profile: string;
-  /** The profile's file or program, for the tabs. */
+
   readonly name: string;
-  /** What its panes share of how they look at it. */
+
   readonly look: ProfileLook;
-  /** The views whose panes were opened as its summary called for them,
-   * each once, so a pane closed stays closed; null until it was first read. */
+
   readonly offered: readonly ProfileView[] | null;
-  /** The view an address asked for before its views were offered, and what
-   * that view's pane keeps to itself. */
+
   readonly show: { readonly view: ProfileView; readonly own: OwnLook } | null;
 }
 
@@ -114,8 +101,6 @@ export function readLink(value: Json | undefined): ProfileLink | null {
 
 const linkValue = (link: ProfileLink): Json => link as unknown as Json;
 
-/** A profile's pane's params: the link it reads, what it keeps to itself,
- * and, for the overview, its profile's name, which its tab shows. */
 export interface ProfilePaneParams {
   readonly link: LinkId | null;
   readonly own: OwnLook;
@@ -134,9 +119,6 @@ export function paneParams(pane: Pane): ProfilePaneParams {
 
 const toParams = (params: ProfilePaneParams): Json => params as unknown as Json;
 
-/** A profile's pane of a view, reading `link`. Its key tells it apart from
- * the link's other panes of the view: the link's first is keyed by the
- * link alone. */
 function profilePane(
   view: ProfileView | null,
   link: LinkId,
@@ -151,7 +133,6 @@ function profilePane(
   };
 }
 
-/** The look a profile's pane shows: its link's, with its own, and its view. */
 export function lookOf(layout: Layout, id: PaneId): ProfileLook | null {
   const pane = layout.panes[id];
   const view = pane ? viewOf(pane) : undefined;
@@ -163,13 +144,11 @@ export function lookOf(layout: Layout, id: PaneId): ProfileLook | null {
   return held ? { ...held.look, ...own, ...(view === null ? {} : { view }) } : null;
 }
 
-/** The profile a pane looks at, if it is one of a profile's. */
 export function profileOf(layout: Layout, pane: Pane): string | null {
   const link = viewOf(pane) === undefined ? null : linkOf(pane);
   return link === null ? null : (readLink(layout.links[link])?.profile ?? null);
 }
 
-/** The panes reading a link, in the order they were opened. */
 function panesOn(layout: Layout, link: LinkId): PaneId[] {
   return (Object.keys(layout.panes) as PaneId[])
     .filter((id) => {
@@ -182,7 +161,6 @@ function panesOn(layout: Layout, link: LinkId): PaneId[] {
 const paneOfView = (layout: Layout, link: LinkId, view: ProfileView | null): PaneId | null =>
   panesOn(layout, link).find((id) => viewOf(layout.panes[id] as Pane) === view) ?? null;
 
-/** The group of the first pane, of any profile, that a test passes. */
 function groupWith(layout: Layout, test: (pane: Pane) => boolean): GroupId | null {
   const found = groups(layout).find((group) =>
     group.tabs.some((tab) => test(layout.panes[tab] as Pane)),
@@ -190,8 +168,6 @@ function groupWith(layout: Layout, test: (pane: Pane) => boolean): GroupId | nul
   return found?.id ?? null;
 }
 
-/** Opens a pane in `group`, or beside it on `side` when it would be a new
- * group's. */
 function openBeside(
   layout: Layout,
   pane: Pane,
@@ -205,9 +181,6 @@ function openBeside(
   };
 }
 
-/** Opens a view's pane on `link` where its kind belongs: among the panes
- * of its sort, of this profile or another; else stacks below the overview,
- * and zones beside Explorer or to the right of the stacks. */
 function place(
   layout: Layout,
   link: LinkId,
@@ -248,7 +221,6 @@ function place(
   return beside ? openBeside(layout, pane, beside, "right") : open(layout, pane);
 }
 
-/** Opens a link's overview above the first of its panes, or alone. */
 function placeOverview(
   layout: Layout,
   link: LinkId,
@@ -267,9 +239,6 @@ function placeOverview(
   };
 }
 
-/** Shows the pane of a view on `link`, opening it where it belongs when
- * there is none, and focuses it. Before its views are offered, it asks for
- * the view to be shown once they are, and shows the overview. */
 export function showView(
   layout: Layout,
   link: LinkId,
@@ -298,8 +267,6 @@ export function showView(
   return { layout: activate(placed.layout, placed.pane), pane: placed.pane };
 }
 
-/** A profile's overview, reading `link`, and what the link starts with:
- * how `look` looks at the profile, and its view to show once arranged. */
 export function overview(
   profile: string,
   name: string,
@@ -314,9 +281,6 @@ export function overview(
   };
 }
 
-/** Shows a profile's overview, reopening it on its link when it was
- * closed, or opening it in `group` reading a new link when no pane shows
- * the profile. */
 export function showOverview(
   layout: Layout,
   profile: string,
@@ -330,9 +294,6 @@ export function showOverview(
     : openProfile(layout, profile, name, {}, group);
 }
 
-/** Opens a profile's overview, reading a new link that looks at it as
- * `look` does, and its pane of the look's view once its summary arranges
- * its panes. */
 export function openProfile(
   layout: Layout,
   profile: string,
@@ -350,10 +311,6 @@ export function openProfile(
   return { layout: activate(opened.layout, opened.pane), pane: opened.pane };
 }
 
-/** The views a profile's summary calls for, in their tabs' order: its
- * stacks once it has samples or is done recording, its kernel data then
- * too or once it has calls, saying what it lacks when it has none, and its
- * zones when it has any. */
 function viewsFor(summary: ProfileSummary, live: boolean): ProfileView[] {
   const sampled = summary.samples > 0 || !live;
   return [
@@ -363,10 +320,6 @@ function viewsFor(summary: ProfileSummary, live: boolean): ProfileView[] {
   ];
 }
 
-/** Opens the panes a profile's summary calls for that it has not called
- * for before, as a recording grows. The first that offers any shows each
- * group's first tab, and the view the address asked for, else keeps the
- * focus where it was; later ones leave what each group shows alone. */
 export function arrange(
   layout: Layout,
   link: LinkId,
@@ -388,7 +341,7 @@ export function arrange(
 
   let next = layout;
   const firsts = new Map<GroupId, PaneId>();
-  // File details is never called for by a summary, only asked for.
+
   const asked = first && held.show?.view === "details" ? (["details"] as const) : [];
   for (const view of [...fresh, ...asked]) {
     if (paneOfView(next, link, view)) {
@@ -406,8 +359,6 @@ export function arrange(
     next = activate(next, !first && kept && next.panes[kept] ? kept : pane);
   }
 
-  // What the address asked for is shown when views are first offered, or
-  // let go of if there is none of it.
   const wanted = first && held.show ? paneOfView(next, link, held.show.view) : null;
   const focus = wanted ?? (back && next.panes[back] ? back : null);
   next = focus ? activate(next, focus) : next;
@@ -418,10 +369,6 @@ export function arrange(
   );
 }
 
-/** Keeps the look a profile's pane shows: what its panes share in its
- * link, what it keeps to itself in its params. A look of another view
- * shows that view's pane, which is returned; that pane keeps how it draws
- * unless `carry`, as when an address says how. */
 export function storeLook(
   layout: Layout,
   id: PaneId,
@@ -445,7 +392,6 @@ export function storeLook(
   const target = shown.pane;
   const into = target ? shown.layout.panes[target] : undefined;
   if (!target || !into || viewOf(into) !== wanted) {
-    // Its view opens once the views are offered, keeping what it keeps.
     const pending = readLink(shown.layout.links[params.link]);
     const asked =
       pending && wanted !== null && carry
@@ -461,15 +407,12 @@ export function storeLook(
   };
 }
 
-/** The focused group's shown pane, if it is a profile's. */
 export function leadingPane(layout: Layout): PaneId | null {
   const active = groups(layout).find((group) => group.id === layout.focused)?.active;
   const pane = active ? layout.panes[active] : undefined;
   return active && pane && viewOf(pane) !== undefined ? active : null;
 }
 
-/** A profile's pane on screen: the focused group's, else the first other
- * group's that shows one. */
 export function shownProfilePane(layout: Layout): PaneId | null {
   const shown = groups(layout)
     .toSorted((a, b) => Number(b.id === layout.focused) - Number(a.id === layout.focused))
@@ -477,9 +420,6 @@ export function shownProfilePane(layout: Layout): PaneId | null {
   return shown.find((id) => viewOf(layout.panes[id] as Pane) !== undefined) ?? null;
 }
 
-/** The link a look at a profile is shown through: the leading pane's if
- * it shows that profile, else the first link to it already looking as
- * `look` does, as after a reload, else the first link to it. */
 function linkTo(layout: Layout, profile: string, look: ProfileLook): LinkId | null {
   const lead = leadingPane(layout);
   const leadLink = lead ? linkOf(layout.panes[lead] as Pane) : null;
@@ -494,9 +434,6 @@ function linkTo(layout: Layout, profile: string, look: ProfileLook): LinkId | nu
   return same ?? links[0] ?? null;
 }
 
-/** Shows what an address names: the profile's pane of its view, looking
- * as it says, opening the profile among the documents when no pane shows
- * it. */
 export function showAddress(
   layout: Layout,
   profile: string,
@@ -519,8 +456,6 @@ export function showAddress(
   return shown.pane ? storeLook(shown.layout, shown.pane, look, true).layout : shown.layout;
 }
 
-/** Names a profile in each link to it, as its overviews' tabs and its
- * views' badges show it. */
 function nameProfile(layout: Layout, profile: string, name: string): Layout {
   let named = layout;
   for (const link of Object.keys(layout.links) as LinkId[]) {
@@ -539,15 +474,12 @@ function nameProfile(layout: Layout, profile: string, name: string): Layout {
   return named;
 }
 
-/** Whether a pane of the profile, of the view an address names, is open. */
 export function viewOpen(layout: Layout, profile: string, view: ProfileView | null): boolean {
   return Object.values(layout.panes).some(
     (pane) => viewOf(pane) === view && profileOf(layout, pane) === profile,
   );
 }
 
-/** Opens another of a profile's pane beside it: reading its link, or a
- * link of its own that starts as a copy, which then changes apart. */
 export function duplicate(
   layout: Layout,
   id: PaneId,

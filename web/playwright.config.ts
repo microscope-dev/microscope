@@ -1,7 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Each test starts its own `microscope web` (see e2e/server.ts), so tests run
-// in parallel without sharing a debugger.
 export default defineConfig({
   testDir: "e2e",
   fullyParallel: true,

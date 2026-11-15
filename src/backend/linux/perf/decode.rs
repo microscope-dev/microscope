@@ -1,14 +1,7 @@
-//! Decodes the records perf events write, for the one sample layout the
-//! recorder asks for, and the records BPF programs write beside them
-//! through output events, which their identifiers tell apart. Decoding is
-//! pure: a record that does not fit its own size is malformed, never read
-//! past.
-
 use super::sys::sample;
 use crate::model::{Pid, Tid};
 use crate::unwind::DwarfRegister;
 
-/// The sample fields every event asks for, in the kernel's order.
 pub const SAMPLE_TYPE: u64 = sample::IDENTIFIER
     | sample::TID
     | sample::TIME
@@ -18,24 +11,15 @@ pub const SAMPLE_TYPE: u64 = sample::IDENTIFIER
     | sample::REGS_USER
     | sample::STACK_USER;
 
-/// The fields of [`SAMPLE_TYPE`] the `sample_id` every other record ends
-/// with holds: an event that asks for these alone writes records that end
-/// as a sampling event's do.
 pub const SAMPLE_ID_TYPE: u64 = sample::IDENTIFIER | sample::TID | sample::TIME | sample::CPU;
 
-/// The `sample_id` every other record ends with: tid, time, cpu, id.
 const SAMPLE_ID: usize = 32;
 
-/// The general registers, by perf's numbering: ax, bx, cx, dx, si, di, bp,
-/// sp, ip, flags, then r8 to r15.
 pub const REGISTERS: u64 = 0x3ff | (0xff << 16);
 
-/// The DWARF number of each register [`REGISTERS`] asks for, in the order
-/// the kernel writes them.
 pub const DWARF_REGISTERS: [DwarfRegister; 18] =
     DwarfRegister::each([0, 3, 2, 1, 4, 5, 6, 7, 16, 49, 8, 9, 10, 11, 12, 13, 14, 15]);
 
-/// The DWARF number of the flags register.
 pub const DWARF_FLAGS: DwarfRegister = DwarfRegister::new(49);
 
 const RECORD_MMAP2: u32 = 10;
@@ -54,11 +38,9 @@ const MISC_MMAP_BUILD_ID: u16 = 1 << 14;
 const MISC_CPUMODE_MASK: u16 = 7;
 const MISC_KERNEL: u16 = 1;
 
-/// Callchain entries at or above this mark a context, not an address.
 const CONTEXT_MAX: u64 = (-4095_i64).cast_unsigned();
 const CONTEXT_USER: u64 = (-512_i64).cast_unsigned();
 
-/// Little-endian words in a record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Words<'a>(&'a [u8]);
 
@@ -72,7 +54,6 @@ impl Words<'_> {
     }
 }
 
-/// One sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sample<'a> {
     pub pid: Pid,
@@ -82,23 +63,16 @@ pub struct Sample<'a> {
     pub period: u64,
     pub kernel: bool,
 
-    /// The kernel's frame-pointer walk, context marks included.
     pub chain: Words<'a>,
 
-    /// [`REGISTERS`] in the kernel's order, or none when the sample
-    /// carries no user registers.
     pub registers: Words<'a>,
 
-    /// The bytes of stack the kernel copied from the stack pointer up.
     pub stack: &'a [u8],
 
-    /// The bytes of stack the sample asked for, which the copy may fall
-    /// short of.
     pub stack_asked: u64,
 }
 
 impl Sample<'_> {
-    /// The walk's user addresses, without context marks.
     pub fn user_chain(&self) -> impl Iterator<Item = u64> + '_ {
         let mut user = !self.kernel;
         self.chain.iter().filter(move |address| {
@@ -112,7 +86,6 @@ impl Sample<'_> {
     }
 }
 
-/// A mapping of a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mmap<'a> {
     pub pid: Pid,
@@ -120,7 +93,6 @@ pub struct Mmap<'a> {
     pub length: u64,
     pub file_offset: u64,
 
-    /// The file's inode, unless the kernel gave its build id instead.
     pub inode: Option<u64>,
     pub executable: bool,
     pub path: &'a [u8],
@@ -131,8 +103,6 @@ pub struct Mmap<'a> {
 pub enum Record<'a> {
     Sample(Sample<'a>),
 
-    /// The bytes a BPF program wrote through an output event, on the CPU
-    /// whose ring holds them, as the thread it ran for.
     Output {
         pid: Pid,
         tid: Tid,
@@ -142,7 +112,6 @@ pub enum Record<'a> {
     },
     Mmap(Mmap<'a>),
 
-    /// A thread's name, set or, when `exec`, changed by an exec.
     Comm {
         pid: Pid,
         tid: Tid,
@@ -155,7 +124,6 @@ pub enum Record<'a> {
         ppid: Pid,
         tid: Tid,
 
-        /// The thread that made it, whose name it starts with.
         ptid: Tid,
         time: u64,
     },
@@ -165,7 +133,6 @@ pub enum Record<'a> {
         time: u64,
     },
 
-    /// Records or samples the kernel dropped.
     Lost {
         count: u64,
         time: u64,
@@ -174,8 +141,6 @@ pub enum Record<'a> {
         time: u64,
     },
 
-    /// A thread left its CPU, or came back to one. One that left while it
-    /// could still run was `preempted`; one that did not blocked.
     Switch {
         pid: Pid,
         tid: Tid,
@@ -184,14 +149,12 @@ pub enum Record<'a> {
         time: u64,
     },
 
-    /// A record the recorder does not use.
     Other {
         time: Option<u64>,
     },
 }
 
 impl Record<'_> {
-    /// When the kernel wrote the record.
     pub const fn time(&self) -> Option<u64> {
         match self {
             Self::Sample(sample) => Some(sample.time),
@@ -208,11 +171,9 @@ impl Record<'_> {
     }
 }
 
-/// A record whose bytes contradict its header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Malformed;
 
-/// Reads fields in order from a record's body.
 struct Fields<'a> {
     bytes: &'a [u8],
 }
@@ -233,7 +194,6 @@ impl<'a> Fields<'a> {
         Ok(u64::from_le_bytes(word.try_into().map_err(|_| Malformed)?))
     }
 
-    /// Two u32 fields in one word.
     fn pair(&mut self) -> Result<(u32, u32), Malformed> {
         let word = self.take(8)?;
         let (low, high) = word.split_at(4);
@@ -252,7 +212,6 @@ impl<'a> Fields<'a> {
     }
 }
 
-/// The `N` bytes at `offset`, or `Malformed` if the body ends before them.
 fn field<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Malformed> {
     bytes
         .get(offset..)
@@ -261,14 +220,10 @@ fn field<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Malform
         .ok_or(Malformed)
 }
 
-/// The record at the start of `bytes` and its length, or `None` at the
-/// end, where no output events write.
 pub fn next(bytes: &[u8]) -> Option<Result<(Record<'_>, usize), Malformed>> {
     next_of(bytes, &[])
 }
 
-/// The record at the start of `bytes` and its length, or `None` at the
-/// end, where the output events whose identifiers are `outputs` write.
 pub fn next_of<'a>(
     bytes: &'a [u8],
     outputs: &[u64],
@@ -276,7 +231,6 @@ pub fn next_of<'a>(
     next_with_period(bytes, outputs, None)
 }
 
-/// Decodes a fixed-period event that omits `PERIOD`, or the usual layout.
 pub fn next_with_period<'a>(
     bytes: &'a [u8],
     outputs: &[u64],
@@ -321,7 +275,6 @@ fn decode<'a>(
             .map(Record::Sample);
     }
 
-    // Every other record ends with its sample_id.
     let Some(split) = body.len().checked_sub(SAMPLE_ID) else {
         return Ok(Record::Other { time: None });
     };
@@ -400,7 +353,6 @@ fn decode<'a>(
             time,
         },
         RECORD_THROTTLE => Record::Throttle { time },
-        // The thread is the sample_id's, which a switch record is all of.
         RECORD_SWITCH => Record::Switch {
             pid: Pid::new(u32::from_le_bytes(field(id, 0)?)),
             tid: Tid::new(u32::from_le_bytes(field(id, 4)?)),
@@ -454,13 +406,7 @@ fn decode_sample(body: &[u8], kernel: bool, period: Option<u64>) -> Result<Sampl
     })
 }
 
-/// Copies the records of `bytes` to `out`, each sample of the usual layout
-/// that an event whose identifier is in `sampling` wrote keeping at most
-/// `keep` bytes of its stack copy, a positive multiple of 8, and returns
-/// how many samples it shortened. A record that cannot be decoded is
-/// copied as it is, with all that follows it.
 pub fn shorten_stacks(bytes: &[u8], sampling: &[u64], keep: usize, out: &mut Vec<u8>) -> u64 {
-    // A copy of no bytes has no count of the bytes filled after it.
     debug_assert!(
         keep > 0 && keep.is_multiple_of(8),
         "shortening stacks to {keep} bytes, not a positive multiple of 8"
@@ -480,8 +426,6 @@ pub fn shorten_stacks(bytes: &[u8], sampling: &[u64], keep: usize, out: &mut Vec
             .then(|| short_sample(record, sampling, keep))
             .flatten();
         if let Some((stack, end)) = short {
-            // The stack's size, `keep` bytes of it, and how many of those
-            // the kernel filled.
             let used = field(record, end - 8).map_or(0, u64::from_le_bytes);
             let length = stack + 8 + keep + 8 + (record.len() - end);
             let pieces = (
@@ -511,16 +455,12 @@ pub fn shorten_stacks(bytes: &[u8], sampling: &[u64], keep: usize, out: &mut Vec
     shortened
 }
 
-/// Where the stack copy of `record`, a whole sample record, begins, at its
-/// size, and where it ends, after how much of it the kernel filled, if an
-/// event in `sampling` wrote it and it copied more than `keep` bytes.
 fn short_sample(record: &[u8], sampling: &[u64], keep: usize) -> Option<(usize, usize)> {
     let word = |at: usize| field(record, at).ok().map(u64::from_le_bytes);
     if !sampling.contains(&word(8)?) {
         return None;
     }
 
-    // The header, then identifier, pid and tid, time, cpu, and period.
     let chain: usize = 8 + 8 * 5;
     let abi = chain.checked_add(8 + 8 * usize::try_from(word(chain)?).ok()?)?;
     let registers = if word(abi)? == 0 {
@@ -534,7 +474,6 @@ fn short_sample(record: &[u8], sampling: &[u64], keep: usize) -> Option<(usize, 
     (size > keep && end <= record.len()).then_some((stack, end))
 }
 
-/// A record an output event wrote: [`super::OUTPUT_SAMPLE_TYPE`]'s fields.
 fn decode_output(body: &[u8]) -> Result<Record<'_>, Malformed> {
     let mut fields = Fields { bytes: body };
     let _identifier = fields.u64()?;
@@ -554,7 +493,6 @@ fn decode_output(body: &[u8]) -> Result<Record<'_>, Malformed> {
     })
 }
 
-/// Decodes every record of `data` until one is malformed.
 #[cfg(feature = "fuzzing")]
 pub fn fuzz(data: &[u8]) {
     let mut offset = 0;
@@ -599,8 +537,6 @@ mod tests {
         );
     }
 
-    /// A sample record, as an event of `identifier` writes it: the fields
-    /// before its own, then `rest`.
     fn sample_record(identifier: u64, rest: &[u8]) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(&identifier.to_le_bytes());
@@ -618,9 +554,6 @@ mod tests {
         record
     }
 
-    /// An output event's record is told from a sample by its identifier,
-    /// and carries the program's bytes, padding and all; one whose bytes
-    /// overrun the record is malformed.
     #[test]
     fn an_output_events_records_are_told_from_samples_by_their_identifier() {
         let mut raw = 4_u32.to_le_bytes().to_vec();
@@ -644,7 +577,6 @@ mod tests {
         assert_eq!((pid.get(), tid.get(), time, cpu), (7, 8, 1000, 3));
         assert_eq!(data, b"abcd");
 
-        // Read as a sample, its bytes are a sample's, which they do not fit.
         assert!(!matches!(
             next(&record),
             Some(Ok((Record::Output { .. }, _)))
@@ -660,8 +592,6 @@ mod tests {
 
     use proptest::prelude::*;
 
-    /// A sample of the usual layout, or a record of another kind, as the
-    /// model of a ring's records.
     #[derive(Debug, Clone)]
     enum Model {
         Sample {
@@ -724,7 +654,6 @@ mod tests {
             record
         }
 
-        /// The record shortening keeps only `keep` bytes of, if any.
         fn shortened(&self, keep: usize) -> Option<Self> {
             let Self::Sample {
                 identifier: SAMPLING,
@@ -753,7 +682,6 @@ mod tests {
         }
     }
 
-    /// The identifier of the event whose samples are shortened.
     const SAMPLING: u64 = 1;
 
     fn record() -> impl Strategy<Value = Model> {
@@ -784,7 +712,6 @@ mod tests {
                 },
             );
         let other = (
-            // Kinds whose records decode whatever their bodies hold.
             prop::sample::select(vec![RECORD_THROTTLE, RECORD_SWITCH, 77]),
             (0..=6_usize).prop_flat_map(|words| prop::collection::vec(any::<u8>(), 8 * words)),
         )
@@ -815,7 +742,6 @@ mod tests {
             let mut out = Vec::new();
             let shortened = shorten_stacks(bytes, &[SAMPLING], keep, &mut out);
 
-            // The records whole before the cut, then what is left of it.
             let mut expected = Vec::new();
             let mut count = 0;
             let mut offset = 0;
@@ -837,7 +763,6 @@ mod tests {
             prop_assert_eq!(&out, &expected);
             prop_assert_eq!(shortened, count);
 
-            // Every rewritten record decodes, as the one it replaced did.
             let mut rest = &out[..out.len() - (cut - offset)];
             while !rest.is_empty() {
                 let (_, length) = next(rest).expect("a record").expect("a whole record");

@@ -1,17 +1,17 @@
-// Three JavaScript threads parked in nested functions of distinct kinds:
-// the main thread in an arrow function under a class method, the worker
-// alpha in a closure under a static method, and the worker beta in a
-// function an async function called after its await resumed.
-//
-// main:  mainOuter > Ledger.settle > tally > checkpoint("parked")
-// alpha: alphaStart > Sorter.sortAll > counterStep > park
-// beta:  betaFetched (after await) > betaHandled > betaInnermost > park
-//
-// V8 names a function whose map no longer keeps the `name` accessor every
-// function starts with by its `name` data property, its own or else its
-// prototypes': betaHandle's and betaInner's are redefined as data, which
-// makes their maps dictionaries, and betaFetch has none of its own but a
-// prototype that keeps one among its many properties.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 'use strict';
 
@@ -73,8 +73,8 @@ async function betaFetch() {
   betaHandle(value);
 }
 
-// Deleting a property other than the last makes an object's map a
-// dictionary.
+
+
 function toDictionary(object) {
   for (let index = 0; index < 32; index++) {
     object[`property${index}`] = index;

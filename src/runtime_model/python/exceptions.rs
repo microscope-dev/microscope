@@ -1,8 +1,3 @@
-//! Python's exceptions, as its agent reports them: raised, wherever Python
-//! code raises one or one reaches it, and uncaught, as one leaves a thread's
-//! outermost Python frame. Either reports the exception's object and a
-//! message the agent formed without running the program's code.
-
 use std::sync::Arc;
 
 use super::agent;
@@ -31,8 +26,6 @@ const UNCAUGHT: ExceptionFilter = ExceptionFilter {
     default: false,
 };
 
-/// The longest message read. The agent bounds what it forms well below
-/// this, so a longer one is a malformed report, not a message to cut.
 const MAX_MESSAGE: u64 = 1 << 13;
 
 const _: () = assert!(
@@ -48,7 +41,6 @@ const _: () = assert!(
     "the agent's uncaught bit names the uncaught filter"
 );
 
-/// The filter the agent reports under `bit`.
 pub const fn filter(bit: u64) -> Option<&'static ExceptionFilter> {
     match bit {
         agent::RAISED => Some(&EXCEPTION_FILTERS[0]),
@@ -57,7 +49,6 @@ pub const fn filter(bit: u64) -> Option<&'static ExceptionFilter> {
     }
 }
 
-/// The agent's bits for the filters `stops` stops.
 pub fn bits(stops: ExceptionStops) -> u64 {
     [agent::RAISED, agent::UNCAUGHT]
         .into_iter()
@@ -65,9 +56,6 @@ pub fn bits(stops: ExceptionStops) -> u64 {
         .fold(0, |bits, bit| bits | bit)
 }
 
-/// The exception the agent reports in the record at `address`: the
-/// object's address, then its message's address and length in bytes,
-/// which the reporting thread keeps alive while it is in the hook.
 pub fn read(stop: &dyn RuntimeStop, address: u64) -> Result<RuntimeException, Arc<str>> {
     let mut record = [0; 24];
     if !stop.read(VirtualAddress::new(address), &mut record) {
@@ -87,7 +75,6 @@ pub fn read(stop: &dyn RuntimeStop, address: u64) -> Result<RuntimeException, Ar
         return Err("the Python agent's exception record is malformed".into());
     }
 
-    // At most `MAX_MESSAGE`, so it fits.
     let mut bytes = vec![0; usize::try_from(length).unwrap_or(usize::MAX)];
     if !stop.read(VirtualAddress::new(text), &mut bytes) {
         return Err(format!("the Python exception's message at {text:#x} is unreadable").into());

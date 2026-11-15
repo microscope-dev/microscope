@@ -1,15 +1,3 @@
-//! Where a breakpoint counts each call of a function exactly.
-//!
-//! A breakpoint samples each execution of one instruction, which is each
-//! call of a function where the function's first instruction runs once a
-//! call. A Go function's prologue does not: when the goroutine's stack has
-//! no room, it grows the stack with `runtime.morestack` and jumps back to
-//! its entry to check again. And the runtime may preempt a goroutine at
-//! most instructions and resume it there, running the instruction again.
-//! Only the stack check's branch is never a place to preempt, and it falls
-//! through once a call: a sample of it whose flags take the branch is a
-//! repeat, not a call.
-
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -20,40 +8,30 @@ use super::RecordError;
 use crate::debug_info::gopclntab::GoTable;
 use crate::{ImageAddress, LoadBias, VirtualAddress};
 
-/// The instruction a breakpoint samples to count a function's calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Calls {
-    /// The instruction's address in the program's image.
     pub address: ImageAddress,
 
-    /// The bias the program must load at for the breakpoint to be right.
     pub bias: LoadBias,
 
-    /// When the instruction is a Go stack check's branch, the condition
-    /// under which it branches to grow the stack.
     pub repeats_when: Option<Branch>,
 }
 
 impl Calls {
-    /// Where the instruction is once the program loads at its bias.
     #[must_use]
     pub const fn loaded(self) -> VirtualAddress {
         self.bias.wrapping_load(self.address)
     }
 }
 
-/// A conditional branch's condition, by the flags it reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Branch {
-    /// `jb`: the carry flag.
     Below,
 
-    /// `jbe`: the carry or zero flag.
     BelowOrEqual,
 }
 
 impl Branch {
-    /// Whether the branch is taken with `flags`.
     pub const fn taken(self, flags: u64) -> bool {
         const CARRY: u64 = 1;
         const ZERO: u64 = 1 << 6;
@@ -64,14 +42,8 @@ impl Branch {
     }
 }
 
-/// Where Linux loads a position-independent executable when it does not
-/// randomize: two thirds of a 47-bit address space, less its first
-/// segment's address, page aligned (`ELF_ET_DYN_BASE`).
 const UNRANDOMIZED_PIE_BASE: u64 = 0x5555_5555_4aaa;
 
-/// Why a function `symbol` names, which no symbol of `program` does, still
-/// has no address to count calls at: its debug information describes it,
-/// and every instance of it was inlined. None when it does not say so.
 fn inlined_everywhere(program: &Path, data: &[u8], symbol: &str) -> Option<RecordError> {
     const SHOWN: usize = 8;
     let search = crate::debug_info::DebugFileSearch::default();
@@ -123,9 +95,6 @@ fn inlined_everywhere(program: &Path, data: &[u8], symbol: &str) -> Option<Recor
     })
 }
 
-/// Where to count the calls of the function `symbol` names in `program`.
-/// The program loads at `bias`, or where it does without address
-/// randomization.
 pub fn plan(program: &Path, symbol: &str, bias: Option<LoadBias>) -> Result<Calls, RecordError> {
     let unreadable = |error: &dyn std::fmt::Display| RecordError::Program(error.to_string());
     let program =
@@ -142,10 +111,6 @@ pub fn plan(program: &Path, symbol: &str, bias: Option<LoadBias>) -> Result<Call
         })
     });
 
-    // A symbol, or the name a profile shows for one. A mangled name spells
-    // each identifier of the name as it is, so only symbols that hold the
-    // last are demangled: Chromium has millions, and demangling them all
-    // took 9 s.
     let last = symbol
         .rsplit("::")
         .next()
@@ -187,7 +152,6 @@ pub fn plan(program: &Path, symbol: &str, bias: Option<LoadBias>) -> Result<Call
         repeats_when: None,
     };
 
-    // Only Go grows stacks in its prologues.
     let Some(table) = crate::debug_info::gopclntab::load(&file).ok().flatten() else {
         return Ok(plain);
     };
@@ -231,8 +195,6 @@ pub fn plan(program: &Path, symbol: &str, bias: Option<LoadBias>) -> Result<Call
     })
 }
 
-/// The last conditional branch of the prologue at `entry` that leads to a
-/// block calling the runtime to grow the stack and jumping back to `entry`.
 fn stack_check(file: &object::File<'_>, table: &GoTable, entry: u64) -> Option<Instruction> {
     let (start, data) = file.sections().find_map(|section| {
         let start = section.address();

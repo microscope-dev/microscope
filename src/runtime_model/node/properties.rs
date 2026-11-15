@@ -1,35 +1,17 @@
-//! An object's named properties, found as `JSReceiver::GetDataProperty`
-//! finds them: the object's own, then its prototypes', where a property
-//! that is an accessor ends the lookup with no value, since V8 calls no
-//! getter there.
-//!
-//! A fast map keeps its own properties' names and details in its
-//! descriptors, and their values in the object or its property array; a
-//! dictionary map keeps all three in a `NameDictionary`. A Swiss dictionary,
-//! a global object's, and an object V8 looks up through interceptors or
-//! access checks are refused by name.
-
 use super::objects::{Object, Problem, Reader, address_at};
 use crate::image::v8::{Constant, Field};
 
-/// The most prototypes followed: chains are a few objects long.
 const MAX_PROTOTYPES: usize = 64;
 
-/// The most entries of a dictionary searched.
 const MAX_ENTRIES: i64 = 1 << 16;
 
-/// A property as its holder keeps it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Own {
-    /// A data property, with its tagged value.
     Data(u64),
-    /// An accessor, which `GetDataProperty` reads as `undefined`.
     Accessor,
     Absent,
 }
 
-/// The value of the data property `name` of `object` or its prototypes, as
-/// a tagged word; `None` where none is, or the one found is an accessor.
 pub(super) fn data_property(
     reader: &Reader<'_>,
     object: Object,
@@ -57,7 +39,6 @@ pub(super) fn data_property(
             Own::Accessor => return Ok(None),
             Own::Absent => {}
         }
-        // The chain ends at `null`, an oddball.
         match reader.object(reader.field(map, Field::MapPrototype)?)? {
             Some(prototype) if !reader.is(prototype, Constant::OddballType)? => {
                 holder = prototype;
@@ -68,7 +49,6 @@ pub(super) fn data_property(
     Err(format!("the prototypes of {:#x} are too many", object.0).into())
 }
 
-/// The property `name` of `holder`, whose map is `map`.
 fn own(reader: &Reader<'_>, holder: Object, map: Object, name: &str) -> Result<Own, Problem> {
     let bits = i64::from(
         reader
@@ -114,8 +94,6 @@ fn own(reader: &Reader<'_>, holder: Object, map: Object, name: &str) -> Result<O
     Ok(Own::Absent)
 }
 
-/// A part of a property's `details`: the bits `mask` takes, shifted down by
-/// `shift`, or by the mask's own zero bits where V8 gives no shift.
 pub(super) fn part(
     reader: &Reader<'_>,
     details: i64,
@@ -130,8 +108,6 @@ pub(super) fn part(
     Ok((details & mask) >> shift)
 }
 
-/// The word `entry` of the descriptor at `index` of `map`'s descriptors,
-/// one of [`Constant::PropDescKey`], details, and value.
 pub(super) fn descriptor(
     reader: &Reader<'_>,
     map: Object,
@@ -165,8 +141,6 @@ pub(super) fn descriptor(
     )?)
 }
 
-/// The value of the field `index` of `holder`, whose map is `map`: in the
-/// object for the first of them, then in its property array.
 pub(super) fn field_value(
     reader: &Reader<'_>,
     holder: Object,
@@ -205,7 +179,6 @@ pub(super) fn field_value(
     )?)
 }
 
-/// The property `name` of `holder`, a dictionary-mode object.
 fn dictionary(reader: &Reader<'_>, holder: Object, name: &str) -> Result<Own, Problem> {
     let word = reader.field(holder, Field::JSReceiverPropertiesOrHash)?;
     let table = reader
@@ -258,8 +231,6 @@ fn dictionary(reader: &Reader<'_>, holder: Object, name: &str) -> Result<Own, Pr
     Ok(Own::Absent)
 }
 
-/// Whether the key `key` is the string `name`. A key is an internalized
-/// string or a symbol; an empty or deleted entry's is an oddball.
 pub(super) fn is_named(reader: &Reader<'_>, key: u64, name: &str) -> Result<bool, Problem> {
     let Some(key) = reader.object(key)? else {
         return Ok(false);

@@ -9,16 +9,10 @@ import { useModel } from "../store";
 import { useTab } from "../tab";
 import { placeText } from "./Banner";
 
-/** The most stops the strip lists. */
 const SHOWN = 8;
 
-/** How long a flash message stays. */
 const FLASH = 4000;
 
-/**
- * The status bar: the session's latest stops, clickable, and what others
- * did or what the tab just did.
- */
 export function StatusBar() {
   const notices = useModel((model) => model.notices);
   const me = useModel((model) => model.hello?.connection);
@@ -28,8 +22,7 @@ export function StatusBar() {
   const latest = notices.findLast((notice) => notice.connection !== me);
   const stops = state?.session ? state.stops.slice(-SHOWN) : [];
   const flashing = flash !== null && now - flash.at < FLASH;
-  // With nothing to say, as for a profile, it takes no room, but stays in
-  // the page so what it says next is still read out.
+
   const idle = stops.length === 0 && !flashing && !latest;
 
   return (
@@ -42,7 +35,7 @@ export function StatusBar() {
           ))}
         </nav>
       )}
-      {/* Only what was just said is read out, not the stops on every stop. */}
+      {}
       <span className="end" aria-live="polite">
         {flashing ? (
           <span className="notice" data-testid="flash">
@@ -59,7 +52,6 @@ export function StatusBar() {
   );
 }
 
-/** Every stop the session made, the latest first. */
 export function Stops() {
   const stops = useModel((model) => model.state?.stops);
   if (!stops || stops.length === 0) {
@@ -82,7 +74,6 @@ export function Stops() {
   );
 }
 
-/** A stop, which shows the tab that stop when chosen. */
 function StopButton({ entry, className }: { entry: StopEntry; className: string }) {
   const session = useModel((model) => model.state?.session);
   const current = useModel((model) =>
@@ -116,7 +107,6 @@ function describeStop(entry: StopEntry): string {
   return `#${entry.stop} · ${who}${entry.reason.description} · ${placeText(entry.place)}`;
 }
 
-/** The time, brought up to date again at `deadline`. */
 function useNow(deadline: number | null): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

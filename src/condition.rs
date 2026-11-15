@@ -1,10 +1,3 @@
-//! Breakpoint and watchpoint conditions, and breakpoint log messages, in the
-//! expression language (`docs/expressions.md`).
-//!
-//! A condition is an expression with a truth value, which cannot assign;
-//! `&&` and `||` short-circuit, so `p != null && p->x > 3` is safe. A log
-//! message is text with expressions in braces: `x = {x}, sum = {a + b}`.
-
 use std::fmt;
 use std::sync::Arc;
 
@@ -12,20 +5,16 @@ use crate::eval::syntax::Expression;
 use crate::eval::syntax::ast::NodeKind;
 use crate::{Error, Result};
 
-/// The longest condition or log message accepted, in bytes.
 const MAX_TEXT_BYTES: usize = 4096;
 
-/// A parsed breakpoint or watchpoint condition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Condition {
     expression: Expression,
 }
 
-/// Parses an expression a breakpoint reads, which may not assign.
 fn read_only(text: &str, invalid: fn(String) -> Error) -> Result<Expression> {
     let expression = Expression::parse(text).map_err(|error| invalid(error.to_string()))?;
 
-    // An assignment anywhere in any reading, not only at its root.
     let assigns = (0..1 << expression.ambiguities().len()).any(|casts| {
         expression.reading(casts).is_ok_and(|tree| {
             let mut pending = vec![tree.root()];
@@ -51,7 +40,6 @@ fn read_only(text: &str, invalid: fn(String) -> Error) -> Result<Expression> {
 }
 
 impl Condition {
-    /// Parses a condition.
     pub fn parse(text: &str) -> Result<Self> {
         let text = text.trim();
         if text.is_empty() {
@@ -65,7 +53,6 @@ impl Condition {
         })
     }
 
-    /// The condition's expression.
     #[must_use]
     pub const fn expression(&self) -> &Expression {
         &self.expression
@@ -78,26 +65,20 @@ impl fmt::Display for Condition {
     }
 }
 
-/// A logpoint's message: text with values interpolated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogMessage {
     text: Arc<str>,
     segments: Arc<[LogSegment]>,
 }
 
-/// One piece of a log message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogSegment {
-    /// Literal text.
     Text(Arc<str>),
 
-    /// An expression whose value is shown in its place.
     Value(Expression),
 }
 
 impl LogMessage {
-    /// Parses a message whose `{expression}` parts show values; `{{` and
-    /// `}}` stand for braces.
     pub fn parse(text: &str) -> Result<Self> {
         let invalid = |description: &str| Error::InvalidLogMessage(description.to_owned());
         if text.len() > MAX_TEXT_BYTES {
@@ -146,7 +127,6 @@ impl LogMessage {
         })
     }
 
-    /// The message's parts in order.
     #[must_use]
     pub fn segments(&self) -> &[LogSegment] {
         &self.segments

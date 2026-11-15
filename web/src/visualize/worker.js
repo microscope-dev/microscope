@@ -1,16 +1,4 @@
-// The worker a renderer runs in, started by the sandboxed frame. It takes
-// what it needs from the global scope, deletes every global that is not on
-// its list, and only then evaluates the renderer's source, which so reaches
-// nothing but the language, drawing, and `microscope`. Pictures go back to the
-// frame as plain data; the page checks every shape before showing one. A
-// live renderer draws into a canvas of its own instead, and each frame goes
-// back as only its pixels, an ImageBitmap.
-//
-// This file is a classic script, never a module: Chromium refuses a module
-// worker from a blob in an opaque-origin frame.
-
 (() => {
-  // Taken before the lockdown, which deletes them from the global scope.
   const post = self.postMessage.bind(self);
   const listen = self.addEventListener.bind(self);
   const later = self.setTimeout.bind(self);
@@ -20,14 +8,12 @@
   const { deleteProperty, ownKeys } = Reflect;
   const Failure = Error;
 
-  /** Fails when the worker's own bookkeeping is wrong: a bug in microscope. */
   function assert(condition, message) {
     if (!condition) {
       throw new Failure(`assertion failed: ${message}`);
     }
   }
 
-  // The globals a renderer keeps: the language, timers, and drawing.
   const KEEP = new Set([
     "AggregateError",
     "Array",
@@ -137,8 +123,6 @@
     "microscope",
   ]);
 
-  /** Deletes every name not kept from the global object and the objects it
-   * inherits from, short of `Object.prototype`, and fails if one stays. */
   function lockDown() {
     let holder = globalThis;
     while (holder !== null && holder !== Object.prototype) {
@@ -152,8 +136,7 @@
         if (deleteProperty(holder, name)) {
           continue;
         }
-        // A name that cannot be deleted may stay only as a plain number,
-        // such as Chromium's TEMPORARY and PERSISTENT.
+
         const kept = getOwnPropertyDescriptor(holder, name);
         if (kept === undefined || typeof kept.value === "number") {
           continue;
@@ -164,7 +147,6 @@
     }
   }
 
-  /** The renderer's file and the line and column of an error in it. */
   function place(error, file) {
     const stack = typeof error?.stack === "string" ? error.stack : "";
     const escaped = file.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -172,7 +154,7 @@
     if (found) {
       return { file, line: Number(found[1]), column: Number(found[2]) };
     }
-    // Firefox says where a syntax error is, Chromium does not.
+
     if (typeof error?.lineNumber === "number") {
       return { file, line: error.lineNumber, column: (error.columnNumber ?? 0) + 1 };
     }
@@ -190,7 +172,6 @@
     return { message, ...place(error, file) };
   }
 
-  // The renderer API, `microscope`.
   let drawer = null;
   let starter = null;
   let theme = freeze({});
@@ -199,8 +180,6 @@
     return (properties) => ({ ...properties, type });
   }
 
-  /** Deep equality over input values: numbers, bigints, strings, arrays,
-   * typed arrays, and plain objects. NaN equals NaN. */
   function same(a, b) {
     if (Object.is(a, b)) {
       return true;
@@ -232,7 +211,6 @@
     return names.every((name) => Object.hasOwn(b, name) && same(a[name], b[name]));
   }
 
-  /** A color `#rgb` or `#rrggbb` as linear OKLab. */
   function oklab(color) {
     const digits = /^#([0-9a-f]{3}|[0-9a-f]{6})$/iu.exec(color)?.[1];
     if (digits === undefined) {
@@ -274,7 +252,6 @@
       .join("")}`;
   }
 
-  /** The color `t` of the way from `from` to `to`, blended in OKLab. */
   function scale(t, from, to) {
     const amount = Number.isFinite(t) ? Math.min(1, Math.max(0, t)) : 0;
     const start = oklab(from);
@@ -282,8 +259,6 @@
     return hex(start.map((value, index) => value + (end[index] - value) * amount));
   }
 
-  /** An image of RGBA pixels, or of an OffscreenCanvas the renderer drew,
-   * which goes to the page as only its pixels. */
   function image(properties) {
     const { canvas, ...rest } = properties ?? {};
     if (canvas === undefined) {
@@ -295,14 +270,9 @@
     return { ...rest, type: "image", rendered: canvas.transferToImageBitmap() };
   }
 
-  /** The most a caption or hint holds. */
   const MOST_TEXT = 4096;
   const text = (value) => String(value).slice(0, MOST_TEXT);
 
-  // What a live renderer asked of its page, the latest of each kind, sent
-  // once the page's message it is handling finishes, or from a timer on the
-  // next turn: a renderer calling these in a loop sends a few messages, not
-  // millions. A drawn picture has no caption, pointer, or frames to ask for.
   const asked = {
     __proto__: null,
     caption: null,
@@ -330,7 +300,7 @@
 
   function flush() {
     flushLater = false;
-    // By index: the renderer may have replaced the arrays' iterator.
+
     for (let index = 0; index < KINDS.length; index++) {
       const kind = KINDS[index];
       const message = asked[kind];
@@ -415,17 +385,15 @@
     return null;
   }
 
-  /** Sets `microscope.theme` and returns what the renderer's function gets. */
   function given(context) {
     theme = freeze({ ...context.palette, series: freeze([...context.palette.series]) });
     const { palette: _, ...rest } = context;
     return freeze(rest);
   }
 
-  // A live renderer's canvas and what its function returned.
   let canvas = null;
   let handlers = null;
-  // Live messages run one after another, each after the last finished.
+
   let queue = Promise.resolve();
 
   function lost(event) {
@@ -439,7 +407,7 @@
     switch (message.type) {
       case "live-start": {
         canvas = new OffscreenCanvas(message.size.width, message.size.height);
-        // The lockdown took addEventListener from every EventTarget.
+
         addEventListener.call(canvas, "webglcontextlost", lost);
         addEventListener.call(canvas, "contextlost", lost);
         handlers = (await starter(canvas, message.input, given(message.context))) ?? {};
@@ -461,13 +429,12 @@
         return;
       case "frame": {
         await handlers?.frame?.(message.time);
-        // What the frame set, as its caption, comes before it.
+
         flush();
         let bitmap;
         try {
           bitmap = canvas.transferToImageBitmap();
         } catch {
-          // A canvas no context has drawn on yet has no pixels to send.
           post({ type: "frame", bitmap: null });
           return;
         }
@@ -481,7 +448,7 @@
   async function draw(id, input, context) {
     if (drawer === null) {
       assert(starter !== null, "draw without microscope.draw or microscope.live");
-      // A live renderer draws in its own canvas, which the page starts.
+
       post({ type: "live", id });
       return;
     }
@@ -508,9 +475,6 @@
     }
   }
 
-  // An error the renderer leaves uncaught, as in a timer, fails its draw.
-  // The first since the page's last message says enough; the page ends a
-  // live renderer at it, and fails every draw waiting.
   let reported = false;
   function uncaught(error) {
     if (!reported) {
@@ -537,8 +501,6 @@
     } else if (message?.type === "draw" && loaded && (drawer !== null || starter !== null)) {
       draw(message.id, message.input, message.context);
     } else if (message?.type === "ping") {
-      // The page's watchdog, answered after the live work before it: a
-      // renderer stuck in a loop, or awaiting what never settles, does not.
       queue = queue.then(() => post({ type: "pong" }));
     } else if (LIVE.has(message?.type) && loaded && starter !== null) {
       // oxlint-disable-next-line promise/always-return -- the queue only orders the work; nothing reads its value
@@ -560,7 +522,6 @@
   try {
     lockDown();
   } catch (error) {
-    // Nothing runs in a sandbox that could not be closed.
     post({ type: "fatal", error: failure(error, "sandbox") });
     loaded = true;
   }

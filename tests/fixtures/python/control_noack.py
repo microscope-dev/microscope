@@ -1,4 +1,4 @@
-"""Fault injection: remove polling after the first accepted configuration."""
+
 import contextvars
 import os
 import sys

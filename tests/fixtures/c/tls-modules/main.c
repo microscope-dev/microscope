@@ -1,9 +1,9 @@
-// Three threads, each with its own copy of TLS in the executable, a linked
-// library, and a plugin loaded while one thread already runs. Every thread
-// records where its copies are, so a debugger's addresses can be checked
-// against the program's own. A static build has no plugin and links the
-// library into the executable. With the argument `abort`, the program
-// aborts where it would stop, leaving a core dump.
+
+
+
+
+
+
 
 #define _GNU_SOURCE
 
@@ -29,8 +29,8 @@ _Thread_local volatile int32_t main_tls = 100;
 _Thread_local volatile int64_t main_zero_tls;
 extern _Thread_local volatile int32_t library_tls;
 
-// Indexed by thread: 0 is the main thread, 1 starts before the plugin is
-// loaded, and 2 after.
+
+
 struct tls_addresses tls_addresses[THREADS];
 
 static volatile int64_t *(*plugin_tls_address)(void);
@@ -74,8 +74,8 @@ int main(int argc, char **argv) {
     aborting = argc > 1 && strcmp(argv[1], "abort") == 0;
     pthread_t early;
     pthread_t late;
-    // gcore cannot read the guard pages glibc 2.42 installs inside a stack
-    // mapping, and then saves none of the mapping, so threads have none.
+
+
     pthread_attr_t unguarded;
     if (pthread_attr_init(&unguarded) != 0 || pthread_attr_setguardsize(&unguarded, 0) != 0 ||
         pthread_barrier_init(&loaded, NULL, 2) != 0 ||

@@ -1,6 +1,3 @@
-//! What the client inspects at a stop for the semantic oracles: backtraces,
-//! steps, and the selected frame's variables.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -17,7 +14,6 @@ use crate::{
     VariableState, VariableValue, VariableValueSource, VirtualAddress,
 };
 
-/// Assigns `$pc` in a frame, and checks it reads back as assigned.
 async fn assign_pc(view: &crate::StopView<'_>, pc: u64) -> Result<(), Failure> {
     let assignment = Expression::parse(&format!("$pc = {pc:#x}")).expect("an assignment");
     let assigned = view
@@ -48,8 +44,6 @@ async fn assign_pc(view: &crate::StopView<'_>, pc: u64) -> Result<(), Failure> {
 }
 
 impl Client {
-    /// Takes a backtrace, which a stop whose inline frame is ambiguous
-    /// cannot present.
     pub(super) async fn backtrace(&self) -> Result<(), Failure> {
         let snapshot = self.snapshot().await?;
         match self.handle.backtrace().await {
@@ -84,14 +78,10 @@ impl Client {
         let kind = *self.choices.borrow_mut().pick(Stream::Client, &kinds);
         let mut before = self.snapshot().await?;
 
-        // A source step must know which frame it starts in, so one from a
-        // stop whose inline frame is ambiguous is refused, not guessed.
         let ambiguous = kind != StepKind::Instruction
             && kind != StepKind::OverInstruction
             && presented_ambiguously(&before);
 
-        // Stepping out of a frame without a caller to return to must be
-        // refused, and change nothing.
         let (caller, outer, was) = if kind == StepKind::Out && !ambiguous {
             self.step_out_of(&mut before).await?
         } else {
@@ -102,8 +92,6 @@ impl Client {
             .step_from(&before, kind, ambiguous, &caller, outer)
             .await;
 
-        // A step out of a caller's frame that left the thread where it was
-        // leaves that frame selected, which the client selects back.
         if let (Some(frame), Some(stop)) = (was, before.stop_id)
             && self.snapshot().await?.stop_id == Some(stop)
         {
@@ -113,8 +101,6 @@ impl Client {
         result
     }
 
-    /// Steps from the stop `before` shows, out of the frame `outer` frames
-    /// up, which returns to `caller`.
     async fn step_from(
         &self,
         before: &StateSnapshot,
@@ -135,8 +121,6 @@ impl Client {
             });
         }
 
-        // Half the steps the oracle can judge run while the client goes on
-        // acting, as it pauses, edits, or kills.
         if !ambiguous && matches!(caller, Caller::Trusted) && self.control(2) == 0 {
             return self.start_step(before, kind).await;
         }
@@ -204,8 +188,6 @@ impl Client {
         Ok(())
     }
 
-    /// Starts a step from the stop `before` shows without waiting for it,
-    /// which ends at the client's next stop, or with the program.
     async fn start_step(&self, before: &StateSnapshot, kind: StepKind) -> Result<(), Failure> {
         let (Some(stop), Some(context), InferiorState::Stopped { process_id, .. }) =
             (before.stop_id, before.selected, &before.inferior)
@@ -218,7 +200,6 @@ impl Client {
             _ => StackFrameId::INNERMOST,
         };
 
-        // Half of them step the thread alone, whose siblings stay stopped.
         let alone = match context {
             ExecutionContext::Thread(thread) if self.draw(2) == 0 => Some(thread),
             _ => None,
@@ -246,8 +227,6 @@ impl Client {
                 self.note(format!("began step {kind:?} as execution {execution}"));
                 self.stepping.set(Some(execution));
                 if alone.is_some() {
-                    // Like a thread continued alone, it may wait forever for
-                    // a sibling that stays stopped.
                     self.alone.set(Some(execution));
                     self.mark(Mark::ThreadStepped);
                 }
@@ -264,8 +243,6 @@ impl Client {
         Ok(())
     }
 
-    /// Steps into one of the calls of the selected thread's line, which
-    /// runs the line's other calls to their returns.
     pub(super) async fn step_into_call(&self) -> Result<(), Failure> {
         let before = self.snapshot().await?;
         let (Some(stop), Some(ExecutionContext::Thread(thread))) =
@@ -281,7 +258,6 @@ impl Client {
         });
         let targets = match view.step_targets().await {
             Ok(targets) => targets,
-            // Which line a thread is on depends on the inline frame.
             Err(Error::AmbiguousInlineFrame) if presented_ambiguously(&before) => {
                 self.note("step targets from an ambiguous inline frame refused");
                 return Ok(());
@@ -332,9 +308,6 @@ impl Client {
         Ok(())
     }
 
-    /// Runs to a location, or until the selected frame returns first, which
-    /// is refused as a step out of it is. The client learns where the
-    /// location is from a disabled breakpoint, which plants nothing.
     pub(super) async fn advance(&self, breakpoints: &[Added]) -> Result<(), Failure> {
         let spec = self.choose_spec(Stream::Control);
         let Some(targets) = self.advance_targets(&spec, breakpoints).await? else {
@@ -421,11 +394,6 @@ impl Client {
         Ok(())
     }
 
-    /// Moves the selected thread to where it stands, by a jump to its own
-    /// address or by assigning `$pc` its own value, which publishes the
-    /// stop again and changes nothing the program computes. A thread in a
-    /// system call stays, since moving it ends the kernel's restart of the
-    /// call.
     pub(super) async fn jump_in_place(&self) -> Result<(), Failure> {
         let before = self.snapshot().await?;
         let (Some(stop), Some(ExecutionContext::Thread(thread))) =
@@ -520,9 +488,6 @@ impl Client {
         Ok(())
     }
 
-    /// The image addresses `spec` names, learned from a disabled breakpoint
-    /// that plants nothing, or `None` when the oracle cannot follow an
-    /// advance there.
     async fn advance_targets(
         &self,
         spec: &BreakpointSpec,
@@ -567,8 +532,6 @@ impl Client {
                     targets.insert(address.get());
                 }
 
-                // Code outside the program is not where the oracle can
-                // follow an advance to.
                 BreakpointLocation::Virtual(_) | BreakpointLocation::Managed(_) => {
                     return Ok(None);
                 }
@@ -578,7 +541,6 @@ impl Client {
         Ok(Some(targets))
     }
 
-    /// Fails unless a refused request left the state as it was.
     async fn unchanged_by_refusal(
         &self,
         before: &StateSnapshot,
@@ -594,8 +556,6 @@ impl Client {
         Ok(())
     }
 
-    /// Reads the variables of the selected frame, and the backtrace of its
-    /// thread, which the variables oracle judges where a marker applies.
     pub(super) async fn inspect(&self, stop: StopId) -> Result<(), Failure> {
         let snapshot = self.snapshot().await?;
         let backtrace = match self.handle.backtrace().await {
@@ -607,9 +567,6 @@ impl Client {
             Err(error) => return Err(protocol(format!("backtrace failed: {error}"))),
         };
 
-        // A third of the inspections are of a caller's frame, which the
-        // client selects and then selects the innermost again, so that
-        // what it does next is of the frame it stopped in.
         let outer = match &backtrace.frames[..] {
             [_, callers @ ..] if !callers.is_empty() && self.draw(3) == 0 => Some(
                 self.choices
@@ -642,14 +599,10 @@ impl Client {
 
         inspected?;
 
-        // Every inspection of a program with views also presents its
-        // containers.
         if self.script.views.is_some() {
             self.present(stop).await?;
         }
 
-        // Every other stopped thread's stack, without changing which is
-        // selected.
         for thread in snapshot.threads.iter() {
             if snapshot.selected == Some(ExecutionContext::Thread(thread.id))
                 || !matches!(thread.state, ThreadState::Stopped { .. })
@@ -665,8 +618,6 @@ impl Client {
 
             match self.handle.at(context).backtrace().await {
                 Ok(backtrace) => self.observe(Observation::Backtrace { stop, backtrace }),
-                // Only the selected thread's presentation is in the
-                // snapshot, so another's inline frame may be ambiguous.
                 Err(Error::AmbiguousInlineFrame) => {
                     self.note(format!("thread {}'s inline frame is ambiguous", thread.id));
                 }
@@ -682,15 +633,12 @@ impl Client {
         Ok(())
     }
 
-    /// Reads the variables of frame `selected` of `backtrace`, the selected
-    /// thread's, and evaluates expressions in half the frames.
     async fn inspect_frame(
         &self,
         stop: StopId,
         backtrace: &Backtrace,
         selected: Option<StackFrameId>,
     ) -> Result<(), Failure> {
-        // Code no debug information describes has no variables to show.
         let undescribed = backtrace
             .frames
             .iter()
@@ -722,8 +670,6 @@ impl Client {
             backtrace: backtrace.clone(),
         });
 
-        // Half the inspections also evaluate expressions, so that the
-        // variables oracle alone judges the rest.
         let evaluations = if self.draw(2) == 0 {
             self.evaluations(&variables, backtrace).await
         } else {
@@ -738,7 +684,6 @@ impl Client {
             evaluations,
         });
 
-        // Half the inspections also read the frame's registers.
         if self.draw(2) == 0 {
             let registers = self
                 .handle
@@ -756,10 +701,6 @@ impl Client {
         Ok(())
     }
 
-    /// The frame a step out is of, as how many frames below it the step
-    /// also returns from, and what it returns to. A third of the steps out
-    /// are of a caller's frame, which the client selects, and `before`
-    /// then shows, with the frame selected until then.
     async fn step_out_of(
         &self,
         before: &mut StateSnapshot,
@@ -800,9 +741,6 @@ impl Client {
         Ok((Caller::of(&backtrace, frame.level), outer, was))
     }
 
-    /// A caller's frame of `backtrace` to step out of, with a caller of its
-    /// own in the program's code, and no inline frame at or below it, so
-    /// that each frame below it is a call the step returns from.
     fn outer_frame(&self, backtrace: &Backtrace) -> Option<StackFrame> {
         let candidates = backtrace
             .frames
@@ -825,8 +763,6 @@ impl Client {
         )
     }
 
-    /// Selects `frame` of the selected thread's backtrace, which the
-    /// debugger must answer with that frame and publish as selected.
     async fn select_frame(&self, frame: &StackFrame) -> Result<(), Failure> {
         let selected =
             self.handle.select_frame(frame.id).await.map_err(|error| {
@@ -854,9 +790,6 @@ impl Client {
         Ok(())
     }
 
-    /// Evaluates each container the program defines, and reads the
-    /// elements of each a view presents as a sequence or map in one page
-    /// and in pages of a size it draws.
     async fn present(&self, stop: StopId) -> Result<(), Failure> {
         for name in crate::sim::views::CONTAINERS {
             if !self
@@ -918,10 +851,6 @@ impl Client {
         Ok(())
     }
 
-    /// The first `elements` children of a presentation, in pages of `size`,
-    /// each resuming where the one before it ended, until one comes back
-    /// empty, as a page whose budget ran out at once does: that one is
-    /// kept, to say why.
     async fn pages(
         &self,
         reference: &Arc<crate::ValueChildrenReference>,
@@ -953,11 +882,6 @@ impl Client {
         Ok(pages)
     }
 
-    /// Evaluates, in the selected frame, the condition of the marker on its
-    /// line, the negation, and what it expects; a few of its variables by
-    /// name, and those in memory by address; and a few sums, differences,
-    /// products, and casts of its integer variables, and an ill-typed
-    /// expression over one.
     async fn evaluations(
         &self,
         variables: &VariableSnapshot,
@@ -980,8 +904,6 @@ impl Client {
             }
         }
 
-        // Only names shown once, which name one variable unambiguously. No
-        // name reaches what a finished function returned.
         let nameable = || {
             variables
                 .variables
@@ -1033,8 +955,6 @@ impl Client {
             self.computed(&integers)
         };
 
-        // Either kind may come first, so that either may be the first to
-        // notice a value that changed between reads.
         if pick(2) == 0 {
             asked.extend(by_name.into_iter().chain(computed));
         } else {
@@ -1063,9 +983,6 @@ impl Client {
         evaluations
     }
 
-    /// Draws expressions computed from `integers`, the names of integer
-    /// variables: two sums, differences, or products, a cast to a narrower
-    /// type, and an ill-typed expression.
     fn computed(&self, integers: &[String]) -> Vec<(Purpose, String)> {
         let pick = |count: usize| usize::try_from(self.draw(count as u64)).expect("small");
         let mut computed = Vec::new();
@@ -1108,7 +1025,6 @@ impl Client {
     }
 }
 
-/// An integer variable's value.
 fn integer(state: &VariableState) -> Option<i128> {
     match state {
         VariableState::Available {
@@ -1123,23 +1039,16 @@ fn integer(state: &VariableState) -> Option<i128> {
     }
 }
 
-/// What a step out of a frame would return to.
 #[derive(Debug, Clone)]
 enum Caller {
-    /// A caller the unwinder found in the program's code, or none needed:
-    /// an inline frame returns into its physical frame.
     Trusted,
 
-    /// The unwinder says the frame has no caller.
     Outermost(UnwindTermination),
 
-    /// The caller the stack names lies outside every module, as a corrupt
-    /// return address does.
     Corrupt(VirtualAddress),
 }
 
 impl Caller {
-    /// What stepping out of the frame at `level` would return to.
     fn of(backtrace: &Backtrace, level: u32) -> Self {
         let level = usize::try_from(level).unwrap_or(usize::MAX);
         let Some(frame) = backtrace.frames.get(level) else {
@@ -1172,8 +1081,6 @@ impl std::fmt::Display for Caller {
     }
 }
 
-/// Whether a stop presents its selected thread in an inline frame the
-/// debug information leaves ambiguous.
 fn presented_ambiguously(snapshot: &StateSnapshot) -> bool {
     snapshot
         .presentation

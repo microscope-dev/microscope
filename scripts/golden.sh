@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
-# Builds the simulator's golden programs. Their sources and manifests are
-# checked in; the binaries are built with the pinned Nix toolchain, which
-# reproduces them byte for byte, and must match the hashes the manifests
-# record, so a compiler change can never silently change what a simulation
-# means.
-#
-#   golden.sh build         compiles every program into build/golden, unless
-#                           its inputs are unchanged since the last build;
-#                           fails unless its binaries, and what they print and
-#                           return, match its manifest; and writes the facts
-#                           GNU binutils give about each binary
-#   golden.sh record NAME   compiles NAME's variants, runs each with every
-#                           argument list in NAME/arguments, and rewrites
-#                           NAME/manifest.json, after a deliberate change to
-#                           its sources or the toolchain
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 set -euo pipefail
 
 readonly golden_dir="tests/golden"
 readonly build_dir="build/golden"
-# Debug information places the repository here wherever it is checked out.
+
 readonly source_root="/microscope"
-# How many more times a build runs each binary to check that it behaves the
-# same however its threads interleave.
+
+
 readonly determinism_runs=20
 readonly common_flags="-std=c11 -g -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fcf-protection=none -Wall -Wextra -Werror"
 readonly static="-static -fno-pie"
 readonly static_pie="-static-pie -fpie"
-# Vectorized loops would need SSE arithmetic, which the simulator does not
-# model. The toolchain keeps frame pointers unless told otherwise, so every
-# variant says which it wants.
+
+
+
 readonly gcc_O2="-O2 -fno-tree-vectorize"
 readonly clang_O2="-O2 -fno-vectorize -fno-slp-vectorize"
 readonly variants=(
@@ -64,7 +64,7 @@ hash_of() {
     sha256sum "$1" | cut -d' ' -f1
 }
 
-# The binary of program NAME's variant VARIANT.
+
 binary_of() {
     printf '%s/%s/%s-%s' "$build_dir" "$1" "$1" "$2"
 }
@@ -74,8 +74,8 @@ toolchain() {
     clang --version | head -n1
 }
 
-# The sources a program's binaries are built from, relative to its directory.
-# Programs that include the thread or process runtime link it too.
+
+
 sources_of() {
     local name="$1"
     printf '%s\n' "${name}.c" ../rt/rt.c ../rt/rt.h
@@ -87,8 +87,8 @@ sources_of() {
     fi
 }
 
-# Prints the manifest the files of program NAME describe now, recording the
-# given compiler versions.
+
+
 manifest() {
     local name="$1" gcc_version="$2" clang_version="$3"
     local directory="${golden_dir}/${name}"
@@ -134,7 +134,7 @@ manifest() {
             binary=$(binary_of "$name" "$variant_name")
             output=$("./${binary}" "${argv[@]}"; printf x) || status=$?
             if [[ $status -eq 0 ]]; then
-                # The command substitution's status is the program's.
+
                 "./${binary}" "${argv[@]}" >/dev/null || status=$?
             fi
             output=${output%x}
@@ -158,13 +158,13 @@ manifest() {
     printf '\n  ]\n}\n'
 }
 
-# Prints, as [name, start, end, register], the addresses where BINARY's
-# location lists say a variable's value is exactly what a register held
-# when its function was entered (DW_OP_entry_value), which only the
-# caller's call site recovers. A concrete instance names its variable
-# through its abstract origin. Variables of inlined code are left out: an
-# inline frame's variables may share names with its function's. Location
-# list offsets are the section's own in readelf's output.
+
+
+
+
+
+
+
 entry_values() {
     awk 'FNR == NR {
             if (/<End of list>/) { list = ""; next }
@@ -211,12 +211,12 @@ entry_values() {
          }' <(readelf -W --debug-dump=loc "$1") <(readelf -W --debug-dump=info "$1")
 }
 
-# Prints what GNU binutils, not microscope, say about each variant of program
-# NAME: its functions from the symbol table, its line table rows in program
-# order, how many inlined calls its debug information describes, and where
-# variables are computed from entry values. The simulator's semantic
-# oracles judge the debugger by these. A row is [address, file, line,
-# statement]; line 0 names no source, and -1 ends a sequence.
+
+
+
+
+
+
 facts() {
     local name="$1"
     local separator="" variant
@@ -250,8 +250,8 @@ facts() {
                  }
                  END { printf "\n" }'
         printf '      ],\n      "epilogues": ['
-        # The row each "Set epilogue_begin" precedes: the next one a special
-        # opcode or Copy emits.
+
+
         readelf -W --debug-dump=rawline "$binary" |
             awk 'match($0, /(set Address|advance Address by [0-9]+|Advance PC by [a-z ]*[0-9]+) to (0x[0-9a-f]+)/, found) {
                     address = strtonum(gensub(/.* to (0x[0-9a-f]+).*/, "\\1", 1, found[0]))
@@ -270,8 +270,8 @@ facts() {
     printf '\n  ]\n}\n'
 }
 
-# Compiles program NAME's variants into build/golden/NAME, with the facts
-# about each.
+
+
 compile() {
     local name="$1"
     local directory="${golden_dir}/${name}"
@@ -283,9 +283,9 @@ compile() {
     local variant
     for variant in "${variants[@]}"; do
         read -r variant_name compiler flags <<<"$variant"
-        # The Nix shell's compile flags include a -frandom-seed derived from
-        # the checkout's path, which gcc records in the debug information.
-        # The programs are freestanding and need none of those flags.
+
+
+
         # shellcheck disable=SC2086
         NIX_HARDENING_ENABLE= NIX_CFLAGS_COMPILE= "$compiler" $common_flags $flags \
             "-ffile-prefix-map=${PWD}=${source_root}" \
@@ -295,8 +295,8 @@ compile() {
     mv "${build_dir}/${name}/facts.json.tmp" "${build_dir}/${name}/facts.json"
 }
 
-# What a build of program NAME depends on: this script, the toolchain, and
-# the program's manifest, arguments, and sources.
+
+
 inputs_of() {
     local name="$1"
     local directory="${golden_dir}/${name}"
@@ -310,8 +310,8 @@ inputs_of() {
     } | sha256sum | cut -d' ' -f1
 }
 
-# Builds program NAME unless its inputs are as they were at its last build,
-# and fails unless the binaries match its manifest.
+
+
 build_one() {
     local name="$1"
     local manifest_path="${golden_dir}/${name}/manifest.json"
@@ -352,8 +352,8 @@ record() {
     manifest "$name" "$gcc_version" "$clang_version" >"${directory}/manifest.json.tmp"
     mv "${directory}/manifest.json.tmp" "${directory}/manifest.json"
     printf '[golden] wrote %s/manifest.json\n' "$directory"
-    # Threads interleave differently on every run; what a program prints and
-    # returns must not depend on how.
+
+
     local run
     for run in $(seq "$determinism_runs"); do
         manifest "$name" "$gcc_version" "$clang_version" | cmp -s - "${directory}/manifest.json" ||

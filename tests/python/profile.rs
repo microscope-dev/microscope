@@ -1,7 +1,3 @@
-//! Profiles of Python programs: each thread's Python frames, by line, from
-//! the engines that read them beside the samples, and which thread holds
-//! the GIL.
-
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::process::{Command, Stdio};
@@ -14,17 +10,12 @@ use microscope::profiler::{
 
 use crate::support::python;
 
-/// The interpreters profiled: before 3.13's table, a GIL build that only
-/// names its holder, a free-threaded one with no GIL, and 3.15, whose
-/// threads say whether they wait for it.
 const PROFILED: [&str; 5] = ["3.12", "3.14", "3.14t", "3.15", "standalone-3.14"];
 
 use crate::support::released::READY_DEADLINE;
 
-/// How often each engine reads the program.
 const EVERY: Duration = Duration::from_millis(20);
 
-/// The fixture's marked lines, by their marks.
 fn lines() -> BTreeMap<String, u32> {
     let source = std::fs::read_to_string(python::fixture("profiled.py")).expect("read the fixture");
     source
@@ -37,14 +28,10 @@ fn lines() -> BTreeMap<String, u32> {
         .collect()
 }
 
-/// Each path of the waits' call tree that waits end at, outermost first,
-/// as the Python look shows them by line, with the weight that ends there.
 fn python_paths(profile: &Profile) -> BTreeMap<Vec<String>, u64> {
     paths(profile, Source::Waits, Look::Python)
 }
 
-/// Each path of `source`'s call tree in `look` that weight ends at,
-/// outermost first, by line, with the weight that ends there.
 fn paths(profile: &Profile, source: Source, look: Look) -> BTreeMap<Vec<String>, u64> {
     let keys = profile.keys(Granularity::Line);
     let tree = keys.aggregate(&Query {
@@ -69,14 +56,8 @@ fn paths(profile: &Profile, source: Source, look: Look) -> BTreeMap<Vec<String>,
         .collect()
 }
 
-/// The functions of the methods `dataclass_methods.py`'s two dataclasses
-/// get from `dataclasses`, which compiles each from a string.
 const DATACLASS_METHODS: [&str; 2] = ["Point.__init__", "Line.__init__"];
 
-/// Whether `frames` name each of [`DATACLASS_METHODS`] by its class. A
-/// frame caught as it returns, its function already cleared, keeps the
-/// name of the code, `__create_fn__.<locals>.__init__`, which every
-/// dataclass's shares.
 fn names_dataclass_methods<'a>(frames: impl IntoIterator<Item = &'a String>) -> bool {
     let frames: Vec<_> = frames.into_iter().collect();
     DATACLASS_METHODS
@@ -84,9 +65,6 @@ fn names_dataclass_methods<'a>(frames: impl IntoIterator<Item = &'a String>) -> 
         .all(|method| frames.iter().any(|frame| frame.starts_with(method)))
 }
 
-/// Snapshots that stop the program and live ones both name the methods
-/// `dataclasses` compiles from strings by their classes: by each frame's
-/// function, not its code, which every dataclass's `__init__` shares.
 fn snapshots_name_dataclass_methods_by_their_class(interpreter: &str, engine: PythonEngine) {
     let named = |profile: &Profile| {
         let paths = python_paths(profile);
@@ -102,8 +80,6 @@ fn snapshots_name_dataclass_methods_by_their_class(interpreter: &str, engine: Py
         python_paths(&profile)
     );
 }
-
-// One test for each recording, since each may wait long for its snapshots.
 
 #[test]
 fn snapshots_name_dataclass_methods_by_their_class_on_3_12() {
@@ -157,8 +133,6 @@ fn live_name_dataclass_methods_by_their_class_on_3_15() {
     snapshots_name_dataclass_methods_by_their_class("3.15", PythonEngine::Live { every: EVERY });
 }
 
-/// Whether a Python path passes through `spin` calling `work`. Native
-/// callees of `work` remain in the Python look and may follow those frames.
 fn spins(path: &[String], lines: &BTreeMap<String, u32>) -> bool {
     let spin = format!("spin profiled.py:{}", lines["spin"]);
     let work = ["work-loop", "work-add"].map(|mark| format!("work profiled.py:{}", lines[mark]));
@@ -169,8 +143,6 @@ fn spins(path: &[String], lines: &BTreeMap<String, u32>) -> bool {
     })
 }
 
-/// Reproduce a snapshot taken inside a native callee of Python's `work`.
-/// The Python look deliberately retains native callees after Python frames.
 #[test]
 fn spinner_detection_keeps_native_callees_and_rejects_wrong_callers() {
     let lines = lines();
@@ -201,14 +173,11 @@ fn spinner_detection_keeps_native_callees_and_rejects_wrong_callers() {
     }
 }
 
-/// Whether a Python path passes through the fixture's `nap`.
 fn naps(path: &[String], lines: &BTreeMap<String, u32>) -> bool {
     let nap = format!("nap profiled.py:{}", lines["nap"]);
     path.contains(&nap)
 }
 
-/// The lines of each function `profiled.py` defines, its `def` line
-/// included, by name.
 fn bodies() -> BTreeMap<String, RangeInclusive<u32>> {
     let source = std::fs::read_to_string(python::fixture("profiled.py")).expect("read the fixture");
     let mut bodies = BTreeMap::new();
@@ -237,9 +206,6 @@ fn bodies() -> BTreeMap<String, RangeInclusive<u32>> {
     bodies
 }
 
-/// The first frame of `path` the fixture could not have run: one of
-/// `profiled.py` at a line outside its function, or `work` called from
-/// anywhere but `spin`'s call of it.
 fn misplaced(
     path: &[String],
     lines: &BTreeMap<String, u32>,
@@ -262,8 +228,6 @@ fn misplaced(
     })
 }
 
-/// The check finds a frame at a line of another function, of no function,
-/// and `work` called from elsewhere, and passes the fixture's own paths.
 #[test]
 fn misplaced_frames_are_found() {
     let (lines, bodies) = (lines(), bodies());
@@ -302,16 +266,12 @@ fn misplaced_frames_are_found() {
     }
 }
 
-/// How a stack names a frame whose code could not be read.
 const UNREADABLE: &str = "[an interpreted frame whose code could not be read]";
 
-/// Whether a function is the interpreter's loop: the switch it is
-/// compiled as, or one of the functions a tail-calling build makes of it.
 fn evaluates(function: &str) -> bool {
     function.starts_with("_PyEval_EvalFrame") || function.starts_with("_TAIL_CALL_")
 }
 
-/// The values the GIL's label spans have.
 fn gil_values(profile: &Profile) -> Vec<String> {
     let mut values: Vec<String> = profile
         .zones()
@@ -324,8 +284,6 @@ fn gil_values(profile: &Profile) -> Vec<String> {
     values
 }
 
-/// Records the fixture under `interpreter` with `engine`, holding it until
-/// a profile so far is `ready`, or the deadline, then releasing it.
 fn record_until(
     interpreter: &str,
     engine: PythonEngine,
@@ -370,12 +328,6 @@ fn record_until_with_args(
     recording.profile
 }
 
-/// Snapshots that stop the program find each thread where it is, its
-/// Python frames among the native frames that run them: by line, the Python
-/// look is the spinners' `spin` calling `work` and the napper's `nap`, with
-/// no frame of the interpreter's. A GIL build's spinners hold its GIL in
-/// turn, and from 3.15 one waits for it as the other holds it; a
-/// free-threaded build's GIL is off.
 fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil(interpreter: &str) {
     let lines = lines();
     let free_threaded = interpreter.ends_with('t');
@@ -422,7 +374,6 @@ fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil(inter
         );
     }
 
-    // The mixed stacks hold the interpreter's frames that run them.
     let mixed = profile.task_waits().into_iter().any(|wait| {
         wait.noun == "thread"
             && wait.functions.iter().any(|function| function == "work")
@@ -431,9 +382,6 @@ fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil(inter
     assert!(mixed, "{interpreter}: no mixed stack of work");
     assert_eq!(gil_values(&profile), wanted, "{interpreter}");
 }
-
-// One test for each profiled interpreter, since each recording may wait
-// long for its snapshots.
 
 #[test]
 fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil_on_3_12() {
@@ -460,9 +408,6 @@ fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil_on_st
     stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil("standalone-3.14");
 }
 
-/// Live snapshots read each thread's Python frames as the program runs,
-/// never stopping it: only Python frames, each thread whose frames changed
-/// as they were read left out and counted, never kept shorter.
 fn live_snapshots_read_each_python_thread_as_it_runs(interpreter: &str) {
     let lines = lines();
     let ready = |profile: &Profile| {
@@ -500,7 +445,6 @@ fn live_snapshots_read_each_python_thread_as_it_runs(interpreter: &str) {
         );
     }
 
-    // Every frame is the program's Python code or the library's.
     for wait in profile.task_waits() {
         assert_eq!(wait.noun, "thread");
         assert!(
@@ -509,8 +453,6 @@ fn live_snapshots_read_each_python_thread_as_it_runs(interpreter: &str) {
         );
     }
 }
-
-// One test for each recording, since each may wait long for its snapshots.
 
 #[test]
 fn live_snapshots_read_each_python_thread_as_it_runs_on_3_12() {
@@ -552,9 +494,6 @@ fn arbitrary_kernel_names_preserve_python_profiles(interpreter: &str, engine: Py
         python_paths(&profile)
     );
 
-    // The kernel keeps 15 bytes of the name, ending in part of a character,
-    // which reads as the replacement character. The spinners, the napper,
-    // and the main thread all take it.
     let kept = String::from_utf8_lossy(&"🧬🧬🧬🧬".as_bytes()[..15]).into_owned();
     let threads = profile.threads();
     let named = threads
@@ -577,16 +516,11 @@ fn arbitrary_kernel_names_preserve_python_profiles(interpreter: &str, engine: Py
             profile.task_snapshot_problems()
         );
     } else {
-        // Live reads can race thread creation, exit, and mapping
-        // records. Require the actual stacks, as the live contract
-        // does, rather than treating its visible gaps as failures.
         let (taken, paused, _) = profile.task_snapshots();
         assert!(taken > 0);
         assert_eq!(paused, 0);
     }
 }
-
-// One test for each recording, since each may wait long for its snapshots.
 
 #[test]
 fn arbitrary_kernel_names_preserve_stopped_python_profiles_on_3_14() {
@@ -601,11 +535,6 @@ fn arbitrary_kernel_names_preserve_live_python_profiles_on_3_14() {
     arbitrary_kernel_names_preserve_python_profiles("3.14", PythonEngine::Live { every: EVERY });
 }
 
-/// A program instrumented with the `microscope` package is recorded as one
-/// instrumented with the Rust SDK is: its zones nest as its blocks and calls
-/// did, its labels, plots, and messages land on its thread, and the calls
-/// `trace_calls` times are zones named by module and qualified name, a
-/// generator's ending as it suspends.
 #[test]
 fn the_python_package_records_what_the_program_marks() {
     let mut command = Command::new(python::interpreter("3.14"));
@@ -661,12 +590,8 @@ fn the_python_package_records_what_the_program_marks() {
     assert_eq!(named("__main__.numbers").len(), 3, "{zones:?}");
     assert!(named("coroutine").is_empty(), "{zones:?}");
 
-    // The module's own code began before its calls were traced, so its end
-    // ends no zone, and none is cut short.
     assert!(zones.iter().all(|zone| zone.flags == 0), "{zones:?}");
 
-    // Equal code in two modules is two sites, and a prefix added later
-    // reaches code that ran before it.
     assert_eq!(named("__main__.traced.work").len(), 1, "{zones:?}");
     assert_eq!(named("elsewhere.work").len(), 1, "{zones:?}");
 
@@ -687,8 +612,6 @@ fn the_python_package_records_what_the_program_marks() {
         .collect::<Vec<_>>();
     assert_eq!(said, ["round 0", "round 1", "round 2"]);
 
-    // The sites past the table's last record nothing, and the profile
-    // says so.
     let problems = profile.probe_problems();
     assert!(
         problems
@@ -698,9 +621,6 @@ fn the_python_package_records_what_the_program_marks() {
     );
 }
 
-/// Recording every site, a program the recording starts records its zones
-/// from its first line, before the recorder has found the program's
-/// library; the program's own children, which nothing reads, do not.
 #[test]
 fn a_zone_the_program_begins_at_once_is_recorded() {
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
@@ -737,10 +657,6 @@ sys.stdin.readline()
     }
 }
 
-/// While no recording switches its site on, traced code's monitoring
-/// callbacks are disabled where they first fire, so the code runs at its
-/// own speed; once its site is on they run again, and once it is off they
-/// stop again.
 #[test]
 fn traced_calls_cost_no_callbacks_while_their_sites_are_off() {
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
@@ -810,9 +726,6 @@ print('TRACE CALLS OK')
     );
 }
 
-/// The thread `trace_calls` starts waits for sites to restart, not for
-/// the program: the report counts its time off the CPU apart, so a program
-/// that only computes is off its CPU for almost none.
 #[test]
 fn the_sdk_threads_waiting_is_counted_apart() {
     let scratch = crate::support::ScratchDir::new("python-sdk-thread");
@@ -857,7 +770,6 @@ while time.monotonic() < end:
     ]);
     let report = microscope(&["report".as_ref(), output.as_os_str()]);
 
-    // The program may be preempted, on a busy machine, but never blocks.
     let seconds = |prefix: &str| {
         report
             .lines()
@@ -884,8 +796,6 @@ while time.monotonic() < end:
     );
 }
 
-/// Without its native library the package still imports, and every mark
-/// does nothing, as with no recording; `problem` says why.
 #[test]
 fn the_python_package_without_its_library_does_nothing_and_says_why() {
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
@@ -926,8 +836,6 @@ print('NO LIBRARY OK')
     );
 }
 
-/// Whether this process holds `CAP_BPF` and `CAP_PERFMON`, as the BPF
-/// engine needs.
 fn privileged() -> bool {
     const CAP_SYS_ADMIN: u32 = 21;
     const CAP_PERFMON: u32 = 38;
@@ -944,13 +852,9 @@ fn privileged() -> bool {
     has(CAP_SYS_ADMIN) || (has(CAP_BPF) && has(CAP_PERFMON))
 }
 
-/// The BPF engine refuses an unsupported recorder namespace or missing
-/// privileges, naming the requirement and the engines that need none,
-/// and the program never starts.
 #[test]
 fn the_bpf_engine_names_the_missing_requirement_and_starts_nothing() {
     if privileged() {
-        // `just test-bpf` runs the engine itself (`bpf` below).
         return;
     }
 
@@ -988,8 +892,6 @@ fn the_bpf_engine_names_the_missing_requirement_and_starts_nothing() {
     assert!(!marker.exists(), "the program started");
 }
 
-/// Perf records use the recorder's PID namespace; BPF currently reports
-/// initial-namespace IDs. Refuse the mismatch before starting the target.
 #[test]
 fn a_namespaced_bpf_recorder_refuses_unproven_kernel_keys() {
     struct Reaped(std::process::Child);
@@ -1057,16 +959,10 @@ fn a_namespaced_bpf_recorder_refuses_unproven_kernel_keys() {
     assert!(!marker.exists(), "the target started");
 }
 
-/// The BPF engine, which reads each sampled thread's Python frames in the
-/// kernel as the sample is taken. It needs `CAP_BPF` and `CAP_PERFMON`,
-/// so these run only through `just test-bpf`, which records through the
-/// `microscope-bpf` wrapper.
 mod bpf {
     use super::*;
     use crate::support::held;
 
-    /// `fixture` run by `interpreter` with `environment`, as the BPF
-    /// tests record it.
     fn program(
         interpreter: &str,
         fixture: &str,
@@ -1084,9 +980,6 @@ mod bpf {
         program
     }
 
-    /// The profile of `program`, recorded by the BPF engine while it is
-    /// held on its standard input, given lines as `lines` says of each
-    /// window until it has `release` of them ([`held::recorded_until`]).
     fn recorded_until(
         program: &Command,
         release: usize,
@@ -1094,14 +987,10 @@ mod bpf {
     ) -> Profile {
         held::recorded_until(held::bpf(), program, &["--python", "bpf"], release, lines).0
     }
-    /// [`recorded_until`] for a program held once, until `ready`.
     fn recorded_when(program: &Command, mut ready: impl FnMut(&Profile) -> bool) -> Profile {
         recorded_until(program, 1, |window| usize::from(ready(window)))
     }
 
-    /// The BPF engine names the methods `dataclasses` compiles from strings
-    /// by their classes, as the frames' functions name them, in the Python
-    /// look that `report --python` shows.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn the_bpf_engine_names_dataclass_methods_by_their_class() {
@@ -1120,7 +1009,6 @@ mod bpf {
         }
     }
 
-    /// The samples of the OpenMP workers.
     fn workers(
         stacks: &[microscope::profiler::SampledStack],
     ) -> Vec<&microscope::profiler::SampledStack> {
@@ -1135,9 +1023,6 @@ mod bpf {
             .collect()
     }
 
-    /// A thread that never enters the interpreter's loop, as a library's
-    /// worker thread does, runs no Python frames: its samples are whole,
-    /// not cut short by frames that cannot be known.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn threads_that_run_no_python_have_no_unknown_frames() {
@@ -1148,8 +1033,6 @@ mod bpf {
         ];
 
         let program = program("3.14", "workers.py", &environment);
-        // The first recording reads the libraries' debug information into
-        // the cache, as the second, which the test asserts on, then finds.
         recorded_when(&program, |profile| !workers(&profile.stacks()).is_empty());
 
         let profile = recorded_when(&program, |profile| workers(&profile.stacks()).len() >= 100);
@@ -1172,10 +1055,6 @@ mod bpf {
         );
     }
 
-    /// A program as short as a few imports has its Python frames from its
-    /// first samples: the engine is told the interpreter's layout as soon
-    /// as a drain reads its mapping, not once microscope has processed
-    /// the mapping and loaded the image's debug information.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn a_short_program_has_its_python_frames_from_the_start() {
@@ -1219,9 +1098,6 @@ mod bpf {
         }
     }
 
-    /// A program that replaces itself with another interpreter is read by
-    /// the new one's modules: the spinners' samples of the program it
-    /// runs hold their Python frames by line.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn a_program_an_exec_replaces_is_read_by_its_own_interpreter() {
@@ -1233,8 +1109,6 @@ mod bpf {
                 .iter()
                 .any(|(path, _)| spins(path, &lines))
         };
-        // Once the first program's Python frames are read, it executes the
-        // second; once the second's spinners are, it ends.
         let profile = recorded_until(&exec, 2, |profile| {
             if spinning(profile) {
                 2
@@ -1252,24 +1126,11 @@ mod bpf {
         assert!(spinning > 0, "no sample through work: {python:#?}");
     }
 
-    /// Each CPU sample of a spinner holds its Python frames by line,
-    /// spliced before the activations of the interpreter's loop that run
-    /// them: the Python look is `spin` calling `work`, with no frame of the
-    /// interpreter's, and the mixed stacks keep both. A GIL build's
-    /// spinners hold its GIL in turn; a free-threaded build's is off once it
-    /// has started. Only
-    /// the samples taken before the engine knew the program are unknown,
-    /// and only those of its first and last moments have code that could
-    /// not be read: a module's body runs once as it is imported and is
-    /// freed before its record drains, and the drain before the program
-    /// exited misses its last.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn samples_hold_each_threads_python_frames_by_line() {
         let lines = lines();
         for interpreter in PROFILED {
-            // Enough samples of the spinners that those taken before the
-            // engine knew the program are few among them.
             let spinning = |profile: &Profile| {
                 let python = paths(profile, Source::Samples, Look::Python);
                 let spinning: u64 = python
@@ -1292,8 +1153,6 @@ mod bpf {
                 spinning * 2 > total,
                 "{interpreter}: {spinning} of {total} through work: {python:#?}"
             );
-            // A stack that ends short, its Python frames unknown or its
-            // native ones cut short, shows its native frames.
             for path in python.keys() {
                 assert!(
                     path.first().is_some_and(|end| end.starts_with('['))
@@ -1309,8 +1168,6 @@ mod bpf {
             });
             assert!(mixed, "{interpreter}: no mixed stack of work");
 
-            // No file holds a Python function's instructions; the
-            // Assembly panel says so and points at its lines.
             let python_look = Query {
                 look: Look::Python,
                 ..Query::default()
@@ -1323,7 +1180,6 @@ mod bpf {
                 code.map(|code| code.blocks.len())
             );
 
-            // Each count is of samples, as each stack is one.
             let samples = stacks.len();
             let ending = |reason: &str| {
                 stacks
@@ -1338,17 +1194,12 @@ mod bpf {
                 "{interpreter}: {unknown} of {samples} samples have unknown frames"
             );
 
-            // A sample can catch the loop as it begins or ends a frame,
-            // so a few may not place theirs; most place every segment.
             let unplaced = ending("interpreted frames not placed among the native ones");
             assert!(
                 unplaced * 10 < samples,
                 "{interpreter}: {unplaced} of {samples} samples do not place their frames"
             );
 
-            // GCC's epilogues pop the registers a caller keeps but leave
-            // the rules that name their slots, below a sample's copy of
-            // the stack; a sample there still reaches its caller.
             let cut = ending("invalid caller");
             assert!(
                 cut * 100 < samples,
@@ -1376,8 +1227,6 @@ mod bpf {
             );
 
             if interpreter.ends_with('t') {
-                // A free-threaded build may turn its GIL on for a moment as
-                // it starts, as to initialize a module, but not as it spins.
                 let spun: Vec<_> = profile
                     .zones()
                     .into_iter()

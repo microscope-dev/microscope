@@ -4,8 +4,8 @@
 
 int main(int argc, char **argv) {
     unsigned long count = argc > 1 ? strtoul(argv[1], NULL, 10) : 2000000;
-    /* Large reads spend their CPU time in the kernel, not libc's syscall
-     * wrapper. Keep one-byte reads as the short CLI workload's default. */
+
+
     static char bytes[65536];
     size_t size = argc > 2 ? strtoul(argv[2], NULL, 10) : 1;
     if (size == 0 || size > sizeof(bytes)) {

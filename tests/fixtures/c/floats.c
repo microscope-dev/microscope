@@ -1,7 +1,7 @@
-// Floats in every format x86-64 compilers give C: half, bfloat16, single,
-// double, x87 extended, and quad precision. The quad value is a tenth, which
-// shows its precision, since a tenth in any shorter format reads back as
-// something else.
+
+
+
+
 
 __attribute__((noinline)) void floats_target(void *values) {
     __asm__ volatile("" : : "r"(values) : "memory");

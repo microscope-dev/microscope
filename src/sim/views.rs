@@ -1,14 +1,3 @@
-//! The views oracle: what the debugger presents of the `containers`
-//! program's vector, list, and table, and the pages of their elements,
-//! against what simulated memory holds.
-//!
-//! The oracle knows the program's containers from its C source, never from
-//! microscope's reading of the debug information: their layouts are fixed by
-//! the x86-64 C ABI whichever compiler built them. It walks memory as the
-//! program's own views say (`tests/golden/containers/containers.views`),
-//! exactly, so it can say which elements the debugger must show, where each
-//! is, and which problem a broken container must end in.
-
 use crate::{
     InspectedValue, InspectionLimits, PresentedCount, PresentedShape, ValueChildPage,
     ValueChildRelationship, VariableState, VariableValueSource, ViewProblem,
@@ -16,44 +5,32 @@ use crate::{
 
 use super::marks::Mark;
 
-/// One element or entry: where its value, and an entry's key, are.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     pub key: Option<(u64, Vec<u8>)>,
     pub value: (u64, Vec<u8>),
 }
 
-/// What a container holds, by its views' rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Truth {
     Items(Vec<Item>),
 
-    /// The view refuses the container, for this reason.
     Refused(Refusal),
 }
 
-/// Why a view refuses a container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
-    /// A check fails: more elements than room.
     Check,
 
-    /// A node leads back to one visited before this element.
     Cycle { at: u64 },
 
-    /// The generators end before the declared count.
     Short { declared: u64, generated: u64 },
 }
 
-/// The containers the program defines, by the name of the global holding
-/// each.
 pub const CONTAINERS: [&str; 3] = ["vec", "list", "table"];
 
-/// How the most nodes a list walk follows, beyond any the program links.
 const MAX_WALK: u64 = 64;
 
-/// What the container in global `name` at `address` holds, reading memory
-/// through `read`; `None` when memory cannot say.
 pub fn truth(
     name: &str,
     address: u64,
@@ -63,7 +40,6 @@ pub fn truth(
     let item = |at: u64, size: u64| Some((at, read(at, size)?));
 
     match name {
-        // {i32 *data; u64 n; u64 cap}
         "vec" => {
             let (data, n, cap) = (word(address)?, word(address + 8)?, word(address + 16)?);
             if n > cap {
@@ -81,7 +57,6 @@ pub fn truth(
             Some(Truth::Items(items))
         }
 
-        // {node *head; u64 count}, nodes {i32 value; node *next}
         "list" => {
             let (head, count) = (word(address)?, word(address + 8)?);
             let mut items = Vec::new();
@@ -109,14 +84,12 @@ pub fn truth(
                 });
                 let next = word(node + 8)?;
 
-                // A ring ends where it began.
                 node = if next == head { 0 } else { next };
             }
 
             Some(Truth::Items(items))
         }
 
-        // {slot *slots; u64 cap; u64 n}, slots {i32 used; i32 key; i32 value}
         "table" => {
             let (slots, cap, n) = (word(address)?, word(address + 8)?, word(address + 16)?);
             if n > cap {
@@ -152,24 +125,18 @@ pub fn truth(
     }
 }
 
-/// What the debugger showed of one container: its presentation, and its
-/// elements in one page and in pages of another size.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shown {
     pub shape: PresentedShape,
     pub count: Option<PresentedCount>,
     pub problem: Option<ViewProblem>,
 
-    /// Elements from one page, then from pages of the client's size.
     pub whole: Vec<Item>,
     pub paged: Vec<Item>,
 
-    /// Whether a page of each said its budget ran out, which alone ends
-    /// the elements early.
     pub truncated: [bool; 2],
 }
 
-/// Where a child's value is and its bytes, when it was read from memory.
 fn place(state: &VariableState) -> Option<(u64, Vec<u8>)> {
     match state {
         VariableState::Available {
@@ -181,7 +148,6 @@ fn place(state: &VariableState) -> Option<(u64, Vec<u8>)> {
     }
 }
 
-/// The elements or entries of pages of a presentation's children.
 pub fn items(pages: &[ValueChildPage]) -> Result<Vec<Item>, String> {
     let mut items = Vec::new();
 
@@ -217,11 +183,6 @@ pub fn items(pages: &[ValueChildPage]) -> Result<Vec<Item>, String> {
     Ok(items)
 }
 
-/// Views: a container's presentation is what its view makes of memory: its
-/// elements or entries, each read from where the walk finds it and holding
-/// what memory holds there, the same in pages of any size; or, for a
-/// broken one, the typed problem the walk ends in, and the value as
-/// stored. Returns the marks the judgment reached.
 pub fn judge(truth: &Truth, shown: &Shown) -> Result<Vec<Mark>, String> {
     let mut marks = Vec::new();
 
@@ -297,7 +258,6 @@ pub fn judge(truth: &Truth, shown: &Shown) -> Result<Vec<Mark>, String> {
     Ok(marks)
 }
 
-/// Whether a page used no more than its limits.
 pub fn within(page: &ValueChildPage, limits: InspectionLimits) -> Result<(), String> {
     let usage = page.usage;
     if usage.memory_reads > limits.memory_reads
@@ -313,7 +273,6 @@ pub fn within(page: &ValueChildPage, limits: InspectionLimits) -> Result<(), Str
     Ok(())
 }
 
-/// What one presentation's value showed, from the client's observation.
 #[must_use]
 pub fn shown(
     value: &InspectedValue,
@@ -345,8 +304,6 @@ mod tests {
 
     use super::*;
 
-    /// Memory of a list of three nodes at 0x100, 0x110, and 0x120, holding
-    /// 1, 2, and 3, whose head is at 0x10.
     fn memory() -> BTreeMap<u64, u8> {
         let mut memory = BTreeMap::new();
         let mut put = |address: u64, bytes: &[u8]| {
@@ -388,8 +345,6 @@ mod tests {
         }
     }
 
-    /// Sabotage: a debugger that drops one element, or shows an element
-    /// from somewhere else, fails the oracle.
     #[test]
     fn an_engine_that_drops_or_moves_an_element_fails() {
         let memory = memory();
@@ -402,7 +357,6 @@ mod tests {
         dropped.whole.remove(1);
         assert!(judge(&truth, &dropped).is_err());
 
-        // Only a page whose budget ran out may end the elements early.
         let mut ended = list_shown(items.clone());
         ended.paged.pop();
         assert!(judge(&truth, &ended).is_err());
@@ -416,8 +370,6 @@ mod tests {
         assert!(judge(&truth, &miscounted).is_err());
     }
 
-    /// A cyclic list must end in the typed cycle problem, at the element
-    /// that would repeat, and nothing else will do.
     #[test]
     fn a_cyclic_list_must_be_refused_as_a_cycle() {
         let mut memory = memory();

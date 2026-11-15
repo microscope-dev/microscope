@@ -1,5 +1,3 @@
-//! PEP 768 requests, computed without changing memory or running code.
-
 use std::cell::Cell;
 use std::sync::Arc;
 
@@ -37,15 +35,6 @@ impl super::objects::Charge for ReadAccounting<'_> {
 
 pub(super) use crate::runtime_model::AgentFailure;
 
-/// The configuration flag below establishes policy, not a working handler.
-/// Only a matching acknowledgement through the owned companion proves that
-/// the target build consumed this request. The controller bounds that wait.
-/// Candidates are live threads the caller proved are executing Python,
-/// ordered by preference. This computes a request, never makes a write.
-/// The caller owns outstanding generations and must await acknowledgement
-/// before preparing another request. Its eligibility proof must exclude a
-/// thread consuming a PEP 768 request, including the path-copy window.
-/// Acknowledgement must precede clearing the old script slot for reuse.
 #[cfg(test)]
 pub(super) fn plan(
     reader: &Reader<'_>,
@@ -180,8 +169,6 @@ fn compute(
         path.len(),
         ranges[1]
     );
-    // Publish the request last. The controller applies these in order at
-    // an all-stop, checking every expected byte before it changes any.
     Ok(Plan {
         thread,
         state,
@@ -193,7 +180,6 @@ fn compute(
     })
 }
 
-/// The three control spans, checked before any process write.
 fn control_ranges(reader: &Reader<'_>) -> Result<[std::ops::Range<u64>; 3], AgentFailure> {
     let field = |field| {
         reader
@@ -201,8 +187,6 @@ fn control_ranges(reader: &Reader<'_>) -> Result<[std::ops::Range<u64>; 3], Agen
             .field(field)
             .ok_or_else(|| AgentFailure::Refused(format!("CPython has no {}", field.name()).into()))
     };
-    // `Reader` is also used with synthesized layouts in tests. Validate
-    // the walk's requirements here rather than relying on its provider.
     for required in [
         Field::RuntimeInterpretersHead,
         Field::InterpreterNext,
@@ -247,8 +231,6 @@ fn control_ranges(reader: &Reader<'_>) -> Result<[std::ops::Range<u64>; 3], Agen
     Ok(ranges)
 }
 
-/// Whether a thread's request slot is free. CPython clears the pending
-/// flag as it consumes a request but never clears the script path.
 fn request_slot(
     reader: &Reader<'_>,
     state: &threads::ThreadState,
@@ -274,10 +256,6 @@ fn request_slot(
     Ok(None)
 }
 
-/// Select only among the caller's proven candidates, and refuse ambiguous
-/// interpreter ownership instead of installing in an arbitrary interpreter.
-/// A candidate whose request slot is in use is passed over; when every one
-/// is, the preferred one's reason is returned.
 fn select_thread(
     reader: &Reader<'_>,
     runtime: VirtualAddress,

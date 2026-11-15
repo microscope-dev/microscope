@@ -48,7 +48,7 @@ __attribute__((noinline)) int tail_callee(int value) {
     return scratch[7];
 }
 
-// The callee replaces this activation at the same canonical frame address.
+
 __attribute__((noinline)) int tail_caller(int value) {
     volatile int mine = value;
     mine += 1;
@@ -77,7 +77,7 @@ __attribute__((noinline)) void after_owner_exit(void) {
 }
 
 int main(void) {
-    // Volatile so setjmp cannot leave it clobbered.
+
     volatile int value = leaf_local(10);
     after_return();
     value += recurse(2);
@@ -96,7 +96,7 @@ int main(void) {
     }
     pthread_join(owner, NULL);
     after_owner_exit();
-    // leaf_local(10) = 13, recurse(2) = 2 + (1 + (0 + 100) + 100) + 100,
-    // blocks() = 6 + 8, and tail_caller(1) = 2 + 7.
+
+
     return value == 13 + 303 + 14 + 9 ? 0 : 1;
 }

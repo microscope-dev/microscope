@@ -67,10 +67,6 @@ import { ZonesPane } from "./ZonesPane";
 
 const sameLook = (a: ProfileLook, b: ProfileLook) => JSON.stringify(a) === JSON.stringify(b);
 
-/** Any of a profile's panes: its overview, or one of its views. It reads
- * how it looks at the profile from its link and its own params; while its
- * tab is the one shown in the focused group and no session's focus is in
- * the address, the address follows it, so a link opens the same view. */
 export function ProfilePaneBody({ id, pane }: PaneProps) {
   const view = viewOf(pane) ?? null;
   const { link, own } = useMemo(() => paneParams(pane), [pane]);
@@ -83,8 +79,7 @@ export function ProfilePaneBody({ id, pane }: PaneProps) {
   const profile = linked?.profile ?? "";
   const navigate = useNavigate();
   const router = useRouter();
-  // Only what this pane reads of the address, so other addresses do not
-  // render it again.
+
   const inSession = useRouterState({
     select: (state) => state.location.pathname.startsWith("/s/"),
   });
@@ -93,7 +88,7 @@ export function ProfilePaneBody({ id, pane }: PaneProps) {
   });
   const focused = useLayout((layout) => leadingPane(layout) === id);
   const leads = focused && !inSession;
-  // Only the pane that leads reads the search, which every tab switch changes.
+
   const search = useRouterState({
     select: (state) => (leads ? (state.location.search as Record<string, unknown>) : null),
   });
@@ -121,13 +116,8 @@ export function ProfilePaneBody({ id, pane }: PaneProps) {
     [id, navigate, profile, router],
   );
 
-  // The address names the profile this pane shows, as it changes.
   const led = useRef(false);
   useEffect(() => {
-    // An address naming this profile changes the look, as Back does, through
-    // ProfileRoute; the look takes the address only as the pane takes the
-    // lead. What the look cannot mean, such as an old link's view, is taken
-    // out of the address too.
     const took = leads && !led.current;
     led.current = leads;
     if (!linked || !search) {
@@ -166,7 +156,6 @@ export function ProfilePaneBody({ id, pane }: PaneProps) {
   );
 }
 
-/** A view's body, in a pane of its own. */
 const ViewBody = memo(function ViewBody({ view }: { view: ProfileView }) {
   return view === "zones" ? (
     <ZonesPane />
@@ -194,15 +183,10 @@ interface FrameProps {
   profile: string;
   look: ProfileLook;
   setLook: ProfileFocus["setLook"];
-  /** Whether Escape on what holds the pane, such as the page, is for it:
-   * a pane only takes keys that land in it, but the one leading takes
-   * those too. */
+
   leads?: boolean;
 }
 
-/** Reads a profile's summary and lends it, with the look, to what is in
- * the frame; says why it cannot instead. Escape in it lets go of the most
- * specific zone selection first. */
 function ProfileFrame({
   profile,
   look,
@@ -215,8 +199,7 @@ function ProfileFrame({
   children: ReactNode;
 }) {
   const info = useModel((model) => model.profiles.find((each) => each.id === profile));
-  // Each revision of a growing profile is asked for anew; the last one's
-  // answers stay on screen until the new ones come.
+
   const revision = info?.revision ?? 0;
   const summary = useAnswer("profile", { profile, revision });
   const disconnected = useDisconnected();
@@ -226,9 +209,7 @@ function ProfileFrame({
       onSummary(summary.data, live);
     }
   }, [summary.data, onSummary, live]);
-  // Except where a field or a dialog has it. A click on the lanes, which
-  // take no focus, leaves it on what holds the pane, which counts for the
-  // pane leading.
+
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
@@ -266,8 +247,6 @@ function ProfileFrame({
   );
 
   if (summary.error) {
-    // The server lists every profile it serves, and refuses one it does
-    // not as invalid; anything else failed reading one it has.
     const missing = !info && summary.error.kind === "invalid";
     return (
       <div className="page">
@@ -305,8 +284,6 @@ function ProfileFrame({
   );
 }
 
-/** A profile's pane of `view`, or its overview, as `look` looks at it.
- * `onSummary` hears of its summary, to open the panes it calls for. */
 export function Profile({
   view = null,
   onSummary,
@@ -335,13 +312,11 @@ const Overview = memo(function Overview() {
   );
 });
 
-/** The profile's name, and everything the query holds, each removable
- * where it shows. */
 function ProfileHead() {
   const { summary, look, setLook } = useProfile();
   const range = rangeOf(look);
   const snapshots = summary.snapshots > 0;
-  // A trace of system calls alone has no frames to compare.
+
   const sampled = summary.samples > 0 || summary.syscalls === 0;
   const zoned = summary.zoneSites.length > 0;
   const showZones = useCallback(
@@ -449,9 +424,6 @@ const DIFF_MEASURES = [
   ["share", "share", "Each function's share of its own profile"],
 ] as const;
 
-/** The zone site chosen, then what it keeps of the samples: one zone's
- * span, the site's zones or its band's, or a diff of the band with the
- * rest. Each part clears on its own; clearing the site clears them all. */
 function ZoneChips() {
   const { summary, look, setLook } = useProfile();
   const instance = look.zi ? parseInstance(look.zi) : null;
@@ -511,8 +483,6 @@ function ZoneChips() {
   );
 }
 
-/** Whether a diff's change column compares time or each side's share,
- * which tells apart sides of different sizes. */
 function DiffMeasure() {
   const { look } = useProfile();
   return (
@@ -546,7 +516,7 @@ function TransformChip({ entry, index }: { entry: string; index: number }) {
     [setLook, index],
   );
   const transform = parseTransform(entry);
-  // Collapsing recursion is set from Options, not shown as a chip.
+
   return transform && transform.op !== "collapseCycles" ? (
     <Chip
       label={`${transform.op} ${transform.name}`}
@@ -556,8 +526,6 @@ function TransformChip({ entry, index }: { entry: string; index: number }) {
   ) : null;
 }
 
-/** What a diff compares with: another range of this profile, chosen from
- * the selection, or another profile served; a chip once chosen. */
 function Compare() {
   const { profile, look, setLook } = useProfile();
   const profiles = useModel((model) => model.profiles);
@@ -622,7 +590,6 @@ function Compare() {
   );
 }
 
-/** A recording's progress, or how it ended. */
 function Recording({ info }: { info: ProfileInfo }) {
   const connection = useConnection();
   const control = useModel((model) => model.hello?.role === "control");
@@ -651,7 +618,6 @@ function Recording({ info }: { info: ProfileInfo }) {
   );
 }
 
-/** A fact of the recording, its label over its value. */
 function Stat({
   label,
   title,
@@ -671,7 +637,6 @@ function Stat({
   );
 }
 
-/** The program recorded, by its name, which shows its whole command. */
 function Program({ summary }: { summary: ProfileSummary }) {
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLDivElement>(null);
@@ -683,7 +648,7 @@ function Program({ summary }: { summary: ProfileSummary }) {
   if (!program) {
     return null;
   }
-  // By its name alone: a path, such as a Nix store's, says little at a glance.
+
   const name = program.slice(program.lastIndexOf("/") + 1);
   return (
     <div className="stat anchor" ref={anchor}>
@@ -717,7 +682,6 @@ function Program({ summary }: { summary: ProfileSummary }) {
   );
 }
 
-/** Its focus goes back to the program's button when it closes. */
 function CommandPopover({ command }: { command: ProfileCommand }) {
   const dialog = useRef<HTMLDivElement>(null);
   useDialogFocus(dialog);
@@ -735,9 +699,6 @@ function CommandPopover({ command }: { command: ProfileCommand }) {
   );
 }
 
-/** What was recorded and how far to trust it, always in view: the program,
- * how long it ran and on how many threads, where its time went, how it was
- * sampled, and any loss, which alone shows in warning colors. */
 function Accounting({ summary }: { summary: ProfileSummary }) {
   const truncated = summary.truncations.reduce((sum, each) => sum + each.count, 0);
   const setting = (name: string) => summary.settings.find((each) => each.name === name)?.value;

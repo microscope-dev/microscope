@@ -1,10 +1,3 @@
-//! Post-mortem Linux x86-64 ELF core dumps.
-//!
-//! Core files are untrusted input. Notes and program headers are bounds-checked
-//! and malformed metadata is rejected instead of being guessed around. Memory
-//! the producer did not save stays unavailable unless a verified module file
-//! supplies those exact bytes.
-
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::File;
@@ -38,27 +31,19 @@ pub(super) const GENERAL_REGISTER_COUNT: usize = 27;
 const AUXV_ENTRY_SIZE: usize = 16;
 const FILE_ENTRY_SIZE: usize = 24;
 
-/// The most note bytes read from all `PT_NOTE` segments together. Notes
-/// describe threads and mappings, not memory, so more is rejected rather
-/// than buffered. The cap is cumulative: zeroed bytes parse as a stream of
-/// ignored notes, so many headers naming one region would each be read.
 const MAX_NOTE_BYTES: u64 = 256 * 1024 * 1024;
 const PAGE_SIZE: u64 = 4096;
 const ELF_MAGIC: [u8; 4] = *b"\x7fELF";
 const CONTENT_COMPARE_CHUNK: u64 = 64 * 1024;
 
-/// Build-id notes sit in an image's first page; larger note segments are
-/// skipped rather than read.
 const MAX_BUILD_ID_NOTES: u64 = 64 * 1024;
 
-/// The most saved header bytes read to find an image's recorded build-id.
 const MAX_RECORDED_HEADER: u64 = 64 * 1024;
 
 pub(super) const AT_PHDR: u64 = 3;
 
 pub(super) const AT_ENTRY: u64 = 9;
 
-/// A core file that could not be used.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum CoreError {
     #[error(transparent)]
@@ -72,16 +57,12 @@ fn invalid(message: impl Into<String>) -> CoreError {
     CoreError::Invalid(message.into())
 }
 
-/// Why a memory read from a core dump did not complete.
 #[derive(Debug)]
 pub(super) enum CoreMemoryError {
-    /// The dump neither saved the bytes nor maps them to a verified file.
     Unavailable,
     Io(io::Error),
 }
 
-/// The bytes of a core file, read positionally so multi-gigabyte dumps are
-/// never buffered whole.
 enum CoreBytes {
     File(File),
 
@@ -109,8 +90,6 @@ impl CoreBytes {
     }
 }
 
-/// The holes of `file`, `len` bytes long, by offset: none where the file
-/// system cannot say.
 fn holes(file: &File, len: u64) -> Vec<Range<u64>> {
     use std::os::fd::AsFd as _;
 
@@ -128,7 +107,6 @@ fn holes(file: &File, len: u64) -> Vec<Range<u64>> {
         let Some(hole) = seek(offset, Whence::SeekHole).filter(|hole| *hole < len) else {
             break;
         };
-        // No data past a hole means it runs to the end.
         let data = seek(hole, Whence::SeekData).unwrap_or(len).min(len);
         if data <= hole {
             break;
@@ -139,7 +117,6 @@ fn holes(file: &File, len: u64) -> Vec<Range<u64>> {
     holes
 }
 
-/// Process-wide identity recorded by `NT_PRPSINFO`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct CoreProcess {
     pub(super) pid: u32,
@@ -147,32 +124,26 @@ pub(super) struct CoreProcess {
     pub(super) arguments: Arc<str>,
 }
 
-/// The signal details recorded by `NT_SIGINFO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CoreSignal {
     pub(super) number: i32,
     pub(super) code: i32,
 
-    /// The faulting address for synchronous fault signals.
     pub(super) fault_address: Option<u64>,
 
-    /// The sending process for user-generated signals.
     pub(super) sender: Option<i32>,
 }
 
-/// One thread's saved register state.
 #[derive(Clone)]
 pub(super) struct CoreThread {
     pub(super) tid: u32,
 
-    /// `pr_cursig`: the signal being delivered when the dump was written.
     pub(super) current_signal: u16,
     pub(super) registers: libc::user_regs_struct,
     pub(super) fxsave: Option<Arc<[u8; FXSAVE_SIZE]>>,
     pub(super) signal: Option<CoreSignal>,
 }
 
-/// One `NT_FILE` entry: a file-backed mapping at dump time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct CoreFileMapping {
     pub(super) start: u64,
@@ -181,8 +152,6 @@ pub(super) struct CoreFileMapping {
     pub(super) path: PathBuf,
 }
 
-/// One `PT_LOAD` segment. The producer saved the first `recorded` bytes and
-/// omitted the rest; truncation can leave only the first `saved` of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CoreSegment {
     start: u64,
@@ -191,25 +160,18 @@ struct CoreSegment {
     recorded: u64,
     saved: u64,
 
-    /// The mapping's `p_flags`: whether it could be read, written, and
-    /// executed.
     flags: u32,
 }
 
-/// A parsed core dump and its saved memory.
 pub(super) struct CoreDump {
     source: CoreBytes,
     pub(super) process: CoreProcess,
 
-    /// Threads in note order. Producers place the thread that triggered the
-    /// dump first.
     pub(super) threads: Vec<CoreThread>,
     pub(super) auxv: Vec<(u64, u64)>,
     pub(super) files: Vec<CoreFileMapping>,
     segments: Vec<CoreSegment>,
 
-    /// The ranges of the core file, by offset and in order, that its
-    /// producer never wrote, where the file system says so.
     holes: Vec<Range<u64>>,
 }
 
@@ -253,14 +215,6 @@ impl CoreDump {
         }
     }
 
-    /// Whether the dump holds the byte at `address` as its producer read
-    /// it: one the producer saved and wrote. gcore leaves a hole in the
-    /// file for the memory it failed to read, which reads back as zeros,
-    /// as glibc's guard regions inside a thread's stack make it fail for
-    /// the rest of the stack.
-    ///
-    /// A byte the dump did not save at all is unreadable instead, which
-    /// already says the memory is missing.
     pub(super) fn written(&self, address: u64) -> bool {
         self.saved_run(address).is_none_or(|(offset, _)| {
             let hole = self.holes.partition_point(|hole| hole.end <= offset);
@@ -278,8 +232,6 @@ impl CoreDump {
             .find_map(|&(entry, value)| (entry == key).then_some(value))
     }
 
-    /// The saved mappings no file backed that the process could execute,
-    /// with whether it could write them too.
     pub(super) fn anonymous_code(&self) -> Vec<(std::ops::Range<u64>, bool)> {
         self.segments
             .iter()
@@ -317,16 +269,12 @@ impl CoreDump {
             .map_or(u64::MAX, |segment| segment.start)
     }
 
-    /// Returns the core-file offset and contiguous length of saved bytes at
-    /// `address`, if the dump saved that address.
     fn saved_run(&self, address: u64) -> Option<(u64, u64)> {
         let segment = self.segment(address)?;
         let offset = address - segment.start;
         (offset < segment.saved).then(|| (segment.file_offset + offset, segment.saved - offset))
     }
 
-    /// Whether the producer saved `address` but truncation lost it. Only the
-    /// dumped process held those bytes; no file may stand in for them.
     fn truncated(&self, address: u64) -> bool {
         self.segment(address).is_some_and(|segment| {
             let offset = address - segment.start;
@@ -334,7 +282,6 @@ impl CoreDump {
         })
     }
 
-    /// Reads bytes the dump itself saved, never substituting file contents.
     pub(super) fn read_saved(
         &self,
         address: u64,
@@ -366,7 +313,6 @@ impl CoreDump {
         Ok(())
     }
 
-    /// Saved address ranges in ascending order.
     fn saved_ranges(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
         self.segments
             .iter()
@@ -421,7 +367,6 @@ fn parse<'data, R: ReadRef<'data>>(data: R, len: u64) -> Result<Metadata, CoreEr
                     .checked_add(file_size)
                     .ok_or_else(|| invalid(format!("load segment at {start:#x} overflows")))?;
 
-                // A truncated dump keeps only the bytes still inside the file.
                 let saved = file_size.min(len.saturating_sub(file_offset));
                 segments.push(CoreSegment {
                     start,
@@ -492,8 +437,6 @@ fn parse_notes(
         .next()
         .map_err(|error| invalid(format!("note is malformed: {error}")))?
     {
-        // Thread state follows each thread's NT_PRSTATUS. Other owners (such
-        // as LINUX extended register state) are not interpreted.
         if note.name() != b"CORE" {
             continue;
         }
@@ -559,7 +502,6 @@ fn current_thread<'a>(
         .ok_or_else(|| invalid(format!("{note} precedes every NT_PRSTATUS note")))
 }
 
-/// Reads `N` bytes at `offset`, or reports that the note ends before them.
 fn bytes_at<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], CoreError> {
     bytes
         .get(offset..)
@@ -611,8 +553,6 @@ fn parse_prstatus(bytes: &[u8]) -> Result<CoreThread, CoreError> {
     })
 }
 
-/// Builds the kernel's `user_regs_struct`, whose field order is the
-/// `elf_gregset_t` order saved in `NT_PRSTATUS`.
 pub(super) const fn user_registers(
     values: [u64; GENERAL_REGISTER_COUNT],
 ) -> libc::user_regs_struct {
@@ -754,7 +694,6 @@ fn parse_files(bytes: &[u8]) -> Result<Vec<CoreFileMapping>, CoreError> {
         .filter(|end| *end <= bytes.len())
         .ok_or_else(malformed)?;
 
-    // Every path is NUL-terminated; a table cut short is malformed.
     let mut names = bytes
         .get(names_start..)
         .ok_or_else(malformed)?
@@ -791,8 +730,6 @@ fn parse_files(bytes: &[u8]) -> Result<Vec<CoreFileMapping>, CoreError> {
     Ok(files)
 }
 
-/// One loaded instance of a file-backed image: the mapping at file offset zero
-/// and the later mappings of the same file that follow it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImageMappings {
     pub(super) path: PathBuf,
@@ -823,10 +760,6 @@ impl ImageMappings {
     }
 }
 
-/// Groups `NT_FILE` mappings into image instances. A mapping at file offset
-/// zero starts an instance; later mappings of the same path join the nearest
-/// instance below them. Mappings with no such instance are not images.
-/// Verification against a file can join instances that its extent covers.
 pub(super) fn image_mappings(files: &[CoreFileMapping]) -> Vec<ImageMappings> {
     let mut sorted = files.to_vec();
     sorted.sort_by_key(|mapping| mapping.start);
@@ -849,24 +782,18 @@ pub(super) fn image_mappings(files: &[CoreFileMapping]) -> Vec<ImageMappings> {
     images
 }
 
-/// The kernel marks unlinked mapped files with this suffix. The replacement
-/// at the original path is then verified like any other candidate.
 fn strip_deleted(path: &Path) -> PathBuf {
     let bytes = path.as_os_str().as_bytes();
     let trimmed = bytes.strip_suffix(b" (deleted)").unwrap_or(bytes);
     PathBuf::from(OsStr::from_bytes(trimmed))
 }
 
-/// What the dump saved at the start of an image's first mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SavedHeader {
-    /// An ELF header: the image is a loaded module.
     Elf,
 
-    /// Other content: the image is a mapped data file.
     Data,
 
-    /// Nothing; only the file on disk can say what was mapped.
     Unsaved,
 }
 
@@ -883,20 +810,10 @@ pub(super) fn saved_header(
     }
 }
 
-/// Whether a file begins with an ELF header.
 pub(super) fn is_elf(data: &[u8]) -> bool {
     data.starts_with(&ELF_MAGIC)
 }
 
-/// The GNU build-id of a 64-bit little-endian ELF image. Only the header,
-/// program headers, and note segments are read, so a large file costs a few
-/// small reads.
-///
-/// A segment's notes are read at its alignment. One that does not read
-/// whole at that alignment is read again at 4 bytes, the alignment of
-/// ordinary note sections, and used only if it reads whole: the kernel
-/// links its vDSO with 4- and 8-byte aligned notes in one segment aligned
-/// to 8.
 pub(super) fn elf_build_id<'data, R: ReadRef<'data>>(data: R) -> Option<&'data [u8]> {
     let header = elf::FileHeader64::<LittleEndian>::parse(data).ok()?;
     let endian = header.endian().ok()?;
@@ -928,7 +845,6 @@ pub(super) fn elf_build_id<'data, R: ReadRef<'data>>(data: R) -> Option<&'data [
     None
 }
 
-/// Every note in `data` read at `align`, or `None` unless all of it reads.
 fn whole_notes(
     endian: LittleEndian,
     align: u64,
@@ -943,11 +859,6 @@ fn whole_notes(
     Some(whole)
 }
 
-/// The build-id the dump saved in an image's header pages, which names the
-/// file to look for before any candidate is read.
-///
-/// The image's first mapping begins at file offset zero, so its saved bytes
-/// are the file's leading bytes and file offsets address them directly.
 pub(super) fn recorded_build_id(
     core: &CoreDump,
     image: &ImageMappings,
@@ -965,42 +876,30 @@ pub(super) fn recorded_build_id(
     Ok(elf_build_id(header.as_slice()).map(<[u8]>::to_vec))
 }
 
-/// How strongly a module file is known to match a dumped image.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ImageEvidence {
-    /// The dumped GNU build-id note equals the file's.
     BuildId,
 
-    /// Every saved byte of the file's read-only segments equals the file.
     SavedContent { compared: u64 },
 
-    /// The file provably differs from the dumped image.
     Mismatch(String),
 
-    /// The dump saved nothing that could confirm or refute the file.
     Unverifiable,
 }
 
-/// A candidate file's placement and identity evidence for one dumped image.
 #[derive(Debug)]
 pub(super) enum ImageVerification {
-    /// The file's segments are placed at the dumped image by `load_bias`.
     Placed {
-        /// The recorded image with every mapping the file's extent covers.
         image: ImageMappings,
         load_bias: LoadBias,
         evidence: ImageEvidence,
 
-        /// Dump-time addresses of the file's read-only, file-backed bytes.
         read_only: Vec<Range<u64>>,
     },
 
-    /// No load bias places the file at the dumped image, which proves it is
-    /// a different file.
     Unplaced(String),
 }
 
-/// The file's loadable segments, normalized from its program headers.
 struct FileSegment {
     address: u64,
     file_offset: u64,
@@ -1009,22 +908,11 @@ struct FileSegment {
     writable: bool,
 }
 
-/// Places `file` at the dumped image and checks that it is the same image.
-///
-/// The image grows to every later mapping of its file within the file's
-/// extent: lld packs a small file's segments into its first page, so several
-/// of them map from file offset zero. Placement must agree with every
-/// recorded mapping. Identity is then proven
-/// by the build-id note when the dump saved it, and otherwise by comparing
-/// every saved byte of the file's read-only segments. Writable segments are
-/// never compared because the process legitimately modified them.
 pub(super) fn verify_image(
     core: &CoreDump,
     image: &ImageMappings,
     file: &[u8],
 ) -> Result<ImageVerification, CoreError> {
-    // The dump recorded an ELF image here; a file that no longer parses as
-    // one, or whose segments lie outside it, is a different file.
     let object = match ElfFile64::<LittleEndian>::parse(file) {
         Ok(object) => object,
         Err(error) => {
@@ -1087,8 +975,6 @@ pub(super) fn verify_image(
         })
     };
 
-    // Mismatched files may still supply metadata, so they keep the placement
-    // the recorded mapping implies.
     if outside {
         return verified(ImageEvidence::Mismatch(
             "a segment of the file lies outside it".to_owned(),
@@ -1115,8 +1001,6 @@ pub(super) fn verify_image(
     verified(evidence)
 }
 
-/// `image` and the later mappings of its path that lie within the extent of
-/// the file's segments at `load_bias`.
 fn whole_image(
     core: &CoreDump,
     image: &ImageMappings,
@@ -1153,8 +1037,6 @@ fn whole_image(
     }
 }
 
-/// Writable segments are excluded: the process may have modified them, and a
-/// dump can omit modified pages when its filter or truncation drops them.
 fn read_only_ranges(segments: &[FileSegment], load_bias: LoadBias) -> Vec<Range<u64>> {
     segments
         .iter()
@@ -1168,14 +1050,6 @@ fn read_only_ranges(segments: &[FileSegment], load_bias: LoadBias) -> Vec<Range<
         .collect()
 }
 
-/// Protection changes such as RELRO split one segment into several mappings,
-/// so each mapping must fall inside a segment's file-backed pages at the
-/// address that segment implies.
-///
-/// glibc's loader first maps the file's whole extent from its first mapping
-/// and then removes access to the gaps between segments, which stay mapped.
-/// A gap is therefore the first mapping continued: its file offset is its
-/// distance from the image's start, and it lies between two segments.
 fn placement_mismatch(
     image: &ImageMappings,
     segments: &[FileSegment],
@@ -1232,7 +1106,6 @@ fn placement_mismatch(
         })
 }
 
-/// Compares the file's build-id note with the dump's copy, when both exist.
 fn build_id_evidence(
     core: &CoreDump,
     file: &[u8],
@@ -1292,8 +1165,6 @@ fn note_has_build_id(notes: &[u8]) -> bool {
     false
 }
 
-/// Compares saved bytes against the file's read-only segments. Returns the
-/// number of bytes compared, or the first differing address.
 fn compare_read_only_content(
     core: &CoreDump,
     image: &ImageMappings,
@@ -1311,9 +1182,6 @@ fn compare_read_only_content(
             }
 
             for segment in segments.iter().filter(|segment| !segment.writable) {
-                // Intersect in file-offset space with this read-only segment.
-                // Both sides are untrusted, so offsets saturate and an
-                // unrepresentable range compares nothing.
                 let mapped_offset = mapping.file_offset.saturating_add(start - mapping.start);
                 let mapped_end = mapped_offset.saturating_add(end - start);
                 let offset = mapped_offset.max(segment.file_offset);
@@ -1351,9 +1219,6 @@ fn compare_read_only_content(
     Ok(Ok(compared))
 }
 
-/// Bytes of a verified image file mapped at dump time, used for memory the
-/// producer did not save. Only read-only segments qualify: a dump may omit
-/// modified writable pages, whose file contents are then stale.
 #[derive(Clone)]
 pub(super) struct FileBacking {
     start: u64,
@@ -1363,7 +1228,6 @@ pub(super) struct FileBacking {
 }
 
 impl FileBacking {
-    /// Backs each part of the image's mappings that lies in `read_only`.
     pub(super) fn for_image(
         image: &ImageMappings,
         data: &Arc<[u8]>,
@@ -1388,7 +1252,6 @@ impl FileBacking {
     }
 }
 
-/// A core dump's memory: saved bytes first, then verified file backings.
 pub(super) struct CoreMemory {
     core: Arc<CoreDump>,
     backings: Vec<FileBacking>,
@@ -1428,7 +1291,6 @@ impl CoreMemory {
             } else if self.core.truncated(current) {
                 return Err(CoreMemoryError::Unavailable);
             } else {
-                // Unsaved bytes end where the next saved segment begins.
                 let limit = self.core.next_segment_start(current) - current;
                 self.read_backing(current, rest, limit)?
             };
@@ -1466,7 +1328,6 @@ impl CoreMemory {
             .and_then(|offset| usize::try_from(offset).ok())
             .ok_or(CoreMemoryError::Unavailable)?;
 
-        // Pages past the end of the file were never backed by it.
         let source = offset
             .checked_add(count)
             .and_then(|end| backing.data.get(offset..end))
@@ -1478,8 +1339,6 @@ impl CoreMemory {
     }
 }
 
-/// Parses arbitrary bytes as a core dump and reads its memory, exercising
-/// every bounds check on untrusted input.
 #[cfg(feature = "fuzzing")]
 pub(super) fn fuzz(data: &[u8]) {
     let Ok(core) = CoreDump::from_bytes(data.into()) else {
@@ -1516,7 +1375,6 @@ pub(super) fn fuzz(data: &[u8]) {
         .chain(core.files.iter().map(|file| file.start))
         .collect::<Vec<_>>();
 
-    // An image no file backs, as the vDSO, is read from saved memory alone.
     for start in addresses
         .iter()
         .copied()
@@ -1570,7 +1428,6 @@ mod tests {
         bytes.resize(bytes.len().next_multiple_of(4), 0);
     }
 
-    /// Writes a minimal little-endian x86-64 ELF core.
     fn core_bytes(notes: &[Note], loads: &[Load]) -> Vec<u8> {
         let mut note_bytes = Vec::new();
         for note in notes {
@@ -1686,14 +1543,11 @@ mod tests {
 
         let segv_maperr = 1;
 
-        // A page fault records its address; a general-protection fault
-        // (SI_KERNEL) records none, so 0 must not appear as an address.
         assert_eq!(parse(libc::SIGSEGV, segv_maperr), (Some(0x1234), None));
         assert_eq!(parse(libc::SIGSEGV, libc::SI_KERNEL), (None, None));
         assert_eq!(parse(libc::SIGABRT, libc::SI_TKILL), (None, Some(0x1234)));
         assert_eq!(parse(libc::SIGTERM, libc::SI_USER), (None, Some(0x1234)));
 
-        // These codes reuse the sender field for a timer ID and a poll band.
         assert_eq!(parse(libc::SIGALRM, libc::SI_TIMER), (None, None));
         assert_eq!(parse(libc::SIGIO, libc::SI_SIGIO), (None, None));
     }
@@ -1785,7 +1639,6 @@ mod tests {
                     elf::NT_AUXV,
                     auxv(&[(AT_PHDR, 0x40_0040), (AT_ENTRY, 0x40_1000)]),
                 ),
-                // gdb records byte offsets with a unit page size.
                 note(elf::NT_FILE, file_note(1, MAPPINGS)),
             ],
             &[],
@@ -2061,7 +1914,6 @@ mod tests {
             );
         }
 
-        // A truncated note segment cannot be partially trusted.
         let mut truncated = core_bytes(&minimal_notes(), &[]);
         truncated.truncate(truncated.len() - 8);
         assert!(rejection(truncated).contains("note segment is malformed"));
@@ -2071,22 +1923,16 @@ mod tests {
         vec![marker; usize::try_from(PAGE_SIZE).unwrap()]
     }
 
-    /// What parsing keeps of a segment: the pages the kernel saved, not
-    /// the ones it left out, and of a segment the file's end cuts, only
-    /// the bytes before the cut. The byte-model properties build their
-    /// cores without parsing.
     #[test]
     fn parsing_keeps_only_the_saved_bytes_a_file_holds() {
         let mut bytes = core_bytes(
             &minimal_notes(),
             &[
-                // Kernel form: the first page saved, the second omitted.
                 Load {
                     address: 0x10000,
                     memory: 0x2000,
                     saved: page(0xa1),
                 },
-                // Cut half way through by the end of the file.
                 Load {
                     address: 0x20000,
                     memory: 0x1000,
@@ -2121,8 +1967,6 @@ mod tests {
         );
     }
 
-    /// An image's first page: an ELF header whose one note segment, at
-    /// `note_offset`, holds a GNU build-id.
     fn image_header(note_offset: usize, build_id: &[u8]) -> Vec<u8> {
         let note_size = 16 + build_id.len();
         let mut bytes = page(0);
@@ -2188,8 +2032,6 @@ mod tests {
             Some(BUILD_ID)
         );
 
-        // File offsets address saved bytes only within the first mapping,
-        // and only bytes the dump kept.
         let late = image_header(0x1800, BUILD_ID);
         assert_eq!(recorded(late.clone(), 0x12000).as_deref(), Some(BUILD_ID));
         assert_eq!(recorded(late.clone(), 0x11000), None);
@@ -2198,8 +2040,6 @@ mod tests {
         assert_eq!(recorded(page(0x7f), 0x12000), None);
     }
 
-    /// Ubuntu 18.04's libc: text, then a 2 MiB gap, then data whose first
-    /// page RELRO leaves read-only.
     #[test]
     fn mappings_must_follow_the_segments_or_the_loaders_gaps_between_them() {
         const BASE: u64 = 0x7f00_0000_0000;
@@ -2246,8 +2086,6 @@ mod tests {
         assert_eq!(mismatch(&[(0x1e_7000, 0x3e_7000, 0x1e_7000)]), None);
         assert_eq!(mismatch(&[(0x2e_7000, 0x2e_8000, 0x2e_7000)]), None);
 
-        // A gap mapped from any other offset, or one that reaches into a
-        // segment's pages or past the last segment, is another file's layout.
         for wrong in [
             (0x1e_7000, 0x3e_7000, 0x1e_8000),
             (0x1e_7000, 0x3e_8000, 0x1e_7000),
@@ -2262,11 +2100,8 @@ mod tests {
 
     use super::super::memory::MemoryAccessError;
 
-    /// How many bytes of address space the memory models span.
     const SPAN: u64 = 48;
 
-    /// A segment the dump saved `saved` bytes of, of the `recorded` its
-    /// producer meant to.
     #[derive(Debug, Clone)]
     struct ModelSegment {
         start: u64,
@@ -2275,14 +2110,10 @@ mod tests {
         saved: u64,
     }
 
-    /// Core memory as the precedence rules say each byte reads: saved
-    /// bytes, else nothing where truncation lost them, else the file
-    /// backing that covers it.
     #[derive(Debug, Clone)]
     struct Model {
         segments: Vec<ModelSegment>,
 
-        /// The core file, where the segments' saved bytes follow a header.
         core: Vec<u8>,
         backings: Vec<FileBacking>,
     }
@@ -2374,8 +2205,6 @@ mod tests {
         }
     }
 
-    /// Between `fewest` and `most` ordered ranges that do not overlap,
-    /// inside the span from `base`.
     fn ranges(base: u64, fewest: usize, most: usize) -> impl Strategy<Value = Vec<Range<u64>>> {
         prop::collection::btree_set(0..=SPAN, 2 * fewest..=2 * most).prop_map(move |points| {
             let points = points.into_iter().collect::<Vec<_>>();
@@ -2388,7 +2217,6 @@ mod tests {
         })
     }
 
-    /// Bytes that differ from one position to the next.
     fn pattern(seed: u8, length: usize) -> Vec<u8> {
         (0..length)
             .map(|index| seed.wrapping_add(u8::try_from(index % 256).unwrap().wrapping_mul(37)))

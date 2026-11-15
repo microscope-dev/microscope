@@ -1,8 +1,3 @@
-//! Developer tools: dump every answer a program's debug information gives,
-//! summarize `--timings` reports, and benchmark loading a pinned corpus.
-
-// Production code returns errors instead of panicking; see dev/assertions.md.
-// Tests may unwrap.
 #![cfg_attr(
     not(test),
     deny(
@@ -34,7 +29,6 @@ use serde::{Deserialize, Serialize};
 #[path = "microscope-tools/smoke.rs"]
 mod smoke;
 
-// Allocates as microscope does, so that loads cost what they cost there.
 #[global_allocator]
 static ALLOCATOR: microscope::timings::alloc::Counting<microscope::timings::alloc::Selected> =
     microscope::timings::alloc::selected();
@@ -412,8 +406,6 @@ fn run(args: Args) -> Result<bool> {
             Ok(true)
         }
 
-        // Unless told how many, each program loads on one worker, whose
-        // counts repeat exactly, and on as many as there are.
         Tool::Bench(bench) => run_bench(
             &bench,
             &match args.jobs {
@@ -504,8 +496,6 @@ fn run_overhead(args: &OverheadArgs) -> Result<bool> {
     Ok(over.is_empty())
 }
 
-/// Runs of the snapshot pause benchmark, by whether the image cache was
-/// warm.
 #[derive(Serialize, Deserialize)]
 struct SnapshotPauses {
     uncached: Vec<microscope::tools::snapshot_pause::Run>,
@@ -535,8 +525,6 @@ fn run_snapshot_pause(args: &SnapshotPauseArgs, cache: Option<&Path>) -> Result<
         return Ok(true);
     }
 
-    // Each mode in a process of its own, since the cache is chosen once
-    // a process. The cached runs follow one that fills the cache.
     let directory = std::env::temp_dir().join(format!("snapshot-pause-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&directory);
     let child = |cache: Option<&Path>, snapshots: u64| -> Result<Vec<snapshot_pause::Run>> {
@@ -665,7 +653,6 @@ fn run_syscall_overhead(args: &SyscallOverheadArgs) -> Result<bool> {
     Ok(true)
 }
 
-/// The summaries as a table, each cost beside the base's when given.
 fn overhead_table(
     summaries: &[microscope::tools::overhead::Summary],
     base: Option<&[microscope::tools::overhead::Summary]>,
@@ -709,15 +696,12 @@ fn overhead_table(
     table
 }
 
-/// A DHAT profile, as `dhat.out` holds it.
 #[derive(Deserialize)]
 struct Dhat {
     pps: Vec<DhatSite>,
     ftbl: Vec<String>,
 }
 
-/// One allocation site: its total bytes and blocks, and those live at the
-/// heap's peak.
 #[derive(Deserialize)]
 struct DhatSite {
     tb: u64,
@@ -731,8 +715,6 @@ struct DhatSite {
     fs: Vec<usize>,
 }
 
-/// The first microscope frame of a stack that is not the standard library's
-/// plumbing, with its file and line.
 fn allocation_site(frames: &[usize], table: &[String]) -> String {
     const PLUMBING: [&str; 22] = [
         "alloc::",
@@ -852,7 +834,6 @@ fn read_report(path: &Path) -> Result<Report> {
     Report::from_json(&text).map_err(|error| anyhow::anyhow!("{}: {error}", path.display()))
 }
 
-/// The bench report format's version.
 const BENCH_SCHEMA: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -879,8 +860,6 @@ struct BenchReport {
 struct ProgramResult {
     name: String,
 
-    /// The loader's workers; reports from before there were several had
-    /// one.
     #[serde(default = "one")]
     jobs: usize,
     path: PathBuf,
@@ -904,7 +883,6 @@ const fn one() -> usize {
 }
 
 impl ProgramResult {
-    /// The program, and how many workers loaded it when more than one.
     fn label(&self) -> String {
         if self.jobs == 1 {
             self.name.clone()
@@ -914,7 +892,6 @@ impl ProgramResult {
     }
 }
 
-/// One program of the corpus, by its name and where it is built.
 struct Program {
     name: String,
     path: PathBuf,
@@ -924,7 +901,6 @@ fn corpus() -> Result<Vec<Program>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut programs = Vec::new();
 
-    // The golden programs' executables, one directory of builds each.
     let golden = root.join("build/golden");
     let mut golden_programs = Vec::new();
     for directory in std::fs::read_dir(&golden).with_context(|| {
@@ -971,8 +947,6 @@ fn corpus() -> Result<Vec<Program>> {
         });
     }
 
-    // The Go command the pinned toolchain ships: 23 MB with compressed
-    // debug sections.
     let go = Command::new("go")
         .args(["env", "GOROOT"])
         .output()
@@ -1071,11 +1045,9 @@ fn load_once(program: &Path, jobs: usize, instructions: bool) -> Result<Measured
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
-/// The instructions one load of `program` runs, as Callgrind counts them.
 fn callgrind(program: &Path) -> Result<u64> {
     let out = std::env::temp_dir().join(format!("microscope-callgrind-{}.out", std::process::id()));
 
-    // One worker, so that the count is the same each run.
     let status = Command::new("valgrind")
         .arg("--tool=callgrind")
         .arg(format!("--callgrind-out-file={}", out.display()))
@@ -1281,9 +1253,6 @@ fn bench_text(report: &BenchReport) -> String {
     text
 }
 
-/// What changed between two runs, measure by measure. Times compare only
-/// when the runs' provenance matches; a change within either run's
-/// spread is marked as noise.
 #[expect(clippy::cast_precision_loss, reason = "reported approximately")]
 #[expect(clippy::too_many_lines, reason = "one row for each measure")]
 fn compare_text(base: &BenchReport, new: &BenchReport) -> String {

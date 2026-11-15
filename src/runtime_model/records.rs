@@ -1,8 +1,3 @@
-//! A runtime's data, laid out as the image's debug information describes
-//! its types: members found by the names the runtime's source gives them,
-//! and sum types read by their own tags. A model reads through these, so
-//! no offset, size, or tag value is ever its own guess.
-
 use std::sync::Arc;
 
 use super::{RuntimeImage, RuntimeStop};
@@ -11,23 +6,16 @@ use crate::{
     VariantDiscriminant, VariantSelection, VariantSelector, VirtualAddress,
 };
 
-/// Why a name the model reads is unavailable, naming it.
 pub type Missing = Arc<str>;
 
-/// The most wrappers followed to reach a type's representation.
 const MAX_WRAPPERS: usize = 16;
 
-/// A member of a type: where it lies within its container, and its type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Field {
     pub offset: u64,
     pub ty: TypeReference,
 }
 
-/// The type a qualified name means, such as
-/// `tokio::runtime::task::core::Header`: the first of its definitions
-/// whose layout is complete, as a type is described once in every unit
-/// that uses it.
 pub fn named(image: &dyn RuntimeImage, name: &str) -> Result<TypeReference, Missing> {
     image
         .types_named(name)
@@ -50,14 +38,12 @@ pub fn named(image: &dyn RuntimeImage, name: &str) -> Result<TypeReference, Miss
         .ok_or_else(|| format!("the program describes no type {name}").into())
 }
 
-/// The type's name, for reasons that name it.
 fn name_of(image: &dyn RuntimeImage, ty: TypeReference) -> Arc<str> {
     image
         .type_info(ty)
         .map_or_else(|| "a type".into(), |info| Arc::clone(&info.name))
 }
 
-/// What lays out a value of `ty`, through names and qualifiers.
 fn representation(image: &dyn RuntimeImage, mut ty: TypeReference) -> Option<&TypeInfo> {
     for _ in 0..MAX_WRAPPERS {
         let info = image.type_info(ty)?;
@@ -71,9 +57,6 @@ fn representation(image: &dyn RuntimeImage, mut ty: TypeReference) -> Option<&Ty
     None
 }
 
-/// The member a path of names reaches within `ty`, through nested records
-/// and the payloads of a sum type's variants, which a path names by the
-/// variant's name.
 pub fn field(image: &dyn RuntimeImage, ty: TypeReference, path: &[&str]) -> Result<Field, Missing> {
     let mut found = Field { offset: 0, ty };
     for name in path {
@@ -95,7 +78,6 @@ pub fn field(image: &dyn RuntimeImage, ty: TypeReference, path: &[&str]) -> Resu
     Ok(found)
 }
 
-/// The members a name may reach directly within a type of this shape.
 fn members(kind: &TypeKind) -> Box<dyn Iterator<Item = &RecordMember> + '_> {
     match kind {
         TypeKind::Record { members, .. } | TypeKind::Union { members, .. } => {
@@ -115,21 +97,18 @@ fn members(kind: &TypeKind) -> Box<dyn Iterator<Item = &RecordMember> + '_> {
     }
 }
 
-/// The offset of a member at `inner` within a member at `outer`.
 pub fn within(outer: u64, inner: u64) -> Result<u64, Missing> {
     outer
         .checked_add(inner)
         .ok_or_else(|| "a member's offset overflows".into())
 }
 
-/// A type's size in bytes.
 pub fn size(image: &dyn RuntimeImage, ty: TypeReference) -> Result<u64, Missing> {
     representation(image, ty)
         .and_then(|info| info.byte_size)
         .ok_or_else(|| format!("{} has no size", name_of(image, ty)).into())
 }
 
-/// A member's offset, once it is the size the model reads it as.
 pub fn sized(
     image: &dyn RuntimeImage,
     ty: TypeReference,
@@ -150,7 +129,6 @@ pub fn sized(
     Ok(found.offset)
 }
 
-/// What a pointer or reference type points to.
 pub fn target(image: &dyn RuntimeImage, ty: TypeReference) -> Result<TypeReference, Missing> {
     match representation(image, ty).map(|info| &info.kind) {
         Some(
@@ -164,8 +142,6 @@ pub fn target(image: &dyn RuntimeImage, ty: TypeReference) -> Result<TypeReferen
     }
 }
 
-/// The element type of a slice, whose normalized layout is its data
-/// pointer then its length, each a word.
 pub fn slice_element(
     image: &dyn RuntimeImage,
     ty: TypeReference,
@@ -176,8 +152,6 @@ pub fn slice_element(
     }
 }
 
-/// The element type and length of a one-dimensional array of fixed size,
-/// such as Rust's `[T; N]`.
 pub fn array(image: &dyn RuntimeImage, ty: TypeReference) -> Result<(TypeReference, u64), Missing> {
     match representation(image, ty).map(|info| &info.kind) {
         Some(TypeKind::Array {
@@ -192,7 +166,6 @@ pub fn array(image: &dyn RuntimeImage, ty: TypeReference) -> Result<(TypeReferen
     }
 }
 
-/// The value an enumeration gives one of its names.
 pub fn enumerator(image: &dyn RuntimeImage, ty: TypeReference, name: &str) -> Result<u64, Missing> {
     let Some(TypeKind::Enumeration { enumerators, .. }) =
         representation(image, ty).map(|info| &info.kind)
@@ -214,18 +187,14 @@ fn unsigned(value: IntegerValue) -> Option<u64> {
     }
 }
 
-/// A sum type, such as a Rust `enum`, read by its tag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sum {
     name: Arc<str>,
 
-    /// Where the tag is, and its size.
     tag: (u64, usize),
     variants: Vec<SumVariant>,
 }
 
-/// One variant of a sum type: its name, which tags select it, and where
-/// its payload is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SumVariant {
     pub name: Arc<str>,
@@ -233,12 +202,10 @@ pub struct SumVariant {
     pub payload: Field,
 }
 
-/// Whether a value of `ty` is of a sum type, such as a Rust `enum`.
 pub fn is_sum(image: &dyn RuntimeImage, ty: TypeReference) -> bool {
     representation(image, ty).is_some_and(|info| matches!(info.kind, TypeKind::Variant { .. }))
 }
 
-/// How the sum type `ty` selects its variants.
 pub fn sum(image: &dyn RuntimeImage, ty: TypeReference) -> Result<Sum, Missing> {
     let info =
         representation(image, ty).ok_or_else(|| format!("{} has no layout", name_of(image, ty)))?;
@@ -298,7 +265,6 @@ pub fn sum(image: &dyn RuntimeImage, ty: TypeReference) -> Result<Sum, Missing> 
 }
 
 impl Sum {
-    /// The variant of this name.
     pub fn variant(&self, name: &str) -> Result<&SumVariant, Missing> {
         self.variants
             .iter()
@@ -306,7 +272,6 @@ impl Sum {
             .ok_or_else(|| format!("{} has no variant {name}", self.name).into())
     }
 
-    /// The variant the value at `address` holds, or why it cannot be read.
     pub fn active(
         &self,
         stop: &dyn RuntimeStop,
@@ -338,31 +303,24 @@ impl Sum {
     }
 }
 
-/// An unsigned little-endian integer of `size` bytes, at most eight.
 pub fn read(stop: &dyn RuntimeStop, address: VirtualAddress, size: usize) -> Option<u64> {
     let mut bytes = [0; 8];
     stop.read(address, bytes.get_mut(..size)?)
         .then(|| u64::from_le_bytes(bytes))
 }
 
-/// The address a null pointer holds.
 pub const NULL: VirtualAddress = VirtualAddress::new(0);
 
-/// A word at `address`.
 pub fn word(stop: &dyn RuntimeStop, address: VirtualAddress) -> Option<u64> {
     read(stop, address, 8)
 }
 
-/// The address a pointer at `address` holds.
 pub fn pointer(stop: &dyn RuntimeStop, address: VirtualAddress) -> Option<VirtualAddress> {
     word(stop, address).map(VirtualAddress::new)
 }
 
 #[cfg(test)]
 impl Sum {
-    /// Where the tag is, and a value of it that selects the variant
-    /// `name`: one of its own, or for the default variant, one no other
-    /// variant claims.
     pub fn tag_for(&self, name: &str) -> (u64, usize, u64) {
         let (offset, size) = self.tag;
         let claimed = |tag: u64| {

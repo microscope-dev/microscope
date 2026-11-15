@@ -1,12 +1,12 @@
-// Values optimized code assembles from pieces, and complex numbers. Before
-// each checkpoint the program prints its own truth, one tab-separated line
-// per value,
-//
-//	TRUTH	<checkpoint>	<path>	<kind>	<value>
-//
-// and then calls reached(checkpoint); the tests inspect reached's caller.
-// A path names a variable, or a member of one after a dot. Complex numbers
-// are their parts' bits in hexadecimal, real first.
+
+
+
+
+
+
+
+
+
 #include <complex.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -36,8 +36,8 @@ static uint64_t bits64(double value) {
     return bits;
 }
 
-// The pair arrives in two registers, and its sum stays in one across the
-// call, so optimized code describes both in pieces.
+
+
 __attribute__((noinline)) static long split(struct pair pair, long bias) {
     struct pair local = pair;
     local.first += bias;

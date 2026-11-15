@@ -1,6 +1,3 @@
-//! Debug information the debugger cannot read, or reads only in part: the
-//! module is still debugged by what else describes it, and says why.
-
 use super::libraries::pending_function;
 use super::*;
 use crate::support::{ScratchDir, corrupt_section};
@@ -12,10 +9,6 @@ fn unusable_reason(image: &ModuleImage) -> Arc<str> {
     }
 }
 
-/// A program whose DWARF is malformed is debugged as its symbols and
-/// call-frame information describe it, and its DWARF's reason says where
-/// it went wrong: in the unit headers, a unit's abbreviations, or its line
-/// program.
 #[tokio::test]
 async fn malformed_dwarf_leaves_a_program_described_by_its_symbols() {
     let scratch = ScratchDir::new("malformed-dwarf");
@@ -43,8 +36,6 @@ async fn malformed_dwarf_leaves_a_program_described_by_its_symbols() {
         assert!(reason.starts_with(expected), "{section}: {reason}");
         assert_eq!(image.functions().len(), 0, "{section}");
 
-        // The symbol table places a breakpoint, and call-frame information
-        // unwinds from it, with no source line to show.
         let breakpoint = scenario
             .operation(
                 "add breakpoint",
@@ -87,15 +78,12 @@ async fn malformed_dwarf_leaves_a_program_described_by_its_symbols() {
     }
 }
 
-/// A library whose DWARF is malformed still loads, described by its
-/// symbols, so a breakpoint waiting for one of its functions stops there.
 #[tokio::test]
 async fn a_library_with_malformed_dwarf_is_described_by_its_symbols() {
     let scratch = ScratchDir::new("malformed-library");
     let program = scratch.path().join("module-frames");
     fs::copy(Scenario::fixture("module-frames-gcc-o0"), &program).expect("copy the program");
 
-    // The program finds its library beside it.
     corrupt_section(
         &Scenario::fixture("libmodule-frames.so"),
         &scratch.path().join("libmodule-frames.so"),
@@ -134,7 +122,6 @@ async fn a_library_with_malformed_dwarf_is_described_by_its_symbols() {
         image.debug_information()
     );
 
-    // The program's own DWARF is whole.
     assert_eq!(
         scenario.handle().module_image().debug_information(),
         microscope::DebugInformation::Loaded
@@ -143,9 +130,6 @@ async fn a_library_with_malformed_dwarf_is_described_by_its_symbols() {
     scenario.shutdown().await;
 }
 
-/// Split DWARF is read from the `.dwo` file each skeleton unit names: the
-/// unit's variables and types are there, declared in files of the line
-/// table the skeleton keeps.
 #[tokio::test]
 async fn split_dwarf_is_read_from_its_dwo_file() {
     let mut scenario = Scenario::launch("basic-split-dwarf");
@@ -198,17 +182,12 @@ async fn split_dwarf_is_read_from_its_dwo_file() {
     scenario.shutdown().await;
 }
 
-/// A skeleton's name for its `.dwo` file is input: one that names a FIFO
-/// or a device, which may never end, is not read, and the unit is left
-/// described as if its file were missing.
 #[tokio::test]
 async fn a_dwo_file_that_is_no_regular_file_is_not_read() {
     let scratch = ScratchDir::new("dwo-fifo");
     let program = scratch.path().join("profile-inline-clang-split");
     fs::copy(Scenario::fixture("profile-inline-clang-split"), &program).expect("copy the program");
 
-    // The skeleton names `build/test-programs/...dwo` in its compile
-    // directory, `.`, which is the copy's.
     let named = scratch
         .path()
         .join("build/test-programs/profile-inline-clang-split-profile-inline.dwo");

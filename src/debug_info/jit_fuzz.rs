@@ -1,8 +1,3 @@
-//! The fuzz harness for what JIT compilers say about the code they
-//! generate: a perf map, and the GDB JIT interface's list of objects, read
-//! from a process's memory. The input's first byte says how much of the
-//! rest is the map; what follows it is the process's memory, at [`BASE`].
-
 use std::path::Path;
 use std::sync::Arc;
 
@@ -11,10 +6,8 @@ use super::perf_map::{self, Jitted};
 use crate::unwind::{DwarfRegister, MemoryReader, RegisterFile};
 use crate::{AddressRange, ImageAddress, ModuleImageId, VirtualAddress};
 
-/// Where the input's memory lies in the process.
 const BASE: u64 = 0x1000;
 
-/// The most bytes of one function's code that are read.
 const MOST_CODE: u64 = 4096;
 
 struct Memory<'a>(&'a [u8]);
@@ -46,8 +39,6 @@ pub fn fuzz(data: &[u8]) {
     jit_objects(&memory);
 }
 
-/// Loads the functions a perf map names, with their code read from
-/// `memory`, as both kinds of module, and unwinds from each.
 fn perf_maps(map: &[u8], memory: &Memory<'_>) {
     let (entries, complete) = perf_map::parse(map);
     debug_assert!(complete <= map.len());
@@ -105,8 +96,6 @@ fn perf_maps(map: &[u8], memory: &Memory<'_>) {
     }
 }
 
-/// Reads the objects the descriptor at the start of `memory` lists, then
-/// again with what the first read knew, as a reader does at its next stop.
 fn jit_objects(memory: &Memory<'_>) {
     let mut witness = Vec::new();
     gdb_jit::witness(BASE, |at, size| memory.read(at, size), &mut witness);

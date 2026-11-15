@@ -1,9 +1,3 @@
-//! Steps whose future goes away while they wait for it: its task is
-//! aborted, or its runtime shuts down, and the step says the task was
-//! cancelled; or the code that awaits it drops it, as a `select!` and a
-//! timeout do, and the step goes on to that code's next line, saying the
-//! future was dropped.
-
 use std::process::Stdio;
 
 use microscope::{BreakpointSpec, LaunchOptions, LineNumber, StepKind, StopReason, TaskEnding};
@@ -20,13 +14,10 @@ const BUILDS: [&str; 4] = [
 ];
 const SOURCE: &str = "cancel/src/main.rs";
 
-/// The fixture in `mode`, stopped where its task first arrives at the
-/// await that never finishes, and the task's number.
 async fn waiting(fixture: &str, mode: &str) -> (Scenario, u64) {
     waiting_with(fixture, mode, None, Stdio::null()).await
 }
 
-/// The same, with the program's standard input and output.
 async fn waiting_with(
     fixture: &str,
     mode: &str,
@@ -60,10 +51,6 @@ async fn waiting_with(
     (scenario, task)
 }
 
-/// A step that waits for a future whose task is aborted, or whose runtime
-/// shuts down, ends as the runtime drops the future, saying the task was
-/// cancelled: a multi-thread runtime's, or a current-thread runtime's,
-/// which drops its tasks on the thread that drops it.
 #[tokio::test]
 async fn a_step_whose_task_is_cancelled_says_so() {
     for fixture in BUILDS {
@@ -91,10 +78,6 @@ async fn a_step_whose_task_is_cancelled_says_so() {
     }
 }
 
-/// A step that waits for a future that the code awaiting it drops, as a
-/// `select!` does once another branch finishes and a timeout does once it
-/// elapses, goes on in that code to its next line, and says the future
-/// was dropped: the branch that finished, and the line after the timeout.
 #[tokio::test]
 async fn a_step_whose_future_is_dropped_ends_on_the_droppers_next_line() {
     for fixture in BUILDS {
@@ -102,7 +85,6 @@ async fn a_step_whose_future_is_dropped_ends_on_the_droppers_next_line() {
             ("select", "selecting", "// STEP: select-other"),
             ("timeout", "timing", "// STEP: timeout-after"),
         ] {
-            // Optimized, the branch's value is no statement of its own.
             let after = if after == "// STEP: select-other" && fixture.ends_with("-o3") {
                 "// STEP: select-end"
             } else {
@@ -133,9 +115,6 @@ async fn a_step_whose_future_is_dropped_ends_on_the_droppers_next_line() {
     }
 }
 
-/// `pause` while a step waits for its task ends the step with the pause,
-/// as it ends any step. A new step of the task, which no thread runs then, waits
-/// for it in turn, and ends at the next line once the task resumes.
 #[tokio::test]
 async fn a_pause_ends_a_waiting_step_and_a_new_one_waits_again() {
     for fixture in BUILDS {
@@ -152,8 +131,6 @@ async fn a_pause_ends_a_waiting_step_and_a_new_one_waits_again() {
 
         let stepping = scenario.start_stepping(StepKind::OverSource).await;
 
-        // Paused once no thread runs the task, the next step begins in it
-        // rather than on a thread.
         let held = tokio::task::spawn_blocking(move || {
             std::io::BufRead::lines(std::io::BufReader::new(output))
                 .map_while(Result::ok)
@@ -214,7 +191,6 @@ async fn a_pause_ends_a_waiting_step_and_a_new_one_waits_again() {
     }
 }
 
-/// The lines a program prints, read as they arrive.
 struct Printed(tokio::sync::mpsc::UnboundedReceiver<String>);
 
 impl Printed {
@@ -233,7 +209,6 @@ impl Printed {
         Self(receive)
     }
 
-    /// The lines up to and including `wanted`, which must arrive.
     async fn until(&mut self, wanted: &str) -> Vec<String> {
         let mut lines = Vec::new();
         loop {
@@ -251,7 +226,6 @@ impl Printed {
         }
     }
 
-    /// Every line still to come, until the program closes its output.
     async fn rest(&mut self) -> Vec<String> {
         let mut lines = Vec::new();
         while let Some(line) =
@@ -266,10 +240,6 @@ impl Printed {
     }
 }
 
-/// The session ends cleanly while a step waits for its task: killed, the
-/// program is gone; exiting, the program ends the step with its status;
-/// detached, it runs on as it would have without the debugger, its step's
-/// breakpoints gone.
 #[tokio::test]
 async fn a_waiting_step_ends_with_its_session() {
     for fixture in BUILDS {
@@ -322,7 +292,6 @@ async fn a_waiting_step_ends_with_its_session() {
             scenario.shutdown().await;
         }
 
-        // Natively, and detached while a step waits.
         let program = Scenario::fixture(fixture);
         let mut runs = Vec::new();
         for attaches in [false, true] {

@@ -1,12 +1,12 @@
-"""Python stepping: over, into, and out of lines, calls, awaits, and raises;
-then exceptions, raised and uncaught.
 
-Each marked line is where a test breaks or expects a step to stop. The
-program prints what it computed, so stopping must change nothing. It parks,
-blocked in C, for a step from a stop its agent did not report, unless run
-`--editor`; run `--attach`, it first says READY and waits for a byte on its
-standard input, blocked in C.
-"""
+
+
+
+
+
+
+
+
 import asyncio
 import os
 import sys

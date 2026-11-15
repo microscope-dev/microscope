@@ -1,14 +1,14 @@
-// Steady work for measuring what recording costs: four goroutines each
-// run units of work of about a millisecond that allocate, so the garbage
-// collector runs beside them, and each writes a line as a unit ends. A
-// measurer counts the lines in a window.
+
+
+
+
 package main
 
 import "os"
 
 const workers = 4
 
-// sink keeps results the compiler would otherwise drop.
+
 var sink []byte
 
 //go:noinline
@@ -32,7 +32,7 @@ func worker() {
 	line := []byte("u\n")
 	for round := 0; ; round++ {
 		unit(round)
-		// Writing fails once the measurer stops reading.
+
 		if _, err := os.Stdout.Write(line); err != nil {
 			os.Exit(0)
 		}

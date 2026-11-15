@@ -1,8 +1,3 @@
-// Small pieces the profile's views share: a removable chip, buttons that
-// change the look, rounded numbers that keep their exact value on hover,
-// a share drawn as a bar, and what a view says before its answer comes or
-// when it failed.
-
 import { type CSSProperties, type ReactNode, useCallback, useMemo } from "react";
 
 import { type ProfileLook, withLook } from "../../profile/look";
@@ -23,7 +18,6 @@ export function Chip({
   removeLabel?: string | undefined;
 }) {
   return (
-    // A long label is cut short, so the title also says it whole.
     <span className="chip profile-chip" title={`${label}\n${title}`}>
       <span className="label">{label}</span>
       <button type="button" aria-label={removeLabel} onClick={remove}>
@@ -33,7 +27,6 @@ export function Chip({
   );
 }
 
-/** A chip for one part of the look, which removing clears. */
 export function ClearChip({
   field,
   label,
@@ -57,7 +50,6 @@ export function ClearChip({
   return <Chip label={label} title={title} removeLabel={removeLabel} remove={clear} />;
 }
 
-/** A chip for the threads, or tasks, the samples are cut to. */
 export function LaneChip() {
   const { summary, look } = useProfile();
   const taskName = (id: string) =>
@@ -87,7 +79,6 @@ export function LaneChip() {
   return null;
 }
 
-/** A button that sets one part of the look, pressed when it is set so. */
 export function LookButton<K extends keyof ProfileLook>({
   field,
   value,
@@ -100,7 +91,7 @@ export function LookButton<K extends keyof ProfileLook>({
   value: ProfileLook[K] | undefined;
   title?: string;
   pressed: boolean;
-  /** Replaces the address rather than pushing a new entry. */
+
   replace?: boolean;
   children: ReactNode;
 }) {
@@ -116,18 +107,14 @@ export function LookButton<K extends keyof ProfileLook>({
   );
 }
 
-/** Nanoseconds, rounded, with the exact count on hover. */
 export function Duration({ ns }: { ns: number }) {
   return <span title={`${formatCount(Math.round(ns))} ns`}>{formatDuration(ns)}</span>;
 }
 
-/** Bytes, rounded, with the exact count on hover. */
 export function Bytes({ bytes }: { bytes: number }) {
   return <span title={formatCount(bytes, "byte")}>{formatBytes(bytes)}</span>;
 }
 
-/** That no sample is selected, and why, when samples during calls of a
- * recording of user code alone are asked for: none can be. */
 export function NoSamples() {
   const { look, summary } = useProfile();
   return (
@@ -139,8 +126,6 @@ export function NoSamples() {
   );
 }
 
-/** What a view shows in place of an answer: why it failed, or what it is
- * reading. */
 export function Unanswered({
   error,
   reading,
@@ -157,11 +142,8 @@ export function Unanswered({
   );
 }
 
-/** The share of the samples a function's own time needs to be hot. */
 export const HOT_OWN = 0.05;
 
-/** A bar filled to `share` of its width, whose look its container's
- * class gives: a heat bar behind a row's percent, or a summary's gauge. */
 function Fill({ share }: { share: number }) {
   const style = useMemo(
     () => ({ "--share": String(Math.min(Math.max(share, 0), 1)) }) as CSSProperties,
@@ -170,8 +152,6 @@ function Fill({ share }: { share: number }) {
   return <span className="share-fill" style={style} />;
 }
 
-/** A row's percent over a bar of its share, warmer as the share grows. A
- * hot share is bold; a dim one is a column read second. */
 export function Share({
   share,
   tone,
@@ -182,8 +162,6 @@ export function Share({
   children: string;
 }) {
   return (
-    // A hot share is "strong", apart from the rows' own "hot", which marks
-    // a source line or instruction that ran at all.
     <span className={`percent share ${tone === "hot" ? "strong" : tone}`}>
       <Fill share={share} />
       <span className="value">{children}</span>
@@ -191,7 +169,6 @@ export function Share({
   );
 }
 
-/** A small gauge of a share, such as how busy the cores were. */
 export function ShareBar({ share }: { share: number }) {
   return (
     <span className="stat-bar" aria-hidden="true">
@@ -200,7 +177,6 @@ export function ShareBar({ share }: { share: number }) {
   );
 }
 
-/** How an own share reads: bold once hot, else as `otherwise`. */
 export function ownTone(share: number, otherwise: "plain" | "dim"): "plain" | "dim" | "hot" {
   return share >= HOT_OWN ? "hot" : otherwise;
 }

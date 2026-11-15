@@ -1,6 +1,3 @@
-//! Process groups of CPython programs: a child interpreter a program
-//! starts is recognized as a runtime microscope models, and joins.
-
 use std::ffi::OsString;
 use std::time::Duration;
 
@@ -14,15 +11,8 @@ use crate::support::python;
 
 const DEADLINE: Duration = Duration::from_secs(60);
 
-/// One interpreter on each side of every split a child's joining takes:
-/// the launch bootstrap (3.12) or PEP 768 (3.14), GIL or free-threaded
-/// (3.15t, and 3.13t, which takes no Python breakpoints), and a runtime in
-/// libpython or in the executable (debian-3.13).
 const SPLITS: [&str; 5] = ["3.12", "3.13t", "3.14", "3.15t", "debian-3.13"];
 
-/// A child interpreter started as `subprocess` starts one, by vfork and
-/// exec, joins its parent's group, whether its runtime is in the
-/// executable or in a libpython it depends on.
 #[tokio::test]
 async fn a_child_interpreter_joins_its_parents_group() {
     for name in SPLITS {
@@ -90,10 +80,6 @@ async fn a_child_interpreter_joins_its_parents_group() {
     }
 }
 
-/// A Python breakpoint stops in a child interpreter of each version that
-/// takes Python breakpoints, 3.12 through the launch's bootstrap, whether
-/// the child is a new interpreter `subprocess` started or a fork of its
-/// parent's.
 #[tokio::test]
 async fn a_python_breakpoint_stops_in_a_child_interpreter() {
     for how in ["spawn", "fork"] {
@@ -145,7 +131,6 @@ async fn a_python_breakpoint_stops_in_a_child_interpreter() {
                 }
             }
 
-            // 3.13's free-threaded build takes no Python breakpoints.
             let expected: &[u32] = if name == "3.13t" { &[] } else { &[2] };
             assert_eq!(stopped, expected, "{how} {name}: {seen:#?}");
             let members = group.members();
@@ -162,10 +147,6 @@ async fn a_python_breakpoint_stops_in_a_child_interpreter() {
     }
 }
 
-/// A Python breakpoint stops in the workers of a multiprocessing pool, on
-/// each version that takes Python breakpoints: workers fork from the
-/// parent before 3.14, and from a forkserver interpreter, which joins at
-/// its exec, from 3.14 on. The parent never runs the function.
 #[tokio::test]
 async fn a_python_breakpoint_stops_in_a_pools_workers() {
     for name in SPLITS {
@@ -217,7 +198,6 @@ async fn a_python_breakpoint_stops_in_a_pools_workers() {
             }
         }
 
-        // Each of the two calls stops in whichever worker runs it.
         if name == "3.13t" {
             assert!(stopped.is_empty(), "pool {name}: {seen:#?}");
         } else {

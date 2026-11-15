@@ -1,9 +1,3 @@
-// Organizations and projects on the services backend, for a signed-in
-// person on a page served on its own: the Projects pane, the Organization
-// pane, and the Account pane's organizations and invitations. Each control
-// shows only for someone services would let use it, and when services
-// refuses anyway, its reason shows where the control was.
-
 import {
   type ChangeEvent,
   type FormEvent,
@@ -72,10 +66,8 @@ import { change } from "../workbench/store";
 import { showOrg, showPane } from "./panes";
 import { OrgSingleSignOn } from "./SingleSignOn";
 
-/** A form a command asked a pane to open: New project or New organization. */
 export const asked = createStore<{ form: "project" | "org" | null }>(() => ({ form: null }));
 
-/** Opens a form when a command asks for it, now or once the pane mounts. */
 function useAsked(form: "project" | "org", open: () => void): void {
   const wanted = useStore(asked, (state) => state.form === form);
   useEffect(() => {
@@ -87,8 +79,6 @@ function useAsked(form: "project" | "org", open: () => void): void {
   }, [wanted]);
 }
 
-/** What an Organization pane keeps in the layout: the name its tab shows,
- * and the section it was left at. */
 function orgParams(pane: Pane): { name: string; section: Section } {
   const params = (pane.params ?? {}) as { name?: unknown; section?: unknown };
   return {
@@ -99,12 +89,8 @@ function orgParams(pane: Pane): { name: string; section: Section } {
 
 export const orgName = (pane: Pane): string => orgParams(pane).name;
 
-/** Where a control's request is: none, or answered; on its way; or
- * refused. Only the newest request's answer counts. */
 type Run = { kind: "idle" } | { kind: "working"; id: number } | { kind: "failed"; error: Error };
 
-/** One request a control makes at a time, with `fail` for a failure that
- * comes some other way. */
 export function useRun() {
   const [now, setNow] = useState<Run>({ kind: "idle" });
   const newest = useRef(0);
@@ -126,16 +112,11 @@ export function useRun() {
   };
 }
 
-/** One request a control makes: whether it is in flight, and why services
- * refused it. */
 export function useAction() {
   const { working, error, run } = useRun();
   return { working, error: error?.message ?? null, run };
 }
 
-/** An answer a pane asks for itself, again whenever `key` changes or it
- * calls `again`. An answer for another key is never shown; one for this
- * key stays while it is asked again. */
 export function useLoaded<T>(load: () => Promise<T>, key: string) {
   const [loaded, setLoaded] = useState<{ key: string; data: T | null; error: string | null }>({
     key,
@@ -173,7 +154,6 @@ const NO_ORGS: readonly Org[] = [];
 const NO_PROJECTS: readonly Project[] = [];
 const NO_MEMBERS: readonly Member[] = [];
 
-/** Why a pane about the person's projects has nothing to show, or null. */
 function SignedOut({ now, what }: { now: Account; what: string }) {
   if (now.kind === "in") {
     return null;
@@ -200,7 +180,6 @@ function SignedOut({ now, what }: { now: Account; what: string }) {
   );
 }
 
-/** A name to give something new or change, and Escape to give up. */
 function NameForm(props: {
   label: string;
   initial?: string;
@@ -277,12 +256,11 @@ function NameForm(props: {
   );
 }
 
-/** A button for what cannot be undone, which asks first. */
 export function Confirm(props: {
   label: string;
   question: string;
   act: () => Promise<unknown>;
-  /** What backing out is called, when "Cancel" would mean the act itself. */
+
   keep?: string;
 }) {
   const [asking, setAsking] = useState(false);
@@ -316,7 +294,6 @@ export function Confirm(props: {
   );
 }
 
-/** A choice from a short list, saved as soon as it changes. */
 function Choice<T extends string>(props: {
   label: string;
   value: T;
@@ -357,7 +334,6 @@ function Choice<T extends string>(props: {
   );
 }
 
-/** Loading, or why loading failed, for a list a pane asked for. */
 export function Loading({ error, what }: { error: string | null; what: string }) {
   return error ? (
     <p className="error" role="alert">
@@ -368,7 +344,6 @@ export function Loading({ error, what }: { error: string | null; what: string })
   );
 }
 
-/** Why a list on screen may be out of date: asking again failed. */
 function Stale({ error, what }: { error: string | null; what: string }) {
   return error ? (
     <p className="error" role="alert">
@@ -376,8 +351,6 @@ function Stale({ error, what }: { error: string | null; what: string }) {
     </p>
   ) : null;
 }
-
-// Projects
 
 export function ProjectsBody() {
   const now = useAccount();
@@ -471,8 +444,6 @@ function ShowOrgButton({
   );
 }
 
-/** Asks for a new project's name and, for an owner of any organization,
- * whose it is: the person's own by default. */
 function NewProject(props: { owners: readonly Org[]; fixed?: Org; done: () => void }) {
   const ownerId = useId();
   const orgs = useStore(directoryStore, (state) => state.orgs);
@@ -507,8 +478,6 @@ function NewProject(props: { owners: readonly Org[]; fixed?: Org; done: () => vo
   );
 }
 
-/** A project, the person's access to it, and for an admin, renaming and
- * deleting it. In an Organization pane, also which teams can reach it. */
 function ProjectRow({ project, org }: { project: Project; org?: Org }) {
   const [renaming, setRenaming] = useState(false);
   const [teams, setTeams] = useState(false);
@@ -574,8 +543,6 @@ function ProjectRow({ project, org }: { project: Project; org?: Org }) {
   );
 }
 
-/** Which of an organization's teams can reach a project, and how far. An
- * admin changes them. */
 function ProjectTeams({ project, org }: { project: Project; org: Org }) {
   const admin = project.permission === "admin";
   const granted = useLoaded(() => projectTeams(project.id), String(project.id));
@@ -724,9 +691,6 @@ function GrantRow({
   );
 }
 
-// The Account pane's organizations and invitations
-
-/** The person's invitations and organizations, under their account. */
 export function Organizations() {
   const directory = useDirectory();
   const [creating, setCreating] = useState(false);
@@ -841,8 +805,6 @@ function InvitationRow({
   );
 }
 
-// The Organization pane
-
 const SECTIONS = ["members", "projects", "teams", "settings"] as const;
 type Section = (typeof SECTIONS)[number];
 const SECTION_LABEL: Record<Section, string> = {
@@ -857,7 +819,7 @@ export function OrgBody({ id, pane }: PaneProps) {
   const now = useAccount();
   const directory = useDirectory();
   const params = useMemo(() => orgParams(pane), [pane]);
-  // Kept in the layout too, so the pane opens where it was left.
+
   const [section, setSection] = useState(params.section);
   const keep = useCallback(
     (changes: Partial<typeof params>) =>
@@ -876,7 +838,7 @@ export function OrgBody({ id, pane }: PaneProps) {
     void checkAccount();
   }, []);
   const label = org ? orgLabel(org, directory.orgs) : "";
-  // The tab shows the name services last gave, told apart from a twin.
+
   useEffect(() => {
     if (org && label !== params.name) {
       keep({ name: label });
@@ -948,7 +910,6 @@ function SectionButton({
   );
 }
 
-/** Closes the pane of an organization the person just left or deleted. */
 function leave(pane: PaneId): void {
   change((layout) => (layout.panes[pane] ? close(layout, pane) : layout));
 }
@@ -956,7 +917,7 @@ function leave(pane: PaneId): void {
 function Members({ org, me, pane }: { org: Org; me: number; pane: PaneId }) {
   const owner = org.role === "owner";
   const members = useLoaded(() => listMembers(org.id), String(org.id));
-  // Only owners may see who is invited.
+
   const invitations = useLoaded(
     () => (owner ? listInvitations(org.id) : Promise.resolve([])),
     `${org.id}:${owner}`,
@@ -970,7 +931,7 @@ function Members({ org, me, pane }: { org: Org; me: number; pane: PaneId }) {
         return;
       }
       again();
-      // Someone's own role decides what they may do next.
+
       if (member.id === me) {
         await reload();
       }
@@ -1204,7 +1165,6 @@ function OrgProjects(props: { org: Org; projects: readonly Project[]; stale: boo
           </div>
         ))}
       {mine.length === 0 ? (
-        // The pane's alert already says the list may be out of date.
         props.stale ? null : (
           <p className="muted">
             {owner ? "No projects yet." : "No projects here that you can see."}
@@ -1224,7 +1184,7 @@ function OrgProjects(props: { org: Org; projects: readonly Project[]; stale: boo
 function Teams({ org }: { org: Org }) {
   const owner = org.role === "owner";
   const teams = useLoaded(() => listTeams(org.id), String(org.id));
-  // An owner adds people from the organization's members.
+
   const members = useLoaded(
     () => (owner ? listMembers(org.id) : Promise.resolve([])),
     `${org.id}:${owner}`,

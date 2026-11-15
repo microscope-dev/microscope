@@ -1,11 +1,3 @@
-//! `js:NAME` function breakpoints: a function declared in a script stops
-//! at its first call, though the script calls it before anything else
-//! runs; so do an arrow held in a constant, a method, and a function in a
-//! required module. A function nested in another is compiled only once
-//! its parent runs, and is found when the program next resumes, so it
-//! stops at its next call. A name nothing has stays pending with why, and
-//! a qualified one is refused with the name to use.
-
 use microscope::{BreakpointOptions, BreakpointSpec, ExitStatus, StopReason};
 
 use crate::oracle;
@@ -14,7 +6,6 @@ use crate::support::node;
 
 const FIXTURE: &str = "functions.js";
 
-/// The line of `file` that carries `marker`.
 fn line_of(file: &str, marker: &str) -> u32 {
     let text = std::fs::read_to_string(node::fixture(file)).expect("read the fixture");
     let index = text
@@ -34,7 +25,6 @@ fn function(name: &str) -> (BreakpointSpec, BreakpointOptions) {
     )
 }
 
-/// The pending reasons of the run's breakpoints, in the order added.
 async fn pending(session: &NodeSession) -> Vec<String> {
     let snapshot = session
         .scenario
@@ -54,8 +44,6 @@ async fn pending(session: &NodeSession) -> Vec<String> {
         .collect()
 }
 
-/// On every build, each function stops where its body begins, in the
-/// order the program calls them, and the nested one once it is compiled.
 #[tokio::test]
 async fn function_breakpoints_stop_where_each_function_begins() {
     const NAMES: [&str; 6] = ["norm", "handler", "area", "helper", "inner", "never"];
@@ -72,7 +60,6 @@ async fn function_breakpoints_stop_where_each_function_begins() {
         let (mut session, mut reason, _events) = NodeSession::unlaunched(entry, FIXTURE)
             .run_to_stop(breakpoints)
             .await;
-        // Once Node's runtime is loaded, a qualified name is refused.
         let qualified = session
             .scenario
             .handle()
@@ -92,8 +79,6 @@ async fn function_breakpoints_stop_where_each_function_begins() {
             }
             reason = session.scenario.resume_to_stop().await;
         }
-        // The program waits for its line, with the nested function
-        // compiled, and the search that resumed it finds it.
         let running = session.scenario.start_resuming().await;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut reasons = pending(&session).await;

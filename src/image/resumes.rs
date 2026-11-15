@@ -1,10 +1,3 @@
-//! Where the functions that run coroutines go for each state, and which
-//! variables of an async body still hold their values when it resumes.
-//!
-//! Resume points are decoded from each body's dispatch on its state
-//! number, and held ranges by following the code from where each state
-//! resumes; both are the module's machine code, read once as it loads.
-
 use std::sync::Arc;
 
 use zerocopy::little_endian::{U32, U64};
@@ -15,26 +8,14 @@ use super::variables::CodeRange;
 use super::{Builder, Image, NONE, Record, Span, TableKind};
 use crate::{AddressRange, CodeInstanceId, ImageAddress, ResumePoint, ResumePoints};
 
-/// Where a code instance that runs a coroutine goes for each state, or why
-/// that is unknown.
 pub type Decoded = (CodeInstanceId, Result<ResumePoints, Arc<str>>);
 
-/// The code where the variable whose entry is at an offset still holds,
-/// as its body resumes in a state, what it held before the state's await,
-/// by the offset and the state.
 pub type Held = ((u64, u64), Vec<AddressRange<ImageAddress>>);
 
-/// What [`add_to`] encodes.
 #[derive(Debug, Clone, Default)]
 pub struct Resumes {
-    /// Where each code instance that runs a coroutine goes for each
-    /// state, or why that is unknown.
     pub points: Vec<Decoded>,
 
-    /// For a variable of an async body, by its entry's offset, and each
-    /// suspended state of the body's future: the code where the variable
-    /// still holds what it held before the state's await. A later entry
-    /// for a key replaces an earlier one.
     pub held: Vec<Held>,
 }
 
@@ -47,7 +28,6 @@ pub struct ResumeRecord {
     pub dispatch: Span<CodeRange>,
     pub points: Span<ResumePointRecord>,
 
-    /// Why the points are unknown, or [`NONE`].
     pub malformed: U32,
 }
 
@@ -83,7 +63,6 @@ impl Record for HeldRecord {
     const KIND: TableKind = TableKind::Held;
 }
 
-/// Why resume points could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the resume points do not fit an image")]
 pub struct TooMany;
@@ -95,7 +74,6 @@ fn number(count: usize) -> Result<u32, TooMany> {
         .ok_or(TooMany)
 }
 
-/// Adds `ranges` to `pool`, returning their span.
 fn pooled(
     pool: &mut Vec<CodeRange>,
     ranges: &[AddressRange<ImageAddress>],
@@ -109,8 +87,6 @@ fn pooled(
     Ok(Span::new(first, number(ranges.len())?))
 }
 
-/// Adds the resume points and held ranges to `builder`, pooling reasons in
-/// `strings`.
 pub fn add_to(
     builder: &mut Builder<'_>,
     strings: &mut StringsBuilder,
@@ -169,7 +145,6 @@ pub fn add_to(
     Ok(())
 }
 
-/// The resume points and held ranges of an image.
 #[derive(Debug, Clone, Copy)]
 pub struct ResumeView<'a> {
     strings: Strings<'a>,
@@ -197,9 +172,6 @@ impl<'a> ResumeView<'a> {
         ranges.rows(self.ranges).iter().map(CodeRange::get)
     }
 
-    /// Where the code instance `instance`, which runs a coroutine, goes
-    /// for each state, or why that is unknown; `None` for an instance that
-    /// runs none.
     pub fn resume_points(self, instance: CodeInstanceId) -> Option<Result<ResumePoints, Arc<str>>> {
         let found = self
             .records
@@ -225,9 +197,6 @@ impl<'a> ResumeView<'a> {
         }))
     }
 
-    /// The code that runs on every resumption and is no statement of the
-    /// program's: each coroutine's dispatch on its state, and the code
-    /// leading from it into each state, with the instance it is in.
     pub fn resume_code(
         self,
     ) -> impl Iterator<Item = (AddressRange<ImageAddress>, CodeInstanceId)> + 'a {
@@ -250,9 +219,6 @@ impl<'a> ResumeView<'a> {
         })
     }
 
-    /// The code where the variable whose entry is at `offset` still holds,
-    /// as the body resumes in `state`, what it held before the state's
-    /// await; `None` when that was not followed.
     pub fn held(
         self,
         offset: u64,
@@ -269,7 +235,6 @@ impl<'a> ResumeView<'a> {
     }
 }
 
-/// Checks the resume points and held ranges.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     let view = ResumeView::new(image);
     let instances = image.table::<super::functions::InstanceRecord>().len();

@@ -1,7 +1,7 @@
-// Signals a profiler test samples. interrupted raises SIGUSR1 at itself
-// the number of times its argument names, and the handler runs on the
-// signal's return from the raise, so each call of on_signal is known to
-// be a handler of a signal that interrupted interrupted, called by main.
+
+
+
+
 #define _POSIX_C_SOURCE 199309L
 #include <signal.h>
 #include <stdlib.h>

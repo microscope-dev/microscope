@@ -1,47 +1,3 @@
-//! The JavaScript frames of a thread that runs on, read from what V8
-//! publishes of them in its isolate.
-//!
-//! JavaScript keeps no frame pointer anywhere but in a thread's rbp, which
-//! only stopping the thread shows. When JavaScript calls out to native
-//! code, V8 publishes where its frames begin, in the isolate the thread
-//! runs: a call through `CEntry`, or into an API callback or accessor,
-//! builds an exit frame and stores its frame pointer as `ThreadLocalTop`'s
-//! `c_entry_fp_`; a fast C call, which builds none, stores its caller's
-//! frame pointer and return address in `IsolateData`. `JSEntry` saves both
-//! in its entry frame and clears them as it enters JavaScript again, and
-//! keeps the outermost entry frame's pointer as `js_entry_sp_`, 0 while
-//! the thread runs no JavaScript. A thread blocked in native code that
-//! JavaScript called can therefore be read from memory alone, frame by
-//! frame, as the stopped thread is, each frame described as
-//! [`frames::describe`] describes it at a stop.
-//!
-//! The caller proves the thread did not run during the read ([`LiveThread`]).
-//! This module validates:
-//!
-//! - `ThreadLocalTop`'s `isolate_` is the isolate it belongs to, which a
-//!   wrong layout would not give;
-//! - the thread entered its isolate from no other isolate, whose
-//!   JavaScript would lie below the isolate's outermost entry, beyond what
-//!   the isolate publishes ([`Constant::EntryStackItemPreviousIsolate`]);
-//! - no frame pointer is published without an outermost entry, the stack
-//!   can be walked (V8's deoptimizer clears `stack_is_iterable` while it
-//!   rewrites a frame), and V8 is not collecting garbage;
-//! - an exit frame's marker is an exit frame's, and every frame lies on
-//!   the thread's own stack, above its stack pointer and up to the
-//!   outermost entry, each above the one before.
-//!
-//! Frames on another thread's stack identify a helper holding, but not
-//! entering, the isolate (`LocalHeap::SetCurrent`). Only `Isolate::Enter`
-//! permits JavaScript execution; `LocalHeap` sets the current isolate only
-//! for background workers. This distinction requires a private heap.
-//! With `--shared-heap`, `--shared-string-table`, or `--harmony-struct`
-//! (off by default in Node), V8 does not guarantee work stays within an
-//! isolate. Such threads are excluded with [`SHARED_HEAP`], based on the
-//! isolate's `uses_shared_heap_flag`.
-//!
-//! Anything else leaves the thread out with the reason: never a shorter
-//! stack, nor a guessed one.
-
 use super::Statics;
 use super::frames;
 use super::objects::{Problem, Reader};
@@ -54,14 +10,10 @@ use crate::runtime_model::{
 use crate::unwind::{RBP, RegisterFile};
 use crate::{AddressRange, CodeRole, ImageAddress, SourceLanguage, ThreadLocal, VirtualAddress};
 
-/// The deepest stack read.
 const MOST_FRAMES: usize = 4096;
 
-/// The most entries of one isolate read.
 const MOST_ENTRIES: usize = 64;
 
-/// Why a thread's frames are not read, each named once so that a profile
-/// counts the threads left out for each.
 pub(super) const RUNNING: &str = "it runs JavaScript, whose frames V8 publishes only while \
                                   JavaScript calls out to native code";
 pub(super) const COLLECTING: &str = "V8 is collecting its isolate's garbage";
@@ -82,25 +34,19 @@ pub(super) const UNPUBLISHED: &str =
 pub(super) const FOREIGN_CODE: &str =
     "a frame its isolate names runs code that is neither V8's builtins nor code V8 generated";
 
-/// What reading a thread needs of the module that carries V8.
 pub(super) struct Context<'a> {
     pub table: &'a mut Table,
     pub encoding: Encoding,
     pub statics: &'a Statics,
 
-    /// Where each thread keeps its current isolate.
     pub isolate: ThreadLocal,
 
-    /// How far into an isolate its stack of entries is.
     pub entry_stack: u64,
 
-    /// The embedded builtins, by the image's addresses its symbols give,
-    /// and by the virtual addresses V8 stored for them.
     pub builtins: Option<AddressRange<ImageAddress>>,
     pub stored_builtins: Option<AddressRange<VirtualAddress>>,
 }
 
-/// The words an isolate publishes about its thread's frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Published {
     isolate: u64,
@@ -113,7 +59,6 @@ struct Published {
     vm_state: u16,
 }
 
-/// The offsets [`Published`] is read at, and the frames' slots.
 struct Offsets {
     top: u64,
     top_isolate: u64,
@@ -177,8 +122,6 @@ impl Offsets {
     }
 }
 
-/// The markers, each a frame type as a Smi, that tell V8's own frames
-/// apart.
 struct Markers {
     exits: Vec<u64>,
     entries: Vec<u64>,
@@ -233,7 +176,6 @@ impl Markers {
     }
 }
 
-/// The JavaScript frames of `thread`, read by `reader` through `context`.
 pub(super) fn read(
     stop: &dyn RuntimeStop,
     reader: &Reader<'_>,
@@ -249,8 +191,6 @@ pub(super) fn read(
     }
 }
 
-/// Why a thread's frames are not read: one of this module's named reasons,
-/// or what could not be read.
 #[derive(Debug)]
 enum Unread {
     Named(&'static str),
@@ -269,8 +209,6 @@ fn frames_of(
     context: &mut Context<'_>,
     thread: &LiveThread<'_>,
 ) -> Result<LiveFrames, Unread> {
-    // Read with the reader's blocks, unlike `current_isolate`'s: the slot
-    // lies in the thread's own pages, which a read before this one read.
     let cannot = |reason: &dyn std::fmt::Display| {
         Problem::from(format!("its isolate cannot be found: {reason}"))
     };
@@ -305,10 +243,6 @@ fn frames_of(
         entered_alone(reader, &offsets, isolate, context.entry_stack)?;
         return Ok(LiveFrames::None);
     }
-    // The outermost entry on another thread's stack: the isolate's
-    // JavaScript runs there, and this thread only holds the isolate, as
-    // V8's helpers do, unless the heap is shared, which lets V8 set the
-    // isolate where it otherwise would not.
     if !thread.stack.contains(&published.js_entry_sp) {
         if published.uses_shared_heap != 0 {
             return Err(Unread::Named(SHARED_HEAP));
@@ -347,7 +281,6 @@ fn frames_of(
     walk.frames(context, thread, start)
 }
 
-/// The words `isolate` publishes, read at `offsets`.
 fn publish(reader: &Reader<'_>, offsets: &Offsets, isolate: u64) -> Result<Published, Problem> {
     let top = isolate.wrapping_add(offsets.top);
     let word = |offset: u64| reader.word(top.wrapping_add(offset));
@@ -369,8 +302,6 @@ fn publish(reader: &Reader<'_>, offsets: &Offsets, isolate: u64) -> Result<Publi
     })
 }
 
-/// Fails unless the thread that entered `isolate` had entered no other
-/// isolate before it, whose JavaScript would lie below this one's.
 fn entered_alone(
     reader: &Reader<'_>,
     offsets: &Offsets,
@@ -393,17 +324,12 @@ fn entered_alone(
     .into())
 }
 
-/// Where a walk begins: the frame that called out of JavaScript, by its
-/// frame pointer and return address, through an exit frame or a fast C
-/// call.
 #[derive(Debug, Clone, Copy)]
 enum Start {
     Exit((u64, u64)),
     Fast(u64, u64),
 }
 
-/// A walk of one thread's frames, from where its isolate says they begin
-/// to its outermost entry.
 struct Walk<'a, 'r> {
     reader: &'a Reader<'r>,
     offsets: &'a Offsets,
@@ -417,8 +343,6 @@ impl Walk<'_, '_> {
         self.reader.word(fp.wrapping_add_signed(offset))
     }
 
-    /// The caller of the exit frame at `fp`, by its frame pointer and
-    /// return address.
     fn exit_caller(&self, fp: u64) -> Result<(u64, u64), Unread> {
         if fp <= self.sp || fp >= self.js_entry_sp {
             return Err(Unread::Named(OFF_STACK));
@@ -488,12 +412,6 @@ impl Walk<'_, '_> {
                 CodeAt::Image(address) if is_builtin(self.reader, context, address) => false,
                 CodeAt::Image(_) | CodeAt::Other => return Err(Unread::Named(FOREIGN_CODE)),
             };
-            // A fast C call from V8's own code in a JavaScript frame, as a
-            // bytecode handler's, saves no bytecode offset first
-            // (`CodeAssembler::CallCFunction` runs no `CallPrologue`), so
-            // the frame's offset may be an earlier call's. A frame of V8's
-            // own keeps a Smi, its marker, where JavaScript keeps its
-            // context.
             if std::mem::take(&mut fast) && !generated && marker & 1 != 0 {
                 return Err(Unread::Named(FAST_FROM_BUILTIN));
             }
@@ -506,8 +424,6 @@ impl Walk<'_, '_> {
         Err(Problem::from(format!("its stack is deeper than {MOST_FRAMES} frames")).into())
     }
 
-    /// Where the walk goes on past the inner entry frame at `fp`: the
-    /// frame that called out of JavaScript before it, which it saved.
     fn inner_entry(&self, fp: u64) -> Result<(u64, u64, bool), Unread> {
         if let Some((fast_fp, fast_pc)) = self.offsets.next_fast {
             let saved = self.word(fp, fast_fp)?;
@@ -526,8 +442,6 @@ impl Walk<'_, '_> {
         Ok((caller, pc, false))
     }
 
-    /// Adds what the frame at `fp`, at `pc`, runs to `frames`, as a stopped
-    /// thread's frame is described.
     fn describe(
         &self,
         context: &mut Context<'_>,
@@ -603,9 +517,6 @@ impl Walk<'_, '_> {
     }
 }
 
-/// Whether the image's code at `address` is one of V8's embedded builtins:
-/// within the bounds its symbols give, or else within those V8 stored, in
-/// the module's own mapping.
 fn is_builtin(reader: &Reader<'_>, context: &Context<'_>, address: ImageAddress) -> bool {
     if let Some(builtins) = context.builtins {
         return builtins.start <= address && address < builtins.end;
@@ -619,11 +530,6 @@ fn is_builtin(reader: &Reader<'_>, context: &Context<'_>, address: ImageAddress)
 
 #[cfg(test)]
 mod tests {
-    //! Each rule the reader proves before it believes a word, on a thread
-    //! the tests write by hand on 14.6's generated layout: an isolate that
-    //! publishes an exit frame whose caller is the outermost entry frame,
-    //! which holds no JavaScript frame, then each lie or state a rule must
-    //! catch.
 
     use std::collections::HashMap;
 
@@ -635,8 +541,6 @@ mod tests {
     use crate::image::v8::{V8Layout, V8Version};
     use crate::{LoadBias, ThreadId};
 
-    /// Memory the tests write, by address; what no test wrote is
-    /// unreadable.
     #[derive(Default, Clone)]
     struct Memory(HashMap<u64, u8>);
 
@@ -689,16 +593,11 @@ mod tests {
 
     const THREAD: ThreadId = ThreadId::new(7);
     const THREAD_POINTER: u64 = 0x7000_0000;
-    /// Where the thread keeps its isolate, from its thread pointer.
     const SLOT: i64 = 0x10;
     const ISOLATE: u64 = 0x1000_0000;
-    /// How far into an isolate its entries are, and the one entry.
     const ENTRY_STACK: u64 = 0x2000;
     const ITEM: u64 = 0x1100_0000;
 
-    /// The thread's stack, its stack pointer, and its frames: the exit
-    /// frame, an inner entry frame and the exit frame it saved, and the
-    /// outermost entry frame.
     const STACK: std::ops::Range<u64> = 0x5000_0000..0x6000_0000;
     const SP: u64 = 0x5000_1000;
     const EXIT: u64 = 0x5000_2000;
@@ -707,8 +606,6 @@ mod tests {
     const ENTRY: u64 = 0x5000_8000;
     const OTHER_STACK: u64 = 0x6800_0000;
 
-    /// The frame types the tests give the markers, chosen by hand: any
-    /// distinct numbers serve.
     const ENTRY_TYPE: i64 = 1;
     const CONSTRUCT_ENTRY_TYPE: i64 = 2;
     const EXIT_TYPE: i64 = 3;
@@ -719,7 +616,6 @@ mod tests {
         frame_type.cast_unsigned() << 1
     }
 
-    /// Code: the embedded builtins, and an address in no code V8 owns.
     const BUILTIN: u64 = 0x40_0000;
     const BUILTINS: AddressRange<ImageAddress> = AddressRange {
         start: ImageAddress::new(0x40_0000),
@@ -740,13 +636,10 @@ mod tests {
         layout
     }
 
-    /// The offset `constant` gives in `layout`.
     fn at(layout: &V8Layout, constant: Constant) -> i64 {
         layout.constant(constant).expect("a generated offset")
     }
 
-    /// The thread as the tests begin: blocked in native code that the
-    /// outermost JavaScript entry's frame called through an exit frame.
     fn blocked(layout: &V8Layout) -> Memory {
         let offset = |constant| at(layout, constant).cast_unsigned();
         let top = ISOLATE + offset(Constant::IsolateThreadLocalTopOffset);
@@ -755,7 +648,6 @@ mod tests {
         memory.word(top + offset(Constant::ThreadLocalTopIsolate), ISOLATE);
         memory.word(top + offset(Constant::ThreadLocalTopCEntryFp), EXIT);
         memory.word(top + offset(Constant::ThreadLocalTopJsEntrySp), ENTRY);
-        // An external state, which is not the collector's.
         memory.word(top + offset(Constant::ThreadLocalTopCurrentVmState), 6);
         memory.word(
             ISOLATE + offset(Constant::IsolateFastCCallCallerFpOffset),
@@ -784,8 +676,6 @@ mod tests {
         memory
     }
 
-    /// Writes the frame at `fp`: its marker, and its caller's frame
-    /// pointer and return address.
     fn frame(layout: &V8Layout, memory: &mut Memory, fp: u64, marker: u64, caller: (u64, u64)) {
         let slot = |constant| fp.wrapping_add_signed(at(layout, constant));
         memory.word(slot(Constant::CommonFrameContextOrFrameTypeOffset), marker);
@@ -793,8 +683,6 @@ mod tests {
         memory.word(slot(Constant::CommonFrameCallerPcOffset), caller.1);
     }
 
-    /// Writes `value` to the isolate's word at the generated `constant`,
-    /// within its `ThreadLocalTop` if `top`.
     fn publish(layout: &V8Layout, memory: &mut Memory, constant: Constant, top: bool, value: u64) {
         let base = if top {
             ISOLATE + at(layout, Constant::IsolateThreadLocalTopOffset).cast_unsigned()
@@ -812,8 +700,6 @@ mod tests {
         }
     }
 
-    /// What the reader reads of `memory`'s thread, with its stack pointer
-    /// at `sp`.
     fn read_at(layout: &V8Layout, memory: &Memory, sp: u64) -> LiveFrames {
         let reader = Reader {
             stop: memory,
@@ -855,8 +741,6 @@ mod tests {
         LiveFrames::Unread(reason.into())
     }
 
-    /// Whether `frames` leaves the thread out with a problem that says
-    /// `text`.
     fn problem(frames: &LiveFrames, text: &str) -> bool {
         matches!(frames, LiveFrames::Unread(reason)
             if reason.starts_with("its frames cannot be read") && reason.contains(text))
@@ -893,8 +777,6 @@ mod tests {
         );
         assert_eq!(read_of(&layout, &memory), LiveFrames::None, "no entry");
 
-        // A helper thread that holds the isolate while JavaScript runs on
-        // the thread that entered it.
         let mut memory = blocked(&layout);
         publish(
             &layout,
@@ -905,7 +787,6 @@ mod tests {
         );
         assert_eq!(read_of(&layout, &memory), LiveFrames::None, "another stack");
 
-        // With the heap shared, holding the isolate proves nothing.
         let shared =
             ISOLATE + at(&layout, Constant::IsolateUsesSharedHeapFlagOffset).cast_unsigned();
         memory.byte(shared, 1);
@@ -915,7 +796,6 @@ mod tests {
             "shared heap"
         );
 
-        // But a thread whose own stack holds the entry is read as ever.
         let mut memory = blocked(&layout);
         let frames = read_of(&layout, &memory);
         memory.byte(shared, 1);
@@ -992,7 +872,6 @@ mod tests {
             unread(OUTSIDE_STACK)
         );
         assert_eq!(read_at(&layout, &memory, ENTRY + 8), unread(OFF_STACK));
-        // The exit frame below the stack pointer is one that returned.
         assert_eq!(read_at(&layout, &memory, EXIT + 8), unread(OFF_STACK));
     }
 
@@ -1004,8 +883,6 @@ mod tests {
         memory.word(ITEM + previous, ISOLATE + 0x100_0000);
         assert_eq!(read_of(&layout, &memory), unread(NESTED));
 
-        // And so is one that left JavaScript for good, whose isolate's
-        // entries say the same.
         publish(
             &layout,
             &mut memory,
@@ -1023,8 +900,6 @@ mod tests {
         assert_eq!(read_of(&layout, &memory), unread(NESTED), "no entry");
     }
 
-    /// The deoptimizer leaves an exit frame's pointer published while it
-    /// rewrites the frames, and says so only by `stack_is_iterable`.
     #[test]
     fn a_stack_being_rewritten_or_collected_is_left_out() {
         let layout = layout();
@@ -1075,7 +950,6 @@ mod tests {
         for (marker, expected) in [
             (marker(ENTRY_TYPE), unread(STALE_EXIT)),
             (marker(STUB_TYPE), unread(STALE_EXIT)),
-            // A JavaScript frame's context, a heap object.
             (0x2000_0001, unread(STALE_EXIT)),
             (marker(WASM_TYPE), unread(WEBASSEMBLY)),
         ] {
@@ -1113,7 +987,6 @@ mod tests {
         memory.word(INNER.wrapping_add_signed(saved), 0);
         assert!(problem(&read_of(&layout, &memory), "saved no frame"));
 
-        // A saved exit frame below the inner entry's is not on the walk.
         memory.word(INNER.wrapping_add_signed(saved), EXIT);
         assert_eq!(read_of(&layout, &memory), unread(OFF_STACK));
     }
@@ -1134,9 +1007,6 @@ mod tests {
         assert_eq!(read_of(&layout, &memory), unread(FOREIGN_CODE));
     }
 
-    /// A bytecode handler's fast C call saves no bytecode offset first; it
-    /// runs in the interpreter's frame, a JavaScript frame, which keeps its
-    /// context, a heap object, where V8's own frames keep a marker.
     #[test]
     fn a_fast_call_from_a_builtins_frame_is_left_out() {
         let layout = layout();

@@ -1,8 +1,8 @@
-"""Python breakpoints: lines, functions, conditions, hit counts and logs.
 
-Each marked line is where a test sets a breakpoint. The program prints what
-it computed, so stopping must change nothing; it ends by forking a child.
-"""
+
+
+
+
 import os
 import sys
 

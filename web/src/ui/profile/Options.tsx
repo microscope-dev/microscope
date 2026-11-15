@@ -1,6 +1,3 @@
-// How the profile's frames are drawn, out of the toolbar's way: a button
-// that counts what differs from the defaults, and a popover that sets it.
-
 import { type ChangeEvent, type ReactNode, useCallback, useRef, useState } from "react";
 
 import { type ProfileLook, transformed, withLook } from "../../profile/look";
@@ -17,11 +14,8 @@ const GRANULARITIES: { by: ProfileGranularity; label: string }[] = [
   { by: "address", label: "instructions" },
 ];
 
-/** A trace of system calls alone has no frames to invert, fold, or compare. */
 const sampled = (summary: ProfileSummary) => summary.samples > 0 || summary.syscalls === 0;
 
-/** The Options button and its popover, which set how a pane draws its
- * frames, or nothing for a profile with nothing to set. */
 export function Options() {
   const { summary } = useProfile();
   const [open, setOpen] = useState(false);
@@ -49,7 +43,6 @@ export function Options() {
   );
 }
 
-/** Its focus goes back to the Options button when it closes. */
 function Popover() {
   const { summary, look, setLook } = useProfile();
   const dialog = useRef<HTMLDivElement>(null);
@@ -76,7 +69,7 @@ function Popover() {
         if (on) {
           return transformed(prev, { op: "collapseCycles", name: "" });
         }
-        // Only this transform goes; those after it still name their frames.
+
         const kept = (prev.tf ?? []).filter((entry) => entry !== COLLAPSE_CYCLES);
         return withLook(prev, "tf", kept.length > 0 ? kept : undefined);
       }, true);
@@ -91,7 +84,7 @@ function Popover() {
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a popover, not a modal <dialog>
       role="dialog"
       aria-label="Options"
-      // Escape closes it rather than leave the view.
+
       data-keys="escape"
     >
       {sampled(summary) ? (
@@ -181,7 +174,6 @@ function Popover() {
   );
 }
 
-/** A checkbox that sets one part of the look to `on` or `off`. */
 function LookCheck<K extends keyof ProfileLook>({
   field,
   title,

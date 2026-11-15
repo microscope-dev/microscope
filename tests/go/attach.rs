@@ -1,7 +1,3 @@
-//! Attaching to a Go server that runs on its own: its goroutines are
-//! listed, a request stops at a breakpoint in its handler, and detaching
-//! leaves it serving.
-
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -14,7 +10,6 @@ use crate::support::{self, ExternalProcess, Scenario};
 
 const SOURCE: &str = "tests/fixtures/go/served/main.go";
 
-/// The body of the server's answer to a GET of `path`.
 fn get(address: &str, path: &str) -> String {
     let mut stream = TcpStream::connect(address).expect("connect to the server");
     stream
@@ -45,7 +40,6 @@ async fn an_attached_server_stops_for_a_request_and_serves_on_once_detached() {
     let mut scenario =
         Scenario::attached("served", server.attach().await).checking_stops(check_go_stop);
 
-    // The server's goroutine waits to accept a connection.
     let tasks = scenario
         .operation("tasks", scenario.handle().tasks(None, 256))
         .await;
@@ -74,7 +68,6 @@ async fn an_attached_server_stops_for_a_request_and_serves_on_once_detached() {
     );
     assert_eq!(place(&scenario).await, ("main.count".to_owned(), line));
 
-    // Detached, the server answers the request it stopped in, and more.
     scenario.remove_breakpoint(breakpoint.id).await;
     scenario.shutdown().await;
     assert_eq!(first.join().expect("the first request"), "1");

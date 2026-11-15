@@ -1,27 +1,11 @@
-//! Where a thread stands with respect to a system call, through every event
-//! that changes it: running while catchpoints watch its calls, inside a
-//! call no catchpoint caught, at a caught call's entry or exit, running in
-//! a call past its entry, about to step into a call, and in a vfork whose
-//! entry was caught.
-//!
-//! Every phase is reached through the controller's messages and wait
-//! statuses, as in the run-phase table, so the table holds however the
-//! controller keeps a thread's call. An exit stop's arguments show whether
-//! the thread kept what its entry said: the fake kernel's registers name
-//! call 0 with no arguments, which is what an exit with its entry unseen
-//! reports.
-
 use super::lifecycle::{Reader, reader, send};
 use super::run_phase::{OTHER, Run, stopped};
 use super::syscalls::info::{AUDIT_ARCH_X86_64, OP_ENTRY, OP_EXIT, SyscallInfo};
 use super::*;
 use crate::syscalls::{Abi, SyscallId};
 
-/// The thread each phase is about. It is not the leader, so its exit ends
-/// only itself.
 const THREAD: Pid = OTHER;
 
-/// The leader, the thread's one sibling.
 const SIBLING: Pid = Pid::from_raw(5000);
 
 const CLOSE: u32 = 3;
@@ -29,14 +13,10 @@ const GETPID: u32 = 39;
 const FORK: u32 = 57;
 const VFORK: u32 = 58;
 
-/// What `close` is passed, which no register of the fake kernel holds.
 const FD: u64 = 7;
 
-/// Where the thread stands in the phases that step into a call, over a
-/// `syscall` instruction.
 const AT_SYSCALL: u64 = 0x5000;
 
-/// The vfork child, which the controller never traces as a thread.
 const VFORK_CHILD: Pid = Pid::from_raw(6000);
 
 impl Run {
@@ -87,7 +67,6 @@ impl Run {
         reader(receiver)
     }
 
-    /// `pid` stops at the entry of `call`, passed `first` first.
     fn entry(&mut self, pid: Pid, call: u32, first: u64) {
         self.syscall_stop(
             pid,
@@ -101,8 +80,6 @@ impl Run {
         );
     }
 
-    /// `pid` stops at the exit of the call it is in, which returns
-    /// `value`.
     fn exit_call(&mut self, pid: Pid, value: i64) {
         self.syscall_stop(
             pid,
@@ -126,8 +103,6 @@ impl Run {
         self.harness.trace().syscall_stops.borrow_mut().remove(&pid);
     }
 
-    /// `pid` stops at the ptrace event `event`, whose message names
-    /// [`VFORK_CHILD`].
     fn call_event(&mut self, pid: Pid, event: libc::c_int) {
         self.harness
             .trace()
@@ -137,7 +112,6 @@ impl Run {
         self.harness.trace().clone.replace(None);
     }
 
-    /// Every catchpoint's hits so far.
     fn catches(&self) -> String {
         self.harness
             .controller
@@ -149,7 +123,6 @@ impl Run {
     }
 }
 
-/// Two threads stopped at a pause, catching `call` at `phase`.
 fn stopped_catching(call: u32, phase: crate::CatchPhase) -> Run {
     let mut run = stopped(false);
     let mut caught = run.catch(call, phase);
@@ -173,8 +146,6 @@ fn continued(mut run: Run) -> Run {
     run
 }
 
-/// Builds the call phase `name`. Each catches `close`, at its entry and
-/// exit unless the phase says otherwise.
 fn phase(name: &str) -> Run {
     use crate::CatchPhase::{Both, Exit};
 
@@ -293,10 +264,6 @@ const EVENTS: [&str; 13] = [
     "thread exits",
 ];
 
-/// One event in one phase: what each request was answered, where the run
-/// settles once the kernel has answered everything asked of it, and how
-/// many calls each catchpoint caught. An edit at a stop is followed by a
-/// continue, to show how each thread runs on.
 fn outcome(name: &str, event: &str) -> Option<String> {
     let mut run = phase(name);
     let stopped = run.is_stopped();
@@ -329,8 +296,6 @@ fn outcome(name: &str, event: &str) -> Option<String> {
             run.exit_call(THREAD, 5);
             none()
         }
-        // A thread waiting for its vfork child takes no signal until the
-        // child execs or exits.
         "signal" if thread_runs && !vforked => {
             run.signal(THREAD, libc::SIGALRM);
             none()
@@ -392,7 +357,6 @@ fn outcome(name: &str, event: &str) -> Option<String> {
     ))
 }
 
-/// The table's rows, as [`outcome`] writes them.
 const EXPECTED: &[&str] = &[
     "running / continue: NotStopped -> running e2 [] {} (c1:0)",
     "running / uncatch: ok -> running e2 [] {request_stop 5000, request_stop 5001, continue 5000 None, continue 5001 None} ()",
@@ -486,10 +450,6 @@ const EXPECTED: &[&str] = &[
     "at a fork inside a call past its caught entry / catch getpid: ok, continue ok -> running e4 [continued e4] {remove_site 0x40, step 5000, reinstall_site 0x40, continue_to_syscall 5000, continue_to_syscall 5001} (c1:1 c2:0)",
 ];
 
-/// Each run-control request and call event, in each phase of a thread's
-/// system call, is answered and settles as it always has: which stop is
-/// published and what call it names, whether each thread resumes to its
-/// next system-call stop, and how many calls each catchpoint caught.
 #[test]
 fn each_call_event_settles_the_same_in_each_phase() {
     let actual: Vec<String> = PHASES

@@ -1,5 +1,3 @@
-//! Renders debugger replies other than values.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -26,8 +24,6 @@ use crate::present::frames;
 
 const HEX_DUMP_BYTES_PER_LINE: usize = 16;
 
-/// An expression's error, with a caret line under the text it is about and
-/// the hint that rewrites it, when there is one.
 pub fn expression_error(text: &str, error: &microscope::ExpressionError) -> String {
     let start = (error.span.start as usize).min(text.len());
     let end = (error.span.end as usize).clamp(start, text.len());
@@ -49,7 +45,6 @@ pub fn expression_error(text: &str, error: &microscope::ExpressionError) -> Stri
     output
 }
 
-/// How a task ended, as a stop says it: `task 7 finished`.
 pub const fn task_ending(ending: microscope::TaskEnding) -> &'static str {
     match ending {
         microscope::TaskEnding::Finished => "finished",
@@ -57,7 +52,6 @@ pub const fn task_ending(ending: microscope::TaskEnding) -> &'static str {
     }
 }
 
-/// Returns `count noun`, adding an `s` unless the count is one.
 pub fn plural(count: u64, noun: &str) -> String {
     format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
@@ -106,7 +100,6 @@ pub fn help(
     output
 }
 
-/// A command's other names, joined.
 fn alias_list(command: &CommandSpec) -> String {
     aliases(command).collect::<Vec<_>>().join(", ")
 }
@@ -135,8 +128,6 @@ pub fn command_help(command: &CommandSpec, renderer: Renderer) -> String {
     output
 }
 
-/// A new catchpoint: `catchpoint c1: syscalls openat, read, at entry and
-/// exit, if $ret < 0`.
 pub fn catchpoint(catchpoint: &microscope::Catchpoint, renderer: Renderer) -> String {
     format!(
         "{} {}",
@@ -178,7 +169,6 @@ fn catchpoint_line(catchpoint: &microscope::Catchpoint, renderer: Renderer) -> S
     )
 }
 
-/// Every catchpoint, one a line, with its hits.
 pub fn catchpoints(catchpoints: &[microscope::Catchpoint], renderer: Renderer) -> String {
     if catchpoints.is_empty() {
         return renderer.paint(Role::Metadata, "no catchpoints").to_string();
@@ -223,8 +213,6 @@ fn breakpoint_location(location: &BreakpointLocation, renderer: Renderer) -> Str
     }
 }
 
-/// Describes which hits a breakpoint or watchpoint that counted
-/// `hit_count` hits stops at, or nothing when it stops at every hit.
 fn hit_condition(
     condition: Option<HitCondition>,
     hit_count: u64,
@@ -239,8 +227,6 @@ fn hit_condition(
     Some(text)
 }
 
-/// A catchpoint's stop: `stopped at catchpoint c1 as the call began:
-/// openat(AT_FDCWD, "/etc/hosts", O_RDONLY)`.
 fn caught_stop(stop: &microscope::SyscallStop, renderer: Renderer) -> String {
     format!(
         "{} at {} {} {}",
@@ -255,7 +241,6 @@ fn caught_stop(stop: &microscope::SyscallStop, renderer: Renderer) -> String {
     )
 }
 
-/// `catchpoint c1` or `catchpoints c1, c2`.
 fn catchpoint_ids(ids: &[microscope::CatchpointId], renderer: Renderer) -> String {
     let noun = if ids.len() == 1 {
         "catchpoint"
@@ -270,7 +255,6 @@ fn catchpoint_ids(ids: &[microscope::CatchpointId], renderer: Renderer) -> Strin
     format!("{noun} {}", ids.join(", "))
 }
 
-/// Names the breakpoint, watchpoint, or catchpoint a condition belongs to.
 pub fn condition_owner(owner: ConditionOwner) -> String {
     match owner {
         ConditionOwner::Breakpoint(id) => format!("breakpoint {id}"),
@@ -348,7 +332,6 @@ pub fn breakpoint(breakpoint: &Breakpoint, placed: &[Placed], renderer: Renderer
     for location in placed {
         let described = self::placed(location, renderer);
 
-        // A location without a source line already says its address.
         if location.source.is_none() {
             let _ = write!(output, "\n  {described}");
         } else {
@@ -363,21 +346,16 @@ pub fn breakpoint(breakpoint: &Breakpoint, placed: &[Placed], renderer: Renderer
     output
 }
 
-/// Where one breakpoint location is, as far as its module tells.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placed {
     pub location: BreakpointLocation,
 
-    /// The innermost function, inline or not, containing it.
     pub function: Option<Arc<str>>,
     pub source: Option<(Arc<PathBuf>, LineNumber)>,
 
-    /// The module containing it, unless it is the program's own.
     pub module: Option<Arc<PathBuf>>,
 }
 
-/// `parse_header at parse.c:41 in libparse.so`, saying as much as is known
-/// and the address when no source line is.
 pub fn placed(placed: &Placed, renderer: Renderer) -> String {
     let mut output = match (&placed.function, &placed.source) {
         (Some(function), Some((path, line))) => format!(
@@ -388,7 +366,6 @@ pub fn placed(placed: &Placed, renderer: Renderer) -> String {
         (None, Some((path, line))) => renderer
             .paint(Role::Metadata, renderer.location(path, line))
             .to_string(),
-        // A runtime's function has no address to be at.
         (Some(_), None) if matches!(placed.location, BreakpointLocation::Managed(_)) => {
             breakpoint_location(&placed.location, renderer)
         }
@@ -411,8 +388,6 @@ pub fn placed(placed: &Placed, renderer: Renderer) -> String {
     output
 }
 
-/// A location's address, or for one a runtime manages, which has none,
-/// that it is managed.
 fn breakpoint_address(location: &BreakpointLocation, renderer: Renderer) -> String {
     match location {
         BreakpointLocation::Image(address) => renderer.paint(Role::Metadata, address).to_string(),
@@ -421,7 +396,6 @@ fn breakpoint_address(location: &BreakpointLocation, renderer: Renderer) -> Stri
     }
 }
 
-/// Describes a breakpoint whose hit condition changed.
 pub fn breakpoint_hit_condition(breakpoint: &Breakpoint, renderer: Renderer) -> String {
     format!(
         "{} {} {}, hit {} so far",
@@ -433,7 +407,6 @@ pub fn breakpoint_hit_condition(breakpoint: &Breakpoint, renderer: Renderer) -> 
     )
 }
 
-/// Describes a watchpoint whose hit condition changed.
 pub fn watchpoint_hit_condition(watchpoint: &Watchpoint, renderer: Renderer) -> String {
     format!(
         "{} {} {}, hit {} so far",
@@ -445,8 +418,6 @@ pub fn watchpoint_hit_condition(watchpoint: &Watchpoint, renderer: Renderer) -> 
     )
 }
 
-/// A table of breakpoints: whether each is enabled, its hits, where it
-/// is, and its options, with several locations listed beneath it.
 pub fn breakpoints(rows: &[(&Breakpoint, Vec<Placed>)], renderer: Renderer) -> String {
     if rows.is_empty() {
         return renderer.paint(Role::Metadata, "no breakpoints").to_string();
@@ -524,7 +495,6 @@ pub fn breakpoints(rows: &[(&Breakpoint, Vec<Placed>)], renderer: Renderer) -> S
     table.render(3, renderer)
 }
 
-/// `+` or `●` for enabled, `-` or `○` for disabled.
 fn enabled_mark(enabled: bool, renderer: Renderer) -> String {
     match (enabled, renderer.unicode()) {
         (true, true) => renderer.paint(Role::Success, "\u{25cf}").to_string(),
@@ -534,8 +504,6 @@ fn enabled_mark(enabled: bool, renderer: Renderer) -> String {
     }
 }
 
-/// A breakpoint's or watchpoint's hit condition and condition, as `break`
-/// takes them.
 fn counted_options(
     hit: Option<HitCondition>,
     hit_count: u64,
@@ -560,12 +528,9 @@ fn counted_options(
     options
 }
 
-/// Rows of cells padded into columns by their visible width, each with
-/// lines beneath it that start where the column `beneath` does.
 struct Table {
     headings: Vec<String>,
 
-    /// The columns aligned right, as counts are.
     right: &'static [usize],
     rows: Vec<(Vec<String>, Vec<String>)>,
 }
@@ -586,7 +551,6 @@ impl Table {
     fn render(self, beneath: usize, renderer: Renderer) -> String {
         let columns = self.headings.len();
 
-        // A last column every row leaves empty is not shown.
         let shown = if self.rows.iter().all(|(cells, _)| {
             columns
                 .checked_sub(1)
@@ -658,13 +622,10 @@ impl Table {
     }
 }
 
-/// The width a terminal shows `text` in, without its color and link
-/// escapes.
 fn visible_width(text: &str) -> usize {
     super::terminal::plain(text).chars().count()
 }
 
-/// Names a watchpoint by the expression that resolved it, or by its bytes.
 pub fn watch_subject(watchpoint: &Watchpoint) -> String {
     watchpoint.expression.as_ref().map_or_else(
         || format!("{}:{}", watchpoint.address, watchpoint.byte_size),
@@ -680,7 +641,6 @@ fn watch_scope_suffix(scope: &WatchScope) -> String {
             format!(" (frame {activation} of thread {thread})")
         }
 
-        // The watch follows the task's stack wherever its runtime moves it.
         WatchScope::Task { task, activation } => {
             format!(" (frame {activation:#x} below the top of task {task}'s stack)")
         }
@@ -713,7 +673,6 @@ pub fn watchpoint_set(watchpoint: &Watchpoint, renderer: Renderer) -> String {
     output
 }
 
-/// Describes a watchpoint whose condition changed.
 pub fn watchpoint_condition(watchpoint: &Watchpoint, renderer: Renderer) -> String {
     let id = renderer.paint(Role::Metadata, watchpoint.id);
     watchpoint.condition.as_ref().map_or_else(
@@ -727,8 +686,6 @@ pub fn watchpoint_condition(watchpoint: &Watchpoint, renderer: Renderer) -> Stri
     )
 }
 
-/// A table of watchpoints: whether each is enabled, its hits, what and
-/// where it watches, and its options.
 pub fn watchpoints(watchpoints: &[Watchpoint], renderer: Renderer) -> String {
     if watchpoints.is_empty() {
         return renderer.paint(Role::Metadata, "no watchpoints").to_string();
@@ -786,7 +743,6 @@ fn watchpoint_invalidations(invalidated: &[InvalidatedWatchpoint], renderer: Ren
         .join("\n")
 }
 
-/// Why a watchpoint was deleted when its storage ended.
 pub const fn invalidation_text(reason: WatchpointInvalidation) -> &'static str {
     match reason {
         WatchpointInvalidation::ScopeExited => "its frame or block is no longer active",
@@ -804,9 +760,6 @@ pub const fn invalidation_text(reason: WatchpointInvalidation) -> &'static str {
     }
 }
 
-/// Describes each hit with the watched value before and after the access.
-/// Renders the watchpoints a stop hit, the first hit's line ending with
-/// `first` and each other's naming its thread.
 pub fn watchpoint_hits(
     hits: &[WatchpointHit],
     watchpoints: &[Watchpoint],
@@ -857,8 +810,6 @@ fn exception(description: &str, code: u64, renderer: Renderer) -> String {
     format!("{} ({code:#x})", renderer.paint(Role::Error, description))
 }
 
-/// Names the breakpoints or watchpoints a stop hit, with each hit's number:
-/// `breakpoint 1 (hit 3)` or `watchpoints 1 (hit 2), 2 (hit 5)`.
 fn numbered_hits(
     noun: &str,
     hits: impl ExactSizeIterator<Item = (u64, u64)>,
@@ -873,9 +824,6 @@ fn numbered_hits(
     format!("{noun}{plural} {hits}")
 }
 
-/// A runtime's exception stop, with `place` saying where it is, followed
-/// by the exception's message as the runtime prints it, which may take
-/// several lines.
 pub fn language_exception(raised: &LanguageException, place: &str, renderer: Renderer) -> String {
     format!(
         "{} {}{place}:\n{}",
@@ -885,7 +833,6 @@ pub fn language_exception(raised: &LanguageException, place: &str, renderer: Ren
     )
 }
 
-/// A runtime's exception stop on one line, with its message's first.
 fn exception_summary(raised: &LanguageException, renderer: Renderer) -> String {
     format!(
         "{} {}: {}",
@@ -906,7 +853,6 @@ const fn exception_kind(kind: LanguageExceptionKind) -> &'static str {
     }
 }
 
-/// Summarizes a stop on one line, without watched values or source.
 #[expect(clippy::too_many_lines, reason = "one arm per stop reason")]
 pub fn stop(reason: &StopReason, renderer: Renderer) -> String {
     let stopped = |role| renderer.paint(role, "stopped");
@@ -1137,8 +1083,6 @@ pub fn threads(snapshot: &StateSnapshot, renderer: Renderer) -> String {
         .join("\n")
 }
 
-/// One task: its id, where the code the program wrote has it, what it does
-/// in its runtime's words, and the thread it is on.
 pub fn task(task: &TaskSnapshot, place: &str, selected: bool, renderer: Renderer) -> String {
     let marker = if selected {
         renderer.paint(Role::Current, "*").to_string()
@@ -1161,7 +1105,6 @@ pub fn task(task: &TaskSnapshot, place: &str, selected: bool, renderer: Renderer
 
     let number = format!("[{}]", task.id.number);
     let number = renderer.paint(Role::Metadata, &number);
-    // Work that runs no code is what it waits for, then whom it will call.
     if task.stackless {
         let what = task.detail.as_deref().unwrap_or(task.noun);
         let place = if place.is_empty() {
@@ -1175,8 +1118,6 @@ pub fn task(task: &TaskSnapshot, place: &str, selected: bool, renderer: Renderer
     format!("{marker} {number} {place}{detail}{labels}{thread}")
 }
 
-/// The function a stackless task's runtime will call for it, `callback
-/// onTimeout at app.js:12`, or nothing where it recorded none.
 fn task_callback(
     task: &TaskSnapshot,
     images: &BTreeMap<ModuleId, Arc<ModuleImage>>,
@@ -1194,9 +1135,6 @@ fn task_callback(
     format!("callback {}{at}", renderer.paint(Role::Name, function))
 }
 
-/// Where a task was created, as its runtime knows: `created by main.main
-/// at main.go:40` for the call that created it, or `created at
-/// src/main.rs:12` for a place its runtime recorded only by its source.
 pub fn task_creation(
     task: &TaskSnapshot,
     images: &BTreeMap<ModuleId, Arc<ModuleImage>>,
@@ -1220,8 +1158,6 @@ pub fn task_creation(
     })
 }
 
-/// Where a task location's source is: the file of its module's that holds
-/// it, or the path its runtime recorded.
 fn location_source(
     location: &microscope::TaskLocation,
     images: &BTreeMap<ModuleId, Arc<ModuleImage>>,
@@ -1242,9 +1178,6 @@ fn location_source(
         })
 }
 
-/// A task's labels as Go's tracebacks show them, `{job: resize, user: "a
-/// b"}`, quoting a key or value only where it needs it; `None` without
-/// labels.
 pub fn task_labels(task: &TaskSnapshot) -> Option<String> {
     let quoted = |text: &str| {
         if !text.is_empty()
@@ -1268,8 +1201,6 @@ pub fn task_labels(task: &TaskSnapshot) -> Option<String> {
     })
 }
 
-/// The function a task's place names: the innermost the program wrote, or
-/// for a task of only the runtime's code, the one it began in.
 pub fn task_function(task: &TaskSnapshot, trace: &Backtrace) -> Option<String> {
     trace.user_frame().map_or_else(
         || {
@@ -1282,9 +1213,6 @@ pub fn task_function(task: &TaskSnapshot, trace: &Backtrace) -> Option<String> {
     )
 }
 
-/// Where a task is: the code the program wrote that it runs, or the
-/// function a task of only the runtime's code began in, or why its frames
-/// are unknown.
 pub fn task_place(
     task: &TaskSnapshot,
     trace: &microscope::Result<Backtrace>,
@@ -1316,7 +1244,6 @@ pub fn task_place(
     }
 }
 
-/// Tasks that are in one place.
 pub fn task_group(noun: &str, place: &str, numbers: &[u64], renderer: Renderer) -> String {
     let listed = numbers
         .iter()
@@ -1363,7 +1290,6 @@ pub fn registers(registers: &RegisterSnapshot, renderer: Renderer) -> String {
         .join("\n")
 }
 
-/// Renders target-order bytes as one hexadecimal number.
 pub fn register_bytes(bytes: &[u8], byte_order: ByteOrder) -> String {
     let digits = |bytes: &mut dyn Iterator<Item = &u8>| {
         bytes.fold(String::new(), |mut output, byte| {
@@ -1438,10 +1364,6 @@ pub fn memory_read(read: &MemoryRead, renderer: Renderer) -> String {
     bound_output(&lines.join("\n"))
 }
 
-/// Renders source lines around a location, after the location itself when
-/// `located`, with a margin marking each line in `breakpoints`, enabled or
-/// not, when any shown line has one, and each line's text as `text` draws
-/// it.
 pub fn source_context(
     context: &SourceContext,
     breakpoints: &BTreeMap<LineNumber, bool>,
@@ -1495,19 +1417,13 @@ pub fn source_context(
     lines.join("\n")
 }
 
-/// One module `info modules` lists.
 pub struct ModuleRow {
     pub path: Arc<PathBuf>,
 
-    /// Where it is loaded, once it is.
     pub load_bias: Option<microscope::LoadBias>,
     pub image: Option<Arc<microscope::ModuleImage>>,
 }
 
-/// The modules, one per line with the range each occupies and what
-/// describes its code, and below one stripped of its debug information the
-/// separate file that holds it, or why that file could not be used, and
-/// below one whose debug information could not all be read, why.
 pub fn modules(modules: &[ModuleRow], renderer: Renderer) -> String {
     let mut lines = Vec::with_capacity(modules.len());
 
@@ -1607,7 +1523,6 @@ pub fn core_dump(core: &CoreDumpInfo, renderer: Renderer) -> String {
                     ModuleIdentity::DumpedMemory => "read from the dump".to_owned(),
                 };
 
-                // A file found under a sysroot or in a module path is named.
                 let file = if module.path == core_module.recorded_path {
                     String::new()
                 } else {
@@ -1645,7 +1560,6 @@ fn build_id_text(build_id: &[u8]) -> String {
     })
 }
 
-/// Describes every module whose file is not proven to match the dump.
 pub fn core_module_warnings(core: &CoreDumpInfo) -> Vec<String> {
     core.modules
         .iter()
@@ -1678,8 +1592,6 @@ pub fn core_module_warnings(core: &CoreDumpInfo) -> Vec<String> {
         .collect()
 }
 
-/// Names the code at a location: the debug-info function when known,
-/// otherwise the containing linker symbol and offset, demangled when possible.
 pub fn code_name(function: Option<&FunctionInfo>, symbol: Option<&SymbolLocation>) -> String {
     if let Some(function) = function {
         return function.name.to_string();
@@ -1703,8 +1615,6 @@ pub fn code_name(function: Option<&FunctionInfo>, symbol: Option<&SymbolLocation
     name
 }
 
-/// Renders the calls of a line that a step can go into, by address, with
-/// what each calls.
 pub fn step_targets(targets: &[microscope::StepTarget], renderer: Renderer) -> String {
     if targets.is_empty() {
         return "no calls on this line".to_owned();
@@ -1733,8 +1643,6 @@ pub fn step_targets(targets: &[microscope::StepTarget], renderer: Renderer) -> S
     text
 }
 
-/// Renders what contains an address: its symbol and offset, its section, and
-/// its module. A data symbol names only bytes within its declared size.
 pub fn address_description(description: &AddressDescription, renderer: Renderer) -> String {
     let Some(module) = &description.module else {
         return format!(
@@ -1775,7 +1683,6 @@ pub fn address_description(description: &AddressDescription, renderer: Renderer)
     )
 }
 
-/// Returns every module whose instructions a disassembly holds.
 pub fn disassembly_modules(disassembly: &Disassembly) -> BTreeSet<ModuleId> {
     let blocks = match &disassembly.view {
         DisassemblyView::Function { blocks, .. } => blocks,
@@ -1790,11 +1697,6 @@ pub fn disassembly_modules(disassembly: &Disassembly) -> BTreeSet<ModuleId> {
         .collect()
 }
 
-/// Renders a disassembly: one line per instruction with its address, its
-/// offset from the containing symbol, its bytes, and its text, marking the
-/// stopped instruction, naming encoded addresses, and announcing each new
-/// source line. Unproven context, conflicts, and unreadable or truncated
-/// code are reported where they occur.
 pub fn disassembly(
     disassembly: &Disassembly,
     program_counter: Option<VirtualAddress>,
@@ -1885,8 +1787,6 @@ pub fn disassembly(
     lines.join("\n")
 }
 
-/// The widest instruction encoding whose bytes keep the text column aligned;
-/// longer encodings push their text right.
 const ALIGNED_INSTRUCTION_BYTES: usize = 8;
 
 fn disassembly_block(
@@ -2005,7 +1905,6 @@ fn disassembly_block(
     }
 }
 
-/// The width of the bytes column, which fits all but the longest encodings.
 fn bytes_column_width(block: &DisassemblyBlock) -> usize {
     block
         .instructions
@@ -2029,8 +1928,6 @@ fn conflict_note(conflict: &BoundaryConflict) -> String {
     }
 }
 
-/// An instruction's bytes, padded to the column's width after a space, or
-/// nothing when the column is hidden.
 fn instruction_bytes(bytes: &[u8], width: Option<usize>) -> String {
     let Some(width) = width else {
         return String::new();
@@ -2043,7 +1940,6 @@ fn instruction_bytes(bytes: &[u8], width: Option<usize>) -> String {
     format!(" {text:<width$}")
 }
 
-/// Renders an instruction's text with each encoded address named.
 pub fn instruction_text(
     decoded: &DecodedInstruction,
     stopped: bool,
@@ -2075,7 +1971,6 @@ pub fn instruction_text(
     };
 
     for reference in decoded.references.iter() {
-        // The indirect target below names the memory holding it.
         if reference.kind == InstructionReferenceKind::MemoryOperand
             && Some(reference.address) == slot
         {
@@ -2107,11 +2002,6 @@ pub fn instruction_text(
     text
 }
 
-/// Appends where an indirect branch transfers control at the stop: `# slot
-/// <name> -> target <name>` for a target loaded from memory, and `# ->
-/// target <name>` for one held in a register. A target that needs registers
-/// is noted only at the stopped instruction, since every return elsewhere
-/// needs them.
 fn indirect_target_text(
     text: &mut String,
     target: &IndirectTarget,
@@ -2185,8 +2075,6 @@ fn indirect_target_text(
     }
 }
 
-/// Names an encoded address by its symbol or, failing that, its section,
-/// adding the module when it differs from the instruction's.
 pub fn reference_name(
     description: &AddressDescription,
     from: Option<ModuleId>,
@@ -2242,7 +2130,6 @@ fn shortfall_reason(shortfall: ContextShortfall) -> String {
     }
 }
 
-/// Returns the file name of a loaded module's image.
 pub fn module_name(modules: &LoadedModuleSnapshot, module: ModuleId) -> Option<String> {
     modules
         .modules
@@ -2252,9 +2139,6 @@ pub fn module_name(modules: &LoadedModuleSnapshot, module: ModuleId) -> Option<S
         .map(|name| name.to_string_lossy().into_owned())
 }
 
-/// Renders a backtrace, highlighting the selected frame's level.
-/// Renders a backtrace, or its first `limit` frames and how many more
-/// there are.
 pub fn backtrace(
     trace: &Backtrace,
     selected: u32,
@@ -2267,8 +2151,6 @@ pub fn backtrace(
     let shown = limit.unwrap_or(usize::MAX).min(trace.frames.len());
     let mut lines = Vec::with_capacity(shown + 1);
 
-    // Where a stack continues on another, each run of frames says whose
-    // stack it is on.
     let switches = trace
         .frames
         .windows(2)
@@ -2370,8 +2252,6 @@ pub fn backtrace(
     lines.join("\n")
 }
 
-/// Where a run of frames is: whose stack it is on, or the future the frame
-/// after it drives.
 pub const fn stack_label(segment: StackSegment) -> &'static str {
     match segment {
         StackSegment::Thread => "on the thread's stack",
@@ -2384,14 +2264,10 @@ pub const fn stack_label(segment: StackSegment) -> &'static str {
     }
 }
 
-/// The line that says why the frames the frame `driver` drives are shown
-/// in part or not at all.
 pub fn unfollowed(note: &Unfollowed) -> String {
     frames::unfollowed(note, &format!("#{}", note.driver.get()))
 }
 
-/// Renders one backtrace frame: its level, instruction, code, the level of
-/// the frame whose loop it iterates, and source location or module.
 pub fn stack_frame(
     frame: &StackFrame,
     iterates: Option<u32>,
@@ -2423,15 +2299,12 @@ pub fn stack_frame(
         )
     });
 
-    // A function that left by a tail call is no activation of its own.
     let tail = if frame.kind == microscope::FrameKind::TailCall {
         format!(" {}", renderer.paint(Role::Metadata, "[tail call]"))
     } else {
         String::new()
     };
 
-    // A suspended task's frames run nowhere until it resumes, and the
-    // future it awaits runs no code of its own.
     let address = frame
         .instruction
         .map_or_else(|| " ".repeat(18), |address| format!("{address:#018x}"));
@@ -2442,7 +2315,6 @@ pub fn stack_frame(
         _ => " in",
     };
 
-    // An awaited future says what it waits for.
     let awaiting = frame
         .awaiting
         .as_ref()
@@ -2461,7 +2333,6 @@ pub fn stack_frame(
         ),
         renderer.paint(Role::Metadata, address),
         renderer.paint(
-            // A runtime's machinery and compiler wrappers recede.
             if frame
                 .function
                 .as_ref()
@@ -2474,9 +2345,6 @@ pub fn stack_frame(
             {
                 let name = frame_code(frame, images);
 
-                // A Rust function's or future's arguments can run to
-                // hundreds of characters; a backtrace keeps its path and its
-                // name.
                 let rust = matches!(frame.kind, microscope::FrameKind::Awaited { .. })
                     || frame.function.as_ref().is_some_and(|function| {
                         function.language == microscope::SourceLanguage::Rust
@@ -2491,18 +2359,14 @@ pub fn stack_frame(
     )
 }
 
-/// The longest generic argument list a backtrace shows whole.
 const MAX_ARGUMENTS: usize = 24;
 
-/// A name with each outermost generic argument list longer than
-/// [`MAX_ARGUMENTS`] written `<…>`, as `run<…>`.
 pub fn elide_arguments(name: &str) -> String {
     let mut elided = String::with_capacity(name.len());
     let mut depth = 0_usize;
     let mut opened = 0;
     for (at, character) in name.char_indices() {
         match character {
-            // An arrow closes nothing.
             '>' if name[..at].ends_with('-') => {}
             '<' => {
                 if depth == 0 {
@@ -2533,7 +2397,6 @@ pub fn elide_arguments(name: &str) -> String {
         }
     }
 
-    // An unbalanced list is left as it was written.
     if depth > 0 {
         return name.to_owned();
     }
@@ -2541,9 +2404,6 @@ pub fn elide_arguments(name: &str) -> String {
     elided
 }
 
-/// What a frame runs, as a backtrace names it: its function or symbol, or
-/// the function its runtime recorded, or, for the future a suspended task
-/// awaits, `awaiting` and that future's type.
 pub fn frame_code(frame: &StackFrame, images: &BTreeMap<ModuleId, Arc<ModuleImage>>) -> String {
     if let microscope::FrameKind::Awaited { ty, .. } = frame.kind {
         let image = images.values().find(|image| image.id() == ty.image);
@@ -2553,8 +2413,6 @@ pub fn frame_code(frame: &StackFrame, images: &BTreeMap<ModuleId, Arc<ModuleImag
     frames::code(frame)
 }
 
-/// The future of type `ty` a suspended task awaits, as its frame is named:
-/// `awaiting tokio::time::sleep::Sleep`.
 pub fn awaited(image: Option<&ModuleImage>, ty: microscope::TypeReference) -> String {
     let name = image
         .filter(|image| image.id() == ty.image)
@@ -2567,9 +2425,6 @@ pub fn awaited(image: Option<&ModuleImage>, ty: microscope::TypeReference) -> St
     format!("awaiting {name}")
 }
 
-/// The frame of a future a suspended task awaits, named with what it
-/// waits for where a client shows no place beside the name:
-/// `awaiting tokio::time::sleep::Sleep — sleeping until +1s`.
 pub fn awaited_frame(image: Option<&ModuleImage>, frame: &StackFrame) -> Option<String> {
     let microscope::FrameKind::Awaited { ty, .. } = frame.kind else {
         return None;
@@ -2583,8 +2438,6 @@ pub fn awaited_frame(image: Option<&ModuleImage>, frame: &StackFrame) -> Option<
     })
 }
 
-/// Where an interpreted frame is, as `where` says: the function its
-/// interpreter recorded, and its file and line, where it recorded them.
 pub fn interpreted_location(frame: &StackFrame, renderer: Renderer) -> String {
     let name = renderer.paint(Role::Name, frames::code(frame));
 
@@ -2599,8 +2452,6 @@ pub fn interpreted_location(frame: &StackFrame, renderer: Renderer) -> String {
     )
 }
 
-/// `path:line`, plus `:column` when the frame's runtime recorded one, as V8
-/// does for JavaScript frames.
 fn place_location(frame: &StackFrame, place: &frames::FramePlace, renderer: Renderer) -> String {
     place
         .column
@@ -2611,8 +2462,6 @@ fn place_location(frame: &StackFrame, place: &frames::FramePlace, renderer: Rend
         )
 }
 
-/// A frame's source file and line, as its runtime recorded them or from
-/// its module's image.
 fn frame_source(
     frame: &StackFrame,
     images: &BTreeMap<ModuleId, Arc<ModuleImage>>,
@@ -2667,7 +2516,6 @@ pub fn globals(page: &GlobalVariablePage, renderer: Renderer) -> String {
     lines.join("\n")
 }
 
-/// Renders signal policies as a table, one signal per line.
 pub fn signal_policies(policies: &[(u64, microscope::SignalPolicy)], renderer: Renderer) -> String {
     let yes_no = |value: bool| if value { "yes" } else { "no" };
 
@@ -2695,8 +2543,6 @@ pub fn signal_policies(policies: &[(u64, microscope::SignalPolicy)], renderer: R
     .join("\n")
 }
 
-/// Says which view presents a value, and why each view tried before it did
-/// not bind.
 pub fn view_explanation(
     expression: &str,
     explanation: &microscope::ViewExplanation,
@@ -2751,8 +2597,6 @@ pub fn view_explanation(
     lines.join("\n")
 }
 
-/// The drawings a type's view offers, which only the web page draws, and
-/// why each that does not bind does not.
 fn drawing_lines(drawings: &[microscope::VisualizerBinding], indent: &str) -> Vec<String> {
     if drawings.is_empty() {
         return Vec::new();
@@ -2786,8 +2630,6 @@ fn drawing_lines(drawings: &[microscope::VisualizerBinding], indent: &str) -> Ve
     lines
 }
 
-/// Each view a type was matched against, and why it did not bind or that
-/// it did.
 fn candidate_lines<'a>(
     candidates: &'a [microscope::ViewCandidate],
     indent: &'a str,
@@ -2801,7 +2643,6 @@ fn candidate_lines<'a>(
     })
 }
 
-/// How each type a name means is presented, as `views explain` says.
 pub fn type_views(name: &str, types: &[microscope::TypeViews], renderer: Renderer) -> String {
     if types.is_empty() {
         return format!("no type is named `{name}`");
@@ -2888,7 +2729,6 @@ fn bound_type_lines(
     }
 }
 
-// Only erase type operands in the grouping key, never in the exact explanation.
 fn view_cause(rejection: &str, name: &str) -> String {
     let mut cause = rejection.replace(&format!("`{name}`"), "`<type>`");
     for (start, end) in [("its type is `", "`"), ("record type '", "' has no member")] {
@@ -2983,8 +2823,6 @@ fn refused_type_lines(
     failed
 }
 
-/// What `views check` finds, and whether any view loaded for the session
-/// or carried by a module presents no type or binds no type it names.
 pub fn view_check(check: &microscope::ViewCheck, renderer: Renderer) -> (String, bool) {
     let mut lines = Vec::new();
     let mut failed = false;
@@ -3047,7 +2885,6 @@ pub fn view_check(check: &microscope::ViewCheck, renderer: Renderer) -> (String,
         lines.push("grouped by view and cause; use `views explain TYPE` (or `microscope views explain PROGRAM TYPE`) for every exact candidate and rejection".to_owned());
     }
 
-    // A kernel is shown as what it is built from, to be reviewed as that.
     if !check.kernels.is_empty() {
         lines.push("kernels, and what they are built from:".to_owned());
         for kernel in check.kernels.iter() {
@@ -3062,8 +2899,6 @@ pub fn view_check(check: &microscope::ViewCheck, renderer: Renderer) -> (String,
         }
     }
 
-    // A renderer runs only in the web page, in its sandbox, and is shown
-    // as its source, to be reviewed as that.
     if !check.renderers.is_empty() {
         lines.push("renderers, which only the web page runs:".to_owned());
         for renderer in check.renderers.iter() {
@@ -3081,8 +2916,6 @@ pub fn view_check(check: &microscope::ViewCheck, renderer: Renderer) -> (String,
     (lines.join("\n"), failed)
 }
 
-/// Adds the drawings that do not bind, each once however many types its
-/// view names, and returns whether any is not built in.
 fn unbound_drawings(check: &microscope::ViewCheck, lines: &mut Vec<String>) -> bool {
     let mut unbound = check
         .types
@@ -3114,7 +2947,6 @@ fn unbound_drawings(check: &microscope::ViewCheck, lines: &mut Vec<String>) -> b
         .any(|(view, ..)| !microscope::is_built_in_view(view))
 }
 
-/// Renders a logged message with the values it shows.
 pub fn log_message(parts: &[microscope::LogPart]) -> String {
     parts
         .iter()
@@ -3128,7 +2960,6 @@ pub fn log_message(parts: &[microscope::LogPart]) -> String {
         .collect()
 }
 
-/// Reports a signal that did not stop the inferior.
 pub fn signal_received(
     thread: microscope::ThreadId,
     info: &microscope::ExceptionInfo,
@@ -3141,8 +2972,6 @@ pub fn signal_received(
     )
 }
 
-/// The line for a process the inferior started that runs without the
-/// debugger.
 pub fn child_released(
     parent: microscope::ProcessId,
     child: microscope::ProcessId,
@@ -3155,8 +2984,6 @@ pub fn child_released(
     )
 }
 
-/// The line saying a process executed another program, which microscope
-/// now debugs in its place.
 pub fn program_changed(
     process: microscope::ProcessId,
     program: &std::path::Path,
@@ -3169,7 +2996,6 @@ pub fn program_changed(
     )
 }
 
-/// A group member as a line names it: its number, process, and command.
 pub fn member(member: &microscope::Member, renderer: Renderer) -> String {
     let process = member.process.map_or_else(String::new, |process| {
         format!(" process {}", renderer.paint(Role::Metadata, process))
@@ -3186,8 +3012,6 @@ pub fn member(member: &microscope::Member, renderer: Renderer) -> String {
     )
 }
 
-/// A command line short enough for one line of a list: its program by
-/// file name, as `ps` names it, then its arguments.
 fn elide_command(command: &str) -> String {
     const LONGEST: usize = 60;
     let (program, arguments) = command.split_once(' ').unwrap_or((command, ""));
@@ -3206,7 +3030,6 @@ fn elide_command(command: &str) -> String {
     short
 }
 
-/// What a member's process did, as a line of a session's output.
 fn exit_description(status: &ExitStatus, renderer: Renderer) -> String {
     match status {
         ExitStatus::Code(code) => format!(
@@ -3222,9 +3045,6 @@ fn exit_description(status: &ExitStatus, renderer: Renderer) -> String {
     }
 }
 
-/// The line a group event prints, or none for an event the session
-/// reports otherwise, as a stop is, or not at all, as a process the group
-/// keeps watching is.
 pub fn group_event(
     event: &microscope::GroupEvent,
     members: &[microscope::Member],
@@ -3323,7 +3143,6 @@ pub fn group_event(
     })
 }
 
-/// A group's members, the selected one marked, each with its state.
 pub fn processes(
     members: &[microscope::Member],
     selected: microscope::MemberNumber,
@@ -3639,7 +3458,6 @@ mod tests {
         let renderer = Renderer::new(false);
         let overview = help(&BTreeMap::new(), renderer, |_| true);
         for command in COMMANDS {
-            // Each command has one overview row: its name, aliases, summary.
             let row = overview
                 .lines()
                 .find(|line| line.split_whitespace().next() == Some(command.name))

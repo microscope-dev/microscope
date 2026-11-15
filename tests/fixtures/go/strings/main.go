@@ -1,5 +1,5 @@
-// Go strings for text summaries: a literal, a long built string, and an
-// empty one.
+
+
 package main
 
 import (

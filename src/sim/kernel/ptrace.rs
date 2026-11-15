@@ -1,7 +1,3 @@
-//! The tracer's ptrace requests. Each answers as Linux does, in terms of
-//! the K-* rules; above all K-WAIT-1, that a request to a thread not in a
-//! ptrace-stop fails with `ESRCH`.
-
 use nix::errno::Errno;
 use nix::libc;
 
@@ -15,7 +11,6 @@ use crate::sim::cpu::{R8, R9, R10, RAX, RDI, RDX, RSI, Registers};
 #[cfg(test)]
 use crate::sim::world::Sabotage;
 
-/// A ptrace event's name, as `PTRACE_EVENT_*` without the prefix.
 #[must_use]
 pub fn event_name(event: i32) -> String {
     match event {
@@ -30,8 +25,6 @@ pub fn event_name(event: i32) -> String {
 }
 
 impl Kernel {
-    /// The thread a request addresses, which the caller must trace, in a
-    /// ptrace-stop.
     fn stopped(&self, tid: Tid) -> Result<&Thread, Errno> {
         let caller = self.caller();
         self.threads
@@ -48,12 +41,9 @@ impl Kernel {
             .ok_or(Errno::ESRCH)
     }
 
-    /// `PTRACE_SETREGS`.
     pub fn set_registers(&mut self, tid: Tid, registers: Registers) -> Result<(), Errno> {
         #[cfg(test)]
         let registers = {
-            // A value the sabotage reported writes back what the register
-            // held, so the program runs on unchanged.
             let held = self.stopped(tid)?.registers;
             let reported = self.reported(held);
             let mut registers = registers;
@@ -66,9 +56,6 @@ impl Kernel {
             registers
         };
 
-        // K-SYS-7: Linux decides whether to restart a call from `rax` and
-        // `rip` as the thread returns, and no probe pins a tracer's change
-        // to either before then.
         let thread = self.stopped(tid)?;
         if thread.call == CallPhase::Restarting
             && (registers.rip != thread.registers.rip
@@ -82,10 +69,6 @@ impl Kernel {
         Ok(())
     }
 
-    /// Registers as the kernel reports them: under
-    /// [`Sabotage::SkewSmallRegisters`],
-    /// general registers other than the stack and frame pointers that hold
-    /// small numbers other than zero read one greater.
     #[cfg(test)]
     fn reported(&self, mut registers: Registers) -> Registers {
         if self.sabotage == Some(Sabotage::SkewSmallRegisters) {
@@ -102,7 +85,6 @@ impl Kernel {
         registers
     }
 
-    /// `PTRACE_PEEKUSER` of a debug register (K-DR-3, K-DR-4).
     pub fn peek_debug(&self, tid: Tid, index: usize) -> Result<u64, Errno> {
         let thread = self.stopped(tid)?;
         #[cfg(test)]
@@ -116,7 +98,6 @@ impl Kernel {
         }
     }
 
-    /// `PTRACE_POKEUSER` of a debug register (K-DR-4).
     pub fn poke_debug(&mut self, tid: Tid, index: usize, value: u64) -> Result<(), Errno> {
         let contended = match self.debug_behavior {
             DebugBehavior::Discarding => {
@@ -151,8 +132,6 @@ impl Kernel {
         thread.debug.poke(index, value, others)
     }
 
-    /// Lets something other than the tracer hold `count` more of a
-    /// thread's hardware breakpoints, as perf can.
     #[cfg(test)]
     pub fn hold_debug_slots(&mut self, tid: Tid, count: usize) {
         if let Some(thread) = self.threads.get_mut(&tid) {
@@ -160,8 +139,6 @@ impl Kernel {
         }
     }
 
-    /// `PTRACE_PEEKDATA`, which ignores protections and fails with `EIO`
-    /// where nothing is mapped (K-MEM-1).
     pub fn peek(&self, tid: Tid, address: u64) -> Result<u64, Errno> {
         let thread = self.stopped(tid)?;
         let word = self.processes[&thread.tgid]
@@ -174,7 +151,6 @@ impl Kernel {
         Ok(word)
     }
 
-    /// `PTRACE_POKEDATA` (K-MEM-1).
     pub fn poke(&mut self, tid: Tid, address: u64, value: u64) -> Result<(), Errno> {
         let group = self.stopped(tid)?.tgid;
         #[cfg(test)]
@@ -182,8 +158,6 @@ impl Kernel {
             return Ok(());
         }
 
-        // A byte a sabotaged read showed falsely, written back as shown, is
-        // written as the byte it hid: the lie is one only reads can see.
         #[cfg(test)]
         let value = self.processes[&group]
             .space
@@ -207,7 +181,6 @@ impl Kernel {
         }
     }
 
-    /// `PTRACE_GETSIGINFO`.
     pub fn signal_info(&self, tid: Tid) -> Result<SigInfo, Errno> {
         match self.stopped(tid)?.state {
             State::Stopped { info, .. } => Ok(info),
@@ -215,7 +188,6 @@ impl Kernel {
         }
     }
 
-    /// `PTRACE_GETREGS`, with `orig_rax`.
     pub fn get_registers_and_call(&self, tid: Tid) -> Result<(Registers, u64), Errno> {
         let thread = self.stopped(tid)?;
         let registers = thread.registers;
@@ -225,8 +197,6 @@ impl Kernel {
         Ok((registers, thread.orig_rax))
     }
 
-    /// `PTRACE_GETEVENTMSG`: the message of the latest event stop, or zero.
-    /// At a system-call-stop it says which (K-SYS-1).
     pub fn event_message(&self, tid: Tid) -> Result<u64, Errno> {
         match self.stopped(tid)?.state {
             State::Stopped {
@@ -245,7 +215,6 @@ impl Kernel {
         }
     }
 
-    /// Whether `tid` finished exiting: it is a zombie, or reaped.
     #[must_use]
     pub fn finished_exiting(&self, tid: Tid) -> bool {
         self.threads
@@ -253,24 +222,16 @@ impl Kernel {
             .is_none_or(|thread| matches!(thread.state, State::Zombie(_)))
     }
 
-    /// The thread group `/proc/<tid>/status` names, until the thread is
-    /// reaped.
     #[must_use]
     pub fn thread_group(&self, tid: Tid) -> Option<Tgid> {
         self.threads.get(&tid).map(|thread| thread.tgid)
     }
 
-    /// `PTRACE_SETOPTIONS`.
     pub fn set_options(&mut self, tid: Tid, options: Options) -> Result<(), Errno> {
         self.stopped_mut(tid)?.options = options;
         Ok(())
     }
 
-    /// `PTRACE_CONT` with `signal`, delivered only from a
-    /// signal-delivery-stop. A thread at an event stop returns from the
-    /// system call it stopped in when it next runs; one at its exit event
-    /// goes on to exit. Resuming a thread from a group-stop while its
-    /// process is still stopped is not modeled.
     pub fn resume(
         &mut self,
         tid: Tid,
@@ -287,8 +248,6 @@ impl Kernel {
                 kind: StopKind::Syscall { .. },
                 ..
             } => {
-                // K-SYS-5: a signal passed here is sent to the process.
-                // SIGKILL is the only one modeled.
                 if signal.is_some_and(|signal| signal != libc::SIGKILL) {
                     self.gap("a signal other than SIGKILL passed at a system-call-stop");
                     return Err(Errno::ENOSYS);
@@ -298,8 +257,6 @@ impl Kernel {
                 thread.report = None;
                 let (registers, group) = (thread.registers, thread.tgid);
 
-                // Resuming a call a catchpoint stops, though no stop
-                // reported it, is the debugger's mistake; killing it is not.
                 if let Some(caught) = self.catching.unreported.remove(&tid)
                     && signal.is_none()
                     && self.catching.stops(caught.call, &registers, caught.exit)
@@ -354,8 +311,6 @@ impl Kernel {
         Ok(())
     }
 
-    /// Resumes each sibling of `tid` stopped with a signal or an event,
-    /// under [`Sabotage::ResumeSiblings`].
     #[cfg(test)]
     fn resume_siblings(&mut self, tid: Tid) {
         let group = self.threads[&tid].tgid;
@@ -383,9 +338,6 @@ impl Kernel {
         self.sabotage = Some(Sabotage::ResumeSiblings);
     }
 
-    /// `PTRACE_SYSCALL`: resumes a stopped thread as `PTRACE_CONT` does,
-    /// to stop next at a system call's entry or exit (K-SYS-1, K-SYS-2).
-    /// Resuming with a signal from a system-call-stop is not modeled.
     pub fn resume_to_call(&mut self, tid: Tid, signal: Option<i32>) -> Result<(), Errno> {
         self.resume(tid, signal, false)?;
         self.threads
@@ -395,9 +347,6 @@ impl Kernel {
         Ok(())
     }
 
-    /// `PTRACE_GET_SYSCALL_INFO` (K-SYS-1, K-SYS-2, K-SYS-4): the call a
-    /// thread stopped at the entry or exit of, or only the architecture at
-    /// any other stop.
     pub fn call_info(&self, tid: Tid) -> Result<CallInfo, Errno> {
         let thread = self.stopped(tid)?;
         let State::Stopped { kind, .. } = thread.state else {
@@ -449,10 +398,6 @@ impl Kernel {
         })
     }
 
-    /// `PTRACE_SEIZE` with `options`: the caller traces the thread, which
-    /// runs on (K-SEIZE-1), or, in a job-control stop, reports a group-stop
-    /// (K-STOP-2). A thread already traced, or one that has finished
-    /// exiting, cannot be seized (K-EXIT-5).
     pub fn seize(&mut self, tid: Tid, options: Options) -> Result<(), Errno> {
         let tracer = self.caller();
         let thread = self.threads.get_mut(&tid).ok_or(Errno::ESRCH)?;
@@ -486,9 +431,6 @@ impl Kernel {
         Ok(())
     }
 
-    /// `PTRACE_INTERRUPT` (K-INT-1, K-INT-2): a running seized thread stops
-    /// before it runs on, and a stopped one as soon as it resumes. One
-    /// exiting, at its exit event or a zombie, stays as it is.
     pub fn interrupt(&mut self, tid: Tid) -> Result<(), Errno> {
         let caller = self.caller();
         let thread = self
@@ -519,24 +461,18 @@ impl Kernel {
         Ok(())
     }
 
-    /// `PTRACE_DETACH` with `signal`, delivered only from a
-    /// signal-delivery-stop. The thread runs on untraced from where it
-    /// stopped, its debug registers as they were (K-FORK-2, K-DR-3), or,
-    /// its process stopped, stops again (K-STOP-2).
     pub fn detach(&mut self, tid: Tid, signal: Option<i32>) -> Result<(), Errno> {
         let tracer = self.caller();
         let thread = self.stopped_mut(tid)?;
         thread.tracing = Tracing::Untraced;
         thread.single_step = false;
 
-        // K-SYS-6: an untraced thread stops at no call.
         thread.syscall_stops = false;
         thread.options = Options::default();
         thread.report = None;
         let state = thread.state;
         let group = thread.tgid;
 
-        // Only a thread that runs on can meet a trap left in its code.
         let exiting = matches!(
             state,
             State::Stopped {
@@ -580,7 +516,6 @@ impl Kernel {
                 kind: StopKind::Event(..) | StopKind::Group(_),
                 ..
             } => self.threads.get_mut(&tid).expect("the thread").state = State::Running,
-            // K-SYS-6: the call goes on, made or returning, untraced.
             State::Stopped {
                 kind: StopKind::Syscall { .. },
                 ..
@@ -617,7 +552,6 @@ impl Kernel {
         Ok(())
     }
 
-    /// Whether `signal` is pending in a stopped thread's own set.
     #[must_use]
     pub fn signal_queued(&self, tid: Tid, signal: i32) -> bool {
         self.threads
@@ -626,18 +560,13 @@ impl Kernel {
     }
 }
 
-/// What `PTRACE_GET_SYSCALL_INFO` reports, for x86-64 alone.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CallInfo {
-    /// 1 at an entry, 2 at an exit, 0 at any other stop.
     pub op: u8,
 
-    /// The call, at an entry.
     pub number: u64,
 
-    /// Its arguments, at an entry.
     pub args: [u64; 6],
 
-    /// What it returned, at an exit.
     pub value: i64,
 }

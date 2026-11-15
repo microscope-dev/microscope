@@ -10,13 +10,8 @@ use microscope::{
 };
 use support::Scenario;
 
-/// The single-threaded fixture across the compiler, optimization, and PIE
-/// matrix, for what the compiler decides: where variables live and how
-/// steps cross its code. Each phase function performs one kind of access.
 const MATRIX: [&str; 3] = ["watch-gcc-o0", "watch-clang-o2", "watch-gcc-o2-nopie"];
 
-/// One build, for phases written in assembly or made of system calls, and
-/// for the debugger's own bookkeeping.
 const FIXTURE: &str = MATRIX[0];
 
 fn expression(text: &str) -> microscope::Expression {
@@ -41,8 +36,6 @@ async fn symbol(scenario: &Scenario, name: &str) -> VirtualAddress {
         .await
 }
 
-/// Runs to a function breakpoint through the signals earlier fixture phases
-/// raise, failing on any other stop.
 async fn run_to(scenario: &mut Scenario, function: &str) {
     scenario.add_breakpoint(function).await;
     let mut reason = scenario.run_to_stop().await;
@@ -67,7 +60,6 @@ fn hits(reason: &StopReason) -> &[WatchpointHit] {
     }
 }
 
-/// Decodes little-endian watched bytes.
 fn value(bytes: Option<&Arc<[u8]>>) -> u64 {
     let bytes = bytes.expect("watched bytes are readable");
     assert!(bytes.len() <= 8, "test values fit in a word");
@@ -76,8 +68,6 @@ fn value(bytes: Option<&Arc<[u8]>>) -> u64 {
     u64::from_le_bytes(word)
 }
 
-/// Asserts that the stop is exactly one hit of `watchpoint` changing the
-/// watched bytes from `previous` to `current`.
 fn assert_single_hit(reason: &StopReason, watchpoint: WatchpointId, previous: u64, current: u64) {
     let [hit] = hits(reason) else {
         panic!("expected exactly one hit, got {reason:?}");
@@ -114,8 +104,6 @@ async fn selected_thread(scenario: &mut Scenario) -> ThreadId {
         .expect("a stopped inferior has a selected thread")
 }
 
-/// Resumes to a clean exit through the signals the fixture's later phases
-/// raise: SIGUSR1 from its handler phase and SIGCHLD from its fork phase.
 async fn resume_to_exit(scenario: &mut Scenario) {
     for _ in 0..4 {
         match scenario.resume_to_stop().await {
@@ -128,7 +116,6 @@ async fn resume_to_exit(scenario: &mut Scenario) {
     panic!("the inferior did not exit");
 }
 
-/// Collects every watchpoint event currently buffered on a subscription.
 fn watch_events(
     events: &mut tokio::sync::broadcast::Receiver<DebuggerEvent>,
 ) -> Vec<DebuggerEvent> {
@@ -232,7 +219,6 @@ async fn write_watchpoints_report_every_store_after_its_instruction() {
         assert_eq!(removed, counted);
         assert!(scenario.snapshot().await.watchpoints.is_empty());
 
-        // One watchpoint stays armed through the process's exit.
         let armed = watch(&scenario, "watch_wide.words[3]", WatchAccess::Write).await;
         let mut events = scenario.handle().subscribe();
         resume_to_exit(&mut scenario).await;
@@ -245,8 +231,6 @@ async fn write_watchpoints_report_every_store_after_its_instruction() {
             "{fixture}: exiting discards {armed:?}"
         );
 
-        // Watchpoints never carry into the next run; it reaches the
-        // breakpoint and exits without a watch stop.
         assert!(matches!(
             scenario.run_to_stop().await,
             StopReason::Breakpoint { .. }
@@ -271,7 +255,6 @@ async fn watch_ranges_split_into_aligned_slots_until_capacity_runs_out() {
     ];
     assert_eq!(capabilities.access.as_ref(), kinds);
 
-    // A C array carries no size of its own: its size is its elements'.
     for text in ["watch_oversized", "watch_oversized.bytes"] {
         let oversized = scenario
             .handle()
@@ -374,11 +357,9 @@ async fn one_store_reports_every_watchpoint_it_touches() {
     let first = watch(&scenario, "watch_pair.first", WatchAccess::Write).await;
     let second = watch(&scenario, "watch_pair.second", WatchAccess::Write).await;
 
-    // The whole record shares both members' slots.
     let pair = watch(&scenario, "watch_pair", WatchAccess::Write).await;
     assert_eq!(pair.byte_size, 16);
 
-    // Two slots remain, so a further 16 bytes fit and then nothing does.
     let wide = watch(&scenario, "watch_wide.words[2]", WatchAccess::Write).await;
     let spare = watch(&scenario, "watch_wide.words[3]", WatchAccess::Write).await;
     assert!(matches!(
@@ -539,7 +520,6 @@ async fn expression_watchpoints_keep_watching_the_location_they_resolved() {
         )
         .await;
 
-    // `*watch_pointer = 2` writes the second pointee and is not reported.
     assert_single_hit(&scenario.resume_to_stop().await, watchpoint.id, 0, 1);
     assert_single_hit(&scenario.resume_to_stop().await, watchpoint.id, 1, 3);
 
@@ -559,9 +539,6 @@ async fn kernel_writes_are_invisible_so_previous_is_the_last_observed_value() {
     run_to(&mut scenario, "kernel_write").await;
     let watchpoint = watch(&scenario, "watch_u64", WatchAccess::Write).await;
 
-    // read(2) stores 0x1234 inside the kernel without a hit; the next
-    // report is the user-mode increment, measured against the value the
-    // debugger last observed before resuming.
     let reason = scenario.resume_to_stop().await;
     assert_single_hit(&reason, watchpoint.id, 0x4444_4444_4444_4444, 0x1235);
     assert_eq!(
@@ -587,8 +564,6 @@ async fn a_handler_run_before_a_breakpoint_repair_reports_its_write() {
         panic!("inferior is stopped");
     };
 
-    // The signal arrives while the thread must still step over its
-    // breakpoint, so the handler runs before the breakpoint is repaired.
     nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(i32::try_from(process_id.get()).expect("pid fits i32")),
         nix::sys::signal::Signal::SIGUSR1,
@@ -611,8 +586,6 @@ async fn a_handler_run_before_a_breakpoint_repair_reports_its_write() {
         )
         .await;
 
-    // The breakpoint the handler interrupted is repaired without being
-    // reported again.
     resume_to_exit(&mut scenario).await;
     scenario.shutdown().await;
 }
@@ -636,9 +609,6 @@ async fn a_handler_storing_the_same_value_before_a_breakpoint_repair_is_transpar
         StopReason::Exception(exception) if exception.code == 10
     ));
 
-    // The handler stores the 99 already there. The thread then returns
-    // to its breakpoint and steps over it, and neither is reported: the
-    // next stop is the fork phase's change.
     let mut reason = scenario.resume_to_stop().await;
     while matches!(&reason, StopReason::Exception(exception) if exception.code == 17) {
         reason = scenario.resume_to_stop().await;
@@ -684,7 +654,6 @@ async fn vdso_writes_are_reported_in_user_mode() {
         "the store happened in the vDSO, pc {pc:#x} outside {vdso:x?}"
     );
 
-    // The vDSO's own call-frame information leads back to the watching code.
     let modules = scenario
         .operation("modules", scenario.handle().loaded_modules())
         .await;
@@ -743,8 +712,6 @@ async fn stepping_over_a_breakpoint_on_a_watched_store_reports_the_store() {
     for kind in [None, Some(StepKind::Instruction)] {
         let mut scenario = Scenario::launch(FIXTURE);
 
-        // The function entry is the store itself, so the address
-        // breakpoint is installed from the preceding phase.
         run_to(&mut scenario, "store_then_breakpoint").await;
         let site = symbol(&scenario, "watched_store_site").await;
         scenario
@@ -756,8 +723,6 @@ async fn stepping_over_a_breakpoint_on_a_watched_store_reports_the_store() {
         );
         let watchpoint = watch(&scenario, "watch_i32", WatchAccess::Write).await;
 
-        // The store executes during the step over the breakpoint, which
-        // must surface the hit instead of silently continuing.
         let reason = match kind {
             Some(kind) => scenario.step_to_stop(kind).await,
             None => scenario.resume_to_stop().await,
@@ -802,7 +767,6 @@ async fn source_steps_end_at_a_watched_store_and_leave_no_plan_behind() {
             )
             .await;
 
-        // A leftover step-plan breakpoint would stop here.
         resume_to_exit(&mut scenario).await;
         scenario.shutdown().await;
     }
@@ -810,8 +774,6 @@ async fn source_steps_end_at_a_watched_store_and_leave_no_plan_behind() {
 
 #[tokio::test]
 async fn finish_ends_at_a_watched_store_before_the_frame_returns() {
-    // A hit ends a step out whatever the build; the builds are
-    // write_watchpoints_report_every_store_after_its_instruction's.
     let mut scenario = Scenario::launch(FIXTURE);
     run_to(&mut scenario, "scalar_stores").await;
     let watchpoint = watch(&scenario, "watch_i32", WatchAccess::Write).await;
@@ -902,8 +864,6 @@ async fn exec_discards_watchpoints_because_the_kernel_cleared_them() {
     scenario.shutdown().await;
 }
 
-/// Every hit reported by any thread at the current stop, from each thread's
-/// own stop reason.
 async fn thread_hits(scenario: &mut Scenario) -> Vec<WatchpointHit> {
     scenario
         .snapshot()
@@ -930,7 +890,6 @@ async fn every_write_from_every_thread_is_reported_exactly_once() {
     run_to(&mut scenario, "before_threads").await;
     let main = selected_thread(&mut scenario).await;
 
-    // Every thread that writes these is created after they were armed.
     let locked = watch(&scenario, "locked_counter", WatchAccess::Write).await;
     let racing = watch(&scenario, "racing_counter", WatchAccess::Write).await;
     scenario.add_breakpoint("tls_ready").await;
@@ -961,7 +920,6 @@ async fn every_write_from_every_thread_is_reported_exactly_once() {
         for hit in thread_hits(&mut scenario).await {
             assert!(hit.changed() || hit.watchpoint == racing.id);
             if hit.watchpoint == locked.id {
-                // Lock-serialized stores are observed one at a time.
                 assert_eq!(
                     value(hit.current.as_ref()),
                     value(hit.previous.as_ref()) + 1,
@@ -983,7 +941,6 @@ async fn every_write_from_every_thread_is_reported_exactly_once() {
         "every locked store is reported in order"
     );
 
-    // Main's own reset in before_threads is the first racing store.
     assert_eq!(
         racing_hits,
         WORKERS * ITERATIONS + 1,
@@ -1036,8 +993,6 @@ async fn thread_local_watchpoints_watch_one_threads_instance_until_it_exits() {
     scenario.add_breakpoint("after_join").await;
     let mut events = scenario.handle().subscribe();
 
-    // The owner stores 2 and 3; main stores 5 through a pointer. The other
-    // worker's stores to its own instance are never reported.
     let mut writes = BTreeMap::new();
 
     loop {
@@ -1056,8 +1011,6 @@ async fn thread_local_watchpoints_watch_one_threads_instance_until_it_exits() {
         }
     }
 
-    // Main's store and the owner's second store may coincide; both are
-    // reported, each with the value once every thread stopped.
     assert_eq!(writes.len(), 2, "{writes:?}");
     assert_eq!(writes.get(&owner).map(|values| values[0]), Some(2));
     assert!(writes.get(&owner).is_some_and(|values| values.len() == 2));
@@ -1073,7 +1026,6 @@ async fn thread_local_watchpoints_watch_one_threads_instance_until_it_exits() {
             .all(|value| [2, 3, 5].contains(value))
     );
 
-    // The first stop after the owner exited removes the watchpoint.
     let invalidated = std::iter::from_fn(|| events.try_recv().ok())
         .find_map(|event| match event {
             DebuggerEvent::WatchpointsInvalidated { invalidated, .. } => Some(invalidated),
@@ -1090,7 +1042,6 @@ async fn thread_local_watchpoints_watch_one_threads_instance_until_it_exits() {
     scenario.shutdown().await;
 }
 
-/// The current values of one watchpoint's hits in a watchpoint stop.
 fn values_of(reason: &StopReason, watchpoint: WatchpointId) -> Vec<u64> {
     hits(reason)
         .iter()
@@ -1115,8 +1066,6 @@ fn locals_line(needle: &str) -> u64 {
     u64::try_from(index + 1).expect("line fits u64")
 }
 
-/// Watches a frame-scoped local and checks that its scope names the
-/// selected thread's current activation.
 async fn watch_local(scenario: &mut Scenario, name: &str, access: WatchAccess) -> Watchpoint {
     let thread = selected_thread(scenario).await;
     let watchpoint = watch(scenario, name, access).await;
@@ -1128,10 +1077,6 @@ async fn watch_local(scenario: &mut Scenario, name: &str, access: WatchAccess) -
     watchpoint
 }
 
-/// Resumes until the watchpoint stops existing, returning the values of every
-/// hit it reported before that and why it was removed. Removal is detected
-/// either at a hit on storage the object no longer owns, which stops with
-/// `WatchpointInvalidated`, or at the next public stop.
 async fn hits_until_invalidated(
     scenario: &mut Scenario,
     watchpoint: WatchpointId,
@@ -1179,7 +1124,6 @@ async fn hits_until_invalidated(
 
 #[tokio::test]
 async fn frame_watchpoints_end_when_their_activation_returns() {
-    // Scope ends the same way whatever the access; Change once is enough.
     for (fixture, access) in [
         (LOCALS[0], WatchAccess::Write),
         (LOCALS[1], WatchAccess::Write),
@@ -1194,8 +1138,6 @@ async fn frame_watchpoints_end_when_their_activation_returns() {
         scenario.add_breakpoint("after_return").await;
         let mut events = scenario.handle().subscribe();
 
-        // The first store initializes uninitialized stack, so only the new
-        // values are deterministic.
         assert_eq!(
             values_of(&scenario.resume_to_stop().await, watchpoint.id),
             [10]
@@ -1205,8 +1147,6 @@ async fn frame_watchpoints_end_when_their_activation_returns() {
             [11]
         );
 
-        // A stop while the activation is live and inside the object's scope
-        // keeps the watchpoint.
         assert!(matches!(
             scenario.resume_to_stop().await,
             StopReason::Breakpoint { .. }
@@ -1241,7 +1181,6 @@ async fn recursive_activations_keep_their_own_frame_watchpoint() {
             )
             .await;
 
-        // The outermost activation's value survives its callees returning.
         let watchpoint = watch_local(&mut scenario, "frame_value", WatchAccess::Write).await;
         scenario.add_breakpoint("after_return").await;
 
@@ -1265,7 +1204,6 @@ async fn block_watchpoints_end_when_execution_leaves_the_block() {
         ));
         let watchpoint = watch_local(&mut scenario, "inner", WatchAccess::Write).await;
 
-        // The same activation is still live in the next block.
         scenario
             .add_source_breakpoint("watch-locals.c", locals_line("reused += 1;"))
             .await;
@@ -1284,7 +1222,6 @@ async fn a_tail_call_replacing_the_activation_ends_its_watchpoints() {
         run_to(&mut scenario, "tail_caller").await;
         let watchpoint = watch_local(&mut scenario, "mine", WatchAccess::Write).await;
 
-        // The callee runs at the replaced activation's frame address.
         scenario.add_breakpoint("tail_callee").await;
 
         let (values, reason, _) = hits_until_invalidated(&mut scenario, watchpoint.id).await;
@@ -1332,8 +1269,6 @@ async fn a_frame_watchpoint_ends_with_its_owner_thread() {
         let (values, reason, at_hit) = hits_until_invalidated(&mut scenario, watchpoint.id).await;
         assert_eq!(values, [4], "{fixture}");
 
-        // Thread teardown may reuse the dead frame's storage while the thread
-        // still exists; otherwise the thread's exit ends the watchpoint.
         assert_eq!(
             reason,
             if at_hit {
@@ -1347,9 +1282,6 @@ async fn a_frame_watchpoint_ends_with_its_owner_thread() {
     }
 }
 
-/// Runs a slot-thief fixture to the point where its perf breakpoints hold
-/// debug registers. A sandbox that forbids `perf_event_open` cannot run these
-/// scenarios, which fails them loudly instead of passing vacuously.
 async fn run_to_stolen_slots(scenario: &mut Scenario) {
     scenario.add_breakpoint("slots_taken").await;
     match scenario.run_to_stop().await {
@@ -1369,7 +1301,6 @@ async fn kernel_capacity_exhaustion_is_reported_without_arming_anything() {
     let main = selected_thread(&mut scenario).await;
     let mut events = scenario.handle().subscribe();
 
-    // The planner sees four free slots, but perf holds three of them.
     let first = watch(&scenario, "thief_target[0]", WatchAccess::Write).await;
     let refused = scenario
         .handle()
@@ -1389,7 +1320,6 @@ async fn kernel_capacity_exhaustion_is_reported_without_arming_anything() {
         "only the success is published"
     );
 
-    // Only the first watchpoint is armed, and it still works.
     assert_single_hit(&scenario.resume_to_stop().await, first.id, 0, 1);
     resume_to_exit(&mut scenario).await;
     scenario.shutdown().await;
@@ -1416,14 +1346,10 @@ async fn arming_rolls_back_every_thread_when_a_later_thread_has_no_capacity() {
     );
     assert!(scenario.snapshot().await.watchpoints.is_empty());
 
-    // The main thread was armed first and must have been rolled back: its
-    // write to the target does not stop.
     resume_to_exit(&mut scenario).await;
     scenario.shutdown().await;
 }
 
-/// The watch-attach fixture, which reports the address of the word it writes
-/// once released.
 struct AttachTarget {
     process: support::ExternalProcess,
     watched: u64,
@@ -1440,8 +1366,6 @@ impl AttachTarget {
         Self { process, watched }
     }
 
-    /// Arms DR0 on the target from a tracer that then exits without
-    /// detaching, as a crashed debugger would.
     fn orphan_watchpoint(&self) {
         let status = std::process::Command::new(Scenario::fixture("watch-orphaner"))
             .arg(self.process.process_id().get().to_string())
@@ -1456,8 +1380,6 @@ impl AttachTarget {
 async fn attaching_clears_watchpoints_a_dead_tracer_left_armed() {
     use std::os::unix::process::ExitStatusExt as _;
 
-    // Control: without microscope the orphaned watchpoint kills the target, so
-    // the scenario below cannot pass vacuously.
     let mut unattended = AttachTarget::spawn();
     unattended.orphan_watchpoint();
     unattended.process.release();
@@ -1467,7 +1389,6 @@ async fn attaching_clears_watchpoints_a_dead_tracer_left_armed() {
         "SIGTRAP kills the target"
     );
 
-    // Detaching immediately must leave the target able to write.
     let mut target = AttachTarget::spawn();
     target.orphan_watchpoint();
     let debugger = target.process.attach().await;
@@ -1475,8 +1396,6 @@ async fn attaching_clears_watchpoints_a_dead_tracer_left_armed() {
     target.process.release();
     assert_eq!(target.process.wait().code(), Some(0));
 
-    // While attached, the foreign registers must already be clear: a hit
-    // in a slot no watchpoint owns would be an unclassifiable stop.
     let mut target = AttachTarget::spawn();
     target.orphan_watchpoint();
     let debugger = target.process.attach().await;
@@ -1497,8 +1416,6 @@ async fn attaching_clears_watchpoints_a_dead_tracer_left_armed() {
 
 #[tokio::test]
 async fn detaching_disarms_watchpoints_even_while_they_are_being_hit() {
-    // Detaching races the target's next hit; repeat it so a trap queued at
-    // the interrupt, or a register left armed, is caught reliably.
     for _ in 0..8 {
         let mut target = AttachTarget::spawn();
         let debugger = target.process.attach().await;
@@ -1518,9 +1435,6 @@ async fn detaching_disarms_watchpoints_even_while_they_are_being_hit() {
             assert_single_hit(&reason, watchpoint.id, expected - 1, expected);
         }
 
-        // Detach while the target runs and keeps hitting the watchpoint. A
-        // debug register left armed, or a hit's SIGTRAP left queued, would
-        // kill it after detaching.
         let mut events = handle.subscribe();
         let microscope::InferiorState::Stopped {
             process_id,
@@ -1572,7 +1486,6 @@ async fn watchpoints_work_across_the_rust_and_zig_matrix() {
         );
         assert_eq!(watchpoint.byte_size, 8, "{fixture}");
 
-        // A change watchpoint on the same bytes shares the hardware slot.
         let changes = watch(&scenario, global, WatchAccess::Change).await;
         let mut values = BTreeMap::<_, Vec<_>>::new();
 
@@ -1612,7 +1525,6 @@ async fn go_watchpoints_follow_goroutines_onto_new_threads() {
     );
     let watchpoint = watch(&scenario, "main.watchedCounter", WatchAccess::Write).await;
 
-    // A Go local exists only past the line declaring it.
     let source = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/go/watch/main.go"),
     )
@@ -1646,7 +1558,6 @@ async fn go_watchpoints_follow_goroutines_onto_new_threads() {
         }
     }
 
-    // watchReady's reset plus 4 goroutines x 5 increments.
     assert_eq!(hit_count, 21);
     assert!(writers.len() >= 2, "goroutines ran on several threads");
 
@@ -1676,7 +1587,6 @@ async fn invalid_requests_fail_with_typed_errors_and_leave_state_unchanged() {
     let mut scenario = Scenario::launch(FIXTURE);
     let location = |address, byte_size| WatchpointSpec::Location { address, byte_size };
 
-    // No process exists yet.
     assert!(matches!(
         scenario
             .handle()
@@ -1757,7 +1667,6 @@ async fn invalid_requests_fail_with_typed_errors_and_leave_state_unchanged() {
         "failed requests publish nothing"
     );
 
-    // A target resolved at an earlier stop cannot be armed at a later one.
     let stale = scenario
         .operation(
             "resolve",
@@ -1780,7 +1689,6 @@ async fn invalid_requests_fail_with_typed_errors_and_leave_state_unchanged() {
 
 #[tokio::test]
 async fn values_without_watchable_memory_are_refused_with_typed_errors() {
-    // Registers, computed values, and entry values in optimized code.
     for (fixture, refusals) in [
         (
             "variables-parameters-gcc-o2",
@@ -1818,7 +1726,6 @@ async fn values_without_watchable_memory_are_refused_with_typed_errors() {
         scenario.shutdown().await;
     }
 
-    // A bit-field member is extracted from its storage, not addressable.
     let mut scenario = Scenario::launch("records-c-gcc-o0");
     run_to(&mut scenario, "inspect_records").await;
     let result = scenario
@@ -1830,8 +1737,6 @@ async fn values_without_watchable_memory_are_refused_with_typed_errors() {
         "{result:?}"
     );
 
-    // The pointer parameter is frame storage; the record it points to has
-    // no lifetime the debugger can know.
     let pointer = scenario
         .operation(
             "resolve record pointer",
@@ -1857,7 +1762,6 @@ async fn values_without_watchable_memory_are_refused_with_typed_errors() {
     assert_eq!(member.scope(), &WatchScope::Location);
     scenario.shutdown().await;
 
-    // A debug-information constant has no storage.
     let mut scenario = Scenario::launch("globals-cpp-gcc-o0");
     run_to(&mut scenario, "inspect_globals").await;
     let result = scenario
@@ -1888,7 +1792,6 @@ async fn unloading_a_module_ends_watchpoints_on_its_static_storage() {
     let owned = watch(&scenario, "dso_external", WatchAccess::Write).await;
     assert_eq!(owned.scope, WatchScope::Static { module: library });
 
-    // The same bytes reached through a pointer have no known owner.
     let pointed = watch(&scenario, "*cross_module_pointer", WatchAccess::Write).await;
     assert_eq!(pointed.address, owned.address);
     assert_eq!(pointed.scope, WatchScope::Location);
@@ -1978,16 +1881,10 @@ async fn attached_processes_arm_threads_they_create_later() {
     drop(target);
 }
 
-/// One change a watchpoint reported: what it watched, and its value before
-/// and after.
 type Change = (String, u64, u64);
 
-/// An expression to watch for changes, with the condition its stops need.
 type Watched<'a> = (&'a str, Option<&'a str>);
 
-/// Runs a fixture to its end under gdb with a `watch` on each expression,
-/// which stops only where a store changes the value, and collects what gdb
-/// reported.
 fn gdb_changes(fixture: &str, expressions: &[Watched<'_>]) -> Vec<Change> {
     let mut command = std::process::Command::new("gdb");
     command.args(["--quiet", "--nx", "--batch"]);
@@ -2046,8 +1943,6 @@ fn gdb_changes(fixture: &str, expressions: &[Watched<'_>]) -> Vec<Change> {
         .collect()
 }
 
-/// Runs a fixture to its end with a change watchpoint on each expression
-/// and collects what they reported.
 async fn microscope_changes(fixture: &str, expressions: &[Watched<'_>]) -> Vec<Change> {
     let mut scenario = Scenario::launch(fixture);
     run_to(&mut scenario, "main").await;
@@ -2096,11 +1991,6 @@ async fn microscope_changes(fixture: &str, expressions: &[Watched<'_>]) -> Vec<C
     changes
 }
 
-/// gdb's `watch` is an independent oracle for which stores change a value:
-/// stores of the value already there, including a failed `lock cmpxchg`
-/// writing its destination back, are not reported, each `rep stos`
-/// iteration that changes a byte is, and a kernel write is seen only once a
-/// later store differs from the value last observed.
 #[tokio::test]
 async fn change_watchpoints_report_the_changes_gdb_watch_reports() {
     for fixture in MATRIX {
@@ -2128,9 +2018,6 @@ async fn change_watchpoints_report_the_changes_gdb_watch_reports() {
     }
 }
 
-/// gdb's conditional `watch` is an independent oracle for what a change
-/// that a condition declines leaves: the value the next reported change is
-/// a change from, as each check sees it.
 #[tokio::test]
 async fn conditional_change_watchpoints_report_the_changes_gdb_reports() {
     for fixture in ["hit-counts-gcc-o0", "hit-counts-clang-o2"] {
@@ -2141,7 +2028,6 @@ async fn conditional_change_watchpoints_report_the_changes_gdb_reports() {
         let expected = gdb_changes(fixture, &expressions);
         assert!(expected.len() >= 10, "{fixture}: {expected:?}");
 
-        // Each reported call follows a declined one, the old value.
         assert!(
             expected
                 .iter()
@@ -2157,10 +2043,6 @@ async fn conditional_change_watchpoints_report_the_changes_gdb_reports() {
     }
 }
 
-/// Runs a script of steps through `steady_stores`, whose lines and callee
-/// store the value the variable already holds, and returns where each step
-/// stopped. The script depends only on where each step stops: it steps out
-/// only of the callee and ends once execution leaves both functions.
 async fn steady_step_script(fixture: &str, access: Option<WatchAccess>) -> Vec<(StopReason, u64)> {
     steady_step_script_with(fixture, access, WatchpointOptions::default()).await
 }
@@ -2223,8 +2105,6 @@ async fn steady_step_script_with(
     }
 
     if access == Some(WatchAccess::Change) {
-        // The watchpoint stayed armed throughout and still reports the
-        // first store that changes the value, but not the one repeating it.
         let reason = scenario.resume_to_stop().await;
         assert_single_hit(&reason, hits(&reason)[0].watchpoint, 7, 8);
         assert_eq!(
@@ -2250,7 +2130,6 @@ async fn steps_cross_stores_that_change_nothing_or_are_declined_as_if_unwatched(
             "{fixture}"
         );
 
-        // The script does cross stores: a write watchpoint ends steps there.
         let written = steady_step_script(fixture, Some(WatchAccess::Write)).await;
         assert!(
             written
@@ -2259,7 +2138,6 @@ async fn steps_cross_stores_that_change_nothing_or_are_declined_as_if_unwatched(
             "{fixture}: {written:?}"
         );
 
-        // Unless its condition or hit condition declines every store.
         for options in [
             WatchpointOptions {
                 condition: Some(
@@ -2287,7 +2165,6 @@ async fn a_debugger_write_is_what_the_next_store_is_judged_against() {
     run_to(&mut scenario, "scalar_stores").await;
     let watchpoint = watch(&scenario, "watch_i32", WatchAccess::Change).await;
 
-    // Writing the value the program stores next hides that store.
     let word = scenario
         .operation("read word", scenario.handle().read_word(watchpoint.address))
         .await;
@@ -2312,7 +2189,6 @@ async fn a_debugger_write_is_what_the_next_store_is_judged_against() {
     scenario.shutdown().await;
 }
 
-/// Reads a global's word.
 async fn global(scenario: &Scenario, name: &str) -> u64 {
     let address = symbol(scenario, name).await;
     scenario
@@ -2323,9 +2199,6 @@ async fn global(scenario: &Scenario, name: &str) -> u64 {
         .await
 }
 
-/// Each change hit's `previous` is the value at the previous stop, when the
-/// debugger last observed it, so racing stores that leave the value as the
-/// last stop saw it are never reported, and every report is a change.
 #[tokio::test]
 async fn racing_threads_report_changes_from_the_value_each_stop_observed() {
     const WORKERS: u64 = 2;
@@ -2375,13 +2248,11 @@ async fn racing_threads_report_changes_from_the_value_each_stop_observed() {
         ]);
     }
 
-    // Every locked increment is a change; `after_join`'s `+= 0` is not.
     assert_eq!(
         locked_values,
         (1..=WORKERS * ITERATIONS + CHURN).collect::<Vec<_>>()
     );
 
-    // The reset to zero in `before_threads` stores what is already there.
     assert!(
         (1..=WORKERS * ITERATIONS).contains(&racing_stops),
         "{racing_stops} racing stops"

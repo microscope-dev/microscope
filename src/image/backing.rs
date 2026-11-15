@@ -1,10 +1,3 @@
-//! Owned bytes aligned for tables, and bounded snapshot reads of files.
-//!
-//! Every byte microscope parses is its own copy: a mapping of a file another
-//! process can rewrite would change under the borrows that read it, and a
-//! cached image is validated byte by byte anyway, so mapping it would save
-//! only the copy.
-
 use std::io::Read as _;
 use std::path::Path;
 
@@ -12,14 +5,12 @@ use zerocopy::{FromBytes, FromZeros as _, Immutable, IntoBytes, KnownLayout};
 
 use super::format::TABLE_ALIGNMENT;
 
-/// One table-aligned block.
 #[repr(C, align(64))]
 #[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
 struct Block([u8; TABLE_ALIGNMENT]);
 
 const _: () = assert!(align_of::<Block>() == TABLE_ALIGNMENT);
 
-/// Owned, zero-initialized bytes whose start is aligned for tables.
 #[derive(Clone)]
 pub struct AlignedBytes {
     blocks: Vec<Block>,
@@ -36,11 +27,6 @@ impl std::fmt::Debug for AlignedBytes {
 }
 
 impl AlignedBytes {
-    /// `length` zero bytes, or `None` when they cannot be allocated.
-    ///
-    /// The bytes are asked of the allocator as zeroed, not filled: a large
-    /// block comes from pages the kernel has already zeroed, so an image or
-    /// file about to be written over is not written twice.
     pub fn zeroed(length: usize) -> Option<Self> {
         let blocks = length.div_ceil(TABLE_ALIGNMENT);
         Some(Self {
@@ -49,7 +35,6 @@ impl AlignedBytes {
         })
     }
 
-    /// A copy of `bytes`.
     #[cfg(test)]
     pub fn copy_of(bytes: &[u8]) -> Option<Self> {
         let mut aligned = Self::zeroed(bytes.len())?;
@@ -88,7 +73,6 @@ impl std::ops::Deref for AlignedBytes {
     }
 }
 
-/// Why a file could not be read as one consistent snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
     #[error(transparent)]
@@ -111,8 +95,6 @@ pub enum ReadError {
     Allocation { path: String, length: u64 },
 }
 
-/// What identifies one version of a file's contents well enough to see an
-/// ordinary rewrite: not proof of equal contents, which only hashing gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileStamp {
     pub device: u64,
@@ -147,19 +129,12 @@ impl From<ReadError> for std::io::Error {
     }
 }
 
-/// The most bytes microscope reads of one input file.
 pub const MAX_INPUT: u64 = 16 << 30;
 
-/// Reads an input file, such as a program or its debug file, as one
-/// snapshot of at most [`MAX_INPUT`] bytes.
 pub fn read_input(path: &Path) -> std::io::Result<(Vec<u8>, FileStamp)> {
     Ok(read_snapshot(path, MAX_INPUT, &mut |_| {}, vector)?)
 }
 
-/// Reads a file another file names, such as a `.dwo` or supplementary file
-/// a module's DWARF names, as [`read_input`] does, but only a regular
-/// file. The name is input: a device or FIFO it names may never end, and
-/// opening a FIFO to read waits for a writer, so neither is opened to read.
 pub fn read_named(path: &Path) -> std::io::Result<Vec<u8>> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -175,30 +150,16 @@ pub fn read_named(path: &Path) -> std::io::Result<Vec<u8>> {
         ));
     }
 
-    // Reading through the descriptor reads the file that was checked,
-    // whatever its path names now.
     let opened = format!("/proc/self/fd/{}", file.as_raw_fd());
     Ok(read_input(Path::new(&opened))?.0)
 }
 
-/// `length` zero bytes, or `None` when they cannot be allocated; zeroed
-/// as [`AlignedBytes::zeroed`] is.
 fn vector(length: usize) -> Option<Vec<u8>> {
     u8::new_vec_zeroed(length).ok()
 }
 
-/// How many times a read starts again when the file changed under it.
 const READ_ATTEMPTS: u32 = 3;
 
-/// Reads a whole file from one descriptor into a buffer `allocate` makes
-/// of the file's length, or `None` when it cannot. The file's metadata is
-/// compared before and after, and a read that saw it change, grow, or
-/// shrink starts again, at most [`READ_ATTEMPTS`] times.
-///
-/// That catches ordinary rewrites, such as a build replacing its output;
-/// it cannot prove a snapshot against a writer racing on purpose. Tests
-/// change the file in `between`, which runs after each attempt's first
-/// metadata check and before its read.
 pub fn read_snapshot<B: AsMut<[u8]>>(
     path: &Path,
     limit: u64,
@@ -249,7 +210,6 @@ pub fn read_snapshot<B: AsMut<[u8]>>(
         })?;
         let read = read_fully(&mut file, bytes.as_mut())?;
 
-        // A file that grew has more to read; one that shrank ended early.
         let mut probe = [0_u8; 1];
         let grew = file.read(&mut probe)? != 0;
         let after = FileStamp::of(&file.metadata()?);
@@ -270,8 +230,6 @@ enum StreamError {
     Allocation(u64),
 }
 
-/// Reads a stream, such as a FIFO, to its end: what it yields is consumed
-/// once, so it is its own snapshot.
 fn read_stream<B: AsMut<[u8]>>(
     file: std::fs::File,
     metadata: &std::fs::Metadata,
@@ -299,8 +257,6 @@ fn read_stream<B: AsMut<[u8]>>(
     ))
 }
 
-/// Reads until `buffer` is full or the file ends, returning how much it
-/// read.
 fn read_fully(file: &mut std::fs::File, buffer: &mut [u8]) -> std::io::Result<usize> {
     let mut filled = 0;
     while let Some(rest) = buffer.get_mut(filled..).filter(|rest| !rest.is_empty()) {

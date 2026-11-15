@@ -1,14 +1,3 @@
-//! The functions and lines a breakpoint location names in one image.
-//!
-//! A function location is first a function's whole name, as the debug
-//! information spells it. Failing that, a function a package defines is
-//! named as its language's programmers write it: by its local name within
-//! the package (see [`crate::type_identity::functions`]), qualified by the
-//! package's import path or name, or not qualified at all. A qualified
-//! match wins over an unqualified one. Wrappers are never named, and a
-//! location naming functions of more than one package or local name is
-//! ambiguous rather than bound to all of them.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -22,19 +11,13 @@ use super::{
     SourceLanguage,
 };
 
-/// A unit of code that a language names by an import path and, in its
-/// own source, by a shorter name, such as a Go package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageInfo {
-    /// The path other code imports the package by, such as `net/http`.
     pub path: Arc<str>,
 
-    /// The name the package's code declares, such as `http`.
     pub name: Arc<str>,
 }
 
-/// Each function's package path and local name, function by function,
-/// for those a package defines.
 pub(super) fn packaged_names<'a>(
     functions: &'a [FunctionInfo],
     packages: &[PackageInfo],
@@ -58,8 +41,6 @@ pub(super) fn packaged_names<'a>(
         .collect()
 }
 
-/// The functions of `view` whose local name, qualified by their package's
-/// path or name, is `plain`.
 fn qualified(view: PackageView<'_>, plain: &str) -> Vec<FunctionId> {
     let mut found = Vec::new();
     for (dot, _) in plain.match_indices('.') {
@@ -79,9 +60,6 @@ fn qualified(view: PackageView<'_>, plain: &str) -> Vec<FunctionId> {
     found
 }
 
-/// What makes two matched functions the same one: a package and local
-/// name, which instantiations and inlined copies share, or else the
-/// function itself.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Identity<'a> {
     Packaged(&'a str, &'a str),
@@ -89,22 +67,6 @@ enum Identity<'a> {
 }
 
 impl ModuleImage {
-    /// Finds the functions with code that a breakpoint location names,
-    /// keeping only those declared in `file` when it is given.
-    ///
-    /// The location is first a whole name, which every function so named
-    /// matches, as overloads do in gdb. Failing that, a function a package
-    /// defines matches its local name within the package, such as
-    /// `Stack.Push` for `main.(*Stack[go.shape.int]).Push`, qualified by the
-    /// package's import path or name, or else unqualified; receivers may
-    /// be written with or without `(*…)`. Wrappers never match. A function
-    /// that a package defines counts as declared in a file when any copy of
-    /// it is, since copies inlined into other units may not say where they
-    /// come from.
-    ///
-    /// Fails with [`Error::AmbiguousFunction`], naming each candidate by
-    /// its package and local name, when the matches are more than one such
-    /// function, and with [`Error::FunctionNotFound`] when nothing matches.
     pub fn functions_located(
         &self,
         location: &str,
@@ -160,8 +122,6 @@ impl ModuleImage {
         Ok(found)
     }
 
-    /// The import path of the package that defines a function, for
-    /// languages with packages.
     #[must_use]
     pub fn function_package(&self, function: FunctionId) -> Option<&str> {
         Some(self.packages().packaged_name(function)?.0)
@@ -171,11 +131,6 @@ impl ModuleImage {
         PackageView::new(&self.tables)
     }
 
-    /// The location an unqualified `location` means within `package`'s
-    /// scope: qualified by the package, when nothing in the image has the
-    /// whole name or a qualified name it spells and the package has a
-    /// function of that local name. Code stopped in a package names its
-    /// own functions unqualified, as its source does.
     #[must_use]
     pub fn location_in_package(&self, location: &str, package: &str) -> Option<String> {
         if self
@@ -207,8 +162,6 @@ impl ModuleImage {
             .then(|| format!("{package}.{location}"))
     }
 
-    /// The functions that a package defines and that `location` names by
-    /// their local names: qualified ones if any, otherwise unqualified.
     fn packaged_functions(&self, location: &str) -> Vec<Function<'_>> {
         let Some(plain) = functions::plain_location(location) else {
             return Vec::new();
@@ -229,16 +182,10 @@ impl ModuleImage {
         }
     }
 
-    /// Whether a location can name a function: it has code, and is not a
-    /// wrapper, which only forwards to the function a location means.
     fn locatable(function: Function<'_>) -> bool {
         function.role() != CodeRole::Wrapper && function.instances().next().is_some()
     }
 
-    /// Whether a line breakpoint in a file stays at the line it asks for:
-    /// the file's functions are Go, whose compiler marks a statement on
-    /// every line that has code, so a line without one has no code to
-    /// stop at and moving to another line would stop somewhere else.
     #[must_use]
     pub fn keeps_line_breakpoints(&self, file: SourceFileId) -> bool {
         self.functions().any(|function| {
@@ -250,8 +197,6 @@ impl ModuleImage {
         })
     }
 
-    /// The nearest lines of a file before and after `line` that have
-    /// statements.
     #[must_use]
     pub fn nearest_statement_lines(
         &self,

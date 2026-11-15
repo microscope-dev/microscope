@@ -1,9 +1,9 @@
-"""A program instrumented with microscope's Python package: it waits for a
-line on its standard input, which the test writes once microscope has read
-its instrumentation, then marks its work every way the package can, and ends
-by timing the calls of its own module, then defines more sites than the
-library holds.
-"""
+
+
+
+
+
+
 import os
 import sys
 import types
@@ -37,8 +37,8 @@ except TypeError:
 else:
     raise AssertionError('a zone spanned what a generator yields')
 
-# A recording that starts the program switches it on at once, but its marks
-# are safe only once microscope has read it.
+
+
 microscope.frame('started')
 sys.stdin.readline()
 
@@ -50,8 +50,8 @@ for round in range(3):
 
 
 def module(name):
-    """A module named `name` defining `work`, whose code equals every
-    other such module's: code objects compare without their files."""
+
+
     made = types.ModuleType(name)
     exec(compile('def work():\n    return 1\n', f'<{name}>', 'exec'), made.__dict__)
     return made
@@ -66,8 +66,8 @@ traced.work()  # Traced, though its code equals the other's.
 microscope.trace_calls('elsewhere')
 other.work()  # Traced from now on.
 
-# A name made anew for each use is a site of its own, until every site the
-# library's table holds is taken.
+
+
 for number in range(4100):
     microscope.label(f'request {number}', number)
 print('PROBES DONE', flush=True)

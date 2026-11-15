@@ -1,7 +1,3 @@
-//! Frames of functions that left by tail calls, which a backtrace shows
-//! where the debug information allows only one chain of tail calls between
-//! a call and the frame it entered.
-
 use microscope::{FrameKind, StackFrame};
 
 use super::*;
@@ -14,7 +10,6 @@ const VARIANTS: [&str; 3] = [
     "tail-frames-clang-o2",
 ];
 
-/// A frame as a backtrace shows it: its kind, function, and line.
 fn shown(frame: &StackFrame) -> (FrameKind, String, u64) {
     (
         frame.kind,
@@ -31,7 +26,6 @@ fn at(kind: FrameKind, function: &str, marker: &str) -> (FrameKind, String, u64)
     (kind, function.to_owned(), source_line(SOURCE, marker))
 }
 
-/// The frames down to `main`'s.
 async fn frames(scenario: &Scenario) -> Vec<StackFrame> {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
@@ -46,10 +40,6 @@ async fn frames(scenario: &Scenario) -> Vec<StackFrame> {
     trace.frames[..=main].to_vec()
 }
 
-/// `top` jumped to `middle`, which jumped to `leaf`: the only way `top`
-/// reaches `leaf`, so their frames stand between `leaf`'s and `main`'s.
-/// `either` reaches `leaf` either directly or through `middle`, so which
-/// functions ran between is unknown, and no frame claims it.
 #[tokio::test]
 async fn a_backtrace_shows_the_one_chain_of_tail_calls() {
     for variant in VARIANTS {
@@ -81,7 +71,6 @@ async fn a_backtrace_shows_the_one_chain_of_tail_calls() {
             "{variant}: {trace:#?}"
         );
 
-        // Each is at its jump, in its own function's code.
         for frame in &trace[1..3] {
             assert_eq!(
                 frame.symbol.as_ref().map(|symbol| &*symbol.name),
@@ -115,9 +104,6 @@ async fn a_backtrace_shows_the_one_chain_of_tail_calls() {
     }
 }
 
-/// A tail call discarded its frame's registers, so none is known there;
-/// the values its caller passed it are, as entry values. A step out of it
-/// returns where the call that entered the chain returns.
 #[tokio::test]
 async fn a_tail_call_frame_knows_only_what_was_passed_to_it() {
     for variant in VARIANTS {
@@ -138,7 +124,6 @@ async fn a_tail_call_frame_knows_only_what_was_passed_to_it() {
                 .operation("registers", scenario.handle().registers())
                 .await;
 
-            // Only the thread's own segments are the same in every frame.
             let segments = ["cs", "ss", "ds", "es", "fs", "gs", "fs_base", "gs_base"];
             assert!(
                 registers
@@ -153,7 +138,6 @@ async fn a_tail_call_frame_knows_only_what_was_passed_to_it() {
                 .operation("value", scenario.handle().variable("value"))
                 .await;
 
-            // Clang's tail call to `middle` does not say what it passed.
             if (variant, function) == ("tail-frames-clang-o2", "middle") {
                 assert_eq!(
                     variable.state,
@@ -172,7 +156,6 @@ async fn a_tail_call_frame_knows_only_what_was_passed_to_it() {
             );
         }
 
-        // Out of `middle`, which returns when `leaf` does.
         scenario
             .operation("select middle", scenario.handle().select_frame(trace[1].id))
             .await;

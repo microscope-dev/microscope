@@ -1,7 +1,3 @@
-//! Conditions and hit conditions on watchpoints: which of a watchpoint's
-//! hits stop, how hits are counted, and that hits which do not stop are
-//! invisible to steps, pauses, edits, and detaching.
-
 mod support;
 
 use std::sync::Arc;
@@ -14,9 +10,6 @@ use microscope::{
 };
 use support::Scenario;
 
-/// The single-threaded hit-count program across the compiler,
-/// optimization, and PIE matrix: what the compiler decides is where the
-/// condition's variables live after each store.
 const COUNTING: [&str; 4] = [
     "hit-counts-gcc-o0",
     "hit-counts-clang-o0",
@@ -63,7 +56,6 @@ async fn watchpoint(scenario: &mut Scenario, id: WatchpointId) -> Watchpoint {
         .expect("watchpoint exists")
 }
 
-/// Waits until a running program has hit watchpoint `id` `count` times.
 async fn wait_for_hits(scenario: &Scenario, id: WatchpointId, count: u64) {
     let deadline = Instant::now() + Duration::from_secs(5);
 
@@ -89,8 +81,6 @@ async fn wait_for_hits(scenario: &Scenario, id: WatchpointId, count: u64) {
     }
 }
 
-/// Every hit reported by any thread at the current stop, from each thread's
-/// own stop reason.
 async fn thread_hits(scenario: &mut Scenario) -> Vec<WatchpointHit> {
     scenario
         .snapshot()
@@ -114,7 +104,6 @@ fn hits(reason: &StopReason) -> &[WatchpointHit] {
     }
 }
 
-/// Decodes little-endian watched bytes.
 fn value(bytes: Option<&Arc<[u8]>>) -> u64 {
     let bytes = bytes.expect("watched bytes are readable");
     let mut word = [0_u8; 8];
@@ -122,7 +111,6 @@ fn value(bytes: Option<&Arc<[u8]>>) -> u64 {
     u64::from_le_bytes(word)
 }
 
-/// Whether a condition holds in the selected frame of the current stop.
 async fn holds(scenario: &Scenario, text: &str) -> bool {
     match scenario
         .operation(text, scenario.handle().evaluate(&expression(text)))
@@ -145,8 +133,6 @@ async fn global(scenario: &Scenario, name: &str) -> u64 {
     scenario.operation(name, handle.read_word(address)).await
 }
 
-/// A watched hit as the program determines it: the watchpoint, the hit's
-/// number, and the value before and after the access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Expected {
     watchpoint: WatchpointId,
@@ -166,9 +152,6 @@ async fn conditions_and_hit_conditions_choose_which_hits_stop() {
         ));
         scenario.remove_all_breakpoints().await;
 
-        // The condition reads the storing function's parameter after the
-        // store; the hit condition counts every changing store, including
-        // the second of the two inlined additions per call.
         let calls = watch(
             &scenario,
             "last_call",
@@ -192,8 +175,6 @@ async fn conditions_and_hit_conditions_choose_which_hits_stop() {
         assert_eq!(calls.condition, Some(condition("call % 10 == 0")));
         assert_eq!(totals.hit_condition, Some(hit_condition("%7")));
 
-        // A declined hit's value is the one the next hit changes, as gdb's
-        // old value is.
         let mut expected = Vec::new();
         let (mut last_call, mut total) = (0, 0);
         let (mut call_hits, mut total_hits) = (0, 0);
@@ -244,7 +225,6 @@ async fn conditions_and_hit_conditions_choose_which_hits_stop() {
                 current: value(hit.current.as_ref()),
             });
 
-            // One thread, so the count is the stop's hit.
             assert_eq!(
                 watchpoint(&mut scenario, hit.watchpoint).await.hit_count,
                 hit.hit_count,
@@ -298,8 +278,6 @@ async fn a_condition_that_cannot_be_evaluated_stops_and_says_why() {
         )]
     );
 
-    // Conditions are amended at a stop, keeping the count, and requests
-    // for a watchpoint that does not exist fail without changing anything.
     let handle = scenario.handle();
     let amended = scenario
         .operation(
@@ -350,8 +328,6 @@ async fn a_condition_that_cannot_be_evaluated_stops_and_says_why() {
     scenario.shutdown().await;
 }
 
-/// Four workers each add 1 through 100 to one total at once. Every store
-/// is a hit, and only the hits whose thread added 50 stop.
 #[tokio::test]
 async fn concurrent_hits_are_each_counted_once_and_judged_in_their_thread() {
     const WORKERS: usize = 4;
@@ -379,8 +355,6 @@ async fn concurrent_hits_are_each_counted_once_and_judged_in_their_thread() {
         .add_source_breakpoint("hit-count-threads.c", joined)
         .await;
 
-    // Workers that hit while every thread stopped report in their own
-    // thread's reason.
     let mut stopped = Vec::new();
 
     let reason = loop {
@@ -409,7 +383,6 @@ async fn concurrent_hits_are_each_counted_once_and_judged_in_their_thread() {
         "{reason:?}"
     );
 
-    // Each worker stops once, at its own hit's number.
     let mut threads = stopped
         .iter()
         .map(|(thread, _)| *thread)
@@ -440,7 +413,6 @@ async fn pause_amend_and_shutdown_interrupt_endless_declined_hits() {
     scenario.run_to_stop().await;
     scenario.remove_all_breakpoints().await;
 
-    // Every store keeps the value at 7, so every hit is declined.
     let watched = watch(
         &scenario,
         "steady",
@@ -452,7 +424,6 @@ async fn pause_amend_and_shutdown_interrupt_endless_declined_hits() {
     )
     .await;
 
-    // A pause lands among declined hits and is reported as a pause.
     let running = scenario.start_resuming().await;
     wait_for_hits(&scenario, watched.id, 100).await;
     scenario.operation("pause", scenario.handle().pause()).await;
@@ -463,13 +434,11 @@ async fn pause_amend_and_shutdown_interrupt_endless_declined_hits() {
     let at_pause = watchpoint(&mut scenario, watched.id).await.hit_count;
     let stores = global(&scenario, "stores").await;
 
-    // A store is counted before the thread counts it in `stores`.
     assert!(
         stores <= at_pause && at_pause <= stores + 4,
         "{stores} stores, {at_pause} hits"
     );
 
-    // An amended condition applies to the running program's next hit.
     let resumed = scenario.start_resuming().await;
     let amended = scenario
         .operation(
@@ -490,7 +459,6 @@ async fn pause_amend_and_shutdown_interrupt_endless_declined_hits() {
         (7, 7)
     );
 
-    // Shutting down while hits are being declined reaps the inferior.
     scenario
         .operation(
             "never stop",
@@ -529,8 +497,6 @@ async fn attached_processes_decline_hits_and_detach_mid_run_unharmed() {
 
     let stores = global(&scenario, "stores").await;
 
-    // Detaching while hits are being declined disarms every thread first:
-    // a leftover debug register would kill the process with SIGTRAP.
     scenario
         .operation(
             "never stop",
@@ -550,8 +516,6 @@ async fn attached_processes_decline_hits_and_detach_mid_run_unharmed() {
     reattached.shutdown().await;
 }
 
-/// Runs the watch fixture to a function breakpoint through the signals its
-/// earlier phases raise.
 async fn run_to(scenario: &mut Scenario, function: &str) {
     scenario.add_breakpoint(function).await;
     let mut reason = scenario.run_to_stop().await;
@@ -566,8 +530,6 @@ async fn run_to(scenario: &mut Scenario, function: &str) {
     );
 }
 
-/// A breakpoint on a watched store is stepped over by executing the store,
-/// whose declined hit completes the step over as if unwatched.
 #[tokio::test]
 async fn a_declined_store_stepped_over_at_a_breakpoint_is_transparent() {
     for kind in [None, Some(microscope::StepKind::Instruction)] {
@@ -602,8 +564,6 @@ async fn a_declined_store_stepped_over_at_a_breakpoint_is_transparent() {
             assert_eq!(watchpoint(&mut scenario, watched.id).await.hit_count, 1);
         }
 
-        // The next store holds the condition, and changes the value the
-        // declined store left.
         let reason = scenario.resume_to_stop().await;
         let [hit] = hits(&reason) else {
             panic!("one hit: {reason:?}");

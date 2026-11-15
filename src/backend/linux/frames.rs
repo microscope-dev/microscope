@@ -1,5 +1,3 @@
-//! Stack unwinding and the logical frames presented for inline code.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -43,17 +41,12 @@ impl<P: InspectionOps> Controller<P> {
         validate_stopped_thread(inferior, pid)?;
         let stop = inferior.run.stop().ok_or(Error::NotStopped)?;
 
-        // The triggering thread's presentation is cached when the stop is
-        // published. Another thread is presented by its own stop reason, or
-        // by default when it merely stopped with its siblings.
         stop.presentations.get(&pid).cloned().map_or_else(
             || self.presentation_for_thread(pid, inferior.thread(pid)?.reason.as_ref()),
             Ok,
         )
     }
 
-    /// Chooses the logical frame to present for a stopped thread. `reason` is
-    /// the thread's own stop reason, which can reveal or select inline frames.
     pub(super) fn presentation_for_thread(
         &self,
         pid: Pid,
@@ -68,9 +61,6 @@ impl<P: InspectionOps> Controller<P> {
             hidden_inline_frames: 0,
         };
 
-        // Presentations describe inline frames of the main image only; an
-        // instruction elsewhere, or anywhere after exec replaced the image,
-        // is presented as its physical frame.
         let Some(image_address) = inferior
             .loaded_module
             .image_address(instruction)
@@ -102,9 +92,6 @@ impl<P: InspectionOps> Controller<P> {
             InlineFrameLookup::None => return Ok(physical()),
         };
 
-        // Every instance a breakpoint hit lies in the one chain, outermost
-        // first. Where several hit together, the stop presents the
-        // innermost, as gdb does; the others are its callers.
         if let Some(StopReason::Breakpoint {
             address: Some(address),
             ..
@@ -167,8 +154,6 @@ impl<P: InspectionOps> Controller<P> {
             | BreakpointOwner::Resolver
             | BreakpointOwner::InspectorHook => None,
         }) {
-            // A breakpoint removed while sites could not be edited, as SIGKILL
-            // tears the process down, leaves its owner on the trap.
             let Some(breakpoint) = self
                 .breakpoints
                 .iter()
@@ -195,14 +180,10 @@ impl<P: InspectionOps> Controller<P> {
     ) -> Result<ExecutionLocation> {
         let inferior = self.stopped_root(stop_id, root)?;
 
-        // A task's saved registers locate its innermost frame as a caller's
-        // are located, before the call it is parked in.
         let Some(pid) = root.thread() else {
             return self.outer_frame_location(inferior, root, frame);
         };
 
-        // A thread stopped in an interpreter's loop has the frame the loop
-        // runs innermost, before the loop's own.
         if frame.get() != 0 || self.interprets_on(inferior, root) {
             return self.outer_frame_location(inferior, root, frame);
         }
@@ -214,7 +195,6 @@ impl<P: InspectionOps> Controller<P> {
             unwind_module_for(&modules, address).ok_or(Error::AddressOutsideModule)?;
         let mut image = module.image.locate(image_address);
 
-        // The stop presentation describes inline frames of the main image only.
         if module.loaded.id == inferior.loaded_module.id {
             let presentation = self.presentation_for_stopped_thread(pid)?;
             apply_presentation(&self.main.image, &mut image, &presentation)?;
@@ -227,7 +207,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Describes a process address against the modules loaded at a stop.
     pub(super) fn describe_address(
         &self,
         stop_id: StopId,
@@ -240,7 +219,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(describe_address(&modules, address))
     }
 
-    /// A stack's frames, each future one awaits with what it waits for.
     pub(super) fn backtrace(&self, stop_id: StopId, root: &StackRoot) -> Result<Backtrace> {
         let _span = crate::span!("stack backtrace");
         let inferior = self.stopped_root(stop_id, root)?;
@@ -276,8 +254,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(trace)
     }
 
-    /// A stack's logical frames, with the frames of the functions that left
-    /// by tail calls that its calls' sites and debug information find.
     pub(super) fn expand_backtrace(
         &self,
         inferior: &Inferior,
@@ -301,23 +277,16 @@ impl<P: InspectionOps> Controller<P> {
         Ok(expanded)
     }
 
-    /// The inferior, once `stop_id` is its current stop and `root` begins in
-    /// one of its stopped threads or in a task's saved registers.
     pub(super) fn stopped_root(&self, stop_id: StopId, root: &StackRoot) -> Result<&Inferior> {
         self.stopped_inferior(stop_id, root.reader())
     }
 
-    /// The logical frame a stack's innermost activation presents: the
-    /// stop's choice for a thread, and every inline frame for a task's
-    /// saved registers, which no stop reason selects among.
     pub(super) fn root_presentation(&self, root: &StackRoot) -> Result<Option<FramePresentation>> {
         root.thread()
             .map(|pid| self.presentation_for_stopped_thread(pid))
             .transpose()
     }
 
-    /// Unwinds at most `max_frames` physical activations of a stack,
-    /// keeping the registers the unwinder reconstructed for each.
     pub(super) fn physical_stack(
         &self,
         inferior: &Inferior,
@@ -345,11 +314,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Unwinds a stack a frame at a time, across the stacks its runtimes
-    /// switch between: `walk` gets the unwinder and the innermost frame.
-    /// A thread's stack begins at `native`, or else its live registers.
-    /// Returns, beside what `walk` does, the thread's registers and whether
-    /// the innermost instruction is a return address.
     pub(super) fn walk_stack<T>(
         &self,
         inferior: &Inferior,
@@ -369,7 +333,6 @@ impl<P: InspectionOps> Controller<P> {
                 (Some(native), x86_64_registers(&native), false, stacks)
             }
 
-            // A parked task's frames are all on its own stack.
             RootOrigin::Saved {
                 registers,
                 after_call,
@@ -398,7 +361,6 @@ impl<P: InspectionOps> Controller<P> {
                 .iter()
                 .find(|runtime| runtime.module.id == module)?;
 
-            // A parked task's frames are all on its own stack.
             let Some(pid) = root.thread() else {
                 return Some(Ok(Crossing::Stay));
             };
@@ -432,9 +394,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok((native, after_call, walk(&mut provider, initial)))
     }
 
-    /// The stacks a thread runs on for the process's runtimes, and whose
-    /// each is. A thread whose runtime state is unreadable has none, so its
-    /// frames are on the thread's own stack.
     fn thread_stacks(
         &self,
         inferior: &Inferior,
@@ -453,9 +412,6 @@ impl<P: InspectionOps> Controller<P> {
             .collect()
     }
 
-    /// Finds one logical frame of a stack, numbered as [`Self::backtrace`]
-    /// presents it, and the state that evaluates its variables. Only the
-    /// activations up to that frame are unwound.
     pub(super) fn resolve_frame(
         &self,
         inferior: &Inferior,
@@ -466,8 +422,6 @@ impl<P: InspectionOps> Controller<P> {
         self.resolve_presented_frame(inferior, root, frame, presentation.as_ref())
     }
 
-    /// Resolves a frame of a thread whose logical presentation is known,
-    /// such as one stopped by a breakpoint hit before any stop is published.
     pub(super) fn resolve_presented_frame(
         &self,
         inferior: &Inferior,
@@ -486,10 +440,6 @@ impl<P: InspectionOps> Controller<P> {
 
         let level = frame.get() as usize;
 
-        // Every activation presents at least one logical frame, so unwinding
-        // one activation per level always reaches the requested frame; but
-        // interpreted frames are placed by every activation of their loop,
-        // so a thread that runs them is unwound as its backtrace is.
         let max_frames = if self.interprets_on(inferior, root) {
             DEFAULT_MAX_FRAMES
         } else {
@@ -498,8 +448,6 @@ impl<P: InspectionOps> Controller<P> {
         let stack = self.physical_stack(inferior, root, max_frames)?;
         let modules = self.unwind_modules(inferior);
 
-        // An innermost frame without one compatible inline chain still has
-        // registers and code, but no single source scope or backtrace frame.
         if level == 0
             && let Some(presentation) = presentation
             && let PresentedFrame::Ambiguous(_) = presentation.frame
@@ -531,8 +479,6 @@ impl<P: InspectionOps> Controller<P> {
         self.resolved_in(inferior, root, &stack, &modules, &expanded, frame)
     }
 
-    /// One logical frame of an expanded stack, and the state that
-    /// evaluates its variables.
     pub(super) fn resolved_in(
         &self,
         inferior: &Inferior,
@@ -593,8 +539,6 @@ impl<P: InspectionOps> Controller<P> {
                     .code_instance
                     .ok_or_else(|| Error::internal("inline frames name their code instance"))?,
             ),
-            // A thread's stack has no suspended frames, and an interpreted
-            // frame's state is no activation's.
             FrameKind::Physical
             | FrameKind::Signal
             | FrameKind::TailCall
@@ -609,8 +553,6 @@ impl<P: InspectionOps> Controller<P> {
             physical.registers.get(crate::unwind::RBP),
         );
 
-        // The jump discarded the frame's registers and its stack's place:
-        // only entry values recover what was passed to it.
         if jump.is_some() {
             return Ok(ResolvedFrame {
                 id: frame,
@@ -643,9 +585,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// The part of a frame's task stack below the frame's stack pointer,
-    /// for a frame on its task's own stack whose stack pointer is known.
-    /// Code a runtime runs on its own stacks may handle any task's memory.
     pub(super) fn below_stack_pointer(
         &self,
         inferior: &Inferior,
@@ -668,8 +607,6 @@ impl<P: InspectionOps> Controller<P> {
         Some(low..stack_pointer)
     }
 
-    /// Computes the canonical frame address of the activation executing
-    /// `code` with `registers`.
     pub(super) fn frame_cfa(
         &self,
         pid: Pid,
@@ -703,8 +640,6 @@ impl<P: InspectionOps> Controller<P> {
             .map_err(|termination| variable_cfa_error(&termination))
     }
 
-    /// Locates a frame other than the innermost one as the backtrace
-    /// describes it.
     fn outer_frame_location(
         &self,
         inferior: &Inferior,
@@ -717,8 +652,6 @@ impl<P: InspectionOps> Controller<P> {
             return Err(Error::FrameInterpreted);
         }
 
-        // A suspended frame whose resume address is unknown has no code to
-        // locate.
         let instruction = selected.instruction.ok_or(Error::FrameSuspended)?;
         let (module, address) = resolved.code.ok_or(Error::AddressOutsideModule)?;
         let module = self
@@ -729,8 +662,6 @@ impl<P: InspectionOps> Controller<P> {
         location.function = selected.function;
         location.source = selected.source;
 
-        // A caller is located just before its return address, but its
-        // symbol offset describes the frame's own instruction.
         let lookup = module.loaded.virtual_address(address)?;
         if let Some(symbol) = &mut location.symbol {
             symbol.offset += instruction.get() - lookup.get();
@@ -743,8 +674,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Whether a stopped thread is running the step `owner` names: the
-    /// step's task, wherever its runtime runs it, or else its thread.
     pub(super) fn runs_step(&self, owner: StepOwner, pid: Pid) -> bool {
         let Some(task) = owner.task else {
             return owner.thread == pid;
@@ -756,7 +685,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// How the stacks a stopped thread runs on are seen at this stop.
     pub(super) fn stack_view(&self, pid: Pid) -> StackView {
         self.session
             .inferior()
@@ -767,7 +695,6 @@ impl<P: InspectionOps> Controller<P> {
             )
     }
 
-    /// Where a stopped thread's stack pointer lies on its stacks.
     pub(super) fn stack_position(
         &self,
         pid: Pid,
@@ -776,7 +703,6 @@ impl<P: InspectionOps> Controller<P> {
         self.stack_view(pid).position(native.rsp)
     }
 
-    /// Every loaded module's unwind context, beginning with the main image.
     pub(super) fn unwind_modules<'a>(&'a self, inferior: &Inferior) -> Vec<UnwindModule<'a>> {
         let main = UnwindModule {
             loaded: inferior.loaded_module,
@@ -800,7 +726,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Selects a frame of a thread or task; each context keeps its own.
     pub(super) fn select_frame(
         &mut self,
         stop_id: StopId,
@@ -825,8 +750,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(selected)
     }
 
-    /// Selects the thread or task that implicit inspection follows: a
-    /// stopped thread, or a task on one, or a parked task.
     pub(super) fn select_context(
         &mut self,
         stop_id: StopId,
@@ -852,8 +775,6 @@ impl<P: InspectionOps> Controller<P> {
 
 fn variable_cfa_error(termination: &UnwindTermination) -> VariableRuntimeError {
     match termination {
-        // Defective unwind metadata makes a value malformed; anything else
-        // only leaves the call-frame address unavailable.
         UnwindTermination::CorruptUnwindInfo { .. }
         | UnwindTermination::InvalidCaller { .. }
         | UnwindTermination::CycleDetected => {
@@ -921,11 +842,6 @@ pub(super) fn default_inline_visible_count(
                 .is_some_and(|instance| instance.ranges().any(|range| range.start == image_address))
         })
         .map_or(inline_chain.len(), |index| {
-            // `position` is a zero-based frame index; presentation uses a
-            // count. Source `step` reveals the newly entered frame, while
-            // `next`, `finish`, and instruction stops remain in its parent.
-            // A loop body is its enclosing function's own code, so any stop
-            // where one begins shows it.
             inline_chain
                 .iter()
                 .skip(index)
@@ -1035,9 +951,6 @@ pub(super) fn source_for_code_instance(
     visible_source(module_image, location, &chain.instances, visible)
 }
 
-/// The source line a frame shows when `visible` of `chain`'s inline frames
-/// are: the call site of the outermost hidden one, or the location's own
-/// line when none is hidden.
 fn visible_source(
     module_image: &ModuleImage,
     location: &ImageLocation,
@@ -1050,7 +963,6 @@ fn visible_source(
     )
 }
 
-/// Where an inline instance was called from.
 fn call_site(instance: crate::CodeInstance<'_>) -> Option<SourceLocation> {
     match instance.kind() {
         CodeInstanceKind::Inline { call_site } => call_site,
@@ -1093,12 +1005,8 @@ pub(super) fn source_line_changed(
     })
 }
 
-/// Where a logical frame of a backtrace comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FrameOrigin {
-    /// The physical activation whose state the frame has, or, for a frame
-    /// whose function left by a tail call, the one whose state replaced it;
-    /// for a frame a runtime's frame drives, the one that drives it.
     pub(super) activation: usize,
 
     pub(super) source: FrameSource,
@@ -1113,27 +1021,16 @@ impl FrameOrigin {
     }
 }
 
-/// What a logical frame's state is read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FrameSource {
-    /// Its activation: the activation's own function, or one inlined
-    /// into it.
     Activation,
 
-    /// A function that left by a tail call, by its module and an address
-    /// within its jump.
     TailCall(ModuleId, ImageAddress),
 
-    /// A future its activation drives, in [`Expanded::futures`].
     Future(usize),
 
-    /// An interpreted frame its activation runs, or that its thread runs
-    /// where its place is unknown, in [`Expanded::interpreted`].
     Interpreted(usize),
 
-    /// A function `runtime` recorded for the activation, as V8 does: the
-    /// activation's own, or one its code inlined; and whether the
-    /// interpreter's registers in its frame are live.
     Described {
         runtime: crate::RuntimeId,
         inlined: bool,
@@ -1141,27 +1038,18 @@ pub(super) enum FrameSource {
     },
 }
 
-/// A stack's logical frames, and where each comes from.
 pub(super) struct Expanded {
     pub(super) trace: Backtrace,
     pub(super) origins: Vec<FrameOrigin>,
 
-    /// The futures whose frames the trace shows, where frames drive them.
     pub(super) futures: Vec<futures::AsyncFrame>,
 
-    /// The interpreted frames the trace shows.
     pub(super) interpreted: Vec<super::interpreted::Placed>,
 
-    /// The await chains a runtime's frames resumed, each by the frame of
-    /// the trace that resumed it, innermost first, which splicing shows
-    /// before it.
     pub(super) awaiting: Vec<(usize, crate::RuntimeId, crate::runtime_model::Awaiting)>,
 }
 
 impl Expanded {
-    /// Panics unless each frame is at its level, has an origin among the
-    /// stack's `activations` and the futures, and every note of a future
-    /// not followed names a frame of the trace.
     pub(super) fn check_invariants(&self, activations: usize) {
         let frames = &self.trace.frames;
         debug_assert_eq!(
@@ -1211,9 +1099,6 @@ impl Expanded {
     }
 }
 
-/// A stack's logical frames: each activation's inline frames, innermost
-/// first, then the activation itself, then the functions that left by the
-/// tail calls `tail_jumps` finds between it and its caller, the last first.
 fn expand_inline_backtrace(
     stack: &PhysicalStack,
     subject: ExecutionContext,
@@ -1229,7 +1114,6 @@ fn expand_inline_backtrace(
         let code = expand_activation(stack, activation, modules, presentation, &mut frames)?;
         origins.resize(frames.len(), FrameOrigin::of(activation));
 
-        // A signal interrupted its frame rather than calling it.
         if let Some((module, address)) = code
             && !physical.context.signal_frame
         {
@@ -1284,9 +1168,6 @@ fn expand_inline_backtrace(
     Ok(expanded)
 }
 
-/// One activation's logical frames: its inline frames, innermost first,
-/// then the activation itself. Returns the module describing its code, and
-/// the code's address in that image.
 fn expand_activation<'a>(
     stack: &PhysicalStack,
     activation: usize,
@@ -1313,8 +1194,6 @@ fn expand_activation<'a>(
         return Ok(None);
     };
 
-    // The stop presentation describes the main image only; innermost
-    // frames in other modules show their complete inline chain.
     let presentation = presentation.filter(|_| {
         activation == 0
             && modules
@@ -1334,15 +1213,10 @@ fn expand_activation<'a>(
     Ok(Some((frame_module, image_address)))
 }
 
-/// The level of the next frame pushed onto a stack of `len` frames.
 fn frame_level(len: usize) -> Result<u32> {
     u32::try_from(len).map_err(|_| Error::internal("frame count fits in u32"))
 }
 
-/// The logical frames of code at `image_address` in `frame_module`, the
-/// frame's instruction or the byte before its return address: the inline
-/// frames `presentation` shows, or else all of them, innermost first, then
-/// a frame of `kind` for the function.
 fn push_code_frames(
     frames: &mut Vec<StackFrame>,
     kind: FrameKind,
@@ -1417,8 +1291,6 @@ fn push_code_frames(
             code_instance: physical_instance.map(crate::image::functions::CodeInstance::id),
             function,
             source: physical_source,
-            // A caller is looked up just before its return address, but
-            // its offset describes the frame's own instruction.
             symbol: location.symbol.map(|mut symbol| {
                 symbol.offset += instruction.get() - lookup.get();
                 symbol
@@ -1429,40 +1301,29 @@ fn push_code_frames(
     Ok(())
 }
 
-/// One physical activation and the registers it held: the thread's own
-/// for the innermost activation, otherwise those the unwinder reconstructed.
 #[derive(Clone)]
 pub(super) struct PhysicalFrame {
     pub(super) context: FrameContext,
     pub(super) registers: RegisterFile,
 
-    /// Whose stack the activation is on.
     pub(super) segment: StackSegment,
 }
 
-/// A stack's physical activations, innermost first.
 #[derive(Clone)]
 pub(super) struct PhysicalStack {
-    /// The live registers of a thread's stack; `None` for registers a task
-    /// saved, which hold only some of them.
     pub(super) native: Option<libc::user_regs_struct>,
 
-    /// Whether the innermost activation's instruction is a return address,
-    /// as a parked task's is.
     pub(super) after_call: bool,
     pub(super) frames: Vec<PhysicalFrame>,
     pub(super) termination: UnwindTermination,
 }
 
 impl PhysicalStack {
-    /// The address whose code an activation is executing: its instruction,
-    /// or the byte before it when that is a return address.
     pub(super) fn lookup_address(&self, activation: usize) -> Option<VirtualAddress> {
         let caller = activation != 0 || self.after_call;
         frame_lookup_address(u32::from(caller), &self.frames.get(activation)?.context)
     }
 
-    /// The registers an activation's values are read from, if it was unwound.
     pub(super) fn registers(&self, activation: usize) -> Option<FrameRegisters> {
         match self.native {
             Some(native) if activation == 0 => Some(FrameRegisters::Thread(native)),
@@ -1474,33 +1335,24 @@ impl PhysicalStack {
     }
 }
 
-/// Where a stack's frames begin, and the context a request named it by.
 #[derive(Debug, Clone)]
 pub(super) struct StackRoot {
     pub(super) context: ExecutionContext,
     pub(super) origin: RootOrigin,
 }
 
-/// Where a stack's innermost frame comes from.
 #[derive(Debug, Clone)]
 pub(super) enum RootOrigin {
-    /// A stopped thread's live registers.
     Thread(Pid),
 
-    /// The registers a parked task saved. Any other register is unknown.
     Saved {
         registers: Box<RegisterFile>,
 
-        /// Whether the saved instruction is a return address.
         after_call: bool,
 
-        /// A stopped thread of the process, through which its memory is
-        /// read.
         reader: Pid,
     },
 
-    /// A suspended task's future, of type `ty`, which the code of `module`
-    /// describes. Its frames are the chain of awaits the future holds.
     Suspended {
         future: VirtualAddress,
         ty: TypeReference,
@@ -1508,9 +1360,6 @@ pub(super) enum RootOrigin {
         reader: Pid,
     },
 
-    /// A suspended task whose frames the interpreter of the runtime
-    /// `runtime` keeps, innermost first, and why they end before the
-    /// task's outermost, if they do.
     Interpreted {
         runtime: crate::RuntimeId,
         frames: Arc<[InterpretedFrame]>,
@@ -1520,7 +1369,6 @@ pub(super) enum RootOrigin {
 }
 
 impl StackRoot {
-    /// A stopped thread's own stack.
     pub(super) fn of_thread(pid: Pid) -> Self {
         Self {
             context: ExecutionContext::Thread(debug_thread_id(pid)),
@@ -1528,7 +1376,6 @@ impl StackRoot {
         }
     }
 
-    /// The stopped thread whose memory and state the stack is read through.
     pub(super) const fn reader(&self) -> Pid {
         match self.origin {
             RootOrigin::Thread(pid)
@@ -1538,7 +1385,6 @@ impl StackRoot {
         }
     }
 
-    /// The thread whose live registers begin the stack, if one does.
     pub(super) const fn thread(&self) -> Option<Pid> {
         match self.origin {
             RootOrigin::Thread(pid) => Some(pid),
@@ -1549,58 +1395,38 @@ impl StackRoot {
     }
 }
 
-/// The registers a logical frame's values are read from.
 #[expect(
     clippy::large_enum_variant,
     reason = "one per frame the debugger resolves; a register file is inline so that unwinding a sample allocates nothing"
 )]
 pub(super) enum FrameRegisters {
-    /// The thread's own registers, which every logical frame of the
-    /// innermost activation shares.
     Thread(libc::user_regs_struct),
 
-    /// The registers the unwinder reconstructed for a caller's activation.
-    /// Registers a callee could overwrite without saving are absent.
     Caller(RegisterFile),
 
-    /// None: the frame's function left by a tail call, which discarded
-    /// them.
     Discarded,
 }
 
-/// The source scope whose variables a frame shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FrameScope {
-    /// No single function scope applies: the code has no debug information,
-    /// or an innermost frame has no single compatible inline chain.
     Unavailable,
 
-    /// The physical function's own scope.
     Function,
 
-    /// One inline instance's scope.
     Inline(CodeInstanceId),
 
-    /// A suspended async function's, whose future of type `ty` at
-    /// `object` is in the state numbered `state`.
     Suspended {
         object: VirtualAddress,
         ty: TypeReference,
         state: u64,
     },
 
-    /// An interpreted frame's, which `runtime`'s interpreter keeps at
-    /// `frame`.
     Interpreted {
         runtime: crate::RuntimeId,
         frame: InterpretedFrameRef,
     },
 }
 
-/// The source scope of `frame`, which comes from `source`, and whose
-/// frame pointer is `fp`. Only code a function describes has one; a
-/// described activation's runtime reads it from the frame at rbp, and an
-/// inlined one has none.
 fn source_scope(frame: &StackFrame, source: FrameSource, fp: Option<u64>) -> FrameScope {
     match (frame.kind, frame.code_instance, source) {
         (
@@ -1635,36 +1461,23 @@ fn source_scope(frame: &StackFrame, source: FrameSource, fp: Option<u64>) -> Fra
     }
 }
 
-/// One logical frame of a stopped thread and the state that evaluates its
-/// variables.
 pub(super) struct ResolvedFrame {
     pub(super) id: StackFrameId,
 
-    /// The logical frame whose source scope the frame's variables follow.
     pub(super) presented: PresentedFrame,
 
-    /// The frame as the backtrace describes it; absent for an innermost
-    /// frame whose inline presentation is ambiguous.
     pub(super) frame: Option<StackFrame>,
 
-    /// The module describing the frame's code, and the frame's address in
-    /// its image: the instruction itself for the innermost activation and
-    /// signal frames, otherwise the byte before the return address.
     pub(super) code: Option<(ModuleId, ImageAddress)>,
     pub(super) scope: FrameScope,
     pub(super) registers: FrameRegisters,
     pub(super) cfa: std::result::Result<VirtualAddress, VariableRuntimeError>,
 
-    /// The index of the physical activation containing the frame.
     pub(super) activation: usize,
 
-    /// For a frame on its task's own stack, the part of that stack below
-    /// the frame's stack pointer: only the frame's callees use it, so a
-    /// pointer of the frame's to it is stale.
     pub(super) below_stack_pointer: Option<std::ops::Range<u64>>,
 }
 
-/// Describes a process address by the module whose image covers it.
 pub(super) fn describe_address(
     modules: &[UnwindModule<'_>],
     address: VirtualAddress,
@@ -1679,38 +1492,24 @@ pub(super) fn describe_address(
     }
 }
 
-/// Unwinds by the roles code plays: outermost code ends a stack, and the
-/// runtime that switched stacks says where a stack switch goes. Everything
-/// else is unwound by its call-frame information.
 pub(super) struct RoleCallerProvider<'a, 'c> {
     pub(super) dwarf: DwarfCallerProvider<'a>,
 
-    /// The stacks a runtime runs the thread on, and whose each is.
     pub(super) stacks: Vec<(std::ops::Range<u64>, StackSegment)>,
 
-    /// Whose stack a frame on none of them is on.
     pub(super) other: StackSegment,
     pub(super) cross: &'c mut CrossStacks<'c>,
 
-    /// Whose stack the current frame is on, when its callee's is: a frame
-    /// is on its callee's stack unless the callee switched stacks or a
-    /// signal interrupted it. A runtime knows its stacks' bounds only
-    /// roughly where the system gave them, as the top of a thread's.
     pub(super) carried: Option<StackSegment>,
 
-    /// Whether a frame on the current stack gave the thread to a task, so
-    /// that the task that switched to this stack may have left it.
     pub(super) dispatched: bool,
 }
 
 impl RoleCallerProvider<'_, '_> {
-    /// Whose stack the current frame is on: its callee's, or else where
-    /// its stack pointer points.
     pub(super) fn segment(&self) -> StackSegment {
         self.carried.unwrap_or_else(|| self.bounded_segment())
     }
 
-    /// Whose stack holds the current frame's stack pointer.
     fn bounded_segment(&self) -> StackSegment {
         self.dwarf
             .registers
@@ -1723,15 +1522,11 @@ impl RoleCallerProvider<'_, '_> {
             .unwrap_or(self.other)
     }
 
-    /// The role of the code at an exact address.
     fn role_at(&self, address: VirtualAddress) -> Option<CodeRole> {
         unwind_module_for(&self.dwarf.modules, address)
             .map(|(module, address)| module.image.code_role(address))
     }
 
-    /// The frame interrupted by a signal, from the registers the kernel
-    /// saved in the signal frame above a handler that returned to a signal
-    /// trampoline: the trampoline's stack holds the `ucontext`.
     fn interrupted(&mut self) -> CallerResult {
         let Some(context) = self.dwarf.registers.get(RSP) else {
             return CallerResult::Finished(UnwindTermination::RegisterUnavailable {
@@ -1767,9 +1562,6 @@ impl RoleCallerProvider<'_, '_> {
 
 pub(super) use crate::unwind::{SIGCONTEXT_REGISTERS, UCONTEXT_MCONTEXT};
 
-/// Asks the runtime whose module holds a frame's code where the frame,
-/// with these registers, goes on past the stack switch it makes; `None`
-/// when no runtime model reads the module's runtime.
 pub(super) type CrossStacks<'c> = dyn FnMut(ModuleId, &RegisterFile, bool) -> Option<std::result::Result<Crossing, Arc<str>>>
     + 'c;
 
@@ -1777,9 +1569,6 @@ impl CallerProvider for RoleCallerProvider<'_, '_> {
     fn caller(&mut self, current: &FrameContext) -> CallerResult {
         self.carried = Some(self.segment());
 
-        // A handler returns to its signal trampoline's first instruction,
-        // so the trampoline is named by its own address, not the one
-        // before it, as glibc's alone allows with a byte to spare.
         match self.caller_by_role(current) {
             CallerResult::Caller(caller)
                 if self.role_at(caller.instruction) == Some(CodeRole::SignalTrampoline) =>
@@ -1821,13 +1610,9 @@ impl RoleCallerProvider<'_, '_> {
                         CallerResult::Finished(UnwindTermination::Complete)
                     }
 
-                    // The task the runtime names now may not be the one
-                    // that switched here, whose frames lie beyond.
                     Some(Ok(Crossing::Resume(_) | Crossing::Continue(_))) if self.dispatched => {
                         CallerResult::Finished(UnwindTermination::Complete)
                     }
-                    // Past a switch, the frames are on a stack the thread
-                    // did not begin on.
                     Some(Ok(Crossing::Resume(registers))) => {
                         self.dwarf.registers = registers;
                         self.dwarf.stack_start = None;
@@ -1859,8 +1644,6 @@ impl RoleCallerProvider<'_, '_> {
                 self.dwarf.caller(current)
             }
 
-            // The runtime entered the frame by a trap, faking a call from
-            // the instruction that trapped, which its caller's pc names.
             Some((_, CodeRole::TrapEntry)) => match self.dwarf.caller(current) {
                 CallerResult::Caller(caller) => CallerResult::Caller(FrameContext {
                     signal_frame: true,
@@ -1879,24 +1662,12 @@ pub(super) struct DwarfCallerProvider<'a> {
     pub(super) memory: PtraceMemory<'a>,
     pub(super) first: bool,
 
-    /// The stack pointer the thread began with, or for a thread whose
-    /// start the debugger did not see an address glibc says is no lower,
-    /// while the frames are on the stack it began on; see
-    /// [`DwarfCallerProvider::zero_return_address`].
     pub(super) stack_start: Option<u64>,
 
-    /// The code runtimes own as the process says, which keeps the
-    /// runtime's frame-pointer convention: a frame there that no
-    /// call-frame information describes is unwound by it.
     pub(super) runtime_code: Vec<super::runtimes::ProcessCode>,
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Unwinds `pid`'s stack from `registers` through every loaded
-    /// module's call-frame information, and by the convention of
-    /// `runtimes` through the code they own where none describes it.
-    /// `first` says the registers are a stopped thread's own, whose
-    /// instruction is not a return address.
     pub(super) fn caller_provider<'a>(
         &'a self,
         inferior: &Inferior,
@@ -1939,8 +1710,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl DwarfCallerProvider<'_> {
-    /// Whether `address`, which `module` holds at its image's
-    /// `image_address`, is in code a runtime owns as the process says.
     fn in_runtime_code(
         &self,
         address: VirtualAddress,
@@ -1953,22 +1722,10 @@ impl DwarfCallerProvider<'_> {
             .any(|range| range.holds(address, code))
     }
 
-    /// The address whose unwind rules describe `current`: its instruction in
-    /// the innermost or a signal frame, and otherwise the byte before its
-    /// return address, which still belongs to the call. `None` means a
-    /// return address of zero, which ends the stack.
     fn lookup_address(&self, current: &FrameContext) -> Option<VirtualAddress> {
         frame_lookup_address(u32::from(!self.first), current)
     }
 
-    /// How a stack ends at a frame whose return address is zero, with its
-    /// caller's stack pointer at `cfa`.
-    ///
-    /// A thread's creator may mark the end of its stack so, at the stack
-    /// pointer it starts the thread with. A zero below that, or below the
-    /// frame's own stack pointer, is no mark: no call writes one, so the
-    /// frame's rules found a slot that holds no return address, as in
-    /// memory the stack has not reached.
     fn zero_return_address(&self, cfa: VirtualAddress) -> UnwindTermination {
         let floor = self
             .registers
@@ -1985,11 +1742,6 @@ impl DwarfCallerProvider<'_> {
         }
     }
 
-    /// The canonical frame address of `current`, from its own unwind rules.
-    ///
-    /// Identifying an activation needs nothing of its caller, so this works
-    /// for a frame whose return address is unreadable or corrupt, such as
-    /// a coroutine's first frame on a fresh stack.
     pub(super) fn frame_cfa(
         &mut self,
         current: &FrameContext,
@@ -2023,8 +1775,6 @@ impl DwarfCallerProvider<'_> {
 
 impl CallerProvider for DwarfCallerProvider<'_> {
     fn caller(&mut self, current: &FrameContext) -> CallerResult {
-        // A stopped thread's stack pointer is on a page it has used, which
-        // a core's producer writes unless it failed to read it.
         if self.first
             && let Some(stack) = self.registers.get(crate::unwind::RSP)
             && !self.memory.ptrace.memory_written(stack)

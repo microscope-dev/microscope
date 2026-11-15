@@ -1,40 +1,19 @@
-//! The only source of randomness in a simulated run.
-//!
-//! A run's seed is expanded with `SplitMix64` into one `xoshiro256**` generator
-//! per [`Stream`], salted by the stream's name. Each concern draws from its
-//! own stream, so changing how one concern draws leaves the others' choices
-//! as they were. Both generators are written here, and pinned by test
-//! vectors, so a seed means the same run with every toolchain and
-//! dependency version.
-
-/// A concern that draws random choices of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stream {
-    /// The run's shape, chosen before it starts.
     Swarm,
 
-    /// Which action the world takes next.
     Schedule,
 
-    /// What the client asks the debugger to do.
     Client,
 
-    /// What the program sees of the outside world, such as `AT_RANDOM`.
     Program,
 
-    /// What happens between two of the controller's calls into the kernel.
     Preempt,
 
-    /// When planned faults fire.
     Fault,
 
-    /// Which breakpoints and watchpoints the client enables, disables, and
-    /// makes temporary, and where it advances to. Drawn apart from
-    /// [`Stream::Client`], so seeds that never use them choose as before.
     Control,
 
-    /// Whether and how the profiler samples running threads. Drawn apart
-    /// from the rest, so seeds that never sample choose as before.
     Sample,
 }
 
@@ -68,15 +47,12 @@ impl Stream {
     }
 }
 
-/// The results of [`Choices::below`], stream by stream, in the order a run
-/// drew them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tape {
     pub streams: [Vec<u64>; Stream::ALL.len()],
 }
 
 impl Tape {
-    /// How many choices the tape holds.
     #[must_use]
     pub fn len(&self) -> usize {
         self.streams.iter().map(Vec::len).sum()
@@ -88,19 +64,15 @@ impl Tape {
     }
 }
 
-/// A tape a run replays, and what it draws.
 struct Replay {
     given: Tape,
     used: [usize; Stream::ALL.len()],
     drawn: Tape,
 }
 
-/// Every random choice a run makes, one generator per stream.
 pub struct Choices {
     streams: [Xoshiro256StarStar; Stream::ALL.len()],
 
-    /// When the run replays a tape: a stream's choices come from it until
-    /// it runs out, and then from the stream's generator.
     replay: Option<Box<Replay>>,
 }
 
@@ -116,8 +88,6 @@ impl Choices {
         }
     }
 
-    /// Choices that replay `tape`, each value held below the bound it is
-    /// drawn for, and record what they draw.
     #[must_use]
     pub fn replaying(seed: u64, tape: Tape) -> Self {
         Self {
@@ -130,17 +100,11 @@ impl Choices {
         }
     }
 
-    /// What a replaying run drew, or `None` for one that replays nothing.
     #[must_use]
     pub fn drawn(&self) -> Option<&Tape> {
         self.replay.as_ref().map(|replay| &replay.drawn)
     }
 
-    /// A uniformly distributed integer in `0..bound`.
-    ///
-    /// # Panics
-    ///
-    /// If `bound` is zero.
     pub fn below(&mut self, stream: Stream, bound: u64) -> u64 {
         assert!(bound > 0, "an empty range has nothing to choose");
 
@@ -161,26 +125,15 @@ impl Choices {
         value
     }
 
-    /// Whether an event with a chance of `per_mille` in a thousand happens.
     pub fn chance(&mut self, stream: Stream, per_mille: u64) -> bool {
         self.below(stream, 1000) < per_mille
     }
 
-    /// One of `items`, each equally likely.
-    ///
-    /// # Panics
-    ///
-    /// If `items` is empty.
     pub fn pick<'a, T>(&mut self, stream: Stream, items: &'a [T]) -> &'a T {
         let index = self.below(stream, items.len() as u64);
         &items[usize::try_from(index).expect("an index below a slice length fits usize")]
     }
 
-    /// An index into `weights`, each chosen in proportion to its weight.
-    ///
-    /// # Panics
-    ///
-    /// If every weight is zero.
     pub fn weighted(&mut self, stream: Stream, weights: &[u64]) -> usize {
         let mut draw = self.below(stream, weights.iter().sum());
 
@@ -195,7 +148,6 @@ impl Choices {
         unreachable!("a draw below the total weight falls in some weight")
     }
 
-    /// Fills `bytes` from `stream`.
     pub fn fill(&mut self, stream: Stream, bytes: &mut [u8]) {
         for chunk in bytes.chunks_mut(8) {
             let word = self.streams[stream.index()].next().to_le_bytes();
@@ -204,7 +156,6 @@ impl Choices {
     }
 }
 
-/// `SplitMix64` (Steele, Lea, and Flood), used to expand a seed.
 struct SplitMix64(u64);
 
 impl SplitMix64 {
@@ -217,14 +168,10 @@ impl SplitMix64 {
     }
 }
 
-/// `xoshiro256**` (Blackman and Vigna).
 struct Xoshiro256StarStar([u64; 4]);
 
 impl Xoshiro256StarStar {
-    /// A uniformly distributed integer in `0..bound`, which is not zero.
     fn below(&mut self, bound: u64) -> u64 {
-        // Lemire's method: the high half of a 128-bit product, rejecting
-        // the few low halves that would bias it.
         let threshold = bound.wrapping_neg() % bound;
 
         loop {
@@ -256,13 +203,11 @@ impl Xoshiro256StarStar {
     }
 }
 
-/// The 64-bit FNV-1a hash.
 #[must_use]
 pub const fn fnv1a(bytes: &[u8]) -> u64 {
     fnv1a_continue(0xcbf2_9ce4_8422_2325, bytes)
 }
 
-/// Continues an FNV-1a hash over more bytes.
 #[must_use]
 pub const fn fnv1a_continue(mut hash: u64, bytes: &[u8]) -> u64 {
     let mut index = 0;
@@ -278,9 +223,6 @@ pub const fn fnv1a_continue(mut hash: u64, bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
-    /// The generators and the hash match their published test vectors, and
-    /// streams expand as the vectors computed independently from them say,
-    /// so a seed names the same run on every toolchain.
     #[test]
     fn generators_match_their_reference_values() {
         let mut expand = SplitMix64(1_234_567);

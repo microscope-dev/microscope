@@ -1,28 +1,18 @@
-//! numpy's arrays, read from synthetic memory: their fields after the
-//! object's header, as numpy's public structure lays them out, their
-//! dtype's byte order and type number, and their elements by shape and
-//! strides.
-
 use super::super::values::Types;
 use super::values::{read_value, with_values};
 use super::{Process, layout};
 use crate::image::python::Field;
 use crate::{InspectionLimits, VirtualAddress};
 
-/// numpy's type numbers of the types the tests write.
 const INT8: i32 = 1;
 const INT32: i32 = 5;
 const FLOAT64: i32 = 12;
 
-/// The size of numpy's array objects past the header, which holds every
-/// field numpy 2 gives an array.
 const ARRAY_FIELDS: u64 = 80;
 
-/// One array's elements, their layout, and their dtype.
 struct Spec<'a> {
     data: &'a [u8],
 
-    /// Where its first element is, in bytes into `data`.
     first: u64,
     shape: &'a [i64],
     strides: &'a [i64],
@@ -31,7 +21,6 @@ struct Spec<'a> {
 }
 
 impl<'a> Spec<'a> {
-    /// A native-order array of `data`, its first element first.
     const fn new(data: &'a [u8], shape: &'a [i64], strides: &'a [i64], number: i32) -> Self {
         Self {
             data,
@@ -44,8 +33,6 @@ impl<'a> Spec<'a> {
     }
 }
 
-/// The world, and numpy's array type, whose objects are `fields` bytes past
-/// the header.
 fn numpy_world(fields: u64) -> (Process, Types, VirtualAddress) {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
@@ -55,7 +42,6 @@ fn numpy_world(fields: u64) -> (Process, Types, VirtualAddress) {
     (process, types, ty)
 }
 
-/// An array object of `ty`, as `spec` describes it.
 fn array(process: &mut Process, ty: VirtualAddress, spec: &Spec<'_>) -> u64 {
     let header = process.offset(Field::ObjectSize);
     let data = process.alloc((spec.data.len() as u64).max(8));

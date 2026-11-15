@@ -1,6 +1,3 @@
-// What an authenticator app does with the key services shows: RFC 6238
-// codes, computed here so tests can sign in with them.
-
 import { createHmac } from "node:crypto";
 
 export function base32(text: string): Buffer {
@@ -20,7 +17,6 @@ export function base32(text: string): Buffer {
   return Buffer.from(bytes);
 }
 
-/** RFC 6238 with SHA-1, six digits, and 30 second steps, `ahead` steps from now. */
 export function totp(secret: Buffer, ahead = 0): string {
   const counter = Buffer.alloc(8);
   counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30_000) + ahead));
@@ -30,7 +26,6 @@ export function totp(secret: Buffer, ahead = 0): string {
   return String(value % 1_000_000).padStart(6, "0");
 }
 
-/** A six digit code that no step near now produces. */
 export function wrong(secret: Buffer): string {
   const valid = new Set([-1, 0, 1, 2].map((ahead) => totp(secret, ahead)));
   for (let n = 0; ; n++) {

@@ -4,9 +4,9 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-// Workers reach `contended` while the main thread signals them, so signal
-// stops arrive while the debugger is skipping hits. Once every signal was
-// handled, `finished` receives the program's own count of calls.
+
+
+
 enum { WORKERS = 3, SIGNALS = 24, CALLS_PER_SIGNAL = 20 };
 
 static _Atomic uint64_t calls;
@@ -54,8 +54,8 @@ int main(void) {
         sched_yield();
     }
     for (int sent = 0; sent < SIGNALS; ++sent) {
-        // One signal at a time, so none coalesces with a pending one, each
-        // sent while workers are calling.
+
+
         uint64_t target = (uint64_t)(sent + 1) * CALLS_PER_SIGNAL;
         while (atomic_load_explicit(&handled, memory_order_relaxed) != sent ||
                atomic_load_explicit(&calls, memory_order_relaxed) < target) {

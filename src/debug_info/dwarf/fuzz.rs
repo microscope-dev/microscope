@@ -1,13 +1,3 @@
-//! The fuzz harness for loading a module's debug information from the
-//! bytes of its file, and for every answer the loaded image then gives.
-//!
-//! An input that begins as an ELF file does is loaded as it is. Any other
-//! is a program that writes one: DIEs and their attributes, line rows,
-//! call-frame entries, symbols, and the sections language runtimes read,
-//! written with `gimli::write` and `object::write`, so that the fuzzer
-//! reaches far past the parsers' first checks. What the program leaves
-//! after its end byte flips bytes of the file it wrote.
-
 #![expect(
     clippy::indexing_slicing,
     reason = "a fuzz harness reports a bug by panicking"
@@ -24,11 +14,8 @@ use object::write;
 
 use super::LoadLimits;
 
-/// Where the module is said to be: nowhere, so that no separate debug
-/// file or `.dwo` file a relative name gives is found beside it.
 const PATH: &str = "/nonexistent/microscope-fuzz/module";
 
-/// Limits small enough that every input loads in milliseconds.
 const LIMITS: LoadLimits = LoadLimits {
     per_input_byte: 32,
     floor: 1 << 20,
@@ -36,11 +23,8 @@ const LIMITS: LoadLimits = LoadLimits {
     most_decompressed: 16 << 20,
 };
 
-/// How many bytes of code the written module has, at address zero.
 const CODE: usize = 0x200;
 
-/// The deepest DIE the program nests, which keeps the writer's own
-/// recursion shallow; the loader's bounds are still reached by flips.
 const MOST_DEPTH: usize = 128;
 
 pub(in crate::debug_info) fn fuzz_load(data: &[u8]) {
@@ -82,8 +66,6 @@ pub(in crate::debug_info) fn fuzz_load(data: &[u8]) {
     }
 }
 
-/// The fuzzer's bytes, read from the front; past their end every read is
-/// zero.
 struct Input<'a>(&'a [u8]);
 
 impl Input<'_> {
@@ -107,7 +89,6 @@ impl Input<'_> {
         u64::from_le_bytes(std::array::from_fn(|_| self.byte()))
     }
 
-    /// A number that is usually small, and sometimes any.
     fn number(&mut self) -> u64 {
         match self.byte() {
             byte @ 0..0xf0 => u64::from(byte),
@@ -116,7 +97,6 @@ impl Input<'_> {
         }
     }
 
-    /// An address near the code, on either side of its ends.
     fn address(&mut self) -> u64 {
         u64::from(self.u16()) % (CODE as u64 + 0x40)
     }
@@ -128,7 +108,6 @@ impl Input<'_> {
         bytes.to_vec()
     }
 
-    /// A DWARF expression: a common first operation, then any bytes.
     fn expression(&mut self) -> Expression {
         let mut bytes = vec![self.pick(&OPERATIONS).0];
         bytes.extend(self.bytes(12));
@@ -230,13 +209,10 @@ const ATTRIBUTES: [gimli::DwAt; 52] = [
     gimli::DW_AT_accessibility,
     gimli::DW_AT_import,
     gimli::DW_AT_noreturn,
-    // Go's kind and runtime type, which gimli does not name.
     gimli::DwAt(0x2900),
     gimli::DwAt(0x2904),
 ];
 
-/// Names that mean something to some loader: languages' own, and some
-/// that are not text.
 const NAMES: [&[u8]; 32] = [
     b"main",
     b"a",
@@ -316,7 +292,6 @@ const OPERATIONS: [gimli::DwOp; 20] = [
     gimli::DW_OP_call4,
 ];
 
-/// Sections the loaders of language runtimes and others read by name.
 const SECTIONS: [&[u8]; 6] = [
     b".PyRuntime",
     b".gopclntab",
@@ -326,7 +301,6 @@ const SECTIONS: [&[u8]; 6] = [
     crate::view::embedded::SECTION.as_bytes(),
 ];
 
-/// Symbols the loaders of language runtimes look for.
 const SYMBOLS: [&[u8]; 9] = [
     b"main",
     b"Py_Version",
@@ -339,7 +313,6 @@ const SYMBOLS: [&[u8]; 9] = [
     b"runtime.text",
 ];
 
-/// A unit being written, and the DIEs open in it.
 struct Writing {
     id: UnitId,
     open: Vec<UnitEntryId>,
@@ -348,9 +321,6 @@ struct Writing {
     sequence: Option<u64>,
 }
 
-/// Writes the module the program at the front of `input` describes,
-/// leaving `input` at what follows its end byte; `None` when the writer
-/// refuses what it describes.
 #[allow(
     clippy::too_many_lines,
     reason = "one interpreter, an arm for each operation"
@@ -377,7 +347,6 @@ fn write_module(input: &mut Input<'_>) -> Option<Vec<u8>> {
     });
     let mut debug_frame = false;
 
-    // A function that saves the frame pointer and returns, over and over.
     let mut code = [0x55, 0x48, 0x89, 0xe5, 0x5d, 0xc3]
         .into_iter()
         .cycle()
@@ -450,7 +419,6 @@ fn write_module(input: &mut Input<'_>) -> Option<Vec<u8>> {
         let parent = *writing.open.last()?;
 
         match operation % 16 {
-            // A DIE, open until it is closed.
             1..=3 => {
                 let tag = input.pick(&TAGS);
                 let entry = unit.add(parent, tag);
@@ -467,7 +435,6 @@ fn write_module(input: &mut Input<'_>) -> Option<Vec<u8>> {
                 }
             }
 
-            // An attribute of the DIE open last.
             5..=8 => {
                 let name = input.pick(&ATTRIBUTES);
                 let value = match input.byte() % 22 {
@@ -491,8 +458,6 @@ fn write_module(input: &mut Input<'_>) -> Option<Vec<u8>> {
                         let mut list = Vec::new();
                         for _ in 0..input.byte() % 4 {
                             let begin = input.address();
-                            // gimli's writer adds the length to the start
-                            // unchecked before DWARF 5.
                             list.push(Location::StartLength {
                                 begin: Address::Constant(begin),
                                 length: input.number().min(u64::MAX - begin),
@@ -527,8 +492,6 @@ fn write_module(input: &mut Input<'_>) -> Option<Vec<u8>> {
                 unit.get_mut(parent).set(name, value);
             }
 
-            // A row of the unit's line program, at an address no lower than
-            // the row before it.
             9 | 10 => {
                 let program = &mut unit.line_program;
                 if writing.sequence.is_none() {
@@ -557,8 +520,6 @@ fn write_module(input: &mut Input<'_>) -> Option<Vec<u8>> {
                 }
             }
 
-            // A call-frame entry, its instructions in the order of their
-            // offsets.
             12 => {
                 debug_frame |= input.byte() & 1 == 1;
                 let start = input.address();
@@ -589,7 +550,6 @@ fn write_module(input: &mut Input<'_>) -> Option<Vec<u8>> {
                 frames.add_fde(cie, fde);
             }
 
-            // A symbol.
             13 => {
                 let name = input.pick(&SYMBOLS).to_vec();
                 let kind = input.byte();
@@ -598,7 +558,6 @@ fn write_module(input: &mut Input<'_>) -> Option<Vec<u8>> {
                 symbols.push((name, kind, value, size));
             }
 
-            // A section a runtime's loader reads, or bytes of code.
             14 => {
                 let name = input.pick(&SECTIONS);
                 let mut data = Vec::new();

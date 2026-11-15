@@ -1,12 +1,12 @@
-"""Published native commands, acknowledgement, bounded stack and recovery."""
+
 import json
 import os
 import sys
 import threading
 import types
 
-# As the launch bootstrap records on 3.12, which cannot say which thread
-# is the main one.
+
+
 sys.modules.setdefault('_microscope_bootstrap', types.SimpleNamespace(main=threading.get_ident()))
 agent = types.ModuleType('control_agent')
 agent._bootstrap_lock = threading.RLock()
@@ -15,8 +15,8 @@ library = os.path.abspath(sys.argv[3])
 original_transport = agent.transport
 
 def checked_transport(path):
-    # Loading a DSO can wait on the loader lock. A monitoring callback on
-    # its owner must never wait on our configuration lock in the opposite order.
+
+
     assert not agent.lock._is_owned(), 'transport loaded under agent lock'
     return original_transport(path)
 
@@ -59,7 +59,7 @@ assert max(depths) - min(depths) == 0, (min(depths), max(depths))
 records.clear()
 assert target() == 42
 assert records == [(1, 42, 0)], records
-# A malformed published request is contained; the target result is unchanged.
+
 records.clear()
 agent._control[32:33] = b'!'
 agent._control[16:20] = (1).to_bytes(4, 'little')
@@ -67,7 +67,7 @@ agent._control[8:16] = (limit + 1).to_bytes(8, 'little')
 assert target() == 42
 assert records == [(3, limit + 1, 2)], records
 assert agent.tool is None
-# Cooperative idle activation uses the same owner but a later generation.
+
 agent.apply(library, limit + 2, (probe,))
 records.clear()
 assert target() == 42
@@ -75,10 +75,10 @@ assert records == [(1, 42, 0)], records
 agent.apply(library, limit + 3, ())
 assert agent.tool is None
 if sys.argv[2] == 'batch':
-    # The probed line's callback consumes the configuration published by
-    # the line before it and hits the site. Reporting that acknowledgement
-    # accepts another configuration that keeps the site armed, so the hit
-    # is still reported, once.
+
+
+
+
     def batch_target():
         queue(agent.generation + 1, (batch_probe,))
         value = 41

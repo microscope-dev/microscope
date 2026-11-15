@@ -1,8 +1,3 @@
-//! A Go library that a C program hosts. The library carries the runtime,
-//! which starts as the library loads; the host calls into Go on a thread
-//! of its own, which runs a goroutine for the call, and the library's own
-//! goroutines are listed beside it.
-
 use std::process::Stdio;
 
 use microscope::{BreakpointOptions, BreakpointSpec, LaunchOptions, StackSegment, StopReason};
@@ -18,7 +13,6 @@ const SOURCE: &str = "tests/fixtures/go/hosted/main.go";
 async fn a_hosted_go_library_shows_the_goroutines_of_its_runtime() {
     let mut scenario = checked("go-host");
 
-    // The library loads once the host runs.
     scenario
         .operation(
             "break in the library",
@@ -45,13 +39,10 @@ async fn a_hosted_go_library_shows_the_goroutines_of_its_runtime() {
         place(&scenario).await,
         (
             "main.Triple".to_owned(),
-            // Unoptimized, Go enters a function on its declaration's line.
             support::source_line(SOURCE, "// HOSTED: entered")
         )
     );
 
-    // The host's thread runs a goroutine for the call, whose stack is
-    // the goroutine's, and the host's C below it the thread's.
     let task = integer(&scenario, "$task")
         .await
         .expect("the host's thread runs a goroutine");
@@ -77,7 +68,6 @@ async fn a_hosted_go_library_shows_the_goroutines_of_its_runtime() {
         "{context}"
     );
 
-    // The goroutine the library started as it loaded is listed.
     assert_listed(&scenario, task).await;
 
     assert_eq!(
@@ -87,8 +77,6 @@ async fn a_hosted_go_library_shows_the_goroutines_of_its_runtime() {
     scenario.shutdown().await;
 }
 
-/// The goroutine the library started as it loaded is in its function,
-/// and the one the host's call runs is on its thread.
 async fn assert_listed(scenario: &Scenario, task: i128) {
     let tasks = scenario
         .operation("tasks", scenario.handle().tasks(None, 256))
@@ -119,7 +107,6 @@ async fn assert_listed(scenario: &Scenario, task: i128) {
         panic!("the goroutine runs the library's code: {waiting:#?}\n{trace:#?}")
     });
 
-    // Initialization waits for entry, but the receive may not have parked yet.
     let lines = ["// HOSTED: began", "// HOSTED: waiting"]
         .map(|marker| support::source_line(SOURCE, marker));
     assert_eq!(

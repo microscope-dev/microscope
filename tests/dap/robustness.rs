@@ -1,5 +1,3 @@
-//! Transports, malformed input, lost events, and abrupt ends.
-
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
@@ -11,16 +9,12 @@ use serde_json::{Value, json};
 use crate::dap::{Configuration, Dap, Profile, fixture};
 use crate::support::{self, ExternalProcess, ScratchDir};
 
-/// `microscope dap --listen` on an unused port, killed on drop so a failing
-/// test leaves nothing behind.
 struct ListeningAdapter {
     child: std::process::Child,
     address: SocketAddr,
 }
 
 impl ListeningAdapter {
-    /// Starts the adapter, logging its traffic to `log`, and waits for it
-    /// to announce its address.
     fn start(log: &Path) -> Self {
         let child = Command::new(env!("CARGO_BIN_EXE_microscope"))
             .args(["dap", "--listen", "127.0.0.1:0", "--log"])
@@ -49,8 +43,6 @@ impl ListeningAdapter {
         adapter
     }
 
-    /// Asks the adapter to stop, as an editor does, and checks that it
-    /// exits cleanly.
     fn stop(mut self) {
         nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(i32::try_from(self.child.id()).expect("pid")),
@@ -74,7 +66,6 @@ fn tcp_serves_one_client_at_a_time_and_refuses_browsers() {
     let log = directory.path().join("traffic.log");
     let adapter = ListeningAdapter::start(&log);
 
-    // A web page's request carries Origin; the adapter drops it unanswered.
     let mut browser = TcpStream::connect(adapter.address).expect("connect");
     browser
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -99,8 +90,6 @@ fn tcp_serves_one_client_at_a_time_and_refuses_browsers() {
     );
     first.event(started.mark, "process", |_| true);
 
-    // A second client connects and asks during the first session, and is
-    // served once it ends.
     let mut second = Dap::connect("tcp second", adapter.address);
     let initialize = second.send("initialize", json!({"adapterID": "microscope"}));
     first.finish();
@@ -115,8 +104,6 @@ fn tcp_serves_one_client_at_a_time_and_refuses_browsers() {
     second.finish();
     adapter.stop();
 
-    // The adapter logs each client's arrival and departure, which never
-    // overlap: each client is accepted only after the one before is gone.
     let log = std::fs::read_to_string(&log).expect("read the traffic log");
     let sessions = log
         .lines()
@@ -197,7 +184,6 @@ fn killing_the_adapter_kills_its_program_and_releases_attached_ones() {
     launched.signal(nix::sys::signal::Signal::SIGKILL);
     launched.abandon();
 
-    // Nothing reports the death of a process this test did not start.
     support::wait_until("the launched program is gone with its adapter", || {
         std::fs::read_to_string(format!("/proc/{pid}/status"))
             .map_or(true, |status| status.contains("State:\tZ"))
@@ -217,8 +203,6 @@ fn killing_the_adapter_kills_its_program_and_releases_attached_ones() {
     attached.signal(nix::sys::signal::Signal::SIGKILL);
     attached.abandon();
 
-    // The kernel detaches a dead tracer's tracees and resumes the ones it
-    // held stopped: this one is untraced and back waiting for its input.
     let status = std::fs::read_to_string(format!("/proc/{}/status", process.process_id()))
         .expect("the attached process lives");
     assert!(
@@ -240,11 +224,6 @@ fn killing_the_adapter_kills_its_program_and_releases_attached_ones() {
 
 #[test]
 fn missed_events_are_recovered_from_the_debuggers_state() {
-    // With room for one event, the adapter misses most of each burst of
-    // thread starts and exits, and must catch up from the debugger's state:
-    // at every stop, the threads the client was told of are the threads
-    // there are. A stop waits for every exiting thread to be gone, so no
-    // thread starts or exits while the program is stopped.
     let mut dap = Dap::start_in("lagged threads", &[("MICROSCOPE_EVENT_CAPACITY", "1")]);
     let started = dap.launch(
         Profile::Helix,
@@ -274,8 +253,6 @@ fn missed_events_are_recovered_from_the_debuggers_state() {
 
     dap.request("setFunctionBreakpoints", json!({"breakpoints": []}));
 
-    // A thread can reach the breakpoint before its removal takes effect,
-    // which stops the program there once more.
     let (kind, body) = dap.next_event(mark, &["stopped", "exited"]);
     let exited = if kind == "stopped" {
         assert!(
@@ -296,8 +273,6 @@ fn missed_events_are_recovered_from_the_debuggers_state() {
     dap.event(mark, "terminated", |_| true);
     dap.finish();
 
-    // Libraries load and unload in bursts too: at every stop, the modules
-    // the client was told of are the modules loaded.
     let mut dap = Dap::start_in("lagged modules", &[("MICROSCOPE_EVENT_CAPACITY", "1")]);
     let started = dap.launch(
         Profile::VsCode,
@@ -330,8 +305,6 @@ fn missed_events_are_recovered_from_the_debuggers_state() {
 
 #[test]
 fn requests_cancelled_while_waiting_their_turn_answer_that_they_were_cancelled() {
-    // The adapter waits for the client's terminal inside the launch, so the
-    // requests sent meanwhile wait their turn.
     let mut dap = Dap::start("cancel waiting requests");
     dap.hold_terminals();
     dap.initialize(Profile::VsCode);
@@ -344,10 +317,8 @@ fn requests_cancelled_while_waiting_their_turn_answer_that_they_were_cancelled()
     let kept = dap.send("threads", Value::Null);
     let cancel = dap.send("cancel", json!({"requestId": cancelled.seq}));
 
-    // configurationDone runs whatever a cancel says: the launch waits on it.
     let cancel_done = dap.send("cancel", json!({"requestId": done.seq}));
 
-    // A cancel names a request already sent, never one still to come.
     let ahead = dap.send("cancel", json!({"requestId": cancel_done.seq + 2}));
     let later = dap.send("threads", Value::Null);
     assert_eq!(later.seq, cancel_done.seq + 2);

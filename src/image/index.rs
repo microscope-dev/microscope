@@ -1,7 +1,3 @@
-//! Indexes several tables share the shape of: intervals ordered for the
-//! lookup of every interval containing an address, and names ordered for
-//! the lookup of every record a name names.
-
 use rayon::slice::ParallelSliceMut as _;
 use zerocopy::little_endian::{U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
@@ -10,8 +6,6 @@ use super::SharedRecord;
 use super::strings::{StrId, Strings};
 use crate::{AddressRange, ImageAddress};
 
-/// One interval, in (start, end, value) order, with the greatest end of
-/// it and every interval before it, which ends a backward search.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -21,7 +15,6 @@ pub struct Interval {
     pub end: U64,
     pub prefix_max_end: U64,
 
-    /// The record the interval belongs to.
     pub value: U32,
 }
 
@@ -29,7 +22,6 @@ impl SharedRecord for Interval {
     const NAME: &'static str = "Interval";
 }
 
-/// The intervals of `entries`, in order, once each, without empty ones.
 pub fn intervals(
     entries: impl IntoIterator<Item = (AddressRange<ImageAddress>, u32)>,
 ) -> Vec<Interval> {
@@ -51,7 +43,6 @@ pub fn intervals(
         )
     });
 
-    // A record may name one range twice.
     intervals.dedup();
     let mut prefix_max_end = 0;
     for interval in &mut intervals {
@@ -62,7 +53,6 @@ pub fn intervals(
     intervals
 }
 
-/// The values of the intervals containing `address`, latest start first.
 pub fn containing(intervals: &[Interval], address: ImageAddress) -> impl Iterator<Item = u32> + '_ {
     let address = address.get();
     let mut index = intervals.partition_point(|interval| interval.start.get() <= address);
@@ -83,8 +73,6 @@ pub fn containing(intervals: &[Interval], address: ImageAddress) -> impl Iterato
     })
 }
 
-/// Whether `intervals` is an index of nonempty intervals over `values`
-/// records, ordered, with correct running ends.
 pub(super) fn valid_intervals(intervals: &[Interval], values: usize) -> bool {
     let mut prefix_max_end = 0;
     intervals.iter().all(|interval| {
@@ -98,10 +86,6 @@ pub(super) fn valid_intervals(intervals: &[Interval], values: usize) -> bool {
     })
 }
 
-/// One name of a record. An index orders them by the name's hash, then
-/// the record, then where the pool keeps the name, so that building one
-/// sorts numbers, and finding a name compares its bytes only where the
-/// hash matches.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -116,20 +100,15 @@ impl SharedRecord for NameEntry {
     const NAME: &'static str = "NameEntry";
 }
 
-/// The hash a name index orders a name by.
 #[expect(clippy::cast_possible_truncation, reason = "the index keeps 32 bits")]
 pub(super) fn hash(name: &[u8]) -> u32 {
     twox_hash::XxHash3_64::oneshot(name) as u32
 }
 
-/// An entry's place: by hash, then record, then name, so that two names
-/// of one record whose hashes collide are both kept.
 const fn key(entry: &NameEntry) -> (u32, u32, u32) {
     (entry.hash.get(), entry.value.get(), entry.name.get())
 }
 
-/// The name index of `entries`, each a name, where the pool holds it, and
-/// the record it names.
 pub fn names<'s>(entries: impl IntoIterator<Item = (&'s str, StrId, u32)>) -> Vec<NameEntry> {
     let mut names = entries
         .into_iter()
@@ -144,7 +123,6 @@ pub fn names<'s>(entries: impl IntoIterator<Item = (&'s str, StrId, u32)>) -> Ve
     names
 }
 
-/// The values `name` names, in order.
 pub fn named<'a>(
     strings: Strings<'a>,
     names: &'a [NameEntry],
@@ -163,8 +141,6 @@ pub fn named<'a>(
         .map(|entry| entry.value.get())
 }
 
-/// Whether `names` is a name index over `values` records whose names are
-/// in `strings`.
 pub(super) fn valid_names(strings: &Strings<'_>, names: &[NameEntry], values: usize) -> bool {
     names.iter().all(|entry| {
         strings.contains(StrId(entry.name.get()))

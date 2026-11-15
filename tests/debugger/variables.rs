@@ -1,5 +1,3 @@
-//! Parameters and locals across languages, scopes, and threads.
-
 use super::*;
 
 #[tokio::test]
@@ -450,7 +448,6 @@ async fn zig_scalars_cover_optimized_partial_locations() {
         assert_variable_value(variable, expected);
     }
 
-    // The remaining locals have no location at the stop.
     let unavailable = snapshot
         .variables
         .iter()
@@ -538,8 +535,6 @@ async fn zig_native_threads_are_all_stopped_selectable_and_variable_aware() {
             .all(|thread| matches!(thread.state, ThreadState::Stopped { .. }))
     );
 
-    // Each worker's value is a parameter of its worker frame, which a
-    // worker still spinning on the release flag shows below an inline frame.
     let stop = snapshot.stop_id.expect("stopped");
     let mut values = BTreeSet::new();
 
@@ -597,7 +592,6 @@ async fn zig_native_threads_are_all_stopped_selectable_and_variable_aware() {
 
     assert_eq!(values, BTreeSet::from([101, 202]));
 
-    // Shutting down kills and reaps every thread.
     assert!(matches!(
         scenario.shutdown().await,
         Some(ExitStatus::Terminated(exception)) if exception.code == 9
@@ -689,8 +683,6 @@ async fn variable_inspection_follows_the_selected_inline_frame() {
             StopReason::Breakpoint { .. }
         ));
 
-        // Physical frame: the caller's parameter and locals are visible, the
-        // inline instance's data objects are not.
         let listed = scenario
             .operation("caller-scope variables", scenario.handle().variables())
             .await;
@@ -721,7 +713,6 @@ async fn variable_inspection_follows_the_selected_inline_frame() {
         assert_eq!(caller_parameter.kind, VariableKind::Parameter);
         assert_variable_value(&caller_parameter, ScalarValue::Signed(7));
 
-        // Step into the inline body (line 6, after inline_local is assigned).
         step_to_source_line(&mut scenario, 6).await;
         let snapshot = scenario.snapshot().await;
         assert!(
@@ -736,7 +727,6 @@ async fn variable_inspection_follows_the_selected_inline_frame() {
             "{fixture} did not present the inline frame: {snapshot:?}"
         );
 
-        // Inline frame: only the inline instance's parameter and local are in scope.
         let inline_parameter = scenario
             .operation("inline parameter", scenario.handle().variable("value"))
             .await;
@@ -774,8 +764,6 @@ async fn variable_inspection_follows_the_selected_inline_frame() {
 
         assert_eq!(names, ["value", "inline_local"], "{fixture}");
 
-        // Back in the caller after the inline returns: the caller's locals
-        // are visible again and the inline local is out of scope.
         step_to_source_line(&mut scenario, 13).await;
         let caller_local = scenario
             .operation("caller local", scenario.handle().variable("caller_local"))
@@ -877,8 +865,6 @@ async fn a_line_breakpoint_inside_an_inline_body_presents_the_inline_frame() {
         Scenario::fixture("variables-inline-gcc-o0"),
     );
 
-    // The line is the inline instance's code, as gdb presents it, not also
-    // its caller's.
     scenario
         .add_source_breakpoint("variables-inline.c", 6)
         .await;
@@ -1032,7 +1018,6 @@ async fn step_to_source_line(scenario: &mut Scenario, line: u32) {
     panic!("did not reach source line {line} within the step budget");
 }
 
-/// The C fixtures' scalar variables: each name, value, and byte size.
 const fn c_scalars() -> [(&'static str, ScalarValue, u64); 15] {
     [
         ("boolean", ScalarValue::Boolean(true), 1),
@@ -1076,7 +1061,6 @@ const fn c_scalars() -> [(&'static str, ScalarValue, u64); 15] {
     ]
 }
 
-/// Checks that a variable holds `expected`, read whole from memory.
 fn assert_whole_in_memory(
     variable: &microscope::Variable,
     expected: ScalarValue,
@@ -1180,8 +1164,6 @@ fn assert_optimized_parameter_values(snapshot: &microscope::VariableSnapshot, fi
                 snapshot.variables[0]
             );
 
-            // Their values on entry are all Clang keeps, and `main`'s call
-            // does not say what it passed.
             for index in 1..4 {
                 assert_eq!(
                     snapshot.variables[index].state,
@@ -1202,8 +1184,6 @@ fn assert_optimized_parameter_values(snapshot: &microscope::VariableSnapshot, fi
             assert_register_source(&snapshot.variables[12], "xmm0", fixture);
             assert_register_source(&snapshot.variables[13], "xmm1", fixture);
 
-            // Its one piece holds, in memory, the 80 bits x87 precision
-            // uses, not the padding after them.
             assert_variable_value(&snapshot.variables[14], expected[14].clone());
             assert!(
                 matches!(

@@ -1,9 +1,3 @@
-// Memory at the address the link names, sixteen bytes to a row. The bytes
-// of the value it was opened from are marked, and selected, or only its C
-// string's bytes are when it is a character array with room to spare. A
-// selection reads as the types its length could be, and controllers write
-// bytes in place.
-
 import {
   type ChangeEvent,
   type FormEvent,
@@ -36,13 +30,10 @@ import { hidden } from "./hidden";
 import { useLook } from "./navigation";
 import { useFocus } from "./Workspace";
 
-/** Rows shown at once. */
 const ROWS = 16;
 
-/** One past the last address. */
 const END = 1n << 64n;
 
-/** How far each arrow key moves through the bytes. */
 const STEPS: Record<string, bigint> = {
   ArrowLeft: -1n,
   ArrowRight: 1n,
@@ -66,7 +57,6 @@ export function Memory() {
         )}
       </div>
       {shown ? (
-        // A new address starts over: at its row, with its bytes selected.
         <Dump key={look.mem} shown={shown} />
       ) : (
         <div className="empty center-message">
@@ -77,14 +67,13 @@ export function Memory() {
   );
 }
 
-/** Goes to an address, or to the memory an expression's value names. */
 function GoTo() {
   const { at, stale } = useFocus();
   const look = useLook();
   const connection = useConnection();
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
-  // Only the latest go-to moves the tab, however its answers are ordered.
+
   const latest = useRef(0);
   const go = useCallback(
     (mem: string) => {
@@ -159,17 +148,15 @@ function Dump({ shown }: { shown: Target }) {
     value === null || value.from <= value.to,
     `value at ${hex(shown.address)} ends before it starts`,
   );
-  // A character array opens with its string selected, so the selection
-  // reads as the text; the array's spare bytes stay marked around it.
+
   const string =
     value && shown.text ? { from: value.from, to: value.from + BigInt(shown.text - 1) } : null;
   const [selection, setSelection] = useState<Selection | null>(string ?? value);
   const [editing, setEditing] = useState<bigint | null>(null);
-  // The byte the keyboard is on, the bytes' one stop in the tab order.
+
   const [cursor, setCursor] = useState<bigint>(shown.address);
   const body = useRef<HTMLDivElement>(null);
 
-  // Paging stops at either end of the address space.
   const first = rowStart(shown.address) + BigInt(moved * ROW);
   const last = END - BigInt(ROWS * ROW);
   const start = first < 0n ? 0n : first > last ? last : first;
@@ -203,8 +190,7 @@ function Dump({ shown }: { shown: Target }) {
     },
     [readable],
   );
-  // At once, not on the next frame: a held arrow key's repeats must each
-  // start from the byte the last one reached.
+
   const focusByte = useCallback(
     (address: bigint) =>
       body.current?.querySelector<HTMLElement>(`[data-address="${address}"]`)?.focus(),
@@ -229,7 +215,7 @@ function Dump({ shown }: { shown: Target }) {
   const doneEditing = useCallback(
     (address: bigint) => {
       setEditing(null);
-      // The byte replaces the editor only once drawn.
+
       requestAnimationFrame(() => focusByte(address));
     },
     [focusByte],
@@ -248,7 +234,7 @@ function Dump({ shown }: { shown: Target }) {
   }
   assert(rows.length === ROWS, `memory shows ${rows.length} rows, not ${ROWS}`);
   assert(rows[0]?.address === start, `memory rows do not start at ${hex(start)}`);
-  // Paging can leave the cursor off screen; the first byte shown takes over.
+
   const stop = readable.includes(cursor) ? cursor : readable[0];
   const within = (range: Selection | null, address: bigint) =>
     range !== null && address >= range.from && address <= range.to;
@@ -301,7 +287,6 @@ function Dump({ shown }: { shown: Target }) {
   );
 }
 
-/** One byte; Enter or F2 edits it, as a double click does. */
 function ByteCell({
   address,
   byte,
@@ -360,7 +345,6 @@ function ByteCell({
   );
 }
 
-/** Writes bytes from `address` on: one pair, or several. */
 function ByteEditor({ address, onDone }: { address: bigint; onDone(address: bigint): void }) {
   const { at } = useFocus();
   const connection = useConnection();
@@ -412,7 +396,6 @@ function ByteEditor({ address, onDone }: { address: bigint; onDone(address: bigi
   );
 }
 
-/** The selected bytes, read as the types their length could be. */
 function Readings({
   rows,
   selection,

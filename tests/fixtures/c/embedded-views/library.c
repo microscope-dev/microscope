@@ -1,4 +1,4 @@
-// A library that carries a view for its own `struct point`.
+
 
 #include "microscope_views.h"
 

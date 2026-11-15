@@ -1,19 +1,19 @@
-"""Values of the standard library's types, which microscope presents as
-their own repr writes them: those only C defines, which it reads itself,
-and those Python defines, through its built-in views
-(views/python-std.views). Classes deriving from either are among them, as
-are containers within each other, a deque of more than one block, and an
-OrderedDict whose order its dict does not keep.
 
-The test passes expressions as arguments, which CPython evaluates in the
-frame before it parks. Besides each expression's result, the checkpoint
-reports the children of each local of a collection type, in order: each
-element's text, or each entry's key and value.
 
-    TRUTH  child  LOCAL  KEY  VALUE
 
-KEY is - for an element.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import collections
 import datetime
@@ -66,7 +66,7 @@ def values():
     queue = collections.deque([1, "two", None])
     bounded = collections.deque(range(3), maxlen=5)
     empty_queue = collections.deque()
-    # Two blocks' items, the first past the start of its block.
+
     long_queue = collections.deque(range(60))
     long_queue.rotate(-9)
     long_queue.appendleft(-1)
@@ -128,8 +128,8 @@ def values():
 
 
 def children(locals_):
-    """The child records of each local of a collection type: a dict's
-    entries in the order its own iteration gives."""
+
+
     records = []
     for local, value in locals_.items():
         if isinstance(value, dict):

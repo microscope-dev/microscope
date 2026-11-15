@@ -1,39 +1,24 @@
-//! The page's files.
-//!
-//! A release build embeds `build/web`, which `just web-build` builds. A
-//! development build reads the directory at run time instead, so rebuilding
-//! the page never rebuilds microscope.
-
 use std::borrow::Cow;
 
-/// The built page, embedded by `build.rs` in release builds.
 #[cfg(not(debug_assertions))]
 static EMBEDDED: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 
-/// Where `just web-build` puts the built page.
 #[cfg(debug_assertions)]
 const DIRECTORY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/build/web");
 
-/// Shown when the page has not been built. It has a `<head>` so that
-/// `rooted` names the base in it as in the built page.
 const UNBUILT: &str = "<!doctype html><head><meta charset=utf-8><title>microscope web</title></head>\
 <body style=\"font:15px system-ui;padding:2em\"><h1>The page is not built</h1>\
 <p>Run <code>just web-build</code>, then reload.</p>";
 
-/// A file to serve and its media type.
 pub struct Asset {
     pub bytes: Cow<'static, [u8]>,
     pub media_type: &'static str,
 
-    /// Whether the name carries a content hash, so it can be cached forever.
     pub immutable: bool,
 
-    /// Whether it is the page itself, `index.html`.
     pub page: bool,
 }
 
-/// Finds the file for a request path. Paths without an extension are the
-/// page's own routes, which all load `index.html`.
 pub fn find(path: &str) -> Option<Asset> {
     let name = path.trim_start_matches('/');
     if name
@@ -60,12 +45,6 @@ pub fn find(path: &str) -> Option<Asset> {
     })
 }
 
-/// The page as served under `base`: the build names its files relative to
-/// the page (`./assets/…`), which a deeper route such as `/s/k7q2/stop/1`
-/// would resolve wrongly, so they are rooted at `base`, and the script finds
-/// `base` in a `microscope-base` meta tag. The page's own `<base>`, which
-/// roots them for a host that serves the build as it is, goes: the policy
-/// here refuses it, and the files no longer need it.
 pub fn rooted(page: &[u8], base: &str) -> Vec<u8> {
     let page = String::from_utf8_lossy(page)
         .replace("<base href=\"/\" />", "")

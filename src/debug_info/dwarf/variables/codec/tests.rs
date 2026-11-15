@@ -7,9 +7,6 @@ use super::super::ConstantValue;
 use super::super::evaluate::{dwarf_value_bytes, materialize_constant};
 use super::*;
 
-/// What a LEB128 encoding means, from its bits alone: the payload bits of
-/// every byte up to the first without a continuation bit, and where that
-/// byte ends. `None` if no byte ends the number.
 fn leb128_bits(bytes: &[u8]) -> Option<(Vec<bool>, usize)> {
     let end = bytes.iter().position(|byte| byte & 0x80 == 0)? + 1;
     let bits = bytes[..end]
@@ -20,8 +17,6 @@ fn leb128_bits(bytes: &[u8]) -> Option<(Vec<bool>, usize)> {
     Some((bits, end))
 }
 
-/// The longest encoding the readers take: a 128-bit number's 19 bytes and
-/// one byte of padding.
 const LONGEST_LEB128: usize = 20;
 
 fn reference_uleb128(bytes: &[u8]) -> Option<(u128, usize)> {
@@ -45,7 +40,6 @@ fn reference_sleb128(bytes: &[u8]) -> Option<(i128, usize)> {
     let (bits, end) = leb128_bits(bytes)?;
     let sign = *bits.last()?;
 
-    // The number fits when every bit from bit 127 up repeats its sign.
     if end > LONGEST_LEB128 || bits.iter().skip(127).any(|bit| *bit != sign) {
         return None;
     }
@@ -88,9 +82,6 @@ fn encode_sleb128(mut value: i128) -> Vec<u8> {
     }
 }
 
-/// Turns a minimal encoding into a damaged or padded one: `padding` more
-/// bytes that repeat the sign, then `flips` xored into the payload of the
-/// last two bytes, then one byte that follows the number.
 fn reshape(mut bytes: Vec<u8>, padding: usize, flips: [u8; 2], fill: u8, after: u8) -> Vec<u8> {
     for _ in 0..padding {
         let last = bytes.len() - 1;
@@ -107,7 +98,6 @@ fn reshape(mut bytes: Vec<u8>, padding: usize, flips: [u8; 2], fill: u8, after: 
     bytes
 }
 
-/// Values near the edges of 128 bits, where a reader can lose a bit.
 fn i128_leb128_values() -> impl Strategy<Value = i128> {
     prop_oneof![
         1 => prop::sample::select(vec![
@@ -128,7 +118,6 @@ fn flips() -> impl Strategy<Value = [u8; 2]> {
 
 #[test]
 fn a_signed_leb128_past_128_bits_is_refused() {
-    // +2^127 and a negative number below -2^127, both one bit too wide.
     let mut too_large = vec![0x80; 18];
     too_large.extend([0x82, 0x00]);
     assert!(read_sleb128_i128(&too_large, &mut 0).is_err());
@@ -137,7 +126,6 @@ fn a_signed_leb128_past_128_bits_is_refused() {
     too_small.extend([0x81, 0x7f]);
     assert!(read_sleb128_i128(&too_small, &mut 0).is_err());
 
-    // -2^128, which the property found read as 0.
     let mut far_too_small = vec![0x80; 18];
     far_too_small.extend([0xfc, 0x7f]);
     assert!(read_sleb128_i128(&far_too_small, &mut 0).is_err());
@@ -204,7 +192,6 @@ fn integer_type(encoding: BaseTypeEncoding, byte_size: u64, bit_size: Option<u64
     }
 }
 
-/// The low `bits` bits of `value`.
 fn pattern_of(value: u128, bits: u32) -> u128 {
     if bits == 128 {
         value
@@ -213,7 +200,6 @@ fn pattern_of(value: u128, bits: u32) -> u128 {
     }
 }
 
-/// `pattern`, `bits` wide, read as two's complement.
 fn signed_pattern(pattern: u128, bits: u32) -> i128 {
     if bits < 128 && pattern >> (bits - 1) == 1 {
         (pattern | !((1 << bits) - 1)).cast_signed()
@@ -222,7 +208,6 @@ fn signed_pattern(pattern: u128, bits: u32) -> i128 {
     }
 }
 
-/// `size` bytes of `pattern` in `byte_order`, one at a time.
 fn laid_out(pattern: u128, size: usize, byte_order: ByteOrder) -> Vec<u8> {
     let mut bytes = (0..size)
         .map(|index| (pattern >> (8 * index)).to_le_bytes()[0])
@@ -234,8 +219,6 @@ fn laid_out(pattern: u128, size: usize, byte_order: ByteOrder) -> Vec<u8> {
     bytes
 }
 
-/// Whether `value` lies in the range of a `bits`-wide integer, signed or
-/// not.
 fn in_range(value: IntegerValue, signed: bool, bits: u32) -> bool {
     match (value, signed) {
         (IntegerValue::Signed(value), true) => {
@@ -249,8 +232,6 @@ fn in_range(value: IntegerValue, signed: bool, bits: u32) -> bool {
     }
 }
 
-/// Raw 128-bit values near the edges of an integer `bits` wide, signed and
-/// not, and Clang's 64-bit sign extensions of narrow patterns.
 fn values_near(bits: u32) -> impl Strategy<Value = u128> {
     let edge =
         |offset: i128| move |base: u128| base.cast_signed().wrapping_add(offset).cast_unsigned();
@@ -282,8 +263,6 @@ fn byte_order() -> impl Strategy<Value = ByteOrder> {
     prop_oneof![Just(ByteOrder::Little), Just(ByteOrder::Big)]
 }
 
-/// A constant of a type `size` bytes wide: an integer near the type's
-/// edges, in any form, or bytes of about its size.
 fn constant(size: usize) -> impl Strategy<Value = ConstantValue> {
     let bits = u32::try_from(size * 8).expect("a small type");
     prop_oneof![
@@ -329,8 +308,6 @@ proptest! {
             .map(|bytes| bytes.to_vec());
         prop_assert_eq!(&materialized, &expected);
 
-        // Whatever was materialized reads back as its pattern, and a
-        // signed constant read as signed is the constant itself.
         if let Some(bytes) = expected {
             let encoding = if signed { BaseTypeEncoding::Signed } else { BaseTypeEncoding::Unsigned };
             let decoded =
@@ -448,7 +425,6 @@ proptest! {
     }
 }
 
-/// The integer `bytes` hold in `byte_order`, read one byte at a time.
 fn laid_out_pattern(bytes: &[u8], byte_order: ByteOrder) -> u128 {
     let mut bytes = bytes.to_vec();
     if byte_order == ByteOrder::Big {

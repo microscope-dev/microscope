@@ -1,5 +1,3 @@
-// Two people in one live session, through a link one of them shares.
-
 import { expect, join, test } from "./server";
 
 const look = (url: string) => {
@@ -17,7 +15,7 @@ test("a view link shows a coworker the same session without its controls", async
   await expect(page.getByTestId("status")).toContainText("Running");
   await page.getByRole("button", { name: /Pause/u }).click();
   await expect(page.getByTestId("status")).toContainText("Stopped");
-  // The link carries the whole look, even watches holding `&` and `#`.
+
   await page.goto(`${page.url()}?w=${encodeURIComponent("a & b#c")}&w=d`);
   await expect(page.getByTestId("status")).toContainText("Stopped");
 
@@ -49,11 +47,9 @@ test("a view link shows a coworker the same session without its controls", async
   await coworker.keyboard.press("F5");
   await expect(coworker.getByTestId("status")).toContainText("Stopped");
 
-  // Each sees the other, and the controller's continue reaches both.
   await expect(page.getByTestId("people").getByRole("listitem")).toHaveCount(2);
   await expect(coworker.getByTestId("people").getByRole("listitem")).toHaveCount(2);
 
-  // Hovering the controller says where they look; clicking goes there.
   await page.keyboard.press("u");
   await expect(page).toHaveURL(/\/f\/1\?/u);
   const owner = coworker.getByRole("button", { name: /Go to tester's focus, .*frame 1/u });

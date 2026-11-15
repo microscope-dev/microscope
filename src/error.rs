@@ -2,10 +2,6 @@ use std::error::Error as StdError;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Every failure a debugger request can report.
-///
-/// A message either embeds its cause or exposes it as [`StdError::source`],
-/// never both, so error reports that walk the chain print each cause once.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -14,9 +10,6 @@ pub enum Error {
     #[error("debug information error: {0}")]
     DebugInfo(Box<dyn StdError + Send + Sync>),
 
-    /// A file that is no program or library the debugger can describe: not
-    /// ELF, cut short, not yet linked, a core dump, or for an architecture
-    /// it does not debug.
     #[error("{0}")]
     UnsupportedFile(Arc<str>),
 
@@ -29,8 +22,6 @@ pub enum Error {
     #[error("multiple functions named '{0}' were found")]
     DuplicateFunction(String),
 
-    /// A location that names several functions where it must name one,
-    /// with a location for each that names it alone.
     #[error("'{name}' matches more than one function: {}", candidates.join(", "))]
     AmbiguousFunction {
         name: String,
@@ -49,9 +40,6 @@ pub enum Error {
     #[error("source line {line} in {path} has no code at or after it in its function")]
     SourceLineUnavailable { path: PathBuf, line: u64 },
 
-    /// A source line with no statement, in a language whose line
-    /// breakpoints stay where they were asked for, with the nearest lines
-    /// before and after it that have one.
     #[error(
         "source line {line} in {path} has no statement{}",
         nearest_statement_lines(*before, *after)
@@ -66,8 +54,6 @@ pub enum Error {
     #[error("breakpoint {0} was not found")]
     BreakpointNotFound(u64),
 
-    /// A language runtime runs code the breakpoint names, but cannot stop
-    /// there, for the reason given.
     #[error("the runtime cannot stop there: {0}")]
     RuntimeBreakpoint(Arc<str>),
 
@@ -98,7 +84,6 @@ pub enum Error {
     #[error("invalid value expression: {0}")]
     InvalidValueExpression(String),
 
-    /// An expression that has no value, and the part of its text at fault.
     #[error("{0}")]
     Expression(crate::ExpressionError),
 
@@ -113,7 +98,6 @@ pub enum Error {
         member: String,
         type_name: Arc<str>,
 
-        /// The selections that reach each candidate, when they are known.
         candidates: Vec<String>,
     },
 
@@ -159,8 +143,6 @@ pub enum Error {
     #[error("variable inspection is unavailable for the selected logical frame")]
     VariableContextUnsupported,
 
-    /// The frame's module was loaded without its locals and parameters,
-    /// for the reason given.
     #[error(
         "the frame's locals and parameters are unknown, as its module's debug information is \
          incomplete: {0}"
@@ -201,8 +183,6 @@ pub enum Error {
     #[error("process identifier {0} is invalid")]
     InvalidProcessId(u64),
 
-    /// A program named without a directory that neither the current
-    /// directory nor `PATH` has.
     #[error("no program named '{}' is in the current directory or on PATH", .0.display())]
     ProgramNotFound(PathBuf),
 
@@ -339,8 +319,6 @@ pub enum Error {
     #[error("source file {path} does not exist{}", missing_source_detail(.path, .tried))]
     SourceFileMissing { path: PathBuf, tried: Vec<PathBuf> },
 
-    /// The code was compiled from text with no file, which its runtime
-    /// names in angle brackets, as Python names code from `-c` `<string>`.
     #[error("the code was compiled from {name}, which is not a file")]
     SourceNotAFile { name: Arc<str> },
 
@@ -438,25 +416,18 @@ pub enum Error {
     #[error("debugger backend thread panicked")]
     BackendThreadPanicked,
 
-    /// A fact microscope relies on did not hold: a defect in microscope,
-    /// reported instead of panicking.
     #[error("internal debugger error: {0}")]
     Internal(Arc<str>),
 
     #[error("debugger request was cancelled")]
     RequestCancelled,
 
-    /// The controller dropped the request's reply without answering it,
-    /// as it does only to requests still queued when it ends.
     #[error("the debugger dropped the request without answering it")]
     ReplyDropped,
 
     #[error("the view failed: {0}")]
     ViewFailed(Arc<str>),
 
-    /// Inspection stopped for run control waiting behind it; the controller
-    /// serves the request again after the run control, and no client sees
-    /// this error.
     #[error("inspection was interrupted by run control")]
     Interrupted,
 
@@ -469,13 +440,10 @@ pub enum Error {
     #[error("debugger shutdown timed out")]
     ShutdownTimedOut,
 
-    /// The attached process was stopped, but its group did not become
-    /// stopped with it.
     #[error("the attach did not finish: {0}")]
     AttachFailed(Arc<str>),
 }
 
-/// The result of a debugger request.
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
@@ -487,14 +455,11 @@ impl Error {
         Self::Backend(Box::new(error))
     }
 
-    /// An internal error, which names the fact that did not hold.
     pub(crate) fn internal(fact: impl Into<Arc<str>>) -> Self {
         Self::Internal(fact.into())
     }
 }
 
-/// Names the mapped locations tried for a missing source file, which follow
-/// the recorded path itself.
 fn missing_source_detail(path: &std::path::Path, tried: &[PathBuf]) -> String {
     let mapped = tried.split_last().map_or(&[][..], |(_, mapped)| mapped);
     let mut detail = if mapped.is_empty() {
@@ -530,7 +495,6 @@ fn nearest_statement_lines(before: Option<u64>, after: Option<u64>) -> String {
     }
 }
 
-/// The selections an ambiguous member's candidates are reached by.
 fn candidates_text(candidates: &[String]) -> String {
     if candidates.is_empty() {
         return String::new();

@@ -1,8 +1,3 @@
-//! System calls as strace prints them, for the CLI, the DAP console, and
-//! the web UI. Decoding is pure: a call's spec, its raw words, and the
-//! bytes its engine captured become tokens, which the CLI colors and the
-//! web turns into spans.
-
 pub mod dumps;
 mod names;
 pub mod sets;
@@ -25,42 +20,32 @@ use nix::libc;
 
 use sets::Shape;
 
-/// What a token is, which decides its color and, in the web UI, its span.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// The call's name.
     Name,
     Punctuation,
     Number,
     String,
 
-    /// A named constant: a flag, an enumeration value, `NULL`.
     Constant,
 
-    /// A descriptor's number.
     Fd,
 
-    /// What a descriptor refers to, between `<` and `>`.
     Path,
     Address,
 
-    /// An error's name and message.
     Error,
 
-    /// A note about the decoding, as `/* 23 vars */`.
     Comment,
 
-    /// A timestamp or duration.
     Time,
     Pid,
 
-    /// Something the engine could not see: `<unreadable>`, `?`.
     Missing,
     Text,
 }
 
 impl Kind {
-    /// The kind's name on the wire.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -88,10 +73,8 @@ pub struct Token {
     pub text: String,
 }
 
-/// Bytes of a string or buffer shown.
 const STRING_LIMIT: usize = 32;
 
-/// Builds a line of tokens.
 #[derive(Debug, Default)]
 pub struct Tokens(pub Vec<Token>);
 
@@ -101,7 +84,6 @@ impl Tokens {
             return;
         }
 
-        // Neighbors of one kind merge, which keeps lines short on the wire.
         if let Some(last) = self.0.last_mut()
             && last.kind == kind
         {
@@ -128,7 +110,6 @@ impl Tokens {
         self.punct("=");
     }
 
-    /// The plain text of the line.
     #[must_use]
     pub fn text(&self) -> String {
         let mut text = String::with_capacity(self.text_len());
@@ -136,22 +117,18 @@ impl Tokens {
         text
     }
 
-    /// Appends the plain text of the line to `text`.
     pub fn append_to(&self, text: &mut String) {
         for token in &self.0 {
             text.push_str(&token.text);
         }
     }
 
-    /// The bytes of the line's plain text.
     #[must_use]
     pub fn text_len(&self) -> usize {
         self.0.iter().map(|token| token.text.len()).sum()
     }
 }
 
-/// The name and message of an error number, as strace prints them,
-/// including the kernel's internal restart codes.
 #[must_use]
 pub fn errno(Errno(number): Errno) -> (String, &'static str) {
     if let Some(&(_, name, message)) = names::ERRNOS.iter().find(|&&(n, _, _)| n == number) {
@@ -174,14 +151,11 @@ pub fn errno(Errno(number): Errno) -> (String, &'static str) {
     }
 }
 
-/// Whether an error is one of the kernel's restart codes, which a call
-/// returns only to be restarted.
 #[must_use]
 pub const fn restarts(Errno(number): Errno) -> bool {
     matches!(number, 512..=514 | 516)
 }
 
-/// The error number an errno name names.
 #[must_use]
 pub fn errno_named(name: &str) -> Option<Errno> {
     names::ERRNOS
@@ -190,7 +164,6 @@ pub fn errno_named(name: &str) -> Option<Errno> {
         .map(|&(number, _, _)| Errno(number))
 }
 
-/// A signal's name: `SIGINT`, `SIGRTMIN`, or `SIGRT_3`.
 #[must_use]
 pub fn signal(number: i32) -> String {
     if let Some(&(_, name)) = names::SIGNALS.iter().find(|&&(n, _)| n == number) {
@@ -204,7 +177,6 @@ pub fn signal(number: i32) -> String {
     }
 }
 
-/// The signal a name names, with or without its `SIG` prefix.
 #[must_use]
 pub fn signal_named(name: &str) -> Option<i32> {
     let bare = name.strip_prefix("SIG").unwrap_or(name);
@@ -224,18 +196,13 @@ pub fn signal_named(name: &str) -> Option<i32> {
         })
 }
 
-/// What the formatter knows besides the event.
 #[derive(Clone, Copy)]
 pub struct Context<'a> {
     pub fds: Option<&'a FdTable>,
 
-    /// Descriptors as they were before the call: true for its arguments,
-    /// false for what it returned.
     pub before: bool,
 }
 
-/// The call a catchpoint stopped at, as strace prints it: its arguments,
-/// with the path it names, and at its exit what it returned.
 #[must_use]
 pub fn caught(stop: &microscope::SyscallStop) -> String {
     let event = SyscallEvent {
@@ -265,7 +232,6 @@ pub fn caught(stop: &microscope::SyscallStop) -> String {
     }
 }
 
-/// Formats `name(arguments) = result`, without a prefix or duration.
 #[must_use]
 pub fn call(event: &SyscallEvent, context: Context<'_>) -> Tokens {
     let mut out = entry(event, context);
@@ -274,8 +240,6 @@ pub fn call(event: &SyscallEvent, context: Context<'_>) -> Tokens {
     out
 }
 
-/// Formats ` = result`: what follows [`entry`], read against the
-/// descriptors as the call left them.
 #[must_use]
 pub fn returned(event: &SyscallEvent, context: Context<'_>) -> Tokens {
     let mut out = Tokens::default();
@@ -284,8 +248,6 @@ pub fn returned(event: &SyscallEvent, context: Context<'_>) -> Tokens {
     out
 }
 
-/// Each argument a call shows, with the kernel's name for it, apart: what
-/// scripts read.
 #[must_use]
 pub fn argument_values(event: &SyscallEvent, context: Context<'_>) -> Vec<(String, Tokens)> {
     let Some(spec) = specs::spec(event.call) else {
@@ -319,7 +281,6 @@ pub fn argument_values(event: &SyscallEvent, context: Context<'_>) -> Vec<(Strin
         .collect()
 }
 
-/// Formats `name(arguments)`: a call as its entry shows it.
 #[must_use]
 pub fn entry(event: &SyscallEvent, context: Context<'_>) -> Tokens {
     let mut out = Tokens::default();
@@ -331,7 +292,6 @@ pub fn entry(event: &SyscallEvent, context: Context<'_>) -> Tokens {
     match spec {
         Some(spec) => arguments(&mut out, event, spec, context),
         None => {
-            // Without a spec every word prints, in hex.
             for (index, &word) in event.args.iter().enumerate() {
                 if index > 0 {
                     out.punct(", ");
@@ -346,8 +306,6 @@ pub fn entry(event: &SyscallEvent, context: Context<'_>) -> Tokens {
     out
 }
 
-/// How many of a call's arguments strace prints: some calls' last
-/// arguments mean nothing for some of their operations.
 fn shown_arguments(event: &SyscallEvent, spec: &Spec) -> usize {
     const O_CREAT: u64 = 0o100;
     const O_TMPFILE: u64 = 0o20_000_000;
@@ -357,8 +315,6 @@ fn shown_arguments(event: &SyscallEvent, spec: &Spec) -> usize {
     match event.call.name().unwrap_or_default() {
         "open" if a[1] & (O_CREAT | O_TMPFILE) == 0 => 2,
         "openat" if a[2] & (O_CREAT | O_TMPFILE) == 0 => 3,
-        // F_GETFD, F_GETFL, F_GETOWN, F_GETSIG, F_GETLEASE, F_GETPIPE_SZ,
-        // and F_GET_SEALS take nothing.
         "fcntl" if matches!(a[1] & 0xffff_ffff, 1 | 3 | 9 | 11 | 1025 | 1032 | 1034) => 2,
         "futex" => match a[1] & 0x7f {
             1 => 3,
@@ -371,8 +327,6 @@ fn shown_arguments(event: &SyscallEvent, spec: &Spec) -> usize {
     }
 }
 
-/// strace's own form of `clone`: named arguments, of which only those
-/// the flags use.
 fn clone_arguments(out: &mut Tokens, event: &SyscallEvent) {
     const CLONE_SETTLS: u64 = 0x0008_0000;
     const CLONE_PARENT_SETTID: u64 = 0x0010_0000;
@@ -457,7 +411,6 @@ fn octal(out: &mut Tokens, value: u64) {
     }
 }
 
-/// A descriptor, with what it refers to when the descriptors are known.
 pub(super) fn descriptor(out: &mut Tokens, process: Pid, fd: i64, context: Context<'_>) {
     out.push(Kind::Fd, fd.to_string());
     let Some(table) = context.fds.filter(|_| fd >= 0) else {
@@ -472,8 +425,6 @@ pub(super) fn descriptor(out: &mut Tokens, process: Pid, fd: i64, context: Conte
         }
     };
 
-    // A descriptor the table lacks is known not to be open once the table
-    // knows its process, and then prints as a bare number.
     if described.is_none() && table.knows(process) {
         return;
     }
@@ -527,7 +478,6 @@ fn argument(
         }
         Arg::Signal => out.push(Kind::Constant, signal(int(word))),
         Arg::Flags(set) => flags(out, event, set, word),
-        // Protocols have names only within the internet families.
         Arg::Enum("ipproto") if !matches!(event.args[0], 2 | 10) => out.number(int(word)),
         Arg::Enum(set) => enumeration(out, set, word),
         Arg::Path | Arg::Str => string_argument(out, event, index, word, arg == Arg::Path),
@@ -540,7 +490,6 @@ fn argument(
     }
 }
 
-/// Bits by name, `|`-joined, with any left over in hex.
 fn named_bits(names: &[(u64, &str)], mut value: u64) -> Vec<String> {
     let mut parts = Vec::new();
     for &(bit, name) in names {
@@ -583,13 +532,11 @@ fn flags(out: &mut Tokens, event: &SyscallEvent, set: &str, word: u64) {
             );
             rest &= !3;
 
-            // O_SYNC is O_DSYNC with a bit of its own.
             if rest & 0o4_010_000 == 0o4_010_000 {
                 parts.push("O_SYNC".to_owned());
                 rest &= !0o4_010_000;
             }
 
-            // O_TMPFILE includes O_DIRECTORY.
             if rest & 0o20_200_000 == 0o20_200_000 {
                 parts.push("O_TMPFILE".to_owned());
                 rest &= !0o20_200_000;
@@ -616,7 +563,6 @@ fn flags(out: &mut Tokens, event: &SyscallEvent, set: &str, word: u64) {
             rest &= !0xf;
         }
         "clone" if event.call.name() == Some("clone") => {
-            // The low byte is the signal the child sends at its exit.
             let exit = rest & 0xff;
             rest &= !0xff;
             let mut named = named_bits(definition.names, rest);
@@ -665,7 +611,6 @@ fn enumeration(out: &mut Tokens, set: &str, word: u64) {
     };
 
     if set == "futex" {
-        // The operation, then its modifiers.
         let operation = value & 0x7f;
         let base = definition.names.iter().find(|&&(v, _)| v == operation);
         let Some(&(_, base)) = base else {
@@ -682,7 +627,6 @@ fn enumeration(out: &mut Tokens, set: &str, word: u64) {
             text.push_str("|FUTEX_CLOCK_REALTIME");
         }
 
-        // The kernel rejects any other bit, so it shows rather than vanish.
         let rest = value & !0x1ff;
         if rest != 0 {
             let _ = write!(text, "|{rest:#x}");
@@ -705,7 +649,6 @@ fn enumeration(out: &mut Tokens, set: &str, word: u64) {
     }
 }
 
-/// Escapes bytes as strace quotes them, or every byte in hex.
 fn quote(out: &mut Tokens, bytes: &[u8], limit: Option<usize>, truncated: bool, all_hex: bool) {
     let shown = limit.map_or(bytes, |limit| bytes.get(..limit).unwrap_or(bytes));
     let mut text = String::with_capacity(shown.len() + 2);
@@ -727,7 +670,6 @@ fn quote(out: &mut Tokens, bytes: &[u8], limit: Option<usize>, truncated: bool, 
             0x0b => text.push_str("\\v"),
             0x20..=0x7e => text.push(char::from(byte)),
             _ => {
-                // An octal escape stays short unless a digit follows it.
                 let next_is_digit = shown.get(position + 1).is_some_and(u8::is_ascii_digit);
                 if next_is_digit {
                     let _ = write!(text, "\\{byte:03o}");
@@ -745,7 +687,6 @@ fn quote(out: &mut Tokens, bytes: &[u8], limit: Option<usize>, truncated: bool, 
     }
 }
 
-/// An address the engine could not read through, or chose not to.
 fn unread(out: &mut Tokens, word: u64, capture: Option<&Capture>) {
     pointer(out, word);
     if word != 0 && capture.is_some_and(|capture| capture.state == CaptureState::Unreadable) {
@@ -771,7 +712,6 @@ fn string_argument(out: &mut Tokens, event: &SyscallEvent, index: usize, word: u
                 .unwrap_or_default();
             let truncated = matches!(capture.state, CaptureState::Truncated { .. });
 
-            // Paths print whole, as strace prints them.
             quote(
                 out,
                 bytes,
@@ -799,7 +739,6 @@ fn string_array(out: &mut Tokens, event: &SyscallEvent, index: usize, word: u64)
 
     let (count, elements) = blobs::strings(&capture.bytes);
 
-    // The environment abbreviates to its size.
     let environment = match event.call.name() {
         Some("execve") => Some(2),
         Some("execveat") => Some(3),
@@ -855,7 +794,6 @@ fn memory(
     #[expect(clippy::cast_possible_truncation, reason = "six arguments")]
     let capture = event.capture(index as u8);
 
-    // What a failed call would have written is not there.
     let failed = !matches!(event.outcome, Outcome::Returned(_));
     let readable = capture.filter(|capture| {
         matches!(
@@ -889,12 +827,10 @@ fn memory(
             let truncated =
                 matches!(capture.state, CaptureState::Truncated { .. }) || shown.len() < length;
 
-            // Random bytes are not text; strace prints them in hex.
             let random = event.call.name() == Some("getrandom");
             quote(out, shown, Some(STRING_LIMIT), truncated, random);
         }
         MemKind::Struct(structure) if event.call.abi != Abi::X86_64 => {
-            // Compat layouts differ; the address is all that prints.
             let _ = structure;
             pointer(out, word);
         }
@@ -929,7 +865,6 @@ fn memory(
     }
 }
 
-/// The ` = result` part.
 fn result(out: &mut Tokens, event: &SyscallEvent, spec: Option<&Spec>, context: Context<'_>) {
     out.punct(" = ");
     match event.outcome {
@@ -974,7 +909,6 @@ fn result(out: &mut Tokens, event: &SyscallEvent, spec: Option<&Spec>, context: 
     }
 }
 
-/// A duration for people: `11 µs`, `2.41 s`.
 #[must_use]
 pub fn duration(nanoseconds: u64) -> String {
     #[expect(clippy::cast_precision_loss, reason = "shown rounded")]
@@ -991,7 +925,6 @@ pub fn duration(nanoseconds: u64) -> String {
     }
 }
 
-/// strace's line for an event other than a call.
 #[must_use]
 pub fn other(event: &TraceEvent) -> Option<Tokens> {
     let mut out = Tokens::default();

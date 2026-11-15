@@ -1,9 +1,9 @@
-/* A small server's metrics, which change every tick, for drawing with the
- * built-in renderers through metrics.views beside this file: CPU history,
- * request latencies, latency by endpoint, size against time, cache misses
- * by core, a framebuffer, and a bitset. With --large, the CPU history and
- * the latencies hold a million samples each. Every number is computed, never
- * random, so a test knows each one. */
+
+
+
+
+
+
 
 #include <math.h>
 #include <stdint.h>
@@ -17,7 +17,7 @@
 #define FB_COLUMNS 64
 #define FB_ROWS 40
 
-/* A run of doubles, which metrics.views presents as a sequence. */
+
 struct samples {
     double *data;
     size_t count;
@@ -37,8 +37,8 @@ struct metrics {
     uint64_t flags;
 };
 
-/* The n-th of a fixed sequence of numbers in [0, 1): Weyl's, by the golden
- * ratio, so every run computes the same. */
+
+
 static double spread(size_t n) {
     double x = (double)n * 0.6180339887498949;
     return x - floor(x);
@@ -56,7 +56,7 @@ static void fill(struct metrics *m) {
     for (size_t i = 0; i < m->cpu.count; i++) {
         m->cpu.data[i] = 40.0 + 30.0 * sin((double)(i + m->tick) / 50.0) + 5.0 * spread(i);
     }
-    /* One sample in all of them spikes, and one is not a number. */
+
     m->cpu.data[m->cpu.count * 3 / 5 + 1] = 250.0 + m->tick;
     m->cpu.data[m->cpu.count / 10] = NAN;
 

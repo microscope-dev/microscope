@@ -1,9 +1,3 @@
-// Docking as a person does it, with the pointer and keys: dragging a tab onto
-// a side, a strip, or the dock's edge, floating one, moving and docking a
-// window, reopening a closed tab, and Escape giving a drag up. A model-based
-// test does long runs of these to the real dock and to the layout model
-// alike, and the tabs on screen must match the model's after every one.
-
 import { cleanup, render } from "@testing-library/react";
 import * as fc from "fast-check";
 import { act } from "react";
@@ -36,7 +30,6 @@ import { readGroups } from "./driver/layout";
 
 afterEach(cleanup);
 
-// The model-based test acts synchronously, a step at a time, with act().
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const KIND: PaneKind<string> = {
@@ -53,7 +46,6 @@ const DOCK_BOX = { display: "flex", width: "900px", height: "500px" };
 
 const pane = (key: string): Pane => ({ kind: KIND.id, key, params: null });
 
-/** Three groups: two stacked on the left, one on the right. */
 const START = () =>
   build({
     axis: "row",
@@ -92,8 +84,6 @@ const middle = (element: Element) => {
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 };
 
-/** Presses on `from`, moves past the drag threshold, and lets go at `to`;
- * or, `still`, lets go where it pressed. */
 function drag(
   from: HTMLElement,
   to: { x: number; y: number },
@@ -120,13 +110,11 @@ function drag(
       window.dispatchEvent(new KeyboardEvent("keydown", { key: held.key, bubbles: true }));
     }
     from.dispatchEvent(at("pointerup", to));
-    // As a browser does after a press and release on the same element.
+
     from.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
 }
 
-/** Each group's titles as the screen shows them: the dock's in reading
- * order, then the windows' in the order they were made. */
 function expected(layout: Layout): string[][] {
   const titles = (group: Group) =>
     group.tabs.map((tab) => {
@@ -144,7 +132,6 @@ function expected(layout: Layout): string[][] {
 
 const groupElement = (id: string) => document.querySelector(`[data-group="${id}"]`) as HTMLElement;
 
-/** A point in the middle of one side's band of a group's body. */
 function sidePoint(id: string, side: Side) {
   const box = groupElement(id).getBoundingClientRect();
   const top = box.y + 28;
@@ -160,9 +147,6 @@ function sidePoint(id: string, side: Side) {
 const dockBox = () =>
   (document.querySelector("[data-part=dock]") as HTMLElement).getBoundingClientRect();
 
-/** Whether a person can aim at `point` in `within`, as the screen shows
- * it: nothing else drawn over it, and, for a group's body, clear of its
- * strip and of the dock's edges, which take the drop first. */
 function aims(point: { x: number; y: number }, within: string, body = false): boolean {
   const hit = document.elementFromPoint(point.x, point.y);
   if (!hit?.closest(within)) {
@@ -222,8 +206,7 @@ const pointer = (type: string, point: { x: number; y: number }) =>
 
 it("ends a drag whose tab closes under it, and drags again after", async () => {
   await mount();
-  // Closed while pressed, and while dragging: the release lands on whatever
-  // is under the pointer now that the tab is gone.
+
   for (const [title, moved] of [
     ["Threads", false],
     ["Tasks", true],
@@ -253,7 +236,7 @@ it("gives up a drag on Escape, leaving every tab where it was", async () => {
   drag(tabOf("Threads"), sidePoint("g7", "right"), { key: "Escape" });
   expect(readGroups()).toEqual(before);
   expect(document.querySelector("[data-part=drop-highlight]")).toBeNull();
-  // A press that never moves far is a click, and chooses the tab.
+
   drag(tabOf("Tasks"), middle(tabOf("Tasks")), { still: true });
   expect(readGroups()[0]).toEqual(["Threads", "*Tasks"]);
 });
@@ -264,7 +247,7 @@ it("moves a window by either header row, docks it on a strip, and reopens a clos
   const bar = document.querySelector("[data-part=window-bar]") as HTMLElement;
   const window = document.querySelector("[data-part=window]") as HTMLElement;
   const before = window.getBoundingClientRect();
-  // Onto a body, which a window only moves over.
+
   drag(bar, { x: middle(bar).x - 150, y: middle(bar).y + 40 });
   const after = (
     document.querySelector("[data-part=window]") as HTMLElement
@@ -279,7 +262,6 @@ it("moves a window by either header row, docks it on a strip, and reopens a clos
   expect(window.getBoundingClientRect().y).toBeCloseTo(after.y - 30);
   expect(readGroups()).toHaveLength(4);
 
-  // Onto the Stack group's strip, past its tab.
   const strip = groupElement("g5").querySelector('[role="tablist"]') as HTMLElement;
   const box = strip.getBoundingClientRect();
   drag(document.querySelector("[data-part=window-bar]") as HTMLElement, {
@@ -289,7 +271,6 @@ it("moves a window by either header row, docks it on a strip, and reopens a clos
   expect(document.querySelector("[data-part=window]")).toBeNull();
   expect(readGroups()[1]).toEqual(["Stack", "*Memory"]);
 
-  // A tab's id is its pane's, after "tab-".
   act(() => closeTab(KINDS, tabOf("Stack").id.slice("tab-".length) as PaneId));
   expect(readGroups()[1]).toEqual(["*Memory"]);
   act(() => void reopenTab(KINDS));
@@ -378,7 +359,6 @@ it("drops onto the raised floating window, not the one behind it", async () => {
   expect(groupOf(after, registers)?.tabs).toEqual([registers]);
 });
 
-/** What a person does, with indexes read against the layout as it is. */
 type Action =
   | { type: "choose" | "close"; tab: number }
   | { type: "side"; tab: number; group: number; side: Side }
@@ -411,8 +391,6 @@ const action: fc.Arbitrary<Action> = fc.oneof(
 const pick = <T,>(list: readonly T[], at: number): T | undefined =>
   list[at % Math.max(list.length, 1)];
 
-/** Does `chosen` on screen, and to the model, or neither when a person
- * could not: a target under a window, or nothing to act on. */
 function perform(model: Layout, chosen: Action): Layout {
   const tabs = groups(model).flatMap((group) => group.tabs);
   const docked = groups(model).filter(
@@ -434,7 +412,7 @@ function perform(model: Layout, chosen: Action): Layout {
     return model;
   }
   const element = tabOf(model.panes[tab]?.key as string);
-  // A tab scrolled out of its strip, or under a window, is not there to take.
+
   if (!aims(middle(element), `#${element.id}`)) {
     return model;
   }
@@ -465,9 +443,9 @@ function perform(model: Layout, chosen: Action): Layout {
       } else {
         const strip = groupElement(into.id).querySelector('[role="tablist"]') as HTMLElement;
         const box = strip.getBoundingClientRect();
-        // Anywhere along the strip: between two tabs, or past them all.
+
         point = { x: box.x + 2 + chosen.along * (box.width - 5), y: box.y + 10 };
-        // Tabs that overflow the strip lie past its end.
+
         const before = [...strip.querySelectorAll("[data-part=tab]")].filter(
           (t) => middle(t).x <= point.x,
         );
@@ -487,8 +465,7 @@ function perform(model: Layout, chosen: Action): Layout {
         top: { x: box.x + box.width / 2, y: box.y + 6 },
         bottom: { x: box.x + box.width / 2, y: box.bottom - 6 },
       }[chosen.side];
-      // Strips take a drop on them before the edge they lie along; a point a
-      // few pixels from one is too close to call by eye.
+
       const near = [-4, 0, 4].flatMap((dx) =>
         [-4, 0, 4].map((dy) => document.elementFromPoint(point.x + dx, point.y + dy)),
       );

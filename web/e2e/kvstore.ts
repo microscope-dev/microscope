@@ -1,10 +1,7 @@
-// Steps the specs that debug kvstore share.
-
 import type { Page } from "@playwright/test";
 
 import { expect } from "./server";
 
-/** Breaks after handle_request looks its key up, and runs there. */
 export async function stopInHandleRequest(page: Page): Promise<void> {
   const adder = page.getByRole("textbox", { name: "Add a breakpoint" });
   await adder.fill("kvstore.c:92");
@@ -15,7 +12,6 @@ export async function stopInHandleRequest(page: Page): Promise<void> {
   await expect(page.locator(".cm-pc-line")).toContainText("int status = 0;");
 }
 
-/** The value row named `name` in a pane. */
 export const valueRow = (page: Page, pane: string, name: string) =>
   page
     .getByTestId(pane)

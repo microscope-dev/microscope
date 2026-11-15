@@ -1,5 +1,3 @@
-//! Disassembly of a stopped snapshot's memory.
-
 use std::collections::BTreeMap;
 
 use nix::unistd::Pid;
@@ -20,8 +18,6 @@ use super::registers::x86_64_registers;
 use super::{BreakpointSite, Controller};
 
 impl<P: InspectionOps> Controller<P> {
-    /// Disassembles the selected thread's stopped snapshot. The thread's
-    /// program counter is a known instruction start.
     pub(super) fn disassemble(
         &self,
         stop_id: StopId,
@@ -84,9 +80,6 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// Resolves the function containing an address to its address ranges in
-/// address order: every range of its out-of-line debug-information instance,
-/// or else the extent of the code symbol containing it.
 fn function_ranges(
     modules: &[UnwindModule<'_>],
     address: VirtualAddress,
@@ -145,12 +138,6 @@ fn function_ranges(
     ))
 }
 
-/// The registers a stopped thread will execute its next instruction with,
-/// by DWARF number, including the FS and GS segment bases.
-///
-/// A thread stopped inside an interrupted system call that the kernel will
-/// restart before returning has no known `rax`: the restarted call replaces
-/// it.
 fn next_instruction_registers(native: &nix::libc::user_regs_struct) -> RegisterFile {
     let mut registers = x86_64_registers(native);
     registers.set(FS_BASE, native.fs_base);
@@ -162,7 +149,6 @@ fn next_instruction_registers(native: &nix::libc::user_regs_struct) -> RegisterF
     registers
 }
 
-/// The memory and module metadata of one stopped snapshot.
 struct TargetCode<'a, P> {
     ptrace: &'a P,
     pid: Pid,
@@ -170,13 +156,11 @@ struct TargetCode<'a, P> {
     modules: &'a [UnwindModule<'a>],
     program_counter: VirtualAddress,
 
-    /// The registers the instruction at the program counter executes with.
     registers: RegisterFile,
 }
 
 impl<P: InspectionOps> CodeSource for TargetCode<'_, P> {
     fn read(&mut self, address: VirtualAddress, size: usize) -> Result<CodeRead> {
-        // Reads never wrap past the end of the address space.
         let room = usize::try_from(u64::MAX - address.get()).unwrap_or(usize::MAX);
         let read = read_logical_memory(
             self.ptrace,
@@ -187,8 +171,6 @@ impl<P: InspectionOps> CodeSource for TargetCode<'_, P> {
         )?;
 
         let unreadable = match read.completion {
-            // No read can end past the final byte of the address space, so
-            // a clamped read reports that byte as unreadable.
             crate::MemoryReadCompletion::Complete => {
                 (size > room).then_some(crate::MemoryReadUnavailableReason::Inaccessible)
             }

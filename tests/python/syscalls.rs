@@ -1,8 +1,3 @@
-//! A recording of a Python program's system calls: each call's stack names
-//! the Python lines that made it, each activation of the interpreter's
-//! loop after the frames it runs; and a catchpoint's stop, whose backtrace
-//! shows them as any stop's does.
-
 use std::process::{Command, Stdio};
 
 use std::sync::Arc;
@@ -14,7 +9,6 @@ use serde_json::Value;
 
 use crate::support::{Scenario, ScratchDir, held, python};
 
-/// The line of the syscalls fixture marked `marker`.
 fn line(marker: &str) -> u64 {
     let source = std::fs::read_to_string(python::fixture("syscalls.py")).expect("read the fixture");
     source
@@ -24,7 +18,6 @@ fn line(marker: &str) -> u64 {
         .unwrap_or_else(|| panic!("no line marked {marker}"))
 }
 
-/// The record of the open of `path`.
 fn opened<'a>(records: &'a [Value], path: &str) -> &'a Value {
     records
         .iter()
@@ -32,7 +25,6 @@ fn opened<'a>(records: &'a [Value], path: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no open of {path} in {records:#?}"))
 }
 
-/// The fixture under `interpreter`, run as the tests run it.
 fn program(interpreter: &str) -> Command {
     let mut program = Command::new(python::interpreter(interpreter));
     program
@@ -41,7 +33,6 @@ fn program(interpreter: &str) -> Command {
     program
 }
 
-/// The fixture's opens under `interpreter`, recorded by the ptrace engine.
 fn recorded(interpreter: &str) -> Profile {
     let directory = ScratchDir::new("python-syscalls");
     let saved = directory.path().join("trace.usprof");
@@ -67,8 +58,6 @@ fn recorded(interpreter: &str) -> Profile {
     );
     Profile::read(&saved).expect("the recording reads").profile
 }
-/// The Python frames of a record's stack, innermost first, as
-/// `function:line`, and the index in the stack of each.
 fn python_frames(record: &Value) -> Vec<(usize, String)> {
     let fixture = python::fixture("syscalls.py");
     record["stack"]
@@ -93,12 +82,8 @@ fn python_frames(record: &Value) -> Vec<(usize, String)> {
         .collect()
 }
 
-/// The interpreters traced: before 3.13's debug offsets, a GIL build, and
-/// a free-threaded one.
 const TRACED: [&str; 4] = ["3.12", "3.14", "3.15t", "standalone-3.14"];
 
-/// That the main thread's open shows `opens` called from the module, and
-/// the worker's the frames of both its activations of the loop.
 fn check_frames(interpreter: &str, records: &[Value]) {
     let main = opened(records, "/proc/self/stat");
     let frames = python_frames(main);
@@ -119,9 +104,6 @@ fn check_frames(interpreter: &str, records: &[Value]) {
         .and_then(|end| end.get("ends"));
     assert_eq!(ends, None, "{interpreter}: {main:#}");
 
-    // The worker's opens runs in a second activation of the loop,
-    // which Context.run, C, began: a native frame comes between it and
-    // through_c, and the frames threading runs the worker in follow.
     let worker = opened(records, "/dev/null");
     let frames = python_frames(worker);
     let names: Vec<&str> = frames.iter().map(|(_, name)| name.as_str()).collect();
@@ -155,8 +137,6 @@ fn a_python_programs_calls_name_the_python_lines_that_made_them() {
             continue;
         }
 
-        // A call's site is its Python line, not the interpreter's, whose
-        // debug information names its C lines.
         let stacks: Vec<Vec<String>> = profile
             .syscalls()
             .events
@@ -222,7 +202,6 @@ async fn a_catchpoint_stops_with_the_python_frames_that_made_the_call() {
         "{stop:?}"
     );
 
-    // The worker's frames, each segment before its activation of the loop.
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
@@ -255,18 +234,12 @@ async fn a_catchpoint_stops_with_the_python_frames_that_made_the_call() {
     scenario.shutdown().await;
 }
 
-/// The BPF engine, whose program reads each call's Python frames as it
-/// returns, held to the frames the ptrace engine finds. It needs
-/// `CAP_BPF` and `CAP_PERFMON`, so it runs only through `just test-bpf`.
 mod bpf {
     use super::*;
 
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn the_bpf_engine_names_the_python_lines_the_ptrace_engine_does() {
-        // The fixture probes until the engine names its Python frames, and
-        // lives until its calls are kept: their code is read as the engine
-        // drains them, which a program that exited takes away.
         let probed = |profile: &Profile| {
             held::records(profile).iter().any(|record| {
                 record["path"] == "/dev/random"

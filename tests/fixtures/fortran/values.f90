@@ -1,13 +1,13 @@
-! Fortran's values, where this program says they are. Before each
-! checkpoint the program prints its own truth, one tab-separated line per
-! value,
-!
-!	TRUTH	<checkpoint>	<path>	<kind>	<value>
-!
-! and then calls reached(checkpoint); the tests read the values in
-! reached's caller. A path names a variable and then its components and
-! elements, an element by its indices in parentheses. Floats are their bits
-! in hexadecimal; kind `summary` is how microscope writes the value.
+
+
+
+
+
+
+
+
+
+
 module values
   use, intrinsic :: iso_fortran_env, only: output_unit, int8, int16, int32, int64, real32, real64
   use, intrinsic :: iso_c_binding, only: c_intptr_t, c_loc
@@ -30,16 +30,16 @@ module values
 
 contains
 
-  ! Reaches a checkpoint once every truth before it is written.
+
   subroutine reached(checkpoint)
-    !GCC$ ATTRIBUTES noinline :: reached
+
     character(*), intent(in) :: checkpoint
     sink = sink + len(checkpoint)
   end subroutine
 
-  ! Keeps a value alive, and where the program put it, past the checkpoint.
+
   subroutine keep(value)
-    !GCC$ ATTRIBUTES noinline :: keep
+
     type(*), target, intent(inout) :: value(..)
     sink = transfer(c_loc(value), sink)
   end subroutine
@@ -58,7 +58,7 @@ contains
     text = trim(buffer)
   end function
 
-  ! Writes bits as Rust's `{:#x}` does.
+
   function hexadecimal(bits) result(text)
     integer(int64), intent(in) :: bits
     character(:), allocatable :: text
@@ -84,7 +84,7 @@ contains
   end function
 
   function add(a, b) result(total)
-    !GCC$ ATTRIBUTES noinline :: add
+
     integer, intent(in) :: a, b
     integer, target :: total
     total = a + b
@@ -92,7 +92,7 @@ contains
   end function
 
   subroutine scalars()
-    !GCC$ ATTRIBUTES noinline :: scalars
+
     integer(int8), target :: small
     integer(int16), target :: wide
     integer(int64), target :: big
@@ -123,7 +123,7 @@ contains
   end subroutine
 
   subroutine records()
-    !GCC$ ATTRIBUTES noinline :: records
+
     type(point), target :: origin
     type(segment), target :: line
     integer(int32), target :: numbers(3)
@@ -164,9 +164,9 @@ contains
     call keep(heap)
   end subroutine
 
-  ! Arrays whose descriptors the program fills at run time.
+
   subroutine descriptors()
-    !GCC$ ATTRIBUTES noinline :: descriptors
+
     integer(int32), allocatable, target :: table(:, :)
     integer(int32), allocatable, target :: unset(:)
     integer(int32), pointer :: loose(:)
@@ -194,9 +194,9 @@ contains
     if (associated(loose)) call keep(loose)
   end subroutine
 
-  ! An assumed-shape array, here every other element of its actual.
+
   subroutine section(part)
-    !GCC$ ATTRIBUTES noinline :: section
+
     integer(int32), intent(inout), target :: part(:)
     integer :: i
     do i = 1, size(part)
@@ -208,7 +208,7 @@ contains
   end subroutine
 
   subroutine strings()
-    !GCC$ ATTRIBUTES noinline :: strings
+
     character(len=5), target :: word
     character(:), allocatable, target :: grown
     word = 'hello'
@@ -221,10 +221,10 @@ contains
     call keep(word); call keep(grown)
   end subroutine
 
-  ! What functions return: a checkpoint named `returned-` is about what the
-  ! function that reached it returns, which is named for the function.
+
+
   function returns_int(n) result(value)
-    !GCC$ ATTRIBUTES noinline :: returns_int
+
     integer, intent(in) :: n
     integer :: value
     value = n * (-11)
@@ -233,7 +233,7 @@ contains
   end function
 
   function returns_double(n) result(value)
-    !GCC$ ATTRIBUTES noinline :: returns_double
+
     integer, intent(in) :: n
     real(real64) :: value
     value = -6.5_real64 * n
@@ -242,7 +242,7 @@ contains
   end function
 
   function returns_logical(n) result(value)
-    !GCC$ ATTRIBUTES noinline :: returns_logical
+
     integer, intent(in) :: n
     logical :: value
     value = n > 0
@@ -257,7 +257,7 @@ program main
   use, intrinsic :: iso_fortran_env, only: real64
   implicit none
   integer :: n
-  ! Arguments the compiler cannot know.
+
   n = command_argument_count() + 3
   call scalars()
   call records()

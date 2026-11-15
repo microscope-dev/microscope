@@ -1,14 +1,3 @@
-//! How captures of nested memory are laid out, so that both engines write
-//! them and every decoder reads them the same way.
-//!
-//! - An iovec array: for each element read, its base and length as
-//!   little-endian `u64`s, the bytes captured from it as a `u32` count,
-//!   then those bytes.
-//! - A string array, as `argv`: the number of elements as a `u32` (or
-//!   `u32::MAX` when the array's end was not found), then each element
-//!   read, NUL-terminated.
-
-/// One element of an iovec capture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Iovec<'a> {
     pub base: u64,
@@ -25,7 +14,6 @@ pub fn push_iovec(blob: &mut Vec<u8>, base: u64, len: u64, bytes: &[u8]) {
     blob.extend_from_slice(bytes);
 }
 
-/// The elements of an iovec capture, stopping at the first malformed one.
 #[must_use]
 pub fn iovecs(mut blob: &[u8]) -> Vec<Iovec<'_>> {
     let mut elements = Vec::new();
@@ -55,8 +43,6 @@ pub fn push_string(blob: &mut Vec<u8>, string: &[u8]) {
     blob.push(0);
 }
 
-/// A string array's element count, when its end was found, and the
-/// elements read.
 #[must_use]
 pub fn strings(blob: &[u8]) -> (Option<u32>, Vec<&[u8]>) {
     let Some((header, rest)) = blob.split_first_chunk::<4>() else {
@@ -70,7 +56,6 @@ pub fn strings(blob: &[u8]) -> (Option<u32>, Vec<&[u8]>) {
 
     let mut elements: Vec<&[u8]> = rest.split(|&byte| byte == 0).collect();
 
-    // The terminator of the last element leaves an empty tail.
     if rest.last() == Some(&0) {
         elements.pop();
     }

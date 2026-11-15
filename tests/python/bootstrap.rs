@@ -1,9 +1,3 @@
-//! CPython 3.12 and 3.13, which no debugger can ask to run a script, take
-//! the agent through the bootstrap microscope gives a launch. The program
-//! and its children see their own environment and path, and the program's
-//! own `sitecustomize` still runs. A breakpoint set as the program runs
-//! reaches the agent through the bootstrap's hidden thread.
-
 use microscope::{BreakpointSpec, CodeRole, LineNumber, StopReason};
 
 use crate::session::PythonSession;
@@ -66,7 +60,6 @@ async fn launch_bootstrap_is_invisible_and_takes_breakpoints(interpreter: &str) 
     );
     assert!(session.integer("count").await >= 1, "{context}");
 
-    // The bootstrap's own thread is the debugger's, by name and by role.
     let snapshot = session.scenario.snapshot().await;
     let ours = snapshot
         .threads

@@ -1,10 +1,3 @@
-// The console: expressions and microscope's commands, in the frame the tab
-// shows, and run control, which the page runs itself (`console.ts`). Tab
-// completes from the frame's names, members, and registers; while the
-// completions are open, Tab and Shift+Tab cycle them and Enter takes one. The
-// arrow keys walk the lines run before, or the open completions. An empty
-// line repeats the last step, and Ctrl+L clears.
-
 import {
   type ChangeEvent,
   type FormEvent,
@@ -44,8 +37,7 @@ import { useFocus } from "./Workspace";
 
 export function Console() {
   const entries = useStore(consoleStore, (state) => state.entries);
-  // A line run follows to the bottom; answers to older lines do not pull
-  // a reader who scrolled up.
+
   const { ref, onScroll } = useFollowBottom<HTMLDivElement>(entries, entries.length);
 
   return (
@@ -87,7 +79,7 @@ export function Console() {
 interface Choices {
   start: number;
   items: Completion[];
-  /** The completion the arrow keys are on, if they moved. */
+
   active: number | null;
 }
 
@@ -102,12 +94,12 @@ function ConsoleInput() {
   const [choices, setChoices] = useState<Choices | null>(null);
   const field = useRef<HTMLInputElement>(null);
   const list = useId();
-  // Lines run at the frame shown, while its stop is the program's.
+
   const frame = at && !stale ? at : null;
 
   const run = useCallback(() => {
     const typed = text.trim();
-    // An empty line repeats the last step or continue, and nothing else.
+
     const last = consoleStore.getState().entries.at(-1)?.line;
     const line = typed || (last !== undefined && repeats(last) ? last : "");
     if (!line) {
@@ -227,7 +219,6 @@ function ConsoleInput() {
         event.preventDefault();
         clearConsole();
       } else if (event.key === "Tab" && choices) {
-        // An open list cycles: Tab walks down it, Shift+Tab back up.
         event.preventDefault();
         walk(event.shiftKey ? -1 : 1);
       } else if (event.key === "Tab" && !event.shiftKey) {
@@ -297,14 +288,13 @@ function ConsoleInput() {
 interface Context {
   store: StoreApi<Model>;
   connection: Connection;
-  /** Where the tab looks, even at a stop the program has left. */
+
   at: At | null;
-  /** Where lines run: `at`, while its stop is the program's. */
+
   frame: At | null;
   look: ReturnType<typeof useLook>;
 }
 
-/** Runs one console line, recording it and its answer. */
 function runLine(line: string, { store, connection, at, frame, look }: Context): void {
   const wanted = asked(line);
   if (wanted.kind === "clear") {
@@ -318,7 +308,6 @@ function runLine(line: string, { store, connection, at, frame, look }: Context):
       finished(id, { error: wanted.message });
       return;
     case "disassemble": {
-      // The view disassembles at the frame the tab shows, so it needs one.
       if (!at) {
         finished(id, { error: "the program is not stopped" });
         return;
@@ -347,7 +336,6 @@ function runLine(line: string, { store, connection, at, frame, look }: Context):
       connection
         .request("console", frame ? { line, ...frame } : { line })
         .then((result) => {
-          // Plain help lists microscope's commands; the page adds its own.
           const help = /^(?:help|h|\?)$/u.test(line) && typeof result.output === "string";
           finished(id, { result: help ? { ...result, output: result.output + RUN_HELP } : result });
           return null;
@@ -374,7 +362,6 @@ function runLine(line: string, { store, connection, at, frame, look }: Context):
     }
     case "advance":
     case "into": {
-      // Both move the stopped thread shown, as a step does.
       const model = store.getState();
       const step = action("over", model, at);
       const inferior = model.state?.inferior;
@@ -420,17 +407,11 @@ function runLine(line: string, { store, connection, at, frame, look }: Context):
   }
 }
 
-/** The Disassembly view, at `address` or else the frame's own code. */
 function showingCode(current: Look, address: string | null): Look {
   const { asm: _asm, ...kept } = current;
   return { ...kept, ...(address === null ? {} : { asm: address }), view: "disassembly" };
 }
 
-/**
- * Sends a run-control request and says in entry `id` where the program
- * stops after it. It watches from before the request goes, since the new
- * state can arrive before the answer.
- */
 function follow(store: StoreApi<Model>, id: number, send: () => Promise<unknown>): Promise<null> {
   const before = store.getState().state?.inferior;
   let settled = false;
@@ -456,7 +437,6 @@ function follow(store: StoreApi<Model>, id: number, send: () => Promise<unknown>
   );
 }
 
-/** A completion, which a press takes. */
 function Choice({
   id,
   item,
@@ -474,8 +454,7 @@ function Choice({
       option.current?.scrollIntoView({ block: "nearest" });
     }
   }, [active]);
-  // The field keeps focus, and the keys the field takes choose; a press
-  // here chooses before the field could lose it.
+
   const press = useCallback(
     (event: MouseEvent) => {
       event.preventDefault();

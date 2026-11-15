@@ -1,6 +1,3 @@
-//! A Go program's core, read against the dump of every goroutine the
-//! runtime printed as it crashed, and the crash itself, live.
-
 use std::collections::BTreeMap;
 use std::process::Stdio;
 
@@ -13,18 +10,14 @@ use crate::support::Scenario;
 
 const BUILDS: [&str; 2] = ["panic-go-o0", "panic-go-o2"];
 
-/// One goroutine of a `GOTRACEBACK=crash` dump.
 #[derive(Debug)]
 struct Dumped {
     status: String,
     labels: Vec<(String, String)>,
 
-    /// Every frame, the runtime's own among them: a function and its
-    /// `file:line`.
     frames: Vec<(String, String)>,
 }
 
-/// The goroutines of the dump in a core's log, by id.
 fn crash_dump(fixture: &str) -> BTreeMap<u64, Dumped> {
     let path = Scenario::fixture(&format!("{fixture}.core.log"));
     let log = std::fs::read_to_string(&path)
@@ -32,7 +25,6 @@ fn crash_dump(fixture: &str) -> BTreeMap<u64, Dumped> {
     let mut goroutines = BTreeMap::new();
     let mut lines = log.lines().peekable();
     while let Some(line) = lines.next() {
-        // goroutine 11 gp=0x… m=nil [chan receive] {job: resize}:
         let Some(header) = line.strip_prefix("goroutine ") else {
             continue;
         };
@@ -83,7 +75,6 @@ fn crash_dump(fixture: &str) -> BTreeMap<u64, Dumped> {
     goroutines
 }
 
-/// Every task of the core.
 async fn tasks(scenario: &Scenario) -> Vec<TaskSnapshot> {
     let mut tasks = Vec::new();
     let mut from = None;
@@ -124,8 +115,6 @@ async fn a_cores_goroutines_are_those_the_runtime_dumped_as_it_crashed() {
         let image = scenario.handle().module_image();
         let tasks = tasks(&scenario).await;
 
-        // Tasks are listed as `allgs` holds them, and each P takes ids in
-        // batches, so their order need not be their ids'.
         let mut listed = tasks.iter().map(|task| task.id.number).collect::<Vec<_>>();
         listed.sort_unstable();
         assert_eq!(
@@ -172,8 +161,6 @@ async fn a_cores_goroutines_are_those_the_runtime_dumped_as_it_crashed() {
                 .collect::<Vec<_>>();
 
             if task.state == TaskState::Running {
-                // Main panicked on the thread the core stopped at, which
-                // went on to raise the signal that ended it.
                 assert_eq!(task.thread, Some(thread_id), "{context}");
                 let user = dumped.frames.len() - 1;
                 assert!(
@@ -214,9 +201,6 @@ async fn a_goroutines_profiler_labels_are_its_own() {
     }
 }
 
-/// Live, the program the cores come from stops at its panic, then at the
-/// SIGABRT the runtime raises to dump core. The session ends there, before
-/// the signal makes a core of its own.
 #[tokio::test]
 async fn a_crashing_panic_stops_then_raises_sigabrt() {
     for fixture in BUILDS {

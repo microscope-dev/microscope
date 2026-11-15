@@ -1,8 +1,3 @@
-//! numpy's arrays, whose elements are numbers kept as the machine keeps
-//! them: shown as `array(ELEMENTS, dtype=NAME)`, their elements or rows as
-//! their children, and their numbers read at once where they lie next to
-//! each other, for drawings.
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,10 +14,8 @@ use crate::locals::{Stop, presented, reported_locals};
 use crate::session::PythonSession;
 use crate::support::python;
 
-/// The interpreters numpy is built for in the flake.
 const NUMPY: [&str; 3] = ["3.12", "3.13", "3.14"];
 
-/// Every expression the fixture evaluates in its frame of `values`.
 const CASES: &[Case] = &[
     agrees("len(floats)"),
     agrees("len(grid)"),
@@ -31,15 +24,12 @@ const CASES: &[Case] = &[
     agrees("len(scalar)"),
     agrees("floats"),
     agrees("grid"),
-    // An item of an array is a new object, numpy's scalar or a view of the
-    // array, and its shape is a property.
     refuses("floats[0]", ExpressionErrorKind::Unsupported),
     refuses("grid[1]", ExpressionErrorKind::Unsupported),
     refuses("floats.shape", ExpressionErrorKind::Unsupported),
     refuses("floats == floats", ExpressionErrorKind::Unsupported),
 ];
 
-/// The directory numpy is in for `interpreter`, which the flake must give.
 fn numpy_directory(interpreter: &str) -> PathBuf {
     let site = python::interpreter(interpreter).with_file_name("site");
     assert!(
@@ -50,7 +40,6 @@ fn numpy_directory(interpreter: &str) -> PathBuf {
     site
 }
 
-/// The children CPython reported of each local array, by its name.
 fn reported_children(truth: &[Vec<String>]) -> BTreeMap<&str, Vec<&str>> {
     let mut locals: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
 
@@ -64,7 +53,6 @@ fn reported_children(truth: &[Vec<String>]) -> BTreeMap<&str, Vec<&str>> {
     locals
 }
 
-/// The capability of a presented value's children.
 fn children_of(state: &VariableState) -> Arc<ValueChildrenReference> {
     match state {
         VariableState::Available {
@@ -78,7 +66,6 @@ fn children_of(state: &VariableState) -> Arc<ValueChildrenReference> {
     }
 }
 
-/// The numbers of a value read at once, as a drawing reads them.
 async fn numbers(
     stop: &Stop<'_>,
     reference: Arc<ValueChildrenReference>,
@@ -93,10 +80,6 @@ async fn numbers(
         .await
 }
 
-/// Each local array is shown as `canonical()` writes it, its elements or
-/// rows are its children, its numbers are read at once only where they lie
-/// next to each other, and every expression gives what CPython gave or is
-/// refused as its case says.
 #[tokio::test]
 async fn each_array_shows_its_elements_and_reads_its_numbers_at_once() {
     for interpreter in NUMPY {
@@ -182,8 +165,6 @@ async fn each_array_shows_its_elements_and_reads_its_numbers_at_once() {
     }
 }
 
-/// Numbers next to each other are read at once, and no others: of
-/// arrays of one axis, of a row of a grid, and not of a list.
 async fn bulk(stop: &Stop<'_>, variables: &[microscope::Variable], lies: &mut Vec<String>) {
     let state = |name: &str| local(variables, name, stop).state.clone();
     let floats = numbers(stop, children_of(&state("floats"))).await;
@@ -211,7 +192,6 @@ async fn bulk(stop: &Stop<'_>, variables: &[microscope::Variable], lies: &mut Ve
         lies.push("long's 100 numbers are not read at once".to_owned());
     }
 
-    // A list's numbers are objects, which a drawing reads one by one.
     for name in [
         "strided",
         "backwards",
@@ -228,8 +208,6 @@ async fn bulk(stop: &Stop<'_>, variables: &[microscope::Variable], lies: &mut Ve
         }
     }
 
-    // A row of a grid lies next to itself, and a row of a transposed
-    // grid does not.
     let row = |name: &'static str| {
         let state = state(name);
         async move {
@@ -256,8 +234,6 @@ async fn bulk(stop: &Stop<'_>, variables: &[microscope::Variable], lies: &mut Ve
     }
 }
 
-/// A view of a Python class that draws its objects offers the drawing, and
-/// its inputs read through the runtime: an array's numbers at once.
 async fn drawn(stop: &Stop<'_>, printer: u64, lies: &mut Vec<String>) {
     let handle = stop.scenario.handle();
     let errors = stop

@@ -7,7 +7,6 @@ use std::time::Duration;
 use expectrl::session::{OsSession, Session};
 use expectrl::{ControlCode, Eof, Expect};
 
-/// The harness's deadline for anything a test waits to observe.
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 fn fixture(name: &str) -> PathBuf {
@@ -16,9 +15,6 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// A microscope command for a terminal that supports color, with history kept
-/// under `state` and no color settings in the environment. It runs in
-/// `state`, whose project an interactive session keeps its breakpoints in.
 fn command(executable: &Path, state: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_microscope"));
     command
@@ -27,7 +23,6 @@ fn command(executable: &Path, state: &Path) -> Command {
         .env("XDG_STATE_HOME", state)
         .env("MICROSCOPE_CONFIG", "")
         .env("TERM", "xterm-256color")
-        // Output taller than the terminal goes through the pager.
         .env("PAGER", "cat")
         .env_remove("NO_COLOR")
         .env_remove("CLICOLOR")
@@ -41,7 +36,6 @@ fn spawn(command: Command) -> OsSession {
     session
 }
 
-/// Starts an uncolored REPL and waits for its first prompt.
 fn repl(executable: &Path, state: &Path) -> OsSession {
     let mut command = command(executable, state);
     command.args(["--color", "never"]);
@@ -101,8 +95,6 @@ fn interactive_prompt_honors_no_color() {
     session.expect(Eof).expect("repl exited");
 }
 
-/// Line editing and the commands that only make sense at a terminal. A
-/// line Ctrl-C did not cancel would run as `invalid-commandbreak asdf`.
 #[test]
 fn interactive_editing_errors_and_clearing() {
     let state = support::ScratchDir::new("repl-editing");
@@ -208,8 +200,6 @@ fn interactive_history_persists_across_sessions() {
     session.expect(Eof).expect("second repl exited");
 }
 
-/// A project in `scratch` with its own copy of `hit-counts.c`, which a
-/// session maps the program's sources to so that a test may edit it.
 fn project_with_sources(scratch: &Path) -> PathBuf {
     let project = scratch.join("project");
     std::fs::create_dir_all(project.join("src")).expect("create the project");
@@ -221,8 +211,6 @@ fn project_with_sources(scratch: &Path) -> PathBuf {
     project
 }
 
-/// An interactive session's command in `project`, which keeps its
-/// breakpoints there, with the program's sources mapped to the project's.
 fn kept_command(project: &Path, state: &Path) -> Command {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut command = command(&fixture("hit-counts-gcc-o0"), state);
@@ -238,8 +226,6 @@ fn kept_command(project: &Path, state: &Path) -> Command {
     command
 }
 
-/// Starts a session in `project`, waiting for what it says before its
-/// first prompt.
 fn kept_session(project: &Path, state: &Path, said: &[&str]) -> OsSession {
     let mut session = spawn(kept_command(project, state));
     for text in said {
@@ -265,7 +251,6 @@ fn quit(mut session: OsSession) {
     session.expect(Eof).expect("the session ended");
 }
 
-/// Quits a session whose program is alive, which asks first.
 fn quit_killing(mut session: OsSession) {
     session.send_line("quit").expect("quit");
     session
@@ -295,7 +280,6 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
         "display 1: /x last_call",
     );
 
-    // Temporary breakpoints belong to one stop, and are not kept.
     run(&mut session, "tbreak caller", "temporary breakpoint 2 set");
     quit(session);
 
@@ -314,8 +298,6 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
         "*\n"
     );
 
-    // The next session restores it, disabled and conditional as it was,
-    // and the display.
     let mut session = kept_session(
         &project,
         scratch.path(),
@@ -330,8 +312,6 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
     );
     quit(session);
 
-    // A line that reads differently since is restored where it was, and
-    // said to have changed.
     let source = project.join("src/hit-counts.c");
     let edited = std::fs::read_to_string(&source)
         .expect("read the source")
@@ -344,7 +324,6 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
         &["hit-counts.c:11 changed since it was saved"],
     ));
 
-    // A file that does not parse is reported and never overwritten.
     std::fs::write(&saved, "version = 1\n[[breakpoint]\n").expect("break the file");
 
     let mut session = kept_session(
@@ -360,7 +339,6 @@ fn an_interactive_session_keeps_its_breakpoints_for_the_next_one() {
         "version = 1\n[[breakpoint]\n"
     );
 
-    // Batch sessions neither restore nor save.
     std::fs::remove_file(&saved).expect("remove the file");
 
     let output = kept_command(&project, scratch.path())
@@ -389,7 +367,6 @@ fn interactive_pp_lays_values_out_to_the_terminal_width() {
         "(inner_record) record->inner = {\r\n  signed_value = -7,\r\n  unsigned_value = 9,\r\n}\r\n",
     );
 
-    // The width is measured again for each line.
     session
         .get_process_mut()
         .set_window_size(100, 24)
@@ -450,7 +427,6 @@ fn interactive_output_taller_than_the_terminal_goes_through_the_pager() {
 
     run(&mut session, "help", "paged:   quit");
 
-    // Output that fits is printed as it is.
     run(&mut session, "breakpoints", "\r\nno breakpoints\r\n");
     quit(session);
 }
@@ -460,7 +436,6 @@ fn interactive_tab_completes_commands_locations_and_members() {
     let state = support::ScratchDir::new("repl-complete");
     let mut session = repl(&fixture("records-c-gcc-o0"), state.path());
 
-    // A command, then a function, each the only candidate.
     session.send("tbrea").expect("type a prefix");
     session.send("\t").expect("complete the command");
     session.send("inspect_rec").expect("type a function prefix");
@@ -474,7 +449,6 @@ fn interactive_tab_completes_commands_locations_and_members() {
 
     run(&mut session, "run", "stopped at breakpoint 1");
 
-    // A member of what a pointer points to, which the debugger reads.
     session.send("p record->in").expect("type a member prefix");
     session.send("\t").expect("complete the member");
     session.send_line("").expect("run the completed line");
@@ -486,9 +460,6 @@ fn interactive_tab_completes_commands_locations_and_members() {
     quit_killing(session);
 }
 
-/// What a run reports of the processes a program starts, it reports once:
-/// the next command at the prompt does not print the joins and exits
-/// again.
 #[test]
 fn a_runs_process_notices_are_not_repeated_at_the_next_prompt() {
     let state = support::ScratchDir::new("repl-group-notices");
@@ -514,7 +485,6 @@ fn a_runs_process_notices_are_not_repeated_at_the_next_prompt() {
     let listed = session.expect("(microscope [3]) ").expect("the listing");
     let listed = String::from_utf8_lossy(listed.before()).into_owned();
     assert!(listed.contains("* [3] process "), "{listed}");
-    // The listing gives [2]'s state; the exit's own notice is not repeated.
     assert!(
         !listed.lines().any(|line| line.starts_with("[2] exited")),
         "{listed}"

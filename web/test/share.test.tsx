@@ -1,6 +1,3 @@
-// The share popover shows the link for the access chosen last, whatever
-// order the server's answers come in, and says while it is being made.
-
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -22,7 +19,7 @@ it("keeps the link for the access chosen last", async () => {
     .element(page.getByRole("textbox", { name: "Join link" }))
     .toHaveValue("http://x/join?control");
   server.answer(viewing, { url: "http://x/join?view" });
-  // The late answer would land before the next frame if it were taken.
+
   await new Promise((resolve) => {
     setTimeout(resolve, 50);
   });

@@ -1,21 +1,21 @@
-"""Values microscope's expressions read in a Python frame, and what CPython
-itself gives for each expression the test passes as an argument, evaluated
-in that frame before it parks: names a local, a global, or a built-in
-binds, numbers at their edges, text beyond ASCII, dicts whose keys are
-found by hash among collisions, deleted entries, a key whose own type
-decides what it equals, and tuple keys, a NaN among their items, and objects of every way CPython keeps attributes:
-in values inline or kept apart, in a dict, and in slots, with the
-descriptors and hooks whose code decides what an attribute is. Objects of
-classes deriving from built-in types hold those types' values, and some
-types define their own items and lengths. A dataclass's fields come first
-among its attributes, in the order it defines them.
 
-Besides each expression's result, the checkpoint reports the attributes of
-each local whose class the fixture defines, as truth.attributes() gives
-them:
 
-    TRUTH  attribute  LOCAL  NAME  VALUE
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import collections
 import dataclasses
@@ -28,7 +28,7 @@ import truth  # noqa: E402
 
 
 class Key:
-    """A key whose hash and equality are its own type's code."""
+
 
     def __init__(self, hash_):
         self.hash_ = hash_
@@ -47,7 +47,7 @@ class Point:
 
 
 class Slotted:
-    """Attributes in slots, one never set."""
+
 
     __slots__ = ("b", "a", "unset")
 
@@ -57,7 +57,7 @@ class Slotted:
 
 
 class Both(Slotted):
-    """A class with a dict, deriving from one with slots."""
+
 
     def __init__(self):
         super().__init__()
@@ -65,7 +65,7 @@ class Both(Slotted):
 
 
 class Described:
-    """A property, a method, and a class attribute."""
+
 
     LIMIT = 10
 
@@ -81,7 +81,7 @@ class Described:
 
 
 class Fallback:
-    """Missing attributes found by its own __getattr__."""
+
 
     def __init__(self):
         self.real = 1
@@ -91,14 +91,14 @@ class Fallback:
 
 
 class Custom:
-    """Every attribute found by its own __getattribute__."""
+
 
     def __getattribute__(self, name):
         return 7
 
 
 class Many:
-    """More attributes than its values inline hold, so kept in a dict."""
+
 
     def __init__(self):
         for index in range(40):
@@ -113,7 +113,7 @@ class Deleted:
 
 
 class Failure(ValueError):
-    """An exception, whose dict its type places at an offset."""
+
 
     def __init__(self, code):
         super().__init__("bad")
@@ -130,7 +130,7 @@ class Items(list):
 
 
 class Counts(dict):
-    """A dict that gives a value for a missing key by its own code."""
+
 
     def __missing__(self, key):
         return 0
@@ -149,7 +149,7 @@ class Color(enum.IntEnum):
 
 
 class Indexed:
-    """Items and a length its own code gives."""
+
 
     def __getitem__(self, key):
         return key
@@ -163,7 +163,7 @@ class Base:
 
 
 class Derived(Base):
-    """A slot of a base's name, never set, which hides the base's."""
+
 
     __slots__ = ("shadowed",)
 
@@ -173,7 +173,7 @@ Pair = collections.namedtuple("Pair", "left right")
 
 @dataclasses.dataclass(slots=True)
 class Slim:
-    """A dataclass whose fields are slots, which CPython sorts."""
+
 
     zed: int
     alpha: str
@@ -181,7 +181,7 @@ class Slim:
 
 @dataclasses.dataclass
 class Late:
-    """A dataclass with a field and an attribute set after its fields."""
+
 
     b: int
     a: int = dataclasses.field(init=False)
@@ -191,18 +191,18 @@ class Late:
         self.a = 2
 
 
-# The instance locals whose dicts are never made, each with the names of its
-# attributes: reading an object's __dict__ makes one, after which CPython
-# reads its attributes through it, not from where it keeps them.
+
+
+
 UNTOUCHED = {"fresh": ("x", "y")}
 
-# The expressions to evaluate and what CPython gave for each, kept out of
-# the frame's locals, which the checkpoint reports.
+
+
 EXPRESSIONS = sys.argv[1:]
 RESULTS = []
 
-# Globals: one a local shadows, one shadowing a built-in, and a dict of
-# more entries than an inspection reads, with every third deleted.
+
+
 LIMIT = 7
 count = "the global count"
 max = "the global max"
@@ -231,16 +231,16 @@ def values():
     squares = {1: 1, 2: 4, 3: 9, -1: 1, 2**40: 0, 0.5: 0.25}
     labels = {None: "none", True: "yes", (1, 2): "pair", b"k": "bytes"}
     doubtful = {Key(7): "seven", 1.5: "float", "s": "str"}
-    # Tuple keys, compared item by item; `cell` equals a key but is
-    # another object, built at run time so the compiler cannot share it.
+
+
     grid = {(1, 2): "a", (1, (2, 3)): "b", ("ann", 3): "c", (): "d", (1,): "e", (1.5, None): "f"}
     cell = tuple([1, 2])
-    # A NaN equals only itself, and hashes by its address.
+
     nan = float("nan")
     by_nan = {nan: 1}
     nan_pair = (1, nan)
     by_nan_pair = {nan_pair: 2}
-    # A tuple holding an object whose equality is its own type's code.
+
     seven = Key(7)
     keyed = {(seven, 1): "k"}
     point = Point(3, 4)

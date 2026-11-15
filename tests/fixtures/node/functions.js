@@ -1,8 +1,8 @@
-// Functions that `js:NAME` breakpoints stop in: a declaration, an arrow
-// held in a constant, a method, one in a required module, and one nested in
-// a function, which V8 compiles only once its parent first runs. The main
-// script runs them all, then waits for a line, then runs the nested one
-// again.
+
+
+
+
+
 'use strict';
 const { helper } = require('./functions_lib.js');
 

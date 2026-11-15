@@ -1,6 +1,6 @@
-// A function the program calls through hand-written assembly without debug
-// information, and then directly, as a library without debug information
-// calls a program's callback.
+
+
+
 
 __attribute__((noinline)) int callback(int value) {
     return value + 1; // CALLBACK

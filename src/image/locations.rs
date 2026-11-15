@@ -1,9 +1,3 @@
-//! Where variables are: DWARF expressions, pooled once each, with what
-//! their evaluation reads besides their operations (their unit, its
-//! encoding, the addresses `.debug_addr` gives their indexes, and the
-//! procedures they call), lists of them by address, and each unit's base
-//! types, which typed operations name.
-
 use std::hash::BuildHasher as _;
 
 use gimli::ValueType;
@@ -13,30 +7,23 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 use super::{Builder, Image, NONE, Record, Span, TableKind};
 use crate::{AddressRange, ImageAddress};
 
-/// One expression.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct ExpressionRecord {
-    /// Where its operations are in [`TableKind::ExpressionBytes`].
     pub bytes: U32,
     pub length: U32,
 
-    /// The unit it was read from, in [`TableKind::EvaluationUnits`].
     pub unit: U32,
 
-    /// Its indexed addresses, by index.
     pub addresses: Span<IndexedAddressRecord>,
 
-    /// The procedures it calls, by `.debug_info` offset.
     pub procedures: Span<ProcedureRecord>,
 
-    /// Its unit's DWARF version.
     pub version: U16,
     pub address_size: u8,
 
-    /// Whether its unit is 64-bit DWARF.
     pub dwarf64: u8,
 }
 
@@ -44,7 +31,6 @@ impl Record for ExpressionRecord {
     const KIND: TableKind = TableKind::Expressions;
 }
 
-/// The address `.debug_addr` gives an index an expression names.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -58,7 +44,6 @@ impl Record for IndexedAddressRecord {
     const KIND: TableKind = TableKind::IndexedAddresses;
 }
 
-/// A procedure an expression calls, by its entry's `.debug_info` offset.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -66,7 +51,6 @@ impl Record for IndexedAddressRecord {
 pub struct ProcedureRecord {
     pub offset: U64,
 
-    /// Its location, or [`NONE`] for an entry without one.
     pub list: U32,
 }
 
@@ -74,7 +58,6 @@ impl Record for ProcedureRecord {
     const KIND: TableKind = TableKind::Procedures;
 }
 
-/// A list of locations.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -87,8 +70,6 @@ impl Record for LocationListRecord {
     const KIND: TableKind = TableKind::LocationLists;
 }
 
-/// One location of a list: an expression and the code it holds in, or,
-/// for a default location, everywhere no other entry holds.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -98,7 +79,6 @@ pub struct LocationEntryRecord {
     pub end: U64,
     pub expression: U32,
 
-    /// [`DEFAULT`] for a default location, whose range is zero.
     pub flags: u8,
 }
 
@@ -106,22 +86,17 @@ impl Record for LocationEntryRecord {
     const KIND: TableKind = TableKind::LocationEntries;
 }
 
-/// [`LocationEntryRecord::flags`] for a default location.
 pub const DEFAULT: u8 = 1;
 
-/// What an expression's typed operations read of its unit.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct EvaluationUnitRecord {
-    /// Where the unit begins in `.debug_info`, when [`unit_flags::OFFSET`].
     pub offset: U64,
 
-    /// Its base types, by unit offset.
     pub base_types: Span<BaseTypeRecord>,
 
-    /// Its `DW_AT_language`, when [`unit_flags::LANGUAGE`].
     pub language: U16,
     pub flags: u8,
 }
@@ -130,7 +105,6 @@ impl Record for EvaluationUnitRecord {
     const KIND: TableKind = TableKind::EvaluationUnits;
 }
 
-/// [`EvaluationUnitRecord::flags`].
 pub mod unit_flags {
     pub const OFFSET: u8 = 1 << 0;
 
@@ -139,13 +113,11 @@ pub mod unit_flags {
     pub const ALL: u8 = OFFSET | LANGUAGE;
 }
 
-/// A base type a typed operation may name.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct BaseTypeRecord {
-    /// Its entry's offset in its unit.
     pub offset: U64,
     pub value_type: u8,
 }
@@ -154,7 +126,6 @@ impl Record for BaseTypeRecord {
     const KIND: TableKind = TableKind::BaseTypes;
 }
 
-/// The value types an operation can be typed with, by code.
 const VALUE_TYPES: [ValueType; 10] = [
     ValueType::I8,
     ValueType::U8,
@@ -168,25 +139,20 @@ const VALUE_TYPES: [ValueType; 10] = [
     ValueType::F64,
 ];
 
-/// An expression, by its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ExpressionId(pub u32);
 
-/// A list of locations, by its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LocationListId(pub u32);
 
-/// What [`LocationsBuilder::unit`] records of a unit.
 #[derive(Debug, Clone, Default)]
 pub struct EvaluationUnit {
     pub offset: Option<u64>,
     pub language: Option<gimli::DwLang>,
 
-    /// Base types by unit offset.
     pub base_types: Vec<(u64, ValueType)>,
 }
 
-/// Expressions and lists being pooled, each once.
 #[derive(Debug, Default, Clone)]
 pub struct LocationsBuilder {
     bytes: Vec<u8>,
@@ -201,7 +167,6 @@ pub struct LocationsBuilder {
     pooled_lists: super::strings::Pooled,
 }
 
-/// Why locations could not be pooled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the locations do not fit an image")]
 pub struct TooLarge;
@@ -214,7 +179,6 @@ fn index(length: usize) -> Result<u32, TooLarge> {
 }
 
 impl LocationsBuilder {
-    /// Records the unit `unit` names, which must be the next.
     pub fn unit(&mut self, unit: &EvaluationUnit) -> Result<u32, TooLarge> {
         let mut base_types = unit.base_types.clone();
         base_types.sort_unstable_by_key(|(offset, _)| *offset);
@@ -250,8 +214,6 @@ impl LocationsBuilder {
         index(self.units.len() - 1)
     }
 
-    /// Pools an expression of `unit`, read with `encoding`, whose indexed
-    /// addresses are `addresses` and whose procedures are `procedures`.
     pub fn expression(
         &mut self,
         bytes: &[u8],
@@ -321,8 +283,6 @@ impl LocationsBuilder {
         Ok(ExpressionId(id))
     }
 
-    /// Pools a list of locations, each with the code it holds in, or
-    /// `None` for a default location.
     pub fn list(
         &mut self,
         entries: &[(Option<AddressRange<ImageAddress>>, ExpressionId)],
@@ -359,7 +319,6 @@ impl LocationsBuilder {
         Ok(LocationListId(id))
     }
 
-    /// The rows the largest table holds, counting each expression byte.
     pub fn largest_table(&self) -> usize {
         [
             self.bytes.len(),
@@ -374,12 +333,6 @@ impl LocationsBuilder {
         .unwrap_or(0)
     }
 
-    /// Pools everything `other` pooled, in the order it pooled each
-    /// expression and each list, and returns the ids each of its
-    /// expressions and lists has here.
-    ///
-    /// The ids are those pooling the same things here directly would have
-    /// given, since each kind is numbered in the order it is first pooled.
     pub fn absorb(
         &mut self,
         other: &Self,
@@ -390,9 +343,6 @@ impl LocationsBuilder {
         let mut procedures = Vec::new();
         let mut entries = Vec::new();
 
-        // An expression names lists pooled before it, and a list names
-        // expressions pooled before it, so each is pooled once what it
-        // names is.
         while expressions.len() < other.expressions.len() || lists.len() < other.lists.len() {
             if let Some(record) = other.expressions.get(expressions.len()) {
                 let called = record.procedures.rows(&other.procedures);
@@ -441,7 +391,6 @@ impl LocationsBuilder {
         Ok((expressions, lists))
     }
 
-    /// What has been pooled so far.
     pub fn tables(&self) -> LocationTables<'_> {
         LocationTables {
             bytes: &self.bytes,
@@ -455,7 +404,6 @@ impl LocationsBuilder {
         }
     }
 
-    /// Adds the pooled locations to `builder`.
     pub fn add_to<'a>(&'a self, builder: &mut Builder<'a>) {
         builder
             .bytes(TableKind::ExpressionBytes, self.bytes.clone())
@@ -469,7 +417,6 @@ impl LocationsBuilder {
     }
 }
 
-/// The locations of an image or a builder.
 #[derive(Debug, Clone, Copy)]
 pub struct LocationTables<'a> {
     bytes: &'a [u8],
@@ -496,7 +443,6 @@ impl<'a> LocationTables<'a> {
         }
     }
 
-    /// The expression `id` names, which must be one of these.
     #[expect(
         clippy::indexing_slicing,
         reason = "callers pass ids from records whose validation checks every expression id \
@@ -514,7 +460,6 @@ impl<'a> LocationTables<'a> {
         }
     }
 
-    /// The list `id` names, which must be one of these.
     #[expect(
         clippy::indexing_slicing,
         reason = "callers pass ids from records whose validation checks every list id against \
@@ -534,19 +479,16 @@ impl<'a> LocationTables<'a> {
         }
     }
 
-    /// Where unit `unit` begins in `.debug_info`, when known.
     pub fn unit_offset(self, unit: u32) -> Option<u64> {
         let record = self.units.get(unit as usize)?;
         (record.flags & unit_flags::OFFSET != 0).then(|| record.offset.get())
     }
 
-    /// Unit `unit`'s `DW_AT_language`.
     pub fn unit_language(self, unit: u32) -> Option<gimli::DwLang> {
         let record = self.units.get(unit as usize)?;
         (record.flags & unit_flags::LANGUAGE != 0).then(|| gimli::DwLang(record.language.get()))
     }
 
-    /// The value type of the base type at `offset` in unit `unit`.
     pub fn base_type(self, unit: u32, offset: u64) -> Option<ValueType> {
         let record = self.units.get(unit as usize)?;
         let types = record.base_types.rows(self.base_types);
@@ -558,7 +500,6 @@ impl<'a> LocationTables<'a> {
     }
 }
 
-/// One expression of a [`LocationTables`].
 #[derive(Debug, Clone, Copy)]
 pub struct Expression<'a> {
     tables: LocationTables<'a>,
@@ -571,7 +512,6 @@ impl<'a> Expression<'a> {
         self.id
     }
 
-    /// Its operations.
     #[expect(
         clippy::indexing_slicing,
         reason = "expression validation checks every record's bytes lie within the pool"
@@ -581,22 +521,18 @@ impl<'a> Expression<'a> {
         &self.tables.bytes[start..start + self.record.length.get() as usize]
     }
 
-    /// The unit it was read from.
     pub const fn unit(self) -> u32 {
         self.record.unit.get()
     }
 
-    /// Where its unit begins in `.debug_info`, when known.
     pub fn unit_offset(self) -> Option<u64> {
         self.tables.unit_offset(self.unit())
     }
 
-    /// The value type of the base type at `offset` in its unit.
     pub fn base_type(self, offset: u64) -> Option<ValueType> {
         self.tables.base_type(self.unit(), offset)
     }
 
-    /// How its unit encodes it.
     pub const fn encoding(self) -> gimli::Encoding {
         gimli::Encoding {
             format: if self.record.dwarf64 == 0 {
@@ -617,14 +553,12 @@ impl<'a> Expression<'a> {
         self.record.procedures.rows(self.tables.procedures)
     }
 
-    /// Its indexed addresses, by index.
     pub fn addresses(self) -> impl Iterator<Item = (u64, u64)> + 'a {
         self.address_records()
             .iter()
             .map(|record| (record.index.get(), record.address.get()))
     }
 
-    /// The procedures it calls, by offset.
     pub fn procedures(self) -> impl Iterator<Item = (u64, Option<LocationListId>)> + 'a {
         self.procedure_records().iter().map(|record| {
             (
@@ -634,7 +568,6 @@ impl<'a> Expression<'a> {
         })
     }
 
-    /// The address `.debug_addr` gives `index`.
     pub fn indexed_address(self, index: u64) -> Option<u64> {
         let records = self.address_records();
         let found = records
@@ -643,7 +576,6 @@ impl<'a> Expression<'a> {
         Some(records.get(found)?.address.get())
     }
 
-    /// The procedure at `offset` it calls, when it calls one there.
     pub fn procedure(self, offset: u64) -> Option<Procedure<'a>> {
         let records = self.procedure_records();
         let found = records
@@ -656,13 +588,10 @@ impl<'a> Expression<'a> {
     }
 }
 
-/// A procedure an expression calls.
 #[derive(Debug, Clone, Copy)]
 pub enum Procedure<'a> {
-    /// One whose locations say what it computes.
     Located(LocationList<'a>),
 
-    /// An entry without a location, which computes nothing.
     Unlocated,
 }
 
@@ -675,7 +604,6 @@ impl<'a> Procedure<'a> {
     }
 }
 
-/// One list of a [`LocationTables`].
 #[derive(Debug, Clone, Copy)]
 pub struct LocationList<'a> {
     tables: LocationTables<'a>,
@@ -683,8 +611,6 @@ pub struct LocationList<'a> {
 }
 
 impl<'a> LocationList<'a> {
-    /// Its locations in order, each with the code it holds in, or `None`
-    /// for a default location.
     pub fn entries(
         self,
     ) -> impl ExactSizeIterator<Item = (Option<AddressRange<ImageAddress>>, Expression<'a>)> + 'a
@@ -706,7 +632,6 @@ impl<'a> LocationList<'a> {
     }
 }
 
-/// Checks the locations.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     let tables = LocationTables::new(image);
     if !tables.units.iter().all(|unit| {

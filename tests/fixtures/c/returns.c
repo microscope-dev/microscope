@@ -1,13 +1,13 @@
-// What C functions return, in each place the System V x86-64 calling
-// convention puts a value. Before each checkpoint the program prints its own
-// truth, one tab-separated line per value,
-//
-//	TRUTH	<checkpoint>	<path>	<kind>	<value>
-//
-// and then calls reached(checkpoint). Every checkpoint is named `returned-`:
-// the tests finish the function that reached it and inspect what it
-// returned, which is named for the function. Floats are their bits in
-// hexadecimal; complex numbers are their parts' bits, real first.
+
+
+
+
+
+
+
+
+
+
 #include <complex.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -31,7 +31,7 @@ static void integer(const char *checkpoint, const char *path, long long value) {
     truth(checkpoint, path, "int", text);
 }
 
-// Reaches a checkpoint from the function returning, which the tests finish.
+
 #define reach(checkpoint)                                                                         \
     do {                                                                                           \
         fflush(stdout);                                                                            \
@@ -144,7 +144,7 @@ __attribute__((noinline)) bool r_bool(int n) {
 
 __attribute__((noinline)) __int128 r_int128(int n) {
     __int128 value = ((__int128)n << 70) + 5;
-    // 2^70 + 5, since n is 1.
+
     truth("returned-int128", "r_int128", "int", n == 1 ? "1180591620717411303429" : "?");
     reach("returned-int128");
     return value;
@@ -256,8 +256,8 @@ __attribute__((noinline)) struct vector r_vector(int n) {
     return value;
 }
 
-// Too large for registers: the caller passes where to put it, and the
-// function returns that address.
+
+
 __attribute__((noinline)) struct big r_big(int n) {
     struct big value = {n * 11L, n * 22L, n * 33L};
     integer("returned-big", "r_big.a", value.a);
@@ -297,7 +297,7 @@ __attribute__((noinline)) void r_void(int n) {
     sink = n;
     truth("returned-void", "r_void", "absent", "");
     reach("returned-void");
-    // Work after the call keeps it from being a tail call.
+
     sink = n + 1;
 }
 

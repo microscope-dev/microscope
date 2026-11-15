@@ -1,4 +1,4 @@
-"""A real PID-namespace and non-UTF-8 proc-status identity oracle."""
+
 import os
 import sys
 import threading
@@ -15,7 +15,7 @@ truth.report("host_pid", host)
 
 
 def bad_name():
-    # 16 UTF-8 bytes, truncated by Linux to 15 bytes in the OS comm field.
+
     threading.current_thread().name = "🧬" * 4
     status = open("/proc/thread-self/status", "rb").read()
     name = next(line for line in status.splitlines() if line.startswith(b"Name:"))
@@ -40,5 +40,5 @@ thread = threading.Thread(target=worker, args=(gate,), name="worker")
 thread.start()
 truth.checkpoint("parked", gate)
 
-# The detach scenario releases the checkpoint before ending its session.
+
 os._exit(0)

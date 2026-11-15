@@ -1,5 +1,3 @@
-//! Prints a reading in normal form, which parses back to the same readings.
-
 use std::fmt::Write as _;
 
 use super::ast::{
@@ -14,8 +12,6 @@ use super::parser::{
 
 use crate::eval::number::Float;
 
-/// Printed where a node has no text of its own, which no reading's node
-/// should lack.
 const UNPRINTABLE: &str = "<?>";
 
 pub fn print(tree: &Tree) -> String {
@@ -28,14 +24,12 @@ pub fn print(tree: &Tree) -> String {
     printer.out
 }
 
-/// A type as a cast's parentheses would hold it.
 pub fn type_text(ty: &TypeName) -> String {
     let mut out = base_text(&ty.base);
     out.extend(std::iter::repeat_n('*', usize::from(ty.pointers)));
     out
 }
 
-/// A type as `as` takes it.
 fn as_type_text(ty: &TypeName) -> String {
     let mut out: String = std::iter::repeat_n('*', usize::from(ty.pointers)).collect();
     out.push_str(&base_text(&ty.base));
@@ -70,7 +64,6 @@ pub fn path_text(path: &Path) -> String {
     out
 }
 
-/// A name, in backticks unless it reads back as itself.
 pub fn name_text(name: &str) -> String {
     let plain = name
         .bytes()
@@ -112,7 +105,6 @@ impl Printer<'_> {
         }
     }
 
-    /// Prints a child that must bind at least as tightly as `minimum`.
     fn child(&mut self, id: NodeId, minimum: u8) {
         if self.precedence(id) < minimum {
             self.out.push('(');
@@ -123,7 +115,6 @@ impl Printer<'_> {
         }
     }
 
-    /// The text a child would print, for decisions about what follows it.
     fn child_text(&self, id: NodeId, minimum: u8) -> String {
         let mut printer = Printer {
             tree: self.tree,
@@ -207,8 +198,6 @@ impl Printer<'_> {
             NodeKind::SizeOf(SizeOf::Type(ty)) => {
                 self.out.push_str("sizeof(");
 
-                // A bare name alone would be measured as a value if it
-                // names one; a qualifier keeps it a type.
                 if is_bare(ty) {
                     self.out.push_str("const ");
                 }
@@ -273,7 +262,6 @@ impl Printer<'_> {
                     self.child(*item, ASSIGN);
                 }
 
-                // `(a,)` is a tuple where `(a)` only groups.
                 if items.len() == 1 {
                     self.out.push(',');
                 }
@@ -337,7 +325,6 @@ impl Printer<'_> {
         });
         let operand = self.child_text(operand, PREFIX);
 
-        // `& &x` must not read as `&&`.
         if op == UnaryOp::AddressOf && operand.starts_with('&') {
             self.out.push(' ');
         }
@@ -358,7 +345,6 @@ impl Printer<'_> {
         self.out.push(')');
         let operand = self.child_text(operand, PREFIX);
 
-        // `(T)-x` with a bare name would also read as subtraction.
         if is_bare(ty) && operand.starts_with(['-', '*', '&']) {
             let _ = write!(self.out, "({operand})");
         } else {
@@ -367,7 +353,6 @@ impl Printer<'_> {
     }
 
     fn member(&mut self, base: NodeId, field: &Field, arrow: bool) {
-        // `(1).5` selects a field where `1.5` would be a float.
         let force = matches!(self.tree.kind(base), NodeKind::Integer { suffix: None, .. });
         if force {
             self.out.push('(');
@@ -395,7 +380,6 @@ impl Printer<'_> {
                 let _ = write!(self.out, "{:?}", f64::from_bits(bits));
             }
 
-            // Literals are never x87 values.
             _ => {
                 let _ = write!(self.out, "{value}");
             }

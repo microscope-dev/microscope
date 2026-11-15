@@ -1,6 +1,3 @@
-//! Hardware watchpoints: arming debug registers, attributing hits, and
-//! invalidating watchpoints whose storage's lifetime ended.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -34,8 +31,6 @@ use super::{
     debug_thread_id, validate_image_current,
 };
 
-/// The watched bytes as a watch observes them, and the value an
-/// interpreted variable's bytes name, as its runtime presents it.
 type Observation = (Option<Arc<[u8]>>, Option<Arc<str>>);
 
 impl<P: LinuxTraceOps> Controller<P> {
@@ -50,7 +45,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         options: WatchpointOptions,
     ) -> Result<Watchpoint> {
         let slot_access = match access {
-            // A change is judged after the store that the hardware traps.
             WatchAccess::Change | WatchAccess::Write => SlotAccess::Write,
             WatchAccess::ReadWrite => SlotAccess::ReadWrite,
             WatchAccess::Read => return Err(Error::UnsupportedWatchAccess(access)),
@@ -66,8 +60,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             WatchpointSpec::Target(target) => {
                 let target = *target;
 
-                // A target is armed only at the stop that resolved it, not
-                // at a later stop or while the inferior runs.
                 if inferior.run.stop().map(|stop| stop.id) != Some(target.stop_id) {
                     return Err(Error::StaleStop);
                 }
@@ -94,7 +86,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let task = self.task_watch(inferior, &scope, address)?;
-        // A watch set aside now would have no place noted to follow.
         if inferior.interpreted_moves.sets_aside(&scope) {
             return Err(Error::WatchTargetUnsupported(
                 "the runtime is collecting on the frame's thread, which moves its objects; \
@@ -114,7 +105,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .then(|| planned_with(&inferior.watch.plan, id, &chunks, slot_access))
             .transpose()?;
 
-        // Read before arming, so a failed read leaves nothing armed.
         let (observed, value) = self.observe(&scope, address, byte_size)?;
 
         if let Some(plan) = plan {
@@ -173,7 +163,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(watchpoint)
     }
 
-    /// Replaces a watchpoint's hit condition, keeping the hits it counted.
     pub(super) fn set_watchpoint_hit_condition(
         &mut self,
         id: WatchpointId,
@@ -190,7 +179,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.edit_watchpoint(id, |watchpoint| watchpoint.condition = condition)
     }
 
-    /// Changes controller state only, so no stop is required.
     fn edit_watchpoint(
         &mut self,
         id: WatchpointId,
@@ -208,16 +196,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(watchpoint)
     }
 
-    /// Counts a hit for each watchpoint among `owners` that reports thread
-    /// `pid`'s access, and returns those the hit stops at, with each hit's
-    /// number: its hit condition and condition are met. A condition that
-    /// cannot be evaluated stops, as a breakpoint's does.
-    ///
-    /// A declined hit's bytes become the watchpoint's last observed bytes,
-    /// as gdb's old value does, so the next hit reports, and a change is
-    /// judged, from them. While another thread's hit on the same watchpoint
-    /// waits for every thread to stop, the bytes stay those that hit
-    /// reports from.
     pub(super) fn stopping_watch_hits(
         &mut self,
         pid: Pid,
@@ -267,8 +245,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(stopping)
     }
 
-    /// Takes the bytes a declined hit left as a watchpoint's last observed
-    /// bytes, unless another thread's hit on it awaits the stop.
     fn observe_declined_hit(&mut self, id: WatchpointId) -> Result<()> {
         let Some(inferior) = self.session.inferior() else {
             return Ok(());
@@ -300,11 +276,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Enables or disables a watchpoint. A disabled one releases its debug
-    /// registers but stays recorded, so its storage's end still ends it.
-    /// Enabling plans its registers again, failing when others took them,
-    /// and takes the bytes it finds as the last observed ones, so stores
-    /// made while it was disabled are not reported as a change.
     pub(super) fn set_watchpoint_enabled(
         &mut self,
         id: WatchpointId,
@@ -436,14 +407,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         });
     }
 
-    /// Installs `plan` on every stopped thread or on none of them.
-    ///
-    /// A thread that has already begun exiting is skipped; its exit is
-    /// processed normally. So is one that does not carry the current plan,
-    /// its arming having failed: it cannot run until it is armed before a
-    /// resume. Rolling a thread back therefore only rewrites slots the plan
-    /// it previously carried already reserved, so rollback needs no new
-    /// kernel capacity.
     pub(super) fn arm_all_threads(&mut self, plan: DebugRegisterPlan) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let previous = inferior.watch.plan.clone();
@@ -466,8 +429,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 Err(failure) => {
                     let cause = arm_error(pid, &failure);
 
-                    // The failing thread may have been partly rewritten, so it
-                    // is restored along with every thread already armed.
                     for &armed in std::iter::once(&pid).chain(programmed.iter().rev()) {
                         match program_debug_registers(&self.ptrace, armed, &previous) {
                             Ok(()) | Err(ArmFailure::ThreadGone) => {}
@@ -497,9 +458,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Programs any stopped thread whose registers do not carry the current
-    /// plan, so no thread ever runs unwatched. Failure leaves the inferior
-    /// stopped.
     pub(super) fn sync_debug_registers(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let generation = inferior.watch.generation;
@@ -526,14 +484,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Arms a newly started thread before it executes. Returns the failure
-    /// to publish when it cannot be armed.
     pub(super) fn arm_new_thread(&mut self, pid: Pid) -> Option<Error> {
         let inferior = self.session.inferior_mut()?;
         let generation = inferior.watch.generation;
 
-        // Debug registers are never inherited, so an unarmed thread already
-        // matches an empty plan.
         let result = if inferior.watch.plan.is_empty() {
             Ok(())
         } else {
@@ -550,8 +504,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Clears debug-register state a previous tracer may have left armed in
-    /// an attached process, which would otherwise kill it with SIGTRAP.
     pub(super) fn clear_attached_debug_registers(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         debug_assert!(
@@ -560,7 +512,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             inferior.watch.plan.slots().iter().flatten().count()
         );
 
-        // Each thread is marked as carrying the current plan.
         let generation = inferior.watch.generation;
         let empty = DebugRegisterPlan::default();
 
@@ -575,10 +526,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Disarms every thread before the process leaves debugger control. The
-    /// kernel keeps debug registers armed across `PTRACE_DETACH`, and an
-    /// untraced hit would kill the process with SIGTRAP. Every thread is
-    /// attempted even if one fails.
     pub(super) fn disarm_for_detach(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let empty = DebugRegisterPlan::default();
@@ -600,9 +547,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         first_error.map_or(Ok(()), Err)
     }
 
-    /// Records the watched bytes just before execution resumes so the next
-    /// hit reports what the access changed since the debugger last looked,
-    /// including the debugger's own writes.
     pub(super) fn refresh_watch_baselines(&mut self) -> Result<()> {
         let Some(inferior) = self.session.inferior() else {
             return Ok(());
@@ -629,10 +573,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Resolves the pending watch evidence of every stopped thread once the
-    /// whole process is stopped: invalidates scoped watchpoints whose storage
-    /// ended, reports hits on the remaining ones, and publishes the result
-    /// as each thread's stop reason.
     pub(super) fn evaluate_watchpoints(&mut self) -> Result<()> {
         let Some(inferior) = self.session.inferior() else {
             return Ok(());
@@ -741,7 +681,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.remove_invalidated_watchpoints(invalidated)
     }
 
-    /// Disarms and publishes watchpoints whose storage's lifetime ended.
     pub(super) fn remove_invalidated_watchpoints(
         &mut self,
         invalidated: Vec<InvalidatedWatchpoint>,
@@ -773,8 +712,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.sync_interpreted_movers()
     }
 
-    /// Discards the watchpoints of a process that no longer exists or whose
-    /// image was replaced.
     pub(super) fn discard_watchpoints(&mut self) {
         let Some(inferior) = self.session.inferior_mut() else {
             return;
@@ -792,16 +729,11 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// A watch's bytes as [`Self::observe`] reads them.
     pub(super) fn observe_record(&self, record: &WatchRecord) -> Result<Observation> {
         let watchpoint = &record.watchpoint;
         self.observe(&watchpoint.scope, watchpoint.address, watchpoint.byte_size)
     }
 
-    /// The watched bytes, and an interpreted variable's value as its
-    /// runtime presents it. Such a variable's word names its object in an
-    /// encoding the runtime may tag; the object's handle stands for its
-    /// bytes, so that a variable given the same object again is unchanged.
     fn observe(
         &self,
         scope: &WatchScope,
@@ -857,11 +789,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok((Some(Arc::from(object.to_le_bytes())), Some(value)))
     }
 
-    /// Reads the current watched bytes through a stopped thread, hiding
-    /// software-breakpoint bytes. Unreadable memory is reported as `None`, as
-    /// is memory no stopped thread can reach because each was killed out of
-    /// its ptrace-stop, as a sibling's `exit_group` does. Any other failure
-    /// is an error, never a value.
     fn read_watched_bytes(
         &self,
         address: VirtualAddress,
@@ -888,9 +815,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(None)
     }
 
-    /// The change watchpoints among `owners` whose watched bytes equal those
-    /// the debugger last observed, so the access changed nothing. Bytes that
-    /// became unreadable, or readable, count as a change.
     pub(super) fn unchanged_watchpoints(
         &self,
         owners: impl IntoIterator<Item = WatchpointId>,
@@ -906,8 +830,6 @@ impl<P: InspectionOps> Controller<P> {
                 continue;
             };
 
-            // A store that ends an interpreted variable's frame, as a new
-            // frame's in its place, is the watch's end, changed or not.
             if record.watchpoint.access == WatchAccess::Change
                 && self.observe_record(record)?.0 == record.observed
                 && !matches!(
@@ -922,8 +844,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(unchanged)
     }
 
-    /// The watchpoints among a thread's hit `owners` that report its
-    /// access: all but the change watchpoints it left unchanged.
     pub(super) fn reportable_watch_hits(
         &self,
         mut owners: BTreeSet<WatchpointId>,
@@ -981,9 +901,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Whether the frame of an interpreted variable a watch watches still
-    /// runs on its thread: `None` for another watch, and for one whose
-    /// frame cannot be read, which is kept rather than ended unproven.
     #[cfg_attr(
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")
@@ -1040,13 +957,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// Whether the owner thread still executes the activation that declared
-    /// a frame-scoped object, inside the object's lexical scope.
-    ///
-    /// The activation is the frame whose canonical frame address matches. A
-    /// frame there running another function means a tail call replaced it,
-    /// and one outside the object's scope ranges means its block ended. When
-    /// unwinding fails first, the stack pointer still proves a return.
     fn frame_scope_is_live(
         &self,
         inferior: &Inferior,
@@ -1117,9 +1027,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(unproven)
     }
 
-    /// The lifetime of a data object's storage, which a watch of memory
-    /// inside it shares. `local` is the frame's address in the object's
-    /// image when the object is a local or parameter of the frame.
     pub(super) fn root_watch_scope(
         &self,
         inferior: &Inferior,
@@ -1190,8 +1097,6 @@ impl<P: InspectionOps> Controller<P> {
                     return Ok((scope, Some(evidence)));
                 }
 
-                // A stack its runtime may move is watched as its task's,
-                // wherever the task's stack is.
                 let (task, below_top) = self
                     .stack_view(pid)
                     .activation(activation)
@@ -1215,7 +1120,6 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// The memory a resolved value occupies, or why it cannot be watched.
 pub(super) fn watchable_storage(value: &InspectedValue) -> Result<(VirtualAddress, u64)> {
     let source = match &value.state {
         crate::VariableState::Available { source, .. }
@@ -1269,7 +1173,6 @@ pub(super) fn watchable_storage(value: &InspectedValue) -> Result<(VirtualAddres
     Ok((address, byte_size))
 }
 
-/// `plan` with a watchpoint's slots added, or the capacity error.
 fn planned_with(
     plan: &DebugRegisterPlan,
     id: WatchpointId,
@@ -1310,17 +1213,12 @@ fn watch_range_error(
     }
 }
 
-/// Why one thread's debug registers could not be programmed.
 #[derive(Debug)]
 enum ArmFailure {
-    /// The thread is exiting.
     ThreadGone,
 
-    /// Other hardware-breakpoint users hold the thread's slots.
     Busy,
 
-    /// The kernel refused a value or the readback disagreed, as in sandboxes
-    /// that ignore debug-register writes.
     Unsupported(String),
     System(Errno),
 }
@@ -1349,8 +1247,6 @@ fn arm_error(pid: Pid, failure: &ArmFailure) -> Error {
     }
 }
 
-/// Installs `plan` in one stopped thread's debug registers and reads it
-/// back. A readback mismatch means the target silently ignored the writes.
 fn program_debug_registers(
     ptrace: &dyn LinuxTraceOps,
     pid: Pid,
@@ -1383,8 +1279,6 @@ fn program_debug_registers(
     Ok(())
 }
 
-/// The debug-register access that reports a watch's accesses. A read watch
-/// is refused when added, as x86 has no read-only condition.
 pub(super) fn slot_access(access: WatchAccess) -> SlotAccess {
     debug_assert_ne!(
         access,

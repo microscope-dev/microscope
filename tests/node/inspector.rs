@@ -1,8 +1,3 @@
-//! The inspector microscope's preload opens in a launched node: microscope
-//! reads its address from the process and hides it (F29), so Node neither
-//! prints it nor lists it, and the program's own variables are put back
-//! (F31).
-
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -11,12 +6,8 @@ use microscope::{ExitStatus, LaunchOptions, StopReason};
 use crate::session::{LINES, MATRIX};
 use crate::support::{Scenario, ScratchDir, node};
 
-/// What a user set, which the program must see as it was.
 const USER_OPTIONS: &str = "--no-warnings";
 
-/// Runs `inspector-lifetime.js` on `entry` with its addon preloaded, which
-/// asks for a listing before the debugger's upgrade and writes the answer
-/// to a file. Returns the program's output and that listing.
 async fn inspector_lifetime(entry: &str) -> (String, String) {
     let scratch = ScratchDir::new("node-inspector-lifetime");
     let output = scratch.path().join("output");
@@ -81,9 +72,6 @@ async fn inspector_lifetime(entry: &str) -> (String, String) {
     )
 }
 
-/// A listing the addon asks for before the debugger's upgrade never lists
-/// the hidden target, and the program's own 64 listings, all hidden,
-/// release every UUID copy Node made for them.
 #[tokio::test]
 async fn hidden_listings_never_disclose_the_target_and_release_their_uuids() {
     let mut failures = Vec::new();
@@ -102,9 +90,6 @@ async fn hidden_listings_never_disclose_the_target_and_release_their_uuids() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// Runs `inspector.js` under the build `entry` and checks that it ran to
-/// its end, its inspector open, its address shown to no one, and its
-/// `NODE_OPTIONS` as the user set it.
 pub async fn check_hidden(entry: &str) {
     let scratch = ScratchDir::new("node-inspector");
     let output = scratch.path().join("output");
@@ -177,7 +162,6 @@ async fn releasing_a_launched_child_closes_only_its_preloads_inspector(entry: &s
 
     crate::support::flight_recordings::watch_scenarios();
     for (borrowed, restricted) in [(true, false), (false, false), (false, true), (true, true)] {
-        // Node 22 has no --allow-inspector permission flag.
         if restricted && crate::session::major(entry) == 22 {
             continue;
         }
@@ -274,7 +258,6 @@ async fn releasing_a_launched_child_closes_only_its_preloads_inspector(entry: &s
     }
 }
 
-// Keep the build matrix out of a single test's stress deadline.
 const _: () = assert!(MATRIX.len() == 6, "a release test for each build");
 
 #[tokio::test]
@@ -465,8 +448,6 @@ new Worker(code, {eval:true, env:{...process.env, NODE_OPTIONS:'--no-deprecation
     }
 }
 
-/// A node whose permission model refuses the inspector runs on, and its
-/// JavaScript breakpoints wait, saying which flag would let it open.
 #[tokio::test]
 async fn a_refused_inspector_names_the_flag_that_allows_it() {
     use microscope::{BreakpointOptions, BreakpointSpec, LineNumber};
@@ -514,8 +495,6 @@ async fn a_refused_inspector_names_the_flag_that_allows_it() {
     }
 }
 
-/// A program that closes Node's inspector runs on past a breakpoint it
-/// can no longer stop at, and the breakpoint says the connection closed.
 #[tokio::test]
 async fn a_closed_inspector_leaves_its_breakpoints_waiting_with_why() {
     use microscope::{BreakpointOptions, BreakpointSpec, LineNumber};

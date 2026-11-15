@@ -1,9 +1,3 @@
-//! Live snapshots of Node programs, which never stop the program: each
-//! thread blocked in native code that JavaScript called is read from what
-//! V8 publishes in its isolate, frame by frame and line by line as V8's own
-//! call sites reported it (`tests/fixtures/node/live.js`); an idle thread
-//! has no frames, and one that runs JavaScript is left out, by its reason.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 use std::sync::LazyLock;
@@ -18,42 +12,30 @@ use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir, node};
 use crate::truth::{Thread, threads};
 
-/// The checkpoints of the threads `live.js` blocks, each named by how.
 const BLOCKED: [&str; 10] = [
     "reviver", "proxy", "sort", "nested", "execfile", "atomics", "napi", "fast", "control",
     "debugger",
 ];
 
-/// How often the live engine reads the program: its default.
 const EVERY: Duration = Duration::from_millis(10);
 
-/// How many live snapshots, after every thread reported where it blocks,
-/// a recording holds before it is checked.
 const SETTLED: usize = 20;
 
-/// Why a thread is left out that was in no system call when read.
 const NOT_ASLEEP: &str = "it was not asleep in a system call";
 
-/// Why a thread is left out whose frames include WebAssembly's.
 const WEBASSEMBLY: &str = "it runs WebAssembly, whose frames a live read does not walk";
 
-/// What `live.js` reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reported {
-    /// The blocked threads, in [`BLOCKED`]'s order.
     pub blocked: Vec<Thread>,
 
-    /// The idle, spinning, and WebAssembly workers' native ids, and when
-    /// they began.
     pub idle: (u64, i64),
     pub spin: (u64, i64),
     pub wasm: (u64, i64),
 
-    /// How many calls took the fast path, and the line of the fast call.
     pub fast: (u64, u32),
 }
 
-/// What the output `text` reported, once every thread has.
 pub fn reported(text: &str) -> Option<Reported> {
     let report = Report::parse(text);
     let blocked = BLOCKED
@@ -72,25 +54,20 @@ pub fn reported(text: &str) -> Option<Reported> {
     })
 }
 
-/// The two numbers of the first line of `kind` in `report`.
 fn pair<A: std::str::FromStr, B: std::str::FromStr>(report: &Report, kind: &str) -> Option<(A, B)> {
     let fields = report.lines().find(|fields| fields[0] == kind)?;
     Some((fields.get(1)?.parse().ok()?, fields.get(2)?.parse().ok()?))
 }
 
-/// Now, on the clock the profile's times are on.
 fn monotonic() -> i64 {
     let now = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC).expect("the clock");
     now.tv_sec() * 1_000_000_000 + now.tv_nsec()
 }
 
-/// Whether `entry` runs V8 12.4, whose Turbofan code keeps no line for the
-/// frame that makes a fast API call.
 fn fast_call_unlined(entry: &str) -> bool {
     entry.ends_with("22")
 }
 
-/// The paths of thread `tid`'s waits in `[since, until)`.
 fn thread_paths(
     profile: &Profile,
     tid: u64,
@@ -117,9 +94,6 @@ fn thread_paths(
     )
 }
 
-/// Each thread the problems in `[since, until)` leave out, by its reason: a
-/// live snapshot's problem names them as `frames not read live: threads
-/// 12, 13: REASON; threads 14: REASON`.
 fn left_out(profile: &Profile, window: (i64, i64)) -> Vec<(u64, String)> {
     unread(&profile.task_snapshot_problems(), window)
 }
@@ -133,7 +107,6 @@ fn unread(problems: &[(i64, String)], (since, until): (i64, i64)) -> Vec<(u64, S
         if time < since || time >= until {
             continue;
         }
-        // The snapshot's other problems, which it counts after its first.
         let groups = match groups.rsplit_once(", and ") {
             Some((groups, more)) if more.ends_with(" more") => groups,
             _ => groups,
@@ -148,16 +121,8 @@ fn unread(problems: &[(i64, String)], (since, until): (i64, i64)) -> Vec<(u64, S
     left
 }
 
-/// The builtins `live.js` calls that V8 writes in C++, which run in an exit
-/// frame, which no snapshot shows as a function; V8's builtins in its own
-/// generated code, as `Object.keys` and `Array.prototype.sort`, run in a
-/// frame of their own, which a snapshot names, without a line.
 const CPP_BUILTINS: [&str; 1] = ["parse"];
 
-/// The frames, outermost first, that every path of a blocked thread's
-/// waits begins with, as V8 reported them. A fast call's caller, which runs
-/// in a frame of its own, is no call site of the line that called it, and
-/// is added.
 fn expected(reported: &Reported, name: &str, thread: &Thread) -> Vec<String> {
     let mut frames = reported_frames(thread);
     if name == "fast" {
@@ -166,9 +131,6 @@ fn expected(reported: &Reported, name: &str, thread: &Thread) -> Vec<String> {
     frames
 }
 
-/// The frames, outermost first, V8 reported of `thread`, as a profile's
-/// interpreted look names them: a builtin of V8's generated code by its
-/// name alone, and one of its C++ builtins not at all.
 fn reported_frames(thread: &Thread) -> Vec<String> {
     thread
         .frames
@@ -185,11 +147,6 @@ fn reported_frames(thread: &Thread) -> Vec<String> {
         .collect()
 }
 
-/// Whether `rest`, the frames a blocked thread's path holds past those V8
-/// reported, are the ones the native call of `name` runs: Node's
-/// `fs.readSync` for those that read, Node's own frames for `execFileSync`,
-/// and none for the others, which call native code straight from the
-/// fixture.
 fn native_call(name: &str, rest: &[String]) -> bool {
     let function = |frame: &String| frame.split(' ').next().unwrap_or_default().to_owned();
     match name {
@@ -206,11 +163,6 @@ fn native_call(name: &str, rest: &[String]) -> bool {
     }
 }
 
-/// Every way the profile differs from what `live.js` reported on `entry`,
-/// read in `[since, until)`: from a moment after every thread reported to
-/// one before the program was let go. A blocked thread may be left out
-/// while it is not asleep, as one that just blocked, or that V8 woke to
-/// serve an interrupt, is not; for no other reason.
 pub fn lies(
     entry: &str,
     profile: &Profile,
@@ -258,8 +210,6 @@ pub fn lies(
         lies.push("no call took the fast path".to_owned());
     }
 
-    // V8 wakes an idle worker every few seconds for a delayed task of its
-    // own, so a read may find it not asleep, as it may a blocked thread.
     let (idle, idle_since) = reported.idle;
     let paths = thread_paths(profile, idle, (idle_since.max(since), until));
     let reasons = left_out_threads(idle);
@@ -287,9 +237,6 @@ pub fn lies(
     lies
 }
 
-/// Records `live.js` on `entry` with the live engine until it has read
-/// every thread, and checks it: no lie, and nothing the fixture said
-/// differs once it exited.
 pub fn check(entry: &str) {
     let scratch = ScratchDir::new("node-live");
     let fifo = |name: &str| {
@@ -374,9 +321,6 @@ fn live_snapshots_read_each_blocked_thread_on_nixpkgs_22() {
     check("nixpkgs-22");
 }
 
-/// Whether `rest`, the frames a path holds past those `tiers.js` reported,
-/// are those `truth.checkpoint()` parks in: its own, then Node's
-/// `fs.readSync`.
 fn parked_at_checkpoint(rest: &[String]) -> bool {
     let function = |frame: &String| frame.split(' ').next().unwrap_or_default().to_owned();
     rest.last().is_some_and(|last| function(last) == "readSync")
@@ -385,11 +329,6 @@ fn parked_at_checkpoint(rest: &[String]) -> bool {
             .all(|frame| frame.contains(" truth.js:"))
 }
 
-/// A thread parked under a frame of every tier V8 runs, in `tiers.js`, is
-/// read live as V8 reported it, function and line, on every build: an
-/// interpreted frame, one of Sparkplug's, Maglev's where the build runs
-/// Maglev, Turbofan's with a function inlined in it, one that deoptimized,
-/// and one that entered optimized code on its loop.
 #[test]
 fn live_reads_a_frame_of_every_tier_as_v8_reported_it() {
     for entry in crate::session::MATRIX {
@@ -397,9 +336,6 @@ fn live_reads_a_frame_of_every_tier_as_v8_reported_it() {
     }
 }
 
-/// Records `tiers.js` on `entry` with the live engine until the thread it
-/// parks has been read, and checks that every read found its frames as V8
-/// reported them, and none left it out but while it was not asleep.
 pub fn check_tiers(entry: &str) {
     let mut command = Command::new(node::node(entry));
     command
@@ -414,8 +350,6 @@ pub fn check_tiers(entry: &str) {
             .checkpoint("tiers")
             .map(<[Vec<String>]>::to_vec)
     };
-    // From a moment after the checkpoint was reported to the last one
-    // before the program was let go.
     let mut window = (None, 0);
     let reads = |profile: &Profile, tid: u64, since: i64| {
         profile
@@ -425,8 +359,6 @@ pub fn check_tiers(entry: &str) {
             .count()
     };
     let (profile, lines, text) = record_released(command, &options, report, |profile, lines| {
-        // The checkpoint's report is whole once read, and the thread
-        // parks after it.
         let now = monotonic();
         let since = *window.0.get_or_insert(now);
         window.1 = now;
@@ -459,7 +391,6 @@ pub fn check_tiers(entry: &str) {
     assert!(reasons.is_empty(), "{entry}: left out: {reasons:?}");
 }
 
-/// The blocking sites and churn calls `live-stress.js` reports.
 const STRESS_SITES: [&str; 15] = [
     "wait",
     "nested",
@@ -478,37 +409,22 @@ const STRESS_SITES: [&str; 15] = [
     "churn-mixed",
 ];
 
-/// How many phases `live-stress.js` cycles through, each calling the sites
-/// through a function of its own.
 const STRESS_PHASES: usize = 4;
 
-/// The workers `live-stress.js` starts beside its main thread, and how
-/// long each loops.
 const STRESS_WORKERS: usize = 3;
 const STRESS_SECONDS: u32 = 4;
 
-/// How often the stress recordings read the program.
 const STRESS_EVERY: Duration = Duration::from_millis(2);
 
-/// The least share of a stress recording's reads of a looping thread that
-/// must find it at a site: the rest are left out, by reason, mostly as
-/// not asleep or as changed while read. A thread blocks for about a
-/// millisecond at a time.
 const LEAST_EXACT: f64 = 0.25;
 
-/// What `live-stress.js` reported of one thread: each phase's frames at
-/// each site, when it ran only the sites, and when it began each phase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Looping {
-    /// By phase, then by site.
     pub sites: Vec<Vec<(String, Thread)>>,
     pub window: (i64, i64),
-    /// Each phase the thread began, with when, in order.
     pub phases: Vec<(usize, i64)>,
 }
 
-/// What `live-stress.js` reported of each thread, by native id, once every
-/// thread is done.
 pub fn looping(text: &str) -> Option<BTreeMap<u64, Looping>> {
     let report = Report::parse(text);
     let times = |kind: &str| -> BTreeMap<u64, i64> {
@@ -553,9 +469,6 @@ pub fn looping(text: &str) -> Option<BTreeMap<u64, Looping>> {
         .collect()
 }
 
-/// What the live reads of the threads `looping` names found in `profile`:
-/// how many found each thread at a site, how many left it out, by reason,
-/// and each path that is at no site of its thread.
 #[derive(Debug, Default)]
 pub struct Tally {
     pub exact: usize,
@@ -563,12 +476,8 @@ pub struct Tally {
     pub changed: usize,
     pub wrong: Vec<String>,
 
-    /// Each read that found a thread twice, or both found it and left it
-    /// out.
     pub twice: Vec<String>,
 
-    /// How many reads found a thread calling a site, before the site's
-    /// frame began ([`found`]).
     pub calling: usize,
 }
 
@@ -584,34 +493,13 @@ impl Tally {
     }
 }
 
-/// Where a read found a looping thread, best first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Found {
-    /// At a site, with the frames V8 reported there.
     Site,
-    /// At a reported call of a site or churn, possibly before callee entry.
     Calling,
-    /// Anywhere else, which no thread of `live-stress.js` blocks at.
     Wrong,
 }
 
-/// Where `path` finds a thread in phase `phase`, whose sites have the
-/// paths `sites`, each outermost first.
-///
-/// A thread can block in its phase's call of a site before the site has a
-/// frame: V8 compiles a site whose bytecode it flushed again as it is
-/// called, and the compile can wait on a lock, as on the isolate's stack
-/// guard (`Runtime_CompileLazy`, `Compiler::Compile`,
-/// `StackGuard::PushInterruptsScope`). Its path is then a site's, cut off
-/// at the phase's own frame. Calls to churn can have the same pre-entry state;
-/// the fixture reports their callers independently through V8's `CallSites`.
-/// A matching caller alone cannot rule out a missing callee frame.
-///
-/// A thread can also wait in the callee's first frame before it runs a
-/// line: V8 handles an interrupt, as a collection or a deoptimization asks,
-/// at the stack check on a function's entry, and places such a frame at the
-/// function's start (`kFunctionEntryBytecodeOffset`). Its path is a site's,
-/// cut off at a callee at the line that declares it.
 fn found(phase: usize, sites: &[Vec<String>], path: &[String]) -> Found {
     if sites.iter().any(|site| site == path) {
         return Found::Site;
@@ -638,8 +526,6 @@ fn found(phase: usize, sites: &[Vec<String>], path: &[String]) -> Found {
     Found::Wrong
 }
 
-/// Each function `live-stress.js` declares, as a frame at its entry names
-/// it: `NAME live-stress.js:LINE`, with LINE the line that declares it.
 static ENTRIES: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
     let source =
         std::fs::read_to_string(node::fixture("live-stress.js")).expect("read live-stress.js");
@@ -683,9 +569,6 @@ fn a_read_finds_a_thread_at_its_sites_or_calling_one() {
     ])];
 
     assert_eq!(found(1, &phase1, &phase1[1]), Found::Site);
-    // As a deoptimizing stress run read it once: a thread of phase 1 that
-    // waited on its isolate's stack guard as V8 compiled a flushed site
-    // again, before the site had a frame.
     let calling = path(&["phase1 live-stress.js:147"]);
     assert_eq!(found(1, &phase1, &calling), Found::Calling);
     assert_eq!(
@@ -705,8 +588,6 @@ fn a_read_finds_a_thread_at_its_sites_or_calling_one() {
         Found::Calling,
         "the captured churn caller, possibly before callee entry"
     );
-    // As a deoptimizing stress run read it once: a worker of phase 2 that
-    // waited at churn's entry, on the stack check that handles interrupts.
     let entry = ENTRIES
         .iter()
         .find(|frame| frame.starts_with("churn "))
@@ -766,10 +647,6 @@ pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
     let waits = profile.task_waits();
     let problems = profile.task_snapshot_problems();
     let mut tally = tally_reads(&waits, &problems, looping);
-    // How long each read that fell behind took, by when it began: a
-    // snapshot's waits are stamped when it began, and it reaches each
-    // thread before it ends, which on a starved machine can be a second
-    // later. One that says nothing ended within the interval.
     let took: BTreeMap<i64, Duration> = problems
         .iter()
         .filter_map(|(time, problem)| Some((*time, read_took(problem)?)))
@@ -786,9 +663,6 @@ pub fn tally(profile: &Profile, looping: &BTreeMap<u64, Looping>) -> Tally {
                     .collect()
             })
             .collect();
-        // A read finds the thread at a site of a phase it was in while
-        // the read ran: the one it was in as the read began, or one it
-        // began before the read ended; never of another.
         let times: std::collections::BTreeSet<i64> = waits
             .iter()
             .filter(|wait| wait.noun == "thread" && wait.task == tid)
@@ -967,9 +841,6 @@ fn stress_accuracy_counts_only_each_threads_measured_reads() {
     assert_eq!(tally.twice.len(), 1, "a read cannot be exact and changed");
 }
 
-/// Records `live-stress.js` on `entry` with V8's `flags`, reading it live
-/// every few milliseconds: no read finds a thread anywhere but at one of
-/// its sites, and enough find it there.
 pub fn stress(entry: &str, flags: &[&str]) {
     let mut command = Command::new(node::node(entry));
     command
@@ -986,8 +857,6 @@ pub fn stress(entry: &str, flags: &[&str]) {
         }),
         ..RecordOptions::default()
     };
-    // The program waits to loop until the recording reads it, which
-    // takes seconds on a loaded machine.
     let waiting = |text: &str| {
         Report::parse(text)
             .lines()
@@ -1011,7 +880,6 @@ pub fn stress(entry: &str, flags: &[&str]) {
         tally.changed,
     );
     eprintln!("{summary}");
-    // A recording whose reads fell behind what it asked says so.
     let problems = profile.task_snapshot_problems();
     let attributed: usize = problems
         .iter()
@@ -1050,12 +918,8 @@ pub fn stress(entry: &str, flags: &[&str]) {
     tally.check_accuracy(&summary);
 }
 
-/// V8's flags that make it collect garbage every few thousand
-/// allocations, and move every object it keeps as it does.
 const COLLECTING: &[&str] = &["--stress-compaction", "--gc-interval=2000"];
 
-/// V8's flags that make it deoptimize optimized code often, and flush
-/// code and bytecode, which it compiles again.
 const DEOPTIMIZING: &[&str] = &[
     "--deopt-every-n-times=40",
     "--stress-flush-code",
@@ -1082,10 +946,6 @@ fn live_reads_under_deoptimization_find_each_thread_at_its_site_on_22() {
     stress("22", DEOPTIMIZING);
 }
 
-/// A live recording reads as often as it is asked to, or says it fell
-/// behind: reads at a millisecond's interval of a program parked in
-/// `fs.readSync` keep up from the first read on, as each read's wait shows,
-/// but for the time the reads that fell behind say they did.
 #[test]
 fn live_reads_keep_their_interval_or_say_they_fell_behind() {
     let every = Duration::from_millis(1);
@@ -1095,8 +955,6 @@ fn live_reads_keep_their_interval_or_say_they_fell_behind() {
         python: Some(PythonEngine::Live { every }),
         ..RecordOptions::default()
     };
-    // Reads begin once the program's debug information is loaded, which
-    // takes seconds on a loaded machine, so the program waits for them.
     let (profile, _, _) = record_released(
         command,
         &options,
@@ -1111,9 +969,6 @@ fn live_reads_keep_their_interval_or_say_they_fell_behind() {
         panic!("no read found the parked thread");
     };
     let span = Duration::from_nanos((last - first).unsigned_abs());
-    // Each read that fell behind says how long it took and how late it
-    // began, which accounts for the reads it kept from being taken; the
-    // rest of the span must hold reads at no less than half the rate.
     let problems = profile.task_snapshot_problems();
     let notes: Vec<&String> = problems
         .iter()
@@ -1141,9 +996,6 @@ fn live_reads_keep_their_interval_or_say_they_fell_behind() {
     );
 }
 
-/// How long at most a read took, by the note that it fell behind, `a live
-/// read took 2.5 ms and began ...`, which rounds to a tenth of a
-/// millisecond.
 fn read_took(note: &str) -> Option<Duration> {
     let rest = note.strip_prefix("a live read took ")?;
     let (took, _) = rest.split_once(" ms and began ")?;
@@ -1152,9 +1004,6 @@ fn read_took(note: &str) -> Option<Duration> {
     ))
 }
 
-/// How far behind a note that a live read fell behind says it was: how
-/// long the read took and how late it began, as `a live read took 2.5 ms
-/// and began 0.5 ms after it was due, ...`.
 fn behind_by(note: &str) -> Option<Duration> {
     let rest = note.strip_prefix("a live read took ")?;
     let (took, rest) = rest.split_once(" ms and began ")?;
@@ -1167,11 +1016,8 @@ fn behind_by(note: &str) -> Option<Duration> {
     Some(ms(took)? + ms(late)?)
 }
 
-/// How long the interval test reads its program.
 const READ_FOR: Duration = Duration::from_secs(1);
 
-/// How many reads found a thread in `profile`, and when the first and the
-/// last began; `None` before any did.
 fn reads_of_one_thread(profile: &Profile) -> Option<(u64, i64, i64)> {
     let times: std::collections::BTreeSet<i64> = profile
         .task_waits()
@@ -1186,15 +1032,9 @@ fn reads_of_one_thread(profile: &Profile) -> Option<(u64, i64, i64)> {
     ))
 }
 
-/// The reason a read gives for a frame in code that none of the mappings
-/// it was given covers.
 const FOREIGN_CODE: &str =
     "a frame its isolate names runs code that is neither V8's builtins nor code V8 generated";
 
-/// Records `waits.js` on `entry` with the live engine from its start, as
-/// its threads block while V8 maps each isolate's code. Every read must
-/// find that code, however long the drain before it took to load the debug
-/// information of the module that carries V8.
 pub fn check_from_start(entry: &str) {
     let mut command = Command::new(node::node(entry));
     command.arg(node::fixture("waits.js")).arg("4");

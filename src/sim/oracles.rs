@@ -1,9 +1,3 @@
-//! Checks of the debugger against the simulation's ground truth.
-//!
-//! Each oracle states one rule and, when it fails, cites both sides of the
-//! disagreement. An oracle is never loosened to make a run pass; one that
-//! is wrong is fixed in a commit that explains why.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -15,19 +9,13 @@ use crate::backend::sim_edge::Truth;
 
 const BREAKPOINT: u8 = 0xcc;
 
-/// The bytes of code [`code_integrity`] compares at once.
 const LINE: usize = 64;
 
-/// Code integrity: every byte of executable memory holds the image's
-/// original, or `0xcc` exactly where the controller says it installed a
-/// trap over that original.
 pub fn code_integrity(kernel: &Kernel, truth: &Truth, image: &Image) -> Result<(), String> {
     let Some(process) = truth.inferior.and_then(|tgid| kernel.processes.get(&tgid)) else {
         return Ok(());
     };
 
-    // Every trap the controller installed is in memory, over the byte it
-    // remembers.
     for (&address, site) in &truth.sites {
         let Some(byte) = process.space.peek_bytes(address, 1) else {
             continue;
@@ -51,8 +39,6 @@ pub fn code_integrity(kernel: &Kernel, truth: &Truth, image: &Image) -> Result<(
         }
     }
 
-    // Every other byte of code is the program's own. A page still shared
-    // with the image was never written.
     for (page_address, original_page) in image.code() {
         if process
             .space
@@ -67,8 +53,6 @@ pub fn code_integrity(kernel: &Kernel, truth: &Truth, image: &Image) -> Result<(
             .peek_page(page_address)
             .ok_or_else(|| format!("code page {page_address:#x} is no longer mapped"))?;
 
-        // Most of a page with traps in it is unchanged, which comparing it a
-        // line at a time skips quickly.
         let lines = current.chunks(LINE).zip(original_page.chunks(LINE));
         for (line, (now, was)) in lines.enumerate() {
             if now == was {
@@ -95,9 +79,6 @@ pub fn code_integrity(kernel: &Kernel, truth: &Truth, image: &Image) -> Result<(
     Ok(())
 }
 
-/// Breakpoint ownership: every site has an owner, and only the execution
-/// in progress owns plan sites. A published stop ended every plan. The
-/// controller restores nothing in a process that is ending as a whole.
 pub fn site_ownership(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
     if truth.inferior.is_some_and(|tgid| ending(kernel, tgid)) {
         return Ok(());
@@ -129,9 +110,6 @@ pub fn site_ownership(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `tgid` is ending as a whole: killed, by the debugger or from
-/// outside, or exiting its group. Its threads then leave their stops
-/// whatever the debugger publishes, until it hears of the exit.
 pub(super) fn ending(kernel: &Kernel, tgid: Tgid) -> bool {
     kernel
         .processes
@@ -139,9 +117,6 @@ pub(super) fn ending(kernel: &Kernel, tgid: Tgid) -> bool {
         .is_none_or(|process| process.group_exit.is_some())
 }
 
-/// All-stop: while a stop is published, every thread of the inferior is in
-/// a ptrace-stop or has ended, and the controller knows exactly the stopped
-/// ones.
 pub fn all_stop(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
     let (Some(stop), Some(tgid)) = (truth.public_stop, truth.inferior) else {
         return Ok(());
@@ -187,10 +162,6 @@ pub fn all_stop(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
     Ok(())
 }
 
-/// Held stops: every thread the controller holds stopped is in a
-/// ptrace-stop, whether or not a stop is published. A thread the kernel
-/// stopped may still be running in the controller's eyes until it hears
-/// of the stop, so only this direction holds.
 pub fn held_stops(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
     if truth.inferior.is_none_or(|tgid| ending(kernel, tgid)) {
         return Ok(());
@@ -208,10 +179,6 @@ pub fn held_stops(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
     Ok(())
 }
 
-/// Calls: a thread the controller holds stopped is at a system call's
-/// entry, or stopped inside a call that returns when it runs, exactly when
-/// the controller has it inside a call. A call failed to be made again is
-/// not one: the controller reads that from the thread's registers.
 pub fn calls(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
     let Some(in_call) = &truth.in_call else {
         return Ok(());
@@ -240,10 +207,6 @@ pub fn calls(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
     Ok(())
 }
 
-/// Requested stops: every thread the controller waits to stop has a stop
-/// on its way. It is stopped already, an interrupt or SIGSTOP is pending
-/// for it, or it is exiting or reaped, whose status the controller will
-/// hear of instead.
 pub fn requested_stops(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
     if truth.inferior.is_none_or(|tgid| ending(kernel, tgid)) {
         return Ok(());
@@ -277,9 +240,6 @@ pub fn requested_stops(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
     Ok(())
 }
 
-/// Breakpoint accounting, unseen hits: no thread executed the program's own
-/// instruction where the user's breakpoint is enabled, except to step over
-/// the trap it just reported there.
 pub fn unseen_hits(kernel: &Kernel) -> Result<(), String> {
     kernel.unseen_hits.first().map_or(Ok(()), |hit| {
         Err(format!(
@@ -290,31 +250,16 @@ pub fn unseen_hits(kernel: &Kernel) -> Result<(), String> {
     })
 }
 
-/// A trap whose stop the controller hears of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeardTrap {
     pub tid: Tid,
     pub address: u64,
 
-    /// When the thread executes the trap again, having executed nothing
-    /// since it last trapped there, the breakpoints that counted its
-    /// arrival and have owned the site ever since.
     pub again: Option<BTreeSet<u64>>,
 
-    /// Whether the controller had begun to shut down.
     pub in_shutdown: bool,
 }
 
-/// Breakpoint accounting, hit counts: handling one message counts at most
-/// the trap it reports, one hit for every user breakpoint owning the site.
-/// The same arrival again (a signal interrupted the step over the trap)
-/// counts nothing for a breakpoint that counted it, and at most one for one
-/// that came to the site since, a breakpoint that left the site and came
-/// back among them: whether the thread ever ran there, a debugger can only
-/// guess. A new inferior starts every count again. A trap
-/// may go uncounted once its process is exiting as a whole, and one heard
-/// during a shutdown is no hit: the controller kills a launched process and
-/// releases an attached one with the thread rewound.
 pub fn hit_counts(
     before: &Truth,
     after: &Truth,
@@ -369,18 +314,11 @@ pub fn hit_counts(
     Ok(())
 }
 
-/// Keeps, of the breakpoints that counted a thread's arrival at `address`,
-/// those that still own the site there. One that left it, because it was
-/// disabled or lost the location, has come to the site since if it comes
-/// back.
 pub fn still_counting(counted: &mut BTreeSet<u64>, truth: &Truth, address: u64) {
     let owners = truth.sites.get(&address).map(|site| &site.users);
     counted.retain(|id| owners.is_some_and(|users| users.contains(id)));
 }
 
-/// Breakpoint accounting, ownership: while a stop is published, every
-/// breakpoint the user was told exists, and has not asked to remove, owns
-/// an installed site at each of its locations.
 pub fn user_breakpoints(
     kernel: &Kernel,
     truth: &Truth,
@@ -426,10 +364,6 @@ pub fn user_breakpoints(
     Ok(())
 }
 
-/// Breakpoint accounting, disabled breakpoints: one the debugger said it
-/// disabled, and the user has not asked to enable or remove since, owns no
-/// site. A process ending as a whole cannot have its memory written, so its
-/// sites stay as they were, as a removed breakpoint's do.
 pub fn disabled_breakpoints(
     kernel: &Kernel,
     truth: &Truth,
@@ -450,8 +384,6 @@ pub fn disabled_breakpoints(
     Ok(())
 }
 
-/// Transparency, while the program runs: what it wrote so far begins what
-/// it writes undisturbed.
 pub fn output_so_far(kernel: &Kernel, run: &Run) -> Result<(), String> {
     for output in kernel.outputs.values() {
         if !run.output.as_bytes().starts_with(output) {
@@ -466,8 +398,6 @@ pub fn output_so_far(kernel: &Kernel, run: &Run) -> Result<(), String> {
     Ok(())
 }
 
-/// Clean exit: when the session is over, no simulated process remains,
-/// not even one waiting to be reaped.
 pub fn clean_exit(kernel: &Kernel) -> Result<(), String> {
     if let Some(thread) = kernel.threads.values().next() {
         return Err(format!(
@@ -486,13 +416,6 @@ pub fn clean_exit(kernel: &Kernel) -> Result<(), String> {
     Ok(())
 }
 
-/// Transparency, once the program ended. A process the tracer launched or
-/// attached to that exited by itself wrote, with the children it forked,
-/// exactly what it writes undisturbed, and exited as it does; one killed,
-/// which only SIGKILL does to a program that raises no signal, wrote only
-/// a beginning of that. A child its parent reaped shows in what
-/// the parent wrote. A child init reaped ran on alone once released: the
-/// corpus's children check their own work and exit 0 when it is right.
 pub fn transparency(kernel: &Kernel, run: &Run) -> Result<(), String> {
     for (tgid, ended) in &kernel.ended {
         match ended.reaper {
@@ -561,9 +484,6 @@ mod tests {
         }
     }
 
-    /// Code integrity accepts a trap the controller installed over the
-    /// byte it remembers, and refuses a trap it does not know of and one
-    /// over a byte it misremembers.
     #[test]
     fn code_integrity_requires_every_trap_to_be_owned_and_remembered() {
         let corpus = Corpus::load().expect("load the golden corpus");
@@ -609,8 +529,6 @@ mod tests {
         assert!(lifted.is_err(), "a lifted site must hold its original byte");
     }
 
-    /// Only the active execution owns plan sites, a published stop ended
-    /// every plan, and no site is left without owners.
     #[test]
     fn site_ownership_ends_plans_with_their_execution() {
         let owned = |plans: Vec<u64>| Truth {
@@ -654,8 +572,6 @@ mod tests {
         assert!(site_ownership(&Kernel::new(100), &orphan).is_err());
     }
 
-    /// A program that exited by itself must have done exactly what it does
-    /// undisturbed; a killed one may have done only a beginning of it.
     #[test]
     fn transparency_compares_ends_with_the_manifest() {
         let run = Run {
@@ -687,8 +603,6 @@ mod tests {
         assert!(ended(ExitStatus::Signal(9, false), "total 9").is_err());
     }
 
-    /// A user site at 0x1000 owned by breakpoints 1 and 2, with breakpoint
-    /// 3 elsewhere, each with `hits`.
     fn with_hits(hits: [u64; 3]) -> Truth {
         let mut users = site(0x55, true, vec![]);
         users.users = BTreeSet::from([1, 2]);
@@ -711,12 +625,6 @@ mod tests {
         }
     }
 
-    /// An arrival at a trap counts one hit for each owner of its site and
-    /// none for any other breakpoint; the trap executed again counts none
-    /// for a breakpoint that counted the arrival and at most one for any
-    /// other owner; a message without a trap counts none; a new inferior
-    /// starts the counts again; a trap a group exit disturbed may go
-    /// uncounted; and one heard during a shutdown counts none.
     #[test]
     fn hit_counts_follow_the_traps_the_controller_hears_of() {
         let before = with_hits([4, 0, 7]);
@@ -780,7 +688,6 @@ mod tests {
         assert!(hit_counts(&before, &with_hits([5, 1, 7]), Some(&in_shutdown), false).is_err());
     }
 
-    /// A published stop requires every live thread stopped and known.
     #[test]
     fn all_stop_requires_every_live_thread_stopped_and_known() {
         let corpus = Corpus::load().expect("load the golden corpus");
@@ -817,7 +724,6 @@ mod tests {
         );
     }
 
-    /// An arrival stays counted by the breakpoints that still own its site.
     #[test]
     fn arrivals_stay_counted_only_by_breakpoints_that_stay() {
         let truth = with_hits([0, 0, 0]);
@@ -828,8 +734,6 @@ mod tests {
         assert!(counted.is_empty());
     }
 
-    /// Every breakpoint the user was told exists owns an installed site at
-    /// each of its locations while a stop is published.
     #[test]
     fn user_breakpoints_own_their_sites_while_stopped() {
         let corpus = Corpus::load().expect("load the golden corpus");
@@ -856,11 +760,9 @@ mod tests {
         assert!(user_breakpoints(&kernel, &truth, &intent(vec![(4, 0x1000)])).is_err());
         assert!(user_breakpoints(&kernel, &truth, &intent(vec![(1, 0x3000)])).is_err());
 
-        // Breakpoint 3's location has no site.
         assert!(user_breakpoints(&kernel, &truth, &intent(vec![(3, 0x2000)])).is_err());
     }
 
-    /// A breakpoint the user was told is disabled owns no site.
     #[test]
     fn disabled_breakpoints_own_no_site() {
         let corpus = Corpus::load().expect("load the golden corpus");

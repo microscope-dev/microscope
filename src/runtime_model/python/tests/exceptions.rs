@@ -1,8 +1,6 @@
 use super::super::{agent, exceptions};
 use super::*;
 
-/// An exception record at `HEAP`: the object's address, then the message's
-/// address and length, with the message after it.
 fn record(object: u64, message: &[u8], length: u64) -> Memory {
     let mut memory = Memory::default();
     let text = HEAP + 0x100;
@@ -13,9 +11,6 @@ fn record(object: u64, message: &[u8], length: u64) -> Memory {
     memory
 }
 
-/// A report reads as the exception's message, as the agent formed it, and
-/// a value that names its object; a record that cannot be what the agent
-/// wrote is refused, never cut or guessed at.
 #[test]
 fn an_exception_report_reads_its_object_and_message_or_is_refused() {
     let message = "ValueError: naïve";
@@ -32,9 +27,6 @@ fn an_exception_report_reads_its_object_and_message_or_is_refused() {
     assert!(refused(&Memory::default()).contains("unreadable"));
 }
 
-/// Each filter has its own bit, which the agent's reports name it by, and
-/// the bits a choice of exceptions sets are those of the Python filters it
-/// stops; other runtimes' filters keep their places.
 #[test]
 fn python_exception_filters_are_bits_the_agent_shares() {
     let raised = exceptions::filter(agent::RAISED).expect("raised");

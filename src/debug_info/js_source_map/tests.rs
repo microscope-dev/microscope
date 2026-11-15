@@ -33,12 +33,6 @@ fn simple(sources: &str, names: &str, mappings: &str) -> String {
     format!(r#"{{"version":3,"sources":{sources},"names":{names},"mappings":"{mappings}"}}"#)
 }
 
-/// Line 0: `AAAA` maps column 0 to a.ts 0:0; `IAAI` moves 4 columns in
-/// both, to 0:4; `EAAEC` moves 2 more and takes name +1, `bar`; `G` at
-/// column 9 has no source. Line 1 is empty. Line 2 starts again at column
-/// 0: `KCCK` is column 5 to b.ts (+1) 1:11 (+1, +5); `I` at column 9 has no
-/// source; `EDDF` is column 11 back to a.ts (-1) 0:9 (-1, -2); `CAAAD` is
-/// column 12 at the same place, with name -1, `foo`.
 const WORKED: &str = "AAAA,IAAI,EAAEC,G;;KCCK,I,EDDF,CAAAD";
 
 fn worked() -> SourceMap {
@@ -79,21 +73,13 @@ fn segments_decode_to_their_worked_out_places() {
     assert_eq!(map.name(NameId::new(2)), None);
 }
 
-/// Segments of a line may be listed out of column order; they are sorted
-/// as ECMA-426 sorts them.
 #[test]
 fn segments_out_of_column_order_are_sorted() {
-    // Column 4 to 0:4, then column 0 (-4) to 0:0 (-4).
     let map = parse(&simple(r#"["a.ts"]"#, "[]", "IAAI,JAAJ"));
     assert_eq!(map.generated, [at(0, 0), at(0, 4)]);
     assert_eq!(map.original_at(at(0, 2)), Some(place(0, 0, 0, None)));
 }
 
-/// Section 0 starts at 0:0, with names `["unused"]`: `AAAA` 0:0 to one.ts
-/// 0:0, `EAAE` 0:2 to 0:2, then `AACA` 1:0 to 1:2. Section 1 starts at
-/// 1:10 with names `["x"]`: `AAAAA` local 0:0 is 1:10, to two.ts 0:0 named
-/// `x`; `EAAE` local 0:2 is 1:12, to 0:2; `CAAC` local 1:1 is 2:1, since
-/// the column offset moves the first line only, to 0:3.
 const INDEX: &str = r#"{
     "version": 3,
     "file": "bundle.js",
@@ -128,7 +114,6 @@ fn an_index_map_moves_each_section_by_its_offset() {
         (at(1, 13), Some(place(1, 0, 2, None))),
         (at(2, 0), None),
         (at(2, 1), Some(place(1, 0, 3, None))),
-        // Section 1's one.ts is section 0's: `CCAA` is index 1, 0:3.
         (at(2, 2), Some(place(0, 0, 3, None))),
     ];
     for (position, expected) in cases {
@@ -161,14 +146,12 @@ fn index_maps_reject_sections_out_of_order_overlapping_or_nested() {
         SourceMapError::Sections { section: 1, .. }
     ));
 
-    // Section 0's last segment is 1:0, after section 1's start at 0:20.
     let overlapping = index(&[section(0, 0, "AAAA;AAAA"), section(0, 20, "AAAA")]);
     assert!(matches!(
         parse_error(&overlapping),
         SourceMapError::Sections { section: 1, .. }
     ));
 
-    // A section may start where the one before it ends.
     let touching = index(&[section(0, 0, "AAAA;AAAA"), section(1, 0, "AAAA")]);
     assert_eq!(parse(&touching).segment_count(), 3);
 
@@ -245,7 +228,6 @@ fn sources_resolve_through_the_root_and_the_map_location() {
     assert_eq!(c.content, None);
     assert_eq!(map.source(SourceId::new(3)).expect("null").name, None);
 
-    // An empty root adds nothing, and a root of URL joins as a URL.
     let empty_root = parse(r#"{"version":3,"sourceRoot":"","sources":["a.ts"],"mappings":""}"#);
     assert_eq!(
         empty_root.source(SourceId::new(0)).expect("a.ts").location,
@@ -437,7 +419,6 @@ fn malformed_maps_are_typed_errors() {
         reason(mappings("A;//////D")),
         (2, "a generated column is out of range")
     );
-    // A name index needs names: a map without any has none to give.
     assert_eq!(
         reason(parse_error(&simple(one, "[]", "AAAAA"))),
         (0, "a name index is out of range")
@@ -524,8 +505,6 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
-/// One segment as a generator writes it: generated column, and original
-/// source, line, column, and name index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Written {
     pub column: u32,
@@ -556,8 +535,6 @@ pub(super) fn encode_vlq(value: i64, out: &mut String) {
     }
 }
 
-/// Encodes lines of segments as a `mappings` string, each field relative
-/// to the one before as ECMA-426 defines.
 pub(super) fn encode_mappings(lines: &[Vec<Written>]) -> String {
     let mut out = String::new();
     let (mut source, mut line, mut column, mut name) = (0i64, 0i64, 0i64, 0i64);
@@ -607,8 +584,6 @@ pub(super) fn written_json(lines: &[Vec<Written>]) -> String {
     )
 }
 
-/// The segments in sorted order: by position, and at one position in the
-/// order they were written.
 fn expected_segments(lines: &[Vec<Written>]) -> Vec<(Position, Option<OriginalPlace>)> {
     let mut expected: Vec<(Position, Option<OriginalPlace>)> = lines
         .iter()
@@ -631,9 +606,6 @@ fn expected_segments(lines: &[Vec<Written>]) -> Vec<(Position, Option<OriginalPl
 
 const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// What ECMA-426 reads from the number at the start of `text`, and where
-/// it ends: digits add five bits at a time, with no limit on how many,
-/// and the sum is checked once all are read.
 fn reference_vlq(text: &[u8]) -> Option<(i64, usize)> {
     let mut wide = 0_u128;
     let mut past_64_bits = false;
@@ -666,9 +638,6 @@ fn reference_vlq(text: &[u8]) -> Option<(i64, usize)> {
     None
 }
 
-/// Text that starts with a number near the edges of 32 bits, maybe padded
-/// with digits that add no bits, maybe cut, maybe with a byte that is no
-/// digit, and then whatever follows the number.
 fn vlq_text() -> impl Strategy<Value = Vec<u8>> {
     let unsigned = prop_oneof![
         prop::sample::select(vec![
@@ -709,7 +678,6 @@ fn vlq_text() -> impl Strategy<Value = Vec<u8>> {
                 }
             }
 
-            // Continue past the last digit with digits that add nothing.
             if padding > 0 {
                 let last = text.len() - 1;
                 let value = DIGITS
@@ -818,9 +786,6 @@ proptest! {
                 expected.sort_unstable();
                 prop_assert_eq!(&found, &expected);
 
-                // A breakpoint goes at every generated copy of the chosen
-                // original column: the line's least, or the greatest at or
-                // before the one asked for.
                 let at_column = |chosen: Option<Column>| -> Vec<Position> {
                     expected
                         .iter()

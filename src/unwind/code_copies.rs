@@ -1,44 +1,21 @@
-//! The proof that a process's anonymous code is a copy of a module's code,
-//! read through whatever reads the process: the debugger's stopped threads,
-//! or the memory of a process the profiler or a syscall trace watches run.
-//!
-//! A runtime may copy some of its own machine code into memory no file
-//! backs and run it there: V8 copies its embedded builtins next to each of
-//! its code ranges. A copy that is byte for byte a range of a loaded
-//! module's code is that code at another address, so its symbols, roles,
-//! and unwind rules hold unchanged. The proof is a full comparison of the
-//! bytes, from where copies begin: a function that begins a page of the
-//! module, as code copied whole begins, or code a runtime says the process
-//! keeps in the module, as V8's builtins where no symbol names them.
-
 use std::ops::Range;
 
 use crate::{ImageAddress, LoadedModule, ModuleImage, SymbolKind};
 
-/// The size of the pages copies begin on.
 pub const PAGE: u64 = 4096;
 
-/// How many of a copy's first bytes pick the function it may copy.
 pub const PROBE: usize = 16;
 
-/// The most of a copy compared, past which its window ends.
 pub const MAX_COPY: u64 = 256 * 1024 * 1024;
 
-/// A module whose code a mapping may copy.
 pub struct Source<'a, K> {
-    /// What the caller knows the module by.
     pub key: K,
     pub image: &'a ModuleImage,
     pub loaded: LoadedModule,
 
-    /// The ranges of the image a runtime says the process keeps code in,
-    /// or where the caller found a copy began before, where a copy may
-    /// begin too. They are tried before any function the symbols name.
     pub stored: Vec<(ImageAddress, ImageAddress)>,
 }
 
-/// A range of a module's code a mapping's bytes begin with, and what the
-/// comparison that proved it found on the way.
 #[derive(Debug)]
 pub struct Proven<K, T> {
     pub source: K,
@@ -47,11 +24,6 @@ pub struct Proven<K, T> {
     pub found: T,
 }
 
-/// The range of a source's code the anonymous `mapping` begins with a copy
-/// of, if any. `probe` reads the mapping's first [`PROBE`] bytes, and
-/// `compare(source, copy, limit)` counts how many of the `limit` bytes at
-/// the process's address `copy` are those at `source`, with whatever it
-/// found on the way, as traps a debugger installed at the source.
 pub fn prove<K: Copy, T>(
     mapping: &Range<u64>,
     sources: &[Source<'_, K>],
@@ -59,7 +31,6 @@ pub fn prove<K: Copy, T>(
     compare: &mut dyn FnMut(u64, u64, u64) -> (u64, T),
 ) -> Option<Proven<K, T>> {
     let first = probe(mapping.start)?;
-    // Unused memory proves nothing.
     if first.iter().all(|byte| *byte == 0) {
         return None;
     }
@@ -68,8 +39,6 @@ pub fn prove<K: Copy, T>(
         .iter()
         .filter(|source| source.loaded.window.is_none())
         .find_map(|source| {
-            // What the caller knows first: stored ranges name the code a
-            // runtime copies, and the start of a copy proven before.
             source
                 .stored
                 .iter()
@@ -84,7 +53,6 @@ pub fn prove<K: Copy, T>(
                     if compare(from, mapping.start, probed).0 < probed {
                         return None;
                     }
-                    // Code that ends before the probe does is proven whole.
                     let (length, found) = compare(from, mapping.start, limit);
                     (length >= probed).then_some(Proven {
                         source: source.key,
@@ -96,8 +64,6 @@ pub fn prove<K: Copy, T>(
         })
 }
 
-/// The functions of `image`'s code that begin a page, with where the code
-/// they lie in ends, where a copy of its code may begin.
 pub fn candidates(image: &ModuleImage) -> impl Iterator<Item = (ImageAddress, ImageAddress)> + '_ {
     let sections = image.sections();
     image
@@ -113,7 +79,6 @@ pub fn candidates(image: &ModuleImage) -> impl Iterator<Item = (ImageAddress, Im
                 .map(|section| (address, section.range.end))
         })
         .scan(None, |previous, candidate| {
-            // Aliases at one address are one candidate.
             let repeated = *previous == Some(candidate.0);
             *previous = Some(candidate.0);
             Some((!repeated).then_some(candidate))
@@ -121,9 +86,6 @@ pub fn candidates(image: &ModuleImage) -> impl Iterator<Item = (ImageAddress, Im
         .flatten()
 }
 
-/// How many of the `limit` bytes at `copy` equal those at `source`, both
-/// read by `read(address, length)`, which gives what it could read, in
-/// chunks of `chunk` bytes.
 pub fn compare_bytes(
     read: &mut dyn FnMut(u64, usize) -> Option<Vec<u8>>,
     source: u64,
@@ -155,8 +117,6 @@ pub fn compare_bytes(
 mod tests {
     use super::*;
 
-    /// A comparison ends at the first byte that differs, and where either
-    /// side cannot be read further.
     #[test]
     fn a_comparison_counts_the_equal_bytes_up_to_the_first_difference() {
         let memory: Vec<u8> = (0..64).map(|byte| byte % 16).collect();
@@ -166,7 +126,6 @@ mod tests {
                 .get(start..)
                 .map(|rest| rest[..length.min(rest.len())].to_vec())
         };
-        // 16 bytes repeat at 16, 32, and 48.
         assert_eq!(compare_bytes(&mut read, 0, 16, 48, 7), 48);
         assert_eq!(compare_bytes(&mut read, 0, 16, 60, 7), 48);
         assert_eq!(compare_bytes(&mut read, 0, 17, 10, 4), 0);

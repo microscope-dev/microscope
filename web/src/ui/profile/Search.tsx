@@ -17,9 +17,6 @@ const ACTIONS: { op: TransformOp; label: string; title: string }[] = [
   { op: "drop", label: "Drop", title: "Remove every stack through this function" },
 ];
 
-/** What a view's search holds: the text typed while no frame is selected.
- * Selecting a frame shows its name in the search instead, so the text
- * typed before goes, and does not come back once it is let go. */
 export function useFrameSearch(): [string, (text: string) => void] {
   const { look } = useProfile();
   const [typed, setTyped] = useState("");
@@ -33,8 +30,6 @@ export function useFrameSearch(): [string, (text: string) => void] {
   return [look.fn === undefined ? typed : "", setTyped];
 }
 
-/** The frames of `tree` whose names hold `search`, in any case, and what
- * the search row says of them: the share of the samples they ran in. */
 export function useTreeSearch(
   tree: CallTree | null,
   search: string,
@@ -52,11 +47,6 @@ export function useTreeSearch(
   }, [tree, search]);
 }
 
-/** One row that searches a view's frames and holds the selected one's
- * details, the same in every view, and ends in its Options. A click on a
- * frame puts its name in the search; typing lets it go, and emptying the
- * search clears, as Clear does. `reset` also clears what else the view
- * keeps, such as a zoom. */
 export function SearchRow({
   search,
   onSearch,
@@ -65,9 +55,9 @@ export function SearchRow({
 }: {
   search: string;
   onSearch: (text: string) => void;
-  /** What the search matches, once it has text. */
+
   matched: string | null;
-  /** Clears the rest of what the view shows, or null when it has none. */
+
   reset: ((look: ProfileLook) => ProfileLook) | null;
 }) {
   const { look, setLook } = useProfile();
@@ -81,7 +71,7 @@ export function SearchRow({
       true,
     );
   }, [onSearch, setLook, reset]);
-  // The button goes once it has cleared, so the search keeps the focus.
+
   const clearAndFocus = useCallback(() => {
     clear();
     searchBox.current?.focus();
@@ -100,8 +90,6 @@ export function SearchRow({
     [reset, fn, onSearch, setLook, clear],
   );
   return (
-    // One row whether or not a frame is selected, so the search stays put
-    // and keeps its focus as a click selects or typing lets go.
     <div className="profile-details" data-testid={fn === undefined ? undefined : "details"}>
       <input
         ref={searchBox}
@@ -134,9 +122,6 @@ export function SearchRow({
   );
 }
 
-/** What the selected function costs under the query, as the server counts
- * each function, and what can be done with it, for a bar that names it.
- * Functions of one name in several modules each show their own cost. */
 export function Selected({ name }: { name: string }) {
   const { query, unit, setLook } = useProfile();
   const answer = useAnswer("profileFunctions", query);
@@ -153,7 +138,7 @@ export function Selected({ name }: { name: string }) {
   );
   return (
     <>
-      {/* Takes the room the actions leave, cut short before they wrap. */}
+      {}
       <span className="cost">
         {located?.file ? (
           <span className="muted mono">
@@ -195,7 +180,6 @@ export function Selected({ name }: { name: string }) {
   );
 }
 
-/** A button that transforms the profile by the selected function. */
 function Action({
   op,
   name,
@@ -211,8 +195,6 @@ function Action({
   const apply = useCallback(
     () =>
       setLook((look) => {
-        // Focused, the function is the root at 100%; merged or dropped, it
-        // is gone. Either way its selection says nothing more, so it goes.
         // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
         return withLook(transformed(look, { op, name }), "fn", undefined);
       }, true),

@@ -1,14 +1,14 @@
-//! What Rust functions return. Before each checkpoint the program prints its
-//! own truth, one tab-separated line per value,
-//!
-//! 	TRUTH	<checkpoint>	<path>	<kind>	<value>
-//!
-//! and then calls reached(checkpoint). Every checkpoint is named
-//! `returned-`: the tests finish the function that reached it and inspect
-//! what it returned, which is named for the function. Rust leaves its own
-//! calling convention unspecified, but returns a scalar, and a value of two
-//! scalars, in registers as LLVM returns them, so only those are known;
-//! floats are their bits in hexadecimal.
+
+
+
+
+
+
+
+
+
+
+
 
 use std::hint::black_box;
 use std::io::Write;
@@ -172,8 +172,8 @@ fn main() {
     let n = black_box(std::env::args().count() as i32);
     let mut total = i64::from(r_int(n)) + i64::from(r_bool(n));
     total += (r_u128(n) >> 100) as i64 + r_f64(n) as i64 + r_f32(n) as i64;
-    // Every part of each value is read, or optimization may stop returning
-    // the parts nothing reads, as it does `r_pending`'s payload.
+
+
     let pair = r_pair(n);
     total += (r_level(n) == Level::High) as i64 + i64::from(pair.first + pair.second);
     if let Poll::Ready(ready) = r_poll(n) {

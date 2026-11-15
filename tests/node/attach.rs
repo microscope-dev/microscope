@@ -1,8 +1,3 @@
-//! Attaching to a node started without its inspector: microscope opens it
-//! with SIGUSR1, hides its address, and connects to its socket, not to the
-//! program's own; breakpoints then stop the main thread and a worker that
-//! starts after the attach.
-
 use std::process::{Command, Stdio};
 
 use microscope::{BreakpointOptions, BreakpointSpec, Debugger, ExitStatus, LineNumber, StopReason};
@@ -14,7 +9,6 @@ use crate::support::{ExternalProcess, Scenario, ScratchDir, node};
 const FIXTURE: &str = "attach.js";
 const SERVED: u32 = 10;
 
-/// What, on the build `entry`, an attached node's breakpoints get wrong.
 pub async fn attach_lies(entry: &str) -> Vec<String> {
     attach_with_inspector(entry, false).await
 }
@@ -52,8 +46,6 @@ async fn attach_with_inspector(entry: &str, existing: bool) -> Vec<String> {
             ),
         )
         .await;
-    // The inspector opens and V8 confirms the breakpoint while the node
-    // runs, before the byte it waits for arrives.
     let mut running = scenario.start_resuming().await;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
@@ -105,9 +97,6 @@ async fn attach_with_inspector(entry: &str, existing: bool) -> Vec<String> {
     lies
 }
 
-/// On every build, an attached node stops at a JavaScript breakpoint on
-/// its main thread and then in a worker it starts after the attach, and
-/// prints no inspector address.
 #[tokio::test]
 async fn an_attached_node_stops_in_javascript_and_in_a_new_worker() {
     let mut lies = Vec::new();

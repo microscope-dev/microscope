@@ -33,8 +33,6 @@ const HANDLERS: [&str; 2] = [
 ];
 const UNSUPPORTED: &str = "Node's inspector activation instructions are unsupported";
 
-// Only relative call and RIP operands vary in this supported watchdog body.
-// Its branches, pointer stride, callee-saved registers, and all writes are checked.
 const WATCHDOG: &[u8] = &[
     0x55, 0x48, 0x8d, 0x3d, 0xc7, 0x95, 0x20, 0x03, 0x48, 0x89, 0xe5, 0x41, 0x55, 0x4c, 0x8d, 0x2d,
     0x9c, 0x90, 0xdf, 0x03, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec, 0x08, 0xe8, 0xe0, 0xc5, 0xb2, 0xff,
@@ -53,7 +51,6 @@ const APPEND: &[u8] = &[
     0x08,
 ];
 
-/// Static identities only; compare the live signal action before delivering SIGUSR1.
 pub(super) fn activation(
     object: &object::File<'_>,
 ) -> Result<(ImageAddress, bool, ImageAddress), Arc<str>> {
@@ -581,7 +578,6 @@ pub(super) fn watchdog(object: &object::File<'_>) -> Result<(u64, Vec<u8>), Arc<
             return Ok((address, text(object, address, size)?.to_vec()));
         }
     }
-    // The stripped fallback has already proved this registration and body.
     fallback(object)?;
     let (start, size) = symbol(object, START)?.ok_or(UNSUPPORTED)?;
     let size = usize::try_from(size).map_err(|_| Arc::<str>::from(UNSUPPORTED))?;
@@ -683,23 +679,23 @@ mod tests {
         let object = object::File::parse(bytes.as_slice()).unwrap();
         fallback(&object).unwrap();
         let mutations: [(u64, u8); 17] = [
-            (0x0085_b960, 0x90), // The reset flag is no longer proved zero.
-            (0x0085_b96a, 0x0b), // SIGSEGV, not SIGUSR1.
-            (0x0085_b965, 0x00), // The handler no longer points at its proved body.
-            (0x0085_b84a, 0x00), // pthread_create no longer takes the watchdog entry.
-            (0x0085_67bd, 0x89), // A write instead of the vector-end load.
-            (0x0085_67bf, 0x10), // Capacity instead of vector end.
-            (0x0085_67de, 0x90), // Flags no longer come from the loop comparison.
-            (0x0085_67e0, 0xee), // Loop branch enters an instruction's middle.
-            (0x0085_67a3, 0x00), // Wait and post use different semaphores.
-            (0x0085_67e4, 0x00), // Lock and unlock use different mutexes.
-            (0x0085_5b40, 0x89), // The handler no longer loads the semaphore address.
-            (0x0085_5b47, 0xe8), // A call without a return is not a tail jump.
-            (0x0037_f980, 0x90), // The semaphore post PLT stub is not proved.
-            (0x0037_d510, 0x90), // The signal registration PLT stub is not proved.
-            (0x0038_f320, 0x90), // The loop's request PLT stub is not proved.
-            (0x0085_6790, 0xa4), // Reader and writer name different aligned storage.
-            (0x0085_b573, 0x00), // The vector end is updated in different storage.
+            (0x0085_b960, 0x90),
+            (0x0085_b96a, 0x0b),
+            (0x0085_b965, 0x00),
+            (0x0085_b84a, 0x00),
+            (0x0085_67bd, 0x89),
+            (0x0085_67bf, 0x10),
+            (0x0085_67de, 0x90),
+            (0x0085_67e0, 0xee),
+            (0x0085_67a3, 0x00),
+            (0x0085_67e4, 0x00),
+            (0x0085_5b40, 0x89),
+            (0x0085_5b47, 0xe8),
+            (0x0037_f980, 0x90),
+            (0x0037_d510, 0x90),
+            (0x0038_f320, 0x90),
+            (0x0085_6790, 0xa4),
+            (0x0085_b573, 0x00),
         ];
         let offsets: Vec<_> = mutations
             .iter()

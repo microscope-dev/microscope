@@ -1,8 +1,8 @@
-// Goroutines a profiler test samples. Each worker calls work through
-// outer a known number of times, so every call's stack is known: work,
-// outer, worker, then goexit. Each also allocates, which runs the
-// allocator on the system stack, and collects garbage, so that samples
-// cross from the system stack into the goroutine's frames.
+
+
+
+
+
 package main
 
 import (
@@ -15,7 +15,7 @@ import (
 
 const workers = 4
 
-// sink keeps results the compiler would otherwise drop.
+
 var sink []byte
 
 //go:noinline

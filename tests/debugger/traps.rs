@@ -1,7 +1,3 @@
-//! What a thread owes a breakpoint's trap across signals and jumps, on the
-//! real kernel: the worker of `trap-jump` stops at a trap in `step`, and
-//! waits for the main thread afterwards, so a worker run alone hangs.
-
 use super::*;
 use microscope::{BreakpointHit, ExceptionDisposition, SignalPolicy, ThreadId};
 
@@ -26,8 +22,6 @@ fn hits(reason: &StopReason) -> Vec<BreakpointHit> {
     }
 }
 
-/// Runs `trap-jump` to the worker's hit at the first line of `step`, and
-/// returns the process, the worker, and the breakpoint.
 async fn stopped_at_hit() -> (Scenario, ProcessId, ThreadId, microscope::Breakpoint) {
     let mut scenario = Scenario::launch("trap-jump");
     let breakpoint = scenario.add_breakpoint_spec(source("hit")).await;
@@ -44,9 +38,6 @@ async fn stopped_at_hit() -> (Scenario, ProcessId, ThreadId, microscope::Breakpo
     (scenario, process_id, thread_id, breakpoint)
 }
 
-/// A signal sent to the worker at its hit stops it as it begins to step
-/// over the trap. Moved elsewhere, its handler returns there, and it runs
-/// on with the main thread, which it needs.
 #[tokio::test]
 async fn a_thread_moved_after_a_signal_stopped_its_step_over_a_trap_runs_with_its_siblings() {
     let (mut scenario, process, worker, _) = stopped_at_hit().await;
@@ -69,10 +60,6 @@ async fn a_thread_moved_after_a_signal_stopped_its_step_over_a_trap_runs_with_it
     scenario.shutdown().await;
 }
 
-/// A quiet signal sent to the worker at its hit runs its handler before
-/// the step over the trap, and a breakpoint in the handler stops it there.
-/// Continued, the worker returns to the trap, steps over it without
-/// counting the hit again, and the program runs every line of `step`.
 #[tokio::test]
 async fn a_stop_in_a_handler_that_interrupted_a_step_over_a_trap_counts_the_trap_once() {
     let (mut scenario, process, worker, first) = stopped_at_hit().await;

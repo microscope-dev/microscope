@@ -1,7 +1,3 @@
-// Drawing values in the page: a program's own renderer, a session's views
-// file, what changed since the stop before, a drawing's parts, the link,
-// failures, and reloading views.
-
 import { copyFile, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
@@ -10,7 +6,6 @@ import type { Page } from "@playwright/test";
 import { card, drawAt } from "./drawings";
 import { expect, fixture, join, type Microscope, menu, root, test } from "./server";
 
-/** The squares a board's drawing outlines as changed since the stop before. */
 function outlined(page: Page): Promise<string[]> {
   return card(page, "self")
     .locator("rect[stroke]")
@@ -30,7 +25,7 @@ test.describe("a program's own renderer", () => {
     await drawAt(page, "main.rs:108");
     const board = card(page, "self");
     await expect(page.getByRole("tab", { name: /Drawings\s*1/u })).toBeVisible();
-    // Pieces are named by their squares' titles.
+
     await expect(board.getByRole("button", { name: "e1: White King" })).toBeVisible();
     await expect(board.getByRole("button", { name: "d8: Black Queen" })).toBeVisible();
     await expect(board.getByRole("button", { name: "e4", exact: true })).toBeVisible();
@@ -38,14 +33,12 @@ test.describe("a program's own renderer", () => {
     await expect(board).toContainText("chess.views[1]");
     expect(await outlined(page)).toEqual([]);
 
-    // The next move: e2e4, which the board marks against the stop before.
     await page.keyboard.press("F5");
     await expect(board).toContainText("stop #3");
     await expect(board.getByRole("button", { name: "e4: White Pawn" })).toBeVisible();
     await expect(board.locator(".drawing-caption")).toHaveText("Black to move");
     await expect.poll(() => outlined(page)).toEqual(["e2", "e4"]);
 
-    // A square opens its part of the value, which can be watched.
     await board.getByRole("button", { name: "e4: White Pawn" }).click();
     const part = page.getByRole("dialog", { name: "Part self.mailbox[28]" });
     await expect(part).toContainText("Some");
@@ -54,7 +47,6 @@ test.describe("a program's own renderer", () => {
     await part.getByRole("button", { name: "Close" }).click();
     await expect(part).toBeHidden();
 
-    // The link shows the same drawing.
     await page.reload();
     await expect(card(page, "self").getByRole("button", { name: "e4: White Pawn" })).toBeVisible();
   });
@@ -71,25 +63,22 @@ test.describe("a program's own renderer", () => {
     await page.getByRole("button", { name: "Draw self.fullmove as…" }).first().click();
     await page.getByRole("menuitem", { name: /^chess-board/u }).click();
     await expect(page).toHaveURL(/[?&]d=self.fullmove~chess-board/u);
-    // The board's renderer reads squares the number does not have.
+
     const pinned = page.getByRole("region", { name: "Drawing of self.fullmove as chess-board" });
     await expect(pinned.getByRole("alert")).toContainText(/chess-board\.js:\d+:\d+: TypeError/u);
-    // Removing it unpins it.
+
     await pinned.getByRole("button", { name: "Stop drawing self.fullmove" }).click();
     await expect(pinned).toBeHidden();
     await expect(page).not.toHaveURL(/[?&]d=/u);
   });
 });
 
-/** Starts microscope on life with `views`, and joins it. */
 async function life(page: Page, microscope: Microscope, views: string): Promise<Microscope> {
   const server = await microscope.start(["--views", views, fixture("life")]);
   await join(page, server.link);
   return server;
 }
 
-/** How many of a life board's cells are alive, and how many were just born,
- * from the pixels the page shows. */
 function cells(page: Page): Promise<{ alive: number; born: number }> {
   return card(page, "life")
     .locator("canvas")
@@ -117,7 +106,7 @@ test.describe("a session's views file", () => {
     const board = card(page, "life");
     await expect(board.locator(".drawing-caption")).toHaveText("generation 1");
     await expect(board).toContainText("life.js");
-    // A glider and a blinker: eight cells, none born before the first stop.
+
     expect(await cells(page)).toEqual({ alive: 8, born: 0 });
 
     await page.keyboard.press("F5");
@@ -126,8 +115,6 @@ test.describe("a session's views file", () => {
     expect(second.alive).toBe(8);
     expect(second.born).toBeGreaterThan(0);
 
-    // Drawing a value the frame already draws pins that card, which can
-    // then stop being pinned.
     await page.getByRole("button", { name: "Draw life", exact: true }).first().click();
     await expect(page).toHaveURL(/[?&]d=life(&|$)/u);
     await board.getByRole("button", { name: "Stop drawing life" }).click();
@@ -155,7 +142,6 @@ test.describe("a session's views file", () => {
     const board = card(page, "life");
     await expect(board.locator(".drawing-caption")).toHaveText("generation 1");
 
-    // Each of the 3,072 cells' bytes, then the other inputs, a row each.
     await board.getByRole("button", { name: "Table" }).click();
     const table = board.getByRole("table", { name: "Inputs of life" });
     await expect(table).toHaveAttribute("aria-rowcount", "3075");
@@ -174,10 +160,9 @@ test.describe("a session's views file", () => {
     expect(lines).toHaveLength(3075);
     expect(lines.slice(0, 2)).toEqual(["path,value", "cells[0],0"]);
     expect(lines.slice(-2)).toEqual(["columns,64", "generation,1"]);
-    // The blinker's middle cell, alive at every generation.
+
     expect(lines[1 + 20 * 64 + 31]).toBe("cells[1311],1");
 
-    // Each cell is 6 units square.
     const image = board.locator("canvas");
     const box = await image.boundingBox();
     if (box === null) {
@@ -207,7 +192,7 @@ extend c life {
 }
 `,
     );
-    // A rect a cell: 3,072 shapes, each titled and selectable.
+
     await writeFile(
       path.join(directory, "cells.js"),
       `microscope.draw(({ cells, columns }) => microscope.picture({
@@ -252,8 +237,6 @@ extend c life {
     await page.keyboard.press("F5");
     await expect(card(page, "life").locator(".drawing-caption")).toHaveText("generation 2");
 
-    // The same program again, whose first board differs from the last one
-    // drawn before it, at an earlier stop.
     await menu(page, "File", "Launch a program…");
     const program = page.getByRole("combobox", { name: "Program" });
     await program.fill(fixture("life"));
@@ -303,7 +286,6 @@ extend c life {
       });
     expect(Number(await caption.textContent())).toBe(await offered());
 
-    // A narrower page draws again at the card's new width.
     const wide = await offered();
     await page.setViewportSize({ width: 1024, height: 720 });
     await expect.poll(offered).toBeLessThan(wide);
@@ -414,7 +396,6 @@ extend c life {
     await expect(board.getByRole("alert")).toContainText("Cannot draw: `pixels`:");
     await expect(board.getByRole("alert")).toContainText("0x10");
 
-    // A renderer that never returns is stopped, and the page answers meanwhile.
     await tab("forever").click();
     await expect(board.getByRole("alert")).toHaveText(
       "The renderer took longer than 2 s, so microscope stopped it.",
@@ -422,7 +403,6 @@ extend c life {
     await page.keyboard.press("Alt+s");
     await expect(page).not.toHaveURL(/view=drawings/u);
 
-    // A renderer nobody provides is named.
     const url = new URL(page.url());
     url.searchParams.set("view", "drawings");
     url.searchParams.append("d", "life~nowhere");

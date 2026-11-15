@@ -1,7 +1,7 @@
-//! A chess position, kept as bitboards and as a 64-square mailbox, that
-//! plays a short scripted game through `make_move`. It carries its views
-//! and the renderer that draws a board in its `.debug_microscope_views`
-//! section, through the SDK's macros.
+
+
+
+
 
 use std::hint::black_box;
 
@@ -30,12 +30,12 @@ pub struct Piece {
     pub kind: Kind,
 }
 
-/// The four castling rights, one bit each: white king side, white queen
-/// side, black king side, black queen side.
+
+
 #[derive(Clone, Copy, Debug)]
 pub struct CastlingRights(pub u8);
 
-/// A square, 0 for a1 to 63 for h8.
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Square(pub u8);
 
@@ -46,9 +46,9 @@ pub struct Move {
 }
 
 pub struct Board {
-    /// The squares each kind of piece holds, by `Kind`.
+
     pub pieces: [u64; 6],
-    /// The squares each side holds, by `Color`.
+
     pub colors: [u64; 2],
     pub mailbox: [Option<Piece>; 64],
     pub side_to_move: Color,
@@ -103,7 +103,7 @@ impl Board {
         Some(piece)
     }
 
-    /// Plays `mv`, and returns the piece it captured.
+
     pub fn make_move(&mut self, mv: Move) -> Option<Piece> {
         let piece = self.take(mv.from).expect("a piece moves");
         let captured = self.take(mv.to);
@@ -112,7 +112,7 @@ impl Board {
             .then(|| Square((mv.from.0 + mv.to.0) / 2));
         if piece.kind == Kind::King {
             self.castling.0 &= if piece.color == Color::White { 0b1100 } else { 0b0011 };
-            // Castling moves the rook beside the king.
+
             if mv.to.0.abs_diff(mv.from.0) == 2 {
                 let (from, to) = if mv.to.0 > mv.from.0 { (mv.to.0 + 1, mv.to.0 - 1) } else { (mv.to.0 - 2, mv.to.0 + 1) };
                 let rook = self.take(Square(from)).expect("a rook castles");
@@ -130,7 +130,7 @@ impl Board {
     }
 }
 
-/// A square named as `e4` is.
+
 fn square(name: &str) -> Square {
     let bytes = name.as_bytes();
     Square((bytes[1] - b'1') * 8 + (bytes[0] - b'a'))

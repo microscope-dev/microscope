@@ -1,8 +1,3 @@
-// The built-in renderers, each drawing a real program's values through a
-// views file. Every test reads the card's inputs exactly, through Copy CSV,
-// holds the drawing to them, then steps once and checks what the drawing
-// marks against the stop before.
-
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
@@ -11,7 +6,6 @@ import type { Locator, Page } from "@playwright/test";
 import { card, copyCsv, drawAt, showTab, stubClipboard, titles } from "./drawings";
 import { expect, fixture, join, type Microscope, menu, root, test } from "./server";
 
-/** Starts microscope on a fixture with its views file, and joins it. */
 async function open(
   page: Page,
   microscope: Microscope,
@@ -27,7 +21,6 @@ async function open(
   await join(page, server.link);
 }
 
-/** The numbers an input holds, in order, from a card's CSV. */
 function numbers(rows: Map<string, string>, name: string): number[] {
   const found: number[] = [];
   for (let index = 0; rows.has(`${name}[${index}]`); index++) {
@@ -36,7 +29,6 @@ function numbers(rows: Map<string, string>, name: string): number[] {
   return found;
 }
 
-/** Steps to the next stop and waits until `board`, on screen, has drawn it. */
 async function step(page: Page, board: Locator, stop: string): Promise<void> {
   await board.scrollIntoViewIfNeeded();
   await page.keyboard.press("F5");
@@ -46,15 +38,10 @@ async function step(page: Page, board: Locator, stop: string): Promise<void> {
 const metrics = (page: Page, microscope: Microscope) =>
   open(page, microscope, "metrics", "c/metrics/metrics.views");
 
-/** The number of values a card's CSV holds under `name`, as `name[i]` or
- * `name[i][j]`. */
 function csvCount(rows: Map<string, string>, name: string): number {
   return [...rows.keys()].filter((key) => key.startsWith(`${name}[`)).length;
 }
 
-/** The renderers' own math is held to known answers in
- * test/builtins.test.tsx; here each draws a real program's values once,
- * opens a part, and marks the stop before after one step. */
 test("a C program's metrics draw in every built-in, open their parts, and mark the stop before", async ({
   page,
   microscope,
@@ -69,8 +56,6 @@ test("a C program's metrics draw in every built-in, open their parts, and mark t
     await dialog.getByRole("button", { name: "Close" }).click();
   };
 
-  // Every value the card was given is drawn: the CSV's count is the
-  // caption's.
   for (const [tab, input, drawn] of [
     ["line-plot", "values", "n=600"],
     ["histogram", "values", "n=5000"],
@@ -101,7 +86,6 @@ test("a C program's metrics draw in every built-in, open their parts, and mark t
   expect((await copyCsv(page, board)).get("values")).toBe("258");
   await expect(caption).toContainText("0x102");
 
-  // One step, and each drawing shown before it marks what changed since.
   await board.scrollIntoViewIfNeeded();
   await page.keyboard.press("F5");
   await expect(board.locator(".drawing-head")).toContainText("stop #3");
@@ -119,7 +103,6 @@ test("a C program's metrics draw in every built-in, open their parts, and mark t
   await showTab(board, "histogram");
   await expect.poll(() => titles(board)).toContain("the stop before");
 
-  // The chosen drawing stays chosen in another view.
   const histogram = board.getByRole("button", { name: "histogram", exact: true });
   await menu(page, "Go", "Show source");
   await page.keyboard.press("Alt+v");
@@ -155,7 +138,7 @@ test.describe("a card's header", () => {
       expect(box.height).toBeLessThan(24);
       expect(box.inside).toBe(true);
     }
-    // Drawing fills in the rest of the header, which moves no tab.
+
     await expect(board.locator(".drawing-caption")).toContainText("n=600");
     await expect(board.getByRole("button", { name: "Copy CSV" })).toBeVisible();
     expect(await boxes()).toEqual(before);
@@ -190,7 +173,6 @@ test.describe("a Go program's counters", () => {
     expect(bars).toContain(`Other: 16 more entries, total ${rest}`);
     await expect(hits.locator(".drawing-caption")).toContainText("top 40 + Other (16 more");
 
-    // The seven largest shares and Other, summing to the whole.
     const bytes = card(page, "bytes");
     const sizes = await copyCsv(page, bytes);
     const values: number[] = [];
@@ -217,7 +199,6 @@ test.describe("a Go program's counters", () => {
       true,
     );
 
-    // Hours by index, in the program's order; a bar opens its element.
     const hours = card(page, "hours");
     await hours.scrollIntoViewIfNeeded();
     await expect(hours.locator(".drawing-head")).toContainText("stop #3");
@@ -268,7 +249,7 @@ test.describe("a Rust program's profile", () => {
     const drawn = await titles(profile);
     expect(drawn).toContain(titleOf(score));
     expect(drawn).toContain(titleOf(query));
-    // The same profile as folded stacks draws the same frames.
+
     const folded = card(page, "folded");
     await expect(folded.locator(".drawing-caption")).toHaveText(caption);
     expect((await titles(folded)).toSorted()).toEqual(drawn.toSorted());
@@ -309,13 +290,12 @@ test.describe("Draw as…", () => {
     const line = page.getByRole("region", { name: "Drawing of window as line-plot" });
     const rows = await copyCsv(page, line);
     const values = numbers(rows, "values");
-    // Five f32 samples, each written as the shortest text that is that f32,
-    // as the CLI prints it: the first, sin 0 + 0, is 0.
+
     expect(values).toHaveLength(5);
     expect(values[0]).toBe(0);
     expect(rows.get("values[1]")).toBe("2.1088262");
     await expect(line.locator(".drawing-caption")).toContainText("n=5");
-    // Few enough values that each is a mark of its own, which opens it.
+
     await line.getByRole("button", { name: `[2] values: ${values[2]}` }).click();
     await expect(page.getByRole("dialog", { name: "Part window[2]" })).toBeVisible();
     await page
@@ -344,7 +324,7 @@ test.describe("a C++ program's own renderer", () => {
     await expect(tree.locator(".drawing-caption")).toHaveText(
       "3 nodes · depth 2 · 1 added since the stop before",
     );
-    // In key order, left to right.
+
     const keys = await tree.getByRole("button").evaluateAll((nodes) =>
       nodes
         .map((node) => ({
@@ -366,7 +346,7 @@ test.describe("a C++ program's own renderer", () => {
     await page.getByRole("button", { name: "Draw counts as…" }).first().click();
     await page.getByRole("menuitem", { name: /^bar-chart/u }).click();
     const counts = page.getByRole("region", { name: "Drawing of counts as bar-chart" });
-    // "tree", "map", "node" so far.
+
     await expect
       .poll(async () =>
         (await titles(counts)).filter((title) => /^\w+: \d+$/u.test(title)).toSorted(),
@@ -419,7 +399,7 @@ extend go main.Hours {
         caption: await hours.locator(".drawing-caption").textContent(),
       };
     };
-    // Each draws once at the first stop, so each has a stop before at the next.
+
     await picture("bars", "#2");
     await picture("bar-chart", "#2");
     await step(page, hours, "#3");

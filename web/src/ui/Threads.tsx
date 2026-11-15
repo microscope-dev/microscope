@@ -7,15 +7,14 @@ import { threadLabel } from "./names";
 import { useGo } from "./navigation";
 import { useFocus } from "./Workspace";
 
-/** Every thread; choosing one shows its stack at the stop. */
 export function Threads() {
   const { state, at, stale } = useFocus();
   const go = useGo();
   const inferior = state.inferior;
   const stopping = inferior.state === "stopped" ? inferior.thread : null;
-  // A task's focus shows no thread's stack.
+
   const shown = at?.task ? null : (at?.thread ?? stopping);
-  // Threads can be chosen at the stop the tab shows, while it lasts.
+
   const choosable = at !== null && stale === null;
   const choose = useCallback(
     (thread: number) => {

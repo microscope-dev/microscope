@@ -1,7 +1,3 @@
-// The built-in mesh viewer, loaded from views/visualizers/mesh.js and run
-// live in the real sandbox with WebGL2, on meshes laid out as a C++ engine
-// keeps them: a position, a normal, and RGBA in 28 bytes a vertex.
-
 import { describe, expect, it } from "vitest";
 import { commands } from "vitest/browser";
 
@@ -12,7 +8,6 @@ import { context, pixel, sandbox, Watched } from "./sandboxes";
 const source = await commands.readFile("../views/visualizers/mesh.js");
 const shape = { width: 240, height: 160 };
 
-/** Vertices as an engine lays them out, and 32-bit indices. */
 function mesh(
   positions: number[][],
   indices: number[] | null,
@@ -50,7 +45,6 @@ const square = [
 ];
 const squareIndices = [0, 1, 2, 0, 2, 3];
 
-/** A session of the viewer on `input`, once it has drawn its first frame. */
 async function viewer(input: unknown, size = shape) {
   const live = new Watched(sandbox(), "card", source, input, "mesh", size);
   await live.expect("started");
@@ -60,7 +54,6 @@ async function viewer(input: unknown, size = shape) {
   return { live, caption, bitmap };
 }
 
-/** The next frame, after whatever asked for it. */
 async function nextFrame(live: Watched): Promise<ImageBitmap> {
   live.session.frame(16);
   for (;;) {
@@ -71,7 +64,6 @@ async function nextFrame(live: Watched): Promise<ImageBitmap> {
   }
 }
 
-/** Every pixel of a frame, to compare frames. */
 function pixels(bitmap: ImageBitmap): Uint8ClampedArray {
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
   const draw = canvas.getContext("2d") as OffscreenCanvasRenderingContext2D;
@@ -105,7 +97,7 @@ describe("mesh", () => {
   it("turns on a drag, zooms on the wheel, shows wireframe on W, and keeps its camera", async () => {
     const { live, bitmap } = await viewer(mesh(square, squareIndices));
     const first = pixels(bitmap);
-    // Pressing hides the hover text.
+
     live.session.pointer(pointer("down", { buttons: 1 }));
     expect(await live.next()).toEqual({ type: "hint", text: null });
     live.session.pointer(pointer("move", { buttons: 1, dx: 40, dy: 10 }));
@@ -113,7 +105,6 @@ describe("mesh", () => {
     const turned = pixels(await nextFrame(live));
     expect(turned).not.toEqual(first);
 
-    // A new stop's mesh is seen from where the camera was.
     live.session.pointer(pointer("up"));
     live.session.update(mesh(square, squareIndices), context);
     expect(await live.caption()).toBe("4 vertices · 2 triangles");
@@ -128,13 +119,13 @@ describe("mesh", () => {
     await live.expect("redraw");
     const wire = await nextFrame(live);
     expect(pixels(wire)).not.toEqual(zoomed);
-    // Only the edges are drawn: the square's middle is the surface.
+
     expect(pixel(wire, 120, 80)).toBe(palette.surface);
   });
 
   it("fits a mesh whole into a tall, narrow canvas", async () => {
     const { bitmap } = await viewer(mesh(square, squareIndices), { width: 60, height: 240 });
-    // The square's corners stay inside: its edge columns are the surface.
+
     for (let y = 0; y < 240; y += 8) {
       expect(pixel(bitmap, 0, y)).toBe(palette.surface);
       expect(pixel(bitmap, 59, y)).toBe(palette.surface);
@@ -143,7 +134,6 @@ describe("mesh", () => {
   });
 
   it("names the vertex nearest the pointer", async () => {
-    // The camera looks at the middle of the mesh, where vertex 0 is.
     const star = [
       [0, 0, 0],
       [1, 0, 0],
@@ -172,7 +162,6 @@ describe("mesh", () => {
     );
     expect(pixel(stray.bitmap, 120, 80)).toBe(palette.surface);
 
-    // A finite position the transform carries past the largest number.
     const huge = [1e300, 0, 0, 0, 0, 1e300, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
     const overflown = await viewer(mesh(square, squareIndices, { transform: huge }));
     expect(overflown.caption).toBe(
@@ -197,7 +186,6 @@ describe("mesh", () => {
     expect(outline.caption).toBe("4 vertices · 4 lines");
     expect(pixel(outline.bitmap, 120, 80)).toBe(palette.surface);
 
-    // Without indices, the vertices are the triangles, in order.
     const shifted = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 5, 5, 5, 1];
     const placed = await viewer(
       mesh(square.slice(0, 3), null, { up: "z", transform: new Float32Array(shifted) }),

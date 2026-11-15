@@ -1,11 +1,3 @@
-//! Node's JavaScript timers. Every timer of an `Environment` shares one
-//! libuv timer, which calls the function its principal realm keeps as its
-//! timers callback, `processTimers` (`lib/internal/timers.js`). That
-//! module keeps the timers themselves: `timerListMap` holds a list of
-//! `Timeout` objects for each duration, linked through `_idleNext` and
-//! `_idlePrev`. The walk reaches the module's variables through the
-//! context `processTimers` closes over.
-
 use std::sync::Arc;
 
 use super::objects::{Object, Problem, Reader, address_at};
@@ -15,17 +7,13 @@ use crate::TaskState;
 use crate::image::v8::{Constant, Field};
 use crate::runtime_model::RuntimeTask;
 
-/// The function Node calls for its timers, and the script that defines it.
 const PROCESS_TIMERS: &str = "processTimers";
 const TIMERS_SCRIPT: &str = "node:internal/timers";
 
-/// How many contexts out the module's is from `processTimers`'s at most.
 const MOST_CONTEXTS: usize = 8;
 
-/// The most timers read: a process keeps far fewer.
 const MOST_TIMERS: usize = 1 << 16;
 
-/// The variables of `internal/timers` the walk reads.
 struct Module {
     lists: Object,
     async_id: u64,
@@ -33,8 +21,6 @@ struct Module {
     refed: u64,
 }
 
-/// The tasks of `environment`'s timers, appended to `tasks`. An
-/// `Environment` that has not yet set up its timers has none.
 pub(super) fn listed(
     walk: &mut Walk<'_>,
     environment: Environment,
@@ -80,9 +66,6 @@ pub(super) fn listed(
     Ok(())
 }
 
-/// The variables of the `internal/timers` of `environment`, through its
-/// principal realm's timers callback, which must be that module's
-/// `processTimers`; `None` before the environment set up its timers.
 fn module_of(walk: &mut Walk<'_>, environment: Environment) -> Result<Option<Module>, Problem> {
     let reader = walk.reader;
     let realm = reader.word(address_at(
@@ -111,8 +94,6 @@ fn module_of(walk: &mut Walk<'_>, environment: Environment) -> Result<Option<Mod
     module(&reader, callback).map(Some)
 }
 
-/// Whether `timer` is a `Timeout` of `environment`'s `internal/timers`
-/// whose async id gives `number`.
 pub(super) fn located(
     walk: &mut Walk<'_>,
     environment: Environment,
@@ -140,8 +121,6 @@ pub(super) fn located(
             if environment.owner.number(id).ok() == Some(number)))
 }
 
-/// The variables of the module whose context is the first out from
-/// `callback`'s that holds `timerListMap`.
 fn module(reader: &Reader<'_>, callback: Object) -> Result<Module, Problem> {
     let mut context = reader
         .object(reader.field(callback, Field::JSFunctionContext)?)?
@@ -173,7 +152,6 @@ fn module(reader: &Reader<'_>, callback: Object) -> Result<Module, Problem> {
     Err("no context out from processTimers' holds timerListMap".into())
 }
 
-/// The object the own property `name` of `object` links to.
 fn linked(reader: &Reader<'_>, object: Object, name: &str) -> Result<Object, Problem> {
     super::tasks::own_data(reader, object, name)?
         .map(|word| reader.object(word))
@@ -182,7 +160,6 @@ fn linked(reader: &Reader<'_>, object: Object, name: &str) -> Result<Object, Pro
         .ok_or_else(|| format!("the timer at {:#x} has no {name}", object.0).into())
 }
 
-/// What a property of a timer holds that the walk reads.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Primitive {
     Number(f64),
@@ -225,7 +202,6 @@ fn primitive(reader: &Reader<'_>, held: Held) -> Result<Primitive, Problem> {
     Ok(Primitive::Other)
 }
 
-/// The task of the `Timeout` object `timer`.
 fn task(
     walk: &mut Walk<'_>,
     environment: Environment,

@@ -1,10 +1,3 @@
-//! Frame and variable references handed to the client.
-//!
-//! Every reference comes from one session-wide counter that never resets,
-//! so a reference from an earlier stop can never name an object of a later
-//! one: once the inferior resumes, every reference is dropped and requests
-//! naming one fail instead of being reinterpreted.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -14,13 +7,10 @@ use microscope::{
     VariableKind,
 };
 
-/// The largest reference DAP clients accept: references are 32-bit signed.
 const MAX_REFERENCE: i64 = i32::MAX as i64;
 
-/// What a variables reference expands to.
 #[derive(Debug, Clone)]
 pub enum Variables {
-    /// The parameters or the locals of a frame.
     Scope {
         context: StopContext,
         kind: VariableKind,
@@ -29,25 +19,20 @@ pub enum Variables {
     /// A frame's registers.
     Registers { context: StopContext },
 
-    /// The static variables declared in a frame's source file.
     Statics {
         context: StopContext,
         module: microscope::ModuleId,
         file: microscope::SourceFileId,
     },
 
-    /// The children of an aggregate, named by `path` when it has a name.
     Children {
         context: StopContext,
         reference: Arc<ValueChildrenReference>,
         path: Option<microscope::Expression>,
 
-        /// Whether the children are all elements, all named members, or
-        /// (`None`) a view's elements followed by its named children.
         indexed: Option<bool>,
     },
 
-    /// What a pointer or reference refers to.
     Pointee {
         context: StopContext,
         reference: Box<DereferenceReference>,
@@ -55,7 +40,6 @@ pub enum Variables {
         path: Option<microscope::Expression>,
     },
 
-    /// The elements of an evaluated range, such as `values[2..6]`.
     Range {
         context: StopContext,
         expression: microscope::Expression,
@@ -63,10 +47,6 @@ pub enum Variables {
 }
 
 impl Variables {
-    /// Whether the list's rows are elements, which a client asks for with
-    /// the `indexed` filter, rather than named rows, which it asks for with
-    /// `named`. `None` when a client has no count to page by, or when the
-    /// list holds both, as a view's does.
     pub const fn indexed(&self) -> Option<bool> {
         match self {
             Self::Scope { .. } | Self::Registers { .. } | Self::Statics { .. } => Some(false),
@@ -76,7 +56,6 @@ impl Variables {
         }
     }
 
-    /// The frame whose values the reference expands.
     pub const fn context(&self) -> StopContext {
         match self {
             Self::Scope { context, .. }
@@ -89,7 +68,6 @@ impl Variables {
     }
 }
 
-/// The references valid at the current stop.
 #[derive(Debug)]
 pub struct References {
     next: i64,
@@ -97,34 +75,25 @@ pub struct References {
     frame_ids: HashMap<(ExecutionContext, StackFrameId), i64>,
     variables: HashMap<i64, Variables>,
 
-    /// The expression of each named row of a variables list, by the list's
-    /// reference and the row's name.
     paths: HashMap<(i64, String), (StopContext, microscope::Expression)>,
 
-    /// What each location reference names.
     locations: HashMap<i64, Location>,
 
-    /// The source line each goto target names.
     targets: HashMap<i64, microscope::BreakpointSpec>,
 
-    /// The call each step-in target names.
     calls: HashMap<i64, microscope::VirtualAddress>,
 }
 
-/// A place in the program's source a location reference names.
 #[derive(Debug, Clone)]
 pub enum Location {
-    /// The code at an address, such as the function a pointer points to.
     Code(u64),
 
-    /// Where a module's debug information says something is declared.
     Declared {
         module: microscope::ModuleId,
         location: microscope::SourceLocation,
     },
 }
 
-/// The session ran out of references, which ends it rather than reusing one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the session used every one of its {MAX_REFERENCE} references")]
 pub struct Exhausted;
@@ -161,8 +130,6 @@ impl References {
         Ok(id)
     }
 
-    /// Returns the reference of a frame, the same one each time it is asked
-    /// for during one stop.
     pub fn frame(&mut self, context: StopContext) -> Result<i64, Exhausted> {
         if let Some(&id) = self.frame_ids.get(&(context.execution, context.frame)) {
             return Ok(id);
@@ -175,51 +142,42 @@ impl References {
         Ok(id)
     }
 
-    /// Returns a new reference that names nothing, such as for a row that
-    /// only labels.
     pub const fn label(&mut self) -> Result<i64, Exhausted> {
         self.allocate()
     }
 
-    /// Returns a new reference for something expandable.
     pub fn variables(&mut self, variables: Variables) -> Result<i64, Exhausted> {
         let id = self.allocate()?;
         self.variables.insert(id, variables);
         Ok(id)
     }
 
-    /// Returns a new reference to a place in the program's source.
     pub fn location(&mut self, location: Location) -> Result<i64, Exhausted> {
         let id = self.allocate()?;
         self.locations.insert(id, location);
         Ok(id)
     }
 
-    /// The place a location reference names.
     pub fn location_of(&self, id: i64) -> Option<&Location> {
         self.locations.get(&id)
     }
 
-    /// Returns a new reference to a location a thread may be moved to.
     pub fn goto_target(&mut self, location: microscope::BreakpointSpec) -> Result<i64, Exhausted> {
         let id = self.allocate()?;
         self.targets.insert(id, location);
         Ok(id)
     }
 
-    /// The location a goto target names.
     pub fn target_of(&self, id: i64) -> Option<&microscope::BreakpointSpec> {
         self.targets.get(&id)
     }
 
-    /// Returns a new reference to a call a step in may go into.
     pub fn step_target(&mut self, call: microscope::VirtualAddress) -> Result<i64, Exhausted> {
         let id = self.allocate()?;
         self.calls.insert(id, call);
         Ok(id)
     }
 
-    /// The call a step-in target names.
     pub fn call_of(&self, id: i64) -> Option<microscope::VirtualAddress> {
         self.calls.get(&id).copied()
     }
@@ -232,7 +190,6 @@ impl References {
         self.variables.get(&id)
     }
 
-    /// Records the expression a row of a variables list evaluates as.
     pub fn record_path(
         &mut self,
         list: i64,
@@ -243,8 +200,6 @@ impl References {
         self.paths.insert((list, name), (context, path));
     }
 
-    /// The expression of a row of a variables list, with its frame: as it
-    /// was listed, or else as the list's kind names its rows.
     pub fn child_path(
         &self,
         list: i64,
@@ -254,7 +209,6 @@ impl References {
             return Some(recorded.clone());
         }
 
-        // A row is named `[i]`, `[i][j]`, or by its member's name.
         let row = |parent: &microscope::Expression, name: &str| {
             if name.starts_with('[') {
                 let indices: Option<Vec<i128>> = name
@@ -304,7 +258,6 @@ impl References {
         }
     }
 
-    /// Drops every reference, as when the inferior resumes.
     pub fn clear(&mut self) {
         self.frames.clear();
         self.frame_ids.clear();

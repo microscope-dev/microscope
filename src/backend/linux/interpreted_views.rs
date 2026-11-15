@@ -1,12 +1,3 @@
-//! Views of an interpreter's objects (`docs/views.md`): the view each class
-//! has at a stop, chosen by the class's identity and then those of the
-//! classes it derives from, and an object's presentation through it.
-//!
-//! A class is only known at run time, and only by its handle while the
-//! stop lasts, so the choice is kept for one stop. The view binds once for
-//! the class: `self` is a value of a dynamic type, whose attributes the
-//! view reaches as expressions do.
-
 use std::sync::Arc;
 
 use super::evaluation::{Place, StopMachine, ViewBound};
@@ -21,9 +12,6 @@ use crate::view::run::Failure;
 use crate::view::{Choice, ViewSet};
 use crate::{Presentation, RuntimeId, TypeInfo, ValueChildren, VariableState};
 
-/// The children of an interpreter's object as the view that presents it
-/// gives them, which only this backend pages, through the runtime that
-/// interprets the object.
 #[derive(Debug)]
 pub(super) struct InterpretedView {
     pub(super) runtime: RuntimeId,
@@ -32,8 +20,6 @@ pub(super) struct InterpretedView {
 }
 
 impl<P: InspectionOps> StopMachine<'_, '_, P> {
-    /// The type and state the debugger presents a slot's value as, which
-    /// `runtime` read: through the view its class has, when one binds.
     pub(super) fn present_interpreted(
         &mut self,
         runtime: &BoundRuntime,
@@ -97,7 +83,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
                     children,
                 );
                 let shown = presented.text.clone();
-                // A view that keeps the object's summary keeps its full text.
                 let detail = (presented.summary == *stored.summary)
                     .then(|| stored.detail.clone())
                     .flatten();
@@ -107,8 +92,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
                 *text = shown.map(Arc::new);
             }
 
-            // A view that cannot present the object leaves it as the
-            // debugger presents it without one, saying why.
             Err(Failure::Problem(problem)) => {
                 let mut presentation = (**stored).clone();
                 presentation.summary =
@@ -123,8 +106,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         Ok((type_info, state))
     }
 
-    /// As [`Self::present_interpreted`], for inspection, which reports what
-    /// went missing as the slot's state.
     pub(super) fn interpreted_state(
         &mut self,
         runtime: &BoundRuntime,
@@ -137,7 +118,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         }
     }
 
-    /// The view the class at `class`, of `runtime`, has at this stop.
     fn class_view(
         &mut self,
         runtime: &BoundRuntime,
@@ -152,8 +132,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
             return choice;
         }
 
-        // A class whose lineage cannot be read has no view: its objects show
-        // as the debugger presents them without one, which is what they are.
         let budget = &mut *self.budget;
         let lineage = frame
             .with_stop(runtime, |stop| {
@@ -178,9 +156,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
     }
 }
 
-/// `presentation`, whose children `bound` presents, with children that
-/// page through the runtime numbered `runtime`, which reads the object
-/// `object`, and drawings whose inputs it reads too.
 fn through_runtime(
     mut presentation: Presentation,
     (runtime, object): (RuntimeId, InterpretedHandle),
@@ -213,8 +188,6 @@ mod tests {
     use crate::view::Choice;
     use crate::{RuntimeId, StopId};
 
-    /// A class's view is kept for its stop alone: once the program runs, the
-    /// class's address may name another class, which is chosen for again.
     #[test]
     fn a_class_view_is_kept_for_its_stop_alone() {
         let views = Views::default();
@@ -225,11 +198,9 @@ mod tests {
         assert!(views.class_choice(first, runtime, class).is_some());
         assert!(views.class_choice(second, runtime, class).is_none());
 
-        // A choice made for a stop that has passed is not kept.
         views.keep_class_choice(first, runtime, class, Arc::new(Choice::default()));
         assert!(views.class_choice(second, runtime, class).is_none());
 
-        // Nor one made before the program's state changed.
         views.keep_class_choice(second, runtime, class, Arc::new(Choice::default()));
         views.forget_scans();
         assert!(views.class_choice(second, runtime, class).is_none());

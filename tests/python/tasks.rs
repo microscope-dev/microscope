@@ -1,9 +1,3 @@
-//! asyncio's tasks, which CPython lists from 3.14: each is a task of the
-//! Python runtime, named, in the state asyncio gives it, with what it
-//! awaits and who awaits it; one no thread runs has its coroutines' frames
-//! as its stack, whose locals and expressions read as a thread's frames'
-//! do, and the one a thread runs is on that thread.
-
 use std::collections::BTreeMap;
 
 use microscope::{
@@ -15,11 +9,8 @@ use crate::expressions::{Outcome, outcome};
 use crate::locals::{Stop, presented};
 use crate::session::PythonSession;
 
-/// The interpreters whose asyncio lists its tasks.
 const ASYNCIO: [&str; 4] = ["3.14", "3.14t", "3.15", "3.15t"];
 
-/// One task as CPython reported it: its state, detail, and awaiters, and
-/// each frame of its stack with its locals.
 #[derive(Debug, Default)]
 struct Reported<'t> {
     state: &'t str,
@@ -29,7 +20,6 @@ struct Reported<'t> {
     locals: BTreeMap<usize, Vec<(&'t str, &'t str)>>,
 }
 
-/// Each task CPython reported, by its name.
 fn reported(truth: &[Vec<String>]) -> BTreeMap<&str, Reported<'_>> {
     let mut tasks: BTreeMap<&str, Reported<'_>> = BTreeMap::new();
     for fields in truth {
@@ -62,7 +52,6 @@ fn reported(truth: &[Vec<String>]) -> BTreeMap<&str, Reported<'_>> {
     tasks
 }
 
-/// The value of a task's label `key`, if it has one.
 fn label<'t>(task: &'t TaskSnapshot, key: &str) -> Option<&'t str> {
     task.labels
         .iter()
@@ -80,9 +69,6 @@ const fn state_name(state: &TaskState) -> &'static str {
     }
 }
 
-/// Every task is listed once, as CPython reported it, and each one no
-/// thread runs has the frames, locals, and expressions CPython gives its
-/// coroutines; the one the printer runs is on its thread.
 #[tokio::test]
 async fn each_task_is_listed_with_its_coroutines_as_its_stack() {
     for interpreter in ASYNCIO {
@@ -167,7 +153,6 @@ async fn each_task_is_listed_with_its_coroutines_as_its_stack() {
             task_stack(&stop, task, name, truth, &mut lies).await;
         }
 
-        // A task's frame evaluates its variables as a thread's would.
         if let Some(chained) = listed.get("chained") {
             let mut at = StopContext {
                 stop: stop.id,
@@ -205,8 +190,6 @@ async fn each_task_is_listed_with_its_coroutines_as_its_stack() {
     }
 }
 
-/// The task's backtrace is its coroutines' frames, and each frame's locals
-/// are those CPython reported.
 async fn task_stack(
     stop: &Stop<'_>,
     task: &TaskSnapshot,

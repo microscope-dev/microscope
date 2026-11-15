@@ -1,6 +1,3 @@
-// Screenshots of every screen in light and dark at a few widths, for
-// reviewing the look without clicking through: `just web-shot [PROGRAM]`.
-
 import { spawnSync } from "node:child_process";
 import { access, mkdir } from "node:fs/promises";
 import * as path from "node:path";
@@ -13,8 +10,6 @@ const out = path.join(root, "target", "web-shots");
 const program = process.argv[2] ?? fixture("kvstore");
 const widths = [1440, 1024, 720];
 
-/** Shoots each scheme at each width. Drawings draw again in a new scheme's
- * colors and at a new width, so a page with them waits `settle` ms. */
 async function shoot(page: Page, name: string, settle = 0): Promise<void> {
   for (const scheme of ["dark", "light"] as const) {
     await page.emulateMedia({ colorScheme: scheme });
@@ -34,7 +29,7 @@ const server = await startMicroscope([program], "");
 const browser = await chromium.launch();
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 800 } });
-  // What went wrong in the page, printed as it happens.
+
   page.on("pageerror", (error) => console.error(`page error: ${error.stack ?? error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") {
@@ -97,7 +92,6 @@ try {
   await server.stop();
 }
 
-/** Where `microscope web` with nothing to debug starts. */
 async function shootStart(page: Page): Promise<void> {
   const empty = await startMicroscope([], "");
   try {
@@ -110,11 +104,9 @@ async function shootStart(page: Page): Promise<void> {
   }
 }
 
-/** The Profile layout: a second of spin recorded, then served. */
 async function shootProfile(page: Page): Promise<void> {
   const file = path.join(out, "spin.usprof");
-  // Ending the recording kills spin, so record exits as it did; the file
-  // is what counts.
+
   spawnSync(
     path.join(root, "target", "debug", "microscope"),
     ["record", "-o", file, "--duration", "1", "--", fixture("spin")],
@@ -133,8 +125,6 @@ async function shootProfile(page: Page): Promise<void> {
   }
 }
 
-/** The Drawings view of the metrics fixture after two ticks, so each chart
- * shows the stop before. */
 async function shootDrawings(page: Page): Promise<void> {
   const views = path.join(root, "tests/fixtures/c/metrics/metrics.views");
   const metrics = await startMicroscope(["--views", views, fixture("metrics")], "");
@@ -160,7 +150,7 @@ async function shootDrawings(page: Page): Promise<void> {
     await metrics.stop();
   }
 }
-/** The mesh fixture's torus in the built-in live viewer. */
+
 async function shootMesh(page: Page): Promise<void> {
   const views = path.join(root, "tests/fixtures/cpp/mesh/mesh.views");
   const mesh = await startMicroscope(["--views", views, fixture("mesh")], "");

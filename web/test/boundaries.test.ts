@@ -1,8 +1,3 @@
-// Which modules may import which. The page is layered: state and logic below,
-// views above, entry points on top, and the tests outside it all. An import
-// that crosses a layer the wrong way fails here, by file and line, before it
-// can grow into a tangle.
-
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
@@ -13,11 +8,10 @@ import { FILES, OWN } from "./budget";
 const web = join(import.meta.dirname, "..");
 
 interface Rule {
-  /** Files the rule applies to, as paths from web/. */
   from: RegExp;
-  /** Paths from web/ those files may not import. */
+
   to: RegExp;
-  /** Files the rule leaves out, as paths from web/. */
+
   except?: RegExp;
   why: string;
 }
@@ -51,7 +45,6 @@ function files(directory: string): string[] {
   });
 }
 
-/** Every relative import in `file`, as a path from web/, with its line. */
 function imports(file: string): { target: string; line: number }[] {
   const found: { target: string; line: number }[] = [];
   const pattern = /(?:\bfrom\s*|\bimport\s*\(?\s*)["'](\.{1,2}\/[^"']+)["']/gu;

@@ -1,12 +1,6 @@
-// A drawing's inputs as its renderer receives them: plain JS values, each
-// decided by its type alone (docs/visualizers.md). Numbers and bytes are
-// copied out of the drawing's binary frame into arrays of their own, so
-// that each crosses into the sandbox without the rest.
-
 import { assert } from "../assert";
 import type { Datum, DrawInput, NumberKind } from "../protocol";
 
-/** A value as a renderer receives it. */
 export type Value =
   | null
   | boolean
@@ -29,7 +23,6 @@ export type TypedArray =
   | Float32Array
   | Float64Array;
 
-/** Why an input could not be read from the drawing's binary frame. */
 export class DecodeError extends Error {
   constructor(message: string) {
     super(message);
@@ -50,7 +43,6 @@ const ARRAYS = {
   f64: Float64Array,
 } as const satisfies Record<NumberKind, unknown>;
 
-/** The inputs by name, with `bytes` the drawing's binary frame's payload. */
 export function decodeInputs(inputs: DrawInput[], bytes: Uint8Array): Record<string, Value> {
   return Object.fromEntries(
     inputs.map((input) => {
@@ -65,8 +57,6 @@ export function decodeInputs(inputs: DrawInput[], bytes: Uint8Array): Record<str
   );
 }
 
-/** Fails unless `length` bytes from `offset` lie in `bytes`: a short frame
- * would otherwise give a short array, or a RangeError. */
 function within(bytes: Uint8Array, offset: number, length: number, what: string): void {
   if (
     !Number.isSafeInteger(offset) ||
@@ -79,12 +69,10 @@ function within(bytes: Uint8Array, offset: number, length: number, what: string)
   }
 }
 
-/** The part of the drawn value each input is, by name, or null. */
 export function inputPaths(inputs: DrawInput[]): Record<string, string | null> {
   return Object.fromEntries(inputs.map((input) => [input.name, input.path]));
 }
 
-/** One input, whose numbers and bytes lie in `bytes`. */
 export function decode(datum: Datum, bytes: Uint8Array): Value {
   switch (datum.t) {
     case "bool":

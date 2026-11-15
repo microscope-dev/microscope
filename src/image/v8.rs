@@ -1,13 +1,3 @@
-//! The V8 runtime a module carries: V8's version, and where its heap
-//! objects hold each field the runtime model reads, with the numbers its
-//! frames, tags, and types are told apart by, validated at load. One row,
-//! for a module that exports V8's `v8dbg_` constants (see
-//! `crate::debug_info::v8`).
-//!
-//! A layout is the offsets of [`Field`]s and the values of [`Constant`]s,
-//! each indexed by its enum, so that no per-version number or name reaches
-//! the runtime model.
-
 use zerocopy::little_endian::{I64, U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -28,9 +18,6 @@ mod slices;
 #[path = "v8/bytecodes.gen.rs"]
 mod bytecodes;
 
-/// V8 `version`'s `Bytecodes::kBytecodeSizes`, generated from its headers:
-/// three rows, at the operand scales 1, 2, and 4, of one size per
-/// bytecode; or why microscope has none.
 pub fn bytecode_sizes(version: V8Version) -> Result<&'static [u8], std::sync::Arc<str>> {
     bytecodes::BYTECODE_SIZES
         .iter()
@@ -45,8 +32,6 @@ pub fn bytecode_sizes(version: V8Version) -> Result<&'static [u8], std::sync::Ar
         })
 }
 
-/// V8 `version`'s number of the bytecode `SuspendGenerator`, generated
-/// from its headers; or why microscope has none.
 pub fn suspend_generator(version: V8Version) -> Result<u8, std::sync::Arc<str>> {
     bytecodes::SUSPEND_GENERATOR
         .iter()
@@ -65,10 +50,6 @@ pub fn suspend_generator(version: V8Version) -> Result<u8, std::sync::Arc<str>> 
 #[path = "v8/builtins.gen.rs"]
 mod builtins;
 
-/// A builtin of V8's an await chain is read by: the closures that resume
-/// an async function or generator after an await, those `Promise.all`,
-/// `allSettled`, and `any` give each element, and a capability's default
-/// resolve function, by its name in `BUILTIN_LIST`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Builtin {
     AsyncFunctionAwaitResolveClosure,
@@ -84,7 +65,6 @@ pub enum Builtin {
 }
 
 impl Builtin {
-    /// Every builtin, in order.
     #[cfg(test)]
     pub const ALL: &[Self] = &[
         Self::AsyncFunctionAwaitResolveClosure,
@@ -99,7 +79,6 @@ impl Builtin {
         Self::PromiseCapabilityDefaultResolve,
     ];
 
-    /// The builtin's name, as `BUILTIN_LIST` gives it.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -121,12 +100,8 @@ impl Builtin {
     }
 }
 
-/// Each of some of [`Builtin`]'s numbers.
 pub type Numbers = &'static [(Builtin, i64)];
 
-/// How many builtins V8 `version` has, and each of [`Builtin`]'s number,
-/// as its release build's `builtin_metadata` gives them; or why microscope
-/// has none.
 pub fn builtins(version: V8Version) -> Result<(u32, Numbers), std::sync::Arc<str>> {
     builtins::BUILTINS
         .iter()
@@ -232,9 +207,6 @@ const _: () = {
     }
 };
 
-/// The symbol of the table of V8's builtins' names, as clang and gcc
-/// mangle it: 24 bytes per builtin in number order, each beginning with a
-/// pointer to its name.
 #[cfg(test)]
 pub const BUILTIN_METADATA: [&str; 2] = [
     "_ZN2v88internal12_GLOBAL__N_1L16builtin_metadataE",
@@ -245,7 +217,6 @@ pub const BUILTIN_METADATA: [&str; 2] = [
 #[path = "v8/scope_info_tests.rs"]
 mod scope_info_tests;
 
-/// Defines an enum of a layout's entries, each with the name V8 gives it.
 macro_rules! entries {
     ($(#[$meta:meta])* $kind:ident { $($(#[$doc:meta])* $variant:ident = $name:literal,)* }) => {
         $(#[$meta])*
@@ -256,11 +227,9 @@ macro_rules! entries {
         }
 
         impl $kind {
-            /// Every entry, in order.
             pub const ALL: &[Self] = &[$(Self::$variant,)*];
             pub const COUNT: usize = Self::ALL.len();
 
-            /// The entry's name, as V8 spells it.
             #[must_use]
             pub const fn name(self) -> &'static str {
                 match self {
@@ -268,7 +237,6 @@ macro_rules! entries {
                 }
             }
 
-            /// The entry `name` names.
             #[must_use]
             pub fn named(name: &str) -> Option<Self> {
                 let found = Self::ALL.iter().copied().find(|entry| entry.name() == name);
@@ -1710,10 +1678,6 @@ entries! {
 }
 
 impl Constant {
-    /// Whether the constant comes from V8's sources, its Torque output or
-    /// its headers, rather than from the binary's `v8dbg_` constants: an
-    /// instance type, a bit field, a class's or namespace's constant, or a
-    /// struct's layout.
     #[must_use]
     pub fn is_torque(self) -> bool {
         let name = self.name();
@@ -1721,25 +1685,17 @@ impl Constant {
     }
 }
 
-/// An offset no field has: the version does not have the field.
 const ABSENT: u32 = u32::MAX;
 
-/// A value no constant has: the version does not have the constant.
 const ABSENT_CONSTANT: i64 = i64::MIN;
 
-/// The module names its `v8dbg_` constants only in its dynamic symbol
-/// table, as a shared libnode stripped of its local symbols does, so no
-/// symbol names its local variables.
 pub const DYNAMIC_SYMBOLS: u16 = 1;
 
-/// The V8 runtime a module carries.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct V8RuntimeRecord {
-    /// `v8::internal::Version`'s `major_`, `minor_`, `build_`, and
-    /// `patch_`.
     pub major: U32,
     pub minor: U32,
     pub build: U32,
@@ -1747,53 +1703,35 @@ pub struct V8RuntimeRecord {
     pub flags: U16,
     pub reserved: U16,
 
-    /// Why the module's runtime cannot be read, a string, or [`NONE`]
-    /// when its layout is complete.
     pub problem: U32,
 
-    /// Where the JS dispatch table is: a `DISPATCH_` kind, with its
-    /// address and offset; or why the module's code does not say, a
-    /// string, or [`NONE`].
     pub dispatch_kind: U16,
     pub dispatch_reserved: U16,
     pub dispatch_problem: U32,
     pub dispatch_address: U64,
     pub dispatch_offset: U64,
 
-    /// Where the embedded blob's bounds are kept: its code, its code's
-    /// size, its data, and its data's size; or why the module's code does
-    /// not say, a string, or [`NONE`].
     pub blob_problem: U32,
     pub blob: [U64; 4],
 
-    /// The Node release that built the module: its major, minor, and
-    /// patch numbers; or why the module does not say, a string, or
-    /// [`NONE`].
     pub node_problem: U32,
     pub node: [U32; 3],
     pub inspector_problem: U32,
     pub inspector: [U64; 20],
 
-    /// Where Node keeps its event loop's work, [`NodeTasks`], or why the
-    /// module's code does not say, a string, or [`NONE`].
     pub tasks_problem: U32,
     pub tasks: [U64; NodeTasks::WORDS],
 
-    /// [`V8Runtime::entry_stack`]: the offset, or why the module's code
-    /// does not say, a string, or [`NONE`].
     pub entry_stack_problem: U32,
     pub entry_stack: U64,
     pub offsets: [U32; Field::COUNT],
     pub constants: [I64; Constant::COUNT],
 }
 
-/// The version has no JS dispatch table.
 const DISPATCH_NONE: u16 = 0;
 
-/// [`DispatchTable::Isolate`].
 const DISPATCH_ISOLATE: u16 = 1;
 
-/// [`DispatchTable::Group`].
 const DISPATCH_GROUP: u16 = 2;
 
 const _: () = assert!(
@@ -1807,7 +1745,6 @@ impl Record for V8RuntimeRecord {
     const KIND: TableKind = TableKind::V8Runtime;
 }
 
-/// A V8 version, as `v8::internal::Version` holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct V8Version {
     pub major: u32,
@@ -1816,7 +1753,6 @@ pub struct V8Version {
     pub patch: u32,
 }
 
-/// A Node release, as `napi_node_version` holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct NodeRelease {
     pub major: u32,
@@ -1840,7 +1776,6 @@ impl std::fmt::Display for V8Version {
     }
 }
 
-/// Where each field is, and each constant's value, for one build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct V8Layout {
     offsets: [u32; Field::COUNT],
@@ -1857,7 +1792,6 @@ impl Default for V8Layout {
 }
 
 impl V8Layout {
-    /// The field's offset; `None` when the version does not have it.
     #[must_use]
     #[expect(
         clippy::indexing_slicing,
@@ -1870,7 +1804,6 @@ impl V8Layout {
         }
     }
 
-    /// The constant's value; `None` when the version does not have it.
     #[must_use]
     #[expect(
         clippy::indexing_slicing,
@@ -1883,7 +1816,6 @@ impl V8Layout {
         }
     }
 
-    /// Sets a field, or leaves it absent when its offset does not fit.
     #[expect(
         clippy::indexing_slicing,
         reason = "an entry's index is its place in `ALL`, which `COUNT` is the length of"
@@ -1895,7 +1827,6 @@ impl V8Layout {
             .unwrap_or(ABSENT);
     }
 
-    /// Sets a constant; `i64::MIN` reads back as absent.
     #[expect(
         clippy::indexing_slicing,
         reason = "an entry's index is its place in `ALL`, which `COUNT` is the length of"
@@ -1915,28 +1846,15 @@ impl V8Layout {
     }
 }
 
-/// Where a process keeps the base of its JS dispatch table, the table
-/// of 13.6's leaptiering through which a function's
-/// [`Field::JSFunctionDispatchHandle`] finds its code: as the module's
-/// `ExternalReference::js_dispatch_table_address` reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchTable {
-    /// The base is the word `offset` bytes into each isolate, as in 14.6.
     Isolate { offset: u64 },
 
-    /// The base is the word `offset` bytes into the isolate group the
-    /// pointer variable at `group` points to, as in 13.6.
     Group { group: ImageAddress, offset: u64 },
 }
 
-/// The variable each thread keeps its current isolate in, which a shared
-/// library names only in its debug package.
 pub const CURRENT_ISOLATE: &str = "_ZN2v88internal18g_current_isolate_E";
 
-/// Where a process keeps the bounds of V8's embedded blob, the builtins
-/// compiled ahead of time, which V8 sets when it starts: the variables
-/// `v8::Isolate::GetEmbeddedCodeRange` reads. `code` and `data` hold
-/// pointers, and `code_size` and `data_size` 32-bit sizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddedBlob {
     pub code: ImageAddress,
@@ -1945,44 +1863,25 @@ pub struct EmbeddedBlob {
     pub data_size: ImageAddress,
 }
 
-/// What a module's loader found of its V8 runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct V8Runtime {
     pub version: V8Version,
     pub flags: u16,
 
-    /// The layout, or why the runtime cannot be read, as for a version
-    /// microscope has no layout of.
     pub layout: Result<V8Layout, std::sync::Arc<str>>,
 
-    /// Where the JS dispatch table is; `None` for a version without one,
-    /// whose functions hold their code. An error, which leaves the rest of
-    /// the runtime readable, when the module's code does not say.
     pub dispatch_table: Result<Option<DispatchTable>, std::sync::Arc<str>>,
 
-    /// Where the embedded blob's bounds are, or why the module's code does
-    /// not say, which leaves the rest of the runtime readable.
     pub embedded_blob: Result<EmbeddedBlob, std::sync::Arc<str>>,
 
-    /// The Node release that built the module, or why its code does not
-    /// say, as for a V8 that Node did not build.
     pub node: Result<NodeRelease, std::sync::Arc<str>>,
     pub inspector: Result<NodeInspector, std::sync::Arc<str>>,
 
-    /// Where Node keeps its event loop's handles, requests, and timers, or
-    /// why the module's code does not say.
     pub tasks: Result<NodeTasks, std::sync::Arc<str>>,
 
-    /// How far into an isolate it keeps the stack of its entries,
-    /// `Isolate::entry_stack_`, as the module's exported
-    /// `v8::Isolate::IsInUse` reads it, or why its code does not say. A
-    /// build's configuration moves it.
     pub entry_stack: Result<u64, std::sync::Arc<str>>,
 }
 
-/// The `nodedbg_` variables Node sets for debuggers, which a release sets
-/// at run time (22 and 24, and nixpkgs' 26) and only some in its file, so
-/// that their values are read from the process at a stop.
 pub const NODEDBG: [&str; 12] = [
     "nodedbg_const_ContextEmbedderIndex__kEnvironment__int",
     "nodedbg_offset_BaseObject__persistent_handle___v8_Persistent_v8_Object",
@@ -1998,47 +1897,28 @@ pub const NODEDBG: [&str; 12] = [
     "nodedbg_offset_ListNode_ReqWrap__prev___uintptr_t",
 ];
 
-/// Where Node keeps its event loop's work, from its own code and its
-/// `nodedbg_` variables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeTasks {
-    /// Where an isolate keeps the context it entered, as
-    /// `v8::Isolate::GetCurrentContext` reads it.
     pub current_context: u64,
 
-    /// The embedder data slots of Node's `Environment` and of its context
-    /// tag, and the variable that holds the tag's address, as
-    /// `node::timers::BindingData::SetupTimers` reads them.
     pub environment_slot: u64,
     pub tag_slot: u64,
     pub context_tag: ImageAddress,
 
-    /// Where an `Environment` keeps its principal realm, and the realm the
-    /// global handle of the function Node calls for its timers.
     pub principal_realm: u64,
     pub timers_callback: u64,
 
-    /// Where an `AsyncWrap` keeps its provider type, and the table of the
-    /// providers' names, as `AsyncWrap::MemoryInfoName` reads them.
     pub provider_type: u64,
     pub provider_names: ImageAddress,
 
-    /// Where an `AsyncWrap` keeps its async id, the trigger's after it, and
-    /// where its JavaScript object keeps the wrapper's address, from the
-    /// object's untagged start, as `AsyncWrap::GetAsyncId` reads them.
     pub async_id: u64,
     pub object_wrapper: u64,
 
-    /// The `nodedbg_` variables, in [`NODEDBG`]'s order.
     pub nodedbg: [ImageAddress; NODEDBG.len()],
 
-    /// libuv's thread pool, where the module holds it.
     pub pool: Option<UvPool>,
 }
 
-/// The variables of libuv's thread pool (`threadpool.c`): its threads'
-/// `pthread_t`s and how many, how many wait for work, and the condition and
-/// mutex they wait on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UvPool {
     pub threads: ImageAddress,
@@ -2049,7 +1929,6 @@ pub struct UvPool {
 }
 
 impl NodeTasks {
-    /// The words a record keeps them in.
     pub const WORDS: usize = 16 + NODEDBG.len();
 
     fn encode(&self) -> [u64; Self::WORDS] {
@@ -2235,12 +2114,10 @@ pub struct InspectorStartup {
     pub async_offset: u64,
 }
 
-/// Why a runtime could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the V8 runtime does not fit an image")]
 pub struct TooLarge;
 
-/// Adds the module's V8 runtime, if it has one, to `builder`.
 pub fn add_to(
     builder: &mut Builder<'_>,
     strings: &mut StringsBuilder,
@@ -2358,7 +2235,6 @@ fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8Runtime
     })
 }
 
-/// The V8 runtime of a validated image, if it has one.
 #[must_use]
 pub fn runtime(image: &Image) -> Option<V8Runtime> {
     let record: &V8RuntimeRecord = image.table().first()?;
@@ -2448,10 +2324,6 @@ pub fn runtime(image: &Image) -> Option<V8Runtime> {
     })
 }
 
-/// Checks that an image has at most one runtime, which sets only the
-/// flags and the kind of dispatch table this format defines, whose
-/// problems name strings, and which leaves no address where it has a
-/// problem instead.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     let records: &[V8RuntimeRecord] = image.table();
     if records.len() > 1 {
@@ -2549,9 +2421,6 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
     Ok(())
 }
 
-/// A part of a `ScopeInfo` whose place and length depend on the scope's
-/// flags and counts, by the name Torque gives its field. A version that
-/// does not have the part gives no [`Slice`] of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ScopeInfoSlice {
     ModuleVariableCount,
@@ -2562,24 +2431,19 @@ pub enum ScopeInfoSlice {
     FunctionVariableInfo,
     InferredFunctionName,
 
-    /// 12.4 only: from 13.6 a scope's positions are a fixed field.
     PositionInfo,
     OuterScopeInfo,
 
-    /// 12.4 only.
     LocalsBlockList,
     ModuleInfo,
     ModuleVariables,
 
-    /// From 13.6.
     DependentCode,
 
-    /// From 14.6.
     UnusedParameterBits,
 }
 
 impl ScopeInfoSlice {
-    /// Every slice, in the order a `ScopeInfo` holds those its version has.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the translator's tests name slices by it")
@@ -2602,23 +2466,12 @@ impl ScopeInfoSlice {
     ];
 }
 
-/// Where one object's slice is: its offset in bytes from the object's
-/// untagged start, and how many items it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Slice {
     pub offset: u64,
     pub length: u64,
 }
 
-/// Where `slice` is in one `ScopeInfo` of V8 `version`, which has 8-byte
-/// tagged words and 64-bit Smis, as the layouts require: by V8's own
-/// `debug-macros.cc`, translated for each version. `read` gives the
-/// object's little-endian word at a byte offset from its untagged start,
-/// a multiple of 8, or `None` when it cannot be read.
-///
-/// `Ok(None)` when the version has no such slice. An error when the
-/// version has no translation, a word cannot be read, or one is not what
-/// V8 would have written there, such as a count that is no Smi.
 pub fn scope_info_slice(
     version: V8Version,
     slice: ScopeInfoSlice,
@@ -2663,8 +2516,6 @@ mod tests {
     use super::*;
     use crate::image::Limits;
 
-    /// A record of a runtime without a layout whose inspector has no
-    /// startup, as encoding one leaves it, with its strings.
     fn encoded() -> (V8RuntimeRecord, Vec<u8>) {
         let runtime = V8Runtime {
             version: V8Version::default(),

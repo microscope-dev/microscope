@@ -1,9 +1,9 @@
-// System calls for the debugger's catchpoints. With no argument: an openat
-// that fails, then a write to stderr and one to stdout. With `threads`:
-// four threads that each call getppid a thousand times at once. With `raw`:
-// one getppid made by a `syscall` instruction labeled raw_syscall, where a
-// breakpoint can go. Built with SPIN, it calls getppid forever, so a
-// catchpoint can be added while it runs.
+
+
+
+
+
+
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <pthread.h>
@@ -27,7 +27,7 @@ static pthread_barrier_t start;
 
 static void *calls(void *unused) {
     (void)unused;
-    // Every thread calls at once.
+
     pthread_barrier_wait(&start);
     for (int call = 0; call < CALLS; call++) {
         syscall(SYS_getppid);

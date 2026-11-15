@@ -1,8 +1,3 @@
-//! How a view's `format` writes a value: hexadecimal, a character, its
-//! bytes, UTF-8 or UTF-16 text, an enumeration's flags or enumerator, a
-//! duration, or a time. A value no format suits, or one the program cannot
-//! provide, keeps its own rendering.
-
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -16,15 +11,11 @@ use crate::{
 use super::bind::BoundFormat;
 use super::syntax::TimeUnit;
 
-/// The most bytes `bytes` shows, and `utf16` reads.
 const MAX_BYTES: u64 = 64;
 const MAX_UTF16_BYTES: u64 = 512;
 
-/// A second, in nanoseconds.
 const SECOND: u128 = 1_000_000_000;
 
-/// `value` written as `format` says, or `None` when the format does not
-/// suit it.
 pub fn write<M: Machine>(
     format: BoundFormat,
     value: &InspectedValue,
@@ -56,8 +47,6 @@ pub fn write<M: Machine>(
         BoundFormat::Duration(unit) => integer(stored).map(|integer| duration(integer, unit)),
         BoundFormat::Time(unit) => integer(stored).and_then(|integer| time(integer, unit)),
         BoundFormat::Utf8 => {
-            // An array is where it is stored, and a slice's elements are
-            // where its children are.
             let (address, length) = match (stored, source, children) {
                 (VariableValue::Array { .. }, VariableValueSource::Memory(address), _) => {
                     (*address, byte_size.unwrap_or(0))
@@ -129,7 +118,6 @@ pub fn write<M: Machine>(
     })
 }
 
-/// The `length` bytes at `address`, quoted, when they are text.
 fn utf8_at<M: Machine>(address: u64, length: u64, machine: &mut M) -> Result<Option<String>, Stop> {
     let shown = length.min(TextSummary::MAX_BYTES as u64);
     let bytes = match machine.read(address, usize::try_from(shown).unwrap_or(0)) {
@@ -154,10 +142,6 @@ fn utf8_at<M: Machine>(address: u64, length: u64, machine: &mut M) -> Result<Opt
     .map(|text| super::summary::quoted(&text)))
 }
 
-/// Bytes as text, when they are text: valid UTF-8 with no control
-/// characters but tab, newline, and carriage return. Bytes cut short may
-/// end inside a character, which is left out. No bytes are not text, nor
-/// are bytes that could not all be read.
 #[must_use]
 pub fn utf8_text(text: &TextSummary) -> Option<TextSummary> {
     let complete = match text.completion {
@@ -184,7 +168,6 @@ pub fn utf8_text(text: &TextSummary) -> Option<TextSummary> {
     })
 }
 
-/// An integer value, of an integer or enumeration.
 fn integer(value: &VariableValue) -> Option<i128> {
     match value {
         VariableValue::Scalar(ScalarValue::Signed(value)) => Some(*value),
@@ -201,13 +184,10 @@ fn signed(value: IntegerValue) -> Option<i128> {
     }
 }
 
-/// Hexadecimal, a negative value in its type's two's complement.
 fn hex(value: i128, byte_size: Option<u64>) -> String {
     format!("{:#x}", value.cast_unsigned() & width_mask(byte_size))
 }
 
-/// The bits a value of `byte_size` bytes has, or all 128 for an unknown
-/// size.
 fn width_mask(byte_size: Option<u64>) -> u128 {
     let bits = byte_size
         .filter(|size| (1..=16).contains(size))
@@ -219,7 +199,6 @@ fn width_mask(byte_size: Option<u64>) -> u128 {
     }
 }
 
-/// The character a code point is, quoted.
 fn character(value: i128) -> Option<String> {
     let character = u32::try_from(value).ok().and_then(char::from_u32)?;
     Some(match character {
@@ -234,7 +213,6 @@ fn character(value: i128) -> Option<String> {
     })
 }
 
-/// An enumeration's enumerators, by name and value.
 fn enumerators<M: Machine>(
     machine: &M,
     enumeration: crate::TypeReference,
@@ -253,9 +231,6 @@ fn enumerators<M: Machine>(
         .collect()
 }
 
-/// The enumerators whose bits a value sets, `A | B`, and the bits none
-/// names in hexadecimal; the enumerator of 0, or `0`, for none. A negative
-/// value or enumerator counts only the bits of its type's width.
 fn flags(value: i128, enumerators: &[(Arc<str>, i128)], byte_size: Option<u64>) -> String {
     let mask = width_mask(byte_size);
     let value = value.cast_unsigned() & mask;
@@ -287,8 +262,6 @@ fn flags(value: i128, enumerators: &[(Arc<str>, i128)], byte_size: Option<u64>) 
     names.join(" | ")
 }
 
-/// A count of `unit`s as Go writes a duration: `1h2m3.5s`, `1.5s`,
-/// `250ms`, `3µs`, `7ns`, or `0s`.
 fn duration(value: i128, unit: TimeUnit) -> String {
     let Some(total) = value.checked_mul(i128::try_from(unit.nanoseconds()).unwrap_or(1)) else {
         return format!("{value}{}", unit_suffix(unit));
@@ -332,17 +305,12 @@ fn duration(value: i128, unit: TimeUnit) -> String {
     output
 }
 
-/// A count of `unit`s since the Unix epoch as the UTC date and time it is,
-/// as Go writes one: `2009-11-10 23:00:00.5 +0000 UTC`, in the proleptic
-/// Gregorian calendar, a year before 1 as 0 or less. `None` for a count
-/// beyond any calendar.
 fn time(value: i128, unit: TimeUnit) -> Option<String> {
     let total = value.checked_mul(i128::try_from(unit.nanoseconds()).ok()?)?;
     let second = i128::try_from(SECOND).ok()?;
     let (seconds, nanoseconds) = (total.div_euclid(second), total.rem_euclid(second));
     let (days, of_day) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
 
-    // Howard Hinnant's `civil_from_days`, in 400-year eras from 0000-03-01.
     let shifted = days + 719_468;
     let era = shifted.div_euclid(146_097);
     let of_era = shifted.rem_euclid(146_097);
@@ -391,7 +359,6 @@ const fn unit_suffix(unit: TimeUnit) -> &'static str {
     }
 }
 
-/// `value / scale` in decimal, its fraction without trailing zeros.
 fn decimal(value: u128, scale: u128) -> String {
     let whole = value / scale;
     let fraction = value % scale;
@@ -494,8 +461,6 @@ mod tests {
         assert_eq!(text(&[0xff, 0, 1], TextCompletion::Complete), None);
         assert_eq!(text(b"nul\0", TextCompletion::Complete), None);
 
-        // A character cut short by the read is left out, unless the bytes
-        // were whole.
         assert_eq!(text(&[b'a', 0xc2], cut), Some(b"a".to_vec()));
         assert_eq!(text(&[b'a', 0xc2], TextCompletion::Complete), None);
         assert_eq!(
@@ -523,8 +488,6 @@ mod tests {
         assert_eq!(hex(-1, Some(2)), "0xffff");
     }
 
-    /// Found by `flags_read_back_as_the_value`: a 32-bit value with its
-    /// top bit set printed the sign-extended 128-bit remainder.
     #[test]
     fn flags_of_a_negative_value_stay_within_its_type() {
         let enumerators = [(Arc::from("A"), 1)];
@@ -536,7 +499,6 @@ mod tests {
         assert_eq!(flags(-32_768, &[], Some(2)), "0x8000");
     }
 
-    /// A Go duration back in nanoseconds: `1h2m3.5s`, `-250ms`, `0s`.
     fn parse_duration(text: &str) -> i128 {
         let (negative, mut rest) = text
             .strip_prefix('-')
@@ -585,7 +547,6 @@ mod tests {
         }
     }
 
-    /// Howard Hinnant's `days_from_civil`: days from 1970-01-01.
     fn days_from_civil(year: i128, month: i128, day: i128) -> i128 {
         let year = year - i128::from(month <= 2);
         let era = year.div_euclid(400);
@@ -595,8 +556,6 @@ mod tests {
         era * 146_097 + of_era_days - 719_468
     }
 
-    /// A Go UTC time back in nanoseconds since the epoch, checking each
-    /// field is in its range.
     fn parse_time(text: &str) -> i128 {
         let text = text.strip_suffix(" +0000 UTC").expect("UTC");
         let (date, clock) = text.split_once(' ').expect("a date and a time");
@@ -648,7 +607,6 @@ mod tests {
         let seconds =
             days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
 
-        // At either end of i128 only the sum fits, so add toward zero.
         if seconds >= 0 || nanoseconds == 0 {
             seconds * 1_000_000_000 + nanoseconds
         } else {
@@ -665,8 +623,6 @@ mod tests {
         ])
     }
 
-    /// Counts of any size, near the edges, and within a few thousand years
-    /// of the epoch in each unit.
     fn count() -> impl Strategy<Value = i128> {
         prop_oneof![
             crate::test_strategies::i128_edges(),
@@ -675,8 +631,6 @@ mod tests {
         ]
     }
 
-    /// A value of a type of `bytes` bytes, read as signed or not, as the
-    /// evaluator would give it.
     fn of_width(bits: u128, bytes: u64, signed: bool) -> i128 {
         let width = bytes * 8;
         let value = bits & width_mask(Some(bytes));
@@ -730,7 +684,6 @@ mod tests {
             ),
             dense in any::<bool>(),
         ) {
-            // Dense values set most of the named bits.
             let flag_values: Vec<i128> = flag_bits.iter().map(|&flag| of_width(flag, bytes, signed)).collect();
             let named = flag_values.iter().fold(0, |all, flag| all | flag.cast_unsigned());
             let value = of_width(if dense { named | bits & 1 } else { bits }, bytes, signed);

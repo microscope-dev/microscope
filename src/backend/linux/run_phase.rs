@@ -1,11 +1,3 @@
-//! Whether an inferior runs an execution, is gathering a stop, or has one
-//! published, and the reason a stop being gathered will publish.
-//!
-//! The phase is one value with private parts, so it changes only through
-//! the transitions here: an execution begins at a published stop, a
-//! barrier gathers a stop while it runs, and the stop is published or the
-//! execution resumes.
-
 use nix::unistd::Pid;
 
 use crate::protocol::{ExecutionId, StopReason};
@@ -17,15 +9,9 @@ use super::{ActiveExecution, Edit, PublicStop, Result, debug_thread_id};
 pub(super) struct RunPhase(Phase);
 
 enum Phase {
-    /// No execution runs, no stop is being gathered, and none is
-    /// published: only while an attach has yet to ask its threads to stop,
-    /// and while a shutdown runs threads to collect the signals still
-    /// queued for them before it detaches them.
     Idle,
     Running(ActiveExecution),
 
-    /// Every thread is being stopped, for the execution, if any, that the
-    /// stop ends or resumes.
     Gathering {
         execution: Option<ActiveExecution>,
         barrier: StopBarrier,
@@ -57,7 +43,6 @@ impl RunPhase {
         matches!(self.0, Phase::Idle)
     }
 
-    /// Whether an execution runs with no stop being gathered.
     pub(super) const fn is_running(&self) -> bool {
         matches!(self.0, Phase::Running(_))
     }
@@ -112,9 +97,6 @@ impl RunPhase {
         }
     }
 
-    /// Runs `execution` from a published stop, or, for a shutdown's
-    /// inspector cleanup, in place of whatever the inferior was doing once
-    /// the edits of any stop being gathered are applied.
     pub(super) fn begin(&mut self, execution: ActiveExecution) {
         debug_assert!(
             self.barrier()
@@ -125,9 +107,6 @@ impl RunPhase {
         self.0 = Phase::Running(execution);
     }
 
-    /// Begins gathering a stop of whatever runs. A published stop has
-    /// nothing running to stop, and a stop already being gathered keeps
-    /// its own barrier.
     pub(super) fn gather(&mut self, barrier: StopBarrier) -> Result<()> {
         self.0 = match std::mem::replace(&mut self.0, Phase::Idle) {
             Phase::Running(execution) => Phase::Gathering {
@@ -148,8 +127,6 @@ impl RunPhase {
         Ok(())
     }
 
-    /// Ends an internal stop, running its execution on, and returns
-    /// whether there is one.
     pub(super) fn resume(&mut self) -> bool {
         self.0 = match std::mem::replace(&mut self.0, Phase::Idle) {
             Phase::Gathering {
@@ -173,8 +150,6 @@ impl RunPhase {
         self.execution().is_some()
     }
 
-    /// Publishes `stop`, ending the stop being gathered and the execution
-    /// it stopped, whose id it returns.
     pub(super) fn publish(&mut self, stop: PublicStop) -> Result<Option<ExecutionId>> {
         let execution = match std::mem::replace(&mut self.0, Phase::Idle) {
             Phase::Gathering { execution, barrier } => {
@@ -194,8 +169,6 @@ impl RunPhase {
         Ok(execution)
     }
 
-    /// Leaves a published stop as a shutdown runs its threads to collect
-    /// their queued signals, and returns whether there was one.
     pub(super) fn release(&mut self) -> bool {
         if !matches!(self.0, Phase::Stopped(_)) {
             return false;
@@ -205,31 +178,19 @@ impl RunPhase {
     }
 }
 
-/// Stops every thread of the inferior, then either publishes a stop or,
-/// when no thread gave a visible reason, applies its edits and resumes the
-/// active execution as if nothing happened.
 pub(super) struct StopBarrier {
     triggering_thread: Pid,
 
-    /// The stop to publish, or `None` while the stop is internal.
     reason: Option<StopReason>,
 
-    /// Whether a client paused, so the stop is published as a pause when
-    /// every reason it would have published is dropped. Never set while
-    /// the stop is internal.
     paused: bool,
 
-    /// Why the active execution ended during the stop, such as its
-    /// stepping thread exiting. The execution cannot resume, so the stop
-    /// publishes this when every other reason is dropped.
     ended: Option<StopReason>,
 
-    /// Client edits applied once every thread is stopped.
     edits: Vec<Edit>,
 }
 
 impl StopBarrier {
-    /// A barrier that publishes `reason` from `triggering_thread`.
     pub(super) fn visible(triggering_thread: Pid, reason: StopReason) -> Self {
         Self {
             triggering_thread,
@@ -240,7 +201,6 @@ impl StopBarrier {
         }
     }
 
-    /// A barrier that publishes nothing unless a thread gives it a reason.
     pub(super) const fn internal(triggering_thread: Pid) -> Self {
         Self {
             triggering_thread,
@@ -259,19 +219,15 @@ impl StopBarrier {
         self.reason.as_ref()
     }
 
-    /// The thread and reason the stop publishes, unless it is internal.
     pub(super) fn publishable(&self) -> Option<(Pid, StopReason)> {
         Some((self.triggering_thread, self.reason.clone()?))
     }
 
-    /// A client's pause: the stop publishes at least a pause.
     pub(super) fn pause(&mut self) {
         self.reason.get_or_insert(StopReason::Pause);
         self.paused = true;
     }
 
-    /// Publishes `reason` instead of the current one if it matters more,
-    /// from `thread` when the reason is a thread's.
     pub(super) fn offer(&mut self, thread: Option<Pid>, reason: StopReason) {
         if self
             .reason
@@ -285,15 +241,11 @@ impl StopBarrier {
         }
     }
 
-    /// The execution ended in `reason` and cannot resume, so the stop
-    /// publishes at least that.
     pub(super) fn end_execution(&mut self, reason: StopReason) {
         self.reason.get_or_insert_with(|| reason.clone());
         self.ended = Some(reason);
     }
 
-    /// The triggering thread `pid` exited with `status`; `replacement`
-    /// presents the stop instead. An internal stop stays internal.
     pub(super) fn thread_exited(&mut self, pid: Pid, replacement: Pid, status: &ExitStatus) {
         if self.triggering_thread != pid {
             return;
@@ -307,8 +259,6 @@ impl StopBarrier {
         }
     }
 
-    /// The watchpoint hit `pid` stopped for reads as `reason` now that the
-    /// watched bytes are known.
     pub(super) fn restate_watchpoint(&mut self, pid: Pid, reason: &StopReason) {
         if self.triggering_thread == pid
             && matches!(self.reason, Some(StopReason::Watchpoint { .. }))
@@ -317,10 +267,6 @@ impl StopBarrier {
         }
     }
 
-    /// Settles the published reason once edits may have dropped the hit it
-    /// was: the triggering thread's own reason as it now stands, `own`,
-    /// then the most important of the other threads', `best`, then the end
-    /// of an execution that cannot resume, then a pause the hit outranked.
     pub(super) fn settle_dropped_hit(
         &mut self,
         own: Option<StopReason>,
@@ -348,8 +294,6 @@ impl StopBarrier {
         }
     }
 
-    /// Makes the stop internal, so the threads run on once it applies its
-    /// edits, as a shutdown's inspector cleanup needs.
     pub(super) fn make_internal(&mut self) {
         self.reason = None;
         self.paused = false;
@@ -360,7 +304,6 @@ impl StopBarrier {
         self.edits.push(edit);
     }
 
-    /// Queues `edit` unless an edit of its kind is already queued.
     pub(super) fn queue_once(&mut self, edit: Edit) {
         let kind = std::mem::discriminant(&edit);
         if !self
@@ -379,12 +322,6 @@ impl StopBarrier {
 
 #[cfg(test)]
 mod tests {
-    //! The stop reason a barrier publishes, over random sequences of the
-    //! reasons threads give, pauses, executions ending, the triggering
-    //! thread exiting, and edits dropping hits. A small model says only
-    //! whether the stop is visible, which priority it has at least, and
-    //! what an offer must leave; the rules come from the all-stop
-    //! description in `dev/process-control.md`.
 
     use std::sync::Arc;
 
@@ -422,13 +359,10 @@ mod tests {
     #[derive(Debug, Clone)]
     enum Op {
         Offer(usize, u8),
-        /// A reason no thread gave, as an agent's report.
         OfferUnowned(u8),
         Pause,
         End(u8),
         TriggeringExits(usize),
-        /// Edits leave the triggering thread `own` and the best of the
-        /// others `best`, each by its reason's kind, or nothing.
         Settle(Option<u8>, Option<(usize, u8)>),
         MakeInternal,
     }
@@ -449,12 +383,6 @@ mod tests {
         ]
     }
 
-    /// Which of two reasons a barrier publishes, written out here rather
-    /// than taken from the controller's own ranking, so a change to that
-    /// ranking is a change to this table: a pause or attach gives way to a
-    /// signal, a signal to a breakpoint, a watchpoint or the triggering
-    /// thread's exit, those to an exec,
-    /// and everything to a stop the controller cannot classify.
     fn rank(reason: &StopReason) -> u8 {
         match reason {
             StopReason::Pause | StopReason::Attach => 0,
@@ -485,8 +413,6 @@ mod tests {
                 StopBarrier::internal(first)
             };
 
-            // Whether something other than a hit an edit may drop, a pause
-            // or an execution's end, keeps the stop visible.
             let mut floor = visible_start;
 
             for op in ops {
@@ -502,8 +428,6 @@ mod tests {
                         let thread = Pid::from_raw(THREADS[thread]);
                         barrier.offer(Some(thread), offered.clone());
 
-                        // The more important reason wins; an equal one
-                        // does not displace the first.
                         let offered_priority = rank(&offered);
                         let wins = before.is_none_or(|before| offered_priority > before);
                         prop_assert_eq!(
@@ -525,7 +449,6 @@ mod tests {
                     Op::Pause => {
                         barrier.pause();
                         floor = true;
-                        // A pause adds a reason, never replaces one.
                         prop_assert_eq!(priority(&barrier), Some(before.unwrap_or(0)));
                     }
                     Op::End(kind) => {
@@ -557,7 +480,6 @@ mod tests {
                         let reason_before = barrier.reason().cloned();
                         barrier.settle_dropped_hit(own.clone(), best.clone());
                         if !was_hit {
-                            // Only a hit can be dropped.
                             prop_assert_eq!(barrier.reason().cloned(), reason_before);
                         } else if let Some(own) = own {
                             prop_assert_eq!(barrier.reason(), Some(&own));
@@ -566,8 +488,6 @@ mod tests {
                             prop_assert_eq!(barrier.reason(), Some(&best));
                             prop_assert_eq!(barrier.triggering_thread(), thread);
                         } else {
-                            // With nothing left of the hits, a pause or an
-                            // end keeps the stop visible.
                             prop_assert_eq!(barrier.reason().is_some(), floor);
                         }
                     }
@@ -578,7 +498,6 @@ mod tests {
                     }
                 }
 
-                // A pause or an end is never lost.
                 if floor {
                     prop_assert!(barrier.reason().is_some(), "the stop turned internal");
                 }

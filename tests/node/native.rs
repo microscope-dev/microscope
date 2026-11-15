@@ -1,15 +1,7 @@
-//! Native backtraces of Node threads: through V8's builtins, which no
-//! call-frame information describes, and through the code it compiles for
-//! JavaScript, to where the thread began. `stacks.rs`, `frames.rs`, and
-//! `debian.rs` hold each thread they stop to it.
-
 use microscope::{Backtrace, LoadedModuleSnapshot, UnwindTermination};
 
 use crate::support::frame_modules;
 
-/// Holds one thread's native backtrace to a complete walk in which every
-/// frame lies in a module, and returns how many frames ran V8's compiled
-/// code and how many its interpreter.
 pub fn check_thread(
     context: &str,
     main: bool,
@@ -34,9 +26,6 @@ pub fn check_thread(
         .iter()
         .filter(|(module, _)| module.starts_with("[V8 code "))
         .count();
-    // Builtins have symbols, not debug information, where the build keeps
-    // them; elsewhere an interpreted frame is one outside V8's compiled
-    // code that runs a fixture's function.
     let interpreted = trace
         .frames
         .iter()

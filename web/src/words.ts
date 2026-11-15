@@ -1,6 +1,3 @@
-// Splits a line of program arguments as a shell would, without expanding
-// anything: quotes group, backslashes escape.
-
 export type Split = { ok: true; words: string[] } | { ok: false; error: string };
 
 export function splitWords(line: string): Split {
@@ -23,7 +20,7 @@ export function splitWords(line: string): Split {
       if (next === undefined) {
         return { ok: false, error: "a backslash ends the line" };
       }
-      // Inside double quotes a backslash escapes only what is special there.
+
       if (quote === '"' && !'"\\$`'.includes(next)) {
         word += char;
       }
@@ -63,7 +60,6 @@ export function splitWords(line: string): Split {
   return { ok: true, words };
 }
 
-/** Writes words back as a line that splits into them again. */
 export function joinWords(words: readonly string[]): string {
   return words
     .map((word) =>
@@ -72,7 +68,6 @@ export function joinWords(words: readonly string[]): string {
     .join(" ");
 }
 
-/** Parses `NAME=VALUE` lines, skipping blank ones. */
 export function parseEnvironment(
   text: string,
 ): { ok: true; pairs: [string, string][] } | { ok: false; error: string } {

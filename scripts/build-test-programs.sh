@@ -17,12 +17,12 @@ readonly ada_fixtures_dir="${fixtures_dir}/ada"
 readonly suite_stamp="${output_dir}/.suite.stamp"
 readonly suite_outputs="${output_dir}/.suite.outputs"
 readonly frame_oracle_script=scripts/frame-variables-oracle.py
-# Include the checkout in signatures: shared build directories may contain
-# another checkout's absolute DWARF paths.
+
+
 readonly checkout="checkout=${PWD}"
 
-# Drop Nix's shell-specific random seed so shell changes don't alter fixture
-# bytes via DW_AT_producer. The signature below invalidates older builds.
+
+
 shell_seed=$(grep -o -- '-frandom-seed=[^ ]*' <<<"${NIX_CFLAGS_COMPILE-}" || true)
 if [[ -n "$shell_seed" ]]; then
     export NIX_CFLAGS_COMPILE="${NIX_CFLAGS_COMPILE//"$shell_seed"/}"
@@ -52,17 +52,17 @@ read_dash_version() {
     dash_version=${dash_version_by_tool["$tool"]}
 }
 
-# Compiles run in parallel, limited by MICROSCOPE_FIXTURE_JOBS (default: nproc).
-# Readers wait for named outputs with wait_for, or all compiles with wait_builds.
-# Only calls through build helpers run compiles in the background; derivations
-# and checks compile synchronously. Cores and oracles also run in the background;
-# readers must wait for their outputs.
+
+
+
+
+
 readonly max_jobs="${MICROSCOPE_FIXTURE_JOBS:-$(nproc)}"
 readonly background_builders=" build_program build_fixture build_c_fixture_directory \
 build_cpp_fixture_directory build_cpp_fixture build_shared_fixture build_symbols_library \
 build_disassembly_fixture build_tls_modules_fixture build_ubuntu_tls_fixture build_rust_fixture build_go_fixture \
 build_go_command build_zig_fixture build_zig_self_hosted_fixture build_odin_fixture build_fortran_fixture build_d_fixture build_nim_fixture build_ada_fixture "
-# What each running job makes, by process ID, and the compiles among them.
+
 declare -A job_outputs=()
 declare -A build_jobs=()
 failed_jobs=()
@@ -84,9 +84,9 @@ check_jobs() {
     fi
 }
 
-# Runs COMMAND in the background to make OUTPUT once a job slot is free.
-# KIND is build for a compile, which wait_builds waits for, or leaf for
-# anything else, which a step that reads OUTPUT waits for with wait_for.
+
+
+
 spawn_job() {
     local kind="$1"
     local output="$2"
@@ -103,7 +103,7 @@ spawn_job() {
     fi
 }
 
-# Waits for every running compile, failing if any failed.
+
 wait_builds() {
     local pid
     for pid in "${!build_jobs[@]}"; do
@@ -114,7 +114,7 @@ wait_builds() {
     check_jobs
 }
 
-# Waits for the running jobs that make any of OUTPUTS, failing if any failed.
+
 wait_for() {
     local pid output
     for pid in "${!job_outputs[@]}"; do
@@ -130,7 +130,7 @@ wait_for() {
     check_jobs
 }
 
-# Waits for every running job, failing if any failed.
+
 wait_jobs() {
     local pid
     for pid in "${!job_outputs[@]}"; do
@@ -141,7 +141,7 @@ wait_jobs() {
     check_jobs
 }
 
-# Whether the build helpers alone called the compile running now.
+
 called_by_builders() {
     local caller
     for caller in "${FUNCNAME[@]:2}"; do
@@ -149,8 +149,8 @@ called_by_builders() {
     done
 }
 
-# Wait for SOURCE, OUTPUT, command arguments, and -L/-l libraries built here.
-# Unrecognized references to the output directory wait for all compiles.
+
+
 wait_for_inputs() {
     local source="$1"
     local output="$2"
@@ -179,7 +179,7 @@ wait_for_inputs() {
     wait_for "${inputs[@]}"
 }
 
-# Compiles OUTPUT and records the signature it was built with.
+
 compile() {
     local output="$1"
     local signature="$2"
@@ -197,8 +197,8 @@ source_changed_since_output() {
     [[ -n "$changed" ]]
 }
 
-# Whether a file the command names among the built outputs, such as a
-# library it links, changed after the output.
+
+
 built_input_changed_since_output() {
     local output="$1"
     shift
@@ -333,8 +333,8 @@ build_shared_fixture() {
         -std=c17 -Wall -Wextra -Werror -shared -fPIC "$@"
 }
 
-# Builds the library of the ELF symbol fixture without debug information, so
-# that only its symbol tables and call-frame information describe it.
+
+
 build_symbols_library() {
     local compiler="$1"
     local output="$2"
@@ -350,8 +350,8 @@ build_symbols_library() {
         "${command[@]}"
 }
 
-# Builds the disassembly fixture from its C program and hand-written code.
-# Lazy binding keeps procedure linkage table slots unresolved until first use.
+
+
 build_disassembly_fixture() {
     local compiler="$1"
     local output="$2"
@@ -367,8 +367,8 @@ build_disassembly_fixture() {
         "${command[@]}"
 }
 
-# Builds a program of the TLS modules fixture from the sources and flags
-# given, so a static build can link the library's source in.
+
+
 build_tls_modules_fixture() {
     local compiler="$1"
     local output="$2"
@@ -382,13 +382,13 @@ build_tls_modules_fixture() {
         "${command[@]}"
 }
 
-# Builds a library of the TLS modules fixture, or with `program` a program,
-# for Ubuntu's build of glibc VERSION. Zig compiles SOURCE against that
-# version's headers and symbols, with the compiler flags before `--`; GNU ld
-# links the object with the arguments after it, as Ubuntu builds programs:
-# against its own startup files and libraries, needing only those it uses. A
-# program runs on Ubuntu's loader and finds Ubuntu's libraries first, never
-# the toolchain's.
+
+
+
+
+
+
+
 build_ubuntu_tls_fixture() {
     local kind="$1"
     local version="$2"
@@ -437,9 +437,9 @@ build_ubuntu_tls_fixture() {
         "${command[@]}"
 }
 
-# Derives a C library standing in for another machine's build: its build-id
-# differs in one byte, while the code stays the toolchain's own so the fixture
-# runs against its loader.
+
+
+
 derive_foreign_libc() {
     wait_builds
     local input="$1"
@@ -472,11 +472,11 @@ derive_foreign_libc() {
         bash -c "$script" _ "$input" "$output"
 }
 
-# Derives a library with only a dynamic symbol table from one with full
-# symbol tables. With an embedded table, the result also carries a
-# MiniDebugInfo section built the way Fedora's find-debuginfo does: the
-# compressed object keeps exactly the function symbols the dynamic table
-# omits. The uncompressed object is kept beside the library for oracles.
+
+
+
+
+
 derive_stripped_library() {
     wait_builds
     local input="$1"
@@ -508,11 +508,11 @@ derive_stripped_library() {
         bash -c "$script" _ "$input" "$output" "$embedded"
 }
 
-# Splits the debug information off a program or library as distributions
-# ship it, stripping every symbol table but the dynamic one from OUTPUT. With
-# LAYOUT `debuglink`, OUTPUT names its debug file by `.gnu_debuglink`, which
-# sits beside it under `.debug`; with `build-id`, the debug file is filed
-# under ROOT/.build-id by the build-id OUTPUT keeps.
+
+
+
+
+
 derive_split_debug() {
     wait_builds
     local input="$1"
@@ -550,8 +550,8 @@ derive_split_debug() {
         bash -c "$script" _ "$input" "$output" "$layout" "$root"
 }
 
-# Builds the shapes program and its library, which share a header, into
-# DIRECTORY/plain with COMPILER and FLAGS.
+
+
 build_shapes_fixture() {
     local compiler="$1"
     local directory="$2"
@@ -570,14 +570,14 @@ build_shapes_fixture() {
         '-Wl,-rpath,$ORIGIN' -o "$directory/plain/shapes"
 }
 
-# Shares what the shapes program and library in DIRECTORY/plain have in
-# common through a dwz supplementary file, as distributions do. With LAYOUT
-# `whole`, DIRECTORY/dwz holds them with their debug information, which
-# names .dwz/shapes beside them by `.gnu_debugaltlink`; `dwarf5` does the
-# same in DIRECTORY/dwarf5, naming it by DWARF 5's `.debug_sup`; with
-# `split`, DIRECTORY/split holds them stripped, and their debug files are
-# filed by build-id under DIRECTORY/debug-root, naming ../../.dwz/shapes
-# there.
+
+
+
+
+
+
+
+
 derive_dwz() {
     wait_builds
     local directory="$1"
@@ -637,17 +637,17 @@ derive_dwz() {
     [[ "$layout" == split ]] && output="$directory/split/shapes"
     [[ "$layout" == dwarf5 ]] && output="$directory/dwarf5/shapes"
     local version
-    # sed reads all input, where head would exit early and the tool's
-    # SIGPIPE fail the pipeline; the same holds for each version below.
+
+
     version=$(dwz --version | sed -n 1p)
     run_cached_build "$directory/plain" "$output" \
         "derivation=dwz-v1"$'\n'"layout=${layout}"$'\n'"dwz=${version}" \
         bash -c "$script" _ "$directory" "$layout"
 }
 
-# Fails the build when the symbol fixture library no longer has the symbol
-# tables and layout the symbolization tests depend on. TABLES names which
-# tables must exist: full, dynamic, or embedded.
+
+
+
 require_symbols_layout() {
     wait_for "$1"
     local library="$1"
@@ -684,9 +684,9 @@ require_symbols_layout() {
         && grep -F lib_static_helper <<<"$symbols" >/dev/null; then
         fail "still names lib_static_helper"
     fi
-    # The return address of the call ending asm_noreturn_caller must be the
-    # first byte of asm_after_noreturn, and asm_nested_inner must lie strictly
-    # inside asm_nested_outer.
+
+
+
     awk '
         $8 == "asm_noreturn_caller" { caller_end = strtonum("0x" $2) + $3 }
         $8 == "asm_after_noreturn" { after = strtonum("0x" $2) }
@@ -701,13 +701,13 @@ build_rust_fixture() {
     local source="$1"
     local output="$2"
     shift 2
-    # The no_std fixture uses the system CRT without pulling std's DWARF into the binary.
+
     build_program rustc "$source" "$output" \
         --edition=2024 -D warnings -C debuginfo=2 -C codegen-units=1 -C panic=abort \
         -C link-arg=-lc "$@"
 }
 
-# Reads the Go toolchain's version and target once.
+
 read_go_version() {
     if [[ -z "$go_version" ]]; then
         go_version=$(go version)
@@ -716,8 +716,8 @@ read_go_version() {
     fi
 }
 
-# Builds a Go package without cgo. GO_CGO=1 enables cgo, which an external
-# link needs; GO_CC and GO_CFLAGS then choose its C compiler and flags.
+
+
 build_go_fixture() {
     local package_dir="$1"
     local output="$2"
@@ -731,8 +731,8 @@ build_go_fixture() {
         exit 1
     fi
     local -a build=(build -buildvcs=false "$@" -o "$output" "${sources[@]}")
-    # A fixture with a go.mod is built as its module, so a -trimpath build
-    # records its sources under the module path wherever the checkout is.
+
+
     if [[ -f "$package_dir/go.mod" ]]; then
         build=(-C "$package_dir" build -buildvcs=false "$@" -o "$PWD/$output" .)
     fi
@@ -746,7 +746,7 @@ build_go_fixture() {
         "${command[@]}"
 }
 
-# Builds a command from the pinned Go toolchain's own sources.
+
 build_go_command() {
     local package="$1"
     local output="$2"
@@ -776,10 +776,10 @@ build_zig_fixture() {
         "${command[@]}"
 }
 
-# Zig's own backend, which Debug builds use by default, describes optionals,
-# error unions, and tagged unions as variant parts, and a type declared in
-# another by its parent. Its compiler-rt cache ignores job counts, so
-# single-job builds need a cache separate from multithreaded builds.
+
+
+
+
 build_zig_self_hosted_fixture() {
     local source="$1"
     local output="$2"
@@ -797,7 +797,7 @@ build_zig_self_hosted_fixture() {
         "${command[@]}"
 }
 
-# Builds one Odin file as a package of its own.
+
 build_odin_fixture() {
     local source="$1"
     local output="$2"
@@ -813,7 +813,7 @@ build_odin_fixture() {
         "${command[@]}"
 }
 
-# Builds one Fortran file, keeping its module files beside the program.
+
 build_fortran_fixture() {
     local source="$1"
     local output="$2"
@@ -831,7 +831,7 @@ build_fortran_fixture() {
         "${command[@]}"
 }
 
-# Builds one D file with LDC, keeping its object beside the program.
+
 build_d_fixture() {
     local source="$1"
     local output="$2"
@@ -847,8 +847,8 @@ build_d_fixture() {
         "${command[@]}"
 }
 
-# Builds one Nim file through a C compiler, reading no configuration of the
-# user's and keeping the C it generates beside the program.
+
+
 build_nim_fixture() {
     local source="$1"
     local output="$2"
@@ -865,13 +865,13 @@ build_nim_fixture() {
         "${command[@]}"
 }
 
-# Builds one Ada file with GNAT, keeping its objects and binder files
-# beside the program.
+
+
 build_ada_fixture() {
     local source="$1"
     local output="$2"
     shift 2
-    # gnatbind writes its files where it runs.
+
     local -a command=(
         env -u NIX_CFLAGS_COMPILE -u NIX_CFLAGS_COMPILE_FOR_BUILD -C "${output}.objects"
         gnatmake -q -g -gnat2022 -gnatwa -gnatwe "$@" -o "${PWD}/${output}" "${PWD}/${source}"
@@ -905,8 +905,8 @@ record_validation() {
     mv "${stamp}.tmp" "$stamp"
 }
 
-# Fails the build when a fixture no longer emits a sibling-call jump a test
-# depends on, instead of letting the test pass through the regular-callee path.
+
+
 require_tail_jump() {
     wait_for "$1"
     local output="$1"
@@ -917,8 +917,8 @@ require_tail_jump() {
     if validation_is_cached "$output" "$stamp" "$signature"; then
         return
     fi
-    # grep reads all input; grep -q would exit early and objdump's SIGPIPE
-    # would fail the pipeline under pipefail despite a successful match.
+
+
     if ! objdump -d --no-show-raw-insn "$output" \
         | sed -n "/<${caller}>:/,/^\$/p" \
         | grep -E "[[:space:]]jmp[[:space:]]+[^<]*<${callee}>" >/dev/null; then
@@ -929,8 +929,8 @@ require_tail_jump() {
     record_validation "$stamp" "$signature"
 }
 
-# Fails the build when a function no longer contains an instruction a test
-# depends on, such as a repeated string store or a 16-byte vector store.
+
+
 require_instruction() {
     wait_for "$1"
     local output="$1"
@@ -942,7 +942,7 @@ require_instruction() {
     if validation_is_cached "$output" "$stamp" "$signature"; then
         return
     fi
-    # grep reads all input; see require_tail_jump.
+
     if ! objdump -d --no-show-raw-insn "$output" \
         | sed -n "/<${function}>:/,/^\$/p" \
         | grep -E "$pattern" >/dev/null; then
@@ -953,9 +953,9 @@ require_instruction() {
     record_validation "$stamp" "$signature"
 }
 
-# Fails the build unless a fixture runs on musl: it names musl's loader as
-# its interpreter or, linked statically, contains musl's TLS layout code.
-# Otherwise a toolchain that quietly targeted glibc would pass musl's tests.
+
+
+
 require_musl() {
     wait_for "$1"
     local output="$1"
@@ -979,10 +979,10 @@ require_musl() {
     record_validation "$stamp" "$signature"
 }
 
-# Fails the build unless a fixture is statically linked with glibc: it has no
-# interpreter and contains glibc's static TLS setup. `threads` says whether it
-# must contain glibc's thread library, whose absence leaves a program without
-# glibc's descriptors of its thread structures.
+
+
+
+
 require_static_glibc() {
     wait_for "$1"
     local output="$1"
@@ -1012,10 +1012,10 @@ require_static_glibc() {
     record_validation "$stamp" "$signature"
 }
 
-# Fails the build unless a fixture runs on Ubuntu's glibc VERSION: its loader
-# finds every library outside the output directory among Ubuntu's, never the
-# toolchain's or the host's. `pthread` says whether it must load libpthread,
-# which alone describes the thread structures of a glibc before 2.34.
+
+
+
+
 require_ubuntu_glibc() {
     wait_for "$1"
     local output="$1"
@@ -1031,7 +1031,7 @@ require_ubuntu_glibc() {
     local loaded path outputs
     loaded=$(LD_TRACE_LOADED_OBJECTS=1 "$output")
     outputs=$(realpath "$output_dir")
-    # Each line names a library, then the path it was found at, if any.
+
     while read -r path; do
         if [[ "$path" != "$libraries"/* && "$path" != "$outputs"/* ]]; then
             printf 'error: %s loads %s, not Ubuntu glibc %s\n' "$output" "$path" "$version" >&2
@@ -1051,9 +1051,9 @@ require_ubuntu_glibc() {
     record_validation "$stamp" "$signature"
 }
 
-# Fails the build when a fixture's DWARF stops exercising the operation a test
-# depends on, instead of letting the test pass without its coverage.
-# Requires that OUTPUT maps no code: no loadable segment is executable.
+
+
+
 require_no_code() {
     wait_for "$1"
     local output="$1"
@@ -1079,8 +1079,8 @@ require_dwarf_operation() {
     if validation_is_cached "$output" "$stamp" "$signature"; then
         return
     fi
-    # grep reads all input; grep -q would exit early and objdump's SIGPIPE
-    # would fail the pipeline under pipefail despite a successful match.
+
+
     if ! objdump --dwarf=info,loc "$output" | grep "$operation" >/dev/null; then
         printf 'error: %s does not exercise %s\n' "$output" "$operation" >&2
         exit 1
@@ -1088,11 +1088,11 @@ require_dwarf_operation() {
     record_validation "$stamp" "$signature"
 }
 
-# Records a post-mortem core of a fixture with gdb's gcore. The fixture must
-# stop with the expected signal first, so a fixture that stops crashing fails
-# the build instead of silently producing a different core. FILTER becomes the
-# inferior's coredump_filter, which gcore honors like the kernel. gdb's log,
-# with everything the fixture printed, is kept as CORE.log.
+
+
+
+
+
 core_signature() {
     local signal="$1"
     local filter="$2"
@@ -1139,8 +1139,8 @@ generate_core() {
     spawn_job leaf "$core" make_core "$core" "$signature" "$signal" "$filter" "$@"
 }
 
-# Runs COMMAND under gdb until it stops with SIGNAL and saves its memory, as
-# FILTER selects, as CORE, recording SIGNATURE beside it.
+
+
 make_core() {
     local core="$1"
     local signature="$2"
@@ -1151,9 +1151,9 @@ make_core() {
     local temporary="${core}.tmp"
     rm -f "$temporary"
     local log
-    # Randomized load addresses make every relocation path in the reader do
-    # real work. gdb only stops disabling randomization itself, so setarch also
-    # clears any ADDR_NO_RANDOMIZE personality inherited from the caller.
+
+
+
     log=$(bash -c 'printf "%s\n" "$1" >/proc/self/coredump_filter && shift && exec "$@"' \
         _ "$filter" \
         setarch "$(uname -m)" \
@@ -1175,16 +1175,16 @@ make_core() {
         rm -f "$temporary"
         exit 1
     fi
-    # gdb's batch status reflects only its last command, so gcore's own
-    # completion message is the evidence that the core was fully written.
+
+
     if ! grep -Fx "Saved corefile ${temporary}" <<<"$log" >/dev/null || [[ ! -s "$temporary" ]]; then
         printf 'error: gcore did not write %s:\n%s\n' "$temporary" "$log" >&2
         rm -f "$temporary"
         exit 1
     fi
-    # gcore saves nothing of a mapping past the first read that fails, which
-    # stack-guard-mappings keeps glibc's guards of threads' stacks from making.
-    # No process can read the vsyscall page, which no test reads either.
+
+
+
     if grep -F 'Memory read failed for corefile section' <<<"$log" |
         grep -Fv ' at 0xffffffffff600000.' >/dev/null; then
         printf 'error: gcore could not read all of %s:\n%s\n' "$temporary" "$log" >&2
@@ -1197,8 +1197,8 @@ make_core() {
     mv "${stamp}.tmp" "$stamp"
 }
 
-# Nix store paths identify each toolchain, so their resolved paths and mtimes
-# change with compiler versions without spawning version probes.
+
+
 suite_signature() {
     local -a paths=()
     local tool path
@@ -1208,16 +1208,16 @@ suite_signature() {
             paths+=("$path")
         fi
     done
-    # Statically linked glibc fixtures link from a store path of their own,
-    # and the Node cores run the builds in another.
+
+
     printf '%s\nsuite-v1\nGOOS=%s GOARCH=%s\nGLIBC_STATIC_LIBRARIES=%s\nMICROSCOPE_FIXTURE_CRATES=%s\nMICROSCOPE_NODE=%s\n' \
         "$checkout" "${GOOS-}" "${GOARCH-}" "$GLIBC_STATIC_LIBRARIES" "${MICROSCOPE_FIXTURE_CRATES-}" \
         "${MICROSCOPE_NODE-}"
     stat -L --format='%n %Y' "${paths[@]}"
 }
 
-# Skips every per-fixture probe when no fixture source, SDK, kernel, this
-# script, or tool changed and every previously built output still exists.
+
+
 suite_is_current() {
     local signature="$1"
     [[ -f "$suite_stamp" && -f "$suite_outputs" ]] || return 1
@@ -1232,32 +1232,32 @@ suite_is_current() {
     done <"$suite_outputs"
 }
 
-# Post-mortem cores. 0x33 is the kernel's default coredump_filter; 0x23 omits
-# ELF header pages, 0x10 saves only ELF header pages so modified file-backed
-# pages are omitted too, and 0 saves no memory at all, leaving nothing that can
-# verify a module file.
+
+
+
+
 readonly default_core_filter=0x33
 readonly headerless_core_filter=0x23
 readonly headers_only_core_filter=0x10
 readonly memoryless_core_filter=0x0
 
-# The tokio fixtures: one cargo workspace whose crates come only from its
-# lockfile, which flake.nix vendors, so building fetches nothing. Each
-# variant has a target directory of its own, so the variants build at once,
-# and cargo rebuilds only what changed; a binary is copied out only when
-# cargo rewrote it. Nothing else here reads them, so they build beside the
-# other fixtures, and their outputs are listed in tokio_outputs for the
-# suite's own list.
+
+
+
+
+
+
+
 readonly tokio_fixtures_dir="${rust_fixtures_dir}/tokio"
 readonly tokio_target_dir="build/tokio-target"
 readonly tokio_outputs="${output_dir}/.tokio.outputs"
-# The variants named for an older tokio release are built with its
-# lockfile, and the rest with Cargo.lock's.
+
+
 readonly tokio_older_release="1.52"
 readonly tokio_older_lock="${tokio_fixtures_dir}/tokio-${tokio_older_release}/Cargo.lock"
 
-# Builds the workspace's PACKAGES with PROFILE, extra RUSTFLAGS, and
-# FEATURES, a list of cargo's (or none), into VARIANT's target directory.
+
+
 compile_tokio_variant() {
     local variant="$1"
     local profile="$2"
@@ -1286,9 +1286,9 @@ compile_tokio_variant() {
         --config "source.crates-io.replace-with='vendored'"
         --config "source.vendored.directory='${MICROSCOPE_FIXTURE_CRATES}'"
     )
-    # Cargo takes a fixture another checkout built as current, as it finds
-    # the fixture's sources at the same relative paths: what this checkout
-    # did not build is built again.
+
+
+
     local stamp="$tokio_target_dir/$variant/.checkout"
     if [[ -f "$stamp" && "$(<"$stamp")" != "$checkout" ]]; then
         local -a fixtures=()
@@ -1303,8 +1303,8 @@ compile_tokio_variant() {
     mv "${stamp}.tmp" "$stamp"
 }
 
-# Copies each of PACKAGES that VARIANT's PROFILE build rewrote to
-# tokio-NAME-VARIANT.
+
+
 copy_tokio_variant() {
     local variant="$1"
     local profile="$2"
@@ -1322,16 +1322,16 @@ copy_tokio_variant() {
         cp -p "$built" "$output"
         rebuilt_outputs["$output"]=true
     done
-    # Coroutines are compared only in the plain builds.
+
     [[ "$variant" == o0 || "$variant" == o3 ]] || return 0
     for package in "$@"; do
         generate_coroutine_oracle "$output_dir/tokio-${package}-${variant}"
     done
 }
 
-# readelf's description of each coroutine a program has, which a test
-# compares microscope's reading of them with. scripts/coroutine-oracle reduces
-# its dump to the coroutines.
+
+
+
 readonly coroutine_reducer="$output_dir/coroutine-oracle"
 generate_coroutine_oracle() {
     local program="$1"
@@ -1344,11 +1344,11 @@ generate_coroutine_oracle() {
     fi
     printf '[oracle] %s\n' "$oracle"
     rebuilt_outputs["$oracle"]=true
-    # Only tests read the result.
+
     spawn_job leaf "$oracle" reduce_coroutines "$program" "$oracle" "$reducer"
 }
 
-# Writes ORACLE, the coroutines REDUCER finds in PROGRAM's dump.
+
 reduce_coroutines() {
     local program="$1"
     local oracle="$2"
@@ -1360,17 +1360,17 @@ reduce_coroutines() {
     mv "${oracle}.tmp" "$oracle"
 }
 
-# Builds every tokio fixture and the cores taken from them, and lists what
-# it made in tokio_outputs. It runs in a shell of its own, which must start
-# before this one starts any job.
+
+
+
 build_tokio_fixtures() {
     if [[ -z "${MICROSCOPE_FIXTURE_CRATES-}" ]]; then
         printf 'error: MICROSCOPE_FIXTURE_CRATES is unset; build inside the Nix shell\n' >&2
         exit 1
     fi
     build_go_fixture scripts/coroutine-oracle "$coroutine_reducer"
-    # Each variant: its name, profile, extra RUSTFLAGS, cargo features, and
-    # packages.
+
+
     local -a variants=()
     local -a builds=()
     variant() {
@@ -1380,39 +1380,39 @@ build_tokio_fixtures() {
         shift 4
         variants+=("$name $profile $*")
     }
-    # Every fixture, unoptimized and optimized. Unoptimized only: a hundred
-    # thousand tasks, which bound what listing them costs, and a task list
-    # the program damages, whose reading the build changes nothing of. The
-    # profiler's tasks need neither tokio release in particular.
+
+
+
+
     local -a fixtures=(std-async panics workers server drivers steps cancel shapes values
         runtimes blocking migrate deadlock)
     variant o0 dev "" "" "${fixtures[@]}" scale corrupt profile
     variant o3 release "" "" "${fixtures[@]}" profile
-    # Every fixture again with the older tokio release, which tests read
-    # as tokio-NAME-1.52-o0 and tokio-NAME-1.52-o3.
+
+
     variant "${tokio_older_release}-o0" dev "" "" "${fixtures[@]}"
     variant "${tokio_older_release}-o3" release "" "" "${fixtures[@]}"
-    # Panics that abort rather than unwind.
+
     variant abort abort "" "" panics
-    # Builds that describe less than tokio's types, where the debugger says
-    # what it cannot read: lines only, symbols only, and tokio's sources moved
-    # where its version cannot be read from their path.
+
+
+
     variant lines lines "" "" workers
     variant stripped stripped "" "" workers
     variant remapped dev \
         "--remap-path-prefix=${MICROSCOPE_FIXTURE_CRATES}/tokio-1.53.2=/vendor/tokio" "" workers
-    # tokio's unstable features, which record where each task was spawned and
-    # give each task's vtable one more offset.
+
+
     variant unstable dev "--cfg tokio_unstable" "" workers
-    # With tokio's tracing feature too, as tokio-console needs: each task's
-    # future is wrapped in a span.
+
+
     variant traced dev "--cfg tokio_unstable" workers/tracing workers
-    # tokio's locks from parking_lot, whose mutexes are laid out as std's
-    # are not.
+
+
     variant parking-lot dev "" workers/parking-lot workers
-    # Some tasks' futures wrapped as programs wrap what they spawn.
+
     variant wrapped dev "" workers/wrapped workers
-    # Symbols mangled as rustc did before v0, which name no generic arguments.
+
     variant legacy dev "-Z unstable-options -C symbol-mangling-version=legacy" "" panics workers
     local build failed=0
     for build in "${builds[@]}"; do
@@ -1428,11 +1428,11 @@ build_tokio_fixtures() {
         copy_tokio_variant $record
     done
 
-    # The workers fixture's checkpoint, as gdb dumps it, with each runtime
-    # flavor, the values fixture's first stop, and the runtimes fixture's
-    # checkpoint. The log keeps what the program reported there. One malloc
-    # arena keeps each thread from reserving one of its own, which the core
-    # saves.
+
+
+
+
+
     export TRUTH_CORE=1 MALLOC_ARENA_MAX=1
     local name
     for name in o0 o3 "${tokio_older_release}-o0" "${tokio_older_release}-o3"; do
@@ -1450,11 +1450,11 @@ build_tokio_fixtures() {
 }
 
 mkdir -p "$output_dir"
-# Every core's program runs under it (make_core), the tokio fixtures' too:
-# it is built before they start, which wait on no job of this shell's.
+
+
 readonly stack_guard_mappings="$output_dir/stack-guard-mappings"
-# `tokio` builds only the tokio fixtures, all that the tokio suite reads,
-# without checking every other fixture.
+
+
 if (( $# > 0 )); then
     if [[ "$*" != tokio ]]; then
         printf 'usage: %s [tokio]\n' "$0" >&2
@@ -1470,8 +1470,8 @@ if suite_is_current "$signature"; then
     printf '[cached] %s\n' "$output_dir"
     exit 0
 fi
-# Written before building so sources edited during this run are newer than the
-# stamp that the final rename publishes.
+
+
 printf '%s\n' "$signature" >"${suite_stamp}.tmp"
 build_fixture gcc scripts/stack-guard-mappings.c "$stack_guard_mappings" -O2
 wait_builds
@@ -1481,15 +1481,15 @@ readonly tokio_build=$!
 
 build_fixture gcc "$c_fixtures_dir/basic.c" "$output_dir/basic" \
     -O0 -g3 -fPIE -pie
-# Built as if elsewhere: its debug information names sources under a
-# directory that does not exist here.
+
+
 build_fixture gcc "$c_fixtures_dir/basic.c" "$output_dir/basic-relocated" \
     -O0 -g3 -fPIE -pie "-ffile-prefix-map=${PWD}=/nonexistent/microscope"
-# Its compile unit's debug information is in a split DWARF file, which the
-# debugger does not read.
+
+
 build_fixture gcc "$c_fixtures_dir/basic.c" "$output_dir/basic-split-dwarf" \
     -O0 -g3 -gsplit-dwarf -fPIE -pie
-# An object file not yet linked, whose DWARF has relocations to apply.
+
 build_fixture gcc "$c_fixtures_dir/basic.c" "$output_dir/basic.o" -O0 -g3 -c
 build_fixture gcc "$c_fixtures_dir/attach.c" "$output_dir/attach" \
     -O0 -g3 -fPIE -pie
@@ -1535,8 +1535,8 @@ build_fixture gcc "$c_fixtures_dir/profile-inline.c" "$output_dir/profile-inline
     -O2 -g -fno-omit-frame-pointer
 build_fixture gcc "$c_fixtures_dir/profile-deep.c" "$output_dir/profile-deep" \
     -O2 -g -fno-omit-frame-pointer
-# Built as Chromium builds by default: split DWARF, so that only the line
-# tables stay in the program and its inlines are described in a .dwo.
+
+
 build_fixture clang "$c_fixtures_dir/profile-inline.c" "$output_dir/profile-inline-clang-split" \
     -O2 -g -gsplit-dwarf -fdebug-compilation-dir=. -fno-omit-frame-pointer
 for variant in "gcc-o0 gcc -O0 -fno-omit-frame-pointer -fPIE -pie" \
@@ -1549,8 +1549,8 @@ done
 build_fixture gcc "$c_fixtures_dir/catch.c" "$output_dir/catch-spin" -O0 -g3 -DSPIN -pthread
 build_fixture gcc "$c_fixtures_dir/syscalls.c" "$output_dir/syscalls" \
     -O0 -g3 -fPIE -pie -pthread
-# With no lines, as a release build ships: a call's site is named by the
-# program's function past the C library's wrappers.
+
+
 build_fixture gcc "$c_fixtures_dir/syscalls.c" "$output_dir/syscalls-nolines" \
     -O0 -fPIE -pie -pthread
 build_fixture gcc "$c_fixtures_dir/attach-fork.c" "$output_dir/attach-fork" \
@@ -1635,7 +1635,7 @@ require_dwarf_operation "$output_dir/variables-static-clang-o2" DW_OP_addrx
 build_fixture gcc "$c_fixtures_dir/variables-static.c" "$output_dir/variables-static-gcc-nopie" \
     -O2 -g3 -gdwarf-5 -fomit-frame-pointer -no-pie
 require_dwarf_operation "$output_dir/variables-static-gcc-nopie" 'DW_OP_addr:'
-# Each pair of compiler, optimization, and linking once.
+
 for build in gcc-o0-pie gcc-o2-nopie clang-o0-nopie clang-o2-pie; do
     IFS=- read -r compiler optimization linking <<<"$build"
     if [[ "$linking" == pie ]]; then
@@ -1662,9 +1662,9 @@ build_shared_fixture gcc "$c_fixtures_dir/shared/library.c" "$output_dir/libglob
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer
 build_fixture gcc "$c_fixtures_dir/shared/main.c" "$output_dir/globals-shared" \
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie -ldl
-# A program and a library that carry views in .debug_microscope_views, which
-# the assembler reads from the fixture's directory, so the cache watches the
-# directory whole.
+
+
+
 embedded_views_dir="$c_fixtures_dir/embedded-views"
 read_dash_version gcc
 embedded_views_metadata="compiler=${dash_version}"$'\n'"target=x86_64-linux"$'\n'"backend=gcc"
@@ -1677,8 +1677,8 @@ run_cached_build "$embedded_views_dir" "$output_dir/embedded-views" \
     gcc -std=c17 -Wall -Wextra -Werror -O0 -g3 -gdwarf-5 -fPIE -pie -Isdk/c \
     "$embedded_views_dir/main.c" -o "$output_dir/embedded-views" \
     "-L$output_dir" -lembedded-views '-Wl,-rpath,$ORIGIN'
-# The kernels microscope carries must be what their sources build, so that each
-# is reviewed as its source; zig caches the build.
+
+
 zig build-exe -target wasm32-freestanding -O ReleaseSmall -fno-entry -rdynamic \
     --stack 16384 --dep microscope_kernel -Mroot=views/kernels/rust-btree.zig \
     -Mmicroscope_kernel=sdk/zig/microscope_kernel.zig -femit-bin="$output_dir/rust-btree.wasm"
@@ -1688,7 +1688,7 @@ if ! cmp -s "$output_dir/rust-btree.wasm" views/kernels/rust-btree.wasm; then
     exit 1
 fi
 rebuilt_outputs["$output_dir/rust-btree.wasm"]=true
-# A program with embedded views and a tree kernel written with the C SDK.
+
 zig cc --target=wasm32-freestanding -Os -nostdlib -Wl,--no-entry -Wl,-z,stack-size=16384 \
     -Isdk/c "$c_fixtures_dir/tutorial/tree.c" -o "$output_dir/tutorial-tree.wasm"
 rebuilt_outputs["$output_dir/tutorial-tree.wasm"]=true
@@ -1717,9 +1717,9 @@ build_fixture clang "$c_fixtures_dir/module-frames/main.c" "$output_dir/module-f
 build_fixture gcc "$c_fixtures_dir/module-frames/main.c" "$output_dir/module-frames-gcc-nopie" \
     -O2 -g3 -gdwarf-5 -fomit-frame-pointer -no-pie \
     "-L$output_dir" -lmodule-frames '-Wl,-rpath,$ORIGIN'
-# Programs and a library whose debug information is a separate file, found
-# by `.gnu_debuglink` beside them, by build-id under a debug directory, or
-# from a debuginfod server.
+
+
+
 mkdir -p "$output_dir/split"
 build_fixture gcc "$c_fixtures_dir/basic.c" "$output_dir/split/basic-debuglink.full" \
     -O0 -g3 -gdwarf-5 -fPIE -pie
@@ -1729,10 +1729,10 @@ build_fixture gcc "$c_fixtures_dir/basic.c" "$output_dir/split/basic-build-id.fu
     -O0 -g3 -gdwarf-5 -fPIE -pie -Wl,--build-id
 derive_split_debug "$output_dir/split/basic-build-id.full" "$output_dir/split/basic-build-id" \
     build-id "$output_dir/split/debug-root"
-# The same debug file under another debug directory, naming a dwz
-# supplementary file as distributions' debug files do, beside it in that
-# directory's .dwz, where none is: microscope refuses it with its reason rather
-# than misread it.
+
+
+
+
 altlinked_script='
     set -euo pipefail
     root="$1"; output="$2"
@@ -1749,10 +1749,10 @@ altlinked_script='
 run_cached_build "$output_dir/split/basic-build-id" "$output_dir/split/altlink-root/ready" \
     "derivation=altlinked-v2" \
     bash -c "$altlinked_script" _ "$output_dir/split/debug-root" "$output_dir/split/altlink-root"
-# A C++ program and its library whose debug information shares what they
-# have in common through a dwz supplementary file, as distributions' does,
-# named the GNU way and DWARF 5's.
-# dwz reads Clang's DWARF only up to version 4.
+
+
+
+
 build_shapes_fixture g++ "$output_dir/dwz/gcc-o0" -O0
 build_shapes_fixture g++ "$output_dir/dwz/gcc-o2" -O2
 build_shapes_fixture clang++ "$output_dir/dwz/clang-o2" -O2 -gdwarf-4
@@ -1770,8 +1770,8 @@ build_fixture gcc "$c_fixtures_dir/module-frames/main.c" "$output_dir/split/modu
     -O0 -g3 -gdwarf-5 -fPIE -pie "-L$output_dir/split" -lmodule-frames '-Wl,-rpath,$ORIGIN'
 build_symbols_library gcc "$output_dir/libelf-symbols-gcc.so"
 build_symbols_library clang "$output_dir/libelf-symbols-clang.so"
-# Stripped libraries keep the soname they were linked with, so each derived
-# library starts from a full build that already carries its final soname.
+
+
 for library in stripped minidebug; do
     build_symbols_library gcc "$output_dir/libelf-symbols-${library}.so.full" \
         "libelf-symbols-${library}.so"
@@ -1809,7 +1809,7 @@ build_disassembly_fixture gcc "$output_dir/disassembly-gcc-o0" \
     -O0 -fno-omit-frame-pointer -fPIE -pie
 build_disassembly_fixture clang "$output_dir/disassembly-clang-o2-nopie" \
     -O2 -fomit-frame-pointer -no-pie
-# mold describes no PLT stub with call-frame information, as lld does not.
+
 build_disassembly_fixture gcc "$output_dir/disassembly-gcc-mold" \
     -O0 -fno-omit-frame-pointer -fPIE -pie -fuse-ld=mold
 build_fixture gcc "$c_fixtures_dir/null-call.c" "$output_dir/null-call" \
@@ -1818,8 +1818,8 @@ build_fixture gcc "$c_fixtures_dir/tls.c" "$output_dir/globals-tls-gcc" \
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie -pthread
 build_fixture clang "$c_fixtures_dir/tls.c" "$output_dir/globals-tls-clang" \
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie -pthread
-# TLS in an executable, a linked library, and a dlopen'd plugin, on glibc and
-# on musl. Statically linked builds have one module and no plugin.
+
+
 readonly tls_modules_dir="$c_fixtures_dir/tls-modules"
 for libc in glibc musl; do
     compiler=gcc suffix=""
@@ -1845,7 +1845,7 @@ build_tls_modules_fixture musl-clang "$output_dir/tls-modules-musl-clang-static-
 for variant in gcc-o0 gcc-static clang-static-pie; do
     require_musl "$output_dir/tls-modules-musl-${variant}"
 done
-# Statically linked glibc, with and without its thread library.
+
 glibc_static=(-L"$GLIBC_STATIC_LIBRARIES" -DSTATIC_BUILD "$tls_modules_dir/library.c")
 build_tls_modules_fixture gcc "$output_dir/tls-modules-gcc-static" -O0 -static \
     "$tls_modules_dir/main.c" "${glibc_static[@]}"
@@ -1859,9 +1859,9 @@ require_static_glibc "$output_dir/tls-modules-gcc-static" yes
 require_static_glibc "$output_dir/tls-modules-clang-static-pie" yes
 require_static_glibc "$output_dir/tls-modules-single-thread-gcc-static-pie" no
 require_static_glibc "$output_dir/tls-modules-single-thread-clang-static" no
-# Dynamically linked on Ubuntu's glibc builds: 18.04's and 20.04's describe
-# their thread structures in libpthread, which a program without threads
-# never loads, and 22.04's in libc, as every glibc since 2.34 does.
+
+
+
 for version in 2.27 2.31 2.35; do
     suffix="-glibc${version}"
     build_ubuntu_tls_fixture library "$version" "$output_dir/libtls-modules${suffix}.so" \
@@ -1904,7 +1904,7 @@ build_cpp_fixture_directory g++ "$cpp_fixtures_dir/expressions" \
     "$output_dir/expressions-cpp-gcc-o0" -O0 -g3 -gdwarf-5 -fPIE -pie
 build_cpp_fixture_directory clang++ "$cpp_fixtures_dir/expressions" \
     "$output_dir/expressions-cpp-clang-o2" -O2 -g3 -gdwarf-5 -fPIE -pie
-# Pair and tuple keys, whose layouts libc++ and libstdc++ each choose.
+
 build_cpp_fixture_directory g++ "$cpp_fixtures_dir/keys" \
     "$output_dir/keys-cpp-gcc-o0" -O0 -g3 -gdwarf-5 -fPIE -pie
 build_cpp_fixture_directory clang++ "$cpp_fixtures_dir/keys" \
@@ -1919,8 +1919,8 @@ build_cpp_fixture g++ "$cpp_fixtures_dir/records.cpp" "$output_dir/records-cpp-g
     -O2 -g3 -gdwarf-5 -fomit-frame-pointer -fPIE -pie
 build_cpp_fixture clang++ "$cpp_fixtures_dir/records.cpp" "$output_dir/records-cpp-clang-o2" \
     -O2 -g3 -gdwarf-5 -fomit-frame-pointer -fPIE -pie
-# libstdc++ only declares std::string in programs that use it; clang's
-# standalone debug information defines it, so its layout is known.
+
+
 build_cpp_fixture clang++ "$cpp_fixtures_dir/strings.cpp" "$output_dir/strings-cpp-clang-o0" \
     -O0 -g3 -gdwarf-5 -fstandalone-debug -fno-omit-frame-pointer -fPIE -pie
 build_cpp_fixture g++ "$cpp_fixtures_dir/globals.cpp" "$output_dir/globals-cpp-gcc-o0" \
@@ -1949,16 +1949,16 @@ build_cpp_fixture g++ "$cpp_fixtures_dir/templates.cpp" "$output_dir/templates-c
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie
 build_cpp_fixture clang++ "$cpp_fixtures_dir/templates.cpp" "$output_dir/templates-cpp-clang-o0" \
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie
-# DWARF 4 type units, without DWARF 5's marks on inline namespaces.
+
 build_cpp_fixture g++ "$cpp_fixtures_dir/templates.cpp" "$output_dir/templates-cpp-gcc-dwarf4" \
     -O0 -g3 -gdwarf-4 -fdebug-types-section -fno-omit-frame-pointer -fPIE -pie
 require_dwarf_operation "$output_dir/templates-cpp-gcc-dwarf4" 'DW_AT_type.*signature:'
-# LLVM's libc++ lays out and names the standard library differently.
+
 build_cpp_fixture clang++-libc++ "$cpp_fixtures_dir/templates.cpp" "$output_dir/templates-cpp-libcxx-o0" \
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie
 require_dwarf_operation "$output_dir/templates-cpp-libcxx-o0" 'DW_AT_name.*: __1$'
-# The containers the built-in views present, across the libraries' matrix,
-# in C++23 for its flat maps and std::expected.
+
+
 for optimization in o0 o2; do
     level="-O${optimization#o}"
     build_cpp_fixture g++ "$cpp_fixtures_dir/containers.cpp" \
@@ -1968,27 +1968,27 @@ for optimization in o0 o2; do
     build_cpp_fixture clang++-libc++ "$cpp_fixtures_dir/containers.cpp" \
         "$output_dir/containers-cpp-libcxx-$optimization" "$level" -std=c++23 -g3 -gdwarf-5 -fPIE -pie
 done
-# libstdc++'s copy-on-write string, from before the C++11 ABI.
+
 build_cpp_fixture g++ "$cpp_fixtures_dir/containers.cpp" "$output_dir/containers-cpp-gcc-oldabi" \
     -O0 -std=c++23 -g3 -gdwarf-5 -fPIE -pie -D_GLIBCXX_USE_CXX11_ABI=0
-# libstdc++'s debug mode, whose containers wrap the ordinary ones.
+
 build_cpp_fixture g++ "$cpp_fixtures_dir/containers.cpp" "$output_dir/containers-cpp-gcc-debug" \
     -O0 -std=c++23 -g3 -gdwarf-5 -fPIE -pie -D_GLIBCXX_DEBUG
-# libstdc++ linked into the program.
+
 build_cpp_fixture g++ "$cpp_fixtures_dir/containers.cpp" "$output_dir/containers-cpp-gcc-static" \
     -O0 -std=c++23 -g3 -gdwarf-5 -fPIE -pie -static-libstdc++
-# Template names without their arguments, which only the arguments'
-# entries give.
+
+
 build_cpp_fixture clang++ "$cpp_fixtures_dir/containers.cpp" "$output_dir/containers-cpp-clang-simple" \
     -O0 -std=c++23 -g3 -gdwarf-5 -gsimple-template-names -fPIE -pie
-# Only with -fstandalone-debug does clang describe the libc++ classes the
-# program never defines itself, such as a shared_ptr's control block.
+
+
 build_cpp_fixture clang++-libc++ "$cpp_fixtures_dir/containers.cpp" \
     "$output_dir/containers-cpp-libcxx-standalone" -O0 -std=c++23 -g3 -gdwarf-5 -fstandalone-debug -fPIE -pie
 build_rust_fixture "$rust_fixtures_dir/variables.rs" "$output_dir/variables-rust-o0" \
     -C opt-level=0 -C force-frame-pointers=yes
-# A call's site is the program's function past std's frames: in a debug
-# build, by std's lines; in a release build without lines, by its names.
+
+
 build_rust_fixture "$rust_fixtures_dir/syscalls.rs" "$output_dir/syscalls-rust-o0" \
     -C opt-level=0 -C force-frame-pointers=yes
 build_rust_fixture "$rust_fixtures_dir/syscalls.rs" "$output_dir/syscalls-rust-release" \
@@ -2019,15 +2019,15 @@ build_rust_fixture "$rust_fixtures_dir/generics.rs" "$output_dir/generics-rust-o
     -C opt-level=0 -C force-frame-pointers=yes
 build_rust_fixture "$rust_fixtures_dir/generics.rs" "$output_dir/generics-rust-o2" \
     -C opt-level=2 -C force-frame-pointers=no
-# The Rust SDK's macro, as a dependency of a program that carries views,
-# whose directory the cache watches whole for the same reason as the C one.
+
+
 read_dash_version rustc
 rust_sdk_metadata="compiler=${dash_version}"$'\n'"target=x86_64-linux"$'\n'"backend=rustc"
 run_cached_build sdk/rust "$output_dir/libmicroscope_views.rlib" "$rust_sdk_metadata" \
     rustc --edition=2024 -D warnings --crate-type rlib --crate-name microscope_views \
     sdk/rust/src/lib.rs -o "$output_dir/libmicroscope_views.rlib"
-# A kernel written with the Rust SDK, which the next program carries; its
-# target's core is built here, so it needs no other toolchain.
+
+
 env RUSTFLAGS= CARGO_ENCODED_RUSTFLAGS= CARGO_TARGET_DIR=build/kernels \
     cargo build --quiet --release --target wasm32-unknown-unknown \
     -Zbuild-std=core,panic_abort \
@@ -2042,12 +2042,12 @@ run_cached_build "$rust_fixtures_dir/embedded-views" "$output_dir/embedded-views
     --crate-name embedded_views \
     --extern "microscope_views=$output_dir/libmicroscope_views.rlib" \
     "$rust_fixtures_dir/embedded-views/main.rs" -o "$output_dir/embedded-views-rust"
-# The probes SDK, switched on, and a program instrumented with it.
+
 run_cached_build sdk/rust-probes "$output_dir/libmicroscope_probes.rlib" "$rust_sdk_metadata" \
     rustc --edition=2024 -D warnings -C opt-level=2 --crate-type rlib --crate-name microscope_probes \
     --cfg 'feature="enabled"' sdk/rust-probes/src/lib.rs -o "$output_dir/libmicroscope_probes.rlib"
-# The same, as the shared library the Python package loads; its name keeps
-# its build's intermediate files apart from the rlib's.
+
+
 run_cached_build sdk/rust-probes "$output_dir/libmicroscope_probes_c.so" "$rust_sdk_metadata" \
     rustc --edition=2024 -D warnings -C opt-level=2 --crate-type cdylib --crate-name microscope_probes \
     --cfg 'feature="enabled"' --cfg 'feature="c"' sdk/rust-probes/src/lib.rs \
@@ -2056,14 +2056,14 @@ run_cached_build "$rust_fixtures_dir/probes" "$output_dir/probes" "$rust_sdk_met
     rustc --edition=2024 -D warnings -C debuginfo=2 -C opt-level=2 --crate-name probes \
     --extern "microscope_probes=$output_dir/libmicroscope_probes.rlib" \
     "$rust_fixtures_dir/probes/main.rs" -o "$output_dir/probes"
-# A chess position that carries its views and the renderer that draws it.
+
 run_cached_build "$rust_fixtures_dir/chess" "$output_dir/chess" \
     "$rust_sdk_metadata" \
     rustc --edition=2024 -D warnings -C debuginfo=2 -C codegen-units=1 -C opt-level=0 \
     --crate-name chess \
     --extern "microscope_views=$output_dir/libmicroscope_views.rlib" \
     "$rust_fixtures_dir/chess/main.rs" -o "$output_dir/chess"
-# Unlike the other Rust fixtures, the containers use std.
+
 build_program rustc "$rust_fixtures_dir/containers.rs" "$output_dir/containers-rust-o0" \
     --edition=2024 -D warnings -C debuginfo=2 -C codegen-units=1 -C opt-level=0
 build_program rustc "$rust_fixtures_dir/containers.rs" "$output_dir/containers-rust-o2" \
@@ -2072,7 +2072,7 @@ for level in 0 2; do
     build_program rustc "$rust_fixtures_dir/returns.rs" "$output_dir/returns-rust-o${level}" \
         --edition=2024 -D warnings -C debuginfo=2 -C codegen-units=1 -C opt-level="$level"
 done
-# Line tables only: no variables or types, so nothing to present.
+
 build_program rustc "$rust_fixtures_dir/containers.rs" "$output_dir/containers-rust-limited" \
     --edition=2024 -D warnings -C debuginfo=limited -C codegen-units=1 -C opt-level=0
 for level in 0 2; do
@@ -2196,7 +2196,7 @@ build_fixture gcc "$c_fixtures_dir/spin.c" "$output_dir/spin" \
     -O0 -g3 -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/threads.c" "$output_dir/threads" \
     -O0 -g3 -fPIE -pie -pthread
-# musl's clone, in its libc.so and linked into the program.
+
 build_fixture musl-gcc "$c_fixtures_dir/threads.c" "$output_dir/threads-musl" \
     -O0 -g3 -fPIE -pie -pthread
 build_fixture musl-gcc "$c_fixtures_dir/threads.c" "$output_dir/threads-musl-static" \
@@ -2212,8 +2212,8 @@ build_fixture gcc "$c_fixtures_dir/stdin-digest.c" "$output_dir/stdin-digest" \
 build_fixture gcc "$c_fixtures_dir/thread-burst.c" "$output_dir/thread-burst" \
     -O0 -g3 -fPIE -pie -pthread
 build_c_fixture_directory gcc "$c_fixtures_dir/life" "$output_dir/life" -O0 -g3 -fPIE -pie
-# Programs whose data the built-in renderers draw, each through a views
-# file beside it, or through Draw as… alone.
+
+
 build_c_fixture_directory gcc "$c_fixtures_dir/metrics" "$output_dir/metrics" -O0 -g3 -fPIE -pie -lm
 build_go_fixture "$go_fixtures_dir/charts" "$output_dir/charts" \
     -buildmode=pie "-gcflags=all=-N -l"
@@ -2251,8 +2251,8 @@ build_fixture gcc "$c_fixtures_dir/signal-policy.c" "$output_dir/signal-policy" 
     -O0 -g3 -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/signal-steps.c" "$output_dir/signal-steps" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie
-# Clang marks a call's return address as no statement, so a step returning
-# there single-steps on.
+
+
 build_fixture clang "$c_fixtures_dir/signal-steps.c" "$output_dir/signal-steps-clang" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/signals.c" "$output_dir/signals" \
@@ -2289,9 +2289,9 @@ build_fixture gcc "$c_fixtures_dir/process-tree.c" "$output_dir/process-tree" \
     -O0 -g3 -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/group-spin.c" "$output_dir/group-spin" \
     -O0 -g3 -fPIE -pie
-# Without debug information: breakpoints resolve by symbol, an indirect
-# function's once its resolver has chosen, whether the loader binds at
-# startup, binds lazily, or a static program relocates itself.
+
+
+
 build_fixture gcc "$c_fixtures_dir/measure.c" "$output_dir/measure-gcc-nodebug" \
     -O0 -fPIE -pie
 build_fixture clang "$c_fixtures_dir/measure.c" "$output_dir/measure-clang-nopie-lazy" \
@@ -2342,7 +2342,7 @@ for variant in gcc-o2:gcc:-gdwarf-5 gcc-o2-dwarf4:gcc:-gdwarf-4 clang-o2:clang:-
     require_tail_jump "$output_dir/tail-frames-$name" middle leaf
     require_tail_jump "$output_dir/tail-frames-$name" either leaf
 done
-# The profiler's exact stacks, across the frame-pointer and PIE matrix.
+
 for variant in \
     gcc-o0:gcc:-O0:-fno-omit-frame-pointer:-fPIE:-pie \
     gcc-o2-nofp:gcc:-O2:-fomit-frame-pointer:-fPIE:-pie \
@@ -2352,55 +2352,55 @@ for variant in \
     build_fixture "$compiler" "$c_fixtures_dir/profile-stacks.c" "$output_dir/profile-stacks-$name" \
         "$level" -g3 "$frames" "$code" "$link" -pthread
 done
-# Built as Google ships Chrome: frame pointers, but no call-frame information
-# and no symbols, so that only its code proves its frames.
+
+
 build_fixture clang "$c_fixtures_dir/profile-stacks.c" "$output_dir/profile-stacks-clang-o2-nocfi" \
     -O2 -fno-omit-frame-pointer -fno-asynchronous-unwind-tables -fno-unwind-tables -fPIE -pie \
     -pthread -s
-# A program attached to, with threads started before and after.
+
 build_fixture gcc "$c_fixtures_dir/profile-attach.c" "$output_dir/profile-attach-gcc-o0" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie -pthread
 build_fixture clang "$c_fixtures_dir/profile-attach.c" "$output_dir/profile-attach-clang-o2-nofp" \
     -O2 -g3 -fomit-frame-pointer -fPIE -pie -pthread
-# Signal handlers and the vDSO, which samples unwind through.
+
 build_fixture gcc "$c_fixtures_dir/profile-signals.c" "$output_dir/profile-signals-gcc-o0" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie
 build_fixture clang "$c_fixtures_dir/profile-signals.c" "$output_dir/profile-signals-clang-o2-nofp" \
     -O2 -g3 -fomit-frame-pointer -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/profile-vdso.c" "$output_dir/profile-vdso" \
     -O2 -g3 -fno-omit-frame-pointer -fPIE -pie
-# Code a perf map names where it was moved to, a mapping no record reports.
+
 build_fixture gcc "$c_fixtures_dir/profile-moved-jit.c" "$output_dir/profile-moved-jit" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie
-# Two phases, the first held until the test releases it, for windows.
+
 build_fixture gcc "$c_fixtures_dir/profile-phases.c" "$output_dir/profile-phases" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie -pthread
-# Threads that block and threads preempted, for off-CPU intervals.
+
 build_fixture gcc "$c_fixtures_dir/profile-offcpu.c" "$output_dir/profile-offcpu" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie -pthread
-# Threads that switch far more often than they run, for what a full ring loses.
+
 build_fixture gcc "$c_fixtures_dir/profile-switches.c" "$output_dir/profile-switches" \
     -O1 -g -fno-omit-frame-pointer -pthread
-# Direct and mutual recursion, for collapsing cycles.
+
 build_fixture gcc "$c_fixtures_dir/profile-recursion.c" "$output_dir/profile-recursion" \
     -O1 -g -fno-omit-frame-pointer -fno-optimize-sibling-calls
-# Steady work whose rate measures what recording costs.
+
 build_fixture gcc "$c_fixtures_dir/overhead.c" "$output_dir/overhead" \
     -O2 -g3 -fno-omit-frame-pointer -fPIE -pie -pthread
-# Static programs, whose code auto mode can judge before they run.
+
 build_fixture musl-gcc "$c_fixtures_dir/profile-stacks.c" "$output_dir/profile-stacks-musl" \
     -O2 -g3 -fno-omit-frame-pointer -static -pthread
 build_fixture musl-gcc "$c_fixtures_dir/profile-stacks.c" "$output_dir/profile-stacks-musl-nofp" \
     -O2 -g3 -fomit-frame-pointer -static -pthread
-# mold places segments at virtual addresses other than their file offsets.
+
 build_fixture gcc "$c_fixtures_dir/profile-stacks.c" "$output_dir/profile-stacks-gcc-mold" \
     -O2 -g3 -fno-omit-frame-pointer -fPIE -pie -fuse-ld=mold -pthread
 build_cpp_fixture g++ "$cpp_fixtures_dir/profile-stacks.cpp" "$output_dir/profile-stacks-cpp-gcc-o2-nofp" \
     -O2 -g3 -fomit-frame-pointer -fPIE -pie -pthread
 build_cpp_fixture clang++ "$cpp_fixtures_dir/profile-stacks.cpp" "$output_dir/profile-stacks-cpp-clang-o0" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie -pthread
-# Line tables only, as Chromium builds: its DWARF names functions without
-# their classes, namespaces, or linkage names.
+
+
 build_cpp_fixture clang++ "$cpp_fixtures_dir/profile-names.cpp" "$output_dir/profile-names-cpp-clang-g1" \
     -O2 -g1 -fno-omit-frame-pointer -fPIE -pie
 build_rust_fixture "$rust_fixtures_dir/profile-stacks.rs" "$output_dir/profile-stacks-rust-o0" \
@@ -2411,7 +2411,7 @@ build_fixture gcc "$c_fixtures_dir/step-over-libc.c" "$output_dir/step-over-libc
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/orphan-frames.c" "$output_dir/orphan-frames" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie
-# Keeps the assembly after the function before it, as the source places it.
+
 build_fixture gcc "$c_fixtures_dir/assembly-after-code.c" "$output_dir/assembly-after-code" \
     -O0 -g3 -fno-toplevel-reorder -fno-omit-frame-pointer -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/undescribed-caller.c" "$output_dir/undescribed-caller" \
@@ -2432,8 +2432,8 @@ build_fixture gcc "$c_fixtures_dir/unwind.c" "$output_dir/unwind-nopie" \
     -O2 -g3 -fomit-frame-pointer -no-pie
 build_fixture clang "$c_fixtures_dir/unwind.c" "$output_dir/unwind-clang-o2" \
     -O2 -g3 -fomit-frame-pointer -fPIE -pie
-# Caller frames whose values live in frame slots, in registers callees saved,
-# and in registers no callee saves.
+
+
 build_fixture gcc "$c_fixtures_dir/frames.c" "$output_dir/frames-gcc-o0" \
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/frames.c" "$output_dir/frames-gcc-o2" \
@@ -2444,8 +2444,8 @@ build_fixture clang "$c_fixtures_dir/frames.c" "$output_dir/frames-clang-o0" \
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie
 build_fixture clang "$c_fixtures_dir/frames.c" "$output_dir/frames-clang-o2" \
     -O2 -g3 -gdwarf-5 -fomit-frame-pointer -fPIE -pie
-# Values split across registers and memory, recovered from callers' call
-# sites, also in another module, and pointing at objects with no address.
+
+
 build_shared_fixture gcc "$c_fixtures_dir/locations/library.c" "$output_dir/liblocations.so" \
     -O2 -g3 -gdwarf-5 -fomit-frame-pointer
 locations_library=("-L$output_dir" -llocations '-Wl,-rpath,$ORIGIN')
@@ -2556,22 +2556,22 @@ build_fixture gcc "$c_fixtures_dir/crash/main.c" "$output_dir/crash-gcc-o2-nopie
     "-L$output_dir" -lcrash '-Wl,-rpath,$ORIGIN'
 build_rust_fixture "$rust_fixtures_dir/crash.rs" "$output_dir/crash-rust-o0" \
     -C opt-level=0 -C force-frame-pointers=yes
-# Later -C options override the debuginfo=2 default; stripping debug info
-# keeps the v0-mangled symbol table.
+
+
 build_rust_fixture "$rust_fixtures_dir/crash.rs" "$output_dir/crash-rust-nodebug" \
     -C opt-level=0 -C debuginfo=0 -C strip=debuginfo
 build_go_fixture "$go_fixtures_dir/preempt" "$output_dir/preempt-go" \
     -buildmode=pie
-# Tasks are read through the TLS sequence and load bias, which differ
-# between a PIE and `go build`'s default executable.
+
+
 build_go_fixture "$go_fixtures_dir/workers" "$output_dir/workers-go-o0" \
     -buildmode=pie "-gcflags=all=-N -l"
 build_go_fixture "$go_fixtures_dir/workers" "$output_dir/workers-go-o2"
-# A program that corrupts one of its parked goroutines, at the addresses its
-# DWARF gives, which a position-dependent executable runs at.
+
+
 build_go_fixture "$go_fixtures_dir/corrupt" "$output_dir/corrupt-go"
 build_go_fixture "$go_fixtures_dir/scale" "$output_dir/scale-go"
-# A large real program, many packages of the standard library's.
+
 build_go_command cmd/gofmt "$output_dir/gofmt-go-o0" -buildmode=pie "-gcflags=all=-N -l"
 build_go_command cmd/gofmt "$output_dir/gofmt-go-o2"
 build_go_fixture "$go_fixtures_dir/stacks" "$output_dir/stacks-go-o0" \
@@ -2580,14 +2580,14 @@ build_go_fixture "$go_fixtures_dir/stacks" "$output_dir/stacks-go-o2"
 build_go_fixture "$go_fixtures_dir/spin" "$output_dir/spin-go-o0" \
     "-gcflags=all=-N -l"
 build_go_fixture "$go_fixtures_dir/spin" "$output_dir/spin-go-o2"
-# Goroutines a profiler's task snapshots find waiting.
+
 build_go_fixture "$go_fixtures_dir/waits" "$output_dir/profile-go-waits"
-# The profiler's goroutine stacks, optimized and not, PIE and not.
+
 build_go_fixture "$go_fixtures_dir/profile" "$output_dir/profile-go-o2"
 build_go_fixture "$go_fixtures_dir/overhead" "$output_dir/overhead-go"
 build_go_fixture "$go_fixtures_dir/profile" "$output_dir/profile-go-o0" \
     -buildmode=pie "-gcflags=all=-N -l"
-# Stripped of DWARF and symbols, so no model describes its runtime's data.
+
 build_go_fixture "$go_fixtures_dir/spin" "$output_dir/spin-go-stripped" "-ldflags=-s -w"
 build_go_fixture "$go_fixtures_dir/siblings" "$output_dir/siblings-go-o0" \
     -buildmode=pie "-gcflags=all=-N -l"
@@ -2595,19 +2595,19 @@ build_go_fixture "$go_fixtures_dir/siblings" "$output_dir/siblings-go-o2"
 build_go_fixture "$go_fixtures_dir/watched" "$output_dir/watched-go-o0" \
     -buildmode=pie "-gcflags=all=-N -l"
 build_go_fixture "$go_fixtures_dir/watched" "$output_dir/watched-go-o2"
-# Go calls C, which calls back into Go, with each C compiler.
+
 GO_CGO=1 GO_CC=gcc GO_CFLAGS="-g -O0" build_go_fixture "$go_fixtures_dir/cgo" \
     "$output_dir/cgo-go-gcc" -buildmode=pie "-gcflags=all=-N -l"
 GO_CGO=1 GO_CC=clang GO_CFLAGS="-g -O2" build_go_fixture "$go_fixtures_dir/cgo" \
     "$output_dir/cgo-go-clang"
-# An HTTP server and its client, and the same built without the paths of
-# its sources.
+
+
 build_go_fixture "$go_fixtures_dir/server" "$output_dir/server-go-o0" \
     -buildmode=pie "-gcflags=all=-N -l"
 build_go_fixture "$go_fixtures_dir/server" "$output_dir/server-go-trimpath" -trimpath
-# A server to attach to.
+
 build_go_fixture "$go_fixtures_dir/served" "$output_dir/served-go" -buildmode=pie
-# A C program that hosts a Go library and calls into its runtime.
+
 GO_CGO=1 GO_CC=gcc GO_CFLAGS="-g -O0" build_go_fixture "$go_fixtures_dir/hosted" \
     "$output_dir/libgo-hosted.so" -buildmode=c-shared "-gcflags=all=-N -l"
 build_fixture gcc "$c_fixtures_dir/go-host/main.c" "$output_dir/go-host" \
@@ -2638,9 +2638,9 @@ build_go_fixture "$go_fixtures_dir/crash" "$output_dir/crash-go-nodwarf" \
     -buildmode=pie "-gcflags=all=-N -l" -ldflags=-w
 build_zig_fixture "$zig_fixtures_dir/crash.zig" "$output_dir/crash-zig-o0" \
     -O Debug -fPIE -fno-omit-frame-pointer
-# A call chain the program records itself, built as `go build` does by
-# default, stripped of DWARF and symbols, and stripped after an external link,
-# which puts Go's code after the C runtime's.
+
+
+
 build_go_fixture "$go_fixtures_dir/callers" "$output_dir/callers-go"
 build_go_fixture "$go_fixtures_dir/callers" "$output_dir/callers-go-stripped" \
     -buildmode=pie "-ldflags=-s -w"
@@ -2661,24 +2661,24 @@ for variant in gcc-o0 clang-o2 gcc-o2-nopie; do
     generate_core "$output_dir/crash-${variant}-abort.core" 6 "$default_core_filter" \
         "$inputs" "$program" abort
 done
-# A Python program's threads at a checkpoint, which aborts there, under
-# interpreters that each lay their frames out or call their loop their own
-# way: a nixpkgs build, a free-threaded one, a tail-calling one, and a
-# distribution's. Each core's log keeps what the program reported.
+
+
+
+
 if [[ -z "${MICROSCOPE_CPYTHON-}" ]]; then
     printf 'error: MICROSCOPE_CPYTHON is unset; build inside the Nix shell\n' >&2
     exit 1
 fi
-# A C extension that holds Python objects in a native frame, built against
-# each interpreter's own headers, as an extension is: the frame's objects are
-# laid out as that interpreter lays them out.
+
+
+
 for interpreter in 3.12 3.14 3.14t 3.15; do
     mkdir -p "$output_dir/python-extension-${interpreter}"
     build_program gcc "$fixtures_dir/python/extension.c" \
         "$output_dir/python-extension-${interpreter}/microscope_extension.so" \
         -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g \
         "-I$MICROSCOPE_CPYTHON/$interpreter/include"
-    # Its stripped twin, whose functions nothing describes.
+
     build_program gcc "$fixtures_dir/python/extension.c" \
         "$output_dir/python-extension-${interpreter}/microscope_bare.so" \
         -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g0 -s -DMODULE=microscope_bare \
@@ -2692,32 +2692,32 @@ for interpreter in 3.13 3.14t 3.15 debian-3.13; do
             "$python" -I -B "$fixtures_dir/python/${fixture}.py" --abort
     done
 done
-# A Node program's threads at a checkpoint, which aborts there, under one
-# official build of each V8 line, which lay out their frames each their own
-# way. The program runs with no environment, as the suite runs it; each
-# core's log keeps what it reported.
+
+
+
+
 if [[ -z "${MICROSCOPE_NODE-}" ]]; then
     printf 'error: MICROSCOPE_NODE is unset; build inside the Nix shell\n' >&2
     exit 1
 fi
-# A Node-API addon that holds JavaScript values in a native frame. Node-API is
-# ABI-stable and every build declares napi_value alike, so one build serves all.
+
+
 build_program gcc "$fixtures_dir/node/addon.c" "$output_dir/node-addon.node" \
     -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g "-I$MICROSCOPE_NODE/26/include"
-# A Node-API addon that holds no frame pointer in rbp at a system call or
-# as it spins, which call-frame information unwinds by the stack pointer.
+
+
 build_program gcc "$fixtures_dir/node/frameless.c" "$output_dir/node-frameless.node" \
     -std=c17 -Wall -Wextra -Werror -shared -fPIC -O2 -g -fomit-frame-pointer -mno-red-zone \
     "-I$MICROSCOPE_NODE/26/include"
-# microscope's Node package's addon, which loads the probes library.
+
 build_program gcc sdk/node/microscope.c "$output_dir/node-microscope.node" \
     -std=c17 -Wall -Wextra -Werror -shared -fPIC -O2 -g "-I$MICROSCOPE_NODE/26/include" -ldl -pthread
 build_program gcc "$fixtures_dir/node/inspector-lifetime.c" "$output_dir/node-inspector-lifetime.node" \
     -std=c17 -Wall -Wextra -Werror -shared -fPIC -O0 -g -pthread "-I$MICROSCOPE_NODE/26/include"
-# An addon with a fast API function, against each build's own headers, as V8's
-# C++ API is not ABI-stable. Node ships no fast API header, which comes from
-# the V8 of the build's line; node.h, included first, has already defined
-# every V8 header that one includes.
+
+
+
+
 for entry_version in "26 14.6" "nixpkgs-26 14.6" "24 13.6" "nixpkgs-24 13.6" "debian-24 13.6" \
     "22 12.4" "nixpkgs-22 12.4"; do
     read -r entry version <<<"$entry_version"
@@ -2737,8 +2737,8 @@ for entry in 26 24 22; do
             "$fixtures_dir/node/${fixture}.js $fixtures_dir/node/truth.js $node" \
             env -i "$node" "${flags[@]}" "$fixtures_dir/node/${fixture}.js" --abort
     done
-    # The tasks fixture's file request opens a FIFO no one writes, which
-    # blocks a pool thread.
+
+
     fifo="$output_dir/node-tasks.fifo"
     if [[ ! -p "$fifo" ]]; then
         rm -f "$fifo"
@@ -2748,7 +2748,7 @@ for entry in 26 24 22; do
         "$fixtures_dir/node/tasks.js $fixtures_dir/node/truth.js $node" \
         env -i "$node" "$fixtures_dir/node/tasks.js" "$fifo" --abort
 done
-# A stack that runs through code the program copied into anonymous memory.
+
 generate_core "$output_dir/code-copy.core" 6 "$default_core_filter" \
     "$output_dir/code-copy" "$output_dir/code-copy" abort
 generate_core "$output_dir/crash-gcc-o0-headerless.core" 11 "$headerless_core_filter" \
@@ -2773,8 +2773,8 @@ for variant in musl-clang-static-pie gcc-static single-thread-clang-static; do
     program="$output_dir/tls-modules-${variant}"
     generate_core "${program}.core" 6 "$default_core_filter" "$program" "$program" abort
 done
-# Ubuntu's 2.27 and 2.35 loaders leave the gaps between their C libraries'
-# segments mapped without access.
+
+
 for version in 2.27 2.31 2.35; do
     program="$output_dir/tls-modules-glibc${version}"
     generate_core "${program}.core" 6 "$default_core_filter" \
@@ -2786,8 +2786,8 @@ for variant in gcc-o2 gcc-o2-nopie clang-o2; do
     generate_core "${program}.core" 6 "$default_core_filter" \
         "$program $output_dir/liblocations.so" "$program" abort
 done
-# Cores whose executable or shared library was deleted after the crash. The
-# copies are refreshed whenever a core itself must be regenerated.
+
+
 generate_core_without() {
     wait_builds
     local name="$1"
@@ -2807,10 +2807,10 @@ generate_core_without() {
 generate_core_without library libcrash.so
 generate_core_without executable crash-gcc-o0
 
-# A core from another machine. Its program ran beside its own build of the C
-# library; afterwards the executable and library at its recorded paths are
-# replaced by different builds and the C library is removed, so only a
-# sysroot or module path holding the originals can supply them.
+
+
+
+
 wait_builds
 toolchain_libc=$(ldd "$output_dir/crash-gcc-o0" | awk '$1 == "libc.so.6" { print $3 }')
 derive_foreign_libc "$toolchain_libc" "$output_dir/libc-foreign.so.6"
@@ -2833,12 +2833,12 @@ generate_foreign_core() {
 }
 generate_foreign_core
 
-# Cores of programs whose code ELF symbols alone describe. The Go runtime's
-# arenas would make a full core enormous, and frame 0 needs only registers.
+
+
 generate_core "$output_dir/crash-rust-nodebug.core" 11 "$default_core_filter" \
     "$output_dir/crash-rust-nodebug" "$output_dir/crash-rust-nodebug"
-# A Go program that panics with GOTRACEBACK=crash prints every goroutine,
-# which the core's log keeps, and aborts.
+
+
 for variant in o0 o2; do
     program="$output_dir/panic-go-${variant}"
     generate_core "${program}.core" 6 "$default_core_filter" "$program" \
@@ -2850,7 +2850,7 @@ generate_core "$output_dir/crash-go-nodwarf.core" 11 "$headers_only_core_filter"
 generate_core "$output_dir/null-call.core" 11 "$default_core_filter" \
     "$output_dir/null-call" "$output_dir/null-call"
 
-# Cores of programs that faulted inside the vDSO, which no file backs.
+
 readonly vdso_variants=(gcc-o0 gcc-o2 clang-o2-nopie)
 for variant in "${vdso_variants[@]}"; do
     program="$output_dir/vdso-${variant}"
@@ -2860,26 +2860,26 @@ for variant in "${vdso_variants[@]}"; do
     done
 done
 
-# Independent readings of the ELF symbol fixture by binutils and gdb, which
-# differential tests compare against microscope's symbol tables and backtraces.
+
+
 readonly symbol_oracle_dir="$output_dir/symbol-oracles"
 mkdir -p "$symbol_oracle_dir"
 
-# Records readelf's section and symbol tables and call-frame entries for one
-# ELF file, and the symbols objdump synthesizes for its PLT stubs. An
-# embedded MiniDebugInfo object has no frame contents to dump.
+
+
+
 generate_symbol_oracle() {
     wait_builds
     local elf="$1"
     local oracle="$symbol_oracle_dir/${2:-${elf##*/}}.readelf"
     local frames="${3:-yes}"
-    # The loader may be listed twice, under two paths.
+
     wait_for "$oracle"
-    # Nix store files all date from 1970, so the modification time alone never
-    # notices a toolchain update. The resolved path names the store entry.
+
+
     local header
     header="microscope-symbol-oracle-v4 $(readlink -f "$elf")"
-    # Registered so that deleting an oracle invalidates the cached suite.
+
     rebuilt_outputs["$oracle"]=false
     if [[ -s "$oracle" && "$oracle" -nt "$elf" && "$(head -n 1 "$oracle")" == "$header" ]]; then
         printf '[cached] %s\n' "$oracle"
@@ -2906,7 +2906,7 @@ make_symbol_oracle() {
     mv "${oracle}.tmp" "$oracle"
 }
 
-# Records gdb's complete backtrace of a core's crashing thread.
+
 generate_backtrace_oracle() {
     wait_builds
     local program="$1"
@@ -2938,7 +2938,7 @@ make_backtrace_oracle() {
     mv "${oracle}.tmp" "$oracle"
 }
 
-# Records gdb's variables for every frame of every thread in a core.
+
 generate_frame_oracle() {
     wait_builds
     local program="$1"
@@ -3000,13 +3000,13 @@ for library in gcc clang stripped minidebug; do
 done
 generate_symbol_oracle "$output_dir/libelf-symbols-minidebug.so.embedded" \
     libelf-symbols-minidebug.so.embedded no
-# The unstripped build locates code whose symbols stripping removed.
+
 generate_symbol_oracle "$output_dir/libelf-symbols-stripped.so.full"
 for variant in "${symbols_variants[@]}"; do
     read -r name _ <<<"$variant"
     generate_symbol_oracle "$output_dir/elf-symbols-${name}"
 done
-# The C library and loader every fixture runs against, as the loader resolves them.
+
 wait_builds
 while read -r library; do
     generate_symbol_oracle "$library"
@@ -3020,8 +3020,8 @@ for variant in "${symbols_variants[@]}"; do
     generate_backtrace_oracle "$program" "${program}.core"
 done
 
-# gdb's type and target function of each function pointer, one per line as
-# `name<TAB>type<TAB>function`, read from the executable's own data.
+
+
 generate_function_type_oracle() {
     wait_builds
     local program="$1"
@@ -3051,8 +3051,8 @@ for compiler in gcc clang; do
     generate_function_type_oracle "$output_dir/function-types-${compiler}-o0"
 done
 
-# Go's own reading of the function tables of images the Go linker linked,
-# which a test compares microscope's reader with.
+
+
 readonly gosym_oracle="$output_dir/gosym-oracle"
 build_go_fixture scripts/gosym-oracle "$gosym_oracle"
 generate_gosym_oracle() {
@@ -3071,34 +3071,34 @@ generate_gosym_oracle() {
 generate_gosym_oracle "$output_dir/callers-go"
 generate_gosym_oracle "$output_dir/callers-go-stripped"
 
-# Odin, through its LLVM backend.
+
 build_odin_fixture "$odin_fixtures_dir/values.odin" "$output_dir/values-odin-o0" -o:none
 build_odin_fixture "$odin_fixtures_dir/values.odin" "$output_dir/values-odin-o2" -o:speed
 build_odin_fixture "$odin_fixtures_dir/containers.odin" "$output_dir/containers-odin-o0" -o:none
 build_odin_fixture "$odin_fixtures_dir/containers.odin" "$output_dir/containers-odin-o2" -o:speed
 
-# Fortran, through GCC.
+
 build_fortran_fixture "$fortran_fixtures_dir/values.f90" "$output_dir/values-fortran-o0" -O0
 build_fortran_fixture "$fortran_fixtures_dir/values.f90" "$output_dir/values-fortran-o2" -O2
 
-# D, through LDC.
+
 build_d_fixture "$d_fixtures_dir/values.d" "$output_dir/values-d-o0" -O0
 build_d_fixture "$d_fixtures_dir/values.d" "$output_dir/values-d-o2" -O2
 build_d_fixture "$d_fixtures_dir/containers.d" "$output_dir/containers-d-o0" -O0
 build_d_fixture "$d_fixtures_dir/containers.d" "$output_dir/containers-d-o2" -O2
 
-# Nim, through GCC and Clang.
+
 build_nim_fixture "$nim_fixtures_dir/values.nim" "$output_dir/values-nim-gcc-o0" --cc:gcc --opt:none
 build_nim_fixture "$nim_fixtures_dir/values.nim" "$output_dir/values-nim-clang-o2" --cc:clang \
     --opt:speed
 
-# Ada, through GNAT.
+
 build_ada_fixture "$ada_fixtures_dir/values.adb" "$output_dir/values-ada-o0" -O0
 build_ada_fixture "$ada_fixtures_dir/values.adb" "$output_dir/values-ada-o2" -O2
 
-# GNU objdump's decoding of every executable section, which differential tests
-# compare against microscope's disassembly. -z keeps the zero-filled runs
-# objdump otherwise elides.
+
+
+
 readonly disassembly_oracle_dir="$output_dir/disassembly-oracles"
 mkdir -p "$disassembly_oracle_dir"
 

@@ -1,5 +1,3 @@
-//! The interactive line-editing REPL.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -19,41 +17,30 @@ use super::terminal::Role;
 use super::{Cli, Renderers};
 
 enum Input {
-    /// A line, and the terminal's width and height when it was entered.
     Line(String, Option<(usize, usize)>),
 
-    /// The answer to a question, empty when it was interrupted.
     Answer(String),
 
-    /// Asks for the members of the value an expression names, to complete
-    /// one.
     Members(String, mpsc::Sender<Vec<String>>),
     Eof,
     Failed(String),
 }
 
-/// What the line editor does after its input is handled.
 enum Reply {
-    /// Reads the next line after the prompt, completing from the context.
     Read(Arc<complete::Context>, String),
     Quit,
 
-    /// Asks a question and sends the answer.
     Ask(String),
 }
 
-/// What comes after a line.
 enum Next {
     Read,
     Quit,
     Ask(String),
 }
 
-/// How long completing waits for a value's members.
 const MEMBERS_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// The line editor's helper, which completes from the context the last
-/// reply sent.
 struct LineHelper {
     context: Arc<complete::Context>,
     input: tokio::sync::mpsc::Sender<Input>,
@@ -84,8 +71,6 @@ impl rustyline::completion::Completer for LineHelper {
         let (start, mut candidates) =
             complete::complete(line, position, &self.context, &mut members);
 
-        // A word completed alone is followed by the next, except a file's
-        // line or function.
         if let [candidate] = candidates.as_mut_slice()
             && !candidate.ends_with(':')
         {
@@ -100,28 +85,18 @@ impl rustyline::hint::Hinter for LineHelper {
     type Hint = String;
 }
 
-// The line itself is not highlighted, so command input stays unstyled.
 impl rustyline::highlight::Highlighter for LineHelper {}
 
 impl rustyline::validate::Validator for LineHelper {}
 
 impl rustyline::Helper for LineHelper {}
 
-/// Runs the REPL until `quit` or end-of-input. With `confirm`, `quit` asks
-/// before killing a program that is still alive.
-///
-/// Rustyline blocks, so it runs on its own thread. After sending each line
-/// the editor waits for a reply, which keeps it from reading the terminal
-/// while a command, and possibly the inferior, is running.
-/// What a line typed at the prompt does: runs its command, or one an empty
-/// line repeats, or asks before a quit would kill the program.
 async fn entered_line(
     cli: &Cli,
     entered: &str,
     confirm: bool,
     last_repeatable: &mut Option<String>,
 ) -> Next {
-    // An empty line repeats the last repeatable command.
     let command = if entered.is_empty() {
         last_repeatable.clone().unwrap_or_default()
     } else {
@@ -172,10 +147,6 @@ pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
     let mut outcome = Ok(());
     let mut last_repeatable = None;
 
-    // What the group does while the editor waits for a line prints before
-    // the next command's output; while a command runs, the command reports
-    // it. Rustyline's external printer would print it above the prompt at
-    // once, but loses typed input that arrives in one read with it.
     let mut at_prompt = true;
     let mut notices = Vec::new();
     loop {
@@ -252,7 +223,6 @@ pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
     outcome
 }
 
-/// Runs one line, and says whether the session goes on.
 async fn run_line(cli: &Cli, line: &str) -> Next {
     let keep_running = cli.run_line(line).await.unwrap_or_else(|error| {
         cli.report_error(&error);
@@ -261,7 +231,6 @@ async fn run_line(cli: &Cli, line: &str) -> Next {
     if keep_running { Next::Read } else { Next::Quit }
 }
 
-/// Whether `line` runs `quit`, as written or through an alias.
 fn quits(cli: &Cli, line: &str) -> bool {
     let expanded = cli.expand_alias(line);
     expanded
@@ -296,8 +265,6 @@ fn line_editor(
         }
     };
 
-    // Rustyline needs a helper to select the styled prompt, and completes
-    // through it.
     editor.set_helper(Some(LineHelper {
         context,
         input: input.clone(),
@@ -366,9 +333,6 @@ fn line_editor(
     }
 }
 
-/// Follows the replies to a line, asking the questions they ask, until one
-/// says to read the next line, which returns the prompt to read it after,
-/// or to stop.
 fn follow_replies(
     editor: &mut Editor<LineHelper, DefaultHistory>,
     input: &tokio::sync::mpsc::Sender<Input>,
@@ -387,7 +351,6 @@ fn follow_replies(
             Ok(Reply::Ask(question)) => match editor.readline(&question) {
                 Ok(answer) => Input::Answer(answer),
                 Err(ReadlineError::Interrupted) => Input::Answer(String::new()),
-                // End of input never asks, so it answers yes.
                 Err(ReadlineError::Eof) => Input::Eof,
                 Err(error) => Input::Failed(error.to_string()),
             },
@@ -399,8 +362,6 @@ fn follow_replies(
     }
 }
 
-/// Locates the history file in the user's state directory, falling back to
-/// the current directory.
 fn history_path(state: Option<PathBuf>) -> PathBuf {
     state.map_or_else(
         || PathBuf::from(".microscope_history"),

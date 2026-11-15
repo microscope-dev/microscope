@@ -1,8 +1,3 @@
-//! Properties of merging and cutting captures, checked against a model of
-//! what a recording saw: rebuilding a capture through `absorb` keeps it,
-//! cutting it at any moments splits every row between the pieces, and a
-//! file of the pieces reads back as them, however it is cut or damaged.
-
 #![expect(
     clippy::too_many_lines,
     clippy::type_complexity,
@@ -20,11 +15,8 @@ use super::builder::{InterpretedPlace, LineInput};
 use super::*;
 use crate::model::{Pid, Tid};
 
-/// The end of every recording the model makes.
 const END: i64 = 100;
 
-/// One life of a thread: its pid, tid, span, and name. A tid may have two
-/// lives, in one process or two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Life {
     pid: u32,
@@ -34,7 +26,6 @@ struct Life {
     named: bool,
 }
 
-/// A system call or a note between calls, in the order they were traced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Traced {
     Call {
@@ -52,7 +43,6 @@ enum Traced {
 }
 
 impl Traced {
-    /// When a cut sees it happen.
     const fn time(&self) -> i64 {
         match self {
             Self::Call {
@@ -66,43 +56,31 @@ impl Traced {
     }
 }
 
-/// What a recording saw, each row by the lives and choices it names.
 #[derive(Debug, Clone)]
 struct Model {
     lives: Vec<Life>,
 
-    /// Stacks of [`frames`], innermost first.
     stacks: Vec<Vec<usize>>,
 
-    /// Each of three tasks' labels, if any.
     labels: [Option<u8>; 3],
     samples: Vec<(usize, i64, u64, usize, Option<usize>)>,
     off_cpu: Vec<(usize, i64, u64, bool)>,
 
-    /// Life, start, end, site, value, flags.
     zones: Vec<(usize, i64, i64, usize, Option<u8>, u32)>,
 
-    /// A life's or the recording's, time, and text.
     marks: Vec<(Option<usize>, i64, Option<u8>)>,
     plots: Vec<(usize, usize, i64, i32)>,
     waits: Vec<(i64, u64, usize, usize)>,
 
-    /// In time order, apart or touching.
     gaps: Vec<(i64, i64)>,
 
-    /// In time order.
     traced: Vec<Traced>,
 }
 
-/// A read that returned three bytes, as the capture's blobs lay it out.
 const CAPTURED: [u8; 15] = [1, 1, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, b'a', b'b', b'c'];
 
-/// The kinds of frame stacks choose from.
 const FRAMES: usize = 6;
 
-/// Builds the model's frames: two native functions of one module, one
-/// with a function inlined into it; one of another module with symbols
-/// and one without; an interpreted frame; and a truncation.
 fn frames(builder: &mut CaptureBuilder) -> [u32; FRAMES] {
     let app = builder.module("/bin/app", Some("b1"), [1; 16], 4096);
     let lib = builder.module("/lib/libx.so", None, [2; 16], 4096);
@@ -135,8 +113,6 @@ fn frames(builder: &mut CaptureBuilder) -> [u32; FRAMES] {
 
 const SITES: [&str; 3] = ["load", "parse", "route"];
 
-/// The capture of what the model saw, with settings and counts when
-/// `counted`.
 fn build(model: &Model, counted: bool) -> CaptureBuilder {
     let mut builder = CaptureBuilder::new();
     builder.setting("start", "0");
@@ -166,8 +142,6 @@ fn build(model: &Model, counted: bool) -> CaptureBuilder {
         .map(|name| builder.site(name, "app.rs", 1, NONE, 0))
         .collect();
 
-    // Each tid's lives come one after another, each ended before the next
-    // begins.
     let threads: Vec<u32> = model
         .lives
         .iter()
@@ -302,11 +276,8 @@ fn build(model: &Model, counted: bool) -> CaptureBuilder {
     builder
 }
 
-/// A thread as rows show it: pid, tid, span, and name.
 type ThreadKey = (u32, u32, i64, i64, String);
 
-/// A capture's rows by what they say, not where they are: every id is
-/// replaced by what it names, and every table is in a fixed order.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Rows {
     settings: BTreeMap<String, String>,
@@ -315,7 +286,6 @@ struct Rows {
     samples: Vec<(ThreadKey, i64, u64, Vec<String>, Option<u64>)>,
     off_cpu: Vec<(ThreadKey, i64, u64, u8, u8)>,
 
-    /// Thread, start, end, site, flags, value, and depth when it is kept.
     zones: Vec<(ThreadKey, i64, i64, String, u32, String, Option<u32>)>,
     markers: Vec<(Option<ThreadKey>, i64, u8, String)>,
     plots: Vec<(ThreadKey, String, i64, u64)>,
@@ -390,7 +360,6 @@ fn blob(bytes: &[u8], start: u32, len: u32) -> Vec<u8> {
     }
 }
 
-/// What `capture` says, with zones' depths when `depths`.
 fn rows(capture: &Capture, depths: bool) -> Rows {
     let thread = |thread: u32| thread_key(capture, thread);
     let task = |task: u32| (task != NONE).then(|| capture.tasks[task as usize].number.get());
@@ -512,7 +481,6 @@ fn rows(capture: &Capture, depths: bool) -> Rows {
         .map(|gap| (gap.start.get(), gap.end.get()))
         .collect();
 
-    // Calls and the notes between them, in the order they were traced.
     let mut notes = capture.syscall_notes.iter().peekable();
     for (position, call) in capture.syscalls.iter().enumerate() {
         while let Some(note) = notes.next_if(|note| note.calls.get() as usize <= position) {
@@ -550,8 +518,6 @@ fn note_row(capture: &Capture, note: &SyscallNote) -> TracedRow {
 }
 
 impl Rows {
-    /// Every table in one order, but the traced calls, whose order is
-    /// what they say.
     fn sort(&mut self) {
         self.threads.sort();
         self.tasks.sort();
@@ -565,9 +531,6 @@ impl Rows {
     }
 }
 
-/// The rows the model's recording holds of the moments `lo..hi`: each
-/// row of a moment in it, and each span that overlaps it, cut to it and
-/// flagged where a zone was cut. A span of no length is a moment.
 fn expected(model: &Model, (lo, hi): (i64, i64)) -> Rows {
     let frames = expected_frames();
     let stack = |stack: usize| -> Vec<String> {
@@ -737,7 +700,6 @@ fn expected(model: &Model, (lo, hi): (i64, i64)) -> Rows {
     rows
 }
 
-/// The frames [`frames`] makes, as [`frame_text`] shows them.
 fn expected_frames() -> Vec<String> {
     let mut builder = CaptureBuilder::new();
     let frames = frames(&mut builder);
@@ -748,8 +710,6 @@ fn expected_frames() -> Vec<String> {
         .collect()
 }
 
-/// The rows of several pieces as one: the moments of each piece, every
-/// span cut at the pieces' bounds.
 fn expected_pieces(model: &Model, cuts: &[i64]) -> Rows {
     let bounds: Vec<i64> = std::iter::once(i64::MIN)
         .chain(cuts.iter().copied())
@@ -775,7 +735,6 @@ fn expected_pieces(model: &Model, cuts: &[i64]) -> Rows {
         all.traced.extend(piece.traced);
     }
 
-    // Merged pieces span the recording and every cut.
     let first = cuts.first().map_or(0, |&cut| cut.min(0));
     let last = cuts.last().map_or(END, |&cut| cut.max(END));
     all.settings.insert("start".to_owned(), first.to_string());
@@ -784,8 +743,6 @@ fn expected_pieces(model: &Model, cuts: &[i64]) -> Rows {
     all
 }
 
-/// Cuts a recording at `cuts`, in order, as a continuous recording's
-/// segments do: each piece from the last cut to the next.
 fn pieces(mut builder: CaptureBuilder, cuts: &[i64]) -> Vec<Capture> {
     let mut pieces = Vec::new();
 
@@ -811,8 +768,6 @@ fn merged(captures: &[Capture]) -> Capture {
     builder.finish()
 }
 
-/// Lives of three tids, the second life of a tid beginning after the
-/// first ends, in the same process or another.
 fn lives() -> impl Strategy<Value = Vec<Life>> {
     let tid = |tid| {
         (
@@ -847,7 +802,6 @@ fn lives() -> impl Strategy<Value = Vec<Life>> {
     [tid(1), tid(2), tid(3)].prop_map(|lives| lives.concat())
 }
 
-/// A moment in `life`, from any draw.
 fn within(life: &Life, draw: i64) -> i64 {
     life.start + draw.rem_euclid(life.end - life.start + 1)
 }
@@ -1007,8 +961,6 @@ fn model() -> impl Strategy<Value = Model> {
     })
 }
 
-/// Moments to cut at: often a moment some row has, so that spans of no
-/// length and spans that end there meet the cut.
 fn cuts(model: &Model, draws: &[(bool, prop::sample::Index, i64)]) -> Vec<i64> {
     let mut moments: Vec<i64> = model
         .samples
@@ -1046,7 +998,6 @@ fn cut_draws() -> impl Strategy<Value = Vec<(bool, prop::sample::Index, i64)>> {
     )
 }
 
-/// A file of `captures`, a chunk each, and where each chunk ends.
 fn file_of(captures: &[Capture]) -> (Vec<u8>, Vec<usize>) {
     let mut bytes = Vec::new();
     let mut ends = Vec::new();
@@ -1086,7 +1037,6 @@ proptest! {
         prop_assert_eq!(rebuilt.validate(), Ok(()));
         prop_assert_eq!(rows(&rebuilt, true), rows(&original, true));
 
-        // Rebuilding again changes nothing, not even where rows are.
         prop_assert_eq!(merged(std::slice::from_ref(&rebuilt)), rebuilt);
     }
 
@@ -1132,7 +1082,6 @@ proptest! {
         let whole = if pieces.len() == 1 { pieces[0].clone() } else { merged(&pieces) };
         prop_assert_eq!(&read.capture, &whole);
 
-        // Every chunk's bounds, the index's, and some bytes between.
         let mut cuts: Vec<usize> = ends
             .iter()
             .flat_map(|&end| [end - 1, end, end + 1])
@@ -1174,8 +1123,6 @@ fn read_whole(bytes: &[u8]) -> Capture {
     file::read(bytes).expect("the file").capture
 }
 
-/// Found by the cutting property: a thread off its CPU for no time, and a
-/// gap of no length, at the moment of a cut were in neither piece.
 #[test]
 fn a_span_of_no_length_at_a_cut_is_in_the_later_piece() {
     let mut builder = CaptureBuilder::new();
@@ -1199,8 +1146,6 @@ fn a_span_of_no_length_at_a_cut_is_in_the_later_piece() {
     assert_eq!(gap, Some((24, 24)));
 }
 
-/// Found by the rebuilding property: two zones of no length at one moment
-/// swapped places each time a capture was rebuilt.
 #[test]
 fn zones_of_one_moment_keep_their_order_when_rebuilt() {
     let mut builder = CaptureBuilder::new();

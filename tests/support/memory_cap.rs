@@ -1,15 +1,3 @@
-//! Caps the live heap of a test process, so that a test allocating without
-//! bound aborts before it and its concurrent siblings fill the machine's
-//! memory. Past the cap an allocation fails, which aborts the process after
-//! this module names the cap. Beneath the cap, microscope's counting allocator
-//! counts what each thread allocates, and what every thread does while a
-//! test measures totals, so a test can measure work that runs on threads of
-//! its own. Blocks come from mimalloc, as they do in microscope itself, which
-//! reads debug information far faster with it than with the C library's
-//! allocator. Under Miri, which cannot run mimalloc's C code, a process keeps
-//! Rust's default allocator, which Miri serves itself and so checks every
-//! block's layout as it is freed.
-
 #![allow(unsafe_code, reason = "a global allocator is an unsafe trait")]
 #![cfg_attr(miri, allow(dead_code, reason = "Miri keeps its own allocator"))]
 
@@ -27,11 +15,8 @@ use microscope::timings::alloc::Counting;
 )]
 pub use microscope::timings::alloc::{Allocated, start_totals, stop_totals, totals};
 
-/// The most live heap one test process may hold, several times the heaviest
-/// test's.
 const CAP_BYTES: usize = 1 << 30;
 
-/// What this thread has allocated since it began.
 #[allow(
     dead_code,
     reason = "only some test processes measure their allocations"
@@ -46,7 +31,6 @@ struct CappedAllocator {
 }
 
 impl CappedAllocator {
-    /// Reserves `bytes` of the cap, or reports why it cannot.
     fn reserve(&self, bytes: usize) -> bool {
         let reserved = self
             .live
@@ -56,7 +40,6 @@ impl CappedAllocator {
             .is_ok();
 
         if !reserved {
-            // Stderr is unbuffered, so this writes without allocating.
             let _ = std::io::stderr().write_all(
                 b"an allocation exceeds the test memory cap (tests/support/memory_cap.rs)\n",
             );

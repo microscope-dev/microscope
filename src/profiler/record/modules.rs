@@ -1,6 +1,3 @@
-//! A process's mapped modules, and the index that finds them by address
-//! for every frame of every sample without looking at each module.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -9,8 +6,6 @@ use crate::debug_info::UnwindInfo;
 use crate::unwind::{Modules, UnwindModule};
 use crate::{AddressRange, ImageAddress, LoadedModule, ModuleImage, VirtualAddress};
 
-/// The pieces of modules a process maps, in the order it mapped them, and
-/// the index built of them, which any change to the pieces drops.
 #[derive(Debug, Default, Clone)]
 pub(super) struct Mappings {
     pieces: Vec<Mapped>,
@@ -26,20 +21,15 @@ impl std::ops::Deref for Mappings {
 }
 
 impl Mappings {
-    /// The pieces, to change: the index is built again when next asked for.
     pub(super) fn edit(&mut self) -> &mut Vec<Mapped> {
         self.index = None;
         &mut self.pieces
     }
 
-    /// Drops the index, as an image whose debug information was read since
-    /// joins the modules a sample unwinds through.
     pub(super) fn forget_index(&mut self) {
         self.index = None;
     }
 
-    /// The piece that maps `address`, as a search of the pieces in order
-    /// finds it: by the index while it is built.
     pub(super) fn piece_at(&self, address: u64) -> Option<&Mapped> {
         let Some((index, by_start)) = self
             .index
@@ -55,8 +45,6 @@ impl Mappings {
         self.pieces.get(span.owner)
     }
 
-    /// The index of the pieces whose images `images` has debug information
-    /// for, built if the pieces changed since.
     pub(super) fn index(&mut self, images: &[Image]) -> Arc<ModuleIndex> {
         let index = self
             .index
@@ -65,26 +53,14 @@ impl Mappings {
     }
 }
 
-/// The modules a sample of a process unwinds through: the pieces it maps
-/// whose images have debug information, in the order it mapped them, each
-/// by its index there, and found by address in logarithmic time.
 pub(super) struct ModuleIndex {
     owners: Vec<Mapped>,
     infos: Vec<(Arc<ModuleImage>, Arc<dyn UnwindInfo>)>,
 
-    /// Where each owner's image describes code, by virtual address, apart
-    /// and in order; where two describe the same address, the one mapped
-    /// first, as a search of the owners in order finds.
     spans: Vec<Span>,
 
-    /// Each nonempty piece, in the order of their starts, with its number
-    /// as the owner: none if two overlap, as no pieces ever have, since then
-    /// only a search in order finds the first.
     by_start: Option<Vec<Span>>,
 
-    /// The span each search found last, tried first by the next: a stack's
-    /// frames are mostly in a few modules, where a search in order finds
-    /// them at once too.
     last_span: AtomicUsize,
     last_piece: AtomicUsize,
 }
@@ -98,7 +74,6 @@ impl std::fmt::Debug for ModuleIndex {
     }
 }
 
-/// Addresses `start..=last` of the owner numbered `owner`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Span {
     start: u64,
@@ -149,7 +124,6 @@ impl ModuleIndex {
         }
     }
 
-    /// The modules, by index.
     pub(super) fn owners(&self) -> &[Mapped] {
         &self.owners
     }
@@ -182,8 +156,6 @@ impl Modules for ModuleIndex {
     }
 }
 
-/// The span of `spans` that holds `address`, trying first the one at
-/// `last`, which this then sets to the one found.
 fn span_at<'a>(spans: &'a [Span], address: u64, last: &AtomicUsize) -> Option<&'a Span> {
     let holds = |span: &&Span| span.start <= address && address <= span.last;
     if let Some(span) = spans.get(last.load(Ordering::Relaxed)).filter(holds) {
@@ -198,15 +170,9 @@ fn span_at<'a>(spans: &'a [Span], address: u64, last: &AtomicUsize) -> Option<&'
     Some(span)
 }
 
-/// The spans of the modules `owners`, each its load and the image addresses
-/// its image describes, in which an address is found as a search of them in
-/// order finds it: the first whose image, unloaded by its bias and within
-/// its window, describes it.
 fn spans(
     owners: impl Iterator<Item = (LoadedModule, Option<AddressRange<ImageAddress>>)>,
 ) -> Vec<Span> {
-    // Each owner's addresses, as a half-open range wide enough for the
-    // last address there is.
     let mut ranges: Vec<(u128, u128, usize)> = owners
         .enumerate()
         .filter_map(|(owner, (loaded, range))| {
@@ -223,8 +189,6 @@ fn spans(
         .collect();
     ranges.sort_unstable();
 
-    // A sweep over every range's ends: between two, the first owner of
-    // those whose ranges hold the addresses there finds them.
     let mut ends: Vec<u128> = ranges
         .iter()
         .flat_map(|&(start, end, _)| [start, end])
@@ -254,7 +218,6 @@ fn spans(
             continue;
         };
 
-        // Both ends lie at most at 2^64, and `start` below `end`.
         let (Ok(start), Ok(last)) = (u64::try_from(start), u64::try_from(end - 1)) else {
             continue;
         };
@@ -276,8 +239,6 @@ mod tests {
     use super::*;
     use crate::{LoadBias, ModuleId, ModuleImageId};
 
-    /// The owner a search of `owners` in order finds `address` in, as
-    /// `unwind_module_at` searches.
     fn searched(
         owners: &[(LoadedModule, Option<AddressRange<ImageAddress>>)],
         address: u64,
@@ -293,8 +254,6 @@ mod tests {
     }
 
     fn owner() -> impl Strategy<Value = (LoadedModule, Option<AddressRange<ImageAddress>>)> {
-        // Small addresses so that ranges overlap, and biases that wrap, as
-        // the vDSO's may, and that reach the last address there is.
         let address = prop_oneof![0_u64..64, (u64::MAX - 8)..=u64::MAX];
         let bias = prop_oneof![
             Just(0_u64),
@@ -336,7 +295,6 @@ mod tests {
         }
     }
 
-    /// Pieces apart, some empty and some touching, in any order.
     fn pieces() -> impl Strategy<Value = Vec<Mapped>> {
         proptest::collection::vec((0_u64..3, 0_u64..4), 0..12)
             .prop_map(|lengths| {

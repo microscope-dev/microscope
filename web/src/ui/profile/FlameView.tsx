@@ -22,12 +22,8 @@ import { SearchRow, useFrameSearch, useTreeSearch } from "./Search";
 // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
 const unzoom = (look: ProfileLook) => withLook(look, "z", undefined);
 
-/** One row of the flame graph, in CSS pixels. */
 const ROW = 18;
 
-/** The flame graph, roots on top, below one row that searches its frames
- * and holds the selected one's details. Clicking a frame zooms to it and
- * selects it, which puts its name in the search. */
 export function FlameView() {
   const { query, look, setLook } = useProfile();
   const answer = useTree(query);
@@ -90,9 +86,9 @@ function FlameGraph({
 }: {
   tree: CallTree;
   zoom: number | null;
-  /** Frames a search found, which stay bright as the rest dim. */
+
   matched: Set<number> | null;
-  /** Frames of the selected function, which are outlined. */
+
   selected: Set<number> | null;
   onZoom: (tree: CallTree, node: number) => void;
 }) {
@@ -101,7 +97,7 @@ function FlameGraph({
   const [box, width] = useWidth();
   const canvas = useRef<HTMLCanvasElement>(null);
   const scheme = useShownScheme();
-  // What is hovered belongs to one tree; another answer hovers nothing.
+
   const [hover, setHovered] = useState<{
     tree: CallTree;
     rect: Rect;
@@ -122,7 +118,7 @@ function FlameGraph({
     if (!context) {
       return;
     }
-    // Painted in the scheme shown, and again when it changes.
+
     const dark = scheme === "dark";
     const ink = token("--ink");
     const surface = token("--surface");
@@ -238,7 +234,6 @@ function FlameGraph({
   );
 }
 
-/** The longest start of `text`, with an ellipsis, that fits `width`. */
 function clip(context: CanvasRenderingContext2D, text: string, width: number): string {
   if (context.measureText(text).width <= width) {
     return text;

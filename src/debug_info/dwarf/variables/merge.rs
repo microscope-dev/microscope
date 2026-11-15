@@ -1,17 +1,3 @@
-//! Walking units apart, and putting what each built in order.
-//!
-//! Units are walked in groups: the units whose DIEs refer to one
-//! another's, directly or through other units. Each group's walk reads
-//! what the arena held before any unit was walked, walks the group's units
-//! in order, and builds their types, locations, and files beside that
-//! base; each unit's types are those built between where its walk began
-//! and ended. Every unit's records are then added in unit order,
-//! renumbered after the units before it, which numbers everything as one
-//! walk of every unit in order does, so long as no unit reaches another
-//! group's types: a walk in order would have built those once, where the
-//! first unit reached them. A unit that does, or a load that runs out of
-//! its budget or fails, is walked again in order instead.
-
 use crate::debug_info::dwarf::DwarfSet;
 use std::sync::{Mutex, PoisonError};
 
@@ -34,7 +20,6 @@ use crate::image::locations::ExpressionId;
 use crate::image::variables::TypeResolution;
 use crate::{SourceFileId, SourceLocation, TypeArgument, TypeId, TypeReference};
 
-/// Where the lists and expressions one unit pooled apart are pooled.
 pub(super) struct Pooled {
     expressions: Vec<ExpressionId>,
     lists: Vec<LocationListId>,
@@ -70,10 +55,7 @@ impl Pooled {
     }
 }
 
-/// Where the types one group built apart are numbered, for the group's
-/// units added so far.
 struct Renumbered<'r> {
-    /// Where the shared base ends, and the group's own types begin.
     base: usize,
     ids: &'r [TypeId],
 }
@@ -103,9 +85,7 @@ impl Renumbered<'_> {
     }
 }
 
-/// What one unit's walk built apart from other groups'.
 struct UnitWalk {
-    /// The unit's group, which its types are numbered within.
     group: usize,
     result: Result<(), DwarfError>,
     walked: Walked,
@@ -114,10 +94,7 @@ struct UnitWalk {
     pool: LocationsBuilder,
 }
 
-/// The types one unit's walk built, numbered within its group's past the
-/// shared base.
 pub(super) struct UnitTypes {
-    /// Where its types begin among its group's.
     start: usize,
     entries: Vec<TypeEntry>,
     by_die: DieMap<TypeId>,
@@ -136,8 +113,6 @@ pub(super) struct UnitTypes {
     foreign: bool,
 }
 
-/// The arena as it was before any unit was walked, which each unit's walk
-/// builds on.
 struct Frozen<'a, 'data> {
     dwarf: &'a DwarfSet<'data>,
     units: &'a crate::debug_info::dwarf::Units<'data>,
@@ -158,7 +133,6 @@ struct Frozen<'a, 'data> {
 }
 
 impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
-    /// What every unit's walk builds on: this arena, frozen.
     fn frozen(&self) -> Frozen<'a, 'data> {
         Frozen {
             dwarf: self.dwarf,
@@ -182,8 +156,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 }
 
 impl<'data> Frozen<'_, 'data> {
-    /// An arena that builds the types of `home`, a group and each unit's
-    /// group, on this base, pooling locations into `pool`.
     fn split<'b>(
         &'b self,
         home: (usize, &'b [usize]),
@@ -222,25 +194,19 @@ impl<'data> Frozen<'_, 'data> {
     }
 }
 
-/// The type numbered `index`, if the number fits a type id.
 fn type_id(index: usize) -> Option<TypeId> {
     u32::try_from(index).ok().map(TypeId::new)
 }
 
-/// Where one unit's walk ended in its group's arena.
 struct Cut {
-    /// How many types the arena held.
     end: usize,
 
-    /// How many DIEs it had taken for another's type.
     aliases: usize,
 
-    /// What the unit's walk spent.
     budget: Meter,
     foreign: bool,
 }
 
-/// The unit a search of the cuts found; none past the last cut.
 fn owner(units: &mut [UnitTypes], index: usize) -> Option<&mut UnitTypes> {
     let unit = units.get_mut(index);
     debug_assert!(
@@ -251,9 +217,6 @@ fn owner(units: &mut [UnitTypes], index: usize) -> Option<&mut UnitTypes> {
 }
 
 impl TypeArenaBuilder<'_, '_> {
-    /// What this arena, split from another, built past their base for each
-    /// unit whose walk ended at `cuts`, in order. `None` if a DIE taken for
-    /// another's type names no type.
     #[expect(
         clippy::iter_over_hash_type,
         reason = "each entry of a map goes to its unit on its own, so their order cannot matter"
@@ -266,7 +229,6 @@ impl TypeArenaBuilder<'_, '_> {
         let base = self.entries.base_len();
         check_cut_order(cuts);
 
-        // The unit whose walk built a type, by its number.
         let unit_of = |id: usize| cuts.partition_point(|cut| cut.end <= id);
         let made = |made: Option<TypeId>, start: usize, end: usize| {
             made.filter(|id| (start..end).contains(&id.index()))
@@ -305,8 +267,6 @@ impl TypeArenaBuilder<'_, '_> {
             unit.entries = entries.split_off(unit.start);
         }
 
-        // A DIE taken for another's type goes to the unit that took it, and
-        // a type's own to the unit that built it.
         let mut by_die = self.by_die.into_own();
 
         for (position, key) in self.aliases.into_iter().enumerate() {
@@ -381,9 +341,6 @@ impl TypeArenaBuilder<'_, '_> {
         Some(units)
     }
 
-    /// The types an arena makes once, `void` and the character of strings
-    /// that name none, that `unit` made, each with the one a unit before it
-    /// made since, if any: the unit made one only when its group had none.
     fn made_once(&self, unit: &UnitTypes) -> [(Option<TypeId>, Option<TypeId>); 2] {
         [
             (unit.void_type, unit.void_type.and(self.void_type)),
@@ -394,9 +351,6 @@ impl TypeArenaBuilder<'_, '_> {
         ]
     }
 
-    /// Adds the types a unit built apart after these, as building them
-    /// here after the units before it would have numbered them, and
-    /// numbers them among `ids`, its group's.
     #[expect(
         clippy::iter_over_hash_type,
         reason = "each entry of a map is added on its own, so their order cannot matter"
@@ -526,8 +480,6 @@ impl TypeArenaBuilder<'_, '_> {
     }
 }
 
-/// Adds what a later unit's walk recorded, renumbered as `types`,
-/// `pooled`, and `files` say.
 fn absorb_walked(
     into: &mut Walked,
     unit: &mut Walked,
@@ -631,8 +583,6 @@ fn absorb_walked(
     Some(())
 }
 
-/// What loading had recorded before any unit was walked, to go back to
-/// when the units must be walked in order after all.
 struct Checkpoint {
     objects: usize,
     functions: usize,
@@ -706,18 +656,14 @@ impl Checkpoint {
     }
 }
 
-/// Where units' walks are added, in unit order, as they finish.
 struct Merge<'m, 'a, 'data> {
     walked: &'m mut Walked,
     types: &'m mut TypeArenaBuilder<'a, 'data>,
     files: &'m mut Files,
     pool: &'m mut LocationsBuilder,
 
-    /// Where each group's types added so far are numbered, by the group.
     groups: HashMap<usize, Vec<TypeId>>,
 
-    /// Whether every unit added so far kept to its own types, the budget,
-    /// and the tables' numbering.
     kept: bool,
 }
 
@@ -775,12 +721,6 @@ impl Merge<'_, '_, '_> {
     }
 }
 
-/// Walks every group of units at once and adds what each unit recorded to
-/// `walked`, `types`, `files`, and `pool` in unit order as soon as the
-/// units before it are added, as walking them in order would have. Each
-/// worker walks at most `walk_ahead` units past those added.
-/// Returns `false`, having changed nothing, when walking them apart could
-/// differ from walking them in order.
 pub(super) fn walk_units_apart<'data>(
     cx: &WalkContext<'_, 'data>,
     walked: &mut Walked,
@@ -791,9 +731,6 @@ pub(super) fn walk_units_apart<'data>(
 ) -> bool {
     let units = &cx.catalog.units;
 
-    // One worker would only add copying each unit's records, and a type
-    // unit's declarations name files by suffixes, which name the files
-    // interned before them.
     if rayon::current_num_threads() < 2
         || units.iter().any(is_type_unit)
         || types.limit_type.is_some()
@@ -803,12 +740,10 @@ pub(super) fn walk_units_apart<'data>(
 
     let _phase = crate::span!("variables.walk_apart");
 
-    // A unit whose references cannot be read fails the walk in order.
     let Ok(groups) = units.groups() else {
         return false;
     };
 
-    // Claiming in order needs each group named by its first unit.
     for (unit, &group) in groups.iter().enumerate() {
         debug_assert!(
             group <= unit && groups.get(group) == Some(&group),
@@ -869,18 +804,12 @@ pub(super) fn walk_units_apart<'data>(
     false
 }
 
-/// Walks the units of one group in order on the frozen arena, apart from
-/// the other groups, and returns what each recorded, by unit. `home` is the
-/// group and each unit's group. Once a unit fails, reaches another group's
-/// types, or exceeds the budget, which leaves it to the walk in order, the
-/// units after it go unwalked.
 fn walk_group<'data>(
     cx: &WalkContext<'_, 'data>,
     frozen: &Frozen<'_, 'data>,
     home: (usize, &[usize]),
     units: &[usize],
 ) -> Vec<(usize, Option<UnitWalk>)> {
-    // Each unit pools its locations apart, as they are pooled in unit order.
     let pools = units
         .iter()
         .map(|_| Mutex::new(LocationsBuilder::default()))
@@ -894,7 +823,6 @@ fn walk_group<'data>(
     let mut walks = Vec::with_capacity(units.len());
     let mut cuts = Vec::with_capacity(units.len());
 
-    // The group's units share the names they hold.
     let mut names = super::Names::default();
 
     for (&unit_index, pool) in units.iter().zip(&pools) {
@@ -929,8 +857,6 @@ fn walk_group<'data>(
     }
 
     let Some(built) = types.into_unit_types(&cuts) else {
-        // The units' types cannot be taken apart, so none of them is kept:
-        // each is walked in order instead.
         return units.iter().map(|&unit| (unit, None)).collect();
     };
 
@@ -957,8 +883,6 @@ fn walk_group<'data>(
         .collect()
 }
 
-/// Panics unless each unit's walk ends at or after the one before it, as
-/// the searches of the cuts need.
 fn check_cut_order(cuts: &[Cut]) {
     debug_assert!(
         cuts.windows(2)

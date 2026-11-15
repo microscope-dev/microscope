@@ -1,17 +1,4 @@
 // @ts-check
-// The built-in flame-graph: a call tree as an icicle, root on top.
-//
-//   nodes    records of name, value (its own samples), and parent (the
-//            index of its parent; a root's is itself, negative, or past
-//            the end); or
-//   stacks   folded stacks: a map, or pairs, of "a;b;c" to a count
-//   values   either, as Draw as… hands a value over
-//
-// Each frame's width is its total: its own value and its descendants'.
-// Frames are colored by name, so a function keeps its color, and titled
-// with self, total, and share of the whole; a node opens when clicked.
-// Frames narrower than a pixel are counted, not drawn. Frames whose total
-// changed since the stop before are outlined.
 
 const ROW = 18;
 const MOST_DEPTH = 48;
@@ -24,9 +11,7 @@ microscope.draw((input, { previous, width, paths }) => {
     try {
       const old = treeOf(previous, {});
       old.walk((node, key) => before.set(key, old.total[node]));
-    } catch {
-      // The stop before had no tree this chart reads.
-    }
+    } catch {}
   }
   const W = Math.round(Math.min(Math.max(width, 320), 1600));
   const left = 4;
@@ -111,9 +96,7 @@ microscope.draw((input, { previous, width, paths }) => {
 /** @returns {undefined} */
 function noPart() {}
 
-/** The call tree: names, own values, totals, children, and a root. */
 function treeOf(given, givenPaths) {
-  // Draw as… hands over `values`: records are nodes, and pairs stacks.
   let input = given;
   let paths = givenPaths;
   if (given.nodes === undefined && given.stacks === undefined && given.values !== undefined) {
@@ -190,7 +173,7 @@ function treeOf(given, givenPaths) {
     if (!Number.isInteger(parent) || parent < 0 || parent >= n || parent === i) roots.push(i);
     else children[parent].push(i);
   }
-  // Several roots hang from one, named for them all.
+
   let root = roots[0] ?? 0;
   let synthetic = false;
   if (roots.length !== 1) {
@@ -200,7 +183,7 @@ function treeOf(given, givenPaths) {
     children.push(roots);
     synthetic = true;
   }
-  // Totals, children first, by an explicit stack: trees may be deep.
+
   const total = self.slice();
   const frames = names.map(() => 1);
   const order = [];
@@ -222,7 +205,7 @@ function treeOf(given, givenPaths) {
       frames[node] += frames[child];
     }
   }
-  // Wider frames first, so the eye finds the heaviest paths at the left.
+
   for (const list of children)
     list.sort((a, b) => Number(total[b]) - Number(total[a]) || (names[a] < names[b] ? -1 : 1));
   const walk = (visit) => {
@@ -243,7 +226,6 @@ function count(value, what) {
   throw new TypeError(`\`${what}\` must be a count, not ${String(value)}`);
 }
 
-/** Exact sums: bigints stay whole, and so do numbers while they can. */
 function add(a, b) {
   if (typeof a === "bigint" || typeof b === "bigint") {
     if (
@@ -256,8 +238,6 @@ function add(a, b) {
   return a + b;
 }
 
-/** A light tint of a series hue chosen by the frame's package, so a name
- * keeps its color and its neighbors from the same package share it. */
 function tint(name, theme) {
   const where = name.replace(/^[(*&]+/u, "").split(/::|\.(?=[A-Za-z_(*])|\//u)[0] ?? name;
   let hash = 2166136261;

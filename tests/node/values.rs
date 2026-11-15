@@ -1,12 +1,8 @@
-//! Checks the JavaScript values microscope presents against the text
-//! `util.inspect` gave them at the same checkpoint.
-
 use microscope::{Evaluation, Expression, SourceLanguage, ThreadId, VariableKind, VariableState};
 
 use crate::session::{LINES, MATRIX, NodeSession};
 use crate::truth::{Named, threads};
 
-/// Selects the frame of `function` on the printer's thread.
 pub async fn select_function(session: &NodeSession, native: u64, function: &str) {
     let handle = session.scenario.handle();
     session
@@ -33,8 +29,6 @@ pub async fn select_function(session: &NodeSession, native: u64, function: &str)
         .await;
 }
 
-/// The summary and full text microscope presents for `text`, or why it
-/// could not.
 pub async fn presented(session: &NodeSession, text: &str) -> (String, String) {
     let expression = Expression::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
     match session.scenario.handle().evaluate(&expression).await {
@@ -57,8 +51,6 @@ fn twice(text: String) -> (String, String) {
     (text.clone(), text)
 }
 
-/// The summary expected for `value`: an error's first line, else its
-/// one-line text cut at any error stack inside it.
 fn summary_of(value: &Named) -> String {
     match value.line.split_once('\n') {
         None => value.line.clone(),
@@ -67,7 +59,6 @@ fn summary_of(value: &Named) -> String {
     }
 }
 
-/// Each way the shown summary and text differ from what Node gave `value`.
 pub fn lies_about(context: &str, value: &Named, (summary, text): &(String, String)) -> Vec<String> {
     let mut lies = Vec::new();
     let name = &value.name;
@@ -89,7 +80,6 @@ pub fn lies_about(context: &str, value: &Named, (summary, text): &(String, Strin
     lies
 }
 
-/// At most the first 300 characters of `text`, for a message.
 fn clipped(text: &str) -> String {
     match text.char_indices().nth(300) {
         Some((end, _)) => format!("{}…", &text[..end]),
@@ -97,9 +87,6 @@ fn clipped(text: &str) -> String {
     }
 }
 
-/// On every build, each gallery value shows the text `util.inspect` gave
-/// it. Errors whose stacks were never read show the stacks Node formats
-/// from their call sites once something reads them.
 async fn gallery_values(entry: &str) {
     let mut lies = Vec::new();
     let mut session = NodeSession::launch(entry, "values.js", &[], &[]).await;
@@ -113,8 +100,6 @@ async fn gallery_values(entry: &str) {
         let shown = presented(&session, &value.name).await;
         lies.extend(lies_about(&session.context(), value, &shown));
     }
-    // At "gallery", `unread` holds raw call sites. Node formats them
-    // when the fixture inspects `unread` at the next checkpoint.
     let unformatted = presented(&session, "unread").await;
     select_function(&session, printer.native, "gallery").await;
     gallery_variable_scopes(&session, &mut lies).await;
@@ -201,8 +186,6 @@ async fn inspection_values_on_build_5() {
     inspection_values(MATRIX[5]).await;
 }
 
-/// The kind of each variable of the selected frame named in `names`, in
-/// the order asked, `None` for one the frame does not list.
 pub async fn kinds(session: &NodeSession, names: &[&str]) -> Vec<Option<VariableKind>> {
     let snapshot = session
         .scenario
@@ -222,8 +205,6 @@ pub async fn kinds(session: &NodeSession, names: &[&str]) -> Vec<Option<Variable
 
 async fn gallery_variable_scopes(session: &NodeSession, lies: &mut Vec<String>) {
     use VariableKind::{Captured, Global, Local, Parameter, Unnamed};
-    // `values` is gallery's own, which its arrow captures; `truth` is
-    // the CommonJS wrapper's, around it.
     let names = [
         "this",
         "arguments[0]",
@@ -257,9 +238,6 @@ async fn gallery_variable_scopes(session: &NodeSession, lies: &mut Vec<String>) 
     }
 }
 
-/// On every build, `.length`, `.size`, and typed array elements read what
-/// JavaScript would give for the gallery's values, as the fixture writes
-/// them, and an element past a typed array's end is absent.
 async fn lengths_sizes_and_typed_elements_are_javascripts(
     session: &NodeSession,
     lies: &mut Vec<String>,
@@ -269,7 +247,6 @@ async fn lengths_sizes_and_typed_elements_are_javascripts(
         ("values.arrays.long.length", "150"),
         ("values.arrays.dictionary.length", "100001"),
         ("values.strings.oneByte.length", "5"),
-        // 'h\u00e9llo \u2603 \u{1f600}': the emoji is two UTF-16 units.
         ("values.strings.twoByte.length", "10"),
         ("values.collections.map.size", "2"),
         ("values.collections.set.size", "3"),
@@ -281,7 +258,6 @@ async fn lengths_sizes_and_typed_elements_are_javascripts(
         ("values.binary.float64[0]", "0.1"),
         ("values.binary.view.length", "3"),
         ("values.binary.buffer.length", "12"),
-        // 'buffer bytes' starts with b, 98.
         ("values.binary.buffer[0]", "98"),
     ];
     for (text, expected) in cases {
@@ -299,8 +275,6 @@ async fn lengths_sizes_and_typed_elements_are_javascripts(
     }
 }
 
-/// What the user sees for `text`: a computed value's one-line summary and
-/// its type's name, or the error.
 async fn shown(session: &NodeSession, text: &str) -> String {
     let expression = Expression::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
     match session.scenario.handle().evaluate(&expression).await {
@@ -319,15 +293,11 @@ async fn shown(session: &NodeSession, text: &str) -> String {
     }
 }
 
-/// On every build, operators on JavaScript values give what JavaScript
-/// gives: every Number is a double, a `BigInt` mixes with no Number, and
-/// what microscope cannot compute is refused.
 async fn operators_compute_as_javascript_does(session: &NodeSession, lies: &mut Vec<String>) {
     let cases = [
         ("values.numbers.smi / 5", "8.4 : number"),
         ("values.numbers.smi % -5", "2 : number"),
         ("values.numbers.negative % 3", "-1 : number"),
-        // 2^53 + 3 rounds to even, 2^53 + 4.
         ("values.numbers.unsafe + 1", "9007199254740996 : number"),
         (
             "values.numbers.smi * values.numbers.smi * 1e20",
@@ -380,9 +350,6 @@ async fn operators_compute_as_javascript_does(session: &NodeSession, lies: &mut 
     }
 }
 
-/// On each V8 line, `process.env`, whose variables an interceptor gives, is
-/// refused with that reason rather than shown as `{}`, and so is a member
-/// of it rather than reported absent.
 #[tokio::test]
 async fn an_interceptors_object_is_refused_rather_than_shown_empty() {
     let mut wrong = Vec::new();
@@ -405,11 +372,8 @@ async fn an_interceptors_object_is_refused_rather_than_shown_empty() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// Optimized frames show no stale interpreter registers, even after OSR;
-/// baseline and interpreted frames show theirs.
 pub async fn optimized_frames_show_no_stale_registers(session: &NodeSession, printer: u64) {
     let mut lies = Vec::new();
-    // `deoptimized` left its optimized code for the interpreter.
     for (function, registers) in [
         ("osr", false),
         ("turbofan", false),

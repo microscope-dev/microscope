@@ -1,49 +1,31 @@
-//! Breakpoint traps: whether a site's trap is in memory, and where a
-//! thread stands with respect to the trap it hit.
-//!
-//! A thread that hit a trap steps over it before it runs on, with every
-//! other thread stopped and the site lifted, so that no other thread can
-//! pass the site unnoticed. Threads step over one at a time: the one
-//! repairing first, then the lowest (site, thread) waiting to.
-
 use crate::VirtualAddress;
 
-/// Whether a site's trap is in memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Trap {
     Installed,
     Lifted(Lift),
 }
 
-/// Why a site's trap was taken out of memory, keeping the site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Lift {
-    /// A thread steps over the site's trap.
     Repair,
 
-    /// A vforked child runs in the memory the trap is in.
     Vfork,
 }
 
-/// Where a thread stands with respect to a breakpoint trap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AtTrap {
     Clear,
 
-    /// Reported the trap at `at`, whose site was removed since. A
-    /// breakpoint added there before the thread moves is stepped over too,
-    /// as its arrival there was counted.
     Reported {
         at: VirtualAddress,
     },
 
     /// Stands at the trap it reported at `at`, to step over before it runs
-    /// on.
     MustStepOver {
         at: VirtualAddress,
     },
 
-    /// Steps over the trap at `at`, with the site lifted.
     Repairing {
         at: VirtualAddress,
     },
@@ -51,39 +33,26 @@ pub(super) enum AtTrap {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TrapEvent {
-    /// The thread executed the trap at the address.
     Hit(VirtualAddress),
 
-    /// The thread begins its step over the trap.
     RepairStarted,
 
-    /// The thread executed the instruction under the trap.
     Stepped,
 
-    /// The step over the trap did not run, as a signal or a stop came
-    /// first. The thread still stands at the trap.
     RepairHeld,
 
-    /// A signal's handler runs before the thread steps over the trap, and
-    /// returns to it, executing it again.
     RepairInterrupted,
 
-    /// The site at the address was removed.
     SiteRemoved(VirtualAddress),
 
-    /// A breakpoint was added at the address.
     SiteAdded(VirtualAddress),
 
-    /// The thread resumes: to step over its trap, or with none left to.
     Resumed,
 
-    /// The thread was moved to the address, as a jump moves it.
     Moved(VirtualAddress),
 }
 
 impl AtTrap {
-    /// The site the thread stands at the trap of, while it must step over
-    /// it or steps over it.
     pub(super) const fn owed(self) -> Option<VirtualAddress> {
         match self {
             Self::MustStepOver { at } | Self::Repairing { at } => Some(at),
@@ -139,8 +108,6 @@ mod tests {
     const A: VirtualAddress = VirtualAddress::new(0x40);
     const B: VirtualAddress = VirtualAddress::new(0x50);
 
-    /// Every state on every event, against the outcomes the controller
-    /// relies on, written out by hand.
     #[test]
     fn each_trap_event_moves_each_state_as_written() {
         let states = [

@@ -1,9 +1,3 @@
-//! What expressions read of a frame's names, of a `dict`'s keys, and of an
-//! object: the reads `Values` makes for them, over the synthetic process the
-//! builders in `values` write. A `str` key is found by its hash only with a
-//! hash secret the process holds, so the tests that need one give the process
-//! a zeroed secret, as CPython's `PYTHONHASHSEED=0` gives.
-
 use super::super::code::{CodeId, CodeTable};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -21,36 +15,28 @@ use crate::runtime_model::{
 };
 use crate::{InspectionLimit, InspectionLimits, VariableUnavailableReason, VirtualAddress};
 
-/// The kinds of local the tests give a code object: a plain local, a
-/// cell, and a hidden one.
 const LOCAL: u8 = 0x20;
 const CELL: u8 = 0x40;
 const HIDDEN: u8 = 0x10;
 
-/// The code points of `text`, as a `str` of it has them.
 fn code_points(text: &str) -> Vec<u32> {
     text.chars().map(u32::from).collect()
 }
 
-/// A secret of zeroes, as `PYTHONHASHSEED=0` gives the process.
 fn zero_secret(process: &mut Process) -> VirtualAddress {
     VirtualAddress::new(process.alloc(16))
 }
 
-/// A secret of `k0` and zeroes, whose first word is `k0`.
 fn secret_with_k0(process: &mut Process, k0: u64) -> VirtualAddress {
     let secret = zero_secret(process);
     process.memory.write(secret.get(), k0, 8);
     secret
 }
 
-/// A `dict`'s entry of the `int` key `value`, which holds `item`.
 fn int_entry(process: &mut Process, types: &Types, value: i128, item: u64) -> (u64, u64, i64) {
     (process.int(types.int, value), item, hash_int(value))
 }
 
-/// A `dict` of `str` keys with the values `entries`, whose table is `table`,
-/// with each key's hash as the zeroed secret gives it.
 fn text_dict(process: &mut Process, types: &Types, table: Table, entries: &[(&str, u64)]) -> u64 {
     let mut hashed = Vec::with_capacity(entries.len());
     for (text, value) in entries {
@@ -61,7 +47,6 @@ fn text_dict(process: &mut Process, types: &Types, table: Table, entries: &[(&st
     process.hashed_dict(types.dict, table, &hashed, &[])
 }
 
-/// The record of the frame at `frame`, and the row of the code it runs.
 fn frame_code<'a>(
     values: &Values<'a, '_>,
     code_type: u64,
@@ -85,7 +70,6 @@ fn frame_code<'a>(
     (record, table, id)
 }
 
-/// The name `name` means in the frame at `frame`, with the default limits.
 fn name_in(
     process: &Process,
     types: Types,
@@ -105,8 +89,6 @@ fn name_in(
     )
 }
 
-/// The object the slot `slot` of the frame at `frame` holds, with the default
-/// limits.
 fn variable_in(
     process: &Process,
     types: Types,
@@ -119,8 +101,6 @@ fn variable_in(
     })
 }
 
-/// The object `key` finds in the object at `object`, with the default limits
-/// and the process's `secret`.
 fn item_in(
     process: &Process,
     types: Types,
@@ -137,16 +117,12 @@ fn item_in(
     )
 }
 
-/// The length of the object at `object`, with the default limits.
 fn length_of(process: &Process, types: Types, object: u64) -> Result<u64, InterpretedFailure> {
     with_values(process, types, InspectionLimits::default(), |values| {
         values.length(VirtualAddress::new(object))
     })
 }
 
-/// Makes a frame of a code object whose locals are `names`, of `kinds`, and
-/// whose slots are `slots`, and whose globals and built-ins are the `dict`s
-/// at `globals` and `builtins`, when they are not zero.
 fn frame_with(
     process: &mut Process,
     types: &Types,
@@ -262,8 +238,6 @@ fn a_hidden_local_is_not_a_name_and_a_name_in_no_namespace_is_none() {
     );
     let secret = Some(zero_secret(&mut process));
 
-    // The hidden local does not shadow the global of its name, and a name no
-    // namespace holds is no name.
     assert_eq!(
         name_in(&process, types, secret, frame, "h"),
         Ok(Some(InterpretedName::Object(InterpretedHandle::new(
@@ -308,7 +282,6 @@ fn a_null_slot_is_unbound_and_a_cell_holds_its_variable() {
         ))
     );
 
-    // A parameter the frame has not yet put in its cell is its object.
     assert_eq!(
         variable_in(&process, types, frame, 3),
         Ok(VirtualAddress::new(three))
@@ -350,7 +323,6 @@ fn the_least_float_an_int_key_can_equal_finds_it() {
     ];
     let dict = process.hashed_dict(types.dict, Table::eight(Kind::General), &entries, &[]);
 
-    // -2.0**127 is exactly the least i128.
     let key = InterpretedKey::Float(-(2.0_f64.powi(127)));
     assert_eq!(
         item_in(&process, types, None, dict, &key),
@@ -471,8 +443,6 @@ fn a_table_whose_probe_never_meets_an_empty_slot_is_unavailable() {
     let types = process.builtin_types();
     let key = process.int(types.int, 1);
     let item = process.int(types.int, 42);
-    // Every slot holds the index of the one entry, whose hash is zero, so
-    // no probe for 2 ever meets an empty slot.
     let dict = process.dict(types.dict, Table::eight(Kind::General), 1, &[(key, item)]);
 
     assert!(
@@ -542,10 +512,6 @@ fn an_int_has_no_length() {
     ));
 }
 
-/// CPython's hash of the finite `value`, worked from what the value is:
-/// m·2^e for its integral significand m, reduced modulo 2^61 − 1, where
-/// 2^60 is the inverse of 2; then signed as the value, with −1, which
-/// CPython keeps for errors, made −2.
 fn reference_float_hash(value: f64) -> i64 {
     const MODULUS: u128 = (1 << 61) - 1;
     let bits = value.to_bits();
@@ -574,15 +540,12 @@ fn reference_float_hash(value: f64) -> i64 {
     }
 }
 
-/// Any finite float, its exponent field below that of infinity: zeroes,
-/// subnormals, and normals of each sign.
 fn finite_float() -> impl Strategy<Value = f64> {
     (any::<bool>(), 0_u64..0x7ff, any::<u64>()).prop_map(|(negative, exponent, fraction)| {
         f64::from_bits(u64::from(negative) << 63 | exponent << 52 | fraction & ((1 << 52) - 1))
     })
 }
 
-/// A float that is an integer below 2^127 in magnitude.
 fn integral_float() -> impl Strategy<Value = f64> {
     (-(1_i64 << 53)..=1 << 53, 0..=73_i32).prop_map(|(significand, shift)| {
         #[expect(
@@ -610,8 +573,6 @@ proptest! {
     }
 }
 
-/// A combined `dict` of int keys as a model: its table's size and index
-/// width, its keys in insertion order, and which of them were deleted.
 #[derive(Debug, Clone)]
 struct IntDict {
     log2_size: u8,
@@ -619,14 +580,9 @@ struct IntDict {
     keys: Vec<i128>,
     deleted: Vec<bool>,
 
-    /// Keys it never held, which collide with those it holds.
     absent: Vec<i128>,
 }
 
-/// Tables of 8 to 256 slots, with one- or two-byte indices, filled to
-/// CPython's two thirds at most, and their keys forced to collide: each
-/// is one of a few residues modulo the table's size, so most share their
-/// first slot and probe past one another.
 fn int_dict() -> impl Strategy<Value = IntDict> {
     (3..=8_u8, 0..=1_u8)
         .prop_flat_map(|(log2_size, log2_width)| {
@@ -651,7 +607,6 @@ fn int_dict() -> impl Strategy<Value = IntDict> {
             )
         })
         .prop_flat_map(|((log2_size, log2_width), keys, deleted, absent)| {
-            // A set's keys are in order; a dict's are in any.
             Just(keys.into_iter().collect::<Vec<_>>())
                 .prop_shuffle()
                 .prop_map(move |keys| {

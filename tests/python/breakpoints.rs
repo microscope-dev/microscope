@@ -1,10 +1,3 @@
-//! Python breakpoints through the agent: lines, functions, conditions, hit
-//! counts, log messages and pending files, each with the ways it can fail.
-//!
-//! One run of the fixture carries every breakpoint at once, beside ones that
-//! must never match, so each stop also proves the agent told them apart. The
-//! fixture prints what it computed, so stopping must change nothing.
-
 use microscope::{
     BreakpointId, BreakpointOptions, BreakpointSpec, CodeRole, Condition, ConditionOwner,
     DebuggerEvent, ExitStatus, HitComparison, HitCondition, LineNumber, LogMessage, LogPart,
@@ -15,7 +8,6 @@ use tokio::sync::broadcast;
 use crate::session::{PythonSession, as_integer};
 use crate::support::python;
 
-/// The line of `fixture` that carries `marker`.
 fn line_of(fixture: &str, marker: &str) -> LineNumber {
     let text = std::fs::read_to_string(python::fixture(fixture)).expect("read the fixture");
     let index = text
@@ -32,34 +24,20 @@ fn pending() -> BreakpointOptions {
     }
 }
 
-/// The breakpoints of one run, in the order they are added.
 #[derive(Debug, Clone, Copy)]
 enum Planted {
-    /// `index == 3` on `LOOP_LINE`.
     Condition,
-    /// A message on `LOG_LINE` with a name the frame does not have.
     Log,
-    /// Every second hit of `TICK_LINE`.
     EverySecond,
-    /// `missing > 1` on `AREA_LINE`, which cannot be evaluated.
     FailingCondition,
-    /// `py:Shape.area`.
     Method,
-    /// `py:area`, the last part of two qualified names.
     LastPart,
-    /// `py:rea`, which only ends a name.
     PartOfName,
-    /// The later file by its absolute path.
     LaterAbsolute,
-    /// The later file by its name.
     LaterName,
-    /// The later file by its directory and name.
     LaterDirectory,
-    /// `later.py`, which only ends the later file's name.
     LaterPartOfName,
-    /// `s_later.py`, likewise.
     LaterOtherName,
-    /// The later file's name in a directory it is not in.
     LaterElsewhere,
 }
 
@@ -129,7 +107,6 @@ impl Planted {
     }
 }
 
-/// A run stopped at a breakpoint, with the ids of what it planted.
 struct Run {
     session: PythonSession,
     ids: Vec<BreakpointId>,
@@ -168,7 +145,6 @@ impl Run {
         self.ids[planted as usize]
     }
 
-    /// Keeps the log messages and failed conditions reported so far.
     fn drain(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
@@ -191,8 +167,6 @@ impl Run {
         }
     }
 
-    /// Checks `reason` is a stop at exactly these hits, each `(planted, hit
-    /// count)`.
     fn assert_hits(&self, reason: &StopReason, expected: &[(Planted, u64)]) {
         let context = self.session.context();
         let StopReason::Breakpoint {
@@ -225,7 +199,6 @@ impl Run {
         reason
     }
 
-    /// The selected frame of the stop and every frame inner to it.
     async fn selected(&mut self) -> (StackFrame, Vec<StackFrame>) {
         let scenario = &mut self.session.scenario;
         let snapshot = scenario.snapshot().await;
@@ -244,9 +217,6 @@ impl Run {
         (trace.frames[index].clone(), trace.frames[..index].to_vec())
     }
 
-    /// Checks the stop selects the program's frame running `function`, at
-    /// `line` when given, with only the debugger's agent and the
-    /// interpreter's machinery inner to it.
     async fn assert_frame(&mut self, function: &str, line: Option<LineNumber>) {
         let context = self.session.context();
         let (frame, inner) = self.selected().await;
@@ -283,7 +253,6 @@ impl Run {
         }
     }
 
-    /// The integer an expression has in the selected frame.
     async fn integer(&self, text: &str) -> i128 {
         self.session.integer(text).await
     }
@@ -301,7 +270,6 @@ impl Run {
     }
 }
 
-/// The integers a log message reported, in order.
 fn logged_integers(parts: &[LogPart]) -> Vec<i128> {
     parts
         .iter()
@@ -319,21 +287,6 @@ fn logged_integers(parts: &[LogPart]) -> Vec<i128> {
         .collect()
 }
 
-/// Every kind of Python breakpoint through one run of the fixture.
-///
-/// - A condition that holds stops once, in the program's own frame, whose
-///   locals read as Python has them; one that cannot be evaluated stops
-///   and says why, rather than hiding what the user asked to see.
-/// - A log message reports each hit with the frame's values, and a value it
-///   cannot read in its place, and never stops.
-/// - A hit count counts every hit and stops only those it names, and a
-///   disabled breakpoint stops no more.
-/// - A function breakpoint matches a qualified name or its last part, as a
-///   method or nested function is named; a name that only ends one never
-///   stops.
-/// - A file imported later is armed as it loads, whether named by its whole
-///   path or by the end of one; a name that only ends its name, or a
-///   directory it is not in, never stops.
 async fn every_kind_of_breakpoint(build: &str) {
     let main = |marker| Some(line_of("breakpoints.py", marker));
     let (mut run, reason) = Run::launch(build).await;
@@ -388,9 +341,6 @@ async fn every_kind_of_breakpoint(build: &str) {
         .await;
     assert_eq!(run.integer("value").await, 7, "{context}");
 
-    // A forked child is released with its traps removed and its agent
-    // disarmed: it runs the breakpoint's code to its end, unmonitored,
-    // while the parent stops there again.
     let reason = run.resume().await;
     run.assert_hits(&reason, &[(Planted::LastPart, 3)]);
     run.assert_frame("outer.<locals>.area", None).await;
@@ -437,12 +387,6 @@ async fn every_kind_of_breakpoint(build: &str) {
     assert_eq!(run.failed.len(), 1, "{context}: {:?}", run.failed);
     run.session.shutdown().await;
 }
-
-// One test for each way the agent arrives and runs: the launch bootstrap
-// (3.12), PEP 768 with the GIL (3.14) and free-threaded (3.14t), and the
-// standalone build's tail-call loop. agent.py branches on no other version.
-// A process holds one debugger session, so each build is a test of its own
-// and the runner runs them at once.
 
 #[tokio::test]
 async fn every_kind_of_breakpoint_on_3_12() {

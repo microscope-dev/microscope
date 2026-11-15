@@ -1,7 +1,7 @@
-"""Variables a test gives new values where a breakpoint stops: the program
-prints what each holds afterwards, so each value is the one the program then
-uses. A second thread runs at the second stop, where nothing is given.
-"""
+
+
+
+
 import threading
 
 LIMIT = 3

@@ -1,7 +1,3 @@
-//! Catch accounting: each system call a catchpoint stops is reported at a
-//! system-call-stop, and what a stop reports of its call is what the
-//! simulated kernel holds the thread in.
-
 use std::collections::BTreeMap;
 
 use super::cpu::{R8, R9, R10, RAX, RDI, RDX, RSI};
@@ -13,9 +9,6 @@ use crate::StopReason;
 use crate::backend::sim_edge::Truth;
 use crate::syscalls::{Abi, CaptureState, SyscallId};
 
-/// Catch accounting, unseen catches: no traced thread of the debugged
-/// process made a call a catchpoint stops, at that end of it, without a
-/// system-call-stop the debugger could report it at.
 pub fn unseen(kernel: &Kernel) -> Result<(), String> {
     let end = |exit| if exit { "exit" } else { "entry" };
 
@@ -40,17 +33,10 @@ pub fn unseen(kernel: &Kernel) -> Result<(), String> {
     })
 }
 
-/// The catchpoints the client knew of, by identifier.
 pub type Known = BTreeMap<u64, UserCatch>;
 
-/// Each thread's reason at a system call, with the catchpoints the client
-/// knew of when it first saw it. A reason outlives the stop it was made at
-/// when another stop, as a jump's, publishes it again.
 pub type Reasons = BTreeMap<Tid, (StopReason, Known)>;
 
-/// The catchpoints each thread's reason at a call answers to: those the
-/// client knew of when it first saw the reason, of `current`, the ones it
-/// still has.
 pub fn known(reasons: &mut Reasons, truth: &Truth, current: &Known) -> BTreeMap<Tid, Known> {
     reasons.retain(|tid, (reason, _)| truth.reasons.get(tid) == Some(reason));
 
@@ -75,12 +61,6 @@ pub fn known(reasons: &mut Reasons, truth: &Truth, current: &Known) -> BTreeMap<
     known
 }
 
-/// Catch stops: while a stop is published, each thread it reports at a
-/// system call is in the kernel's stop at that end of the call, which the
-/// stop names with the arguments and result its registers hold and the
-/// memory its pointers read. It lists the catchpoints that stop the call
-/// of those the client knew of when the thread stopped, and no other.
-/// Returns the marks it reached.
 pub fn judge(
     kernel: &Kernel,
     truth: &Truth,
@@ -177,7 +157,6 @@ pub fn judge(
     Ok(marks)
 }
 
-/// What a stop shows behind its call's pointers is what memory holds.
 fn judge_memory(
     kernel: &Kernel,
     process: Tgid,
@@ -207,7 +186,6 @@ fn judge_memory(
     Ok(())
 }
 
-/// A stop lists each catchpoint that stops its call, and only those.
 fn judge_listed(
     catches: &Known,
     thread: &super::kernel::Thread,

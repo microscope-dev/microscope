@@ -1,7 +1,3 @@
-//! What a command-line session debugs and how it starts: the settings in
-//! effect, whether the project is trusted, and the target that the command
-//! line or a launch configuration names.
-
 use std::ffi::OsString;
 use std::io::{self, IsTerminal as _};
 use std::path::{Path, PathBuf};
@@ -18,7 +14,6 @@ use super::config::{
 use super::terminal::{ColorEnvironment, Renderer, Role};
 use crate::args::Args;
 
-/// What a session opens.
 pub enum Target {
     Program(PathBuf),
     Attach {
@@ -28,31 +23,24 @@ pub enum Target {
     Core(CoreDumpOptions),
 }
 
-/// Everything a command-line session starts with.
 pub struct Session {
     pub settings: Settings,
     pub target: Target,
 
-    /// How `run` launches the program.
     pub launch: LaunchSettings,
 
-    /// The settings files' startup commands, then the launch
-    /// configuration's.
     pub startup: Vec<StartupCommand>,
     pub command_files: Vec<PathBuf>,
     pub commands: Vec<String>,
     pub batch: bool,
 
-    /// The session's view files, those named last first.
     pub views: Vec<PathBuf>,
     pub source_paths: SourcePathMap,
 
-    /// Where modules' separate debug files are found.
     pub debug_files: microscope::DebugFileOptions,
 }
 
 impl Session {
-    /// The process a session attached to, for its banner.
     pub const fn attached(&self) -> Option<ProcessId> {
         match self.target {
             Target::Attach { process, .. } => Some(process),
@@ -61,9 +49,6 @@ impl Session {
     }
 }
 
-/// Reads the settings, decides whether to trust the project, and resolves
-/// the target. `warnings` renders what is said before the settings exist.
-/// `settings` with what the command line and environment choose over them.
 fn flagged_settings(mut settings: Settings, args: &Args) -> Settings {
     if let Some(choice) = args.color {
         settings.override_color(choice, Origin::Flag("--color"));
@@ -183,7 +168,6 @@ pub fn prepare(args: &Args, warnings: Renderer) -> Result<Session> {
     })
 }
 
-/// Reads the settings files a session's flags choose.
 pub fn read_files(start: &Path, args: &Args) -> Result<Files> {
     Files::read(
         start,
@@ -192,7 +176,6 @@ pub fn read_files(start: &Path, args: &Args) -> Result<Files> {
     .map_err(|error| anyhow!("{error}\n(--no-config starts without settings files)"))
 }
 
-/// The launch configuration `--launch` names.
 fn chosen_launch<'a>(
     settings: &'a Settings,
     files: &Files,
@@ -211,8 +194,6 @@ fn chosen_launch<'a>(
     })
 }
 
-/// The target a launch configuration names, with the command line's
-/// arguments, environment, and directory applied to a launched program.
 fn launch_target(
     chosen: &Launch,
     root: &Path,
@@ -287,7 +268,6 @@ fn launch_target(
     })
 }
 
-/// The target the command line names.
 fn explicit_target(args: &Args) -> Result<Target> {
     if let Some(core) = &args.core {
         return Ok(Target::Core(CoreDumpOptions {
@@ -317,7 +297,6 @@ fn explicit_target(args: &Args) -> Result<Target> {
     Ok(Target::Program(executable))
 }
 
-/// The process an attach names: its id, or the one process of its name.
 fn attach_process(target: &AttachTarget) -> Result<ProcessId> {
     let name = match target {
         AttachTarget::Pid(pid) => return Ok(ProcessId::new(*pid)),
@@ -358,9 +337,6 @@ fn attach_process(target: &AttachTarget) -> Result<ProcessId> {
     }
 }
 
-/// Whether the project's acting settings apply: by the user's policy, the
-/// recorded trust, `--trust-project`, or asking. A session that cannot ask
-/// fails rather than guess either way.
 fn decide_trust(files: &Files, flag: bool, interactive: bool, renderer: Renderer) -> Result<bool> {
     let Some(acting) = files.acting() else {
         return Ok(true);

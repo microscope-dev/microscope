@@ -1,19 +1,3 @@
-//! Kernels: WebAssembly functions that walk a structure which is an
-//! algorithm more than a layout, such as a B-tree, for a view's generator
-//! (`docs/views.md`).
-//!
-//! A kernel is a core WebAssembly module. It may import only
-//! `microscope_kernel_v1`'s `read(address: i64, buffer: i32, length: i32) ->
-//! i32` and `yield(words: i32, count: i32) -> i32`, and it exports
-//! `run(arguments: i32, count: i32) -> i32` and its `memory`. A start
-//! function, floats, SIMD, threads, or any other import keeps a module from
-//! loading, so a kernel can do nothing but compute.
-//!
-//! Each call of `read` or `yield` stops the kernel, and whoever runs it
-//! answers: the kernel never holds the program. A run is therefore a pure
-//! function of its arguments and the bytes its reads returned, and a
-//! [`Recording`] of them replays without a program.
-
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
@@ -24,38 +8,26 @@ use wasmi::{
     TypedResumableCallOutOfFuel, Val, ValType,
 };
 
-/// The module a kernel imports the host's functions from.
 pub const ABI: &str = "microscope_kernel_v1";
 
-/// The largest module a kernel may be.
 pub const MAX_MODULE_BYTES: usize = 256 * 1024;
 
-/// The most linear memory a kernel may use.
 pub const MAX_MEMORY_BYTES: u64 = 4 * 1024 * 1024;
 
-/// How deep a kernel's calls may nest.
 pub const MAX_RECURSION: usize = 1024;
 
-/// The most arguments a view passes a kernel.
 pub const MAX_ARGUMENTS: usize = 32;
 
-/// The most words one item may hold.
 pub const MAX_WORDS: usize = 8;
 
-/// The most bytes one `read` may ask for.
 pub const MAX_READ: u32 = 64 * 1024;
 
-/// How much fuel, about one WebAssembly instruction each, one unit of the
-/// inspection's work buys.
 pub const FUEL_PER_UNIT: u64 = 8;
 
-/// How many units of work a run pays for at a time.
 const UNITS_PER_REFILL: u64 = 512;
 
-/// A WebAssembly page.
 const PAGE: u64 = 64 * 1024;
 
-/// A call the kernel made, which stops it until the host answers.
 #[derive(Debug, Clone, Copy)]
 enum Call {
     Read {
@@ -80,8 +52,6 @@ impl fmt::Display for Call {
 
 impl wasmi::errors::HostError for Call {}
 
-/// A loaded kernel: its module, validated and compiled, and where its
-/// source is.
 pub struct Kernel {
     name: Arc<str>,
     source: Arc<str>,
@@ -99,8 +69,6 @@ impl fmt::Debug for Kernel {
 }
 
 impl Kernel {
-    /// Loads the module `wasm` as the kernel `name`, whose source, or a
-    /// link to it, is `source`. Says why a module cannot be a kernel.
     pub fn new(name: &str, source: &str, wasm: &[u8]) -> Result<Self, String> {
         if wasm.len() > MAX_MODULE_BYTES {
             return Err(format!(
@@ -135,13 +103,10 @@ impl Kernel {
         &self.name
     }
 
-    /// The kernel's source, or a link to it.
     pub fn source(&self) -> &str {
         &self.source
     }
 
-    /// Starts a run with `arguments`, recording it into `recordings` when
-    /// given.
     pub fn start(&self, arguments: &[u64], recordings: Option<&Recordings>) -> Result<Run, String> {
         if arguments.len() > MAX_ARGUMENTS {
             return Err(format!(
@@ -178,8 +143,6 @@ impl Kernel {
         })
     }
 
-    /// A store holding an instance, with the arguments in a page of memory
-    /// grown for them, whose address it also returns.
     #[expect(clippy::type_complexity, reason = "the pieces of one instance")]
     fn instantiate(
         &self,
@@ -234,7 +197,6 @@ impl Kernel {
     }
 }
 
-/// The host functions, each of which stops the kernel with its call.
 fn host_functions(engine: &Engine) -> Result<Linker<StoreLimits>, String> {
     let mut linker = Linker::new(engine);
     linker
@@ -265,8 +227,6 @@ fn host_functions(engine: &Engine) -> Result<Linker<StoreLimits>, String> {
     Ok(linker)
 }
 
-/// Checks that a module imports only the host's functions, with their
-/// types, and exports `run` and a memory no larger than a kernel's.
 fn check_interface(module: &Module) -> Result<(), String> {
     use ValType::{I32, I64};
     for import in module.imports() {
@@ -333,24 +293,18 @@ fn check_interface(module: &Module) -> Result<(), String> {
     Ok(())
 }
 
-/// What answers a running kernel.
 pub trait Host {
     type Error;
 
-    /// Reads `length` bytes of the program's memory at `address`.
     fn read(&mut self, address: u64, length: usize) -> Result<Vec<u8>, Self::Error>;
 
-    /// Pays for `units` of the kernel's work.
     fn pay(&mut self, units: u64) -> Result<(), Self::Error>;
 }
 
-/// Why a run ended before its kernel did.
 #[derive(Debug)]
 pub enum RunError<E> {
-    /// The host could not answer: a read failed, or the budget ran out.
     Host(E),
 
-    /// The kernel failed, and why.
     Kernel(String),
 }
 
@@ -360,7 +314,6 @@ enum State {
         arguments: (i32, i32),
     },
 
-    /// Stopped at a call, to be resumed with its answer.
     Called {
         call: TypedResumableCallHostTrap<i32>,
         answer: i32,
@@ -369,20 +322,16 @@ enum State {
     Ended,
 }
 
-/// One run of a kernel, which yields its items one at a time.
 pub struct Run {
     store: Store<StoreLimits>,
     memory: Memory,
     state: State,
     recording: Option<(Recording, Recordings)>,
 
-    /// How the run ended, once it has.
     ended: Option<End>,
 }
 
 impl Run {
-    /// Runs the kernel until it yields its next item, or `None` once it
-    /// returns. A run that failed has ended.
     pub fn next<H: Host>(
         &mut self,
         host: &mut H,
@@ -429,7 +378,6 @@ impl Run {
                 return Ok(None);
             };
 
-            // A reason is one line, as a recording writes it.
             let trapped = |error: wasmi::Error| {
                 RunError::Kernel(format!("it trapped: {error}").replace('\n', " "))
             };
@@ -483,7 +431,6 @@ impl Run {
         }
     }
 
-    /// Answers a read: the bytes, in the kernel's buffer, and their count.
     fn read<H: Host>(
         &mut self,
         host: &mut H,
@@ -534,7 +481,6 @@ impl Run {
         Ok(length.cast_signed())
     }
 
-    /// The words of a yielded item.
     fn item<E>(&self, words: u32, count: u32) -> Result<Box<[u64]>, RunError<E>> {
         let count = count as usize;
         if count == 0 || count > MAX_WORDS {
@@ -569,7 +515,6 @@ impl Drop for Run {
     }
 }
 
-/// The recordings of the runs of one inspection, in the order they ended.
 #[derive(Debug, Clone, Default)]
 pub struct Recordings(Arc<Mutex<Vec<Recording>>>);
 
@@ -589,7 +534,6 @@ impl Recordings {
             .push(recording);
     }
 
-    /// The recordings kept so far, which it forgets.
     pub fn take(&self) -> Vec<Recording> {
         std::mem::take(
             &mut *self
@@ -600,29 +544,21 @@ impl Recordings {
     }
 }
 
-/// What a run read or yielded, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Read { address: u64, bytes: Vec<u8> },
     Item(Vec<u64>),
 }
 
-/// How a run ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum End {
-    /// The kernel returned 0.
     Finished,
 
-    /// The kernel failed, and why.
     Failed(String),
 
-    /// Its host stopped running it: it had the items it wanted, a read
-    /// failed, or the budget ran out.
     Stopped,
 }
 
-/// A run, as it happened: everything it depends on and everything it
-/// gave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recording {
     pub kernel: String,
@@ -631,12 +567,9 @@ pub struct Recording {
     pub end: End,
 }
 
-/// The first line of a recording's text.
 const HEADER: &str = "microscope-kernel-run 1";
 
 impl fmt::Display for Recording {
-    /// A recording as text: a header, then a line for the kernel, its
-    /// arguments, each event, and the end, numbers in hexadecimal.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(formatter, "{HEADER}")?;
         writeln!(formatter, "kernel {}", self.kernel)?;
@@ -675,8 +608,6 @@ impl fmt::Display for Recording {
     }
 }
 
-/// Reads the recordings in `text`, each written as [`Recording`]'s
-/// `Display` writes one.
 pub fn parse_recordings(text: &str) -> Result<Vec<Recording>, String> {
     let mut recordings = Vec::new();
     let mut lines = text
@@ -711,7 +642,6 @@ pub fn parse_recordings(text: &str) -> Result<Vec<Recording>, String> {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // A run is only what a host could have given and taken.
         if arguments.len() > MAX_ARGUMENTS {
             return Err(format!(
                 "line {number}: a kernel takes at most {MAX_ARGUMENTS} arguments"
@@ -781,17 +711,13 @@ fn hexadecimal(word: &str) -> Option<u64> {
     u64::from_str_radix(word.strip_prefix("0x")?, 16).ok()
 }
 
-/// How much work a replay may do: as much as the largest inspection.
 const REPLAY_UNITS: u64 = crate::inspection::MAX_INSPECTION_LIMITS.expression_work;
 
-/// Why a replaying host stopped answering.
 enum Halt {
-    /// The recording stopped here.
     End,
     Differs(String),
 }
 
-/// A host that answers a kernel with what a recording says.
 struct Replayer<'r> {
     recording: &'r Recording,
     next: usize,
@@ -799,12 +725,10 @@ struct Replayer<'r> {
 }
 
 impl Replayer<'_> {
-    /// Whether the recording's host stopped the run here.
     fn stops(&self) -> bool {
         self.next == self.recording.events.len() && self.recording.end == End::Stopped
     }
 
-    /// What the recording does next.
     fn recorded(&self) -> String {
         match self.recording.events.get(self.next) {
             Some(Event::Read { address, bytes }) => {
@@ -861,10 +785,6 @@ fn words_text(words: &[u64]) -> String {
         .join(" ")
 }
 
-/// Runs `kernel` again as `recording` ran, answering its reads with the
-/// bytes recorded, and returns how many events it reproduced, or the first
-/// difference. A recording its host stopped is reproduced once all its
-/// events are.
 pub fn replay(kernel: &Kernel, recording: &Recording) -> Result<usize, String> {
     let mut run = kernel.start(&recording.arguments, None)?;
     let mut host = Replayer {
@@ -921,26 +841,20 @@ mod tests {
 
     use super::*;
 
-    /// A WebAssembly module, assembled by hand: a kernel's two imports,
-    /// then `run`, whose body is given, and any other functions.
     struct Wasm {
         imports: Vec<(&'static str, &'static str, u8)>,
 
-        /// Each function's type and body, after `run`'s.
         functions: Vec<(u8, Vec<u8>)>,
         memory: Option<u32>,
         exports: Vec<(&'static str, u8, u32)>,
         start: Option<u32>,
     }
 
-    /// The types functions have: `read`'s, `yield`'s, `run`'s, and `() ->
-    /// ()`.
     const READ: u8 = 0;
     const YIELD: u8 = 1;
     const RUN: u8 = 2;
     const NOTHING: u8 = 3;
 
-    /// The index of `run`, after the two imports.
     const RUN_INDEX: u32 = 2;
 
     fn leb(mut value: u64, bytes: &mut Vec<u8>) {
@@ -980,7 +894,6 @@ mod tests {
     }
 
     impl Wasm {
-        /// A kernel whose `run` has `body`, with one local i64.
         fn kernel(body: &[u8]) -> Self {
             Self {
                 imports: vec![(ABI, "read", READ), (ABI, "yield", YIELD)],
@@ -1052,7 +965,6 @@ mod tests {
             let mut contents = Vec::new();
             leb(self.functions.len() as u64, &mut contents);
             for (_, body) in &self.functions {
-                // One local i64, then the body.
                 let mut function = vec![1, 1, I64];
                 function.extend(body);
                 function.push(0x0b);
@@ -1080,25 +992,21 @@ mod tests {
     const ARGUMENTS: u8 = 0;
     const COUNTER: u8 = 2;
 
-    /// Yields the items `[0]`, `[1]`, …, below its first argument, from
-    /// address 0, stopping when the host wants no more.
     fn counter() -> Vec<u8> {
-        let mut body = vec![0x02, 0x40, 0x03, 0x40]; // block, loop
-        body.extend([0x20, COUNTER, 0x20, ARGUMENTS, 0x29, 3, 0, 0x5a, 0x0d, 1]); // i >= args[0]: break
+        let mut body = vec![0x02, 0x40, 0x03, 0x40];
+        body.extend([0x20, COUNTER, 0x20, ARGUMENTS, 0x29, 3, 0, 0x5a, 0x0d, 1]);
         body.extend(i32_const(0));
-        body.extend([0x20, COUNTER, 0x37, 3, 0]); // memory[0] = i
+        body.extend([0x20, COUNTER, 0x37, 3, 0]);
         body.extend(i32_const(0));
         body.extend(i32_const(1));
-        body.extend([0x10, 1, 0x45, 0x0d, 1]); // yield(0, 1) == 0: break
+        body.extend([0x10, 1, 0x45, 0x0d, 1]);
         body.extend([0x20, COUNTER]);
         body.extend(i64_const(1));
-        body.extend([0x7c, 0x21, COUNTER, 0x0c, 0, 0x0b, 0x0b]); // i += 1, again
+        body.extend([0x7c, 0x21, COUNTER, 0x0c, 0, 0x0b, 0x0b]);
         body.extend(i32_const(0));
         body
     }
 
-    /// Reads the word at its first argument's address into address 8 and
-    /// yields it.
     fn reader() -> Vec<u8> {
         let mut body = vec![0x20, ARGUMENTS, 0x29, 3, 0];
         body.extend(i32_const(8));
@@ -1111,7 +1019,6 @@ mod tests {
         body
     }
 
-    /// Program memory: bytes by address, and the work paid for.
     #[derive(Default)]
     struct Memory {
         bytes: BTreeMap<u64, u8>,
@@ -1154,7 +1061,6 @@ mod tests {
         Kernel::new("test", "tests", &wasm.bytes())
     }
 
-    /// Every item of a run, and how it ended.
     fn items(
         kernel: &Kernel,
         arguments: &[u64],
@@ -1259,7 +1165,6 @@ mod tests {
         );
         assert!(memory.units > 0, "it paid for its work");
 
-        // A read the host cannot make ends the run with the host's error.
         let (_, ended) = items(&kernel, &[0x2000], &mut memory);
         assert_eq!(ended, Err("0x2000 is unmapped".to_owned()));
 
@@ -1272,7 +1177,6 @@ mod tests {
 
     #[test]
     fn kernels_that_run_away_or_misbehave_end_with_why() {
-        // A loop ends when its budget does, at the same point every time.
         let spins = [[0x03, 0x40, 0x0c, 0, 0x0b].as_slice(), &i32_const(0)].concat();
         let kernel = load(&Wasm::kernel(&spins)).expect("loads");
         let mut memory = Memory {
@@ -1321,7 +1225,6 @@ mod tests {
             assert!(error.contains(expected), "{error}: not {expected}");
         }
 
-        // A run that failed says so again, rather than seeming to end well.
         let kernel = load(&Wasm::kernel(&i32_const(3))).expect("loads");
         let mut run = kernel.start(&[], None).expect("starts");
 
@@ -1363,14 +1266,12 @@ mod tests {
             Err("event 0: the kernel reads 8 bytes at 0x1000, and the recording reads 8 bytes at 0x1008".to_owned())
         );
 
-        // A run its host stopped replays as far as it went.
         let stopped = parse_recordings(
             "microscope-kernel-run 1\nkernel test\narguments 0x1000\nread 0x1000 edfe000000000000\nend stopped\n",
         )
         .expect("parses");
         assert_eq!(replay(&kernel, &stopped[0]), Ok(1));
 
-        // What no host could have given or taken is no recording.
         let run =
             |body: &str| format!("microscope-kernel-run 1\nkernel test\n{body}\nend stopped\n");
 
@@ -1388,11 +1289,6 @@ mod tests {
         assert!(parse_recordings("microscope-kernel-run 1\nkernelfoo test\n").is_err());
     }
 
-    /// A Rust B-tree laid out in `memory`: leaves of `fill` keys, each key
-    /// the u64 that is its entry's position, under `height` levels of
-    /// internal nodes with `fill` keys each. Returns its root, its entries'
-    /// key addresses in order, and its layout's arguments without the
-    /// root and height.
     fn btree(
         memory: &mut Memory,
         height: u64,
@@ -1400,8 +1296,6 @@ mod tests {
         next: &mut u64,
         position: &mut u64,
     ) -> (u64, Vec<u64>) {
-        // A node: len (u16) at 0, keys (u64) at 8, values (u32) at 96,
-        // edges at 144.
         let node = *next;
         *next += 0x200;
         memory.write(node, &fill.to_le_bytes());

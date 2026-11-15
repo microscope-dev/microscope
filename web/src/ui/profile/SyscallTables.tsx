@@ -8,8 +8,6 @@ import { Bytes, Duration, Unanswered } from "./parts";
 import { Tokens } from "./SyscallLog";
 import { SamplesDuring } from "./SyscallSummary";
 
-/** A plain table of rows, or what it is reading, why it could not, or
- * that there are none. */
 function Rows({
   head,
   rows,
@@ -18,7 +16,7 @@ function Rows({
   empty,
 }: {
   head: string[];
-  /** Absent until the first answer comes. */
+
   rows: ReactNode[][] | undefined;
   error: RequestError | undefined;
   reading: string;
@@ -58,7 +56,6 @@ function Rows({
   );
 }
 
-/** A count of failures, red when there are any. */
 function Failed({ count }: { count: number }) {
   return count > 0 ? <span className="error-text">{formatCount(count)}</span> : "0";
 }
@@ -159,14 +156,11 @@ export function Processes({ query }: { query: SyscallQuery }) {
   );
 }
 
-/** A process under its parent, a step in for each ancestor. */
 function Indented({ depth, children }: { depth: number; children: ReactNode }) {
   const style = useMemo(() => ({ paddingLeft: `${depth * 16}px` }), [depth]);
   return <span style={style}>{children}</span>;
 }
 
-/** What each thread of a live trace is blocked in, as of its last
- * publication. */
 function InFlight({ query }: { query: SyscallQuery }) {
   const flight = useAnswer("syscallInFlight", {
     profile: query.profile,

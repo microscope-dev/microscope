@@ -1,5 +1,5 @@
-// Go types the debugger identifies by kind and by instantiation: maps,
-// channels, slices, strings, and a generic record.
+
+
 package main
 
 import (

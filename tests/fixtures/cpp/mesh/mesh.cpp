@@ -1,8 +1,8 @@
-// A game's meshes, as an engine keeps them: a torus of 1,920 vertices and
-// 3,840 triangles, deformed a little each tick, which the built-in mesh
-// viewer draws through mesh.views; two meshes that are broken, one with a
-// vertex that flew off to NaN and one with an index past its last vertex;
-// and a skeleton whose bones bones.js draws, live, in 2-D.
+
+
+
+
+
 
 #include <cmath>
 #include <cstdint>
@@ -31,9 +31,9 @@ struct Mesh {
 
 struct Bone {
     const char *name;
-    // The bone it hangs from, or -1 for the root.
+
     int parent;
-    // Where its joint is, in the skeleton's plane.
+
     float x;
     float y;
 };
@@ -43,7 +43,7 @@ struct Skeleton {
     int count;
 };
 
-}  // namespace engine
+}
 
 namespace {
 
@@ -51,8 +51,8 @@ constexpr int kRings = 48;
 constexpr int kSides = 40;
 constexpr float kPi = 3.14159265f;
 
-// A torus around the y axis, its tube swelling in waves that move with
-// `tick`.
+
+
 void shape_torus(engine::Mesh &mesh, int tick) {
     mesh.vertices.resize(kRings * kSides);
     for (int ring = 0; ring < kRings; ring++) {
@@ -91,7 +91,7 @@ void shape_torus(engine::Mesh &mesh, int tick) {
     }
 }
 
-// A unit square of two triangles.
+
 engine::Mesh square() {
     engine::Mesh mesh;
     const float corners[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
@@ -116,7 +116,7 @@ void pose(engine::Skeleton &skeleton, int tick) {
 
 std::size_t submitted = 0;
 
-// What a renderer would draw each tick.
+
 void submit(const engine::Mesh &mesh, const engine::Mesh &flown, const engine::Mesh &stray,
             const engine::Skeleton &skeleton, int tick) {
     submitted += mesh.indices.size() / 3 + flown.vertices.size() + stray.indices.size() +
@@ -124,7 +124,7 @@ void submit(const engine::Mesh &mesh, const engine::Mesh &flown, const engine::M
     std::printf("tick %d: %zu\n", tick, submitted);
 }
 
-}  // namespace
+}
 
 int main() {
     engine::Mesh torus;

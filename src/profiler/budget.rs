@@ -1,38 +1,18 @@
-//! Holding microscope's own CPU time to a budget.
-//!
-//! Once a period, the controller reads how much CPU time recording took
-//! and how long sampling was on, and chooses how much of the next period
-//! to sample. Pausing is the one control that reaches every event: a new
-//! sampling period would not reach the events a program's threads
-//! inherited, and the stack copy is fixed when an event opens. Each paused
-//! span is a gap in the capture, so weights stay true for the time sampled.
-
 use std::time::Duration;
 
-/// How much CPU time microscope may spend recording.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Budget {
-    /// A share of one CPU: 0.01 is 1%.
     pub cpu: f64,
 
-    /// How often the budget is checked; each period is sampled for its
-    /// share, in one span at a random offset.
     pub period: Duration,
 }
 
 impl Budget {
-    /// One percent of a CPU, checked every second.
     pub const PRODUCTION: Self = Self {
         cpu: 0.01,
         period: Duration::from_secs(1),
     };
 
-    /// How long a period lasts whose sampling took `toggling` to turn on
-    /// and off: long enough that doing so costs at most a tenth of the
-    /// budget, and from one to [`MOST_STRETCH`] of the budget's periods.
-    /// Turning inherited perf events on or off visits every thread's copy
-    /// on every CPU, and took 1 to 4 ms on 16 Node workers: a quarter of a
-    /// 1% budget each second, whatever share was sampled.
     #[must_use]
     pub fn period_for(self, toggling: Duration) -> Duration {
         let stretched = toggling.div_f64(self.cpu / 10.0);
@@ -40,67 +20,38 @@ impl Budget {
     }
 }
 
-/// The most times a budget's period is stretched for what turning sampling
-/// on and off costs, so the controller still answers within seconds.
 pub const MOST_STRETCH: u32 = 8;
 
-/// The finest share of a period the controller samples: 1/64.
 pub const STEPS: u32 = 64;
 
-/// How many times shorter the first period is than the rest.
-///
-/// The first is not judged, and is sampled in full, so the sooner it ends,
-/// the sooner a costly recording is held to its budget: a recording that
-/// cost 2 to 3% of a CPU while sampling went two seconds before the first
-/// decision.
 pub const WARM_UP: u32 = 4;
 
-/// What one period cost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Observation {
-    /// CPU time recording took in the period, less what loading programs'
-    /// debug information took, which no pause makes cheaper.
     pub cpu: Duration,
 
-    /// How long sampling was on.
     pub sampled: Duration,
 
-    /// How long the period lasted.
     pub period: Duration,
 
-    /// What of `cpu` sampling did not cause: what recording took a second
-    /// while sampling was off, over the whole period, and what tracing
-    /// calls cost.
     pub fixed: Duration,
 }
 
-/// A change of the share sampled.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Decision {
-    /// Sixty-fourths of each period now sampled.
     pub steps: u32,
 
-    /// The share of a CPU the period that led to it used.
     pub used: f64,
 }
 
-/// The most a recording owes over its budget, in periods' worth of
-/// budget: past it, an expensive start is forgiven rather than starving
-/// sampling for longer than about this many periods.
 const MOST_OWED: u32 = 4;
 
-/// How much of each period is sampled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Controller {
     steps: u32,
 
-    /// What recording has spent beyond its budget so far. A cheap period
-    /// pays it back; one under budget never banks credit for later.
     owed: Duration,
 
-    /// Whether a period has passed. The first warms what recording builds
-    /// once, such as each module's unwind tables, so what it cost is owed
-    /// but says nothing of what sampling costs.
     warm: bool,
 }
 
@@ -115,37 +66,24 @@ impl Default for Controller {
 }
 
 impl Controller {
-    /// Sixty-fourths of each period sampled.
     #[must_use]
     pub const fn steps(self) -> u32 {
         self.steps
     }
 
-    /// Samples each period whole, while the budget gives up other detail
-    /// first.
     pub const fn whole(&mut self) {
         self.steps = STEPS;
     }
 
-    /// Owes nothing: what recording spent over went with detail it gave
-    /// up.
     pub const fn forgive(&mut self) {
         self.owed = Duration::ZERO;
     }
 
-    /// Whether the first period, which warms recording up, has passed.
     #[must_use]
     pub const fn warm(self) -> bool {
         self.warm
     }
 
-    /// Chooses the share of the next period from what the last one cost,
-    /// and says so when it changes. What fits is what the budget leaves,
-    /// with a margin, once what is owed is paid back. Over budget, the
-    /// share falls at once to what fits. Otherwise it at most doubles,
-    /// toward what fits, and falls only while something is owed. Every
-    /// period's cost is owed, the first's too, though only later ones say
-    /// what sampling costs.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -166,7 +104,6 @@ impl Controller {
 
         let used = observed.cpu.as_secs_f64() / observed.period.as_secs_f64();
 
-        // CPU per second of sampling, and the share of a period that fits.
         let sampling = observed.cpu.saturating_sub(observed.fixed);
         let cost = sampling.as_secs_f64() / observed.sampled.as_secs_f64();
         let left = budget.cpu
@@ -202,8 +139,6 @@ mod tests {
         period: Duration::from_secs(1),
     };
 
-    /// A period of a recording whose sampling costs `cost` of a CPU while
-    /// it is on, sampled for `steps` sixty-fourths.
     fn period(cost: f64, steps: u32) -> Observation {
         let sampled = BUDGET.period * steps / STEPS;
         Observation {
@@ -214,8 +149,6 @@ mod tests {
         }
     }
 
-    /// A period is stretched until turning sampling on and off costs a
-    /// tenth of the budget, within its bounds.
     #[test]
     fn a_period_lasts_until_toggling_costs_a_tenth_of_the_budget() {
         let period = |ms| BUDGET.period_for(Duration::from_millis(ms));
@@ -229,12 +162,6 @@ mod tests {
         );
     }
 
-    /// Whatever sampling costs, the controller settles on the largest share
-    /// that costs at most 90% of the budget, or on the least share, and
-    /// stays: within a few periods, or a few more when a costly start must
-    /// be paid back first. The costs are a whole period that fits, one just
-    /// over the edge, one whose costly start is paid back first, and one
-    /// that is over even at the least share.
     #[test]
     fn the_share_settles_where_it_fits_and_stays() {
         for (cost, settled) in [(0.009, 64), (0.011, 52), (0.2, 2), (1.0, 1)] {
@@ -257,11 +184,6 @@ mod tests {
         }
     }
 
-    /// A cost that pauses do not lower, such as a reader's polling, is
-    /// paid first, and sampling gets what is left: 0.6% of a CPU fixed,
-    /// and sampling at 2% of a CPU, fits 0.4 / 2 * 0.9 of each period, or
-    /// 11 sixty-fourths. Charged to sampling, the fixed cost would hold it
-    /// at the least share.
     #[test]
     fn a_cost_sampling_does_not_cause_is_paid_before_sampling() {
         let mut controller = Controller::default();
@@ -282,8 +204,6 @@ mod tests {
         assert_eq!(controller.steps(), 11);
     }
 
-    /// Once the cost falls and what was owed is paid, the share doubles
-    /// back toward the whole period, never past what fits.
     #[test]
     fn a_cheaper_recording_samples_more_again() {
         let mut controller = Controller::default();
@@ -297,12 +217,9 @@ mod tests {
             shares.push(controller.steps());
         }
 
-        // 0.9 of the budget fits 0.72 of a period: 46 sixty-fourths.
         assert_eq!(shares, [1, 1, 1, 2, 4, 8, 16, 32, 46, 46]);
     }
 
-    /// The first period warms what recording builds once, such as each
-    /// module's unwind tables, so it is not judged.
     #[test]
     fn the_first_period_is_not_judged() {
         let mut controller = Controller::default();
@@ -311,10 +228,6 @@ mod tests {
         assert!(controller.step(BUDGET, period(1.0, STEPS)).is_some());
     }
 
-    /// What `perft.py 5` under `--preset prod --python bpf` cost: its first
-    /// period, sampled in full, took 14-36 ms as recording warmed up, and
-    /// later ones 9-10 ms a second of sampling. A run of 5 s is still held
-    /// to the budget, the warm-up included.
     #[test]
     fn a_costly_first_period_is_paid_back() {
         for first in [16.0, 36.0] {
@@ -345,7 +258,6 @@ mod tests {
         }
     }
 
-    /// A period that sampled nothing says nothing of the cost.
     #[test]
     fn a_period_without_sampling_changes_nothing() {
         let mut controller = Controller::default();

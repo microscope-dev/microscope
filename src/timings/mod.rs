@@ -1,15 +1,3 @@
-//! Where microscope's time and memory go.
-//!
-//! Code marks its phases with [`span!`] and counts its work with
-//! [`count!`]; a [`Recording`] collects both from every thread into a
-//! [`Report`], which `--timings` writes as JSON with Chrome trace events
-//! and `microscope-tools timings` summarizes as text.
-//!
-//! Nothing is measured unless a recording is running: a span then costs one
-//! predictable branch, and reads no clock and allocates nothing. Spans mark
-//! phases and units, never single entries or rows; hot loops count instead,
-//! and their counts attach to the innermost open span on their thread.
-
 pub mod alloc;
 mod report;
 
@@ -20,28 +8,18 @@ use std::time::Instant;
 
 pub use report::{Phase, Report, Summary, ThreadBusy, TraceEvent};
 
-/// The most span events one recording keeps; later ones are counted as
-/// dropped.
 const MAX_EVENTS: usize = 1 << 18;
 
-/// The longest dynamic label a span keeps, in bytes.
 const MAX_LABEL: usize = 96;
 
-/// Whether a recording is running. Spans check this alone when none is.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Which recording is running, so a span begun under one is not reported
-/// by the next.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// The next thread's number in reports.
 static NEXT_THREAD: AtomicU32 = AtomicU32::new(0);
 
-/// The next span's identifier, which a span on another thread names as its
-/// parent.
 static NEXT_SPAN: AtomicU64 = AtomicU64::new(1);
 
-/// The running recording's collected events.
 static COLLECTED: Mutex<Option<Collected>> = Mutex::new(None);
 
 struct Collected {
@@ -50,20 +28,17 @@ struct Collected {
     events: Vec<Event>,
     marks: Vec<(&'static str, u64)>,
 
-    /// Counts made outside any span.
     loose: Vec<(&'static str, u64)>,
     dropped: u64,
     instructions: bool,
 }
 
-/// One finished span.
 #[derive(Debug, Clone)]
 pub(crate) struct Event {
     pub name: &'static str,
     pub label: Option<Box<str>>,
     pub id: u64,
 
-    /// The span that started this one's work, when it ran on another thread.
     pub parent: Option<u64>,
     pub thread: u32,
     pub depth: u32,
@@ -91,7 +66,6 @@ struct ThreadState {
     number: u32,
     generation: u64,
 
-    /// The running recording's start, and whether it counts instructions.
     epoch: Instant,
     instructions_wanted: bool,
     open: Vec<Open>,
@@ -103,9 +77,6 @@ thread_local! {
     static THREAD: RefCell<Option<ThreadState>> = const { RefCell::new(None) };
 }
 
-/// A thread's retired user-mode instructions, counted for this thread
-/// alone: the counter follows neither other threads nor child processes,
-/// so a debuggee never inherits it.
 struct Instructions {
     counter: Option<perf_event::Counter>,
 }
@@ -151,20 +122,15 @@ fn note_instructions_unavailable(reason: &str) {
     unavailable.get_or_insert_with(|| reason.to_owned());
 }
 
-/// What a recording measures beyond time and allocations.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Options {
-    /// Count each span's retired user-mode instructions with a hardware
-    /// counter, where the kernel allows one.
     pub instructions: bool,
 }
 
-/// Why a recording could not start: another is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("a profile recording is already running")]
 pub struct AlreadyRecording;
 
-/// A running recording. Only one runs at a time in a process.
 #[must_use = "a recording collects nothing once dropped"]
 pub struct Recording {
     generation: u64,
@@ -174,8 +140,6 @@ pub struct Recording {
 }
 
 impl Recording {
-    /// Starts recording every thread's spans and counts, or fails when a
-    /// recording is already running.
     pub fn start(options: Options) -> Result<Self, AlreadyRecording> {
         let mut collected = COLLECTED.lock().unwrap_or_else(PoisonError::into_inner);
         if collected.is_some() {
@@ -210,7 +174,6 @@ impl Recording {
         })
     }
 
-    /// Stops recording and reports what it collected.
     pub fn finish(self) -> crate::Result<Report> {
         ENABLED.store(false, Ordering::Release);
         let wall_ns = elapsed_ns(self.started);
@@ -218,7 +181,6 @@ impl Recording {
         let allocations = alloc::totals().since(&self.allocations);
         alloc::stop_totals();
 
-        // This thread's spans may still be buffered.
         flush_thread();
         let collected = COLLECTED
             .lock()
@@ -268,14 +230,11 @@ impl Drop for Recording {
     }
 }
 
-/// Whether a recording is running.
 #[inline]
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Marks an instant, such as the moment a session is ready for its first
-/// command.
 pub fn mark(name: &'static str) {
     if !enabled() {
         return;
@@ -288,14 +247,10 @@ pub fn mark(name: &'static str) {
     }
 }
 
-/// A span open on this thread until dropped.
 #[must_use = "a span measures until it is dropped"]
 pub struct Span {
     open: bool,
 
-    /// The same span as a zone that another microscope can record. Only
-    /// built with `self-probes`; otherwise it is empty, but still keeps the
-    /// span on its thread, so both builds accept the same code.
     _zone: Zone,
 }
 
@@ -306,8 +261,6 @@ type Zone = microscope_probes::Zone;
 type Zone = microscope_probes::Off;
 
 impl Span {
-    /// The identifier work on another thread names as its parent, or `None`
-    /// when nothing is recording.
     #[must_use]
     pub fn id(&self) -> Option<u64> {
         if !self.open {
@@ -323,9 +276,6 @@ impl Span {
     }
 }
 
-/// Opens a span named `name`, with a label `label` formats only when a
-/// recording is running. Work that runs on another thread for this span
-/// names it as `parent`.
 #[inline]
 pub fn span(
     name: &'static str,
@@ -339,7 +289,6 @@ pub fn span(
     }
 }
 
-/// Opens a span in the running recording, unless it has just ended.
 #[cold]
 fn open_span(name: &'static str, parent: Option<u64>, label: Option<&dyn Fn() -> String>) -> bool {
     let label = label.map(|label| {
@@ -362,7 +311,6 @@ fn open_span(name: &'static str, parent: Option<u64>, label: Option<&dyn Fn() ->
         let state = match thread.as_mut() {
             Some(state) if state.generation == generation => state,
             _ => {
-                // The recording this thread last saw has ended.
                 let Some((current, epoch, instructions_wanted)) = COLLECTED
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -483,8 +431,6 @@ fn close_span() {
     }
 }
 
-/// Moves this thread's finished spans into the recording they were
-/// finished under, unless it has ended.
 fn flush_thread() {
     let Some((generation, finished)) = THREAD.with(|thread| {
         thread
@@ -515,8 +461,6 @@ fn flush_thread() {
     }
 }
 
-/// Adds `amount` to the counter `name` of the innermost span open on this
-/// thread.
 #[inline]
 pub fn count(name: &'static str, amount: u64) {
     if enabled() {
@@ -550,9 +494,6 @@ fn add_to(counters: &mut Vec<(&'static str, u64)>, name: &'static str, amount: u
     }
 }
 
-/// Opens a span until the end of the enclosing block: `span!("lines")`,
-/// with a label formatted only while recording, `span!("unit", "{offset:#x}")`,
-/// or as part of work another span started, `span!(parent = id, "unit")`.
 #[macro_export]
 #[doc(hidden)]
 macro_rules! span {
@@ -580,7 +521,6 @@ macro_rules! span {
     };
 }
 
-/// Adds to a counter of the innermost open span: `count!("dies", n)`.
 #[macro_export]
 #[doc(hidden)]
 macro_rules! count {
@@ -605,18 +545,14 @@ fn clock_ns(clock: nix::time::ClockId) -> u64 {
     })
 }
 
-/// The CPU time this thread has used.
 fn thread_cpu_ns() -> u64 {
     clock_ns(nix::time::ClockId::CLOCK_THREAD_CPUTIME_ID)
 }
 
-/// The CPU time every thread of the process has used.
 fn process_cpu_ns() -> u64 {
     clock_ns(nix::time::ClockId::CLOCK_PROCESS_CPUTIME_ID)
 }
 
-/// The process's peak resident set: a high-water mark for its whole life,
-/// not something a span can subtract.
 fn peak_rss_bytes() -> Option<u64> {
     let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF).ok()?;
 

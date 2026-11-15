@@ -1,24 +1,24 @@
-"""asyncio's tasks, which CPython lists from 3.14: one awaiting a chain of
-coroutines that waits for an event, one asleep, one awaiting another task,
-two that await one task together, one made and not yet started, one of a
-class deriving from asyncio.Task, one a thread made in its own loop, and
-the main task, which runs the checkpoint.
 
-The checkpoint reports each task asyncio.all_tasks() lists in each loop,
-and the frames of each one no thread runs, innermost first, as each
-coroutine's own frame and the coroutine it awaits give them:
 
-    TRUTH  task        NAME  STATE  DETAIL  AWAITED-BY
-    TRUTH  task-frame  NAME  DEPTH  QUALNAME  FILE  LINE
-    TRUTH  task-local  NAME  DEPTH  LOCAL  VALUE
 
-STATE is running, runnable, blocked, or exited. DETAIL names what a
-blocked task awaits, as `awaits task NAME` or `awaits TYPE`, and is - for
-any other. AWAITED-BY names the tasks that await it, in the order CPython
-keeps them, joined by `, `, or is - for none. A task given no name keeps the
-number of its name until Python asks for it, so the fixture asks only for
-the name of a task made just before it.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import asyncio
 import os
@@ -61,7 +61,7 @@ async def noop():
 
 
 def describe(task, running):
-    """The task's record: its name, state, detail, and awaiters."""
+
     graph = asyncio.capture_call_graph(task)
     awaiters = [entry.future.get_name() for entry in graph.awaited_by]
     if task is running:
@@ -81,7 +81,7 @@ def describe(task, running):
 
 
 def chain(task):
-    """The frames of the task's coroutines, innermost first."""
+
     frames = []
     coroutine = task.get_coro()
     while coroutine is not None and hasattr(coroutine, "cr_frame"):
@@ -110,8 +110,8 @@ def report(tasks, names, running):
 
 
 def other_loop(started, done, loops):
-    """A loop of a thread of its own, whose task sleeps while its main task
-    waits for `done` in an executor's thread."""
+
+
 
     async def own():
         loops.append(asyncio.get_running_loop())
@@ -127,7 +127,7 @@ def other_loop(started, done, loops):
 
 
 def blocked(started):
-    """Whether the other loop's main task has started and waits."""
+
     return bool(started) and started[0]._fut_waiter is not None
 
 

@@ -57,7 +57,7 @@ __attribute__((noinline)) bool inspect_pointers(int parameter, int* pointer_para
            rvalue_reference == 42 && *reference_to_pointer == 42;
 }
 
-}  // namespace fixture
+}
 
 volatile bool input_flag = true;
 volatile int input_signed = -42;

@@ -1,8 +1,3 @@
-// The dock as a person uses it, with panes of its own: tabs choose and close
-// by pointer and by key, separators resize, a pane that throws or lacks what
-// it needs says so and leaves the others working, and choosing a tab renders
-// nothing outside its group.
-
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
@@ -17,7 +12,6 @@ import { useVisible } from "../src/workbench/visible";
 
 afterEach(cleanup);
 
-/** How often each pane's body rendered. */
 const renders = new Map<string, number>();
 
 function Counting({ pane }: PaneProps) {
@@ -109,7 +103,7 @@ it("walks tabs with the arrow keys and closes one with Delete", async () => {
   await expect.element(tab("Output")).toHaveFocus();
   await userEvent.keyboard("{End}");
   await expect.element(tab("Signals")).toHaveAttribute("aria-selected", "true");
-  // A tab that stays open ignores Delete.
+
   await userEvent.keyboard("{Delete}");
   await expect.element(tab("Signals")).toBeInTheDocument();
   await userEvent.keyboard("{Home}{Delete}");
@@ -180,12 +174,11 @@ it("resizes a split by keyboard and pointer, and evens it out with Enter", async
   await expect.element(separator).not.toHaveAttribute("aria-valuenow", "50");
   expect(threads()).toBeGreaterThan(wide + 20);
   await userEvent.keyboard("{Home}");
-  // A pane keeps its least width.
+
   expect(threads()).toBeGreaterThanOrEqual(119);
   await userEvent.keyboard("{Enter}");
   await expect.element(separator).toHaveAttribute("aria-valuenow", "50");
 
-  // By pointer: Escape puts it back, and letting go keeps where it went.
   const bar = separator.element() as HTMLElement;
   const box = bar.getBoundingClientRect();
   const at = (type: string, x: number) =>

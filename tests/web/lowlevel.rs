@@ -1,6 +1,3 @@
-//! The program below its source: disassembly, memory, registers,
-//! watchpoints, signals, and modules, as the page reads them.
-
 use serde_json::{Value, json};
 
 use crate::support::Scenario;
@@ -10,7 +7,6 @@ fn fixture(name: &str) -> String {
     Scenario::fixture(name).display().to_string()
 }
 
-/// Runs kvstore to the line after `handle_request` looks its key up.
 async fn stop_in_handle_request(tab: &mut Client) -> Value {
     tab.state("the program loaded", |state| state["session"].is_string())
         .await;
@@ -56,7 +52,6 @@ async fn disassembly_shows_each_frames_function_and_where_it_is() {
         .expect("the program counter's instruction");
     assert!(!marked["tokens"].as_array().expect("tokens").is_empty());
 
-    // A call names where it goes, so the page can follow it.
     let call = instructions(&inner)
         .iter()
         .find(|instruction| {
@@ -73,7 +68,6 @@ async fn disassembly_shows_each_frames_function_and_where_it_is() {
         "{inner}"
     );
 
-    // A caller's mark is its call, which the return address follows.
     let outer = tab.ok("disassemble", frame(&at, 1)).await;
     assert_eq!(outer["function"], "worker");
     let called = instructions(&outer)
@@ -87,7 +81,6 @@ async fn disassembly_shows_each_frames_function_and_where_it_is() {
         "{called}"
     );
 
-    // Any address shows the function that holds it.
     let address = call["target"]["address"].clone();
     let elsewhere = tab
         .ok(
@@ -98,7 +91,6 @@ async fn disassembly_shows_each_frames_function_and_where_it_is() {
     assert_eq!(elsewhere["function"], "table_find");
     assert_eq!(elsewhere["marked"], Value::Null);
 
-    // A function's name finds its entry, which the call above goes to.
     let resolved = tab.ok("resolve", json!({"name": "table_find"})).await;
     assert_eq!(resolved["address"], address);
     let (kind, message) = tab
@@ -108,7 +100,6 @@ async fn disassembly_shows_each_frames_function_and_where_it_is() {
     assert_eq!(kind, "failed");
     assert!(message.contains("no_such_function"), "{message}");
 
-    // AT&T syntax, for those who read it.
     let mut att = at.clone();
     att["syntax"] = "att".into();
     let att = tab.ok("disassemble", att).await;
@@ -140,9 +131,6 @@ async fn disassembly_shows_each_frames_function_and_where_it_is() {
     tab.save_traffic("lowlevel");
 }
 
-/// A C string's memory is as long as its text and NUL, which reading the
-/// text found. An array holding one is longer, and says how much of it the
-/// string fills.
 #[tokio::test]
 async fn a_c_string_marks_its_text_in_memory() {
     let web = Web::start("memory", &[&fixture("kvstore")]);
@@ -169,8 +157,6 @@ async fn a_c_string_marks_its_text_in_memory() {
     assert_eq!(key["memory"], array["memory"], "{key} {array}");
     assert_eq!(array["memoryBytes"], 16, "{array}");
 
-    // The array holds the string in its first bytes, which the page marks
-    // apart from the rest. The pointer's memory is the string already.
     assert_eq!(array["textBytes"], "user:1000".len() + 1, "{array}");
     assert_eq!(key["textBytes"], Value::Null, "{key}");
 
@@ -190,11 +176,9 @@ async fn memory_reads_and_writes_at_the_stop_it_names() {
     let key = tab.ok("evaluate", key).await;
     let address = key["memory"].clone();
 
-    // The array is stored in the request, sixteen bytes of it.
     assert_eq!(key["memoryBytes"], 16, "{key}");
     assert_eq!(key["stored"], true, "{key}");
 
-    // A pointer's memory is its pointee, whose size it does not know.
     let mut req = at.clone();
     req["expression"] = "req".into();
     let req = tab.ok("evaluate", req).await;
@@ -208,11 +192,9 @@ async fn memory_reads_and_writes_at_the_stop_it_names() {
         )
         .await;
 
-    // "user:"
     assert_eq!(read["bytes"], "757365723a", "{read}");
     assert_eq!(read["unreadable"], Value::Null);
 
-    // An unmapped page reads as far as it can, and says where it stopped.
     let unmapped = tab
         .ok(
             "readMemory",
@@ -222,7 +204,6 @@ async fn memory_reads_and_writes_at_the_stop_it_names() {
     assert_eq!(unmapped["bytes"], "");
     assert_eq!(unmapped["unreadable"], "0x10");
 
-    // The last page of the address space reads up to its end.
     let last = tab
         .ok(
             "readMemory",
@@ -245,7 +226,6 @@ async fn memory_reads_and_writes_at_the_stop_it_names() {
     first["expression"] = "req->key[0]".into();
     assert_eq!(tab.ok("evaluate", first).await["text"], "85 'U'");
 
-    // Bytes belong to a stop: a passed one reads nothing.
     tab.ok(
         "step",
         json!({"stop": at["stop"], "thread": at["thread"], "kind": "over"}),
@@ -301,14 +281,12 @@ async fn watchpoints_follow_expressions_and_addresses() {
     assert_eq!(kind, "invalid");
     tab.ok("removeWatchpoint", json!({"id": id})).await;
 
-    // Bytes at an address are watched without a frame.
     let mut gets = at.clone();
     gets["expression"] = "s->stats.gets".into();
     let gets = tab.ok("evaluate", gets).await;
     assert_eq!(gets["memoryBytes"], 8, "{gets}");
     let address = gets["memory"].clone();
 
-    // Either case of prefix names an address.
     let target = format!(
         "{}:8",
         address
@@ -334,7 +312,6 @@ async fn watchpoints_follow_expressions_and_addresses() {
     })
     .await;
 
-    // A viewer reads all of it but changes none of it.
     let link = tab.ok("share", json!({"role": "view", "to": "/"})).await["url"]
         .as_str()
         .expect("a link")
@@ -411,8 +388,6 @@ async fn signals_and_modules_are_part_of_the_session() {
     );
 }
 
-/// A module stripped of its debug information names the separate file it
-/// came from, found in the server's debug directories.
 #[tokio::test]
 async fn modules_name_their_separate_debug_files() {
     let root = fixture("split/debug-root");

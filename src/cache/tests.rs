@@ -3,7 +3,6 @@ use std::os::unix::fs::PermissionsExt as _;
 use super::*;
 use crate::image::TableKind;
 
-/// A directory removed when the test ends.
 struct ScratchDir(PathBuf);
 
 impl ScratchDir {
@@ -26,7 +25,6 @@ impl Drop for ScratchDir {
     }
 }
 
-/// A small valid image whose bytes say `views`.
 fn image(views: &[u8]) -> Image {
     let mut builder = crate::image::Builder::new(crate::TargetDescription::X86_64);
     builder.bytes(TableKind::EmbeddedViews, views.to_vec());
@@ -40,7 +38,6 @@ fn bytes_of(lookup: Lookup) -> Vec<u8> {
     }
 }
 
-/// Files in the cache's directory, by name.
 fn files(cache: &ImageCache) -> Vec<String> {
     let mut names = std::fs::read_dir(cache.directory())
         .unwrap()
@@ -62,9 +59,6 @@ fn set_modified(path: &Path, seconds: i64) {
     .unwrap();
 }
 
-/// A key names its inputs' exact bytes in order, so inputs split
-/// differently, reordered, or with an empty one added are other keys; an
-/// entry reads back as it was written.
 #[test]
 fn an_entry_reads_back_under_the_key_of_exactly_its_inputs() {
     let keys = [
@@ -91,7 +85,6 @@ fn an_entry_reads_back_under_the_key_of_exactly_its_inputs() {
     assert_eq!(bytes_of(cache.get(keys[0])), first.as_bytes());
     assert_eq!(bytes_of(cache.get(keys[1])), second.as_bytes());
 
-    // A later write replaces the entry whole.
     cache.put(keys[0], &second).unwrap();
     assert_eq!(bytes_of(cache.get(keys[0])), second.as_bytes());
     let mut expected = [format!("{}.image", keys[0]), format!("{}.image", keys[1])];
@@ -133,8 +126,6 @@ fn live_images_share_validated_tables_and_replacements_leave_readers_intact() {
     assert_eq!(first.as_bytes(), second.as_bytes());
 }
 
-/// An entry damaged in any way is a miss that says why, and is removed so
-/// that the next load writes a good one.
 #[test]
 fn a_damaged_entry_is_reported_and_removed() {
     let dir = ScratchDir::new("cache-damaged");
@@ -158,8 +149,6 @@ fn a_damaged_entry_is_reported_and_removed() {
     }
 }
 
-/// A reader removes only the file it found unusable: one another writer
-/// renamed into place since is a good entry, and stays.
 #[test]
 fn a_reader_removes_only_the_entry_it_found_unusable() {
     let dir = ScratchDir::new("cache-replaced");
@@ -179,9 +168,6 @@ fn a_reader_removes_only_the_entry_it_found_unusable() {
     assert!(matches!(cache.get(key), Lookup::Miss));
 }
 
-/// Opening a cache evicts the entries used longest ago, and files writers
-/// left behind, until it fits; reading an entry counts as using it, and
-/// files the cache did not write are never touched.
 #[test]
 fn opening_evicts_the_entries_used_longest_ago() {
     let dir = ScratchDir::new("cache-evicts");
@@ -201,7 +187,6 @@ fn opening_evicts_the_entries_used_longest_ago() {
     set_modified(&left, 1_005);
     std::fs::write(directory.join("notes"), b"mine").unwrap();
 
-    // Keys 0 and 1 are the oldest, but 0 is read now.
     assert!(matches!(cache.get(keys[0]), Lookup::Hit { .. }));
 
     let cache = ImageCache::open(&directory, 2 * length).unwrap();
@@ -216,11 +201,6 @@ fn opening_evicts_the_entries_used_longest_ago() {
     assert_eq!(files(&cache), ["notes"]);
 }
 
-/// Writing an entry first evicts the entries used longest ago until the
-/// new one fits, so a process that writes many images, or one as large as
-/// Chrome's beside the entries of older microscope builds that no loader
-/// reads again, never holds more than the capacity. Writers' files are
-/// left to them.
 #[test]
 fn writing_evicts_the_entries_used_longest_ago_to_make_room() {
     let dir = ScratchDir::new("cache-write-evicts");
@@ -248,8 +228,6 @@ fn writing_evicts_the_entries_used_longest_ago_to_make_room() {
     assert_eq!(files(&cache), expected);
 }
 
-/// Writers and readers of one key at once never see part of an entry, and
-/// leave no temporary files.
 #[test]
 fn concurrent_writers_and_readers_see_whole_entries() {
     let dir = ScratchDir::new("cache-concurrent");
@@ -274,8 +252,6 @@ fn concurrent_writers_and_readers_see_whole_entries() {
     assert_eq!(files(&cache), [format!("{key}.image")]);
 }
 
-/// A cache that cannot be written fails each write and misses each read,
-/// which leaves loads uncached; one that cannot be created says so.
 #[test]
 fn an_unwritable_cache_fails_writes_and_misses() {
     let dir = ScratchDir::new("cache-unwritable");
@@ -318,7 +294,6 @@ fn the_first_source_that_names_a_cache_wins() {
         dir("/xdg/microscope/images")
     );
 
-    // A relative XDG directory is ignored, as the specification says.
     assert_eq!(
         resolve(None, None, os("xdg"), os("/home"), false),
         dir("/home/.cache/microscope/images")

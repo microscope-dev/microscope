@@ -1,14 +1,3 @@
-//! Internal all-stops: stopping every thread without publishing a stop, so
-//! breakpoints and watchpoints can be edited, and breakpoint sites repaired,
-//! while the inferior runs.
-//!
-//! An internal stop is a [`StopBarrier`] without a reason. Once every thread
-//! is stopped its edits apply, and execution resumes under the same
-//! [`ExecutionId`](crate::ExecutionId) without any stop or continue event.
-//! A thread that stops for a visible reason meanwhile, such as a breakpoint
-//! or a signal, gives the barrier that reason, and the stop is published as
-//! usual once the edits apply.
-
 use nix::unistd::Pid;
 
 use crate::protocol::StopReason;
@@ -22,11 +11,6 @@ use super::{
 };
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Applies a breakpoint or watchpoint edit once every thread is stopped.
-    ///
-    /// At a published stop, before launch, and while a launch or attach is
-    /// still establishing its first stop, the edit applies at once. While
-    /// the inferior runs, every thread is stopped first.
     pub(super) fn edit(&mut self, edit: Edit) {
         if self.shutdown.is_some() {
             edit.reject(Error::RequestCancelled);
@@ -63,9 +47,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Answers the edits an internal stop still held when its process
-    /// ended. They change the logical breakpoints and watchpoints, which
-    /// outlive any process, unless the session is ending.
     pub(super) fn settle_pending_edits(&mut self, edits: Vec<Edit>) {
         for edit in edits {
             if self.shutdown.is_some() {
@@ -76,9 +57,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Whether breakpoint traps and debug registers can be written now:
-    /// the inferior has completed its first stop and every thread is
-    /// settled.
     pub(super) fn sites_live(&self) -> bool {
         !self.session.starting()
             && self.session.inferior().is_some_and(|inferior| {
@@ -142,8 +120,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 let _ = reply.send(self.remove_catchpoint(id));
             }
             Edit::RefreshModules => {
-                // A failed refresh leaves the previous modules; the next stop
-                // refreshes them again.
                 let _ = self.refresh_libraries();
             }
             Edit::FollowStacks => self.follow_stacks(),
@@ -168,9 +144,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Applies an edit of the debugger's own once every thread is stopped,
-    /// by an internal stop unless one is already under way. An edit already
-    /// queued is applied once.
     pub(super) fn queue_internal_edit(&mut self, edit: Edit) -> Result<()> {
         if self
             .session
@@ -193,9 +166,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Starts stopping every running thread without a reason to publish,
-    /// unless a barrier is already doing so. The caller completes it with
-    /// [`Self::finish_barrier_if_ready`].
     pub(super) fn begin_internal_stop(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if inferior.run.barrier().is_some() {
@@ -207,20 +177,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             .run
             .gather(StopBarrier::internal(triggering_thread))?;
 
-        // An agent's acknowledgement budget counts only running time.
         for installation in inferior.agents.values_mut() {
             installation.pause_deadline(std::time::Instant::now());
         }
         self.request_stops()
     }
 
-    /// Resumes the active execution from a completed internal stop: steps
-    /// every thread stopped at a breakpoint over it, then resumes the
-    /// execution's threads as it had them running.
-    ///
-    /// A thread whose slots another user took can't be armed, and running
-    /// it would silently miss accesses the user asked to watch. The stop is
-    /// then published from it, as for a new thread that can't be armed.
     pub(super) fn resume_after_internal_stop(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if !inferior.run.resume() {
@@ -253,9 +215,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.advance_execution()
     }
 
-    /// Steps a thread over the breakpoint site it stopped at, which no
-    /// published stop reports. Removing the site lets any other running
-    /// thread pass it unnoticed, so every other thread is stopped first.
     pub(super) fn repair_when_alone(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         debug_assert_eq!(
@@ -274,13 +233,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.start_next_repair();
         }
 
-        // The repair runs when the stop resumes execution.
         self.begin_internal_stop()?;
         self.finish_barrier_if_ready()
     }
 
-    /// Records that the stepping thread executed an instruction whose
-    /// effect on the step is evaluated before the step resumes.
     pub(super) fn note_step_progress(&mut self, pid: Pid) {
         let owner = self
             .session
@@ -304,8 +260,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Resumes every stopped thread of the active execution's scope, unless
-    /// a barrier is stopping them or the execution has ended.
     pub(super) fn continue_scope_threads(&mut self) -> Result<()> {
         let Some(inferior) = self.session.inferior() else {
             return Ok(());
@@ -338,13 +292,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Reconciles the threads' stop reasons with the edits the barrier just
-    /// applied and the watched bytes as they now are.
-    ///
-    /// As with gdb's moribund locations, a hit whose breakpoint or watchpoint
-    /// was removed or disabled while it was reported is dropped, and so is a change
-    /// watchpoint's hit once another thread restored the bytes. The barrier
-    /// then publishes the next most important reason, or turns internal.
     pub(super) fn settle_edited_reasons(&mut self) -> Result<()> {
         let unchanged = self.unchanged_watchpoints(
             self.session
@@ -354,8 +301,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .flat_map(|thread| thread.watch_hits.keys().copied()),
         )?;
 
-        // A stop holds a hit or two, so looking each up beats indexing every
-        // breakpoint at every stop.
         let breakpoints = &self.breakpoints;
         let exists = |id| {
             breakpoints
@@ -414,8 +359,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
 
-        // A barrier publishes its triggering thread's own reason. If its hit
-        // is gone, another thread's reason, if any, takes its place.
         let own = inferior
             .threads
             .get(&triggering_thread)
@@ -435,7 +378,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl Edit {
-    /// Answers the edit's client with `error` without applying it.
     fn reject(self, error: Error) {
         match self {
             Self::AddBreakpoint { reply, .. }
@@ -474,7 +416,6 @@ impl Edit {
     }
 }
 
-/// Whether every thread except `pid` is stopped.
 fn others_stopped(inferior: &Inferior, pid: Pid) -> bool {
     inferior
         .threads

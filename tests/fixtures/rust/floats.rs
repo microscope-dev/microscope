@@ -1,6 +1,6 @@
-//! Rust's half and quad precision floats. The quad value is a tenth, which
-//! shows its precision, since a tenth in any shorter format reads back as
-//! something else.
+
+
+
 #![no_main]
 #![no_std]
 #![feature(f16, f128)]

@@ -1,12 +1,3 @@
-//! `_Py_DebugOffsets` as each minor version lays it out: after an 8-byte
-//! cookie, `PY_VERSION_HEX`, and the free-threaded flag, one 8-byte offset
-//! or size for each name, in order. Each minor version inserts fields in
-//! the middle, and the table records no size, so a reader must know each
-//! version's order (`Include/internal/pycore_debug_offsets.h`, and
-//! `pycore_runtime.h` for 3.13). A test checks each against the headers
-//! of every interpreter in the matrix.
-
-/// 3.13's fields.
 pub(super) const V3_13: &[&str] = &[
     "runtime_state.size",
     "runtime_state.finalizing",
@@ -80,7 +71,6 @@ pub(super) const V3_13: &[&str] = &[
     "gc.collecting",
 ];
 
-/// 3.14's fields.
 pub(super) const V3_14: &[&str] = &[
     "runtime_state.size",
     "runtime_state.finalizing",
@@ -176,7 +166,6 @@ pub(super) const V3_14: &[&str] = &[
     "debugger_support.debugger_script_path_size",
 ];
 
-/// 3.15's fields.
 pub(super) const V3_15: &[&str] = &[
     "runtime_state.size",
     "runtime_state.finalizing",

@@ -35,7 +35,6 @@ fn command_publication_is_bounded_expected_and_last() {
         serde_json::json!([8, probes, null, 0])
     );
 
-    // A step travels with the probes it is armed beside.
     let step = (5, control_step::OVER, 7, 2, 0x1000);
     let writes =
         control::command(&memory, address, (7, 8), &probes, Some(step), 3, None).expect("command");
@@ -103,8 +102,6 @@ fn oversized_configuration_is_refused_without_truncation() {
     );
 }
 
-/// A slot with only as much room after its header as an empty command
-/// needs, so that a test of many slots stays cheap.
 fn small_slot(sequence: u64) -> (Memory, VirtualAddress) {
     let mut memory = Memory::default();
     memory.fill(HEAP, &[0; hook::CONTROL_HEADER + 64]);
@@ -114,8 +111,6 @@ fn small_slot(sequence: u64) -> (Memory, VirtualAddress) {
     (memory, VirtualAddress::new(HEAP))
 }
 
-/// A generation is published only past the one the agent acknowledged,
-/// replacing it with a write that expects it.
 #[test]
 fn a_generation_must_pass_the_acknowledged_one() {
     for (previous, next, accepted) in [
@@ -137,9 +132,6 @@ fn a_generation_must_pass_the_acknowledged_one() {
     }
 }
 
-/// Every change to a header's magic, acknowledged sequence, capacity,
-/// or reserved bytes refuses the command; its length is the agent's to
-/// clear, so any length is published over.
 #[test]
 fn any_damaged_header_is_refused() {
     for index in 0..hook::CONTROL_HEADER as u64 {
@@ -273,8 +265,6 @@ fn partial_unresumed_publication_is_retired_but_foreign_and_incomplete_state_is_
     );
 }
 
-/// Empty selectors match any code in the agent, so a function breakpoint
-/// without a name would stop at every Python call.
 #[test]
 fn a_python_function_breakpoint_needs_a_name() {
     use crate::runtime_model::RuntimeModel as _;
@@ -299,13 +289,10 @@ fn a_python_function_breakpoint_needs_a_name() {
         resolve("py:outer.<locals>.area").expect("a Python function").as_deref(),
         Ok([crate::ManagedPlace::Function { name }]) if &**name == "outer.<locals>.area"
     ));
-    // A native function in a `py` namespace is not Python's.
     assert!(resolve("py::run").is_none());
     assert!(resolve("main").is_none());
 }
 
-/// A Python line breakpoint's path matches as a native one's does, so `.`
-/// components and repeated separators change nothing it names.
 #[test]
 fn a_python_line_breakpoint_path_ignores_its_dot_components() {
     use crate::runtime_model::RuntimeModel as _;

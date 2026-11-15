@@ -1,11 +1,3 @@
-//! The client's breakpoints over the debugger's logical breakpoints.
-//!
-//! The client replaces whole groups of breakpoints at once: every
-//! breakpoint of one source, or every function breakpoint. Each client
-//! breakpoint keeps its id while it is re-sent, even with new conditions,
-//! and the debugger's breakpoints are shared by reference count, since the
-//! debugger merges equal requests into one breakpoint.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
@@ -13,39 +5,28 @@ use microscope::{BreakpointHit, BreakpointId};
 
 use super::protocol::ErrorBody;
 
-/// A set of breakpoints the client replaces as one.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Group {
-    /// The breakpoints of one source file, named by the client's path.
     Source(PathBuf),
     Functions,
     Instructions,
 
-    /// Breakpoints made with console commands, which the client only hears
-    /// about through events.
     Console,
 }
 
-/// What a client breakpoint is placed at, within its group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
-    /// A one-based source line.
     Line(u64),
 
-    /// A function, or anything else the console's `break` accepts.
     Function(String),
 
-    /// An address: a memory reference and a byte offset from it.
     Instruction(u64),
 
-    /// A debugger breakpoint made from the console.
     Console(BreakpointId),
 
-    /// A location the client named that names nothing, with the reason.
     Invalid(String),
 }
 
-/// One breakpoint as the client asked for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Want {
     pub key: Key,
@@ -55,7 +36,6 @@ pub struct Want {
 }
 
 impl Want {
-    /// A breakpoint with conditions, where blank ones count as none.
     pub fn new(
         key: Key,
         condition: Option<String>,
@@ -81,17 +61,13 @@ impl Want {
     }
 }
 
-/// Where a breakpoint resolved, as the client is told.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Placement {
-    /// The local source file and one-based line of its first location.
     pub source: Option<(PathBuf, u64)>,
 
-    /// The address of its first location.
     pub address: Option<u64>,
 }
 
-/// Whether a client breakpoint is installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum State {
     Resolved {
@@ -100,27 +76,21 @@ pub enum State {
         message: Option<String>,
     },
 
-    /// Configured in the debugger, but no location is ready: code has not
-    /// loaded or its runtime has not accepted arming.
     Pending {
         breakpoint: BreakpointId,
         message: String,
     },
 
-    /// Installed in the debugger but disabled there, from the console,
     /// whose `enable` is the only way back: the protocol has no enabled
-    /// flag.
     Disabled { breakpoint: BreakpointId },
     Unresolved {
         message: String,
 
-        /// Whether it may still resolve later, such as once the program
         /// is loaded, rather than having failed.
         pending: bool,
     },
 }
 
-/// One client breakpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub id: i64,
@@ -129,7 +99,6 @@ pub struct Entry {
 }
 
 impl State {
-    /// The debugger breakpoint the client's breakpoint is installed as.
     pub const fn breakpoint(&self) -> Option<BreakpointId> {
         match self {
             Self::Resolved { breakpoint, .. }
@@ -146,8 +115,6 @@ impl Entry {
     }
 }
 
-/// What replacing a group takes: the entries to release, then each new
-/// entry in request order, kept or to be resolved.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Plan {
     pub release: Vec<Entry>,
@@ -160,7 +127,6 @@ pub enum Slot {
     Resolve { id: i64, want: Want },
 }
 
-/// A change made outside the client's requests, such as from the console.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Change {
     New(Entry),
@@ -185,10 +151,6 @@ impl Default for Breakpoints {
 }
 
 impl Breakpoints {
-    /// Takes a group's entries out and plans replacing them with `wants`.
-    /// An entry re-sent unchanged and resolved is kept; one re-sent with
-    /// other conditions, or still unresolved, keeps its id and is resolved
-    /// again; the rest are released.
     pub fn plan(&mut self, group: &Group, wants: Vec<Want>) -> Plan {
         let mut current = self
             .groups
@@ -229,7 +191,6 @@ impl Breakpoints {
         Plan { release, slots }
     }
 
-    /// Stores a group's entries after its plan was carried out.
     pub fn install(&mut self, group: Group, entries: Vec<Entry>) {
         if entries.is_empty() {
             self.groups.remove(&group);
@@ -238,9 +199,6 @@ impl Breakpoints {
         }
     }
 
-    /// Stores a group's entries after its plan failed part way: those it
-    /// kept, and those it had yet to release, whose owners still count.
-    /// One it released before is gone, as is one it had yet to resolve.
     pub fn abandon(
         &mut self,
         group: Group,
@@ -258,20 +216,16 @@ impl Breakpoints {
         self.install(group, entries);
     }
 
-    /// Allocates an id from the one space every kind of breakpoint shares.
     pub const fn allocate_id(&mut self) -> i64 {
         let id = self.next_id;
         self.next_id += 1;
         id
     }
 
-    /// Records one more owner of a debugger breakpoint.
     pub fn acquire(&mut self, breakpoint: BreakpointId) {
         *self.owners.entry(breakpoint).or_default() += 1;
     }
 
-    /// Releases one owner and returns whether it was the last, so the
-    /// debugger breakpoint should be removed.
     pub fn release(&mut self, breakpoint: BreakpointId) -> bool {
         let Some(count) = self.owners.get_mut(&breakpoint) else {
             return false;
@@ -285,22 +239,18 @@ impl Breakpoints {
         }
     }
 
-    /// Every entry, with its group.
     pub fn entries(&self) -> impl Iterator<Item = (&Group, &Entry)> {
         self.groups
             .iter()
             .flat_map(|(group, entries)| entries.iter().map(move |entry| (group, entry)))
     }
 
-    /// A copy of every entry with its group, to update while iterating.
     pub fn owned_entries(&self) -> Vec<(Group, Entry)> {
         self.entries()
             .map(|(group, entry)| (group.clone(), entry.clone()))
             .collect()
     }
 
-    /// Every unresolved entry with its group, to be resolved again and put
-    /// back with [`Self::replace`].
     pub fn unresolved(&self) -> Vec<(Group, Entry)> {
         self.entries()
             .filter(|(_, entry)| entry.breakpoint().is_none())
@@ -308,7 +258,6 @@ impl Breakpoints {
             .collect()
     }
 
-    /// Replaces the entry with `id` in its group.
     pub fn replace(&mut self, group: &Group, replacement: Entry) {
         if let Some(entry) = self
             .groups
@@ -319,9 +268,6 @@ impl Breakpoints {
         }
     }
 
-    /// The client's ids of the breakpoints a stop hit, and the stop reason
-    /// they make: a function or instruction breakpoint when every one is of
-    /// that kind.
     pub fn hit(&self, hits: &[BreakpointHit]) -> (Vec<i64>, &'static str) {
         let hit = hits
             .iter()
@@ -353,9 +299,6 @@ impl Breakpoints {
         (ids, reason)
     }
 
-    /// Reconciles with the debugger's breakpoints after they changed:
-    /// breakpoints nobody here owns, made from the console, become console
-    /// entries, and entries whose breakpoint is gone are dropped.
     pub fn sync(&mut self, current: &[microscope::Breakpoint]) -> Vec<Change> {
         let existing = current
             .iter()
@@ -410,21 +353,14 @@ impl Breakpoints {
     }
 }
 
-/// The debugger as replacing a group uses it, apart from the table of
-/// entries, so that a test can stand in for it.
 pub(super) trait Debugger {
     fn breakpoints(&mut self) -> &mut Breakpoints;
 
-    /// Removes a debugger breakpoint that nothing owns any longer.
     async fn remove(&mut self, breakpoint: BreakpointId) -> Result<(), ErrorBody>;
 
-    /// Adds the debugger breakpoint `want` describes, which may be one
-    /// that exists, or explains why there is none.
     async fn add(&mut self, group: &Group, want: &Want) -> State;
 }
 
-/// Replaces a group of breakpoints and returns its new entries in request
-/// order.
 pub(super) async fn replace_group(
     debugger: &mut impl Debugger,
     group: Group,
@@ -467,7 +403,6 @@ async fn release_breakpoint(debugger: &mut impl Debugger, entry: &Entry) -> Resu
     if debugger.breakpoints().release(breakpoint)
         && let Err(error) = debugger.remove(breakpoint).await
     {
-        // It may still be installed, and its entry still owns it.
         debugger.breakpoints().acquire(breakpoint);
         return Err(error);
     }
@@ -475,8 +410,6 @@ async fn release_breakpoint(debugger: &mut impl Debugger, entry: &Entry) -> Resu
     Ok(())
 }
 
-/// Installs one breakpoint and owns it, or explains why it is not
-/// installed.
 pub(super) async fn resolve(debugger: &mut impl Debugger, group: &Group, want: &Want) -> State {
     let state = debugger.add(group, want).await;
     if let Some(breakpoint) = state.breakpoint() {
@@ -507,8 +440,6 @@ mod tests {
         }
     }
 
-    /// Carries out a plan as the session does, resolving each line to a
-    /// debugger breakpoint numbered after it.
     fn apply(breakpoints: &mut Breakpoints, group: &Group, wants: Vec<Want>) -> Vec<Entry> {
         let plan = breakpoints.plan(group, wants);
         for entry in &plan.release {
@@ -634,8 +565,6 @@ mod tests {
         assert!(!breakpoints.groups.contains_key(&file));
     }
 
-    /// A debugger that merges equal breakpoints, as the real one does, and
-    /// refuses a removal when told to.
     #[derive(Default)]
     struct Fake {
         table: Breakpoints,
@@ -645,8 +574,6 @@ mod tests {
     }
 
     impl Fake {
-        /// The debugger breakpoint for a location and condition: one that
-        /// is equal, or a new one.
         fn add_spec(&mut self, spec: (String, Option<String>)) -> BreakpointId {
             if let Some((&id, _)) = self
                 .installed
@@ -662,7 +589,6 @@ mod tests {
             id
         }
 
-        /// What the console sees after it changed the breakpoints.
         fn sync(&mut self) {
             let current = self
                 .installed
@@ -726,7 +652,6 @@ mod tests {
         }
     }
 
-    /// Runs a future of the fake, which never waits.
     fn now<T>(future: impl std::future::Future<Output = T>) -> T {
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         match std::pin::pin!(future).poll(&mut context) {
@@ -737,7 +662,6 @@ mod tests {
 
     #[derive(Debug, Clone)]
     enum Operation {
-        /// The client replaces a group: two sources and the functions.
         Set {
             group: u8,
             wants: Vec<(u8, bool, Option<u8>)>,
@@ -747,7 +671,6 @@ mod tests {
         Refuse,
 
         /// The console adds a function breakpoint, which may equal one the
-        /// client has.
         ConsoleAdd { name: u8, condition: Option<u8> },
 
         /// The console deletes any breakpoint.
@@ -797,8 +720,6 @@ mod tests {
         )
     }
 
-    /// The breakpoints a table's entries refer to, each with its number of
-    /// entries.
     fn references(table: &Breakpoints) -> HashMap<BreakpointId, usize> {
         let mut references = HashMap::new();
         for (_, entry) in table.entries() {
@@ -842,8 +763,8 @@ mod tests {
                                     wants.iter().map(|want| want.key.clone()).collect::<Vec<_>>()
                                 );
 
-                                // The k-th entry of a key keeps the id of the
-                                // k-th one before; the rest are new.
+
+
                                 let mut old = before.clone();
                                 for entry in &entries {
                                     let kept = old.iter().position(|old| old.want.key == entry.want.key);

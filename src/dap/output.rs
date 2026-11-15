@@ -1,5 +1,3 @@
-//! Forwards a pipe's bytes to the client as `output` events.
-
 use std::os::fd::OwnedFd;
 use std::time::Duration;
 
@@ -10,18 +8,12 @@ use tokio::task::JoinHandle;
 
 use super::session::Client;
 
-/// The most bytes one `output` event carries.
 const CHUNK: usize = 32 * 1024;
 
-/// Creates a pipe whose write end becomes a child's stream and whose read
-/// end is forwarded once [`spawn`] is called.
 pub fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     Ok(nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)?)
 }
 
-/// A task that forwards a program's output and holds nothing else, so it
-/// can be stopped at any await: only output it had not forwarded is lost,
-/// which no one would see once it is told to stop.
 pub struct Forwarder(JoinHandle<()>);
 
 impl Forwarder {
@@ -29,7 +21,6 @@ impl Forwarder {
         Self(tokio::spawn(forward))
     }
 
-    /// Stops forwarding at once.
     pub fn stop(&self) {
         #[expect(
             clippy::disallowed_methods,
@@ -38,24 +29,18 @@ impl Forwarder {
         self.0.abort();
     }
 
-    /// Waits for the output already written, as the stream's end brings it,
-    /// for at most `within`, then stops.
     pub async fn finish(mut self, within: Duration) {
         if tokio::time::timeout(within, &mut self.0).await.is_err() {
             self.stop();
         }
     }
 
-    /// Stops forwarding and waits until it has.
     pub async fn end(self) {
         self.stop();
         let _ = self.0.await;
     }
 }
 
-/// Forwards everything written to the pipe until every writer closes it.
-/// Text is decoded as UTF-8, replacing invalid bytes, without splitting a
-/// character between events.
 pub fn spawn(read: OwnedFd, category: &'static str, client: Client) -> std::io::Result<Forwarder> {
     let mut receiver = pipe::Receiver::from_owned_fd(read)?;
     Ok(Forwarder::spawn(async move {
@@ -68,7 +53,6 @@ pub fn spawn(read: OwnedFd, category: &'static str, client: Client) -> std::io::
             pending.extend_from_slice(filled);
             let text = decode(&mut pending, read == 0);
 
-            // Replacement characters can make the text longer than the bytes.
             for piece in pieces(&text, CHUNK) {
                 if client
                     .event("output", json!({"category": category, "output": piece}))
@@ -86,8 +70,6 @@ pub fn spawn(read: OwnedFd, category: &'static str, client: Client) -> std::io::
     }))
 }
 
-/// Splits text into pieces of at most `limit` bytes without splitting a
-/// character.
 pub fn pieces(text: &str, limit: usize) -> impl Iterator<Item = &str> {
     let mut rest = text;
     std::iter::from_fn(move || {
@@ -106,8 +88,6 @@ pub fn pieces(text: &str, limit: usize) -> impl Iterator<Item = &str> {
     })
 }
 
-/// Takes the decodable prefix of `bytes`, leaving an incomplete final
-/// character for the next read unless the stream has ended.
 pub fn decode(bytes: &mut Vec<u8>, end: bool) -> String {
     let mut text = String::new();
     let mut rest = &bytes[..];

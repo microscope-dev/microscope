@@ -1,37 +1,22 @@
-//! What a session told its client of the program: whether it runs, and
-//! the stop it shows.
-//!
-//! The client learns of the program from the debugger's events, and from a
-//! snapshot where it starts showing a process the debugger already had, or
-//! catches up after missing events. Events the snapshot already reflects
-//! come after it all the same, and are not news.
-
 use microscope::{
     DebuggerEvent, ExecutionContext, ExitStatus, ProcessId, StackFrameId, StopContext, StopId,
     StopReason, ThreadId,
 };
 
-/// The stop the client was told about.
 #[derive(Debug, Clone)]
 pub(super) struct Stop {
     pub id: StopId,
     pub thread: ThreadId,
 
-    /// What the client knows as the thread that stopped: the task the
-    /// thread runs, when the client's threads are tasks, or the thread.
     pub context: ExecutionContext,
     pub reason: StopReason,
 
-    /// The reason the client was told, as its stopped event named it.
     pub told: &'static str,
 
-    /// The frame of the stopped context the debugger selected, as at an
-    /// exception the frame that raised it; the innermost otherwise.
     pub selected: StackFrameId,
 }
 
 impl Stop {
-    /// The innermost frame of the stopped thread.
     pub const fn innermost(&self) -> StopContext {
         StopContext {
             stop: self.id,
@@ -41,17 +26,13 @@ impl Stop {
     }
 }
 
-/// The program as the client was told of it.
 #[derive(Debug, Clone, Default)]
 pub(super) enum Run {
-    /// No process: none started yet, or it ended.
     #[default]
     NoProcess,
 
-    /// The process runs.
     Running(ProcessId),
 
-    /// The process, or a core dump's, is stopped at `Stop`.
     Stopped(ProcessId, Stop),
 }
 
@@ -70,7 +51,6 @@ impl Run {
         }
     }
 
-    /// The program once it runs: a stop it was at is left.
     pub const fn resumed(&self) -> Self {
         match self {
             Self::NoProcess => Self::NoProcess,
@@ -79,13 +59,10 @@ impl Run {
     }
 }
 
-/// What a debugger event tells the client of the program.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum News {
-    /// The process started, or was attached.
     Started(ProcessId),
 
-    /// The process stopped at a new stop.
     Stopped {
         process: ProcessId,
         stop: StopId,
@@ -93,24 +70,15 @@ pub(super) enum News {
         reason: StopReason,
     },
 
-    /// The process left the stop the client shows for a reason the client
-    /// did not ask for, such as another session's continue.
     ResumedElsewhere,
 
-    /// The process exited.
     Exited(ExitStatus),
 
-    /// The debugger let the process go.
     Detached,
 
-    /// Nothing new about where the program is.
     None,
 }
 
-/// What `event` tells a client shown `run`, which a snapshot at revision
-/// `resynced` brought up to date. An event at or before that revision is
-/// already shown, except the end of the shown process: a snapshot never
-/// ends it, so its exit or detach is news however late it is read.
 pub(super) fn news(run: &Run, resynced: u64, event: DebuggerEvent) -> News {
     let fresh = event.revision() > resynced;
     match event {
@@ -133,7 +101,6 @@ pub(super) fn news(run: &Run, resynced: u64, event: DebuggerEvent) -> News {
             reason,
         },
 
-        // The client's own requests leave the stop as they resume it.
         DebuggerEvent::InferiorContinued { .. } if fresh && matches!(run, Run::Stopped(..)) => {
             News::ResumedElsewhere
         }
@@ -229,8 +196,6 @@ mod tests {
         News::Exited(ExitStatus::Code(0))
     }
 
-    /// Each event about process 7, read before (stale) and after (fresh) a
-    /// snapshot at revision 10, by each program the client may be shown.
     #[test]
     fn events_are_news_once_and_only_for_the_program_shown() {
         let runs = [
@@ -242,7 +207,6 @@ mod tests {
 
         #[rustfmt::skip]
         let table = [
-            // Shown: no process, running, stopped, another running.
             ("launched",  "fresh", [News::Started(SHOWN), News::None, News::None, News::None]),
             ("launched",  "stale", [News::None, News::None, News::None, News::None]),
             ("attached",  "fresh", [News::Started(SHOWN), News::None, News::None, News::None]),

@@ -1,9 +1,3 @@
-//! A profile's system call trace, as the Syscalls view asks about it.
-//!
-//! Each answer is one pass over the calls a query selects, with the
-//! descriptor table as each call found it, so that paths and filters agree
-//! with the CLI's; lines are formatted by `present` as the CLI prints them.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use microscope::profiler::{Profile, RecordedEvent, StackEnding};
@@ -27,20 +21,14 @@ use super::protocol::{
 use super::session::Failure;
 use crate::present::syscalls::{self as present, Context, Tokens};
 
-/// The working directory, as a `dirfd`.
 const AT_FDCWD: i64 = -100;
 
-/// The most slices a chart is cut into.
 const MOST_BUCKETS: u32 = 4096;
 
-/// The most lines a page of the log holds.
 const MOST_LINES: u32 = 2000;
 
-/// Lines shown on each side of a call's source line.
 const SITE_MARGIN: u64 = 3;
 
-/// The classes a call is shown under, first match first: what it does
-/// rather than how it names its target.
 const CLASSES: [Class; 8] = [
     Class::Net,
     Class::File,
@@ -52,14 +40,12 @@ const CLASSES: [Class; 8] = [
     Class::Clock,
 ];
 
-/// A profile's trace, read once.
 pub struct Trace {
     events: Vec<RecordedEvent>,
     counted: Folded,
     lost: microscope::syscalls::Losses,
     calls: u64,
 
-    /// The profile's span, on the trace's clock.
     start: i64,
     end: i64,
     engine: Option<String>,
@@ -98,19 +84,16 @@ impl Trace {
         }
     }
 
-    /// Nanoseconds from the profile's start.
     const fn relative(&self, time: u64) -> i64 {
         time.cast_signed().saturating_sub(self.start)
     }
 
-    /// The program a process ran last.
     fn program(&self, pid: Pid) -> Option<String> {
         let (_, image) = self.processes.get(pid)?.images.last()?;
         Some(image.rsplit('/').next().unwrap_or(image).to_owned())
     }
 }
 
-/// The profile a syscall request asks about.
 pub fn profile_of(request: &Request) -> Option<&str> {
     Some(match request {
         Request::SyscallSummary(query) => &query.query.link.profile,
@@ -126,7 +109,6 @@ pub fn profile_of(request: &Request) -> Option<&str> {
     })
 }
 
-/// Answers a syscall request about `profile`, whose trace is `trace`.
 pub fn answer(profile: &Profile, trace: &Trace, request: Request) -> Result<Value, Failure> {
     match request {
         Request::SyscallSummary(query) => Ok(json(&summary(profile, trace, &query)?)),
@@ -148,7 +130,6 @@ fn json(value: &impl serde::Serialize) -> Value {
     serde_json::to_value(value).unwrap_or_else(|error| json!({ "error": error.to_string() }))
 }
 
-/// How a process ended, as strace's last line says it.
 pub fn end_text(end: ProcessEnd) -> String {
     match end {
         ProcessEnd::Exited(code) => format!("exited with {code}"),
@@ -160,7 +141,6 @@ pub fn end_text(end: ProcessEnd) -> String {
     }
 }
 
-/// How a recorded program ended, in the words of [`end_text`].
 pub fn exit_text(status: std::process::ExitStatus) -> String {
     use std::os::unix::process::ExitStatusExt as _;
 
@@ -174,8 +154,6 @@ pub fn exit_text(status: std::process::ExitStatus) -> String {
     }
 }
 
-/// The calls a live recording's threads were blocked in when it was last
-/// published: those it holds unfinished. An ended one has none.
 pub fn in_flight(profile: &Profile, live: bool) -> SyscallInFlight {
     if !live {
         return SyscallInFlight {
@@ -213,23 +191,18 @@ pub fn in_flight(profile: &Profile, live: bool) -> SyscallInFlight {
     SyscallInFlight { live, calls }
 }
 
-/// The calls a query selects.
 struct Selection {
     filter: Filter,
 
-    /// Calls that ended in `[from, to)`, on the trace's clock.
     from: i64,
     to: i64,
 
-    /// The calls the link keeps, by row, when it keeps fewer than all.
     kept: Option<Vec<bool>>,
 
-    /// Calls whose duration falls in this log2 bucket.
     latency: Option<usize>,
 }
 
 impl Selection {
-    /// The calls `filter` and `latency` keep, in the whole trace.
     fn calls(filter: &str, latency: Option<u32>) -> Result<Self, Failure> {
         let expressions: Vec<String> = filter.split_whitespace().map(str::to_owned).collect();
         let filter = Filter::parse(&expressions, &present::signal_named)
@@ -251,8 +224,6 @@ impl Selection {
             || link.zones.is_some()
             || !link.transforms.is_empty();
         let kept = if narrows {
-            // The range is the selection's own; samples during calls are
-            // not the calls'.
             let mut unranged = link.clone();
             unranged.range = None;
             unranged.during = None;
@@ -283,7 +254,6 @@ impl Selection {
         (self.from..self.to).contains(&time.cast_signed())
     }
 
-    /// Whether the call at `row` of the capture's calls is selected.
     fn shows(&self, row: usize, call: &SyscallEvent, fds: &FdTable) -> bool {
         if !self.holds(call.time())
             || self
@@ -306,7 +276,6 @@ impl Selection {
         })
     }
 
-    /// The range the query asks about, or the whole profile's.
     const fn span(&self, trace: &Trace) -> (i64, i64) {
         if self.from == i64::MIN {
             (trace.start, trace.end.saturating_add(1))
@@ -316,19 +285,14 @@ impl Selection {
     }
 }
 
-/// What a pass over a trace sees.
 enum Seen<'a> {
-    /// A selected call, with the descriptors as it found them.
     Before(usize, &'a SyscallEvent, &'a FdTable),
 
-    /// The same call, with the descriptors as it left them.
     After(usize, &'a SyscallEvent, &'a FdTable),
 
-    /// Another event in the selection's range.
     Other(usize, &'a TraceEvent),
 }
 
-/// Walks the trace in order, keeping its descriptor table.
 fn walk(trace: &Trace, selection: &Selection, mut visit: impl FnMut(Seen<'_>)) {
     let mut fds = FdTable::default();
     let mut row = 0;
@@ -356,7 +320,6 @@ fn walk(trace: &Trace, selection: &Selection, mut visit: impl FnMut(Seen<'_>)) {
     }
 }
 
-/// The rows of the calls `during` selects in the whole trace.
 pub fn rows(profile: &Profile, trace: &Trace, during: &ProfileDuring) -> Result<Vec<u32>, Failure> {
     let selection = Selection::calls(&during.filter, during.latency)?;
     let mut row = during
@@ -373,7 +336,6 @@ pub fn rows(profile: &Profile, trace: &Trace, during: &ProfileDuring) -> Result<
         }
     });
 
-    // A call's row is how many calls come before it.
     let mut matched = matched.into_iter().peekable();
     let mut rows = Vec::new();
     let mut calls = 0;
@@ -390,7 +352,6 @@ pub fn rows(profile: &Profile, trace: &Trace, during: &ProfileDuring) -> Result<
     Ok(rows)
 }
 
-/// Each selected call, with the descriptors as it found them.
 fn calls(
     trace: &Trace,
     selection: &Selection,
@@ -403,8 +364,6 @@ fn calls(
     });
 }
 
-/// Each selected call, with the descriptors as it found them; a connect,
-/// which is known by the endpoint it made, with those it left.
 fn known(
     trace: &Trace,
     selection: &Selection,
@@ -417,15 +376,12 @@ fn known(
     });
 }
 
-/// Where stack `row` was made, as a caller's row names it; read once.
 fn site<'a>(profile: &Profile, sites: &'a mut HashMap<u32, String>, row: u32) -> &'a String {
     sites
         .entry(row)
         .or_insert_with(|| profile.syscall_site_name(row))
 }
 
-/// The path a call names, made absolute against the directory it names
-/// it from, as the descriptor it makes will be known.
 fn named_path(call: &SyscallEvent, fds: &FdTable) -> Option<String> {
     let path = filter::paths(call).into_iter().next()?;
     let dirfd = match specs::spec(call.call).and_then(|spec| {
@@ -440,8 +396,6 @@ fn named_path(call: &SyscallEvent, fds: &FdTable) -> Option<String> {
     Some(fds.resolve(call.process, dirfd, &path))
 }
 
-/// What a call works on: the path it names, or what its first descriptor
-/// refers to.
 fn target(call: &SyscallEvent, fds: &FdTable) -> Option<String> {
     named_path(call, fds).or_else(|| {
         let spec = specs::spec(call.call)?;
@@ -457,7 +411,6 @@ fn target(call: &SyscallEvent, fds: &FdTable) -> Option<String> {
     })
 }
 
-/// The class a call is shown under.
 fn class(call: &SyscallEvent) -> &'static str {
     specs::spec(call.call)
         .and_then(|spec| {
@@ -501,8 +454,6 @@ fn row(key: String, name: String, stats: &SyscallStats) -> SyscallRow {
     }
 }
 
-/// Keys each call by the summary's row it falls under, reading each
-/// stack's site once.
 struct Grouping<'a> {
     profile: &'a Profile,
     trace: &'a Trace,
@@ -520,7 +471,6 @@ impl<'a> Grouping<'a> {
         }
     }
 
-    /// The key and name of the row of the call at `index` of the trace.
     fn row(&mut self, index: usize, call: &SyscallEvent, fds: &FdTable) -> (String, String) {
         match self.group {
             SyscallGroup::Path => {
@@ -573,7 +523,6 @@ fn summary(
             .merge(stats);
     };
 
-    // The kernel's count already holds the calls it kept.
     known(trace, &selection, |index, call, fds| {
         if call.flags.kept() {
             return;
@@ -586,8 +535,6 @@ fn summary(
         add(key, name, &one);
     });
 
-    // A trace the kernel counted holds its calls only as statistics, of
-    // each process and call over the whole trace.
     let counted = !trace.counted.by_call.is_empty();
     for (&(pid, tid, id), stats) in &trace.counted.by_call {
         if !selection.filter.calls.contains(id) {
@@ -646,7 +593,6 @@ fn summary(
     })
 }
 
-/// A range cut into slices: its start, each slice's width, and how many.
 struct Slices {
     start: i64,
     width: i64,
@@ -665,7 +611,6 @@ impl Slices {
         }
     }
 
-    /// The slice a time falls in, if any.
     fn of(&self, time: u64) -> Option<usize> {
         let offset = time.cast_signed().checked_sub(self.start)?;
         usize::try_from(offset / self.width)
@@ -736,7 +681,6 @@ fn detail(
         }
     });
 
-    // Slow is the selection's slowest tenth; failed is any error.
     let slow_ns = selected.quantile_ns(0.9);
     let mut sites: HashMap<u32, String> = HashMap::new();
     let mut callers: BTreeMap<String, (u64, u64)> = BTreeMap::new();
@@ -894,7 +838,6 @@ fn call(
         return Err(missing());
     };
 
-    // The descriptors as the call found them, and as it left them.
     let mut fds = FdTable::default();
     for event in trace.events.iter().take(index) {
         match &event.event {
@@ -967,7 +910,6 @@ fn call(
     })
 }
 
-/// Whether a call opens what its path names.
 fn opens(call: &SyscallEvent) -> bool {
     call.call
         .name()
@@ -1067,7 +1009,6 @@ fn network(
         if connect {
             endpoint.connects += 1;
 
-            // A non-blocking connect that is under way has not failed.
             if matches!(call.outcome, Outcome::Failed(errno) if present::errno(errno).0 != "EINPROGRESS")
             {
                 endpoint.failed += 1;
@@ -1111,7 +1052,6 @@ fn processes(
         entry.1 += u64::from(matches!(call.outcome, Outcome::Failed(_)));
     });
 
-    // Parents first: each process after the one that made it.
     let mut ordered: Vec<SyscallProcess> = Vec::new();
     let mut pending: Vec<Pid> = trace
         .processes

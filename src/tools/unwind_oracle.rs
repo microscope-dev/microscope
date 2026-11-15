@@ -1,20 +1,3 @@
-//! Checks the unwinder against the truth at every instruction a program
-//! runs.
-//!
-//! The program is single-stepped, and the return addresses its calls
-//! push are kept as they run: an entry lives while the stack pointer has
-//! not passed its slot, so returns, `longjmp`, and exceptions all drop it.
-//! Each step is then unwound by call-frame information from the live
-//! process ("live"), as the profiler unwinds a sample from a copy of the
-//! stack and the kernel's frame-pointer walk ("sample N"), and from the
-//! copy alone ("copy cfi N"), and each stack is judged against the truth:
-//! exact, a true prefix with its reason, or wrong.
-//!
-//! The truth is the calls the program made, so it differs from call-frame
-//! information that deliberately describes another frame: glibc's
-//! `__longjmp` names the frame it jumps to as its caller once it has
-//! restored the stack pointer.
-
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::fs::File;
@@ -37,49 +20,36 @@ use crate::unwind::sample::{
 use crate::unwind::{DwarfRegister, MemoryReader, UnwindModule, unwind_module_at};
 use crate::{LoadBias, LoadedModule, ModuleId, ModuleImageId, VirtualAddress};
 
-/// The frames a path may report.
 const LIMIT: usize = 256;
 
-/// How the oracle runs a program.
 #[derive(Debug, Clone)]
 pub struct Options {
     pub program: PathBuf,
     pub args: Vec<String>,
 
-    /// The stack copies the profiler's paths are checked with, in bytes.
     pub copies: Vec<usize>,
 
-    /// Keep every this many steps' samples for the replay benchmark; none
-    /// when 0.
     pub keep_every: u64,
 
-    /// Rounds of the replay benchmark.
     pub rounds: usize,
 
-    /// Examples of each kind of failure to print.
     pub examples: usize,
 
-    /// Only keep samples and replay them, without checking each step.
     pub replay_only: bool,
 }
 
-/// One frame of the true stack, in the unwinder's terms: the address its
-/// frame is named by, and the stack slot that keeps it alive.
 #[derive(Debug, Clone, Copy)]
 struct Entry {
     address: u64,
     slot: u64,
 
-    /// The frame a signal interrupted, which only its `sigreturn` ends.
     interrupted: bool,
 }
 
 #[derive(Default)]
 struct Modules {
-    /// Every image loaded, by path.
     images: HashMap<PathBuf, Option<(ModuleImageId, DebugInfo)>>,
 
-    /// The images mapped now, with their biases.
     mapped: Vec<(PathBuf, LoadBias, ModuleId)>,
 }
 
@@ -184,7 +154,6 @@ impl Modules {
     }
 }
 
-/// A copy of the stack from the address it was taken at.
 struct CopiedStack<'a>(u64, &'a [u8]);
 
 impl MemoryReader for CopiedStack<'_> {
@@ -205,7 +174,6 @@ impl MemoryReader for Live<'_> {
     }
 }
 
-/// Names `address` by its module's file and symbol.
 fn name(modules: &[UnwindModule<'_>], address: u64) -> String {
     let Some((module, image_address)) = unwind_module_at(modules, VirtualAddress::new(address))
         .and_then(|(index, image_address)| Some((modules.get(index)?, image_address)))
@@ -224,7 +192,6 @@ fn name(modules: &[UnwindModule<'_>], address: u64) -> String {
     }
 }
 
-/// The function `address` is in, without its offset.
 fn function(modules: &[UnwindModule<'_>], address: u64) -> String {
     let named = name(modules, address);
     named
@@ -232,25 +199,18 @@ fn function(modules: &[UnwindModule<'_>], address: u64) -> String {
         .map_or_else(|| named.clone(), |(function, _)| function.to_owned())
 }
 
-/// How one path's stack compares with the truth.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Verdict {
-    /// Every frame, and it said the stack was complete.
     Exact,
 
-    /// Every frame, but it could not prove the last was the outermost.
     WholeUnproven(String),
 
-    /// A true prefix, ending with a reason.
     Short(String),
 
-    /// A true prefix that it said was the whole stack.
     FalselyComplete,
 
-    /// Every true frame and more after them.
     Extra,
 
-    /// A frame that is not the true one.
     Wrong,
 }
 
@@ -292,20 +252,16 @@ fn judge(truth: &[u64], got: &[u64], end: StackEnd) -> (Verdict, usize) {
     (verdict, common)
 }
 
-/// What one path found over the run.
 #[derive(Default)]
 struct Tally {
     verdicts: BTreeMap<Verdict, u64>,
 
-    /// Steps by verdict and the function the verdict is about: where a
-    /// short stack stopped, or the callee of the first wrong frame.
     places: BTreeMap<(Verdict, String), (u64, String)>,
     frames: u64,
     true_frames: u64,
     elapsed: Duration,
 }
 
-/// One kept sample, for the replay benchmark.
 struct Kept {
     registers: Vec<(DwarfRegister, u64)>,
     stack: Vec<u8>,
@@ -336,8 +292,6 @@ fn sample_registers(registers: &nix::libc::user_regs_struct) -> Vec<(DwarfRegist
     ]
 }
 
-/// The kernel's walk of the frame-pointer chain, as `perf_callchain_user`
-/// makes it.
 fn kernel_chain(memory: &File, rip: u64, rbp: u64) -> Vec<u64> {
     let mut chain = vec![rip];
     let mut frame = rbp;
@@ -354,7 +308,6 @@ fn kernel_chain(memory: &File, rip: u64, rbp: u64) -> Vec<u64> {
     chain
 }
 
-/// Runs the program to its end under the oracle and prints its report.
 #[expect(clippy::too_many_lines, reason = "one loop over the program's steps")]
 #[expect(clippy::cast_precision_loss, reason = "reported approximately")]
 pub fn run(options: &Options) -> Result<String> {
@@ -399,7 +352,6 @@ pub fn run(options: &Options) -> Result<String> {
         let registers = ptrace::getregs(pid)?;
         let (rip, rsp) = (registers.rip, registers.rsp);
 
-        // Entries whose slots the stack pointer passed have returned.
         while let Some(top) = shadow.last() {
             if top.slot >= rsp || top.interrupted {
                 break;
@@ -532,7 +484,6 @@ pub fn run(options: &Options) -> Result<String> {
             }
         }
 
-        // The instruction about to run.
         let (is_call, is_syscall, next) = *instructions.entry(rip).or_insert_with(|| {
             let mut bytes = [0; 16];
             let length = memory.read_at(&mut bytes, rip).unwrap_or(0);
@@ -555,7 +506,6 @@ pub fn run(options: &Options) -> Result<String> {
         let delivered = match waitpid(pid, None)? {
             WaitStatus::Stopped(_, Signal::SIGTRAP) => false,
             WaitStatus::Stopped(_, other) => {
-                // Deliver it on the next step, which stops at its handler.
                 signal = Some(other);
                 ptrace::step(pid, signal.take())?;
                 match waitpid(pid, None)? {
@@ -570,8 +520,6 @@ pub fn run(options: &Options) -> Result<String> {
 
         let after = ptrace::getregs(pid)?;
         if delivered {
-            // The handler's return address is the trampoline; the
-            // ucontext above it holds the interrupted rip.
             let mut word = [0; 8];
             memory.read_exact_at(&mut word, after.rsp)?;
             let restorer = u64::from_le_bytes(word);
@@ -592,7 +540,6 @@ pub fn run(options: &Options) -> Result<String> {
 
         if is_syscall {
             if rax == 15 {
-                // rt_sigreturn: the interrupted frame runs again.
                 while let Some(entry) = shadow.pop() {
                     if entry.interrupted {
                         break;

@@ -1,17 +1,3 @@
-//! The frame of code no compiler describes, proved from its instructions:
-//! where, at each instruction, its return address and its caller's frame
-//! pointer are.
-//!
-//! Like call-frame information, the proof takes a frame to be a function
-//! of the instruction: every path to an instruction arrives with the same
-//! frame, so the frame an instruction has on the path that falls through
-//! from the entry is the frame it always has. A call returns with the
-//! stack and frame pointers it was made with, as the x86-64 System V ABI
-//! requires. The proof follows each path from the entry, through branches
-//! and direct jumps to their targets in the code; a return or an indirect
-//! jump ends a path. An instruction that paths reach with different frames
-//! is not proved, nor is anything reached only through it.
-
 use std::collections::BTreeSet;
 
 use iced_x86::{
@@ -23,89 +9,54 @@ use super::{full_register, is_immediate, is_push_register, is_register_move};
 use crate::unwind::{MemoryReader, RAX, RBP, RETURN_ADDRESS, RSP, RegisterFile, UnwindStep};
 use crate::{AddressRange, ImageAddress, UnwindTermination, VirtualAddress};
 
-/// Where a frame keeps what its caller needs, at one instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::debug_info) enum CodeFrame {
-    /// Found from the stack pointer: since its entry, the code has pushed
-    /// or allocated `pushed` bytes, so its return address is at
-    /// rsp + `pushed`.
     Stack {
         pushed: u64,
         caller_frame_pointer: CallerFramePointer,
     },
 
-    /// Found from the frame pointer, which holds the address of the word
-    /// that saved the caller's, `offset` bytes below the canonical frame
     /// address. Standard code saves it right below the return address, 16
-    /// bytes below. `below` is what the code proves of how far the stack
-    /// pointer is below rbp.
     Based { offset: u64, below: Below },
 
-    /// The process's entry point, which the kernel jumps to with no
-    /// return address, or the code musl's new thread starts in: the frame
     /// has no caller.
     Outermost,
 
-    /// glibc's `clone` or `clone3` from its system call to its return, or
     /// musl's `__clone` to its branch to the new thread's code, which both
-    /// threads run: in the new one, where the call returned zero in rax,
-    /// the outermost frame; in the caller, the frame it was called with.
     Clone,
 }
 
-/// How far the stack pointer is below rbp, in a frame found from rbp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::debug_info) enum Below {
-    /// Exactly this many bytes.
     Exact(u64),
 
-    /// At least this many bytes: code that only moves the stack pointer
-    /// down, such as `and rsp, -32`, keeps the bound it had.
     AtLeast(u64),
 
-    /// Nothing the code proves.
     Unknown,
 }
 
-/// Where the caller's frame pointer is, in a frame found from the stack
-/// pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::debug_info) enum CallerFramePointer {
-    /// rbp still holds it.
     Kept,
 
-    /// The word this many bytes below the canonical frame address holds it.
     Saved(u64),
 
-    /// Nowhere the code proves: it changed rbp without saving it first,
-    /// or moved the word that saved it.
     Lost,
 }
 
-/// The frame of every instruction of one function's code that the paths
-/// from its entry prove.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::debug_info) struct CodeFrames {
-    /// Each run of instructions with one proved frame: its start, the
-    /// offset past it, and the frame, in order.
     runs: Vec<(u64, u64, CodeFrame)>,
 }
 
-/// What an instruction leaves for the instruction after it.
 enum Next {
     Frame(CodeFrame),
 
-    /// The instruction never falls through, or leaves a frame its
-    /// instructions do not prove.
     Unproved,
 }
 
 impl CodeFrames {
-    /// Proves the frame at each instruction of `code`, the bytes of a
-    /// function from its entry.
     pub(in crate::debug_info) fn analyze(code: &[u8]) -> Self {
-        // A merge of disagreeing paths is found only after one of them went
-        // on past it, so the walk is made again without passing it.
         let mut barriers = BTreeSet::new();
         let found = loop {
             let (found, conflicts) = walk(code, &barriers);
@@ -115,8 +66,6 @@ impl CodeFrames {
             barriers.extend(conflicts);
         };
 
-        // An instruction a jump lands inside proves neither it nor the
-        // instruction it lands in.
         let found: Vec<(u64, u64, CodeFrame)> = found
             .into_iter()
             .map(|(start, (end, frame))| (start, end, frame))
@@ -143,8 +92,6 @@ impl CodeFrames {
         Self { runs }
     }
 
-    /// The frame of the instruction that holds the byte `offset` bytes
-    /// past the entry, if proved.
     pub(in crate::debug_info) fn at(&self, offset: u64) -> Option<CodeFrame> {
         let run = self.runs.partition_point(|(start, ..)| *start <= offset);
         let (_, end, frame) = self.runs.get(run.checked_sub(1)?)?;
@@ -152,15 +99,9 @@ impl CodeFrames {
     }
 }
 
-/// Instructions by offset: the offset past each and its frame.
 type Found = Vec<(u64, (u64, CodeFrame))>;
 
-/// Each instruction of `code` the paths from its entry reach, not past
-/// `barriers`, by offset: the offset past it and its frame. With the
-/// offsets that paths reached with different frames.
 fn walk(code: &[u8], barriers: &BTreeSet<u64>) -> (Found, BTreeSet<u64>) {
-    // Each instruction found, in the order found, and where in it each
-    // offset's is: one slot per byte of code, which costs less than a map.
     let mut instructions: Found = Vec::new();
     let mut slots = vec![u32::MAX; code.len()];
     let mut conflicts = BTreeSet::new();
@@ -215,8 +156,6 @@ fn walk(code: &[u8], barriers: &BTreeSet<u64>) -> (Found, BTreeSet<u64>) {
             continue;
         }
         if let Next::Frame(after) = next(frame, &instruction, &mut factory) {
-            // The instruction after is taken first, so that instructions
-            // are found mostly in order.
             if instruction.flow_control() == FlowControl::ConditionalBranch {
                 work.extend(target(&instruction).map(|target| (target, after)));
             }
@@ -224,7 +163,6 @@ fn walk(code: &[u8], barriers: &BTreeSet<u64>) -> (Found, BTreeSet<u64>) {
         }
     }
 
-    // Paths mostly fall through, so the instructions are nearly in order.
     instructions.sort_unstable_by_key(|(offset, _)| *offset);
     (instructions, conflicts)
 }
@@ -246,7 +184,6 @@ fn next(frame: CodeFrame, instruction: &Instruction, factory: &mut InstructionIn
     }
 }
 
-/// The frame after `instruction` of a frame found from the stack pointer.
 fn next_on_stack(
     pushed: u64,
     caller_frame_pointer: CallerFramePointer,
@@ -255,8 +192,6 @@ fn next_on_stack(
 ) -> Next {
     use CallerFramePointer::{Kept, Lost, Saved};
 
-    // A word below the stack pointer is free for a push, a callee, or a
-    // signal to overwrite, so a saved frame pointer freed there is lost.
     let stack = |pushed: Option<u64>, caller_frame_pointer| {
         pushed.map_or(Next::Unproved, |pushed| {
             let caller_frame_pointer = match caller_frame_pointer {
@@ -271,7 +206,6 @@ fn next_on_stack(
         })
     };
 
-    // The word at rsp is `pushed` + 8 bytes below the frame.
     let top = pushed.saturating_add(8);
     if is_push_register(instruction, Register::RBP) {
         let saved = match caller_frame_pointer {
@@ -282,8 +216,6 @@ fn next_on_stack(
     }
 
     if is_pop(instruction) {
-        // The word popped may be the caller's saved frame pointer: into
-        // rbp, it is kept again; anywhere else, it is gone.
         let popped = caller_frame_pointer == Saved(top);
         let caller_frame_pointer = match (is_pop_register(instruction, Register::RBP), popped) {
             (true, true) => Kept,
@@ -329,15 +261,12 @@ fn next_on_stack(
     stack(Some(pushed), caller_frame_pointer)
 }
 
-/// The frame after `instruction` of a frame found from the frame pointer.
 fn next_based(
     offset: u64,
     below: Below,
     instruction: &Instruction,
     factory: &mut InstructionInfoFactory,
 ) -> Next {
-    // Leaving the frame puts the stack pointer back where rbp points, at
-    // the word that saved the caller's frame pointer.
     let restored = |pushed: Option<u64>| {
         pushed.map_or(Next::Unproved, |pushed| {
             Next::Frame(CodeFrame::Stack {
@@ -402,9 +331,6 @@ fn next_based(
     based(below)
 }
 
-/// How far the stack pointer is below rbp once it moves down by `change`
-/// bytes from `below`, or `None` when that may free the word below rbp that
-/// saved the caller's frame pointer, for a push or a callee to overwrite.
 fn freed(below: Below, change: i64) -> Option<Below> {
     match below {
         Below::Exact(below) => below.checked_add_signed(change).map(Below::Exact),
@@ -413,8 +339,6 @@ fn freed(below: Below, change: i64) -> Option<Below> {
     }
 }
 
-/// Whether `instruction` is `and rsp, imm` with a negative immediate,
-/// which aligns the stack pointer down and never moves it up.
 fn is_realignment(instruction: &Instruction) -> bool {
     instruction.mnemonic() == Mnemonic::And
         && instruction.op_count() == 2
@@ -424,7 +348,6 @@ fn is_realignment(instruction: &Instruction) -> bool {
         && instruction.immediate(1).cast_signed() < 0
 }
 
-/// Which of rsp and rbp `instruction` writes, implicitly or not.
 #[derive(Debug, Clone, Copy)]
 struct Writes {
     rsp: bool,
@@ -437,9 +360,6 @@ fn written(instruction: &Instruction, factory: &mut InstructionInfoFactory) -> W
         rbp: false,
     };
 
-    // Only a stack instruction writes either without naming it, so an
-    // instruction that names neither writes neither, and most need no
-    // full account of what they use.
     let names = (0..instruction.op_count()).any(|operand| {
         instruction.op_kind(operand) == OpKind::Register
             && matches!(
@@ -467,12 +387,10 @@ fn written(instruction: &Instruction, factory: &mut InstructionInfoFactory) -> W
     writes
 }
 
-/// A push of eight bytes.
 fn is_push(instruction: &Instruction) -> bool {
     instruction.mnemonic() == Mnemonic::Push && instruction.stack_pointer_increment() == -8
 }
 
-/// A pop of eight bytes.
 fn is_pop(instruction: &Instruction) -> bool {
     instruction.mnemonic() == Mnemonic::Pop && instruction.stack_pointer_increment() == 8
 }
@@ -483,8 +401,6 @@ fn is_pop_register(instruction: &Instruction, register: Register) -> bool {
         && instruction.op0_register() == register
 }
 
-/// How many bytes `sub rsp, imm`, `add rsp, imm`, or `lea rsp, [rsp+disp]`
-/// allocates, negative when it frees them.
 fn stack_adjustment(instruction: &Instruction) -> Option<i64> {
     if instruction.op_count() != 2
         || instruction.op0_kind() != OpKind::Register
@@ -506,7 +422,6 @@ fn stack_adjustment(instruction: &Instruction) -> Option<i64> {
     }
 }
 
-/// The displacement of `lea rsp, [rbp+disp]`.
 fn frame_relative_stack(instruction: &Instruction) -> Option<i64> {
     (instruction.mnemonic() == Mnemonic::Lea
         && instruction.op0_kind() == OpKind::Register
@@ -522,14 +437,9 @@ fn is_plain_memory(instruction: &Instruction, base: Register) -> bool {
         && instruction.segment_prefix() == Register::None
 }
 
-/// The most bytes an encoded frame names as pushed or as an offset.
 const MOST_ENCODED_BYTES: u64 = (1 << 15) - 1;
 
 impl CodeFrame {
-    /// The frame as an image table holds it: a tag in the low two bits
-    /// and up to two byte counts of 15 bits each above it. A frame whose
-    /// counts do not fit has no encoding, and `below`, which no unwind
-    /// reads, is not kept.
     pub(in crate::debug_info) fn encode(self) -> Option<u32> {
         let (tag, first, second) = match self {
             Self::Stack {
@@ -554,7 +464,6 @@ impl CodeFrame {
         u32::try_from(tag | first << 2 | second << 17).ok()
     }
 
-    /// The frame `encode` gave `value`, if it names one.
     pub(in crate::debug_info) fn decode(value: u32) -> Option<Self> {
         let value = u64::from(value);
         let (first, second) = ((value >> 2) & MOST_ENCODED_BYTES, value >> 17);
@@ -577,12 +486,6 @@ impl CodeFrame {
     }
 }
 
-/// The instructions of a process's entry point, `code` at `address`, up to
-/// and including its first call: the C runtime's `_start`, which the
-/// kernel jumps to with no return address. The x86-64 psABI marks that
-/// frame as the outermost by clearing rbp first, so only code that begins
-/// so, after an optional `endbr64`, and runs straight to a call is taken
-/// for one.
 pub(in crate::debug_info) fn entry_frame(
     code: &[u8],
     address: u64,
@@ -620,35 +523,17 @@ pub(in crate::debug_info) fn entry_frame(
     None
 }
 
-/// The instructions of glibc's `clone` or `clone3` from its system call
-/// to its return, when `code`, at `address`, begins with them:
-///
-/// ```text
-/// mov eax, SYS_clone3   ; or SYS_clone
-/// syscall               ; the range starts here
-/// test rax, rax
-/// jl error
-/// je child
-/// ret                   ; and ends after this
-/// child: xor ebp, ebp
-/// ```
-///
-/// The caller runs them with the stack it was called with, since `ret`
-/// returns from it and nothing in between moves rsp or writes rbp. The new
-/// thread, on its new stack, takes `je`, where clearing rbp marks the
-/// outermost frame as the psABI asks. Which of the two runs is rax: zero
-/// only in the new thread.
 pub(in crate::debug_info) fn clone_return(
     code: &[u8],
     address: u64,
 ) -> Option<AddressRange<ImageAddress>> {
     const SYS_CLONE: [u8; 5] = [0xb8, 0x38, 0, 0, 0];
     const SYS_CLONE3: [u8; 5] = [0xb8, 0xb3, 0x01, 0, 0];
-    // syscall; test rax, rax; jl error, to any offset
+
     const TO_ERROR: [u8; 6] = [0x0f, 0x05, 0x48, 0x85, 0xc0, 0x7c];
-    // je child; ret; child: xor ebp, ebp
+
     const TO_CHILD: [u8; 5] = [0x74, 0x01, 0xc3, 0x31, 0xed];
-    // From the system call through `ret`.
+
     const RANGE: u64 = 10;
 
     let (call, tail) = code.split_at_checked(SYS_CLONE.len())?;
@@ -667,61 +552,35 @@ pub(in crate::debug_info) fn clone_return(
     })
 }
 
-/// The frames of musl's `__clone`, when `code`, a function's at `address`,
-/// is exactly it (`src/thread/x86_64/clone.s`), which has no call-frame
-/// information:
-///
-/// ```text
-///     xor eax, eax
-///     mov al, SYS_clone
-///     ...                   ; moves the arguments, writes the new stack
-///     syscall               ; Clone from here
-///     test eax, eax
-///     jnz 1f
-///     xor ebp, ebp          ; Outermost from here, in the new thread only
-///     pop rdi
-///     call r9               ; to the thread's start, which never returns
-///     mov edi, eax
-///     xor eax, eax
-///     mov al, SYS_exit
-///     syscall
-///     hlt
-/// 1:  ret                   ; the caller's frame again
-/// ```
-///
-/// Nothing before `ret` moves rsp or writes rbp in the caller, so its
-/// return address stays at rsp. The new thread starts after `syscall` on
-/// its new stack, where rax is zero, and clears rbp to mark the outermost
-/// frame, as the psABI asks.
 pub(in crate::debug_info) fn musl_clone(
     code: &[u8],
     address: u64,
 ) -> Option<Vec<(AddressRange<ImageAddress>, u32)>> {
     #[rustfmt::skip]
     const CLONE: [u8; 57] = [
-        0x31, 0xc0,             // xor eax, eax
-        0xb0, 0x38,             // mov al, 56
-        0x49, 0x89, 0xfb,       // mov r11, rdi
-        0x48, 0x89, 0xd7,       // mov rdi, rdx
-        0x4c, 0x89, 0xc2,       // mov rdx, r8
-        0x4d, 0x89, 0xc8,       // mov r8, r9
-        0x4c, 0x8b, 0x54, 0x24, 0x08, // mov r10, [rsp+8]
-        0x4d, 0x89, 0xd9,       // mov r9, r11
-        0x48, 0x83, 0xe6, 0xf0, // and rsi, -16
-        0x48, 0x83, 0xee, 0x08, // sub rsi, 8
-        0x48, 0x89, 0x0e,       // mov [rsi], rcx
-        0x0f, 0x05,             // syscall
-        0x85, 0xc0,             // test eax, eax
-        0x75, 0x0f,             // jnz 1f
-        0x31, 0xed,             // xor ebp, ebp
-        0x5f,                   // pop rdi
-        0x41, 0xff, 0xd1,       // call r9
-        0x89, 0xc7,             // mov edi, eax
-        0x31, 0xc0,             // xor eax, eax
-        0xb0, 0x3c,             // mov al, 60
-        0x0f, 0x05,             // syscall
-        0xf4,                   // hlt
-        0xc3,                   // 1: ret
+        0x31, 0xc0,
+        0xb0, 0x38,
+        0x49, 0x89, 0xfb,
+        0x48, 0x89, 0xd7,
+        0x4c, 0x89, 0xc2,
+        0x4d, 0x89, 0xc8,
+        0x4c, 0x8b, 0x54, 0x24, 0x08,
+        0x4d, 0x89, 0xd9,
+        0x48, 0x83, 0xe6, 0xf0,
+        0x48, 0x83, 0xee, 0x08,
+        0x48, 0x89, 0x0e,
+        0x0f, 0x05,
+        0x85, 0xc0,
+        0x75, 0x0f,
+        0x31, 0xed,
+        0x5f,
+        0x41, 0xff, 0xd1,
+        0x89, 0xc7,
+        0x31, 0xc0,
+        0xb0, 0x3c,
+        0x0f, 0x05,
+        0xf4,
+        0xc3,
     ];
     const SYSCALL: u64 = 35;
     const CHILD: u64 = 41;
@@ -752,16 +611,8 @@ pub(in crate::debug_info) fn musl_clone(
     .collect()
 }
 
-/// `push rbp; mov rbp, rsp`, the prologue of a function that keeps the
-/// frame-pointer chain.
 pub(in crate::debug_info) const PROLOGUE: [u8; 4] = [0x55, 0x48, 0x89, 0xe5];
 
-/// The starts of functions in `code`, the bytes of an executable section
-/// at `address`, read from its start as a compiler's code: what it calls
-/// directly or loads as an address relative to the instruction pointer,
-/// and code that sets up a frame right after `int3` padding, which no
-/// instruction falls through to. What it loads may also be data; those
-/// that lie outside the code are for the caller to leave out.
 pub(in crate::debug_info) fn code_entries(code: &[u8], address: u64) -> Vec<u64> {
     let mut entries = Vec::new();
     let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
@@ -796,14 +647,6 @@ pub(in crate::debug_info) fn code_entries(code: &[u8], address: u64) -> Vec<u64>
     entries
 }
 
-/// Adds the frames of one function of code that no call-frame
-/// information describes, whose code is `code`, at `address`, by encoded
-/// frame. Where its instructions prove the frame, that frame is kept.
-/// For a runtime's code (`convention`), the runtime's convention holds at
-/// each other call the code makes: it calls only from a frame it has
-/// entered, whose rbp holds the address of the word that saved the
-/// caller's, 16 bytes below the canonical frame address. Elsewhere nothing
-/// is known.
 pub(in crate::debug_info) fn runtime_frames(
     code: &[u8],
     address: u64,
@@ -847,7 +690,6 @@ pub(in crate::debug_info) fn runtime_frames(
     }
 }
 
-/// The canonical frame address of `frame`, with `registers` its own.
 pub(in crate::debug_info) fn frame_cfa(
     frame: CodeFrame,
     registers: &RegisterFile,
@@ -866,9 +708,6 @@ pub(in crate::debug_info) fn frame_cfa(
         })
 }
 
-/// The caller of `frame`: its stack pointer, return address, and frame
-/// pointer, as far as the frame proves them. The code's calling
-/// convention is not known, so no other register is.
 pub(in crate::debug_info) fn frame_caller(
     frame: CodeFrame,
     registers: &RegisterFile,
@@ -946,7 +785,6 @@ mod tests {
     use CallerFramePointer::{Kept, Lost, Saved};
     use CodeFrame::{Based, Stack};
 
-    /// A frame found from the stack pointer, as `CodeFrames::at` gives it.
     #[expect(
         clippy::unnecessary_wraps,
         reason = "it is compared with what the analysis may not prove"
@@ -958,7 +796,6 @@ mod tests {
         })
     }
 
-    /// The frame at each offset of `code`.
     fn frames(code: &[u8]) -> Vec<Option<CodeFrame>> {
         let frames = CodeFrames::analyze(code);
         (0..=code.len() as u64)
@@ -991,7 +828,7 @@ mod tests {
             let encoded = frame.encode().expect("it fits");
             assert_eq!(CodeFrame::decode(encoded), Some(frame), "{frame:?}");
         }
-        // `below` is not kept, and a count past 15 bits has no encoding.
+
         let based = Based {
             offset: 16,
             below: Below::Exact(8),
@@ -1004,53 +841,43 @@ mod tests {
             })
         );
         assert_eq!(stack(1 << 15, Kept).and_then(CodeFrame::encode), None);
-        // A Kept or Lost frame with a second count is no encoding, but for
-        // the outermost and clone frames'.
+
         assert_eq!(CodeFrame::decode(2 << 17), None);
         assert_eq!(CodeFrame::decode(1 << 17 | 1 << 2), None);
         assert_eq!(CodeFrame::decode(2 | 1 << 2 | 1 << 17), None);
         assert_eq!(CodeFrame::decode(3 | 1 << 17), None);
     }
 
-    /// musl's and glibc's `_start` clear rbp, as the psABI asks of the
-    /// outermost frame, and run straight to their first call; code that
-    /// sets up a frame, or branches first, is no process entry.
     #[test]
     fn a_process_entry_is_outermost_to_its_first_call() {
         let range = |code: &[u8]| {
             entry_frame(code, 0x1000).map(|range| (range.start.get(), range.end.get()))
         };
-        // xor rbp, rbp; mov rdi, rsp; and rsp, -16; call _start_c; hlt
+
         let musl = [
             0x48, 0x31, 0xed, 0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0xe8, 0, 0, 0, 0, 0xf4,
         ];
         assert_eq!(range(&musl), Some((0x1000, 0x100f)));
-        // endbr64; xor ebp, ebp; mov r9, rdx; pop rsi;
-        // call [rip + __libc_start_main]; hlt
+
         let glibc = [
             0xf3, 0x0f, 0x1e, 0xfa, 0x31, 0xed, 0x49, 0x89, 0xd1, 0x5e, 0xff, 0x15, 0, 0, 0, 0,
             0xf4,
         ];
         assert_eq!(range(&glibc), Some((0x1000, 0x1010)));
 
-        // push rbp; mov rbp, rsp; call f
         assert_eq!(range(&[0x55, 0x48, 0x89, 0xe5, 0xe8, 0, 0, 0, 0]), None);
-        // xor ebp, ebp; jmp f
+
         assert_eq!(range(&[0x31, 0xed, 0xe9, 0, 0, 0, 0]), None);
-        // xor ebp, ebp; and nothing after
+
         assert_eq!(range(&[0x31, 0xed]), None);
     }
 
-    /// glibc 2.42's `clone3` from loading its call's number to its child's
-    /// first instruction, and its `clone`'s, which differ only in the
-    /// number; any other call, or other code after it, is not glibc's.
     #[test]
     fn only_glibcs_clone_tail_is_proved_from_its_system_call_to_its_return() {
         let range = |code: &[u8]| {
             clone_return(code, 0x1000).map(|range| (range.start.get(), range.end.get()))
         };
-        // mov eax, 435; syscall; test rax, rax; jl err; je child; ret;
-        // child: xor ebp, ebp
+
         let clone3 = [
             0xb8, 0xb3, 0x01, 0, 0, 0x0f, 0x05, 0x48, 0x85, 0xc0, 0x7c, 0x14, 0x74, 0x01, 0xc3,
             0x31, 0xed,
@@ -1060,24 +887,20 @@ mod tests {
         clone[1..3].copy_from_slice(&[0x38, 0]);
         assert_eq!(range(&clone), Some((0x1005, 0x100f)));
 
-        // fork (57), whose child has the whole stack.
         let mut fork = clone3;
         fork[1..3].copy_from_slice(&[0x39, 0]);
         assert_eq!(range(&fork), None);
-        // The child's first instruction is missing, or keeps rbp.
+
         assert_eq!(range(&clone3[..15]), None);
         let mut kept = clone3;
         kept[15..].copy_from_slice(&[0x90, 0x90]);
         assert_eq!(range(&kept), None);
-        // The branch to the child skips more than the return.
+
         let mut longer = clone3;
         longer[13] = 0x02;
         assert_eq!(range(&longer), None);
     }
 
-    /// musl 1.2.5's `__clone`, byte for byte: the caller's frame to its
-    /// system call and at its return, the clone frame to its branch, and
-    /// the new thread's outermost frame from there.
     #[test]
     fn only_musls_whole_clone_is_proved() {
         let clone = [
@@ -1114,12 +937,11 @@ mod tests {
                 (0x1038, 0x1039, caller),
             ])
         );
-        // Code after the function changes nothing.
+
         let mut followed = clone.to_vec();
         followed.extend([0xcc; 7]);
         assert_eq!(frames(&followed), frames(&clone));
 
-        // fork (57) instead, the return cut off, or the child keeping rbp.
         let mut fork = clone;
         fork[3] = 0x39;
         assert_eq!(frames(&fork), None);
@@ -1129,9 +951,6 @@ mod tests {
         assert_eq!(frames(&kept), None);
     }
 
-    /// The new thread, where clone returned zero, has no caller; the
-    /// thread that called it returns to its caller with its stack as it
-    /// was, whether the call succeeded or failed.
     #[test]
     fn a_clone_frame_is_outermost_only_where_it_returned_zero() {
         struct Stack;
@@ -1168,10 +987,6 @@ mod tests {
 
     #[test]
     fn a_runtime_function_is_proved_to_its_first_unproved_instruction_then_at_calls() {
-        // V8's CallApiCallbackGeneric opens with `pop rax`, its return
-        // address, which nothing proves; later, `call [r13+0x40]` keeps
-        // the convention's frame.
-        // pop rax; push rbp; mov rbp, rsp; call [r13+0x40]; leave; ret
         let code = [
             0x58, 0x55, 0x48, 0x89, 0xe5, 0x41, 0xff, 0x55, 0x40, 0xc9, 0xc3,
         ];
@@ -1199,7 +1014,6 @@ mod tests {
 
     #[test]
     fn a_frame_is_proved_past_a_jump_at_its_target() {
-        // push rbp; mov rbp, rsp; jmp L; ud2; L: call rax; pop rbp; ret
         let code = [
             0x55, 0x48, 0x89, 0xe5, 0xeb, 0x02, 0x0f, 0x0b, 0xff, 0xd0, 0x5d, 0xc3,
         ];
@@ -1217,7 +1031,6 @@ mod tests {
 
     #[test]
     fn paths_that_arrive_with_different_frames_prove_nothing_after() {
-        // push rbp; je L; push rax; L: call rax; ret
         let code = [0x55, 0x74, 0x01, 0x50, 0xff, 0xd0, 0xc3];
         let frames = CodeFrames::analyze(&code);
         assert_eq!(frames.at(1), stack(8, Saved(16)), "at the branch");
@@ -1228,7 +1041,6 @@ mod tests {
 
     #[test]
     fn a_trampoline_without_a_frame_pointer_is_found_from_the_stack() {
-        // CPython 3.12's: sub rsp, 8; call rcx; add rsp, 8; ret
         let code = [
             0x48, 0x83, 0xec, 0x08, 0xff, 0xd1, 0x48, 0x83, 0xc4, 0x08, 0xc3,
         ];
@@ -1245,7 +1057,6 @@ mod tests {
 
     #[test]
     fn a_trampoline_with_a_frame_pointer_is_found_from_it() {
-        // CPython 3.13's: push rbp; mov rbp, rsp; call rcx; pop rbp; ret
         let code = [0x55, 0x48, 0x89, 0xe5, 0xff, 0xd1, 0x5d, 0xc3];
         let pushed = stack(8, Saved(16));
         let based = Some(Based {
@@ -1270,8 +1081,6 @@ mod tests {
 
     #[test]
     fn a_frame_left_by_leave_or_through_rbp_is_found_from_the_stack_again() {
-        // endbr64; push rbp; mov rbp, rsp; push rbx; sub rsp, 0x18; call rax;
-        // lea rsp, [rbp-8]; pop rbx; pop rbp; ret
         let code = [
             0xf3, 0x0f, 0x1e, 0xfa, 0x55, 0x48, 0x89, 0xe5, 0x53, 0x48, 0x83, 0xec, 0x18, 0xff,
             0xd0, 0x48, 0x8d, 0x65, 0xf8, 0x5b, 0x5d, 0xc3,
@@ -1284,7 +1093,6 @@ mod tests {
         assert_eq!(frames.at(20), stack(8, Saved(16)), "at pop rbp");
         assert_eq!(frames.at(21), stack(0, Kept), "at ret");
 
-        // push rbp; mov rbp, rsp; sub rsp, 0x20; leave; ret
         let based = |below| Some(Based { offset: 16, below });
         let code = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x20, 0xc9, 0xc3];
         let frames = CodeFrames::analyze(&code);
@@ -1294,7 +1102,6 @@ mod tests {
 
     #[test]
     fn rbp_saved_after_other_registers_is_found_where_it_was_pushed() {
-        // push rbx; push rbp; mov rbp, rsp; call rax
         let code = [0x53, 0x55, 0x48, 0x89, 0xe5, 0xff, 0xd0];
         let frames = CodeFrames::analyze(&code);
         assert_eq!(frames.at(2), stack(16, Saved(24)));
@@ -1309,23 +1116,18 @@ mod tests {
 
     #[test]
     fn rbp_changed_unsaved_loses_the_callers_and_saved_keeps_it() {
-        // mov rbp, rdi; call rax
         let frames = CodeFrames::analyze(&[0x48, 0x89, 0xfd, 0xff, 0xd0]);
         assert_eq!(frames.at(3), stack(0, Lost));
 
-        // push rbp; mov rbp, rdi; call rax
         let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89, 0xfd, 0xff, 0xd0]);
         assert_eq!(frames.at(4), stack(8, Saved(16)));
 
-        // push rbp; mov rbp, rdi; pop rax; call rax: the saved word is
-        // popped elsewhere.
         let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89, 0xfd, 0x58, 0xff, 0xd0]);
         assert_eq!(frames.at(5), stack(0, Lost));
     }
 
     #[test]
     fn branches_and_jumps_carry_the_frame_and_other_transfers_end_the_proof() {
-        // push rbp; mov rbp, rsp; je +0; call rax
         let based = Some(Based {
             offset: 16,
             below: Below::Exact(0),
@@ -1333,24 +1135,19 @@ mod tests {
         let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89, 0xe5, 0x74, 0x00, 0xff, 0xd0]);
         assert_eq!(frames.at(6), based);
 
-        // push rbp; mov rbp, rsp; jmp +0; call rax: the jump's target
         let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89, 0xe5, 0xeb, 0x00, 0xff, 0xd0]);
         assert_eq!(frames.at(4), based, "the jump itself");
         assert_eq!(frames.at(6), based, "where it lands");
 
-        // push rbp; mov rbp, rsp; jmp rax; call rax
         let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89, 0xe5, 0xff, 0xe0, 0xff, 0xd0]);
         assert_eq!(frames.at(4), based, "the indirect jump itself");
         assert_eq!(frames.at(6), None, "no path is known past it");
 
-        // ud2; call rax
         assert_eq!(CodeFrames::analyze(&[0x0f, 0x0b, 0xff, 0xd0]).at(2), None);
     }
 
     #[test]
     fn a_saved_frame_pointer_freed_from_the_stack_is_lost() {
-        // push rbp; add rsp, 8; mov rbp, rsp; push rbp; push rbp: the
-        // second push overwrites the word that saved the caller's rbp.
         let code = [0x55, 0x48, 0x83, 0xc4, 0x08, 0x48, 0x89, 0xe5, 0x55, 0x55];
         let frames = CodeFrames::analyze(&code);
         assert_eq!(frames.at(1), stack(8, Saved(16)));
@@ -1360,8 +1157,6 @@ mod tests {
 
     #[test]
     fn freeing_the_stack_past_rbp_ends_the_proof() {
-        // push rbp; nop; mov rbp, rsp; add rsp, 8; call; push rbp: the
-        // call's return address overwrites the word that saved rbp.
         let code = [
             0x55, 0x90, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xc4, 0x08, 0xe8, 0x00, 0x10, 0x00, 0x00,
             0x55,
@@ -1377,18 +1172,12 @@ mod tests {
         assert_eq!(frames.at(9), None);
         assert_eq!(frames.at(14), None);
 
-        // push rbp; mov rbp, rsp; and rsp, -16; pop rax: how far rsp is
-        // below rbp is not proved, so neither is what the pop frees.
         let code = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xe4, 0xf0, 0x58, 0x90];
         assert_eq!(CodeFrames::analyze(&code).at(9), None);
     }
 
     #[test]
     fn a_realigned_frame_frees_its_arguments_within_the_bound_it_keeps() {
-        // push rbp; mov rbp, rsp; and rsp, -32; sub rsp, 64; push rax;
-        // push rcx; call rel32; add rsp, 16; leave; ret: aligning only moves
-        // rsp down, so freeing the call's two arguments frees nothing above
-        // the 64 bytes rsp is at least below rbp.
         let code = [
             0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xe4, 0xe0, 0x48, 0x83, 0xec, 0x40, 0x50, 0x51,
             0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x83, 0xc4, 0x10, 0xc9, 0xc3,
@@ -1400,7 +1189,6 @@ mod tests {
         assert_eq!(frames.at(23), based(Below::AtLeast(64)), "at leave");
         assert_eq!(frames.at(24), stack(0, Kept), "at ret");
 
-        // add rsp, 88 instead frees past the bound.
         let mut code = code;
         code[22] = 0x58;
         assert_eq!(CodeFrames::analyze(&code).at(23), None);
@@ -1408,20 +1196,15 @@ mod tests {
 
     #[test]
     fn a_stack_pointer_the_code_cannot_follow_ends_the_proof() {
-        // and rsp, -16; call rax
         let frames = CodeFrames::analyze(&[0x48, 0x83, 0xe4, 0xf0, 0xff, 0xd0]);
         assert_eq!(frames.at(0), stack(0, Kept));
         assert_eq!(frames.at(4), None);
 
-        // pop rax at entry pops the return address.
         assert_eq!(CodeFrames::analyze(&[0x58, 0xff, 0xd0]).at(1), None);
 
-        // push rbp; mov rbp, rsp; mov rbp, rdi; call rax
         let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0xfd, 0xff, 0xd0]);
         assert_eq!(frames.at(7), None);
 
-        // push rbp; mov rbp, rsp; and rsp, -16; pop rbp: where rsp is, rbp
-        // does not say.
         let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xe4, 0xf0, 0x5d]);
         assert_eq!(
             frames.at(8),
@@ -1435,7 +1218,6 @@ mod tests {
 
     #[test]
     fn code_cut_short_is_proved_only_to_its_last_whole_instruction() {
-        // push rbp; mov rbp, (cut)
         let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89]);
         assert_eq!(frames.at(0), stack(0, Kept));
         assert_eq!(frames.at(1), None);

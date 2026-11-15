@@ -1,8 +1,3 @@
-//! A map is never shown wrong while it grows. Go's maps split a full table
-//! in two and install the halves in the map's directory one store at a
-//! time; at every instruction of that, the map shows only what it holds,
-//! or says why it cannot.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -15,13 +10,10 @@ use microscope::{
 use crate::invariants::checked;
 use crate::support::Scenario;
 
-/// Where Go installs a split table's halves.
 const INSTALL: &str = "internal/runtime/maps.(*Map).installTableSplit";
 
-/// The most instructions the installation runs, stepping over its calls.
 const MOST_STEPS: usize = 2000;
 
-/// An integer, from the state of a value or a key.
 const fn integer(state: &VariableState) -> Option<i128> {
     match state {
         VariableState::Available {
@@ -32,9 +24,6 @@ const fn integer(state: &VariableState) -> Option<i128> {
     }
 }
 
-/// Checks what the stop shows of the map `fill` grows against what the
-/// program has put in it: its count, and every entry it lists, unless it
-/// refuses to list them. Returns whether it listed them.
 async fn check_map(scenario: &Scenario, step: usize) -> Result<bool, String> {
     let snapshot = scenario
         .operation("snapshot", scenario.handle().snapshot())
@@ -86,7 +75,6 @@ async fn check_map(scenario: &Scenario, step: usize) -> Result<bool, String> {
         panic!("step {step}: {presentation:?}");
     };
 
-    // The count is the runtime's own, which the split leaves alone.
     if i128::from(count) != next {
         return Err(format!("{count} entries while {next} are in the map"));
     }
@@ -111,7 +99,6 @@ async fn check_map(scenario: &Scenario, step: usize) -> Result<bool, String> {
 
         let page = match page {
             Ok(page) => page,
-            // A refusal says the map cannot be listed as it is now.
             Err(error)
                 if error
                     .to_string()
@@ -184,8 +171,6 @@ async fn a_map_is_shown_only_as_it_is_while_a_table_splits() {
         assert!(steps < MOST_STEPS, "the split never returns");
     }
 
-    // Between the stores of the two halves, the directory holds neither
-    // table whole, and the map is refused rather than listed short.
     assert!(refused > 0, "{steps} instructions, none refused");
     assert!(check_map(&scenario, steps).await.expect("the split map"));
     scenario.shutdown().await;

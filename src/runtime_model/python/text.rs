@@ -1,10 +1,3 @@
-//! Python `repr` notation for arbitrary-size ints, floats, bytes, and strings.
-//! Strings escape backslashes, their quote, and characters unprintable in every supported
-//! Unicode database (`printable.gen.rs`): controls, non-space separators, format characters,
-//! private use, lone surrogates, and code points no version assigns.
-//! Characters assigned only by a newer version stay literal, unlike an older interpreter's `repr`.
-//! `tests/fixtures/python/truth.py` defines the same text.
-
 use std::fmt::Write as _;
 
 #[path = "printable.gen.rs"]
@@ -24,8 +17,6 @@ const _: () = {
     }
 };
 
-/// Whether every supported interpreter's `repr` keeps the code point
-/// `point` as it is.
 fn printable(point: u32) -> bool {
     let after = printable::ESCAPED.partition_point(|(first, _)| *first <= point);
     after
@@ -34,8 +25,6 @@ fn printable(point: u32) -> bool {
         .is_none_or(|(_, past)| point >= *past)
 }
 
-/// A string's characters as CPython stores them: code points, which may be
-/// lone surrogates, as no Rust `char` may be.
 pub(super) fn string(code_points: &[u32]) -> String {
     let single = code_points.contains(&u32::from(b'\''));
     let double = code_points.contains(&u32::from(b'"'));
@@ -53,8 +42,6 @@ pub(super) fn string(code_points: &[u32]) -> String {
             Some('\n') => text.push_str("\\n"),
             Some('\r') => text.push_str("\\r"),
             Some('\t') => text.push_str("\\t"),
-            // A lone surrogate, which is all from_u32 refuses below
-            // 0x110000, does not print; CPython stores none higher.
             Some(character) if printable(point) => text.push(character),
             _ if point < 0x100 => {
                 let _ = write!(text, "\\x{point:02x}");
@@ -72,9 +59,6 @@ pub(super) fn string(code_points: &[u32]) -> String {
     text
 }
 
-/// Code points as UTF-8, with each lone surrogate encoded as a scalar
-/// value would be, as CPython's `surrogatepass` handler encodes it: the
-/// bytes sort as the code points do.
 pub(super) fn utf8(code_points: &[u32]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(code_points.len());
 
@@ -83,8 +67,6 @@ pub(super) fn utf8(code_points: &[u32]) -> Vec<u8> {
             let mut buffer = [0; 4];
             bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
         } else {
-            // A surrogate, which a str may hold alone: three bytes, as
-            // every code point from U+0800 to U+FFFF takes.
             debug_assert!(
                 (0xd800..0xe000).contains(&point),
                 "code point {point:#x} is neither a character nor a surrogate",
@@ -102,7 +84,6 @@ pub(super) fn utf8(code_points: &[u32]) -> Vec<u8> {
     bytes
 }
 
-/// A `bytes` object's contents, as `repr` gives them.
 pub(super) fn bytes(contents: &[u8]) -> String {
     let quote = if contents.contains(&b'\'') && !contents.contains(&b'"') {
         b'"'
@@ -135,9 +116,6 @@ pub(super) fn bytes(contents: &[u8]) -> String {
     text
 }
 
-/// A float as `repr` gives it: the shortest digits that read back as the
-/// same float, in positional notation unless the decimal point would lie
-/// more than 16 digits past the first or more than 4 before it.
 pub(super) fn float(value: f64) -> String {
     if value.is_nan() {
         return "nan".to_owned();
@@ -148,12 +126,9 @@ pub(super) fn float(value: f64) -> String {
         return format!("{sign}inf");
     }
 
-    // Rust's exponent form gives the same shortest digits, as `d.ddde±x`.
     shortest(sign, &format!("{:e}", value.abs()))
 }
 
-/// A 32-bit float as [`float`] writes a float, with the shortest digits
-/// that read back as the same 32-bit float.
 pub(super) fn float32(value: f32) -> String {
     if value.is_nan() {
         return "nan".to_owned();
@@ -167,15 +142,12 @@ pub(super) fn float32(value: f32) -> String {
     shortest(sign, &format!("{:e}", value.abs()))
 }
 
-/// A float's text from its sign and its shortest digits in exponent form,
-/// in positional notation where Python's `repr` writes it so.
 fn shortest(sign: &str, shortest: &str) -> String {
     let (mantissa, exponent) = shortest.split_once('e').unwrap_or((shortest, "0"));
     let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
     let exponent: i64 = exponent.parse().unwrap_or(0);
     debug_assert!(!digits.is_empty(), "a float's exponent form has no digits");
 
-    // Where the decimal point lies, counted in digits from the first.
     let point = exponent + 1;
     let count = i64::try_from(digits.len()).unwrap_or(i64::MAX);
     let zeros = |count: i64| "0".repeat(usize::try_from(count).unwrap_or(0));
@@ -202,11 +174,7 @@ fn shortest(sign: &str, shortest: &str) -> String {
     }
 }
 
-/// An int from its magnitude's digits of `shift` bits each, least
-/// significant first, in decimal.
 pub(super) fn int(negative: bool, digits: &[u32], shift: u32) -> String {
-    // Base 10^9 limbs, least significant first, which each digit is
-    // shifted into from the most significant down.
     const LIMB: u64 = 1_000_000_000;
     let mut limbs: Vec<u64> = Vec::new();
 
@@ -273,14 +241,9 @@ mod tests {
         assert_eq!(string(&[0x61, 0xd800, 0xdfff]), "'a\\ud800\\udfff'");
     }
 
-    /// Each interpreter's `repr` of every code point alone, one to a line,
-    /// with a newline's and a carriage return's as Python writes them.
     const REPRS: &str = "import sys\n\
         sys.stdout.write('\\n'.join(repr(chr(point)) for point in range(0x110000)))";
 
-    /// Every code point is presented as each interpreter in the matrix
-    /// writes it, but one that interpreter's Unicode version does not
-    /// assign and another's does, which is kept as it is.
     #[test]
     fn each_character_is_as_every_interpreter_in_the_matrix_writes_it() {
         let root = std::env::var_os("MICROSCOPE_CPYTHON")
@@ -370,8 +333,6 @@ mod tests {
         }
     }
 
-    /// A 32-bit float has the shortest digits of its own width, in the
-    /// notation Python's `repr` writes a float in.
     #[test]
     fn a_float32_is_its_shortest_digits() {
         for (value, expected) in [
@@ -400,7 +361,6 @@ mod tests {
         assert_eq!(int(false, &[mask], 30), "1073741823");
         assert_eq!(int(false, &[0, 1], 30), "1073741824");
 
-        // 2**100 + 12345, and -(10**38) - 1, as CPython stores them.
         let big: u128 = (1 << 100) + 12_345;
         let digits = |value: u128| -> Vec<u32> {
             (0..5)
@@ -413,7 +373,6 @@ mod tests {
         let huge: u128 = 10_u128.pow(38) + 1;
         assert_eq!(int(true, &digits(huge), 30), format!("-{huge}"));
 
-        // A 15-bit build's digits.
         assert_eq!(int(false, &[0, 0, 1], 15), (1_u64 << 30).to_string());
     }
 }

@@ -1,7 +1,3 @@
-//! Models of the alarm that wakes the controller at an agent's deadline.
-//! The clock stays at 10. The controller sets the alarm and waits for it
-//! to ring; a lost wake leaves it blocked, which loom reports as a deadlock.
-
 use std::time::Duration;
 
 use loom::sync::atomic::{AtomicBool, Ordering};
@@ -16,10 +12,8 @@ impl Time for u32 {
     }
 }
 
-/// What the clock says while the models run.
 const NOW: u32 = 10;
 
-/// An alarm whose thread runs, and what its ring is heard by.
 struct Running {
     alarm: Arc<Alarm<u32>>,
     rang: Arc<AtomicBool>,
@@ -54,8 +48,6 @@ impl Running {
         }
     }
 
-    /// Waits for the alarm to ring, as the controller blocks on its
-    /// messages.
     fn hear(&self) {
         while !self.rang.load(Ordering::SeqCst) {
             self.heard.wait();
@@ -68,8 +60,6 @@ impl Running {
     }
 }
 
-/// An alarm set for a time that has come rings, whether its thread is
-/// waiting yet or not.
 #[test]
 fn an_alarm_whose_time_has_come_rings() {
     loom::model(|| {
@@ -80,7 +70,6 @@ fn an_alarm_whose_time_has_come_rings() {
     });
 }
 
-/// A sooner time replaces a later one that the thread waits for.
 #[test]
 fn a_sooner_time_replaces_a_later_one() {
     loom::model(|| {
@@ -92,7 +81,6 @@ fn a_sooner_time_replaces_a_later_one() {
     });
 }
 
-/// Stopping ends the thread, however long its alarm had to go.
 #[test]
 fn a_stopped_alarm_ends_its_thread() {
     loom::model(|| {

@@ -1,6 +1,3 @@
-// Who the page says is signed in: an answer services gives to a question
-// asked before the page itself signed in or out never undoes it.
-
 import { afterEach, expect, it, vi } from "vitest";
 
 import { account, checkAccount, signOut, totpConfirmed, type User } from "../src/account";
@@ -12,8 +9,6 @@ afterEach(() => {
   account.setState({ now: { kind: "checking" }, notice: null });
 });
 
-/** Services, holding each answer to who is signed in until the test gives
- * it, and signing out at once. */
 function services() {
   const held: ((user: User | null) => void)[] = [];
   vi.stubGlobal(
@@ -47,7 +42,6 @@ it.each([
   await signOut();
   expect(account.getState().now).toEqual({ kind: "out" });
 
-  // Services answers as it was before the sign-out.
   held[0]?.(ME);
   await asked;
   expect(account.getState().now).toEqual({ kind: "out" });

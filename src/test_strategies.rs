@@ -1,16 +1,7 @@
-//! Strategies the property tests share.
-//!
-//! proptest draws integers uniformly, so a test of `u64` values almost never
-//! sees 0, the maximum, or two equal values. These strategies draw the edges
-//! of a range often and the rest of it otherwise. Add a type to `edges!`
-//! when a test first needs it.
-
 use proptest::prelude::*;
 
 macro_rules! edges {
     ($($name:ident: $type:ty),* $(,)?) => {$(
-        /// Any value, with the edges of the type and small values drawn
-        /// about half the time.
         pub fn $name() -> impl Strategy<Value = $type> + Clone {
             prop_oneof![
                 2 => prop::sample::select(vec![
@@ -37,10 +28,6 @@ edges! {
     i128_edges: i128,
 }
 
-/// An address a walker of target memory may be given. Most often it is
-/// one of `valid`, or a small step from one, so a walk goes on; otherwise
-/// it is 0, small, unaligned, just under the top of the address space or
-/// of user space, or anything at all.
 pub fn hostile_address(valid: Vec<u64>) -> impl Strategy<Value = u64> + Clone {
     let valid = if valid.is_empty() { vec![0] } else { valid };
     prop_oneof![
@@ -56,9 +43,6 @@ pub fn hostile_address(valid: Vec<u64>) -> impl Strategy<Value = u64> + Clone {
     ]
 }
 
-/// A file of the fuzz target `target`'s corpus with up to eight of its
-/// bytes overwritten and the rest maybe cut, so properties reach the
-/// structured inputs the fuzzer was seeded with and the damage it makes.
 pub fn damaged_corpus(target: &str) -> impl Strategy<Value = Vec<u8>> + use<> {
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("fuzz/corpus")

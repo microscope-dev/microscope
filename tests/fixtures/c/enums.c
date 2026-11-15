@@ -11,7 +11,7 @@ enum Flags {
     FLAG_WRITE = 2U,
 };
 
-// Counts 0, 1, 2 as a sequence does, so it holds no flags.
+
 enum Sequence {
     SEQUENCE_FIRST,
     SEQUENCE_SECOND,

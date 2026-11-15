@@ -1,18 +1,13 @@
-//! System call names and numbers for each ABI, generated from the kernel's
-//! UAPI headers into `table.gen.rs`.
-
 use super::model::{Abi, SyscallId};
 
 mod generated {
     include!("table.gen.rs");
 }
 
-/// The kernel's entry points, from its x86 syscall tables.
 mod entries {
     include!("entries.gen.rs");
 }
 
-// Every table is searched by number, which needs each in ascending order.
 const _: () = {
     assert!(
         ascending(generated::X86_64),
@@ -44,7 +39,6 @@ const _: () = {
     }
 };
 
-/// Whether a table's numbers strictly ascend.
 const fn ascending(mut table: &[(u32, &str)]) -> bool {
     while let [first, rest @ ..] = table {
         if let [second, ..] = rest
@@ -59,7 +53,6 @@ const fn ascending(mut table: &[(u32, &str)]) -> bool {
     true
 }
 
-/// The kernel function `id` enters through, with its ABI's prefix.
 pub(super) fn kernel_function(id: SyscallId) -> Option<String> {
     let find = |table: &[(u32, &'static str)]| {
         table
@@ -70,8 +63,6 @@ pub(super) fn kernel_function(id: SyscallId) -> Option<String> {
     };
 
     match id.abi {
-        // x32's own calls are compat entries, which x86-64 kernels also
-        // name `__x64_`.
         Abi::X86_64 => find(entries::X86_64).map(|entry| format!("__x64_{entry}")),
         Abi::X32 => find(entries::X32).map(|entry| format!("__x64_{entry}")),
         Abi::X86_32 => entries::X86_32
@@ -84,7 +75,6 @@ pub(super) fn kernel_function(id: SyscallId) -> Option<String> {
     }
 }
 
-/// Every call of an ABI, as (number, name), in ascending number order.
 #[must_use]
 pub const fn calls(abi: Abi) -> &'static [(u32, &'static str)] {
     match abi {
@@ -94,7 +84,6 @@ pub const fn calls(abi: Abi) -> &'static [(u32, &'static str)] {
     }
 }
 
-/// The bit x32 calls set in their numbers, which the tables leave out.
 pub const X32_SYSCALL_BIT: u32 = 0x4000_0000;
 
 pub(super) fn name(id: SyscallId) -> Option<&'static str> {
@@ -103,7 +92,6 @@ pub(super) fn name(id: SyscallId) -> Option<&'static str> {
         .map(|&(_, name)| name)
 }
 
-/// Where its ABI's table lists a call.
 pub(super) fn index(id: SyscallId) -> Option<usize> {
     calls(id.abi)
         .binary_search_by_key(&id.number, |&(number, _)| number)
@@ -117,14 +105,11 @@ pub(super) fn number(abi: Abi, name: &str) -> Option<u32> {
         .map(|&(number, _)| number)
 }
 
-/// The highest number any ABI's table lists, plus one: the size of a
-/// bitmap over one ABI's calls.
 #[must_use]
 pub fn limit(abi: Abi) -> u32 {
     calls(abi).last().map_or(0, |&(number, _)| number + 1)
 }
 
-/// Every call in every ABI.
 pub fn all() -> impl Iterator<Item = SyscallId> {
     Abi::ALL.into_iter().flat_map(|abi| {
         calls(abi)
@@ -142,10 +127,6 @@ mod tests {
 
     const GENERATED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/syscalls/table.gen.rs");
 
-    /// Every entry point is of a call the headers number, past those a
-    /// newer kernel adds, and a call's
-    /// function is named as the kernel names it, which is not always the
-    /// call's name.
     #[test]
     fn entry_points_are_of_numbered_calls_and_named_as_the_kernel_names_them() {
         for (abi, numbers) in [
@@ -161,10 +142,8 @@ mod tests {
         ] {
             assert!(numbers.is_sorted(), "{abi:?}");
 
-            // x32 shares x86-64's numbers below its own calls.
             let newer = limit(if abi == Abi::X32 { Abi::X86_64 } else { abi });
             for number in numbers {
-                // A newer kernel's tables go past the headers'.
                 assert!(
                     SyscallId::new(abi, number).name().is_some() || number >= newer,
                     "{abi:?} {number} has an entry but no name"
@@ -196,8 +175,6 @@ mod tests {
         );
     }
 
-    /// The kernel UAPI headers the flake provides, among the BPF include
-    /// directories.
     fn uapi() -> std::path::PathBuf {
         let include = std::env::var("MICROSCOPE_BPF_INCLUDE")
             .expect("MICROSCOPE_BPF_INCLUDE names the kernel headers; run in the dev shell");
@@ -209,8 +186,6 @@ mod tests {
             .to_owned()
     }
 
-    /// Reads `#define __NR_name number` lines, with x32's numbers written as
-    /// `(__X32_SYSCALL_BIT + number)`.
     fn parse(header: &str) -> Vec<(u32, String)> {
         let mut calls: Vec<(u32, String)> = header
             .lines()
@@ -255,8 +230,6 @@ mod tests {
         text
     }
 
-    /// Fails when `table.gen.rs` no longer matches the pinned kernel
-    /// headers. Set `MICROSCOPE_UPDATE_SYSCALLS=1` to rewrite it.
     #[test]
     fn tables_match_the_kernel_headers() {
         let expected = generate();

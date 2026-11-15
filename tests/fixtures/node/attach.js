@@ -1,6 +1,6 @@
-// A node microscope attaches to: it listens on a loopback socket of its
-// own, prints READY, and waits on its event loop for a byte. Then it
-// calls served() on the main thread, and again in a worker it starts.
+
+
+
 'use strict';
 const net = require('net');
 const { Worker, isMainThread, workerData } = require('worker_threads');

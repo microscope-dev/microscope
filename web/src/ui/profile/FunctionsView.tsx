@@ -27,14 +27,11 @@ const ROW = 20;
 
 type Order = "own" | "total";
 
-/** Every function's cost, or those a search matches, and for the selected
- * one a sandwich: its callers above and its callees below, merged from
- * every call. */
 export function FunctionsView() {
   const { query, look, setLook } = useProfile();
   const answer = useAnswer("profileFunctions", query);
   const [order, setOrder] = useState<Order>("own");
-  // The functions' share of the height, above the selected one's panel.
+
   const [split, setSplit] = useState(0.5);
   const splitStyle = useMemo(() => ({ gridTemplateRows: rowsOf(split) }) as CSSProperties, [split]);
   const [search, setSearch] = useFrameSearch();
@@ -51,7 +48,7 @@ export function FunctionsView() {
     if (order === "total") {
       return all.toSorted((a, b) => b.total - a.total || b.own - a.own);
     }
-    // The server orders a diff by change in share.
+
     return answer.data?.base && mode === "time"
       ? all.toSorted((a, b) => Math.abs(b.own - b.baseOwn) - Math.abs(a.own - a.baseOwn))
       : all;
@@ -148,7 +145,6 @@ export function FunctionsView() {
                 }
                 return (
                   <FunctionRow
-                    // Functions of one name in two modules are two rows.
                     key={row.key}
                     id={keys.rowId(item.index)}
                     row={row}
@@ -257,8 +253,6 @@ const PANELS = [
   ["code", "Source and assembly"],
 ] as const;
 
-/** The selected function: its callers and callees, or its samples on its
- * source lines or on its instructions. */
 function Selected({
   name,
   split,
@@ -295,12 +289,8 @@ function Selected({
   );
 }
 
-/** How far an arrow key moves the divider, in pixels. */
 const STEP = 16;
 
-/** The bar over the selected function's panel, which a drag or the arrow
- * keys move to share the height with the functions above. A drag moves
- * only the grid's style until it ends, so nothing renders as it moves. */
 function Divider({ split, setSplit }: { split: number; setSplit: (split: number) => void }) {
   const down = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
@@ -357,16 +347,12 @@ function Divider({ split, setSplit }: { split: number; setSplit: (split: number)
   );
 }
 
-/** The functions' share of `box`'s height with the divider at `y`, leaving
- * each side at least `LEAST` pixels. */
 function splitAt(box: HTMLElement, y: number): number {
   const { top, height } = box.getBoundingClientRect();
   const least = Math.min(LEAST, height / 2);
   return Math.max(least, Math.min(height - least, y - top)) / Math.max(height, 1);
 }
 
-/** The grid's rows for `split`. Factors under 1 take only part of the
- * space, so they are scaled up past it. */
 function rowsOf(split: number): string {
   return `minmax(0, ${split * 100}fr) minmax(0, ${(1 - split) * 100}fr)`;
 }
@@ -374,7 +360,6 @@ function rowsOf(split: number): string {
 const CALLERS_HELP = "Functions that call this one.";
 const CALLEES_HELP = "Functions this one calls.";
 
-/** A function's callers, inverted from it, and its callees, from it. */
 function Sandwich({ query, name }: { query: ProfileQuery; name: string }) {
   const focused = useMemo(
     () => ({ ...query, transforms: [...query.transforms, { op: "focus" as const, name }] }),

@@ -1,5 +1,3 @@
-//! Source, function, and hit-count breakpoints as clients set them.
-
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Profile, breakpoints, fixture, line_of, source};
@@ -45,11 +43,9 @@ fn source_breakpoints_move_to_code_keep_their_ids_and_explain_failures() {
         "{first:?}"
     );
 
-    // Sending the same breakpoints again keeps their ids.
     let again = set_lines(&mut dap, &path, &[comment, between]);
     assert_eq!(again, first);
 
-    // Sending the moved line, as dape does until lines settle, is stable.
     let settled = set_lines(&mut dap, &path, &[code]);
     assert_eq!(settled[0]["line"], code);
     assert_eq!(set_lines(&mut dap, &path, &[code]), settled);
@@ -64,7 +60,6 @@ fn source_breakpoints_move_to_code_keep_their_ids_and_explain_failures() {
         (json!("first_function"), json!(code))
     );
 
-    // Clearing the file's breakpoints lets the program finish.
     assert!(set_lines(&mut dap, &path, &[]).is_empty());
     let resumed = dap.send("continue", json!({"threadId": stop.thread}));
     dap.success(resumed);
@@ -97,7 +92,6 @@ fn function_breakpoints_stop_at_every_function_with_the_name() {
 
     assert_eq!(helper["verified"], true);
 
-    // A function no loaded module has waits for one that does.
     assert_eq!(
         (&missing["verified"], &missing["reason"]),
         (&json!(false), &json!("pending"))
@@ -202,7 +196,6 @@ fn breakpoints_sharing_an_address_are_reported_by_one_stop() {
     let function_id = started.function_breakpoints[0]["id"].clone();
     let stop = dap.stopped(started.mark);
 
-    // Two kinds of breakpoint hit together make a plain breakpoint stop.
     assert_eq!(stop.reason, "breakpoint");
     let mut ids = stop.body["hitBreakpointIds"]
         .as_array()
@@ -211,7 +204,6 @@ fn breakpoints_sharing_an_address_are_reported_by_one_stop() {
     ids.sort_by_key(Value::as_i64);
     assert_eq!(ids, [source_id.clone(), function_id]);
 
-    // Removing one leaves the other installed.
     dap.request("setFunctionBreakpoints", json!({"breakpoints": []}));
     let resumed = dap.send("continue", json!({"threadId": stop.thread}));
     dap.success(resumed);
@@ -232,7 +224,6 @@ fn breakpoints_set_while_running_stop_it_and_cleared_ones_never_do() {
     dap.event(started.mark, "process", |_| true);
 
     for _ in 0..10 {
-        // Four threads call the function as fast as they can.
         let set = dap.send(
             "setFunctionBreakpoints",
             json!({"breakpoints": [{"name": "hot_function"}]}),
@@ -245,7 +236,6 @@ fn breakpoints_set_while_running_stop_it_and_cleared_ones_never_do() {
         let resumed = dap.send("continue", json!({"threadId": stop.thread}));
         dap.success(resumed);
 
-        // With the breakpoint gone, the next stop is the pause.
         let paused = dap.send("pause", json!({"threadId": stop.thread}));
         dap.success(paused);
         assert_eq!(dap.stopped(resumed.mark).reason, "pause");
@@ -285,7 +275,6 @@ fn breakpoints_in_files_no_loaded_module_has_wait_pending() {
     dap.finish();
 }
 
-/// Launches the hit-count program stopped at its entry.
 fn counting(dap: &mut Dap) -> crate::dap::Stopped {
     let started = dap.launch(
         Profile::VsCode,
@@ -296,7 +285,6 @@ fn counting(dap: &mut Dap) -> crate::dap::Stopped {
     dap.stopped(started.mark)
 }
 
-/// The `call` argument of the innermost frame of a stopped thread.
 fn call_of(dap: &mut Dap, thread: i64) -> String {
     let trace = dap.request("stackTrace", json!({"threadId": thread, "levels": 1}));
     let frame = trace["stackFrames"][0]["id"].clone();
@@ -387,8 +375,6 @@ fn logpoints_log_values_instead_of_stopping() {
         })
         .collect::<String>();
 
-    // The two logpoints share one address, so their order within a hit
-    // follows their ids.
     assert_eq!(console, expected);
     dap.finish();
 }
@@ -422,9 +408,6 @@ fn a_condition_that_cannot_be_evaluated_stops_and_says_why() {
 fn breakpoints_in_libraries_wait_for_them_and_follow_them_in_and_out() {
     let mut dap = Dap::start("library breakpoints");
 
-    // The program loads a library, unloads it, stops in after_unload, and
-    // loads it again. Without that stop, an unload and reload could pass
-    // before the client hears of either, which leaves nothing to report.
     let started = dap.launch(
         Profile::VsCode,
         &fixture("globals-shared"),
@@ -443,7 +426,6 @@ fn breakpoints_in_libraries_wait_for_them_and_follow_them_in_and_out() {
     let mut mark = started.mark;
 
     for round in 0..2 {
-        // The library loads: the breakpoint resolves, then stops in it.
         let changed = dap.event(mark, "breakpoint", |body| {
             body["breakpoint"]["id"] == id && body["breakpoint"]["verified"] == true
         });
@@ -461,8 +443,6 @@ fn breakpoints_in_libraries_wait_for_them_and_follow_them_in_and_out() {
         let resumed = dap.send("continue", json!({"threadId": stop.thread}));
         dap.success(resumed);
 
-        // The library unloads: the breakpoint waits again, as the client
-        // hears before the next stop or the exit.
         let (next, body) = dap.next_event(resumed.mark, &["stopped", "exited"]);
         let messages = dap.messages_since(resumed.mark);
         let pending = messages.iter().position(|message| {
@@ -494,8 +474,6 @@ fn breakpoints_in_libraries_wait_for_them_and_follow_them_in_and_out() {
     dap.finish();
 }
 
-/// Continues a program to its end, returning each stop's innermost frame
-/// and the name of the frame it was inlined into or called from.
 fn stops_until_exit(dap: &mut Dap, mut mark: crate::dap::Mark) -> Vec<(String, i64, String)> {
     let mut stops = Vec::new();
     loop {
@@ -530,8 +508,6 @@ fn breakpoints_in_inlined_code_stop_in_every_inlined_copy_as_gdb_does() {
     let path = source("c/inline.c");
     let line = line_of(&path, "inline_sink = incremented;");
 
-    // gdb stops at the line as often in each build: gcc's line table marks
-    // a statement there in only some of the inlined copies.
     for (program, line_callers) in [
         ("inline-gcc-o2", vec!["middle", "caller", "branchy"]),
         (
@@ -539,7 +515,6 @@ fn breakpoints_in_inlined_code_stop_in_every_inlined_copy_as_gdb_does() {
             vec!["middle", "middle", "caller", "caller", "branchy"],
         ),
     ] {
-        // A line in the inlined body stops in the inlined frame.
         let mut dap = Dap::start(format!("{program} line"));
         let started = dap.launch(
             Profile::Neovim,
@@ -583,8 +558,6 @@ fn a_function_breakpoint_stops_in_every_overload_and_method_of_the_name() {
     );
     assert_eq!(started.function_breakpoints[0]["verified"], true);
 
-    // Each overload and the method, by their lines; frames name functions
-    // as their debug information does, without scope or parameters.
     let path = source("cpp/overloads.cpp");
     let stops = stops_until_exit(&mut dap, started.mark);
     let expected = [
@@ -603,9 +576,6 @@ fn a_function_breakpoint_stops_in_every_overload_and_method_of_the_name() {
     dap.finish();
 }
 
-/// Function breakpoints find code without debug information by its
-/// symbols: an indirect function stops in the implementation its resolver
-/// chose, which the stack names.
 #[test]
 fn function_breakpoints_find_code_without_debug_information_by_its_symbols() {
     let mut dap = Dap::start("symbol breakpoints");

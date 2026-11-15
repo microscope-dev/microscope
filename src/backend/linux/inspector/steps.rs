@@ -1,8 +1,3 @@
-//! V8 steps (`stepInto`, `stepOver`, `stepOut`) stay in their starting isolate
-//! and continue through Node's own scripts, skipped files, and generated code
-//! without a source mapping. A step from a native stop on the main thread
-//! first pauses V8 at its next statement.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -18,36 +13,23 @@ use super::{Isolate, send};
 use crate::runtime_model::inspector_protocol;
 use crate::{RuntimeId, StopReason};
 
-/// A step V8 runs for microscope.
 #[derive(Debug)]
 pub(super) struct Stepping {
     pub(super) number: u64,
     pub(super) kind: crate::StepKind,
 
-    /// Starting isolate; pauses in other isolates do not end the step.
     pub(super) session: Session,
 
-    /// How many frames the paused thread had where the step began; `None`
-    /// for a step begun where V8 did not hold the thread, which ends at
-    /// V8's next pause outside skipped scripts.
     pub(super) depth: Option<usize>,
 
-    /// The command the step continues with as its thread resumes: the
-    /// step's own, then `stepOut` from where a breakpoint whose condition
-    /// failed paused it deeper than it ends.
     pub(super) command: &'static str,
 
-    /// Whether V8 was sent the command, so that its next pause ends it.
     pub(super) sent: bool,
 
-    /// How many pauses in skipped scripts the step has gone on from.
     pub(super) skipped: u32,
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Continues a non-breakpoint pause in a skipped script, leaving the
-    /// program running. Caught exceptions and `debugger` statements there
-    /// are ignored; steps continue to the program's next statement.
     pub(super) fn step_goes_on(
         &mut self,
         runtime: RuntimeId,
@@ -92,7 +74,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             };
             Some(map.original(&generated))
         });
-        // Generated code with no source is no statement of the program.
         let unmapped = matches!(original, Some(Err(_)));
         let skip = match (&top, original) {
             (None, _) => false,
@@ -108,34 +89,25 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_mut()
             .filter(|step| step.sent && step.session == *session);
         let command = match (params["reason"].as_str(), step) {
-            // A step from a native stop pauses for no reason V8 names, and
-            // one into a script just loaded also at its sentinel.
             (Some("step" | "other" | "ambiguous"), Some(step)) if step.skipped < MAX_SKIPPED => {
                 step.skipped += 1;
-                // Out of generated code by the step's own kind, and out of
-                // Node's into the program's next statement.
                 if unmapped && step.depth.is_some() {
                     step.command
                 } else {
                     inspector_protocol::STEP_INTO
                 }
             }
-            // An exception caught in code steps pass through is that
-            // code's own business, as Node's module loader's are.
             (Some("exception" | "promiseRejection"), step)
                 if params.pointer("/data/uncaught") != Some(&serde_json::Value::Bool(true)) =>
             {
                 step.map_or(inspector_protocol::RESUME, |step| step.command)
             }
-            // So is a `debugger` statement there.
             (Some("other"), None) if statement => inspector_protocol::RESUME,
             _ => return false,
         };
         send(&link.connection, session, command, serde_json::json!({})).is_ok()
     }
 
-    /// Whether a step V8 was told to run runs in the isolate `session`
-    /// reaches.
     pub(super) fn steps_in(&self, runtime: RuntimeId, session: &Session) -> bool {
         self.session
             .inferior()
@@ -143,10 +115,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .is_some_and(|step| step.sent && step.session == *session)
     }
 
-    /// Why a pause of `pid` with `depth` frames, in the isolate `key`
-    /// names, that no breakpoint stopped ends the step V8 runs there, if it
-    /// does. One that does not end it continues it out of the call it
-    /// paused in.
     pub(super) fn inspector_step_end(
         &mut self,
         key: &PauseKey,
@@ -179,12 +147,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// The runtime whose inspector runs a step of `kind` from frame
-    /// `frame` of `pid`, the main isolate's thread, which V8 does not hold:
-    /// into or over from native code with no lines, from which a native
-    /// step would run to whatever native code outside has them. It runs to
-    /// the program's next JavaScript statement instead. A step out keeps
-    /// its native meaning.
     pub(in crate::backend::linux) fn javascript_step_from_native(
         &self,
         stop_id: crate::protocol::StopId,
@@ -219,9 +181,6 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// Asks the main isolate to pause for the step from a native stop that
-/// `step` is, if it is one not yet begun, as its thread resumes. The gate
-/// learns the request it waits to see handed on.
 pub(super) fn pause_for_step(
     connection: &Connection,
     isolate: &mut Isolate,
@@ -233,7 +192,6 @@ pub(super) fn pause_for_step(
     };
     step.sent = true;
     if isolate.resuming {
-        // The pause is sent once V8 has resumed; the gate learns it then.
         ask_pause(connection, &Session::main(), isolate);
         return;
     }
@@ -251,34 +209,19 @@ pub(super) fn pause_for_step(
     }
 }
 
-/// The main thread of a step from a native stop, held stopped until V8 is
-/// sure to take the step's `Debugger.pause` before it runs on.
-///
-/// The main thread takes a message only at its next interrupt check, once
-/// the inspector's I/O thread has handed the message on, and a pause from
-/// there lands at the next check after that. Run at once, the main thread
-/// may run statements past where the step should end before the I/O
-/// thread does so, as it did under load. So it runs only once the I/O
-/// thread has returned from the call that takes the pause's request.
 #[derive(Debug, Clone)]
 pub(super) struct Gate {
-    /// The step the gate holds the main thread for.
     pub(super) number: u64,
 
-    /// Where the I/O thread takes a message.
     entry: crate::VirtualAddress,
     phase: GatePhase,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GatePhase {
-    /// The pause is not yet sent: V8 has yet to resume, which the main
-    /// thread runs to bring about.
     Unsent,
     Sent(Vec<u8>),
 
-    /// Thread `pid` took the request at stack `stack`, and hands it on as
-    /// it returns to `returns_to`.
     Receiving {
         pid: Pid,
         stack: u64,
@@ -296,13 +239,10 @@ impl Gate {
         }
     }
 
-    /// Notes the request `id` the step's pause was sent as, or that none
-    /// was sent, which leaves nothing to wait for.
     pub(super) fn sent(&mut self, id: Option<super::super::cdp::RequestId>) {
         if self.phase != GatePhase::Unsent {
             return;
         }
-        // The text `Connection::send` writes: its keys in serde_json's order.
         self.phase = id.map_or(GatePhase::Passed, |id| {
             let message = serde_json::json!({
                 "id": id.number(),
@@ -313,10 +253,6 @@ impl Gate {
         });
     }
 
-    /// Whether the gate still holds the main thread, until the pause is
-    /// handed on. While the main isolate is `resuming`, a pause not yet
-    /// sent waits for V8 to resume, which the main thread must run to
-    /// bring about, so the gate lets it run until the pause is sent.
     pub(super) const fn holds(&self, resuming: bool) -> bool {
         match self.phase {
             GatePhase::Unsent => !resuming,
@@ -325,7 +261,6 @@ impl Gate {
         }
     }
 
-    /// The traps the gate needs.
     pub(super) fn sites(&self) -> Vec<crate::VirtualAddress> {
         match self.phase {
             GatePhase::Unsent | GatePhase::Sent(_) => vec![self.entry],
@@ -336,7 +271,6 @@ impl Gate {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Whether the gate of a step from a native stop holds thread `pid`.
     pub(in crate::backend::linux) fn step_gate_holds(&self, pid: Pid) -> bool {
         self.session.inferior().is_some_and(|inferior| {
             pid == inferior.tgid
@@ -355,10 +289,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    /// Notes thread `pid` at a trap of a step's gate, at `address`: the
-    /// I/O thread taking the step's pause, or returning once it handed it
-    /// on, which lets the main thread run. Returns whether the trap is the
-    /// gate's.
     pub(super) fn note_step_gate(
         &mut self,
         pid: Pid,
@@ -428,10 +358,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         {
             gate.phase = phase;
         }
-        // The trap this thread stopped at is repaired as it goes on, so
-        // none is removed here: the all-stop a refresh makes removes those
-        // a gate that passed leaves. The main thread runs as the execution
-        // goes on from there.
         self.sync_step_gates(false)?;
         if !self.step_gate_holds(
             self.session
@@ -443,10 +369,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(true)
     }
 
-    /// Plants the traps the steps' gates need and, with `remove`, which
-    /// only an all-stop with no repair under way may ask, removes those no
-    /// gate needs any longer. A thread stopped at a trap removed runs on
-    /// from it, its instruction restored.
     pub(super) fn sync_step_gates(&mut self, remove: bool) -> crate::Result<()> {
         let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
@@ -470,9 +392,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             if inferior.inspectors.planted().contains(&address) {
                 continue;
             }
-            // Removing the last owner restores the instruction and forgets
-            // the repairs of the threads stopped there; a site another
-            // owner keeps keeps its trap, and their repairs.
             super::super::breakpoints::remove_breakpoint_owner_from(
                 &self.ptrace,
                 inferior,
@@ -495,8 +414,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Lets the main thread run once no gate holds it, unless a stop is
-    /// being made or the execution has ended.
     pub(super) fn release_step_gate(&mut self) -> crate::Result<()> {
         let Some(inferior) = self.session.inferior() else {
             return Ok(());
@@ -515,8 +432,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// Prepares a step in the isolate holding its thread paused. From a native
-/// stop, only `main` can step, by first pausing at V8's next statement.
 pub(super) fn stepping(
     isolates: &BTreeMap<Session, Isolate>,
     step: &crate::runtime_model::RuntimeStep,
@@ -552,22 +467,13 @@ pub(super) fn stepping(
     })
 }
 
-/// Bounds skipped pauses before stopping in place. Reaching the program's
-/// next statement from a Node timer callback took 59 pauses.
 const MAX_SKIPPED: u32 = 1000;
 
-/// Whether a step goes on from a pause in the script at `url`: Node's own
-/// scripts, unless steps enter a runtime's code, and the files `skips`
-/// names. V8's blackboxing cannot skip Node's: it decides by a script's
-/// context, which the builtins in Node's snapshot do not record.
 fn skipped(url: &str, skips: &crate::StepSkips, enter_runtime: bool) -> bool {
     (url.starts_with("node:") && !enter_runtime)
         || skips.matches(&inspector_protocol::script_path(url))
 }
 
-/// Whether a pause with `depth` frames ends `step`, which no breakpoint
-/// stopped: V8 ends a step at its next pause, unless a breakpoint whose
-/// condition failed paused it in a call the step runs through.
 pub(super) const fn ends_step(step: &Stepping, depth: usize) -> bool {
     match (step.kind, step.depth) {
         (crate::StepKind::OverSource, Some(began)) => depth <= began,

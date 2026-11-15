@@ -1,23 +1,3 @@
-//! Which action the world takes next.
-//!
-//! Every action belongs to an actor: a program thread, or a session's
-//! waiter, controller, or client. A seed's swarm picks one of two policies:
-//!
-//! - A random walk: an action kind by the swarm's weights, then an action
-//!   of that kind uniformly.
-//! - PCT (Burckhardt et al., 2010): every actor has a priority, and the
-//!   enabled actor with the highest runs. At a few change points, chosen
-//!   before the run, the actor that runs drops below every other. A bug that
-//!   needs `d` orderings to happen is found with a probability that depends
-//!   only on `d`, the number of actors, and the run's length.
-//!
-//! A thread that yields the CPU drops below every other actor under PCT
-//! too, or a thread spinning on a lock would starve the thread holding it.
-//! And an actor enabled for [`PATIENCE`] steps runs next, as a machine's
-//! scheduler runs every thread eventually: a controller whose calls keep
-//! reaping the stops of a thread spinning on `sched_yield` never runs out of
-//! work, and would otherwise keep the client from acting forever.
-
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -25,28 +5,19 @@ use super::choices::{Choices, Stream};
 use super::kernel::Tid;
 use super::swarm::Weights;
 
-/// A session, by the order it started in: the first is the one the client
-/// drives.
 pub type SessionId = usize;
 
-/// One thing the world can do next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// A running thread executes a burst of instructions.
     Run(Tid),
 
-    /// A session's waiter reaps a status and queues it for its controller.
     Collect(SessionId),
 
-    /// A session's controller handles the message at the front of its
-    /// queue.
     Deliver(SessionId),
 
-    /// A session's client task runs until it waits again.
     Poll(SessionId),
 }
 
-/// Who performs an action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Actor {
     Thread(Tid),
@@ -65,8 +36,6 @@ impl Action {
         }
     }
 
-    /// The action's kind, which a random walk weighs: running, collecting,
-    /// delivering, or acting for the user.
     const fn kind(self) -> usize {
         match self {
             Self::Run(_) => 0,
@@ -77,12 +46,10 @@ impl Action {
     }
 }
 
-/// How a run's actions are chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
     Walk(Weights),
 
-    /// PCT with `depth - 1` change points among the first `horizon`
     /// actions.
     Pct {
         depth: u64,
@@ -110,28 +77,21 @@ impl fmt::Display for Policy {
 pub struct Scheduler {
     policy: Policy,
 
-    /// Each actor's priority under PCT; higher runs first.
     priorities: BTreeMap<Actor, i64>,
 
-    /// The steps at which the actor that runs drops, earliest first.
     change_points: Vec<u64>,
 
-    /// The priority the next actor to drop gets, below every other.
     floor: i64,
 
-    /// The step since which each enabled actor has waited to run.
     waiting: BTreeMap<Actor, u64>,
 }
 
-/// Where PCT's initial priorities start, above every dropped actor's.
 const HIGH: i64 = 1 << 32;
 
-/// The most steps an enabled actor waits under PCT before it runs.
 const PATIENCE: u64 = 10_000;
 
 impl Scheduler {
     pub fn new(policy: Policy, choices: &mut Choices) -> Self {
-        // Distinct, so that each of the depth - 1 points drops an actor.
         let mut change_points = Vec::new();
         if let Policy::Pct { depth, horizon } = policy {
             let points = depth.saturating_sub(1).min(horizon);
@@ -154,13 +114,11 @@ impl Scheduler {
         }
     }
 
-    /// Chooses the action taken at `step` from those enabled.
     pub fn choose(&mut self, enabled: &[Action], step: u64, choices: &mut Choices) -> Action {
         match self.policy {
             Policy::Walk(weights) => walk(weights, enabled, choices),
             Policy::Pct { .. } => {
                 for action in enabled {
-                    // A new actor takes a random place among the others.
                     self.priorities.entry(action.actor()).or_insert_with(|| {
                         HIGH + i64::try_from(choices.below(Stream::Schedule, 1 << 32))
                             .expect("a priority fits")
@@ -186,8 +144,6 @@ impl Scheduler {
                 });
                 self.waiting.remove(&action.actor());
 
-                // A point at a step that made no choice, as one a fault
-                // took, drops the actor that runs next.
                 if self
                     .change_points
                     .first()
@@ -202,7 +158,6 @@ impl Scheduler {
         }
     }
 
-    /// A thread gave up the CPU: under PCT, every other actor goes first.
     pub fn yielded(&mut self, tid: Tid) {
         if matches!(self.policy, Policy::Pct { .. }) {
             self.drop_actor(Actor::Thread(tid));
@@ -215,7 +170,6 @@ impl Scheduler {
     }
 }
 
-/// A random walk: an action kind by weight, then one action of that kind.
 fn walk(weights: Weights, enabled: &[Action], choices: &mut Choices) -> Action {
     let weights = [weights.run, weights.collect, weights.deliver, weights.poll];
     let kinds = std::array::from_fn::<_, 4, _>(|kind| {
@@ -242,9 +196,6 @@ fn walk(weights: Weights, enabled: &[Action], choices: &mut Choices) -> Action {
 mod tests {
     use super::*;
 
-    /// Under PCT the highest-priority enabled actor runs until a change
-    /// point or a yield drops it below every other, and an actor that
-    /// dropped later sits lower.
     #[test]
     fn pct_runs_the_highest_priority_actor_until_it_drops() {
         let mut choices = Choices::new(3);
@@ -262,7 +213,6 @@ mod tests {
             assert_eq!(scheduler.choose(&enabled, step, &mut choices), first);
         }
 
-        // The change point dropped the actor that ran at it.
         let second = scheduler.choose(&enabled, change + 1, &mut choices);
         assert_ne!(second, first);
         let Action::Run(tid) = second else {
@@ -276,14 +226,10 @@ mod tests {
             unreachable!("only threads are enabled")
         };
 
-        // Once the third yields too, the earliest to drop is highest again.
         scheduler.yielded(tid);
         assert_eq!(scheduler.choose(&enabled, change + 3, &mut choices), first);
     }
 
-    /// A run of `depth` has `depth - 1` distinct change points, and each
-    /// one drops an actor even when no choice was made at its step, as at
-    /// a step a fault took.
     #[test]
     fn pct_honors_every_change_point() {
         for seed in 0..64 {
@@ -316,7 +262,6 @@ mod tests {
             ran.push(scheduler.choose(&enabled, step, &mut choices));
         }
 
-        // Step 3 made no choice, so the actor that ran at step 4 drops.
         assert_eq!([ran[1], ran[2]], [ran[0]; 2]);
         assert_ne!(ran[3], ran[0]);
         assert_eq!(ran[4], ran[3]);
@@ -324,9 +269,6 @@ mod tests {
         assert!(scheduler.change_points.is_empty());
     }
 
-    /// An actor that never runs out of work, as a controller whose calls
-    /// keep reaping new stops, does not keep another enabled actor waiting
-    /// forever: a machine's scheduler runs every thread eventually.
     #[test]
     fn pct_runs_an_actor_that_waited_too_long() {
         let mut choices = Choices::new(5);

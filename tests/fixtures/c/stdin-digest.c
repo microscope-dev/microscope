@@ -1,5 +1,5 @@
-// Reads stdin to its end and prints how many bytes came and a digest of
-// them, so a test can tell that its input arrived whole, once, and in order.
+
+
 #include <stdio.h>
 
 int main(void) {

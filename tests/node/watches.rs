@@ -1,11 +1,3 @@
-//! Watches of JavaScript variables: a register's ends as the next call
-//! builds its frame in its place, and an argument's ends with its call;
-//! a captured variable's follows its context through the collections that
-//! move it, reporting each store the program prints and nothing a
-//! collection rewrites; a frame V8 replaces on a loop, from Sparkplug's
-//! code or the interpreter's, ends its watch; and a variable V8 14.6
-//! keeps in a context cell is refused.
-
 use microscope::{
     BreakpointOptions, BreakpointSpec, DebuggerEvent, Error, Expression, InferiorState, LineNumber,
     StopReason, WatchAccess, WatchScope, Watchpoint, WatchpointInvalidation, WatchpointSpec,
@@ -17,12 +9,10 @@ use crate::support::node;
 
 const FIXTURE: &str = "watches.js";
 
-/// The line of the fixture that carries `marker`.
 fn line_of(marker: &str) -> LineNumber {
     line_in(FIXTURE, marker)
 }
 
-/// The line of `fixture` that carries `marker`.
 fn line_in(fixture: &str, marker: &str) -> LineNumber {
     let text = std::fs::read_to_string(node::fixture(fixture)).expect("read the fixture");
     let index = text
@@ -49,7 +39,6 @@ fn breakpoint_in(fixture: &str, marker: &str) -> (BreakpointSpec, BreakpointOpti
     )
 }
 
-/// The line the stop is at.
 async fn stopped_line(session: &NodeSession) -> Option<u32> {
     let trace = session
         .scenario
@@ -65,7 +54,6 @@ async fn stopped_line(session: &NodeSession) -> Option<u32> {
     })
 }
 
-/// Watches the selected frame's variable `name` for changes.
 async fn watch(session: &NodeSession, name: &str) -> microscope::Result<Watchpoint> {
     let handle = session.scenario.handle();
     let expression = Expression::parse(name).expect("an expression");
@@ -83,8 +71,6 @@ async fn watch(session: &NodeSession, name: &str) -> microscope::Result<Watchpoi
         .await
 }
 
-/// Each hit's watchpoint, value before, and value after, and each ended
-/// watch's reason, from the stops until the one at `marker`.
 async fn run_to(
     session: &mut NodeSession,
     marker: &str,
@@ -118,7 +104,6 @@ async fn run_to(
             })),
             StopReason::WatchpointInvalidated { .. } => {}
             StopReason::Breakpoint { .. } => {
-                // The second call stops at its own breakpoint on the way.
                 if stopped_line(session).await == Some(line) {
                     return (hits, ended);
                 }
@@ -128,7 +113,6 @@ async fn run_to(
     }
 }
 
-/// Removes the breakpoint on the line marked `marker`.
 async fn remove_breakpoint_at(session: &mut NodeSession, marker: &str) {
     let line = line_of(marker);
     let snapshot = session.scenario.snapshot().await;
@@ -143,7 +127,6 @@ async fn remove_breakpoint_at(session: &mut NodeSession, marker: &str) {
     session.scenario.remove_breakpoint(id).await;
 }
 
-/// The watchpoints the debugger keeps now.
 async fn watchpoints(session: &mut NodeSession) -> Vec<Watchpoint> {
     session.scenario.snapshot().await.watchpoints.to_vec()
 }
@@ -179,8 +162,6 @@ pub async fn variables_are_watched_for_their_frames_life(entry: &str) {
         session.output()
     );
 
-    // The receiver never changes, and a script's binding is kept where
-    // no frame reaches it.
     for name in ["this", "globalThis"] {
         let refused = watch(session, name).await;
         assert!(
@@ -189,8 +170,6 @@ pub async fn variables_are_watched_for_their_frames_life(entry: &str) {
         );
     }
 
-    // A register of the first call: its watch ends as the second call's
-    // frame is built in its place, and reports nothing of that frame.
     let total = watch(session, "total").await.expect("watch total").id.get();
     let (hits, ended) = run_to(session, "COUNTER", &mut events).await;
     assert_eq!(
@@ -208,8 +187,6 @@ pub async fn variables_are_watched_for_their_frames_life(entry: &str) {
         [(total, WatchpointInvalidation::ScopeExited)],
         "{context}: the watch ends with its call"
     );
-    // An argument of the second call, which its body never stores: its
-    // watch ends with the call too.
     let rounds = watch(session, "rounds")
         .await
         .expect("watch rounds")
@@ -228,7 +205,6 @@ pub async fn variables_are_watched_for_their_frames_life(entry: &str) {
         session.output()
     );
 
-    // A captured variable, in a context the collections move.
     let a = watch(session, "a").await.expect("watch a");
     let (hits, ended) = run_to(session, "MOVED_END", &mut events).await;
     let id = a.id.get();
@@ -243,7 +219,6 @@ pub async fn variables_are_watched_for_their_frames_life(entry: &str) {
         session.output()
     );
     assert!(ended.is_empty(), "{context}: {ended:?}");
-    // The scenario holds only if a collection moved the context.
     let now = watchpoints(session).await;
     let followed = now
         .iter()
@@ -266,8 +241,6 @@ pub async fn variables_are_watched_for_their_frames_life(entry: &str) {
         "{context}: the watch of `a` ends with its frame"
     );
 
-    // V8 14.6 keeps a small context's number in a cell, whose fields the
-    // number moves between.
     let x = watch(session, "x").await;
     if major(entry) >= 26 {
         assert!(
@@ -287,9 +260,6 @@ pub async fn variables_are_watched_for_their_frames_life(entry: &str) {
         );
     }
 
-    // V8 replaces the loop's frame by optimized code, which keeps the
-    // argument elsewhere, entering it from Sparkplug's code. V8 optimizes
-    // no function with a breakpoint.
     let n = watch(session, "n").await.expect("watch n").id.get();
     remove_breakpoint_at(session, "HOT").await;
     let (hits, ended) = run_to(session, "SPIN", &mut events).await;
@@ -306,8 +276,6 @@ pub async fn variables_are_watched_for_their_frames_life(entry: &str) {
         session.output()
     );
 
-    // V8 enters the allocating loop's replacement from the interpreter's
-    // bytecode handler, whose frame is below the replaced one.
     let start = watch(session, "start").await.expect("watch start").id.get();
     remove_breakpoint_at(session, "SPIN").await;
     let (hits, ended) = run_to(session, "DONE", &mut events).await;
@@ -332,10 +300,6 @@ pub async fn variables_are_watched_for_their_frames_life(entry: &str) {
     owned.shutdown().await;
 }
 
-/// A block's variable, which each iteration of its loop binds anew in its
-/// register, is refused; the function's own variable reports its stores
-/// until the call returns, and nothing Node's own code later writes in its
-/// slot.
 pub async fn registers_are_watched_for_their_bindings_life(entry: &str) {
     const BLOCKS: &str = "blocks.js";
     let (mut owned, reason, mut events) = NodeSession::unlaunched_with_node(entry, BLOCKS, &[])
@@ -410,9 +374,6 @@ pub async fn registers_are_watched_for_their_bindings_life(entry: &str) {
     owned.shutdown().await;
 }
 
-/// A build that does not name V8's collector, as Debian's stripped
-/// libnode does not, refuses every watch of a JavaScript variable, which
-/// no collection could be followed through.
 pub async fn watches_are_refused_without_the_collector(entry: &str) {
     let (mut owned, reason, _) =
         NodeSession::unlaunched_with_node(entry, FIXTURE, &["--expose-gc"])

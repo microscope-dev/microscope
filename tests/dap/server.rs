@@ -1,7 +1,3 @@
-//! An HTTP server and its client in one Go program, as an editor debugs
-//! them: the filter for every panic stops on one the server recovers from,
-//! and a build without its sources' paths shows them through a source map.
-
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
@@ -30,8 +26,6 @@ fn the_filter_for_every_panic_stops_on_one_the_server_recovers_from() {
         "{info}"
     );
 
-    // The handler that panicked is the program's first frame, below the
-    // runtime's, which are subdued.
     let frames = dap.inspect_as(Profile::VsCode, &stop);
     let handler = frames
         .iter()
@@ -58,8 +52,6 @@ fn a_build_without_its_source_paths_shows_them_through_a_source_map() {
         ..Configuration::default()
     };
 
-    // The breakpoint binds by the file's name, but the program names the
-    // file by a path this machine does not have.
     let shown = |arguments| {
         let mut dap = Dap::start("trimmed paths");
         let started = dap.launch(
@@ -90,8 +82,6 @@ fn a_build_without_its_source_paths_shows_them_through_a_source_map() {
     assert_eq!(mapped, local);
 }
 
-/// The leading parts that differ between a recorded path and a local one
-/// whose trailing components it shares, keeping a part of the recorded.
 fn prefixes(recorded: &Path, local: &Path) -> (PathBuf, PathBuf) {
     let recorded = recorded.components().collect::<Vec<_>>();
     let local = local.components().collect::<Vec<_>>();

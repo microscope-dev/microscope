@@ -1,10 +1,3 @@
-//! Type identities: how the names producers give types split into paths,
-//! bases, and arguments, and an image's index from identities to types.
-//!
-//! Debug information's structure comes first. A name is parsed only for
-//! what the structure does not say, and an argument that does not resolve to
-//! exactly one type stays unknown rather than being guessed.
-
 pub mod functions;
 
 use std::cell::RefCell;
@@ -21,28 +14,20 @@ use crate::{
     TypeKind, TypeModifier, TypeNode, TypeReference,
 };
 
-/// How a path spells a namespace without a name. Each unit's is its own.
 pub const ANONYMOUS_NAMESPACE: &str = "(anonymous namespace)";
 
-/// How deeply argument matching may nest before it gives up.
 const MAX_ARGUMENT_DEPTH: usize = 16;
 
-/// How a language spells qualified and generic type names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NameSyntax {
-    /// `a::b::Name<T, 3>`: C, C++, and Rust.
     Angle,
 
-    /// `path/to/pkg.Name[T,U]`.
     Go,
 
-    /// `module.Name(T,null)`.
     Zig,
 
-    /// `package::Name(T:$int,N:$$4)`, and `map[K]V`.
     Odin,
 
-    /// `Name!T` and `Name!(T, 3)`, scoped by the module it is in.
     D,
 }
 
@@ -60,22 +45,16 @@ impl NameSyntax {
     }
 }
 
-/// A type name split into its parts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeName<'a> {
-    /// The qualifying segments the name spells, outermost first.
     pub path: Vec<&'a str>,
 
-    /// The name without its path or arguments.
     pub base: &'a str,
 
-    /// The argument texts, when the name has an argument list.
     pub arguments: Option<Vec<&'a str>>,
 }
 
 impl<'a> TypeName<'a> {
-    /// Splits a name. A name the syntax does not describe, such as `&str`,
-    /// `[]int`, or `unsigned int`, is all base.
     pub fn parse(name: &'a str, syntax: NameSyntax) -> Self {
         let name = name.trim();
         let parsed = match syntax {
@@ -109,8 +88,6 @@ fn parse_angle(name: &str) -> Option<TypeName<'_>> {
     })
 }
 
-/// One of Rust's braced scopes, such as `{impl#0}` or a closure's
-/// `{closure_env#0}`, which names a type too.
 fn is_braced_scope(text: &str) -> bool {
     text.starts_with('{') && text.ends_with('}')
 }
@@ -138,7 +115,6 @@ fn parse_go(name: &str) -> Option<TypeName<'_>> {
         return None;
     }
 
-    // A package path may hold dots before its last slash, never after.
     let after_slash = qualified.rfind('/').map_or(0, |slash| slash + 1);
     let (path, base) = match qualified[after_slash..].find('.') {
         Some(dot) => {
@@ -175,7 +151,6 @@ fn parse_zig(name: &str) -> Option<TypeName<'_>> {
 }
 
 fn parse_odin(name: &str) -> Option<TypeName<'_>> {
-    // Every map is `map[K]V`, whose arguments are its key and its value.
     if let Some(rest) = name.strip_prefix("map[") {
         let close = top_level_position(rest, ']', NameSyntax::Odin)?;
         let (key, value) = (&rest[..close], &rest[close + 1..]);
@@ -195,8 +170,6 @@ fn parse_odin(name: &str) -> Option<TypeName<'_>> {
     let mut segments = split_top_level(qualified, "::", NameSyntax::Odin)?;
     let base = segments.pop()?;
 
-    // An argument names its parameter: `T:$int` is the type `int`, and
-    // `N:$$4` the constant 4.
     let arguments = arguments
         .map(|arguments| {
             arguments
@@ -219,8 +192,6 @@ fn parse_odin(name: &str) -> Option<TypeName<'_>> {
     )
 }
 
-/// A template instance's name is its template's, `!`, and its one
-/// argument or its parenthesized list of them.
 fn parse_d(name: &str) -> Option<TypeName<'_>> {
     let Some(bang) = top_level_position(name, '!', NameSyntax::D) else {
         return is_identifier(name).then_some(TypeName {
@@ -255,8 +226,6 @@ fn is_identifier(text: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '$'))
 }
 
-/// A path segment: an identifier with any arguments, an anonymous
-/// namespace, or one of Rust's braced scopes such as `{impl#0}`.
 fn is_angle_segment(segment: &str) -> bool {
     segment == ANONYMOUS_NAMESPACE
         || is_braced_scope(segment)
@@ -264,9 +233,6 @@ fn is_angle_segment(segment: &str) -> bool {
             .is_some_and(|(base, _)| is_identifier(base.trim_end()))
 }
 
-/// Splits `Name<A, B>` into `Name` and its argument texts. A name without
-/// an argument list has none; a list that does not end the name, or that
-/// is unbalanced, is not one.
 fn split_arguments(
     text: &str,
     open: char,
@@ -279,8 +245,6 @@ fn split_arguments(
 
     let inner = text[start + open.len_utf8()..].strip_suffix(close)?;
 
-    // The list must close only at the very end, and be balanced, which
-    // splitting it checks.
     if top_level_position(inner, close, syntax).is_some() {
         return None;
     }
@@ -297,7 +261,6 @@ fn split_arguments(
     Some((&text[..start], Some(arguments)))
 }
 
-/// Splits at every occurrence of `separator` outside brackets.
 fn split_top_level<'a>(text: &'a str, separator: &str, syntax: NameSyntax) -> Option<Vec<&'a str>> {
     let mut parts = Vec::new();
     let mut stack = Vec::new();
@@ -311,7 +274,6 @@ fn split_top_level<'a>(text: &'a str, separator: &str, syntax: NameSyntax) -> Op
             parts.push(&text[start..index]);
             start = index + separator.len();
 
-            // Skip the rest of the separator.
             while characters.peek().is_some_and(|(next, _)| *next < start) {
                 characters.next();
             }
@@ -330,7 +292,6 @@ fn split_top_level<'a>(text: &'a str, separator: &str, syntax: NameSyntax) -> Op
     })
 }
 
-/// The first position of `target` outside brackets.
 fn top_level_position(text: &str, target: char, syntax: NameSyntax) -> Option<usize> {
     let mut stack = Vec::new();
     let mut previous = None;
@@ -346,9 +307,6 @@ fn top_level_position(text: &str, target: char, syntax: NameSyntax) -> Option<us
     None
 }
 
-/// Tracks one character's effect on the open brackets. Angle brackets
-/// count only in angle syntax and only outside other brackets, so `->` and
-/// a comparison in a parenthesized value do not unbalance a name.
 fn step(
     stack: &mut Vec<char>,
     character: char,
@@ -377,11 +335,9 @@ fn step(
     Some(())
 }
 
-/// The integer an argument spells, with any C or Rust suffix.
 pub fn parse_integer(text: &str) -> Option<IntegerValue> {
     let text = text.trim();
 
-    // C++ names spell a truth value argument as a word.
     match text {
         "false" => return Some(IntegerValue::Unsigned(0)),
         "true" => return Some(IntegerValue::Unsigned(1)),
@@ -425,7 +381,6 @@ pub fn parse_integer(text: &str) -> Option<IntegerValue> {
     let magnitude = u128::from_str_radix(&number.replace('_', ""), radix).ok()?;
 
     if negative {
-        // `i128::MIN`'s magnitude is past `i128::MAX`.
         Some(IntegerValue::Signed(
             0_i128.checked_sub_unsigned(magnitude)?,
         ))
@@ -434,7 +389,6 @@ pub fn parse_integer(text: &str) -> Option<IntegerValue> {
     }
 }
 
-/// Whether two integers are the same number, whatever their signedness.
 pub fn same_integer(left: IntegerValue, right: IntegerValue) -> bool {
     match (left, right) {
         (IntegerValue::Signed(left), IntegerValue::Signed(right)) => left == right,
@@ -446,13 +400,10 @@ pub fn same_integer(left: IntegerValue, right: IntegerValue) -> bool {
     }
 }
 
-/// How patterns reach the types their arguments name.
 pub trait TypeLookup {
     fn type_info(&self, reference: TypeReference) -> Option<&TypeInfo>;
 }
 
-/// The argument texts one lookup has parsed in one syntax, so that
-/// comparing a pattern with many candidates parses each text once.
 struct Parses<'t> {
     syntax: NameSyntax,
     parsed: RefCell<HashMap<&'t str, Rc<TypeName<'t>>>>,
@@ -477,11 +428,6 @@ impl<'t> Parses<'t> {
     }
 }
 
-/// Whether `info` is a type `pattern` names. A pattern's path may omit
-/// outer segments and spell or omit the type's inline namespaces, and with
-/// `exact` false its arguments may omit trailing ones, as C++ omits
-/// defaulted template arguments. Identities keep inline namespaces' names
-/// but not their places, so a pattern may spell one anywhere in its path.
 fn names_type<'t>(
     pattern: &TypeName<'t>,
     parses: &Parses<'t>,
@@ -563,7 +509,6 @@ fn argument_matches<'t>(
                 return true;
             }
 
-            // A qualifier may be spelled before or after what it qualifies.
             if let TypeKind::Modified { modifier, target } = &info.kind
                 && let Some(word) = match modifier {
                     TypeModifier::Const => Some("const"),
@@ -591,25 +536,18 @@ fn argument_matches<'t>(
     }
 }
 
-/// An image's types by identity.
 #[derive(Debug, Default)]
 pub struct TypeIndex {
     image: Option<ModuleImageId>,
 
-    /// Types with identities, by base, in identifier order. A C base type
-    /// is also under C's own spelling of it.
     by_base: HashMap<Arc<str>, Vec<TypeId>>,
 
-    /// Every resolved type, by name.
     by_name: HashMap<Arc<str>, Vec<TypeId>>,
 
-    /// Each type's identity as one string, so that one type in several
-    /// units compares equal.
     keys: Vec<Arc<str>>,
 }
 
 impl TypeIndex {
-    /// Indexes `count` types, which `info` reaches by index.
     #[cfg(any(test, feature = "tools"))]
     pub fn build<'a>(
         image: Option<ModuleImageId>,
@@ -619,16 +557,12 @@ impl TypeIndex {
         Self::build_searching(image, count, |_| true, info)
     }
 
-    /// Indexes `count` types, which `info` reaches by index, keying every
-    /// one but letting names find only those `searchable` accepts.
     pub fn build_searching<'a>(
         image: Option<ModuleImageId>,
         count: usize,
         searchable: impl Fn(usize) -> bool + Sync,
         info: impl Fn(usize) -> Option<&'a TypeInfo> + Sync,
     ) -> Self {
-        // The names and the keys are indexed beside each other: the keys
-        // read no name, and each walk is serial.
         let ((by_base, by_name), keys) = rayon::join(
             || names_by_base(count, &searchable, &info),
             || canonical_keys(count, &info),
@@ -642,8 +576,6 @@ impl TypeIndex {
         }
     }
 
-    /// Frees the index on every worker: its keys and names are millions of
-    /// allocations, a fifth of a second to free on one thread.
     pub fn free_in_parallel(self) {
         let Self {
             by_base,
@@ -657,8 +589,6 @@ impl TypeIndex {
         );
     }
 
-    /// A type's identity as one string, which every type the same as it
-    /// shares.
     pub fn key(&self, reference: TypeReference) -> Option<&Arc<str>> {
         if self.image != Some(reference.image) {
             return None;
@@ -667,8 +597,6 @@ impl TypeIndex {
         self.keys.get(reference.id.index())
     }
 
-    /// Whether two types of this image have the same identity, as one type
-    /// defined in several units does.
     pub fn same_type(&self, left: TypeReference, right: TypeReference) -> bool {
         left == right
             || self.image == Some(left.image)
@@ -695,25 +623,17 @@ impl NameIndex for TypeIndex {
     }
 }
 
-/// Types by name and by their identity's base, which name lookups search.
 pub trait NameIndex {
-    /// The image whose types these are, if it has any.
     fn image(&self) -> Option<ModuleImageId>;
 
-    /// The resolved types named exactly `name`, in identifier order.
     fn by_name(&self, name: &str) -> Vec<TypeId>;
 
-    /// The types whose identity has base `base`, or whose base C spells
-    /// so, in identifier order.
     fn by_base(&self, base: &str) -> Vec<TypeId>;
 
-    /// The reference to type `id` of this image.
     fn reference(&self, id: TypeId) -> Option<TypeReference> {
         self.image().map(|image| TypeReference { image, id })
     }
 
-    /// The types with exactly this language, path, and base, whatever
-    /// their arguments.
     fn instances(
         &self,
         language: SourceLanguage,
@@ -742,7 +662,6 @@ pub trait NameIndex {
             .collect()
     }
 
-    /// The types whose identity has this base, in identifier order.
     fn with_base(&self, base: &str) -> Vec<TypeReference> {
         self.by_base(base)
             .into_iter()
@@ -750,9 +669,6 @@ pub trait NameIndex {
             .collect()
     }
 
-    /// The types a name, as a person or a producer writes it, could mean,
-    /// in identifier order: those named exactly so, and those whose
-    /// identity the name spells in any language's syntax.
     fn named(&self, text: &str, exact: bool, types: &dyn TypeLookup) -> Vec<TypeReference> {
         let mut found = self.by_name(text);
 
@@ -789,8 +705,6 @@ pub trait NameIndex {
     }
 }
 
-/// The types `searchable` lets be found among `count`, by their identity's
-/// base names and by their names.
 #[expect(clippy::type_complexity, reason = "the two indexes a TypeIndex keeps")]
 fn names_by_base<'a>(
     count: usize,
@@ -820,8 +734,6 @@ fn names_by_base<'a>(
                 .or_default()
                 .push(id);
 
-            // A C base type is also under C's own spelling, whichever
-            // words the producer chose: `short int` is `short`.
             if let Some(key) = c_type_key_of_name(&identity.base)
                 && key != identity.base.as_ref()
             {
@@ -833,8 +745,6 @@ fn names_by_base<'a>(
     (by_base, by_name)
 }
 
-/// Each of `count` types' identity as one string, which every type the
-/// same as it shares: [`TypeIndex::key`] without the index.
 pub fn canonical_keys<'a>(
     count: usize,
     info: impl Fn(usize) -> Option<&'a TypeInfo>,
@@ -850,9 +760,6 @@ pub fn canonical_keys<'a>(
         .collect()
 }
 
-/// A type's identity as one string: its identity when it has one, and
-/// otherwise its shape over its targets' keys. A type in an anonymous
-/// namespace is its unit's own, so its key is its own too.
 #[expect(
     clippy::indexing_slicing,
     reason = "memo and visiting are resized to hold index before either is indexed"
@@ -959,15 +866,12 @@ fn canonical_key<'a>(
     key
 }
 
-/// What [`canonical_key`] knows between types: each finished key, and the
-/// types on the path it is walking.
 struct KeyWalk {
     memo: Vec<Option<Arc<str>>>,
     visiting: Vec<bool>,
     depth: usize,
 }
 
-/// A module image's finalized types, for patterns to reach arguments.
 impl TypeLookup for &[TypeNode] {
     fn type_info(&self, reference: TypeReference) -> Option<&TypeInfo> {
         match self.get(reference.id.index())? {
@@ -983,7 +887,6 @@ mod tests {
 
     use super::*;
 
-    /// An integer argument and how a name spells it.
     #[derive(Debug, Clone)]
     struct Integer {
         value: IntegerValue,
@@ -1005,7 +908,6 @@ mod tests {
                 (true, true) => format!("{magnitude:X}"),
             };
 
-            // Underscores between groups of digits, from the right.
             let digits = self.group.map_or_else(
                 || digits.clone(),
                 |group| {
@@ -1052,7 +954,6 @@ mod tests {
             })
     }
 
-    /// A type name as a tree: its path, base, and arguments.
     #[derive(Debug, Clone)]
     struct Name {
         path: Vec<String>,
@@ -1066,7 +967,6 @@ mod tests {
         Integer(Integer),
     }
 
-    /// How a rendered name separates its arguments.
     const SEPARATORS: [&str; 4] = [",", ", ", " ,", " ,  "];
 
     impl Name {
@@ -1098,8 +998,6 @@ mod tests {
                 NameSyntax::D => ("", "!(", ")", false),
             };
 
-            // Go's path is one package, its import path's parts joined by
-            // slashes.
             let path = if syntax == NameSyntax::Go {
                 self.path.join("/")
             } else {
@@ -1116,8 +1014,6 @@ mod tests {
             text
         }
 
-        /// Checks that `text` parses to this name, its type arguments
-        /// too, and its integer arguments to their values.
         fn check(&self, text: &str, syntax: NameSyntax) -> Result<(), TestCaseError> {
             let parsed = TypeName::parse(text, syntax);
             let path = if syntax == NameSyntax::Go && !self.path.is_empty() {
@@ -1156,7 +1052,6 @@ mod tests {
     }
 
     fn name(syntax: NameSyntax) -> impl Strategy<Value = Name> {
-        // D scopes a template by its module, which its name leaves out.
         let path = if syntax == NameSyntax::D { 0..1 } else { 0..3 };
         let leaf = (
             proptest::collection::vec(identifier(), path.clone()),
@@ -1209,7 +1104,6 @@ mod tests {
         }
     }
 
-    /// Shrunk by the properties above.
     #[test]
     fn the_least_signed_integer_parses() {
         assert_eq!(
@@ -1243,7 +1137,6 @@ mod tests {
             )
         );
 
-        // `->` and a parenthesized comparison do not close the list.
         assert_eq!(
             parts("Vec<fn(i32) -> i32>", Angle),
             (vec![], "Vec", Some(vec!["fn(i32) -> i32"]))
@@ -1297,7 +1190,6 @@ mod tests {
             (vec![], "Tuple", Some(vec!["int[]", "Nullable!int", "3"]))
         );
 
-        // What the syntax does not describe is all base.
         for (name, syntax) in [
             ("&str", Angle),
             ("*const [i32]", Angle),
@@ -1320,9 +1212,6 @@ mod tests {
         }
     }
 
-    /// One type defined in several units is one type, but each unit's
-    /// anonymous namespace is its own, so types in them are distinct
-    /// however alike they are spelled, and so are instances over them.
     #[test]
     fn types_in_anonymous_namespaces_are_distinct_in_each_unit() {
         use crate::{ArgumentOrigin, TypeIdentity};
@@ -1368,8 +1257,6 @@ mod tests {
         assert!(!index.same_type(reference(4), reference(5)));
     }
 
-    /// GCC spells a qualified argument `int const` and clang `const int`;
-    /// either names the qualified type, whatever its own name.
     #[test]
     fn qualified_arguments_match_in_either_order() {
         struct Lookup<'a>(&'a [TypeInfo]);
@@ -1466,8 +1353,6 @@ mod tests {
         assert_eq!(parse_integer("(char)97"), None);
         assert_eq!(parse_integer("3x"), None);
 
-        // A truth value argument, as C++ names spell it, is its number, as
-        // its template parameter's DWARF holds it.
         assert_eq!(parse_integer("false"), Some(IntegerValue::Unsigned(0)));
         assert_eq!(parse_integer("true"), Some(IntegerValue::Unsigned(1)));
         assert!(same_integer(

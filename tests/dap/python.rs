@@ -1,18 +1,12 @@
-//! Python through its agent, as an editor drives it: a breakpoint in a `.py`
-//! file, steps, and an uncaught exception, launched and attached.
-
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Mark, Profile, Stopped, line_of, source};
 use crate::support::{ExternalProcess, python};
 
-/// The line of the stepping fixture marked `marker`.
 fn line(marker: &str) -> u64 {
     line_of(&source("python/stepping.py"), &format!("# {marker}"))
 }
 
-/// The breakpoint at `marker` and the uncaught Python exceptions, which no
-/// other exception filter joins.
 fn configuration(markers: &[&str]) -> Configuration {
     Configuration {
         sources: vec![(
@@ -24,9 +18,6 @@ fn configuration(markers: &[&str]) -> Configuration {
     }
 }
 
-/// Models VS Code's `Thread.getTopStackFrame`: first sourced frame, skipping frame hints
-/// (or source hints if absent) of `subtle`/`deemphasize` except at breakpoint/step stops.
-/// Agent and interpreter frames must therefore have no source at those stops.
 fn focused(dap: &mut Dap, stop: &Stopped) -> Value {
     let trace = dap.request(
         "stackTrace",
@@ -49,7 +40,6 @@ fn focused(dap: &mut Dap, stop: &Stopped) -> Value {
         .unwrap_or_else(|| panic!("no frame has source to focus: {trace}"))
 }
 
-/// Checks the focused frame is `function` at the line marked `marker`.
 fn assert_focused(dap: &mut Dap, stop: &Stopped, function: &str, marker: &str) -> Value {
     let frame = focused(dap, stop);
     assert_eq!(frame["name"], function, "at {marker}: {frame}");
@@ -63,14 +53,12 @@ fn assert_focused(dap: &mut Dap, stop: &Stopped, function: &str, marker: &str) -
     frame
 }
 
-/// Sends `command` for the stopped thread and waits for its stop.
 fn resume(dap: &mut Dap, command: &str, stop: &Stopped) -> Stopped {
     let mark = dap.mark();
     dap.request(command, json!({"threadId": stop.thread}));
     dap.stopped(mark)
 }
 
-/// The value of `name` in the frame's scope `scope`.
 fn variable(dap: &mut Dap, frame: &Value, scope: &str, name: &str) -> Value {
     let scopes = dap.request("scopes", json!({"frameId": frame["id"]}));
     let locals = scopes["scopes"]
@@ -91,9 +79,6 @@ fn variable(dap: &mut Dap, frame: &Value, scope: &str, name: &str) -> Value {
         .clone()
 }
 
-/// Once confirmed, a breakpoint the agent holds stays verified: a step or
-/// another change to the agent's configuration does not make it pending
-/// again while the agent acknowledges it, or an editor would gray it out.
 fn assert_verified_once_confirmed(dap: &mut Dap, since: Mark) {
     let changes = dap.events(since, "breakpoint");
     let first = changes
@@ -117,11 +102,8 @@ fn a_launched_python_program_breaks_steps_and_stops_at_an_uncaught_exception() {
         &configuration(&["CALLER_CALL"]),
     );
 
-    // Its code loads only as the interpreter runs the file.
     assert_eq!(started.source_breakpoints[0][0]["verified"], false);
 
-    // The first stop is the breakpoint, not an exception the interpreter's
-    // own C code raised and caught as it started.
     let stop = dap.stopped(started.mark);
     assert_eq!(stop.reason, "breakpoint", "{stop:?}");
     assert_eq!(stop.body["hitBreakpointIds"], json!([1]), "{stop:?}");
@@ -137,7 +119,6 @@ fn a_launched_python_program_breaks_steps_and_stops_at_an_uncaught_exception() {
     let stop = resume(&mut dap, "next", &stop);
     assert_focused(&mut dap, &stop, "caller", "CALLER_AFTER");
 
-    // The worker's exception leaves Thread.run for threading.excepthook.
     let stop = resume(&mut dap, "continue", &stop);
     assert_eq!(stop.reason, "exception", "{stop:?}");
     assert_eq!(stop.body["text"], "unhandled exception", "{stop:?}");
@@ -180,7 +161,6 @@ fn an_attached_python_program_breaks_and_steps() {
         &configuration(&["CALLER_START"]),
     );
 
-    // Until the program runs Python again, nothing can load the agent.
     let mark = dap.mark();
     process.release();
     let stop = dap.stopped(mark);
@@ -192,8 +172,6 @@ fn an_attached_python_program_breaks_and_steps() {
     assert_eq!(variable(&mut dap, &frame, "Locals", "start"), "1");
     assert_verified_once_confirmed(&mut dap, started.mark);
 
-    // Detaching disarms the agent and leaves the program to finish alone;
-    // its worker's exception goes to threading.excepthook unstopped.
     dap.finish();
     assert_eq!(process.wait().code(), Some(0));
 }

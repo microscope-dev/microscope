@@ -1,13 +1,3 @@
-//! Presents exact built-in types: `None`, `bool`, arbitrary-size `int`, `float`, `str`,
-//! `bytes`, `list`, `tuple`, `dict`, `set`, and `frozenset`; classes and modules use names.
-//! C-defined standard-library types follow their own `repr` ([`super::library`]).
-//! Other objects, including subclasses, use default `repr` (type name and address)
-//! with attribute children ([`super::instances`]).
-//!
-//! Summaries use Python notation ([`super::text`]), bounded by [`SUMMARY_DEPTH`] and
-//! [`SUMMARY_ITEMS`], with `...` for omitted contents and `repr`'s recursive-container notation.
-//! Every read charges the inspection budget; malformed objects report a problem, not emptiness.
-
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -25,31 +15,21 @@ use crate::runtime_model::{
 };
 use crate::{InspectionExhaustion, VariableUnavailableReason};
 
-/// How deep a summary nests containers, and how many items of each it
-/// shows.
 pub(super) const SUMMARY_DEPTH: usize = 6;
 pub(super) const SUMMARY_ITEMS: u64 = 64;
 
-/// The most objects one summary reads.
 pub(super) const SUMMARY_OBJECTS: usize = 512;
 
-/// The most characters of a `str`, or bytes of a `bytes`, a summary shows.
 const SUMMARY_TEXT: u64 = 1024;
 
-/// The most digits of an `int` read: one with more is shown by its size.
 const MAX_INT_DIGITS: u64 = 1 << 10;
 
-/// The most entries of a `dict`'s table read to find its items.
 const MAX_DICT_ENTRIES: u64 = 1 << 20;
 
-/// How many of a `dict`'s entries, or a `set`'s, one read takes.
 const DICT_ENTRIES_READ: u64 = 64;
 
-/// The most slots of a `set`'s table read to find its items.
 const MAX_SET_SLOTS: u64 = 1 << 20;
 
-/// Where the process keeps the type objects of the built-in types the
-/// debugger presents.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Types {
     pub(super) none: VirtualAddress,
@@ -67,32 +47,22 @@ pub(super) struct Types {
     pub(super) module: VirtualAddress,
     pub(super) function: VirtualAddress,
 
-    /// The type of built-in functions and methods, as `len`.
     pub(super) builtin: VirtualAddress,
 
-    /// The types of coroutines, and of generators, which asyncio's
-    /// coroutines may be.
     pub(super) coroutine: VirtualAddress,
     pub(super) generator: VirtualAddress,
     pub(super) code: VirtualAddress,
 
-    /// `type`, whose instances are classes.
     pub(super) class: VirtualAddress,
 
-    /// The type of a slot's descriptor, and of the wrapper of a type's C
-    /// function for a special method.
     pub(super) member: VirtualAddress,
     pub(super) wrapper: VirtualAddress,
 
-    /// The type of a type's C method, as `list.append`.
     pub(super) method: VirtualAddress,
 
-    /// `PyObject_GenericGetAttr`, how a type that reads its instances'
-    /// attributes as `object` does reads them.
     pub(super) generic_getattr: VirtualAddress,
 }
 
-/// An inspection's budget, which pays for each read of its values.
 pub(super) struct Budget<'b>(RefCell<&'b mut InspectionBudget>);
 
 impl<'b> Budget<'b> {
@@ -118,7 +88,6 @@ impl Charge for Budget<'_> {
     }
 }
 
-/// An object, as far as presenting it needs it read.
 pub(super) enum Object {
     Nothing,
     Bool(bool),
@@ -127,7 +96,6 @@ pub(super) enum Object {
         digits: Vec<u32>,
     },
 
-    /// An `int` of more digits than are read.
     LargeInt {
         digits: u64,
     },
@@ -150,8 +118,6 @@ pub(super) enum Object {
     },
     Dict(Dict),
 
-    /// A `set` or a `frozenset`: its table of `mask + 1` slots, of which
-    /// `used` hold items.
     Set {
         frozen: bool,
         table: VirtualAddress,
@@ -159,100 +125,71 @@ pub(super) enum Object {
         used: u64,
     },
 
-    /// A class, `this`, whose type is `meta`.
     Class {
         this: Arc<Class>,
         meta: Arc<Class>,
     },
 
-    /// A module, whose dict holds its globals.
     Module {
         dict: VirtualAddress,
     },
 
-    /// A function, by its qualified name.
     Function {
         name: Arc<str>,
     },
 
-    /// A built-in function or method, by its name, and for a method, the
-    /// name of its object's type and the object's address.
     Builtin {
         name: Arc<str>,
         bound: Option<(Arc<str>, VirtualAddress)>,
     },
 
-    /// A code object: its name, the file it is compiled from, and its first
-    /// line, or -1 for none.
     Code {
         name: Arc<str>,
         file: Arc<str>,
         line: i32,
     },
 
-    /// An object of one of the standard library's types that only C
-    /// defines ([`super::library`]), `class`, by the name the C of its
-    /// own type gives that type, and its value.
     Library {
         class: Arc<Class>,
         name: Arc<str>,
         value: Library,
     },
 
-    /// An object of any other type, and the value of a built-in type it
-    /// holds, as one of a class deriving from `int` or `tuple` does, or
-    /// of a library type.
     Instance {
         class: Arc<Class>,
         base: Option<Box<Self>>,
     },
 }
 
-/// A `dict`'s table of entries, in insertion order, or the keys an
-/// instance's values share with its class's other instances'.
 #[derive(Clone, Copy)]
 pub(super) struct Dict {
     pub(super) object: VirtualAddress,
     pub(super) length: u64,
 
-    /// Its hash table of indices into its entries, of `1 << log2_size`
-    /// slots each `index_width` bytes wide, which its entries follow.
     pub(super) indices: VirtualAddress,
     pub(super) log2_size: u64,
     pub(super) index_width: u64,
     entries: VirtualAddress,
     pub(super) count: u64,
 
-    /// Each entry's size, and where its key and value are within it, and
-    /// the hash of its key, which a general table's entries keep.
     size: u64,
     key: u64,
     value: u64,
     hash: Option<u64>,
 
-    /// The values, where the table's entries share their keys and keep
-    /// their values apart.
     split: Option<Split>,
 }
 
-/// The values a `dict`, or an instance, keeps apart from the keys its
-/// class's instances share: the value of the keys' entry `ix` at
-/// `values[ix]`, for each `ix` below `capacity`, and the entries holding
-/// values in their insertion order, which CPython keeps as a byte each.
 #[derive(Clone, Copy)]
 pub(super) struct Split {
     values: VirtualAddress,
     capacity: u64,
 
-    /// Where the order's first byte is, and whether the order's bytes run
-    /// down from there, as in 3.12, which keeps them before the values.
     order: VirtualAddress,
     descending: bool,
     size: u64,
 }
 
-/// One item of a `dict`: its key, its value, and the hash its entry keeps
-/// of its key, where it keeps one.
 #[derive(Clone, Copy)]
 pub(super) struct Entry {
     pub(super) key: VirtualAddress,
@@ -260,8 +197,6 @@ pub(super) struct Entry {
     pub(super) hash: Option<i64>,
 }
 
-/// Where a summary is: how many objects it has read, the containers it is
-/// within, and why it shows less than all, if it does.
 #[derive(Default)]
 pub(super) struct Summary {
     pub(super) objects: usize,
@@ -269,29 +204,19 @@ pub(super) struct Summary {
     pub(super) problem: Option<Problem>,
 }
 
-/// The values of one stop's objects, and the budget that pays for them.
 pub(super) struct Values<'a, 'b> {
     pub(super) reader: Reader<'a>,
     pub(super) types: Types,
     pub(super) budget: &'a Budget<'b>,
 
-    /// Where the process keeps the secret its `str` hashes are keyed by,
-    /// `_Py_HashSecret`, and whether hashing with it gives the hashes the
-    /// process's own strings keep, once that is known.
     pub(super) secret: Option<VirtualAddress>,
     pub(super) hashing: std::cell::Cell<Option<bool>>,
 
-    /// `_PyRuntime`, whose interpreters keep the static types' dicts, and
-    /// the type objects read so far.
     pub(super) runtime: VirtualAddress,
     pub(super) classes: RefCell<BTreeMap<VirtualAddress, Arc<Class>>>,
 }
 
 impl Values<'_, '_> {
-    /// The local variables of the frame `frame`, which runs the code in
-    /// row `code` of `table`, in the order the code keeps them. Those an
-    /// inlined comprehension hides are left out, as CPython's own
-    /// `f_locals` leaves them out.
     pub(super) fn locals(
         &self,
         table: &CodeTable,
@@ -340,7 +265,6 @@ impl Values<'_, '_> {
         Ok(variables)
     }
 
-    /// What a frame's slot for a local holds: an object, or nothing.
     fn local(&self, bits: u64) -> InterpretedSlot {
         match self.reference(bits) {
             Ok(Some(object)) => self.value(object),
@@ -349,9 +273,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The object a variable a frame shares with closures holds, where its
-    /// slot holds `object`: what the cell holds, or the object itself, for
-    /// a parameter the frame has not yet put in its cell.
     pub(super) fn cell(
         &self,
         object: Option<VirtualAddress>,
@@ -370,13 +291,10 @@ impl Values<'_, '_> {
             .map(VirtualAddress::new))
     }
 
-    /// The object a frame's slot for a local refers to, or `None` when it
-    /// refers to none.
     pub(super) fn reference(&self, bits: u64) -> Result<Option<VirtualAddress>, Problem> {
         reference(self.reader.layout, bits)
     }
 
-    /// The object at `object`, presented.
     pub(super) fn value(&self, object: VirtualAddress) -> InterpretedSlot {
         match self.presented(object) {
             Ok(value) => InterpretedSlot::Value(value),
@@ -384,8 +302,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// Why a read failed: the inspection's limits, once they are reached,
-    /// which is what stopped it, as every read past them fails.
     pub(super) fn failed(&self, problem: Problem) -> InterpretedSlot {
         self.budget.exhaustion().map_or_else(
             || InterpretedSlot::Unreadable(problem),
@@ -448,7 +364,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// What kind of value `object` is.
     fn kind(&self, object: &Object) -> InterpretedKind {
         match object {
             Object::Nothing => InterpretedKind::Nothing,
@@ -477,10 +392,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The children `range` of the object at `object`, or of its part at
-    /// `part`: a sequence's elements, a `dict`'s entries in insertion order,
-    /// or an instance's attributes, after those of the built-in value it
-    /// holds.
     pub(super) fn children(
         &self,
         object: VirtualAddress,
@@ -549,8 +460,6 @@ impl Values<'_, '_> {
         Ok(children)
     }
 
-    /// The elements or entries `range` of the built-in container `read`,
-    /// at `object`.
     fn contents(
         &self,
         object: VirtualAddress,
@@ -629,7 +538,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// Reads as much of the object at `address` as presenting it needs.
     pub(super) fn object(&self, address: VirtualAddress) -> Result<Object, Problem> {
         if address == VirtualAddress::new(0) {
             return Err("the reference is NULL".into());
@@ -666,8 +574,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// The object the head is of, read as the built-in type `ty` keeps its
-    /// objects, or `None` where `ty` is no type whose objects are read.
     fn built_in(&self, head: &Head<'_, '_>, ty: VirtualAddress) -> Result<Option<Object>, Problem> {
         let (address, reader, types) = (head.address(), &self.reader, &self.types);
         let object = if ty == types.none {
@@ -756,8 +662,6 @@ impl Values<'_, '_> {
         Ok(Some(object))
     }
 
-    /// The text of the `str` at `name`, which names the object at `owner`,
-    /// a `what`.
     fn name_text(
         &self,
         name: VirtualAddress,
@@ -767,8 +671,6 @@ impl Values<'_, '_> {
         self.str_text(name).ok_or_else(|| malformed(owner, what))
     }
 
-    /// The built-in function or method the head is of: a function where it
-    /// is bound to nothing or to a module, as CPython names it.
     fn builtin(&self, head: &Head<'_, '_>) -> Result<Object, Problem> {
         let reader = &self.reader;
         let method = VirtualAddress::new(head.field_word(Field::BuiltinMethod)?);
@@ -794,8 +696,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// The type of the built-in value `object` is, which an instance's
-    /// class derives from; `None` for an instance or a class.
     pub(super) fn built_in_type(&self, object: &Object) -> Option<VirtualAddress> {
         let types = &self.types;
         Some(match object {
@@ -819,7 +719,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// The sign and magnitude digits of the `int` the head is of.
     fn int(&self, head: &Head<'_, '_>) -> Result<(bool, Vec<u32>), Problem> {
         let (address, reader) = (head.address(), &self.reader);
         let tag = head.field_word(Field::LongTag)?;
@@ -866,7 +765,6 @@ impl Values<'_, '_> {
         u32::from(self.reader.layout.constant(Constant::LongShift))
     }
 
-    /// The `dict` the head is of, as far as reading its entries needs it.
     pub(super) fn dict(&self, head: &Head<'_, '_>) -> Result<Object, Problem> {
         let address = head.address();
         let length = length(head.field_word(Field::DictUsed)?, address)?;
@@ -887,8 +785,6 @@ impl Values<'_, '_> {
         self.table(address, keys, length, split).map(Object::Dict)
     }
 
-    /// The values at `values`, which a `dict` or an instance keeps apart
-    /// from its keys, and how many of them it holds.
     pub(super) fn split(&self, values: VirtualAddress) -> Result<(Split, u64), Problem> {
         let reader = &self.reader;
         let byte = |at: VirtualAddress| -> Result<u64, Problem> {
@@ -909,9 +805,6 @@ impl Values<'_, '_> {
                 size,
             }
         } else {
-            // 3.12 keeps how many values it holds two bytes before them,
-            // and their order in the bytes before that, down from the
-            // third; the keys bound which entries it has values of.
             Split {
                 values,
                 capacity: u64::MAX,
@@ -928,8 +821,6 @@ impl Values<'_, '_> {
         Ok((split, split.size))
     }
 
-    /// The table of the keys at `keys`, which `owner` holds `length` items
-    /// of, whose values `split` keeps where the keys share them.
     pub(super) fn table(
         &self,
         owner: VirtualAddress,
@@ -975,7 +866,6 @@ impl Values<'_, '_> {
                 return Err(bad());
             };
 
-        // Split keys belong to values kept apart, and only to them.
         if split.is_some() != (kind == u64::from(layout.constant(Constant::DictKeysSplit))) {
             return Err(bad());
         }
@@ -997,8 +887,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// The entry at `index` of the `dict`'s table, which may be deleted:
-    /// a deleted entry holds no value.
     pub(super) fn entry(&self, dict: Dict, index: u64) -> Result<Entry, Problem> {
         if index >= dict.count {
             return Err(malformed(dict.object, "dict"));
@@ -1029,9 +917,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// Calls `each` with each of the `dict`'s items in `range`, in
-    /// insertion order, until it fails. Deleted entries keep their place in
-    /// the table with no value, and are passed over.
     pub(super) fn entries(
         &self,
         dict: Dict,
@@ -1103,7 +988,6 @@ impl Values<'_, '_> {
             first += take;
         }
 
-        // Every entry read: the table must hold the items the dict counts.
         if first == dict.count && item != dict.length {
             return Err(malformed(dict.object, "dict"));
         }
@@ -1111,8 +995,6 @@ impl Values<'_, '_> {
         Ok(())
     }
 
-    /// [`Self::entries`] of a table whose values `split` keeps, in the
-    /// order it keeps.
     fn split_entries(
         &self,
         dict: Dict,
@@ -1157,10 +1039,6 @@ impl Values<'_, '_> {
         Ok(())
     }
 
-    /// Calls `each` with each item in `range` of the `set` at `object`,
-    /// whose table at `table` has `mask + 1` slots, `used` of them holding
-    /// items, in the table's order, until it fails. An empty slot holds no
-    /// key, and a deleted one the hash -1, which no key has.
     pub(super) fn set_items(
         &self,
         object: VirtualAddress,
@@ -1229,8 +1107,6 @@ impl Values<'_, '_> {
         Ok(())
     }
 
-    /// The `end - start` item pointers from `start` of the array at
-    /// `items`.
     pub(super) fn items(
         &self,
         items: VirtualAddress,
@@ -1241,8 +1117,6 @@ impl Values<'_, '_> {
             start <= end,
             "the items {start}..{end} at virtual {items:#x} are reversed"
         );
-        // A sequence's length comes from the target, so a count no list
-        // could hold is refused before its items are read.
         let count = end - start;
         if count > super::objects::MAX_ITEMS {
             return Err(format!(
@@ -1269,7 +1143,6 @@ impl Values<'_, '_> {
         Ok(read)
     }
 
-    /// The module and name of the object's type.
     pub(super) fn type_name(object: &Object) -> (Option<Arc<str>>, Arc<str>) {
         let builtin = |name: &str| (Some(Arc::from("builtins")), Arc::from(name));
         match object {
@@ -1294,7 +1167,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The object at `address` as a summary shows it.
     pub(super) fn summary(&self, address: VirtualAddress) -> Arc<str> {
         let mut summary = Summary {
             objects: 1,
@@ -1308,8 +1180,6 @@ impl Values<'_, '_> {
         )
     }
 
-    /// The object's text, where it is `depth` containers deep in a
-    /// summary.
     fn text(
         &self,
         address: VirtualAddress,
@@ -1323,7 +1193,6 @@ impl Values<'_, '_> {
             Object::Bool(false) => "False".to_owned(),
             Object::Int { negative, digits } => text::int(*negative, digits, self.shift()),
             Object::LargeInt { digits } => {
-                // CPython's digits, each of `shift` bits, not decimal ones.
                 let shift = self.shift();
                 note(
                     summary,
@@ -1393,8 +1262,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The text of the object at `address` as an item of a container in
-    /// a summary, where it is `depth` containers deep.
     pub(super) fn item_text(
         &self,
         address: VirtualAddress,
@@ -1418,8 +1285,6 @@ impl Values<'_, '_> {
             }
         };
 
-        // An object of a class deriving from a container is that
-        // container, as its type's `repr` shows it.
         let held = match &object {
             Object::Instance {
                 base: Some(base), ..
@@ -1437,7 +1302,6 @@ impl Values<'_, '_> {
             return self.text(address, &object, depth, summary);
         }
 
-        // A container within itself, as Python's repr shows it.
         if summary.within.contains(&address) {
             return match held {
                 Object::List { .. } => "[...]".to_owned(),
@@ -1476,8 +1340,6 @@ impl Values<'_, '_> {
         self.listed(items, length, brackets, depth, summary)
     }
 
-    /// The text of a sequence of `length` items, of which `items` are the
-    /// first read, between `open` and `close`.
     pub(super) fn listed(
         &self,
         items: Result<Vec<VirtualAddress>, Problem>,
@@ -1526,9 +1388,6 @@ impl Values<'_, '_> {
         self.pairs_text((&pairs, read), dict.length, depth, summary)
     }
 
-    /// The text of a mapping of `length` items, of which `pairs` are the
-    /// keys and values of the first read, and `read` why no more were, if
-    /// it failed.
     pub(super) fn pairs_text(
         &self,
         (pairs, read): (&[(VirtualAddress, VirtualAddress)], Result<(), Problem>),
@@ -1557,8 +1416,6 @@ impl Values<'_, '_> {
         format!("{{{}}}", texts.join(", "))
     }
 
-    /// A `set`'s text, as Python's `repr` gives it, of its items in its
-    /// table's order.
     fn set_text(
         &self,
         address: VirtualAddress,
@@ -1601,7 +1458,6 @@ impl Values<'_, '_> {
         format!("{open}{}{close}", texts.join(", "))
     }
 
-    /// A module's text: its name, which its dict holds, or why it has none.
     fn module_text(
         &self,
         address: VirtualAddress,
@@ -1649,9 +1505,6 @@ impl Values<'_, '_> {
         )
     }
 
-    /// The texts of the first of `count` items, each from `text`, until
-    /// the budget is spent, and whether it lasted for every item. An item
-    /// whose reads spent it is left out, since its text is not whole.
     fn until_spent<T: Copy>(
         &self,
         items: &[T],
@@ -1672,14 +1525,12 @@ impl Values<'_, '_> {
     }
 }
 
-/// Notes why a summary shows less than all, keeping the first reason.
 pub(super) fn note(summary: &mut Summary, problem: String) {
     if summary.problem.is_none() {
         summary.problem = Some(problem.into());
     }
 }
 
-/// A container's length, which CPython keeps as a signed size.
 fn length(size: u64, address: VirtualAddress) -> Result<u64, Problem> {
     if size.cast_signed() < 0 {
         return Err(malformed(address, "object"));
@@ -1688,7 +1539,6 @@ fn length(size: u64, address: VirtualAddress) -> Result<u64, Problem> {
     Ok(size)
 }
 
-/// An int's value, where it fits in 128 bits.
 pub(super) fn exact(negative: bool, digits: &[u32], shift: u32) -> Option<i128> {
     let mut magnitude: u128 = 0;
 
@@ -1705,8 +1555,6 @@ pub(super) fn exact(negative: bool, digits: &[u32], shift: u32) -> Option<i128> 
     }
 }
 
-/// The object a variable's word `bits` refers to, as `layout` lays a
-/// variable out, none for an unbound one.
 pub(super) fn reference(
     layout: &PythonLayout,
     bits: u64,
@@ -1717,8 +1565,6 @@ pub(super) fn reference(
             .map(VirtualAddress::new));
     }
 
-    // A stack reference: a pointer whose low bit counts references, or a
-    // tagged integer, which only the interpreter's own values are.
     match bits & 3 {
         0 | 1 if bits & !1 == 0 => Ok(None),
         0 | 1 => Ok(Some(VirtualAddress::new(bits & !1))),

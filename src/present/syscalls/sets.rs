@@ -1,23 +1,16 @@
-//! Named flags and values, by the set names the argument specs use.
-
 use nix::libc;
 
-/// How a set's names combine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
-    /// Bits, joined by `|`, with unnamed bits in hex.
     Flags,
 
-    /// One value.
     Enum,
 }
 
-/// A named set of constants.
 #[derive(Debug, Clone, Copy)]
 pub struct Set {
     pub shape: Shape,
 
-    /// The value has only 32 bits, as an `int` argument does.
     pub narrow: bool,
     pub names: &'static [(u64, &'static str)],
 }
@@ -55,7 +48,6 @@ const fn cl(value: libc::c_ulong) -> u64 {
     value
 }
 
-/// `O_ACCMODE` values, which `open`'s flags start with.
 pub const ACCESS_MODES: &[(u64, &str)] = &[
     (c(libc::O_RDONLY), "O_RDONLY"),
     (c(libc::O_WRONLY), "O_WRONLY"),
@@ -77,7 +69,6 @@ const OPEN: &[(u64, &str)] = &[
     (c(libc::O_NOFOLLOW), "O_NOFOLLOW"),
     (c(libc::O_NOATIME), "O_NOATIME"),
     (c(libc::O_CLOEXEC), "O_CLOEXEC"),
-    // O_SYNC includes O_DSYNC's bit; only its own is named here.
     (0o4_000_000, "__O_SYNC"),
     (c(libc::O_PATH), "O_PATH"),
     (0o20_000_000, "__O_TMPFILE"),
@@ -102,7 +93,6 @@ const MMAP_PROT: &[(u64, &str)] = &[
     (c(libc::PROT_GROWSUP), "PROT_GROWSUP"),
 ];
 
-/// `MAP_TYPE` values, which `mmap`'s flags start with.
 pub const MAP_TYPES: &[(u64, &str)] = &[
     (c(libc::MAP_SHARED), "MAP_SHARED"),
     (c(libc::MAP_PRIVATE), "MAP_PRIVATE"),
@@ -140,7 +130,6 @@ const SIGPROCMASK: &[(u64, &str)] = &[
     (c(libc::SIG_SETMASK), "SIG_SETMASK"),
 ];
 
-// The kernel's numbers, which a C library may type differently.
 const IOCTL: &[(u64, &str)] = &[
     (0x5401, "TCGETS"),
     (0x5402, "TCSETS"),
@@ -220,7 +209,6 @@ const AF: &[(u64, &str)] = &[
     (c(libc::AF_XDP), "AF_XDP"),
 ];
 
-/// Socket types, which `socket`'s second argument starts with.
 pub const SOCK_TYPES: &[(u64, &str)] = &[
     (c(libc::SOCK_STREAM), "SOCK_STREAM"),
     (c(libc::SOCK_DGRAM), "SOCK_DGRAM"),
@@ -493,7 +481,6 @@ const UMOUNT: &[(u64, &str)] = &[
 
 const XATTR: &[(u64, &str)] = &[(1, "XATTR_CREATE"), (2, "XATTR_REPLACE")];
 
-/// Futex operations without their modifier bits, which follow.
 pub const FUTEX_OPS: &[(u64, &str)] = &[
     (0, "FUTEX_WAIT"),
     (1, "FUTEX_WAKE"),
@@ -545,7 +532,6 @@ const EPOLL_CTL: &[(u64, &str)] = &[
     (c(libc::EPOLL_CTL_MOD), "EPOLL_CTL_MOD"),
 ];
 
-/// `epoll_event` and `pollfd` event bits.
 #[expect(clippy::cast_sign_loss, reason = "C constants")]
 pub const EPOLL_EVENTS: &[(u64, &str)] = &[
     (libc::EPOLLIN as u64, "EPOLLIN"),
@@ -565,7 +551,6 @@ pub const EPOLL_EVENTS: &[(u64, &str)] = &[
     (libc::EPOLLET as u64 & 0xffff_ffff, "EPOLLET"),
 ];
 
-/// `pollfd` event bits.
 pub const POLL_EVENTS: &[(u64, &str)] = &[
     (libc::POLLIN as u64, "POLLIN"),
     (libc::POLLPRI as u64, "POLLPRI"),
@@ -678,12 +663,9 @@ const BPF: &[(u64, &str)] = &[
 
 const CLOSE_RANGE: &[(u64, &str)] = &[(2, "CLOSE_RANGE_UNSHARE"), (4, "CLOSE_RANGE_CLOEXEC")];
 
-/// The set a spec names.
 #[must_use]
 pub fn set(name: &str) -> Option<Set> {
     Some(match name {
-        // `oflags` are open's without an access mode, as pipe2 and dup3
-        // take them.
         "open" | "oflags" => flags(OPEN),
         "efd" => flags(EFD),
         "in_init" => flags(IN_INIT),

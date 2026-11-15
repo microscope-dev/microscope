@@ -1,9 +1,9 @@
 #![no_main]
 #![no_std]
 
-//! Generic instances and fat pointers whose identities and shapes the
-//! debugger normalizes: slices under every spelling rustc gives them, text,
-//! a const generic, and a pointer to a type with an unsized tail.
+
+
+
 
 extern crate alloc;
 
@@ -11,7 +11,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// The fixture's collections need an allocator; the C library's serves.
+
 struct Malloc;
 
 unsafe extern "C" {
@@ -38,7 +38,7 @@ pub struct Wrapper<T, const N: usize> {
     pub items: [T; N],
 }
 
-/// A dynamically sized type: a pointer to it carries the tail's length.
+
 pub struct Tail {
     pub head: u32,
     pub tail: [u16],
@@ -98,6 +98,6 @@ fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     loop {}
 }
 
-// libcore retains this symbol even with aborting panics; it is never called.
+
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_eh_personality() {}

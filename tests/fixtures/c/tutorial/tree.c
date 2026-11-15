@@ -5,8 +5,8 @@
 
 #include "microscope_kernel.h"
 
-// The deepest tree it walks: a node waits here for each ancestor whose next
-// sibling is still to come.
+
+
 #define MAX_DEPTH 64
 
 MICROSCOPE_KERNEL_EXPORT int32_t run(const uint64_t *arguments, int32_t count) {

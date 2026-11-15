@@ -1,15 +1,3 @@
-//! The simulated Linux kernel: processes, threads, signals, ptrace, and
-//! wait statuses, following the K-* rules in `src/sim/conformance/kernel.rs`.
-//!
-//! The kernel contains no randomness. Wherever Linux leaves an order open,
-//! such as which thread runs next or which status a wait returns, it
-//! exposes the options and the world decides. Requests it does not model
-//! fail as model gaps, never with a plausible default.
-//!
-//! - [`ptrace`]: the tracer's requests and their errno outcomes.
-//! - [`signals`]: generation, delivery, and exits.
-//! - [`syscalls`]: the system calls the golden runtime makes.
-
 pub mod catching;
 pub mod debug_regs;
 pub mod perf;
@@ -39,34 +27,27 @@ use debug_regs::DebugRegisters;
 use shadow::{Shadow, Tracking};
 use signals::{Pending, SIGTRAP};
 
-/// A thread identifier.
 pub type Tid = i32;
 
-/// A thread group's identifier: its process's id, which is its leader's
-/// thread id but never stands in for a thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Tgid(Tid);
 
 impl Tgid {
-    /// The process the kernel's ABI numbers `id`.
     #[must_use]
     pub const fn new(id: Tid) -> Self {
         Self(id)
     }
 
-    /// The process's number in the kernel's ABI.
     #[must_use]
     pub const fn id(self) -> Tid {
         self.0
     }
 
-    /// The group `leader` leads.
     #[must_use]
     pub const fn led_by(leader: Tid) -> Self {
         Self(leader)
     }
 
-    /// The group's leader.
     #[must_use]
     pub const fn leader(self) -> Tid {
         self.0
@@ -79,45 +60,30 @@ impl std::fmt::Display for Tgid {
     }
 }
 
-/// The identifier the first simulated process gets.
 const FIRST_TID: Tid = 1000;
 
-/// The user every simulated process runs as.
 const UID: u32 = 1000;
 
-/// `orig_rax` outside any system call.
 pub const NO_SYSTEM_CALL: u64 = u64::MAX;
 
-/// `rax` after a call that failed for a signal pending, to be restarted
-/// whatever the signal does (K-SYS-7).
 const ERESTARTNOINTR_RESULT: u64 = (-513_i64).cast_unsigned();
 
-/// The length of the `syscall` instruction, which a restart rewinds.
 const SYSCALL_LENGTH: u64 = 2;
 
-/// What `rax` holds while a thread is inside a system call.
 const ENOSYS_RESULT: u64 = (-(libc::ENOSYS as i64)).cast_unsigned();
 
-/// What `waitpid` reports for a thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitStatus {
     Exited(Tid, i32),
 
-    /// Killed by a signal, and whether it dumped core.
     Signaled(Tid, i32, bool),
 
-    /// A signal-delivery-stop.
     Stopped(Tid, i32),
 
-    /// A `PTRACE_EVENT_*` stop.
     Event(Tid, i32),
 
-    /// A seized thread's group-stop: `PTRACE_EVENT_STOP` with the signal
-    /// that stopped its process (K-STOP-2).
     GroupStop(Tid, i32),
 
-    /// A system-call-stop, as `PTRACE_O_TRACESYSGOOD` reports it:
-    /// `SIGTRAP | 0x80` (K-SYS-1).
     Syscall(Tid),
 }
 
@@ -159,36 +125,27 @@ impl fmt::Display for WaitStatus {
     }
 }
 
-/// The fields of the `siginfo_t` `PTRACE_GETSIGINFO` reads. Which of
-/// `pid` and `address` mean anything depends on the signal and code, as in
-/// the real structure, whose union overlays them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SigInfo {
     pub signal: i32,
     pub code: i32,
 
-    /// `si_pid`: the sending process, for codes that name one.
     pub pid: i32,
 
-    /// `si_addr`: the faulting address, for synchronous faults.
     pub address: u64,
 }
 
 impl SigInfo {
-    /// The siginfo of `tid`'s `PTRACE_EVENT_*` stop: SIGTRAP with the
-    /// event in the code's second byte, sent by the thread itself.
     const fn event(tid: Tid, event: i32) -> Self {
         Self {
             signal: SIGTRAP,
             code: SIGTRAP | (event << 8),
             pid: tid,
-            // `si_pid` and `si_uid` overlay `si_addr`.
+
             address: (UID as u64) << 32 | tid.cast_unsigned() as u64,
         }
     }
 
-    /// The siginfo of `tid`'s system-call-stop: SIGTRAP with `0x80` in the
-    /// code, sent by the thread itself (K-SYS-1).
     const fn syscall(tid: Tid) -> Self {
         Self {
             code: SIGTRAP | 0x80,
@@ -196,8 +153,6 @@ impl SigInfo {
         }
     }
 
-    /// The siginfo of `tid`'s group-stop for `signal`: the stop's event in
-    /// the code's second byte, as for an event stop, with that signal.
     const fn group_stop(tid: Tid, signal: i32) -> Self {
         Self {
             signal,
@@ -207,18 +162,14 @@ impl SigInfo {
     }
 }
 
-/// How a thread or process ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitStatus {
     Code(i32),
 
-    /// The signal that killed it, and whether it dumped core.
     Signal(i32, bool),
 }
 
 impl ExitStatus {
-    /// The message `PTRACE_GETEVENTMSG` reports at the exit event, which is
-    /// the status `waitpid` will report.
     const fn event_message(self) -> u64 {
         match self {
             Self::Code(code) => ((code & 0xff).cast_unsigned() as u64) << 8,
@@ -236,51 +187,33 @@ impl ExitStatus {
     }
 }
 
-/// Why a stopped thread stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopKind {
-    /// A signal-delivery-stop: the signal waits for the tracer's verdict.
     Signal(i32),
 
-    /// A `PTRACE_EVENT_*` stop other than the exit event, with the message
-    /// `PTRACE_GETEVENTMSG` reports.
     Event(i32, u64),
 
-    /// The `PTRACE_EVENT_EXIT` stop of a thread ending this way.
     Exit(ExitStatus),
 
-    /// A seized thread's group-stop, for the signal that stopped its
-    /// process (K-STOP-2).
     Group(i32),
 
-    /// A system-call-stop at a call's entry, or at its exit (K-SYS-1,
-    /// K-SYS-2).
     Syscall { exit: bool },
 }
 
-/// Where a thread is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
-    /// Executing instructions whenever the world runs it.
     Running,
 
-    /// In a ptrace-stop, answering the tracer's requests.
     Stopped { kind: StopKind, info: SigInfo },
 
-    /// Untraced, in its process's job-control stop, until SIGCONT ends it
-    /// or a tracer seizes it (K-STOP-1 to K-STOP-3).
     JobStopped,
 
-    /// On its way out, which takes it to its exit event the next time it
-    /// runs, or straight to a zombie when exits are not traced.
     Exiting(ExitStatus),
 
-    /// Gone, having ended this way, but not yet reaped.
     Zombie(ExitStatus),
 }
 
 impl State {
-    /// Whether the thread has begun to exit.
     #[must_use]
     pub const fn exiting(self) -> bool {
         matches!(
@@ -295,7 +228,6 @@ impl State {
     }
 }
 
-/// The `PTRACE_O_*` options the simulation honors.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -308,43 +240,25 @@ pub struct Options {
     pub exit_kill: bool,
 }
 
-/// A byte of a process's code that differs from its program's: its
-/// address, the byte, and the program's.
 pub type Planted = (u64, u8, u8);
 
-/// Whether, and how, a tracer traces a thread. Only the tracer named
-/// reaches the thread with its requests, and only its waits report it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tracing {
-    /// Not at all: the thread runs as if no debugger were there, as one the
-    /// tracer detached does (K-FORK-2).
     Untraced,
 
-    /// Attached, as a launched program and the threads it creates are.
     Attached { tracer: i32 },
 
-    /// Seized, or created by a seized thread: interrupts reach it, the
-    /// threads and processes it creates first stop for one, and one may
-    /// wait to stop it, which any stop takes the place of (K-SEIZE-1,
-    /// K-INT-1).
     Seized { tracer: i32, interrupted: bool },
 }
 
-/// Where a thread stands in a system call, in the kernel's eyes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallPhase {
     Outside,
 
-    /// Stopped at a call's entry, to make the call when it next runs
-    /// (K-SYS-2).
     AtEntry,
 
-    /// Stopped inside a call, which returns this when the thread next runs.
-    /// `rax` holds `-ENOSYS` until then.
     Returning(u64),
 
-    /// The call failed with `-ERESTARTNOINTR` for a signal pending, to be
-    /// made again as the thread returns to its program (K-SYS-7).
     Restarting,
 }
 
@@ -354,51 +268,33 @@ pub struct Thread {
     pub tracing: Tracing,
     pub registers: Registers,
 
-    /// `orig_rax`: the system call the thread entered last, until it runs
-    /// another instruction or takes an exception, or [`NO_SYSTEM_CALL`].
     pub orig_rax: u64,
 
     pub call: CallPhase,
     pub state: State,
     pub options: Options,
 
-    /// Signals pending for this thread alone.
     pub pending: Pending,
 
-    /// Whether the thread stops after its next instruction.
     pub single_step: bool,
 
-    /// Whether the tracer resumed it with `PTRACE_SYSCALL`, to stop at
-    /// each system call's entry and exit (K-SYS-1).
     pub syscall_stops: bool,
 
-    /// How many times the kernel rewound the thread over a `syscall` to
-    /// make a call again (K-SYS-7).
     pub restarts: u64,
 
-    /// Whether its tracer has resumed it, as it has not a thread it seized
-    /// running, which makes calls before the tracer can catch them.
     pub resumed: bool,
 
-    /// The status a wait would report now, until one reaps it.
     pub report: Option<WaitStatus>,
 
-    /// The address of the trap the thread executed, until it executes
-    /// another instruction.
     pub trapped_at: Option<u64>,
 
-    /// Where the thread last executed a trap, and how many instructions it
-    /// had completed then.
     pub last_trap: Option<(u64, u64)>,
 
-    /// How many instructions the thread completed, `syscall` among them.
     pub retired: u64,
 
-    /// The calls the thread made and has not returned from.
     pub shadow: Shadow,
     pub debug: DebugRegisters,
 
-    /// The hardware breakpoints of this thread others hold, as perf can.
     pub debug_held: usize,
 }
 
@@ -408,13 +304,11 @@ impl Thread {
         matches!(self.state, State::Stopped { .. })
     }
 
-    /// Whether a tracer traces the thread.
     #[must_use]
     pub const fn traced(&self) -> bool {
         !matches!(self.tracing, Tracing::Untraced)
     }
 
-    /// The tracer that traces the thread, if one does.
     #[must_use]
     pub const fn tracer(&self) -> Option<i32> {
         match self.tracing {
@@ -423,15 +317,11 @@ impl Thread {
         }
     }
 
-    /// Whether its tracer seized the thread, or traces it as one a seized
-    /// thread created.
     #[must_use]
     pub const fn seized(&self) -> bool {
         matches!(self.tracing, Tracing::Seized { .. })
     }
 
-    /// Whether the thread is held in a ptrace-stop it would leave only for
-    /// the tracer: any but its exit event, which leads only to its end.
     #[must_use]
     pub const fn held(&self) -> bool {
         matches!(
@@ -440,8 +330,6 @@ impl Thread {
         )
     }
 
-    /// Enters a ptrace-stop that reports `report`. Any stop takes the place
-    /// of an interrupt still waiting (K-INT-1).
     pub(super) const fn enter_stop(&mut self, kind: StopKind, info: SigInfo, report: WaitStatus) {
         self.state = State::Stopped { kind, info };
         self.report = Some(report);
@@ -450,13 +338,6 @@ impl Thread {
         }
     }
 
-    /// The thread `id` of `group` that `creator` made with system call
-    /// `call`, which returns zero in it. A creator that traces the creation
-    /// passes on its tracing and options: the new thread first stops for an
-    /// interrupt if the creator was seized (K-SEIZE-1), otherwise for a
-    /// SIGSTOP nobody sent (K-CLONE-1, K-FORK-1). Its debug registers are
-    /// disarmed, though DR7 reads as the creator's, and slots others hold
-    /// follow it, as perf's do (K-DR-3).
     fn created(
         creator: &Self,
         id: Tid,
@@ -500,7 +381,7 @@ impl Thread {
             },
             pending,
             single_step: false,
-            // K-SYS-3: a new thread does not inherit system-call-stops.
+
             syscall_stops: false,
             restarts: 0,
             resumed: false,
@@ -514,16 +395,11 @@ impl Thread {
         }
     }
 
-    /// Whether a running thread is in its program's code, rather than in
-    /// the kernel: inside a system call, returning from one to restart it
-    /// (K-SYS-7), or on its way to take a signal its last instruction
-    /// raised (K-TRAP-2).
     #[must_use]
     pub fn in_user_code(&self) -> bool {
         self.state == State::Running && self.call == CallPhase::Outside && !self.pending.raised()
     }
 
-    /// Whether running the thread can change anything.
     #[must_use]
     pub const fn can_run(&self) -> bool {
         matches!(self.state, State::Running | State::Exiting(_))
@@ -533,61 +409,37 @@ impl Thread {
 pub struct Process {
     pub tgid: Tgid,
 
-    /// The name `comm` reports: the executable's file name, cut to fifteen
-    /// bytes.
     pub name: Arc<str>,
     pub space: AddressSpace,
     pub image: Arc<Image>,
 
-    /// Who reaps the process once it ends.
     pub parent: Parent,
 
-    /// The thread that forked it, which `/proc` lists it under, until that
-    /// thread exits and another of its group takes it on.
     pub creator: Option<Tid>,
 
-    /// The process the tracer launched whose standard output and error
-    /// this one shares, its own included.
     pub root: Tid,
 
-    /// Signals pending for the whole process, which whichever of its
-    /// threads looks first takes.
     pub shared: Pending,
 
-    /// The status of the group exit: from `exit_group`, a fatal signal, or
-    /// the thread that began to exit last (K-EXIT-6).
     pub group_exit: Option<ExitStatus>,
 
-    /// Whether something outside the session killed the process.
     pub killed_externally: bool,
 
-    /// The signal that stopped the process, while it is job-control
-    /// stopped (K-STOP-1).
     pub stopped: Option<i32>,
 
-    /// Whether SIGCONT ended the process's stop, which its parent hears of
-    /// once one of its threads next runs (K-STOP-3).
     pub continued: bool,
 
-    /// When the process started, as `/proc/<pid>/stat` counts it: no two
-    /// processes share one.
     pub start_time: u64,
 }
 
-/// Who reaps a process once it ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Parent {
-    /// The tracer, which launched it.
     Tracer,
 
-    /// Whoever started it untraced, for the tracer to attach to later,
-    /// which reaps it at once.
     Launcher,
 
-    /// The process that forked it, with `wait4`, after SIGCHLD.
     Process(Tgid),
 
-    /// The reaper orphans pass to, which reaps them at once (K-FORK-3).
     Init,
 }
 
@@ -602,31 +454,24 @@ impl fmt::Display for Parent {
     }
 }
 
-/// A thread a tracer's `waitpid` reaped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reaped {
     pub tgid: Tgid,
     pub status: WaitStatus,
 
-    /// Whether its process was exiting as a whole, by `exit_group` or a
-    /// fatal signal.
     pub group_exit: bool,
 }
 
-/// How a process ended, and who reaped it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ended {
     pub status: ExitStatus,
 
-    /// The process the tracer launched whose output this one shared.
     pub root: Tid,
     pub reaper: Parent,
 
-    /// Whether something outside the session killed it.
     pub killed_externally: bool,
 }
 
-/// A process that ended, waiting for its parent to reap it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Zombie {
     pub parent: Tgid,
@@ -636,12 +481,9 @@ pub struct Zombie {
     pub killed_externally: bool,
 }
 
-/// Something the simulation does not model, which ends the run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelGap(pub String);
 
-/// Something that happened in the kernel which the world counts or
-/// reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Happening {
     /// A thread created another.
@@ -654,10 +496,8 @@ pub enum Happening {
     PulledFromStop { tid: Tid },
 
     /// A thread's fork or clone failed for a signal pending, to be made
-    /// again (K-SYS-7).
     Restarting { tid: Tid },
 
-    /// An interrupt stopped a thread whose trap or fault is still queued
     /// (K-TRAP-2).
     InterruptAheadOfTrap { tid: Tid },
 
@@ -670,9 +510,6 @@ pub enum Happening {
     /// A thread forked a process.
     Forked { parent: Tid, child: Tid },
 
-    /// `tracer` detached a thread, leaving the first byte of its code that
-    /// differs from the program's, as its address, the byte, and the
-    /// program's.
     Released {
         tid: Tid,
         tracer: i32,
@@ -688,7 +525,6 @@ pub enum Happening {
     /// The tracer tried to seize a thread that had finished exiting.
     SeizeRefused { tid: Tid },
 
-    /// An interrupt reached a thread already stopped, which it stops again
     /// as soon as it resumes.
     InterruptWaits { tid: Tid },
 
@@ -698,18 +534,13 @@ pub enum Happening {
     /// SIGCONT ended a process's job-control stop.
     Continued { tgid: Tgid },
 
-    /// The tracer resumed a thread from a signal-delivery-stop without
     /// its signal.
     Suppressed { tid: Tid, signal: i32 },
 
-    /// A signal reached the program, untraced or passed on by its tracer,
     /// and the thread took its default action.
     Delivered { tid: Tid, signal: i32 },
 }
 
-/// A thread that executed the program's own instruction at an address
-/// where the user's breakpoint is enabled, without having just trapped
-/// there: a hit the debugger could not see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnseenHit {
     pub tid: Tid,
@@ -717,130 +548,81 @@ pub struct UnseenHit {
 }
 
 pub struct Kernel {
-    /// The process identifier of the simulated debugger that launches
-    /// programs, as their parent.
     tracer: i32,
 
-    /// The tracer whose request the kernel serves, as `current` names the
-    /// calling task in Linux: its requests reach only the threads it
-    /// traces, and the signals it sends name it.
     caller: std::cell::Cell<i32>,
     next_tid: Tid,
     pub processes: BTreeMap<Tgid, Process>,
     pub threads: BTreeMap<Tid, Thread>,
 
-    /// Processes reaped, with how they ended.
     pub ended: BTreeMap<Tgid, Ended>,
 
-    /// Processes that ended and wait for their parents to reap them.
     pub zombies: BTreeMap<Tgid, Zombie>,
 
-    /// What each process the tracer launched, and the processes it forked,
-    /// wrote to standard output and error, in order, by launched process.
     pub outputs: BTreeMap<Tid, Vec<u8>>,
 
-    /// Each thread a tracer reaped, with the status it reported.
     pub reaped: BTreeMap<Tid, Reaped>,
 
-    /// The code each group leader passed to `exit`: its own status, which
-    /// the process's replaces when it is reaped (K-EXIT-6).
     pub leader_exits: BTreeMap<Tid, i32>,
 
-    /// The first model gap the run hit.
     pub gap: Option<ModelGap>,
 
-    /// What happened since the world last looked.
     pub happenings: Vec<Happening>,
 
-    /// The process the debugger controls, whose memory the user's
-    /// breakpoints and watches are in.
     pub debugged: Option<Tgid>,
 
-    /// Addresses where the user's breakpoints are certainly enabled, as
-    /// the client last knew them. The breakpoint-accounting oracle watches
-    /// executions there.
     pub user_breakpoints: BTreeSet<u64>,
 
-    /// The addresses among them only temporary breakpoints own, for
-    /// [`Sabotage::SkipTemporaryTraps`].
     #[cfg(test)]
     pub temporary_breakpoints: BTreeSet<u64>,
 
-    /// Executions at those addresses no trap reported.
     pub unseen_hits: Vec<UnseenHit>,
 
-    /// Where the thread the client steps has been, while it steps.
     pub tracking: Option<Tracking>,
 
-    /// What the kernel follows of the client's watchpoints.
     pub watching: Watching,
 
-    /// What the kernel follows of the client's catchpoints.
     pub catching: Catching,
 
-    /// The calls served since the world last took them.
     pub served: Vec<syscalls::Served>,
 
-    /// How the debug registers answer the tracer.
     pub debug_behavior: DebugBehavior,
 
-    /// The execute breakpoint a probe armed to sample a process.
     pub perf: Option<perf::Breakpoint>,
 
-    /// The identifier the next activation takes.
     next_activation: u64,
 
-    /// The start time the next process takes.
     next_start_time: u64,
 
-    /// A deliberate defect, so tests can check that the oracles notice.
     #[cfg(test)]
     pub sabotage: Option<Sabotage>,
 
-    /// The thread whose single step went on past one instruction, under
-    /// [`Sabotage::LateSingleSteps`].
     #[cfg(test)]
     late_step: Option<Tid>,
 
-    /// The slots each thread's next instruction reports hit again, under
-    /// [`Sabotage::RepeatWatchTraps`].
     #[cfg(test)]
     repeat_watch: BTreeMap<Tid, u64>,
 
-    /// How many small stack words ptrace has read, under
-    /// [`Sabotage::FlickeringStackWords`].
     #[cfg(test)]
     flickers: std::cell::Cell<u64>,
 
-    /// The debug registers the tracer believes it wrote, under
-    /// [`Sabotage::PhantomArming`].
     #[cfg(test)]
     pub(super) phantom_debug: BTreeMap<Tid, debug_regs::DebugRegisters>,
 }
 
-/// How a thread's debug registers answer the tracer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DebugBehavior {
-    /// As Linux's do (K-DR-*).
     Faithful,
 
-    /// Writes succeed and change nothing, and reads give zero, as under
-    /// gVisor.
     Discarding,
 
-    /// Others hold this many hardware breakpoints of every thread the
-    /// program creates, as a perf session following new threads can, so
-    /// fewer of their slots take an address (K-DR-4).
     Contended(usize),
 }
 
-/// What running a thread for a while did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ran {
-    /// How many instructions it executed.
     pub executed: u64,
 
-    /// Whether it gave up the CPU with `sched_yield`.
     pub yielded: bool,
 }
 
@@ -896,19 +678,15 @@ impl Kernel {
         }
     }
 
-    /// Serves `tracer`'s requests from now on.
     pub fn serve(&self, tracer: i32) {
         self.caller.set(tracer);
     }
 
-    /// The tracer whose requests the kernel serves.
     #[must_use]
     pub const fn caller(&self) -> i32 {
         self.caller.get()
     }
 
-    /// Records that the run reached something the simulation does not
-    /// model. The first gap is the one reported.
     pub fn gap(&mut self, description: impl Into<String>) {
         self.gap.get_or_insert_with(|| ModelGap(description.into()));
     }
@@ -925,7 +703,6 @@ impl Kernel {
         tid
     }
 
-    /// The shadow of a thread that has made no call yet.
     const fn new_shadow(&mut self) -> Shadow {
         let base = self.next_activation;
         self.next_activation += 1;
@@ -937,8 +714,6 @@ impl Kernel {
         }
     }
 
-    /// Starts `image` as a traced child that has just executed it (K-EXEC-1):
-    /// it reports a stop for `SIGTRAP` from itself, at its entry point.
     pub fn spawn(
         &mut self,
         image: Arc<Image>,
@@ -949,8 +724,6 @@ impl Kernel {
         self.start(image, name, arguments, random, true)
     }
 
-    /// Starts `image` untraced, running from its entry point, for the
-    /// tracer to attach to.
     pub fn spawn_untraced(
         &mut self,
         image: Arc<Image>,
@@ -1020,7 +793,7 @@ impl Kernel {
                     Tracing::Untraced
                 },
                 registers,
-                // The stop is at the end of `execve`.
+
                 orig_rax: syscalls::SYS_EXECVE,
                 syscall_stops: false,
                 call: CallPhase::Outside,
@@ -1049,7 +822,6 @@ impl Kernel {
         tid
     }
 
-    /// Threads that can make progress if run.
     pub fn runnable(&self) -> impl Iterator<Item = Tid> + '_ {
         self.threads
             .values()
@@ -1057,9 +829,6 @@ impl Kernel {
             .map(|thread| thread.tid)
     }
 
-    /// Threads with a status `tracer`'s wait would report now. A group
-    /// leader's exit waits until every other thread of its group is reaped
-    /// (K-WAIT-2).
     pub fn reportable(&self, tracer: i32) -> impl Iterator<Item = Tid> + '_ {
         self.threads
             .values()
@@ -1069,7 +838,6 @@ impl Kernel {
             .map(|thread| thread.tid)
     }
 
-    /// Whether `thread` is a zombie leader whose group still has others.
     fn delayed(&self, thread: &Thread) -> bool {
         thread.tid == thread.tgid.leader()
             && matches!(thread.state, State::Zombie(_))
@@ -1079,8 +847,6 @@ impl Kernel {
                 .any(|other| other.tgid == thread.tgid && other.tid != thread.tid)
     }
 
-    /// Reaps `tid`'s status, as the waiter's `waitpid` does. A zombie is
-    /// released, and its process ends with its last thread.
     pub fn collect(&mut self, tid: Tid) -> Option<WaitStatus> {
         let thread = self.threads.get(&tid)?;
         if thread.report.is_none() || self.delayed(thread) {
@@ -1096,7 +862,6 @@ impl Kernel {
             self.threads.remove(&tid);
             let process = self.processes.get(&group).expect("a zombie's process");
 
-            // K-EXIT-6: a group exit decides every status reaped after it.
             let exit = process.group_exit.unwrap_or(own);
             status = exit.wait_status(tid);
 
@@ -1119,8 +884,6 @@ impl Kernel {
         Some(status)
     }
 
-    /// Runs `tid` for up to `budget` instructions, stopping early when it
-    /// stops, exits, yields, or hits a gap.
     pub fn run(&mut self, tid: Tid, budget: u64) -> Ran {
         let mut ran = Ran {
             executed: 0,
@@ -1142,18 +905,15 @@ impl Kernel {
             }
 
             if let CallPhase::Returning(result) = thread.call {
-                // The system call the thread stopped inside returns.
                 thread.call = CallPhase::Outside;
                 thread.registers.general[RAX] = result;
                 if thread.single_step {
-                    // K-TRAP-1: a step across `syscall` reports TRAP_BRKPT.
                     self.trap(tid, signals::TRAP_BRKPT);
                     self.note_return(tid);
                     break;
                 }
 
                 if thread.syscall_stops {
-                    // K-SYS-3: the call stops at its exit as it returns.
                     self.syscall_stop(tid, true);
                     break;
                 }
@@ -1163,8 +923,6 @@ impl Kernel {
             }
 
             if thread.call == CallPhase::AtEntry {
-                // K-SYS-2: the call the thread stopped at the entry of runs
-                // before anything else can happen to the thread.
                 thread.call = CallPhase::Outside;
                 let single_step = thread.single_step;
                 match self.serve_entered(tid, single_step) {
@@ -1199,13 +957,10 @@ impl Kernel {
         ran
     }
 
-    /// Executes one instruction of a running thread.
     fn execute(&mut self, tid: Tid) -> Executed {
         self.sample_breakpoint(tid);
         let thread = &self.threads[&tid];
 
-        // What a thread does is the debugger's to report only while it
-        // traces the thread, in the process it debugs.
         let debugged = thread.traced() && self.debugged == Some(thread.tgid);
         if debugged {
             self.watching.resume(tid);
@@ -1262,8 +1017,6 @@ impl Kernel {
             accesses,
         } = cpu::execute(&mut thread.registers, &mut process.space, single_step);
 
-        // K-DR-1: an access an enabled slot covers raises a debug
-        // exception once the instruction completes.
         let watch_hits = if outcome == Outcome::Completed {
             thread.debug.hits(&accesses)
         } else {
@@ -1305,8 +1058,6 @@ impl Kernel {
         }
 
         if outcome != Outcome::Syscall {
-            // Instructions and exceptions enter the kernel, if at all, outside
-            // any system call.
             thread.orig_rax = NO_SYSTEM_CALL;
         }
 
@@ -1322,9 +1073,6 @@ impl Kernel {
         }
     }
 
-    /// A thread executed `syscall`: it stops at the call's entry if its
-    /// tracer resumed it to (K-SYS-1), and otherwise makes the call, which
-    /// a catchpoint of the debugged process's may have had to stop.
     fn enter_syscall(&mut self, tid: Tid, single_step: bool, debugged: bool) -> Executed {
         let thread = self.threads.get_mut(&tid).expect("the calling thread");
         let caught = debugged
@@ -1356,8 +1104,6 @@ impl Kernel {
         executed
     }
 
-    /// Serves the call a thread stopped at the entry of, which stops at its
-    /// exit if the tracer resumed it with `PTRACE_SYSCALL` (K-SYS-2).
     fn serve_entered(&mut self, tid: Tid, single_step: bool) -> Executed {
         let executed = self.serve_syscall(tid, single_step);
 
@@ -1372,7 +1118,6 @@ impl Kernel {
 
             self.syscall_stop(tid, true);
 
-            // A yield gave up the CPU before the exit stopped the thread.
             return if executed == Executed::Yielded {
                 executed
             } else {
@@ -1384,10 +1129,6 @@ impl Kernel {
         executed
     }
 
-    /// Notes a call that returned with no system-call-stop at its exit, if
-    /// a catchpoint stops it there: the debugger could not see it. A call
-    /// still inside an event stop, or one that ended its thread, has not
-    /// returned.
     fn note_return(&mut self, tid: Tid) {
         let Some(thread) = self.threads.get(&tid) else {
             return;
@@ -1418,8 +1159,6 @@ impl Kernel {
         }
     }
 
-    /// Stops a thread at the entry or exit of the system call `orig_rax`
-    /// names. At its entry, `rax` holds `-ENOSYS` (K-SYS-1).
     fn syscall_stop(&mut self, tid: Tid, exit: bool) {
         let thread = self.threads.get_mut(&tid).expect("stopping thread exists");
         if !exit {
@@ -1449,11 +1188,9 @@ impl Kernel {
         );
     }
 
-    /// Serves the system call a thread just entered.
     fn serve_syscall(&mut self, tid: Tid, single_step: bool) -> Executed {
         let yielded = syscalls::serve(self, tid);
 
-        // An untraced thread that exited is reaped at once.
         if !self
             .threads
             .get(&tid)
@@ -1463,12 +1200,10 @@ impl Kernel {
         }
 
         if single_step {
-            // A yield gives up the CPU even under a single step.
             if yielded {
                 self.happenings.push(Happening::Yielded { tid });
             }
 
-            // K-TRAP-1: a step across `syscall` reports TRAP_BRKPT.
             self.trap(tid, signals::TRAP_BRKPT);
             return Executed::Stopped;
         }
@@ -1480,12 +1215,9 @@ impl Kernel {
         }
     }
 
-    /// Raises the signal for the exception the instruction at `address`
-    /// raised (K-TRAP-2).
     fn take_exception(&mut self, tid: Tid, address: u64, outcome: Outcome) -> Executed {
         match outcome {
             Outcome::Breakpoint => {
-                // K-TRAP-1: int3 reports SI_KERNEL with rip past the trap.
                 let thread = self
                     .threads
                     .get_mut(&tid)
@@ -1522,8 +1254,6 @@ impl Kernel {
         Executed::Stopped
     }
 
-    /// Ends an instruction that completed: a single step or a watched
-    /// access raises a debug exception, and otherwise the thread runs on.
     fn complete(&mut self, tid: Tid, single_step: bool, watch_hits: u64) -> Executed {
         if single_step {
             #[cfg(test)]
@@ -1531,8 +1261,6 @@ impl Kernel {
                 return Executed::Continue;
             }
 
-            // K-TRAP-1: a single step reports TRAP_TRACE. K-DR-2: with DR6
-            // holding the step and any slot that hit.
             self.threads
                 .get_mut(&tid)
                 .expect("the stepping thread exists")
@@ -1544,7 +1272,6 @@ impl Kernel {
         }
 
         if watch_hits != 0 {
-            // K-DR-1: TRAP_HWBKPT with `rip` after the instruction.
             self.threads
                 .get_mut(&tid)
                 .expect("the accessing thread exists")
@@ -1558,8 +1285,6 @@ impl Kernel {
         Executed::Continue
     }
 
-    /// Whether a single step of the thread the client steps goes on to a
-    /// second instruction, under [`Sabotage::LateSingleSteps`].
     #[cfg(test)]
     fn step_late(&mut self, tid: Tid) -> bool {
         let stepped = self
@@ -1576,13 +1301,8 @@ impl Kernel {
         }
     }
 
-    /// The word at `address`, with the first byte of the call instruction
-    /// the thread the client steps has come to hidden as a no-op, under
-    /// [`Sabotage::HideSteppedCalls`].
     #[cfg(test)]
     fn hide_stepped_call(&self, tgid: Tgid, address: u64, word: u64) -> u64 {
-        // Once the thread has moved: a call it stands at as the step begins
-        // may be the one the step is to go into.
         let Some(thread) = self
             .tracking
             .as_ref()
@@ -1612,7 +1332,6 @@ impl Kernel {
         (word & !(0xff << shift)) | (0x90 << shift)
     }
 
-    /// A word ptrace reads, as a sabotaged kernel reports it.
     #[cfg(test)]
     pub(super) fn sabotage_read(&self, tgid: Tgid, address: u64, word: u64) -> u64 {
         let return_slot = |exact: bool| {
@@ -1625,9 +1344,6 @@ impl Kernel {
             })
         };
 
-        // Below where the main thread's first call pushed its return
-        // address: what the program itself stored, not its entry's frame
-        // or what the kernel laid out at exec.
         let computed = || {
             self.threads
                 .get(&tgid.leader())
@@ -1663,7 +1379,6 @@ impl Kernel {
         }
     }
 
-    /// Raises `SIGTRAP` with `code` at a thread's current `rip`.
     fn trap(&mut self, tid: Tid, code: i32) {
         let rip = self.threads[&tid].registers.rip;
         self.raise(
@@ -1677,11 +1392,6 @@ impl Kernel {
         );
     }
 
-    /// Queues the signal a trap or fault raised for the thread that raised
-    /// it, which takes it as it takes any pending signal, before it runs
-    /// another instruction: after an interrupt waiting for it, and ahead
-    /// of any signal that is not synchronous (K-TRAP-2). The thread runs no
-    /// further in this burst.
     fn raise(&mut self, tid: Tid, info: SigInfo) {
         self.threads
             .get_mut(&tid)
@@ -1690,8 +1400,6 @@ impl Kernel {
             .insert(info);
     }
 
-    /// Enters a signal-delivery-stop for `info`, or, for an untraced
-    /// thread, takes the signal's default action.
     fn signal_stop(&mut self, tid: Tid, info: SigInfo) {
         let thread = self.threads.get_mut(&tid).expect("stopping thread exists");
         if !thread.traced() {
@@ -1706,9 +1414,6 @@ impl Kernel {
         );
     }
 
-    /// Stops a thread inside the system call it is making for a
-    /// `PTRACE_EVENT_*` stop. The call returns `result` once the thread
-    /// resumes.
     fn event_stop(&mut self, tid: Tid, event: i32, message: u64, result: u64) {
         let thread = self.threads.get_mut(&tid).expect("stopping thread exists");
         thread.registers.general[RAX] = ENOSYS_RESULT;
@@ -1726,9 +1431,6 @@ impl Kernel {
         );
     }
 
-    /// Whether a signal or an interrupt is pending for a thread, which
-    /// makes a fork or clone it enters fail with `-ERESTARTNOINTR`
-    /// (K-SYS-7), as Linux's `signal_pending` does `copy_process`.
     fn signal_pending(&self, tid: Tid) -> bool {
         let thread = &self.threads[&tid];
         let interrupted = matches!(
@@ -1747,9 +1449,6 @@ impl Kernel {
                 .is_some_and(|process| !process.shared.is_empty())
     }
 
-    /// Fails the fork or clone a thread is making for the signal pending
-    /// (K-SYS-7): it creates nothing and returns `-ERESTARTNOINTR`, to be
-    /// made again once the thread has taken what is pending.
     fn fail_to_restart(&mut self, tid: Tid) {
         let thread = self.threads.get_mut(&tid).expect("the calling thread");
         thread.registers.general[RAX] = ERESTARTNOINTR_RESULT;
@@ -1757,10 +1456,6 @@ impl Kernel {
         self.happenings.push(Happening::Restarting { tid });
     }
 
-    /// Makes a call that failed to restart again as the thread returns to
-    /// its program, having taken every stop and signal on the way: the
-    /// kernel rewinds `rip` over the `syscall` and puts the call back in
-    /// `rax`, unless the tracer changed the result meanwhile (K-SYS-7).
     fn restart_call(&mut self, tid: Tid) {
         let thread = self.threads.get_mut(&tid).expect("running thread exists");
         if thread.call != CallPhase::Restarting {
@@ -1777,10 +1472,6 @@ impl Kernel {
         }
     }
 
-    /// Stops a running thread for the interrupt waiting for it, with
-    /// `PTRACE_EVENT_STOP`, before it takes a signal, one a trap raised
-    /// included, or runs (K-INT-1, K-TRAP-2).
-    /// Returns whether it stopped.
     fn stop_for_interrupt(&mut self, tid: Tid) -> bool {
         let thread = self.threads.get_mut(&tid).expect("running thread exists");
         if !matches!(
@@ -1808,9 +1499,6 @@ impl Kernel {
         true
     }
 
-    /// The first byte of `group`'s code that differs from its program's:
-    /// its address, the byte, and the program's. A page still shared with
-    /// the image was never written.
     #[must_use]
     pub fn planted(&self, group: Tgid) -> Option<Planted> {
         let process = self.processes.get(&group)?;
@@ -1834,14 +1522,11 @@ impl Kernel {
         })
     }
 
-    /// The process `tid` belongs to.
     #[must_use]
     pub fn process_of(&self, tid: Tid) -> Option<&Process> {
         self.processes.get(&self.threads.get(&tid)?.tgid)
     }
 
-    /// `/proc/<tid>/maps`, or `None` once the thread is reaped. A zombie
-    /// has no address space left, and its maps read empty.
     #[must_use]
     pub fn maps(&self, tid: Tid) -> Option<String> {
         let thread = self.threads.get(&tid)?;
@@ -1860,8 +1545,6 @@ impl Kernel {
         Some(maps)
     }
 
-    /// The threads of `group` not yet reaped, as `/proc/<tgid>/task` lists
-    /// them.
     pub fn threads_of(&self, group: Tgid) -> impl Iterator<Item = &Thread> + '_ {
         self.threads
             .values()
@@ -1869,8 +1552,6 @@ impl Kernel {
     }
 }
 
-/// The debug exceptions an instruction of `tid`, in the process `leader`
-/// leads, raises under `sabotage` when its slots raise `hits`.
 #[cfg(test)]
 fn sabotaged_watch_hits(
     sabotage: Option<Sabotage>,
@@ -1893,9 +1574,6 @@ fn sabotaged_watch_hits(
     }
 }
 
-/// Whether `sabotage` makes the CPU skip the trap at `address`, which is a
-/// user breakpoint's or not, with `temporaries` those only temporary
-/// breakpoints own.
 #[cfg(test)]
 fn skips_trap(
     sabotage: Option<Sabotage>,
@@ -1910,8 +1588,6 @@ fn skips_trap(
     }
 }
 
-/// `maps` with each file's mappings a page higher than they are, for
-/// [`Sabotage::ShiftMappings`].
 #[cfg(test)]
 fn shift_file_mappings(maps: &str) -> String {
     maps.lines()
@@ -1939,8 +1615,6 @@ fn shift_file_mappings(maps: &str) -> String {
         .collect()
 }
 
-/// Executes the program's own instruction at `rip` though a trap covers
-/// it, as a broken CPU would, for [`Sabotage::SkipTraps`].
 #[cfg(test)]
 fn step_under_trap(
     registers: &mut Registers,
@@ -1958,7 +1632,6 @@ fn step_under_trap(
     executed
 }
 
-/// What executing one instruction did to the thread's run.
 #[derive(PartialEq, Eq)]
 enum Executed {
     Continue,

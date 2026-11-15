@@ -1,6 +1,6 @@
 microscope-views 1
 
-# The program's own vector of integers.
+
 view c intvec {
     check n <= cap
     show sequence(n) for i in range(n) => data[i]

@@ -1,5 +1,3 @@
-//! Agent transport, loading, and injection tests, including cooperative fixtures.
-
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -9,7 +7,6 @@ use microscope::python_agent;
 
 use crate::support::{ScratchDir, python};
 
-/// Own a fixture before the first fallible wait, including panic paths.
 struct Reaped(std::process::Child);
 
 impl Drop for Reaped {
@@ -22,8 +19,6 @@ impl Drop for Reaped {
 #[path = "../../src/runtime_model/python/hook.rs"]
 mod hook;
 
-/// A GIL and a free-threaded interpreter that inject through PEP 768: the
-/// agent's code differs only by those, not by version within them.
 const PEP_768: [&str; 2] = ["3.14", "3.15t"];
 
 #[test]
@@ -40,8 +35,6 @@ fn the_hook_is_a_loadable_exported_function() {
     assert_eq!(symbol.kind(), object::SymbolKind::Text);
 }
 
-/// glibc before 2.35 relocates a library's dynamic section in place, so a
-/// read-only one crashes the target as it loads the hook.
 #[test]
 fn the_hook_loads_under_older_glibc() {
     let scratch = ScratchDir::new("python-hook-glibc");
@@ -169,9 +162,6 @@ fn fixture_output(
             .expect("run the agent fixture"),
     );
 
-    // A free-threaded build stops the world for each reconfiguration, so
-    // the chain of a thousand takes seconds alone, and under the stress
-    // gate most of a minute.
     let deadline = Instant::now() + Duration::from_secs(90);
     let status = loop {
         if let Some(status) = child.0.try_wait().expect("wait for the fixture") {
@@ -266,8 +256,6 @@ fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
         ),
     ];
 
-    // Every mode is a process of its own, and each build's modes run at
-    // once, as many as the machine runs.
     let jobs: Vec<_> = ["3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t"]
         .into_iter()
         .flat_map(|interpreter| {
@@ -280,9 +268,6 @@ fn monitoring_callbacks_survive_reconfiguration_and_code_reuse() {
     run_modes(&jobs, &scratch, &library, &source);
 }
 
-/// Runs each fixture mode of `jobs`, by build, fixture, and mode, as a
-/// process of its own, as many at once as the machine runs, and checks
-/// each reports it passed.
 fn run_modes(
     jobs: &[(&str, &str, &str)],
     scratch: &ScratchDir,
@@ -333,8 +318,6 @@ fn run_modes(
     });
 }
 
-/// Ready reports are stepped over internally, a real callback delivers its
-/// three C arguments, and a malformed report becomes a visible runtime stop.
 #[tokio::test]
 async fn native_reports_cross_the_public_debugger_boundary() {
     use crate::session::PythonSession;
@@ -456,12 +439,6 @@ async fn bootstrap_failure_reports_its_generation_through_the_owned_library() {
         session.shutdown().await;
     }
 }
-
-// One test for each build, which the test runner runs at once: a process
-// holds one debugger session. Every kind of interruption takes the agent's
-// one `except BaseException` path, so a keyboard interrupt stands for all;
-// `monitoring_callbacks_survive_reconfiguration_and_code_reuse` runs each
-// kind on the Python side.
 
 #[tokio::test]
 async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary_on_3_14() {
@@ -763,7 +740,6 @@ async fn a_free_threaded_monitoring_agent_refuses_thread_only_resume_without_con
     }
 }
 
-/// The thread that printed a checkpoint's report.
 fn main_thread(truth: &[Vec<String>]) -> microscope::ThreadId {
     truth
         .iter()
@@ -773,9 +749,6 @@ fn main_thread(truth: &[Vec<String>]) -> microscope::ThreadId {
         .expect("the fixture names its main thread")
 }
 
-/// Steps `main`, which a pause found running only Python, until it is
-/// among the evaluation loop's instructions: a pause can find it in a
-/// function the loop calls, as one that pops a frame.
 async fn step_into_the_loop(
     session: &mut crate::session::PythonSession,
     main: microscope::ThreadId,
@@ -785,8 +758,6 @@ async fn step_into_the_loop(
 
     loop {
         let trace = session.backtrace(main).await;
-        // The innermost native code, past the Python frames the loop runs
-        // and the functions inlined into it.
         let looping = trace
             .frames
             .iter()
@@ -818,9 +789,6 @@ async fn step_into_the_loop(
     }
 }
 
-/// A thread that only runs Python never calls the loop's entry: the agent
-/// installs from where a pause finds it, among the loop's instructions,
-/// which a tail-call build runs as a function each.
 #[tokio::test]
 async fn an_agent_installs_from_a_thread_paused_among_the_loops_instructions() {
     use crate::session::PythonSession;
@@ -893,9 +861,6 @@ async fn an_automatic_agent_detaches_disarms_and_can_be_installed_by_a_new_sessi
     }
 }
 
-/// A source request no thread has taken is withdrawn at detach, so the
-/// program never runs it, though its thread runs only Python and would
-/// take it at once.
 #[tokio::test]
 async fn a_detach_withdraws_a_request_no_thread_has_taken() {
     use crate::session::PythonSession;
@@ -924,7 +889,6 @@ async fn a_detach_withdraws_a_request_no_thread_has_taken() {
             "{interpreter}: the request is outstanding: {site:?}"
         );
 
-        // The releaser reads this once the detached program runs.
         session.release();
         let session = session.reattach_at("released").await;
         assert!(
@@ -1014,9 +978,6 @@ async fn exec_retires_old_agent_files_and_reinstalls_before_the_next_requested_l
     }
 }
 
-/// 3.12 and 3.13 take the agent only through a launch's bootstrap, which
-/// an exec ends: the bootstrap's files go with it, and the breakpoint says
-/// why it cannot be armed instead of waiting for a bootstrap that is gone.
 #[tokio::test]
 async fn exec_retires_a_launch_bootstrap() {
     use crate::session::PythonSession;
@@ -1123,8 +1084,6 @@ async fn exhausted_monitoring_tools_report_failure_and_preserve_application_tool
     }
 }
 
-/// Outstanding acknowledgements must wait on messages with a deadline alarm, not poll.
-/// Counts messages and sleeps rather than timing them to avoid scheduler-dependent failures.
 #[tokio::test]
 async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
     use crate::session::PythonSession;
@@ -1143,15 +1102,10 @@ async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
         "{reason:?}"
     );
 
-    // Its agent acknowledged the breakpoint, and acknowledges nothing once
-    // the fixture faults it. The thread steps in C, from reading the line
-    // that releases it, which it has.
     session.resume().await;
     session.stop_at("faulted").await;
     session.release();
 
-    // How the controller waited during the steps: each count of the
-    // process's timings recording, which nextest gives this test alone.
     let steps = async |session: &mut PythonSession| {
         let recording =
             microscope::timings::Recording::start(microscope::timings::Options::default())
@@ -1174,7 +1128,6 @@ async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
         )
     };
 
-    // With nothing outstanding, no message waits on a deadline.
     let acknowledged = steps(&mut session).await;
     assert_eq!(acknowledged, (0, 0), "(outstanding messages, poll sleeps)");
 
@@ -1193,9 +1146,6 @@ async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
         snapshot.breakpoints
     );
 
-    // Each step's stop is a message the controller takes while the
-    // acknowledgement is outstanding. One already queued is taken without
-    // a wait; none is taken after a sleep.
     let (outstanding, poll_sleeps) = steps(&mut session).await;
     assert_eq!(
         poll_sleeps, 0,
@@ -1283,8 +1233,6 @@ async fn unsupported_python_injection_is_visible_even_for_pending_breakpoints() 
             "{interpreter}: unsupported injection lost its reason: {site:?}"
         );
 
-        // 3.12 and 3.13 take the agent only through a launch's bootstrap,
-        // and 3.13t not at all.
         let reason = if interpreter == "3.13t" {
             "free-threaded build stops listing code"
         } else {

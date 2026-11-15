@@ -16,38 +16,25 @@ pub struct Options<'a> {
     pub look: Look,
     pub focus: Option<&'a str>,
 
-    /// With `tree` and `focus`, the focused function's callers instead of
-    /// its callees.
     pub invert: bool,
 
-    /// How each stack is reshaped first, in order.
     pub reshapes: &'a [Reshape],
 
-    /// The rows of the threads whose samples count, in the profile and in
-    /// the base, or all.
     pub threads: Option<&'a [u32]>,
     pub base_threads: Option<&'a [u32]>,
 }
 
-/// A change to each stack before a report adds them up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reshape {
-    /// Removes the function, giving its cost to its caller.
     Merge(String),
 
-    /// Removes every sample through the function.
     Drop(String),
 
-    /// Merges each run of the function calling itself into its first call.
     Collapse(String),
 
-    /// Cuts every cycle out of each stack.
     Cycles,
 }
 
-/// `reshapes` as transforms of the profile `keys` are of, each function
-/// resolved as `--focus` resolves it. In a `base` profile, a function it
-/// lacks changes nothing there.
 pub fn transforms(keys: &Keys<'_>, reshapes: &[Reshape], base: bool) -> Result<Vec<Transform>> {
     let mut transforms = Vec::new();
     for reshape in reshapes {
@@ -132,7 +119,6 @@ pub fn write(
     Ok(())
 }
 
-/// Both profiles' total cost, and how it changed.
 fn total(before: u64, after: u64, unit: &str, out: &mut impl Write) -> Result<()> {
     writeln!(
         out,
@@ -267,7 +253,6 @@ fn butterfly(keys: &Keys<'_>, query: &Query, key: u32) -> Butterfly {
             *outgoing.entry(tree.key[child]).or_default() += tree.total[child];
             child = tree.end[child] as usize;
         }
-        // Skip recursive occurrences: focus starts at the outermost one.
         node = tree.end[node] as usize;
     }
     let costs = |entries: BTreeMap<u32, u64>| Costs {
@@ -298,7 +283,6 @@ fn focus(
 ) -> Result<()> {
     let _span = microscope::span!("report focus");
     let keys = current.keys(options.granularity);
-    // A name that only inlined frames carry is folded away, not missing.
     ensure!(
         options.granularity != Granularity::PhysicalFunction
             || !keys.named(name).is_empty()
@@ -395,8 +379,6 @@ fn focus(
     Ok(())
 }
 
-/// A focused function's subtree, or with `invert` its callers, which have
-/// no own cost of their own to show.
 fn focused_tree(
     keys: &Keys<'_>,
     tree: &CallTree,
@@ -486,10 +468,8 @@ fn weight(value: i128, unit: &str, signed: bool) -> String {
     }
 }
 
-/// The columns of [`comparison`].
 const COMPARISON: [&str; 4] = ["before", "after", "change", ""];
 
-/// A cost before and after, how much it changed, and by what share.
 fn comparison(before: u64, after: u64, unit: &str) -> [String; 4] {
     [
         weight(before.into(), unit, false),
@@ -499,8 +479,6 @@ fn comparison(before: u64, after: u64, unit: &str) -> [String; 4] {
     ]
 }
 
-/// How `after` differs from `before` as a share of it: `new` when there
-/// was nothing before, and `gone` when there is nothing after.
 #[expect(
     clippy::cast_precision_loss,
     reason = "percentages need no more precision than f64's"
@@ -517,8 +495,6 @@ fn relative(before: u64, after: u64) -> String {
     }
 }
 
-/// Rows of right-aligned cells, each column as wide as its widest cell or
-/// heading, then each row's name.
 fn table(
     headings: &[&str],
     name: &str,

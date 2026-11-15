@@ -1,6 +1,3 @@
-//! System calls in a recording: what to trace, and the trace that runs
-//! beside the samples, on their clock, cut with them.
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -21,25 +18,20 @@ use crate::syscalls::specs::{self, Class, Ret};
 use crate::syscalls::stats::Folded;
 use crate::syscalls::{CallSet, Errno, InFlight, Outcome, SyscallEvent, SyscallId, TraceEvent};
 
-/// How much of each system call a recording keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SyscallLevel {
     Off,
 
-    /// Every call counted in the kernel, by call and thread.
     Counts,
 
-    /// Every call with its arguments, result, short strings, and stack.
     Calls,
 
-    /// As `Calls`, with whole strings and the bytes behind pointers.
     Full,
 }
 
 impl SyscallLevel {
     pub const ALL: [Self; 4] = [Self::Off, Self::Counts, Self::Calls, Self::Full];
 
-    /// The level a preset records at.
     #[must_use]
     pub const fn of(preset: Preset) -> Self {
         match preset {
@@ -77,14 +69,11 @@ impl std::str::FromStr for SyscallLevel {
     }
 }
 
-/// What sees the calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SyscallEngine {
-    /// Programs in the kernel; the traced program never stops.
     #[default]
     Bpf,
 
-    /// The debugger's interface, which stops each traced call.
     Ptrace,
 }
 
@@ -110,29 +99,21 @@ impl std::str::FromStr for SyscallEngine {
     }
 }
 
-/// Everything a recording's system calls depend on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyscallOptions {
     pub level: SyscallLevel,
 
-    /// Whether the level was asked for. The preset's own steps down to
-    /// `Off` where its engine cannot run; one asked for refuses.
     pub asked: bool,
     pub engine: SyscallEngine,
 
-    /// The calls kept, and the filter's text; none keeps every call.
     pub filter: Option<(String, Filter)>,
 
-    /// How long a call takes before `Counts` keeps it as slow.
     pub slow: Duration,
 
-    /// The calls that save the recording as SIGUSR2 does.
     pub save_on: SaveOn,
 
-    /// What sees each event the recording keeps, as the trace sees it.
     pub print: Option<Printer>,
 
-    /// Why a level stepped down to `Off`, once it has.
     pub unavailable: Option<String>,
 }
 
@@ -154,12 +135,6 @@ impl SyscallOptions {
         }
     }
 
-    /// Whether the engine can record the level, refusing pairs that
-    /// cannot be.
-    ///
-    /// # Errors
-    ///
-    /// Counting with ptrace, which stops every call.
     pub fn check(&self) -> Result<(), String> {
         if self.engine == SyscallEngine::Ptrace && self.level == SyscallLevel::Counts {
             return Err(
@@ -172,12 +147,6 @@ impl SyscallOptions {
         Ok(())
     }
 
-    /// Steps a level the preset chose down to `Off` where its engine
-    /// cannot run here, keeping why; returns that line to tell the user.
-    ///
-    /// # Errors
-    ///
-    /// Why a level that was asked for cannot be recorded.
     pub fn resolve(&mut self) -> Result<Option<String>, String> {
         self.check()?;
         if self.level == SyscallLevel::Off || self.engine == SyscallEngine::Ptrace {
@@ -205,10 +174,6 @@ impl SyscallOptions {
         )))
     }
 
-    /// The calls the engine must see: those kept, and when they name
-    /// paths or descriptors, every call that changes a descriptor, so that
-    /// the paths are right. A few calls that name neither attach through
-    /// their kernel functions alone.
     pub(super) fn traced(&self) -> CallSet {
         let Some((_, filter)) = &self.filter else {
             return CallSet::all();
@@ -224,7 +189,6 @@ impl SyscallOptions {
         calls
     }
 
-    /// The settings a capture records of them.
     pub(super) fn settings(&self) -> Vec<(&'static str, String)> {
         let mut settings = vec![("syscalls", self.level.name().to_owned())];
         if let Some(why) = &self.unavailable {
@@ -247,8 +211,6 @@ impl SyscallOptions {
     }
 }
 
-/// The system call trace a recording runs beside its samples, on the
-/// same clock.
 pub(super) struct SyscallTrace {
     stop: Arc<AtomicBool>,
     thread: std::thread::JoinHandle<Result<(), String>>,
@@ -259,9 +221,6 @@ pub(super) struct SyscallTrace {
     budget: Arc<Budgeted>,
 }
 
-/// What the recording's budget has the trace shed, as [`Shed`]'s bits, the
-/// calls traced, and what tracing them has cost the traced threads beyond
-/// counting them, in nanoseconds.
 #[derive(Default)]
 struct Budgeted {
     shed: AtomicU8,
@@ -269,40 +228,26 @@ struct Budgeted {
     kernel: AtomicU64,
 }
 
-/// What a recording keeps of its trace until the samples are cut.
 struct Shared {
-    /// Every event since the last cut, in time order.
     events: VecDeque<TraceEvent>,
 
-    /// What the kernel counted, by when it was read.
     counted: VecDeque<(u64, Folded)>,
 
-    /// Each setting the engine reported.
     settings: Vec<(String, String)>,
 
-    /// A window's length: its cuts copy events and counts, which go only
-    /// once they are older than every window that could hold them.
     window: Option<u64>,
 
-    /// Whether the engine reads its counts every second, for a recording
-    /// cut while it runs, or only at its end.
     flushing: bool,
     last_flush: u64,
 
-    /// Why a call asked to save, until the recording takes it; why the
-    /// next cut is saved; and when calls may ask again.
     trigger: Option<String>,
     saving: Option<String>,
     quiet_until: u64,
 
-    /// The calls a watched recording's threads were last seen blocked in,
-    /// and when.
     blocked: Vec<InFlight>,
     blocked_at: u64,
 }
 
-/// Sees each event a recording keeps, on the trace's own thread, so that
-/// the last events of a trace are seen too.
 #[derive(Clone)]
 pub struct Printer(pub Arc<dyn Fn(&TraceEvent) + Send + Sync>);
 
@@ -320,14 +265,10 @@ impl PartialEq for Printer {
 
 impl Eq for Printer {}
 
-/// The calls that save a recording's window, or end its segment, as SIGUSR2
-/// does.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SaveOn {
-    /// A call that took at least this long.
     pub slow: Option<Duration>,
 
-    /// A call that failed with one of these.
     pub errnos: Vec<Errno>,
 }
 
@@ -337,7 +278,6 @@ impl SaveOn {
         self.slow.is_some() || !self.errnos.is_empty()
     }
 
-    /// Why `call` saves the recording, if it does.
     fn reason(&self, call: &SyscallEvent) -> Option<String> {
         let name = call.call.display_name();
         if let (Some(slow), Some(took)) = (self.slow, call.duration())
@@ -356,7 +296,6 @@ impl SaveOn {
     }
 }
 
-/// The trace's sink, which says when the trace sees its process.
 struct Held {
     shared: Arc<Mutex<Shared>>,
     budget: Arc<Budgeted>,
@@ -364,14 +303,10 @@ struct Held {
     filter: Option<Filter>,
     fds: FdTable,
 
-    /// The calls that save, and how long after one the next is let go:
-    /// a window's span, or a segment's.
     save_on: SaveOn,
     quiet: u64,
     print: Option<Printer>,
 
-    /// Whether someone watches the recording as it goes, who sees the
-    /// calls its threads are blocked in.
     watched: bool,
 }
 
@@ -380,8 +315,6 @@ fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 }
 
 impl Held {
-    /// Whether the filter keeps `event`. Every event updates the
-    /// descriptors, so that later calls' paths are right.
     fn keeps(&mut self, event: &TraceEvent) -> bool {
         let fds = &self.fds;
         let kept = self.filter.as_ref().is_none_or(|filter| match event {
@@ -402,18 +335,12 @@ impl Held {
     }
 }
 
-/// Failed and slow calls a counting recording keeps a second, over every
-/// CPU.
 const KEPT_PER_SECOND: u32 = 2000;
 
-/// How long a call runs before a watched recording shows it blocked.
 const BLOCKED_AFTER: u64 = 1_000_000;
 
-/// The setting of a live capture that says when its unfinished calls were
-/// seen blocked.
 pub const BLOCKED_AT: &str = "syscalls blocked at";
 
-/// How often a cut recording reads the kernel's counts.
 const FLUSH_EVERY: u64 = 1_000_000_000;
 
 impl Sink for Held {
@@ -500,21 +427,14 @@ impl Sink for Held {
     }
 }
 
-/// The process a trace follows, and every process it starts.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Traced {
-    /// Held at its launcher's gate, traced from its first call.
     Held(u32),
 
-    /// Already running, traced from its next call.
     Running(u32),
 }
 
 impl SyscallTrace {
-    /// Traces the calls `recording` asks for of `traced`, if any; returns
-    /// once the trace sees the process. Each call's stack is copied when
-    /// the samples copy `stack_bytes`, more than the frame-pointer chain
-    /// needs. A `watched` trace keeps the calls its threads are blocked in.
     pub(super) fn beside(
         traced: Traced,
         recording: &RecordOptions,
@@ -549,8 +469,6 @@ impl SyscallTrace {
         let engine = BpfOptions {
             count_only: !streams,
             stack_copy,
-            // Calls that stream need these only once the budget sheds them.
-            // A counting recording keeps every call slow enough to save it.
             exceptions: Some(Exceptions {
                 slow: options
                     .save_on
@@ -615,14 +533,12 @@ impl SyscallTrace {
             }));
         }
 
-        // The trace ended before it saw the process: why is its error.
         Err(match thread.join() {
             Ok(Err(why)) => why,
             _ => "the trace ended before it began".to_owned(),
         })
     }
 
-    /// The rungs of the budget's ladder this trace can give up.
     pub(super) fn rungs(&self) -> Vec<Rung> {
         let mut rungs = Vec::new();
         if self.engine == SyscallEngine::Ptrace {
@@ -640,7 +556,6 @@ impl SyscallTrace {
         rungs
     }
 
-    /// Gives up the rungs in `shed`, and takes back the rest.
     pub(super) fn shed(&self, shed: &[Rung]) {
         let bits = shed
             .iter()
@@ -655,8 +570,6 @@ impl SyscallTrace {
         self.budget.shed.store(bits, Ordering::Relaxed);
     }
 
-    /// The calls traced so far, and what tracing them has cost the traced
-    /// threads beyond counting them, which no budget sheds.
     pub(super) fn cost(&self) -> (u64, Duration) {
         (
             self.budget.calls.load(Ordering::Relaxed),
@@ -664,8 +577,6 @@ impl SyscallTrace {
         )
     }
 
-    /// Whether a call asked to save the recording since last asked; the
-    /// next cut says why it was saved.
     pub(super) fn take_trigger(&self) -> bool {
         let mut shared = lock(&self.shared);
         let Some(reason) = shared.trigger.take() else {
@@ -676,25 +587,16 @@ impl SyscallTrace {
         true
     }
 
-    /// `samples` with the calls and counts of their span. A segment's go
-    /// with it; a window's stay until the window rolls past them.
     pub(super) fn cut(&self, samples: &Capture) -> Capture {
         cut(&self.shared, self.stacks.as_ref(), samples, Taken::Span)
     }
 
-    /// `samples` with every call and count so far, which all stay, and the
-    /// calls the threads are blocked in, unfinished: what a watcher sees.
     pub(super) fn live(&self, samples: &Capture) -> Capture {
         cut(&self.shared, self.stacks.as_ref(), samples, Taken::Live)
     }
 
-    /// Ends the trace, its program having ended, and gives `samples` every
-    /// call and count left.
     pub(super) fn merge(self, samples: &Capture) -> Result<Capture, String> {
         let _span = crate::span!("record syscalls merge");
-        // Whatever the program's last calls sent is in the ring, which the
-        // trace drains before it ends; a process the program left running
-        // goes on untraced.
         self.stop.store(true, Ordering::Relaxed);
         self.thread
             .join()
@@ -708,8 +610,6 @@ impl SyscallTrace {
     }
 }
 
-/// Whether `call` takes or makes a descriptor or names a path. One without
-/// a spec is never decoded, so names neither.
 fn names_files(call: SyscallId) -> bool {
     specs::spec(call).is_some_and(|spec| {
         spec.ret == Ret::Fd
@@ -719,7 +619,6 @@ fn names_files(call: SyscallId) -> bool {
     })
 }
 
-/// Traces `traced` with the BPF engine run as `bpf` says, or with ptrace.
 fn run(
     traced: Traced,
     bpf: Option<BpfOptions>,
@@ -744,22 +643,15 @@ fn run(
     ended.map(|_| ())
 }
 
-/// What a cut takes of the calls and counts a trace holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Taken {
-    /// Those of the samples' span: a segment's go with it, and a window's
-    /// stay until the window rolls past them.
     Span,
 
-    /// Every one so far, which all stay, with the calls the threads are
-    /// blocked in as unfinished: what a watcher sees.
     Live,
 
-    /// Every one left, as the trace ends.
     Rest,
 }
 
-/// `samples` with the events and counts `shared` holds, as `taken` says.
 fn cut(
     shared: &Mutex<Shared>,
     stacks: Option<&SharedStacks>,
@@ -781,8 +673,6 @@ fn cut(
             capture.setting("trigger", &reason);
         }
 
-        // Calls before the profiler's first record are in a window until it
-        // rolls past them.
         if let Some(length) = shared.window {
             let passed = start.min(stop.saturating_sub(length));
             while shared

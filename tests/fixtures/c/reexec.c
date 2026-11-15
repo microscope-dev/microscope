@@ -1,5 +1,5 @@
-/* Runs itself again with one argument; a run with arguments prints them
- * and exits with its argument count. */
+
+
 #include <stdio.h>
 #include <unistd.h>
 

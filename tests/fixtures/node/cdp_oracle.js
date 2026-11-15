@@ -1,16 +1,16 @@
-// The oracle for microscope's JavaScript run control: runs a fixture under
-// Node's own inspector, driven by a plain CDP client, and prints where V8
-// paused. Usage: node cdp_oracle.js PLAN FIXTURE [ARGS...], where PLAN is
+
+
+
 // JSON: { "breakpoints": [{ "line": 3, "condition": "n == 2" }, ...],
-// "commands": ["Debugger.stepInto", ...], "skip": ["/vendor/", ...],
-// "enter": false,
-// "exceptions": "none" | "caught" | "uncaught" }. Each pause prints
-// `PAUSE <reason> <function> <line> <column>` (one-based), then `STACK`
-// and the JSON of every frame: its function, line, and column, whether it
-// is the program's own, and in the program's own frames every binding of
-// its local and block scopes and its `this`, each a primitive's value as
-// util.inspect writes it, or null for an object. The command after it is the next of `commands`,
-// then `Debugger.resume`.
+
+
+
+
+
+
+
+
+
 'use strict';
 const { spawn } = require('child_process');
 const { inspect } = require('util');
@@ -72,7 +72,7 @@ function connect(url) {
   };
 }
 
-// A primitive as util.inspect writes it, or undefined for an object.
+
 function primitive(object) {
   switch (object.type) {
     case 'undefined':
@@ -122,30 +122,30 @@ async function stack(callFrames) {
 }
 
 async function paused({ reason, callFrames, data }) {
-  // --inspect-brk pauses before the first statement; the plan starts after.
+
   if (!started) {
     started = true;
     send('Debugger.resume');
     return;
   }
   const [top] = callFrames;
-  // A step never ends in Node's own scripts, unless it enters a runtime's
-  // code, or in a skipped one: it goes on into the next statement of the
-  // program. V8's blackboxing cannot skip Node's, since the builtins in
-  // Node's snapshot have no context.
+
+
+
+
   const url = scripts.get(top.location.scriptId) ?? '';
   const skipped = (url.startsWith('node:') && !enter) || skip.some((part) => url.includes(part));
   if (reason === 'step' && skipped) {
     send('Debugger.stepInto');
     return;
   }
-  // An exception caught in code steps pass through is that code's own.
+
   const exception = reason === 'exception' || reason === 'promiseRejection';
   if (exception && skipped && !data?.uncaught) {
     send('Debugger.resume');
     return;
   }
-  // So is a debugger statement there.
+
   if (reason === 'other' && skipped) {
     send('Debugger.resume');
     return;

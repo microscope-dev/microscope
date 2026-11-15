@@ -1,11 +1,11 @@
 microscope-views 1
 
-# A run of doubles at a pointer, read at once.
+
 view c samples {
     show sequence(count) for i in range(count) => data[i]
 }
 
-# A server's metrics, drawn by the built-in renderers.
+
 extend c metrics {
     visualize "line-plot" {
         values = cpu

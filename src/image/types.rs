@@ -1,13 +1,3 @@
-//! The type graph: every type with its members, bases, variants,
-//! enumerators, dimensions, parameters and identity, and the indexes that
-//! find types by name, base, identity class, enumerator, and Go runtime
-//! descriptor.
-//!
-//! Each type is one record whose kind says what its fields mean; lists
-//! live in shared tables, and each type's spans follow the previous type's,
-//! so that every graph has exactly one encoding. A type's references are
-//! local identifiers; [`TypeTable`] binds them to a session's image.
-
 use std::sync::{Arc, OnceLock};
 
 use zerocopy::little_endian::{I128, U16, U32, U64, U128};
@@ -29,59 +19,38 @@ use crate::{
     VariantDiscriminant, VariantSelection, VariantSelector, VariantStorageKind,
 };
 
-/// What a type's parts are: its members, enumerators, dimensions, or
-/// parameters, by its kind, each in its own table.
 pub enum TypeParts {}
 
-/// One type. What each field holds depends on [`TypeRecord::kind`]; a
-/// field its kind does not use is zero, or [`NONE`] for references.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct TypeRecord {
-    /// The type's name; a malformed type's description.
     pub name: U32,
 
-    /// A base type's or an enumeration's source name, or an opaque type's
-    /// description.
     pub text: U32,
 
-    /// A base type's or an enumeration's underlying base-type name.
     pub base_name: U32,
 
-    /// The type's identity, or [`NONE`].
     pub identity: U32,
 
-    /// The type a pointer, reference, array, slice, modifier or name
-    /// stands for; an enumeration's underlying type; what a signature
-    /// returns; a variant type's tag type. [`NONE`] when absent.
     pub target: U32,
 
-    /// Members, enumerators, dimensions, or parameters.
     pub parts: Span<TypeParts>,
 
-    /// Base classes.
     pub bases: Span<BaseRecord>,
 
-    /// A variant type's variants.
     pub variants: Span<VariantRecord>,
 
-    /// A variant type's stored discriminant member, or [`NONE`].
     pub discriminant: U32,
     pub byte_size: U64,
 
-    /// A base type's or an enumeration's storage size, or a pointer's or
-    /// reference's address class.
     pub value: U64,
 
-    /// A base type's or an enumeration's bit size.
     pub bit_size: U64,
     pub flags: U16,
     pub kind: u8,
 
-    /// The kind's own category: an encoding, modifier, relationship, or
-    /// record, reference, or storage kind.
     pub detail: u8,
 }
 
@@ -95,7 +64,6 @@ impl TypeRecord {
     }
 }
 
-/// [`TypeRecord::kind`].
 pub mod kinds {
     pub const MALFORMED: u8 = 0;
 
@@ -132,7 +100,6 @@ pub mod kinds {
     pub const RUNTIME_ARRAY: u8 = 16;
 }
 
-/// [`TypeRecord::flags`].
 pub mod type_flags {
     pub const SIZED: u16 = 1 << 0;
 
@@ -142,7 +109,6 @@ pub mod type_flags {
 
     pub const SCOPED: u16 = 1 << 3;
 
-    /// An enumeration of a named integer's associated constants.
     pub const NAMED_CONSTANTS: u16 = 1 << 4;
 
     pub const TEXT: u16 = 1 << 6;
@@ -151,14 +117,11 @@ pub mod type_flags {
 
     pub const PROTOTYPED: u16 = 1 << 8;
 
-    /// A variant type's discriminant is stored; with [`TAG_TYPE`], only
-    /// its type is described; with neither, it is absent.
     pub const STORED: u16 = 1 << 9;
 
     pub const TAG_TYPE: u16 = 1 << 10;
 }
 
-/// An exact integer, signed or not.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -196,17 +159,14 @@ impl IntegerRecord {
     }
 }
 
-/// One member of a record, union, or variant.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct MemberRecord {
-    /// The member's name, or [`NONE`] when anonymous.
     pub name: U32,
     pub ty: U32,
 
-    /// The byte offset, or the bit offset of a bit range.
     pub offset: U64,
     pub bit_size: U64,
     pub declaration: LocationRecord,
@@ -219,7 +179,6 @@ impl Record for MemberRecord {
     const KIND: TableKind = TableKind::TypeMembers;
 }
 
-/// [`MemberRecord::flags`].
 pub mod member_flags {
     pub const ARTIFICIAL: u8 = 1 << 0;
 
@@ -232,7 +191,6 @@ const BYTE_OFFSET: u8 = 0;
 const BIT_RANGE: u8 = 1;
 const RUNTIME: u8 = 2;
 
-/// One base class.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -250,18 +208,15 @@ impl Record for BaseRecord {
     const KIND: TableKind = TableKind::TypeBases;
 }
 
-/// One variant of a variant type.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct VariantRecord {
-    /// The variant's name, or [`NONE`].
     pub name: U32,
     pub selectors: Span<SelectorRecord>,
     pub members: Span<MemberRecord>,
 
-    /// Whether the variant is the default, which has no selectors.
     pub default: u8,
 }
 
@@ -269,7 +224,6 @@ impl Record for VariantRecord {
     const KIND: TableKind = TableKind::TypeVariants;
 }
 
-/// One value or inclusive range that selects a variant.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -277,7 +231,6 @@ impl Record for VariantRecord {
 pub struct SelectorRecord {
     pub low: IntegerRecord,
 
-    /// A range's last value; zero for one value.
     pub high: IntegerRecord,
     pub range: u8,
 }
@@ -286,7 +239,6 @@ impl Record for SelectorRecord {
     const KIND: TableKind = TableKind::TypeSelectors;
 }
 
-/// One enumerator.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -300,7 +252,6 @@ impl Record for EnumeratorRecord {
     const KIND: TableKind = TableKind::TypeEnumerators;
 }
 
-/// One array dimension.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -314,24 +265,19 @@ impl Record for DimensionRecord {
     const KIND: TableKind = TableKind::TypeDimensions;
 }
 
-/// One bound of an array dimension bounded at run time.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct BoundRecord {
-    /// A constant's value, or a variable's offset in `.debug_info`.
     pub value: I128,
 
-    /// What [`bound_kinds`] says the bound is.
     pub kind: u8,
 
-    /// How many bytes a computed or stored bound has.
     pub byte_size: u8,
     pub signed: u8,
 }
 
-/// [`BoundRecord::kind`].
 pub mod bound_kinds {
     pub const NONE: u8 = 0;
 
@@ -344,7 +290,6 @@ pub mod bound_kinds {
     pub const VARIABLE: u8 = 4;
 }
 
-/// [`RuntimeDimensionRecord::ends`].
 pub mod ends {
     pub const UPPER: u8 = 0;
 
@@ -353,7 +298,6 @@ pub mod ends {
     pub const UNKNOWN: u8 = 2;
 }
 
-/// One dimension of an array bounded at run time.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -362,10 +306,8 @@ pub struct RuntimeDimensionRecord {
     pub lower: BoundRecord,
     pub extent: BoundRecord,
 
-    /// The byte stride, or [`bound_kinds::NONE`].
     pub stride: BoundRecord,
 
-    /// What [`ends`] says the extent is.
     pub ends: u8,
 }
 
@@ -411,7 +353,6 @@ impl BoundRecord {
         }
     }
 
-    /// The bound, when the record is a valid one.
     fn bound(self) -> Option<ArrayBound> {
         let value = self.value.get();
         let sized = (1..=16).contains(&self.byte_size) && self.signed <= 1;
@@ -456,7 +397,6 @@ impl RuntimeDimensionRecord {
         }
     }
 
-    /// The dimension, when the record is a valid one.
     fn dimension(self) -> Option<RuntimeDimension> {
         let extent = match self.ends {
             ends::UPPER => ArrayExtent::Upper(self.extent.bound()?),
@@ -479,8 +419,6 @@ impl RuntimeDimensionRecord {
     }
 }
 
-/// One value of a list of numbers: a signature's parameter types, an
-/// identity's path segments, or a type's identity class.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -493,28 +431,22 @@ impl SharedRecord for Item {
     const NAME: &'static str = "Item";
 }
 
-/// What a named type is.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct IdentityRecord {
-    /// The enclosing scopes and the inline namespaces among them, as
-    /// strings in [`TableKind::IdentityStrings`].
     pub path: Span<Item>,
     pub inline: Span<Item>,
     pub base: U32,
     pub arguments: Span<ArgumentRecord>,
 
-    /// Where a template parameter pack begins among the arguments, or
-    /// [`NONE`].
     pub pack: U32,
     pub runtime_type: U64,
     pub other_language: U16,
     pub language: u8,
     pub origin: u8,
 
-    /// Go's kind by `internal/abi.Kind`'s number.
     pub go_kind: u8,
     pub flags: u8,
 }
@@ -523,7 +455,6 @@ impl Record for IdentityRecord {
     const KIND: TableKind = TableKind::TypeIdentities;
 }
 
-/// [`IdentityRecord::flags`].
 pub mod identity_flags {
     pub const GO: u8 = 1 << 0;
 
@@ -532,7 +463,6 @@ pub mod identity_flags {
     pub const ALL: u8 = GO | RUNTIME_TYPE;
 }
 
-/// One template or generic argument.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -540,7 +470,6 @@ pub mod identity_flags {
 pub struct ArgumentRecord {
     pub value: IntegerRecord,
 
-    /// A type argument's type, or an unknown argument's text.
     pub reference: U32,
     pub kind: u8,
 }
@@ -553,8 +482,6 @@ const TYPE_ARGUMENT: u8 = 0;
 const VALUE_ARGUMENT: u8 = 1;
 const UNKNOWN_ARGUMENT: u8 = 2;
 
-/// The first type, in identifier order, a Go runtime type descriptor's
-/// offset describes.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -605,7 +532,6 @@ const ACCESSIBILITY: [Accessibility; 3] = [
     Accessibility::Protected,
     Accessibility::Private,
 ];
-/// The entry of `table` a validated record's `code` names.
 #[expect(
     clippy::indexing_slicing,
     reason = "type validation checks every code against the table it indexes"
@@ -629,18 +555,13 @@ fn code<T: PartialEq>(known: &[T], value: &T) -> Result<u8, TooMany> {
     super::functions::code_of(known, value).ok_or(TooMany)
 }
 
-/// What [`add_to`] encodes.
 #[derive(Debug)]
 pub struct Types<'a> {
-    /// Every type, each at its identifier's index.
     pub nodes: &'a [TypeNode],
 
-    /// Each type's identity class: two types have one class when they are
-    /// the same type, as one type defined in several units is.
     pub classes: &'a [u32],
 }
 
-/// Why types could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the types do not fit an image")]
 pub struct TooMany;
@@ -652,7 +573,6 @@ fn number(count: usize) -> Result<u32, TooMany> {
         .ok_or(TooMany)
 }
 
-/// The tables [`add_to`] fills, as it fills them.
 #[derive(Default)]
 struct Encoder {
     types: Vec<TypeRecord>,
@@ -712,7 +632,6 @@ impl Encoder {
         Ok(())
     }
 
-    /// Adds members, returning their span.
     fn members(
         &mut self,
         strings: &mut StringsBuilder,
@@ -870,7 +789,6 @@ impl Encoder {
             record.set(type_flags::SIZED);
         }
 
-        // A list starts where the previous type's ended, even when empty.
         let flag = |record: &mut TypeRecord, set: bool, flag: u16| {
             if set {
                 record.set(flag);
@@ -1032,7 +950,6 @@ impl Encoder {
                         }
                     };
 
-                    // A variant's members follow the previous variant's.
                     let members = self.members(strings, &variant.members)?;
                     self.variants.push(VariantRecord {
                         name: match &variant.name {
@@ -1107,16 +1024,12 @@ impl Encoder {
     }
 }
 
-/// Where a slice descriptor keeps its parts, as a type record's value
-/// holds it: the data's word, the length's, and the capacity's, a byte
-/// each, the capacity's [`NO_SLICE_WORD`] when it has none.
 fn slice_words(words: SliceWords) -> u64 {
     u64::from(words.data)
         | u64::from(words.length) << 8
         | u64::from(words.capacity.unwrap_or(NO_SLICE_WORD)) << 16
 }
 
-/// The words [`slice_words`] encodes.
 fn slice_words_of(value: u64) -> SliceWords {
     let [data, length, capacity, ..] = value.to_le_bytes();
     SliceWords {
@@ -1126,12 +1039,10 @@ fn slice_words_of(value: u64) -> SliceWords {
     }
 }
 
-/// Whether a type record's value is slice words [`slice_words`] made.
 fn valid_slice_words(value: u64) -> bool {
     value >> 24 == 0 && slice_words(slice_words_of(value)) == value
 }
 
-/// The capacity's word of a slice descriptor that has none.
 const NO_SLICE_WORD: u8 = 0xff;
 
 const fn layout(layout: RecordMemberLayout) -> (u8, u64, u64) {
@@ -1145,8 +1056,6 @@ const fn layout(layout: RecordMemberLayout) -> (u8, u64, u64) {
     }
 }
 
-/// Go's kind as `internal/abi.Kind` numbers it. A kind this version
-/// knows by name is never another kind's number.
 fn go_kind_code(kind: GoKind) -> Result<u8, TooMany> {
     let code = match kind {
         GoKind::Other(code) => code,
@@ -1155,14 +1064,11 @@ fn go_kind_code(kind: GoKind) -> Result<u8, TooMany> {
             .ok_or(TooMany)?,
     };
 
-    // An unknown kind's number decodes to it again.
     (GoKind::from_abi(code) == kind)
         .then_some(code)
         .ok_or(TooMany)
 }
 
-/// Adds `types` and their indexes to `builder`, pooling text in
-/// `strings`.
 pub fn add_to(
     builder: &mut Builder<'_>,
     strings: &mut StringsBuilder,
@@ -1184,8 +1090,6 @@ pub fn add_to(
     let mut runtime_types = Vec::<RuntimeTypeRecord>::new();
     let mut base_keys = Vec::new();
 
-    // The encoder adds one record for each node, and validation checks
-    // the indexes built here against them.
     for ((index, node), record) in types.nodes.iter().enumerate().zip(&encoder.types) {
         let TypeNode::Resolved(info) = node else {
             continue;
@@ -1233,7 +1137,6 @@ pub fn add_to(
         .collect::<Result<Vec<_>, TooMany>>()?;
     bases.extend(base_keys);
 
-    // The first type for each offset, in identifier order.
     runtime_types.sort_by_key(|record| record.offset.get());
     runtime_types.dedup_by_key(|record| record.offset.get());
 
@@ -1266,7 +1169,6 @@ pub fn add_to(
     Ok(())
 }
 
-/// The types of a validated image.
 #[derive(Debug, Clone, Copy)]
 pub struct TypeView<'a> {
     strings: Strings<'a>,
@@ -1313,34 +1215,26 @@ impl<'a> TypeView<'a> {
         }
     }
 
-    /// How many types there are.
     pub const fn len(self) -> usize {
         self.types.len()
     }
 
-    /// The resolved types named exactly `name`, in identifier order.
     pub fn named(self, name: &str) -> impl Iterator<Item = TypeId> + 'a {
         index::named(self.strings, self.names, name).map(TypeId::new)
     }
 
-    /// The types whose identity has base `base`, or whose base C spells
-    /// so, in identifier order.
     pub fn with_base(self, base: &str) -> impl Iterator<Item = TypeId> + 'a {
         index::named(self.strings, self.base_names, base).map(TypeId::new)
     }
 
-    /// The enumerations with an enumerator named `name`, in identifier
-    /// order.
     pub fn with_enumerator(self, name: &str) -> impl Iterator<Item = TypeId> + 'a {
         index::named(self.strings, self.enumerator_names, name).map(TypeId::new)
     }
 
-    /// The type's identity class.
     pub fn class(self, id: TypeId) -> Option<u32> {
         Some(self.classes.get(id.index())?.value.get())
     }
 
-    /// The first type a Go runtime type descriptor's offset describes.
     pub fn go_runtime_type(self, offset: u64) -> Option<TypeId> {
         let index = self
             .runtime_types
@@ -1349,8 +1243,6 @@ impl<'a> TypeView<'a> {
         Some(TypeId::new(self.runtime_types.get(index)?.ty.get()))
     }
 
-    /// Every Go runtime type descriptor offset, with the first type it
-    /// describes, in offset order.
     #[cfg(feature = "tools")]
     pub fn go_runtime_types(self) -> impl Iterator<Item = (u64, TypeId)> + 'a {
         self.runtime_types
@@ -1362,8 +1254,6 @@ impl<'a> TypeView<'a> {
         self.strings.get(StrId(id.get())).into()
     }
 
-    /// The records and variants whose names `keep` accepts, in identifier
-    /// order, without decoding them.
     pub fn aggregates_named(
         self,
         keep: impl Fn(&str) -> bool + 'a,
@@ -1381,7 +1271,6 @@ impl<'a> TypeView<'a> {
         (id.get() != NONE).then(|| self.text(id))
     }
 
-    /// The type `id` names, its references in image `image`.
     pub fn node(self, image: ModuleImageId, id: TypeId) -> Option<TypeNode> {
         let record = self.types.get(id.index())?;
         let reference = TypeReference { image, id };
@@ -1680,20 +1569,17 @@ const fn member_layout(layout: u8, offset: u64, bit_size: u64) -> RecordMemberLa
     }
 }
 
-/// A validated image's types, decoded once each as they are asked for.
 #[derive(Debug)]
 pub struct TypeTable {
     image: Arc<Image>,
     id: ModuleImageId,
     decoded: Box<[OnceLock<Box<TypeNode>>]>,
 
-    /// The coroutines, read from their types on the first question.
     coroutines:
         OnceLock<std::collections::BTreeMap<TypeId, Result<crate::CoroutineInfo, Arc<str>>>>,
 }
 
 impl TypeTable {
-    /// The types of `image`, whose references name image `id`.
     pub fn new(image: Arc<Image>, id: ModuleImageId) -> Self {
         let count = TypeView::new(&image).len();
         Self {
@@ -1704,7 +1590,6 @@ impl TypeTable {
         }
     }
 
-    /// The image holding the types, and the rest of its module's tables.
     pub fn tables(&self) -> &Image {
         &self.image
     }
@@ -1713,7 +1598,6 @@ impl TypeTable {
         TypeView::new(&self.image)
     }
 
-    /// The image whose types these are.
     pub const fn image(&self) -> ModuleImageId {
         self.id
     }
@@ -1722,12 +1606,10 @@ impl TypeTable {
         self.decoded.len()
     }
 
-    /// The type `id` names.
     pub fn node(&self, id: TypeId) -> Option<&TypeNode> {
         Some(self.decoded_node(self.decoded.get(id.index())?, id))
     }
 
-    /// The type `id` names, decoded into `slot`, its slot.
     fn decoded_node<'s>(&'s self, slot: &'s OnceLock<Box<TypeNode>>, id: TypeId) -> &'s TypeNode {
         slot.get_or_init(|| {
             Box::new(self.view().node(self.id, id).unwrap_or_else(|| {
@@ -1740,7 +1622,6 @@ impl TypeTable {
         })
     }
 
-    /// The resolved type `reference` names, when it is this image's.
     pub fn info(&self, reference: TypeReference) -> Option<&TypeInfo> {
         if reference.image != self.id {
             return None;
@@ -1752,8 +1633,6 @@ impl TypeTable {
         }
     }
 
-    /// What the coroutine of type `id` is, or why its layout cannot be read
-    /// as one; `None` for a type that is no coroutine.
     pub fn coroutine(&self, id: TypeId) -> Option<Result<&crate::CoroutineInfo, &Arc<str>>> {
         self.coroutines
             .get_or_init(|| crate::debug_info::coroutines::in_table(self))
@@ -1761,7 +1640,6 @@ impl TypeTable {
             .map(Result::as_ref)
     }
 
-    /// Every type, in identifier order.
     pub fn nodes(&self) -> impl ExactSizeIterator<Item = &TypeNode> + '_ {
         self.decoded
             .iter()
@@ -1776,15 +1654,12 @@ impl crate::type_identity::TypeLookup for TypeTable {
     }
 }
 
-/// Checks the types and their indexes.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     validate_types(image)?;
     validate_lists(image)?;
     validate_indexes(image)
 }
 
-/// Where each of a type's lists must begin: each list follows the one
-/// before it in type order.
 #[derive(Default)]
 struct Cursors {
     members: u32,
@@ -1798,7 +1673,6 @@ struct Cursors {
     identities: u32,
 }
 
-/// Advances `cursor` past a list, failing unless the list begins at it.
 const fn follows<T>(cursor: &mut u32, list: Span<T>) -> bool {
     let fits = list.first() == *cursor;
     *cursor = cursor.saturating_add(list.count());
@@ -1977,8 +1851,6 @@ fn validate_types(image: &Image) -> Result<(), String> {
                     && follows(&mut cursors.bases, record.bases)
                     && follows(&mut cursors.variants, record.variants);
 
-                // Each variant's selectors and members follow the last's,
-                // then the stored discriminant.
                 ok && record.variants.within(variants.len())
                     && record.variants.rows(variants).iter().all(|variant| {
                         (variant.name.get() == NONE || text(variant.name))
@@ -2049,7 +1921,6 @@ fn validate_types(image: &Image) -> Result<(), String> {
 
         let sized = flags & f::SIZED != 0 || none(record.byte_size);
 
-        // Identities follow in type order too.
         let identity = unused(record.identity)
             || follows(
                 &mut cursors.identities,
@@ -2061,7 +1932,6 @@ fn validate_types(image: &Image) -> Result<(), String> {
         }
     }
 
-    // The lists hold exactly what the types name.
     let lengths = [
         (cursors.members, members.len()),
         (cursors.bases, image.table::<BaseRecord>().len()),
@@ -2183,7 +2053,6 @@ fn validate_lists(image: &Image) -> Result<(), String> {
         return Err("a type identity's segments or arguments are malformed".into());
     }
 
-    // What functions say of types names types there are.
     if !image
         .table::<GenericRecord>()
         .iter()
@@ -2199,9 +2068,6 @@ fn validate_lists(image: &Image) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether no two entries of a name index name the same record by the
-/// same text: entries for one record and hash are adjacent, so only
-/// those are compared.
 fn distinct_entries(strings: Strings<'_>, entries: &[NameEntry]) -> bool {
     entries
         .chunk_by(|earlier, later| (earlier.hash, earlier.value) == (later.hash, later.value))
@@ -2243,9 +2109,6 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
         return Err("the type name index disagrees with the types".into());
     }
 
-    // Each identity's base names its type, and so does C's spelling of
-    // it where that differs: every entry is one of these, no two are the
-    // same, and there are as many as these.
     let base_names = image.shared::<NameEntry>(TableKind::TypeBaseNames);
     let mut expected = 0;
     let mut keys = Vec::with_capacity(types.len());
@@ -2281,7 +2144,6 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
         return Err("the type base index disagrees with the types".into());
     }
 
-    // Classes are numbered in the order their first types come.
     let classes = image.shared::<Item>(TableKind::TypeClasses);
     let mut next_class = 0;
 
@@ -2299,7 +2161,6 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
         return Err("the type classes are malformed".into());
     }
 
-    // Each enumeration is under each of its enumerators' names once.
     let enumerator_names = image.shared::<NameEntry>(TableKind::EnumeratorNames);
     let mut expected = 0;
     let mut listed = vec![Vec::new(); types.len()];
@@ -2333,7 +2194,6 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
         return Err("the enumerator index disagrees with the types".into());
     }
 
-    // The first type with each runtime descriptor, by offset.
     let runtime_types = image.table::<RuntimeTypeRecord>();
     let mut first = std::collections::BTreeMap::new();
 

@@ -39,8 +39,6 @@ fn maps_parser_preserves_distinct_loads_and_rejects_corruption() {
         "2000-3000 r-xp 00001000 00:01 7 /opt/lib/libsame.so\n",
         "5000-6000 r-xp 00001000 00:01 7 /opt/lib/libsame.so\n",
         "7000-8000 r-xp 00000000 00:01 8 /opt/bin/app (deleted)\n",
-        // The kernel pads the pathname column and does not escape spaces
-        // within the path itself; both must survive parsing intact.
         "9000-a000 r-xp 00000000 00:01 9     /opt/my libs/libspace.so\n",
         "8000-9000 r-xp 00000000 00:00 0 [vdso]\n",
         "b000-c000 rw-p 00000000 00:00 0\n",
@@ -254,14 +252,10 @@ impl VariableInfo for UnusedVariableInfo {
     }
 }
 
-/// An ELF header without sections, so loader rendezvous discovery finds no
-/// dynamic section to read through the fake.
 fn sectionless_elf() -> Arc<[u8]> {
     let mut header = vec![0x7f, b'E', b'L', b'F', 2, 1, 1];
     header.resize(16, 0);
 
-    // e_type through e_shstrndx: a little-endian x86-64 shared object with
-    // no program or section headers.
     for (value, width) in [
         (3_u64, 2),
         (62, 2),
@@ -316,7 +310,6 @@ fn virtual_inline_step_emits_a_new_stop_without_native_operations() {
         .and_then(|inferior| inferior.run.stop())
         .expect("new public stop");
 
-    // Stop identifiers are process-wide, so only their freshness is known.
     assert!(stop.id.get() > 1, "{:?}", stop.id);
     assert_eq!(
         stop.presentations.get(&pid),
@@ -434,17 +427,12 @@ fn virtual_step_image() -> Arc<ModuleImage> {
     ])
 }
 
-/// A code instance of a test image: its index, its parent's, its call
-/// site's line if it is inlined, and its address range.
 type TestInstance = (u32, Option<u32>, Option<u32>, (u64, u64));
 
-/// An image whose functions `physical`, `middle`, and `leaf` have one code
-/// instance each.
 fn inline_test_image(instances: &[TestInstance]) -> Arc<ModuleImage> {
     lined_test_image(instances, crate::image::lines::LineTables::default())
 }
 
-/// An image as [`inline_test_image`] makes, whose code `lines` describe.
 fn lined_test_image(
     instances: &[TestInstance],
     lines: crate::image::lines::LineTables,
@@ -504,7 +492,6 @@ fn lined_test_image(
                 )
                 .collect(),
             files: {
-                // The file the call sites name.
                 let mut files = crate::image::lines::Files::default();
                 files.intern(PathBuf::from("/test/inline.c"));
                 files
@@ -592,7 +579,6 @@ fn stop_classifier_preserves_signal_and_trap_provenance() {
         None
     )));
 
-    // A step across a system call completes from the call's exit path.
     assert!(traced(classify(
         Signal::SIGTRAP,
         metadata(libc::TRAP_BRKPT),
@@ -636,8 +622,6 @@ fn stop_classifier_preserves_signal_and_trap_provenance() {
         ClassifiedStop::Breakpoint(address) if address == VirtualAddress::new(0x1234)
     ));
 
-    // An int3 of the program's own is reported as a trap, never delivered
-    // as a signal; an int3 with no evidence for either cannot be explained.
     assert!(matches!(
         classify_trap(
             Signal::SIGTRAP,
@@ -653,8 +637,6 @@ fn stop_classifier_preserves_signal_and_trap_provenance() {
         ClassifiedStop::Unclassifiable(_)
     ));
 
-    // SIGKILL wakes a thread from a reported stop: its siginfo vanishes and
-    // then describes its exit event.
     for siginfo in [Err(Errno::ESRCH), metadata(EXIT_EVENT)] {
         assert!(matches!(
             classify(Signal::SIGTRAP, siginfo, stepping, None),
@@ -673,128 +655,80 @@ fn step_execution(thread: Pid, kind: StepKind, start: StepStart) -> ActiveKind {
     }
 }
 
-/// The siginfo code of a thread stopped at its exit event.
 const EXIT_EVENT: i32 = libc::SIGTRAP | (libc::PTRACE_EVENT_EXIT << 8);
 
-/// A traced process for the controller: it models per-thread debug
-/// registers as Linux exposes them, records every native effect, and
-/// injects failures and SIGKILL races.
 #[derive(Default)]
 pub(super) struct FakeTrace {
     actions: RefCell<Vec<String>>,
     pub(super) memory_write_failure: RefCell<Option<u32>>,
     registers: RefCell<BTreeMap<Pid, [u64; 8]>>,
 
-    /// Fails a write of `(thread, register)` after skipping that many
-    /// successful writes.
     failures: RefCell<BTreeMap<(Pid, usize), (u32, Errno)>>,
 
-    /// Debug-register writes that always fail, as for slots another user
-    /// holds.
     refusals: RefCell<BTreeMap<(Pid, usize), Errno>>,
 
-    /// Accepts writes without storing them, like gVisor.
     discard_writes: bool,
     siginfo: RefCell<BTreeMap<Pid, SignalMetadata>>,
     program_counters: RefCell<BTreeMap<Pid, u64>>,
     target_ids: BTreeMap<Pid, Option<crate::runtime_model::TargetThreadId>>,
 
-    /// Threads holding a SIGTRAP queued behind an interrupt stop.
     queued_traps: RefCell<BTreeSet<Pid>>,
 
-    /// Threads holding a requested SIGSTOP behind another stop.
     queued_stops: RefCell<BTreeSet<Pid>>,
     queue_error: Option<Pid>,
 
-    /// Threads past their exit, which no interrupt reaches, whose exit
-    /// status is due.
     dead: RefCell<BTreeSet<Pid>>,
 
-    /// Threads a sibling's `exit_group` killed out of their ptrace-stop.
     vanished: RefCell<BTreeSet<Pid>>,
 
-    /// A thread SIGKILL takes out of its stop, leaving it at its exit event,
-    /// when the controller makes the named request of it for the given
-    /// time, counting from zero.
     kill_point: RefCell<Option<(Pid, &'static str, u32)>>,
 
-    /// A request that fails with the given error, not a death, the given
-    /// time it is made of any thread, counting from zero.
     fail_point: RefCell<Option<(&'static str, u32, Errno)>>,
 
-    /// A thread SIGKILL takes out of its stop as the controller reads the
-    /// given address of it, such as a stack slot unwinding needs. That read
-    /// fails while the thread runs to its exit event; once there, it answers
-    /// requests again, as Linux's threads do at that stop.
     kill_at_read: RefCell<Option<(Pid, u64)>>,
 
-    /// A thread SIGKILL takes out of its stop as the controller makes the
-    /// named request of it. That request fails; the thread is then at its
-    /// exit event, where it answers requests again.
     pub(super) exit_point: RefCell<Option<(Pid, &'static str)>>,
 
-    /// Threads SIGKILL took out of their stop, which refuse every request.
     killed: RefCell<BTreeSet<Pid>>,
 
-    /// The child reported by the next clone event, in the process `tgid`.
     clone: RefCell<Option<(Pid, Pid)>>,
 
-    /// The process's thread list.
     listed_threads: RefCell<Vec<Pid>>,
 
-    /// The thread list after the next listing.
     next_listing: RefCell<Option<Vec<Pid>>>,
 
-    /// Threads that cannot be seized, as an exited leader cannot.
     unseizable: RefCell<BTreeSet<Pid>>,
 
-    /// The fork children the tracer still traces.
     traced_children: RefCell<Vec<Pid>>,
 
-    /// Memory words by address; others read as zero.
     memory: RefCell<BTreeMap<u64, u64>>,
 
-    /// Threads' stack pointers; others' are 0.
     pub(super) stack_pointers: RefCell<BTreeMap<Pid, u64>>,
 
-    /// Words whose reads fail, as unmapped memory's do.
     unreadable: RefCell<BTreeSet<u64>>,
 
-    /// Fails every memory read operationally, unlike unmapped memory.
     read_failure: RefCell<Option<Errno>>,
 
-    /// Processes' start times; others' are unreadable.
     start_times: RefCell<BTreeMap<Pid, u64>>,
 
-    /// Mapped library files, by path, with their load bias and whether
-    /// their debug information loads.
     libraries: RefCell<BTreeMap<PathBuf, (crate::LoadBias, bool)>>,
 
-    /// The symbols each library's image names; others name none.
     library_symbols: RefCell<BTreeMap<PathBuf, Vec<crate::SymbolInfo>>>,
 
-    /// Statuses the kernel holds that no waiter has taken.
     unreaped: RefCell<BTreeMap<Pid, WaitEvent>>,
 
-    /// The system-call stop each thread is at; others' cannot be read.
     syscall_stops: RefCell<BTreeMap<Pid, super::syscalls::info::SyscallInfo>>,
 
-    /// The loopback sockets the process listens on, or `None` when they
-    /// cannot be read.
     pub(super) loopback: RefCell<Option<Vec<std::net::SocketAddr>>>,
 
-    /// What was done with runtime agents' files, which a scripted agent
-    /// may share to log its own calls in order with them.
     pub(super) agent_log: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
-/// The files of a runtime agent, which log what is done with them.
 #[derive(Debug)]
 pub(super) struct LoggedFiles {
     log: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
-/// Where [`LoggedFiles`] put the agent's library.
 pub(super) const AGENT_LIBRARY: &str = "/tmp/agent/hook.so";
 
 impl LoggedFiles {
@@ -843,14 +777,12 @@ impl FakeTrace {
         self.program_counters.borrow_mut().insert(pid, pc);
     }
 
-    /// Takes the actions, and returns whether any begins with `prefix`.
     pub(super) fn took(&self, prefix: &str) -> bool {
         self.take_actions()
             .iter()
             .any(|action| action.starts_with(prefix))
     }
 
-    /// Makes `pid`'s next stop report this siginfo.
     fn set_siginfo(&self, pid: Pid, code: i32, sender: Option<i32>) {
         self.siginfo.borrow_mut().insert(
             pid,
@@ -862,7 +794,6 @@ impl FakeTrace {
         );
     }
 
-    /// Takes a thread out of its stop as SIGKILL does, to its exit event.
     fn sigkill(&self, pid: Pid) {
         self.killed.borrow_mut().insert(pid);
         self.vanished.borrow_mut().insert(pid);
@@ -876,14 +807,12 @@ impl FakeTrace {
         );
     }
 
-    /// Writes a site's first byte, as installing or removing its trap does.
     fn put_byte(&self, address: VirtualAddress, byte: u8) {
         let mut memory = self.memory.borrow_mut();
         let word = memory.entry(address.get()).or_default();
         *word = (*word & !0xff) | u64::from(byte);
     }
 
-    /// Fails `request` if it is the one [`Self::fail_point`] names.
     fn fail_at(&self, request: &'static str) -> Result<()> {
         let mut failing = self.fail_point.borrow_mut();
         if let Some((name, remaining, error)) = failing.as_mut()
@@ -899,8 +828,6 @@ impl FakeTrace {
         Ok(())
     }
 
-    /// Fails a request of a thread SIGKILL took out of its stop, which this
-    /// request may be the one to do.
     fn reach(&self, pid: Pid, request: &'static str) -> Result<()> {
         self.fail_at(request)?;
 
@@ -947,7 +874,6 @@ impl FakeTrace {
         ])
     }
 
-    /// Fails every write of `register` in `pid` with `error`.
     fn refuse(&self, pid: Pid, register: usize, error: Errno) {
         self.refusals.borrow_mut().insert((pid, register), error);
     }
@@ -965,8 +891,6 @@ impl InspectionOps for FakeTrace {
         _process: Pid,
         thread: Pid,
     ) -> Option<crate::runtime_model::TargetThreadId> {
-        // This fixture's default kernel has one PID namespace; tests can
-        // supply a nested or unavailable mapping explicitly.
         self.target_ids.get(&thread).copied().unwrap_or_else(|| {
             crate::runtime_model::TargetThreadId::new(u64::try_from(thread.as_raw()).ok()?)
         })
@@ -1096,8 +1020,6 @@ impl LinuxTraceOps for FakeTrace {
     fn detach(&self, pid: Pid, signal: Option<Signal>) -> Result<bool> {
         self.record(format!("detach {pid} {signal:?}"));
 
-        // A thread SIGKILL took out of its stop is not released: it stays
-        // traced until it exits.
         Ok(self.reach(pid, "detach").is_ok())
     }
 
@@ -1213,7 +1135,6 @@ impl LinuxTraceOps for FakeTrace {
             .collect()
     }
 
-    /// A pending clone's process, or else the thread's own, a leader's.
     fn thread_group_id(&self, pid: Pid) -> Result<Pid> {
         Ok(self.clone.borrow().map_or(pid, |(_, tgid)| tgid))
     }
@@ -1247,14 +1168,11 @@ impl LinuxTraceOps for FakeTrace {
             return Err(backend_error(LinuxError::System(Errno::ESRCH)));
         }
 
-        // A resumed thread dequeues a queued trap before it runs an
-        // instruction, and stops for it.
         if self.queued_traps.borrow_mut().remove(&pid) {
             self.unreaped
                 .borrow_mut()
                 .insert(pid, WaitEvent::Stopped(pid, Signal::SIGTRAP));
         } else if self.queued_stops.borrow_mut().remove(&pid) {
-            // The new stop replaces the thread's signal information.
             self.set_siginfo(pid, libc::SI_TKILL, None);
             self.unreaped
                 .borrow_mut()
@@ -1307,7 +1225,6 @@ impl LinuxTraceOps for FakeTrace {
     }
 
     fn event_message(&self, pid: Pid) -> Result<libc::c_long> {
-        // A thread SIGKILL moved to its exit stop reports the kill there.
         if self.reach(pid, "event_message").is_err() {
             return Ok(libc::c_long::from(libc::SIGKILL));
         }
@@ -1479,7 +1396,6 @@ impl WatchHarness {
         self.controller.session.inferior_mut().expect("inferior")
     }
 
-    /// Makes the process one the debugger attached to.
     fn attached(&mut self) {
         self.inferior().origin = InferiorOrigin::Attached;
     }
@@ -1493,13 +1409,11 @@ impl WatchHarness {
             .id
     }
 
-    /// Reports `pid` stopped at the ptrace `event`.
     fn event(&mut self, pid: Pid, event: i32) -> Result<()> {
         self.controller
             .process_wait(WaitEvent::PtraceEvent(pid, Signal::SIGTRAP, event))
     }
 
-    /// Adds a breakpoint by `spec` while every thread is stopped.
     pub(super) fn add_spec(&mut self, spec: BreakpointSpec) -> Result<Breakpoint> {
         self.edit(|reply| Edit::AddBreakpoint {
             spec,
@@ -1510,7 +1424,6 @@ impl WatchHarness {
         .expect("reply")
     }
 
-    /// Adds a breakpoint at `address` while every thread is stopped.
     pub(super) fn add_breakpoint(&mut self, address: u64) -> Breakpoint {
         self.edit(|reply| Edit::AddBreakpoint {
             spec: BreakpointSpec::Address(VirtualAddress::new(address)),
@@ -1522,7 +1435,6 @@ impl WatchHarness {
         .expect("added")
     }
 
-    /// The thread and reason of the next stop published.
     pub(super) fn stopped(&mut self) -> Option<(DebugThreadId, StopReason)> {
         self.published().into_iter().find_map(|event| match event {
             DebuggerEvent::InferiorStopped {
@@ -1562,7 +1474,6 @@ impl WatchHarness {
         )
     }
 
-    /// Stores `value` in the word at `address`, as the inferior would.
     pub(super) fn store(&self, address: u64, value: u64) {
         self.trace().memory.borrow_mut().insert(address, value);
     }
@@ -1587,7 +1498,6 @@ impl WatchHarness {
             .count()
     }
 
-    /// Marks every thread running inside a process-wide continue.
     pub(super) fn start_continue(&mut self) {
         let inferior = self.controller.session.inferior_mut().expect("inferior");
         inferior.run = RunPhase::running(ActiveExecution {
@@ -1603,8 +1513,6 @@ impl WatchHarness {
         }
     }
 
-    /// Delivers the SIGSTOP each still-running thread was asked for. A
-    /// thread that stopped for another reason keeps its SIGSTOP pending.
     pub(super) fn settle_requested_stops(&mut self) {
         let requested = self
             .controller
@@ -1635,7 +1543,6 @@ impl WatchHarness {
         }
     }
 
-    /// Reports a SIGTRAP with `code` while DR6 holds `status`.
     pub(super) fn trap(&mut self, pid: Pid, code: i32, status: u64) -> Result<()> {
         let mut registers = self.trace().registers_of(pid);
         registers[debug_registers::STATUS_REGISTER] = status;
@@ -1652,7 +1559,6 @@ impl WatchHarness {
             .process_wait(WaitEvent::Stopped(pid, Signal::SIGTRAP))
     }
 
-    /// Reports a hardware breakpoint trap whose DR6 names `slots`.
     fn watch_trap(&mut self, pid: Pid, slots: u64) -> Result<()> {
         self.trap(
             pid,
@@ -1661,13 +1567,11 @@ impl WatchHarness {
         )
     }
 
-    /// Reports an int3 at `address`, leaving the PC after it.
     pub(super) fn hit_at(&mut self, pid: Pid, address: u64) -> Result<()> {
         self.trace().set_pc(pid, address + 1);
         self.trap(pid, libc::SI_KERNEL, debug_registers::STATUS_IDLE)
     }
 
-    /// Requests an edit and returns the receiver of its reply.
     pub(super) fn edit<T>(
         &mut self,
         make: impl FnOnce(Reply<T>) -> Edit,
@@ -1677,7 +1581,6 @@ impl WatchHarness {
         result
     }
 
-    /// Takes the published events other than revision changes.
     pub(super) fn published(&mut self) -> Vec<DebuggerEvent> {
         std::iter::from_fn(|| self.events.try_recv().ok())
             .filter(|event| !matches!(event, DebuggerEvent::StateChanged { .. }))
@@ -1697,14 +1600,10 @@ pub(super) fn watch_harness(thread_count: i32) -> WatchHarness {
     watch_harness_of(thread_count, &virtual_step_image())
 }
 
-/// A harness of `thread_count` threads stopped for a pause in a process of
-/// `image`, the first presenting the stop at 0x10.
 fn watch_harness_of(thread_count: i32, image: &Arc<ModuleImage>) -> WatchHarness {
     watch_harness_keeping(thread_count, image, None)
 }
 
-/// A harness as [`watch_harness_of`] makes, whose program keeps its
-/// modules' loads in `kept`.
 fn watch_harness_keeping(
     thread_count: i32,
     image: &Arc<ModuleImage>,
@@ -1877,8 +1776,6 @@ fn a_failed_rollback_kills_the_inferior_and_reports_both_failures() {
         unreachable!("two threads");
     };
 
-    // The second thread refuses its address; restoring the first thread
-    // then fails on its third control write, the rollback's disable.
     harness.trace().fail_after(second, 0, 0, Errno::ENOSPC);
     harness.trace().fail_after(first, 7, 2, Errno::EPERM);
 
@@ -1903,10 +1800,6 @@ fn a_failed_rollback_kills_the_inferior_and_reports_both_failures() {
     assert_eq!(harness.watch_events(), 0);
 }
 
-/// A thread that does not carry the current watchpoints, its slots taken
-/// by another user, cannot run until it is armed before a resume, so
-/// editing watchpoints leaves it to that: removing one succeeds for every
-/// other thread, and nothing is killed.
 #[test]
 fn editing_watchpoints_leaves_a_thread_that_lost_its_slots_to_the_resume() {
     let mut harness = watch_harness(2);
@@ -1973,7 +1866,6 @@ fn an_exiting_thread_is_skipped_and_armed_when_execution_resumes() {
     assert_eq!(harness.thread(harness.threads[0]).armed, Some(1));
     assert_eq!(harness.thread(harness.threads[2]).armed, Some(1));
 
-    // A thread that is still present is programmed before anything runs.
     harness.trace().take_actions();
     harness
         .controller
@@ -2063,7 +1955,6 @@ fn a_new_thread_that_cannot_be_armed_never_runs() {
         "{actions:?}"
     );
 
-    // Resuming retries the arming and refuses to run while it fails.
     harness.trace().fail_after(child, 0, 0, Errno::ENOSPC);
     let stop = harness.stop_id();
     let tgid = harness.threads[0];
@@ -2088,8 +1979,6 @@ fn hits_are_attributed_from_dr6_without_rewinding_the_pc() {
     let first = harness.add(0xd000, 8).expect("first");
     let second = harness.add(0xd008, 8).expect("second");
 
-    // An installed site just before the reported PC must not turn the
-    // hardware trap into an int3.
     harness.trace().set_pc(pid, 0x41);
     harness.inferior().breakpoints.insert(
         VirtualAddress::new(0x40),
@@ -2157,7 +2046,6 @@ fn stale_status_is_never_consulted_outside_debug_exceptions() {
     harness.start_continue();
     harness.trace().take_actions();
 
-    // An int3 stop while DR6 still records an earlier hit.
     harness
         .trap(pid, libc::SI_KERNEL, debug_registers::STATUS_IDLE | 0b1)
         .expect("int3");
@@ -2260,7 +2148,6 @@ fn detaching_disarms_every_thread_first_and_never_redelivers_a_watch_trap() {
 
     harness.start_continue();
 
-    // One thread reports a watch trap while the detach interrupts it.
     let (reply, result) = tokio::sync::oneshot::channel();
     harness.controller.begin_shutdown(Some(reply));
     let [first, second] = harness.threads[..] else {
@@ -2343,7 +2230,6 @@ fn a_failed_disarm_still_detaches_and_publishes_the_detach() {
         "the disarm failure is reported: {result:?}"
     );
 
-    // Keeping the process traced would not help: the tracer is exiting.
     let actions = harness.trace().take_actions();
 
     for pid in [first, second] {
@@ -2360,10 +2246,6 @@ fn a_failed_disarm_still_detaches_and_publishes_the_detach() {
     assert_eq!(detached, 1, "clients learn the process is gone");
 }
 
-/// A waiter thread that took a status while the controller's queue is full
-/// waits to send it there, and only the controller makes room. Ending the
-/// session lets that status through rather than joining a waiter that can
-/// never finish, and keeps it for the controller to serve.
 #[test]
 fn ending_a_session_lets_through_a_waiter_blocked_on_a_full_queue() {
     let mut harness = watch_harness(2);
@@ -2376,7 +2258,6 @@ fn ending_a_session_lets_through_a_waiter_blocked_on_a_full_queue() {
     let handle = thread::spawn({
         let stop = Arc::clone(&stop);
         move || {
-            // As the waiter does, it sends what it took before looking again.
             let _ = sender.blocking_send(ControllerMessage::Wait(held));
             while !stop.load(Ordering::Acquire) {
                 thread::park();
@@ -2409,9 +2290,6 @@ fn ending_a_session_lets_through_a_waiter_blocked_on_a_full_queue() {
     );
 }
 
-/// SIGKILL from outside took every thread of an attached process out of its
-/// stop before the session ends: none can be written, but its process is
-/// ending, so the traps left in it can never run and the detach succeeds.
 #[test]
 fn detaching_a_process_killed_from_outside_succeeds() {
     let mut harness = watch_harness(2);
@@ -2436,9 +2314,6 @@ fn detaching_a_process_killed_from_outside_succeeds() {
     assert_eq!(detached, 1, "clients learn the process is gone");
 }
 
-/// A main thread that reaches its exit event as an attached session ends
-/// finishes exiting. Linux reports its exit only after every other
-/// thread's, so detaching the others never waits for it.
 #[test]
 fn detaching_waits_for_no_main_thread_that_exits_during_the_detach() {
     let mut harness = watch_harness(2);
@@ -2449,7 +2324,6 @@ fn detaching_waits_for_no_main_thread_that_exits_during_the_detach() {
     let inferior = harness.inferior();
     inferior.origin = InferiorOrigin::Attached;
 
-    // The main thread runs alone, as after a client continued it so.
     inferior.thread_mut(leader).expect("leader").state = NativeThreadState::Running;
     harness.trace().take_actions();
 
@@ -2475,12 +2349,6 @@ fn detaching_waits_for_no_main_thread_that_exits_during_the_detach() {
     );
 }
 
-/// SIGKILL from outside takes an attached thread as the stop its
-/// temporary breakpoint made deletes it: lifting its second trap fails,
-/// and so would putting back the first. The process is dying, not failed:
-/// nothing is released or restored, and the client's shutdown, queued
-/// behind the stop, ends when its exit status reports the kill, which is
-/// what the client is told.
 #[test]
 fn a_process_killed_while_its_temporary_breakpoint_is_deleted_reports_its_death() {
     let mut harness = hit_harness(1, ">0");
@@ -2568,8 +2436,6 @@ fn a_process_killed_while_its_temporary_breakpoint_is_deleted_reports_its_death(
     );
 }
 
-/// A breakpoint of two locations at [`HIT_SITE`] and past it, which no
-/// process has installed.
 fn two_location_breakpoint() -> Breakpoint {
     Breakpoint {
         pending_locations: Arc::from([]),
@@ -2591,10 +2457,6 @@ fn two_location_breakpoint() -> Breakpoint {
     }
 }
 
-/// SIGKILL takes a thread as a breakpoint's second trap is written:
-/// taking back the first can only fail too. The error is the death's, and
-/// each site record still matches memory: the first trap stays, recorded,
-/// until the process's exit takes both.
 #[test]
 fn a_breakpoint_a_dying_process_cannot_take_is_not_taken_back() {
     let mut harness = watch_harness(1);
@@ -2634,11 +2496,6 @@ fn a_breakpoint_a_dying_process_cannot_take_is_not_taken_back() {
     );
 }
 
-/// SIGKILL from outside takes the thread of an attach as its first stop
-/// plants a breakpoint of two locations, at the second. The process is
-/// dying, not failed: nothing is released, and the client's shutdown,
-/// queued behind the stop, ends when its exit status reports the kill,
-/// which is what the client is told.
 #[test]
 fn a_process_killed_while_its_attach_plants_a_breakpoint_reports_its_death() {
     let mut harness = watch_harness(1);
@@ -2716,8 +2573,6 @@ fn a_process_killed_while_its_attach_plants_a_breakpoint_reports_its_death() {
     );
 }
 
-/// Serves the exit status SIGKILL left `pid` with, and checks that it is
-/// reported as the kill and the process as reaped, never as released.
 fn assert_reported_killed(harness: &mut WatchHarness, pid: Pid) {
     let actions = harness.trace().take_actions();
     assert!(
@@ -2754,10 +2609,6 @@ fn assert_reported_killed(harness: &mut WatchHarness, pid: Pid) {
     );
 }
 
-/// Removing every breakpoint fails on one for a reason of its own, and
-/// SIGKILL from outside takes the thread as those removed already are put
-/// back. The process is dying, not failed: the request is told of the
-/// death, not of a failed recovery, and the exit status reports the kill.
 #[test]
 fn a_process_killed_while_a_failed_removal_puts_breakpoints_back_reports_its_death() {
     let mut harness = watch_harness(1);
@@ -2783,10 +2634,6 @@ fn a_process_killed_while_a_failed_removal_puts_breakpoints_back_reports_its_dea
     assert_reported_killed(&mut harness, pid);
 }
 
-/// A breakpoint's traps fail to go in or come out for a reason of their
-/// own, and SIGKILL from outside takes the thread as those already changed
-/// are put back. The process is dying, not failed: the error is the
-/// death's, not a failed recovery's.
 #[test]
 fn a_rollback_a_dying_process_cannot_take_reports_its_death() {
     for (failing, killing) in [
@@ -2821,8 +2668,6 @@ fn a_rollback_a_dying_process_cannot_take_reports_its_death() {
     }
 }
 
-/// An image whose source line 3 has a statement at 0x20 in `physical` and
-/// one at 0x40 in `middle`.
 fn two_statement_image() -> Arc<ModuleImage> {
     let mut lines = crate::image::lines::LineTables::default();
     for start in [0x20, 0x40] {
@@ -2855,18 +2700,12 @@ fn two_statement_image() -> Arc<ModuleImage> {
             .expect("the sequence's end");
     }
 
-    // In two functions, as a line of an inlined or duplicated function is.
     lined_test_image(
         &[(0, None, None, (0, 0x30)), (1, None, None, (0x30, 0x100))],
         lines,
     )
 }
 
-/// SIGKILL from outside takes the thread as a client's request writes its
-/// breakpoint's second trap, when the request adds the breakpoint and when
-/// it enables one. The process is dying, not failed: nothing is taken
-/// back, the request is told of the death, and the exit status reports the
-/// kill.
 #[test]
 fn a_process_killed_while_a_request_plants_a_breakpoint_reports_its_death() {
     let line = || BreakpointSpec::Source {
@@ -2933,8 +2772,6 @@ fn a_process_killed_while_a_request_plants_a_breakpoint_reports_its_death() {
     }
 }
 
-/// A failure that releases an attached process ends the controller with a
-/// client's shutdown still queued. That shutdown is answered, not dropped.
 #[test]
 fn a_shutdown_queued_behind_a_failure_that_releases_the_process_is_answered() {
     let mut harness = watch_harness(2);
@@ -2977,8 +2814,6 @@ fn an_attached_stop_collects_traps_queued_behind_its_interrupt() {
     harness.trace().queued_traps.borrow_mut().insert(second);
     harness.trace().take_actions();
 
-    // The first thread hits; the second is interrupted with its own hit
-    // still queued.
     harness.watch_trap(first, 1).expect("first hit");
     assert!(
         harness
@@ -3059,9 +2894,6 @@ fn detaching_collects_queued_traps_before_releasing_the_process() {
     );
 }
 
-/// A launched thread hit a trap before the SIGSTOP a barrier sent it. The
-/// detach collects that SIGSTOP first, which would otherwise stop the
-/// released process for good.
 #[test]
 fn detaching_a_launched_process_collects_its_outstanding_debugger_stops() {
     let mut harness = watch_harness(1);
@@ -3101,9 +2933,6 @@ fn detaching_a_launched_process_collects_its_outstanding_debugger_stops() {
     );
 }
 
-/// A thread that reported its exit while the program ran, and is gone
-/// before an attached session's shutdown can interrupt it, is not lost:
-/// the shutdown awaits its exit status, and publishes its exit.
 #[test]
 fn shutting_down_publishes_the_exit_of_a_thread_too_far_gone_to_interrupt() {
     let mut harness = watch_harness(2);
@@ -3137,9 +2966,6 @@ fn shutting_down_publishes_the_exit_of_a_thread_too_far_gone_to_interrupt() {
     );
 }
 
-/// SIGKILL from outside took a thread out of its stop just as the detach
-/// resumed it to collect a queued trap. The thread goes on to its exit, which
-/// the detach awaits, and the session still ends without an error.
 #[test]
 fn detaching_awaits_a_thread_killed_as_it_resumes_to_collect_a_trap() {
     let mut harness = watch_harness(1);
@@ -3168,8 +2994,6 @@ fn detaching_awaits_a_thread_killed_as_it_resumes_to_collect_a_trap() {
 }
 
 impl WatchHarness {
-    /// Makes the harness's threads those of an attach that has seized and
-    /// interrupted them, and returns the attach's reply.
     fn begin_attach(&mut self) -> tokio::sync::oneshot::Receiver<Result<StopId>> {
         let (reply, attached) = tokio::sync::oneshot::channel();
         let traced = self.controller.session.traced_mut().expect("traced");
@@ -3190,12 +3014,10 @@ impl WatchHarness {
         attached
     }
 
-    /// Reports the `PTRACE_EVENT_STOP` an interrupt causes.
     fn interrupted(&mut self, pid: Pid) -> Result<()> {
         self.event(pid, libc::PTRACE_EVENT_STOP)
     }
 
-    /// Reports `parent` stopped at its clone event for `child`.
     fn cloned(&mut self, parent: Pid, child: Pid) -> Result<()> {
         let tgid = self.controller.session.inferior().expect("inferior").tgid;
         self.trace().clone.replace(Some((child, tgid)));
@@ -3209,8 +3031,6 @@ fn an_attach_traces_threads_created_while_their_creators_were_seized() {
     let leader = harness.threads[0];
     let mut attached = harness.begin_attach();
 
-    // The leader was seized inside clone, after the kernel had decided not
-    // to trace the thread it was creating, which the thread list now shows.
     let untraced = Pid::from_raw(5100);
     harness.trace().listed_threads.borrow_mut().push(untraced);
 
@@ -3244,8 +3064,6 @@ fn an_attach_seizes_the_thread_a_leader_left_after_the_listing() {
     let leader = harness.threads[0];
     let survivor = Pid::from_raw(5100);
 
-    // The listing saw only the leader, which then created a thread and
-    // exited, too soon to be seized. The process lives on in the thread.
     harness.trace().listed_threads.replace(vec![leader]);
     harness
         .trace()
@@ -3269,9 +3087,6 @@ fn an_attach_whose_seized_threads_die_traces_the_threads_left_before_ending() {
     let (leader, seized) = (harness.threads[0], harness.threads[1]);
     let mut attached = harness.begin_attach();
 
-    // The leader had exited and could not be seized, and before it did it
-    // created a thread the listing missed. SIGKILL then reaches the seized
-    // thread before its attach stop, while the new thread still runs.
     let inferior = harness.inferior();
     inferior.threads.remove(&leader);
     inferior.tracked.insert(leader, Tracked::Unseized);
@@ -3327,8 +3142,6 @@ fn an_interrupt_kept_past_a_clone_event_resumes_the_thread_unseen() {
     let child = Pid::from_raw(5001);
     let mut attached = harness.begin_attach();
 
-    // The leader was already at its clone event when the attach interrupted
-    // it. The kernel keeps such an interrupt until the thread resumes.
     harness.trace().listed_threads.borrow_mut().push(child);
     harness.cloned(leader, child).expect("clone event");
     harness.interrupted(child).expect("new thread starts");
@@ -3361,8 +3174,6 @@ fn a_seized_thread_whose_interrupt_a_clone_event_took_is_interrupted_again() {
     harness.resume().expect("continue");
     let process = process_id(harness.threads[0]);
 
-    // The first thread reaches its clone event after the pause interrupts
-    // it. That stop satisfies the interrupt, so no other stop follows.
     harness.controller.begin_pause(process).expect("pause");
     harness.cloned(first, child).expect("clone event");
     harness.interrupted(child).expect("new thread starts");
@@ -3391,15 +3202,12 @@ fn a_fork_child_loses_each_trap_it_inherited_even_one_lifted_since() {
     harness.hit(parent).expect("breakpoint stop");
     assert_eq!(harness.public_reason(), Some(site_hit(1)));
 
-    // The parent steps over the trap it stopped at, lifted from its own
-    // memory but not from the child's, when the child first stops.
     harness.resume().expect("continue");
     assert!(harness.trace().take_actions().ends_with(&[
         format!("remove_site {HIT_SITE:#x}"),
         format!("step {parent}")
     ]));
 
-    // The child's copy of the code still holds the trap.
     harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
     harness
         .controller
@@ -3414,9 +3222,6 @@ fn a_fork_child_loses_each_trap_it_inherited_even_one_lifted_since() {
     );
 }
 
-/// A trap in the last bytes of a mapping comes out of a fork child too.
-/// The word at the trap's own address would reach into the next page,
-/// which may be unmapped, so the scrub reads the aligned word holding it.
 #[test]
 fn a_fork_child_loses_a_trap_whose_word_reaches_an_unmapped_page() {
     let mut harness = hit_harness(1, ">=1");
@@ -3455,8 +3260,6 @@ fn a_fork_child_loses_a_trap_whose_word_reaches_an_unmapped_page() {
     );
 }
 
-/// The program's own `int3` in a mapping's last bytes, before an unmapped
-/// page, is found through the aligned word that holds it.
 #[test]
 fn a_programs_trap_before_an_unmapped_page_is_its_own() {
     let harness = hit_harness(1, ">=1");
@@ -3475,8 +3278,6 @@ fn a_programs_trap_before_an_unmapped_page_is_its_own() {
     );
 }
 
-/// A trap copied into a mapping's last bytes, before an unmapped page,
-/// comes out through the aligned word that holds it.
 #[test]
 fn a_copied_trap_before_an_unmapped_page_is_restored() {
     let harness = hit_harness(1, ">=1");
@@ -3505,9 +3306,6 @@ fn a_fork_whose_parent_is_killed_before_its_event_still_cleans_the_child() {
     let parent = harness.threads[0];
     let child = Pid::from_raw(6000);
 
-    // The breakpoint is removed after the parent forked, before the fork
-    // event is handled, and then the parent is killed: the event now
-    // describes its exit, so its message is not the child's identifier.
     harness
         .controller
         .remove_breakpoint_owner(
@@ -3519,7 +3317,6 @@ fn a_fork_whose_parent_is_killed_before_its_event_still_cleans_the_child() {
     harness.trace().take_actions();
     harness.trace().sigkill(parent);
 
-    // The child forked while the trap was installed, so its copy holds it.
     harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
 
     for status in [
@@ -3553,9 +3350,6 @@ fn a_fork_child_keeps_code_mapped_where_a_trap_was_removed() {
     let parent = harness.threads[0];
     let child = Pid::from_raw(6000);
 
-    // The breakpoint's site is removed, and other code is mapped where it
-    // was, as when a library is unloaded and another loaded in its place.
-    // Only then does the parent fork.
     harness
         .controller
         .remove_breakpoint_owner(
@@ -3597,7 +3391,6 @@ fn a_fork_child_still_starting_when_its_parent_exits_is_released_not_killed() {
         assert!(harness.controller.handle_wait(status));
     }
 
-    // The program is gone, but the controller still releases its child.
     assert!(harness.controller.session.inferior().is_none());
     assert!(matches!(
         harness.controller.session,
@@ -3630,8 +3423,6 @@ fn a_fork_child_whose_event_was_lost_is_found_as_its_parent_exits() {
     let child = Pid::from_raw(6000);
     harness.start_continue();
 
-    // SIGKILL took the parent out of its fork event's stop before the event
-    // was reported; the child it forked still stops.
     harness.trace().traced_children.borrow_mut().push(child);
     harness.trace().sigkill(parent);
     harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
@@ -3660,11 +3451,6 @@ fn a_fork_child_whose_event_was_lost_is_found_as_its_parent_exits() {
     ));
 }
 
-/// After a panic, an attached process is released as a detach would:
-/// the trap a thread executed before any waiter took its stop is given
-/// back its instruction and the thread rewound over it, debug registers
-/// are cleared, and a signal a thread stopped to take, in a status the
-/// controller had not handled, is delivered as it is released.
 #[test]
 fn a_panic_releases_an_attached_process_as_a_detach_would() {
     let mut harness = watch_harness(2);
@@ -3715,12 +3501,6 @@ fn a_panic_releases_an_attached_process_as_a_detach_would() {
     assert!(harness.controller.session.inferior().is_none());
 }
 
-/// After a panic, a thread that an interrupt stopped just after it executed
-/// a trap still holds the trap's SIGTRAP, which a detach would deliver to
-/// the released process, killing it. The release resumes the thread to
-/// take the trap first, then rewinds it over the trap as it would a thread
-/// stopped there. A signal the thread stopped for instead is still passed
-/// on when it is released.
 #[test]
 fn a_panic_takes_a_trap_queued_behind_an_interrupt_before_releasing() {
     for signal in [None, Some(Signal::SIGUSR1)] {
@@ -3766,9 +3546,6 @@ fn a_panic_takes_a_trap_queued_behind_an_interrupt_before_releasing() {
     }
 }
 
-/// After a panic, a trap in the last bytes of a mapping is given back its
-/// instruction through the aligned word that holds it: the word at the
-/// trap's own address would reach into the next page.
 #[test]
 fn a_panic_restores_a_trap_whose_word_reaches_an_unmapped_page() {
     let mut harness = watch_harness(1);
@@ -3796,8 +3573,6 @@ fn a_panic_restores_a_trap_whose_word_reaches_an_unmapped_page() {
     );
 }
 
-/// The controller's invariant check fires on state that contradicts
-/// itself: a site that no owner holds.
 #[test]
 #[should_panic(expected = "the site at 0x40 has no owners")]
 fn the_invariant_check_finds_a_site_no_owner_holds() {
@@ -3814,8 +3589,6 @@ fn the_invariant_check_finds_a_site_no_owner_holds() {
     harness.controller.check_invariants();
 }
 
-/// The invariant check fires on an inferior that is neither running,
-/// stopping, nor stopped.
 #[test]
 #[should_panic(expected = "runs no execution, gathers no stop, and has no stop published")]
 fn the_invariant_check_finds_an_inferior_in_no_run_phase() {
@@ -3825,8 +3598,6 @@ fn the_invariant_check_finds_an_inferior_in_no_run_phase() {
     harness.controller.check_invariants();
 }
 
-/// A client's shutdown after one the controller began itself, as a failed
-/// attach does, is answered once the first is done, not begun again.
 #[test]
 fn a_shutdown_requested_during_another_is_answered_when_it_ends() {
     let mut harness = watch_harness(2);
@@ -3847,8 +3618,6 @@ fn a_shutdown_requested_during_another_is_answered_when_it_ends() {
     );
 }
 
-/// A kill requested while an attached process is being detached is
-/// answered when the detach ends the session.
 #[test]
 fn a_kill_during_a_detach_is_answered_when_it_ends() {
     let mut harness = watch_harness(1);
@@ -3866,9 +3635,6 @@ fn a_kill_during_a_detach_is_answered_when_it_ends() {
     );
 }
 
-/// An attached process whose threads all exit while it is detached hands
-/// a child killed for traps it kept to the orphans, whose exit the waiter
-/// still collects.
 #[test]
 fn a_vanished_attached_process_leaves_its_killed_child_to_be_reaped() {
     let mut harness = watch_harness(1);
@@ -3890,10 +3656,6 @@ fn a_vanished_attached_process_leaves_its_killed_child_to_be_reaped() {
     );
 }
 
-/// A shutdown that meets a fork event its parent's SIGKILL superseded
-/// continues the parent from its exit stop, and the parent is soon reaped.
-/// The child it forked is found first, and released once it stops rather
-/// than left stopped and traced.
 #[test]
 fn a_shutdown_meeting_a_superseded_fork_event_still_releases_the_child() {
     let mut harness = hit_harness(1, ">=1");
@@ -3910,8 +3672,6 @@ fn a_shutdown_meeting_a_superseded_fork_event_still_releases_the_child() {
         libc::PTRACE_EVENT_FORK,
     )));
 
-    // Continued from its exit stop, the parent was reaped, and `/proc`
-    // lists its children no more.
     harness.trace().traced_children.borrow_mut().clear();
 
     for status in [
@@ -3943,12 +3703,6 @@ fn a_shutdown_meeting_a_superseded_fork_event_still_releases_the_child() {
     ));
 }
 
-/// After a panic, a fork child still on its way to its first stop when its
-/// parent's process ended is scrubbed of the traps it inherited and
-/// released, as that stop and a shutdown would have, whether the parent was
-/// attached or launched. Left alone, it would stay traced with no one to
-/// serve it, and then be released with the traps when the tracer thread
-/// ends.
 #[test]
 fn a_panic_releases_orphaned_fork_children() {
     for attached in [true, false] {
@@ -3994,11 +3748,6 @@ fn a_panic_releases_orphaned_fork_children() {
     }
 }
 
-/// After a panic, a launched process is killed, as a shutdown would kill
-/// it, rather than left to `PTRACE_O_EXITKILL`, which comes only when the
-/// tracer thread ends: a group's outlives the controller, and the process
-/// would stay stopped with no one to serve it. A launched process the
-/// session releases on shutdown is released as an attached one is.
 #[test]
 fn a_panic_kills_a_launched_process_unless_the_session_releases_it() {
     for ending in [super::Ending::Kill, super::Ending::Release] {
@@ -4022,9 +3771,6 @@ fn a_panic_kills_a_launched_process_unless_the_session_releases_it() {
     }
 }
 
-/// A launched process killed after a panic does not take its fork children
-/// with it: a child still due its first stop is scrubbed and released, as
-/// a shutdown would release it.
 #[test]
 fn a_panic_releases_the_fork_children_of_a_launched_process_it_kills() {
     let mut harness = hit_harness(1, ">=1");
@@ -4054,11 +3800,6 @@ fn a_panic_releases_the_fork_children_of_a_launched_process_it_kills() {
     }
 }
 
-/// A launched thread the session releases after a panic may still hold
-/// the SIGSTOP the debugger sent it, overtaken by a trap. The detach would
-/// deliver it and stop the released process for good, so the release
-/// takes it first, once it has rewound the thread over the `int3`: the new
-/// stop's signal information no longer says it was one.
 #[test]
 fn a_panic_takes_an_outstanding_debugger_stop_before_releasing() {
     let mut harness = watch_harness(1);
@@ -4101,9 +3842,6 @@ fn a_panic_takes_an_outstanding_debugger_stop_before_releasing() {
     assert!(harness.trace().queued_stops.borrow().is_empty());
 }
 
-/// A launched thread that stopped for a signal may hold a debugger SIGSTOP
-/// queued behind it. The release resumes it with that signal, which it
-/// takes, then takes the SIGSTOP, so it is released running.
 #[test]
 fn a_panic_takes_a_debugger_stop_queued_behind_a_signal() {
     let mut harness = watch_harness(1);
@@ -4135,9 +3873,6 @@ fn a_panic_takes_a_debugger_stop_queued_behind_a_signal() {
     assert!(resumed < detached, "{actions:#?}");
 }
 
-/// A launched process was not seized, so `PTRACE_INTERRUPT` cannot stop a
-/// thread that runs when a panic releases it. The release sends it a
-/// SIGSTOP instead, and takes that SIGSTOP rather than hands it on.
 #[test]
 fn a_panic_stops_a_running_launched_thread_with_a_signal_it_does_not_deliver() {
     let mut harness = watch_harness(1);
@@ -4178,8 +3913,6 @@ fn a_fork_child_that_dies_as_it_is_released_is_awaited_until_its_exit() {
     harness.start_continue();
     harness.trace().clone.replace(Some((child, child)));
 
-    // The parent forks and starts exiting before its child first stops.
-    // SIGKILL then takes the child out of that stop as it is released.
     harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
     *harness.trace().kill_point.borrow_mut() = Some((child, "detach", 0));
 
@@ -4197,8 +3930,6 @@ fn a_fork_child_that_dies_as_it_is_released_is_awaited_until_its_exit() {
         "the child was scrubbed and detached"
     );
 
-    // The program is gone, but its child is still traced: it stops at its
-    // exit event, which waits for the tracer, and only then exits.
     assert!(harness.controller.session.inferior().is_none());
     assert!(
         matches!(harness.controller.session, Session::Draining { .. }),
@@ -4234,8 +3965,6 @@ fn a_fork_event_whose_thread_is_killed_as_its_message_is_read_is_superseded() {
         .trace()
         .set_siginfo(parent, libc::SIGTRAP | (libc::PTRACE_EVENT_FORK << 8), None);
 
-    // SIGKILL lands after the stop was seen to be the fork's, so the message
-    // read is the exit's, not the child's identifier.
     *harness.trace().kill_point.borrow_mut() = Some((parent, "event_message", 0));
     assert!(harness.controller.handle_wait(WaitEvent::PtraceEvent(
         parent,
@@ -4281,8 +4010,6 @@ fn continuing_tolerates_threads_killed_by_a_siblings_exit() {
         unreachable!("three threads");
     };
 
-    // The first thread runs exit_group as soon as it resumes, killing
-    // its siblings out of their stops.
     harness
         .trace()
         .vanished
@@ -4305,7 +4032,6 @@ fn continuing_tolerates_threads_killed_by_a_siblings_exit() {
         assert_eq!(harness.thread(pid).state, NativeThreadState::Exiting);
     }
 
-    // Their exits retire them, and the process exit ends the session.
     for pid in [second, third, first] {
         harness
             .controller
@@ -4327,7 +4053,6 @@ fn a_seized_thread_whose_start_precedes_its_clone_event_is_armed_before_running(
     *harness.trace().clone.borrow_mut() = Some((child, parent));
     harness.trace().take_actions();
 
-    // The child's first stop arrives before the debugger knows it exists.
     harness
         .event(child, libc::PTRACE_EVENT_STOP)
         .expect("early child stop is retained");
@@ -4360,8 +4085,6 @@ fn a_new_thread_killed_out_of_its_first_stop_is_retired_by_its_exit() {
         .event(parent, libc::PTRACE_EVENT_CLONE)
         .expect("clone event");
 
-    // The parent resumed and called exit_group before the child's first
-    // stop was handled, killing the child out of that stop.
     harness.trace().vanished.borrow_mut().insert(child);
     harness
         .event(child, libc::PTRACE_EVENT_STOP)
@@ -4392,8 +4115,6 @@ fn a_requested_stop_that_sigkill_ended_since_is_superseded() {
         .begin_pause(process_id(first))
         .expect("pause");
 
-    // A sibling's exit_group killed the second thread out of the stop it
-    // reported, and it now waits at its exit event.
     harness.trace().set_siginfo(second, EXIT_EVENT, None);
     harness
         .event(second, libc::PTRACE_EVENT_STOP)
@@ -4423,8 +4144,6 @@ fn a_pause_ends_once_a_thread_reaped_before_its_request_is_retired() {
 
     harness.start_continue();
 
-    // The waiter reaped the second thread, whose exit status is still on
-    // its way to the controller.
     harness.trace().vanished.borrow_mut().insert(second);
     harness
         .controller
@@ -4454,7 +4173,6 @@ fn a_stop_whose_thread_sigkill_ends_while_it_is_handled_waits_for_the_exit() {
         kind: StepKind::OverInstruction,
     };
 
-    // The sibling calls exit_group after the step's trap was classified.
     *harness.trace().kill_point.borrow_mut() = Some((stepping, "registers", 0));
     harness
         .trace()
@@ -4470,7 +4188,6 @@ fn a_stop_whose_thread_sigkill_ends_while_it_is_handled_waits_for_the_exit() {
     );
     assert_eq!(harness.thread(stepping).state, NativeThreadState::Running);
 
-    // Both threads exit, and the session ends with the process.
     for status in [
         WaitEvent::PtraceEvent(stepping, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
         WaitEvent::PtraceEvent(sibling, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
@@ -4492,7 +4209,6 @@ fn a_step_whose_threads_sigkill_ends_as_it_begins_runs_into_the_exit() {
 
     let stop = harness.stop_id();
 
-    // Something outside the debugger kills the program as the step starts.
     *harness.trace().kill_point.borrow_mut() = Some((first, "registers", 0));
     harness.trace().sigkill(second);
     let execution = harness.controller.begin_execution(
@@ -4529,7 +4245,6 @@ fn a_trap_whose_thread_sigkill_ends_while_it_is_classified_is_superseded() {
 fn plan_traps_a_dying_process_cannot_take_are_not_restored() {
     let plan = BTreeSet::from([VirtualAddress::new(0x50), VirtualAddress::new(0x60)]);
 
-    // As a step begins.
     let mut harness = watch_harness(1);
     let pid = harness.threads[0];
     let stop = harness.stop_id();
@@ -4561,7 +4276,6 @@ fn plan_traps_a_dying_process_cannot_take_are_not_restored() {
         "nothing is restored and nothing killed"
     );
 
-    // And as a step goes on.
     let mut harness = watch_harness(1);
     let pid = harness.threads[0];
     *harness.trace().kill_point.borrow_mut() = Some((pid, "install_breakpoint", 1));
@@ -4596,7 +4310,6 @@ fn a_launch_killed_at_its_first_stop_ends_in_its_exit() {
     thread.expected = ExpectedStop::InitialExec;
     harness.published();
 
-    // Killed before its options were set.
     harness.trace().sigkill(pid);
     assert!(
         harness
@@ -4637,9 +4350,6 @@ fn repairs_after_the_debuggers_own_kill_are_left_undone() {
     inferior.thread_mut(repairing).expect("thread").trap = AtTrap::Repairing { at: site };
     inferior.thread_mut(running).expect("thread").trap = AtTrap::MustStepOver { at: site };
 
-    // The client kills the program mid-repair. When the repairing thread's
-    // death arrives, the next repair has no stopped thread to lift the
-    // trap through.
     let (reply, mut killed) = tokio::sync::oneshot::channel();
     harness.controller.kill(reply);
 
@@ -4673,8 +4383,6 @@ fn a_repair_whose_process_dies_leaves_its_trap_unrestored() {
     let mut harness = repairing_harness_of(1);
     let (leader, repairing) = (harness.threads[0], harness.threads[1]);
 
-    // Something outside the debugger kills the program mid-repair. The
-    // repairing thread's death leaves no thread to restore the trap through.
     harness.trace().sigkill(leader);
     harness.trace().sigkill(repairing);
 
@@ -4704,7 +4412,6 @@ fn a_pause_that_meets_a_fork_event_instead_completes() {
         .begin_pause(process_id(parent))
         .expect("pause");
 
-    // The parent forked before its requested stop was delivered.
     let child = Pid::from_raw(6200);
     *harness.trace().clone.borrow_mut() = Some((child, child));
     harness
@@ -4713,11 +4420,8 @@ fn a_pause_that_meets_a_fork_event_instead_completes() {
     assert_eq!(harness.public_reason(), Some(StopReason::Pause));
 }
 
-/// The trap site of the hit-count harness's one user breakpoint.
 const HIT_SITE: u64 = 0x40;
 
-/// A process-wide continue whose threads can reach one user breakpoint at
-/// [`HIT_SITE`] with `hit_condition`.
 fn hit_harness(thread_count: i32, hit_condition: &str) -> WatchHarness {
     let mut harness = watch_harness(thread_count);
     harness.controller.breakpoints.push(Breakpoint {
@@ -4752,13 +4456,11 @@ fn hit_harness(thread_count: i32, hit_condition: &str) -> WatchHarness {
 }
 
 impl WatchHarness {
-    /// Reports `pid` executing the trap at [`HIT_SITE`].
     fn hit(&mut self, pid: Pid) -> Result<()> {
         self.trace().set_pc(pid, HIT_SITE + 1);
         self.trap(pid, libc::SI_KERNEL, debug_registers::STATUS_IDLE)
     }
 
-    /// Completes the single step a breakpoint repair began.
     pub(super) fn finish_step(&mut self, pid: Pid) -> Result<()> {
         self.trap(pid, libc::TRAP_TRACE, debug_registers::STATUS_IDLE)
     }
@@ -4842,7 +4544,6 @@ fn declined_hits_lift_the_trap_only_once_every_sibling_stopped() {
     assert_eq!(harness.public_reason(), None);
     assert_eq!(harness.hit_count(), 1);
 
-    // The next arrival meets the condition and stops every thread.
     harness.hit(second).expect("stopping hit");
     harness.settle_requested_stops();
     assert_eq!(harness.public_reason(), Some(site_hit(2)));
@@ -4858,7 +4559,6 @@ fn a_visible_stop_during_an_internal_stop_wins_and_the_declined_hit_counts_once(
 
     harness.hit(first).expect("declined hit");
 
-    // The sibling reports a signal before the stop it was asked for.
     harness.trace().set_siginfo(second, 0, Some(1));
     harness
         .controller
@@ -4878,7 +4578,6 @@ fn a_visible_stop_during_an_internal_stop_wins_and_the_declined_hit_counts_once(
     );
     harness.trace().take_actions();
 
-    // Resuming steps the declined thread over the site before anything runs.
     harness.resume().expect("resume");
     let actions = harness.trace().take_actions();
     assert!(
@@ -4932,7 +4631,6 @@ fn a_co_hit_meeting_its_condition_turns_an_internal_stop_visible() {
 
     harness.hit(first).expect("declined hit");
 
-    // The sibling trapped at the same site before its requested stop.
     harness.hit(second).expect("stopping co-hit");
 
     assert_eq!(harness.public_reason(), Some(site_hit(2)));
@@ -4947,10 +4645,6 @@ fn a_co_hit_meeting_its_condition_turns_an_internal_stop_visible() {
     assert_eq!(harness.thread(second).reason, Some(site_hit(2)));
 }
 
-/// SIGKILL takes a sibling out of a published stop to its exit, so no
-/// site can be edited until it is reaped; a breakpoint removed meanwhile
-/// leaves its owner on the trap, which the stopped thread's frames must
-/// not take for a breakpoint that still exists.
 #[test]
 fn frames_ignore_a_breakpoint_removed_while_a_sibling_exits() {
     let mut harness = hit_harness(2, "==1");
@@ -4985,8 +4679,6 @@ fn a_declined_thread_exiting_during_an_internal_stop_publishes_nothing() {
         panic!("three threads");
     };
 
-    // The kernel reports the leader's exit only after every other thread's,
-    // so a sibling exits here.
     harness.hit(second).expect("declined hit");
     harness
         .controller
@@ -5024,9 +4716,6 @@ fn amending_a_hit_condition_while_running_applies_to_the_next_hit() {
     assert_eq!(harness.public_reason(), Some(site_hit(2)));
 }
 
-/// A thread whose step over the breakpoint it hit a pause interrupted
-/// still steps over the trap there once the breakpoint is replaced by
-/// another at the same place: its arrival there was counted.
 #[test]
 fn a_breakpoint_replaced_where_a_paused_repair_stands_is_stepped_over() {
     let mut harness = hit_harness(1, "==2");
@@ -5037,7 +4726,6 @@ fn a_breakpoint_replaced_where_a_paused_repair_stands_is_stepped_over() {
         .begin_pause(process_id(pid))
         .expect("pause");
 
-    // The pause's SIGSTOP arrives instead of the repair step's trace trap.
     harness.settle_requested_stops();
     assert_eq!(harness.public_reason(), Some(StopReason::Pause));
 
@@ -5059,10 +4747,6 @@ fn a_breakpoint_replaced_where_a_paused_repair_stands_is_stepped_over() {
     );
 }
 
-/// A thread stepping from a breakpoint it had not hit meets a signal
-/// first. Back from the signal it hits the breakpoint, once, at the guard
-/// where its step resumes, and steps over the trap: the step executes the
-/// instruction the trap covers, not the trap again.
 #[test]
 fn a_breakpoint_hit_where_a_signal_interrupted_a_step_is_stepped_over() {
     let mut harness = hit_harness(1, "==2");
@@ -5119,13 +4803,11 @@ fn a_hit_on_a_breakpoint_removed_while_running_is_dropped() {
         reply,
     });
 
-    // The trap was raised before the thread saw its stop request.
     harness
         .hit_at(Pid::from_raw(5000), 0x40)
         .expect("breakpoint trap");
     harness.settle_requested_stops();
 
-    // The hit counted, but the breakpoint is gone before it stops anything.
     let removed = removed.try_recv().expect("reply").expect("removed");
     assert_eq!((removed.id, removed.hit_count), (breakpoint.id, 1));
     let actions = harness.trace().take_actions();
@@ -5303,17 +4985,6 @@ fn another_thread_at_a_stepping_plans_site_is_stepped_over_while_the_others_are_
     );
 }
 
-/// The stepping thread traps at a site its step's plan shares with a user
-/// breakpoint, which a client removes or disables while the step runs.
-/// The edit's internal stop drops the hit, and the step meets its own site
-/// there and ends, rather than stepping over the trap as if only the
-/// breakpoint had owned it.
-///
-/// The simulator found this, with a source step over that ran on past the
-/// line it had to stop at. It needs the edit's stop requested before the
-/// trap is handled, which on a real kernel is a race between the client's
-/// request and the waiter's status that no fixture can force, so this
-/// drives the controller directly.
 fn a_steps_site_shared_with_a_breakpoint_edited_while_running(
     edit: fn(BreakpointId, Reply<Breakpoint>) -> Edit,
 ) {
@@ -5350,7 +5021,6 @@ fn a_steps_site_shared_with_a_breakpoint_edited_while_running(
     harness.trace().take_actions();
     let mut edited = harness.edit(|reply| edit(breakpoint.id, reply));
 
-    // The trap was raised before the thread saw its stop request.
     harness.hit_at(stepping, SITE).expect("shared site trap");
     harness.settle_requested_stops();
 
@@ -5392,21 +5062,11 @@ fn a_step_ends_at_its_site_where_a_breakpoint_disabled_while_running_was_hit() {
     });
 }
 
-/// A source step single-steps onto the start of a line, where a
-/// breakpoint's `int3` lies, and resumes once to hit it, so the hit judges
-/// the arrival. Before the thread runs, an edit's internal stop removes the
-/// trap. The step judges its arrival there as it resumes, rather than
-/// stepping on past a line it had to stop at.
-///
-/// The simulator found this. It needs the edit's stop to reach the thread
-/// before the one instruction it was resumed to run, which on a real kernel
-/// no fixture can force, so this drives the controller directly.
 fn a_step_resumed_to_a_trap_edited_away_while_running(
     edit: fn(BreakpointId, Reply<Breakpoint>) -> Edit,
 ) {
     const SITE: u64 = 0x40;
 
-    // Line 24 at 0x20, and line 25 from the site to 0x60.
     let mut lines = crate::image::lines::LineTables::default();
     lines.begin_sequence().expect("few rows");
 
@@ -5452,7 +5112,6 @@ fn a_step_resumed_to_a_trap_edited_away_while_running(
         };
     }
 
-    // The single step lands before the trap, and resumes to hit it.
     harness.published();
     harness.trace().set_pc(stepping, SITE);
     harness
@@ -5466,7 +5125,6 @@ fn a_step_resumed_to_a_trap_edited_away_while_running(
             .contains(&format!("step {stepping}"))
     );
 
-    // The edit stops the thread before it runs the trap.
     let mut edited = harness.edit(|reply| edit(breakpoint.id, reply));
     harness.settle_requested_stops();
     edited.try_recv().expect("reply").expect("edited");
@@ -5505,47 +5163,34 @@ fn a_step_resumed_to_hit_a_breakpoint_disabled_while_running_ends_where_it_stand
     });
 }
 
-/// A runtime whose threads run the tasks a test sets, so run control's
-/// following of a task is tested without any language's runtime.
 #[derive(Debug, Default)]
 pub(super) struct ScriptedRuntime {
     pub(super) agent: Option<Arc<dyn crate::runtime_model::RuntimeAgent>>,
     running: std::sync::Mutex<BTreeMap<crate::ThreadId, u64>>,
 
-    /// The runtime's internal hooks.
     internal: Vec<crate::runtime_model::HookPlace>,
 
-    /// The hook each hit was asked of, in turn.
     asked: std::sync::Mutex<Vec<crate::runtime_model::HookPlace>>,
 
-    /// What the runtime was armed with, each time it was.
     armed: std::sync::Mutex<Vec<Vec<crate::runtime_model::ManagedArm>>>,
 
-    /// A scripted refusal while arming, after resolution succeeded.
     arm_failure: std::sync::Mutex<Option<Arc<str>>>,
     mixed_function: bool,
 
-    /// The step the runtime was armed with, each time it was.
     steps: std::sync::Mutex<Vec<Option<crate::runtime_model::RuntimeStep>>>,
 
-    /// What each hit of an internal hook reports, in turn.
     events: std::sync::Mutex<
         std::collections::VecDeque<std::result::Result<crate::runtime_model::HookEvent, Arc<str>>>,
     >,
 
-    /// Where the runtime lists its inspector's targets, which makes the
-    /// controller arm it through its inspector.
     inspector_hook: Option<ImageAddress>,
 
-    /// Where an attached node's inspector already listens, and its target,
-    /// or why that cannot be read; `None` reads as no inspector open.
     pub(super) inspector_endpoint: std::sync::Mutex<Option<ScriptedEndpoint>>,
 }
 
 type ScriptedEndpoint = std::result::Result<(std::net::SocketAddr, Arc<str>), Arc<str>>;
 
 impl ScriptedRuntime {
-    /// A runtime armed through the inspector `GetTargetIds` at `hook` lists.
     pub(super) fn inspected(hook: ImageAddress) -> Self {
         Self {
             inspector_hook: Some(hook),
@@ -5560,7 +5205,6 @@ impl ScriptedRuntime {
             .insert(debug_thread_id(thread), task);
     }
 
-    /// Scripts what the next hit of an internal hook reports.
     fn reports(&self, event: std::result::Result<crate::runtime_model::HookEvent, Arc<str>>) {
         self.events.lock().expect("the script").push_back(event);
     }
@@ -5709,8 +5353,6 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
         self.inspector_hook
     }
 
-    /// Every caller of the inspected runtime's `GetTargetIds` lists the
-    /// target the scripted inspector tests connect to.
     fn inspector_target(
         &self,
         _stop: &dyn crate::runtime_model::RuntimeStop,
@@ -5731,8 +5373,6 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
             .transpose()
     }
 
-    /// An inspected runtime's agent serves the target the scripted
-    /// inspector tests connect to.
     fn inspector_agent(
         &self,
         _stop: &dyn crate::runtime_model::RuntimeStop,
@@ -5742,8 +5382,6 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
             .map(|_| (VirtualAddress::new(0x7000), Arc::from("0f2b5c1e-uuid"))))
     }
 
-    /// An inspected runtime's I/O thread takes messages at 0x60, every
-    /// one the message asked about.
     fn inspector_message_received(&self) -> Option<ImageAddress> {
         self.inspector_hook.map(|_| ImageAddress::new(0x60))
     }
@@ -5771,7 +5409,6 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
             .unwrap_or_else(|| Err("the script reports no more hits".into()))
     }
 
-    /// The script runs files named `*.scripted`, and refuses `refused.scripted`.
     fn resolve_breakpoint(
         &self,
         _stop: &dyn crate::runtime_model::RuntimeStop,
@@ -5802,8 +5439,6 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
         })
     }
 
-    /// Arming writes how many locations the runtime is armed with to the
-    /// byte at 0x7000. The script steps by line, never by instruction.
     fn arm(
         &self,
         _stop: &dyn crate::runtime_model::RuntimeStop,
@@ -5836,7 +5471,6 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
     }
 }
 
-/// A stack of one frame, whose CFA is 0x1000 wherever it is.
 pub(super) struct FlatUnwindInfo;
 
 impl UnwindInfo for FlatUnwindInfo {
@@ -5859,8 +5493,6 @@ impl UnwindInfo for FlatUnwindInfo {
     }
 }
 
-/// A watch enabled while its task's stack moves stays set aside, holding
-/// no debug registers on the stack being left, until the move returns.
 #[test]
 fn a_watch_enabled_while_its_stack_moves_stays_set_aside() {
     let mut harness = watch_harness(1);
@@ -5911,8 +5543,6 @@ fn a_watch_enabled_while_its_stack_moves_stays_set_aside() {
     );
 }
 
-/// Begins a source step over a line of `task`, which `thread` runs, with
-/// its plan's site at 0x40.
 fn begin_task_step(harness: &mut WatchHarness, thread: Pid, task: crate::TaskId) {
     harness.start_continue();
     let inferior = harness.inferior();
@@ -5945,9 +5575,6 @@ fn begin_task_step(harness: &mut WatchHarness, thread: Pid, task: crate::TaskId)
     );
 }
 
-/// A step that belongs to a task follows it to whichever thread its
-/// runtime runs it on: another task's thread at the step's site is stepped
-/// over unseen, and the task's new thread takes the step on.
 #[test]
 fn a_step_follows_its_task_to_another_thread_and_passes_the_others() {
     let mut harness = watch_harness(3);
@@ -5970,8 +5597,6 @@ fn a_step_follows_its_task_to_another_thread_and_passes_the_others() {
     harness.published();
     harness.trace().take_actions();
 
-    // The runtime moves the task to another thread, and runs another task
-    // where it was.
     runtime.runs(first, 2);
     runtime.runs(moved, 1);
     runtime.runs(other, 3);
@@ -6034,7 +5659,6 @@ fn a_step_follows_its_task_to_another_thread_and_passes_the_others() {
     );
 }
 
-/// Binds `runtime` to the harness's executable.
 pub(super) fn scripted_runtime(
     harness: &WatchHarness,
     runtime: ScriptedRuntime,
@@ -6049,8 +5673,6 @@ pub(super) fn scripted_runtime(
     runtime
 }
 
-/// Checks that `hitting` steps over the trap it hit while its siblings
-/// wait, and that every thread then continues.
 fn steps_over_alone(harness: &mut WatchHarness, hitting: Pid) {
     assert!(
         harness
@@ -6072,10 +5694,6 @@ fn steps_over_alone(harness: &mut WatchHarness, hitting: Pid) {
     }
 }
 
-/// A runtime's internal hook is armed whatever exceptions stop, and each
-/// hit asks the runtime whether its thread stops: a hit that goes on is
-/// stepped over unseen, an exception stops when its filter does, and a
-/// hit whose report cannot be read stops and says so.
 #[test]
 fn a_runtime_hook_asks_at_each_hit_whether_its_thread_stops() {
     const HOOK: u64 = 0x40;
@@ -6117,8 +5735,6 @@ fn a_runtime_hook_asks_at_each_hit_whether_its_thread_stops() {
         },
     };
 
-    // The thread steps over the trap of a hit that stopped as the execution
-    // begins, which `start_continue` skips.
     let hit = |harness: &mut WatchHarness| {
         harness.thread(hitting).trap = AtTrap::Clear;
         harness.start_continue();
@@ -6174,9 +5790,6 @@ fn a_runtime_hook_asks_at_each_hit_whether_its_thread_stops() {
     );
 }
 
-/// A runtime's internal hook may be a function a companion image exports,
-/// as a library the runtime loads beside its own: it is armed once the
-/// image loads, asked of by that name at each hit, and gone with the image.
 #[test]
 fn a_runtime_hook_in_a_companion_image_is_armed_while_it_is_loaded() {
     const HOOK: crate::runtime_model::HookPlace =
@@ -6256,11 +5869,6 @@ fn a_runtime_hook_in_a_companion_image_is_armed_while_it_is_loaded() {
     assert!(harness.inferior().runtime_hooks.is_empty());
 }
 
-/// A runtime resolves a breakpoint in code it runs itself to a location it
-/// manages, which has no address: the runtime is armed with it as it is
-/// added and removed, and a hit its hook reports by the location's number
-/// stops as a breakpoint's, with no address. A number the runtime was not
-/// armed with is no breakpoint's.
 #[test]
 fn a_runtime_resolves_arms_and_reports_a_managed_breakpoint() {
     const HOOK: u64 = 0x40;
@@ -6364,9 +5972,6 @@ fn a_runtime_resolves_arms_and_reports_a_managed_breakpoint() {
     );
 }
 
-/// One event's hits of several managed locations stop once, for every
-/// breakpoint that owns one, as at one native address; a number no location
-/// has adds nothing.
 #[test]
 fn one_report_of_several_managed_hits_stops_once_for_them_all() {
     const HOOK: u64 = 0x40;
@@ -6422,8 +6027,6 @@ fn one_report_of_several_managed_hits_stops_once_for_them_all() {
     );
 }
 
-/// A runtime whose arming changed has not accepted the change until it is
-/// armed, as when an error ends an edit between claiming and arming.
 #[test]
 fn a_managed_change_not_yet_armed_is_not_shown_ready() {
     let mut harness = watch_harness(1);
@@ -6461,8 +6064,6 @@ fn a_managed_change_not_yet_armed_is_not_shown_ready() {
     assert!(snapshot.breakpoints[0].pending_locations.is_empty());
 }
 
-/// Resolution does not prove the runtime accepted its arming. Public
-/// replies and snapshots retain the location and expose the failure.
 #[test]
 fn managed_arming_failures_remain_visible_until_recovery() {
     let mut harness = watch_harness(1);
@@ -6657,8 +6258,6 @@ fn a_module_refresh_publishes_new_managed_arming_state_once() {
     assert_eq!(harness.breakpoint_events(), 1);
 }
 
-/// A refusal leaves the whole desired configuration unconfirmed. The
-/// earlier configuration can remain effective, so its hits still count.
 #[test]
 fn unconfirmed_runtime_arming_still_judges_hits_from_the_previous_configuration() {
     let mut harness = watch_harness(1);
@@ -6703,8 +6302,6 @@ fn unconfirmed_runtime_arming_still_judges_hits_from_the_previous_configuration(
         matches!(harness.stopped(), Some((_, StopReason::Breakpoint { hits, .. })) if hits[0].breakpoint == first.id)
     );
 
-    // Site numbers survive changes to the desired list. A deleted site's
-    // stale hook names no owner, never the remaining site's breakpoint.
     harness
         .controller
         .remove_breakpoint(first.id)
@@ -6788,8 +6385,6 @@ fn runtime_step_arming_updates_breakpoint_confirmation() {
     );
     assert_eq!(harness.breakpoint_events(), 1);
 
-    // Failure to remove the step also leaves the whole configuration
-    // unconfirmed. Old step events are still rejected by execution id.
     *runtime.arm_failure.lock().expect("the script") = Some("cannot disarm".into());
     runtime.reports(Ok(crate::runtime_model::HookEvent::StepEnded { number: 0 }));
     harness.hit_at(pid, 0x40).expect("step ended");
@@ -6823,11 +6418,6 @@ fn runtime_step_arming_updates_breakpoint_confirmation() {
     assert_eq!(harness.breakpoint_events(), 1);
 }
 
-/// A step a runtime arms runs every thread, and ends only where the
-/// runtime reports its end on the step's own thread: another thread's
-/// report, or a report of another step, goes on unseen. The runtime is
-/// armed with the step as it begins, and with none as the stop that ends
-/// it forms. A step the runtime cannot make is refused, and nothing runs.
 #[test]
 fn a_runtime_step_ends_where_its_runtime_reports_it_on_its_thread() {
     const HOOK: u64 = 0x40;
@@ -6875,7 +6465,6 @@ fn a_runtime_step_ends_where_its_runtime_reports_it_on_its_thread() {
         "a refused step leaves readiness unchanged"
     );
 
-    // The refused step took number 0, which no step takes again.
     step(&mut harness, StepKind::OverSource).expect("the step begins");
     assert_eq!(
         runtime.steps.lock().expect("the script").last(),
@@ -6922,8 +6511,6 @@ fn a_runtime_step_ends_where_its_runtime_reports_it_on_its_thread() {
     );
 }
 
-/// A step the runtime reports it could follow no further stops as an
-/// incomplete step, with the runtime's reason, on the step's own thread.
 #[test]
 fn a_runtime_step_it_cannot_follow_stops_incomplete_with_its_reason() {
     const HOOK: u64 = 0x40;
@@ -6980,9 +6567,6 @@ fn a_runtime_step_it_cannot_follow_stops_incomplete_with_its_reason() {
     );
 }
 
-/// A runtime that reports events through internal hooks is armed again
-/// when which exceptions stop changes, since its arming says which do, and
-/// not when they stay as they were.
 #[test]
 fn a_runtime_is_armed_again_when_which_exceptions_stop_changes() {
     let mut harness = watch_harness(1);
@@ -7017,9 +6601,6 @@ fn a_runtime_is_armed_again_when_which_exceptions_stop_changes() {
     assert_eq!(armings(&runtime), before + 1, "nothing changed");
 }
 
-/// The writes a runtime model asks for are made while every thread is
-/// stopped, each only where memory still holds what the model read there,
-/// and all of them or none. A trap's hidden byte is what the model read.
 #[test]
 fn a_runtimes_writes_are_made_only_to_the_memory_it_read() {
     let mut harness = watch_harness(2);
@@ -7034,7 +6615,6 @@ fn a_runtimes_writes_are_made_only_to_the_memory_it_read() {
     harness.add_breakpoint(0x40);
     harness.trace().take_actions();
 
-    // Memory that changed since the model read it takes none of the writes.
     let refused = harness.controller.write_for_runtime(&[
         write(0x6000, &[1, 2], &[0xaa, 0xbb]),
         write(0x6008, &[0x99], &[0xcc]),
@@ -7070,8 +6650,6 @@ fn a_runtimes_writes_are_made_only_to_the_memory_it_read() {
         assert!(actions.contains(&expected), "{expected} in {actions:?}");
     }
 
-    // The trap at 0x40 hides the byte the model reads there, which the
-    // write replaces under the trap.
     let original = harness.inferior().breakpoints[&VirtualAddress::new(0x40)].original_byte;
     harness
         .controller
@@ -7082,7 +6660,6 @@ fn a_runtimes_writes_are_made_only_to_the_memory_it_read() {
         0x55
     );
 
-    // A running thread could change what was read.
     harness.start_continue();
     assert!(
         harness
@@ -7115,7 +6692,6 @@ fn ending_a_plan_removes_only_the_sites_it_still_owns() {
             .install_breakpoint(pid, &mut inferior.breakpoints, address(0x40), user)
             .expect("user site");
 
-        // A plan may release a site before it ends, as a finished guard does.
         breakpoints::remove_breakpoint_owner_from(
             ptrace,
             inferior,
@@ -7171,7 +6747,6 @@ fn a_hit_on_a_watchpoint_removed_while_running_is_dropped() {
         .expect("watch trap");
     harness.settle_requested_stops();
 
-    // The hit counted before the edit applied, but it stops nothing.
     assert_eq!(
         removed.try_recv().expect("reply").expect("removed"),
         Watchpoint {
@@ -7200,10 +6775,6 @@ fn a_hit_on_a_watchpoint_removed_while_running_is_dropped() {
     );
 }
 
-/// Two threads hit one breakpoint, and the continue steps the first over it
-/// while the second waits. A watch hit by that step on a watchpoint removed
-/// meanwhile is dropped, and the second thread's hit belongs to the stop
-/// already published, so nothing is published again.
 #[test]
 fn a_dropped_watch_hit_during_a_repair_publishes_no_earlier_stop_again() {
     let mut harness = watch_harness(2);
@@ -7258,10 +6829,6 @@ fn a_dropped_watch_hit_during_a_repair_publishes_no_earlier_stop_again() {
     );
 }
 
-/// A thread that lost its slots to another user while running can't be
-/// armed when an edit's internal stop resumes the program. It stays stopped
-/// and the stop is published, as for a new thread that can't be armed;
-/// the program is neither killed nor released.
 #[test]
 fn a_thread_an_internal_stop_cannot_arm_stops_visibly() {
     let mut harness = watch_harness(2);
@@ -7312,12 +6879,10 @@ fn a_thread_an_internal_stop_cannot_arm_stops_visibly() {
     let _ = (first, kept);
 }
 
-/// The bytes of a watched word holding `value`.
 fn word(value: u64) -> Arc<[u8]> {
     Arc::from(value.to_le_bytes())
 }
 
-/// DR6 after a single step whose instruction hit slot 0.
 const STEPPED_SLOT_ZERO: u64 = debug_registers::STATUS_IDLE | 1 << 14 | 0b1;
 
 #[test]
@@ -7332,7 +6897,6 @@ fn a_store_that_changes_nothing_resumes_only_its_own_thread() {
         .add_watching(0x1_3000, 8, WatchAccess::Change)
         .expect("arm");
 
-    // Its slot reports stores only, as a write watchpoint's does.
     assert_eq!(harness.trace().registers_of(first)[7], 0x90001);
     harness.start_continue();
     harness.published();
@@ -7358,8 +6922,6 @@ fn a_store_that_changes_nothing_resumes_only_its_own_thread() {
         thread.state == NativeThreadState::Running && thread.watch_hits.is_empty()
     }));
 
-    // A store of another value stops every thread and reports the change
-    // from the value observed when execution resumed.
     harness.store(0x1_3000, 9);
     harness.watch_trap(second, 0b1).expect("changing store");
     harness.settle_requested_stops();
@@ -7419,7 +6981,6 @@ fn declined_watch_hits_are_counted_and_resume_only_their_thread() {
         assert_eq!(harness.published(), []);
     }
 
-    // The third hit stops, reporting from the bytes the second left.
     harness.store(0x1_c000, 3);
     harness.watch_trap(first, 0b1).expect("stopping store");
     harness.settle_requested_stops();
@@ -7446,9 +7007,6 @@ fn declined_watch_hits_are_counted_and_resume_only_their_thread() {
     );
 }
 
-/// SIGKILL from outside can take a thread out of its stop while its
-/// condition is evaluated. The condition did not fail: the thread is gone,
-/// and its exit, not a condition failure, is what clients hear of.
 #[test]
 fn a_thread_killed_while_its_condition_is_evaluated_reports_no_condition_failure() {
     for killed_at in 0..4 {
@@ -7509,9 +7067,6 @@ fn a_declined_change_keeps_the_bytes_a_siblings_pending_hit_reports_from() {
     harness.start_continue();
     harness.published();
 
-    // The first change stops; while the sibling is being stopped, it makes
-    // a second change, which its hit condition declines. Taking that as the
-    // last observed value would make the first change look undone.
     harness.store(0x1_b000, 9);
     harness.watch_trap(first, 0b1).expect("stopping change");
     harness.store(0x1_b000, 10);
@@ -7558,8 +7113,6 @@ fn a_change_undone_before_every_thread_stopped_lets_a_stepi_finish_once() {
 
     harness.published();
 
-    // The stepped instruction changes the value, so every thread is stopped
-    // to report it, but the sibling stores the old value back first.
     harness.store(0x1_4000, 9);
     harness
         .trap(stepping, libc::TRAP_TRACE, STEPPED_SLOT_ZERO)
@@ -7569,8 +7122,6 @@ fn a_change_undone_before_every_thread_stopped_lets_a_stepi_finish_once() {
     harness.store(0x1_4000, 7);
     harness.watch_trap(sibling, 0b1).expect("restoring store");
 
-    // Nothing changed once every thread stopped: the step ends after the one
-    // instruction it executed, without executing another.
     assert_eq!(
         harness.public_reason(),
         Some(StopReason::Step {
@@ -7621,7 +7172,6 @@ fn a_pause_survives_the_change_it_coincided_with_being_undone() {
     harness.store(0x1_9000, 7);
     harness.watch_trap(second, 0b1).expect("restoring store");
 
-    // The change is gone, but the client still asked for a stop.
     assert_eq!(harness.public_reason(), Some(StopReason::Pause));
     let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(
@@ -7648,7 +7198,6 @@ fn a_store_reports_only_the_watchpoints_whose_access_it_matches() {
         harness.start_continue();
         harness.store(0x1_5000, stored);
 
-        // Watchpoints on the same span share its slot.
         harness.watch_trap(pid, 0b1).expect("store");
         let Some(StopReason::Watchpoint { hits }) = harness.public_reason() else {
             panic!("the write watchpoint reports every store");
@@ -7664,8 +7213,6 @@ fn a_store_reports_only_the_watchpoints_whose_access_it_matches() {
 
 #[test]
 fn an_unchanged_store_while_stepping_over_a_breakpoint_finishes_the_repair_and_runs_on() {
-    // Linux reports the step's own trap; a hardware trap alone must not make
-    // the thread step the instruction again either.
     for (code, status) in [
         (libc::TRAP_TRACE, STEPPED_SLOT_ZERO),
         (TRAP_HARDWARE_BREAKPOINT, debug_registers::STATUS_IDLE | 0b1),
@@ -7756,7 +7303,6 @@ fn a_failed_read_of_watched_bytes_is_an_error_rather_than_a_change() {
 
     harness.store(0x1_9000, 7);
 
-    // A thread killed out of its stop is passed over for one that can read.
     harness.trace().vanished.borrow_mut().insert(first);
     let watchpoint = harness
         .add_watching(0x1_9000, 8, WatchAccess::Change)
@@ -7774,8 +7320,6 @@ fn a_failed_read_of_watched_bytes_is_an_error_rather_than_a_change() {
         Some(word(7))
     );
 
-    // Any other failure is never taken for unreadable bytes: not when a
-    // watchpoint is armed, which then arms nothing,
     harness.trace().read_failure.replace(Some(Errno::EPERM));
     let registers = harness.trace().registers_of(first);
     let error = harness
@@ -7784,11 +7328,9 @@ fn a_failed_read_of_watched_bytes_is_an_error_rather_than_a_change() {
     assert!(is_eperm(&error), "{error:?}");
     assert_eq!(harness.trace().registers_of(first), registers);
 
-    // not when execution resumes,
     let error = harness.resume().expect_err("unread baseline");
     assert!(is_eperm(&error), "{error:?}");
 
-    // and not when a store traps.
     harness.start_continue();
     harness.published();
     let error = harness.watch_trap(second, 0b1).expect_err("unread store");
@@ -7829,14 +7371,10 @@ fn an_unchanged_store_during_a_pause_gives_its_thread_no_reason() {
     assert!(inferior.threads[&second].debugger_stop_pending);
 }
 
-/// Puts the harness's first thread in the middle of stepping over a user
-/// breakpoint at 0x40 while its sibling waits stopped, as a continue does.
 fn repairing_harness() -> WatchHarness {
     repairing_harness_of(0)
 }
 
-/// Puts one of two threads in the middle of stepping over a user breakpoint
-/// at 0x40 while the other waits stopped, as a continue does.
 fn repairing_harness_of(repairing: usize) -> WatchHarness {
     let mut harness = watch_harness(2);
     harness.add_breakpoint(0x40);
@@ -7853,10 +7391,6 @@ fn repairing_harness_of(repairing: usize) -> WatchHarness {
     harness
 }
 
-/// A main thread stepped across its exit exits alone, and Linux reports
-/// that only after every other thread's. Its siblings run on in the step's
-/// scope, and finishing one's repair resumes them without stepping the
-/// thread that is gone.
 #[test]
 fn a_step_whose_main_thread_exited_alone_runs_its_siblings_on() {
     let mut harness = repairing_harness_of(1);
@@ -7879,9 +7413,6 @@ fn a_step_whose_main_thread_exited_alone_runs_its_siblings_on() {
     assert!(harness.controller.session.inferior().is_some());
 }
 
-/// A thread waiting to step over its breakpoint that is exiting meanwhile,
-/// as when SIGKILL ends its process, can step over nothing: its repair is
-/// skipped, and the site restored.
 #[test]
 fn an_exiting_thread_is_not_stepped_over_its_breakpoint() {
     let mut harness = repairing_harness_of(0);
@@ -7927,8 +7458,6 @@ fn a_quiet_signal_during_a_repair_runs_its_handler_before_the_repair() {
 
     deliver(&mut harness, repairing, alarm);
 
-    // The site is restored while the handler runs alone, so the waiting
-    // sibling cannot run past it.
     assert_eq!(
         harness.trace().take_actions(),
         [
@@ -7942,8 +7471,6 @@ fn a_quiet_signal_during_a_repair_runs_its_handler_before_the_repair() {
     );
     assert_eq!(harness.thread(waiting).state, NativeThreadState::Stopped);
 
-    // Returning from the handler re-traps at the site, which the thread
-    // now steps over before its sibling resumes.
     harness.hit_at(repairing, 0x40).expect("re-trap");
     assert_eq!(
         harness.trace().take_actions(),
@@ -8018,7 +7545,6 @@ fn threads_ending_before_their_announcement_never_become_live() {
     harness.trace().take_actions();
     let unannounced = Pid::from_raw(5009);
 
-    // A sibling's exit_group ends a thread its creator has not announced.
     harness
         .event(unannounced, libc::PTRACE_EVENT_EXIT)
         .expect("an unannounced thread's exit event");
@@ -8048,14 +7574,11 @@ fn threads_ending_before_their_announcement_never_become_live() {
         ]
     );
 
-    // A thread whose exit event the kernel released early is no failure.
     harness.trace().vanished.borrow_mut().insert(sibling);
     harness
         .event(sibling, libc::PTRACE_EVENT_EXIT)
         .expect("a released exit event");
 
-    // The leader's exit is reported once every thread is gone, even one
-    // whose own exit was never seen.
     harness.published();
     harness
         .controller
@@ -8071,8 +7594,6 @@ fn threads_ending_before_their_announcement_never_become_live() {
     )));
 }
 
-/// Call-frame information whose rules read a stack slot no read reaches,
-/// as a corrupted stack's do.
 struct LostUnwindInfo;
 
 impl UnwindInfo for LostUnwindInfo {
@@ -8099,8 +7620,6 @@ impl UnwindInfo for LostUnwindInfo {
     }
 }
 
-/// A thread stepping over a source line whose plan site at 0x30 traps where
-/// its frame can no longer be unwound.
 fn lost_frame_harness() -> WatchHarness {
     let mut harness = watch_harness(1);
     let pid = harness.threads[0];
@@ -8150,8 +7669,6 @@ fn lost_frame_harness() -> WatchHarness {
     harness
 }
 
-/// Call-frame information whose one rule reads the stack, as a real
-/// frame's does, so unwinding fails only when that read does.
 struct StackReadingUnwindInfo;
 
 impl StackReadingUnwindInfo {
@@ -8189,8 +7706,6 @@ fn a_step_whose_thread_sigkill_ends_as_it_unwinds_publishes_no_lost_frame() {
     let mut harness = lost_frame_harness();
     let pid = harness.threads[0];
 
-    // Something outside the debugger kills the program after the hit is
-    // classified, as the step reads its frame from the stack.
     harness.controller.main.unwind = Arc::new(StackReadingUnwindInfo);
     *harness.trace().kill_at_read.borrow_mut() = Some((pid, StackReadingUnwindInfo::SLOT.get()));
     harness.trace().set_pc(pid, 0x31);
@@ -8213,8 +7728,6 @@ fn a_step_that_loses_its_frame_stops_explicitly_and_leaves_the_program_alone() {
     let mut harness = lost_frame_harness();
     let pid = harness.threads[0];
 
-    // The step's plan site traps, but where the step's frame went can no
-    // longer be told.
     harness.hit_at(pid, 0x30).expect("the hit is handled");
 
     match harness.public_reason() {
@@ -8255,7 +7768,6 @@ fn an_edit_waiting_for_an_internal_stop_is_answered_when_the_process_ends_first(
     });
     assert!(added.try_recv().is_err(), "the edit waits for every thread");
 
-    // The program exits before either thread stops for the edit.
     for pid in [harness.threads[1], harness.threads[0]] {
         harness
             .controller
@@ -8296,8 +7808,6 @@ fn a_step_whose_thread_exits_while_an_edit_drops_the_other_reason_ends_in_its_ex
     );
     harness.published();
 
-    // The edit stops every thread; meanwhile the other thread hits the
-    // breakpoint being removed, and the stepping thread exits.
     let mut removed = harness.edit(|reply| Edit::RemoveBreakpoint {
         id: breakpoint.id,
         reply,
@@ -8309,8 +7819,6 @@ fn a_step_whose_thread_exits_while_an_edit_drops_the_other_reason_ends_in_its_ex
         .expect("the stepping thread's exit is handled");
     removed.try_recv().expect("reply").expect("removed");
 
-    // The hit died with its breakpoint, but the step cannot resume without
-    // its thread: it ends in that thread's exit.
     assert_eq!(
         harness.public_reason(),
         Some(StopReason::ThreadExited {
@@ -8324,8 +7832,6 @@ fn a_step_whose_thread_exits_while_an_edit_drops_the_other_reason_ends_in_its_ex
     );
 }
 
-/// A stack of two frames: the innermost at 0x30 with its CFA at 0x1000,
-/// whose caller at 0x50 is the outermost.
 struct OutermostCallerUnwindInfo;
 
 impl UnwindInfo for OutermostCallerUnwindInfo {
@@ -8375,8 +7881,6 @@ fn an_activation_missing_from_a_wholly_unwound_stack_has_returned() {
     registers.rip = 0x30;
     registers.rsp = 0x0ff8;
 
-    // Above every frame of this stack: another stack's activation, as a
-    // raw-cloned thread computes from its creator's frame pointer.
     let elsewhere = harness
         .controller
         .stack_view(harness.threads[0])
@@ -8392,9 +7896,6 @@ fn an_activation_missing_from_a_wholly_unwound_stack_has_returned() {
 
 #[test]
 fn an_interrupt_refused_with_eio_means_gone_only_for_a_thread_that_exited() {
-    // An exited thread, as the waiter can reap one between ptrace's check
-    // that it is traced and the interrupt taking its signal lock. A zombie
-    // keeps its identifier, so nothing else can take it meanwhile.
     let mut exited = std::process::Command::new("true")
         .spawn()
         .expect("spawn a process");
@@ -8415,13 +7916,9 @@ fn an_interrupt_refused_with_eio_means_gone_only_for_a_thread_that_exited() {
     exited.wait().expect("reap the process");
     assert!(!gone.expect("an exited thread is gone"));
 
-    // A live thread's EIO is a failure the debugger must not hide.
     assert!(interrupt_outcome(nix::unistd::gettid(), Err(Errno::EIO)).is_err());
 }
 
-/// A pause that arrives once every thread is past its exit event has no
-/// thread left to stop. It is accepted, and the exit ends the execution it
-/// would have interrupted, as an exit ends a continue.
 #[test]
 fn a_pause_after_every_thread_began_exiting_ends_with_the_exit() {
     let mut harness = watch_harness(1);
@@ -8446,11 +7943,6 @@ fn a_pause_after_every_thread_began_exiting_ends_with_the_exit() {
     assert_eq!(ended, Some(Some(execution)));
 }
 
-/// A thread can execute a trap just before another thread's stop removes
-/// its site, as when a step's plan ends while siblings run through the same
-/// return address. The trap's report then names a site that is gone: the
-/// thread re-executes the restored instruction and runs on, and nothing is
-/// published.
 #[test]
 fn a_trap_reported_after_its_site_was_removed_runs_on() {
     let mut harness = watch_harness(2);
@@ -8478,9 +7970,6 @@ fn a_trap_reported_after_its_site_was_removed_runs_on() {
     assert_eq!(harness.published_stops(), 0);
 }
 
-/// A main thread that exits alone while a pause stops the others never
-/// stops: Linux reports its exit only after every other thread's. Once its
-/// exit event is handled, the pause publishes with the threads that remain.
 #[test]
 fn a_pause_completes_when_the_main_thread_exits_alone() {
     let mut harness = watch_harness(2);
@@ -8504,8 +7993,6 @@ fn a_pause_completes_when_the_main_thread_exits_alone() {
         .expect("the worker stops");
     assert_eq!(harness.public_reason(), None);
 
-    // Continued from its exit event, the leader is a zombie that answers no
-    // request.
     harness.trace().killed.borrow_mut().insert(leader);
     harness
         .event(leader, libc::PTRACE_EVENT_EXIT)
@@ -8514,10 +8001,6 @@ fn a_pause_completes_when_the_main_thread_exits_alone() {
     assert_eq!(stopped, Some((debug_thread_id(worker), StopReason::Pause)));
 }
 
-/// A pause stops at once when every thread is stopped or a main thread
-/// past its exit event, which Linux reports only after its siblings' exits,
-/// and otherwise waits for a starting thread's first stop or an exiting
-/// thread's exit, as no request stops either.
 #[test]
 fn a_pause_waits_only_for_threads_that_will_report() {
     use NativeThreadState::{Exiting, Starting, Stopped};
@@ -8570,10 +8053,6 @@ fn a_pause_waits_only_for_threads_that_will_report() {
     }
 }
 
-/// Where the debug information describes two inlined calls that overlap
-/// without nesting, no frame can be presented, so source steps are refused
-/// rather than guessed. An instruction step needs no frame: it executes one
-/// instruction whatever is presented.
 #[test]
 fn instruction_steps_work_where_the_inline_frame_is_ambiguous() {
     let mut harness = watch_harness_of(
@@ -8641,9 +8120,6 @@ fn instruction_steps_work_where_the_inline_frame_is_ambiguous() {
     );
 }
 
-/// Inspection of a stop waits behind run control queued after it, which it
-/// would only delay; every other message keeps its order, and inspection
-/// that run control interrupted is served again after it.
 #[test]
 #[expect(clippy::too_many_lines, reason = "one queue, served in two rounds")]
 fn inspection_of_a_stop_waits_behind_run_control_queued_after_it() {
@@ -8732,8 +8208,6 @@ fn inspection_of_a_stop_waits_behind_run_control_queued_after_it() {
         ]
     );
 
-    // Run control waiting interrupts inspection, which is served again
-    // after it.
     assert!(!controller.run_control_waiting());
     let (pause_reply, _paused) = tokio::sync::oneshot::channel();
     sender
@@ -8768,14 +8242,9 @@ fn inspection_of_a_stop_waits_behind_run_control_queued_after_it() {
         .collect::<Vec<_>>();
     assert_eq!(served, ["pause 5000", "evaluate `interrupted`"]);
 
-    // Serving decides only the order; nothing was answered.
     assert!(replies.iter_mut().all(|reply| reply.try_recv().is_err()));
 }
 
-/// A presentation looks for waiting run control after every
-/// [`INTERRUPT_INTERVAL`](super::evaluation::INTERRUPT_INTERVAL) units of
-/// its frame's work, however that work is split among the views that
-/// present values one inside another, each with a machine of its own.
 #[test]
 fn nested_presentations_share_one_interval_between_looks_for_run_control() {
     use super::evaluation::{INTERRUPT_INTERVAL, StopMachine};
@@ -8810,8 +8279,6 @@ fn nested_presentations_share_one_interval_between_looks_for_run_control() {
         .unwrap_or_else(|_| panic!("the queue has room"));
     let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
 
-    // Two views, each doing just over half an interval's work, as a page of
-    // small presented values does.
     let mut charges = 0;
     let interrupted = (0..2).any(|_| {
         let mut machine = StopMachine::new(&frame, &mut budget, true);
@@ -8827,10 +8294,6 @@ fn nested_presentations_share_one_interval_between_looks_for_run_control() {
     assert_eq!(charges, INTERRUPT_INTERVAL);
 }
 
-/// glibc describes its signal trampoline, `__restore_rt`, with call-frame
-/// expressions that find every register in the `ucontext` the kernel
-/// saved. Evaluating them must agree with the kernel's `sigcontext`
-/// layout, which unwinding through a trampoline reads directly.
 #[test]
 fn glibc_signal_trampoline_expressions_find_the_kernels_saved_registers() {
     use super::frames::{SIGCONTEXT_REGISTERS, UCONTEXT_MCONTEXT};
@@ -8857,8 +8320,6 @@ fn glibc_signal_trampoline_expressions_find_the_kernels_saved_registers() {
         .expect("glibc's signal trampoline")
         .address();
 
-    // A handler's frame returned into the trampoline, whose stack holds the
-    // ucontext; each saved register gets a value of its own.
     let stack = 0x7fff_0000_u64;
     let expected: Vec<_> = SIGCONTEXT_REGISTERS
         .iter()
@@ -8894,11 +8355,6 @@ fn glibc_signal_trampoline_expressions_find_the_kernels_saved_registers() {
     }
 }
 
-/// The modules a stop observes for the first time load as one batch and
-/// are numbered and registered in the order they were observed, whatever
-/// order their loads finish in; one that does not load keeps its number
-/// and leaves its frames unnamed, and a later stop loads only what is new,
-/// trying again what did not load.
 #[test]
 fn new_modules_load_together_and_register_in_observation_order() {
     let mut harness = watch_harness(1);
@@ -8980,10 +8436,6 @@ fn new_modules_load_together_and_register_in_observation_order() {
     assert_eq!(loaded(&mut harness), [(5, "/lib/libd.so".into())]);
 }
 
-/// A session of a program that keeps its modules takes each file an
-/// earlier session loaded, under the same image, instead of loading it
-/// again; a file that changed since, or failed to load, loads again, and
-/// new images are numbered past every kept one.
 #[test]
 fn a_later_session_takes_the_modules_an_earlier_one_loaded() {
     let directory =
@@ -9036,7 +8488,6 @@ fn a_later_session_takes_the_modules_an_earlier_one_loaded() {
     ]);
     assert_eq!(loads(&first), ["liba.so#1 libb.so#2 libfail.so#3"]);
 
-    // libb.so is rewritten, and libd.so is new.
     std::fs::write(file("libb.so"), "libb.so, rebuilt").unwrap();
     std::fs::write(file("libd.so"), "libd.so").unwrap();
     let second = session(&[
@@ -9061,7 +8512,6 @@ fn a_later_session_takes_the_modules_an_earlier_one_loaded() {
         Some(3)
     );
 
-    // A third session takes the rebuilt libb.so as the second loaded it.
     let third = session(&[
         ("liba.so", 0x7000_0000, true),
         ("libb.so", 0x7100_0000, true),
@@ -9072,9 +8522,6 @@ fn a_later_session_takes_the_modules_an_earlier_one_loaded() {
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
-/// Stepping knows the role of code in any loaded module, not only in the
-/// program's own: a source step leaves a library's runtime machinery for
-/// its caller as it leaves the program's.
 #[test]
 fn a_step_leaves_runtime_machinery_in_a_library() {
     let mut harness = watch_harness(1);
@@ -9136,8 +8583,6 @@ fn a_step_leaves_runtime_machinery_in_a_library() {
 }
 
 impl WatchHarness {
-    /// Makes the session a member of a group that follows the children its
-    /// process forks, the next of which is `child`.
     fn follow_forks(&mut self, child: Pid) -> Arc<super::follow::Following> {
         let following = Arc::new(super::follow::Following::new(super::follow::Policy {
             policy: crate::FollowPolicy::default(),
@@ -9173,8 +8618,6 @@ fn a_followed_fork_child_is_scrubbed_and_handed_over_still_traced_whichever_stop
             assert!(harness.controller.handle_wait(status));
         }
 
-        // The child keeps its tracer: nothing stops, detaches, or resumes
-        // it, so it runs no instruction before its own controller does.
         let actions = harness.trace().take_actions();
         let touched = actions
             .iter()
@@ -9205,8 +8648,6 @@ fn a_handed_over_child_is_not_taken_for_a_lost_one_as_its_parent_exits() {
     assert_eq!(following.take_forks().len(), 1);
     harness.trace().take_actions();
 
-    // The tracer thread still traces the child, as its new owner's, when
-    // the parent exits: the parent's session must not wait for it.
     harness.trace().traced_children.borrow_mut().push(child);
     for status in [
         WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),

@@ -1,9 +1,9 @@
-// Known call chains for the profiler: the main thread and one worker each
-// call outer, which calls middle, which calls leaf, which spins for the
-// iterations its argument names. A breakpoint on leaf sees each call at
-// its first instruction, before it keeps a frame of its own. The main
-// thread first descends through frames larger than a small stack copy, so
-// that the kernel's frame-pointer chain must continue its stacks.
+
+
+
+
+
+
 #include <pthread.h>
 #include <stdlib.h>
 

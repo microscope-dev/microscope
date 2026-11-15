@@ -1,6 +1,3 @@
-//! Debug Adapter Protocol scenarios: the real `microscope dap` driven over
-//! stdio the way editors drive it.
-
 #[path = "../support/dap.rs"]
 mod dap;
 #[path = "../support/mod.rs"]

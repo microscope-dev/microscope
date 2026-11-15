@@ -1,5 +1,3 @@
-// Shared profile state. View changes update the URL so the view can be linked.
-
 import { createContext, useContext, useMemo, useRef } from "react";
 
 import { type Requested, useRequest } from "../../data";
@@ -19,13 +17,11 @@ export interface ProfileFocus {
   profile: string;
   summary: ProfileSummary;
   look: ProfileLook;
-  /** The query the look asks. */
+
   query: ProfileQuery;
-  /** What the query's weights are: waits are nanoseconds. */
+
   unit: string;
-  /** Changes the look, replacing the address unless `push` is set. A look
-   * of another view shows that view's pane, which takes how the look draws
-   * only when `carry` is set. */
+
   setLook(change: (look: ProfileLook) => ProfileLook, push?: boolean, carry?: boolean): void;
 }
 
@@ -39,8 +35,6 @@ export function useProfile(): ProfileFocus {
   return focus;
 }
 
-/** Retries on reconnection, which cancels in-flight requests.
- * Keeps the last result visible while disconnected or awaiting a new result. */
 export function useAnswer<M extends Method>(
   method: M,
   params: (ParamsOf<M> extends undefined ? undefined : ParamsOf<M>) | null,
@@ -58,12 +52,10 @@ export function useAnswer<M extends Method>(
     : answer;
 }
 
-/** Whether the connection is down, so what shows may be out of date. */
 export function useDisconnected(): boolean {
   return useModel((model) => model.link === "reconnecting");
 }
 
-/** Reads a CSS color token where the page is drawn. */
 export function token(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
@@ -74,8 +66,6 @@ export interface Fetched {
   current: boolean;
 }
 
-/** A query's call tree, decoded from its answer, as the flame graph,
- * the call tree, and a function's callers and callees each show it. */
 export function useTree(query: ProfileQuery): Fetched {
   const answer = useAnswer("profileTree", query);
   const tree = useMemo(

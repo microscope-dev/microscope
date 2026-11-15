@@ -1,4 +1,4 @@
-"""Agent contract tests, run under every supported injection interpreter."""
+
 import sys
 import threading
 
@@ -8,7 +8,7 @@ source = open(source).read()
 
 
 def load(generation, probes):
-    # Each PEP 768 script runs with fresh globals; only sys.modules persists.
+
     namespace = dict(__microscope_library=library,
                      __microscope_generation=generation,
                      __microscope_probes=probes)
@@ -17,8 +17,8 @@ def load(generation, probes):
 
 
 if sys.version_info < (3, 13):
-    # 3.12 cannot say which thread is the main one, which only the launch
-    # bootstrap, running on it, can record.
+
+
     try:
         load(1, ())
     except RuntimeError as error:
@@ -30,8 +30,8 @@ if sys.version_info < (3, 13):
     sys.modules["_microscope_bootstrap"].main = threading.get_ident()
 
 if "t" in sys.abiflags and sys.version_info < (3, 14):
-    # 3.13t stops listing code to its collector once a thread starts, so
-    # the agent could not find code already running.
+
+
     try:
         load(1, ())
     except RuntimeError as error:
@@ -58,9 +58,9 @@ if "--failed-bootstrap" in sys.argv:
 
 
 def bootstrap_race():
-    # Pause the first source execution before any module body runs. A second
-    # fresh script must find the same published, guarded module, not create
-    # another independent monitoring installation.
+
+
+
     entered = threading.Event()
     second = threading.Event()
     release = threading.Event()
@@ -123,7 +123,7 @@ agent = load(1, ())
 assert gil_enabled() == gil, "loading the agent changed the GIL mode"
 assert agent.tool is None
 initial = [sys.monitoring.get_tool(i) for i in range(6)]
-# The actual native hook must be callable without a debugger.
+
 agent.hook(0, 0, 0)
 records = []
 native_hook = agent.hook
@@ -157,13 +157,13 @@ assert records.pop() == (0, 2, agent.tool)
 target()
 assert records == [(1, 42, 0)], records
 records.clear()
-# Identical and stale scripts cannot overwrite the desired state.
+
 load(2, ())
 load(1, ())
 target()
 assert records == [(1, 42, 0)], records
 records.clear()
-# A new generation replaces the local event mask on already seen code.
+
 probe2 = ("PY_START", 1, 43, __file__, 0, "target")
 load(3, (probe2,))
 records.clear()
@@ -173,7 +173,7 @@ load(4, ())
 assert agent.tool is None
 assert [sys.monitoring.get_tool(i) for i in range(6)] == initial
 
-# A competing debugger retains its callback and events.
+
 sys.monitoring.use_tool_id(0, "other debugger")
 other = []
 callback = lambda *args: other.append(args)
@@ -191,7 +191,7 @@ assert sys.monitoring.register_callback(0, sys.monitoring.events.PY_START, callb
 assert other
 sys.monitoring.free_tool_id(0)
 
-# All IDs occupied: an explicit failed handshake, no stolen ID.
+
 for i in range(6):
     sys.monitoring.use_tool_id(i, str(i))
 records.clear()
@@ -204,8 +204,8 @@ for i in range(6):
 load(8, (probe,))
 assert agent.tool is not None
 
-# A callback failure disarms monitoring and reports it, never changing the
-# target's return value or letting an exception escape into user code.
+
+
 records.clear()
 real_dispatch = agent.dispatch
 agent.dispatch = lambda *args: 1 / 0
@@ -215,7 +215,7 @@ assert agent.tool is None
 agent.dispatch = real_dispatch
 load(9, ())
 
-# Validate before mutation: a malformed request keeps the old generation.
+
 load(10, (probe,))
 for bad in (("LINE", 1, 0, "", 0, ""), ("RAISE", 1, 1, "", 1, ""),
             ("BOGUS", 1, 1, "", 0, "")):
@@ -231,8 +231,8 @@ target()
 assert records == [(1, 42, 0)], records
 load(11, ())
 
-# All callback signatures, including non-disableable events and generators
-# resumed, thrown into, and unwound. Other code must keep running normally.
+
+
 def event_target(fail=False):
     yield 1
     if fail:
@@ -261,8 +261,8 @@ except LookupError:
 assert {number for kind, number, arg in records} == set(range(100, 108)), records
 load(13, ())
 
-# Force an old callback to stay in its hook while another thread applies
-# a new generation. The hook must hold no lock required by configuration.
+
+
 entered = threading.Event()
 release = threading.Event()
 
@@ -300,8 +300,8 @@ assert records == [(1, 43, 0)], records
 agent.hook = record
 load(16, ())
 
-# Force a weakref callback under the real bootstrap's reentrant lock.
-# The only strong references form a cycle, so collection triggers expiry.
+
+
 import gc
 import weakref
 load(17, (probe,))
@@ -326,8 +326,8 @@ finally:
         gc.enable()
 load(18, ())
 
-# A generated whole-state script needs no prepopulated namespace, including
-# on repeated execution. Its string literals are escaped by the Rust builder.
+
+
 standalone = open(sys.argv[3]).read()
 exec(compile(standalone, "<whole-state>", "exec"), {})
 exec(compile(standalone, "<whole-state>", "exec"), {})

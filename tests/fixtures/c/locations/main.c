@@ -1,12 +1,12 @@
-// Values optimized code describes with composite locations, entry values,
-// parameter references, and implicit pointers. Each stage keeps its values
-// across its call to the next, so a stop in `locations_stop` shows every
-// stage's at once. `locations abort` dumps that stack instead,
-// `locations tail` stops in functions entered by tail calls, `locations
-// library` in a library function, `locations interposed` in one entered
-// by tail calls through the program, `locations pointer` past a call
-// through a pointer, and three arguments where a value is known only to
-// an unknown caller.
+
+
+
+
+
+
+
+
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,7 +33,7 @@ struct ref {
 
 volatile long locations_sink;
 static volatile int locations_aborts;
-// Read at run time, so no call passes a constant a clone could fold away.
+
 static volatile int locations_base = 100;
 
 __attribute__((noinline)) static void observe(long value) {
@@ -57,7 +57,7 @@ __attribute__((noinline)) static int implicit_member(int seed) {
 }
 
 __attribute__((noinline)) static int removed_parameter(int used, int unused, int more) {
-    // Unused, so GCC passes a clone only `used` and `more`.
+
     (void)unused;
     observe(used);
     int result = implicit_member(used + more);
@@ -106,14 +106,14 @@ __attribute__((noinline)) static long split_record(struct pair pair) {
     return result + pair.first + pair.second;
 }
 
-// Returns what its caller cannot predict, so its own call stays a call.
+
 __attribute__((noinline)) static int tail_target(int value) {
     observe(value);
     locations_stop();
     return locations_base;
 }
 
-// Calls `tail_target` with a jump, so the frame it leaves is its caller's.
+
 __attribute__((noinline)) static int relay(int value) {
     observe(value);
     return tail_target(value + 1);
@@ -121,8 +121,8 @@ __attribute__((noinline)) static int relay(int value) {
 
 static int pong(int count);
 
-// Entered again by tail calls through `pong`, so its caller's argument is
-// not the one it holds.
+
+
 __attribute__((noinline)) static int ping(int count) {
     observe(count);
     if (count <= 0) {
@@ -137,23 +137,23 @@ __attribute__((noinline)) static int pong(int count) {
     return ping(count - 1);
 }
 
-// Keeps nothing of what it was given.
+
 __attribute__((noinline)) static int forwarded(int value) {
     observe(value);
     locations_stop();
     return locations_base + 1;
 }
 
-// Passes on its own argument as it was given it.
+
 __attribute__((noinline)) static int forwarding(int value) {
     return forwarded(value) + 1;
 }
 
-// Called through, so no call site says which function it reaches.
+
 static int (*volatile locations_forwarding)(int) = forwarding;
 
-// Takes the place of the library's own, so the library's tail calls from
-// `locations_interposing` pass through here.
+
+
 __attribute__((noinline)) int locations_interposed(int value, void (*stop)(void)) {
     return locations_interposed_target(value + 100, stop);
 }
@@ -166,7 +166,7 @@ int main(int argc, char **argv) {
         return relay(argc + 40) + ping(argc + 2) == 0;
     }
     if (argc > 1 && strcmp(argv[1], "pointer") == 0) {
-        // Kept across both calls, so the caller can say where each went.
+
         int (*forward)(int) = locations_forwarding;
         return forward(argc) + forward(argc + 1) == 0;
     }

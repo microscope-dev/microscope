@@ -1,8 +1,3 @@
-//! A goroutine's local watched while the runtime moves its stack. The
-//! watch follows the local to each new stack, sees every store to it from
-//! its own goroutine and none from its siblings', never stops in the
-//! runtime's copy, and ends when the function returns.
-
 use std::collections::BTreeSet;
 use std::process::Stdio;
 
@@ -16,9 +11,6 @@ use crate::support::Scenario;
 
 const BUILDS: [&str; 2] = ["watched-go-o0", "watched-go-o2"];
 
-/// A program stopped where a goroutine's `watched` first calls `bump`,
-/// with the goroutine's `counter` watched, and a breakpoint after every
-/// goroutine has returned.
 async fn watching(fixture: &str, access: WatchAccess) -> (Scenario, Watchpoint, i128, u64) {
     let mut scenario = crate::invariants::checked(fixture);
     let bump = scenario.add_breakpoint("main.bump").await;
@@ -56,7 +48,6 @@ async fn watching(fixture: &str, access: WatchAccess) -> (Scenario, Watchpoint, 
     (scenario, watchpoint, task, before)
 }
 
-/// Selects the innermost frame's caller.
 async fn select_caller(scenario: &Scenario) {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
@@ -86,8 +77,6 @@ async fn a_watched_local_follows_its_stack_until_its_function_returns() {
 
                         assert_eq!(hit.watchpoint, watchpoint.id, "{context}");
 
-                        // Only the goroutine's own store, never the runtime
-                        // copying its stack.
                         assert_eq!(integer(&scenario, "$task").await, Some(task), "{context}");
                         let trace = scenario
                             .operation("backtrace", scenario.handle().backtrace())
@@ -97,8 +86,6 @@ async fn a_watched_local_follows_its_stack_until_its_function_returns() {
                             .as_ref()
                             .map(|function| function.name.to_string());
 
-                        // The store in bump, or, read too, watched returning
-                        // the local.
                         let functions: &[&str] = match access {
                             WatchAccess::ReadWrite => &["main.bump", "main.watched"],
                             _ => &["main.bump"],
@@ -116,7 +103,6 @@ async fn a_watched_local_follows_its_stack_until_its_function_returns() {
                         word.copy_from_slice(bytes);
                         values.push(u64::from_le_bytes(word));
 
-                        // The watch is where the local is now.
                         if function.as_deref() == Some("main.bump") {
                             select_caller(&scenario).await;
                         }
@@ -144,7 +130,6 @@ async fn a_watched_local_follows_its_stack_until_its_function_returns() {
                             .unwrap_or_else(|| panic!("{context}: the watch outlived its frame"));
                     }
 
-                    // Go preempts its threads with SIGURG.
                     StopReason::Exception(exception) if exception.code == 23 => {}
                     other => panic!("{context}: {other:?}"),
                 }
@@ -156,7 +141,6 @@ async fn a_watched_local_follows_its_stack_until_its_function_returns() {
                 "{context}"
             );
 
-            // Each round adds its number; reading the local stops too.
             if access == WatchAccess::Change {
                 assert_eq!(values, [1, 3, 6, 10], "{context}");
             } else {
@@ -172,8 +156,6 @@ async fn a_watched_local_follows_its_stack_until_its_function_returns() {
     }
 }
 
-/// A disabled watch holds no debug registers, which the controller's
-/// invariant check enforces after every message, as its stack moves.
 #[tokio::test]
 async fn a_disabled_watch_stays_disarmed_while_its_stack_moves() {
     for fixture in BUILDS {
@@ -191,10 +173,8 @@ async fn a_disabled_watch_stays_disarmed_while_its_stack_moves() {
         loop {
             match scenario.resume_to_stop().await {
                 StopReason::Breakpoint { .. } => break,
-                // The watch's function returning ends it.
                 StopReason::WatchpointInvalidated { .. } => {}
 
-                // Go preempts its threads with SIGURG.
                 StopReason::Exception(exception) if exception.code == 23 => {}
                 other => panic!("{fixture}: a disabled watch stopped the program: {other:?}"),
             }

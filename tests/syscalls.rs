@@ -1,6 +1,3 @@
-//! A recording's system calls: what `record` keeps and `report --syscalls`
-//! prints, with decoded arguments held to strace's own.
-
 mod support;
 
 use std::collections::BTreeMap;
@@ -13,7 +10,6 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use support::{ExternalProcess, Scenario, ScratchDir};
 
-/// How long a test waits for a line it expects.
 const DEADLINE: Duration = Duration::from_secs(30);
 
 fn fixture() -> PathBuf {
@@ -30,8 +26,6 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// Runs `microscope` with `arguments` in `directory`, which must succeed,
-/// and returns its standard output and error.
 fn succeeds(directory: &Path, arguments: &[&str]) -> (String, String) {
     let output = microscope()
         .args(arguments)
@@ -43,8 +37,6 @@ fn succeeds(directory: &Path, arguments: &[&str]) -> (String, String) {
     (stdout, stderr)
 }
 
-/// Records `program` with the ptrace engine into `trace.usprof` in
-/// `directory`, with `arguments`: its exit code and what it said.
 fn record(
     directory: &Path,
     arguments: &[&str],
@@ -71,15 +63,12 @@ fn read(directory: &Path) -> microscope::profiler::Profile {
         .profile
 }
 
-/// A log line without its time: the thread and the call.
 fn untimed(line: &str) -> Option<&str> {
     let (time, rest) = line.trim_start().split_once(' ')?;
     time.parse::<f64>().ok()?;
     Some(rest.trim_start())
 }
 
-/// `report --syscalls` of `trace.usprof` in `directory` with `arguments`,
-/// each line without its time or duration.
 fn log(directory: &Path, arguments: &[&str]) -> String {
     let duration = Regex::new(r" <[\d.]+ (ns|µs|ms|s)>$").expect("regex");
     let (log, _) = succeeds(
@@ -93,7 +82,6 @@ fn log(directory: &Path, arguments: &[&str]) -> String {
         .join("\n")
 }
 
-/// `text` without the paths shown beside descriptors.
 fn unpathed(text: &str) -> String {
     Regex::new(r"\b(\d+|AT_FDCWD)<(?:[^<>]|<[^<>]*>)*>")
         .expect("regex")
@@ -101,14 +89,10 @@ fn unpathed(text: &str) -> String {
         .into_owned()
 }
 
-/// A log line without its thread.
 fn unthreaded(line: &str) -> &str {
     line.split_once(' ').map_or(line, |(_, rest)| rest)
 }
 
-/// What differs between two runs of one program: addresses, ids, the
-/// size of the environment, and random bytes, and the padding a pid or
-/// address of another width moves: after the pid, and before the result.
 fn normalized(trace: &str) -> String {
     let addresses = Regex::new(r"0x[0-9a-f]+").expect("regex");
     let ids = Regex::new(r"\b\d{4,}\b").expect("regex");
@@ -141,9 +125,6 @@ fn normalized(trace: &str) -> String {
         .join("\n")
 }
 
-/// strace pads a call to its result's column from the call's real width,
-/// so ids and addresses of another width move the result; anything else
-/// that moves it is a difference.
 #[test]
 fn traces_that_differ_only_in_an_ids_width_normalize_alike() {
     assert_eq!(
@@ -205,7 +186,6 @@ fn low_pids_normalize_only_in_pid_contexts() {
     }
 }
 
-/// Fails at the first line where the traces differ, showing both.
 fn assert_same(ours: &str, theirs: &str, context: &str) {
     let (ours, theirs) = (normalized(ours), normalized(theirs));
     let (ours, theirs): (Vec<&str>, Vec<&str>) = (ours.lines().collect(), theirs.lines().collect());
@@ -223,9 +203,6 @@ fn assert_same(ours: &str, theirs: &str, context: &str) {
     );
 }
 
-/// The fixture's calls in `mode` as strace decodes them, and as a ptrace
-/// recording's report does, with the paths it adds to descriptors left
-/// out: strace runs as it does by default, with only `filter` given.
 fn decoded(filter: &str, mode: &str) -> (String, String) {
     let directory = ScratchDir::new("syscalls-strace");
     let theirs = directory.path().join("strace.out");
@@ -245,9 +222,6 @@ fn decoded(filter: &str, mode: &str) -> (String, String) {
     (std::fs::read_to_string(&theirs).expect("read strace"), ours)
 }
 
-/// Every call of a program, from the loader on, decodes its arguments
-/// and result as strace does: paths, flags, structures, buffers, and
-/// errors.
 #[test]
 fn files_and_buffers_decode_as_strace_decodes_them() {
     for (filter, mode) in [
@@ -259,8 +233,6 @@ fn files_and_buffers_decode_as_strace_decodes_them() {
     }
 }
 
-/// Signals, with their senders, and the 32-bit and x32 calls decode as
-/// strace decodes them.
 #[test]
 fn signals_and_compat_calls_decode_as_strace_decodes_them() {
     for (filter, mode) in [
@@ -272,9 +244,6 @@ fn signals_and_compat_calls_decode_as_strace_decodes_them() {
     }
 }
 
-/// Every class names the calls strace's does. The sweep makes every
-/// 64-bit call with invalid arguments, each in a child, under strace
-/// tracing one class; calls that ignore their arguments are left out.
 #[test]
 fn classes_name_the_calls_strace_names() {
     use microscope::syscalls::filter::Filter;
@@ -321,8 +290,6 @@ fn classes_name_the_calls_strace_names() {
 
         let traced = std::fs::read_to_string(&out).expect("read strace");
 
-        // strace calls numbers it has no name for `syscall_0x...`, and
-        // traces them under every class.
         let theirs: BTreeSet<&str> = traced
             .lines()
             .filter_map(|line| Some(named.captures(line)?.get(1)?.as_str()))
@@ -340,7 +307,6 @@ fn classes_name_the_calls_strace_names() {
             .map(|&(_, name)| name)
             .collect();
 
-        // The sweep itself forks and waits.
         let theirs: BTreeSet<&str> = theirs
             .into_iter()
             .filter(|name| {
@@ -360,9 +326,6 @@ fn classes_name_the_calls_strace_names() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// A recording follows the program's children and threads: the child's
-/// write and exit are in the log under its own id, which its parent's
-/// wait returned.
 #[test]
 fn children_and_threads_are_followed() {
     let directory = ScratchDir::new("syscalls-family");
@@ -397,8 +360,6 @@ fn children_and_threads_are_followed() {
     assert!(lines.ends_with("+++ exited with 0 +++"), "{lines}");
 }
 
-/// The summary counts each call and its errors, the fixture's failed open
-/// of "missing" among them, and totals every call.
 #[test]
 fn the_summary_counts_calls_and_errors() {
     let directory = ScratchDir::new("syscalls-summary");
@@ -419,8 +380,6 @@ fn the_summary_counts_calls_and_errors() {
             .unwrap_or_else(|| panic!("no {name} row\n{table}"))
     };
 
-    // % time, seconds, usecs/call, calls, errors when there are any, then
-    // the name.
     let openat = row("openat");
     assert_eq!(openat.len(), 6, "{table}");
     let errors: u64 = openat[4].parse().expect("an error count");
@@ -437,10 +396,6 @@ fn the_summary_counts_calls_and_errors() {
     assert_eq!(calls, read(directory.path()).syscall_count(), "{table}");
 }
 
-/// A Rust program's call is placed in its own function, past the standard
-/// library's frames that every call of a kind passes through: by std's
-/// lines in a debug build, and by std's names in a release build, which
-/// has no lines.
 #[test]
 fn a_rust_programs_call_is_placed_past_the_standard_library() {
     for (fixture, site) in [
@@ -482,8 +437,6 @@ fn a_rust_programs_call_is_placed_past_the_standard_library() {
     }
 }
 
-/// A recording's filter keeps only the calls it selects, each with its
-/// stack, and the process's end; the report counts and lists those.
 #[test]
 fn a_recording_keeps_the_failed_calls_its_filter_selects() {
     let directory = ScratchDir::new("syscalls-capture");
@@ -508,7 +461,6 @@ fn a_recording_keeps_the_failed_calls_its_filter_selects() {
         })
         .collect();
 
-    // The loader's failed opens, and the fixture's open of "missing".
     assert!(calls.len() > 1, "{calls:?}");
     let mut in_main = 0;
     for (call, stack) in &calls {
@@ -534,12 +486,8 @@ fn a_recording_keeps_the_failed_calls_its_filter_selects() {
     );
 }
 
-/// A site in the summary's table of call sites: its name, seconds,
-/// calls, and errors.
 type SiteRow = (String, f64, u64, u64);
 
-/// The rows of the summary's table of call sites, and the calls of its
-/// total.
 fn site_rows(report: &str) -> (Vec<SiteRow>, u64) {
     let number = |cell: &str| {
         let cell = cell.trim();
@@ -551,7 +499,6 @@ fn site_rows(report: &str) -> (Vec<SiteRow>, u64) {
         }
     };
 
-    // After the heading, the columns' names, and a rule.
     let mut lines = report
         .lines()
         .skip_while(|line| *line != "By call site:")
@@ -573,9 +520,6 @@ fn site_rows(report: &str) -> (Vec<SiteRow>, u64) {
     (rows, number(&total[19..28]))
 }
 
-/// The summary ranks a recording's call sites by their time, as the
-/// browser's table of calls by site does, each with its calls and errors,
-/// and shows `--limit` of them, counting the rest in the total.
 #[test]
 fn the_summary_ranks_call_sites_by_time() {
     let directory = ScratchDir::new("syscalls-sites");
@@ -617,7 +561,6 @@ fn the_summary_ranks_call_sites_by_time() {
             .map_or_else(|| panic!("no row {name}\n{all}"), |row| (row.2, row.3))
     };
 
-    // The open of "present", the failed open of "missing", and each close.
     assert_eq!(site(19), (1, 0), "{all}");
     assert_eq!(site(24), (1, 1), "{all}");
     for line in [23, 37, 38, 39, 40] {
@@ -634,8 +577,6 @@ fn the_summary_ranks_call_sites_by_time() {
     );
 }
 
-/// A program without lines has its calls grouped by the function that
-/// called the C library.
 #[test]
 fn the_summary_groups_calls_without_lines_by_their_function() {
     let directory = ScratchDir::new("syscalls-sites-nolines");
@@ -657,13 +598,9 @@ fn the_summary_groups_calls_without_lines_by_their_function() {
         .map(|row| (row.2, row.3))
         .collect();
 
-    // Its three opens, one failed.
     assert_eq!(files, [(3, 1)], "{all}");
 }
 
-/// A thread other than the leader that executes a program takes the
-/// leader's id, and the leader's blocked call ends unfinished: it is
-/// recorded, not lost.
 #[test]
 fn a_leaders_blocked_call_ends_when_another_thread_executes() {
     let directory = ScratchDir::new("syscalls-thread-exec");
@@ -699,8 +636,6 @@ fn a_leaders_blocked_call_ends_when_another_thread_executes() {
     );
 }
 
-/// A microscope run killed and reaped when dropped, whose standard error the
-/// test reads line by line.
 struct Running {
     child: Child,
     lines: mpsc::Receiver<String>,
@@ -733,7 +668,6 @@ impl Running {
         }
     }
 
-    /// Waits for a line that `wanted` accepts, failing at the deadline.
     fn line(&mut self, wanted: impl Fn(&str) -> bool) -> String {
         let end = Instant::now() + DEADLINE;
         loop {
@@ -752,7 +686,6 @@ impl Running {
         }
     }
 
-    /// Waits for microscope to exit, failing at the deadline.
     fn finish(mut self) -> (Option<i32>, Vec<String>) {
         let end = Instant::now() + DEADLINE;
         loop {
@@ -768,12 +701,10 @@ impl Running {
                 self.seen.join("\n")
             );
 
-            // Polls for an exit the test has caused and can only observe so.
             std::thread::sleep(Duration::from_millis(10));
         }
     }
 
-    /// Interrupts microscope, as Ctrl-C does.
     fn interrupt(&self) {
         nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(i32::try_from(self.child.id()).expect("pid")),
@@ -790,8 +721,6 @@ impl Drop for Running {
     }
 }
 
-/// A ptrace recording attached to a running process detaches when it
-/// ends, and the process runs on, untraced, to its own end.
 #[test]
 fn a_ptrace_recording_detaches_and_leaves_the_process_running() {
     let directory = ScratchDir::new("syscalls-ptrace-attach");
@@ -828,10 +757,6 @@ fn a_ptrace_recording_detaches_and_leaves_the_process_running() {
     assert_eq!(status.code(), Some(23));
 }
 
-/// `record` traces calls with ptrace without privileges, beside its
-/// samples and on their clock: each round's calls are traced, each falls
-/// inside the recording's span, and the report warns that ptrace stretched
-/// them. The load spins between rounds, so it is sampled too.
 #[test]
 fn a_ptrace_recording_holds_samples_and_calls_on_one_clock() {
     let directory = ScratchDir::new("syscalls-record-ptrace");
@@ -860,7 +785,6 @@ fn a_ptrace_recording_holds_samples_and_calls_on_one_clock() {
     assert_eq!(profile.setting("syscall engine"), Some("ptrace"));
     assert!(profile.samples() > 50, "{} samples", profile.samples());
     let counts = profile.syscalls().stats().per_call();
-    // The rounds' calls, and the loader's few.
     for name in ["read", "close"] {
         let calls = counts
             .iter()
@@ -898,7 +822,6 @@ fn a_ptrace_recording_holds_samples_and_calls_on_one_clock() {
     );
 }
 
-/// The names of the calls `profile` kept that `wanted` selects.
 fn kept(
     profile: &microscope::profiler::Profile,
     wanted: impl Fn(&microscope::syscalls::SyscallEvent) -> bool,
@@ -914,9 +837,6 @@ fn kept(
         .collect()
 }
 
-/// A window saved while the program runs holds the calls the program made
-/// before it, from its exec on, and the recording's last save holds them
-/// still.
 #[test]
 fn a_saved_window_leaves_its_calls_to_the_next() {
     let ready = |call: &microscope::syscalls::SyscallEvent| {
@@ -949,11 +869,6 @@ fn a_saved_window_leaves_its_calls_to_the_next() {
     assert_eq!(kept(&profile, exec).len(), 1, "{stderr}");
 }
 
-/// `syscall-exceptions` makes 3 getppid calls, 2 closes of -1 that fail
-/// with EBADF from `failed`, and one 30 ms nanosleep from `slow`.
-/// `record --print` streams each call as `report --syscalls` prints it,
-/// `record` names the failures and the slowest site when it ends, and the
-/// report's filter, `--focus`, and `--summary` pick from the same calls.
 #[test]
 fn a_recordings_calls_print_live_and_in_its_report_alike() {
     let directory = ScratchDir::new("syscalls-report-log");
@@ -1008,7 +923,6 @@ fn a_recordings_calls_print_live_and_in_its_report_alike() {
             "trace=close status=failed",
         ],
     );
-    // The exit line stays, as it does in every log.
     let failed: Vec<&str> = failed.lines().filter_map(untimed).collect();
     assert_eq!(failed.len(), 3, "{failed:?}");
     assert_eq!(
@@ -1036,7 +950,6 @@ fn a_recordings_calls_print_live_and_in_its_report_alike() {
     );
 }
 
-/// What `--print` and `report --syscalls` refuse, and why.
 #[test]
 fn printing_calls_needs_calls_to_print() {
     let directory = ScratchDir::new("syscalls-report-refusals");
@@ -1084,10 +997,6 @@ fn printing_calls_needs_calls_to_print() {
     }
 }
 
-/// The BPF engine, held to the ptrace engine's output for the same
-/// program. It needs `CAP_BPF` and `CAP_PERFMON`, so these run only
-/// through `just test-bpf`, which starts microscope with the `microscope-bpf`
-/// wrapper that `nixosModules.microscope-bpf` installs.
 mod bpf {
     use std::collections::BTreeSet;
     use std::io::{Read as _, Write as _};
@@ -1109,8 +1018,6 @@ mod bpf {
         )
     }
 
-    /// microscope through the launcher, without the environment, which a
-    /// launcher that raises capabilities does not pass on.
     fn privileged() -> Command {
         let mut command = Command::new(launcher());
         command
@@ -1120,8 +1027,6 @@ mod bpf {
         command
     }
 
-    /// Records `program` into `trace.usprof` in `directory` with
-    /// `arguments`, by BPF unless they choose ptrace: the exit code.
     fn recorded(
         directory: &Path,
         arguments: &[&str],
@@ -1153,23 +1058,16 @@ mod bpf {
         output.status.code()
     }
 
-    /// A directory named `name` below `scratch`.
     fn below(scratch: &ScratchDir, name: &str) -> PathBuf {
         let directory = scratch.path().join(name);
         std::fs::create_dir(&directory).expect("make a directory");
         directory
     }
-    /// What the engines may differ in besides what any two runs do: the
-    /// credentials the launcher passes on.
     fn comparable(trace: &str) -> String {
         let ids = Regex::new(r"\b(st_uid|st_gid|si_uid)=\d+").expect("regex");
         normalized(&ids.replace_all(trace, "$1=ID"))
     }
-    /// The fixture's calls in `mode` as each engine recorded them, as
-    /// `report --syscalls FILTER` prints them: the ptrace engine's, then
-    /// the BPF engine's.
     fn engines(filter: &str, mode: &str) -> (String, String) {
-        // One directory, so that the paths beside descriptors match.
         let scratch = ScratchDir::new("syscalls-engines");
         let directory = scratch.path();
         let program = [mode];
@@ -1184,7 +1082,6 @@ mod bpf {
         assert_eq!(ptrace_code, bpf_code, "exit codes differ");
         (ptrace, log(directory, &[filter]))
     }
-    /// Each thread's lines, in order, apart from how threads interleave.
     fn threads(trace: &str) -> BTreeSet<Vec<String>> {
         let mut threads: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         for line in trace.lines() {
@@ -1194,7 +1091,6 @@ mod bpf {
 
         threads.into_values().collect()
     }
-    /// Each engine records a program's calls alike, decoded alike.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn the_engines_trace_a_program_alike() {
@@ -1248,8 +1144,6 @@ mod bpf {
             "ignored signal delivered: {trace}"
         );
     }
-    /// A worker thread's exec takes the leader's id; its call is recorded
-    /// once, with its arguments, whether it succeeds or fails late.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_workers_exec_is_paired_once_with_its_captured_arguments() {
@@ -1316,9 +1210,6 @@ mod bpf {
             }
         }
     }
-    /// Records `group-exits` in `mode`, through each kernel function the
-    /// filter names when `fentry`, else through the tracepoints, and checks
-    /// each thread and process ended once, as the fixture saw it.
     fn group_exits(mode: &str, fentry: bool, workers: u32, rounds: u32) {
         let filter = "trace=exit,exit_group,kill";
         let directory = ScratchDir::new("syscalls-group-exits");
@@ -1442,9 +1333,6 @@ mod bpf {
                 })
                 .collect();
 
-            // A call is lost, and counted, when the kernel cannot take a
-            // task storage lock another BPF program holds on its CPU. Every
-            // call shown is the right one; those missing are counted lost.
             assert!(
                 calls
                     .iter()
@@ -1524,8 +1412,6 @@ mod bpf {
         }
         assert_eq!(actual, expected, "{context}");
     }
-    /// A leader that exits first leaves a zombie while its worker runs on,
-    /// and the recording follows the worker to the process's end.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_zombie_leader_does_not_end_its_running_workers_trace() {
@@ -1573,13 +1459,10 @@ mod bpf {
             );
         }
     }
-    /// A short filter attaches to its calls' kernel functions, which see the
-    /// calls the tracepoints do, and the capture names the hook that ran.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn functions_see_what_tracepoints_see() {
         let scratch = ScratchDir::new("syscalls-hooks");
-        // Calls that name no file, which need no descriptors followed.
         let filter = "trace=rt_sigprocmask,clone,clone3,wait4,exit,exit_group";
         let by = |hook: &str, arguments: &[&str]| {
             let directory = below(&scratch, hook);
@@ -1595,9 +1478,6 @@ mod bpf {
         let tracepoint = by("tp_btf", &[]);
         assert_same(&comparable(&fentry), &comparable(&tracepoint), "by hook");
     }
-    /// A call that never returns is recorded at its entry, and one with no
-    /// kernel function of its own falls back to the tracepoints; either
-    /// hook counts the same calls.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn noreturn_calls_need_only_entry_and_sigreturn_still_returns() {
@@ -1647,12 +1527,6 @@ mod bpf {
             assert_eq!(counts[0], counts[1], "{name}");
         }
     }
-    /// Children and threads, each followed alike. A process that is not
-    /// traced is never sent the SIGCHLD its default ignores, which ptrace
-    /// makes the kernel queue, so the comparison leaves it out. Joining
-    /// the thread waits on a futex, finds it gone with EAGAIN, or finds it
-    /// gone before calling at all, as the thread's exit races the join, so
-    /// that futex is left out too.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn the_engines_follow_children_and_threads_alike() {
@@ -1680,9 +1554,6 @@ mod bpf {
         );
     }
 
-    /// Each thread's calls named in `names`, in order, with their stacks'
-    /// functions and how each stack ends, keyed by the names of the
-    /// thread's calls.
     fn stacks(
         profile: &Profile,
         names: &[&str],
@@ -1717,14 +1588,11 @@ mod bpf {
 
         keyed
     }
-    /// A BPF recording holds the calls a ptrace recording finds, each with
-    /// its stack, beside its samples.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_recording_holds_its_calls_beside_its_samples() {
         let scratch = ScratchDir::new("syscalls-record");
 
-        // Each call by number, and whether it failed: what two runs share.
         let calls = |directory: &Path| {
             let mut calls = BTreeMap::new();
             for event in read(directory).syscalls().events {
@@ -1755,8 +1623,6 @@ mod bpf {
         assert!(lines.contains(" samples, "), "{lines}");
         assert!(lines.contains(" system calls, "), "{lines}");
     }
-    /// Records `syscall-load` on `threads` threads of `rounds` rounds each
-    /// with `arguments`, into `file` in `directory`, and reads it.
     fn record_load(
         directory: &Path,
         file: &str,
@@ -1768,8 +1634,6 @@ mod bpf {
         record_fixture(directory, file, arguments, "syscall-load", &program)
     }
 
-    /// Records `fixture` run with `program` with `arguments`, into `file`
-    /// in `directory`, and reads it.
     fn record_fixture(
         directory: &Path,
         file: &str,
@@ -1795,7 +1659,6 @@ mod bpf {
             .profile
     }
 
-    /// Each kept call's site, and how many calls it made.
     fn sites(profile: &microscope::profiler::Profile) -> BTreeMap<String, u64> {
         let mut sites = BTreeMap::new();
         for event in profile.syscalls().events {
@@ -1809,8 +1672,6 @@ mod bpf {
         sites
     }
 
-    /// The filter keeps what its qualifiers say, all of them, while the
-    /// kernel still follows every descriptor the kept calls name.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_recording_keeps_only_the_calls_its_filter_selects() {
@@ -1836,8 +1697,6 @@ mod bpf {
                 _ => None,
             })
             .collect();
-        // The loader's searches for libraries fail; the program's own
-        // opens of /dev/zero do not.
         assert!(!calls.is_empty());
         assert!(
             calls.iter().all(|call| call.call.name() == Some("openat")
@@ -1846,9 +1705,6 @@ mod bpf {
         );
     }
 
-    /// The production preset counts every call in the kernel and keeps
-    /// none that succeeded quickly: the same counts a recording of every
-    /// call makes of the same program.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_production_recording_counts_every_call_and_keeps_none() {
@@ -1863,8 +1719,6 @@ mod bpf {
         let streamed = record_load(directory.path(), "dev.usprof", &[], 2, 100);
         assert_eq!(counted.setting("syscalls"), Some("counts"));
 
-        // A busy host can make any call slow, such as the program's join of
-        // its workers, and a slow call is kept.
         let quick: Vec<_> = counted
             .syscalls()
             .events
@@ -1888,9 +1742,6 @@ mod bpf {
         assert_eq!(counts, per_call(&streamed));
     }
 
-    /// Counting, the kernel keeps each thread's calls apart: each worker
-    /// made its rounds' reads, and the threads' counts add up to the
-    /// process's.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_counting_recording_counts_each_threads_calls() {
@@ -1935,9 +1786,6 @@ mod bpf {
         assert_eq!(read, Some(reads.values().sum()));
     }
 
-    /// Over its budget, a recording gives up system call detail a rung a
-    /// period, in order, before it gives up samples; once it keeps only
-    /// the calls that failed or were slow, the kernel counts the rest.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn over_budget_a_recording_sheds_calls_before_samples() {
@@ -1966,7 +1814,6 @@ mod bpf {
             assert!(text.starts_with(rung), "{changes:#?}");
         }
 
-        // Past the last rung, only kept calls stream.
         let (shed_at, _) = changes
             .iter()
             .find(|(_, text)| text.starts_with("gave up every system call"))
@@ -1991,8 +1838,6 @@ mod bpf {
             late.first()
         );
 
-        // Shedding never sheds counts, nor does a full ring: each of the
-        // 280k rounds' closes is counted, with the loader's few.
         let counts = profile.syscalls().stats().per_call();
         let closes = counts
             .iter()
@@ -2001,10 +1846,6 @@ mod bpf {
         assert!((280_000..280_020).contains(&closes), "{closes}");
     }
 
-    /// On the load where the old `--budget 1` cost 37% of a CPU, 100k
-    /// calls a second, `--preset prod` settles near 1% once its ladder has
-    /// shed what it must. Debug builds poll at a fixed cost of about 0.6%,
-    /// so this allows 2%.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_production_recording_holds_its_budget_under_a_busy_load() {
@@ -2031,8 +1872,6 @@ mod bpf {
             .spawn()
             .expect("run microscope record");
 
-        // The launcher runs microscope in its own process: its CPU time,
-        // in clock ticks, by the monotonic clock the capture's times use.
         let pid = recording.id();
         let mut used = Vec::new();
         while recording.try_wait().expect("microscope runs").is_none() {
@@ -2060,8 +1899,6 @@ mod bpf {
             .profile;
         let changes = profile.budget_changes();
 
-        // From 2 s after the ladder's last step down to 1 s before the
-        // program ended, which leaves out writing the capture.
         let settled = changes
             .iter()
             .filter(|(_, text)| text.starts_with("gave up"))
@@ -2087,7 +1924,6 @@ mod bpf {
         );
     }
 
-    /// How many calls named `name` the profile counted.
     fn counted(profile: &microscope::profiler::Profile, name: &str) -> u64 {
         profile
             .syscalls()
@@ -2098,8 +1934,6 @@ mod bpf {
             .map_or(0, |(_, stats)| stats.calls)
     }
 
-    /// A recording attached to a running process traces its calls from
-    /// then on, each with its site, beside its samples.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_recording_attached_to_a_process_holds_its_calls() {
@@ -2128,7 +1962,6 @@ mod bpf {
             .spawn()
             .expect("run microscope record");
 
-        // Once the recording says it began, the program's calls are traced.
         let mut said = BufReader::new(recording.stderr.take().expect("stderr")).lines();
         let begun = said
             .by_ref()
@@ -2166,9 +1999,6 @@ mod bpf {
         assert!(sites.keys().any(|site| site.contains("spin")), "{sites:#?}");
     }
 
-    /// A debugging session's `profile start` records its program's calls
-    /// from the moment it returns: every round the program runs after is
-    /// counted.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_debugging_session_profiles_its_programs_calls() {
@@ -2222,8 +2052,6 @@ mod bpf {
         );
     }
 
-    /// Each call a counting recording kept, by name, why it was kept, and
-    /// its site.
     fn kept(profile: &microscope::profiler::Profile) -> BTreeMap<(String, &str, String), u64> {
         use microscope::syscalls::{EventFlags, Outcome, TraceEvent};
 
@@ -2257,9 +2085,6 @@ mod bpf {
         kept
     }
 
-    /// Counting, a recording keeps whole each call that failed or took
-    /// longer than the threshold, with the line that made it, and counts
-    /// every call, the kept ones once.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_counting_recording_keeps_the_calls_that_failed_or_were_slow() {
@@ -2275,7 +2100,6 @@ mod bpf {
         assert_eq!(profile.setting("syscall slow"), Some("10ms"));
 
         let kept = kept(&profile);
-        // Each function is named for why its calls are kept.
         let site = |name: &str, why: &'static str, line: u32| {
             kept.get(&(
                 name.to_owned(),
@@ -2303,9 +2127,6 @@ mod bpf {
         assert_eq!(profile.syscalls_lost().capped, 0);
     }
 
-    /// A burst of failures past the cap keeps at most what every CPU's
-    /// bucket holds, and counts the rest as capped: kept and capped add up
-    /// to every failure.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_counting_recording_caps_the_calls_it_keeps() {
@@ -2329,8 +2150,6 @@ mod bpf {
             .values()
             .map(|stats| stats.errors)
             .sum();
-        // A record the kernel had no room for, or a run of the programs it
-        // skipped on a busy machine, is counted dropped.
         assert!(failed >= 20_000, "{failed}");
         assert!(kept + lost.capped <= failed, "{kept} kept, {lost:?}");
         assert!(
@@ -2341,10 +2160,6 @@ mod bpf {
         assert_eq!(lost.unseen, 0);
     }
 
-    /// Copied and unwound by call-frame information, the BPF engine's
-    /// stacks are the ptrace engine's, frame for frame. Walked by frame
-    /// pointers alone, each is the start of the ptrace engine's, and says
-    /// why it ends where it is shorter: never a frame the other lacks.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn the_engines_unwind_stacks_alike() {
@@ -2389,8 +2204,6 @@ mod bpf {
             }
         }
     }
-    /// The getppid calls of `mode` in `program`, recorded with
-    /// `arguments`: each stack's functions and how it ends.
     fn getppid_stacks(
         program: &Path,
         mode: &str,
@@ -2415,9 +2228,6 @@ mod bpf {
             .collect()
     }
 
-    /// Walked by frame pointers alone, the stacks of a program that keeps
-    /// none end where the chain breaks, and say so; copied, they unwind to
-    /// their thread's first frame.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn frame_pointer_breaks_end_stacks_that_a_copy_unwinds() {
@@ -2483,8 +2293,6 @@ mod bpf {
             "{stacks:?}"
         );
     }
-    /// The kernel counts at `--syscalls counts` what the ptrace engine
-    /// counts from every call it sees.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn the_kernel_counts_calls_as_the_ptrace_engine_does() {
@@ -2516,17 +2324,12 @@ mod bpf {
             assert_eq!(counts(&bpf), theirs, "in {mode}");
         }
     }
-    /// Counted continuously, every segment holds its own span's calls: the
-    /// kernel counts into one half of its statistics while microscope reads
-    /// and clears the other, so the segments together count every call.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn continuous_counts_split_into_segments_that_sum_to_every_call() {
         let directory = ScratchDir::new("syscalls-continuous");
         let segments = directory.path().join("segments");
 
-        // Made here, so that the test can clean up what a launcher running
-        // as another user writes in it.
         std::fs::create_dir(&segments).expect("make the directory");
         let mut recording = Command::new(launcher())
             .env_clear()
@@ -2557,7 +2360,6 @@ mod bpf {
             })
         };
 
-        // Polls for files the recording writes and says nothing of.
         let end = Instant::now() + DEADLINE;
         while written() < 3 {
             assert!(Instant::now() < end, "only {} segments", written());
@@ -2593,9 +2395,6 @@ mod bpf {
         );
     }
 
-    /// Runs `record` with `arguments` on `syscall-exceptions` with
-    /// `program`, keeping a window into `window.usprof`, and returns what it
-    /// said and the window a call saved.
     fn saved_by_a_call(
         directory: &Path,
         arguments: &[&str],
@@ -2616,7 +2415,6 @@ mod bpf {
         let said = text(&recorded.stderr);
         assert!(recorded.status.success(), "{said}");
 
-        // One call saves; the rest come within the window's span after it.
         assert_eq!(said.matches("saved ").count(), 1, "{said}");
         let saved = microscope::profiler::Profile::read(&directory.join("window-1.usprof"))
             .unwrap_or_else(|error| panic!("{error}: {said}"))
@@ -2624,8 +2422,6 @@ mod bpf {
         (said, saved)
     }
 
-    /// A call that fails as `--save-on-errno` names saves the window,
-    /// which holds it, and says why.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_failing_call_saves_the_window_that_holds_it() {
@@ -2644,7 +2440,6 @@ mod bpf {
         assert_eq!(counted(&saved, "getppid"), 100);
     }
 
-    /// A counting recording keeps the slow call that saves its window.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_slow_call_saves_the_window_that_holds_it() {
@@ -2666,8 +2461,6 @@ mod bpf {
         );
     }
 
-    /// A continuous recording cuts its calls with its samples: each
-    /// segment holds the calls of its own span.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_continuous_recording_cuts_its_calls_into_segments() {
@@ -2722,7 +2515,6 @@ mod bpf {
 
             input.flush().expect("sent");
 
-            // Polls for a file the recording writes and says nothing of.
             let (before, end) = (written(), Instant::now() + DEADLINE);
             while written() <= before {
                 assert!(Instant::now() < end, "no segment after {before}");
@@ -2733,7 +2525,6 @@ mod bpf {
         drop(input);
         assert!(recording.wait().expect("wait").success());
 
-        // Each segment's reads of a byte, and what it lost.
         let mut found = Vec::new();
 
         for entry in std::fs::read_dir(&segments)
@@ -2757,8 +2548,6 @@ mod bpf {
             found.push((byte, syscalls.lost.dropped + syscalls.lost.unseen));
         }
 
-        // A read whose return went unseen, as when another tracer attached
-        // to its function while it was blocked, is counted lost.
         let read: usize = found.iter().map(|&(byte, _)| byte).sum();
         let lost: u64 = found.iter().map(|&(_, lost)| lost).sum();
         let holding = found.iter().filter(|&&(byte, _)| byte > 0).count();
@@ -2766,15 +2555,9 @@ mod bpf {
         assert!(holding >= 2 || lost > 0, "{found:?}");
     }
 
-    /// A burst of calls that each copy 8 KiB of their stack fits in the
-    /// ring, however little of it the reader drains meanwhile: every call
-    /// is kept, each with its stack.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_burst_of_copied_stacks_loses_no_calls() {
-        // 690 calls in about a millisecond on one CPU, whose records take
-        // some 5.9 MB: more than twice what a 2 MiB ring holds, and less
-        // than 8 MiB.
         let rounds = 230;
         let directory = ScratchDir::new("syscalls-burst");
         let profile = record_fixture(
@@ -2793,8 +2576,6 @@ mod bpf {
             .filter(|event| matches!(event.event, TraceEvent::Call(_)))
             .map(|event| event.stack)
             .collect();
-        // A call the process exited inside, as exit_group, ends after its
-        // memory, and its stack, are gone.
         let bare: Vec<String> = profile
             .syscalls()
             .events
@@ -2810,7 +2591,6 @@ mod bpf {
             .collect();
         assert!(bare.is_empty(), "calls without stacks: {bare:#?}");
 
-        // The fixture's calls, and not the loader's, are made in one_round.
         let shown = calls
             .iter()
             .flatten()
@@ -2832,8 +2612,6 @@ mod bpf {
             profile.syscalls().lost
         );
     }
-    /// A recording attached to a process never stops it: the process runs
-    /// on, traced, to its own end, which ends the recording.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn an_attached_process_runs_on_traced_to_its_end() {
@@ -2850,7 +2628,6 @@ mod bpf {
         let (_, lines) = running.finish();
         target.reaped();
 
-        // The read began before the recording did.
         let trace = unpathed(&log(directory.path(), &["trace=read,exit_group"]));
         assert!(
             trace.contains(r#"read(0, "x", 1) = 1 /* entry unseen */"#),
@@ -2860,20 +2637,6 @@ mod bpf {
         assert!(trace.ends_with("+++ exited with 23 +++"), "{trace}");
     }
 
-    /// A call whose entry or exit program the kernel skipped, as it does
-    /// when it finds the program already running on the CPU, is shown and
-    /// counted. A skipped entry leaves the call to show at its exit with
-    /// its entry unseen, not dropped as a call that began before the trace;
-    /// on the launched program's first thread and on a new one, each is its
-    /// thread's first traced call. A skipped exit leaves the call to show,
-    /// its return unavailable, once its thread enters another call or
-    /// ends, as the new thread does, and never with another call's return.
-    /// The test build's programs skip the entry or exit of a getpgid whose
-    /// second argument is `SKIP_ENTRY` or `SKIP_EXIT`. By the call's own
-    /// kernel function; by the tracepoints for chosen calls, as
-    /// `rt_sigreturn` has no function of its own, where a call not chosen
-    /// follows the skipped exit; then by the tracepoints for every call,
-    /// counting in the kernel.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_call_whose_entry_or_exit_the_kernel_skipped_is_shown() {
@@ -2964,13 +2727,6 @@ mod bpf {
         }
     }
 
-    /// A call's record is sent whole when another program on the CPU makes
-    /// a record while this one's is half made, as one does when the
-    /// kernel preempts the thread inside its program: the worker's exit
-    /// in another process, say. The test build's programs make a getpid's
-    /// record during the making of a getpgid's whose second argument is
-    /// `INTERLEAVE`. By the call's own kernel function, then by the
-    /// tracepoints.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_record_another_program_makes_meanwhile_leaves_a_call_whole() {
@@ -3010,12 +2766,6 @@ mod bpf {
         }
     }
 
-    /// A waiting call's stack is taken as the call begins. Each read the
-    /// fixture's sleeper makes begins on one CPU and returns on another,
-    /// whose ring its stack is not in, and keeps its own stack. The last
-    /// read, still waiting when the recording ends, is unfinished, and has
-    /// its stack too. By the read's own kernel function, then by the
-    /// tracepoints that see every call.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_waiting_calls_stack_is_taken_as_it_begins() {
@@ -3063,7 +2813,6 @@ mod bpf {
                     .events
                     .iter()
                     .filter_map(|event| match &event.event {
-                        // Not the main thread's read of its release.
                         TraceEvent::Call(call)
                             if call.call.name() == Some(name)
                                 && (name != "read" || call.args[0] != 0) =>
@@ -3091,7 +2840,6 @@ mod bpf {
             );
             assert_eq!(unfinished, 1, "{arguments:?}: {reads:#?}");
 
-            // A stack the ring had no room for is shown as none.
             for (outcome, functions) in &reads {
                 assert!(
                     functions.iter().any(|function| function == "wait_here")
@@ -3100,7 +2848,6 @@ mod bpf {
                 );
             }
 
-            // The main thread's own wait, which every call's trace holds.
             if arguments.contains(&"calls") {
                 let pauses = calls("pause");
                 assert!(
@@ -3113,9 +2860,6 @@ mod bpf {
     }
 }
 
-/// Each thread and child is announced, as what it is, before anything it
-/// did: its first stop can reach the tracer before the event of the call
-/// that made it, and a short life can end before that event is handled.
 #[test]
 fn threads_and_children_are_announced_before_what_they_do() {
     use microscope::syscalls::TraceEvent;
@@ -3170,7 +2914,6 @@ fn threads_and_children_are_announced_before_what_they_do() {
 
     assert!(problems.is_empty(), "{problems:?}");
 }
-/// The first process the trace saw: the one launched.
 fn events_first(events: &[microscope::profiler::RecordedEvent]) -> microscope::syscalls::Pid {
     events
         .iter()

@@ -1,16 +1,16 @@
-/* A C extension that holds Python objects in a native frame's locals while
- * it calls back into Python, so that the frame, below the Python frames the
- * callback runs, shows each PyObject * as the Python value it points to;
- * and the native function a values gallery reaches its checkpoints in,
- * which Python steps into.
- * Built against each interpreter's own headers. */
+
+
+
+
+
+
 
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
-/* inspect(point, numbers, mapping, nothing, callback): calls callback with
- * no arguments while its locals hold the other four and a null object, and
- * returns what the callback returns. */
+
+
+
 static PyObject *inspect(PyObject *module, PyObject *const *args, Py_ssize_t count) {
     (void)module;
     if (count != 5) {
@@ -25,16 +25,16 @@ static PyObject *inspect(PyObject *module, PyObject *const *args, Py_ssize_t cou
     PyObject *missing = NULL;
     PyObject *result = PyObject_CallNoArgs(args[4]);
 
-    /* The locals stay in the frame, where the debugger reads them, until
-     * the callback returns. */
+
+
     __asm__ volatile("" : : "g"(point), "g"(numbers), "g"(mapping), "g"(nothing), "g"(missing)
                      : "memory");
     return result;
 }
 
-/* reached(checkpoint): where a values gallery's checkpoint is reached, once
- * the gallery has said what each of its caller's values is. A breakpoint
- * here, conditional on the checkpoint it is given, inspects the caller. */
+
+
+
 __attribute__((noinline)) static PyObject *reached(PyObject *module, PyObject *checkpoint) {
     (void)module;
     __asm__ volatile("" : : "g"(checkpoint) : "memory");
@@ -54,8 +54,8 @@ static PyModuleDef_Slot slots[] = {
     {0, NULL},
 };
 
-/* The module is microscope_extension unless the build names it otherwise,
- * as a stripped twin is. */
+
+
 #ifndef MODULE
 #define MODULE microscope_extension
 #endif

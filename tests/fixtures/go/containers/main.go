@@ -1,7 +1,7 @@
-// Maps, channels, interfaces, and pointers, which the built-in views and the
-// debugger present. Each `VIEW:` marker says what its expression must show,
-// evaluated in main() where barrier() is called; `(any order)` lets a map's
-// entries come in any order, and `count:` gives only how many there are.
+
+
+
+
 package main
 
 import (
@@ -15,18 +15,18 @@ func barrier(fixture any) {
 	runtime.KeepAlive(fixture)
 }
 
-// Counts is a named map type, which views match as a map all the same.
+
 type Counts map[string]int
 
-// Point is stored in an interface by pointer, being larger than a word.
+
 type Point struct {
 	X, Y int
 }
 
-// Handle is stored in an interface directly, being a pointer.
+
 type Handle *Point
 
-// Pair points to points.
+
 type Pair struct {
 	Left, Right *Point
 }
@@ -40,14 +40,14 @@ func main() {
 	for index := 0; index < 300; index++ {
 		big[index] = index * 10
 	}
-	// Large enough that its directory splits into several tables.
+
 	huge := map[int]int{} // VIEW: huge => count: 5000
 	for index := 0; index < 5000; index++ {
 		huge[index] = index
 	}
 
-	// A buffered channel whose ring has wrapped: it received 1 and 2, and
-	// holds 3, 4, and 5.
+
+
 	queue := make(chan int, 4) // VIEW: queue => len=3 [3, 4, 5]
 	for _, value := range []int{1, 2, 3} {
 		queue <- value
@@ -70,8 +70,8 @@ func main() {
 	var failure error = errors.New("bad")       // VIEW: failure => *errors.errorString *"bad"
 	var direct any = Handle(&Point{X: 3, Y: 4}) // VIEW: direct => main.Handle *{X: 3, Y: 4}
 
-	// A pointer shows what it points to, as Go's debuggers show one, and
-	// expands to its members.
+
+
 	pointer := &Point{X: 5, Y: 6} // VIEW: pointer => *{X: 5, Y: 6}
 	// VIEW: pointer => children: X = 5, Y = 6, [raw]
 	var no_pointer *Point                   // VIEW: no_pointer => nil

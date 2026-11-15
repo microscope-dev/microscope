@@ -1,15 +1,3 @@
-//! Types no query can tell apart become one. Each unit describes the types
-//! it uses, so a program built from many units holds many copies of each:
-//! tokio-server's 60,839 types are 8,313 distinct ones.
-//!
-//! Two types merge only when everything about them is equal, the types
-//! they refer to included, however deep and however cyclic: their
-//! unfoldings are the same tree, so every walk of one is a walk of the
-//! other. The coarsest such partition is found by refinement, starting
-//! from each type's own fields and splitting until the types it refers to
-//! agree. A type that keeps its unit's provenance, or whose layout is
-//! computed at run time, is never merged.
-
 use std::sync::Arc;
 
 use std::collections::HashMap;
@@ -24,12 +12,8 @@ use crate::{
     VariantDiscriminant,
 };
 
-/// How many rounds refinement may take. Each round costs one pass over
-/// every reference, and real programs settle in a few; a module that does
-/// not keeps all its types.
 const MAX_ROUNDS: usize = 64;
 
-/// Where each type went.
 #[derive(Debug)]
 pub(super) struct Remap {
     ids: Vec<TypeId>,
@@ -37,8 +21,6 @@ pub(super) struct Remap {
 }
 
 impl Remap {
-    /// The new identifier of the type `id` named. An identifier past the
-    /// types stays past them.
     pub(super) fn id(&self, id: TypeId) -> TypeId {
         self.ids.get(id.index()).copied().unwrap_or_else(|| {
             let beyond = id.get() - super::row(self.ids.len());
@@ -61,15 +43,10 @@ impl Remap {
 }
 
 impl BuiltTypes {
-    /// Merges the types no query can tell apart, keeping the first of each
-    /// in identifier order and renumbering the rest densely. Returns where
-    /// each type went, or `None` when no two types merged.
     pub(super) fn deduplicate(&mut self) -> Option<Remap> {
         self.deduplicate_with(&foldhash::fast::FixedState::default())
     }
 
-    /// [`Self::deduplicate`], hashing with `hasher`, which only chooses
-    /// candidates: equal hashes never merge types that differ.
     pub(super) fn deduplicate_with<H: std::hash::BuildHasher + Clone + Sync>(
         &mut self,
         hasher: &H,
@@ -77,10 +54,6 @@ impl BuiltTypes {
         let mut classes = self.classes(hasher);
         let pending = std::mem::take(&mut self.pending_arguments);
         if !pending.is_empty() {
-            // Types of one class are alike to every name, so matching names
-            // against the first of each finds what matching them all would.
-            // Resolving can make types equal that were not, so the classes
-            // are found again.
             super::identity::resolve_parsed_arguments(
                 &mut self.entries,
                 self.image,
@@ -128,14 +101,6 @@ impl BuiltTypes {
         Some(remap)
     }
 
-    /// Each type's class, as [`refine`] finds them.
-    ///
-    /// Each type's signature is its own entry with its references zeroed in
-    /// place, which are put back once refinement is done. Copying every
-    /// type with its references zeroed instead cost a clone of every
-    /// record's members, most of the work of finding classes, and held the
-    /// copies beside the types at the load's peak: 450 MB on a large Rust
-    /// program.
     fn classes<H: std::hash::BuildHasher + Clone + Sync>(
         &mut self,
         hasher: &H,
@@ -178,9 +143,6 @@ impl BuiltTypes {
         classes
     }
 
-    /// Zeroes the references of every type that may merge, its own among
-    /// them, and returns which types may, and their references in the order
-    /// a walk of its fields meets them, by where each type's start.
     #[expect(
         clippy::disallowed_methods,
         reason = "which aggregates have run-time layouts is one set in any order"
@@ -193,8 +155,6 @@ impl BuiltTypes {
             .map(|key| key.aggregate)
             .collect::<HashSet<_>>();
 
-        // Only a type's references, usually few, are gathered, and copied
-        // into one list after.
         let (mergeable, edges): (Vec<bool>, Vec<Vec<u32>>) = self
             .entries
             .par_iter_mut()
@@ -215,9 +175,6 @@ impl BuiltTypes {
                     zero(reference)
                 });
 
-                // A type that refers outside the graph keeps its own
-                // identifier, so it never merges, and refers to nothing
-                // refinement must follow.
                 if scratch.iter().any(|reference| {
                     reference.image != info.reference.image || reference.id.index() >= count
                 }) {
@@ -249,8 +206,6 @@ impl BuiltTypes {
         (mergeable, offsets, flat)
     }
 
-    /// Puts back what [`Self::zero_references`] zeroed. Every reference of
-    /// a type that may merge is to its own image.
     fn restore_references(&mut self, mergeable: &[bool], offsets: &[usize], edges: &[u32]) {
         self.entries
             .par_iter_mut()
@@ -280,15 +235,12 @@ impl BuiltTypes {
             });
     }
 
-    /// Keeps the first type of each class, pointing every reference where
-    /// its type went.
     #[expect(
         clippy::disallowed_methods,
         clippy::iter_over_hash_type,
         reason = "each identifier moves on its own, so order does not matter"
     )]
     fn apply(&mut self, remap: &Remap, kept: &[bool]) {
-        // An indexed collect splits alike however the work is stolen.
         let entries = std::mem::take(&mut self.entries)
             .into_par_iter()
             .zip(kept)
@@ -307,7 +259,6 @@ impl BuiltTypes {
         self.entries = Vec::with_capacity(remap.retained);
         self.entries.extend(entries.into_iter().flatten());
 
-        // Identifiers past the types begin at the retained count.
         debug_assert_eq!(
             self.entries.len(),
             remap.retained,
@@ -325,7 +276,6 @@ impl BuiltTypes {
             *id = remap.id(*id);
         }
 
-        // Merged types agree on these, which their signatures include.
         self.go_dict_indices = std::mem::take(&mut self.go_dict_indices)
             .into_iter()
             .map(|(id, index)| (remap.id(id), index))
@@ -337,8 +287,6 @@ impl BuiltTypes {
     }
 }
 
-/// What a type is apart from the types it refers to: its entry, with its
-/// references zeroed.
 #[derive(PartialEq, Eq, Hash)]
 struct Fields<'a> {
     info: &'a TypeInfo,
@@ -347,16 +295,12 @@ struct Fields<'a> {
 }
 
 struct Signatures<'a> {
-    /// Each type's fields, or `None` for one that never merges.
     fields: Vec<Option<Fields<'a>>>,
 
-    /// Where each type's references start in `edges`.
     offsets: &'a [usize],
     edges: &'a [u32],
 }
 
-/// The references of type `index`, as [`BuiltTypes::zero_references`]
-/// lists them.
 #[expect(
     clippy::indexing_slicing,
     reason = "`zero_references` lists a 0 and then where each type's references end, so the \
@@ -366,8 +310,6 @@ fn references<'e>(offsets: &[usize], edges: &'e [u32], index: usize) -> &'e [u32
     &edges[offsets[index]..offsets[index + 1]]
 }
 
-/// Whether a type belongs to its unit alone, as one in an anonymous
-/// namespace does.
 fn local(info: &TypeInfo) -> bool {
     info.identity.as_ref().is_some_and(|identity| {
         identity
@@ -384,10 +326,6 @@ const fn zero(reference: TypeReference) -> TypeReference {
     }
 }
 
-/// The coarsest partition in which types of one class have equal fields
-/// and refer, position by position, to types of one class. Returns each
-/// type's class, numbered by first appearance, or `None` when refinement
-/// does not settle within [`MAX_ROUNDS`].
 fn refine<H: std::hash::BuildHasher + Clone + Sync>(
     signatures: &Signatures<'_>,
     hasher: &H,
@@ -402,13 +340,6 @@ fn refine<H: std::hash::BuildHasher + Clone + Sync>(
     let mut members = Members::new(&classes);
     let referrers = Referrers::new(count, offsets, edges);
 
-    // Each round splits a class by what its members' references were as
-    // the round began, so a class can split only once a type it refers
-    // to has moved. Only those classes are looked at again: a large
-    // program takes dozens of rounds, and after the first few only a few
-    // types move in each. The partition each round reaches, and so the
-    // round refinement settles in, is that of splitting every class in
-    // every round.
     let mut dirty = (0..)
         .zip(&members.ranges)
         .filter(|(_, range)| range.len() > 1)
@@ -417,7 +348,6 @@ fn refine<H: std::hash::BuildHasher + Clone + Sync>(
     let mut flagged = Vec::new();
 
     for round in 1..=MAX_ROUNDS {
-        // An indexed collect splits alike however the work is stolen.
         let splits = dirty
             .par_iter()
             .map_init(Scratch::default, |scratch, class| {
@@ -466,27 +396,18 @@ fn refine<H: std::hash::BuildHasher + Clone + Sync>(
     None
 }
 
-/// What [`split`] reuses from one class to the next.
 #[derive(Default)]
 struct Scratch {
-    /// The classes each member refers to, one member after another.
     keys: Vec<u32>,
 
-    /// Where each member's run of `keys` ends.
     ends: Vec<usize>,
     groups: Vec<u32>,
 
-    /// The first member of each group so far.
     firsts: Vec<usize>,
 }
 
-/// How many groups [`split`] tells apart by comparing a member with the
-/// first of each before it hashes them: most classes split into few.
 const LINEAR_GROUPS: usize = 8;
 
-/// The group of each member of `class` when they are told apart by the
-/// classes of the types they refer to, numbered by first appearance, or
-/// `None` when they cannot be told apart.
 fn split<H: std::hash::BuildHasher + Clone>(
     class: usize,
     members: &Members,
@@ -565,7 +486,6 @@ fn split<H: std::hash::BuildHasher + Clone>(
     (firsts.len() > 1).then(|| (class, groups.clone()))
 }
 
-/// Each class's members, in identifier order, contiguous in one list.
 struct Members {
     order: Vec<u32>,
     ranges: Vec<std::ops::Range<usize>>,
@@ -613,9 +533,6 @@ impl Members {
         &self.order[self.ranges[class].clone()]
     }
 
-    /// Splits `class` into `groups`, its members' groups in order: the
-    /// first group keeps the class, and each other becomes a new one.
-    /// Records the members that moved.
     #[expect(
         clippy::indexing_slicing,
         reason = "`groups` numbers the class's members densely from 0, so `starts` holds each \
@@ -624,7 +541,6 @@ impl Members {
     fn split(&mut self, class: usize, groups: &[u32], classes: &mut [u32], moved: &mut Vec<u32>) {
         let range = self.ranges[class].clone();
 
-        // The members are zipped with their groups below.
         debug_assert_eq!(
             groups.len(),
             range.len(),
@@ -670,7 +586,6 @@ impl Members {
     }
 }
 
-/// The types that refer to each type.
 struct Referrers {
     offsets: Vec<usize>,
     referrers: Vec<u32>,
@@ -717,7 +632,6 @@ impl Referrers {
     }
 }
 
-/// `classes` renumbered in order of each class's first member.
 #[expect(
     clippy::indexing_slicing,
     reason = "classes are numbered densely from 0, so each is below the type count"
@@ -738,10 +652,6 @@ fn numbered_by_first_appearance(classes: &[u32]) -> Vec<u32> {
         .collect()
 }
 
-/// Numbers the types by their fields alone, in order of first appearance;
-/// a type that never merges has a class of its own. Hashes are computed in
-/// parallel and only propose the earlier type a type might equal; the
-/// fields are then compared.
 fn classify<H: std::hash::BuildHasher + Sync>(
     fields: &[Option<Fields<'_>>],
     hasher: &H,
@@ -764,8 +674,6 @@ fn classify<H: std::hash::BuildHasher + Sync>(
         })
         .collect::<Vec<_>>();
 
-    // A type unequal to the first of its hash equals only types that are
-    // unequal to it too, so those are compared among themselves.
     let mut collided = HashMap::with_hasher(foldhash::fast::FixedState::default());
     let mut classes = Vec::<u32>::with_capacity(fields.len());
     let mut next = 0_u32;
@@ -789,9 +697,6 @@ fn classify<H: std::hash::BuildHasher + Sync>(
     classes
 }
 
-/// Replaces every reference of `info` to a type, its own aside, with `map`
-/// of it, met in one fixed order. Shared lists are copied first, but a
-/// type's lists are its own once its declarations are recorded.
 pub(super) fn map_references(
     info: &mut TypeInfo,
     map: &mut impl FnMut(TypeReference) -> TypeReference,
@@ -879,8 +784,6 @@ fn map_optional(
     }
 }
 
-/// Maps each member's reference; an empty list, which types share, stays
-/// itself.
 fn map_members(
     members: &mut Arc<[RecordMember]>,
     map: &mut impl FnMut(TypeReference) -> TypeReference,

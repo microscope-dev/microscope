@@ -1,25 +1,3 @@
-//! The Linux x86-64 backend.
-//!
-//! One [`Controller`] per session owns all debugger state and runs on the
-//! thread that created the tracee, which every ptrace call requires. A waiter
-//! thread reports `waitpid` statuses back to it as messages. This module holds
-//! the shared state and request dispatch; the submodules own one concern each:
-//!
-//! - [`native`]: the ptrace, waitpid, and `/proc` edge, behind traits that
-//!   unit tests fake.
-//! - [`lifecycle`]: launch, attach, thread and fork tracking, exec, shutdown.
-//! - [`classify`]: turning raw wait statuses into classified stops.
-//! - [`run_control`]: resuming threads, repairing breakpoint sites, and
-//!   publishing all-stop snapshots.
-//! - [`internal_stops`]: stopping every thread without publishing a stop,
-//!   to edit breakpoints and watchpoints or repair a site while running.
-//! - [`stepping`]: source and instruction stepping plans.
-//! - [`breakpoints`] and [`watchpoints`]: software traps and debug registers.
-//! - [`frames`], [`inspection`], [`memory`], [`registers`]: read-only views of
-//!   a stopped snapshot.
-//! - [`modules`]: the registry of mapped shared objects.
-//! - [`post_mortem`]: serving the same views from a core dump.
-
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -150,9 +128,6 @@ mod writes;
 
 pub use follow::{Capacity, GroupNotice, Joined, Started};
 
-/// Makes `command`'s child ask its parent to trace it before it execs, and
-/// die with the thread that launched it: a developer tool that steps a
-/// program itself.
 #[cfg(feature = "tools")]
 pub fn trace_on_exec(command: &mut std::process::Command) {
     sys::before_exec(
@@ -183,8 +158,6 @@ pub fn fuzz_debug_register_plan(data: &[u8]) {
     debug_registers::fuzz(data);
 }
 
-/// Each thread's id and thread pointer in process `pid`, which may be
-/// running, from its C library's own lists of its threads.
 pub fn running_thread_pointers(pid: u32) -> std::result::Result<Vec<(u32, u64)>, String> {
     let pid = i32::try_from(pid).map_err(|_| format!("process {pid} has no Linux id"))?;
     Ok(tls::running_thread_pointers(Pid::from_raw(pid))?
@@ -216,11 +189,9 @@ pub fn target_thread_id(process: u32, thread: u32) -> Option<crate::runtime_mode
     proc_status::target_thread_id(process, thread)
 }
 
-/// The debug register slots, which the `u32` capability reports.
 const WATCH_SLOTS: u32 = 4;
 const _: () = assert!(WATCH_SLOTS as usize == debug_registers::SLOT_COUNT);
 
-/// x86-64 debug registers report writes or any access, but never reads alone.
 pub fn watchpoint_capabilities() -> WatchpointCapabilities {
     WatchpointCapabilities {
         slots: WATCH_SLOTS,
@@ -256,7 +227,6 @@ fn debug_thread_id(pid: Pid) -> DebugThreadId {
     DebugThreadId::new(u64::from(pid.as_raw().unsigned_abs()))
 }
 
-/// Converts a client-supplied thread identifier to a Linux TID.
 fn debug_pid(thread: DebugThreadId) -> Result<Pid> {
     i32::try_from(thread.get())
         .ok()
@@ -296,7 +266,6 @@ impl SessionLease {
         })
     }
 
-    /// A lease for sessions that never trace, such as post-mortem core dumps.
     const fn detached() -> Self {
         Self {
             owns_global_lease: false,
@@ -328,27 +297,16 @@ enum BreakpointOwner {
     User(BreakpointId),
     Plan(ExecutionId),
 
-    /// The dynamic loader's report of each change to the loaded libraries.
     Loader,
 
-    /// A language runtime's report of an exception.
     Runtime,
 
-    /// The entry or a return of a language runtime's code that moves a
-    /// watched task's stack.
     StackMove,
 
-    /// The entry or a return of a language runtime's collector, or the
-    /// entry of its replacement of a frame's code, which a watched
-    /// interpreted variable's storage follows.
     InterpretedMove,
 
-    /// The entry of an indirect function's resolver, or the return of a
-    /// call of one, that a breakpoint on the function waits for.
     Resolver,
 
-    /// The entry of Node's `GetTargetIds`, or the return of a call of it,
-    /// where the inspector's address is read and hidden.
     InspectorHook,
 }
 
@@ -379,39 +337,23 @@ struct TraceThread {
     expected: ExpectedStop,
     pending_signal: Option<PendingSignal>,
 
-    /// A signal its runtime tolerates arriving late, held while the thread
-    /// stepped or ran without its siblings, until it continues with them.
     held_signal: Option<PendingSignal>,
     reason: Option<StopReason>,
     trap: AtTrap,
 
-    /// The trap a signal's handler returns to, which the thread hit before
-    /// the signal interrupted its step over it. Its hit was counted, so the
-    /// thread runs alone until it executes the trap again.
     retrap: Option<VirtualAddress>,
     debugger_stop_pending: bool,
 
-    /// The watch-plan generation programmed into this thread's debug
-    /// registers. `None` means the debugger never programmed them.
     armed: Option<u64>,
 
-    /// The watchpoints whose hits this thread stops for since its last
-    /// public stop, with each hit's number.
     watch_hits: BTreeMap<WatchpointId, u64>,
 
-    /// Where the thread stands with respect to a system call.
     call: catchpoints::CallPosition,
 
-    /// Whether the thread's step makes a system call, which stops at its
-    /// entry and exit for the catchpoints.
     stepping_call: bool,
 
-    /// The thread's name as of its start or the last published stop.
     name: Option<Arc<str>>,
 
-    /// The stack pointer the thread began with, where its creator may have
-    /// marked the end of its stack. `None` for a thread whose start the
-    /// debugger did not see, as one it attached to.
     stack_start: Option<u64>,
 }
 
@@ -435,15 +377,11 @@ impl TraceThread {
         }
     }
 
-    /// Whether the execution's other threads are held while this one runs:
-    /// as it steps over a trap, and as it returns to one.
     const fn holds_siblings(&self) -> bool {
         self.trap.repairing().is_some() || self.retrap.is_some()
     }
 }
 
-/// The process-wide watchpoints and the debug-register plan every thread
-/// carries.
 #[derive(Default)]
 struct WatchState {
     plan: DebugRegisterPlan,
@@ -455,15 +393,11 @@ struct WatchRecord {
     watchpoint: Watchpoint,
     frame: Option<FrameScopeEvidence>,
 
-    /// The watched bytes when the debugger last observed them.
     observed: Option<Arc<[u8]>>,
 
-    /// For an interpreted variable, the value it held then, and the code
-    /// its frame runs.
     value: Option<Arc<str>>,
     code: Option<VirtualAddress>,
 
-    /// For a watch on a task's stack, where on the stack it is.
     task: Option<stack_watches::TaskWatch>,
 }
 
@@ -480,11 +414,9 @@ struct SignalMetadata {
     code: i32,
     sender: Option<i32>,
 
-    /// The faulting address of a synchronous fault.
     fault_address: Option<u64>,
 }
 
-// Addresses print in hex, as `VirtualAddress` does.
 impl fmt::Debug for PendingSignal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PendingSignal")
@@ -536,129 +468,67 @@ enum ClassifiedStop {
     },
     DebuggerRequested,
 
-    /// The thread executed a trap whose site was removed before its report
-    /// was handled; it has been rewound to the restored instruction.
     RemovedTrap,
 
-    /// The thread executed a trap carried by code that moved since the
-    /// modules were refreshed; it has been rewound to the trap, which the
-    /// refresh takes out.
     CarriedTrap,
 
-    /// The thread executed a trap instruction of the program's own, at
-    /// this address, which no breakpoint of the debugger's owns.
     ProgramTrap(VirtualAddress),
 
-    /// SIGKILL took the thread out of the reported stop; its exit follows.
     Superseded,
     Unclassifiable(RawStopRecord),
 }
 
 #[derive(Debug, Clone, Default)]
 struct StepStart {
-    /// The loaded module whose image `source`, `code_instance`, and
-    /// `physical_instance` belong to, which may be a shared library's: the
-    /// ids mean something only in their own image. `None` is the main
-    /// executable's.
     module: Option<LoadedModule>,
     source: Option<SourceLocation>,
     code_instance: Option<CodeInstanceId>,
     physical_instance: Option<CodeInstanceId>,
     activation: Option<Activation>,
 
-    /// The stack pointer where the step began. Where no activation is
-    /// known, a frame below it was entered by a call, and code above it was
-    /// returned to.
     stack_pointer: Option<StackPosition>,
 
-    /// For a step over or out, the activation its frame returned to, once
-    /// the frame it began in returned short of where the step ends, and
-    /// the one that returned to in turn. The step then goes on by single
-    /// steps and judges frames by this: a later call can make a new
-    /// activation at the returned one's CFA.
     returned_to: Option<Activation>,
 
-    /// Whether the step returned into code without source and runs on, to
-    /// be ended only by a stop the user sees.
     running_on: bool,
     plan_addresses: BTreeSet<VirtualAddress>,
 
-    /// For an advance, the addresses that end it when its thread reaches
-    /// one. They are plan sites too, but no step logic retires them.
     targets: BTreeSet<VirtualAddress>,
 
-    /// The target an advance's thread stood at without having trapped
-    /// there. It arrives there first, which the user's breakpoints count
-    /// and which does not end the advance.
     standing: Option<VirtualAddress>,
     epilogue_traversal: Option<EpilogueTraversal>,
     return_traversal: Option<ReturnTraversal>,
 
-    /// Where a signal handler returns to the instruction it interrupted,
-    /// or a call the step passes returns.
     resume_guard: Option<ResumeGuard>,
 
-    /// For a step into one call of a line, that call's instruction; the
-    /// step runs the line's other calls to their returns.
     into_call: Option<VirtualAddress>,
 
-    /// For a step over a call instruction, the return address and the stack
-    /// pointer the call returns with.
     call_return: Option<(VirtualAddress, StackPosition)>,
 
-    /// Whether the step may stop in a language runtime's own code: it began
-    /// there, or the session's steps enter the runtime.
     enters_runtime: bool,
 
-    /// Where a step over or out traps a panic its task begins: the entries
-    /// of the runtime's code that starts one.
     panic_guards: BTreeSet<VirtualAddress>,
 
-    /// Whether a step over or out follows the runtime's calls into the
-    /// program, as a step in does, since its task began a panic or its
-    /// frame returned into code that calls deferred functions.
     following: bool,
 
-    /// The return address of code the step leaves, where a plan breakpoint
-    /// waits while the stepping thread runs freely, until the step's thread
-    /// or task reaches one of its plan's breakpoints. Meanwhile the thread
-    /// may run anything, such as another of its runtime's tasks.
     escape: Option<VirtualAddress>,
 
-    /// The loops whose bodies, functions of their own, a step over or out
-    /// treats as its own code.
     loops: Option<loops::StepLoops>,
 
-    /// For a step out of a function's own frame, the function, whose
-    /// returned values its stop shows.
     returning: Option<returns::Returning>,
 
-    /// What that function returned, read the instant its call returned,
-    /// which the step's stop shows though the step goes on past code no
-    /// line describes.
     returned: Option<returns::Returned>,
 
-    /// For a step into a new task, how far it has followed the task's
-    /// start.
     new_task: Option<new_task::NewTask>,
 
-    /// For a step over or out of an async function's body, the future it
-    /// runs for, which the step follows across the polls of its awaits.
     awaiting: Option<awaits::AwaitStep>,
 
-    /// The future the step waited for, once it was dropped and the step
-    /// went on in the code that dropped it.
     dropped: Option<awaits::RunningFuture>,
 
-    /// Where the stepping thread stands before a trap, resumed to run it,
-    /// whose hit judges the step's arrival there.
     judged_by_trap: Option<VirtualAddress>,
 }
 
 impl StepStart {
-    /// Where the step's plan stops threads: its plan's own sites, its panic
-    /// guards, an advance's targets, and the code that starts tasks while a
-    /// step into a new task watches for one.
     fn plan_sites(&self) -> BTreeSet<VirtualAddress> {
         let starters = match &self.new_task {
             Some(new_task::NewTask::Watching(starters)) => starters.keys().copied().collect(),
@@ -675,62 +545,43 @@ impl StepStart {
     }
 }
 
-/// Whether a step kind executes machine instructions rather than source
-/// lines.
 const fn steps_instructions(kind: StepKind) -> bool {
     matches!(kind, StepKind::Instruction | StepKind::OverInstruction)
 }
 
-/// Where a step resumes once its thread returns there with this stack
-/// pointer: the instruction a delivered signal interrupted, where its
-/// handler returns, or the return address of a call a step into another
-/// call runs to its return.
 #[derive(Debug, Clone, Copy)]
 struct ResumeGuard {
     address: VirtualAddress,
     stack: StackPosition,
 
-    /// Whether a call returns there, so the step may end where it does.
     call: bool,
 }
 
 #[derive(Debug, Clone)]
 struct ReturnTraversal {
-    /// A frame's return address, proven by agreeing CFI and ABI stack-slot
-    /// sources.
     return_address: VirtualAddress,
 
-    /// The activation whose return reaches `return_address`. For a tail call
-    /// this is the step's starting activation; for a regular call it is the
-    /// nested callee activation.
     guarded_activation: Activation,
     retire_return_after_repair: bool,
 }
 
 #[derive(Debug, Clone)]
 struct EpilogueTraversal {
-    /// The caller instruction is always a guard destination. It is only a
-    /// source-step destination when it is also present in `completion_addresses`.
     return_address: VirtualAddress,
     completion_addresses: BTreeSet<VirtualAddress>,
     retire_return_after_repair: bool,
 }
 
-/// How a stopped thread resumes.
 #[derive(Debug, Clone, Copy)]
 enum Resume {
     Continue,
     Step,
 }
 
-/// Whom a step belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StepOwner {
-    /// The thread the step runs on: the one it began on, until its task
-    /// runs on another.
     thread: Pid,
 
-    /// The task the step began in, which it follows from thread to thread.
     task: Option<crate::TaskId>,
 }
 
@@ -742,31 +593,20 @@ enum ActiveKind {
         owner: StepOwner,
         kind: StepKind,
 
-        /// The kind the client asked for, which the step's stop reports:
-        /// a step into a new task runs as a step over until a task starts.
         requested: StepKind,
         start: Box<StepStart>,
 
-        /// The stepping thread executed an instruction whose effect on the
-        /// step has not been evaluated yet, because a breakpoint repair or
-        /// an internal stop intervened.
         progress_owed: bool,
     },
 
-    /// A step through code a runtime runs itself, which the runtime arms
-    /// and judges: every thread runs, and the step ends where the runtime
-    /// reports its end on the step's own thread or task.
     RuntimeStep {
         owner: StepOwner,
         kind: StepKind,
         runtime: crate::RuntimeId,
 
-        /// The number the runtime reports the step's end by.
         number: u64,
     },
 
-    /// An assignment a runtime's agent makes on `thread`, the only thread
-    /// that runs, which ends where the agent reports it under `number`.
     RuntimeAssignment {
         thread: Pid,
         runtime: crate::RuntimeId,
@@ -781,12 +621,11 @@ struct ActiveExecution {
     resume_threads: BTreeSet<Pid>,
 }
 
-/// A breakpoint or watchpoint change that needs every thread stopped.
 enum Edit {
     InspectorCleanup,
-    /// Judges the pauses runtimes' inspectors reported.
+
     InspectorPaused,
-    /// Ends the assignment a runtime's inspector made or could not.
+
     InspectorAssigned,
     AddBreakpoint {
         spec: crate::BreakpointSpec,
@@ -828,8 +667,6 @@ enum Edit {
         reply: Reply<crate::ExceptionStops>,
     },
     AddCatchpoint {
-        /// The group's id for it, when it is another member's; otherwise
-        /// it gets a new one.
         id: Option<crate::CatchpointId>,
         calls: Arc<[crate::syscalls::SyscallId]>,
         phase: crate::CatchPhase,
@@ -841,23 +678,13 @@ enum Edit {
         reply: Reply<crate::Catchpoint>,
     },
 
-    /// Bring modules and breakpoints up to date after the loader changed
-    /// the loaded libraries.
     RefreshModules,
 
-    /// Set aside the watches of tasks whose stacks a runtime is moving, and
-    /// place those whose moves finished on their new stacks.
     FollowStacks,
 
-    /// Set aside the watches of interpreted frames whose runtime began
-    /// collecting their objects, place those whose collections finished,
-    /// and end those whose frames' code was replaced.
     FollowInterpreted,
     ArmAgents,
 
-    /// Go on with the source step of thread `pid`, which returned from
-    /// native code into a runtime's interpreter, as that runtime's step
-    /// back to the Python that called the native code.
     ReturnToRuntime {
         pid: Pid,
     },
@@ -874,58 +701,36 @@ struct PublicStop {
     reason: StopReason,
     presentations: BTreeMap<Pid, FramePresentation>,
 
-    /// The thread or task that implicit inspection follows: the triggering
-    /// thread until a client selects another.
     selected: ExecutionContext,
 
-    /// The thread the selected context runs on: none for a parked task, or
-    /// once the thread exits.
     selected_thread: Option<Pid>,
 
-    /// Frames selected by clients; an absent context has its innermost
-    /// frame selected.
     selected_frames: BTreeMap<ExecutionContext, StackFrameId>,
     caches: StopCaches,
 
-    /// What the function a step out finished returned.
     returned: Option<returns::Returned>,
 }
 
-/// What requests read of the stopped process and keep while it holds. A
-/// write changes the process without leaving the stop, so each kind of
-/// write names what it keeps: anything added here is forgotten by default.
 #[derive(Default)]
 struct StopCaches {
-    /// What each thread runs for a language runtime, read once asked for.
     activities: RefCell<BTreeMap<Pid, Option<crate::ThreadActivity>>>,
 
-    /// What the runtimes say of each thread, read for every thread at once
-    /// when first asked, since each read numbers what threads run in.
     labels: RefCell<Option<BTreeMap<Pid, Arc<[crate::ThreadLabel]>>>>,
 
-    /// Where each runtime said it keeps the tasks it listed at this stop.
     task_locators: RefCell<BTreeMap<crate::TaskId, u64>>,
 
-    /// The sets of tasks the futures threads drive run, found once asked
-    /// for from the threads' stacks, and why some may be missing.
     task_sets: RefCell<Option<runtimes::TaskSets>>,
 
-    /// The frames each runtime interprets on the threads, read once asked
-    /// for.
     interpreted: interpreted::InterpretedCache,
 
-    /// The memory runtime models read at the stop.
     memory: crate::runtime_model::StopMemory,
 }
 
 impl StopCaches {
-    /// Any of it may have been read from memory.
     fn after_memory_write(&mut self) {
         *self = Self::default();
     }
 
-    /// Runtime models read threads' registers, and task sets come from the
-    /// stacks registers unwind, so only what memory alone gives is kept.
     fn after_register_write(&mut self) {
         *self = Self {
             task_locators: std::mem::take(&mut self.task_locators),
@@ -935,13 +740,9 @@ impl StopCaches {
     }
 }
 
-/// Stop identifiers are unique across every session in the process: a
-/// stopped-state reference can outlive its controller, and must never
-/// authenticate against a later session's stop.
 static NEXT_STOP_ID: AtomicU64 = AtomicU64::new(1);
 
 fn allocate_stop_id() -> Result<StopId> {
-    // On exhaustion the counter stays put rather than wrap and reissue ids.
     #[allow(
         deprecated,
         reason = "try_update is not yet stable on the pinned toolchain"
@@ -956,51 +757,30 @@ fn allocate_stop_id() -> Result<StopId> {
     Ok(StopId::new(issued))
 }
 
-/// A vforked child running in its parent's memory, from the parent's vfork
-/// event to its `VFORK_DONE`.
 #[derive(Debug, Clone, Copy)]
 struct VforkWindow {
-    /// The child that shares the memory until it execs or exits.
     child: Pid,
 
-    /// Whether the vforking thread has been resumed to let the child run.
     resumed: bool,
 }
 
-/// What the controller knows of a pid that is not a live thread of the
-/// inferior: a thread on its way out or in, or a fork child.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Tracked {
-    /// A thread that left the inferior, whose exit status is still due.
     Retired,
 
-    /// A thread that began exiting before the event that announces it.
     Vanished,
 
-    /// A listed thread that exited before an attach could seize it, such
-    /// as a leader that exited before the rest of its process. No status
-    /// of it is due.
     Unseized,
 
-    /// The initial stop of a new thread or fork child, which arrived
-    /// before the event that announces it.
     EarlyStop(WaitEvent),
 
-    /// A fork child announced before its initial stop arrived, with the
-    /// breakpoint sites it inherited. A vfork child shares its parent's
-    /// memory and blocks it until the child execs or exits, so it is
-    /// always released.
     ForkChild {
         sites: Vec<(VirtualAddress, u8)>,
         vfork: bool,
     },
 
-    /// A fork child killed, or found dying, as it was released, whose exit
-    /// is still due: another process's exit may follow the leader's.
     Killed,
 
-    /// A fork child handed to the session's group, which the same tracer
-    /// thread traces but this session no longer owns.
     HandedOver,
 }
 
@@ -1010,64 +790,39 @@ struct Inferior {
     loaded_module: LoadedModule,
     breakpoints: BTreeMap<VirtualAddress, BreakpointSite>,
 
-    /// Every site each execution's plan installed, so that ending the plan
-    /// visits only those. A site the plan already released may remain.
     plan_sites: BTreeMap<ExecutionId, BTreeSet<VirtualAddress>>,
     threads: BTreeMap<Pid, TraceThread>,
 
-    /// What is known of each pid that is not one of `threads`.
     tracked: BTreeMap<Pid, Tracked>,
 
-    /// Sites removed since the address space began, with their original
-    /// bytes: a process forked before their removal still holds their traps.
     former_sites: BTreeMap<VirtualAddress, u8>,
 
-    /// Whether the session only reads the process, so plants none of the
-    /// debugger's own breakpoints (`DebuggerHandle::observe_process`).
     observer: bool,
 
-    /// Threads in a vfork that shares this memory, by the thread that
-    /// vforked. The traps are lifted while any window is open.
     vfork_windows: BTreeMap<Pid, VforkWindow>,
     waiter: Option<Waiter>,
     run: RunPhase,
     next_execution: u64,
 
-    /// Why the program an exec replaced the main program with is not
-    /// followed, once one was not: requests that read the process through
-    /// the main program's image are refused with it.
     unfollowed_exec: Option<String>,
 
-    /// The loader's breakpoint, once the loader is known.
     loader_site: Option<VirtualAddress>,
 
-    /// The runtime functions whose entry stops for an exception.
     runtime_hooks: BTreeMap<VirtualAddress, language_exceptions::HookSite>,
     stack_moves: stack_watches::StackMoves,
     interpreted_moves: interpreted_watches::InterpretedMoves,
 
-    /// The breakpoint locations runtimes manage that user breakpoints own.
     managed: managed::ManagedSites,
     agents: BTreeMap<crate::RuntimeId, runtime_agents::Installation>,
 
-    /// The bootstrap a launch of CPython 3.12 or 3.13 gave it, which takes
-    /// the agent's scripts, or why it could not.
     python_launch: Option<std::result::Result<python_launch::PythonLaunch, Arc<str>>>,
 
-    /// The launch's Node preload, which lives while the launch's nodes may
-    /// load it.
     node_launch: Option<std::result::Result<node_launch::NodeLaunch, Arc<str>>>,
 
-    /// The number the next step a runtime arms takes. A number is never
-    /// reused in a process, so a stale step's end names none.
     next_runtime_step: u64,
 
-    /// The step a runtime is armed with, and the runtime, while one runs.
     runtime_step: Option<(crate::RuntimeId, crate::runtime_model::RuntimeStep)>,
 
-    /// The number the next assignment a runtime's agent makes takes; the
-    /// assignment it is armed with, and the runtime; and the request that
-    /// waits for it.
     next_runtime_assignment: u64,
     runtime_assignment: Option<(crate::RuntimeId, crate::runtime_model::RuntimeAssignment)>,
     assignment: Option<assignments::PendingAssignment>,
@@ -1075,19 +830,11 @@ struct Inferior {
     inspectors: inspector::Inspectors,
     watch: WatchState,
 
-    /// The signal the debugger sent to end the inferior, which never stops
-    /// it whatever its policy.
     terminating: Option<Terminating>,
 
-    /// The numbers thread labels give what threads run in, such as V8's
-    /// isolates, kept for the life of the process.
     holdings: RefCell<holdings::HoldingNumbers>,
 }
 
-/// The debugger asked the inferior to end with `signal`. Programs often
-/// handle it by cleaning up and raising it again with its default action,
-/// as Go's runtime does, so every delivery of it passes silently until the
-/// user sees a stop after the first one.
 #[derive(Clone, Copy, Debug)]
 struct Terminating {
     signal: Signal,
@@ -1095,7 +842,6 @@ struct Terminating {
 }
 
 impl Inferior {
-    /// Creates an inferior in `run`, with no breakpoints or watchpoints.
     fn new(
         origin: InferiorOrigin,
         tgid: Pid,
@@ -1140,26 +886,16 @@ impl Inferior {
         }
     }
 
-    /// Whether `pid` is a group leader that exited while other threads run
-    /// on. Linux reports its exit only after every other thread's, so no
-    /// stop waits for it, and none lists it.
     fn exited_leader(&self, pid: Pid, thread: &TraceThread) -> bool {
         pid == self.tgid
             && matches!(thread.state, NativeThreadState::Exiting)
             && self.threads.len() > 1
     }
 
-    /// Whether a thread is where a coherent stop needs it: stopped, or an
-    /// exited leader.
     fn settled(&self, pid: Pid, thread: &TraceThread) -> bool {
         matches!(thread.state, NativeThreadState::Stopped) || self.exited_leader(pid, thread)
     }
 
-    /// Whether `thread`, resuming expecting `expected`, holds the signals
-    /// its runtime tolerates arriving late: while it steps over a
-    /// breakpoint or returns to one, while it steps, and while it runs
-    /// without the threads the debugger keeps stopped. A handler run then
-    /// could wait for those threads, as Go's preemption does.
     fn holds_signals(&self, thread: &TraceThread, expected: &ExpectedStop) -> bool {
         thread.holds_siblings()
             || matches!(expected, ExpectedStop::UserStep { .. })
@@ -1169,17 +905,12 @@ impl Inferior {
             })
     }
 
-    /// The thread that steps over a trap, and the trap's site.
     fn repairing(&self) -> Option<(Pid, VirtualAddress)> {
         self.threads
             .iter()
             .find_map(|(&pid, thread)| thread.trap.repairing().map(|at| (pid, at)))
     }
 
-    /// The thread to step over its trap next, and the trap's site: of the
-    /// execution's threads stopped at a trap, the lowest site's, and the
-    /// lowest thread there, so that a site is lifted once for every thread
-    /// at it. An exiting thread steps over nothing.
     fn next_repair(&self) -> Option<(Pid, VirtualAddress)> {
         let active = self.run.execution()?;
         active
@@ -1196,12 +927,10 @@ impl Inferior {
             .map(|(at, pid)| (pid, at))
     }
 
-    /// Whether a vforked child runs in this memory, which must hold no trap.
     fn vfork_child_runs(&self) -> bool {
         self.vfork_windows.values().any(|window| window.resumed)
     }
 
-    /// Whether a thread steps over a trap, or a site is lifted for one to.
     fn repair_under_way(&self) -> bool {
         self.repairing().is_some()
             || self
@@ -1210,8 +939,6 @@ impl Inferior {
                 .any(|site| site.trap == Trap::Lifted(Lift::Repair))
     }
 
-    /// Moves `pid`'s trap state on `event`. A transition the state forbids
-    /// is a wait status the controller did not expect.
     fn trap_event(&mut self, pid: Pid, event: TrapEvent) -> Result<()> {
         let thread = self.thread_mut(pid)?;
         thread.trap = thread.trap.on(event).map_err(|transition| {
@@ -1222,9 +949,6 @@ impl Inferior {
         Ok(())
     }
 
-    /// A stopped thread through which to read and write the shared address
-    /// space: the leader when it is stopped, otherwise any stopped thread.
-    /// While some threads run, only a stopped thread accepts ptrace requests.
     fn memory_thread(&self) -> Pid {
         let stopped = |thread: &TraceThread| matches!(thread.state, NativeThreadState::Stopped);
         if self.threads.get(&self.tgid).is_some_and(stopped) {
@@ -1249,7 +973,6 @@ impl Inferior {
             .ok_or_else(|| Error::UnknownThread(debug_thread_id(pid)))
     }
 
-    /// Removes every reference to a thread that exited while others live on.
     fn forget_thread(&mut self, pid: Pid, status: &ExitStatus) {
         if let Some(active) = self.run.execution_mut() {
             active.resume_threads.remove(&pid);
@@ -1262,9 +985,6 @@ impl Inferior {
             }
         }
 
-        // A barrier is presented from its triggering thread, which must live.
-        // An internal stop still has nothing to present. A leader that
-        // exited alone stays listed until its process ends.
         let others = || self.threads.iter().filter(|&(&other, _)| other != pid);
         let replacement = others()
             .find(|(_, thread)| matches!(thread.state, NativeThreadState::Stopped))
@@ -1277,7 +997,6 @@ impl Inferior {
         }
     }
 
-    /// The edits an internal stop holds until every thread stopped.
     fn take_pending_edits(&mut self) -> Vec<Edit> {
         self.run
             .barrier_mut()
@@ -1285,11 +1004,6 @@ impl Inferior {
             .unwrap_or_default()
     }
 
-    /// Every trap a process forked from this one may hold, with its
-    /// original byte: the sites installed now, any lifted among them, and
-    /// those removed since the address space began, as a fork's event may
-    /// be handled after edits that followed the fork. A child is scrubbed
-    /// only where its memory still holds a trap.
     fn inherited_sites(&self) -> Vec<(VirtualAddress, u8)> {
         let mut sites = self.former_sites.clone();
         sites.extend(
@@ -1301,13 +1015,9 @@ impl Inferior {
     }
 }
 
-/// Collects an inferior's wait statuses for the controller: a thread in a
-/// live session, or nothing when whoever drives the controller reports
-/// statuses itself, as test fakes and the simulator do.
 struct Waiter {
     thread: Option<WaiterThread>,
 
-    /// The tracer thread's shared waiter, waiting for this process.
     hub: Option<wait_hub::HubEdge>,
 }
 
@@ -1317,7 +1027,6 @@ struct WaiterThread {
 }
 
 impl Waiter {
-    /// A waiter whose statuses the controller's driver delivers.
     #[cfg(any(test, feature = "sim"))]
     const fn external() -> Self {
         Self {
@@ -1326,15 +1035,10 @@ impl Waiter {
         }
     }
 
-    /// Whether the waiter panicked, so that the controller must take its
-    /// threads' statuses itself.
     fn failed(&self) -> bool {
         self.hub.as_ref().is_some_and(wait_hub::HubEdge::failed)
     }
 
-    /// Stops the waiter, calling `serve` until it ends: one blocked
-    /// sending a status to a full queue waits for the controller to make
-    /// room, which `serve` does.
     fn stop_and_join(self, mut serve: impl FnMut()) -> Result<()> {
         if let Some(hub) = self.hub {
             hub.stop_and_join(&mut serve);
@@ -1363,43 +1067,34 @@ enum InferiorOrigin {
     Launched,
     Attached,
 
-    /// Seized while waiting to exec the executable, and owned as a launch.
     LaunchedByExec,
     PostMortem,
 }
 
 impl InferiorOrigin {
-    /// Whether the process dies with the debugger.
     const fn owned(self) -> bool {
         matches!(self, Self::Launched | Self::LaunchedByExec)
     }
 
-    /// Whether its threads were seized, so they stop by `PTRACE_INTERRUPT`
-    /// and report group-stops as events.
     const fn seized(self) -> bool {
         matches!(self, Self::Attached | Self::LaunchedByExec)
     }
 }
 
-/// The program a process runs: its executable and the debug information
-/// read from it, registered as the module `id`.
 #[derive(Clone)]
 struct MainProgram {
     id: crate::ModuleId,
 
-    /// What its module describes variables with.
     variables: Arc<dyn VariableInfo>,
     executable: Arc<PathBuf>,
     identity: FileIdentity,
 
-    /// The C library the executable runs on, whose structures locate TLS.
     c_library: CLibrary,
     image: Arc<ModuleImage>,
     unwind: Arc<dyn UnwindInfo>,
 }
 
 impl MainProgram {
-    /// The program mapped at `load_bias`.
     fn loaded(&self, load_bias: crate::LoadBias) -> LoadedModule {
         LoadedModule {
             id: self.id,
@@ -1416,7 +1111,6 @@ struct RuntimeModule {
     unwind: Arc<dyn UnwindInfo>,
     variables: Arc<dyn VariableInfo>,
 
-    /// How the C library identifies the module's TLS block, once known.
     tls: Option<TlsModule>,
 }
 
@@ -1522,113 +1216,77 @@ enum LinuxError {
 struct Controller<P: InspectionOps> {
     _lease: SessionLease,
 
-    /// The program the inferior runs, which an exec may replace.
     main: MainProgram,
 
-    /// The program the session was made for, which each launch and attach
-    /// starts from again after an exec replaced it.
     launched: MainProgram,
 
-    /// The main program's image as every handle reads it, replaced before
-    /// [`DebuggerEvent::ProgramChanged`] is sent.
     program: watch::Sender<Arc<ModuleImage>>,
 
-    /// The path a launch runs, which may be a link to the executable.
     launch_path: Arc<PathBuf>,
     expected_process_start_time: Option<u64>,
     modules: BTreeMap<crate::ModuleId, RuntimeModule>,
 
-    /// Where loaded modules' separate debug files are found.
     debug_files: crate::debug_info::DebugFileSearch,
 
-    /// The module loads earlier sessions of the program kept, which this
-    /// one takes instead of loading the same files again, and adds to.
     kept: Option<crate::backend::KeptModules>,
 
-    /// The canonical path and load bias computed for each mapping, so known
-    /// modules are not re-read from disk at every stop.
     mapped_modules: BTreeMap<ModuleMapping, (PathBuf, crate::LoadBias)>,
     next_module_id: u32,
 
-    /// What each mapping of anonymous code, by its range, was proven to be.
     code_copies: std::collections::BTreeMap<(u64, u64), code_copies::Copy>,
     next_image_id: u32,
     messages: RefCell<mpsc::Receiver<ControllerMessage>>,
 
-    /// Messages taken from the queue and not yet served, in arrival order.
     pending: RefCell<VecDeque<ControllerMessage>>,
 
-    /// What wakes the controller blocked on its messages at a runtime
-    /// agent's deadline, started the first time one is outstanding.
     alarm: RefCell<Option<alarm::AlarmThread>>,
 
-    /// The views values are presented with.
     views: presentation::Views,
     message_sender: mpsc::Sender<ControllerMessage>,
     events: EventSender,
     ptrace: P,
     session: Session,
 
-    /// Set once the session is ending, alongside whichever phase it is in.
     shutdown: Option<Shutdown>,
     breakpoints: breakpoints::UserBreakpoints,
     next_breakpoint_id: u64,
     next_watchpoint_id: u64,
 
-    /// The system-call catchpoints, which outlive any process.
     catchpoints: BTreeMap<crate::CatchpointId, crate::Catchpoint>,
     next_catchpoint_id: u64,
     signals: SignalPolicies,
 
-    /// Which exceptions that runtimes report stop the program.
     exception_stops: crate::ExceptionStops,
 
-    /// Whether an exec the session follows stops a continued process.
     exec_stops: bool,
 
-    /// What a shutdown does with a launched process.
     ending: Ending,
 
-    /// The session's group, which its fork children go to instead of
-    /// being released, when it is a member of one that follows them.
     group: Option<follow::Membership>,
 
-    /// Whether steps stop in a language runtime's own code.
     step_into_runtime: bool,
 
-    /// The source files steps pass through.
     step_skips: crate::StepSkips,
 
-    /// The language runtime each image carries, bound on first need.
     runtime_models: runtimes::RuntimeCache,
     revision: u64,
 
-    /// How many messages the controller served, which paces the invariant
-    /// checks of a large state.
     messages_served: u64,
 
-    /// The description a served request begins with that makes the
-    /// controller panic, from [`PANIC_AFTER`], to test what a panic leaves.
     #[cfg(debug_assertions)]
     panic_after: Option<String>,
 
-    /// The description a served request begins with that makes the waiter
-    /// panic at the next status it routes, from [`WAITER_PANIC_AFTER`].
     #[cfg(debug_assertions)]
     waiter_panic_after: Option<String>,
 }
 
-/// What a shutdown does with a launched process.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ending {
     Kill,
 
-    /// Releases it, stopped, as an attached process is released, as a
-    /// group's member detached on its own is.
     Release,
 }
 
-/// A requested launch or attach.
 enum Start {
     Launch(crate::LaunchOptions, Reply<ExecutionId>),
     Attach {
@@ -1643,20 +1301,13 @@ enum Start {
         reply: Reply<ExecutionId>,
     },
 
-    /// Takes over a process the tracer thread already traces, stopped, as
-    /// a fork child its parent's controller handed over is.
     Adopt {
         pid: Pid,
 
-        /// Whether the process descends from a launched one, so that the
-        /// session ends it rather than detaching.
         launched: bool,
         reply: Reply<StopId>,
     },
 
-    /// Takes over a process the tracer thread traces, stopped at the exec
-    /// of the program, as a launch whose initial stop that exec is; the
-    /// launch stops there.
     AdoptExec {
         pid: Pid,
         launched: bool,
@@ -1664,13 +1315,9 @@ enum Start {
     },
 }
 
-/// In development builds, the variable that names a request after which
-/// the controller panics, by the start of its description.
 #[cfg(debug_assertions)]
 const PANIC_AFTER: &str = "MICROSCOPE_TEST_PANIC_AFTER";
 
-/// In development builds, the variable that names a request after which
-/// the waiter panics, by the start of its description.
 #[cfg(debug_assertions)]
 const WAITER_PANIC_AFTER: &str = "MICROSCOPE_TEST_WAITER_PANIC_AFTER";
 
@@ -1691,13 +1338,11 @@ pub fn spawn_controller(
     Ok((current, ControllerJoin::Hosted(hosting)))
 }
 
-/// The edge of a controller a tracer thread serves.
 #[cfg(debug_assertions)]
 type HostedEdge = recorded::Recorded<LinuxPtrace>;
 #[cfg(not(debug_assertions))]
 type HostedEdge = LinuxPtrace;
 
-/// Makes a controller on the tracer thread `host` describes.
 fn hosted_controller(
     host: &tracer::HostContext<'_>,
     executable: Executable,
@@ -1712,7 +1357,6 @@ fn hosted_controller(
     #[cfg(not(debug_assertions))]
     let ptrace = LinuxPtrace::hosted(membership);
     Controller::new(
-        // The tracer thread holds the process's lease.
         SessionLease::detached(),
         executable,
         debug_info,
@@ -1722,19 +1366,14 @@ fn hosted_controller(
     )
 }
 
-/// A group's tracer thread, as its owner holds it.
 pub struct GroupBackend {
     tracer: Option<tracer::Tracer>,
     thread: Option<JoinHandle<()>>,
 
-    /// What the tracer thread reports: members that joined, and processes
-    /// watched or not followed.
     pub notices: tokio::sync::mpsc::UnboundedReceiver<follow::GroupNotice>,
 }
 
 impl GroupBackend {
-    /// Lets the tracer thread end once every member has, ending or
-    /// releasing the processes it watches, and waits for it.
     pub fn join(mut self) -> std::result::Result<(), ()> {
         drop(self.tracer.take());
         self.thread
@@ -1743,9 +1382,6 @@ impl GroupBackend {
     }
 }
 
-/// Starts the tracer thread of a group whose root is a session for
-/// `executable`, which hands the processes its program starts to the
-/// thread as `policy` says.
 pub fn spawn_group(
     executable: Executable,
     debug_info: DebugInfo,
@@ -1796,17 +1432,13 @@ pub fn spawn_group(
     ))
 }
 
-/// What a debugger joins once its controller is asked to end.
 pub enum ControllerJoin {
-    /// A controller with a thread of its own.
     Thread(JoinHandle<()>),
 
-    /// A controller a tracer thread serves.
     Hosted(tracer::Hosting),
 }
 
 impl ControllerJoin {
-    /// Waits for the controller to end, failing when it panicked.
     pub fn join(self) -> std::result::Result<(), ()> {
         match self {
             Self::Thread(thread) => thread.join().map_err(|_| ()),
@@ -1886,7 +1518,7 @@ impl<P: InspectionOps> Controller<P> {
             mapped_modules: BTreeMap::new(),
             next_module_id: 1,
             code_copies: std::collections::BTreeMap::new(),
-            // A kept module's image keeps its id, which no other may take.
+
             next_image_id: executable
                 .kept
                 .as_ref()
@@ -1927,7 +1559,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Takes every message already queued, keeping them in arrival order.
     fn drain_messages(&self) {
         let mut messages = self.messages.borrow_mut();
         let mut pending = self.pending.borrow_mut();
@@ -1936,9 +1567,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// The next message to serve: in arrival order, except that inspection
-    /// of a stop waits behind run control queued after it, which it would
-    /// only delay. Waits for one when `block` holds and none is queued.
     fn next_message(&self, block: bool) -> Option<ControllerMessage> {
         self.drain_messages();
         let deadline = self.agent_deadline();
@@ -1959,7 +1587,6 @@ impl<P: InspectionOps> Controller<P> {
                 .iter()
                 .take(preempting + 1)
                 .position(|message| !message.reads_one_stop())
-                // The preempting message is itself one that does not wait.
                 .unwrap_or(preempting);
             return pending.remove(index);
         }
@@ -1973,9 +1600,6 @@ impl<P: InspectionOps> Controller<P> {
             return None;
         }
 
-        // While an agent's acknowledgement is outstanding, the alarm wakes
-        // the controller at its deadline, which the check above then
-        // judges.
         if let Some(deadline) = deadline
             && !self.set_alarm(deadline)
         {
@@ -1985,7 +1609,6 @@ impl<P: InspectionOps> Controller<P> {
         self.messages.borrow_mut().blocking_recv()
     }
 
-    /// The earliest deadline of an agent's outstanding acknowledgement.
     fn agent_deadline(&self) -> Option<std::time::Instant> {
         self.session.inferior().and_then(|inferior| {
             inferior
@@ -2005,10 +1628,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Sets the alarm to wake the controller at `deadline`, starting it the
-    /// first time, and returns whether it is set. Its ring is an
-    /// `AgentTimeout`, sent only where the queue has room: a full one wakes
-    /// the controller anyway.
     fn set_alarm(&self, deadline: std::time::Instant) -> bool {
         let mut alarm = self.alarm.borrow_mut();
         if alarm.is_none() {
@@ -2034,8 +1653,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Waits for a message by polling while an agent acknowledgement is
-    /// outstanding, as a controller whose alarm could not start must.
     fn poll_messages(&self) -> Option<ControllerMessage> {
         loop {
             let Some(deadline) = self.agent_deadline() else {
@@ -2055,8 +1672,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// Whether run control waits behind the inspection being served, which
-    /// then stops and is served again after it.
     fn run_control_waiting(&self) -> bool {
         self.drain_messages();
         self.pending
@@ -2065,12 +1680,10 @@ impl<P: InspectionOps> Controller<P> {
             .any(ControllerMessage::preempts_inspection)
     }
 
-    /// Stops and joins a waiter, keeping what it sends meanwhile to serve.
     fn join_waiter(&self, waiter: Waiter) -> Result<()> {
         waiter.stop_and_join(|| self.drain_messages())
     }
 
-    /// Serves a request again after the run control that interrupted it.
     fn serve_later(&self, request: Request) {
         record!("interrupted {}", request.describe());
         self.pending
@@ -2080,9 +1693,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Serves one queued request or wait status, and returns whether the
-    /// controller keeps running. A driver that owns the queue, such as the
-    /// simulator, delivers messages one at a time through this.
     fn handle_message(&mut self, message: ControllerMessage) -> bool {
         self.take_group_settings();
         let keeps_running = match message {
@@ -2145,8 +1755,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        // A shutdown, whether requested or begun when an attached process
-        // failed, ends the controller once nothing is left to release.
         let keeps_running = keeps_running && !(self.shutdown.is_some() && self.session.is_idle());
         if !keeps_running {
             self.answer_queued_shutdowns();
@@ -2154,11 +1762,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         keeps_running
     }
 
-    /// Answers the shutdowns still queued as the controller ends, which
-    /// it ended on its own, as a failed attached process makes it: the
-    /// process is released, which is all a shutdown asks.
     fn answer_queued_shutdowns(&self) {
-        // Closed first, so that none is queued after the last is taken.
         self.messages.borrow_mut().close();
         self.drain_messages();
         for message in self.pending.borrow_mut().drain(..) {
@@ -2411,8 +2015,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                             let _ = self.events.send(moved);
                         }
                     }
-                    // The runtime's agent makes it as its thread runs, and
-                    // its stop answers.
+
                     Ok(evaluation::Assigning::Running) => self.await_assignment(reply),
                     Err(error) => {
                         let _ = reply.send(Err(error));
@@ -2427,8 +2030,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                         let _ = reply.send(Ok(()));
                     }
 
-                    // A shutdown the controller began itself, as a failed
-                    // attach does, answers the client's when it ends.
                     Some(Shutdown {
                         reply: waiting @ None,
                     }) => *waiting = Some(reply),
@@ -2451,8 +2052,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Answers a read-only request against the current stopped snapshot.
-    /// Live and post-mortem sessions route every other request themselves.
     #[expect(
         clippy::too_many_lines,
         reason = "the exhaustive inspection dispatcher keeps protocol routing in one place"
@@ -2854,8 +2453,6 @@ impl<P: InspectionOps> Controller<P> {
             | Request::Kill { .. }
             | Request::Terminate { .. }
             | Request::Shutdown { .. } => {
-                // Their replies differ by variant, so this arm cannot answer
-                // them. Dropping the request cancels it at the client.
                 debug_assert!(
                     false,
                     "run-control requests are routed by the session dispatcher"
@@ -2875,18 +2472,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.handle_shutdown_wait(status);
         }
 
-        // The status reported a stop, whatever its thread is counted as.
         let reported = (!matches!(
             status,
             WaitEvent::Exited(..) | WaitEvent::Signaled(..) | WaitEvent::Continued(_)
         ))
         .then(|| status.pid());
 
-        // A ptrace request failing because SIGKILL took its thread out of a
-        // stop is explained by threads that left their stop, or by every
-        // thread having reached its exit. The debugger's own kill needs no
-        // excuse of its own: it takes every thread out of its stop, which
-        // the first finds.
         if let Err(error) = self.process_wait(status)
             && !(is_vanished_tracee(&error)
                 && (self.release_superseded_threads(reported) || self.every_thread_exiting()))
@@ -2897,9 +2488,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         true
     }
 
-    /// Whether `error` came from SIGKILL taking threads out of the stop the
-    /// controller counts them in, so the address space is dying and needs
-    /// nothing restored. The failure's handler releases them.
     fn lost_to_sigkill(&self, error: &Error) -> bool {
         is_vanished_tracee(error)
             && self.session.inferior().is_some_and(|inferior| {
@@ -2910,8 +2498,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
     }
 
-    /// Whether every live thread passed its exit event, leaving none to
-    /// read or write the dying address space through.
     fn every_thread_exiting(&self) -> bool {
         self.session.inferior().is_some_and(|inferior| {
             inferior
@@ -2921,11 +2507,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    /// Finds the threads counted as stopped, or whose reported stop is
-    /// being handled, that SIGKILL took out of their stop, typically a
-    /// sibling's `exit_group` while a stop was handled, which explains a
-    /// ptrace request failing with ESRCH. Each runs on to its exit, which
-    /// retires it. Returns whether any was found.
     fn release_superseded_threads(&mut self, handled: Option<Pid>) -> bool {
         let Some(inferior) = self.session.inferior_mut() else {
             return false;
@@ -2959,9 +2540,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if matches!(inferior.thread(pid)?.expected, ExpectedStop::AdoptedExec) {
-            // Until its exec, a process launched through it runs as it
-            // would untraced: signals are delivered and job control is
-            // ignored.
             match status {
                 WaitEvent::Stopped(pid, signal) => {
                     return self.ptrace.continue_execution(pid, Some(signal));
@@ -3004,11 +2582,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Routes a `PTRACE_EVENT_STOP`, which seized threads report for several
-    /// unrelated reasons.
     fn handle_event_stop(&mut self, pid: Pid, signal: Signal) -> Result<()> {
-        // SIGKILL, typically a sibling's `exit_group`, may have taken the
-        // thread out of the stop since it was reported.
         if is_superseded(&self.ptrace.signal_metadata(pid)) {
             return self.handle_classified_stop(pid, ClassifiedStop::Superseded);
         }
@@ -3025,19 +2599,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         let stop = if matches!(thread.state, NativeThreadState::Starting)
             && matches!(thread.expected, ExpectedStop::None)
         {
-            // Threads auto-attached to a seized process start here instead
-            // of with SIGSTOP.
             ClassifiedStop::ThreadStart
         } else if thread.debugger_stop_pending {
             ClassifiedStop::DebuggerRequested
         } else if is_stopping_signal(signal) {
-            // A seized thread reports a group-stop here, with its signal.
             ClassifiedStop::GroupStop(signal)
         } else if signal == Signal::SIGTRAP {
-            // A `PTRACE_INTERRUPT` that reached a thread already in another
-            // ptrace-stop, such as a clone event while attaching, is kept
-            // until the thread resumes. It then stops before running any
-            // instruction, after the debugger took the other stop for it.
             ClassifiedStop::DebuggerRequested
         } else {
             return self.handle_ptrace_event(pid, libc::PTRACE_EVENT_STOP);
@@ -3130,8 +2697,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// The selection a snapshot reports, without copying the breakpoints
-    /// and threads that every stopped request would otherwise pay for.
     fn stopped_selection(&self) -> Result<crate::StoppedSelection> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let stop = inferior.run.stop().ok_or(Error::NotStopped)?;
@@ -3145,8 +2710,6 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// The frame selected in the stop's selected context: the innermost until a
-/// client selects another.
 fn selected_frame(stop: &PublicStop) -> StackFrameId {
     stop.selected_frames
         .get(&stop.selected)
@@ -3174,8 +2737,6 @@ impl PublicStop {
         }
     }
 
-    /// A stopped thread through which the process's memory is read: the
-    /// selected context's, or the triggering thread for a parked task.
     fn reader(&self) -> Pid {
         self.selected_thread.unwrap_or(self.triggering_thread)
     }
@@ -3207,7 +2768,6 @@ fn validate_public_stop(inferior: &Inferior, requested: Option<StopId>) -> Resul
     }
 }
 
-/// Rejects execution from a stop that cannot be resumed safely.
 fn validate_resumable(inferior: &Inferior) -> Result<()> {
     if inferior
         .run
@@ -3220,8 +2780,6 @@ fn validate_resumable(inferior: &Inferior) -> Result<()> {
     validate_image_current(inferior)
 }
 
-/// Rejects requests that interpret the address space through the debugged
-/// image after exec(2) replaced it with one that could not be loaded.
 fn validate_image_current(inferior: &Inferior) -> Result<()> {
     if let Some(reason) = &inferior.unfollowed_exec {
         return Err(backend_error(LinuxError::UnsupportedExec(reason.clone())));

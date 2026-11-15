@@ -59,8 +59,6 @@ impl ColorEnvironment {
         }
     }
 
-    /// The choice the environment makes, which outranks every settings
-    /// file, and the variable that makes it.
     pub const fn choice(&self) -> Option<(ColorChoice, &'static str)> {
         if self.no_color {
             Some((ColorChoice::Never, "NO_COLOR"))
@@ -74,8 +72,6 @@ impl ColorEnvironment {
     }
 }
 
-/// Decides whether to color a stream: an explicit choice wins, then
-/// `NO_COLOR`, `CLICOLOR_FORCE`, `CLICOLOR`, batch mode, and the terminal.
 pub fn color_enabled(
     choice: ColorChoice,
     environment: &ColorEnvironment,
@@ -108,27 +104,21 @@ fn term_supports_color(term: &OsStr) -> bool {
     !term.is_empty() && term != "dumb"
 }
 
-/// Determines whether cursor-control sequences are safe for the output stream.
 pub fn terminal_control_enabled(environment: &ColorEnvironment, is_terminal: bool) -> bool {
     is_terminal && environment.term.as_deref().is_some_and(term_supports_color)
 }
 
-/// Declares the presentation roles, the `[theme]` key that styles each, and
-/// the struct of those keys.
 macro_rules! roles {
     ($($role:ident $field:ident $key:literal: $about:literal),* $(,)?) => {
-        /// Semantic presentation roles shared by all terminal formatters.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Role {
             $(#[doc = $about] $role),*
         }
 
         impl Role {
-            /// Every role, in declaration order.
             pub const ALL: &[Self] = &[$(Self::$role),*];
         }
 
-        /// Styles a settings file gives single roles, over the theme's.
         #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
         #[serde(default, deny_unknown_fields)]
         pub struct ThemeOverrides {
@@ -169,19 +159,15 @@ roles! {
     Number number "number": "Numbers in highlighted source.",
 }
 
-/// The built-in palette a theme starts from.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeName {
-    /// Bright colors, for dark backgrounds.
     #[default]
     Default,
 
-    /// Darker colors, for light backgrounds.
     Light,
 }
 
-/// One style for each role.
 #[derive(Clone, Debug)]
 pub struct Palette([Style; Role::ALL.len()]);
 
@@ -230,7 +216,6 @@ impl Palette {
         foreground(AnsiColor::Magenta),
     ]);
 
-    /// A theme's palette with single roles restyled.
     pub fn new(theme: ThemeName, overrides: &ThemeOverrides) -> Self {
         let mut palette = match theme {
             ThemeName::Default => Self::DEFAULT,
@@ -255,38 +240,29 @@ impl Palette {
     }
 }
 
-/// How source paths are shown.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PathStyle {
-    /// Relative to the project root when inside it, else absolute.
     #[default]
     Relative,
 
-    /// As the debug information records them.
     Absolute,
 
-    /// The file name alone.
     Name,
 }
 
-/// Everything about presentation besides whether a stream is colored.
 #[derive(Debug)]
 pub struct Look {
     pub palette: Palette,
     pub paths: PathStyle,
 
-    /// The project root relative paths are shown from.
     pub root: Option<PathBuf>,
 
-    /// Whether output may use symbols such as `●` beyond ASCII.
     pub unicode: bool,
 
-    /// Whether `file:line` locations are OSC 8 links to their files.
     pub hyperlinks: bool,
 }
 
-/// The look of clients without settings: absolute paths and ASCII.
 static DEFAULT_LOOK: Look = Look {
     palette: Palette::DEFAULT,
     paths: PathStyle::Absolute,
@@ -300,7 +276,6 @@ pub struct Renderer {
     color: bool,
     look: &'static Look,
 
-    /// Whether values are drawn as having changed.
     changed: bool,
 }
 
@@ -317,7 +292,6 @@ impl Renderer {
         }
     }
 
-    /// This renderer drawing values in the `changed` role.
     pub const fn changed(self) -> Self {
         Self {
             changed: true,
@@ -325,7 +299,6 @@ impl Renderer {
         }
     }
 
-    /// Whether output may use symbols beyond ASCII.
     pub const fn unicode(self) -> bool {
         self.look.unicode
     }
@@ -347,7 +320,6 @@ impl Renderer {
         }
     }
 
-    /// Shows a source path as `[ui] paths` asks.
     pub fn path(self, path: &Path) -> String {
         match self.look.paths {
             PathStyle::Absolute => path.display().to_string(),
@@ -355,7 +327,6 @@ impl Renderer {
                 || path.display().to_string(),
                 |name| name.display().to_string(),
             ),
-            // A root of `/` holds every path, so paths stay absolute there.
             PathStyle::Relative => self
                 .look
                 .root
@@ -369,7 +340,6 @@ impl Renderer {
         }
     }
 
-    /// Shows `path:line`, as a link to the file when hyperlinks are on.
     pub fn location(self, path: &Path, line: impl fmt::Display) -> String {
         let text = format!("{}:{line}", self.path(path));
         if !self.look.hyperlinks || !path.is_absolute() {
@@ -381,8 +351,6 @@ impl Renderer {
     }
 }
 
-/// `text` without its escape sequences: colours, and the links around
-/// locations. A sequence left open at the end hides the rest.
 pub fn plain(text: &str) -> String {
     let mut plain = String::with_capacity(text.len());
     let mut rest = text;
@@ -400,10 +368,6 @@ pub fn plain(text: &str) -> String {
     plain
 }
 
-/// The length of the escape sequence `sequence` starts with, or `None` for
-/// one left open. A control sequence ends at its final byte, an operating
-/// system command such as a link at ST or BEL, and any other escape after
-/// one character, as a terminal reads them.
 pub fn escape_length(sequence: &str) -> Option<usize> {
     debug_assert!(sequence.starts_with('\x1b'), "{sequence:?}");
     let body = sequence.get(1..)?;
@@ -421,7 +385,6 @@ pub fn escape_length(sequence: &str) -> Option<usize> {
     }
 }
 
-/// A `file://` URL, percent-encoding what a URL cannot hold.
 fn file_url(path: &Path) -> String {
     let mut url = String::from("file://");
 
@@ -455,8 +418,6 @@ impl<T: fmt::Display> fmt::Display for Painted<T> {
     }
 }
 
-/// A style as a settings file writes it, such as `bold yellow`,
-/// `bright-cyan on 236`, or `#ff8800 underline`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StyleSpec {
     text: String,

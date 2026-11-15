@@ -1,8 +1,8 @@
-// Standard library containers, and deliberately corrupted ones, which the
-// built-in views present. Each `VIEW:` marker says what its expression must
-// show, evaluated in main() where barrier() is called: `{c*N}` stands for N
-// of the character c, `problem:` says the view must refuse the value, and
-// why, and `(any order)` that a hash table's entries may come in any order.
+
+
+
+
+
 
 #include <any>
 #include <array>
@@ -43,8 +43,8 @@ extern "C" __attribute__((noinline)) void barrier(void *fixture) {
     __asm__ volatile("" : : "r"(fixture) : "memory");
 }
 
-// Storage the program never constructs or destroys, so its bytes can be
-// whatever a corrupted container holds.
+
+
 template <typename T> union Corrupt {
     T value;
     Corrupt() {}
@@ -55,7 +55,7 @@ template <typename T> static void keep(T &value) {
     __asm__ volatile("" : : "r"(&value) : "memory");
 }
 
-// Polymorphic classes, whose values views present as their dynamic types.
+
 struct Shape {
     virtual ~Shape() = default;
     virtual int area() const = 0;
@@ -69,28 +69,28 @@ struct Named {
     virtual ~Named() = default;
     long tag = 2;
 };
-// Its Square is not at its start, so a Shape pointer to one points into it.
+
 struct Tile : Named, Square {
     int row = 9;
 };
 
-// Making one throws, and copying one is not trivial, which leaves a variant
-// being given one holding nothing.
+
+
 struct Fragile {
     explicit Fragile(int) { throw 1; }
     Fragile(const Fragile &) {}
 };
 
-// Where a list node's links are, in each library: libstdc++'s nodes begin
-// with their next link, libc++'s with their previous one.
+
+
 #ifdef _LIBCPP_VERSION
 constexpr std::size_t next_link = 1;
 #else
 constexpr std::size_t next_link = 0;
 #endif
 
-// The ordinary container under a debug-mode one, whose words the
-// corruptions below write.
+
+
 template <typename T> static auto &plain(T &value) {
 #ifdef _GLIBCXX_DEBUG
     return value._M_base();
@@ -99,7 +99,7 @@ template <typename T> static auto &plain(T &value) {
 #endif
 }
 
-// The words of a container, to corrupt it.
+
 template <typename T> static void **object_words(T &value) {
     return reinterpret_cast<void **>(&plain(value));
 }
@@ -110,8 +110,8 @@ int main() {
     std::string long_text(300, 'y');              // VIEW: long_text => "{y*256}"... (300 bytes)
     std::string with_nul("a\0b", 3);             // VIEW: with_nul => "a\u{0}b"
     std::string_view view = "a view";             // VIEW: view => "a view"
-    // Wider characters, decoded from UTF-32 and UTF-16 units; a length is
-    // in bytes.
+
+
     std::wstring wide = L"wide \u00e9";            // VIEW: wide => "wide é"
     std::wstring long_wide(300, L'w');            // VIEW: long_wide => "{w*256}"... (1200 bytes)
     std::u16string short16 = u"ab";               // VIEW: short16 => "ab"
@@ -131,16 +131,16 @@ int main() {
     std::span<int> dynamic_span(ints);            // VIEW: dynamic_span => len=3 [1, 2, 3]
     std::span<int, 4> fixed_span(four);           // VIEW: fixed_span => len=4 [4, 5, 6, 7]
 
-    // A vector whose end passes its storage's end.
+
     int storage[16] = {10, 11, 12, 13};
     Corrupt<std::vector<int>> past_capacity;      // VIEW: past_capacity.value => problem: check
     int *past[3] = {storage, storage + 9, storage + 4};
     std::memcpy(static_cast<void *>(&plain(past_capacity.value)), past, sizeof past);
-    // A vector whose elements are in no mapped memory.
+
     Corrupt<std::vector<int>> dangling;           // VIEW: dangling.value => len=2 [<unavailable>, …]
     std::uintptr_t garbage[3] = {0x10, 0x18, 0x18};
     std::memcpy(static_cast<void *>(&plain(dangling.value)), garbage, sizeof garbage);
-    // A vector whose end is not a whole element past its start.
+
     Corrupt<std::vector<int>> ragged;             // VIEW: ragged.value => problem: whole number of elements
     char *bytes = reinterpret_cast<char *>(storage);
     char *ragged_ends[3] = {bytes, bytes + 6, bytes + 16};
@@ -194,8 +194,8 @@ int main() {
         valueless.emplace<1>(0);
     } catch (int) {
     }
-    // A variant whose index names no alternative. Its index follows its
-    // storage, as big as its largest alternative, a string.
+
+
     std::variant<int, std::string> bad_index = 1; // VIEW: bad_index => problem: the type has no type argument 5
     reinterpret_cast<unsigned char *>(&bad_index)[sizeof(std::string)] = 5;
     std::tuple<> no_elements;                     // VIEW: no_elements => ()
@@ -211,7 +211,7 @@ int main() {
     Shape *inner_shape = &tile;                   // VIEW: *inner_shape => Tile {tag: 2, id: 7, side: 3, row: 9}
     std::pair<int, std::string> pair{1, "one"};  // VIEW: pair => {first: 1, second: "one"}
 
-    // Bits, as the bools they hold, and as the positions set.
+
     std::vector<bool> bits = {true, false, true}; // VIEW: bits => len=3 [true, false, true]
     std::vector<bool> many_bits(130, false);      // VIEW: many_bits => count: 130
     many_bits[129] = true;
@@ -220,7 +220,7 @@ int main() {
     std::bitset<100> wide_flags;                  // VIEW: wide_flags => len=2 [3, 99]
     wide_flags.set(3);
     wide_flags.set(99);
-    // Adaptors present the containers they adapt.
+
     std::stack<int> stack;                        // VIEW: stack => len=2 [1, 2]
     stack.push(1);
     stack.push(2);
@@ -234,7 +234,7 @@ int main() {
     std::initializer_list<int> listed = {1, 2, 3}; // VIEW: listed => len=3 [1, 2, 3]
     std::flat_map<int, int> flat{{2, 20}, {1, 10}}; // VIEW: flat => len=2 {1: 10, 2: 20}
     std::flat_set<int> flat_keys{3, 1};           // VIEW: flat_keys => len=2 [1, 3]
-    // Durations as Go writes them, and the system clock's time as a date.
+
     std::chrono::nanoseconds nanos(42);           // VIEW: nanos => 42ns
     std::chrono::microseconds micros(1500);       // VIEW: micros => 1.5ms
     std::chrono::milliseconds millis(1500);       // VIEW: millis => 1.5s
@@ -243,7 +243,7 @@ int main() {
     std::chrono::hours hrs(26);                   // VIEW: hrs => 26h0m0s
     std::chrono::system_clock::time_point instant{std::chrono::seconds(1700000000)}; // VIEW: instant => 2023-11-14 22:13:20 +0000 UTC
     std::chrono::steady_clock::time_point uptime{std::chrono::seconds(5)}; // VIEW: uptime => 5s
-    // Atomics, references, and outcomes are what they hold.
+
     std::atomic<int> counter{5};                  // VIEW: counter => 5
     std::atomic<bool> ready{true};                // VIEW: ready => true
     std::atomic<long *> slot{nullptr};            // VIEW: slot => 0x0
@@ -255,7 +255,7 @@ int main() {
     std::filesystem::path where = "/tmp/microscope"; // VIEW: where => "/tmp/microscope"
     std::function<int(int)> no_callable;          // VIEW: no_callable => empty
     std::function<int(int)> callable = [&target](int x) { return x + target; };
-    // Mutexes say whether they are held; the owner is a field.
+
     std::mutex unlocked_mutex;                    // VIEW: unlocked_mutex => unlocked
     std::mutex locked_mutex;                      // VIEW: locked_mutex => locked
     locked_mutex.lock();
@@ -267,15 +267,15 @@ int main() {
     reentered.lock();
     reentered.lock();
 
-    // A list whose last node leads back to its second: walking it would
-    // show the second and third elements again.
+
+
     std::list<int> looped = {7, 8, 9};            // VIEW: looped => problem: cycle at element 3
     void **first = static_cast<void **>(object_words(looped)[next_link]);
     void **second = static_cast<void **>(first[next_link]);
     void **third = static_cast<void **>(second[next_link]);
     third[next_link] = second;
-    // A list that claims more elements than it links. libstdc++'s old ABI
-    // keeps no count, so the test does not ask it for this one.
+
+
     std::list<int> overcounted = {1, 2};          // VIEW: overcounted => problem: the view declares 4 elements and generates 2
 #if defined(_LIBCPP_VERSION) || _GLIBCXX_USE_CXX11_ABI
     object_words(looped)[2] = reinterpret_cast<void *>(5);
@@ -307,9 +307,9 @@ int main() {
     locked_mutex.unlock();
     reentered.unlock();
     reentered.unlock();
-    // The corrupted variant holds its int again, for its destructor.
+
     reinterpret_cast<unsigned char *>(&bad_index)[sizeof(std::string)] = 0;
-    // The corrupted lists are never destroyed.
+
     new (&looped) std::list<int>();
     new (&overcounted) std::list<int>();
     return static_cast<int>(ints.size() + many.size()) == 303 ? 0 : 1;

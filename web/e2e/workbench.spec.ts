@@ -1,7 +1,3 @@
-// What every address opens: the one workbench, as `microscope web` starts
-// it and as a page served on its own does, and the panes that start
-// something from the File menu.
-
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 
@@ -28,7 +24,6 @@ test.describe("with nothing to debug", () => {
     await page.keyboard.press("Escape");
     await launch.getByRole("button", { name: "Load", exact: true }).click();
 
-    // The pane closes, and the session opens in the Debug layout.
     await expect(page).toHaveURL(/\/s\/[0-9a-f]+$/u);
     await expect(page.getByTestId("status")).toContainText("Not started");
     await expect(tab(page, "spin.c")).toBeVisible();
@@ -43,7 +38,7 @@ test.describe("with nothing to debug", () => {
       const attach = page.getByRole("tabpanel", { name: "Attach" });
       await attach.getByRole("textbox", { name: "Process" }).fill(String(program.pid));
       await attach.getByRole("button", { name: `Attach to ${program.pid}` }).click();
-      // Attaching stops the process where it was.
+
       await expect(page).toHaveURL(/\/s\/[0-9a-f]+\/stop\//u);
       await expect(page).toHaveTitle(/^spin/u);
       await expect(tab(page, "Attach")).toHaveCount(0);
@@ -53,8 +48,6 @@ test.describe("with nothing to debug", () => {
   });
 });
 
-/** A stand-in for the services backend without email, where a password
- * alone signs in. */
 function standIn(): Handler {
   let signedIn = false;
   const dev = { id: 1, username: "dev", email: "dev@microscope.dev" };
@@ -72,8 +65,7 @@ function standIn(): Handler {
       json(200, { email: false, totp: false, sso: none, passkeys: false });
       return;
     }
-    // A new account: in no organization, with no projects, invitations, or
-    // outside sign-ins.
+
     const empty: Record<string, unknown> = {
       "/api/orgs": [],
       "/api/projects": [],
@@ -98,12 +90,12 @@ test("a page served on its own signs in, then connects with a join link", async 
   microscope,
 }) => {
   const served = await standalonePage(standIn());
-  // Services says nobody is signed in yet.
+
   expectErrors(/\/api\/users\/me: 401$/u);
   try {
     await page.goto(`${served.origin}/`);
     await expect(tab(page, "Account")).toHaveAttribute("aria-selected", "true");
-    // Nothing to connect to yet, so Connect says how.
+
     await expect(tab(page, "Connect")).toHaveAttribute("aria-selected", "true");
 
     const account = page.getByRole("tabpanel", { name: "Account" });
@@ -123,7 +115,6 @@ test("a page served on its own signs in, then connects with a join link", async 
   }
 });
 
-/** A port nothing listens on, as a stopped microscope leaves it. */
 async function deadPort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((done) => {
@@ -143,10 +134,9 @@ test("a page served on its own gets out of a microscope it can't reach", async (
   microscope,
 }) => {
   const served = await standalonePage(standIn());
-  // Firefox reports a server that never answered as a failed CORS request.
+
   allowErrors(/\/api\/users\/me: 401$/u, /CORS request did not succeed/u);
   try {
-    // The microscope this browser used last has stopped.
     const gone = `http://127.0.0.1:${await deadPort()}/`;
     await page.goto(`${served.origin}/`);
     await page.evaluate((server) => {
@@ -154,7 +144,6 @@ test("a page served on its own gets out of a microscope it can't reach", async (
     }, gone);
     await page.reload();
 
-    // The page starts as it would with none, and Connect says why.
     await expect(tab(page, "Account")).toHaveAttribute("aria-selected", "true");
     await expect(tab(page, "Connect")).toHaveAttribute("aria-selected", "true");
     const connect = page.getByRole("tabpanel", { name: "Connect" });
@@ -194,7 +183,6 @@ test("each tab of a page served on its own keeps its microscope, and swaps a los
     const first = session(page.url());
     expect(first).toBeDefined();
 
-    // Another tab connects to another microscope.
     const other = await microscope.start([fixture("spin")]);
     const second = await page.context().newPage();
     await second.goto(`${served.origin}/`);
@@ -204,7 +192,6 @@ test("each tab of a page served on its own keeps its microscope, and swaps a los
     expect(secondSession).toBeDefined();
     expect(secondSession).not.toBe(first);
 
-    // The first tab stays with its own, reloaded or not.
     await page.reload();
     await expect(page.getByTestId("status")).toContainText("Not started");
     expect(session(page.url())).toBe(first);
@@ -213,7 +200,6 @@ test("each tab of a page served on its own keeps its microscope, and swaps a los
       `${microscope.origin}/`,
     );
 
-    // The second's microscope stops: it says so, and connects elsewhere.
     await other.stop();
     await expect(second.getByTestId("status")).toContainText("Reconnecting");
     await menu(second, "File", "Connect…");
@@ -244,13 +230,11 @@ test("a page served on its own sets a session's layout aside while it has none",
   try {
     await page.goto(`${served.origin}/`);
     await connectTo(microscope.link);
-    // Arranged the person's own way: Registers alone.
+
     await registers().click();
     await page.keyboard.press("Alt+Enter");
     await expect(tab(page, "Threads")).toBeHidden();
 
-    // The microscope stops, and the page is opened again with nothing to
-    // debug: it starts from Account, with Connect in front saying why.
     await microscope.stop();
     await page.goto(`${served.origin}/`);
     await expect(tab(page, "Account")).toHaveAttribute("aria-selected", "true");
@@ -258,7 +242,6 @@ test("a page served on its own sets a session's layout aside while it has none",
     await expect(page.getByRole("tabpanel", { name: "Connect" })).toContainText("Can't reach");
     await expect(registers()).toHaveCount(0);
 
-    // The next session comes back to the arrangement it had.
     const next = await microscope.start([fixture("spin")]);
     await connectTo(next.link);
     await expect(registers()).toHaveAttribute("aria-selected", "true");

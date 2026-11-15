@@ -1,7 +1,7 @@
-// Prints one line per expression the debugger must agree with, then calls
-// barrier(): `EXPECT\t<expression>\t<kind>\t<value>`, the value computed
-// here by the compiler. Expressions are chosen where C and microscope's exact
-// language agree, or the native side computes the exact answer itself.
+
+
+
+
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -36,8 +36,8 @@ struct node {
     struct node *next;
 };
 
-// A record whose last member is a flexible array, as long as its count
-// says.
+
+
 struct tail {
     int count;
     int data[];
@@ -74,7 +74,7 @@ struct fixture {
     enum color color;
     enum sign sign;
     counter_t counter;
-    // C11 anonymous members, whose members are named as the record's own.
+
     union {
         int32_t anonymous_int;
         uint32_t anonymous_bits;
@@ -166,7 +166,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < f.tail->count; i++) {
         f.tail->data[i] = 100 + i;
     }
-    // Arrays as long as the program decides: argc is one.
+
     int count = argc + 3;
     int vla[count];
     int vla_grid[2][count];

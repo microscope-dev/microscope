@@ -1,5 +1,3 @@
-// The page's state logic, fed what real servers sent.
-
 import { describe, expect, it, vi } from "vitest";
 
 import { action } from "../src/actions";
@@ -26,17 +24,16 @@ describe("every recorded transcript", () => {
     expect(messages[0]?.type).toBe("hello");
     const models = replay(messages);
     for (const model of models) {
-      // Every state names its session exactly when something is debugged.
       expect(model.state?.session === null).toBe(model.state?.target === null);
-      // Each model is something the status and actions can describe.
+
       expect(shown(model).label).not.toBe("");
       for (const command of ["continue", "kill", "restart"] as const) {
         action(command, model);
       }
-      // Pause is offered exactly while the program runs.
+
       expect(action("pause", model).enabled).toBe(model.state?.inferior.state === "running");
     }
-    // Revisions within one session never go backward.
+
     let last: { session: string | null; revision: number } | null = null;
     for (const message of messages.filter((each) => each.type === "state")) {
       const floor = last?.session === message.session ? last.revision : Number.NEGATIVE_INFINITY;
@@ -133,7 +130,7 @@ describe("a Start pane replacing a session", () => {
     expect(models.slice(loaded).map((model) => model.state?.session)).toEqual(
       models.slice(loaded).map(() => session),
     );
-    // It still runs: the transcript continues it to its end.
+
     const final = models.at(-1) as Model;
     expect(final.state?.busy).toBeNull();
     expect(final.state?.inferior.state).toBe("exited");
@@ -190,7 +187,7 @@ describe("the connection, driven by recorded traffic", () => {
       method: string,
       params?: unknown,
     ) => Promise<unknown>;
-    // The recorded client numbered its requests its own way.
+
     const local = new Map<number, number>();
     const answers = new Map<number, Promise<unknown>>();
     for (const line of lines) {
@@ -226,7 +223,7 @@ describe("the connection, driven by recorded traffic", () => {
       if (message.type !== "result" && message.type !== "error") {
         continue;
       }
-      // An answer's bytes come with it.
+
       const payload = frames.get(message.id);
       const wanted =
         message.type === "error"
@@ -234,7 +231,7 @@ describe("the connection, driven by recorded traffic", () => {
           : { ok: payload ? { ...(message.result as object), payload } : message.result };
       expect(await answers.get(message.id)).toEqual(wanted);
     }
-    // Answers never reach the model; everything else does, in order.
+
     const forwarded = events.flatMap((event) => (event.type === "message" ? [event.message] : []));
     const expected = received(name).filter(
       (message) => message.type !== "result" && message.type !== "error",
@@ -243,7 +240,6 @@ describe("the connection, driven by recorded traffic", () => {
   });
 });
 
-/** A connection whose transport has opened, recording what it sends. */
 async function openConnection(emit: (event: ModelEvent) => void = () => {}) {
   let handlers: TransportHandlers | null = null;
   const sent: string[] = [];

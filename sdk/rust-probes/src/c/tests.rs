@@ -1,6 +1,3 @@
-//! The C entry points as a caller across a language boundary uses them,
-//! which Miri runs too: `just miri`.
-
 use core::sync::atomic::Ordering;
 
 use super::*;
@@ -20,8 +17,6 @@ fn define_site(kind: u8, name: &str) -> *const Site {
     }
 }
 
-/// A site is defined from bytes, refused as null when they are not text;
-/// a null site does nothing; a zone begun ends by its own call.
 #[test]
 fn sites_are_defined_from_bytes_and_null_does_nothing() {
     assert_eq!(microscope_probes_abi(), abi::ABI);

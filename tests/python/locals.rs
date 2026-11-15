@@ -1,6 +1,3 @@
-//! Python frames' locals at native stops, each the value CPython reported
-//! for it, in the text CPython's own `repr` gives it.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -16,8 +13,6 @@ use crate::session::{CORES, MATRIX, PythonSession};
 use crate::support::Scenario;
 use crate::support::truth::Report;
 
-/// The fixture's functions, each parked on a thread of its own, and the
-/// parameters of each, in order.
 pub const PARKED: [(&str, &[&str]); 4] = [
     ("scalars", &["gate"]),
     ("containers", &["gate"]),
@@ -28,13 +23,9 @@ pub const PARKED: [(&str, &[&str]); 4] = [
     ),
 ];
 
-/// The locals not yet assigned at the checkpoint, which CPython leaves out
-/// of a frame's locals, and the function whose they are.
 const UNBOUND: [&str; 1] = ["later"];
 const UNBOUND_IN: &str = "unbound_and_shared";
 
-/// Each frame's locals as CPython reported them, by its thread's native id
-/// and its qualified name: each local's name and canonical text.
 pub fn reported_locals(truth: &[Vec<String>]) -> BTreeMap<(u64, String), Vec<(String, String)>> {
     let mut frames = BTreeMap::new();
     let mut names = BTreeMap::new();
@@ -59,7 +50,6 @@ pub fn reported_locals(truth: &[Vec<String>]) -> BTreeMap<(u64, String), Vec<(St
     frames
 }
 
-/// A stop's frames and their variables.
 pub struct Stop<'a> {
     pub scenario: &'a Scenario,
     pub id: StopId,
@@ -67,7 +57,6 @@ pub struct Stop<'a> {
 }
 
 impl Stop<'_> {
-    /// The variables of the frame of `thread` that runs `function`.
     pub async fn variables(&self, thread: u64, function: &str) -> Vec<Variable> {
         let at = self.frame(thread, function).await;
         let snapshot = self
@@ -77,7 +66,6 @@ impl Stop<'_> {
         snapshot.variables.to_vec()
     }
 
-    /// The frame of `thread` that runs `function`.
     pub async fn frame(&self, thread: u64, function: &str) -> StopContext {
         let at = |frame| StopContext {
             stop: self.id,
@@ -109,7 +97,6 @@ impl Stop<'_> {
         at(frame.id)
     }
 
-    /// Every child of a value, in order.
     pub async fn children(
         &self,
         reference: &Arc<ValueChildrenReference>,
@@ -129,7 +116,6 @@ impl Stop<'_> {
     }
 }
 
-/// The one-line text a value is presented as.
 pub fn summary(state: &VariableState) -> &str {
     match state {
         VariableState::Available {
@@ -140,7 +126,6 @@ pub fn summary(state: &VariableState) -> &str {
     }
 }
 
-/// The capability of a value's children.
 pub fn children_of(state: &VariableState) -> &Arc<ValueChildrenReference> {
     match state {
         VariableState::Available {
@@ -154,7 +139,6 @@ pub fn children_of(state: &VariableState) -> &Arc<ValueChildrenReference> {
     }
 }
 
-/// The one-line text a value is presented as, if it is presented.
 pub fn presented(state: &VariableState) -> Option<&str> {
     match state {
         VariableState::Available {
@@ -165,17 +149,12 @@ pub fn presented(state: &VariableState) -> Option<&str> {
     }
 }
 
-/// Checks the locals of the frame of `function`, whose parameters are
-/// `parameters`, against those CPython reported for it: each bound local
-/// by its name, its kind, and its canonical text, in order; the unbound
-/// ones said to be.
 pub fn check_locals(
     function: &str,
     parameters: &[&str],
     variables: &[Variable],
     reported: &[(String, String)],
 ) -> Result<(), String> {
-    // CPython leaves unbound locals out; the debugger says they are.
     let mut bound = Vec::new();
     for variable in variables {
         if !UNBOUND.contains(&&*variable.name) {
@@ -229,12 +208,8 @@ pub fn check_locals(
     Ok(())
 }
 
-/// Each presented local's text, by its function and name, where it is
-/// the same on every interpreter: not an object shown by its address.
 type Agreed = BTreeMap<(String, String), String>;
 
-/// Checks the locals of every parked function's frame against CPython's,
-/// and gives the texts every interpreter must agree on.
 pub async fn assert_locals(stop: &Stop<'_>, truth: &[Vec<String>]) -> Agreed {
     let reported = reported_locals(truth);
     let mut agreed = Agreed::new();
@@ -259,8 +234,6 @@ pub async fn assert_locals(stop: &Stop<'_>, truth: &[Vec<String>]) -> Agreed {
     agreed
 }
 
-/// Checks that every interpreter presented the locals each presents as
-/// the first did.
 fn assert_agreement(runs: &[(String, Agreed)]) {
     let Some((first, expected)) = runs.first() else {
         return;
@@ -271,7 +244,6 @@ fn assert_agreement(runs: &[(String, Agreed)]) {
     }
 }
 
-/// The thread CPython reported runs `function`.
 fn thread_of(truth: &[Vec<String>], function: &str) -> u64 {
     reported_locals(truth)
         .keys()
@@ -279,7 +251,6 @@ fn thread_of(truth: &[Vec<String>], function: &str) -> u64 {
         .expect("the function's thread")
 }
 
-/// The values of a few locals, as numbers.
 async fn assert_numbers(stop: &Stop<'_>, truth: &[Vec<String>]) {
     let scalars = stop.variables(thread_of(truth, "scalars"), "scalars").await;
     let value = |name: &str| {
@@ -313,7 +284,6 @@ async fn assert_numbers(stop: &Stop<'_>, truth: &[Vec<String>]) {
     );
 }
 
-/// The children of the containers, page by page.
 async fn assert_children(stop: &Stop<'_>, truth: &[Vec<String>]) {
     let containers = stop
         .variables(thread_of(truth, "containers"), "containers")
@@ -353,8 +323,6 @@ async fn assert_children(stop: &Stop<'_>, truth: &[Vec<String>]) {
         stop.context
     );
 
-    // A page from the middle of a dict whose deleted entries keep their
-    // places in its table.
     let thinned = stop.children(children_of(state("thinned")), 3, 2).await;
     assert_eq!(
         texts(&thinned),
@@ -387,7 +355,6 @@ async fn assert_children(stop: &Stop<'_>, truth: &[Vec<String>]) {
     );
 }
 
-/// Expressions over a frame's locals give the values the frame holds.
 async fn assert_evaluated(stop: &Stop<'_>, truth: &[Vec<String>]) {
     let frame = stop
         .frame(thread_of(truth, "containers"), "containers")
@@ -413,8 +380,6 @@ async fn assert_evaluated(stop: &Stop<'_>, truth: &[Vec<String>]) {
     }
 }
 
-/// Every parked frame's locals are the ones CPython reports, presented as
-/// its `repr` presents them, on every interpreter in the matrix.
 #[tokio::test]
 async fn each_frames_locals_are_the_ones_cpython_reports() {
     let mut runs = Vec::new();
@@ -432,13 +397,9 @@ async fn each_frames_locals_are_the_ones_cpython_reports() {
         session.shutdown().await;
     }
 
-    // Every interpreter presents the same values alike, free-threaded or
-    // not, as its own build or a distribution's.
     assert_agreement(&runs);
 }
 
-/// A core dump's Python frames hold the locals the program reported just
-/// before it aborted.
 #[tokio::test]
 async fn a_cores_python_locals_are_the_ones_cpython_reported() {
     let mut runs = Vec::new();

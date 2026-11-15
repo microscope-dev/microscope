@@ -1,7 +1,7 @@
-// Workers through Node's inspector. The main thread starts a worker that
-// runs crunch(), whose line the worker tests break at, and with `both`
-// runs crunch() itself too, released with the worker by one shared flag,
-// so that two isolates pause there at once.
+
+
+
+
 'use strict';
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 
@@ -20,7 +20,7 @@ function risky() {
 
 if (isMainThread) {
   const both = process.argv[2] === 'both';
-  // [0]: the worker is ready; [1]: both go.
+
   const flags = new Int32Array(new SharedArrayBuffer(8));
   const worker = new Worker(__filename, { workerData: { n: 6, flags, both } });
   worker.on('message', (value) => console.log('RESULT', value));

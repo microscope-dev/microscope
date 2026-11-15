@@ -1,23 +1,3 @@
-//! Where Node keeps its event loop's work, which no `v8dbg_` constant and
-//! only some `nodedbg_` variables say: decoded from small functions Node
-//! exports, each checked against the instruction shape it must have, or
-//! refused by name.
-//!
-//! - `v8::Isolate::GetCurrentContext` loads the isolate's current context
-//!   first: `mov r, [rdi + X]; test r, r`.
-//! - `node::timers::BindingData::SetupTimers` reads the current context's
-//!   embedder data, compares its context-tag slot with
-//!   `ContextEmbedderTag::kNodeContextTagPtr`, loads the `Environment`
-//!   from another slot, and passes `[env + realm]`, its principal realm, to
-//!   the realm's setters (`src/timers.cc`).
-//! - `node::PrincipalRealm::set_timers_callback_function` disposes and
-//!   stores the realm's global handle at one offset (`env_properties.h`'s
-//!   `PER_REALM_STRONG_PERSISTENT_VALUES`).
-//! - `node::AsyncWrap::MemoryInfoName` indexes `provider_names` by
-//!   `provider_type_` (`src/async_wrap.cc`).
-//! - `node::AsyncWrap::GetAsyncId` reads the wrapper from its object's
-//!   embedder field and the async id from the wrapper.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -37,14 +17,10 @@ const GET_ASYNC_ID: &str =
     "_ZN4node9AsyncWrap10GetAsyncIdERKN2v820FunctionCallbackInfoINS1_5ValueEEE";
 const CONTEXT_TAG: &str = "_ZN4node18ContextEmbedderTag18kNodeContextTagPtrE";
 
-/// The most bytes of one function decoded.
 const MOST_BYTES: u64 = 1024;
 
-/// The static variables of libuv's `threadpool.c` the walk reads.
 const POOL: [&str; 5] = ["threads", "nthreads", "idle_threads", "cond", "mutex"];
 
-/// Where Node keeps its event loop's work in `object`, whose V8 objects
-/// have `layout`.
 pub(super) fn layout(
     object: &object::File<'_>,
     layout: Result<&V8Layout, &Arc<str>>,
@@ -100,7 +76,6 @@ pub(super) fn layout(
     })
 }
 
-/// The address and size of the definition named `name`.
 fn named(object: &object::File<'_>, name: &str) -> Option<(u64, u64)> {
     object
         .symbols()
@@ -109,7 +84,6 @@ fn named(object: &object::File<'_>, name: &str) -> Option<(u64, u64)> {
         .map(|symbol| (symbol.address(), symbol.size()))
 }
 
-/// The instructions of the function named `name`, over its whole size.
 fn code(object: &object::File<'_>, name: &str) -> Result<Vec<Instruction>, Arc<str>> {
     let (address, size) = object
         .symbols()
@@ -152,8 +126,6 @@ fn unexpected(what: &str) -> Arc<str> {
     format!("{what} does not have the shape microscope reads").into()
 }
 
-/// The 64-bit register `instruction` loads from `[base + displacement]`,
-/// with no index or segment, and the base and displacement.
 fn load(instruction: &Instruction) -> Option<(Register, Register, u64)> {
     (instruction.mnemonic() == Mnemonic::Mov
         && instruction.op_count() == 2
@@ -178,8 +150,6 @@ fn is_prologue(instruction: &Instruction) -> bool {
         || super::super::x86_64::is_register_move(instruction, Register::RBP, Register::RSP)
 }
 
-/// `GetCurrentContext`'s first load, `mov r, [rdi + X]`, followed by
-/// `test r, r`: X.
 fn current_context(code: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
     let mut body = code.iter().filter(|instruction| !is_prologue(instruction));
     let (Some(first), Some(second)) = (body.next(), body.next()) else {
@@ -199,20 +169,15 @@ fn current_context(code: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
     }
 }
 
-/// What a register of `SetupTimers` holds, as far as its loads say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Held {
-    /// A native context's embedder data.
     EmbedderData,
 
-    /// The word at this offset of the embedder data.
     Slot(u64),
 
-    /// A RIP-relative address, or a word read from one.
     Static,
 }
 
-/// What `SetupTimers` says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Setup {
     environment: u64,
@@ -220,12 +185,6 @@ struct Setup {
     realm: u64,
 }
 
-/// The embedder data slots `SetupTimers` reads, the one it compares (the
-/// context tag) and the one whose word it passes `[word + realm]` from
-/// (the `Environment`), and the realm's offset. Every register is followed
-/// in order through the function's code; a call forgets the registers it
-/// may change. `embedder_data` is where a native context keeps its
-/// embedder data, from its tagged address.
 fn setup_timers(code: &[Instruction], embedder_data: u64, what: &str) -> Result<Setup, Arc<str>> {
     const CALLER_SAVED: [Register; 9] = [
         Register::RAX,
@@ -331,9 +290,6 @@ fn setup_timers(code: &[Instruction], embedder_data: u64, what: &str) -> Result<
     }
 }
 
-/// The offset `set_timers_callback_function` disposes and stores its realm's
-/// global handle at: every store through `this` must be to it, and it must
-/// be loaded first.
 fn realm_slot(code: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
     let mut this = vec![Register::RDI];
     let mut loads = Vec::new();
@@ -374,9 +330,6 @@ fn realm_slot(code: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
     }
 }
 
-/// `MemoryInfoName`'s `provider_type_` offset and the address of the
-/// provider names' table: `mov{sxd} i, [rdi + P]`, then `mov rax, [T + i *
-/// 8]`, or `lea t, [rip + T]; mov rax, [t + i * 8]`.
 fn provider(code: &[Instruction], what: &str) -> Result<(u64, u64), Arc<str>> {
     let mut body = code.iter().filter(|instruction| !is_prologue(instruction));
     let first = body.next().ok_or_else(|| unexpected(what))?;
@@ -425,9 +378,6 @@ fn provider(code: &[Instruction], what: &str) -> Result<(u64, u64), Arc<str>> {
     Err(unexpected(what))
 }
 
-/// `GetAsyncId`'s fast path: `mov w, [o + E]` reads the wrapper from the
-/// object's embedder field, and `movsd xmm0, [w + A]` its async id: E, from
-/// the object's tagged address, and A.
 fn async_id(code: &[Instruction], what: &str) -> Result<(u64, u64), Arc<str>> {
     let mut wrappers: BTreeMap<Register, u64> = BTreeMap::new();
     let mut found = Vec::new();
@@ -446,8 +396,6 @@ fn async_id(code: &[Instruction], what: &str) -> Result<(u64, u64), Arc<str>> {
             continue;
         }
         if instruction.mnemonic() == Mnemonic::Call {
-            // A call returns its result in rax and may change the rest of
-            // the caller-saved registers.
             wrappers.clear();
             continue;
         }
@@ -466,8 +414,6 @@ fn async_id(code: &[Instruction], what: &str) -> Result<(u64, u64), Arc<str>> {
     }
 }
 
-/// libuv's thread pool, where `object` links libuv and keeps the local
-/// symbols of `threadpool.c`: each named once after that file's symbol.
 fn pool(object: &object::File<'_>) -> Option<UvPool> {
     let mut file = None;
     let mut found: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
@@ -512,9 +458,7 @@ mod tests {
 
     #[test]
     fn the_current_context_is_the_first_load_from_the_isolate() {
-        // mov rax, [rdi + 0x158]
         let load = &[0x48, 0x8b, 0x87, 0x58, 0x01, 0, 0][..];
-        // test rax, rax; then test rdx, rdx
         assert_eq!(
             current_context(&decode(&[load, &[0x48, 0x85, 0xc0]]), "26"),
             Ok(0x158)
@@ -522,17 +466,15 @@ mod tests {
         assert!(current_context(&decode(&[load, &[0x48, 0x85, 0xd2]]), "planted").is_err());
     }
 
-    /// Node 22's shape: the tag compared through a register loaded from the
-    /// embedder data, and the environment's realm passed in rdi.
     #[test]
     fn setup_timers_gives_the_environment_tag_and_realm() {
-        let context = &[0x49, 0x8b, 0x04, 0x24][..]; // mov rax, [r12]
-        let data = &[0x48, 0x8b, 0x40, 0x2f][..]; // mov rax, [rax + 0x2f]
-        let tag = &[0x48, 0x8b, 0x90, 0x47, 0x01, 0, 0][..]; // mov rdx, [rax + 0x147]
-        let compare = &[0x48, 0x39, 0x15, 0, 0x01, 0, 0][..]; // cmp [rip + 0x100], rdx
-        let environment = &[0x4c, 0x8b, 0xa0, 0x0f, 0x01, 0, 0][..]; // mov r12, [rax + 0x10f]
-        let realm = &[0x49, 0x8b, 0xbc, 0x24, 0x80, 0x0b, 0, 0][..]; // mov rdi, [r12 + 0xb80]
-        let other = &[0x49, 0x8b, 0xbc, 0x24, 0x88, 0x0b, 0, 0][..]; // mov rdi, [r12 + 0xb88]
+        let context = &[0x49, 0x8b, 0x04, 0x24][..];
+        let data = &[0x48, 0x8b, 0x40, 0x2f][..];
+        let tag = &[0x48, 0x8b, 0x90, 0x47, 0x01, 0, 0][..];
+        let compare = &[0x48, 0x39, 0x15, 0, 0x01, 0, 0][..];
+        let environment = &[0x4c, 0x8b, 0xa0, 0x0f, 0x01, 0, 0][..];
+        let realm = &[0x49, 0x8b, 0xbc, 0x24, 0x80, 0x0b, 0, 0][..];
+        let other = &[0x49, 0x8b, 0xbc, 0x24, 0x88, 0x0b, 0, 0][..];
 
         let shape = decode(&[context, data, tag, compare, environment, realm]);
         assert_eq!(
@@ -552,10 +494,10 @@ mod tests {
 
     #[test]
     fn the_realm_slot_is_the_one_stored_through_this() {
-        let this = &[0x48, 0x89, 0xfb][..]; // mov rbx, rdi
-        let isolate = &[0x4c, 0x8b, 0xaf, 0xb8, 0, 0, 0][..]; // mov r13, [rdi + 0xb8]
-        let old = &[0x48, 0x8b, 0xbf, 0x88, 0x02, 0, 0][..]; // mov rdi, [rdi + 0x288]
-        let store = &[0x48, 0x89, 0x83, 0x88, 0x02, 0, 0][..]; // mov [rbx + 0x288], rax
+        let this = &[0x48, 0x89, 0xfb][..];
+        let isolate = &[0x4c, 0x8b, 0xaf, 0xb8, 0, 0, 0][..];
+        let old = &[0x48, 0x8b, 0xbf, 0x88, 0x02, 0, 0][..];
+        let store = &[0x48, 0x89, 0x83, 0x88, 0x02, 0, 0][..];
         assert_eq!(
             realm_slot(&decode(&[this, isolate, old, store, RET]), "26"),
             Ok(0x288)
@@ -565,8 +507,7 @@ mod tests {
 
     #[test]
     fn memory_info_name_gives_the_provider_table() {
-        let index = &[0x48, 0x63, 0x47, 0x30][..]; // movsxd rax, [rdi + 0x30]
-        // mov rax, [rax * 8 + 0x340b060], and with a scale of 4
+        let index = &[0x48, 0x63, 0x47, 0x30][..];
         let table = &[0x48, 0x8b, 0x04, 0xc5, 0x60, 0xb0, 0x40, 0x03][..];
         let scaled = &[0x48, 0x8b, 0x04, 0x85, 0x60, 0xb0, 0x40, 0x03][..];
         assert_eq!(
@@ -578,9 +519,9 @@ mod tests {
 
     #[test]
     fn get_async_id_gives_the_wrapper_field_and_the_id() {
-        let wrapper = &[0x49, 0x8b, 0x46, 0x27][..]; // mov rax, [r14 + 0x27]
-        let id = &[0xf2, 0x0f, 0x10, 0x40, 0x38][..]; // movsd xmm0, [rax + 0x38]
-        let test = &[0x48, 0x85, 0xc0][..]; // test rax, rax
+        let wrapper = &[0x49, 0x8b, 0x46, 0x27][..];
+        let id = &[0xf2, 0x0f, 0x10, 0x40, 0x38][..];
+        let test = &[0x48, 0x85, 0xc0][..];
         let call = &[0xe8, 0, 0, 0, 0][..];
         assert_eq!(
             async_id(&decode(&[wrapper, test, id]), "26"),

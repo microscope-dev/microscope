@@ -1,7 +1,3 @@
-//! The callers of a frame, which recover the values its function's
-//! parameters held on entry from the calls that passed them (DWARF 5
-//! section 2.5.1.7), through any chain of tail calls between.
-
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -23,32 +19,22 @@ use super::native::InspectionOps;
 use super::{Controller, Inferior, RuntimeModule};
 use crate::unwind::DEFAULT_MAX_FRAMES;
 
-/// How many callers one entry value may consult, through call sites whose
-/// values are themselves entry values.
 const MAX_ENTRY_VALUE_DEPTH: usize = 16;
 
-/// The frame a runtime reads, as entry values find its caller.
 #[derive(Clone, Copy)]
 pub(super) struct FrameAt {
-    /// The physical activation, innermost first.
     pub(super) activation: usize,
 
-    /// The module describing its code, and its address in that image.
     pub(super) code: Option<(ModuleId, ImageAddress)>,
 
-    /// How many callers away from the inspected frame it is.
     pub(super) depth: usize,
 }
 
-/// The activations of a stopped thread or a parked task, unwound once for
-/// every entry value one inspection recovers.
 pub(super) struct Callers<'a, P: InspectionOps> {
     controller: &'a Controller<P>,
     inferior: &'a Inferior,
     root: StackRoot,
 
-    /// The activations unwound so far, and how many were asked for: fewer
-    /// means the stack ended.
     stack: RefCell<Option<(PhysicalStack, usize)>>,
 }
 
@@ -70,8 +56,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
         })
     }
 
-    /// The callers of a stack already unwound, as far as `requested`
-    /// activations.
     pub(super) fn with_stack(
         controller: &'a Controller<P>,
         inferior: &'a Inferior,
@@ -87,7 +71,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
         })
     }
 
-    /// The physical activation at `index`, unwinding further if needed.
     fn activation(&self, index: usize) -> Result<Option<PhysicalFrame>, VariableRuntimeError> {
         let mut stack = self.stack.borrow_mut();
         let complete = stack.as_ref().is_some_and(|(stack, requested)| {
@@ -108,8 +91,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
             .cloned())
     }
 
-    /// The value `parameter` held on entry to the function of the frame at
-    /// `frame`, whose location `module` describes.
     pub(super) fn entry_value(
         self: &Rc<Self>,
         frame: FrameAt,
@@ -122,8 +103,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
             return value;
         }
 
-        // A caller asks for its own entry value to say what it passed, and
-        // what its caller lacks is not what the frame's caller lacks.
         value.map_err(|error| match error {
             VariableRuntimeError::Unavailable(
                 reason @ VariableUnavailableReason::EntryValue(_),
@@ -132,7 +111,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
         })
     }
 
-    /// What the caller of the frame at `frame` passed for `parameter`.
     fn caller_value(
         self: &Rc<Self>,
         frame: FrameAt,
@@ -163,7 +141,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
             },
         )
         .map_err(|error| match error {
-            // What the caller cannot provide, the entry value cannot.
             VariableRuntimeError::Unavailable(reason)
                 if !matches!(
                     reason,
@@ -178,10 +155,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
         })
     }
 
-    /// Where each function that left by a tail call between the call that
-    /// entered the activation at `activation` and its function jumped from,
-    /// the last one first. There are none unless the debug information
-    /// allows exactly one chain of tail calls, and says where each jumped.
     pub(super) fn tail_jumps(
         self: &Rc<Self>,
         activation: usize,
@@ -208,15 +181,12 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
             .unwrap_or_default()
     }
 
-    /// The call that entered the function of the frame at `frame`, whose
-    /// location `module` describes, and the one chain of tail calls since.
     fn entry(
         self: &Rc<Self>,
         frame: FrameAt,
         module: ModuleId,
         budget: &mut InspectionBudget,
     ) -> Result<Entry<'a>, VariableRuntimeError> {
-        // Only a frame's own function has entry values.
         let Some((_, code)) = frame.code.filter(|(code_module, _)| *code_module == module) else {
             return Err(unavailable(EntryValueUnavailableReason::NoCaller));
         };
@@ -228,7 +198,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
             return Err(unavailable(EntryValueUnavailableReason::NoCaller));
         };
 
-        // An interrupted frame did not call the frame above it.
         if caller_frame.context.signal_frame {
             return Err(unavailable(EntryValueUnavailableReason::NoCaller));
         }
@@ -250,8 +219,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
             .image_address(return_address)
             .map_err(|_| unavailable(EntryValueUnavailableReason::NoCallSite))?;
 
-        // Reading the caller's frame costs far more than asking whether a
-        // call returns where it does.
         if !caller.variables.may_describe_call_site(caller_return) {
             return Err(unavailable(EntryValueUnavailableReason::NoCallSite));
         }
@@ -289,8 +256,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
         })
     }
 
-    /// Runs `read` with a runtime that reads `caller_frame`, which runs
-    /// `caller`'s code.
     fn with_caller<T>(
         self: &Rc<Self>,
         caller: &RuntimeModule,
@@ -326,7 +291,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
         read(&mut caller_runtime)
     }
 
-    /// Where a call site in `caller` calls.
     fn call_target(
         &self,
         caller: &RuntimeModule,
@@ -352,10 +316,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
             .ok_or_else(|| VariableRuntimeError::Fatal(format!("module {id} is not loaded").into()))
     }
 
-    /// Fails unless the call and its tail calls entered `module`'s
-    /// `functions`, named as linker symbols: one another module also
-    /// defines may have taken the call, or a jump through the procedure
-    /// linkage table, in its place.
     fn entered_as_described(
         &self,
         module: ModuleId,
@@ -377,11 +337,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
         Ok(())
     }
 
-    /// Whether a module other than `module` exports `name` as code, which
-    /// calls to `module`'s function of that name may reach instead. The
-    /// executable comes first in every lookup, so nothing takes its
-    /// functions' place. Untyped symbols count: assembly often leaves
-    /// functions so.
     fn defined_elsewhere(&self, module: ModuleId, name: &str) -> bool {
         module != self.controller.main.id
             && self.controller.modules.values().any(|other| {
@@ -394,8 +349,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
             })
     }
 
-    /// The function whose first instruction `address` is, by its symbol's
-    /// name, in whichever module holds it.
     pub(super) fn function_at(&self, address: VirtualAddress) -> Option<Arc<str>> {
         let modules = self.controller.unwind_modules(self.inferior);
         let (module, image_address) = unwind_module_for(&modules, address)?;
@@ -412,9 +365,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
         })
     }
 
-    /// The one address a linker symbol defines a function at, across every
-    /// loaded module. An indirect function's callers reach whichever
-    /// implementation its resolver chose, which is not its address.
     fn symbol(&self, name: &str) -> Option<VirtualAddress> {
         let mut found = None;
         for module in self.controller.modules.values() {
@@ -437,8 +387,6 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
     }
 }
 
-/// The call that entered a frame's function, from the frame that made it,
-/// and the tail calls since.
 struct Entry<'a> {
     caller: &'a RuntimeModule,
     caller_frame: PhysicalFrame,
@@ -447,7 +395,6 @@ struct Entry<'a> {
     tail_calls: TailCallChain,
 }
 
-/// The call that entered a frame's function, and the tail calls after it.
 struct Chain<'c, 'r, 'a, P: InspectionOps> {
     callee: &'a RuntimeModule,
     caller: &'a RuntimeModule,
@@ -456,9 +403,6 @@ struct Chain<'c, 'r, 'a, P: InspectionOps> {
 }
 
 impl<P: InspectionOps> Chain<'_, '_, '_, P> {
-    /// The value passed for `parameter`, which `requester` describes, by the
-    /// last of `links`, the tail calls between the call and the frame, or by
-    /// the call itself.
     fn value(
         &mut self,
         links: &[CallSiteId],
@@ -471,7 +415,6 @@ impl<P: InspectionOps> Chain<'_, '_, '_, P> {
             Some((last, rest)) => (self.callee, Some((*last, rest))),
         };
 
-        // A parameter entry names a parameter only within its own module.
         if matches!(parameter, EntryParameter::Parameter(_)) && module.loaded.id != requester {
             return Err(unavailable(EntryValueUnavailableReason::NoParameter));
         }
@@ -496,8 +439,6 @@ impl<P: InspectionOps> Chain<'_, '_, '_, P> {
     }
 }
 
-/// A function that left by a tail call: nothing of its state survives the
-/// jump but the values its own caller passed it.
 struct TailCallFrame<'f, 'c, 'r, 'a, P: InspectionOps> {
     chain: &'f mut Chain<'c, 'r, 'a, P>,
     links: &'f [CallSiteId],

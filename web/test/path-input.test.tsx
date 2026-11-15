@@ -1,5 +1,3 @@
-// Completing a path while the server's answers arrive late.
-
 import { cleanup, render } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, expect, it } from "vitest";
@@ -15,7 +13,7 @@ function Field() {
   return (
     <>
       <PathInput id="program" value={value} onChange={setValue} />
-      {/* Tab skips these, so the field moving focus on by itself must too. */}
+      {}
       <button type="button" disabled>
         Off
       </button>
@@ -43,7 +41,6 @@ const field = () => page.getByRole("combobox");
 const entries = (...list: PathEntry[]) => ({ entries: list });
 const next = () => page.getByRole("button", { name: "Next" });
 
-/** The request completing `text`, skipping those for older text. */
 async function asked(server: FakeServer, text: string) {
   let request = await server.next("completePath");
   while ((request.params as { text: string }).text !== text) {
@@ -59,7 +56,7 @@ it("never completes typed text with suggestions for older text", async () => {
 
   await userEvent.type(field(), "build/test-p");
   await userEvent.keyboard("{Tab}");
-  // The answer for the empty field is stale; Tab waits for the current one.
+
   const request = await asked(server, "build/test-p");
   await expect.element(field()).toHaveValue("build/test-p");
   server.answer(request, entries({ text: "build/test-programs/", kind: "directory" }));
@@ -135,7 +132,6 @@ it("passes Tab through an empty field and stops descending at a directory", asyn
   await expect.element(next()).toHaveFocus();
   await expect.element(field()).toHaveValue("build/");
 
-  // An entry the arrow keys picked is taken, directory or not.
   await userEvent.click(field());
   server.answer(await asked(server, "build/"), entries({ text: "build/web/", kind: "directory" }));
   await expect.element(page.getByRole("option", { name: /web/u })).toBeVisible();
@@ -204,7 +200,6 @@ it("keeps an arrow choice when the same text's suggestions come again", async ()
   );
   await expect.element(page.getByRole("option", { name: /basic/u })).toBeVisible();
 
-  // Coming back shows the old suggestions while new ones are fetched.
   await userEvent.click(next());
   await userEvent.click(field());
   await expect.element(page.getByRole("option", { name: /basic/u })).toBeVisible();

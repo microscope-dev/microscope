@@ -1,13 +1,13 @@
-//! What Zig functions return. Before each checkpoint the program prints its
-//! own truth, one line per value, its fields separated by tabs,
-//!
-//!     TRUTH <checkpoint> <path> <kind> <value>
-//!
-//! and then calls reached(checkpoint). Every checkpoint is named
-//! `returned-`: the tests finish the function that reached it and inspect
-//! what it returned, which is named for the function. Zig leaves its own
-//! calling convention unspecified, so only scalars are known; floats are
-//! their bits in hexadecimal.
+
+
+
+
+
+
+
+
+
+
 
 const std = @import("std");
 
@@ -70,9 +70,9 @@ noinline fn r_level(n: i32) Level {
     return value;
 }
 
-// Zig's LLVM backend says a function returning a struct through memory
-// returns void, so it shows nothing returned; the self-hosted backend names
-// the struct, which the tests require to be unknown.
+
+
+
 noinline fn r_pair(n: i32) Pair {
     const value = Pair{ .first = n, .second = -n };
     truth("returned-pair", "r_pair", "absent", "{s}", "");

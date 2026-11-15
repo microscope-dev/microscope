@@ -1,6 +1,3 @@
-/* Dense and legible: 12px monospace data on 20px rows, sans for chrome.
-   Every color is a token; dark mode redefines the tokens only. */
-
 :root {
   color-scheme: light;
   --paper: #f5f6f8;
@@ -10,16 +7,15 @@
   --line-strong: #c4cbd6;
   --ink: #1a2230;
   --ink-2: #4a5566;
-  /* A share's bar: each sets --share, from 0 to 1, and a heat bar's hue
-     warms with it while these hold. */
+
   --share: 0;
-  /* The hue of a source line's tint, which each tinted code row sets. */
+
   --tint: 0;
-  /* The stripes of code with no associated source line. */
+
   --hatch: repeating-linear-gradient(135deg, var(--unsourced) 0 2px, transparent 2px 6px);
-  /* How many characters a code pane's widest line number or offset has. */
+
   --digits: 6;
-  /* A code row's background, which its pinned costs copy. */
+
   --row-bg: transparent;
   --heat-saturation: 95%;
   --heat-lightness: 55%;
@@ -38,7 +34,7 @@
   --changed-bg: #fce8d4;
   --warn-bg: #fff5dc;
   --warn-line: #e3bd5f;
-  /* Tabs of the panes that share the focused pane's selection. */
+
   --linked-line: #c9a43c;
   --error: #b42525;
   --error-bg: #fde6e6;
@@ -153,8 +149,6 @@ body,
   margin: 0;
 }
 
-/* `->` is two characters in code everywhere, never an arrow. Every `font`
-   shorthand turns ligatures back on, so this outranks them all. */
 *,
 *::before,
 *::after {
@@ -200,18 +194,14 @@ kbd {
   text-align: center;
 }
 
-/* Application frame */
-
 .app {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  /* The window's width, never the toolbar's: its status shrinks instead. */
+
   grid-template-columns: minmax(0, 1fr);
   height: 100%;
 }
 
-/* The panes, and a notice above them when the address says something
-   they can't, such as that its session ended. */
 .workbench {
   display: flex;
   flex-direction: column;
@@ -225,7 +215,6 @@ kbd {
   background: var(--warn-bg);
 }
 
-/* The menu bar and the run toolbar under it, while a program is loaded. */
 .frame-head {
   min-width: 0;
 }
@@ -240,7 +229,6 @@ kbd {
   background: var(--surface);
 }
 
-/* Who is here and sharing, at the menu bar's end. */
 .menu-row-end {
   display: flex;
   flex: 1;
@@ -258,8 +246,6 @@ kbd {
   height: 24px;
 }
 
-/* Who is here gives way before the menus and Share: in a narrow window
-   the avatars alone say it, and many of them are cut off at the end. */
 .menu-row-end > .people {
   flex: 0 1 auto;
   min-width: 0;
@@ -272,14 +258,12 @@ kbd {
   }
 }
 
-/* A pane's own controls, above its rows. */
 .pane-tools {
   display: flex;
   justify-content: flex-end;
   padding: 2px 8px;
 }
 
-/* A document: the stop banner over the code. */
 .document,
 .output-pane {
   display: flex;
@@ -296,12 +280,10 @@ kbd {
   padding: 4px 8px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
-  /* Wraps rather than scrolls, since a scrolling box would clip its
-     popovers. */
+
   flex-wrap: wrap;
 }
 
-/* Step buttons keep their glyphs and tooltips where labels do not fit. */
 @media (width < 1360px) {
   .tb .label {
     display: none;
@@ -359,8 +341,6 @@ kbd {
   font: 10.5px / 1 var(--mono);
 }
 
-/* Tooltips still name the keys where the toolbar has no room for them.
-   They give way before the labels and the command the status names. */
 @media (width < 1600px) {
   .tb .hint {
     display: none;
@@ -397,8 +377,6 @@ kbd {
   flex: 1;
 }
 
-/* Takes the toolbar's spare room, and moves to its own row before the
-   pill would be cut off. */
 .status {
   display: flex;
   flex: 1 1 0;
@@ -410,8 +388,6 @@ kbd {
   white-space: nowrap;
 }
 
-/* A long reason, such as an exception's message, gives way before the
-   command: the header's tooltip and the stops strip still say it whole. */
 .status .detail {
   flex: 0 4 auto;
   min-width: 0;
@@ -517,8 +493,6 @@ kbd {
   margin-left: -8px;
 }
 
-/* A dashed ring, not fading, marks who can only view: faded initials fail
-   contrast on some hues. */
 .avatar.view {
   border-style: dashed;
   border-color: var(--ink-3);
@@ -536,8 +510,6 @@ kbd {
   text-transform: inherit;
   cursor: pointer;
 }
-
-/* Panes */
 
 .pane {
   display: flex;
@@ -572,7 +544,6 @@ kbd {
   white-space: nowrap;
 }
 
-/* What a heading names, such as a function or a time, reads as written. */
 .pane-head .subject {
   min-width: 0;
   overflow: hidden;
@@ -609,11 +580,9 @@ kbd {
   overflow: auto;
 }
 
-/* A pane of prose and forms, such as Account or Settings. */
 .pane-text {
   display: grid;
-  /* Rows as tall as their content, scrolling in a short pane instead of
-     squeezing what clips its overflow, such as a segmented control. */
+
   grid-auto-rows: max-content;
   align-content: start;
   gap: 10px;
@@ -659,7 +628,6 @@ kbd {
   margin: 0;
 }
 
-/* Other ways to sign in, set apart from the form above them. */
 .continue-with {
   margin-top: 8px;
 }
@@ -727,16 +695,12 @@ kbd {
   outline-offset: -2px;
 }
 
-/* Rows and these boxes clip what overflows them, so rings inside them are
-   drawn inward. */
 .row :focus-visible,
 .segmented :focus-visible,
 .strip .stops :focus-visible,
 .link-field :focus-visible {
   outline-offset: -2px;
 }
-
-/* Stop summary */
 
 .summary {
   display: grid;
@@ -757,8 +721,6 @@ kbd {
   font: 12px / 1.5 var(--mono);
 }
 
-/* Program output */
-
 .output {
   margin: 0;
   padding: 6px 10px;
@@ -770,8 +732,6 @@ kbd {
 .output .stderr {
   color: var(--error);
 }
-
-/* Status strip */
 
 .strip {
   display: flex;
@@ -801,8 +761,6 @@ kbd {
   padding: 0;
   border-top: 0;
 }
-
-/* Picker, join, and ended pages */
 
 .page {
   overflow: auto;
@@ -840,7 +798,6 @@ kbd {
   padding: 16px;
 }
 
-/* Only listens for edits; the forms stay in the card's grid. */
 .segmented {
   display: inline-flex;
   margin-left: auto;
@@ -882,7 +839,7 @@ fieldset.segmented {
 
 .field {
   display: grid;
-  /* Beside a taller field, the label, input, and note stay together. */
+
   align-content: start;
   gap: 5px;
 }
@@ -936,8 +893,6 @@ textarea.input {
   color: var(--ink-2);
 }
 
-/* Setting up two-factor authentication: the QR code beside its key, which
-   wraps under it in a narrow pane. */
 .totp-scan {
   display: flex;
   flex-wrap: wrap;
@@ -978,9 +933,6 @@ textarea.input {
   list-style: none;
 }
 
-/* Organizations and projects: lists of what a person manages, each row a
-   name, what it is to them, and what they may do, which wraps under the
-   name in a narrow pane. A row's details open beneath it. */
 .pane-text h3 {
   margin: 0;
   font-size: 13px;
@@ -1046,7 +998,6 @@ textarea.input {
   margin-left: auto;
 }
 
-/* What takes a row's whole width: a form or details opened beneath it. */
 .wide {
   flex: 1 1 100%;
 }
@@ -1061,7 +1012,6 @@ textarea.input {
   background: var(--paper);
 }
 
-/* Values a person may need, folded away once they are set. */
 .disclosure > summary {
   width: max-content;
   padding: 3px 0;
@@ -1106,13 +1056,11 @@ textarea.input {
   padding: 2px 6px;
 }
 
-/* Choices among words, such as a role, read as the words around them do. */
 .org select.input,
 .projects select.input {
   font-family: var(--sans);
 }
 
-/* The one button that deletes or removes, once its question is asked. */
 .button.danger {
   border-color: var(--error);
   color: var(--error);
@@ -1138,7 +1086,7 @@ textarea.input {
   border: 1px solid var(--line-strong);
   border-radius: 5px;
   background: var(--surface);
-  /* A link that looks like a button keeps the button's ink. */
+
   color: var(--ink);
   font-size: 13px;
   font-weight: 500;
@@ -1275,8 +1223,6 @@ textarea.input {
   text-align: right;
 }
 
-/* Link buttons */
-
 .link-button {
   padding: 0 4px;
   border: 0;
@@ -1300,10 +1246,6 @@ textarea.input {
   color: var(--ink);
 }
 
-/* Tasks */
-
-/* The function keeps room beside what the task waits for, which gives way
-   first. */
 .task-row .fn {
   flex: 0 1 auto;
   min-width: 6ch;
@@ -1322,7 +1264,6 @@ textarea.input {
   flex: none;
 }
 
-/* Numbers line up, as a runtime's tasks run into the hundreds. */
 .task-row .task-number {
   min-width: 3ch;
   text-align: right;
@@ -1334,8 +1275,6 @@ textarea.input {
   gap: 4px;
   padding: 2px 10px 6px;
 }
-
-/* Popovers */
 
 .popover {
   position: absolute;
@@ -1379,12 +1318,9 @@ textarea.input {
   cursor: pointer;
 }
 
-/* The accent ring would vanish on the accent button. */
 .link-field button:focus-visible {
   outline-color: var(--accent-ink);
 }
-
-/* Rows that act */
 
 .button-row {
   width: 100%;
@@ -1449,7 +1385,6 @@ textarea.input {
   overflow-wrap: anywhere;
 }
 
-/* An error says all of itself, on as many lines as it takes. */
 .row.sub.error {
   height: auto;
   white-space: normal;
@@ -1473,12 +1408,9 @@ textarea.input {
   color: var(--ink);
 }
 
-/* A toggle that is on, such as the eye on a watched value. */
 .icon[aria-pressed="true"] {
   color: var(--accent);
 }
-
-/* Breakpoints */
 
 .dot {
   display: inline-block;
@@ -1528,7 +1460,6 @@ textarea.input {
   text-overflow: ellipsis;
 }
 
-/* Faded rather than hidden, so the keyboard and touch still reach them. */
 .breakpoint .icon {
   opacity: 0;
 }
@@ -1587,8 +1518,6 @@ textarea.input {
   padding: 0 9px;
   font-size: 12px;
 }
-
-/* Code */
 
 .center-message {
   margin: auto;
@@ -1669,7 +1598,6 @@ textarea.input {
 
 .source-view .cm-selectionBackground,
 .source-view .cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
-  /* CodeMirror's base theme sets this more specifically. */
   background: color-mix(in srgb, var(--accent) 22%, transparent) !important;
 }
 
@@ -1686,8 +1614,6 @@ textarea.input {
   box-shadow: inset 3px 0 0 var(--pc-mark);
 }
 
-/* Why an exception stopped the program, under the line it stopped at. It
-   wraps, long paths too, rather than widen the lines it sits among. */
 .source-view .cm-stop-note {
   max-width: 80ch;
   overflow-wrap: anywhere;
@@ -1770,8 +1696,6 @@ textarea.input {
   color: var(--k);
 }
 
-/* Stop banner */
-
 .stop-banner {
   display: flex;
   flex: none;
@@ -1789,7 +1713,6 @@ textarea.input {
   background: var(--surface-2);
 }
 
-/* The processes a session debugs together, a bar like the stop banner's. */
 .processes {
   display: flex;
   flex-wrap: wrap;
@@ -1879,8 +1802,6 @@ textarea.input {
   color: var(--error);
 }
 
-/* Output and program input */
-
 .output .log {
   color: var(--accent);
 }
@@ -1906,8 +1827,6 @@ textarea.input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* Stop history */
 
 .strip .stops {
   display: flex;
@@ -1941,8 +1860,6 @@ textarea.input {
   background: var(--surface);
   color: var(--ink);
 }
-
-/* Values */
 
 .value-list {
   margin: 0;
@@ -2006,7 +1923,7 @@ textarea.input {
   font: inherit;
   text-align: left;
   text-overflow: ellipsis;
-  /* A value's spaces are part of it, and it stays on one line. */
+
   white-space: pre;
 }
 
@@ -2106,8 +2023,6 @@ textarea.input {
   font: 12px var(--mono);
 }
 
-/* Console */
-
 .console {
   padding: 4px 0;
   font: 12px / 1.5 var(--mono);
@@ -2135,7 +2050,6 @@ textarea.input {
   margin-left: -6px;
 }
 
-/* What a run-control line did, such as where the program stopped. */
 .console-said {
   color: var(--ink-2);
 }
@@ -2182,8 +2096,6 @@ textarea.input {
 .completions [role="option"].on {
   background: var(--accent-soft);
 }
-
-/* Disassembly and memory */
 
 .segmented.small button {
   padding: 2px 9px;
@@ -2479,8 +2391,6 @@ textarea.input {
   font: 12px var(--mono);
 }
 
-/* Value actions, registers, and watchpoints */
-
 .row-actions {
   display: inline-flex;
   flex: none;
@@ -2492,8 +2402,6 @@ textarea.input {
   opacity: 1;
 }
 
-/* A watched value keeps its lit eye in sight; the other actions wait for
-   the pointer or focus, holding their places so the eye does not move. */
 .row-actions:has(> [aria-pressed="true"]) {
   opacity: 1;
 }
@@ -2523,7 +2431,6 @@ textarea.input {
   gap: 4px;
 }
 
-/* The exceptions runtimes report, folded below the breakpoints. */
 .exceptions {
   padding: 2px 4px 6px;
   font-size: 12px;
@@ -2547,7 +2454,6 @@ textarea.input {
   cursor: pointer;
 }
 
-/* In a narrow pane, the access goes below rather than squeezing the text. */
 .watch-adder .input:first-child {
   flex: 1 1 16em;
   min-width: 0;
@@ -2557,8 +2463,6 @@ textarea.input {
   flex: none;
   width: auto;
 }
-
-/* Tables */
 
 .table-body {
   padding: 0;
@@ -2581,8 +2485,6 @@ textarea.input {
   text-align: left;
 }
 
-/* Sticky offsets start inside the scroller's padding, so cancel .pane-text's
-   top padding to pin the header to the pane's edge. */
 .pane-text .table th {
   top: -14px;
 }
@@ -2598,8 +2500,6 @@ textarea.input {
 .table tr:hover td {
   background: var(--surface-2);
 }
-
-/* Palette */
 
 .overlay {
   position: fixed;
@@ -2635,7 +2535,6 @@ textarea.input {
   outline: none;
 }
 
-/* The query is the palette's only field, so its underline is the ring. */
 .palette-query:focus-visible {
   border-bottom-color: var(--accent);
   box-shadow: inset 0 -1px 0 var(--accent);
@@ -2687,7 +2586,6 @@ textarea.input {
   font-size: 11.5px;
 }
 
-/* Says when the files listed are not all of them. */
 .palette-note {
   padding: 6px 12px;
   border-top: 1px solid var(--line);
@@ -2699,8 +2597,6 @@ textarea.input {
 .overlay > .palette {
   position: relative;
 }
-
-/* File details */
 
 .details {
   display: flex;
@@ -2729,7 +2625,6 @@ textarea.input {
   overflow-wrap: anywhere;
 }
 
-/* A download's failure takes a row of its own below the head's controls. */
 .details-head .error {
   order: 1;
   flex-basis: 100%;
@@ -2883,8 +2778,6 @@ textarea.input {
   white-space: pre-wrap;
 }
 
-/* A long line wraps deeper than the arguments start, so where one
- * argument ends stays plain. */
 .details-lines > div {
   padding-left: 4ch;
   text-indent: -4ch;
@@ -2925,8 +2818,6 @@ textarea.input {
   background: var(--ink);
 }
 
-/* Round times, each under a short mark, centered on it but for the
- * first and the end, which line up with the chart's edges. */
 .details-ticks {
   position: relative;
   height: 20px;
@@ -2970,8 +2861,6 @@ textarea.input {
   left: auto;
 }
 
-/* Empty until a bar is pointed at, and a line tall throughout, so the
- * page does not move when it fills. */
 .details-readout {
   min-height: 1lh;
 }
@@ -2982,8 +2871,6 @@ textarea.input {
   color: var(--ink-3);
   font-size: 11px;
 }
-
-/* Drawings */
 
 .drawings {
   display: flex;
@@ -3003,7 +2890,6 @@ textarea.input {
   background: var(--surface);
 }
 
-/* Narrow cards wrap the header's end and each whole tab, so tabs stay put. */
 .drawing-head {
   display: flex;
   flex-wrap: wrap;
@@ -3227,8 +3113,6 @@ textarea.input {
   background: var(--select-bg);
 }
 
-/* Profiles */
-
 .profile-disconnected {
   color: var(--changed);
 }
@@ -3262,8 +3146,6 @@ textarea.input {
   gap: 6px 12px;
 }
 
-/* A chip stays one line, cutting a long label short, such as a Rust
-   function's, rather than wrapping and pushing the graph down. */
 .profile-chip {
   display: inline-flex;
   align-items: center;
@@ -3293,15 +3175,12 @@ textarea.input {
 }
 
 .profile-query .profile-by {
-  /* As wide as the choice shown, not the longest one, and as tall as the
-   * toolbar's buttons. */
   field-sizing: content;
   width: auto;
   height: 28px;
   padding: 0 6px;
 }
 
-/* How the frames are drawn, opened from the toolbar's Options button. */
 .popover.profile-options {
   right: auto;
   left: 0;
@@ -3325,10 +3204,6 @@ textarea.input {
   font-size: 13px;
 }
 
-/* Wide enough for most selected frames' names, yielding first to the
-   selection's actions. */
-/* As wide whether or not a frame is selected: its width follows the
-   pane's, never what else the row holds. */
 .profile-search {
   flex: none;
   width: clamp(180px, 28%, 460px);
@@ -3336,13 +3211,10 @@ textarea.input {
   font-size: 12px;
 }
 
-/* The Clear button beside it does this, in every browser. */
 .profile-search::-webkit-search-cancel-button {
   display: none;
 }
 
-/* Lanes of samples with zones under them. Tall enough for several
- * threads' zones, scrolling past that. */
 .profile-timeline {
   position: relative;
   display: flex;
@@ -3354,8 +3226,6 @@ textarea.input {
   background: var(--surface-2);
 }
 
-/* Round times over the lanes, kept in view as they scroll, with the
- * pointer's time and a range's ends and length over them. */
 .timeline-ruler {
   position: sticky;
   z-index: 1;
@@ -3406,7 +3276,6 @@ textarea.input {
   color: var(--surface);
 }
 
-/* A range's ends sit outside it, leaving the inside for its length. */
 .ruler-marks .marker.from {
   transform: translateX(calc(-100% - 2px));
 }
@@ -3415,7 +3284,6 @@ textarea.input {
   transform: translateX(2px);
 }
 
-/* A range's length, as a line with arrows to its ends. */
 .ruler-measure {
   position: absolute;
   top: 10px;
@@ -3475,8 +3343,7 @@ textarea.input {
   display: flex;
   flex: none;
   flex-direction: column;
-  /* As tall as its names, not the 160 px box, which would squeeze them
-   * out of line with the lanes they name. */
+
   align-self: flex-start;
   border-right: 1px solid var(--line);
 }
@@ -3505,7 +3372,6 @@ textarea.input {
   color: var(--ink-3);
 }
 
-/* The threads without zones, folded into one lane and listed under it. */
 .lane-others {
   color: var(--ink-3);
 }
@@ -3523,7 +3389,6 @@ textarea.input {
   padding-left: 22px;
 }
 
-/* Beside a thread's zones, the chevron that shows the nested ones. */
 .lane-zones {
   flex: none;
   padding: 0 8px;
@@ -3583,7 +3448,6 @@ textarea.input {
   color: var(--ink-3);
 }
 
-/* At the pointer wherever the lanes have scrolled. */
 .lanes-tip {
   position: fixed;
   z-index: 5;
@@ -3605,8 +3469,6 @@ textarea.input {
   touch-action: none;
 }
 
-/* One column as wide as the pane: an implicit column would grow to fit a
- * long frame name the selection bar holds on one line. */
 .profile-view {
   display: grid;
   flex: 1;
@@ -3619,7 +3481,6 @@ textarea.input {
   min-height: 0;
 }
 
-/* How the view draws its frames, at the end of its search row. */
 .profile-options {
   margin-left: auto;
 }
@@ -3653,15 +3514,13 @@ textarea.input {
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 10px;
-  /* As tall empty as with its buttons, so selecting shifts nothing below. */
+
   min-height: 37px;
   padding: 4px 10px;
   border-bottom: 1px solid var(--line);
   font-size: 12px;
 }
 
-/* A basis of nothing, so the row never wraps for it; it grows into the
-   room the actions leave and cuts itself short in less. */
 .profile-details .cost {
   display: flex;
   flex: 1 1 0;
@@ -3688,7 +3547,6 @@ textarea.input {
   cursor: pointer;
 }
 
-/* The tree and function lists keep focus and mark the row the keys are on. */
 [role="tree"]:focus-visible .tree-row.active,
 [role="listbox"]:focus-visible .tree-row.active {
   outline: 2px solid var(--accent);
@@ -3723,8 +3581,6 @@ textarea.input {
   text-overflow: ellipsis;
 }
 
-/* A percent over a bar of its share, so the hot rows show without reading
-   every number. */
 .share {
   position: relative;
   align-self: stretch;
@@ -3734,15 +3590,12 @@ textarea.input {
   padding-right: 4px;
 }
 
-/* Filled to its share by --share, which each bar sets. */
 .share-fill {
   position: absolute;
   inset: 0 auto 0 0;
   width: calc(var(--share) * 100%);
 }
 
-/* Yellow for a sliver, red for all of it; the root spreads the small
-   shares most rows have. */
 .share > .share-fill {
   top: 3px;
   bottom: 3px;
@@ -3775,7 +3628,6 @@ textarea.input {
   grid-template-rows: minmax(0, 1fr);
 }
 
-/* A label that explains itself on hover. */
 .hover-help {
   cursor: help;
   text-decoration: underline dotted;
@@ -3793,7 +3645,6 @@ textarea.input {
   border-right: 1px solid var(--line);
 }
 
-/* The recording's facts, each a label over its value, wrapping whole. */
 .profile-accounting {
   display: flex;
   flex-wrap: wrap;
@@ -3852,7 +3703,6 @@ textarea.input {
   color: var(--ink);
 }
 
-/* How many of the threads' worth of CPUs were busy. */
 .stat-bar {
   position: relative;
   width: 40px;
@@ -3896,8 +3746,6 @@ textarea.input {
   font-size: 12px;
 }
 
-/* Zones */
-
 .zones-pane {
   flex: 1;
   min-height: 0;
@@ -3908,15 +3756,12 @@ textarea.input {
   overflow: auto;
 }
 
-/* The sites scroll on their own, so a long list never pushes the chosen
- * site's lengths out of sight. */
 .zone-sites-list {
   max-height: 260px;
   overflow: auto;
   border-bottom: 1px solid var(--line);
 }
 
-/* With no site chosen, the list has the pane to itself. */
 .zone-sites-list:last-child {
   max-height: none;
   border-bottom: none;
@@ -3985,8 +3830,6 @@ textarea.input {
   user-select: none;
 }
 
-/* Each bar fills its column, so the whole column takes the pointer, and
- * draws its count as a share of the tallest. */
 .zone-histogram .bar {
   position: relative;
   flex: 1;
@@ -4011,7 +3854,6 @@ textarea.input {
   background: var(--accent-soft);
 }
 
-/* The selected zone's length. */
 .zone-histogram .bar.here {
   box-shadow: inset 0 0 0 1px var(--ink);
 }
@@ -4083,7 +3925,6 @@ textarea.input {
   border-top: 1px solid var(--line-strong);
 }
 
-/* Lies over the panel's top border, with a taller target than it shows. */
 .profile-divider {
   position: absolute;
   inset: -4px 0 auto;
@@ -4148,9 +3989,6 @@ textarea.input {
   text-align: right;
 }
 
-/* A function's source beside its instructions. The hottest lines each
-   have a hue their instructions share, so the mapping shows without a
-   click; the chosen line's rows are marked at the edge. */
 .code-split {
   flex: 1;
   min-height: 0;
@@ -4217,9 +4055,6 @@ textarea.input {
   }
 }
 
-/* Rows' offsetTop is measured from their pane, which reveals them. Its
-   one column is as wide as the longest row, so every row's pinned costs
-   reach the pane's edge however far it scrolls. */
 .code-split-pane {
   position: relative;
   display: grid;
@@ -4241,8 +4076,6 @@ textarea.input {
   }
 }
 
-/* The costs and numbers stay pinned at the pane's left edge, over an
-   opaque copy of the row's background. */
 .code-row {
   --row-bg: transparent;
   display: flex;
@@ -4270,7 +4103,6 @@ textarea.input {
   background: linear-gradient(var(--row-bg), var(--row-bg)), var(--surface);
 }
 
-/* Wide enough for "100.0%" and the share's padding. */
 .code-row .percent {
   width: calc(6ch + 4px);
   text-align: right;
@@ -4301,8 +4133,6 @@ textarea.input {
   box-shadow: inset 0 -1px var(--line);
 }
 
-/* A symbol's name takes a row, as the panes count it, below the column
-   head. */
 .code-split-pane .annotated-head {
   top: var(--row);
   z-index: 2;
@@ -4350,8 +4180,6 @@ textarea.input {
   color: var(--ink);
 }
 
-/* Code of no source line is hatched rather than tinted, its row in the
-   source and its instructions alike. */
 .code-row.unsourced {
   background: var(--hatch), var(--row-bg);
 }
@@ -4369,7 +4197,6 @@ textarea.input {
   color: var(--ink-2);
 }
 
-/* A line whose code holds inlined functions opens them beneath it. */
 .code-row .inline-toggle {
   width: 2ch;
   align-self: stretch;
@@ -4396,7 +4223,6 @@ textarea.input {
   white-space: pre;
 }
 
-/* Each level of inlining indents a row by a guide. */
 .code-indent {
   display: inline-flex;
   align-self: stretch;
@@ -4414,8 +4240,6 @@ textarea.input {
   color: var(--ink-2);
 }
 
-/* Instructions inlined from one function share a bracket, named on its
-   first row. */
 .code-row .inlined-from {
   position: relative;
   width: 16ch;
@@ -4485,8 +4309,6 @@ textarea.input {
   }
 }
 
-/* Kernel */
-
 .kernel {
   display: flex;
   flex-direction: column;
@@ -4509,8 +4331,6 @@ textarea.input {
   flex-direction: column;
   min-height: 0;
 }
-
-/* Syscalls */
 
 .syscalls {
   flex: 1;
@@ -4634,8 +4454,6 @@ textarea.input {
   white-space: nowrap;
 }
 
-/* The name takes the width the numbers leave, and a long one, such as a
-   Rust function's generic types, is cut rather than pushing them out. */
 .syscalls-table td.name {
   width: 100%;
   max-width: 0;
@@ -4749,7 +4567,7 @@ textarea.input {
 .log-head {
   display: block;
   width: 100%;
-  /* A long line wraps under its own start, never off the pane. */
+
   padding: 1px 12px 1px 32px;
   border: 0;
   background: none;
@@ -4888,9 +4706,6 @@ textarea.input {
   background: var(--select-bg);
 }
 
-/* Touch */
-
-/* The twist grows only its hit area, so the tree keeps its indents and rows. */
 @media (pointer: coarse) {
   .processes .process,
   .processes .button,
@@ -4915,8 +4730,6 @@ textarea.input {
   }
 }
 
-/* A call's stack frame, with links to it in the samples' views that show
-   on hover or focus. */
 .frame-links .link-button {
   opacity: 0;
   font-size: 10.5px;

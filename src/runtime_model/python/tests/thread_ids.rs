@@ -1,5 +1,3 @@
-//! Host/native id collisions must never assign Python state to the wrong thread.
-
 use super::*;
 use crate::runtime_model::{RuntimeModel as _, TargetThreadId};
 
@@ -57,7 +55,6 @@ fn model(process: &Process, runtime: u64) -> super::super::PythonRuntime {
     )
 }
 
-/// A model of `process`'s runtime at `runtime` that knows `types`.
 fn model_with(
     process: &Process,
     runtime: u64,
@@ -137,8 +134,6 @@ fn unavailable_or_ambiguous_ids_never_fall_back_to_numeric_identity() {
     }
 }
 
-/// A watched frame is gone only where its thread's whole chain was read
-/// without it: a thread state that cannot be read proves nothing.
 #[test]
 fn a_watched_frame_is_gone_only_where_every_thread_state_is_read() {
     let mut process = Process::new(layout());

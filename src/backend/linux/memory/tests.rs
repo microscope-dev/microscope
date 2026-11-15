@@ -10,8 +10,6 @@ use crate::test_strategies::u64_edges;
 
 const WORD: usize = 8;
 
-/// Memory as bytes from `base` on, each readable or not. Bytes outside
-/// are unreadable. A readable byte is writable too.
 #[derive(Clone, Debug)]
 struct Bytes {
     base: u64,
@@ -30,8 +28,6 @@ impl Bytes {
         *slot = byte;
     }
 
-    /// The bytes of a word at any address, or `None` unless all are
-    /// readable, as `PTRACE_PEEKDATA` reads them.
     fn word_bytes(&self, address: u64) -> Option<[u8; WORD]> {
         let mut word = [0; WORD];
         for (offset, byte) in word.iter_mut().enumerate() {
@@ -55,8 +51,6 @@ impl Bytes {
         Ok(())
     }
 
-    /// An aligned word's readable leading bytes, as a core dump's word
-    /// reader reports them.
     fn memory_word(&self, address: u64) -> std::result::Result<u64, MemoryAccessError> {
         let mut word = [0; WORD];
         let mut readable = 0;
@@ -82,8 +76,6 @@ impl Bytes {
     }
 }
 
-/// A target whose memory is the model: block reads succeed only when every
-/// byte is readable.
 struct Target<'a>(&'a Bytes);
 
 impl InspectionOps for Target<'_> {
@@ -110,8 +102,6 @@ impl InspectionOps for Target<'_> {
     }
 }
 
-/// What a read of `size` bytes at `address` must return: each byte as
-/// `user` shows it, up to the first unreadable one.
 fn expected_read(
     memory: &Bytes,
     user: impl Fn(u64, u8) -> u8,
@@ -134,8 +124,6 @@ fn expected_read(
     Some((bytes, MemoryReadCompletion::Complete))
 }
 
-/// Reads through both paths, the word reader's and the block reader's, and
-/// checks that each returns `expected`.
 fn check_reads(
     memory: &Bytes,
     sites: &BTreeMap<VirtualAddress, BreakpointSite>,
@@ -165,15 +153,12 @@ fn check_reads(
     }
 }
 
-/// A base address for `words` words, drawn toward the edges of the address
-/// space, so that the last word may end at `u64::MAX`.
 fn base_for(words: usize) -> impl Strategy<Value = u64> {
     u64_edges().prop_map(move |edge| {
         (edge & !(WORD as u64 - 1)).min(((words * WORD) as u64).wrapping_neg())
     })
 }
 
-/// Memory of 1 to 6 words, each with this many readable leading bytes.
 fn memory(readable: impl Strategy<Value = usize> + Clone) -> impl Strategy<Value = Bytes> {
     (1..=6_usize)
         .prop_flat_map(move |words| {
@@ -195,7 +180,6 @@ fn memory(readable: impl Strategy<Value = usize> + Clone) -> impl Strategy<Value
         })
 }
 
-/// A read inside the model's bytes, of any size up to past their end.
 fn read_in(memory: &Bytes) -> impl Strategy<Value = (u64, usize)> + use<> {
     let length = memory.bytes.len();
     let base = memory.base;
@@ -253,9 +237,6 @@ proptest! {
     }
 }
 
-/// The user's view of memory, the owners of each site, and why each
-/// lifted site's trap is out, for a live process: readability changes
-/// only between words.
 #[derive(Clone, Debug)]
 struct World {
     user: Bytes,
@@ -280,7 +261,6 @@ impl World {
             .map_or(Trap::Installed, |&lift| Trap::Lifted(lift))
     }
 
-    /// Whether a trap can go at `address`: any readable byte takes one.
     fn install(&mut self, address: u64, owner: BreakpointOwner) -> bool {
         if self.user.get(address).is_none() {
             return false;
@@ -304,9 +284,6 @@ impl World {
         last
     }
 
-    /// Writes the bytes before the first unreadable one and returns how
-    /// many, or `None` when the write would pass the end of the address
-    /// space.
     fn write(&mut self, address: u64, bytes: &[u8]) -> Option<u64> {
         address.checked_add(bytes.len() as u64)?;
         let mut written = 0;
@@ -321,8 +298,6 @@ impl World {
         Some(written)
     }
 
-    /// How far a read of the whole model goes: the last byte of the address
-    /// space cannot be read, as a read's end would overflow.
     fn whole(&self) -> (u64, usize) {
         let length = self.user.bytes.len();
         let end = self.user.base.checked_add(length as u64);
@@ -337,8 +312,6 @@ enum Step {
     Write(u64, Vec<u8>),
     Read(u64, usize),
 
-    /// Lifts a site's trap, keeping the site. A lifted trap stays out for
-    /// its first reason.
     Lift(u64, Lift),
     Reinstall(u64),
 }
@@ -434,8 +407,6 @@ impl ReferenceStateMachine for Breakpoints {
     }
 }
 
-/// Physical memory and the sites the production code keeps, with the world
-/// before the latest step, which says what that step must report.
 struct Process {
     memory: RefCell<Bytes>,
     sites: BTreeMap<VirtualAddress, BreakpointSite>,
@@ -450,8 +421,6 @@ fn poke(memory: &RefCell<Bytes>) -> impl Fn(u64, u64) -> Result<()> + '_ {
     |word, value| memory.borrow_mut().poke(word, value)
 }
 
-/// A trap goes in the last bytes of a mapping that unmapped memory
-/// follows, where a word at the trap's own address cannot be read.
 #[test]
 fn a_trap_goes_in_the_last_bytes_before_unmapped_memory() {
     let memory = RefCell::new(Bytes {
@@ -488,7 +457,6 @@ fn a_trap_goes_in_the_last_bytes_before_unmapped_memory() {
     assert_eq!(memory.borrow().bytes[..WORD], [Some(0x90); WORD]);
 }
 
-/// A write to the last word of the address space ends with it.
 #[test]
 fn a_write_to_the_last_word_of_the_address_space_ends_with_it() {
     let memory = RefCell::new(Bytes {

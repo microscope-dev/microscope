@@ -1,9 +1,3 @@
-//! The language runtimes in a stopped process, and the tasks they schedule.
-//!
-//! Each loaded image is asked once whether it carries a runtime a model
-//! knows; the bound model then answers through the stopped process's memory
-//! and threads, read as every other inspection reads them.
-
 use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -33,17 +27,13 @@ use super::{
     holdings, validate_public_stop,
 };
 
-/// The sets of tasks the futures threads drive at a stop run, by where
-/// the runtime keeps them, and why some may be missing.
 pub(super) struct TaskSets {
     sets: Arc<[u64]>,
     gaps: Arc<[Arc<str>]>,
 }
 
-/// The most tasks one page holds.
 pub(super) const MAX_TASK_PAGE: usize = 4096;
 
-/// A runtime bound to the loaded module that carries it.
 #[derive(Clone)]
 pub(super) struct BoundRuntime {
     pub(super) id: RuntimeId,
@@ -51,21 +41,14 @@ pub(super) struct BoundRuntime {
     pub(super) model: Arc<dyn RuntimeModel>,
 }
 
-/// Code a runtime owns as the process says at a stop
-/// ([`RuntimeModel::process_code`]), where the image cannot say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ProcessCode {
     pub(super) process: AddressRange<VirtualAddress>,
 
-    /// Where the code lies in the image of the module carrying the
-    /// runtime, which also binds each copy the runtime made of it; `None`
-    /// where that module's mapping does not hold it.
     pub(super) image: Option<(crate::ModuleImageId, AddressRange<ImageAddress>)>,
 }
 
 impl ProcessCode {
-    /// Whether the code holds the process's `address`, which `code` gives
-    /// as an image's, if a module holds it.
     pub(super) fn holds(
         &self,
         address: VirtualAddress,
@@ -81,8 +64,6 @@ impl ProcessCode {
     }
 }
 
-/// The models bound to each image so far, each with why binding it failed
-/// if it did.
 pub(super) type RuntimeCache = std::cell::RefCell<
     std::collections::BTreeMap<
         crate::ModuleImageId,
@@ -90,12 +71,8 @@ pub(super) type RuntimeCache = std::cell::RefCell<
     >,
 >;
 
-/// The most runtimes one module carries, which numbers each runtime by its
-/// module and its place among the module's runtimes, the same at every
-/// stop.
 const RUNTIMES_PER_MODULE: u32 = 4;
 
-/// The id of the `index`th runtime the module `module` carries.
 fn runtime_id(module: crate::ModuleId, index: usize) -> Option<RuntimeId> {
     let index = u32::try_from(index)
         .ok()
@@ -110,38 +87,28 @@ fn runtime_id(module: crate::ModuleId, index: usize) -> Option<RuntimeId> {
 
 type IdentityPairs = Arc<[(ThreadId, crate::runtime_model::TargetThreadId)]>;
 
-/// One stop of the process, as a runtime model reads it.
 struct ProcessStop<'a, P> {
     ptrace: &'a P,
     process: Pid,
 
-    /// A stopped thread, through which memory is read.
     reader: Pid,
     breakpoints: &'a std::collections::BTreeMap<VirtualAddress, BreakpointSite>,
     bias: crate::LoadBias,
 
-    /// How the C library names the module's block of thread-local
-    /// storage, when it was found.
     tls: Option<TlsModule>,
 
-    /// Where the reads made are counted, when they are.
     usage: Option<&'a Cell<InspectionUsage>>,
 
-    /// The process's threads, in the order of their ids.
     threads: Vec<ThreadId>,
 
-    /// The sets of tasks threads drive, once found at this stop.
     task_sets: Vec<u64>,
 
-    /// The memory read at the published stop, if the process is at one.
     memory: Option<&'a crate::runtime_model::StopMemory>,
     identities: OnceCell<IdentityPairs>,
 
-    /// The stack locals runtimes' debugging interfaces named, by frame.
     locals: &'a std::collections::BTreeMap<VirtualAddress, crate::runtime_model::ReportedLocals>,
 }
 
-/// Provider mistakes must not make single and batch identity queries disagree.
 fn unique_target(
     ids: &[(ThreadId, crate::runtime_model::TargetThreadId)],
     thread: ThreadId,
@@ -181,14 +148,8 @@ impl<P: InspectionOps> ProcessStop<'_, P> {
     }
 }
 
-/// The futex word a thread with `registers` is blocked on: the kernel
-/// stopped it inside `futex` (202 on x86-64), whose result is still one of
-/// the restart codes a signal leaves an interrupted wait with, and whose
-/// first argument, rdi, is the word.
 fn blocked_futex(registers: &nix::libc::user_regs_struct) -> Option<u64> {
     const FUTEX: u64 = 202;
-    // -EINTR, -ERESTARTSYS, -ERESTARTNOINTR, -ERESTARTNOHAND, and
-    // -ERESTART_RESTARTBLOCK.
     const INTERRUPTED: [i64; 5] = [-4, -512, -513, -514, -516];
     (registers.orig_rax == FUTEX && INTERRUPTED.contains(&registers.rax.cast_signed()))
         .then_some(registers.rdi)
@@ -302,12 +263,7 @@ impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Every loaded module carrying a runtime a model knows, with the model
-    /// bound to it. A module whose runtime cannot be bound has none; see
-    /// [`Self::unbound_runtimes`].
     pub(super) fn runtimes(&self, inferior: &Inferior) -> Vec<BoundRuntime> {
-        // A copy of part of an image, as V8's of its builtins, is the
-        // runtime of the module that loaded the image, not one of its own.
         self.loaded_images(inferior)
             .filter(|(module, _)| module.window.is_none())
             .flat_map(|(module, image)| {
@@ -325,8 +281,6 @@ impl<P: InspectionOps> Controller<P> {
             .collect()
     }
 
-    /// Why each loaded module carrying a runtime a model knows cannot have
-    /// it bound, as when its debug information is stripped.
     pub(super) fn unbound_runtimes(&self, inferior: &Inferior) -> Vec<Arc<str>> {
         self.loaded_images(inferior)
             .flat_map(|(_, image)| self.bind_runtimes(image))
@@ -346,8 +300,6 @@ impl<P: InspectionOps> Controller<P> {
         )
     }
 
-    /// The image of the loaded module whose range holds `address`, and the
-    /// address within it.
     pub(super) fn module_holding<'a>(
         &'a self,
         inferior: &'a Inferior,
@@ -373,9 +325,6 @@ impl<P: InspectionOps> Controller<P> {
             .clone()
     }
 
-    /// The code each of `runtimes` owns as the process says at the stop,
-    /// read through the stopped thread `reader`, in the order of
-    /// `runtimes` (see [`RuntimeModel::process_code`]).
     pub(super) fn runtime_process_code(
         &self,
         inferior: &Inferior,
@@ -399,8 +348,6 @@ impl<P: InspectionOps> Controller<P> {
             .collect()
     }
 
-    /// Where the process's code `range` lies in the image of `module`,
-    /// if the module's mapping holds all of it.
     fn image_range(
         &self,
         inferior: &Inferior,
@@ -419,8 +366,6 @@ impl<P: InspectionOps> Controller<P> {
         (start <= last).then_some((module.image, AddressRange { start, end }))
     }
 
-    /// Runs `read` against one runtime while the process is stopped,
-    /// reading memory through the stopped thread `reader`.
     pub(super) fn with_runtime_stop<T>(
         &self,
         inferior: &Inferior,
@@ -431,8 +376,6 @@ impl<P: InspectionOps> Controller<P> {
         self.with_counted_runtime_stop(inferior, runtime, reader, None, read)
     }
 
-    /// Runs `read` against one runtime as [`Self::with_runtime_stop`]
-    /// does, counting the memory it reads in `usage`.
     fn with_counted_runtime_stop<T>(
         &self,
         inferior: &Inferior,
@@ -444,8 +387,6 @@ impl<P: InspectionOps> Controller<P> {
         self.with_process_stop(inferior, &runtime.module, reader, usage, read)
     }
 
-    /// Runs `read` against the process at a stop, as the code of `module`
-    /// sees it, reading memory through the stopped thread `reader`.
     pub(super) fn with_module_stop<T>(
         &self,
         inferior: &Inferior,
@@ -491,9 +432,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// The sets of tasks the futures the program's own threads drive run,
-    /// which no runtime lists, found once for a published stop from the
-    /// futures their stacks show, and why some may be missing.
     pub(super) fn task_sets(&self, inferior: &Inferior) -> Arc<[Arc<str>]> {
         let Some(stop) = inferior.run.stop() else {
             return Arc::from([]);
@@ -516,8 +454,6 @@ impl<P: InspectionOps> Controller<P> {
     fn find_task_sets(&self, inferior: &Inferior, reader: Pid) -> (Vec<u64>, Vec<Arc<str>>) {
         let runtimes = self.runtimes(inferior);
 
-        // In the order of the threads that drive them, not of their
-        // addresses, which change from run to run.
         let mut sets = Vec::new();
         let mut gaps = Vec::new();
         if runtimes.is_empty() {
@@ -527,7 +463,6 @@ impl<P: InspectionOps> Controller<P> {
         let modules = self.unwind_modules(inferior);
 
         for &pid in inferior.threads.keys() {
-            // Only a thread no runtime schedules tasks on drives a future.
             if self.thread_activity(inferior, pid) != Some(ThreadActivity::Outside) {
                 continue;
             }
@@ -559,7 +494,6 @@ impl<P: InspectionOps> Controller<P> {
                 }
             };
 
-            // Nor is one driven past where the stack could be unwound.
             if expanded.trace.termination != UnwindTermination::Complete
                 && runtimes.iter().any(|runtime| runtime.model.has_task_sets())
             {
@@ -573,8 +507,6 @@ impl<P: InspectionOps> Controller<P> {
                 );
             }
 
-            // Several frames may drive one future, and some of them not
-            // read it: a set is lost only when none does.
             let unread_set = |gaps: &mut Vec<Arc<str>>, reason: &str| {
                 let gap: Arc<str> = format!(
                     "thread {} drives a future that may run a local set, whose tasks are not listed: {reason}",
@@ -624,8 +556,6 @@ impl<P: InspectionOps> Controller<P> {
         (sets, gaps)
     }
 
-    /// How to ask a runtime about `task`: by its number, and where the
-    /// runtime said it keeps it when it listed it at this stop.
     pub(super) fn task_ref(inferior: &Inferior, task: TaskId) -> TaskRef {
         TaskRef {
             number: task.number,
@@ -636,7 +566,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// One page of the tasks of every runtime at a stop.
     pub(super) fn tasks(
         &self,
         stop_id: StopId,
@@ -659,8 +588,6 @@ impl<P: InspectionOps> Controller<P> {
         });
         let mut tasks = Vec::new();
 
-        // A runtime that cannot be read leaves its tasks out of every page.
-        // So are the tasks of a set that cannot be found.
         let set_gaps = self.task_sets(inferior);
         let mut gaps = if from.is_none() {
             let mut gaps = self.unbound_runtimes(inferior);
@@ -716,7 +643,6 @@ impl<P: InspectionOps> Controller<P> {
             }
         }
 
-        // A task suspended in its future waits for what that future does.
         let phase = crate::span!("tasks awaiting");
         for task in &mut tasks {
             if task.state == TaskState::Blocked
@@ -788,7 +714,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// The function and source line of an address in a task's code.
     fn task_location(&self, inferior: &Inferior, code: CodeAddress) -> TaskLocation {
         let lookup = if code.after_call {
             VirtualAddress::new(code.address.get().saturating_sub(1))
@@ -830,8 +755,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// A place a runtime recorded in the source of its module, in the
-    /// source file of the module's image that its path names, if one does.
     fn recorded_location(
         &self,
         inferior: &Inferior,
@@ -869,10 +792,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// What a stopped thread runs for the process's runtimes: the first
-    /// task one names, or why one could not tell; `None` without a runtime.
-    /// A published stop remembers each thread's; run control, which asks
-    /// at a breakpoint's hit before any stop is published, reads afresh.
     pub(super) fn thread_activity(&self, inferior: &Inferior, pid: Pid) -> Option<ThreadActivity> {
         let Some(stop) = inferior.run.stop() else {
             return self.read_thread_activity(inferior, pid);
@@ -890,10 +809,6 @@ impl<P: InspectionOps> Controller<P> {
         activity
     }
 
-    /// The task a stopped thread runs, as its runtime reads it from the
-    /// thread's own state, without the runtime's shared state: what run
-    /// control asks at a hit, before the threads still running, which may
-    /// be changing that state, have stopped. `None` without a runtime.
     pub(super) fn current_task(
         &self,
         inferior: &Inferior,
@@ -928,10 +843,6 @@ impl<P: InspectionOps> Controller<P> {
         found
     }
 
-    /// What the process's runtimes say of a stopped thread at the published
-    /// stop, such as the isolate it runs: none without a published stop.
-    /// Every thread's are read at once, when the stop is first asked,
-    /// since reading them numbers what each thread runs in.
     pub(super) fn thread_labels(&self, inferior: &Inferior, pid: Pid) -> Arc<[ThreadLabel]> {
         let Some(stop) = inferior.run.stop() else {
             return Arc::from([]);
@@ -962,8 +873,6 @@ impl<P: InspectionOps> Controller<P> {
             .map(|(&pid, _)| pid)
             .collect();
 
-        // A copy V8 made of its builtins binds the runtime of the module
-        // it copies again, which labels each thread once.
         let copies = self.copy_modules();
         let runtimes = self.runtimes(inferior);
         let mut seen = Vec::new();
@@ -1030,8 +939,6 @@ impl<P: InspectionOps> Controller<P> {
     fn read_thread_activity(&self, inferior: &Inferior, pid: Pid) -> Option<ThreadActivity> {
         let runtimes = self.runtimes(inferior);
 
-        // A thread may run the tasks of a runtime that cannot be read. One
-        // runtime's idle thread is idle whatever another says of it.
         let mut found = self
             .unbound_runtimes(inferior)
             .into_iter()
@@ -1072,8 +979,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// The stack of the task a stopped thread runs, as its runtime bounds it
-    /// now, or `None` when the thread runs no task or its stack is unknown.
     pub(super) fn task_stack(&self, inferior: &Inferior, pid: Pid) -> Option<TaskStack> {
         let Some(ThreadActivity::Task { task, .. }) = self.thread_activity(inferior, pid) else {
             return None;
@@ -1098,8 +1003,6 @@ impl<P: InspectionOps> Controller<P> {
             })
     }
 
-    /// The bounds of a task's stack now, or `None` when its runtime has no
-    /// such task.
     pub(super) fn task_stack_bounds(
         &self,
         inferior: &Inferior,
@@ -1119,9 +1022,7 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Whether a runtime in the process tolerates `signal` arriving late.
     pub(super) fn defers(&self, signal: Signal) -> bool {
-        // A runtime that cannot be bound uses signals as it does bound.
         self.session.inferior().is_some_and(|inferior| {
             self.loaded_images(inferior)
                 .flat_map(|(_, image)| self.bind_runtimes(image))
@@ -1138,9 +1039,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Where the frames of a thread or task begin at a stop: a task
-    /// running on a thread begins in that thread's registers, and a parked
-    /// one in the registers its runtime saved.
     pub(super) fn stack_root(
         &self,
         stop_id: StopId,
@@ -1165,8 +1063,6 @@ impl<P: InspectionOps> Controller<P> {
             .ok_or(Error::UnknownTask(task))
     }
 
-    /// Where a task's frames begin, its memory read through the stopped
-    /// thread `reader`, or `None` when its runtime has no such task.
     pub(super) fn task_root(
         &self,
         inferior: &Inferior,
@@ -1221,8 +1117,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// The thread a thread or task runs on at a stop, for requests that
-    /// act on a thread, such as stepping.
     pub(super) fn context_thread(&self, stop_id: StopId, context: ExecutionContext) -> Result<Pid> {
         let root = self.stack_root(stop_id, context)?;
         match (root.thread(), context) {

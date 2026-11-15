@@ -1,5 +1,3 @@
-//! The system calls the golden runtime makes. Any other is a model gap.
-
 use nix::errno::Errno;
 use nix::libc;
 
@@ -20,12 +18,8 @@ const SYS_WAIT4: u64 = 61;
 const SYS_GETPPID: u64 = 110;
 const SYS_EXIT_GROUP: u64 = 231;
 
-/// The flags of a thread that shares everything with its creator, as the
-/// golden runtime creates threads: `CLONE_VM | CLONE_FS | CLONE_FILES |
-/// CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM`.
 const THREAD_FLAGS: u64 = 0x50f00;
 
-/// A call the kernel served, as a tracer of system calls would see it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Served {
     pub tid: Tid,
@@ -33,12 +27,9 @@ pub struct Served {
     pub number: u32,
     pub args: [u64; 6],
 
-    /// What it returned, or `None` for one that ended its thread.
     pub returned: Option<i64>,
 }
 
-/// Serves the system call a thread just entered with `syscall`, as
-/// [`dispatch`] does, and notes it served.
 pub(super) fn serve(kernel: &mut Kernel, tid: Tid) -> bool {
     let thread = &kernel.threads[&tid];
     let group = thread.tgid;
@@ -77,9 +68,6 @@ pub(super) fn serve(kernel: &mut Kernel, tid: Tid) -> bool {
     yielded
 }
 
-/// Serves the system call a thread just entered with `syscall`, leaving
-/// its result in `rax` unless the call stops or ends the thread. Returns
-/// whether the thread yielded the CPU.
 fn dispatch(kernel: &mut Kernel, tid: Tid) -> bool {
     let registers = kernel.threads[&tid].registers;
     let argument = |index: usize| registers.general[index];
@@ -89,8 +77,6 @@ fn dispatch(kernel: &mut Kernel, tid: Tid) -> bool {
     )]
     let code = argument(RDI) as i32;
 
-    // The call `orig_rax` names. Linux lets a tracer at its entry change
-    // it; the edge fails a write to it as a model gap.
     let result = match kernel.threads[&tid].orig_rax {
         SYS_WRITE => write(kernel, tid, argument(RDI), argument(RSI), argument(RDX)),
         SYS_SCHED_YIELD => {
@@ -116,8 +102,6 @@ fn dispatch(kernel: &mut Kernel, tid: Tid) -> bool {
             inside_call(kernel, tid);
             let group = kernel.threads[&tid].tgid;
 
-            // K-EXIT-6: the last thread to begin exiting starts a group exit
-            // with its status, without disturbing any other thread.
             let last = kernel
                 .threads_of(group)
                 .all(|thread| thread.tid == tid || thread.state.exiting());
@@ -143,8 +127,6 @@ fn dispatch(kernel: &mut Kernel, tid: Tid) -> bool {
             kernel.happenings.push(Happening::GroupExit { tid });
             kernel.kill_process(group, ExitStatus::Code(code));
 
-            // The caller is already in the kernel, and goes straight on to
-            // its exit.
             let exit = kernel.processes[&group]
                 .group_exit
                 .expect("the group is exiting");
@@ -170,20 +152,14 @@ fn set_result(kernel: &mut Kernel, tid: Tid, result: u64) {
         .general[RAX] = result;
 }
 
-/// Leaves `rax` as a thread stopped inside a system call shows it.
 fn inside_call(kernel: &mut Kernel, tid: Tid) {
     set_result(kernel, tid, ENOSYS_RESULT);
 }
 
-/// A failed system call's result, as `rax` holds it.
 pub(super) const fn failure(errno: Errno) -> u64 {
     (-(errno as i64)).cast_unsigned()
 }
 
-/// `write(fd, buffer, count)` to standard output or error, which the
-/// simulation captures. Returns the result as the register holds it. The
-/// other descriptors a process may have open are not modeled, so a write
-/// to one is a gap.
 fn write(kernel: &mut Kernel, tid: Tid, fd: u64, buffer: u64, count: u64) -> u64 {
     if fd != 1 && fd != 2 {
         kernel.gap(format!("write to descriptor {}", fd.cast_signed()));
@@ -211,12 +187,6 @@ fn write(kernel: &mut Kernel, tid: Tid, fd: u64, buffer: u64, count: u64) -> u64
     count
 }
 
-/// `clone(flags, stack)` creating a thread. The child starts where its
-/// creator returns from the call, on `stack`, with `rax` zero. A creator
-/// tracing clones stops at `PTRACE_EVENT_CLONE` inside the call, and the
-/// child, traced with the creator's options, first stops for a SIGSTOP
-/// nobody sent (K-CLONE-1). Made with a signal pending, it creates
-/// nothing, to be made again (K-SYS-7).
 fn clone(kernel: &mut Kernel, parent: Tid, flags: u64, stack: u64) {
     if flags != THREAD_FLAGS {
         kernel.gap(format!("clone with flags {flags:#x}"));
@@ -232,8 +202,6 @@ fn clone(kernel: &mut Kernel, parent: Tid, flags: u64, stack: u64) {
     let traced = creator.traced() && creator.options.trace_clone;
     let child = kernel.allocate_tid();
 
-    // The thread begins where its creator returns from the call, but none
-    // of its creator's calls is on its stack.
     let shadow = kernel.new_shadow();
     let creator = &kernel.threads[&parent];
     let mut thread = Thread::created(creator, child, creator.tgid, SYS_CLONE, traced, shadow);

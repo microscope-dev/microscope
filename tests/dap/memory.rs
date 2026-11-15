@@ -1,10 +1,7 @@
-//! Memory, disassembly, and instruction breakpoints.
-
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Profile, Stopped, fixture};
 
-/// Launches `basic` stopped in `breakpoint_target`.
 fn stopped_in_target(dap: &mut Dap) -> Stopped {
     let started = dap.launch(
         Profile::VsCode,
@@ -65,11 +62,9 @@ fn memory_reads_return_readable_bytes_and_say_where_reading_stopped() {
         json!({"memoryReference": value["memoryReference"], "count": 8}),
     );
 
-    // Little-endian 0x1122334455667788.
     assert_eq!(read["data"], "iHdmVUQzIhE=");
     assert_eq!(read["address"], value["memoryReference"]);
 
-    // Offsets and decimal references reach the same bytes.
     let decimal = address(&value["memoryReference"]).to_string();
     let offset = dap.request(
         "readMemory",
@@ -77,7 +72,6 @@ fn memory_reads_return_readable_bytes_and_say_where_reading_stopped() {
     );
     assert_eq!(offset["data"], "RDMiEQ==");
 
-    // Find the end of a mapping that no other mapping follows.
     let pid = dap.process_id().expect("process");
     let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).expect("maps");
     let ranges = maps
@@ -134,7 +128,6 @@ fn disassembly_returns_exactly_the_rows_asked_for_around_any_address() {
     let pointer = trace["stackFrames"][0]["instructionPointerReference"].clone();
     let caller = trace["stackFrames"][1]["instructionPointerReference"].clone();
 
-    // VS Code opens the view with 200 rows before the address and 200 from it.
     let rows = disassemble(&mut dap, &pointer, -200, 400);
     assert_eq!(rows.len(), 400);
     assert_eq!(rows[200]["address"], pointer);
@@ -149,7 +142,6 @@ fn disassembly_returns_exactly_the_rows_asked_for_around_any_address() {
     assert_eq!(rows[200]["symbol"], "breakpoint_target");
     assert!(rows[200]["line"].as_u64().is_some());
 
-    // A source is named on the first row of each run of one file.
     let first_source = rows
         .iter()
         .find(|row| row.get("line").is_some())
@@ -160,7 +152,6 @@ fn disassembly_returns_exactly_the_rows_asked_for_around_any_address() {
             .is_some_and(|path| path.ends_with("basic.c"))
     );
 
-    // Padding rows are marked and never decoded from unproven starts.
     for row in &rows {
         if row["presentationHint"] == "invalid" {
             assert!(
@@ -176,7 +167,6 @@ fn disassembly_returns_exactly_the_rows_asked_for_around_any_address() {
         }
     }
 
-    // A direct call names its target.
     let call = disassemble(&mut dap, &caller, -1, 1);
     assert_eq!(call.len(), 1);
     let text = call[0]["instruction"].as_str().expect("text");
@@ -185,19 +175,16 @@ fn disassembly_returns_exactly_the_rows_asked_for_around_any_address() {
         "{text}"
     );
 
-    // Scrolling up from the first row continues exactly before it.
     let first = rows[0]["address"].clone();
     let above = disassemble(&mut dap, &first, -50, 50);
     assert_eq!(above.len(), 50);
     assert!(address(&above[49]["address"]) < address(&first));
 
-    // Scrolling down continues after the last row.
     let last = rows[399]["address"].clone();
     let below = disassemble(&mut dap, &last, 1, 50);
     assert_eq!(below.len(), 50);
     assert!(address(&below[0]["address"]) > address(&last));
 
-    // An address no module maps is all padding.
     let nowhere = disassemble(&mut dap, &json!("0x10"), -2, 4);
     assert_eq!(nowhere.len(), 4);
     assert!(
@@ -224,7 +211,6 @@ fn instruction_breakpoints_stop_at_their_address() {
     let rows = disassemble(&mut dap, &pointer, 0, 3);
     let target = rows[2]["address"].clone();
 
-    // The reference and offset name the same instruction two ways.
     let offset = i64::try_from(address(&target) - address(&pointer)).expect("small offset");
     let set = dap.request(
         "setInstructionBreakpoints",

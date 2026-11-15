@@ -1,11 +1,3 @@
-//! Steps through code a runtime runs itself, which have no instructions of
-//! their own to step: the runtime is armed with the step, every thread runs
-//! as for a continue, and the step ends where the runtime's internal hook
-//! reports its end on the step's own thread or task. Another thread's
-//! report is not the step's end, as another thread reaching a native
-//! step's plan is not. The runtime is disarmed at whatever stop ends the
-//! step.
-
 use std::sync::Arc;
 
 use nix::unistd::Pid;
@@ -25,10 +17,6 @@ use super::native::{InspectionOps, LinuxTraceOps};
 use super::{ActiveKind, Controller, Inferior, StepOwner, debug_thread_id};
 
 impl<P: InspectionOps> Controller<P> {
-    /// The runtime that interprets frame `frame` of thread `pid`'s stack at
-    /// the stop `stop_id`, and the frame's address, when the frame is one a
-    /// runtime interprets. A thread no runtime interprets on is not
-    /// unwound to tell.
     pub(super) fn interpreted_frame(
         &self,
         stop_id: StopId,
@@ -39,7 +27,6 @@ impl<P: InspectionOps> Controller<P> {
         let root = self
             .stack_root(stop_id, ExecutionContext::Thread(debug_thread_id(pid)))
             .ok()?;
-        // V8 runs its frames on the native stack, in code it generated.
         if !self.interprets_on(inferior, &root)
             && !self
                 .runtimes(inferior)
@@ -55,10 +42,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// The runtime that runs a step of `kind` from frame `frame` of `pid`,
-    /// and the interpreted frame it begins in, if a runtime runs it: one
-    /// from a frame a runtime interprets, or a JavaScript step from a
-    /// native stop, which begins where V8 next pauses.
     pub(super) fn runtime_step_origin(
         &self,
         stop_id: StopId,
@@ -74,7 +57,6 @@ impl<P: InspectionOps> Controller<P> {
             })
     }
 
-    /// Whether `selection` selects an outer frame a runtime interprets.
     pub(super) fn selects_interpreted(&self, selection: &crate::StoppedSelection) -> bool {
         selection.frame != StackFrameId::INNERMOST
             && self
@@ -87,10 +69,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Steps thread `pid` from the interpreted frame at `frame` of the
-    /// runtime `runtime`, or from where it next pauses the thread when
-    /// there is none, as that runtime steps. A runtime that cannot step
-    /// so refuses the step, and nothing runs.
     #[expect(
         clippy::too_many_arguments,
         reason = "a step names its stop, thread, runtime, frame, kind, scope, and exception disposition"
@@ -105,8 +83,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         scope: ResumeScope,
         exception: ExceptionDisposition,
     ) -> Result<ExecutionId> {
-        // An agent binds a step to its frame where it stopped the thread:
-        // from anywhere else, the thread would run on unfollowed first.
         let agent = self.session.inferior().is_some_and(|inferior| {
             self.runtimes(inferior)
                 .into_iter()
@@ -131,7 +107,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             };
             inferior.runtime_step = Some((runtime, step));
 
-            // An agent has begun the step once it has been sent it.
             if let Err(reason) = controller.arm_runtime(runtime)
                 && !controller.agent_step_sent(runtime)
             {
@@ -166,10 +141,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    /// Why thread `pid` stops where the runtime `runtime` reports the end
-    /// of its step numbered `number`, or, with a description, where it could
-    /// follow the step no further: when that is the active step, and `pid`
-    /// runs it.
     pub(super) fn runtime_step_end(
         &self,
         pid: Pid,
@@ -193,12 +164,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Lets the active runtime step into numbered `number` end in the native
-    /// function at `target`, which its thread `pid` is about to call: a trap
-    /// at the function's first statement joins the step's plan, which the
-    /// step's own thread ends it at. Code of the runtime's own image, or
-    /// without debug information, is the runtime's work, and the step goes
-    /// on through it.
     #[cfg_attr(
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")
@@ -248,9 +213,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Where a step into the native function at `target` ends: the first
-    /// statement after its prologue, when a module other than the
-    /// runtime's describes it.
     fn native_step_destination(
         &self,
         inferior: &Inferior,
@@ -274,8 +236,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         module.virtual_address(entry.address).ok()
     }
 
-    /// The loaded module whose image holds `address`, its image, and the
-    /// address within it.
     fn holding<'a>(
         &'a self,
         inferior: &'a Inferior,
@@ -290,11 +250,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    /// Whether the active source step over or out of a native frame has
-    /// returned, on its thread `pid`, into the interpreter of a runtime
-    /// whose agent steps its code: the native code was the runtime's
-    /// callee, and the step goes on as the runtime's step back to the code
-    /// that called it.
     pub(super) fn source_step_returned_to_runtime(&self, pid: Pid, kind: StepKind) -> Result<bool> {
         if !matches!(kind, StepKind::OverSource | StepKind::Out) {
             return Ok(false);
@@ -327,9 +282,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .any(|bound| bound.module.id == module.id && bound.model.agent().is_some()))
     }
 
-    /// Whether the active source step's activation on thread `pid` has
-    /// returned into the code of a runtime's own image, as a Node-API
-    /// function returns into Node's.
     pub(super) fn returned_into_unlined_code(&self, pid: Pid) -> Result<bool> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let Some(activation) = inferior
@@ -356,13 +308,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .any(|bound| bound.module.id == module.id))
     }
 
-    /// Turns the active source step of thread `pid`, which returned into a
-    /// runtime's interpreter (see [`Self::source_step_returned_to_runtime`]),
-    /// into that runtime's step back from the thread's innermost
-    /// interpreted frame, which the agent ends at the thread's next line
-    /// there or in a caller. The step goes on unfollowed, as into any code
-    /// without source, where the runtime cannot step, and at a stop that
-    /// ends it anyway.
     #[cfg_attr(
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")
@@ -394,8 +339,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let thread = debug_thread_id(pid);
-        // V8 runs the step back from a Node-API function itself, from no
-        // frame of its own; an agent steps back from the thread's frame.
         let through = self.returns_through(pid).map(|runtime| (runtime, None));
         let Some((runtime, frame)) = through.or_else(|| {
             self.runtimes(inferior)
@@ -459,8 +402,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         });
     }
 
-    /// The kind of the active runtime step whose plan has a trap at
-    /// `address`, where its own thread `pid` reached it.
     pub(super) fn runtime_step_arrival(
         &self,
         pid: Pid,
@@ -478,8 +419,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         (planned && self.runs_step(owner, pid)).then_some(kind)
     }
 
-    /// Disarms the active runtime step, if there is one, as the stop that
-    /// ends it forms.
     pub(super) fn end_runtime_step(&mut self) {
         let runtime = self
             .session
@@ -496,8 +435,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Arms the runtime with no step. A runtime that cannot be disarmed
-    /// reports its stale step's end to no step.
     #[cfg_attr(
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")

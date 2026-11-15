@@ -6,11 +6,11 @@
 #include <stdint.h>
 #include <sys/prctl.h>
 
-// Every thread stores the value `steady` already holds, so a change
-// watchpoint on it traps at every store yet has nothing to report. This
-// build signals the workers meanwhile and ends with one store that changes
-// the value; the SPIN build stores forever, for clients to pause, attach to,
-// and detach from while the stores are being resolved.
+
+
+
+
+
 enum { WORKERS = 3, SIGNALS = 12, STORES_PER_SIGNAL = 40 };
 
 volatile uint64_t steady = 7;
@@ -65,8 +65,8 @@ int main(void) {
     worker(NULL);
 #endif
     for (int sent = 0; sent < SIGNALS; ++sent) {
-        // One signal at a time, so none coalesces with a pending one, each
-        // sent while workers are storing.
+
+
         uint64_t target = (uint64_t)(sent + 1) * STORES_PER_SIGNAL;
         while (atomic_load_explicit(&handled, memory_order_relaxed) != sent ||
                atomic_load_explicit(&stores, memory_order_relaxed) < target) {

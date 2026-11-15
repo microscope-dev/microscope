@@ -1,6 +1,3 @@
-// The Syscalls view: its address round-trips, and what it draws stacks,
-// buckets, and shades as the server counts.
-
 import { describe, expect, it } from "vitest";
 
 import { parseSearch, stringifySearch } from "../src/focus";
@@ -34,8 +31,7 @@ describe("the Syscalls view's address", () => {
       sk: "1",
     };
     expect(roundTrip(look)).toEqual(look);
-    // The calls are not narrowed by the samples taken during them, nor
-    // weighed as the samples' leaves.
+
     expect(syscallQueryOf("p", look, 3)).toEqual({
       profile: "p",
       revision: 3,
@@ -125,7 +121,7 @@ describe("what a recording did not keep of its calls", () => {
       text: "System calls were not recorded.",
       flag: "--syscalls calls",
     });
-    // Off because BPF was out of reach, which ptrace does not need.
+
     expect(
       unkept(
         settings([

@@ -1,6 +1,3 @@
-// Reading the keyboard: which chord a press is, and whether the focused
-// element types text, in which case letters belong to it.
-
 export interface Chord {
   readonly key: string;
   readonly shift?: boolean;
@@ -17,14 +14,10 @@ export interface KeyLike {
   metaKey: boolean;
 }
 
-/** Whether a chord types text, and so acts only outside text boxes: a
- * letter or Escape with neither Ctrl nor Alt. */
 export function typing(chord: Chord): boolean {
   return !chord.ctrl && !chord.alt && !/^F\d+$/u.test(chord.key);
 }
 
-/** Whether a press is a chord. Letters name their case, so Shift is part of
- * typing them. Presses with Cmd or the Windows key are the browser's. */
 export function matches(chord: Chord, event: KeyLike, inTextBox: boolean): boolean {
   const key = keyOf(event);
   const letter = typing(chord) && key.length === 1;
@@ -38,7 +31,6 @@ export function matches(chord: Chord, event: KeyLike, inTextBox: boolean): boole
   );
 }
 
-/** Two chords no press can tell apart. */
 export function sameKey(a: Chord, b: Chord): boolean {
   const letter = typing(a) && a.key.length === 1;
   return (
@@ -56,7 +48,6 @@ const ARROWS: Readonly<Record<string, string>> = {
   ArrowDown: "↓",
 };
 
-/** How a chord is written in tooltips and help, such as `⇧F11`. */
 export function describeChord(chord: Chord): string {
   if (typing(chord)) {
     return chord.key === "Escape" ? "Esc" : chord.key;
@@ -65,7 +56,6 @@ export function describeChord(chord: Chord): string {
   return `${chord.ctrl ? "Ctrl+" : ""}${chord.alt ? "Alt+" : ""}${chord.shift ? "⇧" : ""}${key}`;
 }
 
-/** A chord as `aria-keyshortcuts` writes it, such as `Shift+F11`. */
 export function ariaChord(chord: Chord): string {
   const key = chord.key === " " ? "Space" : chord.key;
   return [chord.ctrl && "Control", chord.alt && "Alt", chord.shift && "Shift", key]
@@ -73,7 +63,6 @@ export function ariaChord(chord: Chord): string {
     .join("+");
 }
 
-/** Punctuation chords name by the key pressed, unshifted. */
 const PUNCTUATION: Readonly<Record<string, string>> = {
   BracketLeft: "[",
   BracketRight: "]",
@@ -81,8 +70,6 @@ const PUNCTUATION: Readonly<Record<string, string>> = {
   Backquote: "`",
 };
 
-/** The key a chord names: Alt changes what letters and digits type, and
- * Alt, Ctrl, and Shift change what punctuation types. */
 function keyOf(event: KeyLike): string {
   if (!event.code) {
     return event.key;
@@ -101,10 +88,6 @@ function keyOf(event: KeyLike): string {
   return punctuation && (event.altKey || event.ctrlKey) ? punctuation : event.key;
 }
 
-/**
- * Whether keys typed now go into text. The source view is read-only and
- * keeps the debugger's keys, so it is no text box.
- */
 export function isTextBox(element: Element | null): boolean {
   if (!element) {
     return false;
@@ -112,7 +95,7 @@ export function isTextBox(element: Element | null): boolean {
   if (element.closest("[data-keys=debugger]")) {
     return false;
   }
-  // A live drawing's canvas takes the letters, as a text box does.
+
   if (element.closest("[data-keys=renderer]")) {
     return true;
   }
@@ -125,8 +108,6 @@ export function isTextBox(element: Element | null): boolean {
   return element instanceof HTMLElement && element.isContentEditable;
 }
 
-/** Whether a menu or dialog holding `element` closes on Escape itself, so
- * Escape must not also leave the view. Its other keys stay the debugger's. */
 export function keepsEscape(element: Element | null): boolean {
   return element !== null && element.closest("[data-keys=escape]") !== null;
 }

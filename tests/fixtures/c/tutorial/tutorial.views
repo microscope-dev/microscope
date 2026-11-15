@@ -1,13 +1,13 @@
 microscope-views 1
 
-# A vector of integers: `n` of them at `data`, with room for `cap`.
+
 view c intvec {
     check n <= cap
     show sequence(n) for i in range(n) => data[i]
     field capacity = cap
 }
 
-# A tagged union: what it holds depends on its kind.
+
 view c value {
     show match kind {
         VAL_INT => value(u.i)
@@ -16,15 +16,15 @@ view c value {
     }
 }
 
-# A run queue: its tasks, each found from the node that links it.
+
 view c run_queue {
     show sequence(nr) for n in list(&tasks, p => p->next) if n != &tasks
         => container_of(n, task, run_node)->pid
 }
 
-# A tree whose nodes keep their children in a list. No generator walks it,
-# since that takes a stack, so the tree kernel the program carries does,
-# yielding each node before its children.
+
+
+
 view c tree {
     show sequence(count) for at in kernel("tree", root, offsetof(node, child), offsetof(node, sibling))
         => ((node *)at)->value

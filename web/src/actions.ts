@@ -1,7 +1,3 @@
-// What each run-control action does in the current state, or why it is
-// unavailable. Toolbar buttons and keys both ask here, so they always agree.
-// Steps act on the tab's focus: the stop, thread, and frame it shows.
-
 import type { Connection } from "./connection";
 import type { At } from "./focus";
 import type { Model } from "./model";
@@ -35,7 +31,6 @@ const STEPS: Record<StepName, StepKind> = {
   overInstruction: "overInstruction",
 };
 
-/** The cursor's line, when it is in the file shown. */
 export interface Cursor {
   path: string;
   line: number;
@@ -48,7 +43,7 @@ export interface Available {
 
 export interface Unavailable {
   enabled: false;
-  /** Why, as a tooltip says it. */
+
   reason: string;
 }
 
@@ -56,10 +51,6 @@ export type Action = Available | Unavailable;
 
 const unavailable = (reason: string): Unavailable => ({ enabled: false, reason });
 
-/** The actions being answered. The same one sent again meanwhile would act
- * on the state the first is changing, as a double click's second click
- * would, so it is dropped. Another, such as a pause during a long step,
- * still goes. */
 const answering = new Map<ActionName, Promise<unknown>>();
 
 function ready(name: ActionName, run: (connection: Connection) => Promise<unknown>): Available {
@@ -77,7 +68,6 @@ function ready(name: ActionName, run: (connection: Connection) => Promise<unknow
   };
 }
 
-/** `at` is where the tab looks, when it looks at a stop. */
 export function action(
   name: ActionName,
   model: Model,
@@ -132,7 +122,6 @@ export function action(
   }
 }
 
-/** An action that moves the stopped thread the tab shows. */
 function atStop(
   name: StepName | "jumpToCursor" | "stepIntoCall",
   inferior: Inferior,
@@ -142,7 +131,7 @@ function atStop(
   if (inferior.state !== "stopped") {
     return unavailable("the program is not stopped");
   }
-  // The thread and frame shown must be this stop's.
+
   if (at && at.stop !== inferior.stop) {
     const verb = name === "jumpToCursor" ? "jump" : "step";
     return unavailable(`this tab shows stop #${at.stop}; go to stop #${inferior.stop} to ${verb}`);
@@ -164,7 +153,7 @@ function atStop(
       if (!at) {
         return unavailable("this tab shows no stop");
       }
-      // The palette lists the line's calls; choosing one steps into it.
+
       return ready(name, () => {
         tab.setState({ palette: "calls" });
         return Promise.resolve();
@@ -179,7 +168,6 @@ function atStop(
   }
 }
 
-/** The label of the continue button: starting and continuing differ. */
 export function continueLabel(model: Model): string {
   const inferior = model.state?.inferior;
   return inferior && inferior.state !== "stopped" && inferior.state !== "running"

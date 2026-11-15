@@ -1,5 +1,5 @@
-// Goroutines that compute until the Go runtime has preempted them
-// asynchronously, which it does by sending the thread SIGURG, several times.
+
+
 package main
 
 import (
@@ -10,7 +10,7 @@ import (
 	"syscall"
 )
 
-// How many SIGURG signals the program receives before it finishes.
+
 const preemptions = 8
 
 //go:noinline
@@ -23,7 +23,7 @@ func spin(count int) int {
 }
 
 func main() {
-	// The runtime passes its preemption signals on to the program too.
+
 	urgent := make(chan os.Signal, 1)
 	signal.Notify(urgent, syscall.SIGURG)
 	var received atomic.Int64

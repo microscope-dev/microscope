@@ -1,10 +1,5 @@
-// How profile views name numbers and color frames. Colors follow a frame's
-// family, its module or its outermost namespace, so they stay the same
-// across views, profiles, and queries.
-
 import type { ProfileKey } from "../protocol";
 
-/** A weight in its unit: CPU time, or a count of executions. */
 export function formatWeight(weight: number, unit: string): string {
   if (unit === "nanoseconds") {
     return formatDuration(weight);
@@ -13,9 +8,6 @@ export function formatWeight(weight: number, unit: string): string {
   return `${count} ${weight === 1 ? "execution" : "executions"}`;
 }
 
-/** A diff's fill for a frame's share of its samples now and in the base:
- * red where it grew, blue where it shrank, as strong as the change is to
- * the larger share, and grey where it held. */
 export function diffFill(share: number, baseShare: number, dark: boolean): string {
   const larger = Math.max(share, baseShare);
   const change = larger > 0 ? (share - baseShare) / larger : 0;
@@ -28,8 +20,6 @@ export function diffFill(share: number, baseShare: number, dark: boolean): strin
   return `hsl(${angle}, ${Math.round(40 + 40 * strength)}%, ${lightness.toFixed(1)}%)`;
 }
 
-/** How a share of the samples changed from the base's, in percentage
- * points, or `null` when either side weighs nothing. */
 export function shareChange(
   part: number,
   whole: number,
@@ -39,7 +29,6 @@ export function shareChange(
   return whole > 0 && baseWhole > 0 ? (part / whole - basePart / baseWhole) * 100 : null;
 }
 
-/** A change in percentage points, signed. */
 export function formatChange(points: number | null): string {
   if (points === null) {
     return "–";
@@ -48,19 +37,13 @@ export function formatChange(points: number | null): string {
   return Number(shown) === 0 ? "±0" : `${points > 0 ? "+" : "−"}${shown.replace("-", "")} pp`;
 }
 
-/** What a diff's change column compares: each side's cost in the
- * profile's unit, or each side's share of its own profile. */
 export type DiffMode = "time" | "share";
 
-/** A diff cell's change, and which way it went: `up` where cost grew. */
 export interface Changed {
   text: string;
   way: "up" | "down" | "";
 }
 
-/** How a cost changed from the base's, as `report --base` writes it: the
- * difference in `unit` and as a percentage of the base, or `new` or
- * `gone` where one side is zero. */
 export function weightChange(weight: number, baseWeight: number, unit: string): string {
   if (weight === baseWeight) {
     return "±0";
@@ -78,8 +61,6 @@ export function weightChange(weight: number, baseWeight: number, unit: string): 
   return `${amount} ${sign}${percent.toFixed(1)}%`;
 }
 
-/** A diff cell's change in `mode`, from a part of each side and each
- * side's whole. */
 export function changeOf(
   mode: DiffMode,
   [part, whole]: readonly [number, number],
@@ -99,8 +80,6 @@ export function changeOf(
   };
 }
 
-/** A diff's fill in `mode`: by each side's cost, or by each side's share
- * of its own profile. */
 export function changeFill(
   mode: DiffMode,
   [part, whole]: readonly [number, number],
@@ -112,8 +91,6 @@ export function changeFill(
     : diffFill(part / Math.max(whole, 1), basePart / Math.max(baseWhole, 1), dark);
 }
 
-/** `value` to three significant digits in the largest of `units`, largest
- * first, that reads one or more once rounded, or whole in `base`. */
 function scaled(
   value: number,
   units: readonly (readonly [number, string])[],
@@ -122,7 +99,6 @@ function scaled(
   for (const [size, name] of units) {
     const shown = Number((value / size).toPrecision(3));
     if (Math.abs(shown) >= 1) {
-      // `toPrecision` writes 1200 as 1.20e+3.
       return Math.abs(shown) >= 1000
         ? `${Math.round(value / size).toLocaleString("en-US")} ${name}`
         : `${(value / size).toPrecision(3)} ${name}`;
@@ -131,7 +107,6 @@ function scaled(
   return `${Math.round(value)} ${base}`;
 }
 
-/** Bytes, in the largest binary unit that keeps them above one. */
 export function formatBytes(bytes: number): string {
   return scaled(
     bytes,
@@ -144,7 +119,6 @@ export function formatBytes(bytes: number): string {
   );
 }
 
-/** Nanoseconds, in the largest unit that keeps them above one. */
 export function formatDuration(nanoseconds: number): string {
   return scaled(
     nanoseconds,
@@ -157,9 +131,6 @@ export function formatDuration(nanoseconds: number): string {
   );
 }
 
-/** A time since the profile began, in the largest unit that keeps it, or
- * `scale`, above one, with as many decimals as tell apart times
- * `resolution` nanoseconds apart. */
 export function formatInstant(
   nanoseconds: number,
   resolution: number,
@@ -182,8 +153,6 @@ export function formatInstant(
   return `${(nanoseconds / size).toFixed(decimals)} ${name}`;
 }
 
-/** A time range, each end as fine as a hundredth of its length, and that
- * length. */
 export function formatSpan([start, end]: readonly [number, number]): string {
   const resolution = (end - start) / 100;
   return `${formatInstant(start, resolution)} – ${formatInstant(end, resolution)} (${formatDuration(end - start)})`;
@@ -197,15 +166,11 @@ export function formatPercent(part: number, whole: number): string {
   return `${percent >= 10 ? percent.toFixed(1) : percent.toFixed(2)}%`;
 }
 
-/** An exact count, its digits grouped, and with a noun, the noun for one
- * or for many. */
 export function formatCount(count: number, singular?: string, plural = `${singular}s`): string {
   const digits = count.toLocaleString("en-US");
   return singular === undefined ? digits : `${digits} ${count === 1 ? singular : plural}`;
 }
 
-/** The largest of `values`, or `floor` if none is larger. Spreading them
- * into `Math.max` overflows the stack for a lane per thread of buckets. */
 export function largest(values: Iterable<number>, floor: number): number {
   let most = floor;
   for (const value of values) {
@@ -216,17 +181,13 @@ export function largest(values: Iterable<number>, floor: number): number {
   return most;
 }
 
-/** What a frame's color follows: its module, or failing that the first
- * part of its name, such as a Rust crate or a Go package. */
 export function family(key: ProfileKey): string {
   const name = key.name.replace(/^\[task\] /u, "").replace(/^</u, "");
   const scope = /^([A-Za-z_][\w]*)(::|\.)/u.exec(name);
   return scope?.[1] ?? key.module ?? name;
 }
 
-/** A stable hue for a family. */
 export function hue(text: string): number {
-  // FNV-1a, which spreads similar names apart.
   let hash = 0x811c9dc5;
   for (let at = 0; at < text.length; at += 1) {
     // oxlint-disable-next-line unicorn/prefer-code-point -- the hash is over UTF-16 code units; code points would change every hue
@@ -236,8 +197,6 @@ export function hue(text: string): number {
   return (hash >>> 0) % 360;
 }
 
-/** A frame's fill: warm warnings for truncations, gray for time in a
- * system call, the family's hue for code. Dark themes darken every fill. */
 export function fill(key: ProfileKey, dark: boolean): string {
   if (key.kind === "truncation") {
     return dark ? "hsl(40 70% 30%)" : "hsl(42 90% 75%)";

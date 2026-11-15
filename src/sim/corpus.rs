@@ -1,11 +1,3 @@
-//! The golden programs, loaded once and shared read-only by every session.
-//!
-//! Each program in `tests/golden` has a manifest, written by
-//! `scripts/golden.sh`, naming its compiled variants and what each run of
-//! it prints and returns, and markers in its source, conditions its
-//! variables satisfy at their lines. `just build-test-programs` builds the
-//! variants into `build/golden`, with facts about each from GNU binutils.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,22 +9,16 @@ use super::loader::Image;
 use super::markers::{self, Marker};
 use crate::debug_info::{self, DebugInfo};
 
-/// Where the golden programs' sources and manifests live, in the source
-/// tree this build came from.
 #[must_use]
 pub fn directory() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
 }
 
-/// Where `just build-test-programs` builds the golden programs' binaries and
-/// their facts.
 #[must_use]
 pub fn built() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("build/golden")
 }
 
-/// Where a golden program's sources and binaries are in simulated paths,
-/// which match the directory its debug information names.
 const SIMULATED_ROOT: &str = "/microscope/tests/golden";
 
 #[derive(Debug, thiserror::Error)]
@@ -77,7 +63,6 @@ struct ManifestVariant {
     name: String,
 }
 
-/// One way to run a program, and what it does when nothing interferes.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Run {
     pub arguments: Vec<String>,
@@ -85,37 +70,26 @@ pub struct Run {
     pub output: String,
 }
 
-/// One compiled form of a program.
 pub struct Variant {
-    /// The binary's file name, such as `straight-gcc-O0`.
     pub name: String,
 
-    /// The binary as built, which tests also run natively.
     pub file: PathBuf,
 
-    /// The binary's path inside the simulation.
     pub path: Arc<str>,
 
-    /// The inode simulated mappings of the binary report.
     pub inode: u64,
     pub data: Arc<[u8]>,
     pub image: Arc<Image>,
 
-    /// The functions the binary defines, by name.
     pub functions: Vec<String>,
 
-    /// What binutils say about the binary.
     pub facts: Facts,
 
-    /// The data objects the symbol table defines, up to a page: name,
-    /// image address, size.
     pub globals: Vec<(String, u64, u64)>,
     debug_info: DebugInfo,
 }
 
 impl Variant {
-    /// The debug information a session's controller takes, sharing what
-    /// was loaded.
     #[must_use]
     pub fn debug_info(&self) -> DebugInfo {
         DebugInfo {
@@ -131,21 +105,14 @@ pub struct Program {
     pub variants: Vec<Variant>,
     pub runs: Vec<Run>,
 
-    /// The functions any variant defines, by name. Another variant may
-    /// have inlined some of them away.
     pub functions: Vec<String>,
 
-    /// The program's source file, as its debug information names it.
     pub source: PathBuf,
 
-    /// How many lines the source file has.
     pub source_lines: u64,
 
-    /// The conditions the source states at its lines.
     pub markers: Vec<Marker>,
 
-    /// The views its types are presented with, from `NAME.views` beside
-    /// its source, which the client loads.
     pub views: Option<Arc<str>>,
 }
 
@@ -154,7 +121,6 @@ pub struct Corpus {
 }
 
 impl Corpus {
-    /// Loads every program under [`directory`], in name order.
     pub fn load() -> Result<Self, CorpusError> {
         let root = directory();
         let built = built();
@@ -270,8 +236,6 @@ impl Corpus {
     }
 }
 
-/// The views of program `name`'s types, from `NAME.views` beside its
-/// source, if it has one.
 fn views_of(root: &Path, name: &str) -> Result<Option<Arc<str>>, CorpusError> {
     let path = root.join(name).join(format!("{name}.views"));
     match std::fs::read_to_string(&path) {
@@ -281,8 +245,6 @@ fn views_of(root: &Path, name: &str) -> Result<Option<Arc<str>>, CorpusError> {
     }
 }
 
-/// The data objects a binary's symbol table defines, up to a page, by
-/// name.
 fn watchable_objects(data: &[u8]) -> Result<Vec<(String, u64, u64)>, String> {
     let file = object::File::parse(data).map_err(|error| error.to_string())?;
     let mut objects = file
@@ -299,8 +261,6 @@ fn watchable_objects(data: &[u8]) -> Result<Vec<(String, u64, u64)>, String> {
     Ok(objects)
 }
 
-/// The functions a binary's symbol table defines, other than the
-/// runtime's entry points.
 fn defined_functions(data: &[u8]) -> Result<Vec<String>, String> {
     let file = object::File::parse(data).map_err(|error| error.to_string())?;
     let mut functions = file

@@ -1,26 +1,3 @@
-//! The image cache: sealed images by their inputs' contents, so that a
-//! program microscope has loaded before loads by reading and validating one
-//! file.
-//!
-//! An entry's key digests the exact bytes the image was built from (the
-//! file, the separate debug file chosen for it, and the dwz supplementary
-//! file its DWARF shares), the image format, and
-//! the sources the loader was built from, so an entry is never read by a
-//! loader that might have built it differently. Paths, identifiers, and
-//! everything else a session binds an image to stay out of the bytes, so
-//! a copy of a program at another path is a hit.
-//!
-//! Entries are written whole to a file of their own and then renamed into
-//! place, so a reader never sees part of one, and are removed only by
-//! eviction or when found corrupt. Every entry is validated before use: a
-//! checksum catches accidental damage, not a deliberately forged entry, so
-//! the cache is private to its user.
-//!
-//! One process has one cache, chosen by the option a program passes to
-//! [`configure`], then `MICROSCOPE_CACHE_DIR` (empty for none), and otherwise
-//! `$XDG_CACHE_HOME/microscope/images` or `~/.cache/microscope/images`, or none
-//! under nextest, whose tests choose their own.
-
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
@@ -33,27 +10,17 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use crate::image::backing::FileStamp;
 use crate::image::{AlignedBytes, Image, ImageError, Limits};
 
-/// The environment variable that names the cache's directory.
 pub const DIRECTORY_VARIABLE: &str = "MICROSCOPE_CACHE_DIR";
 
-/// The most bytes a cache keeps.
-///
-/// Opening one, and writing to it, evicts its oldest entries beyond this.
-/// One image may be as large as a load's input, 16 GiB, and Chrome's with
-/// its debug information is 7.6 GB, so the cache holds that much.
 pub const DEFAULT_CAPACITY: u64 = crate::image::backing::MAX_INPUT;
 
-/// Which cache a process uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Setting {
-    /// No cache: every load reads its debug information.
     Off,
 
-    /// The cache in this directory.
     Directory(PathBuf),
 }
 
-/// Why the cache cannot be used.
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
     #[error("cannot use the image cache in {path}: {error}")]
@@ -70,9 +37,6 @@ pub enum CacheError {
 
 static CACHE: OnceLock<Option<ImageCache>> = OnceLock::new();
 
-/// The cache's directory: `setting`, else the variable's value `variable`
-/// (empty for none), else none when `under_test`, else the user's cache
-/// directory from `xdg` or `home`.
 pub fn resolve(
     setting: Option<Setting>,
     variable: Option<&OsStr>,
@@ -118,11 +82,6 @@ fn describe(cache: Option<&ImageCache>) -> String {
     )
 }
 
-/// Chooses the process's cache and opens it.
-///
-/// [`resolve`] chooses from `setting` and the environment. A cache that
-/// cannot be opened leaves loads uncached, and the error says why.
-/// Choosing another cache once one is chosen is an error.
 pub fn configure(setting: Option<Setting>) -> Result<(), CacheError> {
     let directory = resolve_here(setting);
     let mut failure = None;
@@ -147,9 +106,6 @@ pub fn configure(setting: Option<Setting>) -> Result<(), CacheError> {
     Ok(())
 }
 
-/// Reports a problem with the cache, which costs loads only time: counted
-/// for `--timings` in every build, and described in a development build's
-/// flight recording.
 pub(crate) fn report(problem: fmt::Arguments<'_>) {
     crate::count!("cache_problems", 1);
     #[cfg(debug_assertions)]
@@ -158,13 +114,8 @@ pub(crate) fn report(problem: fmt::Arguments<'_>) {
     let _ = problem;
 }
 
-/// The images this process could not write since [`take_unwritten`] was
-/// last called: each program's path, and where and why.
 static UNWRITTEN: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
 
-/// Reports that the image of the program at `path` could not be written,
-/// which costs every later load of it all of its time, not only this one:
-/// [`report`]ed, and kept for [`take_unwritten`].
 pub(crate) fn unwritten(path: &Path, error: &WriteError) {
     report(format_args!(
         "{} for {}: {error}",
@@ -177,8 +128,6 @@ pub(crate) fn unwritten(path: &Path, error: &WriteError) {
     }
 }
 
-/// Each program whose image could not be written since the last call, with
-/// the cache's directory and the error, as `in DIRECTORY: ERROR`.
 pub fn take_unwritten() -> Vec<(PathBuf, String)> {
     UNWRITTEN
         .lock()
@@ -186,7 +135,6 @@ pub fn take_unwritten() -> Vec<(PathBuf, String)> {
         .unwrap_or_default()
 }
 
-/// The process's cache, choosing it from the environment when nothing has.
 pub(crate) fn current() -> Option<&'static ImageCache> {
     CACHE
         .get_or_init(|| {
@@ -198,7 +146,6 @@ pub(crate) fn current() -> Option<&'static ImageCache> {
         .as_ref()
 }
 
-/// What names one entry: a digest of every input and of what the loader is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Key(u128);
 
@@ -209,10 +156,6 @@ impl fmt::Display for Key {
 }
 
 impl Key {
-    /// The key of an image built from `inputs`, in their roles' order: the
-    /// file, then the separate debug file chosen for it, if any, then the
-    /// supplementary file its DWARF shares, if any. Which role an input has
-    /// follows from the bytes before it.
     #[must_use]
     pub fn of(inputs: &[&[u8]]) -> Self {
         let mut digest = twox_hash::XxHash3_128::new();
@@ -234,20 +177,15 @@ impl Key {
     }
 }
 
-/// What looking up a key found.
 #[derive(Debug)]
 pub enum Lookup {
-    /// A valid image, and the file it was read from.
     Hit { image: Arc<Image>, stamp: FileStamp },
 
-    /// No entry, or none that could be read.
     Miss,
 
-    /// An entry that failed validation, which was removed.
     Corrupt(ImageError),
 }
 
-/// Why an entry could not be written.
 #[derive(Debug, thiserror::Error)]
 #[error("cannot write {key} to the image cache in {directory}: {error}")]
 pub struct WriteError {
@@ -258,10 +196,8 @@ pub struct WriteError {
     error: std::io::Error,
 }
 
-/// Distinguishes the temporary files of one process's writers.
 static WRITES: AtomicU64 = AtomicU64::new(0);
 
-/// A directory of images, one file per key.
 #[derive(Debug)]
 pub struct ImageCache {
     directory: PathBuf,
@@ -273,8 +209,6 @@ const SUFFIX: &str = ".image";
 const TEMPORARY: &str = ".tmp";
 
 impl ImageCache {
-    /// Opens the cache in `directory`, creating it for its user alone, and
-    /// evicts its oldest entries until it holds at most `capacity` bytes.
     pub fn open(directory: &Path, capacity: u64) -> Result<Self, CacheError> {
         let open = |error| CacheError::Open {
             path: directory.to_owned(),
@@ -297,7 +231,6 @@ impl ImageCache {
         Ok(cache)
     }
 
-    /// The cache's directory.
     #[must_use]
     pub fn directory(&self) -> &Path {
         &self.directory
@@ -307,8 +240,6 @@ impl ImageCache {
         self.directory.join(format!("{key}{SUFFIX}"))
     }
 
-    /// Shares a live validated image if its file is unchanged, otherwise
-    /// reads and validates it. Unusable entries are removed.
     #[must_use]
     pub fn get(&self, key: Key) -> Lookup {
         let path = self.path(key);
@@ -325,7 +256,6 @@ impl ImageCache {
             return Lookup::Hit { image, stamp };
         }
 
-        // Touch before reading so the saved stamp includes our own update.
         let _ = nix::sys::stat::utimensat(
             nix::fcntl::AT_FDCWD,
             &path,
@@ -358,8 +288,6 @@ impl ImageCache {
         }
     }
 
-    /// Removes the entry for `key` if it is still the file `stamp`
-    /// describes, which a reader found unusable.
     pub fn discard(&self, key: Key, stamp: &FileStamp) {
         let path = self.path(key);
         let same = std::fs::symlink_metadata(&path)
@@ -370,9 +298,6 @@ impl ImageCache {
         }
     }
 
-    /// Writes `image` as the entry for `key`: to a file of its own, then
-    /// renamed into place, replacing any entry another writer made. The
-    /// entries used longest ago are evicted first, until it fits.
     pub fn put(&self, key: Key, image: &Image) -> Result<(), WriteError> {
         let failed = |error| WriteError {
             key,
@@ -404,9 +329,6 @@ impl ImageCache {
         Ok(())
     }
 
-    /// Removes the entries used longest ago, and files writers left when
-    /// `abandoned` says the cache is opening, until the cache holds at most
-    /// `capacity` bytes. A writer's file is left alone while it writes.
     fn evict(&self, capacity: u64, abandoned: bool) -> std::io::Result<()> {
         let mut entries = Vec::new();
 
@@ -419,7 +341,6 @@ impl ImageCache {
                 continue;
             }
 
-            // Another process may have removed it meanwhile.
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
@@ -454,10 +375,6 @@ impl ImageCache {
     }
 }
 
-/// Reads an entry. Entries are never written in place, so unlike an
-/// input's snapshot this does not watch for changes: replacing an entry
-/// changes only the replaced file's link count, and validation catches
-/// damage.
 fn read_entry(path: &Path) -> std::io::Result<(AlignedBytes, FileStamp)> {
     let mut file = std::fs::File::open(path)?;
     let metadata = file.metadata()?;

@@ -1,13 +1,8 @@
-// A profile explored in the page: the functions and their callers, a
-// transform, the flame graph's zoom, and the timeline's range, each held
-// in the address bar, so a reload or a link opens the same view.
-
 import { execFileSync, spawn } from "node:child_process";
 import * as path from "node:path";
 
 import { expect, fixture, join, menu, recordCalls, root, showView, test } from "./server";
 
-// The test serves a profile it records, not a program.
 test.use({ program: [] });
 
 test("a profile is explored, and its address opens the same view", async ({
@@ -23,7 +18,6 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(accounting).toContainText(`Sampled${kept} execution`);
   await expect(accounting).toContainText("Samplingeach call of leaf");
 
-  // leaf owns every sample, and its callers are middle, then outer.
   await showView(page, "Functions");
   const functions = page.getByRole("listbox", { name: "Functions" });
   await expect(functions.getByRole("option").first()).toContainText("100.0%");
@@ -35,7 +29,6 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(callers.nth(1)).toContainText("middle");
   await expect(callers.nth(2)).toContainText("outer");
 
-  // Merged away, middle gives its place to outer, in every view.
   await showView(page, "Call tree");
   await page
     .getByRole("tree", { name: "Call tree" })
@@ -50,7 +43,6 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(tree.getByRole("treeitem").filter({ hasText: "leaf" }).first()).toBeVisible();
   await expect(tree.getByRole("treeitem").filter({ hasText: "middle" })).toHaveCount(0);
 
-  // The address opens the same view.
   await page.reload();
   await expect(page.getByText("merge middle")).toBeVisible();
   await expect(page.getByRole("tab", { name: /^Call tree/u })).toHaveAttribute(
@@ -59,8 +51,6 @@ test("a profile is explored, and its address opens the same view", async ({
   );
   await expect(page.getByRole("tree", { name: "Call tree" })).toBeVisible();
 
-  // A frame of the flame graph zooms, and says what it costs, beside a
-  // search as wide as before.
   await showView(page, "Flame graph");
   const flame = page.getByRole("img", { name: "Flame graph" });
   const box = await flame.boundingBox();
@@ -77,7 +67,6 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(page.getByTestId("details").getByText(/total/u)).toBeVisible();
   expect((await search.boundingBox())?.width).toBe(searchWidth);
 
-  // Dragging across the timeline's ruler selects a range, which a chip names.
   const area = await page.getByTestId("ruler").locator(".ruler-marks").boundingBox();
   if (!area) {
     throw new Error("the timeline has no box");
@@ -89,9 +78,6 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(page).toHaveURL(/range=\d+-\d+/u);
   await expect(page.getByRole("button", { name: /^Remove .* – /u })).toBeVisible();
 
-  // A frame named longer than the page is cut short in the search and in
-  // its transform's chip, rather than widening the flame graph until the
-  // page scrolls sideways or wrapping the chip onto more lines.
   const long = `<${"alloc::boxed::Box<dyn core::ops::function::FnMut<(ignore::walk::DirEntry,)>> as ".repeat(8)}call_mut`;
   const address = new URL(page.url());
   address.searchParams.set("fn", long);
@@ -123,7 +109,7 @@ test("each thread's lane says how long it was off its CPU, and the accounting wh
   const served = await microscope.start([file]);
   await join(page, served.link);
   const lanes = page.getByTestId("timeline");
-  // The sleeper naps five times for 20 ms; the spinners share one CPU.
+
   await expect(lanes.getByRole("button", { name: /^sleeper/u })).toHaveAttribute(
     "title",
     /off its CPU (\d{3} ms|[\d.]+ s) blocked/u,
@@ -133,8 +119,7 @@ test("each thread's lane says how long it was off its CPU, and the accounting wh
   for (const spinner of await spinners.all()) {
     await expect(spinner).toHaveAttribute("title", /, (?!0 ns)[\d.]+ \S+ preempted$/u);
   }
-  // The sleeper's naps and the spinners' turns add up off their CPUs; what
-  // recording cost microscope is File details' to say.
+
   const accounting = page.getByTestId("accounting");
   await expect(accounting).toContainText("Threads4");
   await expect(accounting).toContainText(/Cores busy≈[\d.]+On CPU[\d.]+ (ns|µs|ms|s)/u);
@@ -150,7 +135,7 @@ test("File details opens as a pane with the whole command recorded and the sampl
   const program = fixture("profile-stacks-gcc-o0");
   execFileSync(
     path.join(root, "target", "debug", "microscope"),
-    // About 150 ms of work, so it holds a hundred samples or so.
+
     ["record", "-o", file, "--", program, "20000000", "two words", "it's"],
     { stdio: "ignore" },
   );
@@ -164,7 +149,6 @@ test("File details opens as a pane with the whole command recorded and the sampl
   await expect(page).toHaveURL(/view=details/u);
   await page.getByRole("tab", { name: "Metadata" }).click();
 
-  // Each argument whole on its own line, quoted as a shell reads it back.
   const lines = details.getByTestId("command").locator(":scope > div");
   await expect(lines).toHaveText([
     `${program} \\`,
@@ -184,8 +168,6 @@ test("File details opens as a pane with the whole command recorded and the sampl
     details.getByRole("region", { name: /stack depth/u }).getByRole("status"),
   ).toHaveText(/^[\d,]+ frames?: [\d,]+ samples?, /u);
 
-  // The button shows the pane it opened rather than another; closed, it
-  // goes, and a reload of its address opens it again.
   await page.getByRole("tab", { name: "argv.usprof", exact: true }).click();
   await inspect.click();
   await expect(tab).toHaveCount(1);
@@ -203,7 +185,6 @@ test("with many threads, each lane's name is as tall as its lane and level with 
   page,
   microscope,
 }, info) => {
-  // Sixteen spinners and the thread that answers the pipe.
   const file = info.outputPath("many.usprof");
   execFileSync(
     path.join(root, "target", "debug", "microscope"),
@@ -216,7 +197,6 @@ test("with many threads, each lane's name is as tall as its lane and level with 
   const names = timeline.locator(".lane-name");
   await expect.poll(() => names.count()).toBeGreaterThan(8);
 
-  // Each name's top and height, from the top of the lanes' canvas.
   const measured = () =>
     timeline.evaluate((box) => {
       const lanes = box.querySelector("canvas")?.getBoundingClientRect();
@@ -240,7 +220,7 @@ test("a program recorded from the page grows live, stops, and saves", async ({
   microscope,
 }) => {
   await join(page, microscope.link);
-  // An address from before Record was a pane opens the pane.
+
   await page.goto(new URL("/pick?tab=profile", microscope.origin).href);
   const record = page.getByRole("tabpanel", { name: "Record" });
   await record.getByLabel("Program").fill(fixture("spin"));
@@ -248,7 +228,6 @@ test("a program recorded from the page grows live, stops, and saves", async ({
   await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}/u);
   await expect(page.getByTestId("recording")).toContainText("Recording spin");
 
-  // Its samples arrive while it runs.
   await showView(page, "Functions");
   const functions = page.getByRole("listbox", { name: "Functions" });
   const main = functions
@@ -273,7 +252,6 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
   page,
   microscope,
 }, info) => {
-  // The program waits on its standard input the whole time it is recorded.
   const file = info.outputPath("waits.usprof");
   const program = spawn(fixture("profile-go-waits"), [], { stdio: ["pipe", "ignore", "ignore"] });
   const exited = new Promise((done) => {
@@ -296,13 +274,12 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
   await join(page, served.link);
   await expect(page.getByTestId("accounting")).toContainText("Task snapshots");
 
-  // The waits' functions are the receivers', and by task each is its own.
   await page.getByRole("button", { name: "Waits", exact: true }).click();
   await expect(page).toHaveURL(/src=waits/u);
   await showView(page, "Functions");
   const functions = page.getByRole("listbox", { name: "Functions" });
   await expect(functions.getByRole("option").filter({ hasText: "main.receive" })).toHaveCount(1);
-  // By task is the call tree's own: the functions stay as they were.
+
   await showView(page, "Call tree");
   const options = page.getByRole("dialog", { name: "Options" });
   await page.getByRole("button", { name: "Options" }).click();
@@ -315,7 +292,6 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
   await expect(page).not.toHaveURL(/bt=/u);
   await showView(page, "Call tree");
 
-  // The CPU's lanes by task: the spinner's, which selects its samples.
   await page.getByRole("button", { name: "CPU" }).click();
   await page.getByRole("button", { name: "Options" }).click();
   await options.getByRole("checkbox", { name: "By task" }).uncheck();
@@ -349,10 +325,10 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await expect(page.getByRole("img", { name: "Plot round, 3 values from 0 – 2" })).toBeVisible();
   const pane = page.getByTestId("zones-pane");
   await expect(pane).toBeVisible();
-  // The flame graph shows beside the zones, each a pane of its own.
+
   await expect(page.getByRole("img", { name: /flame graph/iu }).first()).toBeVisible();
   await expect(page.getByRole("tab", { name: /^Zones/u })).toHaveAttribute("aria-selected", "true");
-  // A link to the Zones view shows its pane.
+
   const zonesLink = new URL(page.url());
   zonesLink.searchParams.set("view", "zones");
   await page.goto(zonesLink.href);
@@ -361,7 +337,6 @@ test("a program's zones show under its threads, and the Zones pane picks which s
 
   const look = () => new URL(page.url()).searchParams;
 
-  // A site's zones, measured, and its samples alone.
   await pane.getByRole("button", { name: "step", exact: true }).click();
   await expect(page).toHaveURL(/zs=step/u);
   const stats = page.getByTestId("zone-stats");
@@ -371,8 +346,6 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await expect(page.getByRole("button", { name: "Remove zone: step", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove inside every one" })).toBeVisible();
 
-  // A band from the histogram; then only its zones' samples, then a diff
-  // of them against the site's others.
   await stats.getByRole("img", { name: /^Lengths of step/u }).click({ position: { x: 2, y: 30 } });
   await expect(page).toHaveURL(/zb=\d+-\d+/u);
   await expect(page.getByTestId("zone-band")).toContainText(/of 2/u);
@@ -383,20 +356,15 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await pane.getByRole("button", { name: "Compare the band with the rest" }).click();
   await expect(page).toHaveURL(/bz=rest/u);
   await expect(page.getByRole("button", { name: "Remove the band vs the rest" })).toBeVisible();
-  // The band and the rest hold different numbers of zones, so the diff
-  // can compare each side's share instead.
+
   await page.getByRole("button", { name: "share", exact: true }).click();
   await expect(page).toHaveURL(/dm=share/u);
 
-  // One of the longest: the views read its span, and the threads are as
-  // they were. Escape lets go of it, then the band, then the site.
   await stats.getByRole("listitem").first().getByRole("button").first().click();
   await expect(page).toHaveURL(/zi=\d+(%3A|:)\d+-\d+/u);
   expect(look().get("th")).toBeNull();
   await expect(page.getByTestId("zone-rank")).toContainText("of 2");
-  // Somewhere down the middle of it, its tip says how much of it ran on
-  // its CPU. The lanes show the whole recording, which their label says
-  // the length of.
+
   const [, from = 0, to = 0] = (look().get("zi") ?? "").split(/[:-]/u).map(Number);
   const named = (await lanes.getAttribute("aria-label")) ?? "";
   const [, length = "0", unit] = / ([\d.]+) (ms|s)$/u.exec(named) ?? [];
@@ -416,7 +384,7 @@ test("a program's zones show under its threads, and the Zones pane picks which s
     })
     .toMatch(/^step: 20\.\d ms\d+% on CPU, [\d.]+ \S+ blocked, [\d.]+ \S+ preempted/u);
   await page.mouse.move(0, 0);
-  // From anywhere on the page, even what takes no focus.
+
   await page.getByTestId("accounting").click();
   await page.keyboard.press("Escape");
   await expect(page).not.toHaveURL(/zi=/u);
@@ -426,8 +394,6 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await page.keyboard.press("Escape");
   await expect(page).not.toHaveURL(/zs=/u);
 
-  // The chips let go of the same parts: the zone's keeps its site, and
-  // the site's takes the zone with it.
   await pane.getByRole("button", { name: "step", exact: true }).click();
   const longest = stats.getByRole("listitem").first().getByRole("button").first();
   const zoneChip = page.getByRole("button", { name: /^Remove [\d.]+ m?s, /u });
@@ -441,8 +407,6 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await expect(page).not.toHaveURL(/zs=|zi=/u);
   await expect(zoneChip).toHaveCount(0);
 
-  // Ctrl and the wheel zoom anywhere in the lanes, their names too, and
-  // dragging with ctrl held pans; neither changes the range the views read.
   const ruler = page.getByTestId("ruler");
   const end = () => ruler.locator(".ruler-marks > span.last").textContent();
   const whole = await end();
@@ -457,7 +421,7 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await page.mouse.move(drawn.x + drawn.width / 2, drawn.y + 4);
   await page.keyboard.down("Control");
   await page.mouse.down();
-  // Zoomed in at the start, so a drag to the left shows later times.
+
   await page.mouse.move(drawn.x + drawn.width / 2 - 120, drawn.y + 4, { steps: 4 });
   await page.mouse.up();
   await page.keyboard.up("Control");
@@ -465,8 +429,6 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   expect(look().get("range")).toBeNull();
   expect(look().get("zi")).toBeNull();
 
-  // Dragging across the lanes selects a range, and a click off the zones
-  // lets go of it; so does dragging on the ruler, and a click there.
   const marks = (await ruler.boundingBox()) ?? drawn;
   const below = drawn.y + drawn.height - 2;
   await page.mouse.move(drawn.x + 10, below);
@@ -483,7 +445,6 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await page.mouse.up();
   await expect(page).toHaveURL(/range=\d+-\d+/u);
 
-  // Another theme repaints the lanes in its colors.
   await page.emulateMedia({ colorScheme: "light" });
   const painted = () => lanes.evaluate((canvas) => (canvas as HTMLCanvasElement).toDataURL());
   const before = await painted();
@@ -491,7 +452,6 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await expect.poll(painted).not.toBe(before);
   await page.getByRole("button", { name: /^Remove .* – /u }).click();
 
-  // A label's values are filters of every view.
   await pane.getByRole("button", { name: "round", exact: true }).click();
   const value = stats.getByRole("button", { name: /^round=\d$/u });
   await expect(value).toHaveCount(3);
@@ -502,7 +462,6 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await stats.getByRole("button", { name: "By round" }).click();
   await expect(page).toHaveURL(/bl=round/u);
 
-  // The pane closes, and opens again from the overview, as it was.
   await page.getByRole("button", { name: "Close Zones", exact: true }).click();
   await expect(pane).toBeHidden();
   await page.getByRole("button", { name: "Zones", exact: true }).click();
@@ -529,7 +488,7 @@ test("a recording without zones has no Zones pane, and its lanes ask for none", 
   await expect(page.getByRole("img", { name: /^CPU over/u })).toBeVisible();
   await expect(page.getByTestId("zones-pane")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Zones", exact: true })).toHaveCount(0);
-  // A link naming a site this recording lacks keeps nothing it cannot read.
+
   const address = new URL(page.url());
   address.searchParams.set("zs", "nowhere");
   address.searchParams.set("zf", "all");
@@ -551,7 +510,6 @@ test("a profile is diffed with a range of its own, and with another profile", as
   const served = await microscope.start([leaf, middle]);
   await join(page, served.link);
 
-  // The selected range becomes the base, and nothing changed against it.
   const area = await page.getByTestId("ruler").locator(".ruler-marks").boundingBox();
   if (!area) {
     throw new Error("the timeline has no ruler");
@@ -571,12 +529,11 @@ test("a profile is diffed with a range of its own, and with another profile", as
     functions.getByRole("option").filter({ has: page.getByText(name, { exact: true }) });
   await expect(row("leaf")).toContainText("±0");
 
-  // Against the calls of middle, leaf is all new and middle all gone.
   await page.getByRole("button", { name: /^Remove diff with this profile/u }).click();
   await expect(page).not.toHaveURL(/br=/u);
   await compare.selectOption({ label: "diff with middle.usprof" });
   await expect(page).toHaveURL(/bp=[0-9a-f]{16}/u);
-  // In time by default, as report --base compares them.
+
   await expect(row("leaf")).toHaveAttribute(
     "aria-label",
     new RegExp(`, \\+${kept} executions? new change$`, "u"),
@@ -584,7 +541,6 @@ test("a profile is diffed with a range of its own, and with another profile", as
   await expect(row("middle")).toHaveAttribute("aria-label", /, −\d+ executions? gone change$/u);
   await expect(page.getByRole("button", { name: "by change" })).toBeVisible();
 
-  // In share, each side's part of its own profile; the choice is in the address.
   await page.getByRole("button", { name: "share", exact: true }).click();
   await expect(page).toHaveURL(/dm=share/u);
   await expect(row("leaf")).toHaveAttribute("aria-label", /, \+100\.0 pp change$/u);
@@ -620,7 +576,7 @@ test("a function's samples show on its source lines and its instructions", async
   const served = await microscope.start([file]);
   await join(page, served.link);
   await showView(page, "Functions");
-  // The window to itself, for room to move the panel's bar in.
+
   await page.keyboard.press("Alt+Enter");
   await page
     .getByRole("listbox", { name: "Functions" })
@@ -628,7 +584,6 @@ test("a function's samples show on its source lines and its instructions", async
     .filter({ hasText: "leaf" })
     .click();
 
-  // Every call of leaf is on one line of it, and on its first instruction.
   await page.getByRole("button", { name: "Source", exact: true }).click();
   await expect(page).toHaveURL(/ann=lines/u);
   const lines = page.getByTestId("source-lines");
@@ -636,8 +591,7 @@ test("a function's samples show on its source lines and its instructions", async
   await expect(lines.locator(".hot")).toContainText("100.0%");
   await page.getByRole("button", { name: "Source and assembly", exact: true }).click();
   await expect(page).toHaveURL(/ann=code/u);
-  // Source sits beside the instructions: it opens on leaf's sampled line,
-  // whose instructions, the first among them, are chosen and tinted.
+
   const code = page.getByTestId("code");
   await expect(code).toContainText("profile-stacks.c");
   const source = code.getByRole("listbox", { name: "Source" });
@@ -653,7 +607,6 @@ test("a function's samples show on its source lines and its instructions", async
   await expect(first).toHaveAttribute("data-tint", tint ?? "");
   await expect(code.getByTestId("run")).toContainText(/^run 1 of \d+$/u);
 
-  // Each pane names its columns over its rows, however far it scrolls.
   for (const pane of [source, assembly]) {
     const head = pane.locator(".code-head");
     await expect(head).toHaveText("owntotal");
@@ -664,7 +617,6 @@ test("a function's samples show on its source lines and its instructions", async
     expect(shown?.y).toBeCloseTo(edge?.y ?? -1, 0);
   }
 
-  // The bar over the panel moves it: a drag, then the arrow keys.
   const divider = page.getByRole("separator", { name: /^Resize the functions/u });
   const listed = page.getByRole("listbox", { name: "Functions" });
   const tall = async () => (await listed.boundingBox())?.height ?? 0;
@@ -685,9 +637,6 @@ test("a function's samples show on its source lines and its instructions", async
   await divider.dblclick();
   await expect.poll(tall).toBeCloseTo(opened, 0);
 
-  // In a narrow window a long line scrolls sideways under its costs,
-  // which stay at the pane's edge. Both panes pin by the same rule; leaf's
-  // instructions are too short to need it.
   await page.setViewportSize({ width: 400, height: 800 });
   await expect
     .poll(() => source.evaluate((element) => element.scrollWidth - element.clientWidth))
@@ -709,7 +658,7 @@ test("a function's samples show on its source lines and its instructions", async
   expect(pin?.x).toBeCloseTo(edge?.x ?? -1, 0);
   expect(text?.x).toBeLessThan((before.text?.x ?? 0) - 40);
   await expect(row.locator(".percent").first()).toBeVisible();
-  // So do the costs of rows shorter than the scroll.
+
   const strays = await source.evaluate((element) => {
     const { left } = element.getBoundingClientRect();
     return [...element.querySelectorAll(".pin")]

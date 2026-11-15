@@ -1,5 +1,5 @@
-// Starts and joins many short threads, one after another, then calls
-// burst_done: a long burst of thread events before one stop.
+
+
 #include <pthread.h>
 
 enum { THREADS = 400 };

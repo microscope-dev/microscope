@@ -1,8 +1,8 @@
-"""What a program launched through microscope's bootstrap for CPython 3.12
-and 3.13 sees: its own PYTHONPATH and sys.path, its own sitecustomize, none
-of microscope's variables, and one thread; and what a child it starts sees.
-It then counts until a breakpoint, set as it runs, stops it.
-"""
+
+
+
+
+
 import builtins
 import os
 import subprocess

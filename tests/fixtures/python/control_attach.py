@@ -1,4 +1,4 @@
-"""Attach, detach, and attach again without an application agent import."""
+
 import contextvars
 import os
 import sys

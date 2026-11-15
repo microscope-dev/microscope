@@ -1,5 +1,5 @@
-// The parent and its forked child both run shared_work. The parent exits 0
-// only if the child, which inherits the parent's memory, exits normally.
+
+
 
 #include <sys/wait.h>
 #include <unistd.h>

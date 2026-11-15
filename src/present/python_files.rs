@@ -1,32 +1,19 @@
-//! Lists and authorizes reads of Python project sources, which debug information does not name.
-//! Searches project module directories before the standard library and installed packages.
-
 use std::collections::{BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path, PathBuf};
 
-/// The most files a listing holds.
 const MOST_FILES: usize = 20_000;
 
-/// The most directory entries a listing reads, so that a program run from
-/// a home directory lists part of it rather than reading all of it.
 const MOST_ENTRIES: usize = 200_000;
 
-/// Where a Python program's own modules are.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
-    /// The script Python runs, when it runs one from a file.
     pub script: Option<PathBuf>,
 
-    /// The directories Python searches first, absolute: the script's, or
-    /// the working directory for `-c`, `-m`, or standard input; then each
-    /// of `PYTHONPATH`'s, unless `-E` or `-I` ignores it.
     pub directories: Vec<PathBuf>,
 }
 
-/// The Python files under a project's directories, whether that is all of
-/// them, and the directories that could not be read, which may hold more.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listing {
     pub files: Vec<PathBuf>,
@@ -34,23 +21,18 @@ pub struct Listing {
     pub unreadable: Vec<PathBuf>,
 }
 
-/// What an interpreter's command line runs.
 enum Runs<'a> {
     Script(&'a OsStr),
     Directory,
 }
 
-/// What a project takes from an interpreter's command line.
 struct CommandLine<'a> {
     runs: Runs<'a>,
 
-    /// Whether `-E` or `-I` has Python ignore `PYTHONPATH`.
     ignores_environment: bool,
 }
 
 impl Project {
-    /// The project of an interpreter run with `arguments` in `cwd`, with
-    /// `PYTHONPATH` set to `pythonpath`, as Python begins `sys.path`.
     pub fn of(arguments: &[OsString], cwd: &Path, pythonpath: Option<&OsStr>) -> Self {
         let cwd = lexical(cwd);
         let line = command_line(arguments);
@@ -59,7 +41,6 @@ impl Project {
             Runs::Script(script) => {
                 let script = lexical(&cwd.join(script));
                 if script.is_dir() {
-                    // A directory runs its __main__.py.
                     let main = script.join("__main__.py");
                     (main.is_file().then_some(main), script)
                 } else {
@@ -88,16 +69,10 @@ impl Project {
         }
     }
 
-    /// The Python files under the project's directories, in the order of
-    /// their paths, skipping caches, hidden directories, virtual
-    /// environments, and installed packages, and following no link. A
-    /// listing cut short keeps the files nearest its directories.
     pub fn files(&self) -> Listing {
         self.files_within(MOST_FILES, MOST_ENTRIES)
     }
 
-    /// The listing `files` makes, of at most `most_files` files and from at
-    /// most `most_entries` directory entries.
     fn files_within(&self, most_files: usize, most_entries: usize) -> Listing {
         let mut files = BTreeSet::new();
         let mut entries = 0;
@@ -110,8 +85,6 @@ impl Project {
                 continue;
             }
 
-            // A directory that is not there holds no files; one that
-            // cannot be read may.
             let read = match std::fs::read_dir(&directory) {
                 Ok(read) => read,
                 Err(error) => {
@@ -122,7 +95,6 @@ impl Project {
                 }
             };
 
-            // Read no more of a directory than the listing may take.
             let mut children = Vec::new();
             let mut whole = true;
             for child in read.take(most_entries.saturating_sub(entries).saturating_add(1)) {
@@ -176,8 +148,6 @@ impl Project {
         }
     }
 
-    /// Accepts Python files under project directories, excluding skipped directories and links out.
-    /// Internal links are allowed for frame sources, though listings never follow links.
     pub fn holds(&self, path: &Path) -> bool {
         if !path.is_absolute() || !is_python(path) {
             return false;
@@ -208,10 +178,6 @@ impl Project {
     }
 }
 
-/// What `arguments`, CPython's command line after the interpreter, run:
-/// options come first, `-c` and `-m` end them with what they run, `-W`
-/// and `-X` take a value, and the first word that is no option is the
-/// script, or `-` for standard input.
 fn command_line(arguments: &[OsString]) -> CommandLine<'_> {
     let mut ignores_environment = false;
     let mut rest = arguments.iter();
@@ -262,8 +228,6 @@ fn is_python(path: &Path) -> bool {
     path.extension().is_some_and(|extension| extension == "py")
 }
 
-/// Whether a listing passes over the directory at `path`: a cache, a
-/// hidden directory, installed packages, or a virtual environment.
 fn skipped(path: &Path) -> bool {
     let name = path.file_name().map(OsStr::as_bytes).unwrap_or_default();
     name.starts_with(b".")
@@ -271,8 +235,6 @@ fn skipped(path: &Path) -> bool {
         || path.join("pyvenv.cfg").exists()
 }
 
-/// `path` with its `.` and `..` components resolved by their names alone,
-/// as Python's `os.path.abspath` makes the paths it records.
 fn lexical(path: &Path) -> PathBuf {
     let mut resolved = PathBuf::new();
     for component in path.components() {
@@ -304,8 +266,6 @@ mod tests {
         paths.iter().map(PathBuf::from).collect()
     }
 
-    /// The script is the first word that is no option, and its directory is
-    /// searched first.
     #[test]
     fn a_scripts_directory_is_searched_first() {
         let script = project(&["-B", "-W", "error", "tools/../run.py", "-c"], None);
@@ -317,8 +277,6 @@ mod tests {
         assert_eq!(joined.directories, paths(&["/srv"]));
     }
 
-    /// `-c`, `-m`, and standard input search the working directory first,
-    /// whatever follows them.
     #[test]
     fn a_command_or_module_searches_the_working_directory() {
         for arguments in [
@@ -334,8 +292,6 @@ mod tests {
         }
     }
 
-    /// `PYTHONPATH`'s directories follow, relative ones in the working
-    /// directory, unless the command line ignores the environment.
     #[test]
     fn pythonpath_follows_unless_ignored() {
         let searched = project(&["main.py"], Some("lib:/opt/shared::lib"));
@@ -350,9 +306,6 @@ mod tests {
         }
     }
 
-    /// A listing holds the Python files under the project, nearest first,
-    /// and none of its caches, hidden directories, or environments; a read
-    /// is allowed for exactly those.
     #[test]
     fn a_listing_and_a_read_take_the_same_files() {
         let root =
@@ -388,7 +341,6 @@ mod tests {
         assert!(!project.holds(&root.join("notes.txt")));
         assert!(!project.holds(&root.join("pkg/../../elsewhere.py")));
 
-        // A listing cut short says so, and keeps the nearest files.
         let short = project.files_within(1, 100);
         assert_eq!((short.files, short.complete), (vec![main], false));
         assert!(!project.files_within(100, 3).complete);
@@ -396,8 +348,6 @@ mod tests {
         std::fs::remove_dir_all(&root).expect("remove the scratch directory");
     }
 
-    /// A directory that cannot be read leaves its files out of a listing
-    /// that says it is incomplete; one that is not there holds no files.
     #[test]
     fn a_listing_that_cannot_read_a_directory_is_incomplete() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -419,7 +369,6 @@ mod tests {
         );
 
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("lock it");
-        // Root reads any directory.
         let readable = std::fs::read_dir(&locked).is_ok();
         let listing = project.files();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))

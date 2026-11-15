@@ -1,6 +1,3 @@
-//! Expressions at a stop: a frame's names for binding, and its state for
-//! running, over the debug-info providers' structural primitives.
-
 use std::cell::{Cell, OnceCell};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -43,28 +40,22 @@ use super::native::{InspectionOps, LinuxTraceOps};
 use super::registers::x86_64_register_snapshot;
 use super::{Controller, Inferior, RuntimeModule, debug_thread_id, validate_image_current};
 
-/// A data object a frame names.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct StopObject {
     module: ModuleId,
     key: ObjectRef,
 
-    /// Whether it is a local or parameter of the frame.
     local: bool,
 }
 
-/// Which data object a frame names.
 #[derive(Debug, Clone, Copy)]
 enum ObjectRef {
     /// One the debug information describes.
     Data(ObjectKey),
 
     /// A variable a suspended async frame keeps in its future, or the
-    /// future itself: a value of type `ty` at `address`.
     Saved { ty: TypeId, address: VirtualAddress },
 
-    /// What a name means in an interpreted frame, which `runtime`'s
-    /// interpreter keeps at `frame`.
     Interpreted {
         runtime: crate::RuntimeId,
         frame: crate::runtime_model::InterpretedFrameRef,
@@ -73,8 +64,6 @@ enum ObjectRef {
 }
 
 impl StopObject {
-    /// The runtime, frame, and slot of the interpreted frame's variable
-    /// this names, when it names one.
     pub(super) const fn interpreted_variable(
         &self,
     ) -> Option<(
@@ -92,7 +81,6 @@ impl StopObject {
         }
     }
 
-    /// A global of a module.
     pub(super) const fn global(module: ModuleId, key: ObjectKey) -> Self {
         Self {
             module,
@@ -101,8 +89,6 @@ impl StopObject {
         }
     }
 
-    /// What a name means in the interpreted frame `runtime`, carried by
-    /// `module`, keeps at `frame`.
     pub(super) const fn interpreted(
         module: ModuleId,
         runtime: crate::RuntimeId,
@@ -121,32 +107,23 @@ impl StopObject {
     }
 }
 
-/// A structural step planned from types alone.
 #[derive(Clone)]
 pub(super) enum StopStep {
-    /// A step one module's image planned.
     Provider { module: ModuleId, step: PlannedStep },
 
-    /// To an element of a value a view presents as a sequence.
     Element(Arc<ViewBound>),
 
-    /// To the value for a key of a value a view presents as a map.
     Entry(Arc<ViewBound>),
 
-    /// To the value a view presents a value as, for `*x`.
     Presented(Arc<ViewBound>),
 
-    /// To a global, from anywhere: a view's `global(NAME)`.
     Global(StopObject),
 
-    /// From an interpreter's object to its attribute of this name.
     Attribute(Arc<str>),
 
-    /// From an interpreter's object to the item a key or an index finds.
     Item,
 }
 
-/// A view bound against one type, whose steps are a stop's.
 pub(super) type ViewBound = crate::view::bind::BoundView<StopStep>;
 
 impl fmt::Debug for StopStep {
@@ -165,8 +142,6 @@ impl fmt::Debug for StopStep {
     }
 }
 
-/// The step from an interpreter's object to an attribute or an item, which
-/// the machine takes by the object's type as it runs.
 pub(super) fn plan_interpreted(step: StepKind<'_>) -> std::result::Result<StopStep, Refusal> {
     match step {
         StepKind::Member(name) => Ok(StopStep::Attribute(name.into())),
@@ -178,20 +153,16 @@ pub(super) fn plan_interpreted(step: StepKind<'_>) -> std::result::Result<StopSt
     }
 }
 
-/// Where a value of one module's types is.
 #[derive(Debug, Clone)]
 pub(super) struct StopPlace {
     pub(super) module: ModuleId,
     pub(super) located: Located,
 }
 
-/// Where a value an expression reaches is.
 #[derive(Debug, Clone)]
 pub(super) enum Place {
-    /// A value of one module's types.
     Native(StopPlace),
 
-    /// An interpreter's object, which `runtime` names by `object`.
     Interpreted {
         runtime: crate::RuntimeId,
         object: crate::runtime_model::InterpretedHandle,
@@ -205,8 +176,6 @@ impl From<StopPlace> for Place {
 }
 
 impl Place {
-    /// The value of a module's types the binder made this place, which no
-    /// expression can make an interpreter's object.
     pub(super) fn native(&self) -> std::result::Result<&StopPlace, Stop> {
         match self {
             Self::Native(place) => Ok(place),
@@ -217,7 +186,6 @@ impl Place {
     }
 }
 
-/// One frame of a stop, as expressions see it.
 pub(super) struct Frame<'a, P: InspectionOps> {
     pub(super) controller: &'a Controller<P>,
     inferior: &'a Inferior,
@@ -225,21 +193,14 @@ pub(super) struct Frame<'a, P: InspectionOps> {
     pub(super) stop_id: StopId,
     resolved: &'a ResolvedFrame,
 
-    /// The frame's module, address, and inline instance, when it has debug
-    /// information.
     code: Option<(&'a RuntimeModule, ImageAddress, Option<CodeInstanceId>)>,
     registers: OnceCell<Option<RegisterSnapshot>>,
 
-    /// Units of work every machine running at the frame has done; the
-    /// views presenting values one inside another each have a machine.
     charges: Cell<u32>,
 
-    /// The system call the frame's thread stopped at, which `$arg0` to
-    /// `$arg5`, `$ret`, and `$path` read in any of its frames.
     pub(super) call: Option<crate::eval::target::CallValues>,
 }
 
-/// What a catchpoint's stop tells the evaluator of its call.
 pub(super) fn call_values(reason: &crate::StopReason) -> Option<crate::eval::target::CallValues> {
     let crate::StopReason::Syscall(stop) = reason else {
         return None;
@@ -253,7 +214,6 @@ pub(super) fn call_values(reason: &crate::StopReason) -> Option<crate::eval::tar
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// The loaded module whose image defines `ty`.
     pub(super) fn module_of(&self, ty: TypeReference) -> Option<&RuntimeModule> {
         self.modules
             .values()
@@ -282,15 +242,11 @@ impl<'a, P: InspectionOps> Frame<'a, P> {
         self.controller.modules.get(&id)
     }
 
-    /// Reads the frame's registers and memory for values `module` describes.
     pub(super) fn runtime(&self, module: &'a RuntimeModule) -> LinuxVariableRuntime<'a, P> {
         self.controller
             .frame_runtime(self.inferior, self.root, self.resolved, module)
     }
 
-    /// What the value stored at `value` dynamically holds, when the
-    /// runtime the module `module` carries records it in the record named
-    /// `representation`.
     pub(super) fn runtime_dynamic(
         &self,
         module: ModuleId,
@@ -308,7 +264,6 @@ impl<'a, P: InspectionOps> Frame<'a, P> {
             })
     }
 
-    /// Modules in the order names are looked up: the frame's first.
     fn modules(&self) -> impl Iterator<Item = &'a RuntimeModule> + 'a {
         let first = self.code.map(|(module, ..)| module);
         let id = first.map(|module| module.loaded.id);
@@ -333,7 +288,6 @@ impl<'a, P: InspectionOps> Frame<'a, P> {
                         (native.transpose().ok()?, Some(registers))
                     }
 
-                    // A tail call discarded every register of the frame.
                     FrameRegisters::Discarded => {
                         let native = self
                             .root
@@ -357,11 +311,7 @@ impl<'a, P: InspectionOps> Frame<'a, P> {
 }
 
 impl<P: InspectionOps> Frame<'_, P> {
-    /// The variable `name` names in a suspended async frame, which its
-    /// future keeps, or the future for `$future`; `None` in any other
-    /// frame, or for a name it keeps no variable of.
     fn lookup_saved(&self, name: &str) -> std::result::Result<Option<Lookup<StopObject>>, Refusal> {
-        // The future a suspended frame holds, and the type of its own.
         let (object, ty) = match (self.resolved.scope, self.resolved.frame.as_ref()) {
             (FrameScope::Suspended { object, ty, .. }, _) => (object, ty),
             (_, Some(frame)) => match frame.kind {
@@ -401,11 +351,6 @@ impl<P: InspectionOps> Frame<'_, P> {
         }
     }
 
-    /// `$future` in a running frame of an async body whose debug
-    /// information does not name its future, as no Rust before 1.93's
-    /// does: the future its runtime polls at the frame's place in the
-    /// task's chain of awaits. Only an out-of-line body has a place of its
-    /// own; an inlined one names its future as its caller does.
     fn polled_future(
         &self,
         module: &RuntimeModule,
@@ -440,7 +385,6 @@ impl<P: InspectionOps> Frame<'_, P> {
         })
     }
 
-    /// The global `name` names in exactly one loaded module.
     fn lookup_global(
         &self,
         name: &str,
@@ -499,8 +443,6 @@ impl<P: InspectionOps> Frame<'_, P> {
         }
     }
 
-    /// The enumerator `name` names, by its own name or qualified by its
-    /// enumeration's, in the frame's module before others.
     fn lookup_enumerator(&self, name: &str) -> Option<Lookup<StopObject>> {
         for module in self.modules() {
             let mut found = module
@@ -532,7 +474,6 @@ impl<P: InspectionOps> Frame<'_, P> {
     }
 }
 
-/// A data object of `module`, as a name lookup finds it.
 fn object(module: &RuntimeModule, key: ObjectKey, local: bool) -> Lookup<StopObject> {
     Lookup::Object {
         object: StopObject {
@@ -573,8 +514,6 @@ impl<P: InspectionOps> TypeSource for Frame<'_, P> {
     }
 }
 
-/// A shallow description of a type's definition, under which two types of
-/// one name are one type.
 fn definition(image: &crate::ModuleImage, info: &TypeInfo) -> String {
     let name = |reference: TypeReference| {
         image
@@ -662,7 +601,6 @@ const fn tag_matches(tag: Option<Tag>, kind: &TypeKind) -> bool {
     }
 }
 
-/// A provider's refusal of a step, as an expression error.
 fn refusal(error: &Error) -> Refusal {
     let kind = match error {
         Error::AmbiguousBase { .. } | Error::AmbiguousMember { .. } => ErrorKind::AmbiguousName,
@@ -679,7 +617,6 @@ fn refusal(error: &Error) -> Refusal {
     Refusal::new(kind, error.to_string())
 }
 
-/// The loaded module that defines `ty`.
 fn type_module<P: InspectionOps>(
     controller: &Controller<P>,
     ty: TypeReference,
@@ -689,7 +626,6 @@ fn type_module<P: InspectionOps>(
         .ok_or_else(|| Refusal::new(ErrorKind::Unsupported, "the type's module is not loaded"))
 }
 
-/// Plans one step from a value of `from` in the image of its module.
 pub(super) fn plan_in<P: InspectionOps>(
     controller: &Controller<P>,
     from: TypeReference,
@@ -756,11 +692,6 @@ pub(super) fn plan_in<P: InspectionOps>(
     })
 }
 
-/// The types a name means in one module, through its image's identity
-/// index: a name may omit outer path segments and trailing arguments. One
-/// type defined alike in several units is one type, and so is a synonym
-/// that only renames another candidate, as Go's typedefs of its named
-/// types do.
 pub(super) fn lookup_type_in(module: &RuntimeModule, query: &TypeQuery) -> TypeLookup {
     let candidates = module
         .image
@@ -826,8 +757,6 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
             }
         }
 
-        // An interpreted frame's names are its interpreter's: its variables,
-        // then the globals and built-ins its code reads.
         if !outermost && let Some(found) = self.lookup_interpreted(name)? {
             return Ok(found);
         }
@@ -843,7 +772,6 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
         Ok(Lookup::NotFound)
     }
 
-    /// The types a name means, in the frame's module first.
     fn lookup_type(&self, query: &TypeQuery) -> TypeLookup {
         for module in self.modules() {
             match lookup_type_in(module, query) {
@@ -876,15 +804,12 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
     ) -> std::result::Result<Planned<StopStep>, Refusal> {
         let planned = plan_in(self.controller, from, step);
 
-        // A value with no indexing of its own is indexed through the view
-        // that presents it as a sequence.
         match (&planned, step) {
             (Err(_), StepKind::Index { .. }) => {
                 self.controller.view_index(from).map_or(planned, Ok)
             }
             (Err(_), StepKind::Entry) => self.controller.view_entry(from).map_or(planned, Ok),
-            // A value that is no pointer dereferences to the value the
-            // view that presents it presents it as.
+
             (Err(_) | Ok(Planned { result: None, .. }), StepKind::Deref) => {
                 self.controller.view_deref(from).map_or(planned, Ok)
             }
@@ -927,10 +852,6 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
     }
 }
 
-/// The members by which the elements of a type its language makes a tuple
-/// are reached, in order: a Rust tuple's `__0`, `__1`, …, in a type rustc
-/// names by its elements' types, as `(i32, &str)`, which a tuple struct's
-/// name is not; or a Zig tuple's `0`, `1`, …. `None` for any other type.
 fn tuple_members(info: &TypeInfo) -> Option<Vec<Arc<str>>> {
     let TypeKind::Record { members, bases, .. } = &info.kind else {
         return None;
@@ -948,7 +869,6 @@ fn tuple_members(info: &TypeInfo) -> Option<Vec<Arc<str>>> {
                 && member.name.as_deref() == Some(format!("{prefix}{position}").as_str())
         });
 
-    // A record of no members has no names to tell a tuple from a struct.
     (positional && !members.is_empty()).then(|| {
         members
             .iter()
@@ -957,26 +877,17 @@ fn tuple_members(info: &TypeInfo) -> Option<Vec<Arc<str>>> {
     })
 }
 
-/// A frame's state at one stop, which a bound program runs against.
 pub(super) struct StopMachine<'a, 'b, P: InspectionOps> {
     pub(super) frame: &'b Frame<'a, P>,
     pub(super) budget: &'b mut InspectionBudget,
 
-    /// How many views are presenting the values this machine presents, one
-    /// inside another.
     pub(super) depth: u8,
 
-    /// Whether a run-control request waiting ends the work, which then
-    /// runs again after it; false for work run control itself does.
     pub(super) interruptible: bool,
 
-    /// Whether values present as the types they dynamically are; false for
-    /// a base-class subobject, which is part of an object, not one.
     pub(super) dynamic: bool,
 }
 
-/// How many units of work a frame's machines do between checks for waiting
-/// run control.
 pub(super) const INTERRUPT_INTERVAL: u32 = 64;
 
 impl<'a, 'b, P: InspectionOps> StopMachine<'a, 'b, P> {
@@ -994,7 +905,6 @@ impl<'a, 'b, P: InspectionOps> StopMachine<'a, 'b, P> {
         }
     }
 
-    /// A machine on this one's budget, presenting values `depth` views deep.
     pub(super) const fn nested(&mut self, depth: u8) -> StopMachine<'a, '_, P> {
         let mut machine = StopMachine::new(self.frame, self.budget, self.interruptible);
         machine.depth = depth;
@@ -1007,7 +917,6 @@ impl<'a, 'b, P: InspectionOps> StopMachine<'a, 'b, P> {
             .ok_or_else(|| Stop::Failed(Error::ModuleNotLoaded(id)))
     }
 
-    /// The instruction context values of `module` are evaluated at.
     fn address(&self, module: &RuntimeModule) -> Option<ImageAddress> {
         global_context_address(self.frame.resolved, module)
     }
@@ -1022,7 +931,6 @@ impl<'a, 'b, P: InspectionOps> StopMachine<'a, 'b, P> {
         )
     }
 
-    /// A value as it is stored, without a view.
     pub(super) fn materialize(
         &mut self,
         module: &'a RuntimeModule,
@@ -1046,7 +954,6 @@ impl<'a, 'b, P: InspectionOps> StopMachine<'a, 'b, P> {
             .map_err(Stop::missing)
     }
 
-    /// Any module's runtime, for memory the expression addresses directly.
     fn memory_module(&self) -> std::result::Result<&'a RuntimeModule, Stop> {
         self.frame.modules().next().ok_or_else(|| {
             Stop::Refused(Refusal::new(ErrorKind::Unsupported, "no module is loaded"))
@@ -1242,7 +1149,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
                 source: VariableValueSource::Constant,
                 ..
             } => Err(not_in_memory("a constant")),
-            // Including a returned value gathered from several registers.
+
             ValueStorage::Bytes {
                 source: VariableValueSource::Composite,
                 ..
@@ -1368,7 +1275,6 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
     }
 
     fn tuple_elements(&mut self, at: &Place) -> std::result::Result<Option<Vec<Place>>, Stop> {
-        // An interpreter's tuple is compared by its runtime.
         let Place::Native(at) = at else {
             return Ok(None);
         };
@@ -1406,8 +1312,6 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         let place = at;
         let at = at.native()?;
 
-        // A view that presents the value as text says where it is, and
-        // otherwise the debug information does.
         let found = if let Some(found) = self.view_text_span(at)? {
             Some(found)
         } else {
@@ -1427,7 +1331,6 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
             return Ok(None);
         };
 
-        // Text that ends at a NUL is as long as reading it finds.
         let length = match length {
             Some(length) => length,
             None => match self.text(place)? {
@@ -1555,8 +1458,6 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
             return Ok(task.number);
         }
 
-        // A condition at a hit, before the other threads stop, reads the
-        // task from the thread's own state alone, which they cannot change.
         if frame.inferior.run.stop().is_none() {
             return match frame
                 .controller
@@ -1737,11 +1638,9 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
     }
 }
 
-/// What evaluating an expression asks of the controller.
 enum Evaluated {
     Done(Box<Evaluation>),
 
-    /// Store `bytes` in `target`, then read it again.
     Write {
         target: StopPlace,
         bytes: Vec<u8>,
@@ -1749,15 +1648,12 @@ enum Evaluated {
         span: Span,
     },
 
-    /// Store `bytes` in a register, then read it again.
     WriteRegister {
         register: Register,
         bytes: Vec<u8>,
         span: Span,
     },
 
-    /// Give the variable a frame's runtime keeps, which `target` names
-    /// when the expression names one alone, `value`.
     WriteDynamic {
         target: Option<StopObject>,
         value: crate::eval::interp::Assigned<Place>,
@@ -1765,15 +1661,11 @@ enum Evaluated {
     },
 }
 
-/// How an assignment went: made, with the event that follows its reply
-/// when it moved a thread; or begun, as a runtime's agent makes it while
-/// its thread runs, whose stop answers.
 pub(super) enum Assigning {
     Made(Box<Evaluation>, Option<DebuggerEvent>),
     Running,
 }
 
-/// An interpreter failure as the debugger's error.
 fn failure(failure: Failure) -> Error {
     match failure {
         Failure::Expression(error) => Error::Expression(error),
@@ -1782,10 +1674,6 @@ fn failure(failure: Failure) -> Error {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Evaluates an expression that may assign, in one frame of a validated
-    /// stop, and makes its assignment. Assigning the program counter moves
-    /// the thread, whose stop is then published again: the event is
-    /// returned, to follow the evaluation's reply.
     pub(super) fn evaluate_assigning(
         &mut self,
         stop_id: StopId,
@@ -1859,9 +1747,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 source: VariableValueSource::Register(register),
                 ..
             } => {
-                // A register belongs to the innermost activation; a caller's
-                // copy lives in memory its callees saved, and part of a
-                // register cannot be told from the whole.
                 let Some(pid) = root.thread() else {
                     return Err(refused(
                         "it is held in a register the task's runtime saved".into(),
@@ -1896,9 +1781,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map(|evaluation| made((evaluation, None)))
     }
 
-    /// Stores an assignment's bytes in a register of a frame that shares
-    /// the thread's own, and moves the thread when the register is its
-    /// program counter.
     #[expect(clippy::too_many_arguments, reason = "one assignment's parts")]
     fn assign_register(
         &mut self,
@@ -1954,19 +1836,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok((evaluation, Some(moved)))
     }
 
-    /// Whether a frame's registers are the thread's own, as the innermost
-    /// activation's frames, inlined ones too, share them.
     fn shares_thread_registers(&self, root: &StackRoot, frame: StackFrameId) -> Result<bool> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let resolved = self.resolve_frame(inferior, root, frame)?;
         Ok(matches!(resolved.registers, FrameRegisters::Thread(_)))
     }
 
-    /// An assignment's value: its target read again, so what the target's
-    /// own type makes of the stored bytes shows. It is read in the
-    /// assignment's own mode, which run control waiting cannot interrupt:
-    /// the write is made, and serving the request again would make it
-    /// twice.
     pub(super) fn read_assigned(
         &self,
         stop_id: StopId,
@@ -1986,7 +1861,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Evaluates an expression in one frame of a validated stop.
     pub(super) fn evaluate(
         &self,
         stop_id: StopId,
@@ -2027,8 +1901,6 @@ impl<P: InspectionOps> Controller<P> {
         let program = bind(expression, &scope, mode).map_err(Error::Expression)?;
         let mut budget = InspectionBudget::new(limits);
 
-        // Reading may wait for run control; an assignment, which changes
-        // the stop, may not.
         let mut machine = StopMachine::new(&scope, &mut budget, mode == Mode::Read);
         let outcome = run(&program, &mut machine);
         record!("evaluate `{}`: {outcome:?}", expression.text());
@@ -2046,7 +1918,6 @@ impl<P: InspectionOps> Controller<P> {
                 whole,
                 span,
             } => Evaluated::Write {
-                // The binder assigns only to values of a module's types.
                 target: match target {
                     Place::Native(target) => target,
                     Place::Interpreted { .. } => {
@@ -2074,11 +1945,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Evaluates an expression where a breakpoint or watchpoint hit stopped
-    /// one thread while others may run, as a condition or log message does:
-    /// in the innermost frame the hit's stop `reason` presents, with
-    /// capabilities that belong to no stop. A condition's value is its
-    /// truth.
     pub(super) fn evaluate_at_hit(
         &self,
         pid: Pid,
@@ -2089,8 +1955,6 @@ impl<P: InspectionOps> Controller<P> {
         let _span = crate::span!("eval hit");
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
 
-        // The thread is in the ptrace-stop that reported the hit, which its
-        // recorded state does not reflect until the hit is resolved.
         validate_image_current(inferior)?;
         let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
         let presentation = self.presentation_for_thread(pid, Some(reason))?;
@@ -2099,7 +1963,6 @@ impl<P: InspectionOps> Controller<P> {
         let resolved = self.resolve_presented_frame(inferior, &root, frame, Some(&presentation))?;
         let mut scope = self.frame_for(inferior, StopId::new(0), &root, &resolved);
 
-        // The thread's recorded reason is not yet this hit's.
         scope.call = call_values(reason);
         let program = if condition {
             crate::eval::bind::bind_condition(expression, &scope)
@@ -2108,7 +1971,6 @@ impl<P: InspectionOps> Controller<P> {
         }
         .map_err(Error::Expression)?;
 
-        // Run control is evaluating, so nothing interrupts it.
         let mut machine = StopMachine::new(&scope, &mut budget, false);
         let outcome = run(&program, &mut machine);
         record!("evaluate `{}` at a hit: {outcome:?}", expression.text());
@@ -2123,9 +1985,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// The frame a hit's condition and log message read: for a hit a
-    /// runtime reports through its hook, the program's frame it blames, as
-    /// its stop selects; for a trap, the innermost frame.
     fn hit_frame(
         &self,
         inferior: &Inferior,
@@ -2154,9 +2013,6 @@ impl<P: InspectionOps> Controller<P> {
             .ok_or_else(|| Error::RuntimeAgent("the hit's frame is not in its stack".into()))
     }
 
-    /// Resolves an expression at a stop to the memory it occupies and the
-    /// lifetime of that storage: the lifetime of the object it is part of,
-    /// or none when it was reached through a pointer.
     pub(super) fn resolve_watch_target(
         &self,
         stop_id: StopId,
@@ -2218,10 +2074,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Resolves a watch of an interpreted frame's variable, which `program`
-    /// names, to the word the variable keeps its object in, for as long as
-    /// the frame runs. An interpreter's objects themselves move and change
-    /// as it likes.
     fn resolve_interpreted_watch(
         &self,
         inferior: &Inferior,
@@ -2283,8 +2135,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// The type an expression has in one frame, reading no memory, but
-    /// for a value of a dynamic type, which has the type its value has.
     pub(super) fn expression_type(
         &self,
         stop_id: StopId,

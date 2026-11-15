@@ -1,52 +1,33 @@
-//! What a Node fixture reports at a checkpoint (`tests/fixtures/node/truth.js`),
-//! and the comparisons that hold a reader of its threads to it, each shown
-//! to fail on the lies it exists to catch.
-
 use crate::support::Scenario;
 use crate::support::truth::Report;
 
-/// One frame as V8 reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
-    /// The function's name, or `-` where V8 has none.
     pub function: String,
     pub file: String,
     pub line: Option<u32>,
     pub column: Option<u32>,
 
-    /// The frame's tier, as `turbofan`, `inlined`, or `turbofan>ignition`,
-    /// where the frame recorded one.
     pub tier: Option<String>,
 }
 
-/// One JavaScript thread and its frames, innermost first, from the frame
-/// that called into `truth.js`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Thread {
-    /// The Linux thread id.
     pub native: u64,
     pub name: String,
     pub printer: bool,
     pub frames: Vec<Frame>,
 
-    /// V8's await chain below the frames, innermost first: the async
-    /// functions suspended in await, and the promise combinators between
-    /// them, named as `Promise.all (index 1)`.
     pub awaiting: Vec<Frame>,
 
     pub values: Vec<Named>,
 }
 
-/// A value the fixture named.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Named {
     pub name: String,
-    /// `util.inspect`'s text with the default options.
     pub text: String,
-    /// The text with every entry on one line (`compact: true,
-    /// breakLength: Infinity`).
     pub line: String,
-    /// Whether the value is an error V8 made.
     pub error: bool,
 }
 
@@ -60,8 +41,6 @@ fn number<T: std::str::FromStr>(field: &str) -> T {
         .unwrap_or_else(|_| panic!("a number, not {field:?}"))
 }
 
-/// The threads a checkpoint's lines report, in the order it printed them:
-/// the printer first.
 pub fn threads(lines: &[Vec<String>]) -> Vec<Thread> {
     let mut threads: Vec<Thread> = Vec::new();
     for fields in lines {
@@ -124,8 +103,6 @@ pub fn threads(lines: &[Vec<String>]) -> Vec<Thread> {
     threads
 }
 
-/// Each tier a tier fixture reported, anywhere in `report`, it could not
-/// put on the stack.
 pub fn unavailable(report: &Report) -> Vec<String> {
     report
         .lines()
@@ -134,9 +111,6 @@ pub fn unavailable(report: &Report) -> Vec<String> {
         .collect()
 }
 
-/// Whether `observed` are the frames `truth` reports, in order: each
-/// frame's function, file, line, and column, and its tier where the truth
-/// has one. An error says the first that differs.
 pub fn check_frames(observed: &[Frame], truth: &[Frame]) -> Result<(), String> {
     fn place(frame: &Frame) -> (&str, &str, Option<u32>, Option<u32>) {
         (&frame.function, &frame.file, frame.line, frame.column)
@@ -163,10 +137,7 @@ pub fn check_frames(observed: &[Frame], truth: &[Frame]) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `observed` are the threads `truth` reports, by native id, each
-/// with its frames and its await chain.
 pub fn check_threads(observed: &[Thread], truth: &[Thread]) -> Result<(), String> {
-    // Every thread's first lie, so that one thread's hides no other's.
     let mut lies = Vec::new();
     for real in truth {
         let Some(seen) = observed.iter().find(|thread| thread.native == real.native) else {
@@ -193,7 +164,6 @@ pub fn check_threads(observed: &[Thread], truth: &[Thread]) -> Result<(), String
     }
 }
 
-/// The names of a thread's frames in the fixture `file`, in order.
 pub fn functions_in<'a>(thread: &'a Thread, file: &str) -> Vec<&'a str> {
     thread
         .frames
@@ -207,8 +177,6 @@ pub fn functions_in<'a>(thread: &'a Thread, file: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// The threads Node 26 reported at `checkpoint` of `fixture`, from the
-/// report the build saved beside the fixture's core.
 pub fn saved(fixture: &str, checkpoint: &str) -> Vec<Thread> {
     let core = Scenario::fixture(&format!("node-{fixture}-26.core"));
     let log = std::fs::read_to_string(core.with_extension("core.log"))
@@ -220,8 +188,6 @@ pub fn saved(fixture: &str, checkpoint: &str) -> Vec<Thread> {
     )
 }
 
-/// The comparisons fail on a dropped frame, a wrong line, a swapped thread,
-/// and a wrong tier, and hold for the truth itself.
 #[test]
 fn the_truth_fails_on_the_lies_it_looks_for() {
     let truth = saved("stacks", "parked");

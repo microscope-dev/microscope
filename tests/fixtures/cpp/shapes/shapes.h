@@ -1,6 +1,6 @@
-// What a program and its library share: the types, inline functions, and
-// declarations dwz moves into a supplementary file both their debug files
-// name.
+
+
+
 #pragma once
 
 #include <cstdint>
@@ -47,4 +47,4 @@ extern int shapes_measured;
 
 std::int64_t measure(Shape &shape);
 
-} // namespace shapes
+}

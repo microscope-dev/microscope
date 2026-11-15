@@ -1,7 +1,3 @@
-// run.sh drives this test through VS Code's extension test mode.
-// Scenarios use editor commands where available, otherwise DAP requests.
-// Each session's requests and replies are checked and recorded as an adapter log.
-
 "use strict";
 
 const assert = require("assert");
@@ -17,16 +13,13 @@ const source = (name) => path.join(root, "tests/fixtures/c", name);
 const extension = () => require(path.join(root, "editors/vscode/extension.js"));
 const TIMEOUT = 15000;
 
-// Every message of every session, and the waiters for adapter messages.
 const transcripts = new Map();
 let waiters = [];
 
 vscode.debug.registerDebugAdapterTrackerFactory("microscope", {
   createDebugAdapterTracker(session) {
     const lines = [];
-    // A restart that starts another adapter for the session keeps both
-    // transcripts. A child session is named after its parent, since its
-    // own name holds a process id.
+
     let name =
       session.parentSession === undefined
         ? session.configuration.name
@@ -52,7 +45,6 @@ vscode.debug.registerDebugAdapterTrackerFactory("microscope", {
   },
 });
 
-/** Waits for a message the predicate accepts, from the adapter or, with `from`, the client. */
 function message(description, predicate, from = "adapter") {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
@@ -82,7 +74,6 @@ const response = (command, predicate = () => true) =>
     (_, sent) => sent.type === "response" && sent.command === command && predicate(sent),
   );
 
-/** Waits for a request VS Code sends the adapter. */
 const request = (command, predicate = () => true) =>
   message(
     `VS Code to send ${command}`,
@@ -91,7 +82,6 @@ const request = (command, predicate = () => true) =>
     "client",
   );
 
-/** Waits for the response to the next request VS Code sends that the predicate accepts. */
 async function answer(command, predicate = () => true) {
   let seq;
   const sent = request(command, (arguments_) => predicate(arguments_));
@@ -107,7 +97,6 @@ async function answer(command, predicate = () => true) {
   return (await answered).message;
 }
 
-/** Bounds a wait. */
 function within(description, promise) {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -116,7 +105,6 @@ function within(description, promise) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-/** Polls until the predicate holds, or the wait times out. */
 function until(description, predicate) {
   return within(
     description,
@@ -127,7 +115,6 @@ function until(description, predicate) {
   );
 }
 
-/** Waits for a session to end: the one with the name, if given. */
 function terminated(name) {
   return within(
     "the session to end",
@@ -142,7 +129,6 @@ function terminated(name) {
   );
 }
 
-/** Saves each session's transcript, named after its configuration. */
 function save() {
   fs.mkdirSync(record, { recursive: true });
   for (const [name, lines] of transcripts) {
@@ -151,7 +137,6 @@ function save() {
   }
 }
 
-/** Removes breakpoints and waits until the adapter has them. */
 async function remove(breakpoint) {
   const command =
     breakpoint instanceof vscode.FunctionBreakpoint ? "setFunctionBreakpoints" : "setBreakpoints";
@@ -162,10 +147,6 @@ async function remove(breakpoint) {
 
 let focused;
 
-/**
- * Waits for VS Code to focus a frame of a new stop, after which its
- * commands act on that stop. A session never reuses a frame id.
- */
 function focus() {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
@@ -225,7 +206,6 @@ async function topFrame(session, threadId) {
 
 const workspace = () => vscode.workspace.workspaceFolders[0];
 
-/** Starts a session and waits for its first stop. */
 async function launchToStop(configuration, reason) {
   const stopped = event("stopped", (body) => reason === undefined || body.reason === reason);
   assert.ok(
@@ -237,12 +217,11 @@ async function launchToStop(configuration, reason) {
     }),
   );
   const { session, message: sent } = await stopped;
-  // VS Code focuses a frame with source, or else the stopped thread.
+
   const frame = reason === "entry" ? await focusThread(sent.body.threadId) : await focus();
   return { session, threadId: sent.body.threadId, frame, body: sent.body };
 }
 
-/** Waits for VS Code to focus a thread, or a frame of it. */
 function focusThread(threadId) {
   return until("a focused thread", () => {
     const item = vscode.debug.activeStackItem;
@@ -253,7 +232,6 @@ function focusThread(threadId) {
   });
 }
 
-/** Continues the focused session, removes every breakpoint first, and waits for it to end. */
 async function finish(exitCode = 0) {
   for (const breakpoint of vscode.debug.breakpoints) {
     await remove(breakpoint);
@@ -265,18 +243,12 @@ async function finish(exitCode = 0) {
   await ended;
 }
 
-/** Ends a session by disconnecting from it. */
 async function stop(session) {
   const ended = terminated(session.name);
   await vscode.debug.stopDebugging(session);
   await ended;
 }
 
-/**
- * Runs a VS Code command on text selected in a scratch editor, as a user
- * selecting text and choosing "Evaluate in Debug Console" or "Add to Watch"
- * does, and returns the adapter's answer to the evaluation it causes.
- */
 async function onSelection(command, text, context) {
   const document = await vscode.workspace.openTextDocument({ content: text });
   const editor = await vscode.window.showTextDocument(document, { preview: true });
@@ -291,14 +263,9 @@ async function onSelection(command, text, context) {
   return result;
 }
 
-/** A console reply's text without its ANSI styling. */
 // eslint-disable-next-line no-control-regex
 const plain = (styled) => styled?.replaceAll(/\u001B\[[0-9;]*m/gu, "");
 
-/**
- * Evaluates a line in the debug console. Commands' output is styled for
- * VS Code, which shows ANSI styling; the result is returned without it.
- */
 async function inConsole(text) {
   const reply = await onSelection("editor.debug.action.selectionToRepl", text, "repl");
   if (reply.body?.result !== undefined) {
@@ -308,18 +275,16 @@ async function inConsole(text) {
   return reply;
 }
 
-/** Pressing F5 in a folder without a launch.json creates one to fill in. */
 async function createALaunchJson() {
   const folder = workspace().uri.fsPath;
   const program = path.join(folder, "main.c");
   const launchJson = path.join(folder, ".vscode", "launch.json");
   fs.writeFileSync(program, "int main(void) { return 0; }\n");
   try {
-    // The C file makes microscope the only debugger to guess.
     await vscode.window.showTextDocument(vscode.Uri.file(program));
     await vscode.commands.executeCommand("workbench.action.debug.start");
     await until("launch.json", () => fs.existsSync(launchJson));
-    // VS Code writes its own comments at the top of the file.
+
     const text = fs.readFileSync(launchJson, "utf8").replaceAll(/^\s*\/\/.*$/gmu, "");
     const { configurations } = JSON.parse(text);
     assert.deepStrictEqual(
@@ -334,7 +299,6 @@ async function createALaunchJson() {
   }
 }
 
-/** A launch of the basic fixture. */
 const launchBasic = (name) => ({
   type: "microscope",
   request: "launch",
@@ -343,7 +307,6 @@ const launchBasic = (name) => ({
   cwd: root,
 });
 
-/** The microscope.path setting chooses the adapter, and a missing one is named. */
 async function findTheAdapterFromTheSetting() {
   const folder = workspace();
   const wrapper = path.join(folder.uri.fsPath, "microscope-wrapper");
@@ -386,7 +349,6 @@ async function findTheAdapterFromTheSetting() {
   }
 }
 
-/** The microscope.logFile setting has the adapter log every message. */
 async function logTheProtocolToAFile() {
   const log = path.join(workspace().uri.fsPath, "microscope-dap.log");
   const settings = vscode.workspace.getConfiguration("microscope");
@@ -432,7 +394,7 @@ async function launchStepInspectAndRestart() {
   );
   const { session, message: sent } = await stopped;
   const threadId = sent.body.threadId;
-  // VS Code focuses the stopped frame itself.
+
   await focus();
   let frame = await topFrame(session, threadId);
   assert.strictEqual(frame.name, "breakpoint_target");
@@ -444,7 +406,6 @@ async function launchStepInspectAndRestart() {
   });
   assert.strictEqual(value.result, "1234605616436508552");
 
-  // Step out with the toolbar's command, then over with the keyboard's.
   let step = event("stopped", (body) => body.reason === "step");
   await vscode.commands.executeCommand("workbench.action.debug.stepOut");
   await step;
@@ -456,7 +417,6 @@ async function launchStepInspectAndRestart() {
   await step;
   await focus();
 
-  // The disassembly view loads instructions around the current one.
   const disassembled = response(
     "disassemble",
     (reply) => reply.success && reply.body.instructions.length > 0,
@@ -464,7 +424,6 @@ async function launchStepInspectAndRestart() {
   await vscode.commands.executeCommand("debug.action.openDisassemblyView");
   await disassembled;
 
-  // Restarting runs the program again to its breakpoint.
   const again = event("stopped", (body) => body.reason === "breakpoint");
   await vscode.commands.executeCommand("workbench.action.debug.restart");
   await again;
@@ -478,10 +437,6 @@ async function launchStepInspectAndRestart() {
   await ended;
 }
 
-/**
- * Stepping into a call, and with the disassembly view focused, by
- * instruction; run to cursor stops where the cursor is.
- */
 async function stepIntoByInstructionAndRunToCursor() {
   const file = source("basic.c");
   const { session, threadId } = await launchToStop(
@@ -501,7 +456,6 @@ async function stepIntoByInstructionAndRunToCursor() {
   await focus();
   assert.strictEqual((await topFrame(session, threadId)).line, line + 1);
 
-  // Stepping in enters the call on the line.
   const into = request("stepIn");
   stopped = event("stopped", (body) => body.reason === "step");
   await vscode.commands.executeCommand("workbench.action.debug.stepInto");
@@ -510,7 +464,6 @@ async function stepIntoByInstructionAndRunToCursor() {
   await focus();
   assert.strictEqual((await topFrame(session, threadId)).name, "breakpoint_target");
 
-  // With the disassembly view focused, steps are by instruction.
   const disassembled = response("disassemble", (reply) => reply.success);
   await vscode.commands.executeCommand("debug.action.openDisassemblyView");
   await disassembled;
@@ -528,17 +481,13 @@ async function stepIntoByInstructionAndRunToCursor() {
   await finish();
 }
 
-/**
- * Conditions, hit counts, and logpoints stop and print where they say,
- * and breakpoints that cannot be placed say why.
- */
 async function conditionsHitCountsLogpointsAndRefusals() {
   const file = source("hit-counts.c");
   const breakpoints = [
     sourceBreakpoint(file, "last_call = call;", { condition: "call == 5" }),
     sourceBreakpoint(file, "counted(call);", { logMessage: "calling {call} after {last_call}" }),
     new vscode.FunctionBreakpoint("caller", true, undefined, ">= 39"),
-    // Each of these says why it is not placed.
+
     sourceBreakpoint(file, "shared(call);", { condition: "call ==" }),
     sourceBreakpoint(file, "shared(call + SECOND_SITE_OFFSET);", { condition: "call = 3" }),
     sourceBreakpoint(file, "for (uint64_t call = 1", { hitCondition: "5" }),
@@ -573,7 +522,6 @@ async function conditionsHitCountsLogpointsAndRefusals() {
   assert.strictEqual(missing.verified, false);
   assert.match(missing.message, /no_such_function/u);
 
-  // The condition held at the fifth call, after logging each before it.
   await logged;
   const call = await session.customRequest("evaluate", {
     expression: "call",
@@ -583,7 +531,7 @@ async function conditionsHitCountsLogpointsAndRefusals() {
   assert.strictEqual(call.result, "5");
   await remove(breakpoints[0]);
   await remove(breakpoints[1]);
-  // The function breakpoint stops from its 39th hit on.
+
   const hit = event("stopped", (body) => body.reason === "function breakpoint");
   await vscode.commands.executeCommand("workbench.action.debug.continue");
   await hit;
@@ -598,18 +546,12 @@ async function conditionsHitCountsLogpointsAndRefusals() {
   await finish();
 }
 
-/**
- * The debug console evaluates expressions, assigns, and runs commands; the
- * watch view and hovers show whole expressions; the variables view
- * follows assignments and the hexadecimal setting; values show inline.
- */
 async function consoleWatchHoverHexadecimalAndInlineValues() {
   const file = source("command-names.c");
   const line = lineOf(file, "volatile int sink");
   vscode.debug.addBreakpoints([sourceBreakpoint(file, "volatile int sink")]);
   await vscode.commands.executeCommand("workbench.view.debug");
-  // VS Code shows values inline by asking the extension, which asks the
-  // adapter where each variable is declared.
+
   const declared = request("locations");
   const { frame } = await launchToStop(
     { name: "vscode-console", program: fixture("command-names") },
@@ -620,8 +562,6 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
   });
   await declared;
 
-  // Lines are expressions unless they name a command the frame has no
-  // variable for.
   for (const [text, result] of [
     ["x + 1", "21"],
     ["list", "5"],
@@ -637,7 +577,7 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
   }
   assert.match((await inConsole("bt")).body.result, /^#0 .*names/u);
   assert.match((await inConsole("whatis where")).body.result, /point \*/u);
-  // Mistakes are answered, not fatal.
+
   for (const [text, reason] of [
     ["next", /`next` is not available in the debug console/u],
     ["x + missing", /missing[\s\S]*\^{7}/u],
@@ -649,7 +589,6 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
     assert.match(reply.message, reason, text);
   }
 
-  // Watching follows the stop.
   await vscode.commands.executeCommand("workbench.debug.action.focusWatchView");
   const watched = await onSelection(
     "editor.debug.action.selectionToWatch",
@@ -658,7 +597,6 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
   );
   assert.strictEqual(watched.body.result, "22");
 
-  // Assigning in the console updates what the views show.
   const invalidated = event("invalidated");
   const reread = answer(
     "evaluate",
@@ -668,8 +606,6 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
   await invalidated;
   assert.strictEqual((await reread).body.result, "9");
 
-  // Hovering a member shows the whole expression it ends. The mouse may
-  // hover something else meanwhile.
   const hover = answer(
     "evaluate",
     (arguments_) => arguments_.context === "hover" && arguments_.expression === "where->y",
@@ -680,8 +616,7 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
   opened.selection = new vscode.Selection(line, hovered, line, hovered);
   await vscode.commands.executeCommand("editor.debug.action.showDebugHover");
   assert.strictEqual((await hover).body.result, "2");
-  // So does hovering an indexed or qualified name, which VS Code alone
-  // would cut at its brackets or colons.
+
   for (const [text, column, expression] of [
     ["total += items[i + 1].value;", 23, "items[i + 1].value"],
     ["return ns::config.limit;", 19, "ns::config.limit"],
@@ -696,7 +631,6 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
     assert.strictEqual(extension().expressionAt(text, column)?.expression, expression, text);
   }
 
-  // The hexadecimal setting shows every value in hexadecimal.
   const formatted = request("microscope/setValueFormat", (arguments_) => arguments_.hex === true);
   const hexadecimal = answer(
     "evaluate",
@@ -709,7 +643,6 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
   await vscode.commands.executeCommand("microscope.toggleHexadecimal");
   await decimal;
 
-  // Inline values are each variable's, on the lines it is in scope.
   const values = await extension().provideInlineValues(
     editor.document,
     new vscode.Range(0, 0, line + 1, 0),
@@ -727,20 +660,16 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
   ]) {
     assert.ok(inline.includes(expected), `${expected} in ${inline}`);
   }
-  // A member named like a variable is no use of it.
+
   assert.ok(!inline.some((value) => value.endsWith(": y = 2")), `${inline}`);
-  // A declaration before the first line has no uses.
+
   assert.deepStrictEqual(extension().uses(["a"], "a", -1, 0), []);
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
   await vscode.commands.executeCommand("workbench.debug.viewlet.action.removeAllWatchExpressions");
-  // The program checks its sum, which the assignment to x changed.
+
   await finish(1);
 }
 
-/**
- * The variables view links a function pointer to its function, and the
- * console completes members, registers, and globals.
- */
 async function completionsAndLocations() {
   const file = source("variables.c");
   vscode.debug.addBreakpoints([sourceBreakpoint(file, "return **pointer_pointer")]);
@@ -752,8 +681,7 @@ async function completionsAndLocations() {
     { name: "vscode-locations", program: fixture("variables-gcc-o0") },
     "breakpoint",
   );
-  // VS Code shows the locals, where the function pointer's value links to
-  // the function.
+
   const pointer = (await listed).message.body.variables.find(
     (variable) => variable.name === "function_pointer",
   );
@@ -778,10 +706,6 @@ async function completionsAndLocations() {
   await finish();
 }
 
-/**
- * Data breakpoints stop where the value changes, or at every store in
- * their store mode, and the console removing one removes the client's.
- */
 async function dataBreakpointsAndTheirModes() {
   const breakpoint = new vscode.FunctionBreakpoint("scalar_stores");
   vscode.debug.addBreakpoints([breakpoint]);
@@ -816,17 +740,11 @@ async function dataBreakpointsAndTheirModes() {
   );
   assert.match((await inConsole("unwatch all")).body.result, /1 watchpoint/u);
   await removed;
-  // The program raises signals of its own later.
+
   await session.customRequest("setExceptionBreakpoints", { filters: [] });
   await finish();
 }
 
-/**
- * A data breakpoint's condition and hit count choose which changes stop,
- * and editing them keeps the data breakpoint and its count. VS Code edits
- * them only from its breakpoint widget, so the scenario sends the requests
- * VS Code sends after a "Break on Value Change" and each edit.
- */
 async function dataBreakpointConditions() {
   const breakpoint = new vscode.FunctionBreakpoint("caller");
   vscode.debug.addBreakpoints([breakpoint]);
@@ -848,8 +766,7 @@ async function dataBreakpointConditions() {
         breakpoints: [{ dataId, accessType: "write", ...options }],
       })
     ).breakpoints[0];
-  // Continues to the next change, and returns how VS Code describes it
-  // and the call the focused frame made.
+
   const next = async (id) => {
     const stopped = event("stopped", (body) => body.reason === "data breakpoint");
     await vscode.commands.executeCommand("workbench.action.debug.continue");
@@ -867,13 +784,11 @@ async function dataBreakpointConditions() {
   const first = await set({ condition: "call % 10 == 0" });
   assert.strictEqual(first.verified, true);
   assert.deepStrictEqual(await next(first.id), ["last_call changed from 9 to 10", "10"]);
-  // Edited, it keeps its id, and its hit count counts every change since
-  // it was set.
+
   const edited = await set({ condition: "call % 10 == 5", hitCondition: ">=12" });
   assert.deepStrictEqual([edited.id, edited.verified], [first.id, true]);
   assert.deepStrictEqual(await next(first.id), ["last_call changed from 14 to 15", "15"]);
 
-  // A condition that cannot be evaluated stops at the next change and says why.
   await set({ condition: "no_such_value > 1" });
   const explained = event("output", (body) => /could not be evaluated/u.test(body.output));
   assert.deepStrictEqual(await next(first.id), ["last_call changed from 15 to 16", "16"]);
@@ -883,7 +798,6 @@ async function dataBreakpointConditions() {
       "no variable is named `no_such_value` here\n",
   );
 
-  // Conditions that do not parse leave it unverified and unarmed.
   const refused = await set({ condition: "call = 3" });
   assert.strictEqual(refused.verified, false);
   assert.match(refused.message, /cannot assign; compare with `==`/u);
@@ -893,7 +807,6 @@ async function dataBreakpointConditions() {
   await finish();
 }
 
-/** A crash stops at the signal, explains it, and ends the program when continued. */
 async function crashAtASignal() {
   const exception = answer("exceptionInfo");
   const { body } = await launchToStop(
@@ -901,7 +814,7 @@ async function crashAtASignal() {
     "exception",
   );
   assert.strictEqual(body.text, "SIGSEGV");
-  // VS Code asks what the exception is, to show it at the stop.
+
   const info = (await exception).body;
   assert.strictEqual(info.exceptionId, "SIGSEGV");
   const explained = event("output", (output) => /terminated by SIGSEGV/u.test(output.output));
@@ -909,13 +822,6 @@ async function crashAtASignal() {
   await explained;
 }
 
-/**
- * A Go program as VS Code shows it: its goroutines are its threads, named
- * where the program has them; a step stays in its goroutine; a panic the
- * program does not recover stops with the runtime's message; and a stack
- * that crosses from the runtime's own stack to a goroutine's has a label
- * heading each run of frames.
- */
 async function goroutinesStepsPanicsAndStacks() {
   const breakpoint = new vscode.FunctionBreakpoint("main.explode");
   vscode.debug.addBreakpoints([breakpoint]);
@@ -923,7 +829,7 @@ async function goroutinesStepsPanicsAndStacks() {
     { name: "vscode-go", program: fixture("panic-go-o0") },
     "function breakpoint",
   );
-  // Main's goroutine stopped, and its id is the thread's.
+
   assert.strictEqual(threadId, 1);
   const { threads } = await session.customRequest("threads");
   const workers = threads.filter((thread) => / main\.worker — chan receive/u.test(thread.name));
@@ -939,9 +845,6 @@ async function goroutinesStepsPanicsAndStacks() {
   await focus();
   assert.strictEqual((await topFrame(session, threadId)).name, "main.explode");
 
-  // Stepping over the panic stops where the runtime reports it. VS Code
-  // shows it at the frame that panicked, below the runtime's, where its
-  // editor asks what the exception is once someone has used an editor.
   const panicked = event("stopped", (body) => body.reason === "exception");
   await vscode.commands.executeCommand("workbench.action.debug.stepOver");
   assert.strictEqual((await panicked).message.body.threadId, threadId);
@@ -968,8 +871,7 @@ async function goroutinesStepsPanicsAndStacks() {
     ["on the runtime's stack", "on the task's stack"],
     JSON.stringify(trace),
   );
-  // The program goes on to signal itself, and past that it only ends, so
-  // stopping it there ends it however its end races the request's.
+
   await remove(switched);
   const signalled = event(
     "stopped",
@@ -981,12 +883,6 @@ async function goroutinesStepsPanicsAndStacks() {
   await stop(stacks.session);
 }
 
-/**
- * A Python program, launched as its interpreter with the script: a
- * breakpoint in the `.py` file, a step by lines, and an exception the
- * program raises, each shown at the program's frame. 3.14 takes the agent
- * by PEP 768, and 3.12 through the launch bootstrap.
- */
 async function pythonBreakpointsStepsAndExceptions() {
   const script = path.join(root, "tests/fixtures/python/uat.py");
   for (const build of ["3.14", "3.12"]) {
@@ -1014,8 +910,6 @@ async function pythonBreakpointsStepsAndExceptions() {
     assert.strictEqual(frame?.name, "area", build);
     assert.strictEqual(frame.line, lineOf(script, "# AREA_LINE") + 2, build);
 
-    // The filter is a checkbox in the breakpoints view, which has no
-    // command.
     await session.customRequest("setExceptionBreakpoints", { filters: ["python-raised"] });
     const raised = event("stopped", (body) => body.reason === "exception");
     await vscode.commands.executeCommand("workbench.action.debug.continue");
@@ -1029,15 +923,9 @@ async function pythonBreakpointsStepsAndExceptions() {
   }
 }
 
-/** The Node builds the Node scenarios run, as the flake names them. */
 const NODE_BUILDS = ["26", "24", "22", "debian-24"];
 const nodeOf = (build) => path.join(process.env.MICROSCOPE_NODE, build, "node");
 
-/**
- * Runs `body` with the adapter for the Node build `build`. Debian's node
- * runs only in the mount namespace its `enter` makes, so its adapter runs
- * there too, started by a wrapper that `prefix`, if given, replaces.
- */
 async function withNodeAdapter(build, body, prefix) {
   if (!build.startsWith("debian-")) {
     return body();
@@ -1057,13 +945,11 @@ async function withNodeAdapter(build, body, prefix) {
   }
 }
 
-/** The frame VS Code focused at a stop, as the adapter described it. */
 async function shown(session, threadId, item) {
   const { stackFrames } = await session.customRequest("stackTrace", { threadId });
   return stackFrames.find((frame) => frame.id === item.frameId);
 }
 
-/** The value of the variable `name` in the scope `scope` of `frame`. */
 async function valueIn(session, frame, scope, name) {
   const { scopes } = await session.customRequest("scopes", { frameId: frame.id });
   const found = scopes.find((each) => each.name === scope);
@@ -1074,11 +960,6 @@ async function valueIn(session, frame, scope, name) {
   return variables.find((variable) => variable.name === name)?.value;
 }
 
-/**
- * A Node.js program, launched as node with the script: a breakpoint in the
- * `.js` file, a step by lines, the frame's locals by name, and an exception
- * the program throws, each shown at the program's frame, on each Node line.
- */
 async function nodeBreakpointsStepsAndExceptions() {
   const script = path.join(root, "tests/fixtures/node/uat.js");
   for (const build of NODE_BUILDS)
@@ -1108,12 +989,9 @@ async function nodeBreakpointsStepsAndExceptions() {
       assert.strictEqual(frame?.name, "area", build);
       assert.strictEqual(frame.line, lineOf(script, "// RETURN_LINE") + 1, build);
 
-      // The variables view shows the frame's scopes, its locals named.
       assert.strictEqual(await valueIn(session, frame, "Locals", "result"), "16", build);
       assert.strictEqual(await valueIn(session, frame, "Arguments", "side"), "4", build);
 
-      // The filter is a checkbox in the breakpoints view, which has no
-      // command.
       await session.customRequest("setExceptionBreakpoints", { filters: ["javascript-thrown"] });
       const thrown = event("stopped", (body) => body.reason === "exception");
       await vscode.commands.executeCommand("workbench.action.debug.continue");
@@ -1128,15 +1006,9 @@ async function nodeBreakpointsStepsAndExceptions() {
     });
 }
 
-/**
- * TypeScript, run through tsx's loader and as an esbuild bundle with its
- * map in a file: a breakpoint on a line of the `.ts` file stops there, a
- * step goes to its next line, and an exception stops at the `.ts` line
- * that throws it, on each Node line.
- */
 async function nodeTypeScriptThroughSourceMaps() {
   const script = path.join(root, "tests/fixtures/node/maps/app.ts");
-  // Outside /tmp, which Debian's namespace replaces with its own.
+
   const scratch = path.join(root, "target/uat-node-maps");
   fs.mkdirSync(scratch, { recursive: true });
   const bundle = path.join(scratch, "app.js");
@@ -1205,10 +1077,6 @@ async function nodeTypeScriptThroughSourceMaps() {
   }
 }
 
-/**
- * A breakpoint in a worker's code stops the worker's thread, not the main
- * one, and a step there stays on it, on each Node line.
- */
 async function nodeWorkerStopsOnItsThread() {
   const script = path.join(root, "tests/fixtures/node/workers.js");
   for (const build of NODE_BUILDS)
@@ -1227,7 +1095,7 @@ async function nodeWorkerStopsOnItsThread() {
         },
         "breakpoint",
       );
-      // The main thread's id is the process's.
+
       const main = (await started).message.body.systemProcessId;
       assert.notStrictEqual(threadId, main, build);
       const { threads } = await session.customRequest("threads");
@@ -1248,12 +1116,6 @@ async function nodeWorkerStopsOnItsThread() {
     });
 }
 
-/**
- * A node started without its inspector, attached by its process id: a
- * breakpoint added then stops the main thread, and again a worker the
- * program starts after the attach, on each Node line. Debian's adapter
- * joins the namespace its node was started in.
- */
 async function nodeAttachedByProcessId() {
   const script = path.join(root, "tests/fixtures/node/attach.js");
   for (const build of NODE_BUILDS) {
@@ -1261,7 +1123,7 @@ async function nodeAttachedByProcessId() {
     const command = debian
       ? [path.join(path.dirname(nodeOf(build)), "enter"), nodeOf(build), script]
       : [nodeOf(build), script];
-    // VS Code's own NODE_OPTIONS and the like do not reach the node.
+
     const target = childProcess.spawn(command[0], command.slice(1), {
       stdio: ["pipe", "pipe", "inherit"],
       env: {},
@@ -1304,7 +1166,7 @@ async function nodeAttachedByProcessId() {
           const { session, message: announced } = await attached;
           assert.strictEqual(announced.body.systemProcessId, target.pid, build);
           vscode.debug.addBreakpoints([breakpoint]);
-          // V8 confirms the breakpoint while the node runs.
+
           if (!(await placed).body.breakpoints[0].verified) {
             await confirmed;
           }
@@ -1335,7 +1197,6 @@ async function nodeAttachedByProcessId() {
   }
 }
 
-/** Pausing stops every thread, which VS Code lists by name. */
 async function pauseAndThreads() {
   const breakpoint = new vscode.FunctionBreakpoint("worker_breakpoint");
   vscode.debug.addBreakpoints([breakpoint]);
@@ -1343,13 +1204,12 @@ async function pauseAndThreads() {
     { name: "vscode-threads", program: fixture("threads") },
     "function breakpoint",
   );
-  // Every thread stopped with the one that hit the breakpoint.
+
   const { threads } = await session.customRequest("threads");
   assert.strictEqual(threads.length, 3, JSON.stringify(threads));
   assert.ok(threads.some((thread) => thread.id === threadId));
   await finish();
 
-  // VS Code lists a running program's threads when told one started.
   const spinning = event("thread", (body) => body.reason === "started").then(() =>
     answer("threads"),
   );
@@ -1364,7 +1224,7 @@ async function pauseAndThreads() {
   );
   await spinning;
   const spin = vscode.debug.activeDebugSession;
-  // Pause, as the call stack's menu on the session does.
+
   const paused = event("stopped", (body) => body.reason === "pause");
   await vscode.commands.executeCommand("workbench.action.debug.pause", { sessionId: spin.id });
   await paused;
@@ -1372,7 +1232,6 @@ async function pauseAndThreads() {
   await stop(spin);
 }
 
-/** Breakpoints in a library wait for it, and its sources come and go with it. */
 async function librariesAndTheirSources() {
   const file = source("shared/library.c");
   const breakpoint = sourceBreakpoint(file, "return *dso_pointer");
@@ -1388,7 +1247,7 @@ async function librariesAndTheirSources() {
     "entry",
   );
   assert.strictEqual((await pending).body.breakpoints[0].reason, "pending");
-  // The loaded scripts view lists the sources, and follows them.
+
   const listed = answer("loadedSources");
   await vscode.commands.executeCommand("workbench.debug.loadedScriptsView.focus");
   assert.ok(!(await listed).body.sources.some((entry) => entry.path === file));
@@ -1450,14 +1309,13 @@ async function runInTheIntegratedTerminal() {
   const exited = event("exited");
   const ended = terminated();
   await vscode.commands.executeCommand("workbench.action.debug.continue");
-  // The program reads its line from the terminal.
+
   terminal.sendText("typed");
   assert.strictEqual((await exited).message.body.exitCode, 2);
   await ended;
   terminal.dispose();
 }
 
-/** Spawns the attach fixture and waits until it is ready to be attached to. */
 async function attachTarget() {
   const target = childProcess.spawn(fixture("attach"), [], { stdio: ["pipe", "pipe", "inherit"] });
   const exit = new Promise((resolve) => {
@@ -1485,7 +1343,7 @@ async function attachToAProcess() {
       }),
     );
     const { session } = await process;
-    // A breakpoint added while the process runs is placed at once.
+
     const breakpoint = new vscode.FunctionBreakpoint("attach_breakpoint");
     const placed = answer(
       "setFunctionBreakpoints",
@@ -1493,8 +1351,7 @@ async function attachToAProcess() {
     );
     vscode.debug.addBreakpoints([breakpoint]);
     assert.strictEqual((await placed).body.breakpoints[0].verified, true);
-    // Restarting detaches, which leaves the process running, and attaches
-    // to it again, keeping the breakpoints.
+
     const detached = answer("disconnect", (arguments_) => arguments_.restart === true);
     const again = event("process", (body) => body.systemProcessId === target.pid);
     await vscode.commands.executeCommand("workbench.action.debug.restart");
@@ -1505,7 +1362,7 @@ async function attachToAProcess() {
     const { message: sent } = await stopped;
     assert.strictEqual((await topFrame(session, sent.body.threadId)).name, "attach_breakpoint");
     await remove(breakpoint);
-    // Disconnecting leaves the process to finish on its own.
+
     const ended = terminated();
     await vscode.debug.stopDebugging(session);
     await ended;
@@ -1515,10 +1372,6 @@ async function attachToAProcess() {
   }
 }
 
-/**
- * ${command:pickProcess} lists the user's processes, or with a program, only
- * those running it, which leaves the target as the one item to accept.
- */
 async function pickAProcess() {
   const { target, exit } = await attachTarget();
   try {
@@ -1553,7 +1406,7 @@ async function pickAProcess() {
         settled = true;
       },
     );
-    // Accept the only process the picker lists once it opens.
+
     await until("the picker to be accepted", () => {
       if (!settled) {
         vscode.commands.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
@@ -1572,13 +1425,6 @@ async function pickAProcess() {
   }
 }
 
-/**
- * With follow, VS Code starts a session for a forked process at the
- * adapter's request, which the extension connects back to the same
- * adapter. The child stops at the breakpoint after its fork, having run
- * nothing untraced, and each session ends as its process does. Process
- * stops keep the two stops independent of which comes first.
- */
 async function followAForkedChild() {
   const breakpoint = new vscode.FunctionBreakpoint("shared_work");
   vscode.debug.addBreakpoints([breakpoint]);
@@ -1597,7 +1443,7 @@ async function followAForkedChild() {
     "the adapter to ask for a child session",
     (_, sent) => sent.type === "request" && sent.command === "startDebugging",
   );
-  // VS Code answers once the child session has attached.
+
   const started = message(
     "VS Code to answer startDebugging",
     (_, sent) => sent.type === "response" && sent.command === "startDebugging" && sent.success,
@@ -1635,7 +1481,6 @@ async function followAForkedChild() {
   }
   await remove(breakpoint);
 
-  // The child runs to its end, and then its parent, which waited for it.
   for (const [session, stopped] of [
     [child, childStop],
     [parent, parentStop],
@@ -1675,14 +1520,13 @@ async function openACoreDump() {
     JSON.stringify(trace),
   );
   await focus();
-  // A core dump has nothing to run again, so VS Code restarts by opening
-  // it again with a new adapter, in the same session.
+
   const disconnected = request("disconnect", (arguments_) => arguments_.restart === true);
   const reopened = event("stopped", (body) => body.reason === "exception");
   await vscode.commands.executeCommand("workbench.action.debug.restart");
   await disconnected;
   const { session: again } = await reopened;
-  // The new adapter numbers its frames from the start again.
+
   focused = undefined;
   await focus();
   const ended = terminated();
@@ -1690,10 +1534,6 @@ async function openACoreDump() {
   await ended;
 }
 
-/**
- * Configurations that cannot start say why without starting anything, and
- * a folder's programs are offered to launch.
- */
 async function refuseBadConfigurationsAndOfferPrograms() {
   for (const [name, configuration, reason] of [
     [
@@ -1717,8 +1557,7 @@ async function refuseBadConfigurationsAndOfferPrograms() {
       ...configuration,
     });
     assert.match((await refused).message.message, reason, name);
-    // VS Code shows the refusal in a dialog, which its test mode refuses
-    // to open, and ends the session it never started.
+
     await assert.rejects(
       within("the refusal to be shown", started),
       (error) => /refused to show dialog/u.test(error.message) && reason.test(error.message),
@@ -1733,7 +1572,7 @@ async function refuseBadConfigurationsAndOfferPrograms() {
   try {
     fs.copyFileSync(fixture("basic"), path.join(build, "basic"));
     fs.chmodSync(path.join(build, "basic"), 0o755);
-    // Neither a library, a dependency's build, nor a script is a program.
+
     fs.copyFileSync(fixture("libglobals.so"), path.join(build, "libglobals.so"));
     fs.chmodSync(path.join(build, "libglobals.so"), 0o755);
     fs.copyFileSync(fixture("basic"), path.join(build, "deps", "basic-test"));
@@ -1755,7 +1594,6 @@ async function refuseBadConfigurationsAndOfferPrograms() {
 }
 
 exports.run = async function run() {
-  // MICROSCOPE_UAT_ONLY names the scenarios to run, separated by commas.
   const only = process.env.MICROSCOPE_UAT_ONLY?.split(",");
   try {
     for (const scenario of [

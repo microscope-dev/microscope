@@ -1,9 +1,3 @@
-//! Go programs built without debug information, and without symbols too.
-//! Go's own function table names their frames, and breakpoints and steps
-//! work by it. Goroutines need the runtime's types, which only DWARF
-//! describes, so they are reported unavailable, never guessed from a
-//! release's layout.
-
 use std::process::Stdio;
 
 use microscope::{Expression, LaunchOptions, StepKind, StopReason, ThreadActivity, ThreadState};
@@ -38,7 +32,6 @@ async fn a_stripped_program_says_its_goroutines_are_unavailable() {
 
         assert!(gap.contains("debug information"), "{fixture}: {gap}");
 
-        // Every thread says why its goroutine is unknown, as `$task` does.
         for thread in scenario.snapshot().await.threads.iter() {
             assert!(
                 matches!(thread.state, ThreadState::Stopped { .. }),
@@ -62,7 +55,6 @@ async fn a_stripped_program_says_its_goroutines_are_unavailable() {
             "{fixture}: {refused}"
         );
 
-        // Steps go by the function table's lines, on the thread.
         scenario.step_to_stop(StepKind::OverSource).await;
         assert_eq!(
             place(&scenario).await,

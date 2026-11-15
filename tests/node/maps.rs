@@ -1,11 +1,3 @@
-//! TypeScript run through source maps: tsx compiling each file as Node
-//! loads it, with the map inline, and esbuild bundles, with the map in a
-//! file beside them, as `CommonJS` and as an ES module. A breakpoint on a
-//! line of the TypeScript stops there, including in top-level code that
-//! runs as the script loads, frames show the TypeScript's lines, a step
-//! goes to the next TypeScript line, and an exception stops where it is
-//! thrown.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -19,24 +11,18 @@ use crate::support::{ScratchDir, node};
 
 const SOURCE: &str = "maps/app.ts";
 
-/// How the TypeScript reaches Node.
 #[derive(Debug, Clone, Copy)]
 enum Compiler {
-    /// tsx's loader, which compiles each file as Node loads it.
     Tsx,
 
-    /// An esbuild bundle in `CommonJS`, its map in a file.
     Bundle,
 
-    /// An esbuild bundle as an ES module.
     ModuleBundle,
 }
 
 const COMPILERS: [Compiler; 3] = [Compiler::Tsx, Compiler::Bundle, Compiler::ModuleBundle];
 
 impl Compiler {
-    /// The Node arguments and the script that run the source, compiled
-    /// into `scratch` where it is compiled ahead.
     fn script(self, scratch: &Path) -> (Vec<String>, PathBuf) {
         let bundle = |name: &str, format: &str| {
             let out = scratch.join(name);
@@ -81,7 +67,6 @@ fn esbuild() -> PathBuf {
         .into()
 }
 
-/// The line of the source that carries `marker`.
 fn line_of(marker: &str) -> u32 {
     let text = std::fs::read_to_string(node::fixture(SOURCE)).expect("read the source");
     let index = text
@@ -104,7 +89,6 @@ fn at(marker: &str) -> (BreakpointSpec, BreakpointOptions) {
     )
 }
 
-/// The selected frame's file, line, and language, and its local `name`.
 async fn where_stopped(session: &NodeSession, name: &str) -> (String, u32, SourceLanguage, String) {
     let scenario = &session.scenario;
     let snapshot = scenario
@@ -144,10 +128,6 @@ async fn where_stopped(session: &NodeSession, name: &str) -> (String, u32, Sourc
     (path, line, recorded.language, value)
 }
 
-/// On each V8 line and through every compiler, breakpoints on the
-/// TypeScript's lines stop there, top-level code included, with the
-/// frame's locals; a step over goes to the next TypeScript line; and the
-/// program prints what it computed.
 #[tokio::test]
 async fn typescript_stops_at_its_own_lines_through_every_compiler() {
     let source = node::fixture(SOURCE).display().to_string();
@@ -163,7 +143,6 @@ async fn typescript_stops_at_its_own_lines_through_every_compiler() {
                 session.run_to_stop(vec![at("TOP"), at("NORM")]).await;
             let mut seen = Vec::new();
             let mut reason = reason;
-            // TOP, then NORM, then a step over to RETURN, then the end.
             for (local, next) in [
                 ("origin", None),
                 ("p", Some(StepKind::OverSource)),
@@ -186,9 +165,6 @@ async fn typescript_stops_at_its_own_lines_through_every_compiler() {
                     source.clone(),
                     line_of("TOP"),
                     SourceLanguage::TypeScript,
-                    // tsx keeps the `const`, not yet bound, in the module's
-                    // function; esbuild makes it a `var`, which an ES module
-                    // keeps in its module scope rather than the frame's.
                     match compiler {
                         Compiler::Tsx => "Unavailable(Unbound)",
                         Compiler::Bundle => "undefined",
@@ -224,8 +200,6 @@ async fn typescript_stops_at_its_own_lines_through_every_compiler() {
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
-/// On each V8 line, an exception thrown in a bundle stops at the
-/// TypeScript line that throws it.
 #[tokio::test]
 async fn an_exception_stops_at_the_typescript_that_throws_it() {
     let source = node::fixture(SOURCE).display().to_string();

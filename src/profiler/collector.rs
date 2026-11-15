@@ -1,8 +1,3 @@
-//! Reading a program's instrumentation from outside it: switching its
-//! sites on, draining its threads' rings as the recording goes, and
-//! switching them off when it ends. The program is never stopped and
-//! never waits, except as it exits, for a moment, to be read to its end.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -15,16 +10,13 @@ use crate::backend::perf;
 use crate::capture::records::AccountKind;
 use crate::model::{Pid, Tid};
 
-/// Which sites a recording switches on.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ProbeSelection {
     Off,
 
-    /// Every site of every module.
     #[default]
     All,
 
-    /// The sites of these names; a name that ends in `*` is a prefix.
     Named(Vec<String>),
 }
 
@@ -52,7 +44,6 @@ impl std::fmt::Display for ProbeSelection {
     }
 }
 
-/// A module the processor found mapped whose file has instrumentation.
 #[derive(Debug, Clone)]
 pub struct Found {
     pub module: u32,
@@ -61,70 +52,49 @@ pub struct Found {
     pub table: Arc<Table>,
 }
 
-/// What a process mapped and executed since the collector last asked.
 #[derive(Debug, Default)]
 pub struct FoundProbes {
-    /// Whether it executed a program, which ends the instrumentation found
-    /// before.
     pub executed: bool,
 
-    /// Modules it found before it executed, which went unread.
     pub skipped: Vec<Found>,
 
-    /// Modules with instrumentation it mapped since it last executed.
     pub found: Vec<Found>,
 }
 
-/// What microscope knows of one ring.
 #[derive(Debug, Clone, Copy, Default)]
 struct Ring {
-    /// The first position not yet read.
     tail: u64,
 
-    /// The thread that writes it, and its row.
     thread: Option<(Tid, u32)>,
     interrupted: u64,
 
-    /// Whether the thread wrote records before microscope began to read them.
     before: bool,
 
-    /// Whether the ring broke the ABI, which is counted once.
     broken: bool,
 }
 
-/// One module's instrumentation in the recorded process.
 struct Instance {
     control: u64,
     module: u32,
     path: Arc<str>,
 
-    /// Whether the program may define sites as it runs (ABI 2).
     defines: bool,
 
-    /// How many of its run-time sites have been read.
     defined: u32,
 
-    /// Whether it was said that the program defined every run-time site
-    /// its table holds, so that the sites it defines after are not.
     full: bool,
 
-    /// Whether its control block says microscope listens, which it does
-    /// once any site is on.
     on: bool,
 
-    /// Each key's site row.
     sites: HashMap<u32, u32>,
 
-    /// The state bytes switched on.
     states: Vec<u64>,
     rings: BTreeMap<u64, Ring>,
     dropped: u64,
 
-    /// The heartbeat of the last drain that read every ring, if one has.
     read_at: Option<u64>,
 }
 
-/// Reads one process's instrumentation.
 pub struct Collector {
     pid: u32,
     selection: ProbeSelection,
@@ -135,16 +105,12 @@ pub struct Collector {
     decoder: Decoder,
     buffer: Vec<u8>,
 
-    /// Whether the process can no longer be read.
     gone: bool,
 
-    /// Whether the recording is ending, and so switches no site on.
     finishing: bool,
 }
 
 impl Collector {
-    /// Reads process `pid`'s instrumentation, which switches itself off
-    /// once microscope has not read it for `timeout`.
     pub fn new(pid: u32, selection: ProbeSelection, timeout: std::time::Duration) -> Self {
         Self {
             pid,
@@ -166,8 +132,6 @@ impl Collector {
         }
     }
 
-    /// Switches on the sites of every module the processor has found
-    /// mapped since, then reads every ring.
     pub fn drain(&mut self, processor: &mut Processor) {
         let FoundProbes {
             executed,
@@ -224,17 +188,12 @@ impl Collector {
         }
     }
 
-    /// Switches every site off and reads what the rings hold, if the
-    /// process is still there to read.
     pub fn finish(&mut self, processor: &mut Processor, alive: bool) {
         if !alive || self.gone {
             self.ended_unread(processor);
             return;
         }
 
-        // Once the control block says microscope has stopped, no site the
-        // program defines switches itself on, and the last read below
-        // finds every site defined before.
         self.finishing = true;
         for instance in &self.instances {
             if instance.on {
@@ -257,8 +216,6 @@ impl Collector {
             return;
         }
 
-        // The sites the program defined since, which it may have switched
-        // on as it defined them.
         for (instance, known) in self.instances.iter().zip(known) {
             for &state in instance.states.iter().skip(known) {
                 let _ = perf::write_memory(self.pid, state, &[0]);
@@ -266,9 +223,6 @@ impl Collector {
         }
     }
 
-    /// Forgets the instrumentation of the program the process replaced. Its
-    /// threads' zones end where their records were last read: what they
-    /// wrote after cannot be read.
     fn executed(&mut self, processor: &mut Processor) {
         record!("probes: the process executed a program");
         for instance in std::mem::take(&mut self.instances) {
@@ -283,13 +237,9 @@ impl Collector {
             }
         }
 
-        // The new program may be read even if the old one could not be.
         self.gone = false;
     }
 
-    /// Takes a module's instrumentation, and switches on its sites the
-    /// recording selects. A module that may define sites as it runs is
-    /// kept though none is selected yet.
     fn adopt(&mut self, processor: &mut Processor, found: &Found) {
         let image = |address| crate::ImageAddress::new(address);
         let control = found.bias.wrapping_load(image(found.table.control)).get();
@@ -337,11 +287,6 @@ impl Collector {
         }
     }
 
-    /// Says which modules' instrumentation went unread as the process
-    /// ended: those microscope never read, and those it last read so long
-    /// before the process exited that the program no longer waited to be
-    /// read. What a program wrote within a second of its exit without
-    /// waiting, as one that calls `_exit` does, is not counted.
     fn ended_unread(&mut self, processor: &mut Processor) {
         let FoundProbes { skipped, found, .. } = processor.found_probes(Pid::new(self.pid));
         for skipped in &skipped {
@@ -372,8 +317,6 @@ impl Collector {
         }
     }
 
-    /// Says that a module went unread, if the recording would have read
-    /// any of its sites: as [`Collector::adopt`] keeps it.
     fn unread(&self, processor: &mut Processor, path: &str, table: &Table, why: &str) {
         let records = table.abi >= 2
             || table
@@ -385,9 +328,6 @@ impl Collector {
         }
     }
 
-    /// Whether a module's control block is to be switched on: once a site
-    /// it selects is known, or, recording every site, once the module may
-    /// define one, which is then on from its definition.
     fn wants_on(&self, index: usize) -> bool {
         let instance = self.at(index);
         !self.finishing
@@ -395,9 +335,6 @@ impl Collector {
                 || (instance.defines && self.selection == ProbeSelection::All))
     }
 
-    /// Reads the sites a module defined as it ran since they were last
-    /// read, and switches on those the recording selects; once its
-    /// control block is on, at once.
     fn define(&mut self, processor: &mut Processor, index: usize) {
         let control = self.at(index).control;
         let mut block = [0; abi::CONTROL_SIZE];
@@ -422,11 +359,8 @@ impl Collector {
         };
         let count = match count {
             Ok(count) => count,
-            // Only the flight recorder, which release builds leave out,
-            // reads the problem; the profile counts it.
             #[cfg_attr(not(debug_assertions), expect(unused_variables))]
             Err(problem) => {
-                // Read once: a table that breaks the ABI stays broken.
                 record!("probes: module {}: {problem}", self.at(index).module);
                 processor
                     .builder()
@@ -469,7 +403,6 @@ impl Collector {
             let address = probes::runtime_site_address(table, site);
             let read = match perf::read_memory(pid, address, &mut record) {
                 Ok(read) => probes::runtime_site(table, site, filled(&record, read), text),
-                // A process that has gone broke nothing.
                 Err(error) if gone(&error) => {
                     self.gone = true;
                     return;
@@ -479,14 +412,12 @@ impl Collector {
 
             let site = match read {
                 Ok(site) => site,
-                // Its texts went with the process, which broke nothing.
                 Err(_) if vanished.get() => {
                     self.gone = true;
                     return;
                 }
                 #[cfg_attr(not(debug_assertions), expect(unused_variables))]
                 Err(problem) => {
-                    // Its records name a key no site has, and are counted.
                     record!("probes: module {}: {problem}", self.at(index).module);
                     processor
                         .builder()
@@ -514,8 +445,6 @@ impl Collector {
         }
     }
 
-    /// Switches a module's sites on: the rings its threads already have are
-    /// read from where they are now.
     fn switch_on(&mut self, index: usize) {
         let control = self.at(index).control;
         let Some(registry) = self.registry(control) else {
@@ -525,8 +454,6 @@ impl Collector {
 
         let mut rings = BTreeMap::new();
 
-        // A program that switched itself on wrote its records for this
-        // recording, and they are read from the first its rings still hold.
         let armed = registry.0.armed;
         for address in registry.1 {
             if let Ok(Some(header)) = self.header(address) {
@@ -548,8 +475,6 @@ impl Collector {
             }
         }
 
-        // The sites are on before the control block says so, so that a
-        // program that asks whether microscope listens may rely on them.
         let writes = [
             (control + 10, self.clock.to_le_bytes().to_vec()),
             (control + 24, monotonic().to_le_bytes().to_vec()),
@@ -557,8 +482,6 @@ impl Collector {
             (control + 52, self.timeout.to_le_bytes().to_vec()),
         ];
 
-        // Recording every site, a run-time site is on from its definition,
-        // not only once the collector next reads it.
         let enable = if self.selection == ProbeSelection::All {
             abi::ENABLED | abi::ENABLE_DEFINED
         } else {
@@ -587,7 +510,6 @@ impl Collector {
         }
     }
 
-    /// A control block, and the rings its registry lists.
     fn registry(&mut self, control: u64) -> Option<(probes::Control, Vec<u64>)> {
         self.buffer
             .resize(abi::CONTROL_SIZE + abi::MOST_RINGS * 8, 0);
@@ -610,8 +532,6 @@ impl Collector {
         Some((block, rings))
     }
 
-    /// A ring's header, or `None` if it breaks the ABI; `Err` if the
-    /// process has gone.
     fn header(&self, address: u64) -> Result<Option<RingHeader>, Gone> {
         let mut bytes = [0; abi::RING_HEADER];
         match perf::read_memory(self.pid, address, &mut bytes) {
@@ -621,7 +541,6 @@ impl Collector {
         }
     }
 
-    /// Reads every ring of one instance: whether the process could be read.
     fn read_instance(&mut self, processor: &mut Processor, index: usize) -> bool {
         let control = self.at(index).control;
         let Some((block, rings)) = self.registry(control) else {
@@ -630,9 +549,6 @@ impl Collector {
 
         let instance = instance_mut(&mut self.instances, index);
         if block.enable == 0 && !self.finishing {
-            // Only the program clears it while microscope reads, once it
-            // has gone too long without a read. The next drain switches
-            // its sites on again.
             instance.on = false;
             let text = format!(
                 "{}: the program switched its sites off when microscope went more than {} ms \
@@ -642,9 +558,6 @@ impl Collector {
             processor.probe_problem(&text);
         }
 
-        // A program that exits defined its last sites before it said so,
-        // perhaps since this drain read its definitions: their records are
-        // in the rings read below.
         if block.exiting && instance.defines {
             self.define(processor, index);
             if self.gone {
@@ -674,8 +587,6 @@ impl Collector {
         true
     }
 
-    /// Reads the records a ring has taken since it was last read. A ring
-    /// that cannot be read once the process has gone is not malformed.
     fn read_ring(&mut self, processor: &mut Processor, index: usize, address: u64) {
         let pid = self.pid;
         let Ok(header) = self.header(address) else {
@@ -702,7 +613,6 @@ impl Collector {
             return;
         }
 
-        // A ring a new thread took ends the zones of the thread before.
         if let Some((tid, row)) = ring.thread
             && tid != header.thread
         {
@@ -729,7 +639,6 @@ impl Collector {
                 continue;
             }
 
-            // A miss leaves the copy short, which is counted as malformed.
             let Some(into) = records.get_mut(copied..copied + length) else {
                 continue;
             };
@@ -744,7 +653,6 @@ impl Collector {
             }
         }
 
-        // What the thread may have written over while it was copied.
         let mut head = [0; 8];
         let moved = perf::read_memory(pid, address + 64, &mut head)
             .map_or(header.head, |_| u64::from_le_bytes(head));
@@ -787,12 +695,6 @@ impl Collector {
         }
     }
 
-    /// Hands the decoded events of one thread's ring to the processor.
-    ///
-    /// A site the program defined since its definitions were last read,
-    /// switched on as it was, may have records here already. The program
-    /// counts a site before it records one, so a read of the definitions
-    /// after the ring's finds every site the ring's records name.
     fn apply(&mut self, processor: &mut Processor, index: usize, address: u64, header: RingHeader) {
         let instance = self.at(index);
         if instance.defines
@@ -827,8 +729,6 @@ impl Collector {
             }
             .cast_signed();
 
-            // Perf may already have reported the thread's exit. Resolve its
-            // lifetime at the event's time, not at the later drain time.
             let (_, thread) = *ring.thread.get_or_insert_with(|| {
                 (
                     header.thread,
@@ -860,7 +760,6 @@ impl Collector {
         );
     }
 
-    /// Instance `index`.
     #[expect(
         clippy::indexing_slicing,
         reason = "indexes come from 0..len() or the last push, and no caller removes instances"
@@ -875,7 +774,6 @@ impl Collector {
     }
 }
 
-/// Instance `index`, as [`Collector::at`] finds it.
 #[expect(
     clippy::indexing_slicing,
     reason = "indexes come from 0..len() or the last push, and no caller removes instances"
@@ -889,16 +787,12 @@ fn instance_mut(instances: &mut [Instance], index: usize) -> &mut Instance {
     &mut instances[index]
 }
 
-/// The `read` bytes a read of memory filled of `bytes`: none if it says
-/// more, which the parsers then refuse.
 fn filled(bytes: &[u8], read: usize) -> &[u8] {
     bytes.get(..read).unwrap_or_default()
 }
 
-/// The process has gone: its memory can no longer be read.
 struct Gone;
 
-/// Why a module went unread, after its process's id.
 const EXITED: &str = "exited before microscope read its instrumentation";
 const EXECUTED: &str = "executed another program before microscope read its instrumentation";
 
@@ -920,8 +814,6 @@ mod tests {
     use crate::profiler::probes::SiteRecord;
     use crate::profiler::record;
 
-    /// Perf can report a worker's exit before its ring is first read.
-    /// Its zones still belong to the named worker, on either SDK clock.
     #[test]
     fn zones_read_after_a_workers_exit_keep_its_name() {
         for clock in [abi::CLOCK_MONOTONIC, abi::CLOCK_TSC] {
@@ -929,7 +821,6 @@ mod tests {
                 let pid = Pid::new(std::process::id());
                 let tid = Tid::new(7);
                 let mut processor = Processor::new(DebugFileSearch::default(), 64);
-                // PERF_RECORD_COMM, followed by its sample_id trailer.
                 let comm = |tid: Tid, time: u64| {
                     let mut bytes = [0; 64];
                     bytes[..4].copy_from_slice(&3_u32.to_le_bytes());
@@ -942,7 +833,6 @@ mod tests {
                 };
                 processor.ingest(&comm(tid, 1_000), None);
                 if exited {
-                    // PERF_RECORD_EXIT puts the thread ID after the parent PID.
                     let mut exit = comm(tid, 2_000);
                     exit[..4].copy_from_slice(&4_u32.to_le_bytes());
                     exit[16..20].copy_from_slice(&tid.get().to_le_bytes());
@@ -988,8 +878,6 @@ mod tests {
                     read_at: None,
                 });
 
-                // Seeing an empty ring must not choose the thread's lifetime
-                // from the drain time before an event supplies its own time.
                 collector.read_ring(&mut processor, 0, address);
                 for (index, (time, kind)) in [(1_100_u64, abi::ZONE_BEGIN), (1_900, abi::ZONE_END)]
                     .into_iter()
@@ -1031,8 +919,6 @@ mod tests {
         }
     }
 
-    /// The instrumentation of process `pid`, which runs `program`, as a
-    /// recording finds it, its module one of `processor`'s.
     fn found(pid: u32, program: &std::path::Path, processor: &mut Processor) -> Found {
         use object::{Object as _, ObjectSegment as _};
 
@@ -1041,13 +927,11 @@ mod tests {
         let table = probes::table(&file)
             .expect("its instrumentation")
             .expect("the probes SDK's control block");
-        // The mapping of the file's start is its first segment's.
         let first = file
             .segments()
             .map(|segment| segment.address())
             .min()
             .expect("a segment");
-        // The child may not have mapped the program yet when `spawn` returns.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let bias = loop {
             let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).expect("its mappings");
@@ -1087,8 +971,6 @@ mod tests {
         }
     }
 
-    /// The first segment can be mapped before the control block is: a
-    /// header-only mapping must not make the program ready for collection.
     #[test]
     fn a_program_is_found_though_it_is_not_yet_mapped() {
         use std::io::BufRead as _;
@@ -1134,10 +1016,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         assert!(found.is_ok(), "the program was not found");
     }
 
-    /// A site the program defines as a recording ends is off once it has
-    /// ended, though recording every site switched it on as it was
-    /// defined: the recording's last read switches no site on, and the
-    /// sites it finds are switched off.
     #[test]
     fn a_site_defined_as_a_recording_ends_is_off_once_it_has() {
         use std::io::{BufRead as _, Write as _};
@@ -1192,9 +1070,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         assert_eq!(states, (0, 0), "a site is left on");
     }
 
-    /// A program whose sites switched themselves off, as they do when
-    /// microscope goes too long without reading them, is switched on again
-    /// at the next read, which says what was lost.
     #[test]
     fn sites_that_switched_themselves_off_are_switched_on_again() {
         use std::io::{BufRead as _, Write as _};
@@ -1235,7 +1110,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         collector.adopt(&mut processor, &found);
         assert_eq!(state(), 1);
 
-        // What the program does once microscope has gone quiet.
         perf::write_memory(pid, control.get() + 12, &0_u32.to_le_bytes()).expect("disable");
         perf::write_memory(pid, site, &[0]).expect("switch the site off");
         collector.drain(&mut processor);
@@ -1253,10 +1127,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         assert_eq!(problems.len(), 1, "{problems:?}");
     }
 
-    /// A program that defines a site and records it just before it exits
-    /// has both read before it is told it may go: a read that finds it
-    /// exiting reads its definitions again, though a read began just
-    /// before it defined the site.
     #[test]
     fn a_site_defined_as_the_program_exits_is_read_with_its_records() {
         use std::io::{BufRead as _, Write as _};
@@ -1291,8 +1161,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
             "LISTENING"
         );
 
-        // The drain's definitions are read; then the program defines a
-        // site, records it, and waits as it exits.
         writeln!(child.stdin.take().expect("its input")).expect("let it go");
         assert_eq!(lines.next().expect("a line").expect("its text"), "DONE");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1316,9 +1184,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         assert_eq!(builder.account(AccountKind::ProbeEvents as u32), 2);
     }
 
-    /// A program that goes on running defines a site and records it
-    /// between a read's definitions and its rings: the records name a
-    /// site the read has not seen, which it reads before it counts them.
     #[test]
     fn a_site_defined_between_the_reads_of_definitions_and_rings_is_read_with_its_records() {
         use std::io::{BufRead as _, Write as _};
@@ -1344,8 +1209,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         collector.adopt(&mut processor, &found);
         collector.drain(&mut processor);
 
-        // The drain's definitions are read; then the program defines a
-        // site and records it, and the rings are read.
         let mut names = child.stdin.take().expect("its input");
         let mut lines = std::io::BufReader::new(child.stdout.take().expect("its output")).lines();
         writeln!(names, "late").expect("name a site");
@@ -1360,9 +1223,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         assert_eq!(builder.account(AccountKind::ProbeEvents as u32), 2);
     }
 
-    /// A process can exit between the reads of its registry and of its
-    /// rings, after its last records were read. Its rings are then gone,
-    /// not malformed.
     #[test]
     fn the_rings_of_a_process_that_has_gone_are_not_malformed() {
         let mut child = std::process::Command::new("true")
@@ -1400,8 +1260,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         );
     }
 
-    /// A collector of `pid`, a process that has exited, holding one module
-    /// read last at each of `reads`, `None` for never.
     fn collector_of(pid: u32, reads: &[Option<u64>]) -> Collector {
         let mut collector =
             Collector::new(pid, ProbeSelection::All, std::time::Duration::from_secs(1));
@@ -1425,8 +1283,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         collector
     }
 
-    /// A process of its own, which has exited and been reaped, so that
-    /// nothing reads another's memory.
     fn exited_pid() -> u32 {
         let mut child = std::process::Command::new("true")
             .spawn()
@@ -1435,7 +1291,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         child.id()
     }
 
-    /// The probe problems a processor holds, in order.
     fn problems(processor: Processor) -> Vec<String> {
         let profile = crate::profiler::Profile {
             capture: processor.finish(),
@@ -1447,9 +1302,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
             .collect()
     }
 
-    /// A program waits at its exit at most a second after microscope last
-    /// read it, so what it wrote is unread only from a second on; a module
-    /// never read is unread whenever its process exited.
     #[test]
     fn instrumentation_goes_unread_once_its_exit_no_longer_waits() {
         let pid = exited_pid();
@@ -1484,8 +1336,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         );
     }
 
-    /// Without its exit's time, as when the kernel dropped it, a module
-    /// microscope read is not said to be unread; one it never read is.
     #[test]
     fn a_read_module_is_not_unread_when_its_exit_time_is_unknown() {
         let pid = exited_pid();
@@ -1501,8 +1351,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         );
     }
 
-    /// A program that executes another leaves the modules microscope never
-    /// read unread, and those it read as they were.
     #[test]
     fn a_module_never_read_before_an_exec_is_unread() {
         let pid = exited_pid();
@@ -1526,8 +1374,6 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         );
     }
 
-    /// A module none of whose sites the recording selects records nothing,
-    /// so it is not unread; one that may define sites as it runs might.
     #[test]
     fn a_module_the_recording_reads_nothing_of_is_not_unread() {
         let site = SiteRecord {

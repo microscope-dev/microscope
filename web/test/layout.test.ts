@@ -1,6 +1,3 @@
-// The workbench layout: what each operation does to where panes sit, and the
-// rules every layout keeps whatever a person does to it.
-
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -42,7 +39,6 @@ import {
 import { loadLayout, saveLayout } from "../src/workbench/saved";
 import { apply, runLayout, step, steps } from "./arbitraries/layout";
 
-/** Opens panes named by kind into the focused group. */
 function opened(layout: Layout, ...kinds: string[]): [Layout, ...PaneId[]] {
   const ids: PaneId[] = [];
   for (const kind of kinds) {
@@ -53,8 +49,6 @@ function opened(layout: Layout, ...kinds: string[]): [Layout, ...PaneId[]] {
   return [layout, ...ids];
 }
 
-/** A layout's dock as nested lists of the kinds in each group, with weights
- * to two places: easy to read in a failure. */
 function shape(layout: Layout, node: Node = layout.root): unknown {
   if (node.type === "group") {
     return node.tabs.map((tab) => {
@@ -120,7 +114,7 @@ describe("opening and closing", () => {
 describe("moving panes", () => {
   it("reorders within a group by the gap the pane is dropped in", () => {
     const [layout, a] = opened(emptyLayout(), "a", "b", "c");
-    // The gap between b and c, counting a where it still is.
+
     expect(
       shape(move(layout, a as PaneId, { type: "tab", group: layout.focused, index: 2 })),
     ).toEqual(["b", "*a", "c"]);
@@ -159,7 +153,7 @@ describe("moving panes", () => {
         [0.25, ["*b"]],
       ],
     });
-    // Along the axis the dock is split on already, the others share the rest.
+
     const left = move(right, c as PaneId, { type: "edge", side: "left" });
     expect(shape(left)).toEqual({
       row: [
@@ -281,7 +275,6 @@ const groupWith = (layout: Layout, kind: string) =>
   };
 
 describe("hiding a dock", () => {
-  // Threads | (source over console) | watch, with Threads focused.
   const start = build({
     axis: "row",
     children: [
@@ -306,9 +299,9 @@ describe("hiding a dock", () => {
   it("finds the dock before a group in a row, and after it in a column", () => {
     expect(dockBeside(start, source, "left")?.id).toBe(threads.id);
     expect(dockBeside(start, source, "bottom")?.id).toBe(consoleGroup);
-    // From below the code, the row it is in has the same dock on its left.
+
     expect(dockBeside(start, consoleGroup, "left")?.id).toBe(threads.id);
-    // Nothing is left of the first column, or below the last row.
+
     expect(dockBeside(start, threads.id, "left")).toBeNull();
     expect(dockBeside(start, consoleGroup, "bottom")).toBeNull();
   });
@@ -446,7 +439,6 @@ describe("a saved layout", () => {
     expect(shape(layout)).toEqual(["a", "*b"]);
   });
 
-  // Every version of the saved shape ever written stays loadable.
   it.each([
     ["v1", []],
     ["v2", ["g0"]],
@@ -472,7 +464,6 @@ describe("a saved layout", () => {
   });
 });
 
-/** A pane that reads `link`. */
 const reader = (link: LinkId, key = ""): Pane => ({
   kind: "reader" as KindId,
   key,
@@ -493,7 +484,6 @@ describe("a link", () => {
     expect(none.links).toEqual({});
     expect(checkLayout(none)).toEqual([]);
 
-    // Reopened, a pane reads its link as it was when it closed.
     const remembered = linksOf(one, [one.panes[shared.pane] as Pane]);
     const back = open(restoreLinks(none, remembered), reader(link, "other"));
     expect(back.layout.links[link]).toEqual({ n: 2 });
@@ -539,7 +529,7 @@ describe("a link", () => {
       throw new Error(loaded.why);
     }
     expect(loaded.layout.panes["p1" as PaneId]?.params).toEqual({ name: "x.usprof", link: "l2" });
-    // The view it showed opens, drawing as it did, once the profile is read.
+
     expect(readLink(loaded.layout.links["l2" as LinkId])).toEqual({
       profile: "ab12",
       name: "x.usprof",
@@ -551,7 +541,6 @@ describe("a link", () => {
   });
 });
 
-/** Every path to a value in parsed JSON. */
 function paths(value: unknown, at: (string | number)[] = []): (string | number)[][] {
   const below =
     typeof value === "object" && value !== null

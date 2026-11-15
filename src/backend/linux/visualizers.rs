@@ -1,6 +1,3 @@
-//! What a value's drawings read: their inputs, and sequences of numbers in
-//! bulk. Only the web page draws, and it asks for these.
-
 use std::sync::Arc;
 
 use crate::eval::types::{TypeSource, representation};
@@ -22,8 +19,6 @@ use super::native::InspectionOps;
 use super::presentation::{ModuleScope, view_place};
 
 impl<P: InspectionOps> Controller<P> {
-    /// Reads the inputs of one drawing of a value, with the bytes each
-    /// `bytes(PTR, LEN)` names.
     pub(super) fn visualizer_inputs(
         &self,
         reference: &VisualizerReference,
@@ -71,8 +66,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// The bytes a drawing's `bytes(address, length)` names, which count
-    /// toward the drawing's `read` so far, or why they cannot be read.
     fn drawing_bytes(
         &self,
         address: u64,
@@ -96,8 +89,6 @@ impl<P: InspectionOps> Controller<P> {
             .map_err(|error| Arc::from(error.to_string()))
     }
 
-    /// Reads `length` bytes of the stopped program's memory at once, as
-    /// stored, with no breakpoint's trap among them.
     fn read_block(&self, address: u64, length: u64) -> Result<Arc<[u8]>> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let pid = inferior.run.stop().ok_or(Error::NotStopped)?.reader();
@@ -121,15 +112,11 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// The elements of a sequence of numbers read at once, when they lie
-    /// next to each other in memory and take at most `most_bytes`.
     pub(super) fn numbers(
         &self,
         reference: &ValueChildrenReference,
         most_bytes: u64,
     ) -> Result<Option<Numbers>> {
-        // An interpreter's array of numbers says where its elements lie
-        // and what they are, as debug information says a native array's.
         if let Some(array) = Self::interpreted_array(reference) {
             return self.array_numbers(reference, &array, most_bytes);
         }
@@ -164,8 +151,6 @@ impl<P: InspectionOps> Controller<P> {
         }))
     }
 
-    /// The array of numbers an interpreter's object, or its part, keeps,
-    /// whose elements a capability pages, or a view lends it.
     fn interpreted_array(reference: &ValueChildrenReference) -> Option<Arc<InterpretedArray>> {
         let view = reference.view.as_ref()?;
 
@@ -177,8 +162,6 @@ impl<P: InspectionOps> Controller<P> {
         Self::interpreted_array(inner).filter(|array| array.shape.first() == Some(&view.elements))
     }
 
-    /// The children of an interpreter's object a capability pages, which
-    /// no view presents.
     fn interpreted_children_of(reference: &ValueChildrenReference) -> Option<&InterpretedChildren> {
         reference
             .view
@@ -188,8 +171,6 @@ impl<P: InspectionOps> Controller<P> {
             .downcast_ref::<InterpretedChildren>()
     }
 
-    /// The numbers of `array` read at once, when they lie next to each
-    /// other on its one axis and take at most `most_bytes`.
     fn array_numbers(
         &self,
         reference: &ValueChildrenReference,
@@ -221,9 +202,6 @@ impl<P: InspectionOps> Controller<P> {
         }))
     }
 
-    /// Where a value's elements lie when they lie next to each other: the
-    /// first's address, how many there are, their type, and the distance
-    /// between them.
     fn contiguous(
         &self,
         reference: &ValueChildrenReference,
@@ -233,16 +211,12 @@ impl<P: InspectionOps> Controller<P> {
                 return Ok(None);
             }
 
-            // A view that presents the value as another lends that one's
-            // elements.
             if let Some(inner) = &view.inner {
                 return Ok(self
                     .contiguous(inner)?
                     .filter(|(_, count, ..)| *count == view.elements));
             }
 
-            // An interpreter's object lends no memory a view's elements
-            // lie in; its own arrays say where theirs do.
             let (bound, place) = view_place(reference)?;
             if !matches!(place, Place::Native(_)) {
                 return Ok(None);
@@ -301,8 +275,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(Some((address.get(), reference.total, element, stride)))
     }
 
-    /// The kind of number values of `ty` are, through its typedefs: an
-    /// integer of at most 64 bits or a 32- or 64-bit float.
     fn number_kind(&self, ty: TypeReference) -> Option<NumberKind> {
         let types = self.types(ty.image)?;
         let (_, info) = representation(&types, ty).ok()?;
@@ -329,7 +301,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// The types of the module whose image is `image`.
     fn types(&self, image: crate::ModuleImageId) -> Option<ModuleScope<'_, P>> {
         let module = self
             .modules
@@ -341,7 +312,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Every renderer drawings may name, in the order a name is looked up.
     pub(super) fn renderers(&self) -> Arc<[Arc<Renderer>]> {
         let built_in = crate::view::ViewSet::built_in();
         self.views

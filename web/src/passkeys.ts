@@ -1,30 +1,16 @@
-// Passkeys through services (account.ts): adding one to the signed-in
-// account, and signing in with one. Services makes each challenge and checks
-// the answer; the browser and the person's device or password manager make
-// and keep the key.
-//
-// Services sends WebAuthn's options as JSON, with bytes as base64url, and
-// takes the answer the same way. The browser's own JSON helpers are newer
-// than some browsers people still use, so the bytes are converted here.
-//
-// Adding one changes how the account signs in, so it goes through `proven`
-// like connecting Google does.
-
 import { passkeySignedIn, type User } from "./account";
 import { request } from "./orgs";
 
-/** A passkey on the account, as its sign-in methods list it. */
 export interface Passkey {
   id: number;
   name: string;
-  /** Whether it is synced, such as by iCloud Keychain or a password manager. */
+
   backed_up: boolean;
-  /** Unix seconds. */
+
   created_at: number;
   last_used_at: number | null;
 }
 
-/** Whether this browser can make and use passkeys at all. */
 export const supported = () => typeof window.PublicKeyCredential === "function";
 
 const fromB64 = (text: string): ArrayBuffer => {
@@ -55,7 +41,6 @@ interface RequestJson {
   [rest: string]: unknown;
 }
 
-/** What the browser threw, in words for the person. */
 function refusal(error: unknown): unknown {
   if (error instanceof DOMException) {
     if (error.name === "NotAllowedError") {
@@ -73,7 +58,6 @@ const descriptor = (each: Descriptor): PublicKeyCredentialDescriptor => ({
   id: fromB64(each.id),
 });
 
-/** A guess at what to call a passkey made on this device. */
 export function deviceName(): string {
   const agent = navigator.userAgent;
   for (const [pattern, name] of [
@@ -92,7 +76,6 @@ export function deviceName(): string {
   return "Passkey";
 }
 
-/** Makes a passkey on this device and adds it to the signed-in account. */
 export async function addPasskey(name: string): Promise<void> {
   const options = await request<CreationJson>("POST", "/api/passkeys/register/start", {});
   const made = (await navigator.credentials
@@ -122,8 +105,6 @@ export async function addPasskey(name: string): Promise<void> {
 export const removePasskey = (id: number) =>
   request<void>("DELETE", `/api/users/me/passkeys/${id}`);
 
-/** Whether the browser can offer passkeys in the username field's
- * autofill, alongside saved passwords. */
 export async function autofillAvailable(): Promise<boolean> {
   return (
     supported() &&
@@ -132,9 +113,6 @@ export async function autofillAvailable(): Promise<boolean> {
   );
 }
 
-/** Signs in with a passkey the person picks. With `autofill`, the browser
- * offers them in the username field and waits until one is picked or
- * `signal` stops it, which answers null. */
 export async function signInWithPasskey(
   options: { autofill?: boolean; signal?: AbortSignal } = {},
 ): Promise<User | null> {

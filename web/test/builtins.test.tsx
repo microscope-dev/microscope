@@ -1,7 +1,3 @@
-// Each built-in renderer is loaded the way a user's is, from its file in
-// views/visualizers, run in the locked-down worker on known inputs, and
-// its picture, checked by the page's validator, held to known answers.
-
 import { describe, expect, it } from "vitest";
 import { commands } from "vitest/browser";
 
@@ -11,7 +7,6 @@ import { draw, shapesOf, texts, titles } from "./renderer";
 
 const source = (name: string) => commands.readFile(`../views/visualizers/${name}.js`);
 
-/** The picture's shapes of one type. */
 const ofType = <T extends Shape["type"]>(picture: Picture, type: T) =>
   shapesOf(picture).filter((shape): shape is Shape & { type: T } => shape.type === type) as Extract<
     Shape,
@@ -27,7 +22,6 @@ describe("bar-chart", async () => {
   const chart = await source("bar-chart");
 
   it("sorts a map by value and folds past 40 into Other, with its count and total", async () => {
-    // A Go map's entries arrive in any order.
     const entries = Array.from({ length: 45 }, (_, i) => [
       `/api/${String(i).padStart(2, "0")}`,
       BigInt(((i * 37) % 45) + 1),
@@ -38,13 +32,13 @@ describe("bar-chart", async () => {
     const values = drawn.slice(0, 40).map((rect) => Number(rect.title?.split(": ")[1]));
     expect(values).toEqual(values.toSorted((a, b) => b - a));
     expect(values[0]).toBe(45);
-    // 1 to 5 are left: 15 in all.
+
     expect(drawn[40]?.title).toBe("Other: 5 more entries, total 15");
     expect(drawn[40]?.fill).toBe(palette.ink3);
     expect(picture.caption).toBe(
       "45 entries · total 1035 · max 45 at /api/17 · sorted by value (a map's order may be random) · top 40 + Other (5 more, total 15)",
     );
-    // A map's entries are not its members, so bars select nothing.
+
     expect(drawn.some((rect) => rect.select !== undefined)).toBe(false);
   });
 
@@ -103,7 +97,7 @@ describe("scatter-plot", async () => {
     const dots = ofType(picture, "circle").filter((dot) => dot.title !== undefined);
     expect(dots).toHaveLength(5);
     expect(dots[4]?.title).toBe("[4] e: x 5, y 9007199254740993 (evicted)");
-    // The three most common groups, in name order; the rest are other.
+
     expect(dots.map((dot) => dot.fill)).toEqual([
       palette.series[1],
       palette.series[2],
@@ -114,7 +108,7 @@ describe("scatter-plot", async () => {
     expect(picture.caption).toBe(
       "n=6 · groups: evicted 1, hit 3, miss 1, other 1 · x 1 to 5 · y 10 to 9007199254740993 · 1 with NaN or ±∞, not drawn",
     );
-    // Two inputs are two parts, so a dot opens neither.
+
     expect(dots.some((dot) => dot.select !== undefined)).toBe(false);
   });
 
@@ -172,7 +166,7 @@ describe("histogram", async () => {
   it("cuts Freedman–Diaconis bins and titles each with its count and running share", async () => {
     const values = new Float64Array(1000).map((_, i) => i);
     const picture = await draw(chart, { values });
-    // IQR 499.5 over 1000 samples is bins 99.9 wide, ten of them.
+
     expect(picture.caption).toBe(
       "n=1000 · 10 bins (Freedman–Diaconis) of 99.9 · min 0 · max 999 · mean 499.5 · quantiles: linear (type 7)",
     );
@@ -219,7 +213,7 @@ describe("histogram", async () => {
       "n=10 · 3 bins as given · quantiles interpolate within bins · outline = the stop before",
     );
     expect(titles(picture)).toContain("[2, 4]: 6 · 100% up to here");
-    // Half the samples are by 2 + (5 - 4) / 6 of the last bin's width.
+
     expect(titles(picture)).toContain(`p50 ${2 + (1 / 6) * 2}`);
     expect(ofType(picture, "polyline").map((line) => line.title)).toEqual(["the stop before"]);
   });
@@ -384,7 +378,7 @@ describe("heatmap", async () => {
       { previous: { values: before, columns: 1000 } },
     );
     const images = ofType(picture, "image");
-    // The grid and the changed overlay; the legend's ramp.
+
     expect(images).toHaveLength(3);
     expect(cells(picture)).toHaveLength(0);
     expect(picture.caption).toContain("each pixel the largest of its cells");
@@ -549,7 +543,7 @@ describe("bitmap changes", async () => {
       { previous: { pixels: before, columns: 4 } },
     );
     const ring = overlay(everywhere);
-    // Four marks a pixel each way, at this zoom.
+
     expect([ring.columns, ring.rows]).toEqual([16, 16]);
     expect(alpha(ring, 0, 7)).toBeGreaterThan(0);
     expect(alpha(ring, 15, 7)).toBeGreaterThan(0);
@@ -557,8 +551,6 @@ describe("bitmap changes", async () => {
     expect(alpha(ring, 4, 4)).toBe(0);
     expect(everywhere.caption).toContain("16 pixels changed since the stop before, outlined");
 
-    // One pixel, at column 1 and row 1: a ring of its own, which its
-    // unchanged neighbours do not share.
     const one = new Uint8Array(16);
     one[5] = 9;
     const single = overlay(
@@ -597,7 +589,7 @@ describe("bits", async () => {
     );
     const bits = ofType(picture, "rect").filter((rect) => rect.title !== undefined);
     expect(bits).toHaveLength(64);
-    // a2 is bit 8: the second row from the bottom, first column.
+
     const a2 = bits.find((rect) => rect.title === "white pawns bit 8: 1");
     expect(a2?.y).toBe(6 * 14);
     expect(a2?.x).toBe(0);
@@ -662,7 +654,7 @@ describe("line-plot", async () => {
     expect(picture.caption).toContain("max 50 at [61234]");
     expect(picture.caption).toContain("min -50 at [70001]");
     expect(picture.caption).toMatch(/values a column: min\/max band/u);
-    // At most four vertices a column: first, lowest, highest, last.
+
     const lines = ofType(picture, "polyline").filter((line) => line.stroke === palette.series[0]);
     const vertices = lines.reduce((total, line) => total + line.points.length / 2, 0);
     const columns = new Set(
@@ -676,10 +668,10 @@ describe("line-plot", async () => {
     );
     const top = Math.min(...ys);
     const bottom = Math.max(...ys);
-    // The spike reaches the top of the axis, which ends at the next round tick.
+
     expect(texts(picture)).toContain("60");
     expect(top).toBeLessThan(bottom - 150);
-    // A decimated column spans many values, so it selects none.
+
     expect(shapesOf(picture).some((shape) => shape.select !== undefined)).toBe(false);
   });
 
@@ -709,7 +701,7 @@ describe("line-plot", async () => {
     expect(picture.caption).toBe(
       "n=7 · min 0 at [0] · max 88.1 at [1] · mean 26.08 · 1 NaN, left as gaps · 1 ±∞, arrows at the edge",
     );
-    // A column of one value opens it, wherever the input came from.
+
     const marks = shapesOf(picture).filter((shape) => shape.select !== undefined);
     expect(marks.map((mark) => mark.select)).toEqual(
       Array.from({ length: 7 }, (_, i) => `samples[${i}]`),
@@ -746,7 +738,7 @@ describe("line-plot", async () => {
       expect(texts(picture)).toEqual(expect.arrayContaining(["alpha", "beta"]));
       expect(picture.caption?.startsWith("2 series × 3")).toBe(true);
     }
-    // Several series give each value's mark every series' value, and select none.
+
     expect(titles(one)).toContain("[1]\nbeta: 2\nalpha: 2");
   });
 

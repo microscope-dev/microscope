@@ -1,19 +1,9 @@
-//! A client that sends random requests in every state, valid or not.
-//!
-//! Each run is seeded and deterministic in what it sends; the seed is in
-//! the scenario's name, which a failure prints. Whatever is sent, every
-//! request must get exactly one well-formed response, the adapter must keep
-//! working, and the session must end cleanly. `CHAOS_SEEDS=n` runs `n`
-//! other seeds, `CHAOS_SEED=hex` reruns one, and `CHAOS_ROUNDS=n` sends
-//! more bursts, for longer runs.
-
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
 use crate::dap::{Dap, Profile, fixture, source};
 
-/// A small deterministic generator, so no dependency decides the sequence.
 struct Random(u64);
 
 impl Random {
@@ -32,7 +22,6 @@ impl Random {
         &items[usize::try_from(self.below(items.len() as u64)).expect("small index")]
     }
 
-    /// A small number, or now and then an extreme one.
     fn number(&mut self) -> Value {
         match self.below(8) {
             0 => json!(-1),
@@ -44,8 +33,6 @@ impl Random {
     }
 }
 
-/// Ids the adapter has handed out, which requests use most of the time so
-/// that they reach a stopped program's frames and variables.
 #[derive(Default)]
 struct Known {
     threads: Vec<i64>,
@@ -54,7 +41,6 @@ struct Known {
 }
 
 impl Known {
-    /// Learns the ids in a successful response.
     fn learn(&mut self, command: &str, body: &Value) {
         let (list, field, ids) = match command {
             "threads" => (&body["threads"], "id", &mut self.threads),
@@ -81,7 +67,6 @@ impl Known {
 }
 
 impl Random {
-    /// One of `known`, three times in four, or else any number.
     fn id(&mut self, known: &[i64]) -> Value {
         if known.is_empty() || self.below(4) == 0 {
             self.number()
@@ -91,7 +76,6 @@ impl Random {
     }
 }
 
-/// A request that reads a stopped program's stack, frames, or variables.
 fn inspection(random: &mut Random, known: &Known) -> (&'static str, Value) {
     match random.below(4) {
         0 => (
@@ -114,13 +98,10 @@ fn request(random: &mut Random, known: &Known, started: bool) -> (&'static str, 
     let thread = random.id(&known.threads);
     let path = source("c/hot-calls.c");
 
-    // One request in four inspects, as an editor does at each stop.
     if random.below(4) == 0 {
         return inspection(random, known);
     }
 
-    // Before a program starts, a launch or attach would wait for
-    // configurationDone like any other.
     match random.below(if started { 35 } else { 32 }) {
         0 => ("threads", Value::Null),
         1 => (
@@ -178,8 +159,6 @@ fn request(random: &mut Random, known: &Known, started: bool) -> (&'static str, 
         ),
         21 => ("exceptionInfo", json!({"threadId": thread})),
         22 => ("configurationDone", Value::Null),
-        // Ending the program now and then, not so often that it is rarely
-        // stopped.
         23 | 24 if random.below(4) != 0 => ("pause", json!({"threadId": thread})),
         23 => ("terminate", Value::Null),
         24 => ("restart", Value::Null),
@@ -243,17 +222,14 @@ fn random_requests_in_every_state_are_answered_once_and_harm_nothing() {
         dap.initialize(Profile::VsCode);
         let mut known = Known::default();
 
-        // Before anything is launched.
         bursts(&mut dap, &mut random, 10, false, &mut known, &mut answered);
 
-        // While the launch waits for configuration and starts the program.
         let launch = dap.send("launch", json!({"program": fixture("hot-calls")}));
         let done = dap.send("configurationDone", Value::Null);
         bursts(&mut dap, &mut random, 10, true, &mut known, &mut answered);
         dap.response(launch);
         dap.response(done);
 
-        // While it runs and stops, restarts, or ends.
         bursts(
             &mut dap,
             &mut random,
@@ -263,15 +239,12 @@ fn random_requests_in_every_state_are_answered_once_and_harm_nothing() {
             &mut answered,
         );
 
-        // After it has ended.
         end_program(&mut dap);
         bursts(&mut dap, &mut random, 10, true, &mut known, &mut answered);
 
         dap.finish();
     }
 
-    // The requests reached a stopped program, read its stack, and resumed
-    // it, rather than only being refused while it ran or after it ended.
     for command in ["stackTrace", "continue"] {
         assert!(
             answered.get(command).is_some_and(|&count| count > 0),
@@ -280,8 +253,6 @@ fn random_requests_in_every_state_are_answered_once_and_harm_nothing() {
     }
 }
 
-/// Sends bursts of random requests without waiting, as editors send them,
-/// and checks each is answered once.
 fn bursts(
     dap: &mut Dap,
     random: &mut Random,
@@ -309,7 +280,6 @@ fn bursts(
     }
 }
 
-/// Whether the latest program has ended.
 fn ended(dap: &mut Dap) -> bool {
     let messages = dap.messages_since(crate::dap::Mark::START);
     let started = messages
@@ -321,18 +291,12 @@ fn ended(dap: &mut Dap) -> bool {
         .any(|message| message["event"] == "terminated")
 }
 
-/// Ends the program unless it has ended. A thread may still stop for a
-/// breakpoint or signal before the termination signal arrives; the stop is
-/// continued.
 fn end_program(dap: &mut Dap) {
-    // Events from here on decide; one already on its way is not missed.
     let mark = dap.mark();
     if ended(dap) {
         return;
     }
 
-    // A termination already under way can end the program meanwhile, so
-    // any of these may fail; the terminated event decides either way.
     let path = source("c/hot-calls.c");
     for (command, arguments) in [
         (
@@ -354,7 +318,6 @@ fn end_program(dap: &mut Dap) {
             return;
         }
 
-        // The program may already be gone again.
         let resumed = dap.send("continue", json!({"threadId": body["threadId"]}));
         dap.response(resumed);
     }

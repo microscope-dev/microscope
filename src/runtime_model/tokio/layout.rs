@@ -1,26 +1,11 @@
-//! The contract: every name the tokio model reads, bound against the
-//! program's debug information.
-//!
-//! Offsets, sizes, and tags come from DWARF by name; a name the program
-//! lacks makes only the features that read it unavailable, with a reason
-//! that names it.
-
 use std::sync::Arc;
 
 use super::super::RuntimeImage;
 use super::super::records::{self, Field, Missing, Sum};
 use crate::{ThreadLocal, TypeReference};
 
-/// Where the thread-local `CONTEXT` is, by its scope, within which std's
-/// `thread_local!` names its storage (see [`thread_local_storage`]).
 pub const CONTEXT_SCOPE: &str = "tokio::runtime::context::CONTEXT";
 
-/// Where each thread's copy is of the storage std's `thread_local!` makes
-/// for the variable `scope` names, or why that is unknown; `None` when the
-/// program has none. std renamed the storage's static in Rust 1.92, and a
-/// program has it under the name its compiler gave it, so each name
-/// [`crate::rust_names::THREAD_LOCAL_STORAGE`] lists is tried: with only
-/// the newer, tokio is not found at all in a program an older Rust built.
 pub fn thread_local_storage(
     image: &dyn RuntimeImage,
     scope: &str,
@@ -30,8 +15,6 @@ pub fn thread_local_storage(
         .find_map(|name| image.thread_local_within(scope, name))
 }
 
-/// Each runtime flavor, as `scheduler::Handle` names its variant, with
-/// the type its handle's `Arc` holds.
 const FLAVORS: [(Flavor, &str, &str); 2] = [
     (
         Flavor::MultiThread,
@@ -45,10 +28,8 @@ const FLAVORS: [(Flavor, &str, &str); 2] = [
     ),
 ];
 
-/// Where the thread-local that names the `LocalSet` a thread runs is.
 const LOCAL_SCOPE: &str = "tokio::task::local::CURRENT";
 
-/// A runtime's scheduler, or a `LocalSet`, which keeps tasks of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Flavor {
     MultiThread,
@@ -66,7 +47,6 @@ impl Flavor {
     }
 }
 
-/// Everything the model reads, each part bound on its own.
 #[derive(Debug)]
 pub struct Layout {
     pub context: Result<Context, Missing>,
@@ -74,7 +54,6 @@ pub struct Layout {
     pub pool: Result<Pool, Missing>,
     pub spawns: Result<Spawns, Missing>,
 
-    /// `None` for a program that never runs a `LocalSet`.
     pub locals: Result<Option<Locals>, Missing>,
 }
 
@@ -95,33 +74,22 @@ impl Layout {
     }
 }
 
-/// A `LocalSet`'s tasks, which no runtime lists: the set's `Shared` holds
-/// them in a list of its own, which a thread's `CURRENT` reaches while
-/// the thread runs the set, and the set itself reaches always.
 #[derive(Debug)]
 pub struct Locals {
     pub tls: ThreadLocal,
 
-    /// std's state of the thread's storage, a byte, and the value saying
-    /// the thread made it.
     pub state: u64,
     pub alive: u64,
 
-    /// The `Option<Rc<Context>>` the storage holds, a pointer or null.
     pub context: u64,
 
-    /// The `LocalSet`'s own `Rc<Context>` pointer.
     pub set: u64,
 
-    /// The `Context` within its `Rc`'s allocation, and the `Arc<Shared>`
-    /// pointer within the `Context`.
     pub value: u64,
     pub shared: u64,
 
-    /// The `Shared` within its `Arc`'s allocation.
     pub data: u64,
 
-    /// The list's id and head within the `Shared`.
     pub id: u64,
     pub head: u64,
 }
@@ -178,10 +146,6 @@ impl Locals {
     }
 }
 
-/// Where each task was spawned, which tokio records only in a build with
-/// `tokio_unstable`: the offset in a task's vtable of the offset from its
-/// header to its `&'static Location`, and where a `Location` keeps its
-/// file's name, its length, its line, and its column.
 #[derive(Debug)]
 pub struct Spawns {
     pub offset: u64,
@@ -198,8 +162,6 @@ impl Spawns {
             .map_err(|_| "the program was built without tokio_unstable")?;
         let location = records::named(image, "core::panic::location::Location")?;
 
-        // The file's name is a `NonNull<str>` in recent releases of Rust,
-        // and was a `&str` before; either is a slice's pointer and length.
         let name = records::field(image, location, &["filename", "pointer"])
             .or_else(|_| records::field(image, location, &["file"]))?;
         records::slice_element(image, name.ty)?;
@@ -214,54 +176,39 @@ impl Spawns {
     }
 }
 
-/// A thread's `CONTEXT`: where it is, whether the thread made it, the
-/// runtime the thread entered, its scheduler, and the task it polls.
 #[derive(Debug)]
 pub struct Context {
     pub tls: ThreadLocal,
 
-    /// std's state of the thread's storage, a byte, and the value saying
-    /// the thread made it.
     pub state: u64,
     pub alive: u64,
 
-    /// `Option<scheduler::Handle>`, and the handle within its `Some`.
     pub handle: Field,
     pub handle_option: Sum,
     pub handle_some: u64,
     pub flavors: Sum,
 
-    /// What each flavor's handle reaches.
     pub runtimes: Vec<(Flavor, Arc<str>, Runtime)>,
 
-    /// The scheduler's context pointer, null outside a worker.
     pub scheduler: u64,
 
-    /// Whether the thread entered its runtime, as a worker or a thread
-    /// blocking on it does, and a pool thread does not.
     pub entered: Field,
     pub entered_state: Sum,
 
-    /// `Option<task::Id>`, and the id within its `Some`.
     pub task: Field,
     pub task_option: Sum,
     pub task_some: u64,
 }
 
-/// What a runtime's handle holds: where its `Arc`'s pointer is within the
-/// flavor's variant, where the handle is within what that points to, and
-/// where its task list and blocking pool are within the handle.
 #[derive(Debug)]
 pub struct Runtime {
     pub arc: u64,
     pub data: u64,
     pub owned: Owned,
 
-    /// The blocking pool's `Arc<Inner>` pointer within the handle.
     pub spawner: u64,
 }
 
-/// An `OwnedTasks`: its id, its shards, and its count.
 #[derive(Debug)]
 pub struct Owned {
     pub at: u64,
@@ -270,15 +217,11 @@ pub struct Owned {
     pub count: u64,
     pub mask: u64,
 
-    /// Each shard's size, its lock, and its list's head.
     pub shard_size: u64,
     pub shard_lock: Lock,
     pub head: u64,
 }
 
-/// The lock of one of tokio's own mutexes, which wraps std's, or with
-/// tokio's `parking_lot` feature, the `parking_lot` crate's: where its
-/// state is, its size, and the bits of the state that say it is held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lock {
     pub offset: u64,
@@ -287,18 +230,11 @@ pub struct Lock {
 }
 
 impl Lock {
-    /// Whether a lock in this state is held.
     pub const fn is_held(self, state: u64) -> bool {
         state & self.held != 0
     }
 }
 
-/// The lock and the data of `what`'s tokio mutex at `path` within `ty`,
-/// both placed within `ty`. tokio's `Mutex<T>` is
-/// `Mutex(std::sync::Mutex<T>)`, whose lock is a futex word that is zero
-/// when free, or with its `parking_lot` feature
-/// `Mutex(PhantomData<…>, parking_lot::Mutex<T>)`, whose lock is a byte
-/// that also says whether threads are parked on it.
 fn mutex(
     image: &dyn RuntimeImage,
     ty: TypeReference,
@@ -313,8 +249,6 @@ fn mutex(
         (&["__0", "inner"], &["__0", "data", "value"])
     };
 
-    // The `parking_lot` crate's lock is held while its `LOCKED_BIT` is
-    // set; its `PARKED_BIT` may be set while it is free.
     let (size, held, kind) = if parking_lot {
         (1, 0b1, "byte")
     } else {
@@ -458,7 +392,6 @@ impl Owned {
     }
 }
 
-/// A task's header, its vtable, and its trailer's links.
 #[derive(Debug)]
 pub struct Tasks {
     pub state: u64,
@@ -496,34 +429,21 @@ impl Tasks {
     }
 }
 
-/// The blocking pool's queues: each a `VecDeque<Task>` behind a mutex.
-///
-/// tokio 1.53 and before kept one queue, in `Inner.shared`. tokio 1.54
-/// put it behind `Inner.inner_impl`, an enum the runtime's builder
-/// chooses: `Locked` keeps the one queue as before, and `Sharded` keeps
-/// an array of them. Both shapes are bound here, so a program built
-/// with either release lists its queued blocking tasks.
 #[derive(Debug)]
 pub struct Pool {
     pub queues: Queues,
 
-    /// Each queue's head index, length, buffer, and capacity, within its
-    /// `VecDeque`.
     pub head: u64,
     pub len: u64,
     pub buffer: u64,
     pub capacity: u64,
 
-    /// Each queued task's size, and its header pointer within it.
     pub task_size: u64,
     pub task: u64,
 
-    /// Where the pool's `Inner` is within its `Arc`'s allocation.
     pub data: u64,
 }
 
-/// One queue of blocking tasks: its mutex's lock and its `VecDeque`,
-/// each at an offset within the pool's `Inner`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Guarded {
     pub lock: Lock,
@@ -531,7 +451,6 @@ pub struct Guarded {
 }
 
 impl Guarded {
-    /// The same queue `by` bytes further into the pool's `Inner`.
     pub(super) fn shifted(self, by: u64) -> Result<Self, Missing> {
         Ok(Self {
             lock: Lock {
@@ -543,16 +462,10 @@ impl Guarded {
     }
 }
 
-/// How the pool's `Inner` holds its queues.
 #[derive(Debug)]
 pub enum Queues {
-    /// tokio 1.53 and before: the one queue in `Inner.shared`.
     One(Guarded),
 
-    /// tokio 1.54 and after: `Inner.inner_impl`, at `at`, read by its
-    /// tag. `Locked` holds the one queue `locked`; `Sharded` holds
-    /// `shards` queues, the first `sharded` and each next `stride` bytes
-    /// after it.
     Chosen {
         choice: Sum,
         at: u64,
@@ -563,16 +476,12 @@ pub enum Queues {
     },
 }
 
-/// The most queues a sharded pool is read with. tokio 1.54 has 16; a
-/// count past this is damage in the debug information, not a pool.
 pub const MAX_SHARDS: u64 = 1024;
 
 impl Pool {
     fn bind(image: &dyn RuntimeImage) -> Result<Self, Missing> {
         let inner = records::named(image, "tokio::runtime::blocking::pool::Inner")?;
 
-        // The member that names the shape decides which is bound, so a
-        // program of either release reports what its own shape lacks.
         let (queues, deque) = if records::field(image, inner, &["inner_impl"]).is_ok() {
             Self::chosen(image, inner)?
         } else {
@@ -599,10 +508,6 @@ impl Pool {
         })
     }
 
-    /// tokio 1.54's `Inner.inner_impl`: `Locked(LockedImpl { mutex, .. })`
-    /// or `Sharded(ShardedImpl { shards: [Mutex<Shard>; N], .. })`, each
-    /// mutex's data holding a `queue`. Both variants are bound, as which
-    /// one a program uses is the builder's choice at run time.
     fn chosen(
         image: &dyn RuntimeImage,
         inner: TypeReference,
@@ -629,7 +534,6 @@ impl Pool {
             shards.offset,
         )?)?;
 
-        // Each queue is read with the one layout, so both must agree.
         if deque_words(image, shard_deque)? != deque_words(image, deque)? {
             return Err("the blocking pool's queues differ in layout".into());
         }
@@ -649,8 +553,6 @@ impl Pool {
     }
 }
 
-/// A queue behind the mutex whose lock is `lock` and whose data, holding
-/// a `queue` member, is `data`; and the queue's type.
 fn guarded(
     image: &dyn RuntimeImage,
     lock: Lock,
@@ -666,7 +568,6 @@ fn guarded(
     ))
 }
 
-/// A `VecDeque`'s head index, length, buffer, and capacity, each a word.
 fn deque_words(
     image: &dyn RuntimeImage,
     deque: TypeReference,
@@ -675,9 +576,6 @@ fn deque_words(
     Ok((
         sized(&["head"])?,
         sized(&["len"])?,
-        // Each a word wrapped in single-member records whose names std
-        // changes: `Unique` and `Cap` once, `NonNull` and
-        // `UsizeNoHighBit` now. The word begins each wrapper.
         sized(&["buf", "inner", "ptr"])?,
         sized(&["buf", "inner", "cap"])?,
     ))

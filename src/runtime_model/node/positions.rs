@@ -1,28 +1,10 @@
-//! Where in its script a frame of V8's bytecode is: the bytecode's source
-//! position table maps its offset to a character offset of the script,
-//! and the script's line ends map that to a line and column.
-//!
-//! A table is a sequence of entries, each a code offset and a source
-//! position, both written as the difference from the entry before. V8
-//! changed how it writes the code offset in 14.0:
-//! before, a zigzag-coded signed integer whose sign marks a statement;
-//! since, an unsigned integer whose two low bits mark a breakable position
-//! and a statement. Both decode a table into plausible lines, so the
-//! encoding is the version's, never a guess, and a table must decode to
-//! its exact length.
-
 use super::objects::{Object, Problem, Reader};
 use crate::image::v8::{Constant, Field, V8Version};
 
-/// How V8 writes a position table's code offsets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Encoding {
-    /// A zigzag-coded signed integer, negative for an entry that is no
-    /// statement: V8 before 14.0.
     SignedStatement,
 
-    /// An unsigned integer whose low two bits are the breakable and
-    /// statement flags: V8 14.0 and later.
     FlagBits,
 }
 
@@ -36,25 +18,18 @@ impl Encoding {
     }
 }
 
-/// One entry of a decoded table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Entry {
     pub(super) code_offset: i64,
 
-    /// V8's `SourcePosition`, whose script offset and inlining id
-    /// [`script_offset`] gives.
     pub(super) position: i64,
 }
 
-/// The code offset of a function's entry, before its first instruction.
 pub(super) const FUNCTION_ENTRY: i64 = -1;
 
-/// The entries of a table's bytes, or why the bytes are no table.
 pub(super) fn decode(bytes: &[u8], encoding: Encoding) -> Result<Vec<Entry>, Problem> {
     let mut entries = Vec::new();
     let mut at = 0;
-    // Offsets are deltas from the function's entry, which V8 places at
-    // -1 (kFunctionEntryBytecodeOffset).
     let mut code_offset = FUNCTION_ENTRY;
     let mut position = 0_i64;
     while at < bytes.len() {
@@ -63,8 +38,6 @@ pub(super) fn decode(bytes: &[u8], encoding: Encoding) -> Result<Vec<Entry>, Pro
                 let value = zigzag(unsigned(bytes, &mut at)?);
                 if value >= 0 { value } else { -(value + 1) }
             }
-            // V8 reads it as a 32-bit int, so a function's entry, at
-            // offset -1, is a delta of -1.
             Encoding::FlagBits => {
                 let value = u32::try_from(unsigned(bytes, &mut at)?)
                     .map_err(|_| "a position table's offset is too large")?;
@@ -85,8 +58,6 @@ pub(super) fn decode(bytes: &[u8], encoding: Encoding) -> Result<Vec<Entry>, Pro
     Ok(entries)
 }
 
-/// The varint at `at`, seven bits a byte, low bits first, as V8 writes
-/// its position and baseline offset tables.
 pub(super) fn unsigned(bytes: &[u8], at: &mut usize) -> Result<u64, Problem> {
     let mut value = 0_u64;
     for shift in (0..64).step_by(7) {
@@ -94,7 +65,6 @@ pub(super) fn unsigned(bytes: &[u8], at: &mut usize) -> Result<u64, Problem> {
             .get(*at)
             .ok_or("a position table ends inside an entry")?;
         *at += 1;
-        // A group whose bits reach past the 64th names no value.
         let bits = u64::from(byte & 0x7f);
         if (bits << shift) >> shift != bits {
             return Err("a position table holds an integer too large".into());
@@ -112,9 +82,7 @@ const fn zigzag(value: u64) -> i64 {
     (value >> 1).cast_signed() ^ -((value & 1).cast_signed())
 }
 
-/// The script offset a `SourcePosition` holds, or `None` for none.
 pub(super) const fn script_offset(position: i64) -> Option<u64> {
-    // Bit 0 marks an external position; bits 1 to 30 hold the offset + 1.
     if position & 1 != 0 {
         return None;
     }
@@ -126,10 +94,6 @@ pub(super) const fn script_offset(position: i64) -> Option<u64> {
     }
 }
 
-/// The source position of the bytecode at `offset`, or of the function's
-/// entry at [`FUNCTION_ENTRY`]: that of the last entry at or before it in
-/// the script, as V8's `SourcePosition` finds it, the function's entry
-/// included.
 pub(super) fn position_at(entries: &[Entry], offset: i64) -> Option<i64> {
     entries
         .iter()
@@ -139,7 +103,6 @@ pub(super) fn position_at(entries: &[Entry], offset: i64) -> Option<i64> {
         .map(|entry| entry.position)
 }
 
-/// The bytes of the position table of `bytecode`.
 pub(super) fn table_bytes(reader: &Reader<'_>, bytecode: Object) -> Result<Vec<u8>, Problem> {
     let word = reader.field(bytecode, Field::BytecodeArraySourcePositionTable)?;
     let table = reader
@@ -148,7 +111,6 @@ pub(super) fn table_bytes(reader: &Reader<'_>, bytecode: Object) -> Result<Vec<u
     byte_array(reader, table)
 }
 
-/// The bytes of the byte array `array`, trusted or not.
 pub(super) fn byte_array(reader: &Reader<'_>, array: Object) -> Result<Vec<u8>, Problem> {
     let (length, values) = if reader.is(array, Constant::TrustedByteArrayType)? {
         (Field::TrustedByteArrayLength, Field::TrustedByteArrayValues)
@@ -165,8 +127,6 @@ pub(super) fn byte_array(reader: &Reader<'_>, array: Object) -> Result<Vec<u8>, 
     let mut bytes = vec![0; length];
     let address = reader.field_address(array, values)?;
     let unreadable = || format!("the byte array at {:#x} is unreadable", array.0).into();
-    // One that fits a block is read with the blocks the reader keeps, as
-    // its own object is.
     if reader.blocks.is_some_and(|blocks| length <= blocks.block()) {
         reader.bytes_into(address, &mut bytes)?;
         return Ok(bytes);
@@ -200,13 +160,10 @@ mod tests {
         ((value << 1) ^ (value >> 63)).cast_unsigned()
     }
 
-    /// A source position for `offset`, not inlined.
     fn position(offset: i64) -> i64 {
         (offset + 1) << 1
     }
 
-    /// Entries as (code offset, source position, statement), as each
-    /// version writes them.
     fn encode_positions(entries: &[(i64, i64, bool)], encoding: Encoding) -> Vec<u8> {
         let mut bytes = Vec::new();
         let (mut code, mut source) = (FUNCTION_ENTRY, 0);
@@ -229,9 +186,6 @@ mod tests {
         bytes
     }
 
-    /// The varint at `at` as the format defines it, read into 128 bits:
-    /// at most ten groups, and `None` for one cut short, longer, or past
-    /// 64 bits.
     fn reference_unsigned(bytes: &[u8], at: &mut usize) -> Option<u64> {
         let mut value = 0_u128;
         for group in 0..10 {
@@ -245,9 +199,6 @@ mod tests {
         None
     }
 
-    /// A table's entries as the format defines them, with every sum in
-    /// 128 bits, or `None` where the bytes are no table or a value does
-    /// not fit.
     fn reference_decode(bytes: &[u8], encoding: Encoding) -> Option<Vec<Entry>> {
         let mut entries = Vec::new();
         let mut at = 0;
@@ -288,15 +239,12 @@ mod tests {
         prop_oneof![Just(Encoding::SignedStatement), Just(Encoding::FlagBits)]
     }
 
-    /// A varint's group past the 64th bit is no value, not one with its
-    /// high bits dropped.
     #[test]
     fn a_varint_past_64_bits_is_too_long() {
         let mut wide = vec![0x80; 9];
         wide.push(0x02);
         assert!(unsigned(&wide, &mut 0).is_err());
 
-        // The table proptest shrank the case to.
         let mut table = vec![0x00];
         table.extend(wide);
         assert!(decode(&table, Encoding::SignedStatement).is_err());
@@ -348,8 +296,6 @@ mod tests {
                 0..8,
             ),
         ) {
-            // Runs of continuation bytes, each ended by any byte, reach
-            // every length of varint.
             let bytes: Vec<u8> = varints
                 .into_iter()
                 .flat_map(|(groups, fill, last)| {

@@ -1,21 +1,3 @@
-//! Each recorded process's anonymous code, and what names the functions a
-//! compiler wrote there: the perf map it keeps, whose functions in one
-//! anonymous range become a module of its own (see
-//! [`crate::debug_info::perf_map`]), and the objects it registers through
-//! the GDB JIT interface, each a module of its own with the call-frame
-//! information it carries (see [`crate::debug_info::gdb_jit`]).
-//!
-//! The map is append-only and written as it is read, so it is read on
-//! from where it was last read, and only when a sample lands in anonymous
-//! code nothing names, and not again for a while after a read that found
-//! nothing new. A function's code is read with it: its frames are proved
-//! from the code as it is then. The registered objects are read
-//! again then too, when their descriptors or entries changed since they
-//! were last read. A range that holds registered objects is theirs alone.
-//! Anonymous code the recording saw no mapping of, as when a full ring
-//! dropped its record, is mapped from the process first (see
-//! [`Jit::unseen`]).
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -23,126 +5,73 @@ use crate::backend::perf::{self, jit::MapError};
 use crate::debug_info::gdb_jit::{self, Registered};
 use crate::debug_info::perf_map::{self, Jitted};
 
-/// The most of one function's code read: its frames are proved from its
-/// entry, so a frame further in than this has none.
 const CODE_READ: u64 = 64 * 1024;
 
-/// The most of the map read at once: it is read on from there the next
-/// time.
 const MAP_READ: u64 = 16 << 20;
 
-/// The most bytes of functions' code read at once, past which a function
-/// has none, and so no frames.
 const CODES_READ: u64 = 64 << 20;
 
-/// The most bytes of registered objects read at once.
 const OBJECTS_READ: u64 = 64 << 20;
 
-/// How long after a read that found nothing new, in nanoseconds of the
-/// samples' time, code nothing names is not read for again: a hot callback
-/// in such code, as a foreign-function library writes, would otherwise
-/// open the process's files at each of its samples.
 const QUIET: u64 = 20_000_000;
 
-/// How far apart, in bytes, a range's chunks begin: each chunk of a range
-/// has a module of its own, made again only for its own new functions. A
-/// chunk is a V8 code page, whose code V8 makes in a few pages at a time;
-/// one module for V8's whole code range indexed every function it held
-/// each time one was new.
 const CHUNK: u64 = 1 << 18;
 
-/// One anonymous executable mapping.
 #[derive(Debug, Clone, Default)]
 struct Range {
     end: u64,
 
-    /// The chunks whose modules are made, by start: each one's end, and
-    /// when the newest function its module holds was read, by when the map
-    /// named it.
     built: BTreeMap<u64, (u64, u64)>,
 }
 
-/// What a process's anonymous code is known to hold.
 #[derive(Debug, Default)]
 pub struct Jit {
     ranges: BTreeMap<u64, Range>,
 
-    /// Each function the map named, by start, a later one replacing those
-    /// it overlaps.
     functions: BTreeMap<u64, Named>,
 
-    /// How many bytes of the map are read, and the path the process
-    /// names it by, once it has been read.
     read: u64,
     path: Option<String>,
 
-    /// When, by `CLOCK_MONOTONIC`, the map was last read to its end. A
-    /// program writes a function's line as it makes its code, before the
-    /// code runs, so a sample from before then ran no code a later line
-    /// names.
     read_to_end: u64,
 
-    /// Each registered object, by where its code starts; the descriptors
-    /// they are registered with, until the process maps something; and
-    /// the bytes of the descriptors and their entries as they were when
-    /// the objects were read.
     objects: BTreeMap<u64, JitCode>,
     descriptors: Option<Vec<u64>>,
 
-    /// Where each object's code starts and its image's outline, by where
-    /// the image was when it was read. A compiler adds objects to its list
-    /// one at a time, so most of a read finds the same images in the same
-    /// places, which are not read again.
     images: BTreeMap<u64, (u64, Vec<u8>)>,
     headers: Vec<u8>,
 
-    /// Whether the code of the functions the map names is left unread: a
-    /// process that carries V8 unwinds V8's code by V8's convention, and
-    /// the map gives it only names.
     pub names_only: bool,
 
-    /// Why the map, or a registered object, was last not read, until it is
-    /// taken.
     problem: Option<String>,
 
-    /// Until when, in the samples' time, neither the map nor the objects
-    /// are read for code nothing names, as the last read found nothing new.
     quiet: u64,
 }
 
-/// A function the map named, and when its line was read, by
-/// `CLOCK_MONOTONIC`, which times what perf records.
 #[derive(Debug)]
 struct Named {
     function: Jitted,
     read: u64,
 }
 
-/// The code of an object a compiler registered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JitCode {
     pub start: u64,
     pub end: u64,
 
-    /// The object's name, and the object.
     pub path: String,
     pub bytes: Arc<[u8]>,
 }
 
-/// A chunk of an anonymous range whose module is out of date, with the
-/// functions in it.
 pub struct Stale {
     pub start: u64,
     pub end: u64,
 
-    /// Where the range begins, which names a module of V8's code.
     pub range: u64,
     pub path: String,
     pub functions: Vec<Jitted>,
 }
 
-/// The modules a refresh found out of date: each anonymous range's whose
-/// functions a perf map names, and each registered object's.
 #[derive(Default)]
 pub struct Refreshed {
     pub stale: Vec<Stale>,
@@ -150,11 +79,7 @@ pub struct Refreshed {
 }
 
 impl Jit {
-    /// Records a mapping of `start..end` made at `time`, which replaces
-    /// whatever it overlaps, and is anonymous code when `anonymous`.
     pub fn mapped(&mut self, start: u64, end: u64, anonymous: bool, time: u64) {
-        // What it does not overlap of a range is anonymous code still,
-        // whose module is made again.
         let overlapped: Vec<(u64, u64)> = self
             .ranges
             .range(..end)
@@ -180,23 +105,16 @@ impl Jit {
             }
         }
 
-        // A function whose line was read before the mapping named what it
-        // replaced. One read since may name what it holds: the map is read
-        // as the program runs, ahead of the mappings drained.
         self.functions.retain(|&function, named| {
             named.function.entry.end <= start || function >= end || named.read > time
         });
 
-        // The code of an object it overlaps is gone, or another's: what the
-        // compiler registers there is read and made again. What it maps may
-        // hold a descriptor.
         let objects = self.objects.len();
         self.objects
             .retain(|_, object| object.end <= start || object.start >= end);
         if self.objects.len() != objects {
             self.headers.clear();
         }
-        // Only a module holds a descriptor.
         if !anonymous {
             self.descriptors = None;
         }
@@ -213,10 +131,6 @@ impl Jit {
         }
     }
 
-    /// Forgets all the process's code, which a new program replaced. The
-    /// map is the same file, whose pid the new program keeps, and the new
-    /// program's lines follow the old one's, so it is read on from where
-    /// it was.
     pub fn exec(&mut self) {
         *self = Self {
             read: self.read,
@@ -225,12 +139,6 @@ impl Jit {
         };
     }
 
-    /// Whether the chunk of an anonymous range that holds `address`, if
-    /// any, needs its module made again: its module does not name the
-    /// function that holds `address`, or none covers `address`, so the map
-    /// may have more. A chunk whose module names the sample's function is
-    /// not made again for functions the map named since, which no sample
-    /// has needed: each remaking indexes every symbol of the chunk.
     pub fn needs(&self, address: u64) -> bool {
         self.range(address).is_some_and(|(start, range)| {
             let (chunk, end) = self.chunk(start, range.end, address);
@@ -251,9 +159,6 @@ impl Jit {
         })
     }
 
-    /// The bounds of the chunk of range `start..end` that holds `address`:
-    /// it begins and ends where [`CHUNK`]s do, or past a function that
-    /// crosses there, so that no function is cut in two.
     fn chunk(&self, start: u64, end: u64, address: u64) -> (u64, u64) {
         let cut = |boundary: u64| {
             if boundary <= start {
@@ -281,11 +186,6 @@ impl Jit {
         (cut(lower), cut(upper))
     }
 
-    /// Whether `address`, sampled at `time` in no mapping the recording
-    /// holds, may be anonymous code whose mapping it never saw: it lies in
-    /// no anonymous range the recording saw mapped, nothing named covers
-    /// it, and no read for code nothing names found nothing new within
-    /// [`QUIET`] before.
     pub fn unseen(&self, address: u64, time: u64) -> bool {
         self.range(address).is_none() && !self.covers(address) && time >= self.quiet
     }
@@ -312,14 +212,6 @@ impl Jit {
                 .is_some_and(|(_, object)| address < object.end)
     }
 
-    /// Reads the map of process `pid` on, and the objects registered with
-    /// the `descriptors` it gives, when some `addresses` sampled at `time`,
-    /// which lie in no module the recording holds, are code nothing names,
-    /// and returns the modules out of date. Each range's module is made
-    /// again from what it returns, which marks it current. An address in no
-    /// anonymous range the recording saw mapped may be in code whose
-    /// mapping it lost, which a registered object still names. Within
-    /// [`QUIET`] of a read that found nothing new, nothing is read.
     pub fn refresh(
         &mut self,
         pid: u32,
@@ -341,10 +233,6 @@ impl Jit {
 
         let mut refreshed = Refreshed::default();
         if (uncovered || unknown) && time >= self.quiet {
-            // A sample is processed well after it was taken, while the
-            // program goes on making code: reading on for every sample in
-            // code no function covers would find new lines nearly every
-            // time, and make the ranges' modules again each time.
             let read_map = uncovered && time > self.read_to_end;
             let lines = read_map && self.read_on(pid);
             let descriptors = self.descriptors.get_or_insert_with(descriptors).clone();
@@ -356,9 +244,6 @@ impl Jit {
             }
         }
 
-        // Only the modules of the chunks these addresses need are made
-        // again, with the bounds what was just read gives them; another
-        // chunk's is made once a sample needs it.
         let chunks: BTreeSet<(u64, u64, u64)> = needed
             .into_iter()
             .filter_map(|(range, address)| {
@@ -411,10 +296,6 @@ impl Jit {
         refreshed
     }
 
-    /// Reads again the objects registered with `descriptors` when any of
-    /// them changed since they were read, and returns each object not
-    /// known before. An object whose image is where and what it was is
-    /// kept as it was read.
     fn read_objects(&mut self, pid: u32, descriptors: &[u64]) -> Vec<JitCode> {
         let read = |address: u64, size: usize| {
             let mut bytes = vec![0; size];
@@ -497,20 +378,14 @@ impl Jit {
         new
     }
 
-    /// Why the map, or a registered object, was not read, the first time
-    /// it is asked after a read found one that cannot be used.
     pub const fn take_problem(&mut self) -> Option<String> {
         self.problem.take()
     }
 
-    /// Reads the lines written since the last read, with each new
-    /// function's code, and returns whether there were any.
     fn read_on(&mut self, pid: u32) -> bool {
         self.read_on_within(pid, MAP_READ, CODES_READ)
     }
 
-    /// Reads on as [`Self::read_on`] does, at most `limit` bytes of the
-    /// map and `codes` bytes of its functions' code.
     fn read_on_within(&mut self, pid: u32, limit: u64, mut codes: u64) -> bool {
         let (path, bytes) = match perf::jit::read_map(pid, self.read, limit) {
             Ok(read) => read,
@@ -562,8 +437,6 @@ impl Jit {
         any
     }
 
-    /// Records a function the map named, whose line was read at `read`,
-    /// in place of those it overlaps.
     fn name(&mut self, function: Jitted, read: u64) {
         let entry = &function.entry;
         let overlapped: Vec<u64> = self
@@ -588,12 +461,9 @@ mod tests {
     use super::*;
     use crate::debug_info::perf_map::Entry;
 
-    /// Code for a test's perf map to name, aligned so that no chunk
-    /// boundary falls inside it at whatever address the program is loaded.
     #[repr(align(64))]
     struct Code<const N: usize>([u8; N]);
 
-    /// A perf map a test wrote, removed once it ends.
     struct Removed(String);
 
     impl Drop for Removed {
@@ -622,7 +492,6 @@ mod tests {
         assert!(!jit.needs(0x3000), "file-backed");
         assert!(!jit.needs(0x2000), "past the range");
 
-        // Functions read since, as the map would give them.
         jit.functions.insert(
             0x1000,
             Named {
@@ -642,15 +511,11 @@ mod tests {
                 .is_empty()
         );
 
-        // A mapping over part of the range replaces that part, and the
-        // module of the rest is made again.
         jit.mapped(0x1800, 0x2800, false, 0);
         assert!(!jit.needs(0x1808));
         assert!(jit.needs(0x1008));
     }
 
-    /// A new program has none of the old one's code, and reads the map on
-    /// from where the old one's lines end.
     #[test]
     fn a_new_program_forgets_the_old_ones_code() {
         let mut jit = Jit::default();
@@ -669,10 +534,6 @@ mod tests {
         assert_eq!(jit.read, 40);
     }
 
-    /// A process's registered objects are read when a sample lands in code
-    /// nothing names, whether or not its mapping was seen; again only once
-    /// the descriptor changed, or a mapping replaced an object's code; and
-    /// never in a process with no descriptor. This process registers one.
     #[test]
     fn registered_objects_are_read_when_unnamed_code_runs() {
         let image = crate::debug_info::gdb_jit::test_image(0x7000_1000, 64);
@@ -690,7 +551,6 @@ mod tests {
         };
         assert!(refresh(&mut jit, code, &Vec::new).is_empty());
 
-        // What the process maps since may hold a descriptor.
         jit.mapped(0x5000, 0x6000, false, 0);
         let objects = refresh(&mut jit, code, &|| vec![at]);
         assert_eq!(objects.len(), 1);
@@ -704,19 +564,14 @@ mod tests {
             "unchanged, so not read"
         );
 
-        // A changed descriptor is read, and holds nothing new.
         descriptor[0] = 1 | (1 << 32);
         assert!(refresh(&mut jit, 0x7000_2000, &|| vec![at]).is_empty());
         assert_eq!(jit.objects.len(), 1);
 
-        // A mapping over its code: what is there now is made again.
         jit.mapped(0x7000_0000, 0x7000_2000, true, 0);
         assert_eq!(refresh(&mut jit, code, &|| vec![at]).len(), 1);
     }
 
-    /// A compiler that unregisters an object and registers another may
-    /// leave its descriptor's bytes as they were: the new object's entry
-    /// can be where the old one's was. The new object is still read.
     #[test]
     fn an_object_registered_at_a_reused_entry_is_read() {
         let first = crate::debug_info::gdb_jit::test_image(0x7000_1000, 64);
@@ -735,8 +590,6 @@ mod tests {
         let objects = refresh(&mut jit, 0x7000_1008);
         assert_eq!(objects.len(), 1);
 
-        // The same entry, now the second object's; the descriptor's bytes
-        // are as they were.
         entry[2] = second.as_ptr() as u64;
         entry[3] = second.len() as u64;
         std::hint::black_box(&entry);
@@ -751,11 +604,6 @@ mod tests {
         drop(descriptor);
     }
 
-    /// An object whose image is where it was, of the size and section
-    /// headers it had, is kept as it was read when the list changes, not
-    /// read again: a compiler that adds objects one at a time would
-    /// otherwise have its whole list read at each. Another image of the same
-    /// size in the same place places its code elsewhere, and is read.
     #[test]
     fn an_object_listed_as_it_was_is_not_read_again() {
         let mut first = crate::debug_info::gdb_jit::test_image(0x7000_1000, 64);
@@ -779,8 +627,6 @@ mod tests {
         };
         assert_eq!(refresh(&mut jit, 0x7000_1008), [0x7000_1000]);
 
-        // A second object goes first in the list, and the first object's
-        // code changes, which the code it ran told of, not its headers.
         first[64..128].fill(0x90);
         later[0] = std::ptr::from_ref(&*entry) as u64;
         descriptor[2] = std::ptr::from_ref(&*later) as u64;
@@ -792,7 +638,6 @@ mod tests {
             "read again"
         );
 
-        // Another image of the same size where the first was.
         first.copy_from_slice(&crate::debug_info::gdb_jit::test_image(0x7000_5000, 64));
         entry[1] = 1;
         std::hint::black_box((&first, &entry));
@@ -800,9 +645,6 @@ mod tests {
         assert!(!jit.objects.contains_key(&0x7000_1000));
     }
 
-    /// A read takes at most so much of the map, and the next read goes on
-    /// from there; and at most so much of its functions' code, past which a
-    /// function has none. A line longer than a read takes is a problem.
     #[test]
     fn a_read_of_the_map_is_bounded() {
         static CODE: Code<32> = Code([0xcc; 32]);
@@ -842,10 +684,6 @@ mod tests {
         assert!(problem.contains("longer than 4 bytes"), "{problem}");
     }
 
-    /// A range's module is made again only for a sample in a function it
-    /// does not name: functions the map names in it meanwhile, read for a
-    /// sample elsewhere, wait for a sample that needs them. In a process
-    /// that carries V8 the map gives only names, so no code is read.
     #[test]
     fn a_range_is_made_again_only_for_a_function_its_module_lacks() {
         static CODE: Code<64> = Code([0xcc; 64]);
@@ -888,7 +726,6 @@ mod tests {
             [["a"]]
         );
 
-        // A sample in the other range reads b, in the first, with c.
         append(format!("{:x} 10 b\n{other:x} 10 c\n", start + 0x10));
         assert_eq!(
             names(jit.refresh(pid, now(), [other + 8], Vec::new)),
@@ -905,7 +742,6 @@ mod tests {
             [["a", "b"]]
         );
 
-        // A function that replaces one the module names is a new function.
         append(format!("{start:x} 10 a2\n"));
         assert!(
             jit.refresh(pid, now(), [other + 0x18], Vec::new)
@@ -923,9 +759,6 @@ mod tests {
         );
     }
 
-    /// Each chunk of a range has a module of its own, made again only for
-    /// a function new in it, and a function that crosses where a chunk
-    /// would end stays whole in the chunk it begins in.
     #[test]
     fn a_new_function_makes_again_only_the_chunk_that_holds_it() {
         let pid = std::process::id();
@@ -997,11 +830,6 @@ mod tests {
         );
     }
 
-    /// Samples are processed well after they are taken, while the program
-    /// goes on making code. A sample taken before the map was last read to
-    /// its end ran no code a line written since names, so it reads nothing
-    /// again; one taken after reads on. Of the ranges the lines are in,
-    /// only those a sample lands in have their modules made again.
     #[test]
     fn the_map_is_read_on_only_for_samples_taken_after_it_was_last_read() {
         static CODE: Code<64> = Code([0xcc; 64]);
@@ -1028,7 +856,6 @@ mod tests {
             [second]
         );
 
-        // The program makes more code after the sample was taken.
         let mut map = std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
@@ -1049,8 +876,6 @@ mod tests {
         assert_eq!(jit.functions.len(), 3);
     }
 
-    /// A registered object that places no code is not a module, and the
-    /// recording says so.
     #[test]
     fn a_registered_object_that_places_no_code_is_a_problem() {
         let image = crate::debug_info::gdb_jit::test_image(0x7000_1000, 0);
@@ -1068,15 +893,11 @@ mod tests {
         assert!(problem.contains("places no code"), "{problem}");
     }
 
-    /// What the model's pages and functions are, in [`PAGE`]s and
-    /// [`UNIT`]s from [`BASE`].
     const PAGE: u64 = 4096;
     const UNIT: u64 = 16;
     const PAGES: usize = 3 * (CHUNK / PAGE) as usize;
     const BASE: u64 = 0x7f00_0000_0000;
 
-    /// One step of a process's code: a mapping of pages, anonymous or not,
-    /// at a time, or a function the map named, read at a time.
     #[derive(Debug, Clone)]
     enum Step {
         Map {
@@ -1132,8 +953,6 @@ mod tests {
             use proptest::prelude::*;
             let mut jit = Jit::default();
 
-            // The step that last mapped each page, and the functions named
-            // and not since ended, each start, end, and read.
             let mut mapped: Vec<Option<usize>> = vec![None; PAGES];
             let mut named: Vec<(u64, u64, u64)> = Vec::new();
 
@@ -1163,7 +982,6 @@ mod tests {
                 mapped[page].is_some_and(|step| matches!(steps[step], Step::Map { anonymous: true, .. }))
             };
 
-            // The ranges are apart and in order.
             let ranges: Vec<(u64, u64)> = jit.ranges.iter().map(|(&start, range)| (start, range.end)).collect();
             prop_assert!(ranges.iter().all(|(start, end)| start < end));
             prop_assert!(ranges.windows(2).all(|pair| pair[0].1 <= pair[1].0), "{:x?}", ranges);
@@ -1202,7 +1020,6 @@ mod tests {
                 prop_assert_eq!(jit.chunk(start, range.end, upper - 1), (lower, upper));
 
                 for &(begins, ends, _) in named.iter().filter(|(begins, _, _)| (start..range.end).contains(begins)) {
-                    // A function past the range's end ends its last chunk.
                     for bound in [lower, upper].into_iter().filter(|&bound| bound != range.end) {
                         prop_assert!(bound <= begins || bound >= ends,
                             "{:#x}..{:#x} cuts {:#x}..{:#x}", lower, upper, begins, ends);
@@ -1212,9 +1029,6 @@ mod tests {
         }
     }
 
-    /// After a read for code nothing names found nothing new, nothing is
-    /// read again for a while of the samples' time, unless the process
-    /// maps something.
     #[test]
     fn code_nothing_names_is_read_for_at_most_once_a_while() {
         let image = crate::debug_info::gdb_jit::test_image(0x7000_1000, 64);
@@ -1238,8 +1052,6 @@ mod tests {
             1
         );
 
-        // Found something, so not quiet; then found nothing, so quiet, until
-        // the process maps something.
         assert!(
             jit.refresh(pid, QUIET, [code], || vec![at])
                 .objects

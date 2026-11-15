@@ -1,7 +1,3 @@
-// A group of panes: a strip of tabs and the pane each shows. Panes in tabs
-// not shown stay mounted and hidden, so a tab switch is instant and keeps
-// their scroll, unless their kind says they are too costly to keep.
-
 import {
   type ComponentType,
   type KeyboardEvent,
@@ -47,7 +43,6 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
   const strip = useRef<HTMLDivElement>(null);
   const active = group?.active ?? null;
 
-  // A strip with more tabs than room scrolls, keeping the shown one in view.
   useEffect(() => {
     if (active) {
       const shown = document.querySelector<HTMLElement>(`#${tabId(active)}`);
@@ -63,17 +58,14 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
     }
   }, [active]);
 
-  // Working in a group makes it the one keys and new panes go to.
   const focus = useCallback(() => {
     if (!focused && active) {
       change((layout) => activate(layout, active));
     }
   }, [focused, active]);
 
-  // The arrow keys, Home, and End choose a tab as they go; Delete closes it.
   const walk = useCallback(
     (event: KeyboardEvent) => {
-      // Chords with modifiers are commands', such as Alt+→ to the next group.
       if (!group || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
         return;
       }
@@ -109,7 +101,7 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
     <section
       className={`${css("group")} ${focused ? css("focused") : ""}`}
       data-group={id}
-      // The group keys and new panes go to.
+
       data-focused={focused || undefined}
     >
       {/* oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- its tabs take the focus, one at a time, as a tab list's do */}
@@ -162,8 +154,6 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
   );
 });
 
-/** Whether a pane other than the one the keyboard is in reads the link
- * that one reads, so its tab can show they share what is selected. */
 function readsFocusedLink(layout: Layout, pane: PaneId, found: Pane): boolean {
   const link = linkOf(found);
   if (link === null) {
@@ -174,7 +164,6 @@ function readsFocusedLink(layout: Layout, pane: PaneId, found: Pane): boolean {
   return lead !== pane && leading !== undefined && linkOf(leading) === link;
 }
 
-/** One tab in the strip, and its close button if its pane can close. */
 function Tab({
   pane,
   found,
@@ -206,8 +195,6 @@ function Tab({
     [shut],
   );
 
-  // The tab and its close button are pressed as one: either drags the tab, and
-  // a middle click on either closes it, without the browser's autoscroll.
   return (
     // oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- pointer handling shared by the two buttons inside, which carry the roles and keys
     <div
@@ -254,8 +241,6 @@ function noAutoscroll(event: MouseEvent) {
   }
 }
 
-/** A tab's badge, which counts what its pane shows and so needs what the
- * pane needs. */
 function TabBadge({
   Badge,
   id,

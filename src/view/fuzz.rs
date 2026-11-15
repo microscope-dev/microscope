@@ -1,7 +1,3 @@
-//! The hostile view harness: every built-in view, and views made of
-//! arbitrary text, run over arbitrary memory. Whatever the bytes, a
-//! presentation ends in a value or a typed problem within its budget, never
-//! panics, and allocates only what its limits allow.
 #![allow(clippy::panic, reason = "a fuzz harness reports a bug by panicking")]
 #![expect(
     clippy::indexing_slicing,
@@ -18,16 +14,12 @@ use crate::eval::fake::Place;
 use crate::eval::fake::World;
 use crate::{BaseTypeEncoding as E, IntegerValue, SourceLanguage, TypeArgument, TypeReference};
 
-/// Where the harness maps the heap the containers may point into.
 const HEAP: u64 = 0x10_0000;
 const HEAP_SIZE: usize = 4096;
 
-/// The most units of evaluation work one run may take.
 #[cfg(feature = "fuzzing")]
 const MAX_WORK: u64 = 65_536;
 
-/// The fuzzer's bytes for memory, read round and round, or zeros when
-/// there are none, so a short input still makes a whole world.
 struct Input<'a> {
     data: &'a [u8],
     position: usize,
@@ -49,8 +41,6 @@ impl Input<'_> {
         u64::from_le_bytes(std::array::from_fn(|_| self.byte()))
     }
 
-    /// A word a container holds: often a pointer into the heap or a small
-    /// count, so that views get past their checks, and otherwise anything.
     fn field(&mut self) -> u64 {
         match self.byte() % 4 {
             0 => HEAP + self.word() % HEAP_SIZE as u64,
@@ -67,8 +57,6 @@ impl Input<'_> {
     }
 }
 
-/// A world of the containers the built-in views present, laid out as their
-/// libraries lay them out, each a variable whose bytes come from `input`.
 #[expect(clippy::too_many_lines, reason = "one type graph per library")]
 fn containers(input: &mut Input<'_>) -> (World, Vec<(String, TypeReference)>) {
     let mut world = World::new();
@@ -85,7 +73,6 @@ fn containers(input: &mut Input<'_>) -> (World, Vec<(String, TypeReference)>) {
     let unknown = |text: &str| TypeArgument::Unknown(text.into());
     let mut variables = Vec::new();
 
-    // libstdc++
     let implementation = world.record(
         "_Vector_impl",
         24,
@@ -172,7 +159,6 @@ fn containers(input: &mut Input<'_>) -> (World, Vec<(String, TypeReference)>) {
     );
     variables.push(("libstdc++ span".to_owned(), span));
 
-    // libc++, whose bit-fields this world lays out as whole bytes.
     let short = world.array(char, &[23]);
     let short_string = world.record(
         "__short",
@@ -229,7 +215,6 @@ fn containers(input: &mut Input<'_>) -> (World, Vec<(String, TypeReference)>) {
     );
     variables.push(("libc++ vector".to_owned(), libcxx_vector));
 
-    // Rust
     let marker = world.record("PhantomData", 0, &[]);
     let global = world.record("Global", 0, &[]);
     let non_null = world.record("NonNull<u8>", 8, &[("pointer", byte_pointer, 0)]);
@@ -287,7 +272,6 @@ fn containers(input: &mut Input<'_>) -> (World, Vec<(String, TypeReference)>) {
     );
     variables.push(("VecDeque<i32>".to_owned(), deque));
 
-    // Zig
     let items = world.slice(i32);
     let list = world.record(
         "array_list.Aligned(i32,null)",
@@ -303,7 +287,6 @@ fn containers(input: &mut Input<'_>) -> (World, Vec<(String, TypeReference)>) {
     );
     variables.push(("ArrayList(i32)".to_owned(), list));
 
-    // Linked and hashed containers, whose views scan.
     linked_containers(&mut world, &mut variables);
     sums_and_tuples(&mut world, &mut variables);
     btree_map(&mut world, &mut variables);
@@ -321,9 +304,6 @@ fn containers(input: &mut Input<'_>) -> (World, Vec<(String, TypeReference)>) {
     (world, variables)
 }
 
-/// The containers whose built-in views scan: libstdc++'s list and map,
-/// Rust's `HashMap`, a Go map, and Zig's hash map, laid out as their
-/// libraries lay them out (bases flattened into their members).
 #[expect(clippy::too_many_lines, reason = "one type graph per library")]
 fn linked_containers(world: &mut World, variables: &mut Vec<(String, TypeReference)>) {
     let int = world.base("int", E::Signed, 4);
@@ -334,7 +314,6 @@ fn linked_containers(world: &mut World, variables: &mut Vec<(String, TypeReferen
     let u32 = world.base("u32", E::Unsigned, 4);
     let unknown = |text: &str| TypeArgument::Unknown(text.into());
 
-    // libstdc++ std::list<int>
     let link = world.record("_List_node_base", 16, &[]);
     let link_pointer = world.pointer(Some(link));
     world.set_members(
@@ -377,7 +356,6 @@ fn linked_containers(world: &mut World, variables: &mut Vec<(String, TypeReferen
     );
     variables.push(("libstdc++ list".to_owned(), list));
 
-    // libstdc++ std::map<int, int>
     let tree_node_base = world.record("_Rb_tree_node_base", 32, &[]);
     let base_pointer = world.pointer(Some(tree_node_base));
     world.set_members(
@@ -450,7 +428,6 @@ fn linked_containers(world: &mut World, variables: &mut Vec<(String, TypeReferen
     );
     variables.push(("libstdc++ map".to_owned(), map));
 
-    // Rust HashMap<i32, i32>
     let byte_pointer = world.pointer(Some(u8));
     let non_null = world.record("NonNull<u8>", 8, &[("pointer", byte_pointer, 0)]);
     let inner = world.record(
@@ -487,7 +464,6 @@ fn linked_containers(world: &mut World, variables: &mut Vec<(String, TypeReferen
     );
     variables.push(("Rust HashMap".to_owned(), hash_map));
 
-    // A Go map[int]int: a pointer to a swiss table.
     let slot = world.record(
         "struct { key int; elem int }",
         16,
@@ -547,7 +523,6 @@ fn linked_containers(world: &mut World, variables: &mut Vec<(String, TypeReferen
     world.container(go_map);
     variables.push(("Go map".to_owned(), go_map));
 
-    // Zig HashMapUnmanaged(u32, u32, …): metadata, with its header before it.
     let name = "hash_map.HashMapUnmanaged(u32,u32,hash_map.AutoContext(u32),80)";
     let u32_pointer = world.pointer(Some(u32));
     world.record(
@@ -584,9 +559,6 @@ fn linked_containers(world: &mut World, variables: &mut Vec<(String, TypeReferen
     variables.push(("Zig HashMapUnmanaged".to_owned(), zig_map));
 }
 
-/// The values whose built-in views choose among alternatives or name
-/// members: libstdc++'s `optional`, `variant`, and `tuple`, and a Go
-/// channel.
 fn sums_and_tuples(world: &mut World, variables: &mut Vec<(String, TypeReference)>) {
     let int = world.base("int", E::Signed, 4);
     let long = world.base("long", E::Signed, 8);
@@ -595,8 +567,6 @@ fn sums_and_tuples(world: &mut World, variables: &mut Vec<(String, TypeReference
     let size = world.base("unsigned long", E::Unsigned, 8);
     let integer = |value| TypeArgument::Value(IntegerValue::Unsigned(value));
 
-    // std::optional<int>: _M_payload, of _Optional_base, holds the value
-    // and whether there is one.
     let storage = world.record("_Storage<int>", 4, &[("_M_value", int, 0)]);
     let payload = world.record(
         "_Optional_payload<int>",
@@ -613,8 +583,6 @@ fn sums_and_tuples(world: &mut World, variables: &mut Vec<(String, TypeReference
     );
     variables.push(("libstdc++ optional".to_owned(), optional));
 
-    // std::variant<int, long>: the alternatives share _M_u, and _M_index
-    // says which one it holds.
     let union = world.record("_Variadic_union<int, long>", 8, &[("_M_first", long, 0)]);
     let variant = world.record(
         "variant<int, long>",
@@ -631,7 +599,6 @@ fn sums_and_tuples(world: &mut World, variables: &mut Vec<(String, TypeReference
     world.pack(variant, 0);
     variables.push(("libstdc++ variant".to_owned(), variant));
 
-    // std::tuple<int, long>: each element in a _Head_base<N, T> base.
     let heads = [(0, int, 8), (1, long, 0)].map(|(index, ty, offset)| {
         let head = world.record(
             &format!("_Head_base<{index}, …>"),
@@ -659,7 +626,6 @@ fn sums_and_tuples(world: &mut World, variables: &mut Vec<(String, TypeReference
     world.pack(tuple, 0);
     variables.push(("libstdc++ tuple".to_owned(), tuple));
 
-    // A Go chan int: a pointer to its hchan, whose buffer is a ring.
     let buffer = world.pointer(None);
     let hchan = world.record(
         "hchan<int>",
@@ -692,9 +658,6 @@ fn sums_and_tuples(world: &mut World, variables: &mut Vec<(String, TypeReference
     variables.push(("Go channel".to_owned(), channel));
 }
 
-/// Rust's `BTreeMap<i32, i32>`, whose view a kernel walks. The harness has
-/// no sums, so its root's `Some` is a plain member here: what the harness
-/// exercises is the kernel's walk over whatever the nodes hold.
 fn btree_map(world: &mut World, variables: &mut Vec<(String, TypeReference)>) {
     let i32 = world.base("i32", E::Signed, 4);
     let u16 = world.base("u16", E::Unsigned, 2);
@@ -761,8 +724,6 @@ fn btree_map(world: &mut World, variables: &mut Vec<(String, TypeReference)>) {
     variables.push(("Rust BTreeMap".to_owned(), map));
 }
 
-/// Go's byte slices, times, mutexes, and buffers, whose views decode words,
-/// read text, and look up globals.
 fn go_library(world: &mut World, variables: &mut Vec<(String, TypeReference)>) {
     let go = |world: &mut World, ty, path: &[&str], base: &str| {
         world.identify(ty, SourceLanguage::Go, path, base, Vec::new());
@@ -833,16 +794,11 @@ fn world_size(world: &World, ty: TypeReference) -> u64 {
         .unwrap_or(8)
 }
 
-/// Runs every view that binds each container over memory from `data`.
 #[cfg(feature = "fuzzing")]
 pub fn hostile(data: &[u8]) {
-    // The same bytes, read as a module's embedded records, are refused or
-    // read, never more than they hold.
     let embedded = super::embedded::view_set("fuzz", data);
     assert!(embedded.views().len() <= data.len());
 
-    // A budget, the length of a view file of the input's own, which is
-    // tried first, the file, and then memory.
     let (&budget, data) = data.split_first().unwrap_or((&0, &[]));
     let (&text_length, data) = data.split_first().unwrap_or((&0, &[]));
     let (text, memory) = data.split_at((usize::from(text_length) * 4).min(data.len()));
@@ -935,8 +891,6 @@ pub fn hostile(data: &[u8]) {
     }
 }
 
-/// Which built-in view presents each container of the harness's world, so a
-/// change to a view or to the harness that leaves a view unexercised fails.
 #[cfg(test)]
 pub fn built_in_choices() -> Vec<(String, Option<String>)> {
     let mut input = Input {

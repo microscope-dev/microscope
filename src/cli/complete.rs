@@ -1,39 +1,26 @@
-//! Completion for the line editor, from a context the REPL sends it with
-//! each reply, so that completing never waits on the debugger, except for
-//! a value's fields, which the line names.
-
 use std::sync::Arc;
 
 use super::Cli;
 use super::commands::{COMMANDS, Command, INFO_SUBCOMMANDS, resolve_command};
 use crate::present::complete::Completing;
 
-/// What the line editor completes from.
 #[derive(Clone, Debug, Default)]
 pub struct Context {
-    /// The settings' aliases.
     pub aliases: Arc<[String]>,
 
-    /// The functions of the loaded modules, or the program's.
     pub functions: Arc<[String]>,
 
-    /// The names of their source files.
     pub files: Arc<[String]>,
 
-    /// Breakpoint ids, and watchpoint ids with their `w`.
     pub breakpoints: Arc<[String]>,
     pub watchpoints: Arc<[String]>,
     pub displays: Arc<[String]>,
 
-    /// The selected frame's variables.
     pub names: Arc<[String]>,
 
-    /// The globals of the loaded modules.
     pub globals: Arc<[String]>,
 }
 
-/// What completion knows of the code, kept while the same modules are
-/// loaded.
 #[derive(Clone, Debug)]
 pub struct Code {
     modules: Vec<microscope::ModuleId>,
@@ -42,7 +29,6 @@ pub struct Code {
     globals: Arc<[String]>,
 }
 
-/// The selected frame's variables, kept for one stop and frame.
 #[derive(Clone, Debug)]
 pub struct Names {
     frame: (microscope::StopId, Option<microscope::StackFrameId>),
@@ -50,9 +36,6 @@ pub struct Names {
 }
 
 impl Cli {
-    /// What completion knows now: the code of the loaded modules, built
-    /// once for each set of them, and the selected frame's names, read once
-    /// for each stop and frame.
     pub async fn completion_context(&self) -> Context {
         let snapshot = self.debugger().snapshot().await.ok();
         let code = self.completion_code().await;
@@ -99,7 +82,6 @@ impl Cli {
         }
     }
 
-    /// What completion knows of the loaded modules' code.
     async fn completion_code(&self) -> Code {
         let modules = match self.debugger().loaded_modules().await {
             Ok(loaded) => loaded
@@ -128,7 +110,6 @@ impl Cli {
         code
     }
 
-    /// The variables of the selected frame, `frame` at its stop.
     async fn frame_names(
         &self,
         frame: (microscope::StopId, Option<microscope::StackFrameId>),
@@ -165,8 +146,6 @@ impl Cli {
         names
     }
 
-    /// The functions, source file names, and globals of the loaded
-    /// modules, or of the program before it runs.
     async fn code_names(&self, modules: Vec<microscope::ModuleId>) -> Code {
         let mut functions = std::collections::BTreeSet::new();
         let mut files = std::collections::BTreeSet::new();
@@ -202,8 +181,6 @@ impl Cli {
         }
     }
 
-    /// The names of the members of the value `base` names, or of what it
-    /// points to; none when it names no aggregate.
     pub async fn member_names(&self, base: &str) -> Vec<String> {
         let Ok(expression) = microscope::Expression::parse(base) else {
             return Vec::new();
@@ -265,8 +242,6 @@ impl Cli {
 const BREAK_OPTIONS: &[&str] = &["if", "hits", "log", "disabled"];
 const SIGNAL_ACTIONS: &[&str] = &["stop", "nostop", "print", "noprint", "pass", "nopass"];
 
-/// What `catch`'s argument at `argument` may be: an exception filter, then
-/// whether it stops.
 fn exception_words(argument: usize, first: Option<&str>) -> Vec<String> {
     if argument == 0 {
         let mut words: Vec<String> = microscope::ExceptionStops::filters()
@@ -288,12 +263,8 @@ fn exception_words(argument: usize, first: Option<&str>) -> Vec<String> {
     }
 }
 
-/// The settings `set` turns on or off.
 const TOGGLES: [&str; 3] = ["views", "step-runtime", "runtime-frames"];
 
-/// Where the word at `position` in `line` starts, and the words that
-/// could replace it. `fields` gives the members of the value an expression
-/// names, or of what it points to.
 pub fn complete(
     line: &str,
     position: usize,
@@ -307,7 +278,6 @@ pub fn complete(
     let word = &before[start..];
     let words = before[..start].split_whitespace().collect::<Vec<_>>();
     let Some(first) = words.first() else {
-        // A command's own aliases abbreviate it, so only its name is offered.
         let names = COMMANDS
             .iter()
             .map(|spec| spec.name.to_owned())
@@ -409,7 +379,6 @@ pub fn complete(
     (start, matching(word, candidates))
 }
 
-/// Whether a command's first argument is a location.
 const fn takes_location(command: Command) -> bool {
     matches!(
         command,
@@ -421,7 +390,6 @@ fn words_of(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| (*word).to_owned()).collect()
 }
 
-/// The candidates that begin with `word`, sorted, once each.
 fn matching(word: &str, candidates: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut matching = candidates
         .into_iter()
@@ -432,8 +400,6 @@ fn matching(word: &str, candidates: impl IntoIterator<Item = String>) -> Vec<Str
     matching
 }
 
-/// Completes a location: a function, a file to follow with a line or
-/// function, or a function within a file.
 fn location(word: &str, start: usize, context: &Context) -> (usize, Vec<String>) {
     if let Some((file, function)) = word.split_once(':') {
         let start = start + file.len() + 1;
@@ -449,8 +415,6 @@ fn location(word: &str, start: usize, context: &Context) -> (usize, Vec<String>)
     (start, matching(word, candidates))
 }
 
-/// Completes the name that ends `line`, an expression: a member after
-/// `.` or `->`, or a variable or one of `keywords`.
 fn expression(
     line: &str,
     context: &Context,

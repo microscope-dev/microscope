@@ -1,36 +1,36 @@
-//! A program instrumented with microscope's probes SDK. Each mode waits until
-//! microscope listens, does its work, and exits. A mode a test records waits
-//! for a line on its standard input, which the test writes once the profile
-//! shows microscope has read the program's instrumentation, or, given no
-//! input, until microscope has found it; the modes whose subject is `found`
-//! itself, or that a person runs, wait for `found`.
-//!
-//! - `zones`: three rounds of nested zones, each in a label, with a plot,
-//!   a message, and a frame, while a worker thread runs zones of its own,
-//!   then a trigger.
-//! - `burst COUNT`: COUNT zones as fast as it can write them.
-//! - `churn COUNT`: COUNT threads, one after another, each one zone.
-//! - `fork`: a zone around a forked child, whose own zone records nothing.
-//! - `exec`: executes this program again as `execed`, which waits for a
-//!   second line, once microscope has read the new program, and runs a zone.
-//! - `quiet`: says it is ready to be attached to, waits until microscope
-//!   has found it, then zones until the sites switch themselves off.
-//! - `cost COUNT`: times COUNT zones as they are, off unless microscope reads;
-//!   `cost-on COUNT` waits until it does.
-//! - `rate`: zones without end, a line for every hundred, listened to or
-//!   not.
-//! - `defined`: sites defined as it runs, as a language that names its
-//!   zones at run time does: three rounds of a zone, a plot, and a zone
-//!   in another name, then a message whose site it defines once microscope
-//!   listens, which it waits for microscope to switch on.
-//! - `defines`: for each name a line of its standard input gives, a zone's
-//!   site of that name, and a line with the address of its state byte.
-//! - `records`: for each name a line gives, a zone's site of that name,
-//!   one zone of it, and a line saying it was recorded. Recording every
-//!   site switches each on as it is defined.
-//! - `late PATH`: waits until microscope has found it, prints its pid, records a
-//!   zone, loads the shared library at PATH, and says `MAPPED`; then, once a
-//!   line arrives, records another zone and exits.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 use std::io::Write as _;
 use std::time::{Duration, Instant};
@@ -89,11 +89,11 @@ fn main() {
     }
 }
 
-/// Waits for the test to say microscope has read the program, with a line.
-/// Input that ends with no line, as a recording from the command line
-/// gives, leaves it to wait until microscope has found it. It reads a byte
-/// at a time, past any buffer, so that a line meant for the program it
-/// executes stays for it.
+
+
+
+
+
 fn wait_for_release() {
     use std::io::Read as _;
     use std::os::fd::FromRawFd as _;
@@ -113,9 +113,9 @@ fn wait_for_release() {
     }
 }
 
-/// Waits until microscope has found the program and switched the sites on.
-/// A program `microscope record` starts switches itself on at once, so only
-/// `found` waits for microscope.
+
+
+
 fn wait_until_found() {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !microscope_probes::found() {
@@ -129,7 +129,7 @@ fn zones() {
         .name("worker".into())
         .spawn(|| {
             let _zone = zone!("work");
-            // Long enough that samples land in each step.
+
             for _ in 0..2 {
                 let _step = zone!("step");
                 let until = Instant::now() + Duration::from_millis(20);
@@ -228,10 +228,10 @@ fn cost(count: u64) {
     println!("a zone {state}: {each:.2} ns");
 }
 
-/// Steady work for measuring what recording costs: units of a hundred
-/// zones, each around some microseconds of work, as instrumentation would
-/// mark a request's steps, a line written as each unit ends, whether or
-/// not microscope listens. A measurer counts the lines in a window.
+
+
+
+
 fn rate() {
     let mut out = std::io::stdout();
     loop {
@@ -239,7 +239,7 @@ fn rate() {
             let _zone = zone!("rate");
             std::hint::black_box(spin(50_000 + round));
         }
-        // Writing fails once the measurer stops reading.
+
         if writeln!(out, "u").is_err() {
             return;
         }
@@ -270,14 +270,14 @@ fn defines() {
     for name in std::io::stdin().lines() {
         let name = name.expect("a name");
         let site = define(abi::SITE_ZONE, &name, "app.py", 1).expect("a zone");
-        // The ABI puts a run-time site's state byte at its offset 1.
+
         println!("SITE {:#x}", std::ptr::from_ref(site).addr() + 1);
         std::io::stdout().flush().expect("flush");
     }
 }
 
-/// Defines a zone of each name a line holds and records one of it, which
-/// recording every site switched on as it was defined.
+
+
 fn records() {
     for name in std::io::stdin().lines() {
         let name = name.expect("a name");
@@ -289,8 +289,8 @@ fn records() {
     }
 }
 
-/// Once a line arrives, defines a site, records a zone of it, and exits,
-/// waiting at its exit for microscope to read what it wrote.
+
+
 fn exiting() {
     println!("LISTENING");
     std::io::stdout().flush().expect("flush");
@@ -302,8 +302,8 @@ fn exiting() {
     std::io::stdout().flush().expect("flush");
 }
 
-/// Loads the shared library at `path`, which microscope reads the debug
-/// information of, between two zones; the second waits for a line.
+
+
 fn late(path: &str) {
     println!("PID {}", std::process::id());
     drop(zone!("before"));

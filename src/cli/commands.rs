@@ -1,5 +1,3 @@
-//! The command table, argument parsing, and command handlers.
-
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -25,16 +23,12 @@ use super::{Cli, Control};
 
 const DEFAULT_HEX_DUMP_BYTES: u64 = 64;
 
-/// The most breakpoints one `rbreak` sets, so that a pattern like `.` does
-/// not install thousands of traps.
 const MAX_RBREAK: usize = 200;
 
 pub const MAX_HEX_DUMP_BYTES: u64 = 8 * 1024;
 
-/// How many tasks one request lists.
 const TASK_PAGE: usize = 1024;
 
-/// Instructions shown before and from a stop that no function contains.
 const DISASSEMBLY_CONTEXT_BEFORE: u32 = 8;
 const DISASSEMBLY_CONTEXT_AFTER: u32 = 16;
 
@@ -107,20 +101,13 @@ pub struct CommandSpec {
     pub name: &'static str,
     pub aliases: &'static [&'static str],
 
-    /// The name followed by one word per argument: `<required>`,
-    /// `[optional]`, or a bare `alternative|list` that is required.
     pub usage: &'static str,
     pub summary: &'static str,
 
-    /// Whether an empty interactive line repeats this command.
     pub repeatable: bool,
 }
 
 impl CommandSpec {
-    /// Returns the inclusive range of argument counts the usage accepts. A
-    /// final `[words...]` takes the rest of the line, every word of a
-    /// bracketed group such as `[hits hit-condition]` is optional, and a
-    /// usage of alternatives such as `a [x] | a y z` accepts any of them.
     fn arity(&self) -> (usize, usize) {
         self.usage
             .split(" | ")
@@ -151,7 +138,6 @@ impl CommandSpec {
         range
     }
 
-    /// Returns whether usage shows anything beyond the command name.
     pub fn takes_arguments(&self) -> bool {
         self.arity().1 != 0
     }
@@ -176,7 +162,6 @@ macro_rules! command {
     (@repeatable repeatable) => { true };
 }
 
-/// The subcommands `info` accepts, by their primary names.
 pub const INFO_SUBCOMMANDS: [&str; 7] = [
     "breakpoints",
     "watchpoints",
@@ -602,16 +587,9 @@ pub fn command_named(name: &str) -> Option<&'static CommandSpec> {
         .find(|command| aliases(command).any(|alias| alias == name) || command.name == name)
 }
 
-/// Why a stackless task, such as an event loop's pending handle, shows no
-/// stack.
 const STACKLESS: &str =
     "it has no frames because it does not run until its runtime calls its callback";
 
-/// A command's other names, with each runtime's own name for its tasks for
-/// the commands about tasks: `goroutines` for `tasks` in Go. A runtime that
-/// calls its tasks tasks adds none, and a noun that names another command
-/// stays that command's: Node's `handle` sets how a signal stops, though
-/// `handles` lists Node's tasks.
 pub fn aliases(command: &CommandSpec) -> impl Iterator<Item = &'static str> {
     let nouns = microscope::TASK_NOUNS.iter();
     let runtime = match command.command {
@@ -633,8 +611,6 @@ pub fn aliases(command: &CommandSpec) -> impl Iterator<Item = &'static str> {
     )
 }
 
-/// Whether `word` names a task: `task`, or a runtime's own name for one,
-/// such as Go's `goroutine`.
 fn names_a_task(word: &str) -> bool {
     word == "task"
         || microscope::TASK_NOUNS
@@ -642,8 +618,6 @@ fn names_a_task(word: &str) -> bool {
             .any(|(singular, _)| *singular == word)
 }
 
-/// The command `entered` names, exactly or as the unique prefix of a
-/// command's name or alias, or why it names none.
 pub fn resolve_command(entered: &str) -> Result<&'static CommandSpec> {
     if let Some(spec) = command_named(entered) {
         return Ok(spec);
@@ -684,11 +658,6 @@ pub fn resolve_command(entered: &str) -> Result<&'static CommandSpec> {
     }
 }
 
-/// The command a line starts with, and the name it is written with, which
-/// excludes a format such as the `/x` of `p/x`.
-/// Whether a client that controls execution itself lets its console run
-/// `command`. Running the inferior and ending the session belong to the
-/// client, which also shows files and watches values itself.
 const fn in_console(command: Command) -> bool {
     !matches!(
         command,
@@ -715,8 +684,6 @@ pub fn line_command(line: &str) -> Option<(&'static CommandSpec, &str)> {
 }
 
 impl Cli {
-    /// A line whose first word is an alias from the settings, with the
-    /// command line the alias stands for in its place.
     pub(super) fn expand_alias(&self, line: &str) -> Option<String> {
         let word = line.split_whitespace().next()?;
         let expansion = self.settings.config.aliases.get(word)?;
@@ -728,7 +695,6 @@ impl Cli {
         })
     }
 
-    /// Parses and executes one non-empty command line.
     #[expect(clippy::too_many_lines, reason = "one arm per command")]
     pub(super) async fn execute(&self, line: &str) -> Result<Control> {
         let expanded = self.expand_alias(line);
@@ -846,7 +812,6 @@ impl Cli {
         Ok(Control::Continue(output))
     }
 
-    /// Help on one command, or on every one.
     fn help(&self, command: Option<&str>) -> Result<String> {
         let renderer = self.renderers.stdout;
         Ok(match command {
@@ -858,16 +823,12 @@ impl Cli {
         })
     }
 
-    /// Runs until the selected thread reaches `location` or its frame
-    /// returns.
     async fn advance(&self, location: &str, spec: &CommandSpec) -> Result<String> {
         let location = parse_breakpoint_location(location)?.ok_or_else(|| spec.usage_error())?;
         self.execute_until_stop(self.debugger().advance(location))
             .await
     }
 
-    /// Moves the selected thread to resume at a line of the selected
-    /// frame's file, or at another location in its function.
     async fn jump(&self, written: &str, spec: &CommandSpec) -> Result<String> {
         let location = match frame_line(written)? {
             Some(line) => self.frame_source(line).await?,
@@ -878,7 +839,6 @@ impl Cli {
             .await
     }
 
-    /// Runs `info` with its `arguments`, `rest` being them as written.
     async fn info(&self, arguments: &[&str], rest: &str, spec: &CommandSpec) -> Result<String> {
         let renderer = self.renderers.stdout;
         let debugger = &self.debugger();
@@ -912,12 +872,9 @@ impl Cli {
         })
     }
 
-    /// The loaded modules: where each is, what describes its code, and the
-    /// separate file its debug information came from.
     async fn list_modules(&self) -> Result<String> {
         let loaded = match self.debugger().loaded_modules().await {
             Ok(loaded) => loaded,
-            // Before the program runs, only its own image is known.
             Err(microscope::Error::NotRunning) => {
                 let image = self.debugger().module_image();
                 return Ok(format::modules(
@@ -949,10 +906,6 @@ impl Cli {
         Ok(format::modules(&modules, self.renderers.stdout))
     }
 
-    /// Runs one command for a client that controls execution itself, such
-    /// as a debug adapter's console, or returns `None` when the line names
-    /// no command. Commands that run the inferior or end the session are
-    /// refused, since the client owns those.
     pub async fn console(&self, line: &str) -> Result<Option<String>> {
         let line = line.trim();
         let Some((spec, _)) = line_command(line) else {
@@ -966,7 +919,6 @@ impl Cli {
             );
         }
 
-        // Plain `help` lists only what the console runs.
         if spec.command == Command::Help && line.split_whitespace().nth(1).is_none() {
             return Ok(Some(format::help(
                 &self.settings.config.aliases,
@@ -996,9 +948,6 @@ impl Cli {
         ))
     }
 
-    /// Deletes the breakpoints and watchpoints `words` name, once every one
-    /// is known to exist; `all` deletes every breakpoint, or for `unwatch`
-    /// every watchpoint, whose ids bare numbers name.
     async fn delete(&self, words: &[&str], watches: bool, spec: &CommandSpec) -> Result<String> {
         let renderer = self.renderers.stdout;
         let (caught, words) = self.delete_catchpoints(words, spec).await?;
@@ -1037,9 +986,6 @@ impl Cli {
         Ok(format::deleted(&describe_ids(&ids, renderer), renderer))
     }
 
-    /// The ids `words` name, each known to exist, or `None` for `all`.
-    /// Bare numbers name watchpoints when `watches`, and breakpoints
-    /// otherwise.
     async fn existing_ids(
         &self,
         words: &[&str],
@@ -1061,7 +1007,6 @@ impl Cli {
         known_ids(words, watches, &known, spec)
     }
 
-    /// Adds the breakpoint a `break` or `tbreak` line describes.
     async fn add_breakpoint(
         &self,
         line: &str,
@@ -1153,8 +1098,6 @@ impl Cli {
         Ok(output)
     }
 
-    /// Breaks at every function of the loaded modules whose name, demangled,
-    /// matches `pattern`, refusing more than [`MAX_RBREAK`].
     async fn rbreak(&self, pattern: &str) -> Result<String> {
         let regex = regex::Regex::new(pattern)
             .map_err(|error| anyhow!("invalid pattern '{pattern}': {error}"))?;
@@ -1169,7 +1112,6 @@ impl Cli {
                 }
             }
 
-            // Code without debug information is named by its symbol.
             for symbol in image.symbols() {
                 let shown = symbol
                     .demangled_name()
@@ -1210,7 +1152,6 @@ impl Cli {
         Ok(lines.join("\n"))
     }
 
-    /// Writes the commands that recreate the breakpoints to `file`.
     async fn save_breakpoint_commands(&self, file: &str) -> Result<String> {
         let snapshot = self.debugger().snapshot().await?;
         let (text, refused) = super::saved::commands(&snapshot.breakpoints, &self.settings.root);
@@ -1238,15 +1179,10 @@ impl Cli {
         Ok(output)
     }
 
-    /// The images of the loaded modules, or the program's before it runs.
     pub(super) async fn loaded_images(&self) -> Vec<std::sync::Arc<microscope::ModuleImage>> {
         loaded_images(&self.debugger()).await
     }
 
-    /// Whether a native breakpoint `error` refused may instead wait for a
-    /// program the process executes: nothing loaded resembles the name, so
-    /// it is no misspelling, and a loaded module imports a function that
-    /// executes programs, as env, shells, and version managers' shims do.
     async fn may_wait_for_exec(&self, error: &microscope::Error) -> bool {
         if !matches!(
             error,
@@ -1258,8 +1194,6 @@ impl Cli {
         executes_programs(&self.loaded_images().await) && self.hint(error).await.is_none()
     }
 
-    /// A breakpoint's failure, with the nearest names when it names a
-    /// function or source file that no loaded module has.
     async fn suggest(&self, error: microscope::Error) -> anyhow::Error {
         match self.hint(&error).await {
             Some(hint) => anyhow!("{error}; {hint}"),
@@ -1267,7 +1201,6 @@ impl Cli {
         }
     }
 
-    // Advice after the pending decision, not input to resolution or exec policy.
     async fn pending_function_guidance(&self, name: &str) -> Option<String> {
         let images = self.loaded_images().await;
         if images
@@ -1332,7 +1265,6 @@ impl Cli {
         ))
     }
 
-    /// What `error` suggests the user meant, if anything.
     async fn hint(&self, error: &microscope::Error) -> Option<String> {
         match error {
             microscope::Error::FunctionNotFound(name) => {
@@ -1345,12 +1277,10 @@ impl Cli {
                             .map(microscope::Symbol::name),
                     )
                 });
-                // A name meant for Python may be a native one misspelled.
                 let native = microscope::suggest::did_you_mean(name, names);
                 let python = python_name_hint(name, &self.debugger().module_image());
 
                 match (native, python) {
-                    // Two sentences: the first ends in its question mark.
                     (Some(native), Some(python)) => {
                         let mut python = python.chars();
                         let first = python.next().map(|first| first.to_ascii_uppercase());
@@ -1379,7 +1309,6 @@ impl Cli {
         }
     }
 
-    /// A line of the selected frame's source file.
     async fn frame_source(&self, line: FrameLine) -> Result<BreakpointSpec> {
         let location = self.debugger().current_location().await.map_err(|error| {
             anyhow!("no frame is selected to take a line from ({error}); give a location")
@@ -1412,20 +1341,15 @@ impl Cli {
         })
     }
 
-    /// Where each of a breakpoint's locations is, as far as its module
-    /// tells.
     pub(super) async fn placed(&self, breakpoint: &microscope::Breakpoint) -> Vec<format::Placed> {
         self.placed_in(&self.group_debugger(), breakpoint).await
     }
 
-    /// Where `debugger`'s breakpoint `breakpoint` is placed.
     pub(super) async fn placed_in(
         &self,
         debugger: &microscope::DebuggerHandle,
         breakpoint: &microscope::Breakpoint,
     ) -> Vec<format::Placed> {
-        // The program's own module, whose image addresses a running process
-        // shows at their runtime addresses.
         let main = debugger.loaded_modules().await.ok().and_then(|loaded| {
             loaded
                 .modules
@@ -1456,7 +1380,6 @@ impl Cli {
         };
 
         let (image, address) = match location {
-            // A runtime's location is where the runtime says it is.
             microscope::BreakpointLocation::Managed(managed) => {
                 match managed.place {
                     microscope::ManagedPlace::Line { path, line } => {
@@ -1516,7 +1439,6 @@ impl Cli {
                     .as_ref()
                     .map(|function| std::sync::Arc::clone(&function.name))
             })
-            // Code no debug information describes is named by its symbol.
             .or_else(|| {
                 let symbol = image.symbolize(address)?;
                 Some(format::code_name(None, Some(&symbol)).into())
@@ -1531,8 +1453,6 @@ impl Cli {
         placed
     }
 
-    /// Enables or disables the breakpoints and watchpoints `words` name,
-    /// once every one is known to exist.
     async fn set_enabled(
         &self,
         words: &[&str],
@@ -1610,8 +1530,6 @@ impl Cli {
         })
     }
 
-    /// Sets or removes a breakpoint's or watchpoint's condition, as gdb's
-    /// `condition` does.
     async fn condition(&self, id: &str, words: &[&str], spec: &CommandSpec) -> Result<String> {
         let id = parse_counted_id(id, spec)?;
         let condition = if words.is_empty() {
@@ -1657,8 +1575,6 @@ impl Cli {
         ))
     }
 
-    /// Skips a breakpoint's or watchpoint's next `count` hits like gdb's
-    /// `ignore`: the hit condition becomes `>=` the hit after them.
     async fn ignore(&self, id: &str, count: &str, spec: &CommandSpec) -> Result<String> {
         let id = parse_counted_id(id, spec)?;
         let count = parse_count(count).ok_or_else(|| spec.usage_error())?;
@@ -1730,7 +1646,6 @@ impl Cli {
         ))
     }
 
-    /// Every task at the current stop, and why the list may be incomplete.
     async fn task_list(&self) -> Result<(Vec<TaskSnapshot>, Vec<Arc<str>>)> {
         let mut tasks = Vec::new();
         let mut gaps = Vec::new();
@@ -1747,15 +1662,11 @@ impl Cli {
         }
     }
 
-    /// Every task at the current stop, each with its backtrace or why it
-    /// has none, and the images that name their frames' sources.
     async fn task_traces(&self) -> Result<TaskTraces> {
         let (tasks, gaps) = self.task_list().await?;
         self.traced(tasks, gaps).await
     }
 
-    /// `tasks`, each with its backtrace or why it has none, and the images
-    /// that name their frames' sources.
     async fn traced(&self, tasks: Vec<TaskSnapshot>, gaps: Vec<Arc<str>>) -> Result<TaskTraces> {
         let snapshot = self.debugger().snapshot().await?;
         let stop = snapshot
@@ -1764,8 +1675,6 @@ impl Cli {
 
         let mut traced = Vec::with_capacity(tasks.len());
         for task in tasks {
-            // A task that runs no code has no stack to ask for, and asking
-            // would have its runtime list every task again.
             let trace = if task.stackless {
                 Err(microscope::Error::TaskUnavailable {
                     task: task.id,
@@ -1801,8 +1710,6 @@ impl Cli {
         })
     }
 
-    /// Lists tasks: the program's, or with `-a` the runtime's own too; with
-    /// `-g` grouped by where they are; with `-t` each with its stack.
     async fn tasks(&self, line: &str, arguments: &[&str], spec: &CommandSpec) -> Result<String> {
         let (mut all, mut grouped, mut stacks) = (false, false, false);
 
@@ -1820,8 +1727,6 @@ impl Cli {
         let noun = traces.tasks.first().map_or("task", |(task, _)| task.noun);
         let renderer = self.renderers.stdout;
 
-        // A runtime's lists keep its tasks in an order of their own, so
-        // they are shown by number.
         let mut shown = traces
             .tasks
             .iter()
@@ -1906,8 +1811,6 @@ impl Cli {
         Ok(lines.join("\n"))
     }
 
-    /// Shows the selected task, selects one, or runs an inspection command
-    /// with one selected and then selects again what was.
     async fn task(&self, line: &str, arguments: &[&str]) -> Result<String> {
         let name = line_command(line).map_or("task", |(_, name)| name);
         let renderer = self.renderers.stdout;
@@ -1919,7 +1822,6 @@ impl Cli {
                 .find(|task| selects(selected, task))
                 .ok_or_else(|| anyhow!("no {name} is selected"))?;
 
-            // Only the selected task's frames are read.
             let traces = self.traced(vec![task], Vec::new()).await?;
             let (task, trace) = traces
                 .tasks
@@ -1992,13 +1894,10 @@ impl Cli {
         }
     }
 
-    /// The images of the modules whose code the frames run, which name
-    /// their source files.
     async fn source_images(
         &self,
         frames: impl Iterator<Item = &StackFrame>,
     ) -> Result<BTreeMap<ModuleId, Arc<ModuleImage>>> {
-        // An awaited future is named by its type, which its image holds.
         let modules = frames
             .filter(|frame| {
                 frame.source.is_some()
@@ -2018,8 +1917,6 @@ impl Cli {
     async fn step(&self, kind: StepKind) -> Result<String> {
         let mut output = self.execute_until_stop(self.debugger().step(kind)).await?;
 
-        // Finishing a function shows what it returned, as the stop's
-        // variables list it.
         if kind == StepKind::Out
             && let Ok(snapshot) = self.debugger().variables().await
         {
@@ -2036,8 +1933,6 @@ impl Cli {
         Ok(output)
     }
 
-    /// Steps into the call of the line that `call` names: by its callee's
-    /// name, the first such call, or by its address after `*`.
     async fn step_into_call(&self, call: &str) -> Result<String> {
         let targets = self.debugger().step_targets().await?;
 
@@ -2066,9 +1961,6 @@ impl Cli {
             .await
     }
 
-    /// Waits for an execution request, prefixing its stop with a line for
-    /// each signal received without stopping, message logged, condition
-    /// that failed, and loaded library view that cannot be used.
     pub(super) async fn execute_until_stop(
         &self,
         execution: impl std::future::Future<Output = microscope::Result<StopReason>>,
@@ -2118,8 +2010,6 @@ impl Cli {
         ))
     }
 
-    /// Watches for stores that change a value, as gdb's `watch` does, or
-    /// with `-w` for every store.
     async fn watch_stores(&self, arguments: &[&str], spec: &CommandSpec) -> Result<String> {
         match arguments {
             ["-w", rest @ ..] => self.watch(rest, WatchAccess::Write, spec).await,
@@ -2130,8 +2020,6 @@ impl Cli {
         }
     }
 
-    /// Watches a target, the first of `arguments`, which may be followed by
-    /// `if` and a condition, as in gdb.
     async fn watch(
         &self,
         arguments: &[&str],
@@ -2176,8 +2064,6 @@ impl Cli {
         Ok(format::watchpoint_set(&watchpoint, self.renderers.stdout))
     }
 
-    /// How `command` with `format` lays a value out: the `[print]`
-    /// settings, which `pp` and each format letter override.
     pub(super) fn layout(&self, command: Command, format: &str) -> Result<value::Layout> {
         let print = &self.settings.config.print;
         let has = |letter| format.contains(letter);
@@ -2211,14 +2097,10 @@ impl Cli {
         })
     }
 
-    /// Every local of the selected frame: summarized, or each expanded
-    /// and laid out when `layout` is pretty.
     async fn print_locals(&self, layout: value::Layout) -> Result<String> {
         let renderer = self.renderers.stdout;
         let snapshot = self.debugger().variables().await?;
 
-        // Say so rather than print nothing, as for a program built without
-        // variable debug information.
         if snapshot.variables.is_empty() && snapshot.completion.exhaustion().is_none() {
             return Ok("no variables in scope".to_owned());
         }
@@ -2260,8 +2142,6 @@ impl Cli {
         Ok(lines.join("\n"))
     }
 
-    /// An expression's value as `print` shows it, laid out as `layout`
-    /// says and drawn by `renderer`.
     pub(super) async fn print(
         &self,
         text: &str,
@@ -2297,8 +2177,6 @@ impl Cli {
             None => value::untyped(text, &inspected.state, renderer),
         };
 
-        // Say which operand the program could not provide, when it is not
-        // the whole expression.
         if let Some(cause) = cause
             && cause.text(text) != text
         {
@@ -2315,8 +2193,6 @@ impl Cli {
         Ok(output)
     }
 
-    /// Which view presents an expression's value, from where, and why each
-    /// view tried before it did not bind.
     async fn explain_view(&self, text: &str) -> Result<String> {
         let expression = parse_expression(text)?;
         let explanation = self
@@ -2344,7 +2220,6 @@ impl Cli {
         ))
     }
 
-    /// Shows a type's definition: of a type named, or of an expression's.
     async fn ptype(&self, text: &str) -> Result<String> {
         let as_expression = match microscope::Expression::parse(text) {
             Ok(expression) => self.debugger().expression_type(&expression).await,
@@ -2354,8 +2229,6 @@ impl Cli {
         let type_info = match as_expression {
             Ok(type_info) => type_info,
             Err(expression_failure) => {
-                // A type is measured through a pointer to it, which reads
-                // nothing.
                 let through = microscope::Expression::parse(&format!("*({text}*)null"));
                 let found = match through {
                     Ok(expression) => self.debugger().expression_type(&expression).await.ok(),
@@ -2389,7 +2262,6 @@ impl Cli {
         Ok(images)
     }
 
-    /// Assigns a value in the selected frame, as gdb's `set var` does.
     async fn set(&self, text: &str, spec: &CommandSpec) -> Result<String> {
         if let Some(setting @ ("on" | "off")) = text.strip_prefix("views ").map(str::trim) {
             self.debugger().enable_views(setting == "on").await?;
@@ -2464,7 +2336,6 @@ impl Cli {
         })
     }
 
-    /// Runs `views` and its subcommands.
     async fn views(&self, arguments: &[&str]) -> Result<String> {
         match arguments {
             [] => {
@@ -2575,9 +2446,6 @@ impl Cli {
         Ok(format::globals(&page, self.renderers.stdout))
     }
 
-    /// Disassembles the function containing the stopped instruction, a named
-    /// function, or the function containing an address; with a count,
-    /// disassembles that many instructions from the address instead.
     async fn disassemble(&self, target: Option<&str>, count: Option<&str>) -> Result<String> {
         let (code_address, marked) = self.selected_code().await?;
         let count = count
@@ -2604,8 +2472,6 @@ impl Cli {
             }
         });
         let disassembly = match self.disassemble_query(range).await {
-            // Code outside every function, such as the vDSO's unexported
-            // helpers, is shown around the frame's instruction instead.
             Err(microscope::Error::NoFunctionContainsAddress(_)) if target.is_none() => {
                 self.disassemble_query(DisassemblyRange::Window {
                     address: marked,
@@ -2625,7 +2491,6 @@ impl Cli {
         self.render_disassembly(&disassembly, marked).await
     }
 
-    /// Renders disassembly with the instruction at `marked` marked.
     pub(super) async fn render_disassembly(
         &self,
         disassembly: &Disassembly,
@@ -2661,13 +2526,7 @@ impl Cli {
             .await
     }
 
-    /// Returns the address of the selected frame's code, by which its
-    /// function is found, and its instruction. They differ in an outer
-    /// frame, whose instruction is a return address that can lie past the
-    /// end of a function ending in a call.
     pub(super) async fn selected_code(&self) -> Result<(VirtualAddress, VirtualAddress)> {
-        // The innermost frame's instruction is the program counter, known
-        // even where no module or single inline frame describes it.
         if self.selected_level().await? == 0 {
             let program_counter = self.selected_instruction().await?;
             return Ok((program_counter, program_counter));
@@ -2695,8 +2554,6 @@ impl Cli {
         ))
     }
 
-    /// Returns the selected frame's instruction: the selected thread's
-    /// program counter in the innermost frame.
     async fn selected_instruction(&self) -> Result<VirtualAddress> {
         let level = self.selected_level().await?;
         if level != 0 {
@@ -2736,14 +2593,12 @@ impl Cli {
             .get())
     }
 
-    /// Selects a frame and shows it with its source.
     async fn frame(&self, target: FrameTarget) -> Result<String> {
         let selected_level = self.selected_level().await?;
         let selected = u64::from(selected_level);
         let trace = self.debugger().backtrace().await?;
         let outermost = trace.frames.len().saturating_sub(1) as u64;
 
-        // Moving between frames passes over those a backtrace folds.
         let folded = if self.shows_runtime_frames() {
             Vec::new()
         } else {
@@ -2841,15 +2696,10 @@ impl Cli {
         self.describe_location(true).await
     }
 
-    /// The selected frame's function and source line, with its address
-    /// when `with_address`, or its address and module where no line is
-    /// known.
     pub(super) async fn describe_location(&self, with_address: bool) -> Result<String> {
         let renderer = self.renderers.stdout;
         let location = match self.debugger().current_location().await {
             Ok(location) => location,
-            // No loaded module describes the frame's code, such as a stop in
-            // JIT-compiled code.
             Err(microscope::Error::AddressOutsideModule) => {
                 return Ok(format!(
                     "{} at {} outside every loaded module",
@@ -2860,7 +2710,6 @@ impl Cli {
                     )
                 ));
             }
-            // An interpreted frame is where its interpreter recorded it.
             Err(microscope::Error::FrameInterpreted) => {
                 let selected = self.debugger().snapshot().await?.selected_frame;
                 let trace = self.debugger().backtrace().await?;
@@ -2874,8 +2723,6 @@ impl Cli {
             Err(error) => return Err(error.into()),
         };
 
-        // Code no debug information describes may run a function its
-        // runtime recorded, as V8's builtins run a script's.
         if location.image.function.is_none() {
             let selected = self.debugger().snapshot().await?.selected_frame;
             let trace = self.debugger().backtrace().await?;
@@ -2891,7 +2738,6 @@ impl Cli {
         self.describe(&location, with_address).await
     }
 
-    /// Where a location is: its function, then its line or address.
     pub(super) async fn describe(
         &self,
         location: &microscope::ExecutionLocation,
@@ -2944,8 +2790,6 @@ impl Cli {
         ))
     }
 
-    /// The selected frame's source, with as many lines around its line as
-    /// `[source] context` asks for.
     pub(super) async fn source_context(&self) -> microscope::Result<microscope::SourceContext> {
         let [before, after] = self.settings.config.source.context;
         let mut context = self.debugger().source_context(before.max(after)).await?;
@@ -2962,14 +2806,11 @@ impl Cli {
         Ok(context)
     }
 
-    /// Whether backtraces show every runtime frame, as `set runtime-frames`
-    /// or the settings chose.
     pub(super) fn shows_runtime_frames(&self) -> bool {
         self.runtime_frames
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// The selected thread's backtrace, of at most `limit` frames.
     pub(super) async fn backtrace(&self, limit: Option<usize>, raw: bool) -> Result<String> {
         let selected = self.selected_level().await?;
         let trace = self.debugger().backtrace().await?;
@@ -2984,7 +2825,6 @@ impl Cli {
             None
         };
 
-        // Source files are identified within their owning module's image.
         let images = self.source_images(trace.frames.iter()).await?;
 
         Ok(format::backtrace(
@@ -2998,8 +2838,6 @@ impl Cli {
         ))
     }
 
-    /// Opens the editor at the selected frame's source line and waits for
-    /// it to exit.
     async fn edit(&self) -> Result<String> {
         let context = self.source_context().await?;
         let path = std::path::absolute(&*context.path)?;
@@ -3042,11 +2880,6 @@ impl Cli {
         Ok(String::new())
     }
 
-    /// Says which temporary breakpoints a stop deleted: a stop deletes the
-    /// temporary breakpoints it hit before it is published, so the hits
-    /// missing from `snapshot` were temporaries. In a group the hits carry
-    /// the group's ids and the snapshot the member's own, so the member's
-    /// are translated before they are compared.
     pub(super) fn deleted_temporaries(
         &self,
         hits: &[microscope::BreakpointHit],
@@ -3078,8 +2911,6 @@ impl Cli {
         })
     }
 
-    /// Source lines around a location, after the location when `located`,
-    /// with the lines breakpoints are at marked.
     pub(super) async fn source_listing(
         &self,
         context: &microscope::SourceContext,
@@ -3112,8 +2943,6 @@ impl Cli {
                 .and_then(|lexed| {
                     lexed.get(usize::try_from(line.number.get()).ok()?.checked_sub(1)?)
                 })
-                // A file that changed since the debugger read it is not
-                // highlighted.
                 .filter(|(text, _)| **text == *line.text)
                 .map_or(&[][..], |(_, spans)| &spans[..]);
             super::highlight::render(&line.text, spans, tab_width, renderer)
@@ -3122,8 +2951,6 @@ impl Cli {
         format::source_context(context, &marks, located, &text, renderer)
     }
 
-    /// The highlighted lines of the source file at `path`, lexed once while
-    /// it is unchanged, or `None` for a language the lexer does not know.
     fn lexed(&self, path: &std::path::Path) -> Option<std::sync::Arc<super::Lexed>> {
         let language = super::highlight::Language::of(path)?;
         let modified = std::fs::metadata(path).ok()?.modified().ok();
@@ -3156,23 +2983,17 @@ impl Cli {
     }
 }
 
-/// Which frame a frame command selects.
 #[derive(Clone, Copy)]
 enum FrameTarget {
-    /// The frame already selected.
     Selected,
 
-    /// The frame at a backtrace level.
     Level(u64),
 
-    /// A frame this many levels toward the callers, or the outermost.
     Outward(u64),
 
-    /// A frame this many levels toward the stop, or the innermost.
     Inward(u64),
 }
 
-/// Parses `frame [level]`, `up [count]`, or `down [count]`.
 fn parse_frame_target(spec: &CommandSpec, argument: Option<&str>) -> Result<FrameTarget> {
     let number = argument
         .map(|value| value.parse::<u64>().map_err(|_| spec.usage_error()))
@@ -3186,8 +3007,6 @@ fn parse_frame_target(spec: &CommandSpec, argument: Option<&str>) -> Result<Fram
     })
 }
 
-/// Parses a `0x`-prefixed hexadecimal address. The prefix keeps addresses
-/// distinct from names made of hexadecimal digits, such as `add`.
 fn parse_address(value: &str) -> Result<VirtualAddress> {
     value
         .strip_prefix("0x")
@@ -3196,7 +3015,6 @@ fn parse_address(value: &str) -> Result<VirtualAddress> {
         .ok_or_else(|| anyhow!("invalid address '{value}'; addresses are 0x-prefixed hexadecimal"))
 }
 
-/// Parses a decimal or `0x`-prefixed hexadecimal count.
 fn parse_count(value: &str) -> Option<u64> {
     value.strip_prefix("0x").map_or_else(
         || value.parse().ok(),
@@ -3214,8 +3032,6 @@ fn parse_memory_byte_count(value: Option<&str>, spec: &CommandSpec) -> Result<u6
         .ok_or_else(|| spec.usage_error())
 }
 
-/// A breakpoint, or a watchpoint written `w` and its id, whose hits
-/// `condition`, `hits`, and `ignore` choose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum CountedId {
     Breakpoint(BreakpointId),
@@ -3249,14 +3065,12 @@ fn parse_counted_id(argument: &str, spec: &CommandSpec) -> Result<CountedId> {
         .map_err(|_| spec.usage_error())
 }
 
-/// A line of the selected frame's file, as `break` names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrameLine {
     Number(u64),
     Offset(i64),
 }
 
-/// Parses `42`, `+3`, or `-3` as a line of the selected frame's file.
 fn frame_line(written: &str) -> Result<Option<FrameLine>> {
     if let Some(offset) = written.strip_prefix(['+', '-']) {
         let lines = offset
@@ -3285,7 +3099,6 @@ fn frame_line(written: &str) -> Result<Option<FrameLine>> {
     Ok(None)
 }
 
-/// A `break` line: its location, and the options written after it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct BreakLine<'a> {
     pub location: Option<Cow<'a, str>>,
@@ -3297,11 +3110,6 @@ pub(super) struct BreakLine<'a> {
 
 const BREAK_OPTIONS: [&str; 4] = ["if", "hits", "log", "disabled"];
 
-/// Splits a `break` line into its location and its options, each of which
-/// takes the text up to the next option word outside a string or brackets.
-/// A word after the location that is no option is a hit condition, as
-/// `break counted ==3` wrote it before options had names. A location in
-/// double quotes may hold spaces and option words.
 pub(super) fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
     let words = option_words(line);
     let starts = words
@@ -3345,9 +3153,6 @@ pub(super) fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<Break
     Ok(parsed)
 }
 
-/// The words of a line outside strings, character literals, backticked
-/// names, and brackets, with their offsets; such text is part of the word
-/// around it.
 fn option_words(line: &str) -> Vec<(usize, &str)> {
     let mut words = Vec::new();
     let (mut depth, mut quote, mut escaped) = (0_usize, None, false);
@@ -3378,8 +3183,6 @@ fn option_words(line: &str) -> Vec<(usize, &str)> {
         match character {
             '"' | '`' => quote = Some(character),
             '\'' => {
-                // Only a whole literal such as `'('` or `'\''`, so that the
-                // lifetime in a name such as `Foo<'a>` opens nothing.
                 let length = char_literal_length(&line[offset..]);
                 for _ in 1..length {
                     characters.next();
@@ -3398,14 +3201,10 @@ fn option_words(line: &str) -> Vec<(usize, &str)> {
     words
 }
 
-/// How many characters the character literal at the start of `text` takes,
-/// or 1 when the quote begins none: one character or one escape, then the
-/// closing quote.
 fn char_literal_length(text: &str) -> usize {
     let mut characters = text.chars().skip(1);
     let length = match characters.next() {
         Some('\\') => {
-            // An escape such as `\'` or `\u{e9}` runs to the next quote.
             characters.next();
             characters
                 .position(|character| character == '\'')
@@ -3418,8 +3217,6 @@ fn char_literal_length(text: &str) -> usize {
     length.unwrap_or(1)
 }
 
-/// A location as `break` takes it: in double quotes, escaped as a log
-/// message is, or as it is.
 fn unquoted_location(word: &str) -> Result<Cow<'_, str>> {
     if word.starts_with('"') {
         Ok(Cow::Owned(unquoted(word, "a location")?))
@@ -3428,7 +3225,6 @@ fn unquoted_location(word: &str) -> Result<Cow<'_, str>> {
     }
 }
 
-/// A text, `what`, written in quotes, with `\"` and `\\` escaped, or as it is.
 fn unquoted(text: &str, what: &str) -> Result<String> {
     let Some(inner) = text.strip_prefix('"') else {
         return Ok(text.to_owned());
@@ -3456,10 +3252,6 @@ fn unquoted(text: &str, what: &str) -> Result<String> {
     bail!("{what} in quotes needs its closing quote")
 }
 
-/// Parses breakpoint and watchpoint ids, ranges of them such as `3-5` or
-/// `w1-2`, or `all` as `None`. Each id must name one of the `most` that
-/// exist, so past `most` ids one is surely missing and the rest are left
-/// unparsed: a range may be as wide as `1-4000000000`.
 fn parse_ids(
     words: &[&str],
     watches: bool,
@@ -3504,7 +3296,6 @@ fn parse_ids(
     Ok(Some(ids))
 }
 
-/// The ids `words` name, each one of `known`, or `None` for `all`.
 fn known_ids(
     words: &[&str],
     watches: bool,
@@ -3522,12 +3313,10 @@ fn known_ids(
     Ok(Some(ids))
 }
 
-/// `text` quoted for a POSIX shell.
 fn shell_quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// Parses display numbers, ranges of them, or `all` as `None`.
 pub(super) fn parse_display_ids(
     words: &[&str],
     most: usize,
@@ -3545,7 +3334,6 @@ pub(super) fn parse_display_ids(
         .transpose()
 }
 
-/// `breakpoints 1, 3 and watchpoint 2`.
 fn describe_ids(ids: &[CountedId], renderer: Renderer) -> String {
     let list = |kind: &str, ids: Vec<u64>| -> Option<String> {
         if ids.is_empty() {
@@ -3588,8 +3376,6 @@ fn describe_ids(ids: &[CountedId], renderer: Renderer) -> String {
     .join(" and ")
 }
 
-/// Parses `0xaddress:byte-count`. Arguments without the `0x` prefix are value
-/// expressions, which may contain `::` qualifiers.
 fn parse_watch_location(argument: &str, spec: &CommandSpec) -> Result<Option<WatchpointSpec>> {
     if !argument.starts_with("0x") {
         return Ok(None);
@@ -3602,10 +3388,6 @@ fn parse_watch_location(argument: &str, spec: &CommandSpec) -> Result<Option<Wat
     }))
 }
 
-/// Parses a breakpoint location: a function, `py:function`, `js:function`, `0xaddress`,
-/// `file:line`, or `file:function`, or `None` when a file or its location is
-/// missing. The `::` of a qualified name such as `ns::run` never separates a
-/// file.
 pub fn parse_breakpoint_location(argument: &str) -> Result<Option<BreakpointSpec>> {
     if argument.starts_with("0x") {
         return Ok(Some(BreakpointSpec::Address(parse_address(argument)?)));
@@ -3647,9 +3429,6 @@ pub fn parse_breakpoint_location(argument: &str) -> Result<Option<BreakpointSpec
     }))
 }
 
-/// Whether a breakpoint is in Python code, which loads as the program
-/// imports it, so nothing can be checked against before then: it is kept
-/// pending until it is armed, rather than refused.
 pub fn is_python(location: &BreakpointSpec) -> bool {
     match location {
         BreakpointSpec::Source { path, .. } => {
@@ -3662,8 +3441,6 @@ pub fn is_python(location: &BreakpointSpec) -> bool {
     }
 }
 
-/// Whether a breakpoint is in a script Node runs, which loads as the
-/// program requires it, so it is kept pending as a Python one is.
 pub fn is_javascript(location: &BreakpointSpec) -> bool {
     match location {
         BreakpointSpec::Source { path, .. } => path
@@ -3677,8 +3454,6 @@ pub fn is_javascript(location: &BreakpointSpec) -> bool {
     }
 }
 
-/// How to name a Python function, for a bare name no native function has
-/// in a program that runs Python: a bare name is always a native one's.
 pub fn python_name_hint(name: &str, program: &microscope::ModuleImage) -> Option<String> {
     let dotted = name.split('.').all(|part| {
         !part.is_empty()
@@ -3691,7 +3466,6 @@ pub fn python_name_hint(name: &str, program: &microscope::ModuleImage) -> Option
         .then(|| format!("write a Python function with `py:`, as in `py:{name}`"))
 }
 
-/// Joins two parts of a command's output, either of which may be empty.
 pub(super) fn join_lines(first: &str, second: &str) -> String {
     match (first.is_empty(), second.is_empty()) {
         (true, _) => second.to_owned(),
@@ -3710,8 +3484,6 @@ impl Cli {
         Ok(format::signal_policies(&policies, self.renderers.stdout))
     }
 
-    /// Shows or changes one signal's policy with gdb's actions: `stop`
-    /// implies `print`, and `noprint` implies `nostop`.
     async fn handle_signal(&self, arguments: &[&str]) -> Result<String> {
         let Some((&name, actions)) = arguments.split_first() else {
             bail!("handle needs a signal");
@@ -3736,8 +3508,6 @@ impl Cli {
 }
 
 impl Cli {
-    /// `catch syscall [entry|exit] [call...] [if EXPR]`: stops at the calls
-    /// named, by name or number, or at every call.
     async fn catch_syscall(&self, rest: &str, spec: &CommandSpec) -> Result<String> {
         let rest = rest.trim_start().strip_prefix("syscall").unwrap_or(rest);
         let (words, condition) = match rest.split_once(" if ") {
@@ -3797,8 +3567,6 @@ impl Cli {
         Ok(format::catchpoint(&catchpoint, self.renderers.stdout))
     }
 
-    /// Deletes the catchpoints `words` name as `cID`, and returns what it
-    /// deleted and the other words.
     async fn delete_catchpoints<'a>(
         &self,
         words: &[&'a str],
@@ -3824,8 +3592,6 @@ impl Cli {
         Ok((deleted, others))
     }
 
-    /// The exceptions that stop, as `catch` or another client of this
-    /// console last chose them.
     pub fn exception_stops(&self) -> microscope::ExceptionStops {
         *self
             .exceptions
@@ -3833,8 +3599,6 @@ impl Cli {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Chooses whether the exceptions the filter named `id` passes stop, and
-    /// returns the stops chosen.
     pub async fn set_exception_stop(
         &self,
         id: &str,
@@ -3854,8 +3618,6 @@ impl Cli {
         Ok(chosen)
     }
 
-    /// Lists the exceptions runtimes report and whether each stops, or
-    /// shows one, or chooses whether it does.
     async fn catch(&self, arguments: &[&str], rest: &str, spec: &CommandSpec) -> Result<String> {
         if arguments.first() == Some(&"syscall") {
             return self.catch_syscall(rest, spec).await;
@@ -3925,8 +3687,6 @@ impl Cli {
     }
 }
 
-/// Changes one aspect of a signal policy as gdb's `handle` does: stopping
-/// implies printing, and not printing implies not stopping.
 pub fn apply_signal_action(policy: &mut SignalPolicy, action: &str) -> Result<()> {
     match action {
         "stop" => {
@@ -3954,8 +3714,6 @@ fn parse_expression(text: &str) -> Result<microscope::Expression> {
         .map_err(|error| anyhow!(format::expression_error(text, &error)))
 }
 
-/// Splits a command line into its command, the format written after it as
-/// in `print/x`, the rest of the line as written, and its words.
 fn command_line(line: &str) -> Result<(&'static CommandSpec, &str, &str, Vec<&str>)> {
     let mut words = line.split_whitespace();
     let written = words.next().unwrap_or_default();
@@ -3985,24 +3743,20 @@ fn command_line(line: &str) -> Result<(&'static CommandSpec, &str, &str, Vec<&st
     Ok((spec, format, rest, arguments))
 }
 
-/// Every task at a stop, with what names their places.
 struct TaskTraces {
     selected: Option<ExecutionContext>,
     tasks: Vec<(TaskSnapshot, microscope::Result<Backtrace>)>,
 
-    /// Why some tasks could not be read.
     gaps: Vec<Arc<str>>,
     images: BTreeMap<ModuleId, Arc<ModuleImage>>,
 }
 
 impl TaskTraces {
-    /// Whether the task is selected, itself or through the thread it is on.
     fn is_selected(&self, task: &TaskSnapshot) -> bool {
         selects(self.selected, task)
     }
 }
 
-/// Whether a selected context is `task`, or the thread running it.
 fn selects(selected: Option<ExecutionContext>, task: &TaskSnapshot) -> bool {
     match selected {
         Some(ExecutionContext::Task(id)) => id == task.id,
@@ -4011,8 +3765,6 @@ fn selects(selected: Option<ExecutionContext>, task: &TaskSnapshot) -> bool {
     }
 }
 
-/// Whether a command only inspects the stop, so that it may run with
-/// another task selected for it.
 const fn inspects(command: Command) -> bool {
     matches!(
         command,
@@ -4029,8 +3781,6 @@ const fn inspects(command: Command) -> bool {
     )
 }
 
-/// An evaluation's failure, pointing into the expression when it is the
-/// expression's.
 fn expression_error(text: &str, error: microscope::Error) -> anyhow::Error {
     match error {
         microscope::Error::Expression(error) => anyhow!(format::expression_error(text, &error)),
@@ -4038,7 +3788,6 @@ fn expression_error(text: &str, error: microscope::Error) -> anyhow::Error {
     }
 }
 
-/// The images of the loaded modules, or the program's before it runs.
 pub async fn loaded_images(
     debugger: &microscope::DebuggerHandle,
 ) -> Vec<std::sync::Arc<microscope::ModuleImage>> {
@@ -4061,8 +3810,6 @@ pub async fn loaded_images(
     images
 }
 
-/// Whether one of `images` imports a function that executes a program, so
-/// that the process may run code none of them has.
 pub fn executes_programs(images: &[std::sync::Arc<microscope::ModuleImage>]) -> bool {
     const EXECUTES: [&str; 11] = [
         "execve",
@@ -4119,8 +3866,6 @@ mod tests {
         }
     }
 
-    /// Option words inside strings and brackets belong to the text around
-    /// them, and the legacy trailing hit condition still parses.
     #[test]
     fn break_options_end_at_option_words_outside_strings_and_brackets() {
         let spec = spec(Command::Break);
@@ -4176,7 +3921,6 @@ mod tests {
         assert!(parse("main.c:0").is_none());
         assert!(parse(":12").is_none());
 
-        // Qualified names are functions, also within a file.
         assert_eq!(
             parse("ns::Type::run").expect("qualified function"),
             BreakpointSpec::Function("ns::Type::run".to_owned())
@@ -4187,7 +3931,6 @@ mod tests {
                 if path == std::path::Path::new("main.cpp") && function == "ns::run"
         ));
 
-        // Python breakpoints are kept pending; native ones are checked.
         for (location, python) in [
             ("app.py:12", true),
             ("pkg/app.py:12", true),
@@ -4203,7 +3946,6 @@ mod tests {
             assert_eq!(is_python(&spec), python, "{location}");
         }
 
-        // So are JavaScript ones, and `js::run` is a native function.
         for (location, javascript) in [
             ("app.ts:3", true),
             ("js:handler", true),
@@ -4214,7 +3956,6 @@ mod tests {
             assert_eq!(is_javascript(&spec), javascript, "{location}");
         }
 
-        // Python functions keep their prefix, which no file has.
         for name in [
             "py:main",
             "py:Shape.area",
@@ -4280,8 +4021,6 @@ mod tests {
         }
     }
 
-    /// An id near the ends of `u64`, near the small ids that exist, or
-    /// anywhere.
     fn id() -> impl Strategy<Value = u64> {
         prop_oneof![
             prop::sample::select(vec![0, 1, 2, 3, 4, 5, u64::MAX - 2, u64::MAX - 1, u64::MAX]),
@@ -4289,7 +4028,6 @@ mod tests {
         ]
     }
 
-    /// A word of ids: one, or a range, perhaps marked as watchpoints.
     #[derive(Debug, Clone)]
     struct Word {
         watch: bool,
@@ -4309,9 +4047,6 @@ mod tests {
         }
     }
 
-    /// What `delete` should do with `words`: the ids they name in order,
-    /// each once, or the error for the first range that is empty or else
-    /// the first id that does not exist, found without walking a range.
     fn expected_ids(
         words: &[Word],
         watches: bool,
@@ -4338,8 +4073,6 @@ mod tests {
 
         let mut ids = Vec::new();
         for (first, last) in words {
-            // The ids in the range that exist, and whether each follows the
-            // one before it without a gap.
             let mut next = Some(first);
             for &id in known.range(first..=last) {
                 if Some(id) != next {
@@ -4375,7 +4108,6 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig {
-            // A range walked id by id hangs.
             fork: true,
             timeout: 5_000,
             ..ProptestConfig::default()
@@ -4411,8 +4143,6 @@ mod tests {
         }
     }
 
-    /// Each id a range names must exist, so a range past every breakpoint
-    /// that exists fails at once, however wide.
     #[test]
     fn a_wide_range_of_ids_is_parsed_at_once() {
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -4431,9 +4161,6 @@ mod tests {
     }
 }
 
-/// The lines a run reports from its debuggers' events, before its stop:
-/// signals, logged messages, conditions that failed, programs executed,
-/// and what libraries that loaded could not use of their debug information.
 #[derive(Default)]
 pub(super) struct RunLines {
     lines: Vec<String>,
@@ -4481,13 +4208,10 @@ impl RunLines {
         self.lines.push(line);
     }
 
-    /// Adds a line the run reports in order with the events'.
     pub(super) fn push(&mut self, line: String) {
         self.lines.push(line);
     }
 
-    /// The lines, with what could not be used of each loaded library's debug
-    /// information, and what kept its own views out, once, when it loads.
     pub(super) async fn finish(mut self, renderer: Renderer) -> String {
         for (debugger, module) in std::mem::take(&mut self.loaded) {
             if let Ok(image) = debugger.loaded_module_image(module).await {

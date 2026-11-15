@@ -1,39 +1,9 @@
-//! What V8's C++ headers say that its Torque output does not, parsed for
-//! `layouts.gen.rs`: the fields of `Code` and `CodeWrapper`, which no
-//! Torque reader reads; the kinds of code; the slots of deoptimization
-//! data, hash tables, name dictionaries, and descriptor arrays; the bits of
-//! a property's details and of a source position; an inlining position's
-//! layout; the encoding of weak references; and the JS dispatch table's
-//! entries. Each value is computed from the header's own expressions for
-//! the configuration the layouts require, and any construct or name the
-//! parser does not know fails, rather than being guessed.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::LazyLock;
 
 use regex::Regex;
 
-/// The configuration the layouts are generated for, each macro with why it
-/// has its value.
-///
-/// - `V8_ENABLE_SANDBOX_BOOL` is false: binding refuses a build with the
-///   sandbox, and every build in the matrix says `"v8_enable_sandbox": 0`.
-/// - `V8_EMBEDDED_CONSTANT_POOL_BOOL` is false: `globals.h` makes it true
-///   only on PPC, which [`configuration`] checks.
-/// - `V8_ENABLE_LEAPTIERING_BOOL` is true where Torque's readers give
-///   `JSFunction::DispatchHandle`, from 13.6.
-/// - `V8_BUILTIN_JUMP_TABLE_INFO_BOOL` (13.6) is false: it needs
-///   `V8_ENABLE_BUILTIN_JUMP_TABLE_SWITCH`, a build argument off by
-///   default that no header defines; Node 24's code objects keep their
-///   parameter count at 84 and builtin id at 86, as without it.
-/// - `V8_JUMP_TABLE_INFO_BOOL` (14.6) is true: it is `ENABLE_DISASSEMBLER`
-///   on x64, and every 14.6 build in the matrix defines
-///   `Code::Disassemble`, which `code.h` declares only with the
-///   disassembler; Node 26's code objects keep their builtin id at 90.
-/// - `V8_LOWER_LIMITS_MODE_BOOL` is false, the build argument's default:
-///   every dispatch handle in Node 24's and 26's processes is a multiple
-///   of 256, not 4096.
 pub(super) fn configuration(globals: &str, leaptiering: bool) -> BTreeMap<&'static str, bool> {
     let guard = globals
         .split_once("#define V8_EMBEDDED_CONSTANT_POOL_BOOL true")
@@ -54,7 +24,6 @@ pub(super) fn configuration(globals: &str, leaptiering: bool) -> BTreeMap<&'stat
     ])
 }
 
-/// One version's headers, under `MICROSCOPE_V8_TORQUE/<version>/v8`.
 pub(super) struct Headers {
     files: BTreeMap<&'static str, String>,
     config: BTreeMap<&'static str, bool>,
@@ -118,8 +87,6 @@ const FILES: [&str; 55] = [
     "src/execution/isolate.h",
 ];
 
-/// The headers a version may lack: 12.4 has no JS dispatch table, and
-/// before 14.6 `isolate-data.h` lists the isolate's fields itself.
 fn optional(file: &str, leaptiering: bool) -> bool {
     match file {
         "src/sandbox/js-dispatch-table.h" => !leaptiering,
@@ -149,7 +116,6 @@ impl Headers {
         Self { files, config }
     }
 
-    /// Whether `file`, without its comments, has `text`.
     pub(super) fn contains(&self, file: &str, text: &str) -> bool {
         self.file(file).contains(text)
     }
@@ -160,7 +126,6 @@ impl Headers {
             .unwrap_or_else(|| panic!("{file} is not read"))
     }
 
-    /// The size in bytes the name of a size in a field list stands for.
     fn size(&self, name: &str) -> i64 {
         let globals = self.file("src/common/globals.h");
         for (name, value) in [
@@ -194,9 +159,6 @@ impl Headers {
         }
     }
 
-    /// The value an expression of `file` has, its names looked up in
-    /// `classes`' constants in order, then in the file's and the other
-    /// headers' namespace constants, and the configuration.
     fn eval(&self, file: &str, classes: &[&str], expression: &str) -> i64 {
         let lookup = |name: &str| self.lookup(file, classes, name);
         eval(expression, &lookup)
@@ -230,7 +192,6 @@ impl Headers {
             .filter(|own| self.files.contains_key(**own))
             .find_map(|own| namespace_constant(self.file(own), name))
             .map(|expression| {
-                // The API's sizes, as `kApiSystemPointerSize = sizeof(void*)`.
                 expression
                     .strip_prefix("sizeof(")
                     .and_then(|ty| ty.strip_suffix(')'))
@@ -241,7 +202,6 @@ impl Headers {
             })
     }
 
-    /// The header that declares `class`, of those read.
     fn declaring(&self, class: &str) -> Option<&'static str> {
         FILES.iter().copied().find(|file| {
             self.files
@@ -250,10 +210,6 @@ impl Headers {
         })
     }
 
-    /// A `static const` constant of the first of `classes`, a class and the
-    /// classes it derives from, that defines it; the first definition, as
-    /// the 64-bit branch of a header that defines one per architecture
-    /// puts it.
     pub(super) fn class_constant(&self, file: &str, classes: &[&str], name: &str) -> Option<i64> {
         let pattern = format!(r"static\s+(?:constexpr|const)\s+[\w:]+\s+{name}\s*=\s*([^;]+);");
         let pattern = Regex::new(&pattern).expect("a pattern");
@@ -264,16 +220,12 @@ impl Headers {
         Some(self.eval(file, classes, &expression))
     }
 
-    /// A namespace constant of `file`, `const T name = value;`.
     pub(super) fn constant(&self, file: &str, name: &str) -> i64 {
         let expression = namespace_constant(self.file(file), name)
             .unwrap_or_else(|| panic!("{file} defines no {name}"));
         self.eval(file, &[], &expression)
     }
 
-    /// Where a `PropertyArray`'s properties begin, given where its
-    /// `length_and_hash` is: just after it, the one field
-    /// `property-array.tq` declares, as Torque's `kHeaderSize` puts them.
     pub(super) fn property_array_objects(&self, length_and_hash: i64) -> i64 {
         let declared =
             Regex::new(r"extern\s+class\s+PropertyArray\s+extends\s+HeapObject\s*\{([^}]*)\}")
@@ -290,10 +242,6 @@ impl Headers {
         length_and_hash + self.size("kTaggedSize")
     }
 
-    /// The fields of `Code`, from `code.h`'s `CODE_DATA_FIELDS`, which
-    /// begins at `ExposedTrustedObject::kHeaderSize`: `HeapObject`'s header,
-    /// its map, without the sandbox. Each is named `Code::Name` from its
-    /// `kNameOffset`; one of no size, a marker, is left out.
     pub(super) fn code_fields(&self) -> Vec<(String, i64)> {
         let trusted = self.file("src/objects/trusted-object.h");
         let unsandboxed = Regex::new(
@@ -315,8 +263,6 @@ impl Headers {
         self.field_list("Code", &list, self.size("kTaggedSize"))
     }
 
-    /// The fields of `CodeWrapper`, from its `FIELD_LIST`, after
-    /// `Struct::kHeaderSize`, `HeapObject`'s.
     pub(super) fn code_wrapper_fields(&self) -> Vec<(String, i64)> {
         let code = self.file("src/objects/code.h");
         let body = class_body(code, "CodeWrapper").expect("code.h declares CodeWrapper");
@@ -328,7 +274,6 @@ impl Headers {
         self.field_list("CodeWrapper", &list, self.size("kTaggedSize"))
     }
 
-    /// The stream's code slot and instruction start, after its padded header.
     pub(super) fn instruction_stream_fields(&self) -> Vec<(String, i64)> {
         let header = self.file("src/objects/instruction-stream.h");
         assert!(
@@ -364,8 +309,6 @@ impl Headers {
         panic!("InstructionStream's field list has no header size")
     }
 
-    /// The fields of a `V(kNameOffset, size)` list from `start`, until its
-    /// `kUnalignedSize`, `kHeaderSize`, or `kSize`.
     fn field_list(&self, class: &str, list: &str, start: i64) -> Vec<(String, i64)> {
         let mut fields = Vec::new();
         let mut offset = start;
@@ -388,8 +331,6 @@ impl Headers {
         panic!("{class}'s field list does not end")
     }
 
-    /// The size of a field list's entry: a size's name, 0, or `CONFIG ?
-    /// size : size`.
     fn field_size(&self, size: &str) -> i64 {
         if let Some((condition, choices)) = size.split_once('?') {
             let (then, otherwise) = choices.split_once(':').expect("a ternary size");
@@ -423,8 +364,6 @@ impl Headers {
         }
     }
 
-    /// Each code kind's number: its place in `code-kind.h`'s
-    /// `CODE_KIND_LIST`, by its name.
     pub(super) fn code_kinds(&self) -> Vec<(String, i64)> {
         let list = macro_body(
             self.file("src/objects/code-kind.h"),
@@ -442,8 +381,6 @@ impl Headers {
             .collect()
     }
 
-    /// Where a code's flags keep its kind: the first of `code.h`'s
-    /// `FLAGS_BIT_FIELDS`, as `(shift, size)`.
     pub(super) fn code_kind_field(&self) -> (i64, i64) {
         let list = macro_body(
             self.file("src/objects/code.h"),
@@ -460,9 +397,6 @@ impl Headers {
         (0, size.parse().expect("a bit field's size"))
     }
 
-    /// Each bit field of a class, `using Name = base::BitField<T, shift,
-    /// size>` or `BitField64`, or `using Name = Previous::Next<T, size>`, as
-    /// `(shift, size)`.
     pub(super) fn bit_fields(&self, file: &str, class: &str) -> BTreeMap<String, (i64, i64)> {
         let body = class_body(self.file(file), class)
             .unwrap_or_else(|| panic!("{file} declares no {class}"));
@@ -486,14 +420,10 @@ impl Headers {
         fields
     }
 
-    /// The enumerators of the enum whose declaration is `head`, in `file`,
-    /// with their values.
     pub(super) fn enumerators(&self, file: &str, head: &str) -> BTreeMap<String, i64> {
         self.enumerator_values(file, &self.enum_body(file, head))
     }
 
-    /// The body of the enum whose declaration is `head`, in `file`, between
-    /// its braces. The file's first `head` must be a definition.
     fn enum_body(&self, file: &str, head: &str) -> String {
         let text = self.file(file);
         let (before, body) = text
@@ -508,8 +438,6 @@ impl Headers {
         body.to_owned()
     }
 
-    /// The values of the enumerators of an enum's `body`, which may name
-    /// those before them.
     fn enumerator_values(&self, file: &str, body: &str) -> BTreeMap<String, i64> {
         assert!(
             !body.contains('#'),
@@ -543,8 +471,6 @@ impl Headers {
         values
     }
 
-    /// The size of a heap object's header, `HeapObjectLayout`, whose one
-    /// member is its map, a tagged value.
     fn heap_object_header_size(&self) -> i64 {
         let file = "src/objects/heap-object.h";
         assert!(
@@ -563,10 +489,6 @@ impl Headers {
         self.size("kTaggedSize")
     }
 
-    /// The fields of `BigIntBase` (`bigint.h`), which Torque has no readers
-    /// of: after the `HeapObject` header, a 32-bit bit field, 4 bytes of
-    /// padding where `BIGINT_NEEDS_PADDING` (a 64-bit build without pointer
-    /// compression), then the digits.
     pub(super) fn bigint_fields(&self) -> Vec<(String, i64)> {
         let file = "src/objects/bigint.h";
         let padding = Regex::new(
@@ -611,9 +533,6 @@ impl Headers {
         ]
     }
 
-    /// An `AccessorPair`'s tagged getter and setter after the `HeapObject`
-    /// header. From 14.6 `struct.h` lays them out in C++ and Torque has no
-    /// readers of them. `None` where Torque defines the class, as before 14.6.
     pub(super) fn accessor_pair_fields(&self) -> Option<Vec<(String, i64)>> {
         let file = "src/objects/struct.h";
         if self.contains(
@@ -655,9 +574,6 @@ impl Headers {
         ])
     }
 
-    /// The layout of `class`, an `OrderedHashTable<class, entrysize>`, as
-    /// `ordered-hash-table.h` gives it, in elements of its `FixedArray`, by
-    /// each constant's or function's name.
     pub(super) fn ordered_hash_table(&self, class: &str) -> Vec<(String, i64)> {
         let file = "src/objects/ordered-hash-table.h";
         let pattern = format!(
@@ -715,10 +631,6 @@ impl Headers {
             .collect()
     }
 
-    /// Each elements kind of `enum ElementsKind` (`elements-kind.h`), with
-    /// the typed arrays' kinds it expands from `TYPED_ARRAYS` and
-    /// `RAB_GSAB_TYPED_ARRAYS`, as a build without pointer compression
-    /// numbers them.
     pub(super) fn elements_kinds(&self) -> BTreeMap<String, i64> {
         let file = "src/objects/elements-kind.h";
         let body = normalized(&self.enum_body(file, "enum ElementsKind : uint8_t"));
@@ -751,10 +663,6 @@ impl Headers {
         self.enumerator_values(file, &body)
     }
 
-    /// The slots of a context, `Context::Field` (`contexts.h`), with the
-    /// native context's it expands from `NATIVE_CONTEXT_FIELDS`, and how a
-    /// context reaches its native context: through its map's
-    /// `ConstructorOrBackPointerOrNativeContext`.
     pub(super) fn context_slots(&self) -> BTreeMap<String, i64> {
         let file = "src/objects/contexts.h";
         assert_eq!(
@@ -775,8 +683,6 @@ impl Headers {
         let slots: Vec<String> = super::bytecodes::expand(&macros, "NATIVE_CONTEXT_FIELDS")
             .into_iter()
             .map(|entry| {
-                // The type may hold commas the expander splits on, but the
-                // index, the first argument, is a plain name.
                 let index = entry
                     .first()
                     .filter(|index| {
@@ -807,8 +713,6 @@ impl Headers {
                 "{file} no longer says {expected:?}"
             );
         }
-        // From 14.6 the header defines what 12.4's and 13.6's contexts.cc
-        // does: a native context's extension is its global object.
         let inline = normalized(self.file("src/objects/contexts-inl.h"));
         let global = "Tagged<JSGlobalObject> NativeContext::global_object() const {";
         if inline.contains(global) {
@@ -823,9 +727,6 @@ impl Headers {
         self.enumerator_values(file, &body.replace(native, &(slots.join(", ") + ",")))
     }
 
-    /// The slots of the contexts of `PromiseBuiltins`' closures
-    /// (`builtins-promise.h`), each enum's first at a context's first
-    /// local, `min_context_slots`, as `Context::MIN_CONTEXT_SLOTS` puts it.
     pub(super) fn promise_context_slots(&self, min_context_slots: i64) -> BTreeMap<String, i64> {
         let file = "src/builtins/builtins-promise.h";
         let mut slots = BTreeMap::new();
@@ -847,9 +748,6 @@ impl Headers {
         slots
     }
 
-    /// The bits of the hole in a double array, `kHoleNanInt64`, as
-    /// `globals.h` defines them on x64. The first definitions of the hole's
-    /// halves are for MIPS; the `#else` branch covers every other target.
     pub(super) fn hole_nan_int64(&self) -> i64 {
         let globals = self.file("src/common/globals.h");
         let halves = "constexpr uint32_t kHoleNanUpper32 = ";
@@ -882,8 +780,6 @@ impl Headers {
         i64::from_ne_bytes(bits.to_ne_bytes())
     }
 
-    /// Whether `GlobalDictionary::CellAt` reads an entry's property cell
-    /// from its key (`dictionary-inl.h`).
     pub(super) fn global_dictionary_cell_is_key(&self) -> bool {
         let pattern = Regex::new(
             r"Tagged<PropertyCell> GlobalDictionary::CellAt\(PtrComprCageBase cage_base,\s*InternalIndex entry\) \{\s*DCHECK\(IsPropertyCell\(KeyAt\(cage_base, entry\), cage_base\)\);\s*return (?:PropertyCell::cast|Cast<PropertyCell>)\(KeyAt\(cage_base, entry\)\);\s*\}",
@@ -892,12 +788,6 @@ impl Headers {
         pattern.is_match(self.file("src/objects/dictionary-inl.h"))
     }
 
-    /// Each `class::name` of `names`, a constant of a frame class in
-    /// `frame-constants.h`, with the header's frame macros such as
-    /// `DEFINE_STANDARD_FRAME_SIZES` expanded. A name is looked up as C++
-    /// does: in its class, then the classes it derives from, then
-    /// `globals.h`'s constants and the configuration, which has no constant
-    /// pool for `kCPSlotSize`.
     pub(super) fn frame_constants(&self, names: &[(&str, &str)]) -> Vec<(String, i64)> {
         let file = "src/execution/frame-constants.h";
         let text = self.file(file);
@@ -934,9 +824,6 @@ impl Headers {
             .collect()
     }
 
-    /// The value of `name` in `class`, from `frame_constants`' expanded
-    /// `bodies`: its definition in the class or the nearest class it derives
-    /// from, evaluated in that class.
     fn frame_constant(
         &self,
         bodies: &BTreeMap<&str, String>,
@@ -977,9 +864,6 @@ impl Headers {
         None
     }
 
-    /// `struct InliningPosition`'s size and its members' offsets, laid out
-    /// as C does: a `SourcePosition`, whose only member is a `uint64_t`, and
-    /// an `int`.
     pub(super) fn inlining_position(&self) -> (i64, BTreeMap<String, i64>) {
         let file = "src/codegen/source-position.h";
         let text = self.file(file);
@@ -1005,9 +889,6 @@ impl Headers {
         (align(offset, alignment), offsets)
     }
 
-    /// Whether the first definition of `name` in `file` is in its 64-bit
-    /// branch, `#if defined(V8_TARGET_ARCH_64_BIT)` or `#ifdef
-    /// V8_TARGET_ARCH_64_BIT`, before its 32-bit one.
     pub(super) fn first_is_64_bit(&self, file: &str, name: &str) -> bool {
         let text = self.file(file);
         let Some(at) = text.find(&format!("{name} =")) else {
@@ -1021,8 +902,6 @@ impl Headers {
             return false;
         };
 
-        // Within the branch, every conditional the definition is not in
-        // has closed.
         let mut depth = 0;
         for line in before[open..].lines().skip(1).map(str::trim_start) {
             if line.starts_with("#if") {
@@ -1039,15 +918,10 @@ impl Headers {
         true
     }
 
-    /// The body of `class` in `file`, without its comments.
     pub(super) fn class_text(&self, file: &str, class: &str) -> &str {
         class_body(self.file(file), class).unwrap_or_else(|| panic!("{file} declares no {class}"))
     }
 
-    /// The offsets `class`'s header layout gives its fields, by their
-    /// `kNameOffset` names and `kHeaderSize`: its `static constexpr`
-    /// constants, as 12.4 gives a safepoint table's, or its `FIELD_LIST`
-    /// from 0, as 13.6 does.
     pub(super) fn header_offsets(&self, file: &str, class: &str) -> BTreeMap<String, i64> {
         let body = self.class_text(file, class);
         if !body.contains("#define FIELD_LIST(V)") {
@@ -1084,8 +958,6 @@ impl Headers {
         panic!("{class}'s field list has no kHeaderSize")
     }
 
-    /// The size of a type `safepoint-table-base.h` names, as
-    /// `SafepointTableStackSlotsField_t`.
     fn alias_size(&self, alias: &str) -> i64 {
         let base = self.file("src/codegen/safepoint-table-base.h");
         let pattern = format!(r"using\s+{alias}\s*=\s*(\w+);");
@@ -1099,10 +971,6 @@ impl Headers {
         type_size(self.file("src/common/globals.h"), &ty)
     }
 
-    /// `TRANSLATION_OPCODE_LIST`, each opcode by its name with its operand
-    /// count, in their order, which numbers them; and how many of the first
-    /// are JS frames' and frames'. WebAssembly's are among them: every
-    /// build defines `V8_ENABLE_WEBASSEMBLY`.
     pub(super) fn translation_opcodes(&self) -> (Vec<(String, i64)>, usize, usize) {
         let file = "src/deoptimizer/translation-opcode.h";
         let text = self.file(file);
@@ -1131,8 +999,6 @@ impl Headers {
         (all, js_frames, frames)
     }
 
-    /// The entries of an opcode list's body: `V(NAME, count)`,
-    /// `IF_WASM(V, NAME, count)`, and other lists' `NAME(V)`.
     fn opcode_list(&self, body: &str) -> Vec<(String, i64)> {
         let text = self.file("src/deoptimizer/translation-opcode.h");
         let entry =
@@ -1159,12 +1025,6 @@ impl Headers {
         opcodes
     }
 
-    /// What a running thread's frames are read from: where the isolate
-    /// keeps its `ThreadLocalTop`, its fast C call's frame pointer and
-    /// return address, and whether its stack is iterable; the root
-    /// register's bias; `ThreadLocalTop`'s members; the VM state of a
-    /// collection; and the slots of x64's entry frame. Each by the name
-    /// [`crate::image::v8::Constant`] gives it.
     pub(super) fn isolate_constants(&self) -> Vec<(String, i64)> {
         let internals = "include/v8-internal.h";
         let internal = |name: &str| -> i64 {
@@ -1191,7 +1051,6 @@ impl Headers {
             constants.push((format!("Internals::{name}"), internal(name)));
         }
 
-        // The stack guard is the second field, and the byte flags follow it.
         let stack_guard = self
             .class_constant(
                 "src/execution/stack-guard.h",
@@ -1273,9 +1132,6 @@ impl Headers {
         constants
     }
 
-    /// Where `IsolateData`'s byte flag `name` is among the flags that
-    /// follow its stack guard, which `ISOLATE_DATA_FIELDS` lists: 12.4
-    /// names each `kNameOffset` or `kName`, later versions `Name`.
     fn isolate_byte_flag(&self, name: &str) -> i64 {
         let head = "#define ISOLATE_DATA_FIELDS(V)";
         let defining: Vec<&str> = [
@@ -1296,8 +1152,6 @@ impl Headers {
                 _ => entry.to_owned(),
             }
         };
-        // Nothing but V( entries may come between the guard and the flag:
-        // another macro's fields would be unknown.
         let guard_at = list.find("V(").expect("a field");
         let entries = v_entries(&list[guard_at..]);
         let names: Vec<String> = entries.iter().map(|(entry, _)| bare(entry)).collect();
@@ -1330,11 +1184,6 @@ impl Headers {
         i64::try_from(at - 2).expect("a small index")
     }
 
-    /// `ThreadLocalTop`'s size and its data members' offsets, laid out as
-    /// C++ lays out the types it declares: x64, without pointer
-    /// compression. Any statement or type it does not know fails, as does
-    /// a member under a preprocessor conditional, and a size that differs
-    /// from the class's `kSizeInBytes`.
     pub(super) fn thread_local_top(&self) -> (i64, BTreeMap<String, i64>) {
         let file = "src/execution/thread-local-top.h";
         let (size, offsets) = self.lay_out(file, "ThreadLocalTop", Names::V8);
@@ -1348,19 +1197,11 @@ impl Headers {
         (size, offsets)
     }
 
-    /// The offsets of the data members of `Isolate::EntryStackItem`, each
-    /// item of the stack of entries an isolate keeps for the thread that
-    /// entered it, as [`Self::thread_local_top`] lays them out. Its
-    /// members are named without V8's trailing underscore.
     pub(super) fn entry_stack_item(&self) -> BTreeMap<String, i64> {
         self.lay_out("src/execution/isolate.h", "EntryStackItem", Names::Plain)
             .1
     }
 
-    /// The size and the data members' offsets of `class`, which `file`
-    /// declares, laid out as C++ lays out the types it declares: x64,
-    /// without pointer compression. Any statement or type it does not
-    /// know fails, as does a member under a preprocessor conditional.
     fn lay_out(&self, file: &str, class: &str, names: Names) -> (i64, BTreeMap<String, i64>) {
         let body = self.class_text(file, class);
         let mut offsets = BTreeMap::new();
@@ -1380,8 +1221,6 @@ impl Headers {
         (align(offset, alignment), offsets)
     }
 
-    /// The type and name of a class's data member `statement`, `None` for
-    /// a statement known to be no data member, failing on any other.
     fn data_member(statement: &str, names: Names) -> Option<(String, String)> {
         let statement = normalized(statement);
         let statement = statement.trim();
@@ -1398,14 +1237,10 @@ impl Headers {
         {
             return None;
         }
-        // A member of a function's pointer type, written out, would read as
-        // a function.
         assert!(
             !statement.contains("(*") && !statement.contains("(&"),
             "an unknown statement {statement:?}"
         );
-        // A function, an operator among them: a template, a declaration,
-        // or what is left of a definition whose body was dropped.
         let function = Regex::new(
             r"^(?:template\s*<[^;]*>\s*)?(?:[\w:<>,*&~]+\s+)*~?(?:\w+|operator\s*[^\s(\w]+)\s*\([^;]*\)\s*(?:const\s*)?(?:override\s*)?(?:=\s*(?:default|delete|0)\s*)?$",
         )
@@ -1413,8 +1248,6 @@ impl Headers {
         if function.is_match(statement) {
             return None;
         }
-        // A member, its type with no parentheses, and its name V8's way or
-        // plainly, perhaps with an initializer.
         let name = match names {
             Names::V8 => r"\w+_",
             Names::Plain => r"[a-z]\w*",
@@ -1427,8 +1260,6 @@ impl Headers {
         Some((captures[1].trim().to_owned(), captures[2].to_owned()))
     }
 
-    /// The size, and alignment, of a type `ThreadLocalTop` or
-    /// `Isolate::EntryStackItem` declares a member of.
     fn member_type_size(&self, ty: &str) -> i64 {
         let globals = self.file("src/common/globals.h");
         if ty.ends_with('*') {
@@ -1455,7 +1286,6 @@ impl Headers {
                 2
             }
             "std::atomic<ThreadId>" => {
-                // A lock-free atomic of a type has its size.
                 let thread_id = class_body(self.file("src/execution/thread-id.h"), "ThreadId")
                     .expect("thread-id.h declares ThreadId");
                 let members = data_members(thread_id);
@@ -1476,9 +1306,6 @@ impl Headers {
         }
     }
 
-    /// x64's `EntryFrameConstants`, outside Windows: where `JSEntry` saves
-    /// the exit frame pointer it clears, and from 13.6 the fast C call's
-    /// frame pointer and return address. Every other conditional fails.
     fn entry_frame_constants(&self) -> Vec<(String, i64)> {
         let file = "src/execution/x64/frame-constants-x64.h";
         let body = without_windows(self.class_text(file, "EntryFrameConstants"));
@@ -1512,8 +1339,6 @@ impl Headers {
         constants
     }
 
-    /// An expression of a class whose `body` defines the constants it
-    /// names, or the headers do.
     fn eval_in(&self, file: &str, body: &str, expression: &str) -> i64 {
         let lookup = |name: &str| {
             let pattern = format!(r"static\s+constexpr\s+int\s+{name}\s*=\s*([^;]+);");
@@ -1527,17 +1352,12 @@ impl Headers {
     }
 }
 
-/// How a class names its data members: V8's way, with a trailing
-/// underscore, or plainly, as `Isolate::EntryStackItem` does.
 #[derive(Debug, Clone, Copy)]
 enum Names {
     V8,
     Plain,
 }
 
-/// A class body's statements outside its functions' bodies, each with
-/// whether a preprocessor conditional encloses it. A dropped body ends
-/// its statement, so that what follows is a statement of its own.
 fn class_statements(body: &str) -> Vec<(String, bool)> {
     let mut statements = Vec::new();
     let mut current = String::new();
@@ -1587,8 +1407,6 @@ fn class_statements(body: &str) -> Vec<(String, bool)> {
     statements
 }
 
-/// A class body with each `#ifdef V8_TARGET_OS_WIN` replaced by its other
-/// branch.
 fn without_windows(body: &str) -> String {
     let mut kept = String::new();
     let mut windows: Option<bool> = None;
@@ -1608,12 +1426,10 @@ fn without_windows(body: &str) -> String {
     kept
 }
 
-/// `value` rounded up to a multiple of `alignment`, which is positive.
 fn align(value: i64, alignment: i64) -> i64 {
     (value + alignment - 1) / alignment * alignment
 }
 
-/// The size of a C type `globals.h` or the platform gives.
 fn type_size(globals: &str, ty: &str) -> i64 {
     match ty {
         "int16_t" | "uint16_t" => 2,
@@ -1625,8 +1441,6 @@ fn type_size(globals: &str, ty: &str) -> i64 {
     }
 }
 
-/// The data members of a class's body, `Type name;` or `Type name =
-/// value;`, as `(type, name)`.
 fn members(body: &str) -> Vec<(String, String)> {
     let mut depth = 0;
     let body: String = body
@@ -1655,8 +1469,6 @@ fn members(body: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The classes of frames `Headers::frame_constants` reads, each with the
-/// class it derives from, which the header must declare.
 const FRAME_CLASSES: [(&str, &str); 4] = [
     ("InterpreterFrameConstants", "UnoptimizedFrameConstants"),
     ("UnoptimizedFrameConstants", "StandardFrameConstants"),
@@ -1664,10 +1476,6 @@ const FRAME_CLASSES: [(&str, &str); 4] = [
     ("CommonFrameConstants", "AllStatic"),
 ];
 
-/// `text` with each call of a function-like macro of `macros` expanded, and
-/// the result expanded again. These macros neither stringize nor paste. A
-/// macro with more than one definition, or a call with the wrong number of
-/// arguments, fails.
 fn expand_macros(text: &str, macros: &BTreeMap<String, Vec<(Vec<String>, String)>>) -> String {
     let call = Regex::new(r"\b(\w+)\s*\(").expect("a pattern");
     let identifier = Regex::new(r"\w+").expect("a pattern");
@@ -1726,15 +1534,10 @@ fn expand_macros(text: &str, macros: &BTreeMap<String, Vec<(Vec<String>, String)
     panic!("the macros do not finish expanding")
 }
 
-/// `text` with each run of whitespace collapsed to one space, for comparing
-/// source shapes.
 fn normalized(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The data members of a class's body outside its functions' bodies, as
-/// V8 names them, `Type name_;` or `Type name_[N];`, each as written with
-/// its whitespace normalized.
 fn data_members(body: &str) -> Vec<String> {
     let mut depth = 0;
     let outside: String = body
@@ -1757,7 +1560,6 @@ fn data_members(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// The text without its comments.
 fn strip_comments(text: &str) -> String {
     static BLOCK: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/").expect("a pattern"));
@@ -1766,13 +1568,7 @@ fn strip_comments(text: &str) -> String {
         .into_owned()
 }
 
-/// The text as a release build compiles it: without the branches of `#ifdef
-/// DEBUG` and `#if DEBUG`, nor the other branches of `#ifndef DEBUG`, as
-/// `DeoptimizationData::kDeoptEntrySize` has one per build type. Every
-/// other conditional is kept, with its directives.
 fn release(text: &str) -> String {
-    // Each open conditional: whether its current branch is compiled, for one
-    // about DEBUG, or `None` for another, which is kept.
     let mut open: Vec<Option<bool>> = Vec::new();
     let compiled = |open: &[Option<bool>]| open.iter().all(|branch| branch.unwrap_or(true));
     let debug = |condition: &str| matches!(condition.trim(), "DEBUG" | "defined(DEBUG)");
@@ -1817,7 +1613,6 @@ fn release(text: &str) -> String {
     kept
 }
 
-/// The body of the macro `head` defines, its lines joined.
 fn macro_body(text: &str, head: &str) -> String {
     let rest = text
         .split_once(head)
@@ -1837,8 +1632,6 @@ fn macro_body(text: &str, head: &str) -> String {
     body
 }
 
-/// Each `V(name, rest)` of a macro's body, its arguments' parentheses
-/// balanced.
 fn v_entries(body: &str) -> Vec<(String, String)> {
     let mut entries = Vec::new();
     let mut rest = body;
@@ -1865,7 +1658,6 @@ fn v_entries(body: &str) -> Vec<(String, String)> {
     entries
 }
 
-/// The body of the class or struct named `name`, between its braces.
 fn class_body<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     let pattern = format!(
         r"(?:class|struct)\s+(?:[A-Z_0-9]+(?:\([A-Z_0-9]+\))?\s+)*{name}\b\s*(?:final\s*)?(?::[^;{{]*)?\{{"
@@ -1884,8 +1676,6 @@ fn class_body<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     Some(&body[..end.0])
 }
 
-/// The expression a namespace constant `const T name = value;` or
-/// `constexpr T name = value;` has, the first a file defines.
 fn namespace_constant(text: &str, name: &str) -> Option<String> {
     let pattern =
         format!(r"(?m)^(?:static\s+)?(?:const|constexpr)\s+[\w:]+\s+{name}\s*=\s*([^;]+);");
@@ -1896,8 +1686,6 @@ fn namespace_constant(text: &str, name: &str) -> Option<String> {
     )
 }
 
-/// The value of a C++ integer expression: literals, names `lookup` gives,
-/// unary minus, `* + - << == |`, parentheses, and `condition ? a : b`.
 pub(super) fn eval(expression: &str, lookup: &dyn Fn(&str) -> Option<i64>) -> Option<i64> {
     static TOKENS: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"[A-Za-z_][\w:]*|0x[0-9a-fA-F]+[uUlL]*|\d+[uUlL]*|<<|==|[-+*|()?:]")

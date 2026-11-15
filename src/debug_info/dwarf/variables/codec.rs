@@ -1,5 +1,3 @@
-//! Decoding and encoding target integers, floats, addresses, and bit-fields.
-
 use std::sync::Arc;
 
 use gimli::{Reader as _, RunTimeEndian};
@@ -215,9 +213,6 @@ pub(super) fn read_sleb128_i128(
     let mut value = 0_u128;
     let mut shift = 0_u32;
 
-    // The number fits only if every bit from bit 127 up repeats the sign,
-    // which only the last byte gives. Until then, note whether those bits
-    // were all zero or all one.
     let mut high_zeros = true;
     let mut high_ones = true;
 
@@ -393,7 +388,6 @@ pub(super) fn signed_integer_bytes(
     integer_bytes(value.cast_unsigned() & low_bits_mask(bits), size, target)
 }
 
-/// Whether `value` fits a two's-complement integer `bits` wide.
 const fn fits_signed(value: i128, bits: u32) -> bool {
     if bits >= 128 {
         return true;
@@ -516,9 +510,6 @@ pub(super) fn decode_scalar(
     }
 }
 
-/// The float type each part of a complex type is: Go's `complex128` is two
-/// `float64`, C's `complex double` two `double`, and Clang's `complex` two
-/// floats of its size.
 pub(super) fn complex_part(complex: &BaseType) -> BaseType {
     let byte_size = complex.byte_size / 2;
     let name: Arc<str> = match complex.base_name.as_ref() {
@@ -572,9 +563,6 @@ pub(super) fn unsigned_value(
     })
 }
 
-/// Whether a 16-byte float is x87 extended precision, padded, rather than
-/// the IEEE binary128 of `__float128` and `f128`; only the name tells them
-/// apart.
 fn is_x87_extended(type_info: &BaseType, target: TargetDescription) -> bool {
     type_info.byte_size == 16
         && type_info.float_layout() == Some(FloatLayout::X87Extended)
@@ -582,8 +570,6 @@ fn is_x87_extended(type_info: &BaseType, target: TargetDescription) -> bool {
         && target.byte_order == ByteOrder::Little
 }
 
-/// How many leading bytes of a scalar's storage hold its value: all of
-/// them, but for x87 extended precision, whose last six are padding.
 pub(super) fn significant_bytes(type_info: &BaseType, target: TargetDescription) -> u64 {
     if is_x87_extended(type_info, target) {
         10

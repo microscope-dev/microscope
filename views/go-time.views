@@ -1,26 +1,26 @@
 microscope-views 1
 
-# Go's time package. Verified against Go 1.27.1, by tests/fixtures/go/stdlib.
 
-# A duration is a count of nanoseconds, written as Duration.String writes
-# it.
+
+
+
 view go time.Duration {
     show value((i64)self)
     format self as duration(ns)
 }
 
-# A time is a wall clock reading, its location, and, when it has one, a
-# monotonic clock reading (time.go). Its wall word's top bit says whether it
-# has a monotonic reading; if so, the next 33 bits are its seconds since
-# 1885 and ext is the monotonic reading, in nanoseconds since the process
-# started, and if not, ext is its seconds since the year 1. The word's low
-# 30 bits are its nanoseconds. The wall reading is shown in UTC, since the
-# offset of a location's zone at an instant is the program's to compute; a
-# nil location is UTC.
+
+
+
+
+
+
+
+
 view go time.Time {
     let monotonic = wall >> 63 != 0
-    # wallToInternal and unixToInternal: the seconds from the year 1 to
-    # 1885, and to 1970.
+
+
     let seconds = monotonic ? 59453308800 + (wall << 1 >> 31) : ext
     let unix = (seconds - 62135596800) * 1000000000 + (wall & 0x3fffffff)
     let location = loc == null ? &global(`time.utcLoc`) : &*loc
@@ -33,9 +33,9 @@ view go time.Time {
     format monotonic as duration(ns)
 }
 
-# A location is named by its name, except the local location before the
-# program first uses it, whose name the program has yet to choose
-# (zoneinfo.go).
+
+
+
 view go time.Location {
     show if len(name) == 0 && &self == &global(`time.localLoc`) {
         empty("Local (not yet loaded)")

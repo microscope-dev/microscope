@@ -17,8 +17,6 @@ const TABS: { tab: SyscallTab | undefined; label: string }[] = [
   { tab: "processes", label: "Processes" },
 ];
 
-/** What the kernel did for the program. System calls are its first kind,
- * and the one it has so far. */
 export function KernelPane() {
   return (
     <div className="kernel" data-testid="kernel">
@@ -34,11 +32,6 @@ export function KernelPane() {
   );
 }
 
-/** The profile's system calls: what they cost, when, from where, and what
- * they did. Every panel reads the same selection, in strace's `-e`
- * syntax, over the same time range as the rest of the profile. A
- * recording that kept none, or only the exceptions, says so in their
- * place, with the flag that would have kept them. */
 function SyscallsView() {
   const { summary, look } = useProfile();
   const missing = unkept(summary.settings);
@@ -80,8 +73,6 @@ function Unkept({ text, flag }: Missing) {
   );
 }
 
-/** The calls the recording kept, under what it left out when it kept
- * only some. */
 function Calls({ missing }: { missing: Missing | null }) {
   const { profile, look, query } = useProfile();
   const base = useMemo(
@@ -114,7 +105,6 @@ function Calls({ missing }: { missing: Missing | null }) {
       {missing ? <Unkept {...missing} /> : null}
       <div className="syscalls-body">
         {look.st === "log" ? (
-          // A new selection starts at its first page.
           <Log key={JSON.stringify(base)} query={base} />
         ) : look.st === "files" ? (
           <Files query={base} />
@@ -130,11 +120,10 @@ function Calls({ missing }: { missing: Missing | null }) {
   );
 }
 
-/** The selection, as `-e` takes it; Enter applies it. */
 function FilterBar({ error }: { error: string | undefined }) {
   const { look, setLook } = useProfile();
   const [text, setText] = useState(look.sf ?? "");
-  // A selection applied elsewhere replaces what is typed.
+
   const [applied, setApplied] = useState(look.sf);
   if (applied !== look.sf) {
     setApplied(look.sf);

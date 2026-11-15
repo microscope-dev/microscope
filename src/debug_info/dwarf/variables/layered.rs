@@ -1,11 +1,3 @@
-//! Tables the type arena keeps in two layers: a frozen base, which every
-//! unit's walk shares and none changes, and the rows one walk adds.
-//!
-//! Each unit's walk reads what was built before any unit was walked and
-//! adds its own types beside it, so that units can be walked at once and
-//! their types put in order afterwards. A table that is not shared reads
-//! and writes as one table; writing to a shared base copies it first.
-
 use std::sync::Arc;
 
 use foldhash::HashMap;
@@ -13,7 +5,6 @@ use foldhash::HashMap;
 use super::types::Bits;
 use crate::debug_info::dwarf::{DieKey, DieMap};
 
-/// Rows numbered from zero, whose first rows may be a shared base.
 pub(super) struct Rows<T> {
     base: Arc<Vec<T>>,
     own: Vec<T>,
@@ -43,7 +34,6 @@ impl<T> Rows<T> {
         self.own.push(row);
     }
 
-    /// Grows the rows to `len`, filling them with `fill`.
     pub(super) fn resize_with(&mut self, len: usize, fill: impl FnMut() -> T) {
         if let Some(own) = len.checked_sub(self.base.len())
             && own > self.own.len()
@@ -56,23 +46,18 @@ impl<T> Rows<T> {
         self.base.iter().chain(&self.own)
     }
 
-    /// How many rows the base holds.
     pub(super) fn base_len(&self) -> usize {
         self.base.len()
     }
 
-    /// The rows past the base, which only this table holds.
     pub(super) fn into_own(self) -> Vec<T> {
         self.own
     }
 
-    /// Forgets the rows past the base.
     pub(super) fn clear_own(&mut self) {
         self.own.clear();
     }
 
-    /// Makes every row the base of this table and of the tables split from
-    /// it.
     pub(super) fn freeze(&mut self)
     where
         T: Clone,
@@ -81,8 +66,6 @@ impl<T> Rows<T> {
         self.base = Arc::new(rows);
     }
 
-    /// A table that reads this one's base and adds its own rows; this one
-    /// must have none past its base.
     pub(super) fn split(&self) -> Self {
         debug_assert!(self.own.is_empty(), "only a frozen table splits");
         Self {
@@ -100,9 +83,6 @@ impl<T: Clone> Rows<T> {
         }
     }
 
-    /// Every row as one vector: the base's, moved when nothing else shares
-    /// it and copied when something does, then this table's own. The
-    /// longer of the two is kept and the other moved into it.
     pub(super) fn flat(&mut self) -> &mut Vec<T> {
         if !self.base.is_empty() {
             let base = std::mem::take(&mut self.base);
@@ -150,7 +130,6 @@ impl<T: Clone> std::ops::IndexMut<usize> for Rows<T> {
     }
 }
 
-/// A set of small numbers, whose first members may be a shared base.
 #[derive(Default)]
 pub(super) struct Marks {
     base: Arc<Bits>,
@@ -166,12 +145,10 @@ impl Marks {
         self.own.insert(value);
     }
 
-    /// The numbers this set holds past its base.
     pub(super) fn into_own(self) -> Bits {
         self.own
     }
 
-    /// Forgets the numbers past the base.
     pub(super) fn clear_own(&mut self) {
         self.own = Bits::default();
     }
@@ -196,7 +173,6 @@ impl Marks {
     }
 }
 
-/// A map one walk reads through to a shared base.
 pub(super) trait Table: Default + Clone {
     type Key;
     type Value;
@@ -205,7 +181,6 @@ pub(super) trait Table: Default + Clone {
 
     fn insert(&mut self, key: Self::Key, value: Self::Value) -> Option<Self::Value>;
 
-    /// Adds every entry of `other`, whose own replace these.
     fn extend_with(&mut self, other: Self);
 
     fn is_empty(&self) -> bool;
@@ -253,8 +228,6 @@ impl<V: Clone> Table for DieMap<V> {
     }
 }
 
-/// A map whose first entries may be a shared base. An entry this map adds
-/// for a key the base holds hides the base's.
 #[derive(Default)]
 pub(super) struct Layered<M> {
     base: Arc<M>,
@@ -270,23 +243,18 @@ impl<M: Table> Layered<M> {
         self.own.insert(key, value);
     }
 
-    /// The entries past the base, which only this map holds.
     pub(super) fn into_own(self) -> M {
         self.own
     }
 
-    /// Forgets the entries past the base.
     pub(super) fn clear_own(&mut self) {
         self.own = M::default();
     }
 
-    /// Adds entries past the base.
     pub(super) fn extend_own(&mut self, entries: M) {
         self.own.extend_with(entries);
     }
 
-    /// Every entry as one map: the base's, moved when nothing else shares
-    /// it and copied when something does, then this map's own.
     pub(super) fn flat(&mut self) -> &mut M {
         if !self.base.is_empty() {
             let base = std::mem::take(&mut self.base);

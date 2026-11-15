@@ -1,7 +1,3 @@
-// Every renderer example in docs/visualizers.md runs in the real worker and
-// returns a picture the page accepts, and the tutorial's files are the
-// fixture's, so the reference cannot drift from what microscope does.
-
 import { expect, it } from "vitest";
 import { commands } from "vitest/browser";
 
@@ -11,8 +7,6 @@ import { sandbox, Watched } from "./sandboxes";
 
 const docs = await commands.readFile("../docs/visualizers.md");
 
-/** What `source` returns for `input`, which is also its previous input, as
- * if each input were the value's member of the same name. */
 function run(source: string, input: unknown): Promise<Record<string, unknown>> {
   return runRenderer(source, input, {
     previous: input,

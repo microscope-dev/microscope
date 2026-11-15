@@ -1,7 +1,7 @@
 'use strict';
-// microscope's launch preload. In a process microscope's tracer traces, it
-// opens Node's inspector and waits for microscope to connect; elsewhere it
-// does nothing.
+
+
+
 (() => {
   const env = process.env;
   const tracer = env.MICROSCOPE_TRACER;
@@ -34,6 +34,6 @@
       inspector.console.debug('microscope ownership', ownership, target, borrowed ? 'borrowed' : 'created');
     }
   } catch {
-    // node --test's runner has no inspector (F30).
+
   }
 })();

@@ -1,6 +1,3 @@
-// Profile view state is encoded in the URL. Selections use function names,
-// not node numbers, so links work across clients.
-
 import { assert } from "../assert";
 import type {
   ProfileDuring,
@@ -14,85 +11,74 @@ import type {
 } from "../protocol";
 import type { DiffMode } from "./paint";
 
-/** A profile's panes other than its overview, which holds its timeline. */
 export type ProfileView = "flame" | "tree" | "functions" | "kernel" | "zones" | "details";
 
-/** The Syscalls tab's own tabs; the summary when absent. */
 export type SyscallTab = "log" | "files" | "network" | "processes";
 
 export interface ProfileLook {
-  /** The pane shown; the overview when absent. */
   view?: ProfileView;
-  /** `START-END`, nanoseconds from the profile's start. */
+
   range?: string;
-  /** Thread rows selected; every thread when absent. */
+
   th?: string[];
-  /** Where task snapshots found tasks waiting, not the CPU samples. */
+
   src?: "waits";
-  /** Task rows selected, `none` for what no snapshot named; every task
-   * when absent. */
+
   tk?: string[];
-  /** Each path rooted at its task. */
+
   bt?: "1";
-  /** Labels a sample must carry, each `KEY=VALUE`. */
+
   lb?: string[];
-  /** Each path rooted at its label of this key. */
+
   bl?: string;
-  /** The zone site, or label key, the Zones pane measures and the lanes
-   * light up. */
+
   zs?: string;
-  /** Of the site's zones, those of lengths `LO-HI` in nanoseconds. */
+
   zb?: string;
-  /** Samples inside every zone of the site, or of the band; the range's
-   * samples alone when absent. */
+
   zf?: "all" | "band";
-  /** One zone, `THREAD:START-END`, whose span the views read instead of
-   * the range and the site's zones. */
+
   zi?: string;
-  /** A diff of the band against the rest of the site's zones. */
+
   bz?: "rest";
-  /** Timeline lanes of tasks rather than threads. */
+
   lanes?: "tasks";
-  /** Transforms in order, each `OP:NAME`. */
+
   tf?: string[];
   invert?: "1";
-  /** The frames threads ran, not each async task's own. */
+
   native?: "1";
-  /** Each stack as its Python code sees it. */
+
   py?: "1";
-  /** How finely frames are told apart; by function when absent. */
+
   by?: Exclude<ProfileGranularity, "function">;
-  /** The function selected, by name. */
+
   fn?: string;
-  /** The flame graph's zoomed node, by its path of names from the root. */
+
   z?: string[];
-  /** The profile a diff compares with, by its id; this one when absent and
-   * `br` is set. */
+
   bp?: string;
-  /** The range of the base profile a diff compares with, `START-END`. */
+
   br?: string;
-  /** A diff compares each side's share of its own profile, not its cost. */
+
   dm?: "share";
-  /** What the selected function shows: its source lines or its code,
-   * rather than its callers and callees. */
+
   ann?: "lines" | "code";
-  /** The Syscalls view's selection, in strace's `-e` syntax. */
+
   sf?: string;
-  /** What the Syscalls summary's rows are of; calls when absent. */
+
   sg?: Exclude<SyscallGroup, "syscall">;
-  /** The call selected in the Syscalls summary, by name. */
+
   sc?: string;
-  /** The Syscalls view's tab. */
+
   st?: SyscallTab;
-  /** The log line expanded, by its event. */
+
   ev?: string;
-  /** Calls of one log2 latency bucket, as a heat map's row names it. */
+
   sl?: string;
-  /** Samples taken during the calls `sf` and `sl` select: `all`, or those
-   * of one summary row, `GROUP:KEY`. */
+
   du?: string;
-  /** Each call the samples' views keep as a leaf under the code that made
-   * it. */
+
   sk?: "1";
 }
 
@@ -101,10 +87,9 @@ const SYSCALL_GROUPS: ReadonlySet<string> = new Set(["class", "process", "thread
 const SYSCALL_TABS: ReadonlySet<string> = new Set(["log", "files", "network", "processes"]);
 const GRANULARITIES: ReadonlySet<string> = new Set(["physical", "line", "address"]);
 const OPS: readonly TransformOp[] = ["focus", "merge", "drop"];
-/** The ops that take no name, written in the look as the op alone. */
+
 const NAMELESS: readonly TransformOp[] = ["collapseCycles"];
 
-/** The typed look, dropping anything malformed. */
 export function validateProfileLook(search: Record<string, unknown>): ProfileLook {
   const look: ProfileLook = {};
   const text = (key: string) => {
@@ -241,7 +226,6 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
   return look;
 }
 
-/** One summary row, `GROUP:KEY`; the key may hold colons of its own. */
 export function parseDuringRow(text: string): { group: SyscallGroup; key: string } | null {
   const at = text.indexOf(":");
   const group = text.slice(0, at);
@@ -254,7 +238,6 @@ export function formatDuringRow(group: SyscallGroup, key: string): string {
   return `${group}:${key}`;
 }
 
-/** What a chip calls the calls of `du`. */
 export function duringLabel(du: string): string {
   const row = parseDuringRow(du);
   if (!row) {
@@ -263,7 +246,6 @@ export function duringLabel(du: string): string {
   return row.group === "process" || row.group === "thread" ? `${row.group} ${row.key}` : row.key;
 }
 
-/** The calls whose samples a look keeps, if it keeps only those. */
 export function duringOf(look: ProfileLook): ProfileDuring | null {
   if (!look.du) {
     return null;
@@ -276,11 +258,7 @@ export function duringOf(look: ProfileLook): ProfileDuring | null {
   };
 }
 
-/** The Syscalls view's query of `profile`: the calls of the look's
- * selection, through its filter and latency band. */
 export function syscallQueryOf(profile: string, look: ProfileLook, revision: number): SyscallQuery {
-  // The calls of what the sample views select; a comparison is theirs, and
-  // the calls are not narrowed by the samples taken during them.
   const { base: _base, during: _during, ...link } = queryOf(profile, look);
   return {
     ...link,
@@ -291,7 +269,6 @@ export function syscallQueryOf(profile: string, look: ProfileLook, revision: num
   };
 }
 
-/** Parses `START-END`, a nonempty range of whole nanoseconds. */
 export function parseRange(text: string): [number, number] | null {
   const match = /^(\d{1,16})-(\d{1,16})$/u.exec(text);
   if (!match) {
@@ -302,7 +279,6 @@ export function parseRange(text: string): [number, number] | null {
   return end > start ? [start, end] : null;
 }
 
-/** Parses `LO-HI`, a band of whole nanoseconds, which may be one length. */
 export function parseBand(text: string): [number, number] | null {
   const match = /^(\d{1,16})-(\d{1,16})$/u.exec(text);
   if (!match) {
@@ -318,13 +294,11 @@ export function formatBand([low, high]: readonly [number, number]): string {
   return `${Math.round(low)}-${Math.round(high)}`;
 }
 
-/** One zone: its thread's row and its span. */
 export interface Instance {
   thread: number;
   span: [number, number];
 }
 
-/** Parses `THREAD:START-END`. */
 export function parseInstance(text: string): Instance | null {
   const at = text.indexOf(":");
   const span = parseRange(text.slice(at + 1));
@@ -337,14 +311,10 @@ export function formatInstance({ thread, span }: Instance): string {
   return `${thread}:${formatRange(span)}`;
 }
 
-/** The look with one zone selected, or none: it never changes the threads
- * the views read. */
 export function withInstance(look: ProfileLook, instance: Instance | null): ProfileLook {
   return withLook(look, "zi", instance ? formatInstance(instance) : undefined);
 }
 
-/** The look with its most specific zone selection cleared: the zone, else
- * the band, else the site; the same look if it has none. */
 export function cleared(look: ProfileLook): ProfileLook {
   if (look.zi) {
     return withInstance(look, null);
@@ -356,15 +326,12 @@ export function cleared(look: ProfileLook): ProfileLook {
   return look.zs ? rest : look;
 }
 
-/** The look with no zone site chosen, nor anything that refines one. */
 export function withoutSite(look: ProfileLook): ProfileLook {
   const { zs: _zs, zb: _zb, zf: _zf, bz: _bz, zi: _zi, ...rest } = look;
   return rest;
 }
 
-/** The zones a look's samples must be inside, if any. */
 export function scopeOf(look: ProfileLook): ProfileZoneScope | null {
-  // Zones are a thread's, never a wait's; an instance stands in for them.
   if (!look.zs || look.zi || look.src === "waits") {
     return null;
   }
@@ -375,18 +342,14 @@ export function scopeOf(look: ProfileLook): ProfileZoneScope | null {
   return look.zf === "all" ? { name: look.zs, band: null, outside: false } : null;
 }
 
-/** What a diff's change column compares: cost, unless the look asks for
- * shares. */
 export function diffModeOf(look: { dm?: "share" | undefined }): DiffMode {
   return look.dm === "share" ? "share" : "time";
 }
 
-/** The look's time range, if it selects one. */
 export function rangeOf(look: { range?: string | undefined }): [number, number] | null {
   return look.range ? parseRange(look.range) : null;
 }
 
-/** The span the views read: the zone selected, else the range. */
 export function spanOf(look: ProfileLook): [number, number] | null {
   return (look.zi ? parseInstance(look.zi)?.span : null) ?? rangeOf(look);
 }
@@ -396,8 +359,6 @@ export function formatRange([start, end]: [number, number]): string {
   return `${Math.round(start)}-${Math.round(end)}`;
 }
 
-/** Parses `OP:NAME`, or an op that takes no name alone; the name may
- * hold colons of its own. */
 export function parseTransform(entry: string): ProfileTransform | null {
   if ((NAMELESS as readonly string[]).includes(entry)) {
     return { op: entry as TransformOp, name: "" };
@@ -414,13 +375,12 @@ function formatTransform(transform: ProfileTransform): string {
   return NAMELESS.includes(transform.op) ? transform.op : `${transform.op}:${transform.name}`;
 }
 
-/** The query a look asks of `profile`. */
 export function queryOf(profile: string, look: ProfileLook): ProfileQuery {
   const range = spanOf(look);
   const zones = scopeOf(look);
   const baseRange = look.br ? parseRange(look.br) : null;
   const during = duringOf(look);
-  // The rest of the band's site, over the same range.
+
   const rest = look.bz === "rest" && zones?.band ? { ...zones, outside: true } : null;
   const base = rest
     ? { profile, ...(range ? { range } : {}), zones: rest }
@@ -450,15 +410,11 @@ export function queryOf(profile: string, look: ProfileLook): ProfileQuery {
   };
 }
 
-/** The same look with `transform` applied after the others. What was
- * selected or zoomed may no longer be where it was, so neither is kept. */
 export function transformed(look: ProfileLook, transform: ProfileTransform): ProfileLook {
   const { z: _z, ...rest } = look;
   return { ...rest, tf: [...(look.tf ?? []), formatTransform(transform)] };
 }
 
-/** The same look without its transform at `index`. The others still name
- * functions of the profile, so each still applies without it. */
 export function untransformed(look: ProfileLook, index: number): ProfileLook {
   const { tf, z: _z, ...rest } = look;
   assert(
@@ -469,8 +425,6 @@ export function untransformed(look: ProfileLook, index: number): ProfileLook {
   return kept.length > 0 ? { ...rest, tf: kept } : rest;
 }
 
-/** What one pane keeps to itself: how it draws the samples, not which
- * they are. The rest of a look its profile's panes share. */
 const OWN = [
   "z",
   "invert",
@@ -488,8 +442,6 @@ const OWN = [
 
 export type OwnLook = Pick<ProfileLook, (typeof OWN)[number]>;
 
-/** A look's parts: what its profile's panes share, and what the pane shown
- * keeps to itself. The view is which pane, so neither keeps it. */
 export function splitLook(look: ProfileLook): { shared: ProfileLook; own: OwnLook } {
   const { view: _view, ...rest } = look;
   const shared: Record<string, unknown> = { ...rest };
@@ -503,7 +455,6 @@ export function splitLook(look: ProfileLook): { shared: ProfileLook; own: OwnLoo
   return { shared: shared as ProfileLook, own: own as OwnLook };
 }
 
-/** The same look with only `key` changed, or removed when undefined. */
 export function withLook<K extends keyof ProfileLook>(
   look: ProfileLook,
   key: K,

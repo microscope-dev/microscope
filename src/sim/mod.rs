@@ -1,22 +1,3 @@
-//! Deterministic simulation of debugging sessions; see `dev/simulator.md`.
-//!
-//! A run drives the real controller and `DebuggerHandle` against a simulated
-//! Linux kernel and x86-64 CPU, so that one seed names one complete,
-//! reproducible session.
-//!
-//! - [`world`]: the step loop that schedules every action of a session, and
-//!   `machine`, what its actions and the controller's calls reach.
-//! - [`kernel`], [`cpu`], [`memory`], [`loader`]: the simulated machine.
-//! - [`client`]: the simulated user, driving `DebuggerHandle`.
-//! - [`oracles`], `semantics`, and `audit`: checks of the debugger against
-//!   ground truth, and `samples`, of the profiler's samples.
-//! - [`choices`], [`swarm`], [`schedule`]: where every random choice comes
-//!   from, and how the next action is chosen.
-//! - [`faults`]: what the rest of the machine does to a session.
-//! - [`corpus`]: the golden programs, with [`facts`] about each binary and
-//!   [`markers`] in their sources.
-//! - [`report`]: traces, fingerprints, and failures, and [`shrink`], which
-//!   makes a failing run smaller.
 #![expect(
     clippy::indexing_slicing,
     reason = "the simulator is a test harness and reports a bug by panicking"
@@ -71,7 +52,6 @@ pub use corpus::Corpus;
 pub use marks::Reach;
 pub use world::{Outcome, Settings, run};
 
-/// A failed run, written to be understood without rerunning it.
 #[must_use]
 pub fn describe_failure(outcome: &Outcome) -> String {
     let mut text = String::new();
@@ -102,8 +82,6 @@ pub fn describe_failure(outcome: &Outcome) -> String {
         let _ = writeln!(text, "  {line}");
     }
 
-    // A run that replayed a tape needs it to run again; whoever made the
-    // tape says how.
     if outcome.tape.is_none() {
         let _ = writeln!(
             text,

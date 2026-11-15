@@ -1,5 +1,3 @@
-//! Variable, expression, and global inspection at a stopped snapshot.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -37,8 +35,6 @@ use super::{
 };
 
 impl<P: InspectionOps> Controller<P> {
-    /// The inferior, once `stop_id` is its current stop, `pid` one of its
-    /// stopped threads, and its image the one the thread executes.
     pub(super) fn stopped_inferior(&self, stop_id: StopId, pid: Pid) -> Result<&Inferior> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_public_stop(inferior, Some(stop_id))?;
@@ -61,7 +57,6 @@ impl<P: InspectionOps> Controller<P> {
             .map(|pid| self.ptrace.registers(pid))
             .transpose()?;
 
-        // A parked task's innermost registers are those its runtime saved.
         let resolved = if frame == StackFrameId::INNERMOST && native.is_some() {
             None
         } else {
@@ -96,18 +91,12 @@ impl<P: InspectionOps> Controller<P> {
         ))
     }
 
-    /// Returns the module describing a frame's function, the frame's address
-    /// in its image, and the frame's source scope, or `None` when no single
-    /// function scope applies: code without debug information, or an
-    /// innermost frame with no single inline chain.
     pub(super) fn frame_scope(
         &self,
         frame: &ResolvedFrame,
     ) -> Option<(&RuntimeModule, ImageAddress, Option<CodeInstanceId>)> {
         let (module, address) = frame.code?;
         let selected = match frame.scope {
-            // A suspended frame's variables are in its future, which no
-            // scope of its function's code describes.
             FrameScope::Unavailable
             | FrameScope::Suspended { .. }
             | FrameScope::Interpreted { .. } => return None,
@@ -118,7 +107,6 @@ impl<P: InspectionOps> Controller<P> {
         Some((self.modules.get(&module)?, address, selected))
     }
 
-    /// Reads a frame's registers and memory for values `module` describes.
     pub(super) fn frame_runtime<'a>(
         &'a self,
         inferior: &'a Inferior,
@@ -159,8 +147,6 @@ impl<P: InspectionOps> Controller<P> {
         let mut budget = InspectionBudget::new(limits);
         let inferior = self.stopped_root(stop_id, root)?;
 
-        // An inline frame sees its instance's variables; a physical frame,
-        // its function's own.
         let resolved = self.resolve_frame(inferior, root, frame)?;
         let scope = self.frame_scope(&resolved);
         let suspended = matches!(resolved.scope, FrameScope::Suspended { .. });
@@ -204,8 +190,6 @@ impl<P: InspectionOps> Controller<P> {
             VariableQuery::All => {
                 let mut variables = inspect_locals(&mut budget)?;
 
-                // A step out's stop shows what the finished function
-                // returned beside the frame it returned to.
                 if let Some(returned) = inferior.run.stop().and_then(|stop| stop.returned.as_ref())
                 {
                     variables.extend(self.returned_variables(
@@ -228,8 +212,6 @@ impl<P: InspectionOps> Controller<P> {
 
                 match local {
                     Ok(variables) => variables,
-                    // An interpreted frame's names are its interpreter's,
-                    // which no native global answers to.
                     Err(Error::VariableNotFound(_)) if interpreted.is_none() => {
                         let global = self.loaded_global_named(name)?;
                         vec![self.inspect_loaded_global(
@@ -245,8 +227,6 @@ impl<P: InspectionOps> Controller<P> {
             }
         };
 
-        // Views present what the provider read, with the same budget; an
-        // interpreter's values come presented.
         if interpreted.is_none() {
             let scope = self.frame_for(inferior, stop_id, root, &resolved);
             let mut machine = StopMachine::new(&scope, &mut budget, true);
@@ -269,8 +249,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// A capability's stack and module, once its stop is current. Nothing
-    /// a stale capability names is consulted.
     fn capability_module(
         &self,
         stop_id: StopId,
@@ -291,7 +269,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok((inferior, root, module))
     }
 
-    /// The one global named `name` among the loaded modules.
     fn loaded_global_named(&self, name: &str) -> Result<GlobalVariableReference> {
         let mut matches = Vec::new();
         for module in self.modules.values() {
@@ -352,8 +329,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(variable)
     }
 
-    /// The elements `start..end` of an inspected array or slice, by source
-    /// index.
     pub(super) fn range_page(
         &self,
         stop_id: StopId,
@@ -418,8 +393,6 @@ impl<P: InspectionOps> Controller<P> {
             }
         };
 
-        // Once `start` is in bounds, `end`, which is not below it, can only
-        // be past the last element.
         let relative = |index: i128| {
             index
                 .checked_sub(lower_bound)
@@ -464,8 +437,6 @@ impl<P: InspectionOps> Controller<P> {
             reference.image,
         )?;
 
-        // The capability evaluates in the frame that produced it, whichever
-        // frame is selected now.
         let frame = self.resolve_frame(inferior, &root, reference.frame)?;
         let mut runtime = self.frame_runtime(inferior, &root, &frame, module);
         let mut value = module
@@ -536,8 +507,6 @@ impl<P: InspectionOps> Controller<P> {
         let mut children = page.children.to_vec();
 
         for child in &mut children {
-            // A base-class subobject is part of an object, not one of the
-            // type it dynamically is.
             machine.dynamic = !matches!(child.relationship, crate::ValueChildRelationship::Base(_));
             machine.present_state(Some(child.type_info.clone()), &mut child.state)?;
         }
@@ -628,8 +597,6 @@ pub(super) const fn variable_context(
     }
 }
 
-/// The stop whose capabilities inspection hands out: the public stop, or
-/// none at all for values read at a breakpoint hit.
 fn public_stop_id(inferior: &Inferior) -> StopId {
     inferior
         .run
@@ -637,9 +604,6 @@ fn public_stop_id(inferior: &Inferior) -> StopId {
         .map_or_else(|| StopId::new(0), |stop| stop.id)
 }
 
-/// The instruction context that selects a global's range-gated location
-/// entries. A frame executing another module gives none, so the provider
-/// refuses to guess rather than resolving against an unrelated address.
 pub(super) fn global_context_address(
     frame: &ResolvedFrame,
     module: &RuntimeModule,
@@ -653,15 +617,11 @@ pub(super) fn global_context_address(
 pub(super) struct LinuxVariableRuntime<'a, P: InspectionOps> {
     pub(super) ptrace: &'a P,
 
-    /// A stopped thread through which the process's memory is read.
     pub(super) pid: Pid,
 
-    /// The thread whose thread-local storage the frame sees; none for a
-    /// parked task.
     pub(super) thread: Option<Pid>,
     pub(super) loaded_module: LoadedModule,
 
-    /// The image addresses the module's segments span.
     pub(super) image_range: AddressRange<ImageAddress>,
     pub(super) breakpoints: &'a BTreeMap<VirtualAddress, BreakpointSite>,
     pub(super) registers: &'a FrameRegisters,
@@ -670,11 +630,8 @@ pub(super) struct LinuxVariableRuntime<'a, P: InspectionOps> {
     pub(super) tls: Option<TlsModule>,
     pub(super) frame: FrameAt,
 
-    /// The stack's activations, which entry values find callers among.
     pub(super) callers: Option<Rc<Callers<'a, P>>>,
 
-    /// Where the frame's task stack is below its stack pointer, which the
-    /// frame's values may not read.
     pub(super) below_stack_pointer: Option<std::ops::Range<u64>>,
 }
 
@@ -791,9 +748,6 @@ impl<P: InspectionOps> VariableRuntime for LinuxVariableRuntime<'_, P> {
 
         let read = read_logical_memory(self.ptrace, self.pid, self.breakpoints, address, size)
             .map_err(|error| match error {
-                // A location computed from a meaningless frame base, as
-                // before a prologue, can wrap the address space: that one
-                // value is unavailable.
                 Error::AddressOverflow => {
                     VariableRuntimeError::Unavailable(VariableUnavailableReason::ValueAccess(
                         crate::ValueAccessUnavailableReason::AddressOverflow,
@@ -831,7 +785,6 @@ impl<P: InspectionOps> VariableRuntime for LinuxVariableRuntime<'_, P> {
     }
 }
 
-/// The number of elements `start..end` holds, at most a page.
 fn validate_range_length(start: i128, end: i128) -> Result<i128> {
     let length = end
         .checked_sub(start)

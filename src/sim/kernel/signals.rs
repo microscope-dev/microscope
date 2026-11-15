@@ -1,6 +1,3 @@
-//! Signals: what they do by default, how they are delivered, and how
-//! threads exit.
-
 use nix::errno::Errno;
 use nix::libc;
 
@@ -17,23 +14,16 @@ pub const SIGSTOP: i32 = libc::SIGSTOP;
 
 pub const SIGCONT: i32 = libc::SIGCONT;
 
-/// `si_code` of a signal sent by `kill`.
 pub const SI_USER: i32 = libc::SI_USER;
 
-/// `si_code` of a signal sent by `tgkill`.
 pub const SI_TKILL: i32 = libc::SI_TKILL;
 
-/// `si_code` of a breakpoint trap.
 pub const TRAP_BRKPT: i32 = 1;
 
-/// `si_code` of a single-step trap.
 pub const TRAP_TRACE: i32 = 2;
 
-/// `si_code` of a hardware breakpoint's trap.
 pub const TRAP_HWBKPT: i32 = 4;
 
-/// Signals the kernel delivers before any other pending signal, because an
-/// instruction raised them.
 const SYNCHRONOUS: [i32; 6] = [
     libc::SIGSEGV,
     libc::SIGBUS,
@@ -43,14 +33,10 @@ const SYNCHRONOUS: [i32; 6] = [
     libc::SIGSYS,
 ];
 
-/// The standard signals, 1 to 31, pending for one thread, each with the
-/// siginfo it will be delivered with. A standard signal already pending is
-/// not queued again: the first one's siginfo stays.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Pending([Option<SigInfo>; 31]);
 
 impl Pending {
-    /// Makes `info.signal` pending, unless it already is.
     pub const fn insert(&mut self, info: SigInfo) {
         let slot = &mut self.0[(info.signal - 1).cast_unsigned() as usize];
         if slot.is_none() {
@@ -58,14 +44,11 @@ impl Pending {
         }
     }
 
-    /// Whether a signal an instruction raised is pending: only a trap or
-    /// fault queues a synchronous one (K-TRAP-2).
     #[must_use]
     pub fn raised(&self) -> bool {
         SYNCHRONOUS.iter().any(|&signal| self.contains(signal))
     }
 
-    /// Whether no signal is pending.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.iter().all(Option::is_none)
@@ -76,13 +59,10 @@ impl Pending {
         self.0[(signal - 1).cast_unsigned() as usize].is_some()
     }
 
-    /// Forgets `signal`, if it is pending.
     pub(super) const fn remove(&mut self, signal: i32) {
         self.0[(signal - 1).cast_unsigned() as usize] = None;
     }
 
-    /// Takes the signal the kernel delivers next: synchronous signals
-    /// first, then the lowest-numbered.
     fn take_next(&mut self) -> Option<SigInfo> {
         let signal = SYNCHRONOUS
             .into_iter()
@@ -93,12 +73,8 @@ impl Pending {
     }
 }
 
-/// The signals that stop a process by default.
 const STOPPING: [i32; 4] = [SIGSTOP, libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU];
 
-/// What a signal does when the program has no handler for it.
-/// Signals that dump core terminate too: core dumps are off, as with a zero
-/// core size limit.
 enum DefaultAction {
     Terminate,
     Ignore,
@@ -113,7 +89,6 @@ const fn default_action(signal: i32) -> DefaultAction {
     }
 }
 
-/// A signal's conventional name.
 #[must_use]
 pub fn name(signal: i32) -> String {
     nix::sys::signal::Signal::try_from(signal).map_or_else(
@@ -123,7 +98,6 @@ pub fn name(signal: i32) -> String {
 }
 
 impl Kernel {
-    /// `kill(tgid, signal)`, sent by the tracer: SIGKILL, or SIGCONT.
     pub fn kill(&mut self, group: Tgid, signal: i32) -> Result<(), Errno> {
         if !self.processes.contains_key(&group) {
             return Err(Errno::ESRCH);
@@ -141,12 +115,6 @@ impl Kernel {
         Ok(())
     }
 
-    /// SIGCONT from the tracer to `group` (K-STOP-3). It flushes every
-    /// pending stop signal and ends the process's job-control stop, which
-    /// its parent hears of once one of its threads next runs. It
-    /// interrupts each seized thread, as `PTRACE_INTERRUPT` does. Queued
-    /// for the process when its leader is traced, it is otherwise
-    /// discarded, as an ignored signal is (Linux's `sig_ignored`).
     fn continue_process(&mut self, group: Tgid) {
         let sender = self.caller();
 
@@ -200,8 +168,6 @@ impl Kernel {
         }
     }
 
-    /// Tells a parent its child continued, once a thread of the child's
-    /// that SIGCONT woke runs (K-STOP-3).
     pub(super) fn report_continued(&mut self, tid: Tid) {
         let group = self.threads[&tid].tgid;
         let Some(process) = self
@@ -216,7 +182,6 @@ impl Kernel {
         self.notify_parent(group, libc::CLD_CONTINUED);
     }
 
-    /// Queues SIGCHLD with `code` for `group`'s parent, if a live process.
     pub(super) fn notify_parent(&mut self, group: Tgid, code: i32) {
         let Some(Parent::Process(parent)) =
             self.processes.get(&group).map(|process| process.parent)
@@ -234,9 +199,6 @@ impl Kernel {
         }
     }
 
-    /// `tgkill(tgid, tid, SIGSTOP)`, sent by the tracer. K-INT-2: a thread
-    /// that has not been reaped, even a zombie, accepts it. K-STOP-3: it
-    /// flushes a pending SIGCONT.
     pub fn tgkill(&mut self, group: Tgid, tid: Tid, signal: i32) -> Result<(), Errno> {
         let tracer = self.caller();
         if self
@@ -269,8 +231,6 @@ impl Kernel {
             thread.pending.remove(SIGCONT);
         }
 
-        // K-SIG-1: delivered at the thread's next chance as a stop from
-        // the tracer.
         let thread = self.threads.get_mut(&tid).expect("the thread exists");
         thread.pending.insert(SigInfo {
             signal,
@@ -281,14 +241,6 @@ impl Kernel {
         Ok(())
     }
 
-    /// Ends every thread of a process with `exit`, as `exit_group` or a
-    /// fatal signal does (K-EXIT-1, K-EXIT-3). Any thread in a stop is taken
-    /// out of it, losing a status not yet reported (K-WAIT-1, K-EXIT-2):
-    /// one at the exit event of its own `exit` finishes exiting, and any
-    /// other runs to its exit. A system call a thread stopped inside, or
-    /// was resumed from inside and has not yet run to the end of, returns
-    /// on the way out. A group already exiting keeps its status, and its
-    /// threads at their exit events stay there (K-EXIT-4).
     pub(super) fn kill_process(&mut self, group: Tgid, exit: ExitStatus) {
         let Some(process) = self.processes.get_mut(&group) else {
             return;
@@ -311,8 +263,6 @@ impl Kernel {
                 State::Running | State::JobStopped => {
                     thread.state = State::Exiting(exit);
 
-                    // K-EXIT-3: the call the thread was resumed inside of
-                    // returns before the signal is taken.
                     if let CallPhase::Returning(result) = thread.call {
                         thread.call = CallPhase::Outside;
                         thread.registers.general[super::RAX] = result;
@@ -330,11 +280,8 @@ impl Kernel {
                     thread.report = None;
 
                     match thread.call {
-                        // K-SYS-5: a call stopped at its entry never runs.
                         CallPhase::AtEntry => thread.call = CallPhase::Outside,
 
-                        // A system call the thread stopped inside returns
-                        // on the way out.
                         CallPhase::Returning(result) => {
                             thread.call = CallPhase::Outside;
                             thread.registers.general[super::RAX] = result;
@@ -365,11 +312,6 @@ impl Kernel {
         );
     }
 
-    /// Delivers a running thread's pending signals, its own before its
-    /// process's, until one stops it or none is left. A traced thread
-    /// stops for the tracer; an untraced one takes the signal's default
-    /// action, and goes on to the next one it ignores, as Linux's
-    /// `get_signal` does. Returns whether it stopped.
     pub(super) fn deliver_pending(&mut self, tid: Tid) -> bool {
         loop {
             let thread = self.threads.get_mut(&tid).expect("running thread exists");
@@ -382,8 +324,6 @@ impl Kernel {
                 return false;
             };
 
-            // Synchronous signals are only ever those an instruction raised
-            // (K-TRAP-2).
             if ![SIGSTOP, SIGCONT, libc::SIGCHLD].contains(&info.signal)
                 && !SYNCHRONOUS.contains(&info.signal)
             {
@@ -398,8 +338,6 @@ impl Kernel {
         }
     }
 
-    /// Resumes a thread from a signal-delivery-stop with `signal` delivered
-    /// to it, or suppressed when `None`.
     pub(super) fn resume_with(&mut self, tid: Tid, signal: Option<i32>) {
         let thread = self.threads.get_mut(&tid).expect("resumed thread exists");
         if let State::Stopped {
@@ -421,10 +359,6 @@ impl Kernel {
         }
     }
 
-    /// Takes a thread through `signal`'s default action, as if no debugger
-    /// were there: SIGCHLD and SIGCONT are ignored, a trap or fault ends its
-    /// process (K-FORK-2), and SIGSTOP stops an untraced process with one
-    /// thread (K-STOP-1).
     pub(super) fn act_by_default(&mut self, tid: Tid, signal: i32) {
         self.happenings.push(Happening::Delivered { tid, signal });
 
@@ -438,9 +372,6 @@ impl Kernel {
         }
     }
 
-    /// Stops `tid`'s process for `signal`, untraced, and tells its parent
-    /// (K-STOP-1). Group-stops of a traced thread, or of a process with
-    /// several threads, are not modeled.
     fn stop_process(&mut self, tid: Tid, signal: i32) {
         let thread = &self.threads[&tid];
         let group = thread.tgid;
@@ -465,8 +396,6 @@ impl Kernel {
         self.notify_parent(group, libc::CLD_STOPPED);
     }
 
-    /// Takes an exiting thread to its exit: the exit event stop when exits
-    /// are traced (K-EXIT-1, K-EXIT-3), otherwise straight to a zombie.
     pub(super) fn reach_exit(&mut self, tid: Tid, exit: ExitStatus) {
         let thread = self.threads.get_mut(&tid).expect("exiting thread exists");
         if thread.traced() && thread.options.trace_exit {
@@ -480,16 +409,12 @@ impl Kernel {
         }
     }
 
-    /// Ends a thread for good; its status waits to be reaped. A leader
-    /// leaving others behind stays a zombie until they are gone (K-EXIT-5).
     pub(super) fn become_zombie(&mut self, tid: Tid, exit: ExitStatus) {
         let thread = self.threads.get_mut(&tid).expect("exiting thread exists");
         let group = thread.tgid;
         let traced = thread.traced();
         thread.state = State::Zombie(exit);
 
-        // The tracer reaps a traced thread; nobody waits for an untraced one
-        // but its process's parent.
         thread.report = traced.then(|| exit.wait_status(tid));
         thread.pending = Pending::default();
         self.forget_children(tid);

@@ -1,6 +1,3 @@
-//! Numeric fields from kernel stat/status records. Command names need not
-//! be UTF-8; only the selected numeric fields are decoded.
-
 use std::io::Read as _;
 use std::os::fd::OwnedFd;
 
@@ -12,8 +9,6 @@ use crate::runtime_model::TargetThreadId;
 const MAX_STATUS_BYTES: usize = 64 * 1024;
 const MAX_ID_VALUES: usize = 64;
 
-/// Room for a whole record of most files: from an empty buffer, reading to
-/// the end begins with reads of a few bytes each.
 const RECORD_BYTES: usize = 4096;
 
 fn read(file: impl std::io::Read) -> std::io::Result<Vec<u8>> {
@@ -23,10 +18,6 @@ fn read(file: impl std::io::Read) -> std::io::Result<Vec<u8>> {
     Ok(bounded(bytes))
 }
 
-/// The record a kept `/proc` file holds now, read from its start. Each read
-/// at offset 0 has the kernel write the record anew (`seq_read_iter`), and
-/// it copies all of a record that fits, so a read shorter than the buffer
-/// is the whole record; one that fills it reads on from where it stopped.
 fn reread(file: &std::fs::File) -> std::io::Result<Vec<u8>> {
     use std::os::unix::fs::FileExt as _;
 
@@ -54,8 +45,6 @@ fn reread(file: &std::fs::File) -> std::io::Result<Vec<u8>> {
 fn bounded(mut bytes: Vec<u8>) -> Vec<u8> {
     if bytes.len() > MAX_STATUS_BYTES {
         bytes.truncate(MAX_STATUS_BYTES);
-        // A truncated final number is not identity evidence. Earlier
-        // complete fields remain usable, even with a huge CPU mask.
         let end = bytes
             .iter()
             .rposition(|byte| *byte == b'\n')
@@ -94,8 +83,6 @@ pub(super) fn target_thread_id(process: u32, thread: u32) -> Option<TargetThread
         .map(|(_, target)| target)
 }
 
-/// Anchor one proc mount while validating its namespace and each member.
-/// The caller bounds the controlled thread catalog.
 pub(super) fn target_thread_ids(process: u32, threads: &[u32]) -> Vec<(u32, TargetThreadId)> {
     namespace().map_or_else(Vec::new, |root| {
         threads
@@ -131,12 +118,9 @@ fn namespace() -> Option<OwnedFd> {
     .ok()?;
     let own = read_at(&root, "self/status")?;
 
-    // NSpid starts in the namespace of the proc mount. A different proc
-    // view could make the debugger's numeric TID name another process.
     own_namespace(&own, std::process::id()).then_some(root)
 }
 
-/// Numeric stat fields are separated from an arbitrary byte-string comm.
 fn stat_field(stat: &[u8], index: usize) -> Option<&[u8]> {
     let open = stat.iter().position(|byte| *byte == b'(')?;
     let close = stat.iter().rposition(|byte| *byte == b')')?;
@@ -166,7 +150,6 @@ fn stat_field(stat: &[u8], index: usize) -> Option<&[u8]> {
         .filter(|field| !field.trim_ascii().is_empty())
         .nth(index)?;
 
-    // Do not accept a truncated final number as identity evidence.
     field
         .last()?
         .is_ascii_whitespace()
@@ -243,7 +226,6 @@ pub(super) fn tgid(status: &[u8]) -> Option<u32> {
     valid_pid(value).then_some(value)
 }
 
-/// The process that started the one a `/proc/PID/status` describes.
 pub(super) fn parent_pid(status: &[u8]) -> Option<u32> {
     let value = u32::try_from(decimal(field(status, b"PPid:")?.trim_ascii())?).ok()?;
     valid_pid(value).then_some(value)
@@ -262,12 +244,6 @@ pub(super) fn hex_field(status: &[u8], key: &[u8]) -> Option<u64> {
     u64::from_str_radix(std::str::from_utf8(value).ok()?, 16).ok()
 }
 
-/// A thread asleep in a system call, as its `/proc/PID/task/TID/syscall`
-/// record shows it: the system call's number and arguments, its stack
-/// pointer, and its instruction pointer. Of another process's thread, the
-/// kernel writes the record only while the thread is off its CPU and stays
-/// off it while the record is made (`task_current_syscall`); a thread that
-/// reads its own record finds the read it makes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asleep {
     pub stack_pointer: u64,
@@ -276,14 +252,11 @@ pub struct Asleep {
 
 #[cfg(test)]
 impl Asleep {
-    /// The thread a `syscall` record describes, if it is asleep in one.
     pub fn from_record(record: &[u8]) -> Option<Self> {
         asleep(record)
     }
 }
 
-/// The thread a `syscall` record describes, if it is asleep in a system
-/// call: not `running`, nor blocked outside one (`-1 sp pc`).
 pub(super) fn asleep(record: &[u8]) -> Option<Asleep> {
     let fields: Vec<&[u8]> = record.trim_ascii().split(|byte| *byte == b' ').collect();
     let [number, arguments @ .., stack_pointer, _instruction] = fields.as_slice() else {
@@ -305,8 +278,6 @@ pub(super) fn asleep(record: &[u8]) -> Option<Asleep> {
     })
 }
 
-/// How many times the thread a `status` record describes has given up its
-/// CPU, of its own accord and not.
 pub(super) fn context_switches(status: &[u8]) -> Option<(u64, u64)> {
     let count = |key: &[u8]| decimal(field(status, key)?.trim_ascii());
     Some((
@@ -315,17 +286,6 @@ pub(super) fn context_switches(status: &[u8]) -> Option<(u64, u64)> {
     ))
 }
 
-/// A thread's `syscall` and `status` files, opened once and read again
-/// from the start for each record, which costs one system call where
-/// opening the file by its path costs four. A `/proc` file holds the
-/// thread's `struct pid`, not its number, and a read finds the task
-/// through it (`proc_single_show`): once the thread is gone, every read
-/// fails with `ESRCH`, even after a later thread is given its id. Both
-/// files are opened through one descriptor of the thread's directory,
-/// which holds the same, so they name the thread its start time does.
-/// Its `schedstat`, the shortest record a thread has, tells whether the
-/// thread is still there, and so whether the start time is still its own;
-/// a kernel without `CONFIG_SCHED_INFO` has none, and `status` tells it.
 #[derive(Debug)]
 pub struct ThreadFiles {
     start: u64,
@@ -333,13 +293,10 @@ pub struct ThreadFiles {
     status: std::fs::File,
     schedstat: Option<std::fs::File>,
 
-    /// Whether a read of them failed, as every read does once the thread
-    /// is gone: they are of no use, and a later thread may have its id.
     failed: std::cell::Cell<bool>,
 }
 
 impl ThreadFiles {
-    /// Opens the files of thread `thread` of process `process`.
     pub fn open(process: u32, thread: u32) -> std::io::Result<Self> {
         if !valid_pid(process) || !valid_pid(thread) {
             return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
@@ -373,19 +330,14 @@ impl ThreadFiles {
         })
     }
 
-    /// When the thread started, in clock ticks since boot.
     pub const fn start(&self) -> u64 {
         self.start
     }
 
-    /// Whether a read of the files failed, which every read does once the
-    /// thread is gone.
     const fn failed(&self) -> bool {
         self.failed.get()
     }
 
-    /// Whether the thread is still there, so that a thread given its id
-    /// later is not taken for it. One read of its shortest record.
     pub fn live(&self) -> bool {
         !self.failed()
             && self
@@ -393,13 +345,10 @@ impl ThreadFiles {
                 .is_ok()
     }
 
-    /// The thread, if it is asleep in a system call.
     pub fn asleep(&self) -> std::io::Result<Option<Asleep>> {
         Ok(asleep(&self.reread(&self.syscall)?))
     }
 
-    /// How many times the thread has given up its CPU, of its own accord
-    /// and not.
     pub fn switches(&self) -> std::io::Result<(u64, u64)> {
         context_switches(&self.reread(&self.status)?)
             .ok_or_else(|| std::io::Error::other("the status names no context switches"))
@@ -505,9 +454,6 @@ mod tests {
         assert_eq!(context_switches(b"voluntary_ctxt_switches:\t12\n"), None);
     }
 
-    /// A thread that spins is on its CPU, or waits for it, and is in no
-    /// system call; one blocked in a system call is asleep in it, and has
-    /// given up its CPU.
     #[test]
     fn a_blocked_thread_is_asleep_in_its_system_call() {
         let process = std::process::id();
@@ -527,8 +473,6 @@ mod tests {
         let spinner_id = spinning
             .recv_timeout(std::time::Duration::from_secs(20))
             .unwrap();
-        // It may still be leaving the channel's send; once it spins, it
-        // stays in no system call.
         std::thread::sleep(std::time::Duration::from_millis(20));
         let files = ThreadFiles::open(process, spinner_id).unwrap();
         for _ in 0..100 {
@@ -568,7 +512,6 @@ mod tests {
         let switches = files.switches().unwrap();
         assert!(switches.0 >= 1, "{switches:?}");
 
-        // Each read of the kept files is of the thread as it is now.
         nix::unistd::write(&writer, b"x").unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while files.switches().unwrap() == switches {
@@ -578,9 +521,6 @@ mod tests {
         assert_eq!(asleep(), first, "asleep in the same read again");
         assert!(!files.failed());
 
-        // Once the thread is gone, so are its files.
-        // A joined thread may still be leaving: until the kernel releases
-        // it, its files read it as it exits.
         drop(writer);
         blocked.join().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
@@ -598,8 +538,6 @@ mod tests {
         assert!(ThreadFiles::open(process, thread).is_err());
     }
 
-    /// Without `schedstat`, as a kernel without `CONFIG_SCHED_INFO`
-    /// leaves it, a thread's files still say whether it is there.
     #[test]
     fn a_thread_is_known_gone_without_its_schedstat() {
         let process = std::process::id();
@@ -633,7 +571,6 @@ mod tests {
         }
     }
 
-    /// A record longer than the first buffer is read whole.
     #[test]
     fn a_record_is_reread_whole_whatever_its_length() {
         let status = std::fs::File::open("/proc/self/status").unwrap();
@@ -887,16 +824,12 @@ mod tests {
         assert!(read(std::io::Cursor::new(huge)).unwrap().is_empty());
     }
 
-    /// A status record's `Tgid` and `NSpid` fields, as the kernel writes
-    /// them or damaged: an id may be zero, past `i32::MAX`, or past
-    /// `u32::MAX`, and there may be too many.
     #[derive(Debug, Clone)]
     struct Status {
         tgid: u64,
         ids: Vec<u64>,
     }
 
-    /// A pid, or one of the values no pid has.
     fn id(bad: bool) -> impl proptest::strategy::Strategy<Value = u64> {
         let pid = 1_u64..=i32::MAX as u64;
         let not_pid = proptest::sample::select(vec![
@@ -908,8 +841,6 @@ mod tests {
         if bad { not_pid.boxed() } else { pid.boxed() }
     }
 
-    /// A record's ids: a few, or about as many as are allowed, and now and
-    /// then one that is no pid.
     fn status() -> impl proptest::strategy::Strategy<Value = Status> {
         let length = proptest::prop_oneof![
             3 => 1..=4_usize,
@@ -932,8 +863,6 @@ mod tests {
             .prop_map(|(tgid, ids)| Status { tgid, ids })
     }
 
-    /// An id a caller asks about, which `target_thread_ids` has checked is
-    /// a pid: mostly the one in the record, where that is one.
     fn asked(id: u64) -> impl proptest::strategy::Strategy<Value = u32> {
         let other = 1..=i32::MAX.cast_unsigned();
         match u32::try_from(id).ok().filter(|id| valid_pid(*id)) {

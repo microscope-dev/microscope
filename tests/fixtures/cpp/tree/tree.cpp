@@ -1,6 +1,6 @@
-// A binary search tree kept in an array, drawn by tree.js through
-// tree.views beside this file, and a std::map of word counts, which the
-// built-in bar-chart draws through std::map's own view.
+
+
+
 
 #include <cstdio>
 #include <map>
@@ -8,7 +8,7 @@
 
 struct Node {
     int key;
-    // Indices into the pool, or -1 for none.
+
     int left;
     int right;
 };

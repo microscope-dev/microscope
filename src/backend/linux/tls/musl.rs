@@ -1,17 +1,3 @@
-//! Thread-local storage addresses in musl's thread layout.
-//!
-//! musl has no thread debugging library, but the start of its thread
-//! descriptor is ABI that its own assembly depends on: it is the thread
-//! control block, whose second word points at the thread's DTV. The DTV's
-//! first word counts the modules it has slots for, and slot N holds the
-//! address of TLS module N's block.
-//!
-//! musl gives a thread every module's block before the module's code can
-//! run: a new thread copies every block, and `dlopen` extends every thread's
-//! DTV before it runs the library's code. A DTV with too few slots belongs to
-//! a thread caught in between, or to a musl older than 1.1.22, which gave
-//! threads a `dlopen`ed library's block only when they first used it.
-
 use std::num::NonZeroU64;
 
 use nix::unistd::Pid;
@@ -20,8 +6,6 @@ use super::{ProcessServices, TlsError, dtv, failed, read_word, thread_pointer};
 
 const WORD_SIZE: u64 = 8;
 
-/// The address of `offset` within the TLS block of module `module` for
-/// `thread`.
 pub(super) fn tls_address(
     services: &dyn ProcessServices,
     thread: Pid,
@@ -88,7 +72,6 @@ mod tests {
     }
 
     impl Process {
-        /// A thread whose DTV has a slot for each of `blocks`.
         fn new(blocks: &[u64]) -> Self {
             let mut words = BTreeMap::from([
                 (THREAD_POINTER, THREAD_POINTER),
@@ -118,8 +101,6 @@ mod tests {
         assert_eq!(process.address(1), Ok(0x1024));
         assert_eq!(process.address(3), Ok(0x3024));
 
-        // A module loaded after the thread's DTV was last extended, an empty
-        // slot, and a thread before its thread pointer is set have no block.
         assert_eq!(process.address(4), Err(TlsError::Deferred));
         assert_eq!(
             Process::new(&[0x1000, 0]).address(2),
@@ -134,8 +115,6 @@ mod tests {
             result => panic!("expected a failure, got {result:?}"),
         };
 
-        // A thread pointer that does not address a descriptor of its own is
-        // not musl's.
         let mut foreign = Process::new(&[0x1000]);
         foreign.words.insert(THREAD_POINTER, 0);
         assert!(failure(&foreign).contains("does not address a thread control block"));

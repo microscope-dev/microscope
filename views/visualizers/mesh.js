@@ -1,26 +1,4 @@
 // @ts-check
-// The built-in mesh viewer: vertices and indices, as a program keeps them,
-// drawn in 3-D with WebGL2. Drag to turn it, use the wheel to zoom, and
-// press W for wireframe.
-//
-//   vertices    the vertex bytes, as bytes(&vertices[0], len * sizeof(Vertex))
-//   stride      the bytes of one vertex, as sizeof(Vertex)
-//   position    where its position's three f32s sit, as offsetof(Vertex, position)
-//   normal      optional: where its normal's three f32s sit; without one,
-//               each face is shaded by its own normal
-//   color       optional: where its four bytes of RGBA sit
-//   indices     optional: the index bytes; without them, vertices are taken
-//               in order
-//   index_size  2 or 4, the bytes of one index (4 by default)
-//   primitive   optional: "triangles" (the default), "lines", or "points"
-//   transform   optional: 16 numbers, a column-major model matrix
-//   up          optional: "y" (the default) or "z"
-//
-// Numbers are little-endian. A vertex whose position is not finite, an
-// index past the last vertex, or indices that are not whole primitives are
-// named in the caption, and nothing is drawn: a mesh drawn around its
-// problem would look fine. Hover names the nearest vertex. The camera fits
-// the first mesh and keeps its place across stops.
 
 microscope.live((canvas, input) => {
   const context = canvas.getContext("webgl2", { antialias: true });
@@ -94,7 +72,6 @@ microscope.live((canvas, input) => {
     microscope.caption(mesh.caption);
   }
 
-  /** The edges of every triangle, for the wireframe, made when first shown. */
   function edges() {
     if (edgeCount < 0) {
       const lines = new Uint32Array(mesh.indices.length * 2);
@@ -124,8 +101,7 @@ microscope.live((canvas, input) => {
     const near = Math.max(distance - radius * 2, distance / 1000, 1e-6);
     const far = distance + radius * 2;
     const aspect = width / Math.max(1, height);
-    // The narrower side sees FIELD, so the fitted mesh shows whole on a
-    // tall canvas too.
+
     const field = aspect >= 1 ? FIELD : 2 * Math.atan(Math.tan(FIELD / 2) / aspect);
     return {
       eye,
@@ -184,7 +160,6 @@ microscope.live((canvas, input) => {
     gl.bindVertexArray(null);
   }
 
-  /** Names the vertex nearest the pointer, within a few pixels. */
   function nearest(pointer, transform) {
     const { positions, count } = mesh;
     const width = canvas.width;
@@ -208,7 +183,7 @@ microscope.live((canvas, input) => {
         height;
       const d = (sx - pointer.x) ** 2 + (sy - pointer.y) ** 2;
       const depth = (transform[2] * x + transform[6] * y + transform[10] * z + transform[14]) / w;
-      // Of the vertices about as near, the one in front.
+
       if (d < bestDistance - 4 || (d <= bestDistance + 4 && depth < bestDepth)) {
         best = i;
         bestDistance = d;
@@ -263,9 +238,8 @@ microscope.live((canvas, input) => {
   };
 });
 
-/** The vertical field of view, in radians. */
 const FIELD = Math.PI / 4;
-// How a fragment is colored: lit by the eye, its vertex color, or ink.
+
 const LIT = 0;
 const COLORED = 1;
 const INK = 2;
@@ -275,7 +249,6 @@ const Z_UP = [1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1];
  * @typedef {{ yaw: number, pitch: number, distance: number, center: number[], radius: number }} Camera
  */
 
-/** The mesh in `input`, ready for the GPU, and what is wrong with it. */
 function read(input) {
   const vertices = input.vertices ?? new Uint8Array();
   if (!(vertices instanceof Uint8Array)) {
@@ -342,7 +315,7 @@ function read(input) {
       problems.push(at);
       break;
     }
-    // The GPU places it in floats, which a large transform can overflow.
+
     const placed = [0, 1, 2].map(
       (row) => model[row] * x + model[4 + row] * y + model[8 + row] * z + model[12 + row],
     );
@@ -409,7 +382,6 @@ function read(input) {
   };
 }
 
-/** A camera that shows the whole mesh, looking a little down at it. */
 function fit(mesh) {
   const lo = [Infinity, Infinity, Infinity];
   const hi = [-Infinity, -Infinity, -Infinity];
@@ -446,7 +418,6 @@ const short = (value) =>
   Number.isFinite(value) ? String(Number(value.toPrecision(5))) : String(value);
 const grouped = (value) => value.toLocaleString("en-US");
 
-/** A `#rrggbb` color as three numbers from 0 to 1. */
 function rgb(color) {
   return [1, 3, 5].map((at) => Number.parseInt(color.slice(at, at + 2), 16) / 255);
 }
@@ -455,7 +426,6 @@ function identity() {
   return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 }
 
-/** a × b, both column-major. */
 function multiply(a, b) {
   const out = Array.from({ length: 16 }, () => 0);
   for (let column = 0; column < 4; column++) {
@@ -533,14 +503,13 @@ function lookAt(eye, center) {
   ];
 }
 
-/** The inverse transpose of the model's upper 3×3, for normals. */
 function normalMatrix(m) {
   const [a, b, c, d, e, f, g, h, i] = [m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]];
   const A = e * i - f * h;
   const B = -(d * i - f * g);
   const C = d * h - e * g;
   const determinant = a * A + b * B + c * C || 1;
-  // The inverse's transpose is the cofactors over the determinant.
+
   return [
     A,
     B,
@@ -554,7 +523,6 @@ function normalMatrix(m) {
   ].map((value) => value / determinant);
 }
 
-/** The program every primitive draws with. */
 function link(gl) {
   const compile = (type, source) => {
     // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline

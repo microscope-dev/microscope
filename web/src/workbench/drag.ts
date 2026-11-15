@@ -1,8 +1,3 @@
-// Dragging a tab, or a floating window by its title bar. The page is measured
-// once as the drag begins, the ghost and the highlight are moved by hand at
-// most once a frame, and the layout changes once, at the drop, so a drag
-// renders nothing until it ends.
-
 import type { PointerEvent as ReactPointerEvent } from "react";
 
 import { classOf } from "./classes";
@@ -25,14 +20,10 @@ import styles from "./Dock.module.css";
 
 const css = classOf(styles);
 
-/** How far, in pixels, the pointer moves before a press becomes a drag, so
- * a click still chooses a tab. */
 export const THRESHOLD = 4;
 
-/** The size a pane floats at the first time. */
 export const FLOAT_SIZE = { width: 480, height: 320 } as const;
 
-/** The size each pane last floated at, to float it at again. */
 const sizes = new Map<PaneId, { width: number; height: number }>();
 
 type Source =
@@ -41,7 +32,7 @@ type Source =
       readonly type: "window";
       readonly group: GroupId;
       readonly element: HTMLElement;
-      /** Where the window was, in the dock's coordinates. */
+
       readonly rect: Rect;
     };
 
@@ -52,9 +43,9 @@ interface Drag {
   point: Point;
   shift: boolean;
   alt: boolean;
-  /** Set once the pointer has gone past the threshold. */
+
   measured: Measured | null;
-  /** The layout measured, which a drop lands in only if it still holds. */
+
   layout: Layout | null;
   bounds: Rect;
   drop: Drop | null;
@@ -63,13 +54,10 @@ interface Drag {
   highlight: HTMLElement | null;
 }
 
-/** Starts what may become a drag of a tab, from a press on it. */
 export function pressTab(event: ReactPointerEvent<HTMLElement>, pane: PaneId, title: string): void {
   press(event, { type: "tab", pane, title });
 }
 
-/** Starts what may become a drag of a floating window, from a press on its
- * title bar. */
 export function pressWindow(
   event: ReactPointerEvent<HTMLElement>,
   group: GroupId,
@@ -79,8 +67,6 @@ export function pressWindow(
   press(event, { type: "window", group, element, rect });
 }
 
-/** Where a pane floats when dropped at `point`, in the dock's coordinates:
- * its title under the pointer, at the size it last floated at. */
 export function floatingRect(pane: PaneId, point: Point, bounds: Rect): Rect {
   const size = sizes.get(pane) ?? FLOAT_SIZE;
   const width = Math.min(size.width, bounds.width);
@@ -91,7 +77,6 @@ export function floatingRect(pane: PaneId, point: Point, bounds: Rect): Rect {
   );
 }
 
-/** Remembers a window's size for each of its panes, as it is docked. */
 export function rememberSize(layout: Layout, window: GroupId): void {
   const found = layout.floating.find((candidate) => candidate.group.id === window);
   for (const pane of found?.group.tabs ?? []) {
@@ -126,7 +111,7 @@ function press(event: ReactPointerEvent<HTMLElement>, source: Source): void {
       aim(drag, released);
       if (drag.measured) {
         land(drag);
-        // The click that ends a drag is not a click on the tab.
+
         window.addEventListener("click", swallow, { capture: true, once: true });
         setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 0);
       }
@@ -136,8 +121,6 @@ function press(event: ReactPointerEvent<HTMLElement>, source: Source): void {
   });
 }
 
-/** Takes in where the pointer is, starting the drag once it has gone far
- * enough, and shows the drop at most once a frame. */
 function follow(drag: Drag, event: PointerEvent): void {
   aim(drag, event);
   if (!drag.measured) {
@@ -186,7 +169,6 @@ function begin(drag: Drag): void {
   }
 }
 
-/** Shows where the drop would land now. */
 function show(drag: Drag): void {
   const { source, point } = drag;
   if (drag.ghost) {
@@ -207,7 +189,6 @@ function show(drag: Drag): void {
   }
   highlight.hidden = drop === null;
   if (drop) {
-    // Measured in the page; drawn in the dock.
     const { x, y, width, height } = drop.highlight;
     Object.assign(highlight.style, {
       left: `${x - drag.bounds.x}px`,
@@ -218,8 +199,6 @@ function show(drag: Drag): void {
   }
 }
 
-/** Where the pointer is aimed: none when Shift floats a tab, and only strips
- * and edges for a window. */
 function target(drag: Drag): Drop | null {
   const measured = drag.measured;
   if (!measured || (drag.source.type === "tab" && drag.shift)) {
@@ -228,7 +207,6 @@ function target(drag: Drag): Drop | null {
   return resolveDrop(measured, drag.point, drag.source.type === "tab");
 }
 
-/** A dragged window's rectangle now, in the dock's coordinates, snapped. */
 function windowRect(drag: Drag): Rect {
   const source = drag.source;
   if (source.type !== "window") {
@@ -248,8 +226,6 @@ function windowRect(drag: Drag): Rect {
 }
 
 function land(drag: Drag): void {
-  // Something else changed the layout mid-drag, such as closing the dragged
-  // tab, so the drop measured may name panes and groups that are gone.
   if (workbench.getState().layout !== drag.layout) {
     return;
   }
@@ -284,8 +260,6 @@ function end(drag: Drag): void {
   }
 }
 
-/** The dock's groups and windows as they are on screen, less what is
- * dragged. */
 function measure(drag: Drag): Measured {
   const tree = [...drag.dock.querySelectorAll<HTMLElement>("[data-part=tree] [data-group]")];
   const dragged = drag.source.type === "window" ? drag.source.group : null;

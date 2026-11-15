@@ -1,15 +1,3 @@
-//! Node's inspector, which microscope drives over the Chrome `DevTools`
-//! Protocol: finding and hiding its address (F29), connecting, and
-//! releasing a node the launch preload holds (F31). One connection serves
-//! a process: its main isolate, and each worker's through `NodeWorker`
-//! sessions inside it, which wait to run until they are armed.
-//!
-//! The address is read where Node lists its targets,
-//! `InspectorIoDelegate::GetTargetIds`, which it calls as the server starts
-//! and at every WebSocket upgrade. At entry microscope reads the delegate's
-//! immutable UUID and returns an empty vector for proven print/list callers,
-//! before any string is allocated. Native upgrade validation runs unchanged.
-
 mod addons;
 mod arming;
 pub(super) mod assignments;
@@ -45,11 +33,8 @@ use crate::{Error, Result, RuntimeId, VirtualAddress};
 
 pub(super) use protocol::{is_script_frame, loopback_listeners};
 
-/// Numbers every connection, across processes, so that a message from a
-/// connection that has ended is never taken for a newer one's.
 static GENERATIONS: AtomicU64 = AtomicU64::new(1);
 
-/// A message from the inspector connection of `generation`.
 #[derive(Debug)]
 pub struct InspectorMessage {
     generation: u64,
@@ -57,41 +42,29 @@ pub struct InspectorMessage {
     incoming: Incoming,
 }
 
-/// The inspectors of one process's runtimes and the sites that find them.
 #[derive(Debug, Default)]
 pub(super) struct Inspectors {
     pub(super) cleanup: Option<teardown::Cleanup>,
     startup: BTreeMap<RuntimeId, quiescence::Startup>,
     startup_planted: BTreeSet<VirtualAddress>,
 
-    /// The traps planted for the gates of steps from native stops.
     gate_planted: BTreeSet<VirtualAddress>,
-    /// The planted entries of `GetTargetIds`, by the runtime each lists.
     entries: BTreeMap<VirtualAddress, RuntimeId>,
 
     records: BTreeMap<RuntimeId, Inspector>,
 
-    /// When a client's pause stops every thread natively, unless V8
-    /// pauses running JavaScript first.
     pub(super) interrupt: Option<std::time::Instant>,
 
-    /// The stack locals V8 named for each interpreted frame of a thread it
-    /// holds paused, by frame, valid until that thread runs (G5).
     pub(super) locals: BTreeMap<VirtualAddress, crate::runtime_model::ReportedLocals>,
 
-    /// The source map of each script that names one, by the script's
-    /// path, from any isolate.
     maps: BTreeMap<Arc<str>, maps::ScriptMap>,
 }
 
 impl Inspectors {
-    /// Whether the debugger drives `runtime` through its inspector.
     pub(super) fn has(&self, runtime: RuntimeId) -> bool {
         self.records.contains_key(&runtime)
     }
 
-    /// Ends the interrupt under way, withdrawing the pauses not yet sent.
-    /// A pause still listing its variables answers it no longer.
     pub(in crate::backend::linux) fn end_interrupt(&mut self) -> bool {
         for isolate in self.isolates_mut() {
             if isolate.pause == PauseRequest::Deferred {
@@ -111,16 +84,12 @@ impl Inspectors {
             .flat_map(|(_, isolates)| isolates.values_mut())
     }
 
-    /// Forgets a site whose memory is gone.
     pub(super) fn forget(&mut self, address: VirtualAddress) {
         self.entries.remove(&address);
         self.startup_planted.remove(&address);
         self.gate_planted.remove(&address);
     }
 
-    /// Shows each script frame of `frames` at the original place its
-    /// script's source map leads to, keeping the generated one. A frame in
-    /// generated code the map leads nowhere loses its place, with why.
     pub(super) fn map_frames(&self, frames: &mut Arc<[crate::StackFrame]>) {
         let mapped = |frame: &crate::StackFrame| {
             frame.recorded.as_ref().is_some_and(|recorded| {
@@ -165,14 +134,12 @@ impl Inspectors {
                     recorded.problem.get_or_insert(reason);
                 }
             }
-            // The function's first line is the generated code's.
             recorded.first_line = None;
             recorded.generated = Some(generated);
         }
         *frames = shown.into();
     }
 
-    /// Every target, cleanup, and startup checkpoint planted.
     pub(super) fn planted(&self) -> BTreeSet<VirtualAddress> {
         self.entries
             .keys()
@@ -184,134 +151,85 @@ impl Inspectors {
     }
 }
 
-/// One runtime's inspector.
 #[derive(Debug, Default)]
 struct Inspector {
     ownership: Ownership,
     owned_agent: Option<VirtualAddress>,
 
-    /// The loopback sockets the process listened on before microscope
-    /// opened its inspector, none of which is the inspector's.
     listening: BTreeSet<SocketAddr>,
 
     status: Status,
 
-    /// The managed locations the runtime is armed with, which every
-    /// isolate is given.
     desired: Vec<ManagedArm>,
 
-    /// The step the runtime is armed with, which V8 runs.
     step: Option<steps::Stepping>,
 
-    /// The assignment V8 is asked to make, while it holds the pause it is
-    /// made in.
     assigning: Option<assignments::Assigning>,
 
-    /// The `stepInto` V8 still runs for a thread a JavaScript step left in
-    /// a Node-API addon's C function.
     through: Option<addons::Through>,
 
-    /// What holds the main thread for a step from a native stop until V8
-    /// is sure to pause it.
     gate: Option<steps::Gate>,
 
-    /// Which exceptions V8 is to pause at, as `setPauseOnExceptions`
-    /// names them.
     pausing: &'static str,
 }
 
-/// A connection's isolates, by the session that reaches each.
 type Isolates = BTreeMap<Session, Isolate>;
 
-/// What one isolate holds and does, as its session reported it.
 #[derive(Debug, Default)]
 struct Isolate {
-    /// Each managed location set in it, by number.
     sites: BTreeMap<u64, Site>,
 
-    /// Placement replies still owed for breakpoints already removed.
     withdrawn: BTreeSet<RequestId>,
 
-    /// The URL of each script V8 parsed, by its id: V8's pauses name
-    /// scripts only by id (F19).
     scripts: BTreeMap<Arc<str>, Arc<str>>,
 
-    /// The breakpoint at the start of every script, while there are line
-    /// breakpoints, whose pause lets a script's mapped breakpoints be set
-    /// before it runs.
     sentinel: Option<Sentinel>,
 
-    /// A sentinel's pause, as V8 reported it, judged once V8 answers the
-    /// mapped breakpoints set in its script: V8 sets them while paused,
-    /// and does not count one at the pause's own place hit.
     deferred: Option<serde_json::Value>,
 
-    /// The search of its functions under way, for function breakpoints.
     search: Option<functions::Search>,
 
-    /// The scripts whose start a search ran at.
     searched: BTreeSet<Arc<str>>,
 
-    /// The text of each script a function breakpoint is placed in.
     texts: BTreeMap<Arc<str>, Arc<functions::Text>>,
 
-    /// Whether its profiler, which lists its functions, is enabled.
     profiling: bool,
 
-    /// The pause V8 reported and holds its thread in, until resumed.
     paused: Option<pauses::Paused>,
 
-    /// Which exceptions it was last told to pause at.
     told: Option<&'static str>,
 
-    /// Whether V8 was told to resume and has not yet left its pause.
     resuming: bool,
     pause: PauseRequest,
 }
 
-/// Where the client's request that V8 pause is.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum PauseRequest {
     #[default]
     None,
 
-    /// It waits for V8 to leave its pause, as V8 drops one asked for
-    /// before.
     Deferred,
 
-    /// V8 was asked and has not paused since. It reports that pause as it
-    /// does a `debugger` statement.
     Sent,
 }
 
-/// A managed location as an isolate holds it: set by its path, and at
-/// each place in a script that a source map leads its line to.
 #[derive(Debug, Default)]
 struct Site {
     placements: Vec<Placement>,
 }
 
-/// One of V8's breakpoints.
 #[derive(Debug)]
 struct Placement {
-    /// V8's id for it, once V8 set it.
     id: Option<Arc<str>>,
     state: SiteState,
 
-    /// The script and zero-based place a source map led it to; `None` for
-    /// one set by the location's path.
     mapped: Option<(Arc<str>, crate::debug_info::js_source_map::Position)>,
 
-    /// The zero-based line and column V8 placed it at, once it answered:
-    /// the breakable place at or after the one asked for.
     actual: Option<(u64, u64)>,
 
-    /// The script and offset of the function a function breakpoint was
-    /// placed in, as V8's coverage starts it.
     function: Option<(Arc<str>, u32)>,
 }
 
-/// An isolate's sentinel breakpoint and the URL pattern it was set with.
 #[derive(Debug)]
 struct Sentinel {
     pattern: String,
@@ -322,55 +240,39 @@ struct Sentinel {
 enum SiteState {
     Requested(RequestId),
 
-    /// Set, with no loaded script at its place yet.
     Unresolved,
     Resolved,
     Refused(Arc<str>),
 
-    /// Requested by path, then found to fall in a script whose source map
-    /// moves its lines: removed once V8 names it.
     Withdrawn(RequestId),
 }
 
-/// How far microscope has got in reaching one runtime's inspector.
 #[derive(Debug, Default)]
 enum Status {
-    /// Microscope has not looked at how the inspector opens.
     #[default]
     Unknown,
 
-    /// Microscope looked, and waits for Node to list its target: after
-    /// the `SIGUSR1` it sent a node it attached to, or as the launch
-    /// preload opens it. A launched node's command line and environment
-    /// may tell why it never will.
     Awaited {
         unstarted: Option<&'static str>,
     },
 
-    /// Node listed its target, and microscope is not connected to it.
     Listed(Server),
 
     Connecting(Server, Link),
-    /// Connected, with the main isolate and each worker's, by the session
-    /// that reaches it.
     Connected(Server, Link, Isolates),
 
-    /// The inspector cannot be used. The target stays known, if Node
-    /// listed one, for detach to find the server by.
     Failed {
         reason: Arc<str>,
         target: Option<Arc<str>>,
     },
 }
 
-/// The inspector server Node listed.
 #[derive(Debug, Clone)]
 struct Server {
     target: Arc<str>,
     address: SocketAddr,
 }
 
-/// A connection and the generation its messages carry.
 struct Link {
     generation: u64,
     connection: Connection,
@@ -386,7 +288,6 @@ impl std::fmt::Debug for Link {
 }
 
 impl Status {
-    /// The connection, made or being made.
     const fn link(&self) -> Option<&Link> {
         match self {
             Self::Connecting(_, link) | Self::Connected(_, link, _) => Some(link),
@@ -394,7 +295,6 @@ impl Status {
         }
     }
 
-    /// The connection, once made.
     const fn connected(&self) -> Option<&Link> {
         match self {
             Self::Connected(_, link, _) => Some(link),
@@ -406,7 +306,6 @@ impl Status {
         }
     }
 
-    /// The id of the target Node listed, if it did.
     const fn target(&self) -> Option<&Arc<str>> {
         match self {
             Self::Listed(server) | Self::Connecting(server, _) | Self::Connected(server, ..) => {
@@ -417,7 +316,6 @@ impl Status {
         }
     }
 
-    /// Each isolate, while connected.
     fn isolates(&self) -> &Isolates {
         static NONE: Isolates = BTreeMap::new();
         match self {
@@ -430,7 +328,6 @@ impl Status {
         }
     }
 
-    /// The connection and its isolates, once made.
     const fn connected_mut(&mut self) -> Option<(&Link, &mut Isolates)> {
         match self {
             Self::Connected(_, link, isolates) => Some((link, isolates)),
@@ -442,14 +339,11 @@ impl Status {
         }
     }
 
-    /// The connection and the isolate `session` reaches.
     fn connected_isolate(&mut self, session: &Session) -> Option<(&Link, &mut Isolate)> {
         let (link, isolates) = self.connected_mut()?;
         Some((link, isolates.get_mut(session)?))
     }
 
-    /// Ends the connection with no fault of its own, and returns it. The
-    /// isolates go with it.
     fn disconnect(&mut self) -> Option<Link> {
         match std::mem::take(self) {
             Self::Connecting(server, link) | Self::Connected(server, link, _) => {
@@ -463,15 +357,12 @@ impl Status {
         }
     }
 
-    /// The inspector cannot be used, for `reason`.
     fn fail(&mut self, reason: Arc<str>) {
         let target = self.target().cloned();
         *self = Self::Failed { reason, target };
     }
 }
 
-/// Sends `method` to the isolate `session` reaches, and records what came
-/// of it.
 fn send(
     connection: &Connection,
     session: &Session,
@@ -484,7 +375,6 @@ fn send(
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Plants each loaded runtime's target entry and cleanup checkpoints.
     pub(super) fn sync_inspector_hooks(&mut self) -> Result<()> {
         self.sync_step_gates(true)?;
         let Some(inferior) = self
@@ -525,8 +415,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .chain(inferior.inspectors.gate_planted.iter().copied())
             .collect::<BTreeSet<_>>();
 
-        // The record changes with each site, so that a failed edit leaves
-        // it naming exactly the sites planted.
         for &address in planted.difference(&needed) {
             remove_breakpoint_owner_from(
                 &self.ptrace,
@@ -561,10 +449,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Opens the inspector of each runtime of an attached node that has
-    /// not listed its target, with the `SIGUSR1` Node handles by starting
-    /// it (F12). A launched node opens its own, through the preload, and
-    /// what may keep it from doing so is noted.
     pub(super) fn open_inspectors(&mut self) {
         let Some(inferior) = self.session.inferior_mut() else {
             return;
@@ -627,8 +511,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.open_connection(runtime, Server { target, address });
                 continue;
             }
-            // Do not enqueue Node's asynchronous startup before the first
-            // resume: an immediate detach must leave no pending server open.
             if self
                 .session
                 .inferior()
@@ -693,7 +575,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Suppresses proven print/list calls before they allocate a UUID copy.
     pub(super) fn note_inspector_hook(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
         if self.note_step_gate(pid, address)? {
             return Ok(());
@@ -725,8 +606,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(target) = target else {
             return Ok(());
         };
-        // SysV's nontrivial vector result is uninitialized storage in rdi.
-        // No element has been constructed: an all-null empty vector owns nothing.
         for offset in [0, 8, 16] {
             let address = registers.rdi.checked_add(offset).ok_or_else(|| {
                 Error::RuntimeAgent("the inspector result address overflows".into())
@@ -769,9 +648,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.queue_module_refresh()
     }
 
-    /// Where the inspector of `runtime`, which just listed its target,
-    /// listens: the one loopback socket the process opened since
-    /// microscope looked.
     fn inspector_address(&self, runtime: RuntimeId) -> std::result::Result<SocketAddr, Arc<str>> {
         let inferior = self.session.inferior().ok_or("the process is gone")?;
         let listening = inferior
@@ -796,7 +672,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Connects to the inspector of `runtime` at `server`.
     fn open_connection(&mut self, runtime: RuntimeId, server: Server) {
         let Some(inferior) = self.session.inferior_mut() else {
             return;
@@ -835,7 +710,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
     }
 
-    /// Serves a message from an inspector connection.
     #[cfg_attr(
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")
@@ -917,7 +791,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .status
                     .fail(format!("the inspector connection closed: {reason}").into());
                 self.publish_breakpoints_changed();
-                // No pause is coming to hold the main thread for.
                 self.release_step_gate()?;
             }
             Incoming::Malformed { session, reason } => {
@@ -927,8 +800,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Readies the main isolate of a connection just made, and lets a node
-    /// the preload holds run on.
     fn inspector_connected(&mut self, runtime: RuntimeId) {
         let Some(inspector) = self
             .session
@@ -948,10 +819,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(link) = inspector.status.connected() else {
             return;
         };
-        // The connection stays while the process is debugged, so an
-        // interrupt can pause its JavaScript (F20: it costs nothing while
-        // it runs). Node then reports the program's end, rather than
-        // waiting for the debugger to leave unasked.
         let main = Session::main();
         let _ = send(
             &link.connection,
@@ -961,8 +828,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         );
         ready_isolate(&link.connection, &main);
         self.sync_inspector(runtime);
-        // A release Node takes before the preload's waitForDebugger begins
-        // is lost, so the release answers Node's report that it waits.
         if let Some(link) = self
             .session
             .inferior()
@@ -985,8 +850,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.publish_breakpoints_changed();
     }
 
-    /// Lets the isolate `session` reaches run on, once it is armed: a node
-    /// the preload holds, or a worker waiting for its debugger.
     fn release_isolate(&self, runtime: RuntimeId, session: &Session) {
         if let Some(link) = self
             .session
@@ -1132,8 +995,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Readies a worker's isolate, which waits for its debugger: it is
-    /// given the process's breakpoints and exceptions, then runs on.
     fn attach_worker(&mut self, runtime: RuntimeId, session: &Session) {
         record!("worker {session:?} attached");
         let Some(inspector) = self
@@ -1153,8 +1014,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// Has the isolate `session` reaches report its scripts and pauses, and
-/// its workers as each starts, holding each until it is armed.
 fn ready_isolate(connection: &Connection, session: &Session) {
     let _ = send(
         connection,

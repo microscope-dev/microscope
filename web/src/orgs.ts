@@ -1,18 +1,10 @@
-// Organizations, their members and teams, and projects, on the services
-// backend (account.ts). Everyone has a personal organization that services
-// never shows: its projects are the person's own, with no organization.
-//
-// Services decides who may do what on every request. The role and
-// permission each answer carries only tell the page which controls to show.
-
 import { useEffect } from "react";
 import { createStore, useStore } from "zustand";
 
 import { type Account, account, failure, useAccount } from "./account";
 
 export type Permission = "none" | "read" | "write" | "admin";
-/** What a team can be given on a project, and what anyone who can see a
- * project has on it. */
+
 export type Grant = Exclude<Permission, "none">;
 export type Role = "owner" | "member";
 
@@ -29,14 +21,12 @@ export interface Member {
   role: Role;
 }
 
-/** Someone an organization's owners invited, as they see it. */
 export interface Invitation {
   user_id: number;
   username: string;
   role: Role;
 }
 
-/** An invitation to the signed-in person. */
 export interface MyInvitation {
   org: { id: number; name: string };
   role: Role;
@@ -46,7 +36,7 @@ export interface MyInvitation {
 export interface Project {
   id: number;
   name: string;
-  /** Null for the person's own. */
+
   org: { id: number; name: string } | null;
   permission: Grant;
 }
@@ -105,7 +95,7 @@ export const deleteOrg = (id: number) => request<void>("DELETE", orgUrl(id));
 export const listMembers = (id: number) => request<Member[]>("GET", `${orgUrl(id)}/members`);
 export const setRole = (id: number, user: number, role: Role) =>
   request<Member>("PATCH", `${orgUrl(id)}/members/${user}`, { role });
-/** Removes someone, or, for the person's own id, leaves. */
+
 export const removeMember = (id: number, user: number) =>
   request<void>("DELETE", `${orgUrl(id)}/members/${user}`);
 
@@ -117,15 +107,14 @@ export const cancelInvitation = (id: number, user: number) =>
   request<void>("DELETE", `${orgUrl(id)}/invitations/${user}`);
 
 export const myInvitations = () => request<MyInvitation[]>("GET", "/api/users/me/invitations");
-// An empty JSON body, so the browser asks before sending either from
-// another site's page, as it does for every other change.
+
 export const acceptInvitation = (id: number) =>
   request<Org>("POST", `/api/invitations/${id}/accept`, {});
 export const declineInvitation = (id: number) =>
   request<void>("POST", `/api/invitations/${id}/decline`, {});
 
 export const listProjects = () => request<Project[]>("GET", "/api/projects");
-/** A project of the person's own when `orgId` is null. */
+
 export const createProject = (name: string, orgId: number | null) =>
   request<Project>("POST", "/api/projects", orgId === null ? { name } : { name, org_id: orgId });
 export const renameProject = (id: number, name: string) =>
@@ -152,10 +141,7 @@ export const addToTeam = (id: number, team: number, user: number) =>
 export const removeFromTeam = (id: number, team: number, user: number) =>
   request<void>("DELETE", `${orgUrl(id)}/teams/${team}/members/${user}`);
 
-/** What the signed-in person belongs to, can read, and is invited to,
- * which the Account, Projects, and Organization panes share. */
 export interface Directory {
-  /** Whose these are, or null when nobody is signed in. */
   readonly user: number | null;
   readonly orgs: readonly Org[] | null;
   readonly projects: readonly Project[] | null;
@@ -167,15 +153,11 @@ const EMPTY: Directory = { user: null, orgs: null, projects: null, invitations: 
 
 export const directory = createStore<Directory>(() => EMPTY);
 
-/** Counts reloads, so an older answer never replaces a newer one. */
 let asked = 0;
 let inFlight: Promise<void> | null = null;
 
 const signedInAs = (now: Account): number | null => (now.kind === "in" ? now.user.id : null);
 
-// When someone else signs in, or nobody is, the last person's answers go
-// before anything renders, and a question asked for them is not shared with
-// the next person.
 account.subscribe((state, before) => {
   const user = signedInAs(state.now);
   if (user !== signedInAs(before.now)) {
@@ -185,7 +167,6 @@ account.subscribe((state, before) => {
   }
 });
 
-/** Asks services for the directory again, after a change to it. */
 export function reload(): Promise<void> {
   const now = account.getState().now;
   if (now.kind !== "in") {
@@ -194,7 +175,6 @@ export function reload(): Promise<void> {
   }
   const user = now.user.id;
   if (directory.getState().user !== user) {
-    // Someone else's answers never show while this person's load.
     directory.setState({ ...EMPTY, user }, true);
   }
   asked += 1;
@@ -227,8 +207,6 @@ export function reload(): Promise<void> {
   return loading;
 }
 
-/** The directory, asked for when a pane showing it opens and whenever
- * someone else signs in. Panes opening together share one question. */
 export function useDirectory(): Directory {
   const user = signedInAs(useAccount());
   useEffect(() => {
@@ -238,15 +216,12 @@ export function useDirectory(): Directory {
   return useStore(directory);
 }
 
-/** An organization's name, with its id when another the person is in has
- * the same name, since names are labels and need not be unique. */
 export function orgLabel(org: { id: number; name: string }, orgs: readonly Org[] | null): string {
   const name = org.name.toLowerCase();
   const twin = (orgs ?? []).some((each) => each.id !== org.id && each.name.toLowerCase() === name);
   return twin ? `${org.name} (#${org.id})` : org.name;
 }
 
-/** The projects of one owner: the person's own when `org` is null. */
 export interface ProjectGroup {
   readonly org: { id: number; name: string; role: Role | null } | null;
   readonly projects: readonly Project[];
@@ -255,12 +230,6 @@ export interface ProjectGroup {
 const byName = (a: { name: string; id: number }, b: { name: string; id: number }) =>
   a.name.localeCompare(b.name) || a.id - b.id;
 
-/**
- * The person's own projects first, then each organization's by its name.
- * Organizations are told apart by id, since two can share a name. Every
- * organization the person is in has a group, even with no projects they
- * can see, so an owner sees where to make one.
- */
 export function groupProjects(
   projects: readonly Project[],
   orgs: readonly Org[],

@@ -1,6 +1,6 @@
-// A small key-value store for the web page's tests and screenshots: a
-// producer queues requests, workers apply them to a table and print what
-// they did, and each line of input is echoed. It runs until its input ends.
+
+
+
 
 #include <pthread.h>
 #include <stdio.h>
@@ -85,7 +85,7 @@ static void entry_set(struct entry *e, const char *value, size_t len) {
     e->len = len;
 }
 
-/* Applies one request to the table and says what it did. */
+
 static int handle_request(struct server *s, const struct request *req) {
     pthread_mutex_lock(&s->lock);
     struct entry *e = table_find(&s->table, req->key);
@@ -168,7 +168,7 @@ int main(void) {
         pthread_create(&workers[id], NULL, worker, (void *)(id + 1));
     }
     pthread_create(&input, NULL, read_input, NULL);
-    // Paces the requests, so the program runs on while people look at it.
+
     const struct timespec pause = {.tv_sec = 0, .tv_nsec = 20 * 1000 * 1000};
     for (unsigned long round = 0; !input_ended; ++round) {
         struct request req = {.op = round % 3 == 2 ? OP_GET : OP_PUT};

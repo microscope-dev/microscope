@@ -1,14 +1,3 @@
-//! Function breakpoints, `js:NAME`, through V8's own lists: a search asks
-//! for the best-effort coverage of the isolate, which names every function
-//! V8 has compiled, called or not, with its range in its script. Each
-//! function named NAME then gets a breakpoint at its own first breakable
-//! place, which V8 lists when asked from where the function begins.
-//!
-//! A search runs when a function breakpoint is armed, at the start of each
-//! script, which a sentinel holds while there is one, and each time the
-//! program resumes. A function nested in one that has never run is not yet
-//! compiled, so V8 lists it only after its parent first runs.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -20,13 +9,10 @@ use crate::debug_info::js_source_map::{Column, Line, Position};
 use crate::runtime_model::{ManagedArm, inspector_protocol};
 use crate::{ManagedPlace, Result, RuntimeId};
 
-/// A search of one isolate's functions, under way.
 #[derive(Debug, Default)]
 pub(super) struct Search {
     requests: BTreeMap<RequestId, Step>,
 
-    /// Whether another search was asked for while this one ran: it may
-    /// miss the scripts compiled since it began.
     again: bool,
 }
 
@@ -38,7 +24,6 @@ enum Step {
     Within(Found),
 }
 
-/// A function the coverage named, by its script and UTF-16 range.
 #[derive(Debug, Clone)]
 struct Found {
     script: Arc<str>,
@@ -47,8 +32,6 @@ struct Found {
     end: u32,
 }
 
-/// Where each line of a script starts, and its length, in UTF-16 code
-/// units as V8 counts offsets and columns.
 #[derive(Debug)]
 pub(super) struct Text {
     units: usize,
@@ -60,7 +43,6 @@ impl Text {
         let units = source.encode_utf16().collect::<Vec<_>>();
         let mut lines = vec![0];
         for (index, &unit) in units.iter().enumerate() {
-            // V8's line terminators; a CR before an LF ends no line.
             let ends = match unit {
                 0x0A | 0x2028 | 0x2029 => true,
                 0x0D => units.get(index + 1) != Some(&0x0A),
@@ -76,7 +58,6 @@ impl Text {
         }
     }
 
-    /// The zero-based line and column of `offset`.
     pub(super) fn position(&self, offset: u32) -> Option<Position> {
         if usize::try_from(offset).ok()? > self.units {
             return None;
@@ -89,7 +70,6 @@ impl Text {
         ))
     }
 
-    /// The offset of the zero-based `line` and `column`.
     pub(super) fn offset(&self, line: u64, column: u64) -> Option<u32> {
         let start = *self.lines.get(usize::try_from(line).ok()?)?;
         let offset = start.checked_add(u32::try_from(column).ok()?)?;
@@ -97,7 +77,6 @@ impl Text {
     }
 }
 
-/// The names of the function breakpoints among `desired`.
 fn names(desired: &[ManagedArm]) -> BTreeSet<Arc<str>> {
     desired
         .iter()
@@ -108,15 +87,12 @@ fn names(desired: &[ManagedArm]) -> BTreeSet<Arc<str>> {
         .collect()
 }
 
-/// Whether `desired` holds a function breakpoint.
 pub(super) fn wanted(desired: &[ManagedArm]) -> bool {
     desired
         .iter()
         .any(|arm| matches!(arm.place, ManagedPlace::Function { .. }))
 }
 
-/// Begins a search of the isolate `session` reaches, or has the one under
-/// way run again once it ends.
 pub(super) fn search(connection: &Connection, session: &Session, isolate: &mut Isolate) {
     if let Some(search) = isolate.search.as_mut() {
         search.again = true;
@@ -147,8 +123,6 @@ pub(super) fn search(connection: &Connection, session: &Session, isolate: &mut I
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Begins a search of the isolate `session` reaches in `runtime`, when
-    /// the runtime has a function breakpoint. Returns whether one runs.
     pub(super) fn search_functions(&mut self, runtime: RuntimeId, session: &Session) -> bool {
         let Some(inspector) = self
             .session
@@ -167,7 +141,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         isolate.search.is_some()
     }
 
-    /// Whether `id` is a request of a search in `runtime`.
     pub(super) fn searches(&self, runtime: RuntimeId, id: RequestId) -> bool {
         self.session
             .inferior()
@@ -182,8 +155,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
     }
 
-    /// Takes V8's answer to the search request `id` in `runtime` a step
-    /// on, and once the search ends, judges the sentinel's pause it held.
     pub(super) fn search_answered(
         &mut self,
         runtime: RuntimeId,
@@ -275,7 +246,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// The numbers of the function breakpoints among `desired`, by name.
 fn numbers_by_name(desired: &[ManagedArm]) -> BTreeMap<Arc<str>, Vec<u64>> {
     let mut numbers = BTreeMap::<Arc<str>, Vec<u64>>::new();
     for arm in desired {
@@ -289,9 +259,6 @@ fn numbers_by_name(desired: &[ManagedArm]) -> BTreeMap<Arc<str>, Vec<u64>> {
     numbers
 }
 
-/// Goes on from the coverage `coverage` of an isolate: each function it
-/// names among `names`, in the program's scripts and not yet placed, is
-/// looked into in its script's text, which is asked for first if needed.
 fn found(
     connection: &Connection,
     session: &Session,
@@ -304,7 +271,6 @@ fn found(
         let (Some(id), Some(url)) = (script["scriptId"].as_str(), script["url"].as_str()) else {
             continue;
         };
-        // Node's own code is no part of the program's.
         if url.is_empty() || url.starts_with("node:") {
             continue;
         }
@@ -358,8 +324,6 @@ fn found(
     }
 }
 
-/// Asks for the breakable places of `function` itself, from where the
-/// coverage starts it: V8 lists those of the innermost function there.
 fn within(connection: &Connection, session: &Session, isolate: &mut Isolate, function: Found) {
     let Some(start) = isolate
         .texts
@@ -386,9 +350,6 @@ fn within(connection: &Connection, session: &Session, isolate: &mut Isolate, fun
     }
 }
 
-/// Sets the function breakpoints named as `function` is at its first
-/// breakable place, from `result`, the places V8 listed for it. A list
-/// with a place outside the function is of another function, and refused.
 fn place(
     connection: &Connection,
     session: &Session,
@@ -436,9 +397,6 @@ fn place(
     }
 }
 
-/// The first of the places V8 `listed` for `function`, once each is in
-/// its range: after where it starts, and at or before where it ends,
-/// which a concise arrow function returns at.
 fn first_place(
     text: Option<&Arc<Text>>,
     function: &Found,
@@ -479,8 +437,6 @@ fn first_place(
 }
 
 impl Isolate {
-    /// Whether a function the coverage started at `start` in `script` was
-    /// placed, or refused, already.
     fn placed(&self, script: &Arc<str>, start: u32) -> bool {
         self.sites.values().any(|site| {
             site.placements.iter().any(|placement| {
@@ -504,7 +460,6 @@ mod tests {
 
     #[test]
     fn lines_end_where_v8_ends_them_and_columns_count_utf16() {
-        // "a\r\nb\rc\u{2028}d" then an astral character, two units, then "e".
         let text = Text::new("a\r\nb\rc\u{2028}d\u{1F600}e");
         assert_eq!(at(&text, 0), (0, 0));
         assert_eq!(at(&text, 2), (0, 2), "the LF of a CRLF is on its line");
@@ -519,7 +474,6 @@ mod tests {
 
     #[test]
     fn a_listing_outside_the_function_is_refused() {
-        // `x => (y) => y` lists `(y) => y` from 11 to 19; `f` at 0 to 19.
         let text = Some(Arc::new(Text::new("const f = (x) => (y) => y;")));
         let function = Found {
             script: "1".into(),

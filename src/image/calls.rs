@@ -1,10 +1,3 @@
-//! What debug information says of calls: each call site, with what it
-//! passed and where it returns, and what each function says of the calls
-//! it makes, which entry values and tail-call chains are found from.
-//!
-//! Calling functions are one per function of [`super::variables`], in its
-//! order; sites and functions name each other by row.
-
 use std::sync::Arc;
 
 use zerocopy::little_endian::{U16, U32, U64};
@@ -18,62 +11,48 @@ use super::{Builder, Image, NONE, Record, Span, TableKind};
 use crate::ImageAddress;
 use crate::debug_info::TailJump;
 
-/// What a function says of the calls it makes.
 #[derive(Debug, Clone)]
 pub struct CallingFunction {
-    /// The linker name other modules may call it by.
     pub name: Option<Arc<str>>,
     pub frame_base: Metadata<LocationListId>,
 
-    /// Whether the function describes every tail call it makes.
     pub tail_calls_described: bool,
     pub tail_calls: Vec<u32>,
 }
 
-/// What a call site calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SiteTarget {
     Code(ImageAddress),
     Symbol(Arc<str>),
 
-    /// The location of the address it calls, or why it is malformed.
     Computed(Result<LocationListId, Arc<str>>),
     Unknown,
 }
 
-/// What a call passed in one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SiteParameter {
-    /// The register the parameter is passed in.
     pub register: Option<u16>,
 
-    /// The `.debug_info` offset of the callee's parameter entry.
     pub parameter: Option<u64>,
     pub value: Option<ExpressionId>,
 
-    /// The value the passed address pointed at.
     pub data_value: Option<ExpressionId>,
 }
 
-/// One call site, as [`add_to`] takes it.
 #[derive(Debug, Clone)]
 pub struct CallSite {
     pub function: u32,
 
-    /// The instruction after the call, which a frame it entered returns to.
     pub return_address: Option<ImageAddress>,
     pub target: SiteTarget,
 
-    /// For a tail call, the function it enters in this module, if known.
     pub enters: Option<u32>,
 
-    /// For a tail call, where it jumped from, if known.
     pub jump: Option<TailJump>,
     pub parameters: Vec<SiteParameter>,
     pub malformed: Option<Arc<str>>,
 }
 
-/// What [`add_to`] encodes.
 #[derive(Debug, Clone, Default)]
 pub struct Calls {
     pub functions: Vec<CallingFunction>,
@@ -85,7 +64,6 @@ pub struct Calls {
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct CallingFunctionRecord {
-    /// The linker name, or [`NONE`].
     pub name: U32,
     pub frame_base: U32,
     pub tail_calls: Span<Item>,
@@ -111,16 +89,13 @@ pub struct CallSiteRecord {
     pub function: U32,
     pub return_address: U64,
 
-    /// What [`CallSiteRecord::target_kind`] says it is.
     pub target: U64,
 
-    /// The function a tail call enters, or [`NONE`].
     pub enters: U32,
     pub jump_instruction: U64,
     pub jump_lookup: U64,
     pub parameters: Span<SiteParameterRecord>,
 
-    /// Why the site is malformed, or [`NONE`].
     pub malformed: U32,
     pub target_kind: u8,
     pub flags: u8,
@@ -158,7 +133,6 @@ pub struct SiteParameterRecord {
     pub register: U16,
     pub parameter: U64,
 
-    /// The value's expression, or [`NONE`].
     pub value: U32,
     pub data_value: U32,
     pub flags: u8,
@@ -176,7 +150,6 @@ pub mod parameter_flags {
     pub const ALL: u8 = REGISTER | PARAMETER;
 }
 
-/// Why calls could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the call sites do not fit an image")]
 pub struct TooMany;
@@ -203,8 +176,6 @@ const fn some(value: U32) -> Option<u32> {
     }
 }
 
-/// Adds the calling functions, call sites, and the index of where calls
-/// return to `builder`, pooling names in `strings`.
 pub fn add_to(
     builder: &mut Builder<'_>,
     strings: &mut StringsBuilder,
@@ -316,11 +287,9 @@ pub fn add_to(
     Ok(())
 }
 
-/// A call site, by its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SiteId(pub u32);
 
-/// The calls of an image.
 #[derive(Debug, Clone, Copy)]
 pub struct CallView<'a> {
     strings: Strings<'a>,
@@ -343,9 +312,6 @@ impl<'a> CallView<'a> {
         }
     }
 
-    /// The calling function `function` numbers. Validation does not tie
-    /// these to the variables' functions, whose ids callers pass, so one
-    /// missing here describes none of its tail calls.
     pub fn function(self, function: u32) -> Calling<'a> {
         const UNDESCRIBED: CallingFunctionRecord = CallingFunctionRecord {
             name: U32::new(NONE),
@@ -364,7 +330,6 @@ impl<'a> CallView<'a> {
         }
     }
 
-    /// The site `id` names, when it is one of these.
     pub fn site(self, id: SiteId) -> Option<Site<'a>> {
         Some(Site {
             view: self,
@@ -372,8 +337,6 @@ impl<'a> CallView<'a> {
         })
     }
 
-    /// The sites whose calls return to `address`; more than one is
-    /// malformed.
     pub fn returning_to(self, address: ImageAddress) -> impl Iterator<Item = SiteId> + 'a {
         let first = self
             .returns
@@ -391,7 +354,6 @@ impl<'a> CallView<'a> {
     }
 }
 
-/// What one function says of the calls it makes.
 #[derive(Debug, Clone, Copy)]
 pub struct Calling<'a> {
     view: CallView<'a>,
@@ -399,7 +361,6 @@ pub struct Calling<'a> {
 }
 
 impl<'a> Calling<'a> {
-    /// The linker name other modules may call it by.
     pub fn name(self) -> Option<Arc<str>> {
         some(self.record.name).map(|name| self.view.text(name))
     }
@@ -412,12 +373,10 @@ impl<'a> Calling<'a> {
         )
     }
 
-    /// Whether the function describes every tail call it makes.
     pub const fn tail_calls_described(self) -> bool {
         self.record.flags & calling_flags::TAIL_CALLS_DESCRIBED != 0
     }
 
-    /// The tail calls it makes, in the order it describes them.
     pub fn tail_calls(self) -> impl ExactSizeIterator<Item = SiteId> + 'a {
         self.record
             .tail_calls
@@ -427,7 +386,6 @@ impl<'a> Calling<'a> {
     }
 }
 
-/// One call site of a [`CallView`].
 #[derive(Debug, Clone, Copy)]
 pub struct Site<'a> {
     view: CallView<'a>,
@@ -435,12 +393,10 @@ pub struct Site<'a> {
 }
 
 impl<'a> Site<'a> {
-    /// The function making the call.
     pub const fn function(self) -> u32 {
         self.record.function.get()
     }
 
-    /// The instruction after the call, which a frame it entered returns to.
     pub const fn return_address(self) -> Option<ImageAddress> {
         if self.record.flags & site_flags::RETURN_ADDRESS == 0 {
             None
@@ -452,7 +408,6 @@ impl<'a> Site<'a> {
     pub fn target(self) -> SiteTarget {
         let value = self.record.target.get();
 
-        // Validation keeps a string's or a list's number within u32.
         let row = u32::try_from(value).ok();
         match self.record.target_kind {
             targets::CODE => SiteTarget::Code(ImageAddress::new(value)),
@@ -469,12 +424,10 @@ impl<'a> Site<'a> {
         }
     }
 
-    /// For a tail call, the function it enters in this module, if known.
     pub const fn enters(self) -> Option<u32> {
         some(self.record.enters)
     }
 
-    /// For a tail call, where it jumped from, if known.
     pub const fn jump(self) -> Option<TailJump> {
         if self.record.flags & site_flags::JUMP == 0 {
             None
@@ -506,7 +459,6 @@ impl<'a> Site<'a> {
     }
 }
 
-/// Checks the calls.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     let view = CallView::new(image);
     let lists = image.table::<super::locations::LocationListRecord>().len();

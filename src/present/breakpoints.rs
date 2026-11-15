@@ -1,5 +1,3 @@
-//! Pending runtime arming, described consistently by every client.
-
 use std::collections::BTreeSet;
 
 use microscope::Breakpoint;

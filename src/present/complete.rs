@@ -1,14 +1,8 @@
-//! What completes the part of a console line being completed: names,
-//! members, and registers, as the frame knows them.
-
 use microscope::{StopContext, VariableSnapshot};
 
 use super::Presenter;
 pub use super::completing::{Completing, completing};
 
-/// What may complete the part being completed, before filtering by it:
-/// each candidate and its kind, `keyword`, `value`, `variable`, or `field`.
-/// `command` is the line's first word, and `variables` the frame's.
 pub async fn candidates(
     presenter: &Presenter<'_>,
     completing: Completing<'_>,
@@ -92,7 +86,6 @@ pub async fn candidates(
     candidates
 }
 
-/// The candidates that complete `partial`, once each, at most `limit`.
 pub fn matching(
     candidates: Vec<(String, &'static str)>,
     partial: &str,

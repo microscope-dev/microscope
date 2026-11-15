@@ -1,8 +1,8 @@
-# The settings every CLI test runs with, so that the locale of whoever runs
-# them never changes their output.
+
+
 [ui]
 unicode = "never"
 
-# How long a run took depends on the machine's load.
+
 [stop]
 elapsed = false

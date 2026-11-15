@@ -1,6 +1,6 @@
-/* Conway's game of life on a 64 by 48 torus, a generation each step, for
- * drawing its cells from their bytes. A session's views file, life.views,
- * and the renderer beside it, life.js, draw it. */
+
+
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +14,7 @@ struct life {
     uint8_t cells[ROWS][COLUMNS];
 };
 
-/* A glider, which travels, and a blinker, which stays. */
+
 static void seed(struct life *life) {
     memset(life, 0, sizeof *life);
     static const int glider[][2] = {{1, 2}, {2, 3}, {3, 1}, {3, 2}, {3, 3}};

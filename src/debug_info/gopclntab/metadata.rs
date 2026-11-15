@@ -1,8 +1,3 @@
-//! Functions, inline instances, and line tables from Go's function table,
-//! for code no DWARF describes, such as a stripped image's. They become the
-//! same module-image records DWARF would produce, so nothing past the
-//! provider knows where they came from.
-
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,21 +10,16 @@ use crate::{
     SourceLanguage, SourceLocation,
 };
 
-/// A function's source positions, by the code each covers.
 type Positions = Vec<(std::ops::Range<u64>, GoPosition)>;
 
-/// The per-image tables the function table adds to.
 pub struct Catalog<'a> {
     pub functions: &'a mut Vec<FunctionInfo>,
     pub code_instances: &'a mut Vec<CodeInstanceInfo>,
     pub lines: &'a mut LineTables,
 
-    /// Interns a source path.
     pub source_file: &'a mut dyn FnMut(PathBuf) -> SourceFileId,
 }
 
-/// Adds every function of the table whose code no existing function or line
-/// describes. `code` returns the image's code bytes at an address.
 pub fn complete<'code>(
     table: &GoTable,
     code: impl Fn(u64, usize) -> Option<&'code [u8]> + Copy,
@@ -48,7 +38,6 @@ pub fn complete<'code>(
         source_file: &mut *catalog.source_file,
     };
 
-    // Every function is declared before any inlined call names one.
     let mut declared = Vec::new();
     for function in table.functions() {
         if function.entry < function.end && !described.contains(function.entry) {
@@ -70,7 +59,6 @@ pub fn complete<'code>(
     Ok(())
 }
 
-/// The code that existing records already describe, merged and sorted.
 struct Described(Vec<(u64, u64)>);
 
 impl Described {
@@ -115,8 +103,6 @@ struct Builder<'a, 'catalog> {
     lines: LineTables,
     files: HashMap<Arc<str>, SourceFileId>,
 
-    /// The function each name names, for inlined calls: the first function
-    /// of that name that is not a wrapper.
     by_name: HashMap<Arc<str>, FunctionId>,
     first_function: usize,
     first_instance: usize,
@@ -194,8 +180,6 @@ impl Builder<'_, '_> {
         Ok(id)
     }
 
-    /// The function's record, its source positions, and its inline-tree
-    /// runs. It is declared where its own code begins, outside inlined code.
     fn declare(&mut self, function: &GoFunction) -> Result<(FunctionId, Positions, Vec<PcRun>)> {
         let table = self.table;
         let name = table.name(function)?;
@@ -226,7 +210,6 @@ impl Builder<'_, '_> {
 
         let id = self.new_function(Arc::clone(&name), declaration, language, role)?;
 
-        // An ABI wrapper shares its function's name.
         if function.facts.special != Some(super::SpecialFunction::Wrapper) {
             self.by_name.entry(name).or_insert(id);
         }
@@ -234,8 +217,6 @@ impl Builder<'_, '_> {
         Ok((id, positions, inlined))
     }
 
-    /// The function's code: its out-of-line instance, its lines, and the
-    /// instances of the calls inlined into it.
     fn define<'code>(
         &mut self,
         function: &GoFunction,
@@ -266,10 +247,6 @@ impl Builder<'_, '_> {
         self.add_inlined_calls(function, inlined, physical)
     }
 
-    /// One line-table sequence for the function: a row for each run of a
-    /// position, each a statement, since the table marks none, and a row
-    /// ending the sequence where the last run ends. A run without a line
-    /// keeps its row, so that rows keep their positions' ordinals.
     fn add_lines(&mut self, positions: &Positions) -> Result<()> {
         let Some((last, _)) = positions.last() else {
             return Ok(());
@@ -308,8 +285,6 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
-    /// An inline instance for each entry of the function's inline tree,
-    /// covering the code where the entry is on the inline-call chain.
     fn add_inlined_calls(
         &mut self,
         function: &GoFunction,
@@ -318,7 +293,6 @@ impl Builder<'_, '_> {
     ) -> Result<()> {
         let table = self.table;
 
-        // Each entry's ranges and its parent entry, by tree index.
         let mut entries = BTreeMap::<i32, (Vec<AddressRange<ImageAddress>>, i32)>::new();
         for run in runs.iter().filter(|run| run.value >= 0) {
             let mut index = run.value;
@@ -355,7 +329,6 @@ impl Builder<'_, '_> {
 
         let mut instances = BTreeMap::<i32, CodeInstanceId>::new();
 
-        // Parents first, so each instance names its parent's.
         let mut pending = entries.iter().collect::<Vec<_>>();
 
         while !pending.is_empty() {
@@ -408,8 +381,6 @@ impl Builder<'_, '_> {
 }
 
 impl Builder<'_, '_> {
-    /// A function for an inlined call whose callee has no code of its own,
-    /// declared where its first inlined code is.
     fn inlined_function(
         &mut self,
         function: &GoFunction,
@@ -438,11 +409,8 @@ impl Builder<'_, '_> {
     }
 }
 
-/// Bounds the inline-call chain at one address, which only a corrupt tree
-/// makes longer than the compiler's inlining depth.
 const MAX_INLINE_DEPTH: usize = 256;
 
-/// The value of the run containing an address, or -1 outside every run.
 fn value_at(runs: &[PcRun], address: u64) -> i32 {
     let after = runs.partition_point(|run| run.start <= address);
     after

@@ -1,7 +1,7 @@
-//! Tasks a profiler test samples. Each of the tasks on a multi-thread
-//! runtime's two workers calls `work` from two async functions it awaits,
-//! so that every call's logical stack is known: the task, `outer`,
-//! `inner`, then `work`.
+
+
+
+
 
 use std::hint::black_box;
 

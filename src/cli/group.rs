@@ -1,6 +1,3 @@
-//! A session of a process group: the selected member, the commands that
-//! list and select members, and runs that wait for the whole group.
-
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
@@ -14,14 +11,10 @@ use super::commands::{RunLines, join_lines};
 use super::terminal::Role;
 use super::{Cli, Selected, format};
 
-/// The group a session debugs, and how its members read source files.
 pub struct Group {
     pub handle: GroupHandle,
     source_paths: SourcePathMap,
 
-    /// The group's events, read by a run while it waits and by the prompt
-    /// between commands, so each prints once. A holder awaits only a
-    /// receive, which a cancelled one leaves as it found it.
     #[expect(clippy::disallowed_types, reason = "held only across a receive")]
     events: tokio::sync::Mutex<broadcast::Receiver<GroupEvent>>,
 }
@@ -38,15 +31,12 @@ impl Group {
     }
 }
 
-/// How a group run starts.
 pub enum Start {
-    /// Launches the program, as the session's settings say.
     Launch,
     Continue,
 }
 
 impl Cli {
-    /// Selects member `number`, whose handle commands act on from now on.
     pub(super) fn select_member(&self, number: MemberNumber) -> Result<()> {
         let group = self
             .group
@@ -67,7 +57,6 @@ impl Cli {
         Ok(())
     }
 
-    /// The members, for `processes`.
     pub(super) fn processes(&self) -> Result<String> {
         let group = self
             .group
@@ -80,7 +69,6 @@ impl Cli {
         ))
     }
 
-    /// `process N`: selects a member, and says where it is.
     pub(super) async fn process(&self, argument: &str) -> Result<String> {
         let number = parse_member(argument)?;
         self.select_member(number)?;
@@ -94,7 +82,6 @@ impl Cli {
         Ok(join_lines(&selected, &place))
     }
 
-    /// `detach process N`: releases a stopped member to run on its own.
     pub(super) async fn detach_member(
         &self,
         arguments: &[&str],
@@ -121,8 +108,6 @@ impl Cli {
         ))
     }
 
-    /// The prompt, which names the selected member once the group has more
-    /// than one.
     pub(super) fn prompt(&self) -> String {
         let prompt = &self.settings.config.ui.prompt;
         let Some(group) = &self.group else {
@@ -139,11 +124,8 @@ impl Cli {
         )
     }
 
-    /// `run` or `continue`: runs the group, or the one process.
     pub(super) async fn run_program(&self, start: Start) -> Result<String> {
         if self.group.is_some() {
-            // A group's run is a large future, which most commands do
-            // not need room for.
             return Box::pin(self.run_group(start)).await;
         }
         let debugger = self.debugger();
@@ -156,10 +138,6 @@ impl Cli {
         }
     }
 
-    /// Waits until the group has seen the selected member's command end,
-    /// and reports what the group did meanwhile. When the command ended in
-    /// a stop, it waits for the group stop with that stop's id. An older
-    /// group stop that nobody read yet is printed as a notice instead.
     pub(super) async fn member_execution_end(
         &self,
         reason: &StopReason,
@@ -170,8 +148,6 @@ impl Cli {
         };
         let member = self.selected_member();
 
-        // Nothing else moves the member, so its current stop is the one
-        // the command ended at.
         let stop = match self.debugger().snapshot().await?.inferior {
             InferiorState::Stopped { stop_id, .. } if !matches!(reason, StopReason::Exited(_)) => {
                 Some(stop_id)
@@ -184,8 +160,6 @@ impl Cli {
             let event = match events.recv().await {
                 Ok(event) => event,
 
-                // The events lost may have held the command's end, which
-                // the group's state shows.
                 Err(RecvError::Lagged(missed)) => {
                     lines.push(missed_warning(missed, self.renderers.stdout));
                     let members = group.handle.members();
@@ -249,10 +223,6 @@ impl Cli {
         Ok(())
     }
 
-    /// Runs the group, by launching its root or continuing every member,
-    /// until it stops or every member has exited, and reports what the
-    /// group did meanwhile and the stop, in the member that stopped, which
-    /// is selected.
     pub(super) async fn run_group(&self, start: Start) -> Result<String> {
         let group = self
             .group
@@ -264,15 +234,10 @@ impl Cli {
         self.earlier_notices(&mut events, &mut lines);
         let mut member_events = MemberEvents::of(&group.handle);
 
-        // What the group's state held as the run began, which a run that
-        // misses events compares it with.
         let before = group.handle.last_stop();
         let lost_before = lost(&group.handle);
         let started = Instant::now();
 
-        // A continue ends at the group stop that names it. A launch's run
-        // takes the first group stop: no member is left from before it to
-        // stop late.
         let execution = match start {
             Start::Launch => {
                 group
@@ -300,9 +265,6 @@ impl Cli {
             };
             let event = match received {
                 Ok(event) => event,
-                // The events lost may have held the run's end, a member
-                // it lost, or members that joined, which the group's state
-                // shows.
                 Err(RecvError::Lagged(missed)) => {
                     lines.push(missed_warning(missed, renderer));
                     member_events.catch_up(&group.handle);
@@ -327,8 +289,6 @@ impl Cli {
                     );
                 }
                 GroupEvent::GroupExited => break group_exit(&group.handle),
-                // The root's exit reports as the run's end when the
-                // group's follows it, so it waits to see which.
                 GroupEvent::MemberExited { member: 1, .. } => {
                     root_exit = format::group_event(&event, &group.handle.members(), renderer);
                 }
@@ -350,7 +310,6 @@ impl Cli {
             }
         };
 
-        // The prompt reads what the group does from here on.
         drop(events);
         let elapsed = started.elapsed();
         if let Some(line) = root_exit
@@ -366,10 +325,6 @@ impl Cli {
         Ok(join_lines(&lines, &stop))
     }
 
-    /// What the group did since the prompt last read its events, which a
-    /// run reports first, as the prompt would have printed it. Reading them
-    /// before the run starts also keeps the run's own rules, where a lost
-    /// member fails it and an exit ends it, to what happens during it.
     fn earlier_notices(&self, events: &mut broadcast::Receiver<GroupEvent>, lines: &mut RunLines) {
         loop {
             match events.try_recv() {
@@ -386,7 +341,6 @@ impl Cli {
         }
     }
 
-    /// Selects the member that stopped, and reports its stop.
     async fn group_stop(
         &self,
         group: &GroupHandle,
@@ -408,8 +362,6 @@ impl Cli {
         Ok(stop)
     }
 
-    /// The line the group's next event that no run reported prints between
-    /// commands, if any. It never comes for a session of one.
     pub(super) async fn next_group_notice(&self) -> Option<String> {
         let Some(group) = self.group.as_ref() else {
             return std::future::pending().await;
@@ -422,14 +374,12 @@ impl Cli {
         }
     }
 
-    /// The line a group event prints between commands, if any.
     pub(super) fn group_notice(&self, event: &GroupEvent) -> Option<String> {
         let group = self.group.as_ref()?;
         format::group_event(event, &group.handle.members(), self.renderers.stdout)
     }
 }
 
-/// Whether a member has a process microscope debugs, or will.
 const fn live(state: &MemberState) -> bool {
     matches!(
         state,
@@ -437,7 +387,6 @@ const fn live(state: &MemberState) -> bool {
     )
 }
 
-/// The members whose sessions failed.
 fn lost(group: &GroupHandle) -> Vec<MemberNumber> {
     group
         .members()
@@ -447,8 +396,6 @@ fn lost(group: &GroupHandle) -> Vec<MemberNumber> {
         .collect()
 }
 
-/// Development builds panic on request once the group runs, to test what a
-/// panic in the CLI leaves of the processes it debugs.
 #[cfg(debug_assertions)]
 fn panic_if_asked() {
     const PANIC_WHILE_RUNNING: &str = "MICROSCOPE_TEST_CLI_PANIC";
@@ -458,10 +405,6 @@ fn panic_if_asked() {
     );
 }
 
-/// How a run that missed group events ended, as the group's state shows:
-/// a member whose session failed since `lost_before` fails it, a group stop
-/// newer than `before` that names `execution` ends it, as does every member
-/// being gone. None when it runs on.
 fn run_end(
     group: &GroupHandle,
     before: Option<&GroupStop>,
@@ -486,7 +429,6 @@ fn run_end(
     Ok(None)
 }
 
-/// A run's end once every member is gone, reported as the root's exit.
 fn group_exit(group: &GroupHandle) -> (MemberNumber, StopReason) {
     let status = match group.members().first().map(|member| &member.state) {
         Some(MemberState::Exited(status)) => status.clone(),
@@ -502,7 +444,6 @@ fn missed_warning(missed: u64, renderer: super::terminal::Renderer) -> String {
     )
 }
 
-/// A member's stop with the group's breakpoint ids in place of its copies'.
 fn group_reason(group: &GroupHandle, member: MemberNumber, reason: StopReason) -> StopReason {
     match reason {
         StopReason::Breakpoint { address, hits } => StopReason::Breakpoint {
@@ -529,31 +470,23 @@ fn parse_member(argument: &str) -> Result<MemberNumber> {
         .map_err(|_| anyhow!("invalid process number: {argument}"))
 }
 
-/// A member's events, as they arrive.
 type MemberEvent = (
     microscope::DebuggerHandle,
     Result<microscope::DebuggerEvent, RecvError>,
 );
 
-/// Each member's own events, such as signals and logged messages, which a
-/// run reports as a single process's run reports them.
 struct MemberEvents {
     forward: tokio::sync::mpsc::UnboundedSender<MemberEvent>,
     received: tokio::sync::mpsc::UnboundedReceiver<MemberEvent>,
 
-    /// The tasks that forward them, which end when this drops.
     forwarders: tokio::task::JoinSet<()>,
 
-    /// Tells the forwarders to pass on what their members already sent,
-    /// and end.
     stop: tokio::sync::watch::Sender<bool>,
 
-    /// The members whose events are forwarded.
     watched: std::collections::BTreeSet<MemberNumber>,
 }
 
 impl MemberEvents {
-    /// The events of every member `group` has so far.
     fn of(group: &GroupHandle) -> Self {
         let (forward, received) = tokio::sync::mpsc::unbounded_channel();
         let mut events = Self {
@@ -567,7 +500,6 @@ impl MemberEvents {
         events
     }
 
-    /// Forwards the events of every member of `group` not yet watched.
     fn catch_up(&mut self, group: &GroupHandle) {
         for member in group.members() {
             if let Some(debugger) = group.member(member.number) {
@@ -576,7 +508,6 @@ impl MemberEvents {
         }
     }
 
-    /// Forwards member `number`'s events too, through `debugger`.
     fn watch(&mut self, number: MemberNumber, debugger: microscope::DebuggerHandle) {
         if !self.watched.insert(number) {
             return;
@@ -598,8 +529,6 @@ impl MemberEvents {
                 }
             }
 
-            // A member sends its events before the stop that ends the run,
-            // so those still queued belong to the run.
             loop {
                 let event = match events.try_recv() {
                     Ok(event) => Ok(event),
@@ -613,7 +542,6 @@ impl MemberEvents {
         });
     }
 
-    /// Records every event the members sent during the run.
     async fn finish(mut self, lines: &mut RunLines, renderer: super::terminal::Renderer) {
         let _ = self.stop.send(true);
         while self.forwarders.join_next().await.is_some() {}
@@ -636,14 +564,6 @@ mod tests {
 
     use super::super::{Cli, LaunchSettings, Renderers, config::Settings};
 
-    /// A CLI session of a group, driven by calling its commands directly,
-    /// with no terminal. The group's events reach the session through a
-    /// channel the test owns, so a test can add its own events to it.
-    /// `forwarded` counts the group stops and exits copied into it so far,
-    /// and an event put in `slipped` is sent just before the next of them.
-    /// When `flood` is set, the next stop or exit is followed by enough
-    /// other events to push it out of the session's channel, as a burst
-    /// of events would.
     struct Session {
         cli: Cli,
         group: ProcessGroup,
@@ -653,7 +573,6 @@ mod tests {
         flood: Arc<AtomicBool>,
     }
 
-    /// How many events the session's channel holds.
     const CAPACITY: usize = 64;
 
     fn ends_a_run(event: &GroupEvent) -> bool {
@@ -720,7 +639,6 @@ mod tests {
             }
         }
 
-        /// Runs command `line`, and returns what it printed.
         async fn run(&self, line: &str) -> String {
             let control = tokio::time::timeout(Duration::from_secs(10), self.cli.execute(line))
                 .await
@@ -732,8 +650,6 @@ mod tests {
             }
         }
 
-        /// Waits until `count` of the group's stops and exits have reached
-        /// the session.
         async fn forwarded(&mut self, count: usize) {
             tokio::time::timeout(
                 Duration::from_secs(10),
@@ -744,8 +660,6 @@ mod tests {
             .expect("the group runs");
         }
 
-        /// The group stops and exits the session received and no command
-        /// read.
         async fn unread_stops(&self) -> Vec<GroupEvent> {
             let group = self.cli.group.as_ref().expect("a group session");
             let mut events = group.events.lock().await;
@@ -754,7 +668,6 @@ mod tests {
                 .collect()
         }
 
-        /// A copy of the root's current stop, as if nothing read it yet.
         async fn stale_root_stop(&self) -> GroupEvent {
             let InferiorState::Stopped {
                 stop_id, reason, ..
@@ -786,10 +699,6 @@ mod tests {
         }
     }
 
-    /// A step waits for the group stop its own step made. An older group
-    /// stop that nothing read yet, like one the prompt did not get to
-    /// print, must not end it. If it did, the step's own stop would stay
-    /// unread, and the next command would take it as its own end.
     #[tokio::test]
     async fn a_step_ends_at_its_own_group_stop_not_an_older_one() {
         let mut session = Session::of("basic");
@@ -812,9 +721,6 @@ mod tests {
         session.end().await;
     }
 
-    /// A continue ends at the group stop or exit it caused. An older group
-    /// stop that arrives while it runs, after the notices from before the
-    /// continue were printed, must not end it early.
     #[tokio::test]
     async fn a_continue_ends_at_its_own_end_not_an_older_stop() {
         let mut session = Session::of("basic");
@@ -835,9 +741,6 @@ mod tests {
         session.end().await;
     }
 
-    /// An event from before a continue, which the prompt had no turn to
-    /// print, is a notice of what happened then. A member lost before
-    /// must not fail the continue as if it was lost during it.
     #[tokio::test]
     async fn a_continue_prints_an_older_loss_without_failing() {
         let mut session = Session::of("basic");
@@ -862,8 +765,6 @@ mod tests {
         session.end().await;
     }
 
-    /// A step whose group stop was pushed out of the session's events by
-    /// a burst learns of it from the group, and ends at it.
     #[tokio::test]
     async fn a_step_whose_group_stop_was_lost_ends_at_it() {
         let mut session = Session::of("basic");
@@ -880,8 +781,6 @@ mod tests {
         session.end().await;
     }
 
-    /// A continue whose group stop, and then whose exit, was pushed out
-    /// of the session's events learns of it from the group, and ends.
     #[tokio::test]
     async fn a_continue_whose_end_was_lost_ends_at_it() {
         let mut session = Session::of("basic");
@@ -903,8 +802,6 @@ mod tests {
         session.end().await;
     }
 
-    /// The prompt says when it missed some of the group's events, rather
-    /// than printing what came after as if nothing was lost.
     #[tokio::test]
     async fn the_prompt_says_it_missed_group_events() {
         let session = Session::of("basic");

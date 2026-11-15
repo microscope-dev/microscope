@@ -1,5 +1,3 @@
-// The run buttons send what was clicked once, however fast the clicks come.
-
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -20,7 +18,7 @@ it("continues once for a double click", async () => {
 
   await userEvent.dblClick(button);
   await expect.poll(() => sent, POLL).toContain("continue");
-  // The second click lands while the first is still being answered.
+
   await new Promise((resolve) => {
     setTimeout(resolve, 20);
   });

@@ -1,11 +1,3 @@
-//! Views present logical values, such as a `std::string`'s text or a `Vec`'s
-//! elements, while keeping the stored value accessible (`docs/views.md`).
-//!
-//! Program access uses the evaluator's traits, implemented by the debugger;
-//! this module performs no I/O, clock reads, or thread creation. A view is
-//! parsed once, bound to each matching concrete type before execution, and
-//! run at stops, charging every read to the inspection budget.
-
 pub mod bind;
 pub mod embedded;
 pub mod format;
@@ -31,7 +23,6 @@ use crate::{TypeInfo, TypeReference, ViewName};
 use bind::{BoundView, Rejection, SelfType};
 use syntax::View;
 
-/// The view files built into microscope, in the order they are tried.
 const BUILT_IN: [(&str, &str); 18] = [
     (
         "libstdc++.views",
@@ -77,18 +68,12 @@ const BUILT_IN: [(&str, &str); 18] = [
     ),
 ];
 
-/// The kernels built into microscope: each one's name, the source it is built
-/// from, and its module, which `just build-test-programs` checks is what
-/// that source builds.
 const BUILT_IN_KERNELS: [(&str, &str, &[u8]); 1] = [(
     "rust-btree",
     "views/kernels/rust-btree.zig",
     include_bytes!("../../views/kernels/rust-btree.wasm"),
 )];
 
-/// The renderers built into microscope, which any `visualize` may call: each
-/// one's name and its JavaScript (`docs/visualizers.md`). They use only
-/// the API every renderer has.
 const BUILT_IN_RENDERERS: [(&str, &str); 11] = [
     (
         "line-plot",
@@ -127,30 +112,21 @@ const BUILT_IN_RENDERERS: [(&str, &str); 11] = [
     ("mesh", include_str!("../../views/visualizers/mesh.js")),
 ];
 
-/// The largest renderer read, in bytes.
 pub const MAX_RENDERER_BYTES: usize = 256 * 1024;
 
-/// Views from one source, such as the files loaded for a session, a
-/// module's embedded views, or the built-in ones, in the order they are
-/// tried, and the kernels they may call. Immutable once made; loading
-/// views makes a new set.
 #[derive(Debug)]
 pub struct ViewSet {
     views: Vec<Arc<View>>,
 
-    /// Each base name's views, in order.
     by_base: BTreeMap<String, Vec<usize>>,
 
-    /// Each kernel, by name, with where it was loaded from.
     kernels: BTreeMap<String, (Arc<str>, Arc<kernel::Kernel>)>,
 
-    /// Each renderer, by name.
     renderers: BTreeMap<String, Arc<crate::Renderer>>,
     errors: Vec<syntax::Error>,
 }
 
 impl ViewSet {
-    /// Parses files, highest precedence first.
     #[must_use]
     pub fn new<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
         let mut views = Vec::new();
@@ -180,9 +156,6 @@ impl ViewSet {
         }
     }
 
-    /// Adds renderers loaded from `origin`, each a name and its
-    /// JavaScript. A renderer too large, or whose name an earlier one has,
-    /// is an error of `origin`.
     pub fn add_renderers<'a>(
         &mut self,
         origin: &str,
@@ -221,20 +194,15 @@ impl ViewSet {
         }
     }
 
-    /// The renderer named `name`, if the set has one.
     #[must_use]
     pub fn renderer(&self, name: &str) -> Option<&Arc<crate::Renderer>> {
         self.renderers.get(name)
     }
 
-    /// The set's renderers, by name.
     pub fn renderers(&self) -> impl Iterator<Item = &Arc<crate::Renderer>> + '_ {
         self.renderers.values()
     }
 
-    /// Adds kernels loaded from `origin`, each a name, its source or a link
-    /// to it, and its module. A kernel that cannot load, or whose name an
-    /// earlier one has, is an error of `origin`.
     pub fn add_kernels<'a>(
         &mut self,
         origin: &str,
@@ -269,14 +237,11 @@ impl ViewSet {
         }
     }
 
-    /// The kernel named `name`, if the set has one.
     #[must_use]
     pub fn kernel(&self, name: &str) -> Option<Arc<kernel::Kernel>> {
         self.kernels.get(name).map(|(_, kernel)| Arc::clone(kernel))
     }
 
-    /// The set's kernels, with where each was loaded from and what it is
-    /// built from.
     pub fn kernels(&self) -> impl Iterator<Item = crate::KernelSource> + '_ {
         self.kernels
             .values()
@@ -287,7 +252,6 @@ impl ViewSet {
             })
     }
 
-    /// The built-in views alone, with the built-in kernels.
     #[must_use]
     pub fn built_in() -> Arc<Self> {
         static BUILT_IN_SET: OnceLock<Arc<ViewSet>> = OnceLock::new();
@@ -299,27 +263,22 @@ impl ViewSet {
         }))
     }
 
-    /// A set of no views.
     #[must_use]
     pub fn empty() -> Arc<Self> {
         static EMPTY: OnceLock<Arc<ViewSet>> = OnceLock::new();
         Arc::clone(EMPTY.get_or_init(|| Arc::new(Self::new([]))))
     }
 
-    /// The views, in the order they are tried.
     #[must_use]
     pub fn views(&self) -> &[Arc<View>] {
         &self.views
     }
 
-    /// What kept parts of the files out.
     #[must_use]
     pub fn errors(&self) -> &[syntax::Error] {
         &self.errors
     }
 
-    /// Whether a view of the set names a type of this identity's base, or
-    /// its Go kind.
     #[must_use]
     pub fn names(&self, identity: &crate::TypeIdentity) -> bool {
         self.by_base.contains_key(identity.base.as_ref())
@@ -327,18 +286,13 @@ impl ViewSet {
     }
 }
 
-/// A view a type was matched against, and whether it bound.
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub name: Arc<ViewName>,
 
-    /// `None` when it bound.
     pub rejection: Option<Rejection>,
 }
 
-/// Which view presents a type: the first candidate that binds, with why
-/// each candidate before it did not, and the `extend`s that add to it.
-/// Views after it are not tried; `extend`s are.
 #[derive(Debug, Clone)]
 pub struct Choice<St> {
     pub bound: Option<Arc<BoundView<St>>>,
@@ -354,7 +308,6 @@ impl<St> Default for Choice<St> {
     }
 }
 
-/// How a view is named in results and diagnostics.
 #[must_use]
 pub fn name_of(view: &View) -> Arc<ViewName> {
     Arc::new(ViewName {
@@ -365,10 +318,6 @@ pub fn name_of(view: &View) -> Arc<ViewName> {
     })
 }
 
-/// Whether `ty`, through its typedefs and qualifiers, is a pointer that
-/// only stands for a container its language gives a kind of its own, which
-/// a pattern names by that kind: a Go map or channel. Expressions index,
-/// measure, and size such a value through its view, never as a pointer.
 #[must_use]
 pub fn stands_for_container(types: &dyn TypeSource, mut ty: TypeReference) -> bool {
     for _ in 0..64 {
@@ -398,17 +347,11 @@ pub fn stands_for_container(types: &dyn TypeSource, mut ty: TypeReference) -> bo
     false
 }
 
-/// Chooses the view for values of `ty`: the first, in the set's order,
-/// whose pattern names the type and which binds against it in `scope`. A
-/// typedef's own identity is tried before what it stands for, as Go's map
-/// types are typedefs of a pointer.
 #[cfg(any(test, feature = "fuzzing"))]
 pub fn choose<S: Scope>(views: &ViewSet, ty: TypeReference, scope: &S) -> Choice<S::Step> {
     choose_among(&[views], ty, scope)
 }
 
-/// As [`choose`], among the views of several sets, each set's before the
-/// next's.
 pub fn choose_among<S: Scope>(sets: &[&ViewSet], ty: TypeReference, scope: &S) -> Choice<S::Step> {
     let mut choice = Choice::default();
 
@@ -428,13 +371,6 @@ pub fn choose_among<S: Scope>(sets: &[&ViewSet], ty: TypeReference, scope: &S) -
     choice
 }
 
-/// Chooses the view for an interpreter's objects of a class whose lineage
-/// is `lineage`: the class's identity, then each class it derives from, in
-/// the order the language looks attributes up in. The first identity a
-/// view of the language binds for presents the objects, as an enum's
-/// members are presented by the view of the enum class they derive from.
-/// The view binds once for every object of the class, since `self` is a
-/// value of a dynamic type.
 pub fn choose_dynamic<S: Scope>(
     sets: &[&ViewSet],
     lineage: &[crate::TypeIdentity],
@@ -453,9 +389,6 @@ pub fn choose_dynamic<S: Scope>(
     choice
 }
 
-/// Binds the views whose patterns name `identity`, in the sets' order,
-/// against `self_type`, adding each one tried to `choice`'s candidates:
-/// the first that binds, with every `extend` that adds to it, or `None`.
 fn choose_identity<S: Scope>(
     sets: &[&ViewSet],
     identity: &crate::TypeIdentity,
@@ -466,7 +399,6 @@ fn choose_identity<S: Scope>(
     let mut candidates = Vec::new();
 
     for views in sets {
-        // A Go type is also named by its kind, as every map is by `map`.
         let mut found = views
             .by_base
             .get(identity.base.as_ref())
@@ -494,7 +426,6 @@ fn choose_identity<S: Scope>(
     let mut extensions = Vec::new();
 
     for (view, set) in candidates {
-        // Views after the one that binds are not tried; `extend`s are.
         if base.is_some() && !view.extend {
             continue;
         }
@@ -523,7 +454,6 @@ fn choose_identity<S: Scope>(
         }
     }
 
-    // `extend`s with no view to add to add to the value's members.
     if base.is_none()
         && let Some((view, set, captures, _)) = extensions.first()
     {
@@ -558,8 +488,6 @@ fn choose_identity<S: Scope>(
     Some(base)
 }
 
-/// A type and the types its typedefs and qualifiers stand for, outermost
-/// first, ending at its representation.
 fn wrappers(types: &dyn TypeSource, ty: TypeReference) -> Vec<(TypeReference, &TypeInfo)> {
     let mut chain = Vec::new();
     let mut current = ty;

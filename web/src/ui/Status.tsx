@@ -11,7 +11,6 @@ interface Shown {
   detail: string | null;
 }
 
-/** What the status shows: the run state is the loudest thing on screen. */
 export function shown(model: Model): Shown {
   switch (model.link) {
     case "connecting":
@@ -38,7 +37,7 @@ export function shown(model: Model): Shown {
     return { pill: "idle", label: "Nothing loaded", detail: null };
   }
   const inferior = state.inferior;
-  // Which process the panes show, once there are several.
+
   const member = (state.group?.members.length ?? 0) > 1 ? `[${state.group?.selected}] ` : "";
   switch (inferior.state) {
     case "notStarted":
@@ -61,7 +60,6 @@ export function shown(model: Model): Shown {
 }
 
 export function Status() {
-  // Only what it shows, so output arriving does not render it again.
   const { pill, label, detail } = useModel(useShallow(shown));
   const program = useModel((model) => commandName(model.state));
   const command = useModel((model) => {
@@ -69,7 +67,6 @@ export function Status() {
     return target ? [target.program, ...target.arguments].join(" ") : undefined;
   });
   return (
-    // A status, so a change of run state is read out.
     // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled block, not a form output
     <div className="status" role="status" data-testid="status">
       {program && (

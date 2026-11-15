@@ -1,8 +1,8 @@
-// A program to attach to whose threads all sleep until a byte on its
-// standard input releases them, then each calls attach_breakpoint. A
-// debugger that releases it while it runs must stop every thread before it
-// can lift a trap, so a release cut short leaves the trap for some thread
-// to hit. Exits 23 once every thread has called attach_breakpoint.
+
+
+
+
+
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <stdint.h>

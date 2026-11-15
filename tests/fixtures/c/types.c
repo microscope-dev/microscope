@@ -1,11 +1,11 @@
 typedef int base_alias;
 typedef base_alias alias_chain;
 
-// GCC writes these bounds in one and two unsigned bytes: 255 and 65535.
+
 char byte_bounded[256];
 long short_bounded[65536];
 
-// Producers express void by omitting a type, even under a qualifier or name.
+
 typedef void opaque_handle;
 const void *const_void_pointer = byte_bounded;
 opaque_handle *typedef_void_pointer = short_bounded;

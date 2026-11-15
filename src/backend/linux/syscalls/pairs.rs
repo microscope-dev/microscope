@@ -1,46 +1,28 @@
-//! Each stack the kernel sent, paired with the call or signal it belongs to.
-//!
-//! A stack taken at a call's exit, or as a signal is delivered, goes in
-//! its ring just before the record it belongs to, so it pairs with its
-//! thread's next call or signal. A waiting call's stack is taken as the
-//! call begins and carries that time, since the call can return on
-//! another CPU. It pairs only with the call that began then: a signal
-//! delivered while the call waits has a stack of its own. A thread's
-//! interpreted frames go just before its stack, which says whether they
-//! did, so that frames whose own stack was lost are never another's.
-
 use std::collections::BTreeMap;
 
 use super::bpf::SampledStack;
 use crate::syscalls::Tid;
 
-/// A stack and the walker's record of the interpreted frames sent with it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Taken {
     pub stack: SampledStack,
     pub python: Option<Vec<u8>>,
 }
 
-/// The stacks not yet paired, by thread.
 #[derive(Default)]
 pub struct Pairs {
-    /// Interpreted frames whose stack has not come yet.
     python: BTreeMap<Tid, Vec<u8>>,
 
-    /// The stack of each thread's next call or signal.
     next: BTreeMap<Tid, Taken>,
 
-    /// The stack of each thread's waiting call, taken as it began.
     waiting: BTreeMap<Tid, Taken>,
 }
 
 impl Pairs {
-    /// The walker's record of a thread's interpreted frames.
     pub fn python(&mut self, thread: Tid, record: Vec<u8>) {
         self.python.insert(thread, record);
     }
 
-    /// A thread's stack, with the interpreted frames before it.
     pub fn stack(&mut self, stack: SampledStack) {
         let thread = stack.thread;
         let python = self.python.remove(&thread);
@@ -49,8 +31,6 @@ impl Pairs {
             stack,
         };
 
-        // A thread waits in one call at a time; a stack left from one
-        // whose record was lost is replaced.
         if taken.stack.entered.is_some() {
             self.waiting.insert(thread, taken);
         } else {
@@ -58,8 +38,6 @@ impl Pairs {
         }
     }
 
-    /// The stack of a thread's call that began at `entered`. Whatever
-    /// else the thread left unpaired is another record's, lost, and goes.
     pub fn call(&mut self, thread: Tid, entered: Option<u64>) -> Option<Taken> {
         let waiting = self.waiting(thread, entered);
         let next = self.next.remove(&thread);
@@ -67,14 +45,11 @@ impl Pairs {
         waiting.or(next)
     }
 
-    /// The stack of a thread's signal; a waiting call's stays.
     pub fn signal(&mut self, thread: Tid) -> Option<Taken> {
         self.python.remove(&thread);
         self.next.remove(&thread)
     }
 
-    /// The stack a thread's call that began at `entered` took as it
-    /// began, if it did: for a call still waiting as the trace ends.
     pub fn waiting(&mut self, thread: Tid, entered: Option<u64>) -> Option<Taken> {
         let waiting = self.waiting.remove(&thread)?;
         (entered.is_some() && waiting.stack.entered == entered).then_some(waiting)
@@ -91,27 +66,19 @@ mod tests {
     use crate::syscalls::Pid;
     use crate::unwind::DwarfRegister;
 
-    /// What a thread does: a call, whose stack is taken as it begins if it
-    /// waits and at its exit if not, with the signals delivered while it
-    /// waits; or a signal.
     #[derive(Debug, Clone)]
     enum Act {
         Call { waits: bool, signals: Vec<Fate> },
         Signal,
     }
 
-    /// What became of the interpreted frames the walker sends before a
-    /// stack.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Frames {
-        /// The process runs no interpreter the walker knows.
         None,
         Sent,
         Lost,
     }
 
-    /// How an act's records fare in the ring: its frames, and whether its
-    /// stack, or the record the stack went with, was lost.
     #[derive(Debug, Clone, Copy)]
     struct Fate {
         frames: Frames,
@@ -120,7 +87,6 @@ mod tests {
     }
 
     impl Fate {
-        /// Whether the frames are in the ring before the stack.
         fn interpreted(self) -> bool {
             self.frames == Frames::Sent
         }
@@ -149,18 +115,14 @@ mod tests {
         (act, fate())
     }
 
-    /// A record as the reader hands it on, after the rings are merged.
     #[derive(Debug)]
     enum Seen {
         Python(Tid, u64),
         Stack(Box<SampledStack>),
-        /// A call: its thread, its id, when it began, and whether the
-        /// record says its stack was lost.
         Call(Tid, u64, u64, bool),
         Signal(Tid, u64, bool),
     }
 
-    /// The stack whose kernel walk is just `id`.
     fn stack(thread: Tid, id: u64, entered: Option<u64>, interpreted: bool) -> SampledStack {
         SampledStack {
             thread,
@@ -175,17 +137,12 @@ mod tests {
         }
     }
 
-    /// The records a thread's acts send, in order. Each call or signal
-    /// whose record is sent is in `expected` with the id of the stack it
-    /// must be paired with, its own or none when its stack was lost, and
-    /// whether its frames must be too.
     fn records(
         thread: Tid,
         acts: &[(Act, Fate)],
         ids: &mut u64,
         expected: &mut BTreeMap<u64, Option<(u64, bool)>>,
     ) -> Vec<Seen> {
-        // A stack and its frames, as its fate allows.
         let stack = |out: &mut Vec<Seen>, id: u64, entered: Option<u64>, fate: Fate| {
             if fate.interpreted() {
                 out.push(Seen::Python(thread, id));
@@ -195,7 +152,6 @@ mod tests {
                 out.push(Seen::Stack(Box::new(sent)));
             }
         };
-        // A record of a call or signal, whose stack was sent before it.
         let record = |out: &mut Vec<Seen>,
                       expected: &mut BTreeMap<u64, Option<(u64, bool)>>,
                       seen: Seen,
@@ -257,8 +213,6 @@ mod tests {
                 })
                 .collect();
 
-            // The threads' records as `order` picks them, each thread's in
-            // its own order, then the rest.
             let mut seen = Vec::new();
             for pick in order {
                 let count = sent.len();
@@ -294,9 +248,6 @@ mod tests {
         }
     }
 
-    /// A call still waiting as the trace ends takes the stack it took as
-    /// it began, and only that: not the stack of a lost record, nor one of
-    /// an earlier call of its thread.
     #[test]
     fn a_call_still_waiting_takes_only_its_own_stack() {
         let thread = Tid::new(7);
@@ -313,8 +264,6 @@ mod tests {
         assert_eq!(pairs.waiting(thread, Some(300)), None);
     }
 
-    /// Frames whose stack did not fit are not the next stack's, when that
-    /// stack's own frames did not fit either.
     #[test]
     fn frames_whose_stack_was_lost_are_no_others() {
         let thread = Tid::new(7);

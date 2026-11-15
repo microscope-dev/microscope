@@ -9,7 +9,7 @@ describe("palette matching", () => {
     expect(score("restart", "start")?.rank).toBe(2);
     expect(score("handle_request", "hreq")).toEqual({ rank: 3, marks: [0, 7, 8, 9] });
     expect(score("handle_request", "qh")).toBeNull();
-    // Case is ignored, and marks name the characters matched.
+
     expect(score("Step Over", "over")).toEqual({ rank: 2, marks: [5, 6, 7, 8] });
   });
 

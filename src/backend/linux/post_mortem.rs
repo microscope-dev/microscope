@@ -1,9 +1,3 @@
-//! Post-mortem sessions present a core dump as one permanent all-stop.
-//!
-//! Every inspection request shares the live controller's implementation over
-//! [`CoreTarget`]. Requests that would execute, modify, or trap the target are
-//! rejected before reaching any process-control state.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -44,11 +38,9 @@ use crate::{
 
 const POST_MORTEM_THREAD_NAME: &str = "microscope-core";
 
-/// Registers and memory recorded by a core dump.
 pub(super) struct CoreTarget {
     memory: CoreMemory,
 
-    /// Loaded images whose symbols locate the C library's thread structures.
     symbol_modules: Vec<SymbolModule>,
     thread_id_descriptor: OnceLock<Option<u64>>,
 }
@@ -114,8 +106,6 @@ impl CoreTarget {
     }
 }
 
-/// Reads the word at `address`, or as much of it as is readable from its
-/// start: saved and file-backed memory need not end on a word boundary.
 pub(super) fn read_word(
     memory: &CoreMemory,
     address: u64,
@@ -165,8 +155,6 @@ impl InspectionOps for CoreTarget {
     ) -> Option<crate::runtime_model::TargetThreadId> {
         self.thread(thread).ok()?;
 
-        // Core writers can record host IDs while CPython retains inner
-        // namespace IDs. Read the saved TCB instead of assuming equality.
         let descriptor = self.thread_id_descriptor.get_or_init(|| {
             let mut descriptors = self
                 .symbol_modules
@@ -246,7 +234,6 @@ impl InspectionOps for CoreTarget {
     }
 }
 
-/// An opened core dump and the controller thread serving its requests.
 pub struct PostMortemSession {
     pub image: Arc<ModuleImage>,
     pub info: Arc<CoreDumpInfo>,
@@ -262,21 +249,17 @@ impl From<CoreError> for Error {
     }
 }
 
-/// A module file placed at one recorded image.
 struct PlacedFile {
     path: PathBuf,
     data: Arc<[u8]>,
     inode: u64,
 
-    /// The recorded image grown to the file's extent.
     image: ImageMappings,
     load_bias: LoadBias,
 
-    /// Dump-time addresses whose file bytes are the process's memory.
     read_only: Vec<Range<u64>>,
 }
 
-/// The dump's executable as a session keeps it, which nothing launches.
 fn dump_executable(file: ImageFile) -> crate::backend::Executable {
     let path = Arc::new(file.path);
     crate::backend::ExecutableSource {
@@ -285,13 +268,11 @@ fn dump_executable(file: ImageFile) -> crate::backend::Executable {
         identity: FileIdentity { inode: file.inode },
         data: file.data,
         process_start_time: None,
-        // Every module a dump has is loaded already.
         debug_files: crate::debug_info::DebugFileSearch::default(),
     }
     .described()
 }
 
-/// The module file chosen for one recorded image.
 struct ImageFile {
     path: PathBuf,
     data: Arc<[u8]>,
@@ -316,17 +297,12 @@ impl PlacedFile {
     }
 }
 
-/// Why a candidate file is not proven to be a recorded image, from least to
-/// most usable.
 #[derive(Debug)]
 enum Rejection<T> {
-    /// No load bias places the file at the image, which proves it differs.
     Unplaced(String),
 
-    /// The file is placed but provably differs from the image.
     Mismatch(T, String),
 
-    /// The dump saved nothing that confirms or refutes the file.
     Unverifiable(T),
 }
 
@@ -346,15 +322,10 @@ struct Rejected<T> {
     rejection: Rejection<T>,
 }
 
-/// Applies the identity policy once no candidate was proven. When mismatches
-/// are allowed, the most usable placed candidate is used, the earliest among
-/// equals; otherwise the most usable one explains the failure. No candidates
-/// at all means the image's file is missing.
 fn choose_unproven<T>(
     rejected: Vec<Rejected<T>>,
     allow: bool,
 ) -> Result<Option<(T, ModuleIdentity)>> {
-    // `max_by_key` keeps the last maximum, so reversing keeps the earliest.
     let Some(best) = rejected
         .into_iter()
         .rev()
@@ -378,13 +349,10 @@ fn choose_unproven<T>(
             Err(Error::CoreModuleMismatch { path, detail })
         }
 
-        // Allowing a mismatch permits using a file's metadata, not
-        // relocating it to a guessed address.
         (Rejection::Unplaced(detail), true) => Err(Error::CoreModuleUnplaceable { path, detail }),
     }
 }
 
-/// What one candidate file proves about a recorded image.
 enum Examined {
     Proven(ImageFile),
     Rejected(Rejected<PlacedFile>),
@@ -415,12 +383,9 @@ fn examine(
         }
     };
 
-    // The kernel records where execution began; a different entry point is
-    // proof of a different executable even when no other evidence survives.
     if let Some(recorded) = entry
         && !matches!(evidence, ImageEvidence::Mismatch(_))
     {
-        // Verification already proved the file parses as an ELF image.
         let declared = object::File::parse(data.as_ref()).map_or(0, |object| object.entry());
         if load_bias
             .load(ImageAddress::new(declared))
@@ -458,15 +423,6 @@ fn examine(
     }
 }
 
-/// Finds the file for one recorded image: the first candidate proven to be
-/// it, or else whichever unproven candidate the identity policy accepts.
-/// Without a saved header only ELF candidates count, since a mapped data
-/// file is no module.
-///
-/// When no candidate is proven, a different file at the recorded path is an
-/// error unless mismatches are allowed, since it means this machine or
-/// sysroot holds another build. A file that searching found merely shares a
-/// name, so unless mismatches are allowed it counts only once proven.
 fn resolve_image(
     core: &CoreDump,
     image: &ImageMappings,
@@ -481,7 +437,6 @@ fn resolve_image(
     for candidate in candidates {
         let candidate = candidate?;
 
-        // One file can be reached by name and by build-id.
         if (elf_only && !is_elf(&candidate.data)) || !examined.insert(candidate.path.clone()) {
             continue;
         }
@@ -497,8 +452,6 @@ fn resolve_image(
     Ok(choose_unproven(rejected, allow)?.map(|(file, identity)| file.with_identity(identity)))
 }
 
-/// Every candidate for a recorded image, searching by build-id only once
-/// every file found by name has been examined.
 fn candidates<'a>(
     locator: &'a ModuleLocator,
     recorded: &'a Path,
@@ -511,7 +464,6 @@ fn candidates<'a>(
     )
 }
 
-/// Loaded state for every recorded image other than the main executable.
 struct LibraryImage {
     image: ImageMappings,
     file: ImageFile,
@@ -519,13 +471,11 @@ struct LibraryImage {
     debug: crate::debug_info::DebugInfo,
 }
 
-/// A loaded image no file backs, read from the dump's memory.
 struct MemoryModule {
     loaded: LoadedModule,
     debug: crate::debug_info::DebugInfo,
 }
 
-/// Every recorded image resolved to a file, or explicitly missing.
 struct ResolvedModules {
     main_image: ImageMappings,
     main_file: ImageFile,
@@ -536,7 +486,6 @@ struct ResolvedModules {
 }
 
 impl ResolvedModules {
-    /// Only proven files may stand in for memory the dump did not save.
     fn backings(&self) -> Vec<FileBacking> {
         let mut backings = Vec::new();
         if self.main_file.identity.is_verified() {
@@ -586,15 +535,12 @@ fn loaded_state(loaded: LoadedModule, file: &ImageFile) -> CoreModuleState {
     }
 }
 
-/// The executable's recorded image, its recorded build-id, and its file.
 struct MainImage {
     image: ImageMappings,
     build_id: Option<Vec<u8>>,
     file: ImageFile,
 }
 
-/// Selects the executable's image through the program headers recorded in
-/// the auxiliary vector, then finds its file unless one was supplied.
 fn resolve_executable(
     core: &CoreDump,
     images: &[ImageMappings],
@@ -657,8 +603,6 @@ fn resolve_executable(
     })
 }
 
-/// Finds, verifies, and loads every recorded image, beginning with the
-/// executable.
 fn resolve_modules(core: &CoreDump, options: &CoreDumpOptions) -> Result<ResolvedModules> {
     let locator = ModuleLocator::new(options.sysroot.as_deref(), &options.module_paths)?;
     let images = image_mappings(&core.files);
@@ -668,7 +612,6 @@ fn resolve_modules(core: &CoreDump, options: &CoreDumpOptions) -> Result<Resolve
         file: main_file,
     } = resolve_executable(core, &images, &locator, options)?;
 
-    // A dump written elsewhere has its machine's debug files in its sysroot.
     let mut debug_files = options.debug_files.clone();
     if let Some(sysroot) = &options.sysroot {
         debug_files.directories.push(sysroot.join("usr/lib/debug"));
@@ -686,7 +629,6 @@ fn resolve_modules(core: &CoreDump, options: &CoreDumpOptions) -> Result<Resolve
     let mut libraries = Vec::new();
 
     for image in &images {
-        // A part of an image already placed, such as a packed lld segment.
         let placed = std::iter::once(&main_image)
             .chain(
                 libraries
@@ -698,8 +640,6 @@ fn resolve_modules(core: &CoreDump, options: &CoreDumpOptions) -> Result<Resolve
             continue;
         }
 
-        // Without a saved header, only an ELF file can say that the image
-        // is a module, and finding none leaves nothing to report.
         let elf_only = match saved_header(core, image)? {
             SavedHeader::Elf => false,
             SavedHeader::Data => continue,
@@ -761,9 +701,6 @@ fn resolve_modules(core: &CoreDump, options: &CoreDumpOptions) -> Result<Resolve
     })
 }
 
-/// The vDSO, which no file backs: the dump saved its image with the rest
-/// of the process's memory, at the address the auxiliary vector records. A
-/// dump without that memory or with a malformed image lists it as missing.
 fn resolve_vdso(
     core: &CoreDump,
     number: u32,
@@ -837,8 +774,6 @@ fn resolve_vdso(
     )))
 }
 
-/// Opens a core dump, verifies and loads its modules, and starts a controller
-/// that serves read-only requests against its single stopped snapshot.
 pub fn open_core(
     options: &CoreDumpOptions,
     channels: ControllerChannels,
@@ -978,9 +913,6 @@ impl Controller<CoreTarget> {
             .first()
             .ok_or_else(|| Error::InvalidCoreDump("the core dump has no threads".to_owned()))?;
 
-        // Loader link maps locate each module's TLS block. A dump that lost the
-        // loader's state leaves the TLS they name explicitly unavailable instead
-        // of failing.
         let link_maps =
             loader_link_maps(&self.ptrace, selected, &self.main.image, main).unwrap_or_default();
 
@@ -1036,7 +968,6 @@ impl Controller<CoreTarget> {
         );
         self.session = Session::live(inferior);
 
-        // A dump holds no trap of the debugger's to take out of a copy.
         let anonymous: Vec<_> = self
             .ptrace
             .memory
@@ -1101,7 +1032,6 @@ impl Controller<CoreTarget> {
                 | Request::Terminate { reply }
                 | Request::ReleaseOnShutdown { reply } => reject(reply),
                 Request::WriteMemory { reply, .. } => reject(reply),
-                // A dump runs nothing, but the choice stays the session's.
                 Request::SetExceptionStops { stops, reply } => {
                     let _ = reply.send(Ok(std::mem::replace(&mut self.exception_stops, stops)));
                 }
@@ -1118,7 +1048,6 @@ fn reject<T>(reply: Reply<T>) {
     let _ = reply.send(Err(Error::PostMortemTarget));
 }
 
-/// Describes the signal recorded for the thread that triggered the dump.
 fn core_exception(thread: &CoreThread) -> Option<ExceptionInfo> {
     let signal = thread.signal.unwrap_or_else(|| CoreSignal {
         number: i32::from(thread.current_signal),
@@ -1182,12 +1111,9 @@ mod tests {
 
         let only_unplaced = || vec![candidate("/a", unplaced())];
 
-        // Nothing found is a missing file in either mode.
         assert!(matches!(choose_unproven::<()>(Vec::new(), false), Ok(None)));
         assert!(matches!(choose_unproven::<()>(Vec::new(), true), Ok(None)));
 
-        // Allowed: a file that may be right beats one known to be wrong,
-        // and the earliest wins among equals.
         assert!(matches!(
             choose_unproven(mixed(), true),
             Ok(Some(("c", ModuleIdentity::Unverified)))
@@ -1201,7 +1127,6 @@ mod tests {
             Err(Error::CoreModuleUnplaceable { path, .. }) if path == Path::new("/a")
         ));
 
-        // Strict: the most usable candidate explains the failure.
         assert!(matches!(
             choose_unproven(mixed(), false),
             Err(Error::CoreModuleUnverified { path }) if path == Path::new("/c")

@@ -1,20 +1,3 @@
-//! Watches of interpreted variables whose storage a language runtime moves
-//! or abandons, as V8's collector moves the contexts that hold a frame's
-//! captured variables and rewrites the frame's slots that name moved
-//! objects, and its on-stack replacement leaves an interpreter frame's
-//! registers for optimized code's.
-//!
-//! A collection runs on the thread of the isolate whose objects it moves,
-//! and the isolate runs none of its JavaScript meanwhile. So the watches
-//! of that thread's frames are put aside from the collector's entry, where
-//! each is noted by how its frame reaches its word, until its return,
-//! where each is placed where its frame reaches the word now, its last
-//! value taken anew. The collector's writes are its own moves, never the
-//! program's stores, and are not reported. A replacement's entry ends the
-//! watches of the replaced frame's own slots. Each site is a breakpoint
-//! planted only while an interpreted watch exists; one a thread with no
-//! such watch reaches stops nothing.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use nix::unistd::Pid;
@@ -32,40 +15,28 @@ use super::registers::x86_64_registers;
 use super::runtimes::BoundRuntime;
 use super::{BreakpointOwner, Controller, Edit, Inferior, debug_pid, debug_thread_id};
 
-/// The collections and frame replacements the debugger follows.
 #[derive(Debug, Default)]
 pub(super) struct InterpretedMoves {
-    /// The collector's entry in each runtime with a watch.
     collectors: BTreeMap<VirtualAddress, RuntimeId>,
 
-    /// The entries of each such runtime's frame replacers, with the saved
-    /// frame pointers between each entry's and the replaced frame's.
     replacers: BTreeMap<VirtualAddress, (RuntimeId, u8)>,
 
-    /// The collections under way on threads with watches.
     collecting: Vec<Collection>,
 
-    /// Where the collections under way return, each planted.
     returns: BTreeSet<VirtualAddress>,
 
-    /// The frames replacements began on, by thread and frame pointer,
-    /// whose watches the next follow ends.
     replacing: Vec<(ThreadId, RuntimeId, VirtualAddress)>,
 
-    /// Whether each interpreted watch is of a frame's own slot, which
-    /// alone a replacement ends, as noted at the stop that added it.
     frame_slots: BTreeMap<WatchpointId, bool>,
 }
 
 impl InterpretedMoves {
-    /// Forgets a site whose code went away.
     pub(super) fn forget(&mut self, address: VirtualAddress) {
         self.collectors.remove(&address);
         self.replacers.remove(&address);
         self.returns.remove(&address);
     }
 
-    /// Every site planted.
     pub(super) fn planted(&self) -> BTreeSet<VirtualAddress> {
         self.collectors
             .keys()
@@ -75,9 +46,6 @@ impl InterpretedMoves {
             .collect()
     }
 
-    /// Whether an interpreted watch of `scope` is set aside while a
-    /// collection on its thread moves its objects: it holds no debug
-    /// registers until the collection returns.
     pub(super) fn sets_aside(&self, scope: &WatchScope) -> bool {
         let WatchScope::Interpreted {
             thread, runtime, ..
@@ -93,7 +61,6 @@ impl InterpretedMoves {
     }
 }
 
-/// One collection on a thread with watches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Collection {
     thread: Pid,
@@ -101,26 +68,12 @@ struct Collection {
     returns_to: VirtualAddress,
     stack: u64,
 
-    /// How each watch set aside for it is reached, once the follow noted
-    /// it at the collection's entry.
     places: Option<BTreeMap<WatchpointId, InterpretedPlace>>,
 
-    /// Whether the collector returned, so the objects are where they go.
     returned: bool,
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Whether the interpreted frame at `frame` that `pid`'s native stack
-    /// holds, as `runtime` keeps its frames, has left it, so that a watch
-    /// of one of its slots ends; `hit` says the thread just wrote the
-    /// watched slot. The frame returned or unwound when the innermost
-    /// frame's canonical frame address is above the frame's, or, in the
-    /// runtime's code, which keeps rbp as its frame pointer, when rbp is
-    /// above the frame. A new frame takes its place when the runtime's
-    /// frame builder runs at the frame's address: as its unwind rules
-    /// prove, or, where they cannot, as rbp shows when the builder wrote
-    /// the slot, which it writes only in the frame it builds. Nothing
-    /// proved keeps the watch.
     pub(super) fn stack_frame_left(
         &self,
         inferior: &Inferior,
@@ -146,9 +99,6 @@ impl<P: InspectionOps> Controller<P> {
             .get()
             .checked_add(16)
             .ok_or_else(|| Error::internal("a frame's address leaves room for its caller's"))?;
-        // The frame is live only while a frame of the thread's stack is
-        // at its address: a deeper frame may since reuse the slots of one
-        // that returned, as a native function's prologue does.
         let mut walked = context;
         let mut on_stack = None;
         for _ in 0..DEFAULT_MAX_FRAMES {
@@ -201,11 +151,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Whether each interpreted watch is of a frame's own slot, noted
-    /// once at the stop that added it, which the sync that follows the add
-    /// runs at. A replacer's entry, which a loop may reach on each
-    /// iteration while V8 compiles its replacement, is planted only for
-    /// frames' own slots; a watch whose place is unknown counts as one.
     fn frame_slots(
         &self,
         inferior: &Inferior,
@@ -245,9 +190,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         frame_slots
     }
 
-    /// Plants the collector's and the frame replacers' entries in each
-    /// runtime with an interpreted watch, and removes the rest, with the
-    /// returns of collections no watch waits for any more.
     pub(super) fn sync_interpreted_movers(&mut self) -> Result<()> {
         let Some(inferior) = self.session.inferior() else {
             return Ok(());
@@ -267,8 +209,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 Some((runtime.module.virtual_address(entry).ok()?, runtime.id))
             })
             .collect::<BTreeMap<_, _>>();
-        // The replacers are builtins, which V8 may run from a copy it made
-        // of the image's code: each mapping of the image is planted.
         let mappings = self
             .loaded_images(inferior)
             .map(|(module, _)| module)
@@ -312,8 +252,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .copied()
             .collect::<BTreeSet<_>>();
 
-        // The record changes with each site, so that a failed edit leaves
-        // it naming exactly the sites planted.
         for &address in planted.difference(&needed) {
             remove_breakpoint_owner_from(
                 &self.ptrace,
@@ -353,9 +291,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Notes a thread that reached a collector's entry or return, or a
-    /// frame replacer's entry, if `address` is one and the thread's frames
-    /// have watches, and stops every thread to follow it.
     pub(super) fn note_interpreted_move(
         &mut self,
         pid: Pid,
@@ -440,11 +375,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.queue_internal_edit(Edit::FollowInterpreted)
     }
 
-    /// With every thread stopped, ends the watches of replaced frames'
-    /// slots, sets the watches of threads whose collections began aside,
-    /// and places those whose collections returned where their frames
-    /// reach their words now. A watch that could not be is ended, rather
-    /// than left watching memory its object may have left.
     pub(super) fn follow_interpreted(&mut self) {
         #[cfg_attr(
             not(debug_assertions),
@@ -580,9 +510,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             record.code = Some(watch.code);
         }
 
-        // The collection's rewrites of a word that names a moved object
-        // are not the program's, so the value each watch reports a change
-        // from is the one it finds now.
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let observed = placed
             .keys()
@@ -627,8 +554,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.sync_interpreted_movers()
     }
 
-    /// Notes for ending the watches of the slots of each frame a
-    /// replacement began on, which its optimized code no longer keeps.
     fn note_replaced_frames(
         &mut self,
         ended: &mut Vec<(WatchpointId, WatchpointInvalidation)>,
@@ -660,8 +585,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                         .model
                         .interpreted_place(stop, frame, record.watchpoint.address)
                 });
-                // A context the frame reaches stays where it is, and is
-                // still the variable's after the frame's code changes.
                 if matches!(place, Ok(InterpretedPlace::Frame(_))) {
                     ended.push((id, WatchpointInvalidation::FrameReplaced));
                 }
@@ -670,9 +593,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Notes how the frame of each watch a collection that just began sets
-    /// aside reaches its word, ending a watch whose frame ended or reaches
-    /// it no more.
     fn note_collection_places(
         &mut self,
         ended: &mut Vec<(WatchpointId, WatchpointInvalidation)>,
@@ -744,7 +664,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Ends the interpreted watches whose scope `ending` takes.
     fn end_interpreted_watches(
         &mut self,
         ending: impl Fn(&WatchScope) -> bool,
@@ -766,7 +685,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// The threads and runtimes whose interpreted frames have watches.
 fn watched_threads(inferior: &Inferior) -> BTreeSet<(ThreadId, RuntimeId)> {
     inferior
         .watch

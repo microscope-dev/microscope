@@ -1,6 +1,3 @@
-// The workbench every address shows. A session's panes share the session,
-// stop, and frame its address selects.
-
 import { useLocation, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
   createContext,
@@ -42,17 +39,15 @@ import {
 export interface Focus {
   session: string;
   state: State;
-  /** The stop, thread or task, and frame shown; none before the program
-   * stops. */
+
   at: At | null;
   look: Look;
-  /** The stack of the thread or task shown, once it has arrived. */
+
   trace: Backtrace | undefined;
-  /** Why displayed data may be stale; null when current. */
+
   stale: "running" | "passed" | "disconnected" | null;
 }
 
-/** Exported so tests can render a pane at a focus they choose. */
 export const FocusContext = createContext<Focus | null>(null);
 
 export function useFocus(): Focus {
@@ -63,8 +58,6 @@ export function useFocus(): Focus {
   return focus;
 }
 
-/** The URL's stop, thread or task, and frame, or null on the session's
- * own page. */
 function useAt(): At | null {
   const params = useParams({ strict: false }) as {
     stop?: string;
@@ -82,7 +75,6 @@ function useAt(): At | null {
   );
 }
 
-/** A session's panes, at the focus the address names. */
 export function Workspace() {
   const { session } = useParams({ from: "/s/$session" });
   const look = useSearch({ from: "/s/$session" });
@@ -121,9 +113,6 @@ export function Workspace() {
   return <Workbench focus={focus} wants="session" />;
 }
 
-/** The panes, as every address shows them: with a session's focus when the
- * address names one, and with `children` above them when it says something
- * the panes can't. */
 export function Workbench({
   focus,
   wants,
@@ -132,8 +121,7 @@ export function Workbench({
 }: {
   focus: Focus | null;
   wants: Wants;
-  /** The layout to start from when the one in use holds nothing for what
-   * the address wants. */
+
   start?: () => Layout;
   children?: ReactNode;
 }) {
@@ -152,11 +140,7 @@ export function Workbench({
   );
 }
 
-/** Arranges the panes as this browser last had them, then as the address
- * wants them, during the first render so the panes render within it; then
- * keeps the arrangement as it changes. */
 function useArranged(wants: Wants, start: () => Layout) {
-  // Read once, so StrictMode's second render agrees.
   const [refused] = useState(restoreLayout);
   const arranged = useRef<Wants | null>(null);
   // oxlint-disable-next-line react/refs -- arranged during render, before the panes render
@@ -165,8 +149,6 @@ function useArranged(wants: Wants, start: () => Layout) {
     arranged.current = wants;
     const current = workbench.getState().layout;
     if (misplaced(current, wants)) {
-      // A session's arrangement waits for the next session, rather than
-      // being lost to the page that starts one.
       if (wants === "start" && !misplaced(current, "session")) {
         setAside(current);
       }
@@ -182,11 +164,6 @@ function useArranged(wants: Wants, start: () => Layout) {
   useEffect(keepSaving, []);
 }
 
-/** Brings Connect forward when microscope refuses the page's link, or has
- * not been reached since the page started, which is the pane that can fix
- * it: opened if it is closed, and in front of its group's others. A page
- * being left loses its socket before it goes, so not reaching microscope
- * counts only once it lasts. */
 function useConnectWhenRefused() {
   const link = useModel((model) => model.link);
   useEffect(() => {
@@ -204,12 +181,11 @@ function useConnectWhenRefused() {
 
 const UNREACHABLE_FOR_MS = 1000;
 
-/** Moves a following tab to each new stop, replacing the address (D3). */
 function useFollowing(session: string, at: At | null, look: Look) {
   const state = useModel((model) => model.state);
   const pinned = useTab((current) => current.pinned);
   const navigate = useNavigate();
-  // The latest stop as of the previous state: what a following tab showed.
+
   const followed = useRef<number | undefined>(state ? latestStop(state) : undefined);
   const lookRef = useRef(look);
   useLayoutEffect(() => {
@@ -230,9 +206,7 @@ function useFollowing(session: string, at: At | null, look: Look) {
       where = { stop, thread, frame };
     }
     const move = follow(state, where, followed.current, pinned);
-    // A running state shows no stop, so it leaves the one a following tab
-    // showed. Its stops can be another member's, once the member that
-    // stopped exits and the group selects another while it runs.
+
     if (state.inferior.state !== "running") {
       followed.current = latestStop(state);
     }
@@ -255,7 +229,6 @@ function useFollowing(session: string, at: At | null, look: Look) {
   }, [state, session, stop, thread, frame, pinned, navigate]);
 }
 
-/** Mirrors the focus into the tab store, for the keyboard. */
 function useMirror(focus: Focus | null) {
   const session = focus?.session ?? null;
   const at = focus?.at ?? null;
@@ -267,7 +240,6 @@ function useMirror(focus: Focus | null) {
 
 const NO_LOOK: Look = {};
 
-/** Tells everyone where this tab looks. */
 function usePresence(at: At | null, trace: Backtrace | undefined) {
   const connection = useConnection();
   const open = useModel((model) => model.link === "open");

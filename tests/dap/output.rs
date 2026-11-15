@@ -1,5 +1,3 @@
-//! The program's output, and nothing else, reaches the client's console.
-
 use serde_json::json;
 
 use crate::dap::{Configuration, Dap, Profile, fixture};
@@ -28,7 +26,6 @@ fn program_output_arrives_whole_in_order_and_on_its_own_stream() {
     );
     assert_eq!(stderr, "err 1\nerr 2\nerr 3\n");
 
-    // Each event carries a bounded chunk.
     for event in dap.events(started.mark, "output") {
         let length = event["output"].as_str().expect("output").len();
         assert!(

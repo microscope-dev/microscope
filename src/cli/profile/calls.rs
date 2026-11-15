@@ -1,6 +1,3 @@
-//! A recording's system calls in the terminal: the log, the tables, and
-//! the few lines `record` prints when it ends.
-
 use std::collections::BTreeMap;
 use std::io::Write;
 
@@ -13,12 +10,7 @@ use crate::cli::terminal::{Renderer, Role};
 use crate::present::syscalls::summary::{self, Column};
 use crate::present::syscalls::{self as present, Context, Kind, Tokens};
 
-/// Writes a trace's events as lines, in the one layout: seconds since the
-/// recording began, the thread, the call with its descriptors' paths, and
-/// how long it took.
 pub struct Lines {
-    /// When the recording began; a live trace takes its first event's time,
-    /// which is where a capture's records begin too.
     start: Option<u64>,
     fds: FdTable,
     filter: Option<Filter>,
@@ -35,8 +27,6 @@ impl Lines {
         }
     }
 
-    /// The line for `event` when it is `wanted` and the filter keeps it.
-    /// Every event updates the descriptors, so later paths are right.
     pub fn line(&mut self, event: &TraceEvent, wanted: bool) -> Option<String> {
         let TraceEvent::Call(call) = event else {
             self.fds.apply(event);
@@ -125,7 +115,6 @@ impl Lines {
     }
 }
 
-/// Why a capture holds no calls to show, if it holds none.
 fn none_kept(profile: &Profile) -> Option<String> {
     if profile.has_syscalls() {
         return None;
@@ -137,8 +126,6 @@ fn none_kept(profile: &Profile) -> Option<String> {
     ))
 }
 
-/// Writes every call the capture kept that `filter` keeps, and, with
-/// `focus`, whose stack passes through that function, as [`Lines`] does.
 pub fn log(
     profile: &Profile,
     filter: Option<Filter>,
@@ -177,8 +164,6 @@ pub fn log(
     trace_notes(profile, syscalls.lost, out)
 }
 
-/// What shaped a trace's counts: an engine that stretched them, and what
-/// the engine lost or kept only as counts.
 fn trace_notes(profile: &Profile, lost: Losses, out: &mut impl Write) -> Result<()> {
     if profile.setting("syscall engine") == Some("ptrace") {
         writeln!(
@@ -217,8 +202,6 @@ fn errno_name(number: u16) -> String {
     present::errno(Errno(number)).0
 }
 
-/// The system calls a capture holds, as a table by call, then the `limit`
-/// call sites that took the most time.
 #[expect(
     clippy::cast_precision_loss,
     reason = "seconds need no more precision than f64's"
@@ -282,12 +265,8 @@ pub fn summary(profile: &Profile, limit: usize, out: &mut impl Write) -> Result<
     Ok(())
 }
 
-/// How many of each list the end of a recording names.
 const BRIEF: usize = 3;
 
-/// The calls a recording ended with, for `record` to print: the calls that
-/// took the most time, those that failed most, and the sites whose calls
-/// were slowest, so that the kernel's side shows without a report.
 pub fn brief(profile: &Profile, out: &mut impl Write) -> Result<()> {
     if !profile.has_syscalls() {
         return Ok(());

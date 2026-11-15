@@ -1,6 +1,6 @@
-// Steps through code that signals itself with a raw system call, so a step
-// is certain to cross the signal's arrival. Its handler must run without a
-// step stopping in it.
+
+
+
 #define _GNU_SOURCE
 
 #include <signal.h>
@@ -22,7 +22,7 @@ __attribute__((noinline)) long sum_to(long count) {
         total += index;
         if (index == 2) {
             long result;
-            __asm__ volatile("syscall" // signals this thread
+            __asm__ volatile("syscall"
                              : "=a"(result)
                              : "a"((long)SYS_tgkill), "D"((long)process), "S"((long)thread),
                                "d"((long)SIGUSR2)
@@ -37,15 +37,15 @@ __attribute__((noinline)) long twice(long value) {
     return value * 2; // the returning line
 }
 
-// Calls and then signals this thread on one line, so a step returning
-// into the line single-steps to its end and reaches the next line with the
-// signal still pending.
+
+
+
 __attribute__((noinline)) long twice_then_signal(long value) {
-    // The call has no output, so no store follows it on its line. Unoptimized
-    // code keeps nothing in rax across it.
-    // clang-format off
+
+
+
     value = twice(value); __asm__ volatile("syscall" : : "a"((long)SYS_tgkill), "D"((long)process), "S"((long)thread), "d"((long)SIGUSR2) : "rcx", "r11", "memory"); // the calling line
-    // clang-format on
+
     value += 1; // the line after the signal
     return value;
 }

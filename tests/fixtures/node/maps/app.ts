@@ -1,6 +1,6 @@
-// TypeScript that the source map tests run through tsx and esbuild, whose
-// JavaScript has other lines than these: the types and the enum below
-// move every statement.
+
+
+
 interface Point {
   x: number;
   y: number;

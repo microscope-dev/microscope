@@ -1,6 +1,3 @@
-//! The runtime the macros call: the control block, each thread's ring, and
-//! the paths that write them.
-
 use core::cell::Cell;
 use core::fmt;
 use core::marker::PhantomData;
@@ -13,7 +10,6 @@ use std::sync::{Once, OnceLock};
 
 use crate::abi;
 
-/// The control block microscope finds in the program's file and writes.
 #[repr(C, align(64))]
 pub struct Control {
     magic: [u8; 8],
@@ -56,7 +52,6 @@ static CONTROL: Control = Control {
 const _: () = assert!(core::mem::offset_of!(Control, registry) == abi::CONTROL_SIZE);
 const _: () = assert!(core::mem::offset_of!(Control, sites) == 56);
 
-/// The run-time sites: [`abi::SITES_HEADER`]'s header, then the records.
 #[repr(C, align(16))]
 struct Sites {
     magic: u32,
@@ -67,7 +62,6 @@ struct Sites {
     records: [Site; abi::MOST_RUNTIME_SITES],
 }
 
-/// A site a program defines as it runs, which [`define`] gives.
 #[repr(C)]
 pub struct Site {
     kind: AtomicU8,
@@ -79,7 +73,6 @@ pub struct Site {
     file_length: AtomicU32,
     file: AtomicU64,
 
-    /// Its key, which the ABI leaves out.
     key: AtomicU32,
     reserved: [AtomicU32; 3],
 }
@@ -110,18 +103,9 @@ static SITES: Sites = Sites {
     }; abi::MOST_RUNTIME_SITES],
 };
 
-/// The run-time sites defined so far, with their name and file, which also
-/// keeps one definition at a time.
 type Definitions = Vec<(&'static str, &'static str, &'static Site)>;
 static DEFINED: std::sync::Mutex<Definitions> = std::sync::Mutex::new(Vec::new());
 
-/// The run-time site of `kind`, a `SITE_` constant other than
-/// [`abi::SITE_NONE`], named `name` at `file`'s `line`: the one defined
-/// before with all four, or a new one. None when the kind is not one,
-/// either text is longer than [`abi::MOST_SITE_TEXT`], every site is
-/// taken, or the thread is defining one already, as an allocator that
-/// defines one while the SDK copies a site's texts is. It is off until
-/// microscope switches it on, as a static site is.
 pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Site> {
     arm();
     let longest = abi::MOST_SITE_TEXT as usize;
@@ -136,7 +120,6 @@ pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Si
     let mut defined = DEFINED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // Few sites are defined, each once, so a search costs little.
     if let Some(&(_, _, site)) = defined.iter().find(|(named, at, site)| {
         *named == name && *at == file && site.is(kind) && site.line.load(Ordering::Relaxed) == line
     }) {
@@ -146,7 +129,6 @@ pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Si
     let index = SITES.count.load(Ordering::Relaxed);
     let site = SITES.records.get(index as usize)?;
 
-    // Its texts live as long as the program, as a static site's do.
     let name: &'static str = Box::leak(name.to_owned().into_boxed_str());
     let file: &'static str = Box::leak(file.to_owned().into_boxed_str());
     let address = |text: &str| ptr::from_ref(text).addr() as u64;
@@ -166,13 +148,8 @@ pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Si
         site.state.store(1, Ordering::Relaxed);
     }
 
-    // Whole before it is counted, and counted before microscope is told
-    // where to look.
     SITES.count.store(index + 1, Ordering::SeqCst);
 
-    // Whoever switches every site off clears `enable` and then reads the
-    // count. If that read came before this site was counted, `enable`
-    // was cleared first, and this load sees it.
     if switched && CONTROL.enable.load(Ordering::SeqCst) & abi::ENABLE_DEFINED == 0 {
         site.state.store(0, Ordering::Relaxed);
     }
@@ -184,13 +161,11 @@ pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Si
     Some(site)
 }
 
-/// The first run-time site's record, which the others follow.
 #[must_use]
 pub fn sites() -> *const Site {
     SITES.records.as_ptr()
 }
 
-/// The run-time site defined `index`th, if one is.
 #[must_use]
 pub fn runtime_site(index: u32) -> Option<&'static Site> {
     (index < SITES.count.load(Ordering::Acquire))
@@ -198,8 +173,6 @@ pub fn runtime_site(index: u32) -> Option<&'static Site> {
         .flatten()
 }
 
-/// The index of `site` among the run-time sites, or none for a site that is
-/// not one.
 #[must_use]
 pub fn index(site: &Site) -> Option<u32> {
     let index = site.key() & !abi::RUNTIME_KEY;
@@ -209,7 +182,6 @@ pub fn index(site: &Site) -> Option<u32> {
 }
 
 impl Site {
-    /// Whether microscope switched the site on.
     #[must_use]
     #[inline]
     pub fn on(&self) -> bool {
@@ -224,15 +196,12 @@ impl Site {
         self.kind.load(Ordering::Relaxed) == kind
     }
 
-    /// A span of the thread's time, from here until the guard drops, at a
-    /// zone's site.
     pub fn zone(&self) -> Zone {
         let began =
             self.is(abi::SITE_ZONE) && self.on() && write(self.key(), abi::ZONE_BEGIN, 0, &[]);
         Zone(began.then(|| self.key()), PhantomData)
     }
 
-    /// The end of a frame, at a frame's site, or a trigger, at a trigger's.
     pub fn event(&self) {
         let kind = if self.is(abi::SITE_FRAME) {
             abi::FRAME
@@ -246,23 +215,18 @@ impl Site {
         }
     }
 
-    /// A value of the series, at a plot's site.
     pub fn plot(&self, value: f64) {
         if self.is(abi::SITE_PLOT) && self.on() {
             write(self.key(), abi::PLOT, 0, &value.to_le_bytes());
         }
     }
 
-    /// A message on the thread's timeline, at a message's site, cut to 256
-    /// bytes.
     pub fn message(&self, message: fmt::Arguments<'_>) {
         if self.is(abi::SITE_MESSAGE) && self.on() {
             text(self.key(), abi::MESSAGE, message);
         }
     }
 
-    /// Labels the thread's time `name=value` until the guard drops, at a
-    /// label's site.
     pub fn label(&self, value: &dyn fmt::Display) -> Label {
         let began = self.is(abi::SITE_LABEL)
             && self.on()
@@ -271,7 +235,6 @@ impl Site {
     }
 }
 
-/// A ring's header; its records follow it.
 #[repr(C, align(128))]
 pub struct Header {
     magic: u32,
@@ -283,14 +246,10 @@ pub struct Header {
     state: AtomicU32,
     signal_drops: AtomicU64,
 
-    /// The forks the process had made when the ring was made, which the
-    /// ABI leaves out: a forked child takes none of its parent's rings.
     generation: AtomicU32,
     line_0: [u8; 36],
     head: AtomicU64,
 
-    /// Whether the thread is writing a record, which a signal handler that
-    /// interrupts it must not.
     writing: AtomicU8,
     line_1: [u8; 55],
 }
@@ -298,27 +257,21 @@ pub struct Header {
 const _: () = assert!(core::mem::size_of::<Header>() == abi::RING_HEADER);
 const _: () = assert!(core::mem::offset_of!(Header, head) == 64);
 
-/// A record, written as two words, which microscope reads as its 16 bytes.
 #[repr(C)]
 struct Record([AtomicU64; 2]);
 
 const _: () = assert!(core::mem::size_of::<Record>() == abi::RECORD);
 
-/// A ring: its header, then its records, a power of two of them. A ring,
-/// once made, is never freed.
 #[repr(C)]
 struct Ring {
     header: Header,
     records: [Record],
 }
 
-/// The ring a thread writes to.
 #[derive(Clone, Copy)]
 enum Slot {
-    /// None yet: the thread's first event takes one.
     Unset,
 
-    /// None: the thread is exiting, or none was left.
     Nothing,
     Ring(&'static Ring),
 }
@@ -328,7 +281,6 @@ thread_local! {
     static RETIRE: Retire = const { Retire };
 }
 
-/// Retires the thread's ring when the thread exits.
 struct Retire;
 
 impl Drop for Retire {
@@ -341,27 +293,18 @@ impl Drop for Retire {
     }
 }
 
-/// Every ring this process made, so that a thread can take one another
-/// left: the ABI's registry holds their addresses for microscope, and this
-/// the rings themselves.
 static MADE: [OnceLock<&'static Ring>; abi::MOST_RINGS] =
     [const { OnceLock::new() }; abi::MOST_RINGS];
 static MADE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// The forks the process has made, by [`Header::generation`].
 static FORKS: AtomicU32 = AtomicU32::new(0);
 
-/// Whether microscope is recording the program's instrumentation: every site
-/// it chose is on.
 #[must_use]
 pub fn listening() -> bool {
     arm();
     CONTROL.enable.load(Ordering::Acquire) != 0
 }
 
-/// Whether microscope has found the program and is recording it. A program
-/// a recording starts switches itself on before microscope finds it, so it
-/// may be [`listening`] first; only microscope sets the timeout.
 #[must_use]
 pub fn found() -> bool {
     listening() && CONTROL.timeout.load(Ordering::Acquire) != 0
@@ -371,17 +314,10 @@ thread_local! {
     static INSIDE: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The thread is in one of the SDK's paths that lock or allocate until this
-/// drops.
 struct Inside;
 
 impl Inside {
-    /// None when the thread is in one already: a call that re-enters the
-    /// SDK from there, as from the program's allocator or a signal handler,
-    /// must not wait on it or start it again.
     fn enter() -> Option<Self> {
-        // Made only once entered: a refused call's guard would clear the
-        // flag as it dropped.
         (!INSIDE.replace(true)).then(|| Self)
     }
 }
@@ -394,9 +330,6 @@ impl Drop for Inside {
 
 static ARMED: Once = Once::new();
 
-/// Switches the program on, once, if the recording that started it records
-/// every site and has not found it yet: see [`abi::RECORDER`]. A call from
-/// inside the arming returns at once.
 fn arm() {
     if ARMED.is_completed() {
         return;
@@ -409,8 +342,6 @@ fn arm() {
         let recorder =
             std::env::var_os(abi::RECORDER).and_then(|value| value.to_str()?.parse::<i32>().ok());
         if recorder.is_some_and(|recorder| recorder == getppid()) {
-            // Every site is on before the program is, as microscope switches
-            // them; microscope may have switched the program on already.
             CONTROL.heartbeat.store(monotonic(), Ordering::Relaxed);
             switch_sites(1);
             let _ = CONTROL.enable.compare_exchange(
@@ -423,17 +354,14 @@ fn arm() {
     });
 }
 
-/// Whether the site whose state byte is `state` is on.
 #[doc(hidden)]
 #[inline(always)]
 pub fn __on(state: &AtomicU8) -> bool {
     state.load(Ordering::Relaxed) != 0
 }
 
-/// What keeps a guard on the thread it began on, whose ring it ends in.
 type ThreadBound = PhantomData<*const ()>;
 
-/// The zone [`zone!`](crate::zone) opens, which ends when it drops.
 #[must_use = "a zone ends when its guard drops"]
 pub struct Zone(Option<u32>, ThreadBound);
 
@@ -447,8 +375,6 @@ impl Zone {
 }
 
 impl Zone {
-    /// Whether the zone began, leaving it to end as a separate call: for a
-    /// caller across a language boundary, which ends it itself.
     #[cfg(feature = "c")]
     pub(crate) fn began(self) -> bool {
         let began = self.0.is_some();
@@ -460,14 +386,12 @@ impl Zone {
 impl Drop for Zone {
     #[inline(always)]
     fn drop(&mut self) {
-        // A zone that began ends, whether or not its site is still on.
         if let Some(key) = self.0 {
             end(key, abi::ZONE_END);
         }
     }
 }
 
-/// The label [`label!`](crate::label) opens, which ends when it drops.
 #[must_use = "a label ends when its guard drops"]
 pub struct Label(Option<u32>, ThreadBound);
 
@@ -481,7 +405,6 @@ impl Label {
 }
 
 impl Label {
-    /// Whether the label began, leaving it to end as a separate call.
     #[cfg(feature = "c")]
     pub(crate) fn began(self) -> bool {
         let began = self.0.is_some();
@@ -499,16 +422,11 @@ impl Drop for Label {
     }
 }
 
-/// Ends a zone or label out of line, so that a guard whose site was off
-/// drops to one test, which the compiler then inlines.
 #[inline(never)]
 pub(crate) fn end(key: u32, kind: u8) {
     write(key, kind, 0, &[]);
 }
 
-/// Counts an event the thread dropped because it was already in the SDK, as
-/// [`write`] counts one a signal handler drops: in its ring, or as one no
-/// ring could take.
 #[cfg(feature = "c")]
 #[cold]
 pub(crate) fn interrupted() {
@@ -538,7 +456,6 @@ pub fn __message(state: &'static AtomicU8, message: fmt::Arguments<'_>) {
     text(site(state), abi::MESSAGE, message);
 }
 
-/// Writes an event whose argument is `text`, cut to its longest.
 #[inline(never)]
 fn text(key: u32, kind: u8, text: fmt::Arguments<'_>) -> bool {
     let mut cut = Cut {
@@ -546,14 +463,12 @@ fn text(key: u32, kind: u8, text: fmt::Arguments<'_>) -> bool {
         length: 0,
     };
 
-    // A cut text is the bytes that fit, as a full one would be.
     let _ = fmt::write(&mut cut, text);
     let text = &cut.bytes[..cut.length];
     #[expect(clippy::cast_possible_truncation, reason = "a text is short")]
     write(key, kind, text.len() as u32, text)
 }
 
-/// A text, cut where it would pass its longest, at a character's start.
 struct Cut {
     bytes: [u8; abi::MOST_TEXT],
     length: usize,
@@ -577,9 +492,6 @@ impl fmt::Write for Cut {
     }
 }
 
-/// Writes one event of `kind` from the site whose key is `site` to the
-/// thread's ring: a record, and `more` in the records after it. Whether
-/// the ring took it.
 #[inline(always)]
 fn write(site: u32, kind: u8, argument: u32, more: &[u8]) -> bool {
     let mut slot = RING.with(Cell::get);
@@ -623,7 +535,6 @@ fn write(site: u32, kind: u8, argument: u32, more: &[u8]) -> bool {
     compiler_fence(Ordering::SeqCst);
     header.writing.store(0, Ordering::Relaxed);
 
-    // Every so often, the thread asks whether microscope is still there.
     if (head ^ position) >> 10 != 0 {
         check_heartbeat();
     }
@@ -632,7 +543,6 @@ fn write(site: u32, kind: u8, argument: u32, more: &[u8]) -> bool {
 }
 
 impl Ring {
-    /// Writes `record` at `position`, as the ring wraps.
     #[inline(always)]
     fn put(&self, position: u64, record: &[u8; abi::RECORD]) {
         #[expect(
@@ -648,7 +558,6 @@ impl Ring {
     }
 }
 
-/// A static site's key: its state byte's offset from the control block.
 #[inline(always)]
 fn site(state: &'static AtomicU8) -> u32 {
     #[expect(
@@ -660,7 +569,6 @@ fn site(state: &'static AtomicU8) -> u32 {
     offset.cast_unsigned()
 }
 
-/// The time now, by `clock`.
 #[inline(always)]
 fn now(clock: u8) -> u64 {
     #[cfg(target_arch = "x86_64")]
@@ -699,8 +607,6 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-/// Miri runs none of these, and its tests never fork or exit, nor are they
-/// started by a recording.
 #[cfg(miri)]
 const fn getppid() -> i32 {
     0
@@ -720,7 +626,6 @@ fn pthread_atfork(
     0
 }
 
-/// Nanoseconds of `CLOCK_MONOTONIC`.
 fn monotonic() -> u64 {
     const CLOCK_MONOTONIC: i32 = 1;
     let mut time = Timespec {
@@ -734,7 +639,6 @@ fn monotonic() -> u64 {
         .wrapping_add(time.nanoseconds.cast_unsigned())
 }
 
-/// Switches every site off once microscope has gone quiet.
 #[cold]
 fn check_heartbeat() {
     let heartbeat = CONTROL.heartbeat.load(Ordering::Relaxed);
@@ -756,12 +660,9 @@ unsafe extern "C" {
     static __stop_microscope_sites: [u8; 0];
 }
 
-// The SDK's own site, so that the section is always there.
 static SITE: &AtomicU8 = crate::__site!(crate::abi::SITE_NONE, "microscope_probes");
 
-/// Switches every site off.
 fn disable() {
-    // Cleared before the count is read: see `define`.
     CONTROL.enable.store(0, Ordering::SeqCst);
     switch_sites(0);
     let defined = SITES.count.load(Ordering::SeqCst) as usize;
@@ -771,8 +672,6 @@ fn disable() {
     let _ = SITE;
 }
 
-/// Writes `state` to every static site's state byte. Miri has no section to
-/// walk.
 #[cfg(miri)]
 fn switch_sites(_: u8) {}
 
@@ -798,7 +697,6 @@ fn switch_sites(state: u8) {
 /// `start..stop` holds whole sites, and each site's state offset, from its
 /// field, names an `AtomicU8` that lives through the call.
 unsafe fn switch_all(start: *const u8, stop: *const u8, value: u8) {
-    /// Where a site's state offset lies in it.
     const STATE_FIELD: usize = 24;
 
     let mut site = start;
@@ -820,8 +718,6 @@ unsafe fn switch_all(start: *const u8, stop: *const u8, value: u8) {
 
 static ATFORK: Once = Once::new();
 
-/// A child of `fork` records nothing until microscope says so, and never into
-/// its parent's rings.
 extern "C" fn forked() {
     disable();
     FORKS.fetch_add(1, Ordering::Relaxed);
@@ -833,8 +729,6 @@ extern "C" fn forked() {
     let _ = RING.try_with(|slot| slot.set(Slot::Unset));
 }
 
-/// A program that exits while microscope reads it waits a moment for microscope
-/// to read what its threads wrote last.
 extern "C" fn exiting() {
     let fresh = |now: u64| {
         now.saturating_sub(CONTROL.heartbeat.load(Ordering::Relaxed)) < abi::FRESH_NANOSECONDS
@@ -854,10 +748,6 @@ extern "C" fn exiting() {
     }
 }
 
-/// The thread's ring, the first time it writes one: a free one, or a new
-/// one, or none. An event the thread writes while it takes one, as from
-/// the allocator that makes the ring, gets none, and the thread takes its
-/// ring at the next.
 #[cold]
 #[inline(never)]
 fn acquire() -> Slot {
@@ -870,13 +760,10 @@ fn acquire() -> Slot {
     };
 
     ATFORK.call_once(|| {
-        // The handlers touch only atomics, the thread's own slot, and the
-        // clock.
         pthread_atfork(None, None, Some(forked));
         atexit(exiting);
     });
 
-    // A thread that is exiting keeps no ring.
     if RETIRE.try_with(|_| ()).is_err() {
         return Slot::Nothing;
     }
@@ -902,8 +789,6 @@ fn acquire() -> Slot {
     slot
 }
 
-/// A ring of this process that a thread that exited left, which microscope
-/// has read.
 fn reuse() -> Option<&'static Ring> {
     let generation = FORKS.load(Ordering::Relaxed);
     let made = MADE_COUNT.load(Ordering::Acquire).min(abi::MOST_RINGS);
@@ -926,19 +811,12 @@ fn reuse() -> Option<&'static Ring> {
         })
 }
 
-/// The least size, as a power of two of records, of a ring made from now
-/// on, which the program asks for: see [`reserve`].
 static LEAST_SIZE: AtomicU32 = AtomicU32::new(0);
 
-/// Asks that each ring made from now on hold at least `2^size` records, up
-/// to [`abi::MOST_RING_SIZE`], as a writer of millions of records a second
-/// needs between microscope's reads. A ring made before keeps its size.
 pub fn reserve(size: u32) {
     LEAST_SIZE.fetch_max(size, Ordering::Relaxed);
 }
 
-/// A new ring of the size microscope chose, or the program asked for if
-/// larger, in both registries, or none.
 fn allocate() -> Option<&'static Ring> {
     let mut index = CONTROL.rings.load(Ordering::Relaxed);
     loop {
@@ -973,7 +851,6 @@ fn allocate() -> Option<&'static Ring> {
     Some(ring)
 }
 
-/// A ring of `2^size` records, claimed, which lives for the program.
 fn make_ring(size: u32) -> Option<&'static Ring> {
     let records = 1_usize << size;
     let layout = std::alloc::Layout::from_size_align(
@@ -988,8 +865,6 @@ fn make_ring(size: u32) -> Option<&'static Ring> {
         return None;
     }
 
-    // A ring's records are its slice, so a pointer to one carries their
-    // count as its metadata.
     let ring = ptr::slice_from_raw_parts_mut(block, records) as *mut Ring;
 
     // SAFETY: the block is the layout of a ring of `records` records,

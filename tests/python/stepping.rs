@@ -1,12 +1,3 @@
-//! Python stepping through the agent: over, into, and out of lines, calls,
-//! returns, awaits, and raises, from where a breakpoint or a step stopped;
-//! and refused, with its reason, from a stop the agent did not report. Then
-//! Python's exceptions, raised and uncaught, chosen at that stop.
-//!
-//! One run of the fixture takes every step in turn on each build, so each
-//! step also begins where the last one ended. The fixture prints what it
-//! computed, so stopping must change nothing.
-
 use microscope::{
     BreakpointOptions, BreakpointSpec, CodeRole, Error, ExceptionStops, ExitStatus,
     LanguageException, LanguageExceptionKind, LineNumber, StackFrame, StepKind, StopReason,
@@ -19,7 +10,6 @@ use crate::support::python;
 const FIXTURE: &str = "stepping.py";
 const NATIVE: &str = "stepping_native.py";
 
-/// The line of `fixture` that carries `marker`.
 fn line(fixture: &str, marker: &str) -> LineNumber {
     let text = std::fs::read_to_string(python::fixture(fixture)).expect("read the fixture");
     let index = text
@@ -42,7 +32,6 @@ fn at(fixture: &str, marker: &str) -> (BreakpointSpec, BreakpointOptions) {
     )
 }
 
-/// The selected frame of the stop, and every frame inner to it.
 async fn selected(session: &mut PythonSession) -> (StackFrame, Vec<StackFrame>) {
     let snapshot = session.scenario.snapshot().await;
     let id = snapshot.selected_frame.expect("a selected frame");
@@ -61,8 +50,6 @@ async fn selected(session: &mut PythonSession) -> (StackFrame, Vec<StackFrame>) 
     (trace.frames[index].clone(), trace.frames[..index].to_vec())
 }
 
-/// Checks the stop is `expected` and selects the program's frame running
-/// `function` at the line marked `marker`, with only machinery inner to it.
 async fn assert_at(
     session: &mut PythonSession,
     reason: &StopReason,
@@ -113,9 +100,6 @@ const fn stepped(kind: StepKind) -> StopReason {
     StopReason::Step { kind }
 }
 
-/// From the breakpoint at `DEEP`, steps over a line of the caller selected,
-/// as pdb's `next` after `up` does: the call's rest runs, and the caller
-/// stops at its next line.
 async fn over_in_the_selected_caller(session: &mut PythonSession) {
     let reason = session.scenario.resume_to_stop().await;
     assert!(
@@ -133,8 +117,6 @@ async fn over_in_the_selected_caller(session: &mut PythonSession) {
     assert_at(session, &reason, &over, "shallow", "SHALLOW_AFTER").await;
 }
 
-/// Steps out of the module's frame, at a stop the agent did not report,
-/// and checks the step is refused, with why.
 async fn refused_step_out_of_module(session: &PythonSession) {
     let trace = session
         .scenario
@@ -166,9 +148,6 @@ async fn refused_step_out_of_module(session: &PythonSession) {
     );
 }
 
-/// From the pause at `parked`, which only native code has run to, stops at
-/// a raised exception, where it is raised, with the exception as a value;
-/// then, with only uncaught ones chosen, where one leaves its thread's code.
 async fn exceptions(session: &mut PythonSession) {
     let choose = |names: &[&str]| {
         names
@@ -270,8 +249,6 @@ async fn every_kind_of_step(build: &str) {
     let breakpoint = reason.clone();
     assert_at(&mut session, &reason, &breakpoint, "caller", "CALLER_START").await;
 
-    // Over a line, into a call, through it, and back out to the caller at
-    // the call, then on to its next line.
     let over = stepped(StepKind::OverSource);
     let into = stepped(StepKind::IntoSource);
 
@@ -300,7 +277,6 @@ async fn every_kind_of_step(build: &str) {
 
     assert_eq!(session.integer("result").await, 3, "{}", session.context());
 
-    // Out of the frame, to its caller at the call.
     let reason = step(&mut session, StepKind::Out).await;
     assert_at(
         &mut session,
@@ -311,14 +287,12 @@ async fn every_kind_of_step(build: &str) {
     )
     .await;
 
-    // Over an await stays with the task, across its suspension.
     let reason = session.scenario.resume_to_stop().await;
     assert!(hit(&reason), "{}: {reason:?}", session.context());
     assert_at(&mut session, &reason, &reason.clone(), "task", "TASK_AWAIT").await;
     let reason = step(&mut session, StepKind::OverSource).await;
     assert_at(&mut session, &reason, &over, "task", "TASK_END").await;
 
-    // Over a call that raises, to where its handler matches it.
     let reason = session.scenario.resume_to_stop().await;
     assert!(hit(&reason), "{}: {reason:?}", session.context());
     assert_at(
@@ -334,9 +308,6 @@ async fn every_kind_of_step(build: &str) {
     assert_at(&mut session, &reason, &over, "handles", "HANDLES_EXCEPT").await;
     over_in_the_selected_caller(&mut session).await;
 
-    // From a stop the agent did not report, the thread would run on
-    // unfollowed before the step could begin: the step is refused, with
-    // why, and nothing runs.
     session.resume().await;
     session.stop_at("parked").await;
     refused_step_out_of_module(&session).await;
@@ -369,8 +340,6 @@ async fn every_kind_of_step(build: &str) {
     session.shutdown().await;
 }
 
-/// Checks the stop is `expected` and selects the extension's native
-/// `reached`, at a line its debug information describes.
 async fn assert_in_reached(
     session: &mut PythonSession,
     reason: &StopReason,
@@ -387,12 +356,6 @@ async fn assert_in_reached(
     );
 }
 
-/// From Python into the extension's C function, back out of it, and over
-/// its last line, each to the next line of the Python that called it; into
-/// what nothing describes, a builtin and a stripped extension's function,
-/// which run through to the next line; and out of the C function from a
-/// breakpoint there, where the agent, which has a breakpoint elsewhere,
-/// watches none of the program's lines.
 async fn steps_between_python_and_c(build: &str) {
     let directory = extension_directory(build);
     let (mut session, reason, _) = PythonSession::launch_to_stop(
@@ -450,8 +413,6 @@ async fn steps_between_python_and_c(build: &str) {
     let reason = step(&mut session, StepKind::IntoSource).await;
     assert_at(&mut session, &reason, &into, "main", "THIRD_CALL").await;
 
-    // The call into Python on the way acknowledges the agent's idle
-    // configuration before the breakpoint stops the thread in C.
     session
         .scenario
         .operation(
@@ -499,7 +460,6 @@ async fn steps_between_python_and_c(build: &str) {
     session.shutdown().await;
 }
 
-/// The line of the extension's C source that carries `text`.
 fn extension_line(text: &str) -> u64 {
     let source = std::fs::read_to_string(python::fixture("extension.c")).expect("read the source");
     let index = source
@@ -509,7 +469,6 @@ fn extension_line(text: &str) -> u64 {
     index as u64 + 1
 }
 
-/// The C function the selected frame runs, and its line.
 async fn native_line(session: &mut PythonSession) -> (Option<String>, Option<u64>) {
     let (frame, _) = selected(session).await;
 
@@ -519,11 +478,6 @@ async fn native_line(session: &mut PythonSession) -> (Option<String>, Option<u64
     )
 }
 
-/// Into an extension's function, then over its lines by breakpoints, as in
-/// the program's own executable: over a line that calls back into Python,
-/// to the next line of the C function. Without them a step over in a
-/// shared library single-stepped through the interpreter until the agent's
-/// acknowledgement timed out.
 async fn steps_over_the_lines_of_an_extension(build: &str) {
     let directory = extension_directory(build);
     let (mut session, reason, _) =
@@ -538,7 +492,6 @@ async fn steps_over_the_lines_of_an_extension(build: &str) {
         panic!("{}: {reason:?}: {}", session.context(), session.output());
     };
 
-    // The callback runs on the breakpoint's line.
     let breakpoint = hits[0].breakpoint;
     session
         .scenario
@@ -616,20 +569,12 @@ async fn steps_over_the_lines_of_an_extension_on_each_build() {
     }
 }
 
-/// On each build the extension is built for that PEP 768 injects the agent
-/// into.
 #[tokio::test]
 async fn steps_between_python_and_c_on_each_build() {
     for build in ["3.14", "3.14t", "3.15"] {
         steps_between_python_and_c(build).await;
     }
 }
-
-// One test for each way the agent arrives and runs: the launch bootstrap
-// (3.12), PEP 768 with the GIL (3.14) and free-threaded (3.14t), and the
-// standalone build's tail-call loop. agent.py branches on no other version.
-// A process holds one debugger session, so each build is a test of its own
-// and the runner runs them at once.
 
 #[tokio::test]
 async fn every_kind_of_step_on_3_12() {

@@ -1,5 +1,3 @@
-//! Pointers, aggregates, child pages, dereferences, and inspection budgets.
-
 use super::*;
 use microscope::ValueChildRelationship;
 
@@ -486,8 +484,6 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                 .operation("inspect Rust slice", scenario.handle().variable("slice"))
                 .await;
 
-            // Optimized code keeps the slice's pointer and length in two
-            // registers.
             assert_slice_values(&scenario, &slice, None, &[20, 22], fixture).await;
             if fixture == "variables-rust-o0" {
                 let indexed = scenario
@@ -534,8 +530,6 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
                     "{fixture}: {out_of_bounds:?}"
                 );
             } else {
-                // Optimized code keeps its pointer and length in registers,
-                // which a location in pieces assembles.
                 assert!(
                     matches!(
                         slice.state,
@@ -637,8 +631,6 @@ async fn record_pointees_are_bounded_values_and_unsupported_pointees_remain_prin
             record_page(&scenario, &pair.state, 2, &format!("{fixture} pair")).await;
         }
 
-        // Each pointee is read, not only shaped: the pair holds 20 and 22,
-        // and the node C's chain starts at 40 and the others' at 42.
         let node_value = if fixture == "variables-gcc-o0" {
             40
         } else {
@@ -790,7 +782,6 @@ async fn c_records_cover_nesting_arrays_bit_fields_globals_and_optimization() {
             let flexible_page = record_page(&scenario, &flexible.state, 2, fixture).await;
             assert_signed(&named_child(&flexible_page, "count").state, 2, fixture);
 
-            // A flexible array member's elements are reached by index.
             assert_eq!(
                 named_child(&flexible_page, "values").state,
                 VariableState::Unavailable(VariableUnavailableReason::ValueAccess(
@@ -974,7 +965,6 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
         )
     }));
 
-    // The page is read at once, but each element reports its own address.
     let sources = range_page
         .children
         .iter()
@@ -1020,7 +1010,6 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
         .await;
 
         let expected = match expression {
-            // A range is checked against the array's bounds as it runs.
             "huge_array[7..3]" | "huge_array[1048576..1048578]" => matches!(
                 &result,
                 Err(Error::Expression(error)) if error.kind == microscope::ExpressionErrorKind::Bounds
@@ -1049,7 +1038,6 @@ async fn structural_inspection_reads_a_small_field_without_materializing_a_large
         "{fixture}: {out_of_bounds:?}"
     );
 
-    // A pointer indexes as C indexes it: `records[0]` is `*records`.
     let pointer_index = scenario
         .handle()
         .inspect(&parsed_value_expression("records[0]"))
@@ -1205,8 +1193,6 @@ async fn inspection_budgets_report_typed_partial_results_at_each_public_boundary
         )
         .await;
 
-    // The selection and the page share the limit, which the page's
-    // elements reach.
     assert_eq!(range.children.len(), 3, "{range:?}");
     assert!(matches!(
         range.completion,
@@ -1644,8 +1630,6 @@ async fn rust_zig_and_go_records_cover_nested_arrays_slices_and_optimized_metada
     }
 }
 
-/// Reads one member through each of the record fixtures' parameters: the
-/// record, the array of records, and the slice of it.
 async fn assert_record_members(scenario: &Scenario, signed_member: &str, fixture: &str) {
     for (expression, expected) in [
         (format!("(*record).{signed_member}"), -7),
@@ -1691,7 +1675,6 @@ async fn c_enums_and_raw_unions_preserve_values_names_aliases_and_interpretation
                 microscope::IntegerValue::Signed(0),
                 &["SIGNED_ZERO", "SIGNED_ZERO_ALIAS"][..],
             ),
-            // Single bits are flags, and a value is the ones it sets.
             (
                 "flags",
                 microscope::IntegerValue::Unsigned(3),
@@ -1762,9 +1745,6 @@ async fn c_enums_and_raw_unions_preserve_values_names_aliases_and_interpretation
     }
 }
 
-/// Rust's enums decode as enumerations or as variants with an active
-/// member, never as empty records, and the unit type, a base type of no
-/// bytes, decodes as an empty structure does.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1981,7 +1961,6 @@ async fn go_named_integer_constants_reconstruct_symbolic_values() {
             );
         }
 
-        // A value no constant names is a number, not a nameless symbol.
         let unknown = dereference_named(&scenario, "unknown", 1).await;
         assert_eq!(
             available_value(&unknown.state),
@@ -2285,7 +2264,6 @@ async fn dereference_reads_are_all_or_unavailable_across_an_unmapped_boundary() 
         "{fixture}: {range:?}"
     );
 
-    // A raw read returns the readable prefix and where it stopped.
     let pointer = scenario
         .operation(
             "boundary array",
@@ -2692,7 +2670,6 @@ fn text(bytes: &[u8], completion: microscope::TextCompletion) -> microscope::Tex
     }
 }
 
-/// Text longer than a summary holds, of one repeated byte.
 fn truncated(byte: u8, length: Option<u64>) -> microscope::TextSummary {
     text(
         &[byte; microscope::TextSummary::MAX_BYTES],
@@ -2700,7 +2677,6 @@ fn truncated(byte: u8, length: Option<u64>) -> microscope::TextSummary {
     )
 }
 
-/// C string text whose terminator was found `extent` bytes from its start.
 fn ending(text: microscope::TextSummary, extent: u64) -> microscope::TextSummary {
     microscope::TextSummary {
         extent: Some(extent),
@@ -2708,8 +2684,6 @@ fn ending(text: microscope::TextSummary, extent: u64) -> microscope::TextSummary
     }
 }
 
-/// Stops a fixture at its "strings stop here" line, or in `function`, and
-/// checks each variable's text.
 async fn assert_strings(
     fixture: &str,
     source: &str,
@@ -2758,9 +2732,6 @@ async fn c_strings_read_up_to_their_terminator_limit_or_unreadable_memory() {
         "c/strings.c",
         None,
         &[
-            // Text extends through the NUL that ends it in memory, through
-            // a pointer or within an array; an array without one is all
-            // text, and has no extent past it.
             (
                 "greeting",
                 Some(ending(text(b"hello, world", Complete), 13)),
@@ -2778,9 +2749,6 @@ async fn c_strings_read_up_to_their_terminator_limit_or_unreadable_memory() {
             ("null_text", None),
             ("invalid", Some(text(b"", unreadable))),
             ("bytes", Some(ending(text(b"A\xff", Complete), 3))),
-            // Wide text is decoded from its units: UTF-32 for `wchar_t`
-            // and `char32_t`, UTF-16 for `char16_t`.
-            // Their extents count units, not the UTF-8 they become.
             (
                 "wide",
                 Some(ending(text("wide é".as_bytes(), Complete), 7 * 4)),
@@ -2869,11 +2837,6 @@ async fn text_running_into_an_unmapped_page_stops_at_the_page() {
     scenario.shutdown().await;
 }
 
-/// Before a function's prologue its frame base may be meaningless: clang's
-/// unoptimized code bases locations on `rbp`, which still holds the zero
-/// a program's entry point left in it. A location computed from it wraps
-/// the address space, so the variable is unavailable, and the others are
-/// still shown.
 #[tokio::test]
 async fn a_variable_whose_location_wraps_the_address_space_is_unavailable() {
     let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2889,7 +2852,6 @@ async fn a_variable_whose_location_wraps_the_address_space_is_unavailable() {
 
     assert_eq!(entry, StopReason::Entry);
 
-    // The entry point clears rbp, aligns the stack, and calls rt_start.
     for _ in 0..4 {
         scenario.step_to_stop(StepKind::Instruction).await;
     }
@@ -2948,7 +2910,6 @@ async fn assert_array_values(
     assert_eq!(values, [20, 22], "{fixture}");
 }
 
-/// The page of elements a range expression selects.
 async fn evaluate_range(
     handle: &microscope::DebuggerHandle,
     text: &str,

@@ -1,9 +1,3 @@
-//! GIL ownership and waits. From 3.15, thread states report both; earlier versions
-//! identify only the holder, from a locked GIL's last-holder field.
-//! A disabled GIL in a free-threaded build has neither holders nor waiters.
-//!
-//! Live reads may race threads taking or dropping the GIL.
-
 use std::collections::BTreeMap;
 
 use super::objects::{Problem, Reader};
@@ -11,21 +5,16 @@ use super::threads::ThreadState;
 use crate::VirtualAddress;
 use crate::image::python::Field;
 
-/// What a thread does with its interpreter's GIL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Gil {
     Held,
 
-    /// It asks for the GIL another thread holds, which only 3.15 and later
-    /// say.
     Waiting,
 
-    /// It neither holds nor, where the runtime says, asks for it.
     Released,
 }
 
 impl Gil {
-    /// The label a sample of the thread carries, if any.
     pub(super) const fn label(self) -> Option<&'static str> {
         match self {
             Self::Held => Some("held"),
@@ -35,16 +24,12 @@ impl Gil {
     }
 }
 
-/// An interpreter's GIL, as read once for its threads.
 #[derive(Debug, Clone, Copy)]
 struct Lock {
     locked: bool,
     holder: u64,
 }
 
-/// What each of `states` does with its interpreter's GIL, in their order:
-/// `None` for a thread whose interpreter has no GIL on, or an error that
-/// says why it cannot be read.
 pub(super) fn gil_states(
     reader: &Reader<'_>,
     states: &[ThreadState],
@@ -66,8 +51,6 @@ pub(super) fn gil_states(
         .collect()
 }
 
-/// The GIL the interpreter at `interpreter` takes, or `None` where it is
-/// off or not yet made.
 fn lock(reader: &Reader<'_>, interpreter: VirtualAddress) -> Result<Option<Lock>, Problem> {
     let layout = reader.layout;
     let gil = reader.field_word(interpreter, Field::InterpreterCevalGil)?;
@@ -82,8 +65,6 @@ fn lock(reader: &Reader<'_>, interpreter: VirtualAddress) -> Result<Option<Lock>
         return Ok(None);
     }
 
-    // The GIL's structure holds `locked` and `last_holder` where the
-    // interpreter's own copy of it does, less where that copy begins.
     let within = |field: Field| -> Result<u64, Problem> {
         reader
             .offset(field)?
@@ -98,14 +79,11 @@ fn lock(reader: &Reader<'_>, interpreter: VirtualAddress) -> Result<Option<Lock>
     let holder = reader.word(gil.wrapping_add(within(Field::InterpreterGilHolder)?))?;
 
     Ok(Some(Lock {
-        // An uninitialized GIL is locked -1.
         locked: locked == 1,
         holder,
     }))
 }
 
-/// What the thread state `state` does with its interpreter's GIL, which
-/// `lock` is.
 fn thread_gil(reader: &Reader<'_>, state: &ThreadState, lock: Lock) -> Result<Gil, Problem> {
     let layout = reader.layout;
     if let (Some(holds), Some(requested)) = (
@@ -128,7 +106,6 @@ fn thread_gil(reader: &Reader<'_>, state: &ThreadState, lock: Lock) -> Result<Gi
     })
 }
 
-/// The C `int` at `address`.
 fn int(reader: &Reader<'_>, address: VirtualAddress) -> Result<i32, Problem> {
     let bytes = reader.bytes(address, 4)?;
     let bytes: [u8; 4] = bytes

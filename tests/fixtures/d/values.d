@@ -1,12 +1,12 @@
-// D's values, where this program says they are. Before each checkpoint the
-// program prints its own truth, one tab-separated line per value,
-//
-//	TRUTH	<checkpoint>	<path>	<kind>	<value>
-//
-// and then calls reached(checkpoint); the tests read the values in
-// reached's caller. A path names a variable and then its fields and
-// elements. Floats are their bits in hexadecimal; kind `summary` is how
-// microscope writes the value.
+
+
+
+
+
+
+
+
+
 module values;
 
 import std.stdio : stdout, writefln;
@@ -45,13 +45,13 @@ class Animal
 
 __gshared const(void)* sink;
 
-// Reaches a checkpoint once every truth before it is written.
+
 pragma(inline, false) void reached(string checkpoint)
 {
     sink = checkpoint.ptr;
 }
 
-// Keeps a value alive, and where the program put it, past the checkpoint.
+
 pragma(inline, false) void keep(const(void)* value)
 {
     sink = value;
@@ -87,8 +87,8 @@ pragma(inline, false) int add(int a, int b)
     return sum;
 }
 
-// What functions return: a checkpoint named `returned-` is about what the
-// function that reached it returns, which is named for the function.
+
+
 pragma(inline, false) int returnsInt(int n)
 {
     int value = n * -11;
@@ -174,7 +174,7 @@ pragma(inline, false) void slices()
     keep(&ints); keep(&nothing); keep(&text); keep(&empty); keep(&wide);
 }
 
-// Stops within a loop, among the variables D makes to run it.
+
 pragma(inline, false) void loop()
 {
     long total = 0;
@@ -200,7 +200,7 @@ string format(size_t value)
 
 void main(string[] args)
 {
-    // Arguments the compiler cannot know.
+
     int n = cast(int) args.length + 2;
     scalars();
     records();

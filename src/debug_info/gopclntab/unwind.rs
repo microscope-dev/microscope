@@ -1,9 +1,3 @@
-//! Unwinding Go code by its stack table, as the runtime's traceback does:
-//! the canonical frame address is SP plus the table's delta at the
-//! instruction, plus the return address the call pushed, which lies just
-//! below it. Go's call-frame information is generated from the same table,
-//! but a stripped image has none.
-
 use std::sync::Arc;
 
 use super::{GoFunction, GoTable};
@@ -14,31 +8,22 @@ use crate::unwind::{
 
 use crate::{ImageAddress, UnwindTermination, VirtualAddress};
 
-/// What a frame's caller had in its frame-pointer register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerFramePointer {
-    /// The prologue saved it in the word at this address.
     Saved(VirtualAddress),
 
-    /// The function has not changed it: Go code compiled by Go allocates
-    /// no register to rbp, and it has not yet pushed it or has popped it.
     Unchanged,
 
-    /// Nothing proves where it is.
     Unknown,
 }
 
-/// A Go function table with what unwinding needs of each function.
 #[derive(Debug)]
 pub struct GoUnwind {
     table: Arc<GoTable>,
 
-    /// Where each function keeps its caller's frame pointer saved, by index.
     frame_pointer_saved: Vec<Option<std::ops::Range<u64>>>,
 }
 
-/// Where each function keeps its caller's frame pointer saved, by index,
-/// from every function's prologue in the image's code.
 pub fn frame_saves<'code>(
     table: &GoTable,
     code: impl Fn(u64, usize) -> Option<&'code [u8]>,
@@ -57,7 +42,6 @@ pub fn frame_saves<'code>(
 }
 
 impl GoUnwind {
-    /// Unwinds by `table`, with [`frame_saves`]'s answer for it.
     pub const fn new(
         table: Arc<GoTable>,
         frame_pointer_saved: Vec<Option<std::ops::Range<u64>>>,
@@ -68,8 +52,6 @@ impl GoUnwind {
         }
     }
 
-    /// The function Go compiled or assembled whose code contains an image
-    /// address, with its index.
     fn function(&self, address: ImageAddress) -> Option<(usize, &GoFunction)> {
         let functions = self.table.functions();
         let address = address.get();
@@ -80,21 +62,15 @@ impl GoUnwind {
         (function.contains(address) && function.is_go()).then_some((index, function))
     }
 
-    /// Whether Go compiled or assembled the code at an image address.
     pub fn is_go(&self, address: ImageAddress) -> bool {
         self.function(address).is_some()
     }
 
-    /// Whether Go compiled the code at an image address, rather than
-    /// assembled it: compiled code follows the register ABI, which keeps
-    /// the goroutine's `g` in R14 throughout, where assembly may overwrite
-    /// it. Every release whose table this reads has that ABI.
     pub fn compiled(&self, address: ImageAddress) -> bool {
         self.function(address)
             .is_some_and(|(_, function)| !function.facts.assembly)
     }
 
-    /// How far SP is below its value at the function's entry.
     fn sp_delta(
         &self,
         function: &GoFunction,
@@ -115,8 +91,6 @@ impl GoUnwind {
         })
     }
 
-    /// The canonical frame address of the Go frame executing `address`, or
-    /// `None` when Go did not compile the code there.
     pub fn cfa(
         &self,
         address: ImageAddress,
@@ -138,9 +112,6 @@ impl GoUnwind {
         }))
     }
 
-    /// Reconstructs the caller of the Go frame executing `address`, which
-    /// keeps none of the `clobbered` registers, or `None` when Go did not
-    /// compile the code there.
     pub fn unwind(
         &self,
         address: ImageAddress,
@@ -174,16 +145,6 @@ impl GoUnwind {
         })())
     }
 
-    /// Where the caller's frame pointer is, for the Go frame executing
-    /// `address` with canonical frame address `cfa`, or `None` when Go did
-    /// not compile the code there.
-    ///
-    /// The assembler's prologue pushes rbp first of all its changes to SP
-    /// and each epilogue pops it last, so while SP is at least 8 below its
-    /// entry value the caller's rbp is in the word below the return address
-    /// (see [`super::Prologue`]). Where SP is at its entry value, compiled
-    /// Go code has not changed rbp, which the compiler never allocates;
-    /// assembly may have.
     pub fn caller_frame_pointer(
         &self,
         address: ImageAddress,
@@ -209,10 +170,6 @@ impl GoUnwind {
         })
     }
 
-    /// Whether the Go frame executing `address` keeps the frame-pointer
-    /// chain, or `None` when Go did not compile the code there. Its rbp is
-    /// the word below its return address once the prologue saved the
-    /// caller's there; compiled Go code keeps no other value in it.
     pub fn frame_pointer_rule(&self, address: ImageAddress) -> Option<FramePointerRule> {
         let (index, function) = self.function(address)?;
         let saved = self
@@ -229,7 +186,6 @@ impl GoUnwind {
         })
     }
 
-    /// Applies [`Self::caller_frame_pointer`] to a reconstructed caller.
     pub fn recover_frame_pointer(
         &self,
         address: ImageAddress,

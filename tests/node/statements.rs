@@ -1,7 +1,3 @@
-//! JavaScript `debugger` statements stop where V8 pauses at them under a
-//! plain CDP client (`oracle.rs`), with the frame's locals, unless their
-//! script is skipped.
-
 use microscope::{ExitStatus, StepSkips, StopReason};
 
 use crate::oracle::{self, Pause, Skipping};
@@ -9,9 +5,6 @@ use crate::session::{LINES, NodeSession};
 
 const FIXTURE: &str = "statements.js";
 
-/// Runs the fixture on one build, skipping `directories`, and returns
-/// where microscope stopped, where V8 paused, and `doubled` at the first
-/// stop.
 async fn run(entry: &str, directories: &[&str]) -> (Vec<Pause>, Vec<Pause>, String) {
     let skipping = Skipping {
         directories,
@@ -50,7 +43,6 @@ async fn run(entry: &str, directories: &[&str]) -> (Vec<Pause>, Vec<Pause>, Stri
     (seen, expected, doubled)
 }
 
-/// The summary of the selected frame's variable `name`.
 async fn local(session: &NodeSession, name: &str) -> String {
     let variables = session
         .scenario
@@ -72,15 +64,12 @@ async fn local(session: &NodeSession, name: &str) -> String {
         )
 }
 
-/// On every build, each `debugger` statement the program runs stops where
-/// V8 pauses at it, once each time it runs, except in a skipped script.
 #[tokio::test]
 async fn debugger_statements_stop_where_v8_pauses_at_them() {
     let mut lies = Vec::new();
     for entry in LINES {
         for directories in [&[][..], &["/vendor/"][..]] {
             let (seen, expected, doubled) = run(entry, directories).await;
-            // first, halt unless skipped, and the loop's two.
             let count = if directories.is_empty() { 4 } else { 3 };
             let mut differences = oracle::differences(&seen, &expected);
             if seen.len() != count {

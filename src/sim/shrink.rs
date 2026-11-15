@@ -1,15 +1,3 @@
-//! Shrinks a failing seed's run to a smaller one that fails the same way.
-//!
-//! A seed has no structure to shrink, so the shrinker works on what the run
-//! chose. First it makes the run's shape simpler, one part at a time; the
-//! streams are independent, so this barely disturbs the rest of the run.
-//! Then it shrinks the tape of choices the run drew, as Hypothesis does:
-//! it deletes runs of choices and lowers single ones toward zero. It keeps
-//! each change whose run fails with the same [`Failure::signature`] and is
-//! no larger, so the result is never a larger run than the seed's.
-//!
-//! [`Failure::signature`]: super::report::Failure::signature
-
 use std::fmt::Write as _;
 
 use super::Corpus;
@@ -17,19 +5,16 @@ use super::choices::{Stream, Tape};
 use super::swarm::Simpler;
 use super::world::{Outcome, Settings, run};
 
-/// The smallest failing run found, and how to run it again.
 pub struct Shrunk {
     pub seed: u64,
     pub simpler: Vec<Simpler>,
     pub tape: Tape,
     pub outcome: Outcome,
 
-    /// How many runs shrinking took.
     pub runs: u64,
 }
 
 impl Shrunk {
-    /// The run as a file `replay --shrunk` reads.
     #[must_use]
     pub fn to_text(&self) -> String {
         let mut text = format!("seed {:#x}\n", self.seed);
@@ -49,12 +34,6 @@ impl Shrunk {
     }
 }
 
-/// The seed, simpler choices, and tape a file `Shrunk::to_text` wrote
-/// names.
-///
-/// # Errors
-///
-/// When a line is not one that function writes.
 pub fn read(text: &str) -> Result<(u64, Vec<Simpler>, Tape), String> {
     let mut seed = None;
     let mut simpler = Vec::new();
@@ -95,8 +74,6 @@ pub fn read(text: &str) -> Result<(u64, Vec<Simpler>, Tape), String> {
     Ok((seed.ok_or("a shrunk run names its seed")?, simpler, tape))
 }
 
-/// How large a run is: its actions, then how many choices it drew, then
-/// their sum.
 fn size(outcome: &Outcome, tape: &Tape) -> (u64, usize, u128) {
     let sum = tape
         .streams
@@ -120,8 +97,6 @@ impl Shrinker<'_> {
         self.best.runs >= self.most_runs
     }
 
-    /// Runs with `simpler` and `tape`, and keeps the run when it fails the
-    /// same way and is smaller, or, when `ties` keep, no larger.
     fn attempt(&mut self, simpler: Vec<Simpler>, tape: Tape, ties: bool) -> bool {
         if self.exhausted() {
             return false;
@@ -156,8 +131,6 @@ impl Shrinker<'_> {
         true
     }
 
-    /// Tries each simpler choice of the run's shape, the fewest requests
-    /// that still fail first.
     fn simplify_shape(&mut self) {
         let mut fewer_requests = false;
         for candidate in Simpler::for_swarm(&self.best.outcome.swarm) {
@@ -177,9 +150,6 @@ impl Shrinker<'_> {
         }
     }
 
-    /// Deletes runs of choices from each stream's tape, the longest first,
-    /// and lowers each choice that remains toward zero, until nothing
-    /// shrinks the run.
     fn shrink_tape(&mut self) {
         loop {
             let before = size(&self.best.outcome, &self.best.tape);
@@ -225,8 +195,6 @@ impl Shrinker<'_> {
     }
 }
 
-/// The smallest run found within `most_runs` runs that fails as `seed`'s
-/// does, or `None` when `seed`'s run passes.
 #[must_use]
 pub fn shrink(seed: u64, corpus: &Corpus, settings: &Settings, most_runs: u64) -> Option<Shrunk> {
     let first = Settings {

@@ -1,32 +1,3 @@
-//! The values a function returned, read where its caller sees them the
-//! instant the call returns. Optimized code keeps no result in a place its
-//! debug information describes by then, but the calling convention says
-//! where each one is. Two conventions are known on x86-64.
-//!
-//! Go's register ABI (`abi-internal.md`) assigns results to registers
-//! apart from the arguments, starting again from the first: an integer,
-//! pointer, or boolean takes the next integer register, a float the next
-//! floating-point one, a complex number two, and a string, slice,
-//! interface, struct, or one-element array its parts in order. A value with
-//! no register left for every part, or an array of more elements, is on
-//! the stack instead, after the arguments the stack holds, at the caller's
-//! stack pointer.
-//!
-//! The System V ABI, which C and C++ follow, returns one value. A value of
-//! at most two eightbytes is classified an eightbyte at a time: one holding
-//! any integer takes the next of rax and rdx, and one of only floats the
-//! next of xmm0 and xmm1. A `long double` is in st0. A larger value, and a
-//! C++ class its producer says calls pass by reference, is in memory the
-//! caller provides, whose address the function returns in rax. Rust, Zig,
-//! Odin, Fortran, D, and Ada leave their own conventions unspecified, so
-//! only their scalars, which LLVM and GCC return as C does, are known, and
-//! Rust's values of two scalars, which rustc returns as LLVM returns a
-//! pair: each scalar in the next register of its class.
-//!
-//! LLVM may change how a function no other module calls returns, such as
-//! dropping a part no caller reads, and then marks it `DW_CC_nocall`: what
-//! such a function returned is unknown.
-
 use std::sync::Arc;
 
 use crate::debug_info::{Located, ReturnedValue, VariableRuntime};
@@ -45,51 +16,34 @@ use super::types::TypeResolution;
 use crate::image::variables::Object;
 use crate::unwind::DwarfRegister;
 
-/// The DWARF numbers of x86-64's integer result registers, in order: rax,
-/// rbx, rcx, rdi, rsi, and r8 through r11.
 const INTEGER: [DwarfRegister; 9] = DwarfRegister::each([0, 3, 2, 5, 4, 8, 9, 10, 11]);
 
-/// The DWARF numbers of x86-64's floating-point result registers, xmm0
-/// through xmm14.
 const FLOATING: [DwarfRegister; 15] =
     DwarfRegister::each([17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
-/// x86-64's stack pointer.
 const STACK_POINTER: DwarfRegister = crate::unwind::RSP;
 
-/// The size of a word, and the stack's alignment between arguments and
-/// results.
 const WORD: u64 = 8;
 
-/// System V's integer result registers, rax and rdx.
 const SYSTEM_V_INTEGER: [DwarfRegister; 2] = DwarfRegister::each([0, 1]);
 
-/// System V's floating-point result registers, xmm0 and xmm1.
 const SYSTEM_V_FLOATING: [DwarfRegister; 2] = DwarfRegister::each([17, 18]);
 
-/// The x87 register stack's top, which returns a `long double`.
 const ST0: DwarfRegister = DwarfRegister::new(33);
 
-/// The size of an eightbyte, the unit System V classifies.
 const EIGHTBYTE: u64 = 8;
 
 pub(super) use crate::image::variables::{ReturnConvention, SystemV};
 
-/// Where one part of a value is.
 #[derive(Debug, Clone, Copy)]
 enum Source {
-    /// The low bytes of a register.
     Register(DwarfRegister),
 
-    /// The stack, this far past the caller's stack pointer.
     Stack(u64),
 
-    /// Memory at the address a register holds.
     Indirect(DwarfRegister),
 }
 
-/// One part of a value: where it is in the value, its size, and where it
-/// was returned.
 #[derive(Debug, Clone, Copy)]
 struct Part {
     offset: u64,
@@ -97,22 +51,16 @@ struct Part {
     source: Source,
 }
 
-/// Why a value has no registers.
 enum Unassigned {
-    /// It does not fit those left, so it is on the stack.
     Stack,
 
-    /// Its type is one the convention does not describe.
     Unsupported,
 
-    /// Its language does not say where it is returned.
     Unspecified,
 
-    /// Its type's debug information is malformed.
     Malformed(Arc<str>),
 }
 
-/// One assignment of values to registers and the stack, in order.
 #[derive(Default)]
 struct Assignment {
     integers: usize,
@@ -147,8 +95,6 @@ impl DwarfVariableInfo {
 
         let results = own(VariableKind::Result).collect::<Vec<_>>();
 
-        // The stack-assigned results follow the stack-assigned arguments,
-        // so where they are depends on every argument.
         let mut arguments = Assignment::default();
 
         for parameter in own(VariableKind::Parameter) {
@@ -168,7 +114,6 @@ impl DwarfVariableInfo {
         let mut returned = Vec::with_capacity(results.len());
 
         for (index, &result) in results.iter().enumerate() {
-            // So does where each result is on every one before it.
             let Some(ty) = type_of(result) else {
                 let missing = Self::all_missing(
                     results.get(index..).unwrap_or_default(),
@@ -190,8 +135,6 @@ impl DwarfVariableInfo {
                 )?),
             };
 
-            // A generic result's shape is laid out as its type is, but its
-            // type is in a dictionary the returned call took away.
             let unresolved_shape = match self.generic_type(ty, None, None, runtime, budget)? {
                 Generic::Unresolved(_, reason) => Some(reason),
                 Generic::Plain | Generic::Resolved(_) => None,
@@ -208,7 +151,6 @@ impl DwarfVariableInfo {
         Ok(Some(returned))
     }
 
-    /// Results none of whose values can be found, for one reason.
     fn all_missing(results: &[Object<'_>], error: &EvaluateError) -> Result<Vec<ReturnedValue>> {
         let state = evaluate_error_state(error.clone(), VariableMalformedKind::InvalidTypeGraph)?;
         Ok(results
@@ -222,7 +164,6 @@ impl DwarfVariableInfo {
             .collect())
     }
 
-    /// The bytes of a value of type `ty` from its parts.
     fn capture(
         &self,
         ty: TypeId,
@@ -288,12 +229,10 @@ impl DwarfVariableInfo {
         })
     }
 
-    /// What `ty` is, through names and modifiers.
     fn underlying(&self, ty: TypeId) -> std::result::Result<&crate::TypeInfo, Unassigned> {
         self.underlying_type(ty).map(|(_, info)| info)
     }
 
-    /// What `ty` is, through names and modifiers, and its identifier.
     fn underlying_type(
         &self,
         ty: TypeId,
@@ -324,7 +263,6 @@ impl DwarfVariableInfo {
             .ok_or_else(|| Unassigned::Malformed("a type has no size".into()))
     }
 
-    /// The alignment a value of type `ty` takes on the stack.
     fn alignment(&self, ty: TypeId) -> std::result::Result<u64, Unassigned> {
         let info = self.underlying(ty)?;
         Ok(match &info.kind {
@@ -349,17 +287,14 @@ impl DwarfVariableInfo {
     }
 }
 
-/// The class System V gives a scalar, and so the eightbyte holding it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Class {
     Integer,
     Floating,
 
-    /// A `long double`, which only the x87 registers hold.
     X87,
 }
 
-/// One scalar in a value: where it is, its size, and its class.
 #[derive(Debug, Clone, Copy)]
 struct Leaf {
     offset: u64,
@@ -368,7 +303,6 @@ struct Leaf {
 }
 
 impl DwarfVariableInfo {
-    /// The one value a function returned by the System V convention.
     fn system_v_returned(
         &self,
         returned: &SystemV,
@@ -391,7 +325,6 @@ impl DwarfVariableInfo {
             }
         };
 
-        // Void and zero-sized values have nothing to show.
         if self.underlying(ty).is_ok_and(|info| {
             matches!(info.kind, TypeKind::Unspecified) && info.name.as_ref() == "void"
         }) || self.size(ty).is_ok_and(|size| size == 0)
@@ -424,7 +357,6 @@ impl DwarfVariableInfo {
         }]))
     }
 
-    /// Where System V returns a value of type `ty`.
     fn system_v_parts(
         &self,
         ty: TypeId,
@@ -453,17 +385,11 @@ impl DwarfVariableInfo {
                 SourceLanguage::Cpp => match self.type_facts().passed_by_value(id) {
                     Some(true) => true,
                     Some(false) => return Ok(memory),
-                    // A class too large for registers is in memory however
-                    // calls pass it; a smaller one's place depends on
-                    // whether copying it is trivial, which the producer
-                    // did not say.
                     None if size > 2 * EIGHTBYTE => return Ok(memory),
                     None => return Err(Unassigned::Unspecified),
                 },
                 _ => return Err(Unassigned::Unspecified),
             },
-            // C returns no array but a vector, which the vector registers
-            // hold.
             _ => return Err(Unassigned::Unsupported),
         };
 
@@ -486,7 +412,6 @@ impl DwarfVariableInfo {
             },
         ] = leaves[..]
         {
-            // The x87 register's ten bytes; the rest is padding.
             return Ok(vec![Part {
                 offset: 0,
                 size: 10,
@@ -494,8 +419,6 @@ impl DwarfVariableInfo {
             }]);
         }
 
-        // An unaligned field puts a value in memory, though producers
-        // disagree on packed records.
         if leaves.iter().any(|leaf| leaf.offset % leaf.size != 0) {
             return Err(Unassigned::Unsupported);
         }
@@ -533,12 +456,6 @@ impl DwarfVariableInfo {
         Ok(parts)
     }
 
-    /// Where rustc returns a Rust record or enum: in registers when it
-    /// holds one scalar, or two, which rustc lays out as a scalar pair, and
-    /// returns as LLVM does a pair, each scalar in the next register of its
-    /// class. An enum's tag is one of its scalars, and each variant's
-    /// payload, at the same place in every variant, the other. rustc
-    /// returns any other aggregate as it sees fit.
     fn rust_pair_parts(&self, ty: TypeId) -> std::result::Result<Vec<Part>, Unassigned> {
         let mut leaves = Vec::new();
         self.rust_leaves(ty, 0, &mut leaves)?;
@@ -574,9 +491,6 @@ impl DwarfVariableInfo {
             .collect()
     }
 
-    /// Adds the scalars of a Rust value of type `ty` at `offset` to
-    /// `leaves`: an enum's tag and every variant's payload. rustc lays out
-    /// arrays and unions as aggregates, never scalars.
     fn rust_leaves(
         &self,
         ty: TypeId,
@@ -626,7 +540,6 @@ impl DwarfVariableInfo {
         }
     }
 
-    /// Adds the scalars of a value of type `ty` at `offset` to `leaves`.
     fn leaves(
         &self,
         ty: TypeId,
@@ -724,8 +637,6 @@ impl DwarfVariableInfo {
         Ok(())
     }
 
-    /// Adds the scalars of a record's member to `leaves`: a bit field's
-    /// bytes are integers.
     fn member_leaves(
         &self,
         member: &crate::RecordMember,
@@ -758,8 +669,6 @@ impl DwarfVariableInfo {
 }
 
 impl Assignment {
-    /// Assigns a value of type `ty` registers, or else the stack, and adds
-    /// where its parts are to `parts`.
     fn assign(
         &mut self,
         info: &DwarfVariableInfo,
@@ -789,8 +698,6 @@ impl Assignment {
         }
     }
 
-    /// Assigns registers to a value of type `ty` at `offset` in the value
-    /// being returned.
     fn registers(
         &mut self,
         info: &DwarfVariableInfo,
@@ -889,8 +796,6 @@ impl Assignment {
     }
 }
 
-/// Why a value that cannot take registers has no place on the stack
-/// either.
 fn placed(unassigned: Unassigned) -> EvaluateError {
     match unassigned {
         Unassigned::Unsupported => crate::UnsupportedVariableFeature::TypeRepresentation.into(),
@@ -900,8 +805,6 @@ fn placed(unassigned: Unassigned) -> EvaluateError {
     }
 }
 
-/// The type of a parameter or result, unless its debug information is
-/// malformed.
 fn type_of(object: Object<'_>) -> Option<TypeId> {
     object.type_id().filter(|_| object.malformed().is_none())
 }

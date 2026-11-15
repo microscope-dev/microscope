@@ -9,19 +9,14 @@ import { useGo } from "./navigation";
 import { where } from "./Stack";
 import { useFocus } from "./Workspace";
 
-/**
- * The tasks of the program's runtimes at the stop shown, alone or grouped
- * by where they are; choosing one shows its stack. Absent for a program
- * whose runtimes have none, but a failure to list them is shown.
- */
 export function Tasks() {
   const { at, stale } = useFocus();
   const go = useGo();
   const [grouped, setGrouped] = useState(false);
-  // A stop's tasks are read while it lasts.
+
   const asked = useRequest("tasks", at && stale === null ? { stop: at.stop } : null);
   const list = asked.data;
-  // A task opens at the code the program wrote, as its place says.
+
   const choose = useCallback(
     (task: Task) => {
       assert(at !== null, `task ${task.key.number} chosen with no stop`);
@@ -83,7 +78,6 @@ export function Tasks() {
                   </div>
                   <div className="task-numbers">
                     {tasks.map((task) =>
-                      // Work that runs no code opens no stack.
                       task.stackless ? (
                         <span
                           key={key(task.key)}
@@ -104,8 +98,6 @@ export function Tasks() {
               );
             })
           : list.tasks.map((task) =>
-              // Work an event loop waits on has no stack to show: it is
-              // what it waits for, then the callback it will run.
               task.stackless ? (
                 <li
                   key={key(task.key)}
@@ -134,7 +126,6 @@ export function Tasks() {
   );
 }
 
-/** How many tasks the stop shown has, once they are read. */
 export function TasksBadge() {
   const { at, stale } = useFocus();
   const list = useRequest("tasks", at && stale === null ? { stop: at.stop } : null).data;
@@ -175,7 +166,6 @@ function TaskButton({
   );
 }
 
-/** Everything a task's row says, for its tooltip. */
 function describe(task: Task): string {
   return [
     task.stackless
@@ -193,7 +183,6 @@ function key(task: TaskKey): string {
   return `${task.runtime}.${task.number}`;
 }
 
-/** Tasks by where they are, the place with the most first. */
 function groups(tasks: readonly Task[]): [string, Task[]][] {
   const byPlace = new Map<string, Task[]>();
   for (const task of tasks) {

@@ -1,11 +1,3 @@
-//! Views at a stop: which view presents each type, the presentation every
-//! inspection path attaches to the values it returns, and the children of
-//! presented values.
-//!
-//! Views run on the controller thread, inside the inspection that asked for
-//! the value and charged to its budget. A view binds once per type and view
-//! set; each presentation then reads only what it shows.
-
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -40,42 +32,26 @@ use super::frames::StackRoot;
 use super::native::InspectionOps;
 use super::{Controller, RuntimeModule};
 
-/// How deeply views present values inside the values they present.
 pub(super) const MAX_DEPTH: u8 = 4;
 
-/// The most values whose scans the controller keeps checkpoints for at one
-/// stop; the oldest is forgotten first.
 const MAX_SCANS: usize = 64;
 
-/// How many children a recording of kernel runs presents after a value.
 const RECORDED_CHILDREN: u32 = 256;
 
-/// The most children of a variant a sum's presentation reads.
 const MAX_SUM_CHILDREN: u32 = 64;
 
-/// The views a controller presents values with, the view each type has,
-/// and where the scans of values presented at this stop have been.
 pub(super) struct Views {
-    /// The files loaded for the session, tried before a module's own views
-    /// and the built-in ones.
     pub(super) set: Arc<ViewSet>,
     pub(super) enabled: bool,
 
-    /// The view each type has under this set, bound when first needed.
     choices: RefCell<BTreeMap<TypeReference, Arc<Choice<StopStep>>>>,
 
-    /// The view each interpreter's class has at this stop.
     classes: RefCell<ClassChoices>,
     scans: RefCell<Scans>,
 
-    /// Where kernel runs are recorded while a request records them; scans
-    /// then neither use nor keep checkpoints.
     recording: RefCell<Option<Recordings>>,
 }
 
-/// The view each interpreter's class has at one stop, by its runtime and
-/// its address. A class is only known by its address while the stop lasts:
-/// once the program runs, it may free the class and make another there.
 #[derive(Default)]
 struct ClassChoices {
     stop: Option<StopId>,
@@ -85,7 +61,6 @@ struct ClassChoices {
     >,
 }
 
-/// Which value a scan presents: its type, its view, and the value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ScanKey {
     ty: TypeReference,
@@ -93,19 +68,13 @@ pub(super) struct ScanKey {
     scanned: Scanned,
 }
 
-/// The value a scan presents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Scanned {
-    /// A native value, where it is stored.
     Stored(ValueStorage),
 
-    /// An interpreter's object, by its runtime and its handle, which need
-    /// not point to memory.
     Interpreted(crate::RuntimeId, crate::runtime_model::InterpretedHandle),
 }
 
-/// The checkpoints of scans at one stop, oldest first. They hold while the
-/// program's state does, so a new stop or a write forgets them.
 #[derive(Default)]
 struct Scans {
     stop: Option<StopId>,
@@ -126,21 +95,17 @@ impl Default for Views {
 }
 
 impl Views {
-    /// Presents with another set from now on.
     pub(super) fn replace(&mut self, set: Arc<ViewSet>) {
         self.set = set;
         self.choices.get_mut().clear();
         self.forget_scans();
     }
 
-    /// Forgets where scans have been, and the views of classes, which the
-    /// program keeps, after the program's state changed.
     pub(super) fn forget_scans(&self) {
         self.scans.borrow_mut().entries.clear();
         *self.classes.borrow_mut() = ClassChoices::default();
     }
 
-    /// The view the class `class` of `runtime` has at `stop`, once chosen.
     pub(super) fn class_choice(
         &self,
         stop: StopId,
@@ -158,7 +123,6 @@ impl Views {
         classes.choices.get(&(runtime, class)).cloned()
     }
 
-    /// Keeps the view the class `class` of `runtime` has at `stop`.
     pub(super) fn keep_class_choice(
         &self,
         stop: StopId,
@@ -172,8 +136,6 @@ impl Views {
         }
     }
 
-    /// Runs one scan of the value `key` names at `stop` from the checkpoints
-    /// earlier scans of it left, and keeps the ones this scan leaves.
     pub(super) fn scan<T>(
         &self,
         stop: StopId,
@@ -218,7 +180,6 @@ impl Views {
     }
 }
 
-/// The key of the scan presenting `place` with `bound`.
 fn scan_key(bound: &ViewBound, image: crate::ModuleImageId, place: &StopPlace) -> ScanKey {
     ScanKey {
         ty: TypeReference {
@@ -231,7 +192,6 @@ fn scan_key(bound: &ViewBound, image: crate::ModuleImageId, place: &StopPlace) -
 }
 
 impl StopPlace {
-    /// Where the value a children reference belongs to is.
     pub(super) fn of(reference: &ValueChildrenReference) -> Self {
         Self {
             module: reference.module,
@@ -243,8 +203,6 @@ impl StopPlace {
     }
 }
 
-/// The scope a view binds in: one module's types, and no names. A view
-/// sees nothing a frame names, so it means the same at every stop.
 pub(super) struct ModuleScope<'a, P: InspectionOps> {
     pub(super) controller: &'a Controller<P>,
     pub(super) module: &'a RuntimeModule,
@@ -295,8 +253,6 @@ impl<P: InspectionOps> Scope for ModuleScope<'_, P> {
     ) -> std::result::Result<Planned<StopStep>, Refusal> {
         let planned = plan_in(self.controller, from, step);
 
-        // A member with no indexing of its own, such as a `std::vector`, is
-        // indexed through the view that presents it, as in any expression.
         match (&planned, step) {
             (Err(_), StepKind::Index { .. }) => {
                 self.controller.view_index(from).map_or(planned, Ok)
@@ -310,8 +266,6 @@ impl<P: InspectionOps> Scope for ModuleScope<'_, P> {
         None
     }
 
-    /// A view of an interpreter's objects reaches their attributes and
-    /// items, as an expression in an interpreted frame does.
     fn plan_dynamic(&self, step: StepKind<'_>) -> std::result::Result<StopStep, Refusal> {
         super::evaluation::plan_interpreted(step)
     }
@@ -356,8 +310,6 @@ impl<P: InspectionOps> Scope for ModuleScope<'_, P> {
     }
 }
 
-/// The program type of a sequence's elements, when every branch that
-/// presents one agrees.
 fn element_type<P: InspectionOps>(
     controller: &Controller<P>,
     shape: &BoundShape<StopStep>,
@@ -368,8 +320,6 @@ fn element_type<P: InspectionOps>(
             Ty::Program(reference) if element.is_place() => Some(*reference),
             _ => None,
         },
-        // A value presented as another has that one's elements, as far as
-        // views present values inside the values they present.
         BoundShape::Value(program) if depth < MAX_DEPTH => match program.result() {
             Ty::Program(inner) if program.is_place() => {
                 let bound = controller.view_choice(*inner).bound.clone()?;
@@ -392,9 +342,6 @@ fn element_type<P: InspectionOps>(
     }
 }
 
-/// The program type of the value a view presents a value as, when every
-/// branch that presents one agrees and it is a place; a branch that
-/// presents the value as empty, as a null pointer is, presents none.
 fn presented_type(shape: &BoundShape<StopStep>) -> Option<TypeReference> {
     match shape {
         BoundShape::Value(program) => match program.result() {
@@ -413,8 +360,6 @@ fn presented_type(shape: &BoundShape<StopStep>) -> Option<TypeReference> {
     }
 }
 
-/// The program type of a map's values, when every branch that presents
-/// one agrees and its values are places.
 fn entry_type<P: InspectionOps>(
     controller: &Controller<P>,
     shape: &BoundShape<StopStep>,
@@ -425,8 +370,6 @@ fn entry_type<P: InspectionOps>(
             Ty::Program(reference) if value.is_place() => Some(*reference),
             _ => None,
         },
-        // A value presented as another has that one's entries, as it has
-        // that one's elements.
         BoundShape::Value(program) if depth < MAX_DEPTH => match program.result() {
             Ty::Program(inner) if program.is_place() => {
                 let bound = controller.view_choice(*inner).bound.clone()?;
@@ -449,7 +392,6 @@ fn entry_type<P: InspectionOps>(
     }
 }
 
-/// Each view a choice tried, with why it did not bind.
 fn candidates(choice: &Choice<StopStep>) -> Vec<crate::ViewCandidate> {
     choice
         .candidates
@@ -464,8 +406,6 @@ fn candidates(choice: &Choice<StopStep>) -> Vec<crate::ViewCandidate> {
         .collect()
 }
 
-/// The drawings the view a choice binds, and its `extend`s, offer, each
-/// with whether it binds.
 fn drawing_bindings(choice: &Choice<StopStep>) -> Vec<crate::VisualizerBinding> {
     let Some(bound) = &choice.bound else {
         return Vec::new();
@@ -501,15 +441,11 @@ fn drawing_bindings(choice: &Choice<StopStep>) -> Vec<crate::VisualizerBinding> 
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// The view that presents values of `ty`, with why each candidate
-    /// before it did not bind.
     pub(super) fn view_choice(&self, ty: TypeReference) -> Arc<Choice<StopStep>> {
         if let Some(choice) = self.views.choices.borrow().get(&ty) {
             return Arc::clone(choice);
         }
 
-        // While its view binds, a type has none: a view that indexes a value
-        // of its own type through itself binds no view.
         self.views
             .choices
             .borrow_mut()
@@ -534,8 +470,6 @@ impl<P: InspectionOps> Controller<P> {
         choice
     }
 
-    /// The views whose patterns name the types `name` means in each module,
-    /// and why each did not bind.
     pub(super) fn explain_type(&self, name: &str) -> Vec<crate::TypeViews> {
         let mut found = Vec::new();
         for module in self.modules.values() {
@@ -556,9 +490,6 @@ impl<P: InspectionOps> Controller<P> {
         found
     }
 
-    /// How every module's types are presented: each type a view's pattern
-    /// names, once however many units define it, and the session's and
-    /// modules' own views that present no type.
     pub(super) fn check_views(&self) -> crate::ViewCheck {
         let built_in = ViewSet::built_in();
         let mut types = Vec::new();
@@ -651,7 +582,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// The views whose patterns name one type, as its choice tried them.
     fn type_views(
         &self,
         module: &RuntimeModule,
@@ -666,7 +596,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Why an expression's value is presented as it is.
     pub(super) fn explain_view(
         &self,
         stop_id: StopId,
@@ -696,8 +625,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Presents an expression's value and its first page of children, and
-    /// returns a recording of each kernel run that took, as text.
     pub(super) fn record_kernels(
         &self,
         stop_id: StopId,
@@ -735,7 +662,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(recordings.take().iter().map(ToString::to_string).collect())
     }
 
-    /// The one value an expression has, for a request about its view.
     fn view_subject(
         &self,
         stop_id: StopId,
@@ -759,8 +685,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// The step from a value of `from` to an element its view presents,
-    /// for `v[i]` on a value with no indexing of its own.
     pub(super) fn view_index(&self, from: TypeReference) -> Option<Planned<StopStep>> {
         if !self.views.enabled {
             return None;
@@ -776,8 +700,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// The step from a value of `from` to the value its view presents it
-    /// as, for `*x`.
     pub(super) fn view_deref(&self, from: TypeReference) -> Option<Planned<StopStep>> {
         if !self.views.enabled {
             return None;
@@ -793,8 +715,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// The step from a value of `from` to the value its view presents as a
-    /// map holds for a key, for `m[key]`.
     pub(super) fn view_entry(&self, from: TypeReference) -> Option<Planned<StopStep>> {
         if !self.views.enabled {
             return None;
@@ -810,8 +730,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// The children a view presents: its elements, its fields, and the
-    /// value as stored.
     pub(super) fn view_children(
         &self,
         reference: &ValueChildrenReference,
@@ -829,12 +747,8 @@ impl<P: InspectionOps> Controller<P> {
         let mut children = Vec::new();
         let mut exhausted = None;
 
-        // A view that presents the value as another lends it that value's
-        // children.
         let mut next = offset;
         if let (Some(inner), Some(picked)) = (&view.inner, &view.picked) {
-            // Elements picked from another value's children come a page of
-            // one each.
             while exhausted.is_none() && next < end.min(view.elements) {
                 let position = usize::try_from(next)
                     .map_err(|_| Error::internal("a picked element index fits usize"))?;
@@ -872,12 +786,8 @@ impl<P: InspectionOps> Controller<P> {
         if exhausted.is_none() && next < end {
             let mut machine = StopMachine::new(&scope, budget, true);
             match &bound {
-                // What the debugger presents without a view has only `[raw]`
-                // after the elements it lends.
                 None => children.push(value_child(Child::Raw, &this, &mut machine)?),
                 Some(bound) => {
-                    // With borrowed elements, the view's own children start
-                    // at its fields.
                     let (start, elements) = if view.inner.is_some() {
                         (next - view.elements, 0)
                     } else {
@@ -928,12 +838,10 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// The value whose children a view presents.
 #[derive(Debug, Clone)]
 enum Viewed {
     Native(StopPlace),
 
-    /// An interpreter's object, which `runtime` names by `object`.
     Interpreted {
         runtime: crate::RuntimeId,
         object: crate::runtime_model::InterpretedHandle,
@@ -951,7 +859,6 @@ impl Viewed {
         }
     }
 
-    /// The key of the scan that presents the value through `bound`.
     fn scan_key(&self, bound: &ViewBound, image: crate::ModuleImageId) -> ScanKey {
         match self {
             Self::Native(place) => scan_key(bound, image, place),
@@ -959,7 +866,6 @@ impl Viewed {
         }
     }
 
-    /// The type of a child whose own type is unknown.
     fn placeholder(&self) -> TypeInfo {
         match self {
             Self::Native(place) => placeholder(place),
@@ -974,7 +880,6 @@ impl Viewed {
     }
 }
 
-/// The scan of `runtime`'s object `object` through `bound`.
 pub(super) fn interpreted_scan_key(
     bound: &ViewBound,
     runtime: crate::RuntimeId,
@@ -987,8 +892,6 @@ pub(super) fn interpreted_scan_key(
     }
 }
 
-/// The view a children capability presents through, if any, and the value
-/// whose children they are.
 fn viewed(
     reference: &ValueChildrenReference,
     view: &ViewChildren,
@@ -1015,8 +918,6 @@ fn viewed(
     Ok((Some(bound), native()))
 }
 
-/// The view a capability presents through, and where the value it
-/// presents is: a native value, or an interpreter's object.
 pub(super) fn view_place(reference: &ValueChildrenReference) -> Result<(Arc<ViewBound>, Place)> {
     let no_view = || Error::InvalidValueExpression("the value has no view".into());
     let view = reference.view.as_ref().ok_or_else(no_view)?;
@@ -1024,7 +925,6 @@ pub(super) fn view_place(reference: &ValueChildrenReference) -> Result<(Arc<View
     Ok((bound.ok_or_else(no_view)?, viewed.place()))
 }
 
-/// A child a view presents, as the public model has it.
 fn value_child<P: InspectionOps>(
     child: Child,
     this: &Viewed,
@@ -1066,17 +966,13 @@ fn value_child<P: InspectionOps>(
     })
 }
 
-/// What a value dynamically is.
 enum Dynamic {
-    /// Nothing, as a nil interface holds.
     Nil,
 
-    /// A value of type `ty` at `place`.
     Value { ty: TypeReference, place: StopPlace },
 }
 
 impl Dynamic {
-    /// The value of type `ty` at `address`, in `module`.
     const fn at(module: &RuntimeModule, ty: TypeReference, address: u64) -> Self {
         Self::Value {
             ty,
@@ -1091,8 +987,6 @@ impl Dynamic {
     }
 }
 
-/// A type and the types its typedefs and qualifiers stand for, outermost
-/// first.
 fn typedef_chain(types: &dyn TypeSource, ty: TypeReference) -> Vec<&TypeInfo> {
     let mut chain = Vec::new();
     let mut current = Some(ty);
@@ -1116,8 +1010,6 @@ fn typedef_chain(types: &dyn TypeSource, ty: TypeReference) -> Vec<&TypeInfo> {
     chain
 }
 
-/// Whether a C++ class is polymorphic: it, or a base at its start, holds a
-/// vtable pointer, which GCC names `_vptr.X` and Clang `_vptr$X`.
 fn polymorphic(types: &dyn TypeSource, ty: TypeReference, depth: usize) -> bool {
     let Ok((_, info)) = crate::eval::types::representation(types, ty) else {
         return false;
@@ -1140,8 +1032,6 @@ fn polymorphic(types: &dyn TypeSource, ty: TypeReference, depth: usize) -> bool 
         }))
 }
 
-/// The one type a name means in an image, as its several units' copies of
-/// one type are one.
 fn one_type(image: &crate::ModuleImage, name: &str) -> Option<TypeReference> {
     let found = image
         .types_named(name)
@@ -1160,21 +1050,12 @@ fn one_type(image: &crate::ModuleImage, name: &str) -> Option<TypeReference> {
         .then_some(first)
 }
 
-/// How a sum type's value reads: the value standing for it, if any, and
-/// its summary.
 struct Sum {
     payload: Option<ValueChild>,
     summary: String,
 }
 
 impl Sum {
-    /// The sum whose active variant is `name`, with `members`. A variant
-    /// whose one member is named as it holds that member: Rust's is a record
-    /// of the variant's fields, `__0` and on for a tuple variant, and a Zig
-    /// tagged union's any value: `Some(42)`, `Ok(7)`, `Point {x: 1, y: 2}`,
-    /// `circle(3)`, `None`. A Zig optional or error union is its payload,
-    /// `null`, or its error, and an Odin union the value it holds, or
-    /// `nil`.
     fn of<P: InspectionOps>(
         language: Option<crate::SourceLanguage>,
         name: &str,
@@ -1183,11 +1064,6 @@ impl Sum {
     ) -> std::result::Result<Self, Stop> {
         let zig = language == Some(crate::SourceLanguage::Zig);
 
-        // Zig's optionals and error unions stand for what they hold: the
-        // LLVM backend names their variants `null`, `some`, `success`, and
-        // `error`, and the self-hosted one `null`, `?`, `value`, and
-        // `error`, whose errors it names without the `error.` the LLVM
-        // backend gives them.
         match (zig, name, members) {
             (true, "null", [] | [_]) if members.iter().all(holds_nothing) => {
                 return Ok(Self {
@@ -1222,7 +1098,6 @@ impl Sum {
             _ => {}
         }
 
-        // An Odin union's variant is named for its one member's type.
         if let (Some(crate::SourceLanguage::Odin), [member]) = (language, members) {
             return Ok(Self {
                 summary: crate::view::summary::value(Some(&member.type_info), &member.state),
@@ -1230,15 +1105,9 @@ impl Sum {
             });
         }
 
-        // One member named as the variant is its payload: a Rust variant's
-        // record of fields, or a Zig tagged union's value.
         let fields = match members {
-            // A payload of no size or no type, such as Zig's `void`, holds
-            // nothing.
             [member] if member_name(member) == Some(name) && holds_nothing(member) => Vec::new(),
             [member] if member_name(member) == Some(name) => match &member.state {
-                // Rust's tuple variant is a record of `__0` and on, which
-                // is presented as a tuple of its own.
                 VariableState::Available {
                     value: crate::VariableValue::Record,
                     children: ValueChildren::Available(reference),
@@ -1288,8 +1157,6 @@ impl Sum {
             ),
         };
 
-        // A variant of one field stands for that field; one of several, or
-        // a Rust variant's record, for its members.
         let payload = match (fields.as_slice(), members) {
             ([field], _) => Some(field.clone()),
             ([], _) => None,
@@ -1301,13 +1168,10 @@ impl Sum {
     }
 }
 
-/// Whether a variant's member holds nothing: of no size, or of a type
-/// that is no type, as Zig's `void` and the type of `null` are.
 fn holds_nothing(member: &ValueChild) -> bool {
     member.type_info.byte_size == Some(0) || matches!(member.type_info.kind, TypeKind::Unspecified)
 }
 
-/// A child's member name.
 fn member_name(child: &ValueChild) -> Option<&str> {
     match &child.relationship {
         ValueChildRelationship::Member(member) => member.name.as_deref(),
@@ -1315,7 +1179,6 @@ fn member_name(child: &ValueChild) -> Option<&str> {
     }
 }
 
-/// A coroutine's summary: its state, then the variables it keeps.
 fn coroutine_summary(
     image: &crate::ModuleImage,
     state: &crate::CoroutineState,
@@ -1358,10 +1221,8 @@ fn coroutine_summary(
     summary
 }
 
-/// Children one value lends another, and how many.
 type Lent = (Arc<ValueChildrenReference>, u64);
 
-/// The last `count` of `items`, or all of them when there are fewer.
 #[expect(
     clippy::indexing_slicing,
     reason = "saturating_sub keeps the start within the slice"
@@ -1370,9 +1231,6 @@ fn trailing<T>(items: &[T], count: usize) -> &[T] {
     &items[items.len().saturating_sub(count)..]
 }
 
-/// The children a value lends the value it stands for, and how many: a
-/// presented value's elements and fields, but not its `[raw]`, which is
-/// its own; or the members of one no view presents.
 fn lent(state: &VariableState) -> Option<Lent> {
     match state {
         VariableState::Available {
@@ -1392,7 +1250,6 @@ fn lent(state: &VariableState) -> Option<Lent> {
     }
 }
 
-/// A type for a child whose own type is unknown.
 fn placeholder(this: &StopPlace) -> TypeInfo {
     TypeInfo {
         reference: TypeReference {
@@ -1406,7 +1263,6 @@ fn placeholder(this: &StopPlace) -> TypeInfo {
     }
 }
 
-/// A machine's stop as the debugger's error.
 pub(super) fn stopped(stop: Stop) -> Error {
     match stop {
         Stop::Failed(error) => error,
@@ -1415,10 +1271,6 @@ pub(super) fn stopped(stop: Stop) -> Error {
     }
 }
 
-/// How a value a view presented reads: its shape and count, and the value
-/// that lends it elements, with how many. A value presented as a sequence
-/// or map stands for this one as that sequence or map: its elements, then
-/// this value's own fields and `[raw]`.
 fn collection(
     presented: &crate::view::run::Presented,
 ) -> (
@@ -1462,8 +1314,6 @@ fn collection(
     )
 }
 
-/// The children of `raw` presented through a view: `elements` that `inner`
-/// lends or `bound` presents, then `fields`, then `[raw]`.
 fn presented_children(
     raw: &ValueChildrenReference,
     bound: Option<Arc<ViewBound>>,
@@ -1484,8 +1334,6 @@ fn presented_children(
     ValueChildren::Available(Arc::new(reference))
 }
 
-/// The presentation of a value of the raw children `raw` that `bound`,
-/// named `name`, presented as `presented`.
 pub(super) fn view_presentation(
     name: Arc<crate::ViewName>,
     bound: &Arc<ViewBound>,
@@ -1514,8 +1362,6 @@ pub(super) fn view_presentation(
     }
 }
 
-/// The drawings a view and its `extend`s offer of a value whose children,
-/// through the view, are `children`.
 pub(super) fn drawings(bound: &ViewBound, children: &ValueChildren) -> Arc<[crate::Visualizer]> {
     let ValueChildren::Available(children) = children else {
         return Arc::from([]);
@@ -1537,8 +1383,6 @@ pub(super) fn drawings(bound: &ViewBound, children: &ValueChildren) -> Arc<[crat
         .collect()
 }
 
-/// A presentation the debugger makes from debug information alone, under
-/// `header`, standing for the value whose children are `lent`.
 fn built_in_presentation(
     header: &str,
     shape: PresentedShape,
@@ -1566,7 +1410,6 @@ fn built_in_presentation(
     }
 }
 
-/// The integer `value` is, or a view presents it as.
 fn number(value: &InspectedValue) -> Option<Arc<InspectedValue>> {
     match &value.state {
         VariableState::Available {
@@ -1585,7 +1428,6 @@ fn number(value: &InspectedValue) -> Option<Arc<InspectedValue>> {
     }
 }
 
-/// `value` with a presentation already shared.
 fn present_as_shared(mut value: InspectedValue, presentation: Arc<Presentation>) -> InspectedValue {
     if let VariableState::Available {
         presentation: slot, ..
@@ -1608,8 +1450,6 @@ fn present_as(mut value: InspectedValue, presentation: Presentation) -> Inspecte
     value
 }
 
-/// The presentation of a value a view failed to present, which shows it as
-/// stored, with the reason.
 fn failed(view: Arc<crate::ViewName>, problem: ViewProblem) -> Presentation {
     Presentation {
         view,
@@ -1625,7 +1465,6 @@ fn failed(view: Arc<crate::ViewName>, problem: ViewProblem) -> Presentation {
     }
 }
 
-/// A view's failure to run for an expression, as the machine's stop.
 fn view_stop(failure: Failure, bound: &ViewBound, kind: ErrorKind) -> Stop {
     match failure {
         Failure::Debugger(error) => Stop::Failed(error),
@@ -1640,9 +1479,6 @@ fn view_stop(failure: Failure, bound: &ViewBound, kind: ErrorKind) -> Stop {
 }
 
 impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
-    /// `value` with its presentation, when a view presents its type. The
-    /// view runs with a share of the budget, so a presentation that runs
-    /// out never takes the rest of the inspection with it.
     pub(super) fn presented(
         &mut self,
         mut value: InspectedValue,
@@ -1671,10 +1507,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
                 ..
             } = &**reference
         {
-            // A pointer or reference to text shows the text, as a pointer
-            // to characters does, or why its view could not read it. A
-            // null pointer, like a null pointer to characters, points at
-            // nothing to read.
             if address.get() == 0 {
                 return Ok(value);
             }
@@ -1694,8 +1526,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
 
             let (text, presentation) = self.pointee_text(target, place)?;
 
-            // A pointer to what is not text may still be shown as what
-            // it points to, as Go's debuggers show one.
             if text.is_some() || presentation.is_some() {
                 if let VariableState::Available {
                     text: state_text,
@@ -1725,8 +1555,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             return self.built_in(value);
         };
 
-        // An aggregate's children say where it is; another value, such as
-        // a Go map's pointer, is where its state was read from.
         let Some(raw) = self.presented_place(type_info, &value.state) else {
             return Ok(value);
         };
@@ -1758,9 +1586,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         Ok(value)
     }
 
-    /// What the debugger presents of a value no view presents, from its
-    /// debug information alone: a value as the type it dynamically is, or a
-    /// sum type as its active variant.
     fn built_in(&mut self, value: InspectedValue) -> std::result::Result<InspectedValue, Stop> {
         if self.dynamic
             && let Some(dynamic) = self.dynamic(&value)?
@@ -1863,10 +1688,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         ))
     }
 
-    /// The presentation of the interpreter's object a native pointer points
-    /// to, where its pointee's type, or a type it names, is the one an
-    /// interpreter of the process gives its objects, as CPython's
-    /// `PyObject`; `None` for any other value, and a null pointer.
     fn interpreter_pointer(
         &mut self,
         value: &InspectedValue,
@@ -1905,10 +1726,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         self.interpreted_object(&names, address.address)
     }
 
-    /// What a value dynamically is, when its debug information and the
-    /// program's own tables say so exactly: the object a C++ vtable
-    /// pointer belongs to, the value a Rust trait object or Go interface
-    /// holds, or nothing at all, as a nil interface holds.
     fn dynamic(&mut self, value: &InspectedValue) -> std::result::Result<Option<Dynamic>, Stop> {
         let Some(type_info) = &value.type_info else {
             return Ok(None);
@@ -1931,7 +1748,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         }
     }
 
-    /// A pointer-sized word of memory.
     fn word(&mut self, address: u64) -> std::result::Result<u64, Stop> {
         let bytes = self.read(address, 8)?;
         Ok(u64::from_le_bytes(bytes.try_into().map_err(|_| {
@@ -1942,7 +1758,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         })?))
     }
 
-    /// The module a virtual address lies in, with the address in its image.
     fn module_at(&self, address: u64) -> Option<(&'a RuntimeModule, crate::ImageAddress)> {
         let controller: &'a Controller<P> = self.frame.controller;
         controller.modules.values().find_map(|module| {
@@ -1957,11 +1772,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         })
     }
 
-    /// A C++ object of a polymorphic class is the object its vtable pointer
-    /// belongs to (the Itanium ABI): the pointer lies in the vtable group a
-    /// `vtable for X` symbol names, the word before the pointer's target
-    /// says how far the whole object begins before this one, and that
-    /// object's own vtable pointer must be the group's primary one.
     fn cpp_dynamic(
         &mut self,
         type_info: &TypeInfo,
@@ -2011,8 +1821,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         Ok(Some(Dynamic::at(module, ty, whole)))
     }
 
-    /// A Rust trait object, `{pointer, vtable}` with a `dyn` pointee, holds
-    /// the value of the type its vtable, `<C as Trait>::{vtable}`, is for.
     fn rust_dynamic(
         &mut self,
         type_info: &TypeInfo,
@@ -2071,10 +1879,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         Ok(Some(Dynamic::at(module, ty, data)))
     }
 
-    /// A Go interface holds what the runtime the module carries says it
-    /// does: the value of the type its runtime type descriptor describes,
-    /// which a type's `DW_AT_go_runtime_type` names, or nothing. Where the
-    /// runtime cannot say, the interface shows as the record it is.
     fn go_dynamic(&self, type_info: &TypeInfo, place: &StopPlace) -> Option<Dynamic> {
         let (_, record) = crate::eval::types::representation(self, type_info.reference).ok()?;
         let TypeKind::Record { .. } = &record.kind else {
@@ -2110,8 +1914,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
 
         match (held, &place.located.storage) {
             (HeldPlace::Memory(address), _) => Some(Dynamic::at(module, ty, address.get())),
-            // A value stored directly in an interface held in bytes is
-            // those of its data word.
             (
                 HeldPlace::Within(within),
                 ValueStorage::Bytes {
@@ -2142,7 +1944,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         }
     }
 
-    /// `value` with the presentation of what it dynamically is.
     fn with_dynamic(
         &mut self,
         value: InspectedValue,
@@ -2201,9 +2002,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         ))
     }
 
-    /// A record's members on one line, `{x: 1, y: 2}`, with its base
-    /// classes' members first, as many as fit a summary; `None` for what is
-    /// no record or a view presents.
     fn record_summary(
         &mut self,
         state: &VariableState,
@@ -2243,10 +2041,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         Ok(Some(line))
     }
 
-    /// A pointer to a record as Go's debuggers show one an interface holds,
-    /// `*{name: value, …}`, or `nil`; `None` for any other value. A pointer
-    /// to a value a view presents is `*` and the view's summary, and lends
-    /// the view's children.
     fn pointee_summary(
         &mut self,
         state: &VariableState,
@@ -2299,15 +2093,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .map(|fields| (format!("*{fields}"), lent(&pointee.state))))
     }
 
-    /// A coroutine, such as an async function's future, as the state it
-    /// holds rather than the number encoding it: `suspended at main.rs:43
-    /// {id: 3, label: "leaf 3"}` with what it keeps across that await,
-    /// `unresumed` with what it captured, `returned`, or `panicked`. The
-    /// compiler's own members, such as the awaited future and drop flags,
-    /// are left out of the summary, and so are an async function's
-    /// captures once it has started, which its body moved into variables
-    /// of its own. The variables it shows are its children, and the rest
-    /// are under `[raw]`.
     fn coroutine(
         &mut self,
         value: &InspectedValue,
@@ -2360,7 +2145,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             _ => Vec::new(),
         };
 
-        // Every state but `Unresumed` ends with the captures.
         let held = if state.kind == crate::CoroutineStateKind::Unresumed
             || coroutine.kind != crate::CoroutineKind::AsyncFunction
         {
@@ -2387,8 +2171,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .collect::<Vec<_>>();
         let summary = coroutine_summary(&image, state, &shown);
 
-        // Its children are the variables it keeps; the awaited future,
-        // drop flags, and moved captures are under `[raw]`.
         let picked = kept
             .iter()
             .map(|(index, _)| *index as u64)
@@ -2411,8 +2193,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         Ok(Some(present_as(value.clone(), presentation)))
     }
 
-    /// A Rust tuple, `(1, "two")`, or tuple struct, `Meters(7)`, as Rust
-    /// writes one: a record whose members are `__0`, `__1`, and on.
     fn rust_tuple(
         &mut self,
         value: &InspectedValue,
@@ -2457,7 +2237,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .collect::<Vec<_>>()
             .join(", ");
 
-        // rustc names a tuple by its elements' types, `(i32, &str)`.
         let name = if type_info.name.starts_with('(') {
             ""
         } else {
@@ -2478,8 +2257,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         )))
     }
 
-    /// Whether a type is a Go pointer, which Go's debuggers show as what it
-    /// points to.
     fn is_go_pointer(&self, type_info: &TypeInfo) -> bool {
         let chain = typedef_chain(self, type_info.reference);
         chain.iter().any(|info| {
@@ -2497,7 +2274,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         })
     }
 
-    /// The `name: value` parts of a record's members, its bases' first.
     fn record_members(
         &mut self,
         reference: &ValueChildrenReference,
@@ -2534,7 +2310,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         Ok(())
     }
 
-    /// A value's children as stored, each presented one level deeper.
     fn children_of(
         &mut self,
         reference: &ValueChildrenReference,
@@ -2569,9 +2344,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         Ok(children)
     }
 
-    /// Runs a view one level deeper. A view presenting a value at the top
-    /// runs on a share of the budget, so running out never takes the rest
-    /// of the inspection with it; the values inside it share that share.
     pub(super) fn in_share<T>(&mut self, run: impl FnOnce(&mut StopMachine<'_, '_, P>) -> T) -> T {
         if self.depth > 0 {
             return run(&mut self.nested(self.depth + 1));
@@ -2588,8 +2360,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         result
     }
 
-    /// Where the value a view presents is: a slice's descriptor, though its
-    /// children are its elements, or anything else's place.
     fn presented_place(
         &self,
         type_info: &TypeInfo,
@@ -2604,7 +2374,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         }
     }
 
-    /// Where a value of `type_info` is, as a capability over its storage.
     fn place_of(
         &self,
         type_info: &TypeInfo,
@@ -2621,8 +2390,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         self.storage_of(type_info, state)
     }
 
-    /// Where a value of `type_info` was read from, as a capability over that
-    /// storage, whatever its children say.
     fn storage_of(
         &self,
         type_info: &TypeInfo,
@@ -2663,9 +2430,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         }))
     }
 
-    /// The text a view presents the value at `place` as, when it presents
-    /// values of `ty` as text, or the presentation that says why it could
-    /// not.
     fn pointee_text(
         &mut self,
         ty: TypeReference,
@@ -2679,7 +2443,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             return Ok((None, None));
         }
 
-        // A text view scans nothing.
         let result = self.in_share(|machine| {
             crate::view::run::present(&bound, machine, place.into(), &mut Checkpoints::default())
         });
@@ -2694,8 +2457,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         }
     }
 
-    /// The place of element `index` of a value a view presents, for
-    /// `v[i]`.
     pub(super) fn view_element(
         &mut self,
         bound: &Arc<ViewBound>,
@@ -2721,8 +2482,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .map_err(|failure| view_stop(failure, bound, ErrorKind::Unsupported))
     }
 
-    /// The place of the value the view presents the value at `from` as,
-    /// for `*x`.
     pub(super) fn view_presented(
         &mut self,
         bound: &Arc<ViewBound>,
@@ -2734,8 +2493,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .map_err(|failure| view_stop(failure, bound, ErrorKind::Type))
     }
 
-    /// The places of the elements of the value at `from`, when its view
-    /// presents it as a tuple.
     pub(super) fn view_tuple(
         &mut self,
         bound: &Arc<ViewBound>,
@@ -2747,8 +2504,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .map_err(|failure| view_stop(failure, bound, ErrorKind::Type))
     }
 
-    /// The place of the value the map at `from` holds for `key`, as a view
-    /// presents the map, for `m[key]`.
     pub(super) fn view_entry_place(
         &mut self,
         bound: &Arc<ViewBound>,
@@ -2774,7 +2529,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .map_err(|failure| view_stop(failure, bound, ErrorKind::Type))
     }
 
-    /// The view that presents the value at `at`, when views are on.
     pub(super) fn view_of(
         &self,
         at: &StopPlace,
@@ -2792,8 +2546,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
         Ok(controller.view_choice(ty).bound.clone())
     }
 
-    /// How many elements the value at `at` has room for, as the
-    /// `capacity` field of its view says, for `cap(v)`.
     pub(super) fn view_capacity(
         &mut self,
         at: &StopPlace,
@@ -2808,8 +2560,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .map_err(|failure| view_stop(failure, &bound, ErrorKind::Type))
     }
 
-    /// Where the text a view presents the value at `at` as is, for slicing
-    /// it: `None` when no view presents it as text.
     pub(super) fn view_text_span(
         &mut self,
         at: &StopPlace,
@@ -2828,8 +2578,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .map_err(|failure| view_stop(failure, &bound, ErrorKind::Type))
     }
 
-    /// How many elements the value at `at` holds, or the length of its
-    /// text, as the view of its type presents it, for `len(v)`.
     pub(super) fn view_length(&mut self, at: &StopPlace) -> std::result::Result<Option<u64>, Stop> {
         let controller = self.frame.controller;
         if !controller.views.enabled {
@@ -2858,10 +2606,6 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .map_err(|failure| view_stop(failure, &bound, ErrorKind::Type))
     }
 
-    /// Presents a value the provider read in place. A value whose
-    /// presentation needed what the budget or the program could not provide
-    /// is missing for that reason, as any value is, rather than failing the
-    /// inspection it is part of.
     pub(super) fn present_state(
         &mut self,
         type_info: Option<TypeInfo>,

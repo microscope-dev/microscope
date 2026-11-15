@@ -1,15 +1,3 @@
-//! The built-in views present the standard libraries' containers as the
-//! `containers` fixtures' `VIEW:` markers say, in every build of the
-//! matrix, and every built-in view binds in some build.
-//!
-//! A marker reads `VIEW: <expression> => <summary>`, where `{c*N}` stands
-//! for N of the character c, `{duration A..B}` for a duration from A to B
-//! as Go writes them, and a trailing `(any order)` lets a hash table's
-//! entries come in any order, `VIEW: <expression> => problem:
-//! <words>` when the view must refuse the value, or `VIEW: <expression> =>
-//! stored` when no view presents it. Each expression is evaluated in the
-//! frame that calls `barrier`.
-
 use microscope::{
     Evaluation, ExceptionStops, Expression, InspectedValue, PresentedCount, PresentedShape,
     StackFrameId, ValueChildQuery, ValueChildRelationship, ValueChildren,
@@ -17,25 +5,17 @@ use microscope::{
 
 use super::*;
 
-/// What a marker says its expression shows.
 enum Expected {
     Summary(String),
 
-    /// A summary whose items may come in any order.
     Unordered(String),
 
-    /// Only how many elements or entries, which come in an order that
-    /// changes between runs.
     Count(u64),
 
-    /// The view refuses the value, saying this.
     Problem(String),
 
-    /// The presented value's children, each `name = summary` (a field or
-    /// a member), `[i] = summary`, or `key: summary`, and `[raw]`.
     Children(String),
 
-    /// No view presents the value, and it holds no text.
     Stored,
 }
 
@@ -45,7 +25,6 @@ struct Marker {
     expected: Expected,
 }
 
-/// `{c*N}` as N of the character c.
 fn expand(text: &str) -> String {
     let mut out = String::new();
     let mut rest = text;
@@ -72,7 +51,6 @@ fn expand(text: &str) -> String {
     out
 }
 
-/// What a marker's text after ` => ` says.
 fn expectation(text: &str) -> Expected {
     if text == "stored" {
         return Expected::Stored;
@@ -101,8 +79,6 @@ fn markers(source: &str) -> Vec<Marker> {
     markers_in(&fs::read_to_string(&path).expect("read the fixture's source"))
 }
 
-/// The markers in a fixture's source, or in what it printed, each with its
-/// line.
 fn markers_in(text: &str) -> Vec<Marker> {
     text.lines()
         .enumerate()
@@ -129,8 +105,6 @@ async fn evaluate(scenario: &Scenario, text: &str) -> InspectedValue {
     }
 }
 
-/// A duration as Go writes one, such as `1h2m3.5s` or `250ms`, in
-/// nanoseconds.
 fn go_duration(text: &str) -> Option<f64> {
     let mut total = 0.0;
     let mut rest = text;
@@ -158,8 +132,6 @@ fn go_duration(text: &str) -> Option<f64> {
     (!text.is_empty()).then_some(total)
 }
 
-/// Whether a summary is what a marker expects, each `{duration A..B}` in
-/// it any duration from A to B.
 fn summary_matches(expected: &str, actual: &str) -> bool {
     let Some((head, tail)) = expected.split_once("{duration ") else {
         return expected == actual;
@@ -182,8 +154,6 @@ fn summary_matches(expected: &str, actual: &str) -> bool {
     }) && summary_matches(tail, &rest[end..])
 }
 
-/// A summary with its items sorted, so that items in any order compare
-/// equal: `len=2 {2: 20, 1: 10}` is `len=2 {1: 10, 2: 20}`.
 fn sorted_items(summary: &str) -> String {
     let Some(open) = summary.find(['[', '{']) else {
         return summary.to_owned();
@@ -235,7 +205,6 @@ fn summary(value: &InspectedValue) -> String {
     }
 }
 
-/// Whether a child is an element or an entry.
 const fn is_item(relationship: &ValueChildRelationship) -> bool {
     matches!(
         relationship,
@@ -243,8 +212,6 @@ const fn is_item(relationship: &ValueChildRelationship) -> bool {
     )
 }
 
-/// The first `wanted` children, in as few pages as the largest budget
-/// allows: a scan resumes where the page before it ran out.
 async fn first_children(
     scenario: &Scenario,
     marker: &Marker,
@@ -297,9 +264,6 @@ async fn first_children(
     Some(children)
 }
 
-/// Checks a presented sequence's or map's children: its elements or
-/// entries, which evaluate back, the same in pages of any size; its fields;
-/// and `[raw]`, the value as stored.
 async fn check_children(
     scenario: &Scenario,
     marker: &Marker,
@@ -344,7 +308,6 @@ async fn check_children(
         failures.push(format!("line {}: no [raw] child: {raw:?}", marker.line));
     }
 
-    // Small pages read the same elements as one large page.
     let mut paged = Vec::new();
     let mut offset = 0;
 
@@ -381,8 +344,6 @@ async fn check_children(
     }
 }
 
-/// An element's name evaluates back to it, and so does where an entry's
-/// value is.
 async fn check_name(
     scenario: &Scenario,
     marker: &Marker,
@@ -391,8 +352,6 @@ async fn check_name(
     failures: &mut Vec<String>,
 ) {
     let name = match (&child.relationship, &child.state) {
-        // An element a view computes, as a bitset's positions are, has no
-        // place to index.
         (
             ValueChildRelationship::Element { .. },
             VariableState::Available {
@@ -439,8 +398,6 @@ async fn check_name(
     }
 }
 
-/// Checks every child of a presented value, as a `children:` marker lists
-/// them, noting the views that presented them.
 async fn check_listed_children(
     scenario: &Scenario,
     marker: &Marker,
@@ -497,7 +454,6 @@ async fn check_listed_children(
     }
 }
 
-/// Checks what one marker says its expression shows.
 async fn check_marker(
     scenario: &Scenario,
     marker: &Marker,
@@ -523,8 +479,6 @@ async fn check_marker(
         return;
     }
 
-    // Text a language's own types hold, such as Rust's `Box<str>`, needs
-    // no view.
     if let (
         VariableState::Available {
             text: Some(text),
@@ -604,7 +558,6 @@ async fn check_marker(
     }
 }
 
-/// Selects the frame that called the one stopped in.
 async fn select_caller(scenario: &Scenario) {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
@@ -615,8 +568,6 @@ async fn select_caller(scenario: &Scenario) {
         .await;
 }
 
-/// Stops a containers build at `barrier`, checks every marker in its
-/// caller, and returns the views that presented values.
 async fn check_containers(
     fixture: &str,
     source: &str,
@@ -626,8 +577,6 @@ async fn check_containers(
     check_containers_but(fixture, source, barrier, optimized, &[]).await
 }
 
-/// As [`check_containers`], skipping the markers of `skipped` expressions,
-/// which a build has no way to show.
 async fn check_containers_but(
     fixture: &str,
     source: &str,
@@ -660,8 +609,6 @@ async fn check_containers_but(
     seen
 }
 
-/// Checks every marker at the stop, noting the views that presented
-/// values.
 async fn check_markers(
     scenario: &Scenario,
     markers: &[Marker],
@@ -670,8 +617,6 @@ async fn check_markers(
     failures: &mut Vec<String>,
 ) {
     for marker in markers {
-        // An optimized build may keep no value of a variable, or no
-        // variable at all.
         let value = if optimized {
             let expression = Expression::parse(&marker.expression).expect("an expression");
             match scenario.handle().evaluate(&expression).await {
@@ -684,8 +629,6 @@ async fn check_markers(
             evaluate(scenario, &marker.expression).await
         };
 
-        // Nor need it keep everything a view reads, such as the parts of a
-        // value it holds in pieces.
         let view_unavailable = matches!(
             &value.state,
             VariableState::Available { presentation: Some(presentation), .. }
@@ -695,7 +638,6 @@ async fn check_markers(
             continue;
         }
 
-        // Or keep it where it has no address, which a view may need.
         if optimized
             && let VariableState::Available {
                 presentation: Some(presentation),
@@ -713,20 +655,13 @@ async fn check_markers(
     }
 }
 
-/// Where a fixture's markers are evaluated.
 #[derive(Clone, Copy)]
 enum MarkedFrame {
-    /// In the frame of `barrier`, which the fixture passes its values.
     Barrier,
 
-    /// In the frame that calls `barrier`, whose locals they are.
     Caller,
 }
 
-/// Runs a fixture that prints its markers before each call to `barrier`,
-/// and checks the markers printed before each stop there, at that stop.
-/// The fixture's exceptions do not stop it. Returns the views that
-/// presented values.
 async fn check_printed_markers(
     fixture: &str,
     barrier: &str,
@@ -760,7 +695,6 @@ async fn check_printed_markers(
     while matches!(reason, StopReason::Breakpoint { .. }) {
         stops += 1;
 
-        // The fixture writes its markers before it calls barrier.
         let printed = fs::read_to_string(&output_path).expect("read the fixture's output");
         let markers = markers_in(&printed[read..]);
         read = printed.len();
@@ -789,7 +723,6 @@ async fn check_printed_markers(
     seen
 }
 
-/// Every built-in view of `library` presented some marked value.
 fn assert_every_view_binds(library: &str, seen: &BTreeSet<String>) {
     let missing = microscope::built_in_views()
         .into_iter()
@@ -811,12 +744,7 @@ async fn cpp_containers_present_as_their_views_say_across_the_library_matrix() {
         ("containers-cpp-gcc-o0", false, &[][..]),
         ("containers-cpp-gcc-o2", true, &[]),
         ("containers-cpp-clang-o0", false, &[]),
-        // The old ABI's list keeps no count to be wrong.
         ("containers-cpp-gcc-oldabi", false, &["overcounted"]),
-        // Without -fstandalone-debug, libc++'s control blocks are
-        // undescribed, so a shared_ptr shows no counts and a weak_ptr cannot
-        // say whether its object exists; recursive_mutex, defined in the
-        // library, is only declared.
         (
             "containers-cpp-libcxx-o0",
             false,
@@ -873,15 +801,11 @@ async fn zig_containers_present_as_their_views_say() {
 
     for (fixture, optimized, skipped) in [
         ("containers-zig-o0", false, &[][..]),
-        // ReleaseSafe emits no entry type for an array hash map, so nothing
-        // says how its entries are laid out, and it shows as stored.
         (
             "containers-zig-o2",
             true,
             &["ordered", "strings", "no_ordered"],
         ),
-        // Zig's own backend emits no entry type for an array hash map
-        // either.
         (
             "containers-zig-self-hosted",
             false,
@@ -939,9 +863,6 @@ async fn go_containers_present_as_their_views_say() {
     assert_every_view_binds("go-runtime.views", &seen);
 }
 
-/// The standard library's values present as Go itself shows them: the
-/// fixture prints each value's marker from its own String and Error
-/// methods, so the markers stay true when the toolchain moves.
 #[tokio::test]
 async fn go_library_values_present_as_go_shows_them() {
     let mut seen = BTreeSet::new();
@@ -963,13 +884,6 @@ async fn go_library_values_present_as_go_shows_them() {
     }
 }
 
-/// tokio's values present as the program says, in each state each view
-/// tells apart, and every one of tokio's views binds. Some present values
-/// no expression reaches: a task's cell, which a join handle presents as
-/// the type its task's code says, and the futures tasks wait on for
-/// permits and messages, which the workers tests check, and for lines and
-/// sockets, which the attach tests check. Each tokio release the fixtures
-/// are built with binds every view.
 #[tokio::test]
 async fn tokio_values_present_as_their_views_say() {
     for fixture in ["tokio-values-o0", "tokio-values-1.52-o0"] {
@@ -994,8 +908,6 @@ async fn tokio_values_present_as_their_views_say() {
     }
 }
 
-/// A core of the program's first stop presents its values as the program
-/// said before it, which the core's log keeps.
 #[tokio::test]
 async fn tokio_values_in_a_core_present_as_their_views_say() {
     for (variant, optimized) in [("o0", false), ("o3", true), ("1.52-o3", true)] {
@@ -1034,10 +946,6 @@ async fn tokio_values_in_a_core_present_as_their_views_say() {
     }
 }
 
-/// Inspection sent beside run control never holds it up or answers
-/// wrongly: whichever the controller serves first, run control is
-/// acknowledged, and each inspection is either its whole answer at the stop
-/// or a failure for an old stop, never part of one or a different one.
 #[tokio::test]
 async fn inspection_sent_beside_run_control_is_whole_or_stale() {
     for round in 0..4 {
@@ -1112,10 +1020,6 @@ async fn inspection_sent_beside_run_control_is_whole_or_stale() {
     }
 }
 
-/// An assignment sent before run control is made at its stop and answered
-/// with its target read again, even when reading it again runs a view long
-/// enough to notice the run control waiting: the write cannot be undone or
-/// made again, so nothing interrupts that read.
 #[tokio::test]
 async fn an_assignment_sent_before_run_control_answers_with_its_value() {
     let mut scenario = Scenario::launch("containers-rust-o0");
@@ -1126,8 +1030,6 @@ async fn an_assignment_sent_before_run_control_answers_with_its_value() {
         .await;
     let caller = trace.frames[1].id;
 
-    // Each check costs more than the work between looks for run control,
-    // and finding an element's place runs them all.
     let sum = vec!["n"; 16].join(" + ");
     let checks = format!("    check {sum} >= 0\n").repeat(5);
     let views = format!(
@@ -1169,7 +1071,6 @@ view rust alloc::vec::Vec<T, _> {{
     });
     let assignment = Expression::parse("ints[0] = 7").expect("an expression");
 
-    // Polled in order, so the assignment is queued first.
     let (assigned, resumed) = tokio::join!(
         frame.evaluate_with(
             &assignment,
@@ -1201,9 +1102,6 @@ view rust alloc::vec::Vec<T, _> {{
     scenario.shutdown().await;
 }
 
-/// Views loaded for a session come before the built-in ones; a view that
-/// presents a value as another lends it that value's children; and what
-/// keeps a view out of a file is reported with where it is.
 #[tokio::test]
 async fn session_views_come_first_and_present_values_as_others() {
     let mut scenario = Scenario::launch("containers-rust-o0");
@@ -1253,8 +1151,6 @@ view rust nowhere {
     let ints = evaluate(&scenario, "ints").await;
     assert_eq!(summary(&ints), "a vector");
 
-    // The path presents as its bytes, a Vec<u8> the session's view now
-    // presents, whose children it borrows.
     let path = evaluate(&scenario, "path").await;
     let presentation = presentation(&path).expect("presented");
     assert_eq!(
@@ -1288,8 +1184,6 @@ view rust nowhere {
         })
         .collect::<Vec<_>>();
 
-    // The vector's own presentation, `empty`, has no elements, and its
-    // `[raw]` is its own: the path's children are its field and `[raw]`.
     assert_eq!(names, ["length", "[raw]"]);
 
     let length = &page.children[0];
@@ -1304,7 +1198,6 @@ view rust nowhere {
         "{length:?}"
     );
 
-    // Restoring the built-in views presents the vector again.
     scenario
         .operation("unload views", scenario.handle().load_views(&[], &[], &[]))
         .await;
@@ -1316,9 +1209,6 @@ view rust nowhere {
     scenario.shutdown().await;
 }
 
-/// Views a module carries in its `.debug_microscope_views` section present
-/// that module's own types, and never another module's type of the same
-/// name.
 #[tokio::test]
 async fn embedded_views_present_only_their_own_modules_types() {
     let mut scenario = Scenario::launch("embedded-views");
@@ -1348,14 +1238,11 @@ async fn embedded_views_present_only_their_own_modules_types() {
         ("{x: 0x3, y: 4}", "libembedded-views.so.views[0]")
     );
 
-    // The program's own point has the library's point's name, and no view.
     let here = evaluate(&scenario, "here").await;
     assert!(presentation(&here).is_none(), "{:?}", here.state);
     scenario.shutdown().await;
 }
 
-/// The Rust SDK's macros embed a program's views, and a kernel one calls,
-/// as the C header does; the kernel is written with the SDK.
 #[tokio::test]
 async fn the_rust_sdk_embeds_a_programs_views_and_kernels() {
     let mut scenario = Scenario::launch("embedded-views-rust");
@@ -1389,7 +1276,6 @@ async fn the_rust_sdk_embeds_a_programs_views_and_kernels() {
     scenario.shutdown().await;
 }
 
-/// The C SDK fixture's embedded views present values as its markers specify.
 #[tokio::test]
 async fn the_tutorials_program_presents_as_its_markers_say() {
     check_containers("tutorial", "c/tutorial/tutorial.c", "barrier", false).await;

@@ -1,23 +1,3 @@
-//! Where the function that runs a coroutine goes for each of its states.
-//!
-//! A coroutine's function begins by dispatching on the state number the
-//! coroutine stores: rustc loads it and jumps through a table, or compares
-//! it against each state's number. Each state's code begins where the
-//! dispatch leaves for it, and the first instructions there, up to the
-//! state's first work, only lead into it, such as reloading what the
-//! previous poll spilled.
-//!
-//! Each state is found by running the dispatch with the state's number, on
-//! a small model of the processor: registers and stack slots hold numbers,
-//! addresses within the coroutine, or addresses on the function's stack,
-//! each marked when its value came from the state number. The dispatch is
-//! every instruction run before control first moves on a marked value; a
-//! state's code begins where that move lands, and its lead ends at the
-//! first call, return, store outside the stack, or branch on an unmarked
-//! value. Anything the model does not know ends the run: a dispatch that
-//! cannot be followed for every state leaves the function's resume points
-//! unknown, with the reason.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -28,26 +8,16 @@ use iced_x86::{
 
 use crate::{AddressRange, ImageAddress, ResumePoint, ResumePoints, StateMember};
 
-/// The most instructions one state's run executes.
 const MAX_STEPS: usize = 96;
 
-/// The longest instruction, which every read of code covers.
 const MAX_INSTRUCTION: usize = 15;
 
-/// The bytes of the image a dispatch is decoded from.
 pub trait DispatchImage {
-    /// The code bytes at `address`, up to `length`; fewer at the end of the
-    /// code, and none outside it.
     fn code(&self, address: u64, length: usize) -> Option<&[u8]>;
 
-    /// `length` bytes of read-only data at `address`, such as a jump
-    /// table's.
     fn data(&self, address: u64, length: usize) -> Option<&[u8]>;
 }
 
-/// Decodes the dispatch at the start of the function whose code is
-/// `ranges`, which is passed the coroutine in its first argument, for each
-/// state number in `states`.
 pub fn decode(
     image: &dyn DispatchImage,
     ranges: &[AddressRange<ImageAddress>],
@@ -89,13 +59,8 @@ pub fn decode(
     })
 }
 
-/// The most instructions a flood visits.
 const MAX_FLOOD: usize = 4096;
 
-/// The code reachable from `start` without leaving the instructions
-/// `within` admits: every branch is followed both ways, and a call returns.
-/// An indirect branch or an instruction that cannot be decoded ends that
-/// path.
 pub fn flood(
     image: &dyn DispatchImage,
     start: ImageAddress,
@@ -104,9 +69,6 @@ pub fn flood(
     flood_all(image, start, within).0
 }
 
-/// [`flood`]'s code, and whether it is all the code reachable: a path an
-/// indirect branch, an undecodable instruction, or the bound on work ends
-/// may reach more.
 pub fn flood_all(
     image: &dyn DispatchImage,
     start: ImageAddress,
@@ -162,9 +124,6 @@ pub fn flood_all(
     (ranges_of(extents), complete)
 }
 
-/// The first instruction `within` does not admit that execution from
-/// `start` reaches, preferring each branch's fall-through: the first
-/// instruction of new work after code that only leads into it.
 pub fn first_beyond(
     image: &dyn DispatchImage,
     start: ImageAddress,
@@ -205,7 +164,6 @@ pub fn first_beyond(
     None
 }
 
-/// Merges instruction extents into ranges.
 fn ranges_of(extents: BTreeSet<(u64, u64)>) -> Arc<[AddressRange<ImageAddress>]> {
     let mut ranges = Vec::<AddressRange<ImageAddress>>::new();
     for (start, end) in extents {
@@ -223,20 +181,16 @@ fn ranges_of(extents: BTreeSet<(u64, u64)>) -> Arc<[AddressRange<ImageAddress>]>
     ranges.into()
 }
 
-/// What a register or stack slot holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Value {
     Unknown,
     Number(u64),
 
-    /// An address this far into the coroutine.
     Object(u64),
 
-    /// An address this far from the stack pointer at the function's entry.
     Stack(i64),
 }
 
-/// A value, and whether it came from the state number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Cell {
     value: Value,
@@ -248,8 +202,6 @@ const UNKNOWN: Cell = Cell {
     state: false,
 };
 
-/// The flags the last comparison set, and whether its operands came from
-/// the state number.
 #[derive(Debug, Clone, Copy)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -263,8 +215,6 @@ struct Flags {
     state: bool,
 }
 
-/// Where a run's state begins, where its lead ends, and the extents of the
-/// dispatch's instructions.
 type Ran = (u64, u64, Vec<(u64, u64)>);
 
 struct Run<'a> {
@@ -276,18 +226,13 @@ struct Run<'a> {
     flags: Option<Flags>,
 }
 
-/// How a run continues after an instruction.
 enum Next {
-    /// To the next instruction.
     Fall,
 
-    /// To an address, having moved on a value the state number decided.
     Decided(u64),
 
-    /// To an address, on values the state number did not decide.
     Jump(u64),
 
-    /// The model cannot follow this instruction, for the reason.
     Stop(&'static str),
 }
 
@@ -318,8 +263,6 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// Runs from `entry`: where the state's code begins, where its lead
-    /// ends, and the extents of the dispatch's instructions.
     fn execute(mut self, entry: u64, contains: &dyn Fn(u64) -> bool) -> Result<Ran, Arc<str>> {
         let mut ip = entry;
         let mut landing = None;
@@ -335,7 +278,6 @@ impl<'a> Run<'a> {
             let after = instruction.next_ip();
 
             match (next, landing) {
-                // Before the state decides anything, the dispatch goes on.
                 (Next::Fall, None) => {
                     executed.push((ip, after));
                     ip = after;
@@ -428,7 +370,6 @@ impl<'a> Run<'a> {
                 };
 
                 let source = match (instruction.mnemonic(), source.value) {
-                    // A narrower register's value, extended.
                     (Mnemonic::Movzx, Value::Number(number))
                         if instruction.op1_kind() == OpKind::Register =>
                     {
@@ -530,8 +471,6 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// Branches, calls, returns, and every instruction the model does not
-    /// know.
     fn control(&self, instruction: &Instruction) -> Next {
         match instruction.flow_control() {
             FlowControl::UnconditionalBranch => match instruction.op0_kind() {
@@ -615,7 +554,6 @@ impl<'a> Run<'a> {
         self.stack.push((at, cell));
     }
 
-    /// The value of operand `operand` that is a register or an immediate.
     fn operand(&self, instruction: &Instruction, operand: u32) -> Cell {
         match instruction.op_kind(operand) {
             OpKind::Register => {
@@ -650,7 +588,6 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// The address a memory operand names.
     fn address(&self, instruction: &Instruction) -> Cell {
         let displacement = instruction.memory_displacement64();
         if instruction.is_ip_rel_memory_operand() {
@@ -695,8 +632,6 @@ impl<'a> Run<'a> {
         Cell { value, state }
     }
 
-    /// Loads `size` bytes from the memory operand, extending by sign when
-    /// `sign`.
     fn load(&self, instruction: &Instruction, size: usize, sign: bool) -> Cell {
         let address = self.address(instruction);
 
@@ -736,8 +671,6 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// Writes `cell` to operand `operand`: a register, or a slot on the
-    /// stack. Writing anywhere else is the state's own work.
     fn write(&mut self, instruction: &Instruction, operand: u32, cell: Cell) -> Next {
         match instruction.op_kind(operand) {
             OpKind::Register => {
@@ -786,7 +719,6 @@ impl<'a> Run<'a> {
     }
 }
 
-/// The index of a general register's full width, or `None` for another.
 fn index(register: Register) -> Option<usize> {
     let full = register.full_register();
     let index = full as usize;
@@ -856,8 +788,6 @@ fn arithmetic_flags(
     }
 }
 
-/// Whether a conditional branch is taken, or `None` for a condition on a
-/// flag the model does not keep.
 const fn condition(code: ConditionCode, flags: Flags) -> Option<bool> {
     Some(match code {
         ConditionCode::o => flags.overflow,
@@ -880,8 +810,6 @@ const fn condition(code: ConditionCode, flags: Flags) -> Option<bool> {
 
 #[cfg(any(test, feature = "fuzzing"))]
 pub fn fuzz(data: &[u8]) {
-    /// Code at 0x1000 from the input's tail, and data at 0x2000 from its
-    /// head.
     struct Bytes<'a>(&'a [u8], &'a [u8]);
 
     impl DispatchImage for Bytes<'_> {

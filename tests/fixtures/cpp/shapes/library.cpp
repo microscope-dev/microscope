@@ -11,4 +11,4 @@ __attribute__((visibility("default"), noinline)) std::int64_t measure(Shape &sha
     return measured;
 }
 
-} // namespace shapes
+}

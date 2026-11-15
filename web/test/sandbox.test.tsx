@@ -1,8 +1,3 @@
-// Renderers run in a worker that has locked itself down, behind a
-// sandboxed frame; their pictures come back as data for the page to check
-// and draw. These run the real scripts in Chromium. The served frame, its
-// policy, and Firefox are covered by e2e/sandbox.spec.ts.
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { validate } from "../src/visualize/picture";
@@ -30,7 +25,6 @@ import {
 
 const context: DrawContext = { previous: null, paths: {}, width: 400, theme: "light", palette };
 
-/** A renderer that draws one text: the JSON of what `body` returns. */
 const reporting = (body: string) => `
 microscope.draw((input, context) => {
   const report = (() => { ${body} })();
@@ -39,7 +33,6 @@ microscope.draw((input, context) => {
   ] });
 });`;
 
-/** The worker's messages, one at a time. */
 class Probe {
   readonly worker: Worker;
   private readonly messages: unknown[] = [];
@@ -72,7 +65,6 @@ class Probe {
     return this.next();
   }
 
-  /** What a reporting renderer reported. */
   async report(input: unknown = {}): Promise<unknown> {
     const answer = await this.draw(input);
     // oxlint-disable-next-line vitest/no-standalone-expect -- a helper that tests call
@@ -93,7 +85,6 @@ afterEach(() => {
   }
 });
 
-// Ways out of a worker, and ways to reach the page or the debugger.
 const DANGEROUS = [
   "fetch",
   "XMLHttpRequest",
@@ -162,8 +153,6 @@ describe("the worker", () => {
   });
 
   it("evaluates the renderer only after locking down, so hoisting changes nothing", async () => {
-    // Declarations hoist to the top of a script; were the renderer part of
-    // the worker's script, these would run before the lockdown.
     const probe = new Probe(`
       var Reflect = { deleteProperty: () => true, ownKeys: () => [] };
       function postMessage() {}
@@ -327,7 +316,7 @@ describe("the sandbox", () => {
     const box = sandbox();
     expect(textOf(await box.draw("a", counting, { label: "a" }, context))).toBe("a 1");
     expect(textOf(await box.draw("a", counting, { label: "a" }, context))).toBe("a 2");
-    // Each card has its own worker.
+
     expect(textOf(await box.draw("b", counting, { label: "b" }, context))).toBe("b 1");
     const changed = { ...counting, digest: "count-2" };
     expect(textOf(await box.draw("a", changed, { label: "a" }, context))).toBe("a 1");
@@ -359,7 +348,7 @@ describe("the sandbox", () => {
     );
     const started = performance.now();
     await Promise.all(["1", "2", "3", "4", "5"].map((card) => box.draw(card, slow, {}, context)));
-    // The fifth waits for one of the first four.
+
     expect(performance.now() - started).toBeGreaterThanOrEqual(600);
   });
 
@@ -392,7 +381,6 @@ const failed = (message: string) => ({
 });
 
 describe("the sandbox's frame", () => {
-  // Only timers are fake: the frame still loads and talks as it would.
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   });
@@ -432,7 +420,7 @@ describe("the sandbox's frame", () => {
     await reloaded;
     await vi.advanceTimersByTimeAsync(DRAW_TIMEOUT - 1);
     expect(running.value).toEqual(lost);
-    // The page replaces a sandbox that failed; this one stays failed.
+
     expect(await box.draw("a", counting, { label: "a" }, context)).toEqual(lost);
   });
 
@@ -440,7 +428,7 @@ describe("the sandbox's frame", () => {
     const box = framed();
     expect(textOf(await box.draw("a", counting, { label: "a" }, context))).toBe("a 1");
     const running = settled(box.draw("b", never, {}, context));
-    // The draw reaches the frame before it goes.
+
     await vi.advanceTimersByTimeAsync(0);
     lastFrame().remove();
     await vi.advanceTimersByTimeAsync(DRAW_TIMEOUT);
@@ -499,7 +487,7 @@ describe("the builder", () => {
       expect(square?.querySelector("title")?.textContent).toBe("e4: White Pawn");
       square?.dispatchEvent(new MouseEvent("click"));
       square?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-      // Space too, as on any button, without scrolling the page.
+
       const space = new KeyboardEvent("keydown", { key: " ", cancelable: true });
       square?.dispatchEvent(space);
       expect(space.defaultPrevented).toBe(true);

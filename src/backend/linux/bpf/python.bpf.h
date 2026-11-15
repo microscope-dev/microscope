@@ -1,39 +1,39 @@
-// CPython frame walker for samples and syscall stacks; see dev/profiling.md.
-// Follows `previous` from the thread's innermost frame, copying py_frame records via py_layout.
-// microscope validates and names code objects later; this walker only copies.
-//
-// Global walk/search functions get one verifier check per calling program.
-// Reads access only user memory and fail whole; walks and searches are bounded.
+
+
+
+
+
+
 #pragma once
 
 #include "records.h"
 
-// The most frames one record holds.
+
 #define PY_FRAMES 128
 
-// The most interpreters and thread states a search for a thread's state
-// steps through.
+
+
 #define PY_SEARCH 1024
 
-// A record of a thread's Python frames.
+
 struct py_stack {
 	struct py_stack_record header;
 	struct py_frame frames[PY_FRAMES];
 };
 
-// Reads the u64 at `address` into `word`: nonzero when it cannot be read.
+
 static __always_inline int py_word(u64 address, u64 *word)
 {
 	return bpf_probe_read_user(word, sizeof(*word), (const void *)address);
 }
 
-// Reads the C int at `address` into `value`: nonzero when it cannot be read.
+
 static __always_inline int py_int(u64 address, s32 *value)
 {
 	return bpf_probe_read_user(value, sizeof(*value), (const void *)address);
 }
 
-// What the thread whose state is at `state` does with its interpreter's GIL.
+
 static __always_inline u8 py_gil(const struct py_layout *layout, u64 state)
 {
 	s32 flag = 0;
@@ -68,8 +68,8 @@ static __always_inline u8 py_gil(const struct py_layout *layout, u64 state)
 	return flag == 1 && holder == state ? PY_GIL_HELD : PY_GIL_RELEASED;
 }
 
-// Where the bytecode a frame runs begins: its code object's own, or on a
-// free-threaded build the thread's copy of it; 0 when it cannot be read.
+
+
 static __always_inline u64 py_bytecode(const struct py_layout *layout, u64 frame, u64 code)
 {
 	if (layout->frame_tlbc_index == PY_ABSENT)
@@ -91,20 +91,20 @@ static __always_inline u64 py_bytecode(const struct py_layout *layout, u64 frame
 	return bytecode;
 }
 
-// The code object a frame's executable names, or 0 for none.
+
 static __always_inline u64 py_code(const struct py_layout *layout, u64 executable)
 {
 	if (!layout->stack_refs)
 		return executable;
-	// A stack reference is a pointer with a reference-counting bit, or a
-	// tagged integer.
+
+
 	if ((executable & 3) > 1)
 		return 0;
 	return executable & ~(u64)1;
 }
 
-// The current thread's id as the pid namespace `layout` names numbers it,
-// which its state names it by, or 0 if the thread is not in it.
+
+
 static __always_inline u64 py_native(const struct py_layout *layout)
 {
 	struct bpf_pidns_info ids = {};
@@ -113,21 +113,21 @@ static __always_inline u64 py_native(const struct py_layout *layout)
 	return ids.pid;
 }
 
-// Set as microscope loads the programs on kernels with bpf_loop (5.17),
-// whose callback the verifier checks once rather than once per step. The
-// plain loops stay for older kernels, and the verifier drops whichever
-// is unused.
+
+
+
+
 const volatile u32 loop_helper = 0;
 
-// Where a search for a thread's state stands. `result` holds the state
-// found, or 0, once `done`.
+
+
 struct py_search {
 	u64 interp_next, interp_threads_head, thread_native_id, thread_next;
 	u64 native, interp, state, found, result;
 	u32 done;
 };
 
-// One step of a search: 1 once it has its answer, 0 to go on.
+
 static __always_inline long py_search_step(struct py_search *search)
 {
 	if (!search->state) {
@@ -166,9 +166,9 @@ static long py_search_callback(u32 index, void *context)
 	return py_search_step(context);
 }
 
-// The one state among every interpreter's that names `native` as its
-// thread, or 0 where none does, more than one does, or the search ends
-// before it has seen every state.
+
+
+
 __noinline u64 py_find(const struct py_layout *layout, u64 native)
 {
 	if (!layout || !native || !layout->runtime ||
@@ -197,9 +197,9 @@ __noinline u64 py_find(const struct py_layout *layout, u64 native)
 	return search.done ? search.result : 0;
 }
 
-// Reads the current thread's frames into `stack`, as `layout` places their
-// fields: from the state at `known`, if it names the thread, or else the
-// state the search finds. Returns the number of frames read.
+
+
+
 __noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u64 known)
 {
 	if (!layout || !stack)
@@ -244,8 +244,8 @@ __noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u
 	header->end = PY_END_BOUNDED;
 	u32 count = 0;
 	for (u32 i = 0; i < PY_FRAMES; i++) {
-		// As the walk in userspace does, a chain with no frame at all ends
-		// where it should, whatever its base.
+
+
 		if (!frame) {
 			header->end = base && i ? PY_END_BEFORE_BASE : PY_END_COMPLETE;
 			break;
@@ -276,7 +276,7 @@ __noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u
 		out->first_line = 0;
 		out->offset = PY_NO_OFFSET;
 
-		// An entry frame runs no code of its own: it ends a segment.
+
 		if (owner != layout->owner_entry) {
 			u64 code = py_code(layout, executable);
 			if (!code || py_word(code + layout->code_qualname, &out->qualname) ||
@@ -287,8 +287,8 @@ __noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u
 			}
 
 			out->code = code;
-			// Only microscope's naming of code `exec` compiled needs the
-			// function; one that cannot be read leaves the code's name.
+
+
 			if (layout->frame_function != PY_ABSENT)
 				py_word(frame + layout->frame_function, &out->function);
 			u64 bytecode = py_bytecode(layout, frame, code);
@@ -301,7 +301,7 @@ __noinline int py_walk(const struct py_layout *layout, struct py_stack *stack, u
 		frame = previous;
 	}
 
-	// A chain of exactly PY_FRAMES frames ends where the loop does.
+
 	if (header->end == PY_END_BOUNDED && (!frame || (base && frame == base)))
 		header->end = !frame && base ? PY_END_BEFORE_BASE : PY_END_COMPLETE;
 

@@ -1,9 +1,3 @@
-//! Python variables given new values where the agent stopped their thread:
-//! each value the evaluator computes, and an object another name holds,
-//! reaches the variable the program then uses, under a new stop. Where the
-//! write could race another thread, or the stop is not the agent's, or the
-//! interpreter is free-threaded, it is refused and nothing runs.
-
 use microscope::{
     BreakpointOptions, BreakpointSpec, Error, Evaluation, EvaluationMode, Expression,
     ExpressionErrorKind, InferiorState, InspectionLimits, LineNumber, StopContext, StopReason,
@@ -15,7 +9,6 @@ use crate::support::python;
 
 const FIXTURE: &str = "assignments.py";
 
-/// The line of the fixture marked `marker`.
 fn line_of(marker: &str) -> LineNumber {
     let text = std::fs::read_to_string(python::fixture(FIXTURE)).expect("read the fixture");
     let index = text
@@ -38,7 +31,6 @@ fn breakpoint(marker: &str) -> (BreakpointSpec, BreakpointOptions) {
     )
 }
 
-/// Assigns with `text` in `context`, or in the selected frame.
 async fn assign(
     session: &PythonSession,
     context: Option<StopContext>,
@@ -66,8 +58,6 @@ async fn assign(
     session.scenario.attempt(text, request).await
 }
 
-/// How the variable an assignment gave presents, read again where the
-/// assignment's stop published it, which selects the variable's frame.
 async fn assigned(session: &mut PythonSession, text: &str, function: &str) -> String {
     let context = session.context();
     let before = stop_id(session).await;
@@ -122,8 +112,6 @@ async fn stop_id(session: &mut PythonSession) -> microscope::StopId {
     }
 }
 
-/// Checks `text` is refused as `kind`, with `reason` in its message,
-/// leaving the stop as it was.
 async fn refused(
     session: &mut PythonSession,
     context: Option<StopContext>,
@@ -146,7 +134,6 @@ async fn refused(
     );
 }
 
-/// The frame running `function` on a thread other than the stop's.
 async fn other_threads_frame(session: &mut PythonSession, function: &str) -> StopContext {
     let context = session.context();
     let snapshot = session.scenario.snapshot().await;
@@ -234,8 +221,6 @@ async fn each_value_reaches_the_program(interpreter: &str) {
         assert_eq!(summary, shown, "{context}: `{text}`");
     }
 
-    // The list `nested[0]` reads is the agent's object, but no name of the
-    // frame holds it, so the agent cannot find it to give.
     let text = "gone = nested[0]";
     match assign(&session, None, text).await {
         Err(error) if error.to_string().contains("no name of the frame finds") => {}
@@ -266,8 +251,6 @@ async fn each_value_reaches_the_program(interpreter: &str) {
         "{context}: the program uses each value given: {output}"
     );
 
-    // Another thread runs: the write could race it, and that thread was
-    // stopped where the agent did not stop it.
     refused(&mut session, None, "count = 7", kind, "another thread").await;
     let waiting = other_threads_frame(&mut session, "beside.<locals>.wait").await;
     refused(
@@ -303,8 +286,6 @@ async fn each_value_reaches_the_program_on_3_15() {
     each_value_reaches_the_program("3.15").await;
 }
 
-/// A free-threaded interpreter's other threads may hold what a write
-/// changes whenever they run, so nothing is given there.
 #[tokio::test]
 async fn a_free_threaded_interpreter_refuses_assignments() {
     let mut session = launch("3.14t").await;
@@ -330,9 +311,6 @@ async fn a_free_threaded_interpreter_refuses_assignments() {
     session.shutdown().await;
 }
 
-/// CPython before 3.14 takes the agent through a launch's bootstrap, whose
-/// thread runs beside the program's, and 3.12's frame variables are a copy:
-/// nothing is given there, and the refusal says so.
 #[tokio::test]
 async fn an_interpreter_before_3_14_refuses_assignments() {
     for interpreter in ["3.12", "3.13"] {

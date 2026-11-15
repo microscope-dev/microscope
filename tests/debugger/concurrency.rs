@@ -1,10 +1,6 @@
-//! Execution control while other threads run: steps that let every thread
-//! run, and breakpoint and watchpoint edits while the inferior runs.
-
 use super::*;
 use microscope::{ExceptionDisposition, ResumeScope, ThreadId, WatchAccess, WatchpointSpec};
 
-/// The thread-steps fixture, unoptimized and optimized.
 const THREAD_STEPS: [&str; 2] = ["thread-steps-gcc-o0", "thread-steps-clang-o2"];
 
 fn thread_steps_line(needle: &str) -> u64 {
@@ -18,7 +14,6 @@ async fn stopped_thread(scenario: &mut Scenario) -> ThreadId {
     }
 }
 
-/// The selected frame's function and source line.
 async fn position(scenario: &Scenario) -> (Option<String>, Option<u64>) {
     let location = scenario
         .operation("location", scenario.handle().current_location())
@@ -32,7 +27,6 @@ async fn position(scenario: &Scenario) -> (Option<String>, Option<u64>) {
     )
 }
 
-/// Sets the 32-bit flag `name` to 1 without touching the bytes after it.
 async fn set_flag(scenario: &Scenario, name: &str) {
     let address = scenario
         .operation(name, scenario.handle().runtime_address(name))
@@ -50,8 +44,6 @@ async fn set_flag(scenario: &Scenario, name: &str) {
         .await;
 }
 
-/// Launches thread-steps with `arguments` and runs to a breakpoint on the
-/// line containing `needle`, returning the main thread.
 async fn thread_steps_at(fixture: &str, arguments: &[&str], needle: &str) -> (Scenario, ThreadId) {
     let mut scenario = Scenario::launch(fixture);
     scenario
@@ -78,8 +70,6 @@ async fn next_over_a_join_runs_the_thread_it_waits_for() {
     for fixture in THREAD_STEPS {
         let (mut scenario, main) = thread_steps_at(fixture, &[], "joins the gated worker").await;
 
-        // The worker waits at a gate this line opens, so it is still alive
-        // here, and the step completes only because it runs while it does.
         assert_eq!(scenario.snapshot().await.threads.len(), 2, "{fixture}");
         assert_eq!(
             scenario.step_to_stop(StepKind::OverSource).await,
@@ -111,8 +101,6 @@ async fn another_threads_breakpoint_ends_a_step_and_retracts_its_plan() {
     for fixture in THREAD_STEPS {
         let (mut scenario, main) = thread_steps_at(fixture, &[], "joins the gated worker").await;
 
-        // The worker cannot reach its breakpoint before this line opens its
-        // gate.
         let worker = scenario.add_breakpoint("worker_reached").await;
         let reason = scenario.step_to_stop(StepKind::OverSource).await;
         assert!(
@@ -129,8 +117,6 @@ async fn another_threads_breakpoint_ends_a_step_and_retracts_its_plan() {
             "{fixture}"
         );
 
-        // The interrupted step's internal breakpoints are gone, so the join
-        // completes and the program exits without another stop.
         assert_eq!(
             scenario.resume_to_stop().await,
             StopReason::Exited(ExitStatus::Code(0)),
@@ -145,8 +131,6 @@ async fn steps_complete_on_their_thread_while_another_runs_the_same_code() {
     for fixture in THREAD_STEPS {
         let (mut scenario, main) = thread_steps_at(fixture, &["race"], "main's shared call").await;
 
-        // The racer keeps calling the functions the main thread steps
-        // through, reaching every internal breakpoint of its steps.
         for function in ["shared_caller", "shared_work"] {
             let mut entered = false;
             for _ in 0..16 {
@@ -167,7 +151,6 @@ async fn steps_complete_on_their_thread_while_another_runs_the_same_code() {
             assert!(entered, "{fixture}: never stepped into {function}");
         }
 
-        // Optimized code may fold the lines, so `next` can return early.
         let optimized = !fixture.ends_with("-o0");
         let lines = ["value += 3;", "thread_steps_sink = value;"].map(thread_steps_line);
 
@@ -243,7 +226,6 @@ async fn a_single_thread_step_keeps_every_other_thread_stopped() {
             assert_eq!(stopped_thread(&mut scenario).await, main, "{fixture}");
         }
 
-        // The racer never sleeps, so it would have counted rounds had it run.
         assert_eq!(
             scenario
                 .operation("racer rounds", scenario.handle().read_word(rounds))
@@ -252,7 +234,6 @@ async fn a_single_thread_step_keeps_every_other_thread_stopped() {
             "{fixture}: the racer ran during single-thread steps"
         );
 
-        // A single-thread scope names the stepping thread.
         let snapshot = scenario.snapshot().await;
         let racer = snapshot
             .threads
@@ -318,7 +299,6 @@ async fn breakpoints_are_edited_while_running_without_publishing_a_stop() {
         )
         .await;
 
-    // The loop reaches the new breakpoint, ending the launch's execution.
     let reason = timeout(Duration::from_secs(5), run)
         .await
         .expect("the new breakpoint was not reached")
@@ -361,8 +341,6 @@ async fn breakpoints_are_edited_while_running_without_publishing_a_stop() {
     scenario.shutdown().await;
 }
 
-/// Waits for the next stop event, which must name `breakpoint`, and resumes
-/// the process from it.
 async fn resume_from_hit(
     scenario: &Scenario,
     events: &mut tokio::sync::broadcast::Receiver<microscope::DebuggerEvent>,
@@ -418,12 +396,9 @@ async fn breakpoints_edited_while_threads_hit_them_report_only_current_breakpoin
             )
             .await;
         if round % 2 == 1 {
-            // Four threads call the function continuously, so it is hit.
             resume_from_hit(&scenario, &mut events, breakpoint.id, &context).await;
         }
 
-        // Removing races with the threads' traps: a hit before the removal
-        // stops the program, and one the removal overtakes is dropped.
         let removed = scenario
             .operation(
                 "remove hot breakpoint",
@@ -478,7 +453,6 @@ async fn breakpoints_edited_while_threads_hit_them_report_only_current_breakpoin
         }
     }
 
-    // Release the callers; nothing else stops the program.
     let reason = timeout(Duration::from_secs(2), handle.pause())
         .await
         .expect("pause timed out")
@@ -501,8 +475,6 @@ async fn watchpoints_are_armed_and_disarmed_while_running() {
         .operation("hot_stop", handle.runtime_address("hot_stop"))
         .await;
 
-    // Every caller reads the flag, so a read watchpoint armed while
-    // running reports the next read.
     let reads = scenario
         .operation(
             "arm while running",
@@ -535,8 +507,6 @@ async fn watchpoints_are_armed_and_disarmed_while_running() {
         )
         .await;
 
-    // A write watchpoint on the flag never fires, so disarming it while
-    // running resumes silently.
     let writes = scenario
         .operation(
             "arm write watchpoint",
@@ -551,7 +521,6 @@ async fn watchpoints_are_armed_and_disarmed_while_running() {
         .await;
     let resumed = scenario.start_resuming().await;
 
-    // A target resolved at an earlier stop is armed only at that stop.
     assert!(matches!(
         handle
             .add_watchpoint(WatchpointSpec::Target(Box::new(stale)), WatchAccess::Write)
@@ -591,8 +560,6 @@ async fn a_named_threads_start_routine_finishes_when_the_thread_exits() {
         let (mut scenario, worker) =
             thread_steps_at(fixture, &["spin"], "thread_steps_sink += 1;").await;
 
-        // Threads are named as they name themselves; Linux keeps the first 15
-        // bytes of a name.
         let names = scenario
             .snapshot()
             .await
@@ -623,8 +590,6 @@ async fn a_named_threads_start_routine_finishes_when_the_thread_exits() {
             "{fixture}"
         );
 
-        // The start routine returns into the C library, which has no source
-        // to stop in, and the thread exits while the main thread runs.
         assert_eq!(
             scenario.step_to_stop(StepKind::Out).await,
             StopReason::ThreadExited {
@@ -652,11 +617,6 @@ async fn a_named_threads_start_routine_finishes_when_the_thread_exits() {
     }
 }
 
-/// A main thread continued alone that exits while other threads live ends
-/// its execution at its exit event, with the code it passed to `exit`.
-/// Linux reports the main thread's exit status only once every other thread
-/// has exited, which threads held stopped never do. However the session
-/// then ends, nothing is left behind.
 #[tokio::test]
 async fn a_main_thread_continued_alone_ends_its_execution_when_it_exits() {
     let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -666,7 +626,6 @@ async fn a_main_thread_continued_alone_ends_its_execution_when_it_exits() {
         "/tests/golden/threads/threads.c"
     );
 
-    // The main thread's call, the last of the two.
     let main_exits = fs::read_to_string(source)
         .expect("read the golden program")
         .lines()
@@ -682,7 +641,6 @@ async fn a_main_thread_continued_alone_ends_its_execution_when_it_exits() {
             &program,
         );
 
-        // Every worker must call `share` before it can exit.
         scenario.add_breakpoint("share").await;
         let exit = scenario
             .add_source_breakpoint("threads.c", main_exits)

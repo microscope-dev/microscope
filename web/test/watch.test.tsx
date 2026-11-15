@@ -1,6 +1,3 @@
-// A watch the tab cannot read now says so once, above the list, and its
-// row is dim; only an expression that failed to evaluate is red.
-
 import { afterEach, expect, it } from "vitest";
 import { page } from "vitest/browser";
 
@@ -14,10 +11,8 @@ afterEach(unmountPane);
 const textOf = (name: string) =>
   page.getByRole("listitem").filter({ hasText: name }).element().querySelector(".value-text");
 
-/** The color a row's value text is drawn in. */
 const colorOf = (name: string) => getComputedStyle(textOf(name) as Element).color;
 
-/** The color a theme token resolves to. */
 function token(name: string): string {
   const probe = document.createElement("span");
   probe.style.color = `var(${name})`;

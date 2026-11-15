@@ -1,22 +1,3 @@
-//! The fuzz harness for the runtime models: every question a session asks
-//! a runtime at a stop, over memory the input writes.
-//!
-//! Each target loads one real image once: a Go program, a tokio program,
-//! CPython, or Node. Memory is the image's own file, as the loader maps
-//! it, with a heap and each thread's thread-local block mapped as zeros.
-//! The input writes into it relative to anchors: the heap's regions, each
-//! thread's thread pointer, and every symbol and thread-local the models
-//! looked up while they bound and answered an empty stop. So a pointer the
-//! input writes can name anything the models read first, or itself, as
-//! corrupt memory in a core does.
-//!
-//! The input's first byte shapes the stop: how many threads it has,
-//! whether it keeps a [`StopMemory`], and whether the program runs. Its
-//! first eight bytes also choose what is asked, such as a page's size.
-//! Past them, each command writes bytes, a word, a run of one byte, or a
-//! field the models read at an anchor, sets a thread's register, futex,
-//! or target id, or names a task set. A word is an anchor and an offset,
-//! a constant the models compare with, or eight bytes as they are.
 #![expect(
     clippy::indexing_slicing,
     reason = "a fuzz harness reports a bug by panicking"
@@ -40,7 +21,6 @@ use crate::{
     ThreadLocal, TypeInfo, TypeNode, TypeReference, VirtualAddress,
 };
 
-/// The image a target loads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Runtime {
     Go,
@@ -49,37 +29,25 @@ pub enum Runtime {
     Node,
 }
 
-/// Where the heap is, and how large: regions of [`REGION`] bytes, each an
-/// anchor.
 const HEAP: u64 = 0x7000_0000_0000;
 const REGION: u64 = 0x1_0000;
 const REGIONS: u64 = 32;
 
-/// Each thread's thread pointer is in the middle of a block of
-/// [`THREAD_BLOCK`] bytes, the first at [`THREADS`]; the C library's block
-/// for the module's own thread-locals is [`DYNAMIC`] into it.
 const THREADS: u64 = 0x7100_0000_0000;
 const THREAD_BLOCK: u64 = 0x10_0000;
 const DYNAMIC: u64 = 0x1000;
 
-/// The most threads the input stops.
 const MOST_THREADS: u8 = 4;
 
-/// The most anchors kept, so that one byte names any, and the most of
-/// them in code.
 const MOST_ANCHORS: usize = 255;
 const MOST_CODE_ANCHORS: usize = 64;
 
-/// The most names noted, and the most fields and constants kept.
 const MOST_LOOKED_UP: usize = 4096;
 
 const PAGE: u64 = 4096;
 
-/// The most pages one run writes, which bounds its memory.
 const MOST_PAGES: usize = 1024;
 
-/// The most of each kind of thing asked of a model at one stop, so that
-/// a run stays short.
 const MOST_TASKS: usize = 64;
 const MOST_FRAMES: usize = 32;
 const MOST_CHILDREN: u64 = 16;
@@ -87,11 +55,8 @@ const MOST_LOCALS: usize = 16;
 const MOST_FUTURES: usize = 64;
 const MOST_SEARCHED: usize = 4;
 
-/// The most pages of tasks listed. A runtime's own bounds allow far more,
-/// as Go's 16M goroutines do, which a run need not read through.
 const MOST_PAGES_LISTED: usize = 16;
 
-/// The names an interpreted frame is asked for.
 const NAMES: [&str; 8] = [
     "x", "self", "value", "__name__", "len", "Object", "this", "a",
 ];
@@ -111,26 +76,17 @@ pub fn fuzz(runtime: Runtime, data: &[u8]) {
     }
 }
 
-/// What a target binds once: its image, the models it carries, and the
-/// anchors the input writes relative to.
 struct Fixture {
     image: Arc<dyn RuntimeImage + Send + Sync>,
     models: Vec<Arc<dyn RuntimeModel>>,
 
-    /// The image's loaded segments: address, size, and the file's bytes
-    /// for them, which may be fewer.
     segments: Vec<(u64, u64, Arc<[u8]>)>,
 
-    /// Where the input writes relative to, by index.
     anchors: Vec<u64>,
 
-    /// The fields the models read, each its offset within its object and
-    /// its size, and the constants they compare with, by index.
     fields: Vec<(u64, u64)>,
     constants: Vec<u64>,
 
-    /// The futures the image's types describe, which are walked at
-    /// anchors.
     futures: Vec<TypeReference>,
 }
 
@@ -182,8 +138,6 @@ impl Fixture {
             futures,
         };
 
-        // What the models look up while they answer an empty stop is what
-        // they read first, as a session's first questions would.
         let empty = Stop::new(&fixture, &[(MOST_THREADS - 1) << 3]);
         for model in &fixture.models {
             drive(&fixture, model.as_ref(), &empty, &Query::new(&[]));
@@ -215,8 +169,6 @@ fn image_path(runtime: Runtime) -> PathBuf {
     }
 }
 
-/// The file that carries CPython's runtime: its executable, or the
-/// library the executable links.
 #[expect(
     clippy::panic,
     reason = "a fuzz target without its image tests nothing"
@@ -241,7 +193,6 @@ fn python_module(directory: &Path) -> PathBuf {
         .unwrap_or(executable)
 }
 
-/// The loaded segments of the file at `path`.
 #[expect(
     clippy::panic,
     reason = "a fuzz target without its image tests nothing"
@@ -261,8 +212,6 @@ fn segments(path: &Path) -> Vec<(u64, u64, Arc<[u8]>)> {
         .collect()
 }
 
-/// The image's coroutines, and the pointers, pins, and trait objects of
-/// futures that may hold one, in identifier order.
 fn future_types(module: &ModuleImage) -> Vec<TypeReference> {
     module
         .types()
@@ -282,10 +231,6 @@ fn future_types(module: &ModuleImage) -> Vec<TypeReference> {
         .collect()
 }
 
-/// The anchors: the heap's regions, each thread's thread pointer, where
-/// each thread keeps each thread-local the models looked up, the symbols
-/// they looked up, the Python and V8 runtimes' places, and the code the
-/// models trap in.
 fn anchors(recording: &Recording, models: &[Arc<dyn RuntimeModel>], stop: &Stop<'_>) -> Vec<u64> {
     let mut anchors: Vec<u64> = (0..REGIONS).map(|region| HEAP + region * REGION).collect();
     let threads = stop.threads();
@@ -350,7 +295,6 @@ fn anchors(recording: &Recording, models: &[Arc<dyn RuntimeModel>], stop: &Stop<
 
     anchors.extend(places);
 
-    // Code goes last: registers name it, and few writes do.
     let mut code: Vec<u64> = models
         .iter()
         .flat_map(|model| code_places(model.as_ref()))
@@ -363,10 +307,6 @@ fn anchors(recording: &Recording, models: &[Arc<dyn RuntimeModel>], stop: &Stop<
     anchors
 }
 
-/// The fields the models read: the members they looked up, those of the
-/// types they looked at, and the fields of the Python and V8 layouts; and
-/// the constants they compare with: those they looked up, a sum type's
-/// tags, and the layouts' own.
 fn fields(recording: &Recording) -> (Vec<(u64, u64)>, Vec<u64>) {
     let looked_up = recording
         .looked_up
@@ -436,7 +376,6 @@ fn fields(recording: &Recording) -> (Vec<(u64, u64)>, Vec<u64>) {
     (fields, constants)
 }
 
-/// A constant's low word, which is what memory holds of it.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -449,7 +388,6 @@ const fn low_word(value: IntegerValue) -> u64 {
     }
 }
 
-/// The size of a value of `ty`, or a word where it is unknown.
 fn byte_size(image: &ModuleImage, ty: TypeReference) -> u64 {
     image
         .type_info(ty)
@@ -458,8 +396,6 @@ fn byte_size(image: &ModuleImage, ty: TypeReference) -> u64 {
         .unwrap_or(8)
 }
 
-/// The fields of the record or sum type `info` describes, and its
-/// variants' tags.
 fn type_fields(
     image: &ModuleImage,
     info: &TypeInfo,
@@ -499,7 +435,6 @@ fn type_fields(
     }
 }
 
-/// The code a model traps or describes threads in.
 fn code_places(model: &dyn RuntimeModel) -> Vec<ImageAddress> {
     let mut places: Vec<ImageAddress> = model.hooks().iter().map(|hook| hook.address).collect();
     places.extend(model.internal_hooks().iter().filter_map(|hook| match hook {
@@ -544,7 +479,6 @@ fn code_places(model: &dyn RuntimeModel) -> Vec<ImageAddress> {
     places
 }
 
-/// A name a model looked up in the image.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum LookedUp {
     Symbol(String),
@@ -555,7 +489,6 @@ enum LookedUp {
     Type(TypeReference),
 }
 
-/// The image, which notes the names the models look up in it.
 #[derive(Debug)]
 struct Recording {
     module: Arc<ModuleImage>,
@@ -687,7 +620,6 @@ impl RuntimeImage for Recording {
     }
 }
 
-/// The input, read a byte at a time, as zeros past its end.
 struct Input<'a>(&'a [u8]);
 
 impl Input<'_> {
@@ -714,8 +646,6 @@ impl Input<'_> {
     }
 }
 
-/// A stopped thread: its thread pointer, its registers, and what the
-/// stop says of it.
 struct Thread {
     id: ThreadId,
     pointer: u64,
@@ -724,11 +654,9 @@ struct Thread {
     target: Option<TargetThreadId>,
 }
 
-/// The stop the input describes: memory, threads, and how it is read.
 struct Stop<'a> {
     fixture: &'a Fixture,
 
-    /// The pages the input wrote, each whole.
     pages: BTreeMap<u64, Box<[u8]>>,
     threads: Vec<Thread>,
     memory: Option<StopMemory>,
@@ -737,8 +665,6 @@ struct Stop<'a> {
 }
 
 impl<'a> Stop<'a> {
-    /// The stop `data` writes: its first byte the stop's shape, then
-    /// commands, each a byte and its operands.
     fn new(fixture: &'a Fixture, data: &[u8]) -> Self {
         let mut input = Input(data.get(Query::BYTES..).unwrap_or_default());
         let shape = data.first().copied().unwrap_or(0);
@@ -819,7 +745,6 @@ impl<'a> Stop<'a> {
         stop
     }
 
-    /// A word: an anchor and an offset from it, or the next eight bytes.
     fn value(&self, input: &mut Input<'_>) -> u64 {
         match input.byte() {
             0xff => input.u64(),
@@ -838,8 +763,6 @@ impl<'a> Stop<'a> {
         VirtualAddress::new(base.wrapping_add(offset))
     }
 
-    /// Fills `bytes` with what memory from `at` holds before the input
-    /// writes it, a mapped range at a time, or says some of it is unmapped.
     fn original(&self, mut at: u64, mut bytes: &mut [u8]) -> bool {
         let heap = (HEAP, REGIONS * REGION);
         let threads = (THREADS, u64::from(MOST_THREADS) * THREAD_BLOCK);
@@ -874,7 +797,6 @@ impl<'a> Stop<'a> {
         true
     }
 
-    /// Writes `bytes` a page at a time, leaving out what is unmapped.
     fn write(&mut self, address: u64, mut bytes: &[u8]) {
         let mut at = address;
         while !bytes.is_empty() {
@@ -889,8 +811,6 @@ impl<'a> Stop<'a> {
                 && self.pages.len() < MOST_PAGES
                 && self.original(page, &mut [0])
             {
-                // A page that runs past the end of what is mapped holds
-                // zero there.
                 let mut held = vec![0; usize::try_from(PAGE).unwrap_or(4096)].into_boxed_slice();
                 if !self.original(page, &mut held) {
                     held.fill(0);
@@ -1002,12 +922,10 @@ impl RuntimeStop for Stop<'_> {
     }
 }
 
-/// The `index`th of `items`, counting round.
 fn pick<T: Copy>(items: &[T], index: u16) -> Option<T> {
     (!items.is_empty()).then(|| items[usize::from(index) % items.len()])
 }
 
-/// What the input asks beside the stop: its first [`Query::BYTES`] bytes.
 struct Query([u8; Self::BYTES]);
 
 impl Query {
@@ -1028,7 +946,6 @@ impl Query {
     }
 }
 
-/// Asks `model` everything a session asks a runtime at a stop.
 fn drive(fixture: &Fixture, model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Query) {
     let _ = (model.signals(), model.task_noun(), model.driver_role());
     let _ = model.process_code(stop);
@@ -1131,16 +1048,12 @@ fn drive(fixture: &Fixture, model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Q
     let _ = model.inspector_received_matches(stop, delegate, b"{\"id\":1}");
 }
 
-/// Lists the runtime's tasks page by page, and asks after each.
 fn tasks(fixture: &Fixture, model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Query) {
     let limit = 1 + usize::from(query.byte(2)) % MOST_TASKS;
     let program_only = query.bit(0);
     let mut start = 0;
     let mut tasks = Vec::new();
 
-    // A page's position is the runtime's own, in no order, but a session
-    // that lists every task reads pages until there is no next: one that
-    // comes back to a position never ends.
     let mut seen = BTreeSet::from([start]);
     for _ in 0..MOST_PAGES_LISTED {
         let page = model.tasks(stop, start, limit, program_only);
@@ -1155,8 +1068,6 @@ fn tasks(fixture: &Fixture, model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Q
     }
 
     for (index, task) in tasks.iter().take(MOST_TASKS).enumerate() {
-        // Without its locator a task is found by searching every task,
-        // which costs the same for each one, so only the first few are.
         let both = [Some(task.locator), None];
         let locators = if index < MOST_SEARCHED {
             &both[..]
@@ -1185,7 +1096,6 @@ fn tasks(fixture: &Fixture, model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Q
     }
 }
 
-/// Follows where a task's frames begin as a backtrace would.
 fn context_of(fixture: &Fixture, stop: &Stop<'_>, context: &TaskContext) {
     match context {
         TaskContext::Suspended { future, ty } => {
@@ -1210,7 +1120,6 @@ fn context_of(fixture: &Fixture, stop: &Stop<'_>, context: &TaskContext) {
     }
 }
 
-/// Asks after each stopped thread, and what its registers say.
 fn threads(model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Query) {
     for thread in &stop.threads {
         let id = thread.id;
@@ -1282,8 +1191,6 @@ fn threads(model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Query) {
     }
 }
 
-/// Lists the interpreter's frames, and asks after their variables and
-/// the objects they hold.
 fn interpreted(model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Query) {
     let Some(stacks) = model.interpreted(stop) else {
         return;
@@ -1347,7 +1254,6 @@ fn interpreted(model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Query) {
     }
 }
 
-/// Asks after a variable's or child's value, and its children to `depth`.
 fn slot(
     model: &dyn RuntimeModel,
     stop: &Stop<'_>,

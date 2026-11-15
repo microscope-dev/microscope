@@ -1,8 +1,3 @@
-//! The tokio model on the `workers` fixture's real layout, with runtimes,
-//! threads, and tasks the tests write: every state a task's bits can
-//! hold, threads in each relation to a runtime, and damaged lists, which
-//! no program shows on demand.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
@@ -22,21 +17,15 @@ use crate::{
 
 const FIXTURE: &str = "tokio-workers-o0";
 
-/// Where the tests place what they write.
 const HEAP: u64 = 0x7000_0000_0000;
 
-/// Where each task's id and trailer are within its cell, as the tests'
-/// vtables say.
 const ID: u64 = 0x28;
 const TRAILER: u64 = 0x40;
 
-/// The bits of a task's state that are not its lifecycle, and one
-/// reference.
 const JOIN_INTEREST: u64 = 0b1000;
 const JOIN_WAKER: u64 = 0b1_0000;
 const REF_ONE: u64 = 1 << 6;
 
-/// The pinned release's one blocking queue.
 fn one_queue(model: &TokioRuntime) -> Guarded {
     match &model.layout.pool.as_ref().expect("the pool binds").queues {
         Queues::One(one) => *one,
@@ -60,10 +49,6 @@ fn module() -> Arc<ModuleImage> {
     }))
 }
 
-/// The fixture's image, with some of tokio's names hidden, as a program
-/// that lacks them would be, and tokio's sources where `source` says.
-/// The types in `overlay` stand in for the fixture's of the same name,
-/// as another release's would.
 #[derive(Debug)]
 struct Image {
     module: Arc<ModuleImage>,
@@ -72,7 +57,6 @@ struct Image {
     overlay: Vec<TypeInfo>,
 }
 
-/// Where a release the model was verified against keeps its sources.
 const VERIFIED_SOURCE: &str = "/crates/tokio-1.53.2/src/runtime/task/raw.rs";
 
 impl RuntimeImage for Image {
@@ -160,7 +144,6 @@ impl RuntimeImage for Image {
     }
 }
 
-/// Memory the tests write, and the threads they stop.
 #[derive(Default)]
 struct Memory {
     bytes: BTreeMap<u64, u8>,
@@ -215,8 +198,6 @@ impl RuntimeStop for Memory {
     }
 }
 
-/// A runtime the tests wrote: its `Arc`'s allocation, its handle, its
-/// list's id and shards, and each shard's tasks' headers.
 #[derive(Debug, Clone)]
 struct Written {
     flavor: Flavor,
@@ -227,13 +208,11 @@ struct Written {
     headers: Vec<Vec<u64>>,
 }
 
-/// The model, and the memory it reads.
 struct World {
     model: TokioRuntime,
     memory: Memory,
     next: u64,
 
-    /// A task vtable's poll function, and a worker's launch closure's.
     poll: u64,
     launch: u64,
 }
@@ -243,20 +222,15 @@ impl World {
         Self::with_source(hidden, Some(VERIFIED_SOURCE))
     }
 
-    /// The model of an image whose tokio sources are at `source`.
     fn with_source(hidden: &[&'static str], source: Option<&'static str>) -> Self {
         Self::with_image(hidden, source, Vec::new())
     }
 
-    /// The model of an image whose tokio sources are at `source`, with
-    /// `overlay`'s types in place of the fixture's.
     fn with_image(
         hidden: &[&'static str],
         source: Option<&'static str>,
         overlay: Vec<TypeInfo>,
     ) -> Self {
-        // Finding them demangles every symbol, so each test process does
-        // it once.
         static POLLS: OnceLock<(u64, u64)> = OnceLock::new();
         let module = module();
 
@@ -310,14 +284,12 @@ impl World {
             .expect("the flavor binds")
     }
 
-    /// A fresh, 128-aligned allocation.
     fn allocate(&mut self, size: u64) -> u64 {
         let at = self.next;
         self.next += size.next_multiple_of(128) + 128;
         at
     }
 
-    /// A vtable whose poll function is `poll`.
     fn vtable(&mut self, poll: u64) -> u64 {
         let tasks = self.model.layout.tasks.as_ref().expect("Header binds");
         let (poll_at, trailer_at, id_at) = (tasks.poll, tasks.trailer_offset, tasks.id_offset);
@@ -328,7 +300,6 @@ impl World {
         vtable
     }
 
-    /// A task's cell, unlinked.
     fn cell(&mut self, vtable: u64, id: u64, state: u64, owner: u64) -> u64 {
         let tasks = self.model.layout.tasks.as_ref().expect("Header binds");
         let (state_at, vtable_at, owner_at) = (tasks.state, tasks.vtable, tasks.owner);
@@ -340,7 +311,6 @@ impl World {
         header
     }
 
-    /// Links a shard's tasks, in order, from its head.
     fn link(&mut self, shard: u64, headers: &[u64]) {
         let owned = &self.runtime_layout(Flavor::MultiThread).owned;
         let head_at = owned.head;
@@ -357,7 +327,6 @@ impl World {
         }
     }
 
-    /// A runtime whose list's shards hold tasks of these ids and states.
     fn runtime(&mut self, flavor: Flavor, list: u64, shards: &[Vec<(u64, u64)>]) -> Written {
         let runtime = self.runtime_layout(flavor);
         let (data, owned_at) = (runtime.data, runtime.owned.at);
@@ -406,9 +375,6 @@ impl World {
         }
     }
 
-    /// The runtime's blocking pool, holding these tasks in a ring buffer
-    /// of twice their number, the first of them at its end; where the
-    /// pool's shared state is.
     fn pool(&mut self, flavor: Flavor, handle: u64, queued: &[(u64, bool)]) -> u64 {
         let spawner = self.runtime_layout(flavor).spawner;
         let data = self
@@ -421,7 +387,6 @@ impl World {
         let arc = self.allocate(1024);
         self.memory.word(handle + spawner, arc);
         let inner = arc + data;
-        // tokio 1.54's pool holds the queue its `Locked` variant does.
         let one = match &self
             .model
             .layout
@@ -444,9 +409,6 @@ impl World {
         inner
     }
 
-    /// The queue `guarded` within the pool's `Inner` at `inner`, holding
-    /// these tasks in a ring buffer of twice their number, the first of
-    /// them at its end, its lock free.
     fn queue(&mut self, inner: u64, guarded: Guarded, queued: &[(u64, bool)]) {
         let pool = self.model.layout.pool.as_ref().expect("the pool binds");
         let (head, len, buffer, capacity, size, task) = (
@@ -478,14 +440,10 @@ impl World {
         }
     }
 
-    /// A thread whose `CONTEXT` names `runtime`, as a worker or not,
-    /// polling `task`; a worker entered its runtime.
     fn thread(&mut self, tid: u64, runtime: Option<&Written>, worker: bool, task: Option<u64>) {
         self.entered_thread(tid, runtime, worker, worker, task);
     }
 
-    /// A thread whose `CONTEXT` names `runtime`, as a worker or not, which
-    /// entered it or not, polling `task`.
     fn entered_thread(
         &mut self,
         tid: u64,
@@ -558,7 +516,6 @@ impl World {
         }
     }
 
-    /// Every task, `page` at a time, and the page's gaps.
     fn tasks(&self, page: usize, program_only: bool) -> (Vec<RuntimeTask>, Vec<String>) {
         let mut tasks = Vec::new();
         let mut gaps = Vec::new();
@@ -582,8 +539,6 @@ impl World {
     }
 }
 
-/// What the convention says a task's state bits mean, given whether a
-/// worker polls it: a state, and its description.
 fn convention(bits: u64, polled: bool) -> (TaskState, String) {
     let cancelled = if bits & CANCELLED == 0 {
         ""
@@ -609,9 +564,6 @@ fn convention(bits: u64, polled: bool) -> (TaskState, String) {
     }
 }
 
-/// Every combination of the state's six flags, at three reference counts,
-/// is one state, as the convention says; only a task some worker polls is
-/// on a thread.
 #[test]
 fn each_state_is_read_as_tokio_defines_it() {
     let mut world = World::new(&[]);
@@ -636,7 +588,6 @@ fn each_state_is_read_as_tokio_defines_it() {
 
     let runtime = world.runtime(Flavor::MultiThread, 7, &[tasks.clone()]);
 
-    // A worker polls the running tasks with one reference.
     let polled = tasks
         .iter()
         .filter(|(id, bits)| bits & RUNNING != 0 && id % 4 == 1)
@@ -667,11 +618,6 @@ fn each_state_is_read_as_tokio_defines_it() {
     }
 }
 
-/// A worker runs the task it polls only when the task is its runtime's,
-/// and is idle as it polls its own launch; a pool thread runs its
-/// closure's task, and waits for one idle. A thread that never made its
-/// context, names no runtime, or blocks on one is the program's own, as is
-/// a worker still starting.
 #[test]
 fn a_thread_runs_the_task_its_context_names() {
     let mut world = World::new(&[]);
@@ -689,12 +635,10 @@ fn a_thread_runs_the_task_its_context_names() {
     world.thread(6, Some(&runtime), true, Some(11));
     world.entered_thread(8, Some(&runtime), false, true, None);
 
-    // A worker starting, its launch entered before its scheduler is set.
     world.entered_thread(11, Some(&runtime), false, true, Some(2));
     world.thread(9, Some(&current), true, None);
     world.thread(10, Some(&current), true, Some(30));
 
-    // A thread that never touched its context.
     world.thread(7, Some(&runtime), true, Some(10));
     let state = world.context().state;
     let pointer = world.memory.threads[&ThreadId::new(7)];
@@ -717,8 +661,6 @@ fn a_thread_runs_the_task_its_context_names() {
     assert_eq!(world.activity(4), ThreadActivity::Idle);
     assert_eq!(world.activity(5), ThreadActivity::Outside);
 
-    // A worker polling a suspended task is on it, though the task says
-    // otherwise, as when a poll is about to begin.
     assert_eq!(world.activity(6), task(11));
     assert_eq!(world.activity(7), ThreadActivity::Outside);
     assert_eq!(world.activity(8), ThreadActivity::Outside);
@@ -726,8 +668,6 @@ fn a_thread_runs_the_task_its_context_names() {
     assert_eq!(world.activity(9), ThreadActivity::Outside);
     assert_eq!(world.activity(10), task(30));
 
-    // The pool thread's task is listed as running there; its frames, and
-    // the worker's task's, begin on their threads.
     let (listed, _) = world.tasks(4096, true);
     let blocking = listed
         .iter()
@@ -765,10 +705,6 @@ fn a_thread_runs_the_task_its_context_names() {
     );
 }
 
-/// A thread's own context says which task it polls, read without the
-/// runtime's list: at a breakpoint's hit, before the other threads stop,
-/// one of them may be changing the list, and the thread still runs its
-/// task.
 #[test]
 fn a_threads_current_task_is_its_contexts_whatever_its_list_says() {
     let mut world = World::new(&[]);
@@ -781,8 +717,6 @@ fn a_threads_current_task_is_its_contexts_whatever_its_list_says() {
     world.thread(2, Some(&runtime), true, None);
     world.thread(3, None, false, None);
 
-    // Another thread was binding a task to the first shard, whose head it
-    // has written and the task's header not yet.
     let head = world.runtime_layout(Flavor::MultiThread).owned.head;
     world.memory.word(runtime.shards + head, 0x10);
     assert!(matches!(world.activity(1), ThreadActivity::Unknown(_)));
@@ -799,8 +733,6 @@ fn a_threads_current_task_is_its_contexts_whatever_its_list_says() {
     assert_eq!(current(3), None);
 }
 
-/// The blocking pool's queue is listed in its order, around the end of its
-/// ring; a worker's launch is the runtime's own.
 #[test]
 fn the_blocking_pool_lists_its_queue_in_order() {
     let mut world = World::new(&[]);
@@ -828,25 +760,13 @@ fn the_blocking_pool_lists_its_queue_in_order() {
     assert_eq!(numbers, [1, 21, 22]);
 }
 
-/// Where tokio 1.54's `Inner.inner_impl` is within the tests' `Inner`,
-/// each variant's `__0` within its variant, `LockedImpl.mutex` within
-/// its record, and `ShardedImpl.shards` within its: each nonzero and
-/// distinct, so an offset left out of a sum shows.
 const INNER_IMPL_AT: u64 = 16;
 const VARIANT_AT: u64 = 8;
 const MUTEX_AT: u64 = 24;
 const SHARDS_AT: u64 = 40;
 
-/// The shards of the tests' sharded pool. tokio's 16 would test nothing
-/// three do not.
 const SHARDS: u64 = 3;
 
-/// tokio 1.54's blocking pool, over the fixture's: an `Inner` holding
-/// `inner_impl: InnerImpl { Locked(LockedImpl { mutex }), Sharded(
-/// ShardedImpl { shards: [_; SHARDS] }) }`, its tag a word at its start,
-/// `Locked` 0 and `Sharded` 1. Each mutex is the fixture's
-/// `Mutex<Shared>`, whose data holds a `queue` as tokio 1.54's
-/// `LockedInner` and `Shard` do.
 #[expect(clippy::too_many_lines, reason = "one type graph, written out")]
 fn sharded_pool() -> Vec<TypeInfo> {
     use crate::{
@@ -963,8 +883,6 @@ fn sharded_pool() -> Vec<TypeInfo> {
     ]
 }
 
-/// A pool laid out as tokio 1.54's, its `inner_impl` tagged `tag`: where
-/// its `Inner` is, and its `Locked` queue and first shard.
 fn chosen_pool(world: &mut World, runtime: &Written, tag: u64) -> (u64, Guarded, Guarded, u64) {
     let pool = world.model.layout.pool.as_ref().expect("the pool binds");
     let Queues::Chosen {
@@ -987,10 +905,6 @@ fn chosen_pool(world: &mut World, runtime: &Written, tag: u64) -> (u64, Guarded,
     (inner, locked, sharded, stride)
 }
 
-/// tokio 1.54 holds its blocking queue behind a choice the runtime's
-/// builder makes: each queue is found where its own variant puts it,
-/// at the sum of every offset on the way, and read as the one queue
-/// before it was.
 #[test]
 fn tokio_1_54s_blocking_queues_are_found_within_their_variant() {
     let world = World::with_image(&[], Some(VERIFIED_SOURCE), sharded_pool());
@@ -1006,9 +920,6 @@ fn tokio_1_54s_blocking_queues_are_found_within_their_variant() {
         panic!("tokio 1.54's pool is a choice: {:?}", pool.queues);
     };
 
-    // The fixture's mutex puts its lock and its data's `queue` at these
-    // offsets from the mutex's start; tokio 1.54's do the same from
-    // wherever its variant puts the mutex.
     let one = one_queue(&World::new(&[]).model);
     let shared = super::records::field(
         module().as_ref(),
@@ -1036,9 +947,6 @@ fn tokio_1_54s_blocking_queues_are_found_within_their_variant() {
     assert_eq!(stride, mutex_size);
 }
 
-/// A sharded pool lists every shard's tasks, shard by shard, each in its
-/// order, empty shards included; a locked one lists its one queue and
-/// ignores what the shards' bytes would hold, as the two overlap.
 #[test]
 fn tokio_1_54s_blocking_pool_lists_the_queues_its_variant_holds() {
     for (tag, expected) in [(1, vec![1, 20, 21, 22]), (0, vec![1, 30, 31])] {
@@ -1068,9 +976,6 @@ fn tokio_1_54s_blocking_pool_lists_the_queues_its_variant_holds() {
     }
 }
 
-/// In a sharded pool, one shard's held lock is the change its gap
-/// reports, as the one queue's was; a tag no variant claims is reported,
-/// never read as either.
 #[test]
 fn a_sharded_pool_reports_its_held_shard_and_unknown_tags() {
     let mut world = World::with_image(&[], Some(VERIFIED_SOURCE), sharded_pool());
@@ -1106,10 +1011,6 @@ fn a_sharded_pool_reports_its_held_shard_and_unknown_tags() {
     );
 }
 
-/// A thread stopped inside a push may have counted a slot it has not yet
-/// written: with the pool's lock held, an entry that cannot be read is the
-/// change the pool's gap reports, and the entries before it are listed;
-/// with the lock free, it is damage.
 #[test]
 fn a_queue_read_mid_push_is_the_change_its_lock_reports() {
     for held in [true, false] {
@@ -1167,9 +1068,6 @@ fn a_queue_read_mid_push_is_the_change_its_lock_reports() {
     }
 }
 
-/// Addresses read from the program's memory may be anything: a context
-/// at the top of the address space, or a queue's head past its end, is
-/// reported, never followed past the end of the address space.
 #[test]
 fn addresses_at_the_end_of_memory_are_reported_not_followed() {
     let mut world = World::new(&[]);
@@ -1211,10 +1109,6 @@ fn addresses_at_the_end_of_memory_are_reported_not_followed() {
     assert!(gaps.iter().any(|gap| gap.contains("queue")), "{gaps:?}");
 }
 
-/// A release other than those verified is read wherever its layout binds,
-/// as the newest of them, and every page says it is unverified; sources
-/// whose path names no release say the version is unknown. Neither is
-/// taken for granted, and each verified release is.
 #[test]
 fn every_page_says_when_the_version_is_unverified_or_unknown() {
     let unknown = "tokio's version is unknown; its runtime is read as tokio 1.54's";
@@ -1247,8 +1141,6 @@ fn every_page_says_when_the_version_is_unverified_or_unknown() {
     }
 }
 
-/// A name the program lacks makes only what reads it unavailable, and
-/// says which.
 #[test]
 fn a_missing_name_makes_only_what_needs_it_unavailable() {
     let pool = "tokio::runtime::blocking::pool::Inner";
@@ -1292,7 +1184,6 @@ fn a_missing_name_makes_only_what_needs_it_unavailable() {
         page.gaps
     );
 
-    // A pool thread's task is still known: it needs no task's header.
     assert!(matches!(
         without_header.thread_activity(&memory, ThreadId::new(1)),
         ThreadActivity::Task { number: 12, .. }
@@ -1318,9 +1209,6 @@ fn a_missing_name_makes_only_what_needs_it_unavailable() {
     ));
 }
 
-/// tokio's locks are std's futex words, held while nonzero, or with its
-/// `parking_lot` feature the `parking_lot` crate's bytes, held while their
-/// low bit is set: one that is free with threads parked on it is not held.
 #[test]
 fn locks_are_held_as_their_mutex_says() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1360,38 +1248,26 @@ fn locks_are_held_as_their_mutex_says() {
     }
 }
 
-/// How a test damages one task of a list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Damage {
-    /// The task names another list as its owner.
     ForeignOwner,
 
-    /// The task's back link names another task.
     BrokenBack,
 
-    /// The shard's last task links to its head again.
     Cycle,
 
-    /// The task's vtable polls no task.
     DataVtable,
 
-    /// The shard's lock is held.
     HeldLock,
 
-    /// The shard's lock is held, and the task's back link names another
-    /// task, as a shard caught mid-change has.
     HeldLockBrokenBack,
 
-    /// The list's count is one more than it holds.
     WrongCount,
 
-    /// The list's count is one less than it holds.
     ShortCount,
 
-    /// The task's id picks another shard than the one that holds it.
     MisplacedId,
 
-    /// Another shard's head is the shard's first task.
     SharedHead,
 }
 
@@ -1411,8 +1287,6 @@ fn damage() -> impl Strategy<Value = Option<Damage>> {
     ]
 }
 
-/// A task's state: any lifecycle bits, with any of the bits beside them
-/// and some references.
 fn task_state() -> impl Strategy<Value = u64> {
     (
         prop::sample::subsequence(vec![RUNNING, COMPLETE, NOTIFIED, CANCELLED], 0..=2),
@@ -1424,11 +1298,6 @@ fn task_state() -> impl Strategy<Value = u64> {
         })
 }
 
-/// Whether a future that cannot be read may run a `LocalSet` is in its
-/// type, here the `runtimes` fixture's: the set's `run_until` and its
-/// `RunUntil` may, and so may a pin of one, which `block_on` drives, and
-/// a reference to a set; the fixture's own futures, which hold no set,
-/// may not.
 #[test]
 fn a_futures_type_says_whether_it_may_run_a_set() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1509,11 +1378,6 @@ fn shared_world() -> &'static std::sync::Mutex<()> {
     &LOCK
 }
 
-/// On a list of any shape, and its tasks in any state, every task is
-/// listed once, whatever the page size, and found by its number with its
-/// locator and without, as it was listed; damage is reported with its
-/// shard, never listed past, and leaves every other shard listed; a wrong
-/// count is reported when one page reads the whole list.
 #[expect(clippy::too_many_lines, reason = "one model per kind of damage")]
 fn pages_list_every_task_once(
     shard_bits: u32,
@@ -1526,7 +1390,6 @@ fn pages_list_every_task_once(
     let _serial = shared_world().lock();
     let shards = 1_usize << shard_bits;
 
-    // tokio keeps each task in the shard its id picks.
     let lists = (0..shards)
         .map(|shard| {
             (1..=sizes[shard % sizes.len()])
@@ -1543,9 +1406,6 @@ fn pages_list_every_task_once(
     let runtime = world.runtime(Flavor::MultiThread, 9, &lists);
     world.thread(1, Some(&runtime), false, None);
 
-    // The damaged shard and task: the shard's index, and how many of
-    // its tasks precede the damage. Damage that moves a task to another
-    // shard needs two.
     let nonempty = (0..shards)
         .filter(|shard| !lists[*shard].is_empty())
         .collect::<Vec<_>>();
@@ -1570,8 +1430,6 @@ fn pages_list_every_task_once(
         |shard: usize| runtime.shards + u64::try_from(shard).expect("small") * shard_size;
     let counted_at = runtime.handle + world.runtime_layout(Flavor::MultiThread).owned.at + count;
 
-    // The shard that reports the damage, and how many of each shard's
-    // tasks are listed.
     let mut reported_in = None;
     let mut cut = None;
     if let Some((damage, shard, node)) = damaged {
@@ -1615,9 +1473,6 @@ fn pages_list_every_task_once(
                 reported_in = None;
             }
 
-            // The count bounds each page's walk of a shard, so a shard
-            // that holds more is read only that far by a page that can
-            // walk that far; pages too small to each walk less.
             Damage::ShortCount => {
                 let short = total - 1;
                 world
@@ -1695,8 +1550,6 @@ fn pages_list_every_task_once(
             "{:?}",
             reported
         ),
-        // Only a list one page reads whole is counted: counting one read
-        // over several pages would read it all again.
         (Some(_), None) if total > page => {
             prop_assert!(reported.is_empty(), "{:?}", reported);
         }
@@ -1711,8 +1564,6 @@ fn pages_list_every_task_once(
     Ok(())
 }
 
-/// Found by the property below: a shard with a wrong count, read over
-/// two pages.
 #[test]
 fn a_wrong_count_read_over_two_pages_lists_every_task() {
     pages_list_every_task_once(
@@ -1726,11 +1577,6 @@ fn a_wrong_count_read_over_two_pages_lists_every_task() {
     .unwrap();
 }
 
-/// Found by the fuzzer: tokio numbers each runtime's task list once in a
-/// process, so two runtimes whose lists claim one id are damage. Only the
-/// first is listed, with a gap, and the pages end: a page that ended in
-/// the second named a task the next page looked for in the first, which
-/// listed the second again from its head, without end.
 #[test]
 fn two_runtimes_whose_lists_claim_one_id_are_listed_once() {
     let mut world = World::new(&[]);
@@ -1739,8 +1585,6 @@ fn two_runtimes_whose_lists_claim_one_id_are_listed_once() {
     world.thread(1, Some(&multi), true, None);
     world.thread(2, Some(&current), true, None);
 
-    // The first runtime's shards are unreadable, so a page that looks for
-    // the second's task in it finds nothing there.
     let owned = &world.runtime_layout(Flavor::MultiThread).owned;
     let shards = multi.handle + owned.at + owned.shards;
     world.memory.word(shards, 0x10);
@@ -1753,10 +1597,6 @@ fn two_runtimes_whose_lists_claim_one_id_are_listed_once() {
     );
 }
 
-/// Found by the property below: a task whose id picks another shard
-/// than the one that holds it is not listed, since a later page and a
-/// search by its number would look for it there; and a shard whose head
-/// is another shard's first task lists none of them twice.
 #[test]
 fn a_task_in_another_shard_than_its_id_picks_is_not_listed() {
     let sizes = [0, 1, 0, 0, 0, 0, 0, 0];
@@ -1787,7 +1627,6 @@ proptest! {
     }
 }
 
-/// A frame of a function of this linkage name and debug-information name.
 fn named_frame(linkage: &str, name: &str) -> crate::StackFrame {
     let mut frame =
         crate::StackFrame::new(0, crate::FrameKind::Physical, None, VirtualAddress::new(1));
@@ -1806,16 +1645,8 @@ fn named_frame(linkage: &str, name: &str) -> crate::StackFrame {
     frame
 }
 
-/// tokio's poller and drivers are known by their paths under either
-/// symbol mangling. Rust's legacy mangling, the default before 1.97,
-/// names every closure `{{closure}}`; the debug information's name still
-/// numbers it, so another closure of the same function is not the
-/// poller, and a closure the debug information does not number is not
-/// guessed at.
 #[test]
 fn the_poller_and_drivers_are_known_under_either_mangling() {
-    // `tokio::runtime::task::core::Core<T,S>::poll::{{closure}}`, as Rust
-    // 1.85 mangles it.
     let legacy_poll = "_ZN5tokio7runtime4task4core17Core$LT$T$C$S$GT$4poll28_$u7b$$u7b$closure$u7d$$u7d$17h09458907f21dda2bE";
     let poller = named_frame(
         legacy_poll,
@@ -1832,13 +1663,11 @@ fn the_poller_and_drivers_are_known_under_either_mangling() {
         None
     );
 
-    // `CoreGuard::block_on::{{closure}}` drives the future it holds.
     let legacy_block_on = "_ZN5tokio7runtime9scheduler14current_thread9CoreGuard8block_on28_$u7b$$u7b$closure$u7d$$u7d$17h0123456789abcdefE";
     let driver = named_frame(legacy_block_on, "{closure#0}<u8>");
     assert_eq!(super::future::driven_future(&driver), Some("future"));
     assert_eq!(super::future::polled_future(&driver), None);
 
-    // The fixture's own poller, mangled as the pinned toolchain does.
     let module = module();
     let poller = module
         .functions()

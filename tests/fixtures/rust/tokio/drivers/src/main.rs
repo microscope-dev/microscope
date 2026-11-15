@@ -1,24 +1,24 @@
-//! Futures that no runtime lists as tasks, which `block_on` drives, each
-//! parked in `block_on` while another thread reaches the checkpoint
-//! `parked`:
-//!
-//! - with no argument, `#[tokio::main]`'s future, on the main thread;
-//! - `current`, a current-thread runtime's `Runtime::block_on`, on a plain
-//!   thread;
-//! - `handle`, a multi-thread runtime's `Handle::block_on`, on a plain
-//!   thread.
-//!
-//! The driven future reports as task 0, two async functions deep, with a
-//! local saved across each await. Once the thread driving it sleeps in
-//! `block_on`'s park, the checkpoint reports it; then the future is
-//! released and the program ends.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 use std::hint::black_box;
 use std::sync::mpsc;
 
 use tokio::sync::oneshot;
 
-/// What the driven future reports as, since it is no task.
+
 const ME: u64 = 0;
 
 async fn waiting(release: oneshot::Receiver<u32>) -> u32 {
@@ -37,9 +37,9 @@ async fn driven(release: oneshot::Receiver<u32>) -> u32 {
     got + u32::try_from(driven_local).unwrap_or(0)
 }
 
-/// Waits until the future has registered its await and the thread driving
-/// it sleeps in `block_on`, then stops at the checkpoint and releases the
-/// future.
+
+
+
 fn checkpoint(driver: i32, release: oneshot::Sender<u32>) {
     while truth::parked_at("waiting") != 1 || !truth::thread_parked(driver) {
         std::thread::yield_now();

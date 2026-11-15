@@ -1,14 +1,8 @@
-//! What microscope assumes of each interpreter in the matrix beyond its
-//! layout, checked against the interpreter's headers. The layouts
-//! themselves are checked against each binary's own table and DWARF by
-//! `debug_info::cpython`'s tests.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::support::ScratchDir;
 
-/// Each interpreter's directory, by name.
 fn interpreters() -> Vec<(String, PathBuf)> {
     let root = std::env::var_os("MICROSCOPE_CPYTHON")
         .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell");
@@ -27,10 +21,6 @@ fn interpreters() -> Vec<(String, PathBuf)> {
     interpreters
 }
 
-/// What microscope assumes of every interpreter beyond the offsets its
-/// layouts give: the width it reads each field at, and how a stack
-/// reference tags what it holds. Each is checked by its name in the
-/// headers, so a version that changes one fails here, not in a stack.
 const ASSUMPTIONS: &str = r#"
 #include <Python.h>
 #include <stddef.h>
@@ -103,8 +93,6 @@ _Static_assert((Py_TAG_BITS & ~(uintptr_t)3) == 0, "a stack reference's tag bits
 #endif
 "#;
 
-/// Each interpreter's headers agree with what microscope assumes of it
-/// beyond its layout.
 #[test]
 fn the_assumptions_beyond_the_layouts_are_the_headers() {
     let scratch = ScratchDir::new("python-assumptions");
@@ -120,8 +108,6 @@ fn the_assumptions_beyond_the_layouts_are_the_headers() {
     }
 }
 
-/// Checks the C file `file` against the headers of the interpreter in
-/// `directory`, as CPython's own core code sees them.
 fn compile(directory: &Path, file: &Path) -> std::process::Output {
     let mut compile = Command::new("cc");
     compile.args(["-std=c11", "-fsyntax-only", "-w", "-DPy_BUILD_CORE=1"]);

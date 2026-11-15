@@ -1,22 +1,22 @@
 microscope-views 1
 
-# Bytes as text in Go. Verified against Go 1.27.1, by
-# tests/fixtures/go/stdlib.
 
-# A byte slice is text when its bytes are valid UTF-8 without control
-# characters, and its bytes otherwise; its elements are its bytes either
-# way.
+
+
+
+
+
 view go `[]uint8` {
     show sequence(len(self)) for i in range(len(self)) => self[i]
     format self as utf8
 }
 
-# A builder's text is its buffer.
+
 view go strings.Builder {
     show text(buf)
 }
 
-# A buffer's text is what it has not yet read, from off.
+
 view go bytes.Buffer {
     check off <= len(buf)
     show if off == len(buf) {
@@ -26,7 +26,7 @@ view go bytes.Buffer {
     }
 }
 
-# Raw JSON is the text it holds. json.RawMessage is jsontext.Value.
+
 view go `encoding/json/jsontext`.Value {
     show sequence(len(self)) for i in range(len(self)) => self[i]
     format self as utf8

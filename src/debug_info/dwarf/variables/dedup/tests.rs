@@ -14,7 +14,6 @@ use crate::{
     TypeIdentity, TypeInfo, TypeKind, TypeReference,
 };
 
-/// Hashes everything alike, so every type collides with every other.
 #[derive(Clone, Copy)]
 struct Colliding;
 
@@ -105,9 +104,6 @@ fn ids(remap: &Remap) -> Vec<u32> {
     remap.ids.iter().map(|id| id.get()).collect()
 }
 
-/// Two units' copies of a linked list's node, each pointing to itself
-/// through its own pointer type, and a node that differs only in a
-/// member's name.
 fn linked_lists() -> Vec<TypeEntry> {
     vec![
         record(0, "Node", &[("next", 1)]),
@@ -116,7 +112,6 @@ fn linked_lists() -> Vec<TypeEntry> {
         pointer(3, 2),
         record(4, "Node", &[("link", 5)]),
         pointer(5, 4),
-        // A pointer to the second copy, which follows it to the first.
         pointer(6, 2),
     ]
 }
@@ -158,10 +153,8 @@ fn copies_of_a_cyclic_type_merge_and_every_reference_follows() {
     assert_eq!(types.passed_by_value.len(), 1);
     assert!(types.passed_by_value[&TypeId::new(0)]);
 
-    // An identifier past the types stays past them.
     assert_eq!(remap.id(TypeId::new(7)), TypeId::new(4));
 
-    // Colliding hashes only propose candidates.
     let mut colliding = built(linked_lists());
     let collided = colliding
         .deduplicate_with(&Colliding)
@@ -169,7 +162,6 @@ fn copies_of_a_cyclic_type_merge_and_every_reference_follows() {
     assert_eq!(ids(&collided), ids(&remap));
 }
 
-/// A case's name, its types, and what else it says about them.
 type Case = (&'static str, Vec<TypeEntry>, fn(&mut BuiltTypes));
 
 #[test]
@@ -239,16 +231,12 @@ fn types_that_keep_their_provenance_never_merge() {
         change(&mut types);
         assert!(types.deduplicate().is_none(), "{name} copies merged");
 
-        // Signatures zero references in place, so this proves each came
-        // back.
         assert_eq!(types.entries, entries, "{name}");
     }
 }
 
 #[test]
 fn refinement_that_does_not_settle_keeps_every_type() {
-    // Two chains of pointers that differ only at their ends, and a copy of
-    // the first: a chain's depth is how many rounds it takes to tell apart.
     let chains = |depth: u32| {
         let mut entries = Vec::new();
         for (chain, end) in ["int", "long", "int"].into_iter().enumerate() {
@@ -280,8 +268,6 @@ fn refinement_that_does_not_settle_keeps_every_type() {
     assert_eq!(deep.entries, entries);
 }
 
-/// The greatest relation in which related types have equal fields and
-/// refer, position by position, to related types, found the slow way.
 fn bisimilar(labels: &[Option<u8>], edges: &[Vec<u32>]) -> Vec<Vec<bool>> {
     let count = labels.len();
     let mut related = (0..count)
@@ -328,9 +314,6 @@ fn graph() -> impl Strategy<Value = (Vec<Option<u8>>, Vec<Vec<u32>>)> {
     })
 }
 
-/// Refines types with these labels and edges with an ordinary hasher and
-/// one under which everything collides, and checks both against
-/// [`bisimilar`].
 fn check_refinement(labels: &[Option<u8>], edges: &[Vec<u32>]) -> Result<(), TestCaseError> {
     let infos = labels
         .iter()
@@ -380,9 +363,6 @@ proptest! {
 
 #[test]
 fn a_class_splits_into_more_groups_than_it_compares_one_by_one() {
-    // Records alike but for the leaf each refers to: two leaves of each of
-    // many labels, so that one round splits the records into many groups,
-    // and the records whose leaves share a label stay together.
     let mut labels = Vec::new();
     let mut edges = Vec::new();
 
@@ -398,12 +378,8 @@ fn a_class_splits_into_more_groups_than_it_compares_one_by_one() {
     check_refinement(&labels, &edges).unwrap();
 }
 
-/// A type named by a label, with members, and generic arguments that are
-/// types or a label its name spells.
 type NamedType = (u8, Vec<u32>, Vec<Result<u32, u8>>);
 
-/// Types named by a label, with members and generic arguments from the
-/// edges, and arguments their names spell, which resolve to a label.
 fn named_graph() -> impl Strategy<Value = Vec<NamedType>> {
     (1_usize..9).prop_flat_map(|count| {
         let bound = u32::try_from(count).unwrap();
@@ -480,9 +456,6 @@ fn named_types(
     (entries, pending)
 }
 
-/// Resolving the arguments names spell while merging, searching one type
-/// of each class, gives the types and merges that resolving them first,
-/// searching every type, gives.
 fn arguments_resolve_while_merging(types: &[NamedType]) -> Result<(), TestCaseError> {
     let (entries, pending) = named_types(types);
     let mut first = entries.clone();
@@ -508,8 +481,6 @@ fn arguments_resolve_while_merging(types: &[NamedType]) -> Result<(), TestCaseEr
     Ok(())
 }
 
-/// Found by the property below: two types of one label whose names spell
-/// the same arguments.
 #[test]
 fn two_types_spelling_the_same_arguments_resolve_while_merging() {
     arguments_resolve_while_merging(&[

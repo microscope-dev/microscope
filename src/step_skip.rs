@@ -1,19 +1,10 @@
-//! The source files steps pass through without stopping, as globs over
-//! their paths: `**/node_modules/**`, `/srv/vendor/*.js`.
-//!
-//! `*` and `?` match within one path component and `**` across any
-//! number. A pattern that does not begin with `/` matches the end of a
-//! path at a component boundary, as a relative breakpoint path does.
-
 use std::sync::Arc;
 
 use crate::{Error, Result};
 
-/// The most patterns kept, and the longest one, in bytes.
 const MAX_PATTERNS: usize = 256;
 const MAX_PATTERN_BYTES: usize = 1024;
 
-/// A parsed set of skip patterns.
 #[derive(Debug, Clone, Default)]
 pub struct StepSkips {
     patterns: Arc<[Arc<str>]>,
@@ -29,7 +20,6 @@ impl PartialEq for StepSkips {
 impl Eq for StepSkips {}
 
 impl StepSkips {
-    /// Parses `patterns`, refusing an empty or overlong one.
     pub fn parse<S: AsRef<str>>(patterns: &[S]) -> Result<Self> {
         if patterns.len() > MAX_PATTERNS {
             return Err(Error::InvalidStepSkip(format!(
@@ -64,13 +54,11 @@ impl StepSkips {
         })
     }
 
-    /// The patterns as given.
     #[must_use]
     pub fn patterns(&self) -> &[Arc<str>] {
         &self.patterns
     }
 
-    /// Whether a step passes through code of the file at `path`.
     #[must_use]
     pub fn matches(&self, path: &str) -> bool {
         self.matcher
@@ -79,9 +67,7 @@ impl StepSkips {
     }
 }
 
-/// The regular expression a glob stands for.
 fn expression(glob: &str) -> String {
-    // `s` lets `**` cross a newline in a file's name, as `*` does.
     let mut expression = String::from(if glob.starts_with('/') {
         "(?s)^"
     } else {
@@ -92,7 +78,6 @@ fn expression(glob: &str) -> String {
         match character {
             '*' if characters.peek() == Some(&'*') => {
                 characters.next();
-                // `**/` also matches no directory at all.
                 if characters.peek() == Some(&'/') {
                     characters.next();
                     expression.push_str("(?:.*/)?");
@@ -115,8 +100,6 @@ mod tests {
 
     use super::StepSkips;
 
-    /// Each pattern, with paths it must match and paths it must not, where
-    /// the wrong readings of a glob part from the right one.
     #[test]
     fn globs_match_whole_components() {
         let cases: [(&str, &[&str], &[&str]); 6] = [
@@ -160,7 +143,6 @@ mod tests {
         assert!(StepSkips::parse(&[""]).is_err());
     }
 
-    /// Shrunk by the property below: `**` stopped at a newline.
     #[test]
     fn stars_cross_a_newline_in_a_name() {
         let skips = StepSkips::parse(&["a**"]).expect("a pattern");
@@ -168,7 +150,6 @@ mod tests {
         assert!(skips.matches("/a/b\nc/d"));
     }
 
-    /// One part of a glob.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Part {
         Literal(char),
@@ -191,8 +172,6 @@ mod tests {
             .collect()
     }
 
-    /// The parts of a glob, read from the left: `**/`, `**`, `*`, `?`, or
-    /// a character.
     fn tokens(glob: &str) -> Vec<Part> {
         let mut parts = Vec::new();
         let mut rest = glob;
@@ -214,8 +193,6 @@ mod tests {
         parts
     }
 
-    /// Whether `parts` match all of `path`, by the module's rules, trying
-    /// every way each wildcard can match.
     fn naive(parts: &[Part], path: &[char]) -> bool {
         let Some((first, rest)) = parts.split_first() else {
             return path.is_empty();
@@ -235,8 +212,6 @@ mod tests {
         }
     }
 
-    /// Whether a pattern matches a path: all of it from `/`, or else its
-    /// end from a component boundary.
     fn naive_matches(parts: &[Part], path: &str) -> bool {
         let path = path.chars().collect::<Vec<_>>();
         if parts.first() == Some(&Part::Literal('/')) {
@@ -269,7 +244,6 @@ mod tests {
         .prop_map(|parts| tokens(&glob(&parts)))
     }
 
-    /// A path the parts match, choosing what each wildcard matches.
     fn instance(parts: Vec<Part>) -> impl Strategy<Value = String> {
         let pieces = parts
             .into_iter()

@@ -1,12 +1,3 @@
-//! Reads CPython interpreters, threads, and frames at a stop using the layout loaded
-//! from libpython or the executable (`crate::image::python`).
-//!
-//! Python frames are interpreted, not native. Each evaluation-loop activation runs a
-//! segment ending at its entry frame; backtraces place the segment before that activation
-//! ([`RuntimeModel::driven`]).
-//!
-//! Only code objects ([`code::CodeTable`]) are cached across stops; each use revalidates its row.
-
 mod agent;
 mod asyncio;
 mod code;
@@ -51,19 +42,14 @@ use crate::{
     AddressRange, CodeRole, ImageAddress, StackFrame, StackSegment, ThreadId, VirtualAddress,
 };
 
-/// The object a handle names: CPython's handle is its object's address.
 pub(super) const fn address(object: InterpretedHandle) -> VirtualAddress {
     VirtualAddress::new(object.get())
 }
 
-/// The handle of the object at `object`.
 pub(super) const fn handle(object: VirtualAddress) -> InterpretedHandle {
     InterpretedHandle::new(object.get())
 }
 
-/// The CPython runtime a module carries. One whose frames cannot be read,
-/// as one of a version microscope does not know, still finds its loop's
-/// activations, where a backtrace says why their frames are missing.
 pub fn detect(
     image: &Arc<dyn RuntimeImage + Send + Sync>,
 ) -> Option<Result<Arc<dyn RuntimeModel>, Unbound>> {
@@ -96,10 +82,6 @@ pub fn detect(
     })))
 }
 
-/// Where a thread begins to run Python code: the evaluation loop, or a
-/// tail-call build's first instruction, where something calls them; and
-/// the calls that enter the loop where LTO and PGO inline it into them, as
-/// they do in tail-call builds: a function's call, and a module's code.
 fn entries(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<ImageAddress> {
     let mut entries = [
         format!("{TAIL_CALL_PREFIX}start_frame"),
@@ -117,9 +99,6 @@ fn entries(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<ImageAddress> {
     entries
 }
 
-/// The code that runs Python's instructions: the evaluation loop with the
-/// part GCC splits off it, and in a tail-call build each instruction's
-/// function, which run the loop between them.
 fn evaluation(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<AddressRange<ImageAddress>> {
     [
         EVALUATION_LOOP.to_owned(),
@@ -137,17 +116,10 @@ fn evaluation(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<AddressRange<Imag
     .collect()
 }
 
-/// The size of a block a read of the running program reads at once: a
-/// page, as a thread's frames lie together on its stack of frames.
 const LIVE_BLOCK: usize = 4096;
 
-/// The most times the running program's frames are read at once, while a
-/// thread's still change as they are read.
 const LIVE_READS: usize = 8;
 
-/// The symbols CPython exports the objects the model reads values by as:
-/// the type objects of the built-in types it presents, and the function
-/// that reads attributes as `object` does.
 const TYPES: [&str; 23] = [
     "_PyNone_Type",
     "PyBool_Type",
@@ -174,8 +146,6 @@ const TYPES: [&str; 23] = [
     "PyObject_GenericGetAttr",
 ];
 
-/// The objects [`TYPES`] names, in its order; or why the model cannot read
-/// values.
 fn types(
     image: &dyn RuntimeImage,
     version: PyVersion,
@@ -197,7 +167,6 @@ fn types(
 struct PythonRuntime {
     version: PyVersion,
 
-    /// What reads its frames and values, or why nothing can.
     reading: Result<Reading, Arc<str>>,
     free_threaded: bool,
     entries: Vec<ImageAddress>,
@@ -209,7 +178,6 @@ impl PythonRuntime {
         self.reading.as_ref().map_err(Arc::clone)
     }
 
-    /// What reads the values expressions compute with, or why nothing can.
     fn expressions(&self) -> Result<&Reading, InterpretedFailure> {
         self.reading().map_err(|reason| {
             InterpretedFailure::Unavailable(crate::VariableUnavailableReason::Interpreted(reason))
@@ -217,30 +185,21 @@ impl PythonRuntime {
     }
 }
 
-/// What reads a runtime whose layout is known.
 #[derive(Debug)]
 struct Reading {
-    /// CPython's runtime state, `_PyRuntime`, which its `.PyRuntime`
-    /// section holds.
     runtime: AddressRange<ImageAddress>,
     layout: PythonLayout,
     code_type: ImageAddress,
 
-    /// The built-in types' objects, in the order [`TYPES`] names them.
     types: Result<[ImageAddress; TYPES.len()], Arc<str>>,
 
-    /// The secret `str` hashes are keyed by, `_Py_HashSecret`, where the
-    /// module exports it.
     secret: Option<ImageAddress>,
     code: Mutex<code::CodeTable>,
 
-    /// The pages the last read of the running program's frames used, which
-    /// the next reads first, all at once.
     pages: Mutex<Vec<u64>>,
 }
 
 impl Reading {
-    /// The stop's values, read through `budget`, and the code table.
     fn values<R>(
         &self,
         stop: &dyn RuntimeStop,
@@ -250,9 +209,6 @@ impl Reading {
         self.read_values(stop, Some(budget), read)
     }
 
-    /// The stop's values, their reads paid for from `budget`, or unpaid
-    /// for as a backtrace's are, which bounds its own work, and the code
-    /// table.
     fn read_values<R>(
         &self,
         stop: &dyn RuntimeStop,
@@ -321,8 +277,6 @@ impl Reading {
         let mut unpaid = InspectionBudget::new(crate::InspectionLimits::default());
         let budget = values::Budget::new(budget.unwrap_or(&mut unpaid));
 
-        // Blocks read at the stop are kept while it lasts, where the debugger
-        // keeps them, and while this read lasts otherwise.
         let read_now = StopMemory::default();
         let values = values::Values {
             reader: objects::Reader {
@@ -346,7 +300,6 @@ impl Reading {
         read(&values, &mut table)
     }
 
-    /// What an expression's `read` of the stop's values gives.
     fn interpreted<R>(
         &self,
         stop: &dyn RuntimeStop,
@@ -364,8 +317,6 @@ impl Reading {
             })?
     }
 
-    /// What an expression's `read` of the frame at `frame`, with the row
-    /// of its code, gives.
     fn interpreted_frame<R>(
         &self,
         stop: &dyn RuntimeStop,
@@ -401,10 +352,6 @@ impl Reading {
         })
     }
 
-    /// What `read` gives of asyncio's tasks, given the values, the walk
-    /// that reads frames, the thread states, and why some may be missing,
-    /// read unpaid for, as a backtrace's frames are, which bounds its own
-    /// work.
     fn asyncio<R>(
         &self,
         stop: &dyn RuntimeStop,
@@ -430,12 +377,6 @@ impl Reading {
         })
     }
 
-    /// Each thread's frames. While the program runs, a thread may push
-    /// and pop frames between the reads of one walk, so the pages the last
-    /// walk used are read first, all at once, for its thread states, frames
-    /// and code to come from about the same moment; and while a thread's
-    /// frames are not read whole, the walk is made again at once, up to
-    /// [`LIVE_READS`] times in all, keeping each thread's first whole read.
     fn stacks(&self, stop: &dyn RuntimeStop, version: PyVersion) -> Partial<InterpretedStacks> {
         if !stop.runs() {
             return self.stacks_from(stop, version, None, None);
@@ -506,9 +447,6 @@ impl Reading {
         }
     }
 
-    /// Each thread's frames, as one walk reads them, through `blocks`;
-    /// with each thread none of whose frames could be read, and why, in
-    /// `unread` where given, or else among the gaps.
     fn stacks_from(
         &self,
         stop: &dyn RuntimeStop,
@@ -583,8 +521,6 @@ impl Reading {
 }
 
 impl Reading {
-    /// Each thread state of every interpreter, where a walker in the
-    /// kernel begins the thread it names.
     fn walked_threads(
         &self,
         stop: &dyn RuntimeStop,
@@ -622,7 +558,6 @@ impl Reading {
         }
     }
 
-    /// The frames a walker in the kernel read of one thread, named.
     fn sampled_frames(
         &self,
         stop: &dyn RuntimeStop,
@@ -651,8 +586,6 @@ impl Reading {
         .sampled(frames)
     }
 
-    /// Each thread of the stop that holds its interpreter's GIL, or from
-    /// 3.15 asks for it, labeled `gil=held` or `gil=waiting`.
     fn thread_labels(
         &self,
         stop: &dyn RuntimeStop,
@@ -734,12 +667,8 @@ impl Reading {
     }
 }
 
-/// A thread, and the interpreter it runs frames in.
 type ThreadKey = (ThreadId, i64);
 
-/// Adds the frames of each thread state that runs on one of the stop's
-/// `threads` to `stacks`, and why others' are missing to `gaps`; or, for
-/// a thread none of whose frames could be read, to `unread` where given.
 fn walk_threads(
     walk: &mut frames::Walk<'_, '_>,
     states: &[threads::ThreadState],
@@ -792,8 +721,6 @@ impl RuntimeModel for PythonRuntime {
             crate::BreakpointSpec::Source { path, line }
                 if path.extension().is_some_and(|extension| extension == "py") =>
             {
-                // As a native breakpoint's path does, a relative path
-                // matches the files that end with its components.
                 let path = path
                     .components()
                     .filter(|component| *component != std::path::Component::CurDir)
@@ -809,12 +736,10 @@ impl RuntimeModel for PythonRuntime {
                     line,
                 }
             }
-            // `py::run` is a native function in a `py` namespace.
             crate::BreakpointSpec::Function(name)
                 if let Some(name) = name.strip_prefix("py:")
                     && !name.starts_with(':') =>
             {
-                // The agent treats an empty name as any function.
                 if name.is_empty() {
                     return Some(Err(
                         "a Python function breakpoint needs a function name".into()
@@ -824,9 +749,6 @@ impl RuntimeModel for PythonRuntime {
             }
             _ => return None,
         };
-        // Keep the requested location even when injection is unsupported.
-        // Arming supplies its explicit reason, including for pending requests
-        // created before the interpreter was discovered.
         Some(Ok(vec![place]))
     }
 
@@ -900,8 +822,6 @@ impl RuntimeModel for PythonRuntime {
                 number: number - 1,
                 description: reason.description().into(),
             },
-            // The step goes on in Python when the callable runs no C
-            // function of its own to step into.
             agent::Report::StepCalls { number, callable } => self
                 .reading()?
                 .native_callee(stop, crate::VirtualAddress::new(callable))?
@@ -923,7 +843,6 @@ impl RuntimeModel for PythonRuntime {
         })
     }
 
-    /// asyncio's tasks, which only 3.14 and later list.
     fn tasks(
         &self,
         stop: &dyn RuntimeStop,
@@ -978,7 +897,6 @@ impl RuntimeModel for PythonRuntime {
         })
     }
 
-    /// The asyncio task a thread runs, which its state names from 3.14.
     fn thread_activity(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> ThreadActivity {
         let reading = match self.reading() {
             Ok(reading) if reading.layout.has(Field::ThreadAsyncioRunningTask) => reading,
@@ -1029,8 +947,6 @@ impl RuntimeModel for PythonRuntime {
         }
     }
 
-    /// A task a thread runs begins on the thread; one no thread runs is
-    /// its chain of awaits.
     fn task_context(
         &self,
         stop: &dyn RuntimeStop,
@@ -1055,7 +971,6 @@ impl RuntimeModel for PythonRuntime {
                     .map_err(Arc::clone);
             }
 
-            // A thread state that cannot be read may run the task.
             if !gaps.is_empty() {
                 let gaps: Vec<&str> = gaps.iter().map(AsRef::as_ref).collect();
                 return Err(gaps.join("; ").into());
@@ -1180,8 +1095,6 @@ impl RuntimeModel for PythonRuntime {
     fn activation(&self, name: &str, inner: Option<&str>) -> bool {
         let instruction = |name: &str| split_from(name).starts_with(TAIL_CALL_PREFIX);
 
-        // A tail-call instruction function represents its loop activation; don't count both.
-        // When the loop is inlined into its caller, only the instruction function appears.
         let called = inner.is_some_and(instruction);
         instruction(name) || (split_from(name) == EVALUATION_LOOP && !called)
     }
@@ -1349,12 +1262,10 @@ impl RuntimeModel for PythonRuntime {
                     let (running, _) = walk.code_of(&record)?;
                     return Ok(running == code);
                 }
-                // The frame may be past where the walk ended.
                 if let Some(end) = end {
                     return Err(end);
                 }
             }
-            // The frame may be in a thread state that could not be read.
             gaps.first().map_or(Ok(false), |gap| Err(Arc::clone(gap)))
         })
     }

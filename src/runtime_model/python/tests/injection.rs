@@ -392,8 +392,6 @@ fn a_consumed_but_unacknowledged_slot_is_never_overwritten() {
     );
 }
 
-/// The request sets the debugger's stop bit in the eval breaker and keeps
-/// every other bit, whichever are set, the stop bit among them.
 #[test]
 fn injection_preserves_every_other_eval_breaker_bit() {
     for breaker in [0, 32, 31, !32, u64::MAX, 0x8000_0000_0000_0001] {
@@ -483,8 +481,6 @@ fn an_ambiguous_preferred_thread_does_not_hide_an_eligible_alternative() {
     assert_eq!(writes[0].address.get(), second + 76);
 }
 
-/// CPython never clears a consumed script slot, so one earlier request on
-/// the preferred thread must not hide an eligible alternative.
 #[test]
 fn a_busy_preferred_thread_does_not_hide_an_eligible_alternative() {
     for busy in ["pending", "uncleared"] {

@@ -1,8 +1,8 @@
-"""A program to profile: two threads spin in Python, taking turns at the GIL
-where there is one, and a third sleeps, until a line arrives on standard
-input. Each line a test looks for is marked with a comment naming it, which
-the test finds in this file.
-"""
+
+
+
+
+
 
 import ctypes
 import sys

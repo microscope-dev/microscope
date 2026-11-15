@@ -1,5 +1,3 @@
-//! Variant parts: discriminant lists and selecting the active variant.
-
 use std::sync::Arc;
 
 use gimli::Reader as _;
@@ -224,7 +222,6 @@ pub(super) fn validate_variant_selections(
     Ok(())
 }
 
-/// Whether a variant part has exactly one variant, selected by default.
 pub(super) const fn is_single_default_variant(variants: &[Variant]) -> bool {
     matches!(
         variants,

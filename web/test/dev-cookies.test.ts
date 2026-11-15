@@ -4,7 +4,6 @@ import { fromServices, toServices } from "../dev-cookies";
 
 describe("services' cookies over plain HTTP", () => {
   it("forwards only the newest of each, under services' name", () => {
-    // The browser sends the narrower path first, then oldest to newest.
     const header =
       "dev-session=stale; theme=dark; dev-session=fresh; __Host-session=elsewhere; dev-sso=s";
     expect(toServices(header)).toBe("__Host-session=fresh; theme=dark; __Host-sso=s");

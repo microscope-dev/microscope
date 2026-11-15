@@ -10,9 +10,9 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-// Holds hardware breakpoints through perf so the kernel has fewer debug
-// registers left for ptrace. STOLEN_BY_WORKER selects whether a second
-// thread, rather than the main thread, holds every slot.
+
+
+
 
 #ifndef STOLEN_SLOTS
 #error "STOLEN_SLOTS must be defined"

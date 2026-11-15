@@ -1,5 +1,3 @@
-//! Interns what a recording sees into a [`Capture`]'s tables.
-
 use std::collections::BTreeMap;
 
 use foldhash::HashMap;
@@ -15,7 +13,6 @@ use super::records::{
 use crate::image::{StrId, StringsBuilder};
 use crate::model::{Pid, Tid};
 
-/// One source line of a frame, as a symbolizer reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineInput<'a> {
     pub function: &'a str,
@@ -23,16 +20,11 @@ pub struct LineInput<'a> {
     pub line: u32,
     pub column: u32,
 
-    /// Where the function is declared.
     pub declared: Option<(&'a str, u32)>,
 
-    /// The function's role, by [`role_number`](super::records::role_number).
     pub role: u8,
 }
 
-/// Where an interpreted frame is: its function, the line it runs of the
-/// file its code is in, and the file and line its function's code begins
-/// at, which a frame whose line is unknown may still know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InterpretedPlace<'a> {
     pub function: &'a str,
@@ -41,7 +33,6 @@ pub struct InterpretedPlace<'a> {
     pub declared: Option<(&'a str, u32)>,
 }
 
-/// Builds a capture as a recording proceeds.
 #[derive(Debug, Default, Clone)]
 pub struct CaptureBuilder {
     strings: StringsBuilder,
@@ -51,8 +42,6 @@ pub struct CaptureBuilder {
     processes: Vec<Process>,
     live_processes: HashMap<Pid, u32>,
 
-    /// Each pid's and tid's ended rows, which an event from before its end
-    /// still belongs to: an id names one process or thread at a time.
     ended_processes: HashMap<Pid, Vec<u32>>,
     threads: Vec<Thread>,
     live_threads: BTreeMap<Tid, u32>,
@@ -71,7 +60,6 @@ pub struct CaptureBuilder {
     function_index: HashMap<(u32, u32, u32, u32), u32>,
     sites: Vec<Site>,
 
-    /// Each thread's zones, whose depths their nesting gives.
     zones: BTreeMap<u32, Vec<Zone>>,
     plots: Vec<Plot>,
     markers: Vec<Marker>,
@@ -86,8 +74,6 @@ pub struct CaptureBuilder {
     syscall_errnos: Vec<SyscallErrno>,
 }
 
-/// Rows kept per thread, as one table in time order per thread and each
-/// thread's range of it.
 fn grouped<T: Timed>(by_thread: Vec<Vec<T>>) -> (Vec<T>, Vec<ThreadRange>) {
     let mut rows = Vec::with_capacity(by_thread.iter().map(Vec::len).sum());
     let mut ranges = Vec::new();
@@ -108,17 +94,14 @@ fn grouped<T: Timed>(by_thread: Vec<Vec<T>>) -> (Vec<T>, Vec<ThreadRange>) {
     (rows, ranges)
 }
 
-/// Whether a process's span holds `time`.
 const fn covers(process: &Process, time: i64) -> bool {
     process.start.get() <= time && time <= process.end.get()
 }
 
-/// Whether two spans share a moment.
 const fn overlap(a: (i64, i64), b: (i64, i64)) -> bool {
     a.0 <= b.1 && b.0 <= a.1
 }
 
-/// When a call happened, for cutting a window: its end, or its entry.
 const fn call_time(call: &Syscall) -> i64 {
     if call.exited.get() == UNSEEN {
         call.entered.get()
@@ -132,7 +115,6 @@ impl CaptureBuilder {
         Self::default()
     }
 
-    /// The pool's name for `text`; a string with a NUL is cut at it.
     pub fn string(&mut self, text: &str) -> u32 {
         let text = text.split('\0').next().unwrap_or_default();
         self.strings.push(text).map_or(NONE, |StrId(id)| id)
@@ -142,12 +124,10 @@ impl CaptureBuilder {
         text.map_or(NONE, |text| self.string(text))
     }
 
-    /// Records what produced the capture.
     pub fn setting(&mut self, key: &str, value: &str) {
         self.settings.insert(key.to_owned(), value.to_owned());
     }
 
-    /// The module of a file, by its path, build id, and contents.
     pub fn module(
         &mut self,
         path: &str,
@@ -172,7 +152,6 @@ impl CaptureBuilder {
         module
     }
 
-    /// The live process `pid`, which begins at `time` if not yet seen.
     pub fn process(&mut self, pid: Pid, time: i64) -> u32 {
         if let Some(&process) = self.live_processes.get(&pid) {
             return process;
@@ -197,19 +176,16 @@ impl CaptureBuilder {
         process
     }
 
-    /// When the last process `pid` named exited, if it has.
     pub fn process_end(&self, pid: Pid) -> Option<i64> {
         let process = *self.ended_processes.get(&pid)?.last()?;
         Some(own(&self.processes, process).end.get())
     }
 
-    /// Names a process, as when it execs.
     pub fn process_name(&mut self, process: u32, name: &str) {
         let name = self.string(name);
         own_mut(&mut self.processes, process).name = name.into();
     }
 
-    /// Ends process `pid` and its threads at `time`.
     pub fn process_exit(&mut self, pid: Pid, time: i64) {
         if let Some(process) = self.live_processes.remove(&pid) {
             own_mut(&mut self.processes, process).end = time.into();
@@ -227,8 +203,6 @@ impl CaptureBuilder {
         }
     }
 
-    /// The live thread `tid` of `pid`, which begins at `time` if not yet
-    /// seen.
     pub fn thread(&mut self, pid: Pid, tid: Tid, time: i64) -> u32 {
         if let Some(&thread) = self.live_threads.get(&tid) {
             let thread_record = own_mut(&mut self.threads, thread);
@@ -274,14 +248,11 @@ impl CaptureBuilder {
         thread
     }
 
-    /// Names a thread.
     pub fn thread_name(&mut self, thread: u32, name: &str) {
         let name = self.string(name);
         own_mut(&mut self.threads, thread).name = name.into();
     }
 
-    /// Gives a thread without a name the name of the live thread `from`,
-    /// which made it, if that has one.
     pub fn inherit_name(&mut self, thread: u32, from: Tid) {
         let Some(&maker) = self.live_threads.get(&from) else {
             return;
@@ -293,7 +264,6 @@ impl CaptureBuilder {
         }
     }
 
-    /// Ends thread `tid` at `time`.
     pub fn thread_exit(&mut self, tid: Tid, time: i64) {
         if let Some(thread) = self.live_threads.remove(&tid) {
             self.ended_threads.entry(tid).or_default().push(thread);
@@ -304,12 +274,10 @@ impl CaptureBuilder {
         }
     }
 
-    /// Records a mapping of a module into a process.
     pub fn mapping(&mut self, mapping: Mapping) {
         self.mappings.push(mapping);
     }
 
-    /// The frame of a kind, module, and address.
     pub fn frame(&mut self, kind: FrameKind, module: u32, address: u64, role: u8) -> u32 {
         let key = (address, module, kind as u8);
         if let Some(&frame) = self.frame_index.get(&key) {
@@ -328,18 +296,14 @@ impl CaptureBuilder {
         frame
     }
 
-    /// Every frame so far, by index.
     pub fn frames(&self) -> &[Frame] {
         &self.frames
     }
 
-    /// The frame that says why a stack ends early.
     pub fn truncation(&mut self, reason: Truncation, module: u32) -> u32 {
         self.frame(FrameKind::Truncated, module, reason as u64, 0)
     }
 
-    /// The frame of a future a suspended task awaits, named by what it
-    /// waits for.
     pub fn awaited(&mut self, text: &str) -> u32 {
         let name = self.string(text);
         let frame = self.frame(FrameKind::Awaited, NONE, u64::from(name), 0);
@@ -359,16 +323,9 @@ impl CaptureBuilder {
         frame
     }
 
-    /// The frame of an interpreted function at a line of its source, whose
-    /// code is in no module. Its function is declared at the file and line
-    /// its code begins at, so that functions of one name in two files, or
-    /// two of one file, stay apart.
     pub fn interpreted(&mut self, place: &InterpretedPlace<'_>) -> u32 {
         let file = place.file.unwrap_or_default();
 
-        // The files' lengths make the key unambiguous whatever the names
-        // hold, and a declaration in another file than the frame's, which
-        // only a frame with no place has, is keyed after its own.
         let elsewhere = place
             .declared
             .map(|(declared, _)| declared)
@@ -407,7 +364,6 @@ impl CaptureBuilder {
         frame
     }
 
-    /// The stack node of `frame` called from `parent`.
     pub fn child(&mut self, parent: u32, frame: u32) -> u32 {
         debug_assert!(
             parent == NONE || (parent as usize) < self.stacks.len(),
@@ -432,7 +388,6 @@ impl CaptureBuilder {
         stack
     }
 
-    /// The stack of `frames`, given innermost first.
     pub fn stack(&mut self, frames: &[u32]) -> u32 {
         frames
             .iter()
@@ -440,7 +395,6 @@ impl CaptureBuilder {
             .fold(NONE, |parent, frame| self.child(parent, *frame))
     }
 
-    /// Records an on-CPU sample of a thread.
     pub fn sample(&mut self, thread: u32, time: i64, weight: u64, stack: u32, task: u32) {
         debug_assert!(
             stack == NONE || (stack as usize) < self.stacks.len(),
@@ -460,9 +414,6 @@ impl CaptureBuilder {
         });
     }
 
-    /// Gives a thread's samples at `time` the task they ran, and says how
-    /// many it gave. Samples come in time order, so the search runs back
-    /// from the latest.
     pub fn claim(&mut self, thread: u32, time: i64, task: u32) -> u64 {
         let mut claimed = 0;
 
@@ -481,8 +432,6 @@ impl CaptureBuilder {
         claimed
     }
 
-    /// Records that a thread spent `duration` nanoseconds off its CPU from
-    /// `time`, preempted or blocked, with `OFF_CPU_*` `flags`.
     pub fn off_cpu(&mut self, thread: u32, time: i64, duration: u64, preempted: bool, flags: u8) {
         own_mut(&mut self.off_cpu, thread).push(OffCpu {
             time: time.into(),
@@ -492,24 +441,20 @@ impl CaptureBuilder {
         });
     }
 
-    /// Adds to a count.
     pub fn count(&mut self, kind: u32, value: u64) {
         if value > 0 {
             *self.accounts.entry(kind).or_default() += value;
         }
     }
 
-    /// A count so far.
     pub fn account(&self, kind: u32) -> u64 {
         self.accounts.get(&kind).copied().unwrap_or(0)
     }
 
-    /// Whether `frame` has its lines.
     pub fn symbolized(&self, frame: u32) -> bool {
         self.symbols.contains_key(&frame)
     }
 
-    /// Gives a frame its source lines, innermost inline first.
     pub fn symbolize(&mut self, frame: u32, module: u32, lines: &[LineInput<'_>]) {
         debug_assert!(
             (frame as usize) < self.frames.len(),
@@ -536,7 +481,6 @@ impl CaptureBuilder {
         self.symbols.insert(frame, range(start, lines.len()));
     }
 
-    /// The function named `name` of `module`, declared at `file`:`line`.
     fn function(&mut self, name: u32, module: u32, (file, line): (u32, u32), role: u8) -> u32 {
         let key = (name, module, file, line);
         if let Some(&function) = self.function_index.get(&key) {
@@ -556,7 +500,6 @@ impl CaptureBuilder {
         function
     }
 
-    /// The site of an instrumentation record.
     pub fn site(&mut self, name: &str, file: &str, line: u32, module: u32, kind: u8) -> u32 {
         let name = self.string(name);
         let file = self.string(file);
@@ -583,13 +526,10 @@ impl CaptureBuilder {
         site
     }
 
-    /// Records a zone of a thread, at the depth its nesting in the
-    /// thread's other zones gives it.
     pub fn zone(&mut self, thread: u32, zone: Zone) {
         self.zones.entry(thread).or_default().push(zone);
     }
 
-    /// Records a value of the series a site plots.
     pub fn plot(&mut self, thread: u32, site: u32, time: i64, value: f64) {
         self.plots.push(Plot {
             time: time.into(),
@@ -599,7 +539,6 @@ impl CaptureBuilder {
         });
     }
 
-    /// Marks an instant of a thread, from a site.
     pub fn thread_marker(
         &mut self,
         (thread, site): (u32, u32),
@@ -618,7 +557,6 @@ impl CaptureBuilder {
         });
     }
 
-    /// The task a runtime numbers `number`, first seen at `time`.
     pub fn task(&mut self, runtime: &str, number: u64, time: i64) -> u32 {
         let runtime = self.string(runtime);
         if let Some(&task) = self.task_index.get(&(runtime, number)) {
@@ -643,7 +581,6 @@ impl CaptureBuilder {
         task
     }
 
-    /// Sets a task's root frame and labels, each unless `NONE`.
     pub fn describe_task(&mut self, task: u32, root: u32, labels: Option<&str>) {
         let labels = self.optional(labels);
         let record = own_mut(&mut self.tasks, task);
@@ -656,7 +593,6 @@ impl CaptureBuilder {
         }
     }
 
-    /// Marks an instant of the whole recording, saying what happened.
     pub fn marker(&mut self, time: i64, kind: MarkerKind, text: &str) {
         let text = self.string(text);
         self.markers.push(Marker {
@@ -669,7 +605,6 @@ impl CaptureBuilder {
         });
     }
 
-    /// Records that nothing was sampled from `start` to `end`.
     pub fn gap(&mut self, start: i64, end: i64, reason: GapReason) {
         self.gaps.push(Gap {
             start: start.into(),
@@ -678,17 +613,11 @@ impl CaptureBuilder {
         });
     }
 
-    /// Forgets every row of what happened before `time`, as a rolling
-    /// window does, and cuts the spans that cross it there. What rows
-    /// refer to, such as threads, frames, and stacks, stays, and so do the
-    /// counts.
     pub fn forget_before(&mut self, time: i64) {
         for samples in &mut self.samples {
             samples.retain(|sample| sample.time.get() >= time);
         }
 
-        // A span of no length at the cut is of the moment it begins, which
-        // this side keeps, as [`Self::forget_from`] does not.
         for intervals in &mut self.off_cpu {
             intervals.retain_mut(|interval| {
                 let start = interval.time.get();
@@ -712,8 +641,6 @@ impl CaptureBuilder {
             end > time || start >= time
         });
 
-        // A zone open at the cut keeps the part after it, as an interval
-        // off a CPU does, beginning unseen.
         for zones in self.zones.values_mut() {
             zones.retain_mut(|zone| {
                 let (start, end) = (zone.start.get(), zone.end.get());
@@ -732,8 +659,6 @@ impl CaptureBuilder {
         self.forget_syscalls(|at| at >= time);
     }
 
-    /// Forgets every row of what happened at `time` or after, as a segment
-    /// that ends there does, and cuts the spans that cross it there.
     pub fn forget_from(&mut self, time: i64) {
         for samples in &mut self.samples {
             samples.retain(|sample| sample.time.get() < time);
@@ -756,7 +681,6 @@ impl CaptureBuilder {
             gap.start.get() < time
         });
 
-        // A zone open at the cut keeps the part before it, ending unseen.
         for zones in self.zones.values_mut() {
             zones.retain_mut(|zone| {
                 if zone.end.get() > time {
@@ -774,8 +698,6 @@ impl CaptureBuilder {
         self.forget_syscalls(|at| at < time);
     }
 
-    /// Keeps the calls and notes of the times `keep` keeps, and only their
-    /// bytes, each note still among the calls it came between.
     #[expect(
         clippy::indexing_slicing,
         reason = "a note counts at most the calls, which `kept_before` has one more entry \
@@ -814,18 +736,14 @@ impl CaptureBuilder {
         }
     }
 
-    /// Every count, by kind.
     pub const fn accounts(&self) -> &BTreeMap<u32, u64> {
         &self.accounts
     }
 
-    /// Restores cumulative totals at a cut before the latest rows.
     pub fn restore_accounts(&mut self, accounts: &BTreeMap<u32, u64>) {
         self.accounts.clone_from(accounts);
     }
 
-    /// Takes `base` from every count, so that they count only what came
-    /// after it.
     pub fn discount(&mut self, base: &BTreeMap<u32, u64>) {
         for (kind, value) in &mut self.accounts {
             *value = value.saturating_sub(base.get(kind).copied().unwrap_or(0));
@@ -834,8 +752,6 @@ impl CaptureBuilder {
         self.accounts.retain(|_, value| *value > 0);
     }
 
-    /// Keeps bytes in the blobs: where they start and how many, or
-    /// [`NONE`] for none.
     fn blob(&mut self, bytes: &[u8]) -> (u32, u32) {
         if bytes.is_empty() {
             return (NONE, 0);
@@ -846,8 +762,6 @@ impl CaptureBuilder {
         (start, index(bytes.len()))
     }
 
-    /// Records a system call, with the bytes captured behind its
-    /// arguments.
     pub fn syscall(&mut self, mut call: Syscall, captures: &[u8]) {
         let (start, len) = self.blob(captures);
         call.captures = start.into();
@@ -855,8 +769,6 @@ impl CaptureBuilder {
         self.syscalls.push(call);
     }
 
-    /// Records what a system call trace saw besides a call, after the
-    /// calls so far, with its bytes.
     pub fn syscall_note(&mut self, mut note: SyscallNote, bytes: &[u8]) {
         note.calls = index(self.syscalls.len()).into();
         self.push_note(note, bytes);
@@ -869,8 +781,6 @@ impl CaptureBuilder {
         self.syscall_notes.push(note);
     }
 
-    /// Records a process's statistics of a call that the kernel counted,
-    /// which a trace with no calls holds instead.
     pub fn syscall_stat(&mut self, mut stat: SyscallStat, errnos: &[SyscallErrno]) {
         stat.errnos = index(self.syscall_errnos.len()).into();
         stat.errno_count = index(errnos.len()).into();
@@ -878,7 +788,6 @@ impl CaptureBuilder {
         self.syscall_stats.push(stat);
     }
 
-    /// Records where a task waited.
     pub fn task_wait(&mut self, task: u32, time: i64, weight: u64, stack: u32, state: &str) {
         let state = self.string(state);
         self.task_waits.push(TaskWait {
@@ -891,9 +800,6 @@ impl CaptureBuilder {
         });
     }
 
-    /// Adds every row of `capture`, which may come from another chunk of
-    /// the same recording: threads, modules, frames, and stacks are matched
-    /// by what they are, not by index. Returns where its rows landed.
     pub fn absorb(&mut self, capture: &Capture) -> Remap {
         self.absorb_settings(capture);
         let mut map = Remap::default();
@@ -903,7 +809,6 @@ impl CaptureBuilder {
         map
     }
 
-    /// This pool's name for a string of `capture`'s.
     fn copy_string(&mut self, capture: &Capture, id: u32) -> u32 {
         if id == NONE {
             NONE
@@ -917,7 +822,6 @@ impl CaptureBuilder {
             let key = capture.string(setting.key.get());
             let value = capture.string(setting.value.get());
 
-            // Chunks of one recording span its time between them.
             let keep_existing = match (key, self.settings.get(key)) {
                 ("start", Some(existing)) => existing.parse::<i64>().ok() <= value.parse().ok(),
                 ("end", Some(existing)) => existing.parse::<i64>().ok() >= value.parse().ok(),
@@ -940,7 +844,6 @@ impl CaptureBuilder {
         }
 
         for process in &capture.processes {
-            // One pid names one process at a time.
             let found = self.processes.iter().position(|existing| {
                 existing.pid == process.pid
                     && overlap(
@@ -1011,8 +914,6 @@ impl CaptureBuilder {
             let kind = FrameKind::from_number(frame.kind).unwrap_or(FrameKind::Native);
             let module = map.module(frame.module.get());
 
-            // A frame keyed by a string is keyed by the string's text, not
-            // by where the other capture kept it.
             let address = match u32::try_from(frame.address.get()) {
                 Ok(name) if kind.named() => u64::from(self.copy_string(capture, name)),
                 _ => frame.address.get(),
@@ -1072,7 +973,6 @@ impl CaptureBuilder {
             let new = self.task(runtime, task.number.get(), task.first_seen.get());
             self.task(runtime, task.number.get(), task.last_seen.get());
 
-            // Snapshots find a task's labels with no root frame.
             let root = match task.root.get() {
                 NONE => NONE,
                 root => Remap::get(&map.frames, root),
@@ -1106,9 +1006,6 @@ impl CaptureBuilder {
             self.count(account.kind.get(), account.value.get());
         }
 
-        // In reverse of the table's order, so that zones it orders by when
-        // they were recorded come again in that order: of two of one span,
-        // the one that holds the other comes later.
         for range in capture.zone_ranges.iter().rev() {
             let thread = Remap::get(&map.threads, range.thread.get());
             for zone in capture.range_zones(range).iter().rev() {
@@ -1192,12 +1089,9 @@ impl CaptureBuilder {
         }
     }
 
-    /// The finished capture: each thread's rows in time order, zones by
-    /// thread and depth.
     pub fn finish(self) -> Capture {
         let capture = self.assemble();
 
-        // A saved capture is read back through the same check.
         if cfg!(debug_assertions)
             && let Err(error) = capture.validate()
         {
@@ -1207,9 +1101,6 @@ impl CaptureBuilder {
         capture
     }
 
-    /// The finished capture of captures read and absorbed, checked as a
-    /// file's capture is: each was valid, but together they may not be, as
-    /// weights that add up past what a count holds.
     pub fn finish_read(self) -> Result<Capture, String> {
         let capture = self.assemble();
         capture.validate()?;
@@ -1255,8 +1146,6 @@ impl CaptureBuilder {
         let mut gaps = self.gaps;
         gaps.sort_by_key(|gap| gap.start.get());
 
-        // The chunks of one file may hold gaps that overlap; a gap keeps only
-        // what no earlier one covers.
         let mut covered = i64::MIN;
         gaps.retain_mut(|gap| {
             gap.start = gap.start.get().max(covered).into();
@@ -1320,12 +1209,6 @@ impl CaptureBuilder {
     }
 }
 
-/// A thread's zones by depth, each depth's by start: a zone is one deeper
-/// than the latest zone that began before it and ends after it begins.
-/// Zones that cross rather than nest go deeper still, so that no two of one
-/// depth overlap.
-/// Of two zones with one span, the one recorded later holds the other, as a
-/// zone that holds another ends after it.
 fn depths(zones: Vec<Zone>) -> Vec<Vec<Zone>> {
     let mut zones: Vec<(usize, Zone)> = zones.into_iter().enumerate().collect();
     zones.sort_by_key(|(order, zone)| {
@@ -1347,7 +1230,6 @@ fn depths(zones: Vec<Zone>) -> Vec<Vec<Zone>> {
         let depth = open.len();
         open.push(zone.end.get());
 
-        // A zone is at most one deeper than any before it.
         match depths.get_mut(depth) {
             Some(depth) => depth.push(zone),
             None => depths.push(vec![zone]),
@@ -1357,9 +1239,6 @@ fn depths(zones: Vec<Zone>) -> Vec<Vec<Zone>> {
     depths
 }
 
-/// A row's position as an id. Each of a capture's tables would need more
-/// memory than any machine recording it has to pass `u32::MAX` rows, and
-/// validation, which reading a capture runs, refuses a capture that does.
 fn index(position: usize) -> u32 {
     let index = u32::try_from(position);
     debug_assert!(
@@ -1370,7 +1249,6 @@ fn index(position: usize) -> u32 {
     index.unwrap_or(u32::MAX)
 }
 
-/// A row by an id the builder handed out.
 #[expect(
     clippy::indexing_slicing,
     reason = "the builder hands out ids only of rows it pushed, and never removes \
@@ -1380,7 +1258,6 @@ const fn own<T>(rows: &[T], id: u32) -> &T {
     &rows[id as usize]
 }
 
-/// A row by an id the builder handed out, to change.
 #[expect(
     clippy::indexing_slicing,
     reason = "the builder hands out ids only of rows it pushed, and never removes \
@@ -1390,7 +1267,6 @@ const fn own_mut<T>(rows: &mut [T], id: u32) -> &mut T {
     &mut rows[id as usize]
 }
 
-/// Where each of another capture's rows landed in this one.
 #[derive(Debug, Default)]
 pub struct Remap {
     modules: Vec<u32>,
@@ -1403,7 +1279,6 @@ pub struct Remap {
 }
 
 impl Remap {
-    /// The new index of `id` in `table`, keeping [`NONE`].
     #[expect(
         clippy::indexing_slicing,
         reason = "each table has an entry per row of the capture it remaps, and `validate` \
@@ -1418,7 +1293,6 @@ impl Remap {
     }
 }
 
-/// A row of a table grouped by thread and ordered by time.
 trait Timed {
     fn time(&self) -> i64;
 }

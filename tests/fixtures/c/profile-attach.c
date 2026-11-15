@@ -1,8 +1,8 @@
-// A program a profiler attaches to. One worker starts before it says
-// READY; once a byte on its standard input releases it, main starts a
-// second, and each of the three threads calls outer, which calls middle,
-// which calls leaf, three times. So an attach finds one thread that
-// started before it, and follows one that starts after.
+
+
+
+
+
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>

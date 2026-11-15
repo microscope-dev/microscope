@@ -1,8 +1,3 @@
-//! The interactive and scripted command-line client.
-//!
-//! The CLI is one client of [`DebuggerHandle`]: it parses commands, issues
-//! requests, and renders replies. Debugger semantics live in the library.
-
 pub mod commands;
 mod complete;
 pub mod config;
@@ -37,18 +32,15 @@ use terminal::{
     terminal_control_enabled,
 };
 
-/// Renderers for each output stream.
 #[derive(Clone, Copy)]
 pub struct Renderers {
     pub stdout: Renderer,
     pub stderr: Renderer,
 
-    /// Whether stdout accepts cursor-control sequences.
     pub stdout_control: bool,
 }
 
 impl Renderers {
-    /// Detects color and terminal support from the streams and environment.
     pub fn detect(choice: ColorChoice, batch: bool) -> Self {
         let environment = ColorEnvironment::current();
         let stdout_is_terminal = io::stdout().is_terminal();
@@ -71,11 +63,7 @@ impl Renderers {
         }
     }
 
-    /// Renderers for a debug adapter's console: paths relative to the
-    /// project root, as the CLI shows them, and Unicode, which every editor
-    /// shows.
     pub fn console(color: bool, root: PathBuf) -> Self {
-        // One look per session, which lives as long as the adapter.
         let look: &'static Look = Box::leak(Box::new(Look {
             palette: Palette::new(
                 terminal::ThemeName::Default,
@@ -94,8 +82,6 @@ impl Renderers {
         }
     }
 
-    /// Renderers in the look the settings describe, colored as they and
-    /// the streams allow.
     pub fn configured(settings: &Settings, batch: bool) -> Self {
         let ui = &settings.config.ui;
         let detected = Self::detect(ui.color, batch);
@@ -124,8 +110,6 @@ impl Renderers {
     }
 }
 
-/// Whether the locale's character set is UTF-8, by the first of `LC_ALL`,
-/// `LC_CTYPE`, and `LANG` that is set.
 fn locale_is_utf8() -> bool {
     ["LC_ALL", "LC_CTYPE", "LANG"]
         .iter()
@@ -136,7 +120,6 @@ fn locale_is_utf8() -> bool {
         })
 }
 
-/// Whether the terminal is one known to show OSC 8 hyperlinks.
 fn terminal_has_hyperlinks() -> bool {
     let variable = |name| std::env::var(name).unwrap_or_default();
     let program = variable("TERM_PROGRAM");
@@ -186,25 +169,19 @@ impl From<AssemblySyntax> for DisassemblySyntax {
     }
 }
 
-/// What the input loop does after a command.
 enum Control {
-    /// Print the output, if any, and read the next command.
     Continue(String),
     ClearScreen,
     Quit,
 }
 
-/// How a script reacts to a failed command.
 #[derive(Clone, Copy)]
 enum OnError {
-    /// Stop the script and fail the session.
     Abort,
 
-    /// Report the error and read the next command.
     Report,
 }
 
-/// How `run` starts the inferior.
 #[derive(Clone, Debug, Default)]
 pub struct LaunchSettings {
     pub arguments: Vec<OsString>,
@@ -213,7 +190,6 @@ pub struct LaunchSettings {
 }
 
 impl LaunchSettings {
-    /// The options for one launch, sharing the debugger's standard streams.
     fn options(&self) -> LaunchOptions {
         LaunchOptions {
             arguments: self.arguments.clone(),
@@ -225,12 +201,8 @@ impl LaunchSettings {
 }
 
 pub struct Cli {
-    /// The debugger commands act on: the session's, or in a group, the
-    /// selected member's.
     selected: std::sync::Mutex<Selected>,
 
-    /// The process group the session debugs, when it follows the
-    /// processes its program starts.
     group: Option<group::Group>,
     renderers: Renderers,
     settings: Settings,
@@ -238,59 +210,39 @@ pub struct Cli {
     launch: LaunchSettings,
     views: std::sync::Mutex<ViewSources>,
 
-    /// The breakpoints an interactive session keeps for the next one.
     kept: std::sync::OnceLock<std::sync::Mutex<saved::Kept>>,
 
-    /// The terminal's width and height as the line editor last measured
-    /// them, or 0.
     columns: std::sync::atomic::AtomicUsize,
     rows: std::sync::atomic::AtomicUsize,
 
-    /// The exceptions that stop, as `catch` last chose them.
     exceptions: std::sync::Mutex<microscope::ExceptionStops>,
 
-    /// Whether backtraces show every runtime frame rather than folding
-    /// them, as `set runtime-frames` last chose.
     runtime_frames: std::sync::atomic::AtomicBool,
 
-    /// The expressions every stop prints.
     displays: std::sync::Mutex<stops::Displays>,
 
-    /// The values the last stops showed, which a stop marks changes from.
     changes: std::sync::Mutex<stops::Changes>,
 
-    /// What completion knows of the loaded code and the selected frame.
     completion_code: std::sync::Mutex<Option<complete::Code>>,
     completion_names: std::sync::Mutex<Option<complete::Names>>,
 
-    /// Source files lexed for highlighting, by path, with when each was
-    /// modified.
     highlights: std::sync::Mutex<Highlights>,
 
-    /// The program's profile, recording or recorded, boxed as a profile is
-    /// large.
     profiling: std::sync::Mutex<Box<profile::Profiling>>,
 
-    /// Whether the inferior replaced its program with one microscope does
-    /// not follow, which fails a batch run.
     unfollowed_exec: std::sync::atomic::AtomicBool,
 }
 
-/// The member commands act on, and its handle.
 struct Selected {
     member: microscope::MemberNumber,
     handle: DebuggerHandle,
 }
 
-/// A source file's lines, each with its highlighted spans.
 type Lexed = Vec<(String, Vec<highlight::Span>)>;
 
-/// Lexed source files by path, with when each was modified.
 type Highlights =
     std::collections::BTreeMap<PathBuf, (Option<std::time::SystemTime>, std::sync::Arc<Lexed>)>;
 
-/// The view files a session loads: those it was given or loaded, most
-/// recent first, then the project's and the user's.
 #[derive(Default)]
 struct ViewSources {
     session: Vec<microscope::view_files::ViewFile>,
@@ -335,9 +287,6 @@ impl Cli {
         }
     }
 
-    /// Makes the session one of a process group, whose root is the
-    /// debugger it was made with, and whose members' handles read source
-    /// files through `source_paths`.
     #[must_use]
     pub fn with_group(
         mut self,
@@ -348,7 +297,6 @@ impl Cli {
         self
     }
 
-    /// The debugger commands act on.
     pub(super) fn debugger(&self) -> DebuggerHandle {
         self.selected
             .lock()
@@ -357,15 +305,12 @@ impl Cli {
             .clone()
     }
 
-    /// The debugger breakpoints belong to: a group's root, whose
-    /// breakpoints every member has, or the session's.
     pub(super) fn group_debugger(&self) -> DebuggerHandle {
         self.group
             .as_ref()
             .map_or_else(|| self.debugger(), |group| group.handle.root())
     }
 
-    /// The member commands act on.
     pub(super) fn selected_member(&self) -> microscope::MemberNumber {
         self.selected
             .lock()
@@ -373,7 +318,6 @@ impl Cli {
             .member
     }
 
-    /// The process the session launched, while it is alive.
     pub async fn live_process(&self) -> Option<microscope::ProcessId> {
         self.debugger()
             .snapshot()
@@ -383,15 +327,12 @@ impl Cli {
             .live_process()
     }
 
-    /// Records the terminal's size, as the line editor measured it.
     pub fn set_dimensions(&self, columns: usize, rows: usize) {
         self.columns
             .store(columns, std::sync::atomic::Ordering::Relaxed);
         self.rows.store(rows, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Prints a command's output, through the pager when it is taller
-    /// than the terminal of an interactive session.
     async fn show(&self, output: &str) -> Result<()> {
         let rows = self.rows.load(std::sync::atomic::Ordering::Relaxed);
         let columns = self.columns().max(1);
@@ -434,8 +375,6 @@ impl Cli {
         Ok(emit(output)?)
     }
 
-    /// The width a value is laid out to: the terminal's, or 80 when output
-    /// is not one, so that piped and batch output is the same everywhere.
     pub fn columns(&self) -> usize {
         match self.columns.load(std::sync::atomic::Ordering::Relaxed) {
             0 => 80,
@@ -443,9 +382,6 @@ impl Cli {
         }
     }
 
-    /// Loads the project's view files, under `project_root`, and the
-    /// user's, and the session files at `paths`, and returns a warning for
-    /// each file or view it could not use, the program's own included.
     pub async fn load_view_sources(
         &self,
         project_root: &std::path::Path,
@@ -483,14 +419,10 @@ impl Cli {
         warnings
     }
 
-    /// What could not be used of the debug information of the program and of
-    /// the libraries already loaded, as an attached process or a core dump
-    /// has them.
     pub async fn debug_information_warnings(&self) -> Vec<String> {
         let program = self.debugger().module_image();
         let mut warnings = crate::present::debug_information::warnings(&program, true);
 
-        // A program yet to run has loaded nothing else.
         let Ok(loaded) = self.debugger().loaded_modules().await else {
             return warnings;
         };
@@ -506,8 +438,6 @@ impl Cli {
         warnings
     }
 
-    /// Loads view files as [`Self::load_view_sources`] does and warns about
-    /// each one that cannot be used. Returns whether every one could be used.
     pub async fn load_views(&self, project_root: &std::path::Path, paths: &[PathBuf]) -> bool {
         let warnings = self.load_view_sources(project_root, paths).await;
         for warning in &warnings {
@@ -517,8 +447,6 @@ impl Cli {
         warnings.is_empty()
     }
 
-    /// Presents values with the session's view files and the kernels beside
-    /// them, and returns what kept parts of them out.
     async fn reload_views(&self) -> Vec<String> {
         let sources = {
             let views = self
@@ -535,7 +463,6 @@ impl Cli {
 
         let mut kernels = Vec::<microscope::view_files::KernelFile>::new();
 
-        // Files in one directory share the kernels beside them.
         for kernel in sources.iter().flat_map(|file| &file.kernels) {
             if !kernels.iter().any(|loaded| loaded.path == kernel.path) {
                 kernels.push(kernel.clone());
@@ -564,9 +491,6 @@ impl Cli {
         }
     }
 
-    /// Runs the session's scripts and then its REPL, pausing the inferior on
-    /// Ctrl-C. Ends early once `terminated` completes, and returns the
-    /// signal it completed with.
     pub async fn run(
         &self,
         session: &Session,
@@ -574,8 +498,6 @@ impl Cli {
     ) -> Result<Option<SignalKind>> {
         let session_batch = session.batch;
 
-        // One listener for the session: a Ctrl-C while a pause is under way
-        // waits in it, where a listener made anew each time would miss it.
         let mut interrupts =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
                 .context("failed to listen for Ctrl-C")?;
@@ -586,8 +508,6 @@ impl Cli {
                 result = &mut session => {
                     result?;
 
-                    // A script that ran to its end still failed when the
-                    // program it debugged was replaced by one it did not.
                     if session_batch
                         && self.unfollowed_exec.load(std::sync::atomic::Ordering::Relaxed)
                     {
@@ -623,11 +543,7 @@ impl Cli {
         }
     }
 
-    /// Pauses a running inferior. Ctrl-C never ends the session: with nothing
-    /// running there is nothing to interrupt, and `quit` or end-of-input exits.
     async fn interrupt(&self) {
-        // A group stops as a whole once its selected member stops, or at
-        // once when that member has no process left.
         let paused = match &self.group {
             Some(group) => match self.debugger().pause().await {
                 Err(Error::NotRunning | Error::AlreadyStopped) => {
@@ -644,7 +560,6 @@ impl Cli {
     }
 
     async fn run_inputs(&self, args: &Session) -> Result<()> {
-        // The program is loaded and the session can take its first command.
         microscope::timings::mark("ready");
         self.announce(args)?;
 
@@ -663,8 +578,6 @@ impl Cli {
             self.debugger().set_step_skips(skips).await?;
         }
 
-        // Scripts behave the same in every checkout, so only a session at
-        // a terminal keeps its breakpoints.
         if !args.batch
             && io::stdin().is_terminal()
             && io::stdout().is_terminal()
@@ -703,8 +616,6 @@ impl Cli {
 
         if !args.batch {
             if io::stdin().is_terminal() && io::stdout().is_terminal() {
-                // Quitting kills a launched program, but detaches an
-                // attached one and leaves a core as it was.
                 let confirm = self.settings.config.ui.confirm_quit
                     && args.attached().is_none()
                     && self.debugger().core_dump().is_none();
@@ -721,7 +632,6 @@ impl Cli {
         Ok(())
     }
 
-    /// Applies the settings' `[signals]`, as `handle` would.
     async fn apply_signal_settings(&self) -> Result<()> {
         for (name, actions) in &self.settings.config.signals {
             let Some(code) = microscope::signal_named(name) else {
@@ -759,7 +669,6 @@ impl Cli {
                 ))?;
             }
 
-            // Modules not proven to match the dump are always reported.
             for warning in format::core_module_warnings(core) {
                 self.warn(&warning);
             }
@@ -800,7 +709,6 @@ impl Cli {
         Ok(())
     }
 
-    /// Runs one line of a script and returns whether to keep reading.
     async fn run_scripted(
         &self,
         line: &str,
@@ -823,8 +731,6 @@ impl Cli {
         }
     }
 
-    /// Executes one command line, keeps the breakpoints it leaves, and
-    /// returns whether to keep reading.
     async fn run_line(&self, line: &str) -> Result<bool> {
         let result = self.run_unsaved_line(line).await;
         self.save_breakpoints().await;
@@ -859,9 +765,6 @@ impl Cli {
         }
     }
 
-    /// Restores the breakpoints the project's last interactive session
-    /// kept, each pending until code for it loads, and starts keeping this
-    /// session's.
     async fn restore_breakpoints(&self, source_paths: &microscope::SourcePathMap) {
         let path = saved::path(&self.settings.root);
         let shown = self.renderers.stderr.path(&path);
@@ -944,8 +847,6 @@ impl Cli {
         let _ = self.kept.set(std::sync::Mutex::new(kept));
     }
 
-    /// Restores one saved breakpoint, returning whether its line reads
-    /// differently than when it was saved.
     async fn restore_breakpoint(
         &self,
         entry: &saved::Saved,
@@ -982,7 +883,6 @@ impl Cli {
             .is_some_and(|current| current.trim() != text.trim()))
     }
 
-    /// The line a source breakpoint's first location is at, as it reads now.
     async fn current_line_text(
         &self,
         breakpoint: &microscope::Breakpoint,
@@ -997,8 +897,6 @@ impl Cli {
         saved::line_text(source_paths, &path, line.get())
     }
 
-    /// Writes the session's breakpoints to the project's file when they
-    /// changed since it was last written.
     async fn save_breakpoints(&self) {
         let Some(kept) = self.kept.get() else {
             return;
@@ -1096,7 +994,6 @@ impl Cli {
         ));
     }
 
-    /// Whether this session keeps its breakpoints for the next one.
     fn keeps_breakpoints(&self) -> bool {
         self.kept.get().is_some_and(|kept| {
             !kept
@@ -1121,25 +1018,18 @@ impl Cli {
     }
 }
 
-/// Shows `text` through `pager`, a shell command, returning false when the
-/// shell found no such command.
 fn page(pager: &str, text: &str) -> io::Result<bool> {
     let mut child = std::process::Command::new("sh")
         .args(["-c", pager])
         .stdin(std::process::Stdio::piped())
         .spawn()?;
     if let Some(mut input) = child.stdin.take() {
-        // A pager that quits early closes its input, which is no error.
         let _ = input.write_all(text.as_bytes());
     }
 
     Ok(wait_for_child(&mut child)?.is_none_or(|status| status.code() != Some(127)))
 }
 
-/// Waits for a process the CLI started, returning its status when it can
-/// still be read. While a program is traced the debugger collects the exit
-/// of every child of this process, so a child already collected has ended,
-/// with a status no one can read now.
 pub fn wait_for_child(
     child: &mut std::process::Child,
 ) -> io::Result<Option<std::process::ExitStatus>> {
@@ -1150,8 +1040,6 @@ pub fn wait_for_child(
     }
 }
 
-/// Writes one line to stdout. Unlike `println!`, a closed pipe is an error
-/// rather than a panic.
 fn emit(text: &str) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
     writeln!(stdout, "{text}")?;

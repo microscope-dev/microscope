@@ -1,15 +1,3 @@
-//! What recording costs a program, measured on reference workloads.
-//!
-//! Each runs bare and under each preset, interleaved so that drift in the
-//! machine falls on every setup alike. Each workload reports its own rate
-//! of work in a window that begins once recording is on, so setting up and
-//! finishing a recording, which the program does not wait for, cost it
-//! nothing here. The program runs on CPUs of four physical cores of its
-//! own, and microscope and the server's clients on the other cores that share
-//! its last-level cache: unpinned, where the scheduler places four threads
-//! among shared cores, and clients across caches from their server, moves
-//! a rate by more than recording does.
-
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -24,31 +12,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::profiler::{Preset, Profile, PythonEngine, RecordOptions, Watch, record_watched};
 
-/// How a workload's rate is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Measure {
-    /// The program writes a line as each unit of work ends.
     Lines,
 
-    /// The program is a line server, which clients load.
     Server,
 }
 
-/// What runs a workload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Program {
-    /// A built fixture, by its name.
     Built(&'static str),
 
-    /// A Python fixture, by its name, run by the interpreter the flake
-    /// names `interpreter`.
     Python {
         interpreter: &'static str,
         script: &'static str,
     },
 }
 
-/// A reference workload: a fixture, its arguments, and how its rate is read.
 #[derive(Debug, Clone, Copy)]
 pub struct Workload {
     pub name: &'static str,
@@ -57,9 +37,6 @@ pub struct Workload {
     measure: Measure,
 }
 
-/// CPU-bound C, Go goroutines that allocate, a tokio server under load,
-/// Rust instrumented with microscope's probes, listened to when recorded,
-/// and CPU-bound Python, whose stacks each Python engine reads.
 pub const WORKLOADS: [Workload; 5] = [
     Workload {
         name: "c",
@@ -96,17 +73,12 @@ pub const WORKLOADS: [Workload; 5] = [
     },
 ];
 
-/// Each setup every workload runs under: bare, then each preset.
 pub const SETUPS: [(&str, Option<Preset>); 3] = [
     ("bare", None),
     ("prod", Some(Preset::Production)),
     ("dev", Some(Preset::Development)),
 ];
 
-/// The production preset with each Python engine, which a Python workload
-/// also runs under.
-///
-/// The BPF engine's setup runs only where the tool has its privileges.
 pub const PYTHON_SETUPS: [(&str, PythonEngine); 3] = [
     (
         "prod+live",
@@ -123,7 +95,6 @@ pub const PYTHON_SETUPS: [(&str, PythonEngine); 3] = [
     ("prod+bpf", PythonEngine::Bpf),
 ];
 
-/// What a workload is recorded with under `setup`, or `None` for bare.
 fn recorded_with(workload: &Workload, setup: &str) -> Option<RecordOptions> {
     if let Some((_, preset)) = SETUPS.iter().find(|(name, _)| *name == setup) {
         return preset.map(RecordOptions::preset);
@@ -140,7 +111,6 @@ fn recorded_with(workload: &Workload, setup: &str) -> Option<RecordOptions> {
     })
 }
 
-/// The setups `workload` runs under, in order.
 fn setups(workload: &Workload, privileged: bool) -> Vec<&'static str> {
     let mut setups: Vec<&str> = SETUPS.iter().map(|(name, _)| *name).collect();
     if matches!(workload.program, Program::Python { .. }) {
@@ -155,63 +125,42 @@ fn setups(workload: &Workload, privileged: bool) -> Vec<&'static str> {
     setups
 }
 
-/// Whether this process may run the BPF engine.
 fn privileged() -> bool {
     crate::backend::syscall_engines::bpf::Probe::read()
         .lacks_privileges()
         .is_none()
 }
 
-/// How many clients load the server, and how many requests each keeps
-/// outstanding: enough that the server's cores never idle, since a core
-/// that does wakes more slowly than one sampling keeps busy, which makes
-/// a server that waits on its clients faster when recorded.
 const CLIENTS: usize = 4;
 const BATCH: usize = 32;
 
-/// One run of one workload under one setup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
     pub workload: String,
     pub setup: String,
 
-    /// Units of work, or requests answered, a second.
     pub rate: f64,
 
-    /// A server's 99th-percentile latency for a batch of requests, in
-    /// nanoseconds.
     pub p99_ns: Option<u64>,
 
-    /// The share of one CPU microscope spent recording, past reading debug
-    /// information.
     pub recorder_cpu: Option<f64>,
 
-    /// How much more memory microscope's process held at its most while it
-    /// recorded than as it began.
     pub recording_bytes: Option<u64>,
 }
 
-/// What to measure, and for how long.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// Where the built fixtures are.
     pub programs: PathBuf,
 
-    /// Runs of each workload under each setup.
     pub runs: usize,
 
-    /// How long a program runs before its window, once recording is on.
     pub warmup: Duration,
 
-    /// How long its rate is counted.
     pub window: Duration,
 
-    /// Only the workloads with these names; every one when empty.
     pub only: Vec<String>,
 }
 
-/// Runs every workload under every setup `options.runs` times, telling
-/// `progress` of each run as it ends.
 pub fn measure(options: &Options, mut progress: impl FnMut(&Run)) -> Result<Vec<Run>> {
     let workloads: Vec<&Workload> = WORKLOADS
         .iter()
@@ -238,26 +187,19 @@ pub fn measure(options: &Options, mut progress: impl FnMut(&Run)) -> Result<Vec<
     Ok(runs)
 }
 
-/// What a workload measured of itself.
 struct Measured {
     rate: f64,
     p99_ns: Option<u64>,
 }
 
-/// Where the program runs, and where microscope does.
 pub(super) struct Placement {
     program: CpuSet,
     microscope: CpuSet,
 }
 
-/// How many cores the program runs on: one for each thread of the
-/// workloads.
 const PROGRAM_CORES: usize = 4;
 
 impl Placement {
-    /// One CPU of each of the first cores for the program, and one of each
-    /// of the other cores that share its last-level cache for microscope, or of
-    /// every other core if none do, so that no two share a core.
     pub(super) fn new() -> Result<Self> {
         let mut cores = Vec::new();
         for cpu in 0..CpuSet::count() {
@@ -267,7 +209,6 @@ impl Placement {
                 continue;
             };
 
-            // A core's first CPU names it.
             let first = siblings
                 .trim()
                 .split([',', '-'])
@@ -313,13 +254,10 @@ impl Placement {
         })
     }
 
-    /// Moves the calling thread to the program's CPUs, so that a program
-    /// it starts runs there from its first instruction.
     fn program(&self) -> Result<()> {
         Ok(sched_setaffinity(Pid::from_raw(0), &self.program)?)
     }
 
-    /// The program's CPUs, as `taskset --cpu-list` reads them.
     pub(super) fn program_list(&self) -> String {
         (0..CpuSet::count())
             .filter(|&cpu| self.program.is_set(cpu).unwrap_or(false))
@@ -328,14 +266,11 @@ impl Placement {
             .join(",")
     }
 
-    /// Moves the calling thread to microscope's CPUs.
     pub(super) fn microscope(&self) -> Result<()> {
         Ok(sched_setaffinity(Pid::from_raw(0), &self.microscope)?)
     }
 }
 
-/// The CPUs a list such as `0-7,16-23` in `path` names, or none if it
-/// cannot be read.
 fn cpu_list(path: &str) -> Vec<usize> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut cpus = Vec::new();
@@ -395,8 +330,6 @@ fn run(workload: &Workload, setup: &str, options: &Options, placement: &Placemen
                 let recording = scope.spawn(move || {
                     let mut sent = false;
 
-                    // The recording starts the program from this thread,
-                    // which goes back to microscope's CPUs once it has.
                     placement.program()?;
                     Ok::<_, anyhow::Error>(record_watched(
                         command,
@@ -426,7 +359,6 @@ fn run(workload: &Workload, setup: &str, options: &Options, placement: &Placemen
             Measure::Server => server(reader, options),
         };
 
-        // A line program runs until stopped; a server exits once told.
         if let Some(mut child) = bare {
             if workload.measure == Measure::Lines {
                 child.kill().ok();
@@ -462,7 +394,6 @@ fn run(workload: &Workload, setup: &str, options: &Options, placement: &Placemen
     })
 }
 
-/// The rate at which lines arrive in the window after the warmup.
 fn lines(mut reader: BufReader<std::io::PipeReader>, options: &Options) -> Result<Measured> {
     let begin = Instant::now() + options.warmup;
     let end = begin + options.window;
@@ -489,9 +420,6 @@ fn lines(mut reader: BufReader<std::io::PipeReader>, options: &Options) -> Resul
     })
 }
 
-/// The rate at which the server answers clients that each wait for a
-/// batch's answers before asking again, in the window after the warmup,
-/// and the 99th percentile of how long a batch took, then tells it to quit.
 fn server(mut reader: BufReader<std::io::PipeReader>, options: &Options) -> Result<Measured> {
     let mut ready = String::new();
     reader.read_line(&mut ready)?;
@@ -536,7 +464,6 @@ fn server(mut reader: BufReader<std::io::PipeReader>, options: &Options) -> Resu
     })
 }
 
-/// How long each batch of answers in the window took.
 fn client(address: &str, begin: Instant, end: Instant) -> Result<Vec<Duration>> {
     let stream = std::net::TcpStream::connect(address)?;
     stream.set_nodelay(true)?;
@@ -564,8 +491,6 @@ fn client(address: &str, begin: Instant, end: Instant) -> Result<Vec<Duration>> 
     }
 }
 
-/// The share of one CPU microscope spent recording, past reading debug
-/// information, over the recording's span.
 fn recorder_share(profile: &Profile) -> f64 {
     let (cpu, loading) = profile.recorder_cpu();
     let (start, end) = profile.span();
@@ -574,14 +499,11 @@ fn recorder_share(profile: &Profile) -> f64 {
     share
 }
 
-/// Restarts counting the most memory this process holds, from what it
-/// holds now, which it returns.
 fn reset_peak_rss() -> Option<u64> {
     std::fs::write("/proc/self/clear_refs", "5").ok()?;
     memory("VmRSS:")
 }
 
-/// The bytes of memory `/proc/self/status` gives on the line of `key`.
 fn memory(key: &str) -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find_map(|line| line.strip_prefix(key))?;
@@ -589,25 +511,20 @@ fn memory(key: &str) -> Option<u64> {
     Some(kilobytes * 1024)
 }
 
-/// One workload under one setup, over its runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Summary {
     pub workload: String,
     pub setup: String,
     pub rate: f64,
 
-    /// How much less work it did than bare, in percent.
     pub cost_percent: f64,
 
-    /// Bare's spread, the range of its runs over their median, in percent:
-    /// the noise a cost is read against.
     pub noise_percent: f64,
     pub p99_ns: Option<u64>,
     pub recorder_cpu: Option<f64>,
     pub recording_bytes: Option<u64>,
 }
 
-/// Each workload under each setup, by the medians of its runs.
 #[must_use]
 pub fn summarize(runs: &[Run]) -> Vec<Summary> {
     let mut summaries = Vec::new();

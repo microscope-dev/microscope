@@ -1,5 +1,5 @@
-// The C fixture's call chains in C++: the worker is a std::thread, so its
-// stacks pass through libstdc++, and the functions are a namespace's.
+
+
 #include <cstdlib>
 #include <thread>
 
@@ -16,7 +16,7 @@ __attribute__((noinline)) void outer(unsigned long iterations) {
     sink = sink + 1;
 }
 
-} // namespace stacks
+}
 
 extern "C" __attribute__((noinline)) void leaf(unsigned long iterations) {
     for (unsigned long index = 0; index < iterations; ++index) {
@@ -31,7 +31,7 @@ __attribute__((noinline)) void middle(unsigned long iterations) {
     sink = sink + 1;
 }
 
-} // namespace stacks
+}
 
 int main(int argc, char **argv) {
     unsigned long iterations = argc > 1 ? std::strtoul(argv[1], nullptr, 10) : 1;

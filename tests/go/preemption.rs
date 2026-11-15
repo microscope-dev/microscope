@@ -1,10 +1,3 @@
-//! Preemption signals that arrive while the debugger runs one thread alone:
-//! one stepping over a breakpoint, or stepping by itself. The runtime sends
-//! them to a goroutine locked to its thread, which parks until stopped
-//! threads restart the world if it takes one, so each must wait for the
-//! next continue. A stripped build waits too: its runtime's data is not
-//! described, but its use of signals is the same.
-
 use microscope::{
     BreakpointSpec, DebuggerEvent, LineNumber, SignalPolicy, StepKind, StopReason, VirtualAddress,
 };
@@ -14,14 +7,10 @@ use crate::support::{self, Scenario};
 
 const BUILDS: [&str; 3] = ["spin-go-o0", "spin-go-o2", STRIPPED];
 
-/// A build without debug information, whose goroutines no check can read.
 const STRIPPED: &str = "spin-go-stripped";
 
-/// How many times each test runs the spinning thread alone.
 const ROUNDS: usize = 100;
 
-/// A program spinning at a breakpoint in its loop, with SIGURG reported so
-/// a test can tell the runtime sent it.
 async fn spinning(fixture: &str) -> (Scenario, Receiver<DebuggerEvent>, VirtualAddress) {
     let mut scenario = if fixture == STRIPPED {
         Scenario::launch(fixture)
@@ -67,7 +56,6 @@ fn urgent() -> u64 {
     microscope::signal_named("SIGURG").expect("SIGURG")
 }
 
-/// How many SIGURG signals were reported since the last count.
 fn preemptions(events: &mut Receiver<DebuggerEvent>) -> u64 {
     let mut count = 0;
     loop {
@@ -104,8 +92,6 @@ async fn preemption_waits_while_a_thread_steps_alone() {
     for fixture in BUILDS {
         let (mut scenario, mut events, _) = spinning(fixture).await;
         for _ in 0..ROUNDS {
-            // Every thread runs to the breakpoint, so signals are pending
-            // again when the spinning thread steps alone.
             let reason = scenario.resume_to_stop().await;
             assert!(
                 matches!(reason, StopReason::Breakpoint { .. }),

@@ -1,21 +1,9 @@
-//! Process-lifetime script and function cache, like Python's `CodeTable`.
-//! Address-keyed rows are revalidated on every use; GC movement or address
-//! reuse causes a miss rather than a wrong name.
-//!
-//! Script identity uses its source string and id, never reused within an
-//! isolate. Function identity adds its script's address and function literal
-//! id. Line ends are decoded once per script, only as far as frames need,
-//! and once per source: each of a Node program's workers compiles the same
-//! files into an isolate of its own, and a script whose source reads the
-//! same as one already scanned under its path takes that one's line ends.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::objects::{Object, Problem, Reader, address_at};
 use crate::image::v8::{Constant, Field};
 
-/// The most rows of each kind a table keeps before it begins again.
 const MAX_ROWS: usize = 1 << 16;
 
 #[derive(Debug, Default)]
@@ -23,32 +11,22 @@ pub(super) struct Table {
     scripts: HashMap<u64, Script>,
     functions: HashMap<u64, Function>,
 
-    /// Each function's first line, by its shared information's address.
     first_lines: HashMap<u64, (FunctionProof, Option<u32>)>,
 
-    /// The line ends scanned from the source of the scripts of each path.
     sources: HashMap<Arc<str>, Source>,
 }
 
-/// The line ends scanned from a source, read by read, for every script of
-/// its path whose source reads the same: a read of a script's source
-/// whose units hash as the same read of this one did, after reads that
-/// all did, holds the same line ends.
 #[derive(Debug, Default)]
 struct Source {
     length: u64,
 
-    /// The hash of each read: its units, and the one after, which says
-    /// whether a carriage return at its end ends its line.
     reads: Vec<u128>,
 
-    /// The line ends found, and how many all the reads up to each found.
     ends: Vec<u64>,
     found: Vec<usize>,
 }
 
 impl Source {
-    /// The line ends read `read` found.
     #[expect(
         clippy::indexing_slicing,
         reason = "callers pass a read that was hashed, and `found` gains an entry with each \
@@ -73,8 +51,6 @@ struct Script {
     lines: Lines,
 }
 
-/// The newline offsets read so far: from V8's own line ends, the array at
-/// `ends_word`, or else from the source, through `scanned`.
 #[derive(Debug, Default)]
 struct Lines {
     ends: Vec<u64>,
@@ -82,8 +58,6 @@ struct Lines {
     scanned: u64,
     complete: bool,
 
-    /// How many reads of the source read the same as its path's
-    /// [`Source`], every one before them too.
     same: usize,
 }
 
@@ -101,7 +75,6 @@ struct Function {
 }
 
 impl Table {
-    /// The script row of `script`, proven against the script as it is now.
     fn script(&mut self, reader: &Reader<'_>, script: Object) -> Result<&mut Script, Problem> {
         let proof = ScriptProof {
             id: reader.smi_field(script, Field::ScriptId)?,
@@ -131,7 +104,6 @@ impl Table {
             .ok_or_else(|| "the script's row is missing".into())
     }
 
-    /// The path `script` names, as Node names its file.
     pub(super) fn path(
         &mut self,
         reader: &Reader<'_>,
@@ -140,14 +112,11 @@ impl Table {
         Ok(self.script(reader, script)?.path.clone())
     }
 
-    /// The name of the function `shared` describes, as
-    /// `SharedFunctionInfo::DebugName` gives it.
     pub(super) fn function_name(
         &mut self,
         reader: &Reader<'_>,
         shared: Object,
     ) -> Result<Arc<str>, Problem> {
-        // A function of no script, as a native one, has no proof.
         let Some(script) = super::frames::script(reader, shared)? else {
             return Ok(super::names::function_name(reader, shared)?.into());
         };
@@ -171,9 +140,6 @@ impl Table {
         Ok(name)
     }
 
-    /// The line, from 1, where the source of the function `shared` of
-    /// `script` begins: where V8's stack traces say it is declared. `None`
-    /// for one whose start V8 does not keep.
     pub(super) fn first_line(
         &mut self,
         reader: &Reader<'_>,
@@ -197,8 +163,6 @@ impl Table {
         Ok(line)
     }
 
-    /// The line and column, each from 1, of the character `offset` of
-    /// `script`.
     pub(super) fn line_column(
         &mut self,
         reader: &Reader<'_>,
@@ -218,8 +182,6 @@ impl Table {
             .ok_or("the script's row is missing")?;
         row.lines.cover(reader, script, offset, source)?;
         let ends = &row.lines.ends;
-        // Lines end at their newline; the line of `offset` is the first whose
-        // end is at or past it.
         let line = ends.partition_point(|end| *end < offset);
         let start = line
             .checked_sub(1)
@@ -238,7 +200,6 @@ impl Table {
     }
 }
 
-/// What proves a row of the function `shared` of `script` is still its.
 fn function_proof(
     reader: &Reader<'_>,
     shared: Object,
@@ -254,20 +215,14 @@ fn function_proof(
     })
 }
 
-/// The most source characters scanned for newlines at once.
 const SCAN: u64 = 1 << 16;
 
-/// How many of V8's computed line ends are read at once: 4 KiB of them.
 const ENDS_READ: usize = 512;
 
 const MAX_LINE_ENDS: usize = 1 << 22;
 const MAX_SOURCE_SCAN: u64 = 1 << 24;
 
 impl Lines {
-    /// Reads newline offsets until one is at or past `offset`, or the
-    /// script ends: from V8's line ends where it computed them, else from
-    /// the source, in whole reads, taking those of `shared` that the source
-    /// reads the same as.
     fn cover(
         &mut self,
         reader: &Reader<'_>,
@@ -295,8 +250,6 @@ impl Lines {
             if count > MAX_LINE_ENDS as u64 {
                 return Err("a script exceeds the line ends limit".into());
             }
-            // A block's worth of ends at a time: a word at a time, a long
-            // script's took a read of the stop's memory for each line.
             let first = reader.field_address(ends, Field::FixedArrayObjects)?;
             let mut index = self.ends.len() as u64;
             let mut words = [0_u8; 8 * ENDS_READ];
@@ -333,10 +286,8 @@ impl Lines {
         }
         let mut text = Vec::new();
         while self.scanned < target {
-            // Whole reads, so that each script of a source reads the same.
             let limit = (length - self.scanned).min(SCAN);
             text.clear();
-            // Look ahead one unit so a CRLF straddling reads ends at its LF.
             reader.string_into(source, self.scanned, limit + 1, 0, &mut text)?;
             let scanned = self.scanned;
             let consumed = text.len().min(limit as usize);
@@ -344,7 +295,6 @@ impl Lines {
                 return Err("the script's source ends before its declared length".into());
             }
 
-            // The read is shared only while every earlier one was.
             let read = self.same;
             let hash = twox_hash::XxHash3_128::oneshot(zerocopy::IntoBytes::as_bytes(&text[..]));
             if let Some(shared) = shared.as_deref_mut()
@@ -384,8 +334,6 @@ impl Lines {
     }
 }
 
-/// The line ends of the first `consumed` of `text`, which begins at unit
-/// `scanned` of a source whose last line end before it is `last`.
 fn scan(text: &[u16], consumed: usize, scanned: u64, last: Option<u64>) -> Vec<u64> {
     let mut ends = Vec::new();
     for (at, &unit) in text.iter().take(consumed).enumerate() {
@@ -410,7 +358,6 @@ mod tests {
     use crate::runtime_model::RuntimeStop;
     use crate::{LoadBias, ThreadId, VirtualAddress};
 
-    /// A V8 heap the tests write: bytes by address.
     #[derive(Default)]
     struct Heap(HashMap<u64, u8>);
 
@@ -454,7 +401,6 @@ mod tests {
         }
     }
 
-    /// 14.6's generated layout, with the tags each build exports.
     fn layout() -> V8Layout {
         let mut layout = crate::debug_info::v8::generated_layout(14, 6).expect("a layout");
         for (constant, value) in [
@@ -493,7 +439,6 @@ mod tests {
         value << 32
     }
 
-    /// Writes into `heap` the objects the tests' rows need.
     struct Writer<'a> {
         heap: &'a mut Heap,
         layout: &'a V8Layout,
@@ -504,7 +449,6 @@ mod tests {
             self.layout.field(field).expect("a field")
         }
 
-        /// A map at `at` for objects of instance type `ty`; tagged.
         fn map(&mut self, at: u64, ty: u16) -> u64 {
             let instance_type = self.offset(Field::MapInstanceType);
             self.heap.word(at, at + 1);
@@ -517,7 +461,6 @@ mod tests {
             self.heap.word(at, word);
         }
 
-        /// A sequential one-byte string at `at`; tagged.
         fn string(&mut self, at: u64, map: u64, text: &str) -> u64 {
             let length = u32::try_from(text.len()).expect("a short string");
             self.heap.word(at, map);
@@ -541,7 +484,6 @@ mod tests {
             at + 1
         }
 
-        /// A script at `at`, numbered `id`, named `name`, of `source`.
         fn script(&mut self, at: u64, map: u64, (id, name, source): (u64, u64, u64)) -> u64 {
             let script = at + 1;
             self.heap.word(at, map);
@@ -555,8 +497,6 @@ mod tests {
             script
         }
 
-        /// A shared function info at `at` of the literal `literal` of
-        /// `script`, named by the string `name`.
         fn shared(&mut self, at: u64, map: u64, script: u64, literal: u32, name: u64) -> u64 {
             let shared = at + 1;
             self.heap.word(at, map);
@@ -629,10 +569,6 @@ mod tests {
         );
     }
 
-    /// Scripts of one path, as each worker of a Node program compiles,
-    /// share the line ends of each read their sources hold alike, and only
-    /// while every earlier read was alike: a source that differs from the
-    /// second read on has its own line ends there.
     #[test]
     fn scripts_of_one_path_share_line_ends_only_where_their_sources_match() {
         let layout = layout();
@@ -666,8 +602,6 @@ mod tests {
         assert_eq!(table.sources["s"].reads.len(), 2);
     }
 
-    /// V8's computed line ends are read a block at a time, and each read
-    /// stops at the array's end and at the line of the offset asked for.
     #[test]
     fn computed_line_ends_give_lines_across_reads() {
         let layout = layout();
@@ -684,7 +618,6 @@ mod tests {
         writer.heap.word(0x10000, map);
         writer.field(ends, Field::FixedArrayBaseLength, smi(count as u64));
         let first = 0x10000 + writer.offset(Field::FixedArrayObjects);
-        // Line n ends at 10n + 9, so is ten characters long.
         for line in 0..count as u64 {
             writer.heap.word(first + line * 8, smi(line * 10 + 9));
         }
@@ -844,9 +777,6 @@ mod tests {
         );
     }
 
-    /// A row answers only for the object it was made from: a function or
-    /// script that another one replaced at the same address, as after V8's
-    /// GC moves objects, is read again.
     #[test]
     fn a_row_misses_when_another_object_takes_its_address() {
         let layout = layout();
@@ -893,7 +823,6 @@ mod tests {
                     .expect("a path")
                     .as_deref()
                     .map(str::to_owned),
-                // "zzz" starts at 5; its second character is line 3, column 2.
                 table.line_column(&reader, script, 6).expect("a line"),
                 table.line_column(&reader, script, 1).expect("a line"),
             )
@@ -905,7 +834,6 @@ mod tests {
             expected("first", "/a.js", (3, 2), (1, 2))
         );
 
-        // Another literal of the same script takes the function's address.
         let mut writer = Writer {
             heap: &mut heap,
             layout: &layout,
@@ -916,7 +844,6 @@ mod tests {
             expected("second", "/a.js", (3, 2), (1, 2))
         );
 
-        // Another script, with other lines, takes the script's address.
         let mut writer = Writer {
             heap: &mut heap,
             layout: &layout,

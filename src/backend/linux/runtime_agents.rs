@@ -1,5 +1,3 @@
-//! Controller-owned agent files, outstanding requests and acknowledgements.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,30 +27,19 @@ use crate::runtime_model::{
     TargetProcessId,
 };
 
-/// One runtime's agent: its files, the requests the controller made of
-/// it, and how the newest stands.
 #[derive(Debug)]
 pub(super) struct Installation {
     files: Option<Box<dyn AgentFiles>>,
     library: Option<Arc<str>>,
 
-    /// The generation the next request takes.
     next: u64,
 
-    /// The newest generation that may have reached the agent. Only its
-    /// reports count.
     generation: Option<u64>,
 
-    /// The newest generation the command slot is known to publish.
     sequence: u64,
 
-    /// What the newest request asked of the agent, or asks once a thread
-    /// can take it.
     sent: Option<Desired>,
 
-    /// The sites of the configuration the agent last acknowledged. While a
-    /// newer one is outstanding, the agent holds one or the other, so a site
-    /// both name stays armed.
     confirmed: BTreeSet<u64>,
 
     state: State,
@@ -60,46 +47,31 @@ pub(super) struct Installation {
 
 #[derive(Debug)]
 enum State {
-    /// No thread could take a request. The runtime's entries are trapped
-    /// until one reaches them.
     Waiting,
 
-    /// The newest request awaits the agent's acknowledgement.
     Awaiting(Request),
 
-    /// The agent acknowledged the newest request.
     Ready,
 
-    /// The newest configuration was refused, by the agent or before any
-    /// request reached the program.
     Refused(Arc<str>),
 }
 
-/// An outstanding request.
 #[derive(Debug)]
 struct Request {
-    /// What retires a source request. A command needs nothing.
     source: Option<Source>,
     timer: Timer,
 }
 
-/// A source request, which one thread runs as it enters the interpreter.
 #[derive(Debug)]
 struct Source {
     ticket: Arc<dyn AgentRequestTicket>,
     thread: crate::ThreadId,
 
-    /// The script path of a request the launch bootstrap takes, which no
-    /// thread of the program's runs.
     bootstrap: Option<String>,
 }
 
-/// What is left of a request's acknowledgement budget, which counts only
-/// time the program runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Timer {
-    /// No thread has run since the request was published, so the agent
-    /// cannot have read it, and a newer command can replace it.
     Unread,
     Paused(Duration),
     Running(Instant),
@@ -107,7 +79,6 @@ enum Timer {
 }
 
 impl Request {
-    /// Why arming waits for this request.
     const fn waiting(&self) -> &'static str {
         match (self.timer, &self.source) {
             (
@@ -155,7 +126,6 @@ impl Installation {
         }
     }
 
-    /// Makes `generation` the newest request, outstanding.
     fn publish(&mut self, generation: u64, source: Option<Source>) {
         self.generation = Some(generation);
         self.state = State::Awaiting(Request {
@@ -174,7 +144,6 @@ impl Installation {
         }
     }
 
-    /// The program runs: the outstanding request's budget runs with it.
     pub(super) fn start_deadline(&mut self, now: Instant) {
         if let State::Awaiting(request) = &mut self.state {
             request.timer = match request.timer {
@@ -193,8 +162,6 @@ impl Installation {
         }
     }
 
-    /// Ends the outstanding request's budget if it ran out by `now`, and
-    /// says why arming now fails.
     fn expire(&mut self, now: Instant) -> Option<&'static str> {
         let State::Awaiting(request) = &mut self.state else {
             return None;
@@ -217,8 +184,6 @@ impl Installation {
         )
     }
 
-    /// Whether the outstanding request is a command no thread has run
-    /// since it was published, which the agent cannot have read.
     const fn replaceable(&self) -> bool {
         matches!(
             self.state,
@@ -229,18 +194,11 @@ impl Installation {
         )
     }
 
-    /// How arming with `wanted` stands without configuring the agent, or
-    /// `None` when the agent is to be configured with it.
     fn settled(&self, wanted: &Desired) -> Option<Result<(), Arc<str>>> {
         let sent = self.sent.as_ref() == Some(wanted);
 
         match &self.state {
             State::Awaiting(request) => {
-                // A step back cannot wait for a command's acknowledgement,
-                // which comes only from a callback, none of which may run
-                // before the thread runs on past the step's end. Its source
-                // request carries the whole configuration, which the agent
-                // takes over the command's older generation.
                 let back = request.source.is_none()
                     && request.timer != Timer::Expired
                     && wanted.step.as_ref().is_some_and(|step| step.returning)
@@ -255,15 +213,10 @@ impl Installation {
         }
     }
 
-    /// Whether the agent is configured through its command slot, which an
-    /// active agent reads, rather than by injecting a whole-state script.
     fn commands(&self) -> bool {
-        // An unread command was published only to an active agent, which
-        // still holds the configuration before it.
         (matches!(self.state, State::Ready) && self.active()) || self.replaceable()
     }
 
-    /// Whether the agent was last sent anything to watch for.
     fn active(&self) -> bool {
         self.sent
             .as_ref()
@@ -278,9 +231,6 @@ impl Installation {
         matches!(self.state, State::Waiting)
     }
 
-    /// Whether the site numbered `number` is armed whichever configuration
-    /// the agent now holds: it acknowledged it, and has failed nothing
-    /// since. A site the outstanding configuration drops is not asked about.
     pub(super) fn confirms(&self, number: u64) -> bool {
         let holds = match &self.state {
             State::Ready => true,
@@ -290,7 +240,6 @@ impl Installation {
         holds && self.confirmed.contains(&number)
     }
 
-    /// Panics if the installation contradicts itself.
     pub(super) fn check_invariants(&self, runtime: RuntimeId) {
         debug_assert!(
             matches!(self.state, State::Waiting | State::Refused(_)) || self.generation.is_some(),
@@ -356,8 +305,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.publish_breakpoints_changed();
 
-        // Use the ordinary stop barrier: no thread is declared stopped until
-        // its actual wait status arrives.
         self.raise_barrier(
             thread,
             crate::StopReason::RuntimeEvent {
@@ -366,9 +313,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         )
     }
 
-    /// Publish disarming before removing traps. A mapped companion remains
-    /// valid after unlink; its next callback consumes the empty configuration
-    /// before dispatching any application event. Shutdown never runs a thread.
     pub(super) fn prepare_agents_for_detach(&mut self) -> Result<(), Arc<str>> {
         let runtimes = self
             .session
@@ -397,8 +341,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Withdraws the agent's outstanding source request, or sends it an
-    /// empty configuration, and closes its files.
     fn disarm_agent(
         &mut self,
         bound: &BoundRuntime,
@@ -468,8 +410,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         for bound in self.runtimes(inferior) {
-            // A waiting or refused agent is idle: the target's agent clears
-            // its monitoring on every failure.
             if inferior
                 .agents
                 .get(&bound.id)
@@ -527,10 +467,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
                 Err(reason) => {
                     let reason: Arc<str> = reason.to_string().into();
-                    // Still ready: no request reached the target, whose agent
-                    // keeps the acknowledged configuration. The next arming
-                    // tries again. A replacement that failed leaves the
-                    // command it would have replaced outstanding.
                     if !matches!(installation.state, State::Ready) && !replaceable {
                         installation.sent = Some(wanted);
                         if !matches!(installation.state, State::Awaiting(_)) {
@@ -542,7 +478,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             },
         };
         if let Some(inferior) = self.session.inferior_mut() {
-            // An internal stop starts the deadline as it resumes.
             if inferior.run.is_running() {
                 installation.start_deadline(Instant::now());
             }
@@ -572,9 +507,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .checked_add(1)
             .ok_or("runtime agent generations are exhausted")?;
 
-        // A step back binds on a thread in native code, where no monitoring
-        // callback may come to read a command: a source request runs there
-        // as the thread returns to the interpreter.
         let returning = arming.step.is_some_and(|step| step.returning)
             && installation
                 .sent
@@ -582,9 +514,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .and_then(|sent| sent.step.as_ref())
                 != arming.step;
 
-        // An assignment is sent only where the agent stopped a thread,
-        // which reads a command as its hook returns; a script would run
-        // where the thread next enters the interpreter, after its code.
         if arming.assignment.is_some() && !installation.commands() && !installation.ready() {
             return Err("the runtime's agent takes an assignment only as a command".into());
         }
@@ -684,8 +613,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         );
 
         if let Err(reason) = self.write_for_runtime(&prepared.writes) {
-            // No thread has resumed since preparation. Revalidate even a
-            // partially written slot before retiring the unpublished source.
             if let Err(cleanup) =
                 self.retire_agent_source(bound, installation, AgentRetirementProof::Unresumed)
             {
@@ -700,7 +627,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             installation.files = None;
             installation.library = None;
-            // A replacement library's command slot starts unpublished.
             installation.sequence = 0;
             return Err(reason.into());
         }
@@ -731,17 +657,12 @@ impl<P: LinuxTraceOps> Controller<P> {
                 });
 
             if readable && held == publication.expected {
-                // Payload or length may have changed, but this command was
-                // not published: the agent reads neither until the sequence
-                // changes, and keeps its acknowledged configuration.
                 return Err(Arc::clone(reason).into());
             }
 
             if readable && held == publication.bytes {
                 installation.sequence = generation;
             }
-            // Unreadable/foreign publication bytes remain unconfirmed. Keep
-            // one generation outstanding and bound the acknowledgement wait.
         } else {
             installation.sequence = generation;
         }
@@ -750,9 +671,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         result.map_err(AgentFailure::from)
     }
 
-    /// Retires the outstanding source request, whose files go once its
-    /// thread can no longer read them: the agent acknowledged it, no thread
-    /// ran since it was published, or it is still pending and is withdrawn.
     fn retire_agent_source(
         &mut self,
         bound: &BoundRuntime,
@@ -793,9 +711,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .acknowledge(generation)
     }
 
-    /// Reads the outstanding bootstrap request back out of the launch's
-    /// FIFO, unless the agent acknowledged it: one no thread ran since it
-    /// was written is there, and one the bootstrap took may yet run.
     fn withdraw_bootstrap(
         &self,
         source: &mut Source,
@@ -836,9 +751,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(inferior) = self.session.inferior() else {
             return Ok(false);
         };
-        // With no installation, the program loaded the agent itself, as its
-        // bootstrap and hook library: its failure stops the program, so the
-        // user sees it, though it concerns no generation of ours.
         let Some(installation) = inferior.agents.get(&runtime) else {
             return Ok(true);
         };
@@ -854,8 +766,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .inferior_mut()
             .and_then(|inferior| inferior.run.barrier_mut())
             .ok_or("the report has no all-stop barrier")?;
-        // Unlike ArmAgents these reports cannot be coalesced: two generations
-        // or runtimes may report before their siblings finish stopping.
         barrier.queue(Edit::AgentReport {
             runtime,
             generation,
@@ -877,8 +787,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .inferior_mut()
                 .and_then(|inferior| inferior.run.barrier_mut())
         {
-            // As any other reason a barrier's threads give, it does not
-            // displace one that stopped a thread first, as a breakpoint's.
             barrier.offer(None, crate::StopReason::RuntimeEvent { description });
         }
 
@@ -887,9 +795,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Takes the agent's report on `generation`: its acknowledgement of
-    /// the outstanding request, or its failure, which may come later, once
-    /// it holds the configuration. Returns whether the report counted.
     fn agent_report(
         &mut self,
         runtime: RuntimeId,
@@ -927,14 +832,10 @@ impl<P: LinuxTraceOps> Controller<P> {
                     AgentRetirementProof::Acknowledged,
                 )
                 .map_err(|error| match failure {
-                    // What the agent said is why the configuration failed.
                     Some(reason) => Arc::from(format!("{reason}; {error}")),
                     None => error,
                 })?;
             } else if awaiting {
-                // Source acknowledgements do not publish the native slot.
-                // A matching native report does prove its consumed sequence,
-                // including after an uncertain publication write/read.
                 installation.sequence = generation;
             }
 
@@ -961,10 +862,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         result
     }
 
-    /// Whether the runtime's agent takes a command where it stopped a
-    /// thread: it is loaded and ready, or holds an unread command that a
-    /// new one replaces. Its stopped thread reads the command as its hook
-    /// returns, whatever events it monitors.
     pub(super) fn agent_takes_commands(&self, runtime: RuntimeId) -> bool {
         self.session
             .inferior()
@@ -975,8 +872,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
     }
 
-    /// Whether the runtime's agent has been sent the active assignment as
-    /// a command, which the thread it stopped reads as its hook returns.
     pub(super) fn agent_assignment_sent(&self, runtime: RuntimeId) -> bool {
         let Some(inferior) = self.session.inferior() else {
             return false;
@@ -1001,8 +896,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    /// Whether the runtime's agent has been sent the active step, and has
-    /// only to acknowledge it: the step has begun.
     pub(super) fn agent_step_sent(&self, runtime: RuntimeId) -> bool {
         let Some(inferior) = self.session.inferior() else {
             return false;
@@ -1013,8 +906,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .filter(|(stepping, _)| *stepping == runtime)
             .map(|(_, step)| step);
 
-        // A step back is sent by a source request, which its thread runs
-        // as it returns to the interpreter; a command waits for a callback.
         inferior.agents.get(&runtime).is_some_and(|installation| {
             matches!(&installation.state, State::Awaiting(request)
                 if request.source.is_some() || !step.is_some_and(|step| step.returning))
@@ -1078,9 +969,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .collect()
     }
 
-    /// Marks each runtime whose agent is not installed to be armed, as when
-    /// the module that carries it loads: what it is to report may ask for
-    /// it before any breakpoint does, as an exception that stops does.
     pub(super) fn arm_new_agents(&mut self) {
         let Some(inferior) = self.session.inferior() else {
             return;
@@ -1151,8 +1039,6 @@ mod tests {
     use crate::ExitStatus;
     use std::sync::Mutex;
 
-    /// An installation whose command of generation 5 is outstanding, with
-    /// `timer` left of its budget.
     fn awaiting_with(timer: Timer) -> Installation {
         let mut installation = Installation::new();
         installation.next = 6;
@@ -1168,7 +1054,6 @@ mod tests {
         awaiting_with(Timer::Unread)
     }
 
-    /// An outstanding source request's state, for `thread`.
     fn source(ticket: Arc<dyn AgentRequestTicket>, thread: crate::ThreadId) -> State {
         State::Awaiting(Request {
             source: Some(Source {
@@ -1180,7 +1065,6 @@ mod tests {
         })
     }
 
-    /// An unread command's state.
     const fn command() -> State {
         State::Awaiting(Request {
             source: None,
@@ -1196,8 +1080,6 @@ mod tests {
         assert_eq!(installation.deadline(), Some(now + ACK_TIMEOUT));
         installation.start_deadline(now + Duration::from_secs(1));
         assert_eq!(installation.deadline(), Some(now + ACK_TIMEOUT));
-        // A second of the budget was spent running before the stop; only
-        // the rest is left once the program runs again.
         installation.pause_deadline(now + Duration::from_secs(1));
         assert_eq!(installation.deadline(), None);
         let later = now + Duration::from_secs(3600);
@@ -1239,9 +1121,6 @@ mod tests {
         ));
     }
 
-    /// A controller waiting for messages while an acknowledgement is
-    /// outstanding wakes at its deadline, though nothing else arrives, and
-    /// times the request out.
     #[test]
     fn the_alarm_wakes_a_waiting_controller_at_the_deadline() {
         let mut harness = watch_harness(1);
@@ -1253,8 +1132,6 @@ mod tests {
             .agents
             .insert(RuntimeId::new(0), awaiting_with(Timer::Running(deadline)));
 
-        // Should the alarm never ring, this wakes the controller instead,
-        // and the test fails rather than waits forever.
         let sender = harness.controller.message_sender.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(2));
@@ -1270,7 +1147,6 @@ mod tests {
         );
         assert!(Instant::now() >= deadline, "woke before the deadline");
 
-        // The controller times the request out as it handles the ring.
         harness.controller.handle_message(woke.expect("the ring"));
         let inferior = harness.controller.session.inferior().expect("inferior");
         assert!(inferior.agents[&RuntimeId::new(0)].expired());
@@ -1284,9 +1160,6 @@ mod tests {
         );
     }
 
-    /// The alarm may ring for a deadline that was paused or moved since:
-    /// a timeout is judged by the deadlines as they are, and one not yet
-    /// passed, or none, times nothing out.
     #[test]
     fn a_stale_alarm_times_nothing_out() {
         let mut harness = watch_harness(1);
@@ -1390,9 +1263,6 @@ mod tests {
         }
     }
 
-    /// A process that exits with fork children still due leaves its
-    /// agents' cleanup failure to the shutdown that ends once they are
-    /// released.
     #[test]
     fn a_cleanup_failure_reaches_a_shutdown_that_waits_for_fork_children() {
         let mut harness = watch_harness(1);
@@ -1640,7 +1510,6 @@ mod tests {
                 calls: Arc::clone(&calls),
                 fail_exit: false,
             }));
-            // The first target word succeeds; the second fails operationally.
             *harness.controller.ptrace.memory_write_failure.borrow_mut() = Some(1);
             let arming = Arming {
                 breakpoints: &[],
@@ -1878,8 +1747,6 @@ mod tests {
         }
     }
 
-    /// An agent binds a step to its frame where it stopped the thread: a
-    /// step from anywhere else is refused, and nothing runs.
     #[test]
     fn an_agent_steps_only_from_where_it_stopped_the_thread() {
         let mut harness = watch_harness(1);
@@ -1923,8 +1790,6 @@ mod tests {
         );
     }
 
-    /// A step has begun once the agent has been sent it, and only that
-    /// step: not another, nor one the agent has been sent and acknowledged.
     #[test]
     fn a_step_has_begun_once_its_agent_is_sent_it() {
         let mut harness = watch_harness(1);
@@ -1962,8 +1827,6 @@ mod tests {
     fn uncertain_native_publication_adopts_its_sequence_only_after_an_owned_acknowledgement() {
         let mut harness = watch_harness(1);
         let runtime = RuntimeId::new(0);
-        // A failed write/read left publication unconfirmed, preserving the
-        // previous proven native sequence while waiting for generation 5.
         let installation = awaiting();
         assert_eq!(installation.sequence, 0);
         harness

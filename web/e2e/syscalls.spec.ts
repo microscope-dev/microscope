@@ -1,13 +1,8 @@
-// A recording's system calls explored in the page: what the calls cost,
-// where the failed one came from, its line in the log and what it was
-// passed, and the files the program used, each held in the address bar.
-
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
 
 import { expect, fixture, join, menu, root, showView, test } from "./server";
 
-// The test serves a recording it makes, not a program.
 test.use({ program: [] });
 
 test("a recording's calls are explored from their costs to one call's arguments and stack", async ({
@@ -15,8 +10,7 @@ test("a recording's calls are explored from their costs to one call's arguments 
   microscope,
 }, info) => {
   const file = info.outputPath("files.usprof");
-  // The program runs in the output directory, where it makes its files,
-  // and exits with 3.
+
   const traced = spawnSync(
     path.join(root, "target", "debug", "microscope"),
     ["record", "--syscall-engine", "ptrace", "-o", file, "--", fixture("syscalls"), "files"],
@@ -32,7 +26,6 @@ test("a recording's calls are explored from their costs to one call's arguments 
   await expect(page.getByTestId("accounting")).toContainText(/Calls traced[\d,]+ by ptrace/u);
   await expect(page.getByTestId("accounting")).not.toContainText("Calls lost");
 
-  // Narrowed to failed opens, the one call left is placed at its line.
   await page.getByLabel("Selection").fill("trace=openat status=failed");
   await page.getByLabel("Selection").press("Enter");
   await expect(page).toHaveURL(/sf=trace%3Dopenat/u);
@@ -46,7 +39,6 @@ test("a recording's calls are explored from their costs to one call's arguments 
   await expect(page.getByTestId("syscall-callers")).toContainText("files · syscalls.c:24");
   await expect(detail.getByRole("img", { name: "Latency heat map" })).toBeVisible();
 
-  // Its line reads as strace prints it, and opens to its arguments.
   await view.getByRole("button", { name: "Log", exact: true }).click();
   await expect(page).toHaveURL(/st=log/u);
   const line = page
@@ -60,21 +52,18 @@ test("a recording's calls are explored from their costs to one call's arguments 
   await expect(
     call.getByRole("listitem").filter({ has: page.getByText("files", { exact: true }) }),
   ).toBeVisible();
-  // And to the line that made it.
+
   const site = call.getByTestId("syscall-site");
   await expect(site.locator("figcaption")).toContainText(/^files · .*syscalls\.c:24$/u);
   await expect(site.locator(".made")).toContainText('"missing"');
 
-  // The address opens the same view.
   await page.reload();
   await expect(page.getByTestId("syscall-call")).toContainText('"missing"');
 
-  // A selection the trace cannot name says why.
   await page.getByLabel("Selection").fill("trace=nosuchcall");
   await page.getByLabel("Selection").press("Enter");
   await expect(view.getByRole("alert")).toContainText("nosuchcall");
 
-  // The file it wrote and read back, and the one it could not open.
   await page.getByLabel("Selection").fill("");
   await page.getByLabel("Selection").press("Enter");
   await view.getByRole("button", { name: "Files", exact: true }).click();
@@ -82,7 +71,6 @@ test("a recording's calls are explored from their costs to one call's arguments 
   await expect(files.getByRole("cell", { name: /^\/.*\/present$/u })).toHaveCount(1);
   await expect(files.getByRole("cell", { name: /^\/.*\/missing$/u })).toHaveCount(1);
 
-  // Grouped by file, the failed open is the missing file's.
   await view.getByRole("button", { name: "Summary", exact: true }).click();
   await page.getByLabel("Selection").fill("trace=openat");
   await page.getByLabel("Selection").press("Enter");
@@ -91,12 +79,10 @@ test("a recording's calls are explored from their costs to one call's arguments 
   await expect(table.locator("td.name", { hasText: /\/missing$/u })).toHaveCount(1);
   await page.getByLabel("Group", { exact: true }).selectOption("syscall");
 
-  // A cell of the heat map lists its calls: of its time and latency.
   await table.locator('tr[data-row="openat"] td').nth(1).click();
   const heat = detail.getByRole("img", { name: "Latency heat map" });
   await expect(heat).toBeVisible();
   await heat.evaluate((canvas) => {
-    // Every cell is clicked; an empty one does nothing.
     const box = canvas.getBoundingClientRect();
     for (let y = box.bottom - 1; y > box.top; y -= 3) {
       for (let x = box.left + 1; x < box.right; x += 2) {
@@ -106,7 +92,7 @@ test("a recording's calls are explored from their costs to one call's arguments 
   });
   await expect(page).toHaveURL(/st=log/u);
   await expect(page).toHaveURL(/sl=\d+/u);
-  // The band is a chip in the row every pane's selection shows in.
+
   const band = page.getByRole("button", { name: "Remove the latency band" });
   await expect(band).toBeVisible();
   const calls = page.getByTestId("syscall-log").getByRole("button");
@@ -118,7 +104,6 @@ test("a recording's calls are explored from their costs to one call's arguments 
   await expect(page).not.toHaveURL(/sl=/u);
   await page.getByRole("button", { name: /^Remove .* – /u }).click();
 
-  // Dragging across the timeline selects a range, which a chip names.
   await view.getByRole("button", { name: "Summary", exact: true }).click();
   const lanes = page.getByTestId("timeline").getByRole("img");
   const area = await lanes.boundingBox();
@@ -161,7 +146,7 @@ test("a recording without calls opens the same Kernel pane, saying how to record
   await kernel.getByRole("button", { name: "Log", exact: true }).click();
   await expect(page).toHaveURL(/st=log/u);
   await expect(page.getByTestId("syscalls-unkept")).toBeVisible();
-  // The stacks are there as for any recording.
+
   await expect(page.getByRole("tab", { name: /^Flame graph/u })).toBeVisible();
 });
 
@@ -170,7 +155,7 @@ test("calls and samples select each other, and a call's frames lead to the sampl
   microscope,
 }, info) => {
   const file = info.outputPath("work.usprof");
-  // Rounds of running on its CPU, drawing random bytes, and sleeping.
+
   const recorded = spawnSync(
     path.join(root, "target", "debug", "microscope"),
     ["record", "--syscall-engine", "ptrace", "-o", file, "--", fixture("syscalls"), "work"],
@@ -180,9 +165,6 @@ test("calls and samples select each other, and a call's frames lead to the sampl
   const served = await microscope.start([file]);
   await join(page, served.link);
 
-  // The recording sampled user code alone, so no sample falls inside a call:
-  // the sleeps' site turns on leaves, which weigh the sleeps' own time under
-  // the code that slept.
   await page.getByRole("tab", { name: /^Kernel/u }).click();
   await page.getByLabel("Selection").fill("trace=clock_nanosleep");
   await page.getByLabel("Selection").press("Enter");
@@ -190,7 +172,7 @@ test("calls and samples select each other, and a call's frames lead to the sampl
   await page.getByRole("button", { name: /^Samples during rest · /u }).click();
   await expect(page).toHaveURL(/du=site/u);
   await expect(page).toHaveURL(/sk=1/u);
-  // The calls stay in view; the other panes are scoped to them.
+
   await expect(page.getByTestId("syscalls")).toBeVisible();
   await expect(page.getByRole("tab", { name: /^Kernel/u })).toHaveAttribute(
     "aria-selected",
@@ -205,7 +187,6 @@ test("calls and samples select each other, and a call's frames lead to the sampl
   await expect(functions.filter({ hasText: "burn" })).toHaveCount(0);
   await expect(functions.filter({ hasText: "[syscall] getrandom" })).toHaveCount(0);
 
-  // Without leaves, the view says why it is empty.
   const leaves = async (on: boolean) => {
     await page.getByRole("button", { name: "Options" }).click();
     await page
@@ -219,8 +200,6 @@ test("calls and samples select each other, and a call's frames lead to the sampl
   await leaves(true);
   await expect(functions.filter({ hasText: "rest" }).first()).toBeVisible();
 
-  // The address opens the same view, and the chip lets the samples go,
-  // with the sleeps still leaves beside the code that ran.
   await page.reload();
   await expect(functions.filter({ hasText: "rest" }).first()).toBeVisible();
   await chip.click();
@@ -228,7 +207,6 @@ test("calls and samples select each other, and a call's frames lead to the sampl
   await expect(functions.filter({ hasText: "burn" }).first()).toBeVisible();
   await expect(functions.filter({ hasText: "[syscall] clock_nanosleep" }).first()).toBeVisible();
 
-  // A call's frame selects its function in the flame graph.
   await page.getByRole("tab", { name: /^Kernel/u }).click();
   const view = page.getByTestId("syscalls");
   await view.getByRole("button", { name: "Log", exact: true }).click();
@@ -245,7 +223,6 @@ test("calls and samples select each other, and a call's frames lead to the sampl
   await expect(page).toHaveURL(/fn=rest/u);
   await expect(page.getByRole("img", { name: "Flame graph" })).toBeVisible();
 
-  // And its samples on its source lines.
   await page.getByRole("tab", { name: /^Kernel/u }).click();
   await frame.hover();
   await frame.getByRole("button", { name: "rest on its source lines" }).click();
@@ -278,8 +255,6 @@ test("a family's processes are listed parents first, each with how it ended", as
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(1)).toContainText("exited with 4");
 
-  // The parent's kernel lane, under its CPU on the timeline, names the
-  // call it waited in for its child; a click selects that wait.
   const timeline = page.getByTestId("timeline").getByRole("img");
   const box = await timeline.boundingBox();
   if (!box) {
@@ -287,7 +262,6 @@ test("a family's processes are listed parents first, each with how it ended", as
   }
   const tip = page.getByTestId("zone-tip");
   const found = async () => {
-    // Each lane is 30 pixels: its CPU, then its calls.
     for (let top = 0; top + 30 <= box.height; top += 30) {
       for (let x = 1; x < box.width; x += 4) {
         await page.mouse.move(box.x + x, box.y + top + 24);
@@ -313,7 +287,7 @@ test("a recording made from the page shows what its program is blocked in, until
   const record = page.getByRole("tabpanel", { name: "Record" });
   await record.getByLabel("Program").fill(fixture("syscalls"));
   await record.getByLabel("Arguments").fill("pause");
-  // The production preset counts, which ptrace cannot.
+
   await record.getByLabel("Preset").selectOption("production");
   await record.getByLabel("Engine").selectOption("ptrace");
   await expect(record.getByLabel("System calls")).toHaveValue("counts");
@@ -323,7 +297,6 @@ test("a recording made from the page shows what its program is blocked in, until
   await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}/u);
   await expect(page.getByTestId("recording")).toContainText("Recording syscalls");
 
-  // The pause shows in flight once the recording publishes it.
   await page.getByRole("tab", { name: /^Kernel/u }).click();
   const view = page.getByTestId("syscalls");
   await view.getByRole("button", { name: "Processes", exact: true }).click();

@@ -1,7 +1,3 @@
-//! JavaScript values in a Node-API addon's native frame: each `napi_value`
-//! local is shown as the value it refers to, and `(js)` casts a pointer to
-//! one, so that expressions reach into it as in a JavaScript frame.
-
 use microscope::{FrameKind, ThreadId, VariableState};
 
 use crate::session::{MATRIX, NodeSession};
@@ -9,7 +5,6 @@ use crate::support::Scenario;
 use crate::truth::threads;
 use crate::values::{lies_about, presented};
 
-/// Selects the frame of the addon's C function `inspect` on `thread`.
 async fn select_inspect(session: &NodeSession, thread: u64) {
     let handle = session.scenario.handle();
     session
@@ -42,9 +37,6 @@ async fn select_inspect(session: &NodeSession, thread: u64) {
         .await;
 }
 
-/// On every build, the addon's `napi_value` locals, in the frame's variables
-/// and as expressions, are the text `util.inspect` gave the values the
-/// driver passed, and `(js)` reaches the object through a `void *`.
 #[tokio::test]
 async fn an_addons_napi_values_are_the_values_node_gave_them() {
     let addon = Scenario::fixture("node-addon.node");
@@ -102,7 +94,6 @@ async fn an_addons_napi_values_are_the_values_node_gave_them() {
                 &shown,
             ));
         }
-        // `opaque` is a `void *` that holds the object's handle.
         let shown = presented(&session, "(js)opaque").await;
         lies.extend(lies_about(
             &format!("{context}, `(js)opaque`"),

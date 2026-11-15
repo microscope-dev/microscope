@@ -1,8 +1,3 @@
-// A function's instructions: the frame's own when the link names no
-// address, with the instruction the frame executes marked. Source lines head
-// the instructions compiled from them and lead back to the source; calls
-// and jumps link where they go.
-
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -19,7 +14,6 @@ import { fileName } from "./paths";
 import { errorClass, hidden } from "./Values";
 import { useFocus } from "./Workspace";
 
-/** The syntax this browser reads, Intel unless AT&T was chosen. */
 function useSyntax(): [Syntax, (syntax: Syntax) => void] {
   const [syntax, setSyntax] = useState<Syntax>(() =>
     read(
@@ -111,7 +105,6 @@ function SyntaxButton({
   );
 }
 
-/** Every line of a listing is one row high, so only the rows in view exist. */
 const LINE = 20;
 
 type Line =
@@ -119,11 +112,6 @@ type Line =
   | { kind: "source"; key: string; source: SourceLine }
   | { kind: "instruction"; key: string; instruction: Instruction };
 
-/**
- * The listing, with notes first and each source line before the
- * instructions compiled from it. A function holds thousands of
- * instructions, so the rows are virtual.
- */
 function Lines({
   disassembled,
   body,
@@ -161,7 +149,6 @@ function Lines({
     overscan: 40,
   });
 
-  // The marked instruction comes into view whenever it moves.
   const marked = current ? disassembled.marked : undefined;
   useEffect(() => {
     const index = marked
@@ -203,7 +190,6 @@ function Lines({
   );
 }
 
-/** A virtual row, placed `start` pixels down. */
 function Slot({ start, children }: { start: number; children: React.ReactNode }) {
   const style = useMemo(() => ({ transform: `translateY(${start}px)` }), [start]);
   return (
@@ -258,7 +244,6 @@ function Row({
   );
 }
 
-/** The source line instructions after it were compiled from. */
 function SourceHead({ source }: { source: SourceLine }) {
   const showSource = useShowSource();
   const text = useRequest("source", { path: source.path }).data;
@@ -281,7 +266,6 @@ function SourceHead({ source }: { source: SourceLine }) {
   );
 }
 
-/** Where a call or jump goes, as a link to its code. */
 function Target({ address, name }: { address: string; name: string | null }) {
   const look = useLook();
   const { look: current } = useFocus();
@@ -301,7 +285,7 @@ function Target({ address, name }: { address: string; name: string | null }) {
   return (
     <a
       className="asm-target"
-      // The link opens elsewhere as itself; a plain click moves this tab.
+
       href={window.location.pathname + stringifySearch({ ...there(current) })}
       title={address}
       onClick={follow}
@@ -311,7 +295,6 @@ function Target({ address, name }: { address: string; name: string | null }) {
   );
 }
 
-/** A breakpoint's dot at an instruction, which toggles it for controllers. */
 function Gutter({ address }: { address: string }) {
   const { state } = useFocus();
   const control = useModel(controls);

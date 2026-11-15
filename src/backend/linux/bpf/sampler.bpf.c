@@ -1,10 +1,10 @@
-// The profiler's BPF engine (dev/profiling.md). The
-// program runs on the sampler's own perf events, as each takes a sample,
-// and returns 1, so that perf still writes the sample as it would. Before
-// that, it writes the sampled thread's Python frames to the same CPU's
-// ring, through that CPU's event in OUTPUT, which microscope points at the
-// ring; microscope pairs the two by thread and CPU, and splices the frames
-// into the sample's native stack.
+
+
+
+
+
+
+
 
 #include <linux/bpf.h>
 #include <linux/bpf_perf_event.h>
@@ -16,7 +16,7 @@
 
 const volatile u32 KERNEL_SAMPLES = 0;
 
-// Appended outside the interpreter record's size, only with --kernel-stacks.
+
 struct kernel_sample_record {
 	u64 syscall;
 	u32 abi;
@@ -33,7 +33,7 @@ struct sampled_v8 {
 	struct kernel_sample_record kernel;
 };
 
-// Each Python process's layout, by its process id.
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
@@ -41,7 +41,7 @@ struct {
 	__type(value, struct py_layout);
 } LAYOUTS SEC(".maps");
 
-// Each thread of a Python process that has a state, by its thread id.
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 65536);
@@ -49,7 +49,7 @@ struct {
 	__type(value, struct py_thread);
 } THREADS SEC(".maps");
 
-// Each Node process's V8 layout, by its process id.
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
@@ -57,7 +57,7 @@ struct {
 	__type(value, struct v8_layout);
 } V8_LAYOUTS SEC(".maps");
 
-// Where each CPU builds its record of JavaScript frames.
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -65,8 +65,8 @@ struct {
 	__type(value, struct sampled_v8);
 } V8_SCRATCH SEC(".maps");
 
-// Each CPU's BPF output event, which writes to that CPU's ring; microscope
-// sizes it to the CPUs.
+
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
 	__uint(max_entries, 1);
@@ -74,7 +74,7 @@ struct {
 	__type(value, u32);
 } OUTPUT SEC(".maps");
 
-// Where each CPU builds its record.
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -82,7 +82,7 @@ struct {
 	__type(value, struct sampled_python);
 } SCRATCH SEC(".maps");
 
-// Each CPU's records that found no room in its ring.
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -91,14 +91,14 @@ struct {
 } LOST SEC(".maps");
 
 #ifdef MICROSCOPE_WALK_TIMING
-// What each CPU's walks of JavaScript frames took, in a build for measuring
-// it alone (the bpf-walk-timing feature): the shipping program has no clock.
+
+
 struct v8_walk_times {
 	u64 walks;
 	u64 ns;
 	u64 frames;
 	u64 most_ns;
-	// The walks that filled the record, V8_FRAMES frames each.
+
 	u64 full_walks;
 	u64 full_ns;
 };
@@ -111,7 +111,7 @@ struct {
 } V8_WALK_TIMES SEC(".maps");
 #endif
 
-// Counts a record that found no room in the CPU's ring.
+
 static __always_inline void lost_record(void)
 {
 	u32 zero = 0;
@@ -144,7 +144,7 @@ static __always_inline struct kernel_sample_record kernel_record(struct bpf_perf
 	    !bpf_core_field_exists(task->thread_info.status) ||
 	    bpf_core_read(&status, sizeof(status), &task->thread_info.status))
 		return record;
-	// TS_COMPAT identifies int 0x80 even when the process runs 64-bit code.
+
 	record.abi = (status & 2) ? ABI_32 : (record.syscall & (1U << 30)) ? ABI_X32 : ABI_64;
 	return record;
 }
@@ -161,17 +161,17 @@ static __always_inline int send_sample(struct bpf_perf_event_data *ctx, void *da
 	}
 	if (bpf_perf_event_output(ctx, &OUTPUT, BPF_F_CURRENT_CPU, data, size)) {
 		lost_record();
-		// No perf sample may consume an earlier sample's syscall metadata.
+
 		return KERNEL_SAMPLES ? 0 : 1;
 	}
 	return 1;
 }
 
-// The kernel's record of a thread's registers that the kernel keeps for it
-// as it switches tasks, of which only its thread pointer is read. These
-// are flavors (CO-RE drops the ___v8), relocated against the running
-// kernel's task_struct: kernel_types.h's pt_regs would clash with the
-// perf event's.
+
+
+
+
+
 struct thread_struct___v8 {
 	unsigned long fsbase;
 } __attribute__((preserve_access_index));
@@ -180,10 +180,10 @@ struct task_struct___v8 {
 	struct thread_struct___v8 thread;
 } __attribute__((preserve_access_index));
 
-// Reads the current thread's isolate into the record `header`, where
-// `layout` places it. The thread pointer is the one the kernel set when
-// the thread was made, or by arch_prctl, and saves as it switches away:
-// glibc never writes it otherwise.
+
+
+
+
 static __always_inline void v8_isolate(const struct v8_layout *layout,
 				       struct v8_stack_record *header)
 {
@@ -197,8 +197,8 @@ static __always_inline void v8_isolate(const struct v8_layout *layout,
 	if (bpf_core_read(&fsbase, sizeof(fsbase), &task->thread.fsbase) || !fsbase)
 		return;
 	s64 offset = layout->isolate_offset;
-	// A slot is read at each sample, as the loader fills it only once the
-	// image is mapped, after microscope may have read the layout.
+
+
 	if (layout->isolate_place == V8_ISOLATE_SLOT &&
 	    bpf_probe_read_user(&offset, sizeof(offset), (const void *)layout->isolate_slot))
 		return;
@@ -209,8 +209,8 @@ static __always_inline void v8_isolate(const struct v8_layout *layout,
 	header->isolate_read = V8_ISOLATE_READ;
 }
 
-// Writes the sampled thread's JavaScript frames, when its process has a V8
-// layout: whether it has.
+
+
 static __always_inline int v8_sample(struct bpf_perf_event_data *ctx, u32 tgid, u32 tid)
 {
 	u32 zero = 0;
@@ -228,8 +228,8 @@ static __always_inline int v8_sample(struct bpf_perf_event_data *ctx, u32 tgid, 
 	header->pad[0] = header->pad[1] = 0;
 	v8_isolate(layout, header);
 
-	// A sample taken in the kernel holds the kernel's registers; the
-	// thread's own are those it entered the kernel with.
+
+
 	struct pt_regs regs = ctx->regs;
 	if (!(regs.cs & 3)) {
 		void *user = (void *)bpf_task_pt_regs(bpf_get_current_task_btf());

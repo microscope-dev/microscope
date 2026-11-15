@@ -1,8 +1,3 @@
-//! Profiles the server serves to every tab, whatever it debugs. Each is
-//! named by a digest of its bytes, so a link to one opens the same profile
-//! whenever a server serves it. Every answer is a query of
-//! [`microscope::profiler`], which the CLI's reports read too.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -31,20 +26,16 @@ use super::session::Failure;
 
 mod inspect;
 
-/// The most slices a timeline is cut into.
 const MOST_BUCKETS: u32 = 4096;
 
-/// How often a recording publishes its profile so far.
 pub(super) const LIVE_EVERY: Duration = Duration::from_secs(2);
 
-/// The profiles one server serves.
 pub struct Profiles {
     cwd: PathBuf,
     entries: RwLock<BTreeMap<String, Arc<Entry>>>,
     list: watch::Sender<Arc<ProfileList>>,
     recordings: Mutex<BTreeMap<String, Recorder>>,
 
-    /// Counts recordings, so each gets an id of its own.
     recorded: AtomicU64,
 }
 
@@ -54,7 +45,6 @@ impl Entry {
             .get_or_init(|| Arc::new(super::syscalls::Trace::of(&self.profile)))
     }
 
-    /// The analysis's query for a tab's, its calls resolved to their rows.
     fn resolve(&self, keys: &Keys<'_>, query: &ProfileQuery) -> Result<Query, Failure> {
         let mut resolved = resolve(&self.profile, keys, query)?;
         if let Some(during) = &query.during {
@@ -69,20 +59,16 @@ struct Entry {
     info: ProfileInfo,
     profile: Arc<Profile>,
 
-    /// Its system call trace, read once it is asked for.
     syscalls: std::sync::OnceLock<Arc<super::syscalls::Trace>>,
 
-    /// What Inspect shows, read once it is asked for.
     inspection: std::sync::OnceLock<Value>,
 
-    /// The file it was read from, if any.
     file: Option<protocol::ProfileFile>,
 }
 
 struct Recorder {
     stop: Arc<AtomicBool>,
 
-    /// Its thread, once started.
     thread: Option<JoinHandle<()>>,
 }
 
@@ -101,7 +87,6 @@ impl Profiles {
         })
     }
 
-    /// Serves the profile in `bytes`, read from `path`, returning its id.
     pub fn add(&self, path: &Path, bytes: &[u8]) -> anyhow::Result<String> {
         let id = format!("{:016x}", twox_hash::XxHash3_64::oneshot(bytes));
         Ok(self.add_read(
@@ -112,8 +97,6 @@ impl Profiles {
         ))
     }
 
-    /// Serves the segments of a continuous recording in `directory` as one
-    /// profile, as they are now, returning its id.
     pub fn add_segments(&self, directory: &Path) -> anyhow::Result<String> {
         let read = Profile::read_segments(directory)?;
         let id = format!(
@@ -137,8 +120,6 @@ impl Profiles {
             );
         }
 
-        // A profile recorded with its symbols left for later gets those
-        // this host's files and debug directories hold.
         for module in read
             .profile
             .symbolize(&microscope::DebugFileOptions::default())
@@ -174,7 +155,6 @@ impl Profiles {
         id
     }
 
-    /// Serves `profile` as `info` says, replacing what its id served.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the list is sent under the lock, so changes publish in order"
@@ -201,12 +181,10 @@ impl Profiles {
         self.list.send_replace(Arc::new(ProfileList { profiles }));
     }
 
-    /// The profiles, now and as they change.
     pub fn subscribe(&self) -> watch::Receiver<Arc<ProfileList>> {
         self.list.subscribe()
     }
 
-    /// A profile's file, by its id, and the name to save it under.
     pub fn file(&self, id: &str) -> Option<(String, std::io::Result<Vec<u8>>)> {
         let entry = self.entry(id).ok()?;
         let name = if std::path::Path::new(&entry.info.name)
@@ -221,7 +199,6 @@ impl Profiles {
         Some((name, entry.profile.to_bytes()))
     }
 
-    /// Ends every recording, killing its program, and waits for each.
     pub fn shutdown(&self) {
         let recordings = std::mem::take(
             &mut *self
@@ -241,9 +218,6 @@ impl Profiles {
         }
     }
 
-    /// Answers a request about a profile, with the bytes that go before the
-    /// answer. Aggregation reads every sample a query selects, so it runs
-    /// off the server's threads.
     pub async fn handle(
         self: &Arc<Self>,
         role: Role,
@@ -277,7 +251,6 @@ impl Profiles {
         }
     }
 
-    /// Starts recording `spec`, answering once its program has started.
     async fn record(self: &Arc<Self>, role: Role, spec: RecordProfile) -> Result<String, Failure> {
         controls(role)?;
         let program = PathBuf::from(&spec.program);
@@ -340,7 +313,6 @@ impl Profiles {
         }
     }
 
-    /// Records on this thread, publishing each profile under `id`.
     fn run_recording(
         &self,
         id: &str,
@@ -373,7 +345,6 @@ impl Profiles {
                     }
                 },
                 stop,
-                // The page saves what it shows: with a window, the window.
                 save: None,
             },
         );
@@ -401,10 +372,6 @@ impl Profiles {
         }
     }
 
-    /// Runs `run` as the recording `id` on the thread `spawn` starts, and
-    /// lists it until `run` returns. Returns the thread when it is no
-    /// longer listed, having ended or been stopped by a shutdown, for the
-    /// caller to join.
     fn start_recorder(
         self: &Arc<Self>,
         id: &str,
@@ -412,7 +379,6 @@ impl Profiles {
         run: impl FnOnce() + Send + 'static,
         spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<JoinHandle<()>>,
     ) -> std::io::Result<Option<JoinHandle<()>>> {
-        // Listed before it starts, so that it is unlisted only once it ends.
         self.recordings
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -457,7 +423,6 @@ impl Profiles {
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, format!("no profile {id}")))
     }
 
-    /// A query's base, read with the query's own filters and transforms.
     fn base(&self, query: &ProfileQuery) -> Result<Option<(Arc<Entry>, ProfileQuery)>, Failure> {
         let Some(base) = &query.base else {
             return Ok(None);
@@ -587,7 +552,6 @@ impl Profiles {
         let diff_span = microscope::span!("web diff functions");
         let mut diff = diff_costs((&keys, &costs), (&base_keys, &base_costs));
 
-        // Most changed share of the samples first.
         let share = |weight: u64, of: u64| {
             if of == 0 {
                 0.0
@@ -700,7 +664,6 @@ impl Profiles {
     }
 }
 
-/// How a recording the page asked for samples.
 fn sampling(spec: &RecordProfile) -> Result<RecordOptions, Failure> {
     let mut options = RecordOptions::preset(match spec.preset {
         RecordPreset::Production => Preset::Production,
@@ -748,7 +711,6 @@ fn sampling(spec: &RecordProfile) -> Result<RecordOptions, Failure> {
     Ok(options)
 }
 
-/// Whether a request is about a profile.
 pub const fn is_profile_request(request: &Request) -> bool {
     matches!(
         request,
@@ -775,7 +737,6 @@ pub const fn is_profile_request(request: &Request) -> bool {
     )
 }
 
-/// Fails unless `role` may run programs.
 fn controls(role: Role) -> Result<(), Failure> {
     if role == Role::Control {
         Ok(())
@@ -787,7 +748,6 @@ fn controls(role: Role) -> Result<(), Failure> {
     }
 }
 
-/// Each span sampling paused for `reason`, from `start`.
 fn paused(profile: &Profile, reason: GapReason, start: i64) -> Vec<[i64; 2]> {
     profile
         .paused(reason)
@@ -894,7 +854,6 @@ fn summary(entry: &Entry) -> ProfileSummary {
     }
 }
 
-/// Markers as a page shows them, from the profile's `start`.
 fn markers(markers: Vec<(i64, String)>, start: i64) -> Vec<protocol::ProfileMarker> {
     markers
         .into_iter()
@@ -905,8 +864,6 @@ fn markers(markers: Vec<(i64, String)>, start: i64) -> Vec<protocol::ProfileMark
         .collect()
 }
 
-/// A profile's tasks, named as views name their groups, most weight
-/// first.
 fn tasks(profile: &Profile) -> Vec<protocol::ProfileTask> {
     let keys = profile.keys(Granularity::Function);
     let mut tasks: Vec<protocol::ProfileTask> = profile
@@ -933,9 +890,6 @@ pub(super) const fn granularity(granularity: ProfileGranularity) -> Granularity 
     }
 }
 
-/// The analysis's query for a tab's, its transforms' names resolved to
-/// keys. A name no key has is an error rather than a transform that
-/// silently does nothing, and so is a focus on a name several keys share.
 pub(super) fn resolve(
     profile: &Profile,
     keys: &Keys<'_>,
@@ -944,8 +898,6 @@ pub(super) fn resolve(
     resolve_in(profile, keys, query, false)
 }
 
-/// Resolves a query in a diff's base, where a name the base lacks is no
-/// error: a focus on it keeps nothing, and the others change nothing.
 fn resolve_base(
     profile: &Profile,
     keys: &Keys<'_>,
@@ -1065,8 +1017,6 @@ fn resolve_in(
     })
 }
 
-/// The zones a query's scope names. A name no site or label has is an
-/// error, except in a diff's base, where it keeps nothing.
 fn zone_scope(
     profile: &Profile,
     scope: &protocol::ProfileZoneScope,
@@ -1096,7 +1046,6 @@ fn zone_scope(
     })
 }
 
-/// Each thread's, or task's, weight over time, and its time off a CPU.
 fn timeline_of(
     entry: &Entry,
     timeline: &protocol::ProfileTimelineQuery,
@@ -1134,7 +1083,6 @@ fn timeline_of(
         .map(|(id, weights)| (id, lane(id, weights)))
         .collect();
 
-    // Time off a CPU is a thread's.
     if !by_task {
         for off in profile.off_cpu_lanes(&resolved, buckets) {
             let lane = lanes
@@ -1169,12 +1117,9 @@ fn timeline_of(
     })
 }
 
-/// The most of a source file served, and how many lines around a
-/// function's own are.
 const MOST_SOURCE_BYTES: u64 = 4 << 20;
 const SOURCE_MARGIN: u64 = 5;
 
-/// A function query's selection, its transforms left out.
 fn selection(entry: &Entry, query: &protocol::ProfileFunctionQuery) -> Result<Query, Failure> {
     let mut plain = query.query.clone();
     plain.transforms.clear();
@@ -1184,7 +1129,6 @@ fn selection(entry: &Entry, query: &protocol::ProfileFunctionQuery) -> Result<Qu
     entry.resolve(&keys, &plain)
 }
 
-/// A function's samples on its source lines, with the text around them.
 fn source(
     entry: &Entry,
     query: &protocol::ProfileFunctionQuery,
@@ -1198,8 +1142,6 @@ fn source(
     })
 }
 
-/// Lines' costs by file, in path order, each file with its text around
-/// them.
 fn source_files(costs: Vec<LineCost>) -> Vec<protocol::ProfileSourceFile> {
     let mut files: BTreeMap<Option<String>, Vec<[u64; 3]>> = BTreeMap::new();
     for line in costs {
@@ -1235,7 +1177,6 @@ fn source_files(costs: Vec<LineCost>) -> Vec<protocol::ProfileSourceFile> {
         .collect()
 }
 
-/// Lines `first` to `last` of a source file, as it reads now.
 pub(super) fn source_lines(path: &str, first: u64, last: u64) -> Result<Vec<String>, String> {
     let size = std::fs::metadata(path)
         .map_err(|error| format!("{path} cannot be read: {error}"))?
@@ -1256,7 +1197,6 @@ pub(super) fn source_lines(path: &str, first: u64, last: u64) -> Result<Vec<Stri
         .collect())
 }
 
-/// A function's samples on its instructions, or why its code is unknown.
 fn code(
     entry: &Entry,
     query: &protocol::ProfileFunctionQuery,
@@ -1280,9 +1220,6 @@ fn code(
         }
     };
 
-    // The function's own file is the one its instructions most often
-    // belong to as its own, past what is inlined into it; or, when it has
-    // no code of its own, as what was inlined.
     let mut owners: BTreeMap<&str, usize> = BTreeMap::new();
     for instruction in code.blocks.iter().flat_map(|block| &block.instructions) {
         let own = if code.inlined_into.is_some() {
@@ -1367,11 +1304,8 @@ fn code(
     })
 }
 
-/// The most marks a zones answer holds.
 const MOST_MARKS: usize = 4096;
 
-/// A range from the profile's start, as the profile's clock has it, or the
-/// whole profile.
 fn absolute(profile: &Profile, range: Option<[i64; 2]>) -> (i64, i64) {
     let (start, end) = profile.span();
     range.map_or_else(
@@ -1380,11 +1314,9 @@ fn absolute(profile: &Profile, range: Option<[i64; 2]>) -> (i64, i64) {
     )
 }
 
-/// Zones folded to a width, and the program's marks, in a range.
 fn zones(profile: &Profile, query: &protocol::ProfileZonesQuery) -> (Value, Vec<u8>) {
     let (start, _) = profile.span();
 
-    // Without a range, the zones' own, with a margin.
     let range = match (query.range, profile.zone_extent()) {
         (None, Some((first, last))) => {
             let margin = ((last - first) / 50).max(1);
@@ -1393,7 +1325,6 @@ fn zones(profile: &Profile, query: &protocol::ProfileZonesQuery) -> (Value, Vec<
         (range, _) => absolute(profile, range),
     };
 
-    // Zones under three pixels wide fold together.
     let fold = (range.1 - range.0) * 3 / i64::from(query.width.max(1));
     let band = query.band.map(Into::into);
     let chosen = query.site.as_deref().map(|site| (site, band));
@@ -1546,7 +1477,6 @@ fn zone_stats(
     }
 }
 
-/// A time as a page's numbers hold it, exactly to 2^53 nanoseconds.
 #[expect(
     clippy::cast_precision_loss,
     reason = "no view can show a part in 2^53"
@@ -1555,11 +1485,9 @@ const fn exact_time(time: i64) -> f64 {
     time as f64
 }
 
-/// The keys an answer names, each once, in the order first named.
 struct Named<'a, 'k> {
     keys_of: &'a Keys<'k>,
 
-    /// A diff's base's keys, which its nodes from the base name.
     base_of: Option<&'a Keys<'k>>,
     indices: BTreeMap<(bool, u32), u32>,
     keys: Vec<ProfileKey>,
@@ -1622,15 +1550,12 @@ impl<'a, 'k> Named<'a, 'k> {
     }
 }
 
-/// Weights as a column of little-endian `f64`s.
 fn put_weights(bytes: &mut Vec<u8>, weights: &[u64]) {
     for weight in weights {
         bytes.extend_from_slice(&exact(*weight).to_le_bytes());
     }
 }
 
-/// A weight as a page's numbers hold it: exactly up to 2^53, nanoseconds
-/// of more than a hundred days, and beyond to within a part in 2^53.
 #[expect(
     clippy::cast_precision_loss,
     reason = "no view can show a part in 2^53"
@@ -1639,7 +1564,6 @@ const fn exact(weight: u64) -> f64 {
     weight as f64
 }
 
-/// An answer that is only JSON.
 fn json(value: &impl serde::Serialize) -> (Value, Vec<u8>) {
     (to_value(value), Vec::new())
 }
@@ -1652,8 +1576,6 @@ fn to_value(value: &impl serde::Serialize) -> Value {
 mod tests {
     use super::*;
 
-    /// A recording can end before the thread that started it lists it, as
-    /// one whose program fails to start does. It is not listed after.
     #[test]
     fn a_recording_that_ends_at_once_is_not_left_listed() {
         let profiles = Profiles::new(PathBuf::from("/"));

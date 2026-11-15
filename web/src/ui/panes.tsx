@@ -1,8 +1,3 @@
-// Every view as a pane kind, what each needs before it can show anything,
-// and the presets that arrange them: Debug, as the page always has been
-// (threads and the stack on the left, the code and the console in the
-// middle, values on the right), Start, and Profile.
-
 import { useContext } from "react";
 
 import { DOCUMENT_KINDS, documentsGroup, KIND, single, sourcePane } from "../documents";
@@ -57,13 +52,10 @@ import { Threads } from "./Threads";
 import { Variables, Watch, WatchBadge } from "./Values";
 import { FocusContext } from "./Workspace";
 
-/** What a pane needs before it can show anything: a session the tab is
- * looking at, a connected microscope, or one this page may control. */
 export type Need = "session" | "connection" | "control";
 
 type Kind = PaneKind<Need>;
 
-/** A view there is one of, which needs a session unless it says otherwise. */
 function view(
   id: (typeof KIND)[keyof typeof KIND],
   title: string,
@@ -102,7 +94,7 @@ export const KINDS = kinds<Need>([
     title: (pane) => (pane.key === "" ? "Source" : fileName(pane.key)),
     Body: SourceBody,
     needs: "session",
-    // Only the file shown keeps its editor; another's opens again when chosen.
+
     keepAlive: false,
     closable: (pane) => pane.key !== "",
     chosen: (pane) => (pane.key === "" ? showView("source") : showDocument(pane.key)),
@@ -118,7 +110,7 @@ export const KINDS = kinds<Need>([
   }),
   view(KIND.drawings, "Drawings", Drawings, {
     Badge: DrawingsBadge,
-    // Live drawings hold workers and canvases.
+
     keepAlive: false,
     chosen: () => showView("drawings"),
     close: closesView("drawings"),
@@ -150,8 +142,6 @@ export const KINDS = kinds<Need>([
   profileKind(KIND.profileDetails, () => "File details"),
 ]);
 
-/** One of a profile's panes. Each of its views names its profile's file,
- * so the panes of one profile read as one group wherever they sit. */
 function profileKind(id: KindId, title: Kind["title"]): Kind {
   return {
     id,
@@ -159,7 +149,7 @@ function profileKind(id: KindId, title: Kind["title"]): Kind {
     Body: ProfilePaneBody,
     ...(id === KIND.profile ? {} : { Badge: ProfileBadge }),
     needs: "connection",
-    // Their canvases and timeline are costly to keep hidden.
+
     keepAlive: false,
     closable: () => true,
   };
@@ -171,16 +161,12 @@ function ProfileBadge({ pane }: PaneProps) {
     const held = value as { name?: unknown } | null | undefined;
     return typeof held?.name === "string" ? held.name : "";
   });
-  // The space keeps the tab's name "Flame graph go.usprof" for a screen
-  // reader; the tab's gap spaces them on screen.
+
   return name ? <span className="muted"> {fileName(name)}</span> : null;
 }
 
-/** What the dock shows panes with. */
 export const DOCK = { kinds: KINDS, useMissing };
 
-/** Closes a document's pane; closing the one the address shows goes back
- * to the source. */
 function closesView(shown: View): (id: PaneId) => void {
   return (id) => {
     change((layout) => close(layout, id));
@@ -196,7 +182,6 @@ function ThreadsBadge() {
   return count > 0 ? <span className="count">{count}</span> : null;
 }
 
-/** Why a pane has nothing to show, or null when it has. */
 export function useMissing(need: string | null): string | null {
   const focus = useContext(FocusContext);
   const link = useModel((model) => model.link);
@@ -234,8 +219,6 @@ export function useMissing(need: string | null): string | null {
   }
 }
 
-/** Shows the pane of a kind there is one of, opening it where it belongs
- * when it is not open, and moves the keyboard into it. */
 export function showPane(kind: KindId): void {
   let shown: PaneId | null = null;
   change((layout) => {
@@ -244,28 +227,23 @@ export function showPane(kind: KindId): void {
       shown = found;
       return activate(layout, found);
     }
-    // A document, or a page of its own such as Settings, opens where there
-    // is room for it; a session's view opens where the person is.
+
     const roomy = DOCUMENT_KINDS.has(kind) || KINDS.get(kind).needs !== "session";
     const into = roomy ? documentsGroup(layout, tab.getState().files) : layout.focused;
     const opened = open(layout, single(kind), into);
     shown = opened.pane;
     return activate(opened.layout, opened.pane);
   });
-  // Once the pane is on screen.
+
   requestAnimationFrame(() => shown && focusPane(shown));
 }
 
-/** Shows a profile's overview, opening it among the documents when it is
- * not open. */
 export function showProfile(id: string, name: string): void {
   change(
     (layout) => showOverview(layout, id, name, documentsGroup(layout, tab.getState().files)).layout,
   );
 }
 
-/** Shows a shared organization's pane, opening it where there is room
- * when it is not open, and moves the keyboard into it. */
 export function showOrg(id: number, name: string): void {
   const before = workbench.getState().layout;
   const found = paneOf(before, KIND.org, String(id));
@@ -280,7 +258,6 @@ export function showOrg(id: number, name: string): void {
   requestAnimationFrame(() => focusPane(opened.pane));
 }
 
-/** Today's arrangement: nothing moves for someone who knows the page. */
 export function debugLayout(): Layout {
   return build({
     axis: "row",
@@ -337,15 +314,11 @@ export function debugLayout(): Layout {
   });
 }
 
-/** Puts a whole layout in place, the tab's open files in its documents. */
 export function applyLayout(layout: Layout): void {
   workbench.setState({ layout });
   tab.setState((state) => ({ files: [...state.files] }));
 }
 
-/** Where a page with nothing open starts: at Account, which offers what can
- * be done from here. A page served on its own has Connect beside it; one
- * `microscope web` serves, the forms that choose what to debug. */
 export function startLayout(): Layout {
   return standalone
     ? build({
@@ -373,22 +346,14 @@ export function startLayout(): Layout {
       });
 }
 
-/** What an address wants the workbench to hold: a session's panes, or
- * something to start from. */
 export type Wants = "session" | "start";
 
-/** Whether the layout in use is wrong for what an address wants: an empty
- * one is wrong for any; a session wants a pane that shows one, and a page
- * with no session wants none of them, since each would only say there is
- * nothing to show. */
 export function misplaced(layout: Layout, wants: Wants): boolean {
   const panes = Object.values(layout.panes);
   const session = panes.some((pane) => KINDS.get(pane.kind).needs === "session");
   return panes.length === 0 || (wants === "session" ? !session : session);
 }
 
-/** Puts back the layout this browser used last when the workbench holds
- * nothing, and says why it could not when it could not. */
 export function restoreLayout(): string | null {
   if (Object.keys(workbench.getState().layout.panes).length > 0) {
     return null;
@@ -400,7 +365,6 @@ export function restoreLayout(): string | null {
   return kept && !kept.ok ? kept.why : null;
 }
 
-/** A profile, with Explorer beside it to open another. */
 export function profileLayout(id: string, name: string, look: ProfileLook): Layout {
   const link = "l0" as LinkId;
   const { pane, value } = overview(id, name, look, link);

@@ -1,15 +1,15 @@
-//! Tasks a test steps through, across awaits. Three tasks run the same
-//! async functions. Each waits at its gate, which a plain thread opens
-//! only once every task waits there and the runtime's workers park, so
-//! that an await a test steps over is pending, and the other tasks run
-//! the same code meanwhile. Then each goes round a loop of awaits that
-//! yield, and finishes.
-//!
-//! With no argument the tasks run on a multi-thread runtime's two
-//! workers; with `current`, on a current-thread runtime; with `local`, in
-//! a `LocalSet` the main thread runs on a current-thread runtime. With
-//! `nested`, one task on a multi-thread runtime spawns another and awaits
-//! it.
+
+
+
+
+
+
+
+
+
+
+
+
 
 use std::hint::black_box;
 
@@ -96,8 +96,8 @@ fn main() {
         };
         handles.push(handle);
     }
-    // A task marks the gate before it polls it, so the gates open only
-    // once the workers park too: then every task's await is pending.
+
+
     let handle = runtime.handle().clone();
     let opener = std::thread::spawn(move || {
         while truth::parked_at("gate") != TASKS || !truth::workers_parked(&handle) {

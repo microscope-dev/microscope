@@ -1,5 +1,5 @@
-//! The C fixture's call chains in Rust: the worker is a std thread, and
-//! the functions keep their names for a breakpoint on `leaf`.
+
+
 
 use std::hint::black_box;
 use std::sync::atomic::{AtomicU64, Ordering};

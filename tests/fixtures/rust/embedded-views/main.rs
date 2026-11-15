@@ -1,26 +1,26 @@
-//! A Rust program that carries views for its own types in its
-//! `.debug_microscope_views` section, and a kernel one of them calls, through
-//! the SDK's macros.
+
+
+
 
 use std::hint::black_box;
 
 microscope_views::microscope_views_file!("tests/fixtures/rust/embedded-views/main.views");
 
-/// Tags, which their view presents as the names they hold.
+
 pub struct Tags {
     names: Vec<&'static str>,
 }
 
-/// A temperature in degrees Celsius.
+
 pub struct Celsius(f64);
 
-/// A tree whose nodes keep their children in a list.
+
 pub struct Tree {
     root: Option<Box<Node>>,
     count: usize,
 }
 
-/// A node of a tree, whose links only the kernel follows.
+
 #[expect(dead_code, reason = "the kernel reads the links")]
 pub struct Node {
     value: i32,
@@ -28,7 +28,7 @@ pub struct Node {
     sibling: Option<Box<Node>>,
 }
 
-// The kernel, built from kernel/ into the file the build names.
+
 microscope_views::microscope_kernel!(
     "tree",
     "tests/fixtures/rust/embedded-views/kernel/src/lib.rs",

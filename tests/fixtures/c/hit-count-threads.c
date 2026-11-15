@@ -3,9 +3,9 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-// Every worker reaches `contended` CALLS times at once with its siblings. A
-// hit lost or counted twice changes the debugger's count, and an instruction
-// skipped or repeated while stepping over a trap changes the total.
+
+
+
 enum { WORKERS = 4, CALLS = 100 };
 
 static _Atomic uint64_t total;

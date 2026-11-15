@@ -1,6 +1,3 @@
-//! The system-call filter: stopping at the calls its condition names, as
-//! they begin and return, until the client turns it off.
-
 use serde_json::json;
 
 use crate::dap::{Configuration, Dap, Profile, fixture};

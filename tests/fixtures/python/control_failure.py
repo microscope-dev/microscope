@@ -1,4 +1,4 @@
-"""A real interpreter whose monitoring slots all belong to the application."""
+
 import contextvars
 import os
 import sys

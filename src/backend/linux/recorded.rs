@@ -1,12 +1,3 @@
-//! Records the native control calls a development build makes.
-//!
-//! [`Recorded`] wraps the ptrace edge and records every call that controls a
-//! tracee or reads how it stopped. A breakpoint operation is one line, not
-//! the word writes it makes. Memory, register, and `/proc` reads are left
-//! out: they are frequent, change nothing, and would crowd the record of
-//! what the debugger did out of the ring. Wait statuses are recorded where
-//! they are consumed, in `native::wait_for`.
-
 use std::collections::BTreeMap;
 use std::fmt::{self, Arguments, Debug, Display, Formatter};
 use std::path::{Path, PathBuf};
@@ -33,9 +24,6 @@ use super::{BreakpointOwner, BreakpointSite, SignalMetadata, Waiter};
 
 pub(super) struct Recorded<P>(pub(super) P);
 
-/// Records a call that acts on a tracee before making it, since a wait
-/// status it causes may be recorded before it returns, then records its
-/// result unless it is `expected`.
 fn issued<T: Debug + PartialEq, E: Debug>(
     call: Arguments<'_>,
     expected: &T,
@@ -52,7 +40,6 @@ fn issued<T: Debug + PartialEq, E: Debug>(
     result
 }
 
-/// Records a call that only reads, with its result.
 fn queried<T: Debug, E: Debug>(
     call: Arguments<'_>,
     result: std::result::Result<T, E>,
@@ -65,7 +52,6 @@ fn queried<T: Debug, E: Debug>(
     result
 }
 
-/// Describes a wait status, naming its ptrace event.
 pub(super) struct Described<'a>(pub(super) &'a WaitEvent);
 
 impl Display for Described<'_> {

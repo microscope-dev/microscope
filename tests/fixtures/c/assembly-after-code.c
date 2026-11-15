@@ -1,6 +1,6 @@
-// Hand-written assembly placed after a compiled function, with no line
-// information of its own: the function's last line table row runs on, to
-// the next row, through it.
+
+
+
 
 __attribute__((noinline)) int before(int value) {
     return value + 1;

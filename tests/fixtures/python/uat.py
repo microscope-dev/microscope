@@ -1,5 +1,5 @@
-"""What the VS Code acceptance test debugs: a line to break at and step
-from, and an exception the program raises and catches itself."""
+
+
 
 
 def area(side):

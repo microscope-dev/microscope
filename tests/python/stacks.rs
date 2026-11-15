@@ -1,5 +1,3 @@
-//! Python programs' stacks at native stops.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use microscope::{
@@ -11,11 +9,8 @@ use crate::session::{CORES, MATRIX, PythonSession};
 use crate::support::Scenario;
 use crate::support::truth::Report;
 
-/// The interpreters with debug files, whose call machinery DWARF names.
 const DESCRIBED: [&str; 3] = ["3.12", "3.13", "3.14"];
 
-/// The evaluation loop and the calls around it are the interpreter's, in
-/// the frames of every thread; the C functions Python calls are not.
 #[tokio::test]
 async fn the_interpreters_loop_and_calls_are_its_own() {
     for interpreter in DESCRIBED {
@@ -51,12 +46,8 @@ async fn the_interpreters_loop_and_calls_are_its_own() {
     }
 }
 
-/// A Python frame as CPython reported it: its qualified name, file, and
-/// line.
 pub type Reported = (String, String, String);
 
-/// Each thread a checkpoint reported: its native id, whether it printed
-/// the report, and its Python frames, innermost first.
 pub fn reported_threads(truth: &[Vec<String>]) -> Vec<(u64, bool, Vec<Reported>)> {
     let mut threads: Vec<(u64, bool, Vec<Reported>)> = Vec::new();
     for fields in truth {
@@ -78,10 +69,6 @@ pub fn reported_threads(truth: &[Vec<String>]) -> Vec<(u64, bool, Vec<Reported>)
     threads
 }
 
-/// Checks that a thread's backtrace shows the Python frames CPython
-/// `reported`, past `beneath` innermost frames the thread entered after it
-/// reported them, each segment before the activation of the evaluation
-/// loop that runs it.
 pub fn check_frames(
     trace: &microscope::Backtrace,
     reported: &[Reported],
@@ -133,7 +120,6 @@ pub fn check_frames(
     Ok(())
 }
 
-/// A backtrace's Python frames, innermost first.
 fn python_frames(trace: &microscope::Backtrace) -> impl Iterator<Item = &microscope::StackFrame> {
     trace
         .frames
@@ -141,13 +127,9 @@ fn python_frames(trace: &microscope::Backtrace) -> impl Iterator<Item = &microsc
         .filter(|frame| matches!(frame.kind, FrameKind::Interpreted { .. }))
 }
 
-/// The lines of each code object a fixture's code table gave, by its
-/// qualified name and file.
 pub struct CodeLines(BTreeMap<(String, String), BTreeSet<String>>);
 
 impl CodeLines {
-    /// The code table in a fixture's report, which it prints before any
-    /// checkpoint.
     pub fn of(report: &Report) -> Self {
         let mut lines: BTreeMap<_, BTreeSet<String>> = BTreeMap::new();
         for fields in report.lines().filter(|fields| fields[0] == "code") {
@@ -160,8 +142,6 @@ impl CodeLines {
         Self(lines)
     }
 
-    /// Checks that each Python frame in a file the table covers runs a
-    /// line its code has, and that the table covers some frame.
     pub fn check(&self, trace: &microscope::Backtrace) -> Result<(), String> {
         let mut checked = 0;
         for frame in python_frames(trace) {
@@ -197,9 +177,6 @@ impl CodeLines {
     }
 }
 
-/// Each thread's Python frames are CPython's own, in order, each placed
-/// before the activation of the evaluation loop that runs it, with the
-/// source of the line it runs, on every interpreter in the matrix.
 #[tokio::test]
 async fn each_threads_python_frames_are_the_ones_cpython_reports() {
     for interpreter in MATRIX {
@@ -212,8 +189,6 @@ async fn each_threads_python_frames_are_the_ones_cpython_reports() {
         for (thread, printer, reported) in threads {
             let trace = session.backtrace(ThreadId::new(thread)).await;
 
-            // The printer reported its frames from its checkpoint's caller,
-            // and parks in two frames beneath it.
             let beneath = if printer { 2 } else { 0 };
             let context = format!("{} thread {thread}: {trace:#?}", session.context());
             check_frames(&trace, &reported, beneath)
@@ -236,9 +211,6 @@ async fn each_threads_python_frames_are_the_ones_cpython_reports() {
     }
 }
 
-/// A core dump's threads show the Python frames the program reported just
-/// before it aborted, on interpreters that each lay out or run their
-/// frames their own way.
 #[tokio::test]
 async fn a_cores_python_frames_are_the_ones_cpython_reported() {
     for interpreter in CORES {
@@ -274,7 +246,6 @@ async fn a_cores_python_frames_are_the_ones_cpython_reported() {
                 )
                 .await;
 
-            // The printer aborts in its checkpoint, beneath what it reported.
             let beneath = usize::from(printer);
             let context = format!("{name} thread {thread}: {trace:#?}");
             check_frames(&trace, &reported, beneath)
@@ -288,9 +259,6 @@ async fn a_cores_python_frames_are_the_ones_cpython_reported() {
     }
 }
 
-/// Holds each interpreted frame of `thread`'s `trace` at `stop` to the line
-/// its interpreter recorded, read from the file at the path it recorded:
-/// an interpreted frame has no machine code to locate.
 async fn check_sources(
     session: &PythonSession,
     stop: StopId,
@@ -318,7 +286,6 @@ async fn check_sources(
             frame: frame.id,
         };
 
-        // An interpreted frame has no machine code to locate.
         let location = session.scenario.handle().at(at).location().await;
         assert!(
             matches!(location, Err(microscope::Error::FrameInterpreted)),
@@ -349,8 +316,6 @@ async fn check_sources(
     }
 }
 
-/// The host IDs are intentionally different from every CPython ID, and
-/// decoding status must not depend on the kernel comm field being UTF-8.
 #[tokio::test]
 async fn a_pid_namespaces_python_frames_match_the_reported_target_threads() {
     for interpreter in ["3.14", "3.14t"] {

@@ -1,5 +1,5 @@
-// Embedded views and a kernel built with the C SDK.
-// Each `VIEW:` marker says what its expression shows.
+
+
 
 #include <stddef.h>
 
@@ -7,18 +7,18 @@
 
 MICROSCOPE_VIEWS_FILE("tests/fixtures/c/tutorial/tutorial.views");
 
-// The kernel its tree's view calls, built from tree.c into a directory the
-// assembler is given with -Wa,-I.
+
+
 MICROSCOPE_KERNEL("tree", "tests/fixtures/c/tutorial/tree.c", "tutorial-tree.wasm");
 
-// A vector of integers: `n` of them at `data`, with room for `cap`.
+
 typedef struct {
     int *data;
     size_t n;
     size_t cap;
 } intvec;
 
-// A value of one of three kinds.
+
 enum kind { VAL_INT, VAL_STR, VAL_NIL };
 
 typedef struct {
@@ -32,7 +32,7 @@ typedef struct {
     } u;
 } value;
 
-// Tasks on a run queue, linked through the node each embeds.
+
 struct list_head {
     struct list_head *next, *prev;
 };
@@ -47,7 +47,7 @@ struct run_queue {
     size_t nr;
 };
 
-// A tree whose nodes keep their children in a list.
+
 typedef struct node {
     int value;
     struct node *child;

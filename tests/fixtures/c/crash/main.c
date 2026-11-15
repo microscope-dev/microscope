@@ -1,5 +1,5 @@
-// Crashes deterministically after every worker thread is spinning in user code.
-// `crash segv` faults in crash_segv; `crash abort` raises SIGABRT inside libc.
+
+
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -19,12 +19,12 @@ struct crash_record {
 const char crash_message[] = "post-mortem read-only message";
 const char *const crash_label = "read-only label";
 #ifdef CRASH_REBUILT
-// A rebuild with identical layout but different contents and build-id.
+
 volatile int32_t crash_counter = 9;
 #else
 volatile int32_t crash_counter = 7;
 #endif
-// Read at run time so optimized builds keep `scale` in a vector register.
+
 volatile double crash_scale = 2.5;
 static volatile int32_t crash_zeroed;
 _Thread_local volatile int32_t crash_tls = 100;
@@ -51,7 +51,7 @@ __attribute__((noinline)) static double crash_segv(struct crash_record *record, 
                                                    double scale) {
     volatile int32_t local_depth = depth * 2;
     crash_zeroed = record->id + local_depth;
-    // The faulting store keeps `scale` live for the computation after it.
+
     *record->poison = depth;
     return scale * depth;
 }
@@ -62,8 +62,8 @@ __attribute__((noinline)) static void crash_abort(struct crash_record *record) {
 }
 
 int main(int argc, char **argv) {
-    // gdb's gcore zero-fills a whole region when any page in it is an
-    // in-place stack guard, so worker stacks have none.
+
+
     pthread_attr_t attributes;
     if (pthread_attr_init(&attributes) != 0 || pthread_attr_setguardsize(&attributes, 0) != 0) {
         return 1;

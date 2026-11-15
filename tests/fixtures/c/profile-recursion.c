@@ -1,6 +1,6 @@
-// Recursion of two shapes, each RUNS times, 26 calls deep: self calls
-// itself, and visit and children call each other. Each call does a little
-// work of its own.
+
+
+
 #include <stdlib.h>
 volatile unsigned long sink;
 __attribute__((noinline)) void work(void) { for (int i = 0; i < 20000; i++) sink += i; }

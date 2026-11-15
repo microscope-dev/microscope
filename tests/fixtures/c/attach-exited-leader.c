@@ -20,8 +20,8 @@ static void *worker(void *unused) {
     exit(worker_value);
 }
 
-// The main thread exits alone, leaving a zombie leader listed beside the
-// worker until the process ends.
+
+
 int main(void) {
     pthread_t thread;
 

@@ -1,8 +1,3 @@
-//! The built-in values the model presents, read from the process memory
-//! the builders below synthesize with the shared layout. The builders
-//! write each object whole, so the values read exactly what the tests put
-//! there.
-
 use std::sync::Arc;
 
 use super::super::code::CodeTable;
@@ -20,24 +15,14 @@ use crate::{
     VirtualAddress,
 };
 
-/// The depth at which a summary shows `...`, as the model's summary gives
-/// it. The model keeps the constant private, so the test mirrors it.
 const SUMMARY_DEPTH: usize = 6;
 
-/// How many items of a container a summary shows, mirrored as
-/// [`SUMMARY_DEPTH`] is.
 const SUMMARY_ITEMS: u64 = 64;
 
-/// How many characters of a `str` a summary shows, mirrored as
-/// [`SUMMARY_DEPTH`] is.
 const SUMMARY_TEXT: usize = 1024;
 
-/// The size of a type object the builders write, past every field of one
-/// the layout gives.
 const TYPE_SIZE: u64 = 144;
 
-/// The keys table of a combined `dict`: its kind of entries, and its index
-/// and table sizes as log2 values.
 #[derive(Clone, Copy)]
 pub(super) struct Table {
     pub(super) kind: Kind,
@@ -46,7 +31,6 @@ pub(super) struct Table {
 }
 
 impl Table {
-    /// A table of eight slots, whose indices are one byte each.
     pub(super) const fn eight(kind: Kind) -> Self {
         Self {
             kind,
@@ -56,8 +40,6 @@ impl Table {
     }
 }
 
-/// The two kinds of a combined `dict`'s entries: a general entry holds a
-/// hash, and a unicode entry does not.
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
     General,
@@ -65,7 +47,6 @@ pub(super) enum Kind {
 }
 
 impl Process {
-    /// A C string holding `text`, in memory whole-chunk reads stay within.
     pub(super) fn c_string(&mut self, text: &str) -> u64 {
         let size = (text.len() as u64 + 1).next_multiple_of(16);
         let address = self.alloc(size);
@@ -73,8 +54,6 @@ impl Process {
         address
     }
 
-    /// A type object named `name`, as CPython names a type, of a static
-    /// type with no flags.
     pub(super) fn type_object(&mut self, name: &str) -> VirtualAddress {
         let object = self.alloc(TYPE_SIZE);
         let name = self.c_string(name);
@@ -83,9 +62,7 @@ impl Process {
         VirtualAddress::new(object)
     }
 
-    /// The type objects of the nine built-in types the model presents.
     pub(super) fn builtin_types(&mut self) -> Types {
-        // `type` is an object of itself, and every type after it of `type`.
         let class = self.type_object("type");
         self.word(class.get(), Field::ObjectType, class.get());
         self.metatype = class.get();
@@ -116,29 +93,23 @@ impl Process {
         }
     }
 
-    /// An object of type `ty` that is `size` zeroed bytes, with its type
-    /// written.
     pub(super) fn object(&mut self, ty: VirtualAddress, size: u64) -> u64 {
         let object = self.alloc(size);
         self.word(object, Field::ObjectType, ty.get());
         object
     }
 
-    /// Writes `values` as consecutive words from `at`.
     pub(super) fn words(&mut self, at: u64, values: &[u64]) {
         for (index, value) in (0_u64..).zip(values) {
             self.memory.write(at + 8 * index, *value, 8);
         }
     }
 
-    /// The tag of an `int` with the sign bits `sign` and `digits` digits.
     pub(super) fn long_tag(&self, sign: u64, digits: usize) -> u64 {
         let shift = u32::from(self.layout.constant(Constant::LongNonSizeBits));
         sign | ((digits as u64) << shift)
     }
 
-    /// An `int`-shaped object of type `ty`, with the tag `tag` and the
-    /// 30-bit `digits`, least significant first.
     pub(super) fn long(&mut self, ty: VirtualAddress, tag: u64, digits: &[u32]) -> u64 {
         let size = self.offset(Field::LongDigits) + 4 * (digits.len() as u64);
         let object = self.object(ty, size);
@@ -151,8 +122,6 @@ impl Process {
         object
     }
 
-    /// An `int` of type `ty` with the value `value`, in digits of the
-    /// layout's shift.
     pub(super) fn int(&mut self, ty: VirtualAddress, value: i128) -> u64 {
         let shift = u32::from(self.layout.constant(Constant::LongShift));
         let mut magnitude = value.unsigned_abs();
@@ -175,15 +144,12 @@ impl Process {
         self.long(ty, tag, &digits)
     }
 
-    /// A `str` of type `ty` holding the ASCII `text`.
     pub(super) fn str_object(&mut self, ty: VirtualAddress, text: &str) -> u64 {
         let object = self.string(text);
         self.word(object, Field::ObjectType, ty.get());
         object
     }
 
-    /// A `str` of type `ty` holding the two-byte code units `units`, which
-    /// is compact and not ASCII.
     pub(super) fn wide_str(&mut self, ty: VirtualAddress, units: &[u16]) -> u64 {
         let compact = self.offset(Field::UnicodeCompactSize);
         let object = self.alloc(compact + 2 * (units.len() as u64));
@@ -197,7 +163,6 @@ impl Process {
         object
     }
 
-    /// A `tuple` of type `ty`, whose items lie inline.
     pub(super) fn tuple(&mut self, ty: VirtualAddress, items: &[u64]) -> u64 {
         let size = self.offset(Field::TupleItems) + 8 * (items.len() as u64);
         let object = self.object(ty, size);
@@ -207,14 +172,12 @@ impl Process {
         object
     }
 
-    /// A `list` of type `ty` whose items are `items`.
     pub(super) fn list(&mut self, ty: VirtualAddress, items: &[u64]) -> u64 {
         let object = self.object(ty, self.offset(Field::ListItems) + 8);
         self.set_items(object, items);
         object
     }
 
-    /// Points the `list` at `list` at an array holding `items`.
     fn set_items(&mut self, list: u64, items: &[u64]) {
         let array = if items.is_empty() {
             0
@@ -227,9 +190,6 @@ impl Process {
         self.word(list, Field::ListItems, array);
     }
 
-    /// A combined `dict` of type `ty` whose header counts `used` items. Its
-    /// table holds `entries` as (key, value) pairs in insertion order, and a
-    /// value of 0 marks a deleted entry.
     pub(super) fn dict(
         &mut self,
         ty: VirtualAddress,
@@ -268,14 +228,6 @@ impl Process {
         object
     }
 
-    /// A combined `dict` of type `ty` whose table holds `entries` as (key,
-    /// value, hash) triples in insertion order, with its index table filled
-    /// as CPython's insertion fills it: each entry takes the first empty slot
-    /// of its probe sequence. The entries listed in `deleted` keep their
-    /// slots, which become deleted, and hold no key or value. The hash of a
-    /// general table's entry is written to the entry, and that of a unicode
-    /// table's key to the key's `str`, so the table's hashes agree with
-    /// the entries' keys.
     pub(super) fn hashed_dict(
         &mut self,
         ty: VirtualAddress,
@@ -366,8 +318,6 @@ impl Process {
         object
     }
 
-    /// Gives the code object `code` the local variables `names`, whose
-    /// kinds are `kinds`.
     pub(super) fn locals(&mut self, types: &Types, code: u64, names: &[&str], kinds: &[u8]) {
         let name_objects: Vec<u64> = names.iter().map(|name| self.string(name)).collect();
         let tuple = self.tuple(types.tuple, &name_objects);
@@ -377,8 +327,6 @@ impl Process {
     }
 }
 
-/// The fields of a combined `dict`'s entries of `kind`: the size of an
-/// entry, where its key and value are, and the constant of its keys' kind.
 fn entry_fields(kind: Kind) -> (Field, Field, Field, Constant) {
     match kind {
         Kind::General => (
@@ -396,8 +344,6 @@ fn entry_fields(kind: Kind) -> (Field, Field, Field, Constant) {
     }
 }
 
-/// Runs `read` on the values of `process`, which pays for its reads from a
-/// budget of `limits`.
 pub(super) fn with_values<R>(
     process: &Process,
     types: Types,
@@ -407,8 +353,6 @@ pub(super) fn with_values<R>(
     with_secret(process, types, limits, None, read)
 }
 
-/// Runs `read` on the values of `process` with the process's hash secret at
-/// `secret`, which pays for its reads from a budget of `limits`.
 pub(super) fn with_secret<R>(
     process: &Process,
     types: Types,
@@ -426,9 +370,6 @@ pub(super) fn with_secret<R>(
     )
 }
 
-/// Runs `read` on the values of `process`, with the process's hash secret at
-/// `secret` and its `_PyRuntime` at `runtime`, which pays for its reads from
-/// a budget of `limits`.
 pub(super) fn with_runtime<R>(
     process: &Process,
     types: Types,
@@ -458,19 +399,16 @@ pub(super) fn with_runtime<R>(
     read(&values)
 }
 
-/// The value at `address`, read with the default limits.
 pub(super) fn value_at(process: &Process, types: Types, address: u64) -> InterpretedSlot {
     with_values(process, types, InspectionLimits::default(), |values| {
         values.value(VirtualAddress::new(address))
     })
 }
 
-/// The value at `address`, which must be one.
 pub(super) fn read_value(process: &Process, types: Types, address: u64) -> InterpretedValue {
     value_of(value_at(process, types, address))
 }
 
-/// The value a slot holds, which must be one.
 fn value_of(slot: InterpretedSlot) -> InterpretedValue {
     match slot {
         InterpretedSlot::Value(value) => value,
@@ -478,7 +416,6 @@ fn value_of(slot: InterpretedSlot) -> InterpretedValue {
     }
 }
 
-/// Asserts that `value` is an object of the built-in type `name`.
 fn assert_builtin(value: &InterpretedValue, name: &str) {
     assert_eq!(
         value.module.as_deref(),
@@ -488,7 +425,6 @@ fn assert_builtin(value: &InterpretedValue, name: &str) {
     assert_eq!(value.type_name.as_ref(), name);
 }
 
-/// How a slot reads, in words: a value's summary, or what it lacks.
 pub(super) fn describe(slot: &InterpretedSlot) -> String {
     match slot {
         InterpretedSlot::Value(value) => value.summary.to_string(),
@@ -499,8 +435,6 @@ pub(super) fn describe(slot: &InterpretedSlot) -> String {
     }
 }
 
-/// The children `range` of the container at `address`, read with the
-/// default limits.
 pub(super) fn children_of(
     process: &Process,
     types: Types,
@@ -512,8 +446,6 @@ pub(super) fn children_of(
     })
 }
 
-/// The summaries of each entry's key and value, of children that are all
-/// entries.
 fn entry_summaries(children: &[InterpretedChild]) -> Vec<(String, String)> {
     children
         .iter()
@@ -526,7 +458,6 @@ fn entry_summaries(children: &[InterpretedChild]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The locals of the frame at `frame`, read with the default limits.
 fn locals_of(process: &Process, types: Types, frame: u64) -> Vec<InterpretedLocal> {
     with_values(process, types, InspectionLimits::default(), |values| {
         let record = values
@@ -550,9 +481,6 @@ fn locals_of(process: &Process, types: Types, frame: u64) -> Vec<InterpretedLoca
     })
 }
 
-/// Makes a frame of a code object with the locals a, b, c, d, and e, whose
-/// first is a parameter, and whose slots are `slots`. The local c is
-/// hidden, and d is a cell.
 fn local_frame(process: &mut Process, types: &Types, slots: [u64; 5]) -> u64 {
     let code = process.code("f", 1, &[(1, 0)]);
     process.put(code, Field::CodeArgcount, 1, 4);
@@ -588,7 +516,6 @@ fn ints_are_shown_in_decimal_with_their_value_where_it_fits_in_128_bits() {
         assert_eq!(shown.problem, None);
     }
 
-    // Five digits reach past 128 bits, so the kind has no value.
     let digits = [1, 0, 0, 0, 1024];
     let tag = process.long_tag(0, digits.len());
     let big = process.long(types.int, tag, &digits);
@@ -673,8 +600,6 @@ fn a_str_longer_than_the_summary_shows_its_first_characters_and_a_lone_surrogate
     assert_eq!(shown.problem, None);
 }
 
-/// A name longer than a summary shows, as a class's qualified name may be,
-/// is read whole, up to the longest `str` read.
 #[test]
 fn a_name_longer_than_a_summary_is_read_whole() {
     let mut process = Process::new(layout());
@@ -695,7 +620,6 @@ fn a_name_longer_than_a_summary_is_read_whole() {
 fn a_list_nested_past_the_summary_depth_shows_an_ellipsis_at_the_limit() {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
-    // The innermost list makes one more level than the summary's depth.
     let mut nested = process.list(types.list, &[]);
 
     for _ in 0..SUMMARY_DEPTH {
@@ -721,8 +645,6 @@ fn a_list_longer_than_the_summary_shows_its_first_items_then_an_ellipsis() {
         .collect();
     let list = process.list(types.list, &items);
 
-    // Each small object costs one read, so the default budget affords the
-    // summary.
     let shown = read_value(&process, types, list);
     let first: Vec<String> = (0..SUMMARY_ITEMS).map(|value| value.to_string()).collect();
     assert_eq!(
@@ -775,7 +697,6 @@ fn a_dict_whose_count_disagrees_with_its_entries_is_malformed() {
     let b = process.str_object(types.str, "b");
     let one = process.int(types.int, 1);
     let two = process.int(types.int, 2);
-    // The header counts one item, but the table holds two live entries.
     let dict = process.dict(
         types.dict,
         Table::eight(Kind::Unicode),
@@ -832,7 +753,6 @@ fn an_object_of_another_type_is_shown_by_its_module_its_name_and_its_address() {
     );
     assert_eq!(shown.problem, None);
 
-    // A static type's name with no module's is the name of a built-in.
     let shown = read_value(&process, types, gate);
     assert_eq!(shown.module.as_deref(), Some("builtins"));
     assert_eq!(shown.type_name.as_ref(), "Gate");
@@ -872,8 +792,6 @@ fn an_element_the_budget_cannot_afford_is_a_limit_and_the_ones_before_it_are_rea
     process.spread();
     let items: Vec<u64> = (1..=3).map(|value| process.int(types.int, value)).collect();
     let list = process.list(types.list, &items);
-    // Reading the list takes one read, its items one more, and each int
-    // one, so the first int is the only one that fits.
     let limits = InspectionLimits {
         memory_reads: 3,
         ..InspectionLimits::default()
@@ -927,8 +845,6 @@ fn a_summary_the_budget_runs_out_in_ends_where_it_ran_out() {
         &[(items[0], items[1]), (items[3], inner)],
     );
 
-    // The outer list, its items, two ints, the inner list, its items, and
-    // its first int: the inner list is cut short, so it is left out.
     let limits = InspectionLimits {
         memory_reads: 7,
         ..InspectionLimits::default()
@@ -946,7 +862,6 @@ fn a_summary_the_budget_runs_out_in_ends_where_it_ran_out() {
     .to_string();
     assert_eq!(shown.problem.as_deref(), Some(spent.as_str()));
 
-    // The dict, its keys, its entries, and the first entry's key and value.
     let limits = InspectionLimits {
         memory_reads: 5,
         ..InspectionLimits::default()
@@ -963,7 +878,6 @@ fn a_stack_reference_reads_its_object_and_a_tagged_integer_is_unreadable() {
     process.layout.set_constant(Constant::StackRefs, 1);
     let types = process.builtin_types();
     let five = process.int(types.int, 5);
-    // A pointer with its counting bit, an unbound slot, and a tagged int.
     let frame = local_frame(&mut process, &types, [five | 1, 1, 0, 0, (5 << 2) | 3]);
 
     let shown: Vec<(String, String)> = locals_of(&process, types, frame)
@@ -986,8 +900,6 @@ fn a_stack_reference_reads_its_object_and_a_tagged_integer_is_unreadable() {
 }
 
 impl Types {
-    /// The types' addresses as a model's `Reading` keeps them, at the image
-    /// addresses of a process loaded with no bias.
     pub(super) fn images(&self) -> [crate::ImageAddress; 23] {
         [
             self.none,

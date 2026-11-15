@@ -1,17 +1,4 @@
 // @ts-check
-// The built-in bar-chart: a bar per value, from a zero baseline.
-//
-//   values       numbers, with labels, or a map or record of labels to numbers
-//   labels       optional, one per value
-//   entries      a map or record of labels to numbers, as values may be
-//   orientation  optional: "horizontal" (the default) or "vertical"
-//   sort         optional: "value", "label", or "none"
-//
-// A map sorts by value, since a map's order may be random, and an array
-// keeps the program's order. Past 40 sorted entries, the rest fold into
-// one "Other" bar that says how many and their total. Negative values
-// extend the other way from zero. A tick marks each bar's length at the
-// stop before.
 
 const MOST = 40;
 const MOST_IN_ORDER = 400;
@@ -24,9 +11,7 @@ microscope.draw((input, { previous, width, paths }) => {
     try {
       for (const bar of barsOf(previous, {}).bars)
         before.set(keyed ? bar.label : bar.index, bar.value);
-    } catch {
-      // The stop before had nothing this chart reads.
-    }
+    } catch {}
   }
   const order = input.sort ?? (keyed ? "value" : "none");
   if (order !== "value" && order !== "label" && order !== "none") {
@@ -36,8 +21,6 @@ microscope.draw((input, { previous, width, paths }) => {
   if (order === "value") sorted.sort((a, b) => b.value - a.value || compare(a.label, b.label));
   if (order === "label") sorted.sort((a, b) => compare(a.label, b.label));
 
-  // Sorted bars fold past the top 40; bars in the program's order are cut,
-  // and the caption says so.
   let shown = sorted;
   /** @type {{ count: number, total: number | bigint } | null} */
   let other = null;
@@ -254,7 +237,7 @@ microscope.draw((input, { previous, width, paths }) => {
       `Other: ${other.count} more entries, total ${other.total}`,
     );
   }
-  // The largest bar's value, over it.
+
   const largest = finite.reduce((best, item) => (item.value > best.value ? item : best), finite[0]);
   if (largest !== undefined && largest.value > 0) {
     const k = shown.indexOf(largest);
@@ -308,7 +291,6 @@ function titleOf(item) {
   return `${item.label}: ${item.text}`;
 }
 
-/** The bars: each value with its label, exact text, and the part it is. */
 function barsOf(input, paths) {
   const source = input.entries ?? input.values;
   if (source === undefined || source === null) {
@@ -354,7 +336,6 @@ function barOf(name, value, index, what, key, select) {
   return { label: name, value: Number(value), raw: value, text: exact(value), index, key, select };
 }
 
-/** A map's [key, value] pairs, or a record's members, or null. */
 function asEntries(value) {
   if (
     Array.isArray(value) &&
@@ -402,7 +383,6 @@ function exact(v) {
   return Object.is(v, -0) ? "-0" : String(v);
 }
 
-/** The exact total: whole when every value is an integer, else a double. */
 function sum(values) {
   if (values.every((v) => typeof v === "bigint" || Number.isSafeInteger(v))) {
     return values.reduce((total, v) => total + BigInt(v), 0n);

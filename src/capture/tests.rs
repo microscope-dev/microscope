@@ -2,7 +2,6 @@ use super::builder::{InterpretedPlace, LineInput};
 use super::*;
 use crate::model::{Pid, Tid};
 
-/// A small capture with two threads, shared stacks, symbols, and a zone.
 fn sample_capture(offset: i64) -> Capture {
     let mut builder = CaptureBuilder::new();
     builder.setting("start", &offset.to_string());
@@ -69,7 +68,6 @@ fn sample_capture(offset: i64) -> Capture {
         },
     );
 
-    // A read that returned three bytes, behind a signal.
     let mut captured = vec![1, 1, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0];
     captured.extend_from_slice(b"abc");
 
@@ -114,10 +112,6 @@ fn sample_capture(offset: i64) -> Capture {
     builder.finish()
 }
 
-/// A file of two chunks of the same recording merges them: frames and
-/// stacks are interned once, and each thread's samples stay in time order.
-/// The file properties compare rows by meaning, so they cannot see a frame
-/// kept twice.
 #[test]
 fn chunks_of_one_recording_merge_by_identity() {
     let capture = sample_capture(0);
@@ -170,12 +164,6 @@ fn chunks_of_one_recording_merge_by_identity() {
     assert_eq!(merged.frame_lines(0).len(), 1);
 }
 
-/// An interpreted frame is keyed by its function, file, and line, and its
-/// function by where its code begins, so that functions of one name in two
-/// files, or at two places in one, stay apart, while one function's lines
-/// share it, and a frame whose line is unknown is still its function's
-/// where it knows the function's. A capture rebuilt from others keys them by
-/// their text, not by where each kept it.
 #[test]
 fn interpreted_frames_keep_their_functions_apart_through_a_merge() {
     let places = [
@@ -191,8 +179,6 @@ fn interpreted_frames_keep_their_functions_apart_through_a_merge() {
     let build = |padding: &str| {
         let mut builder = CaptureBuilder::new();
 
-        // Moves every later string, so that the captures keep the same text
-        // at different ids.
         builder.string(padding);
         let frames: Vec<u32> = places
             .iter()
@@ -275,9 +261,6 @@ fn interpreted_frames_keep_their_functions_apart_through_a_merge() {
     assert_eq!(merged.stacks.len(), capture.stacks.len());
 }
 
-/// A task's labels, which snapshots find without a root frame, survive a
-/// capture rebuilt from another, as symbolizing or merging a file's chunks
-/// rebuilds it.
 #[test]
 fn merged_chunks_keep_each_tasks_labels() {
     let mut first = CaptureBuilder::new();
@@ -374,9 +357,6 @@ fn validation_rejects_every_out_of_bounds_reference() {
     assert!(broken.validate().is_err(), "an unterminated string pool");
 }
 
-/// The recorder always writes a thread's process, a mapping's process, a
-/// zone range's thread, and a wait's task, so a file without one is
-/// damaged. Readers index by them, and once panicked on such a file.
 #[test]
 fn validation_rejects_a_missing_owner_the_recorder_always_writes() {
     let mut builder = CaptureBuilder::new();
@@ -425,10 +405,6 @@ fn validation_rejects_a_missing_owner_the_recorder_always_writes() {
     assert!(broken.validate().is_err(), "a wait of no task");
 }
 
-/// A tid reused at the moment its earlier thread ended names that thread
-/// still, as an event then may be either's; one reused a moment later is a
-/// thread of its own. A recording cut there and merged again agrees, as
-/// spans that share a moment overlap.
 #[test]
 fn a_tid_reused_as_its_thread_ends_is_that_thread() {
     for (reused, threads) in [(40, 1), (41, 2)] {
@@ -455,7 +431,6 @@ fn a_tid_reused_as_its_thread_ends_is_that_thread() {
     }
 }
 
-/// A capture of one sample of `weight`, its string pool `padding` longer.
 fn weighing(weight: u64, padding: usize) -> Capture {
     let mut builder = CaptureBuilder::new();
     builder.string(&"p".repeat(padding));
@@ -477,8 +452,6 @@ fn file_of(captures: &[Capture]) -> Vec<u8> {
     bytes
 }
 
-/// Chunks that each weigh what a capture may can weigh more together:
-/// the merged capture is refused, as one chunk of that weight is.
 #[test]
 fn chunks_whose_weights_add_up_past_a_count_are_refused() {
     let half = weighing(u64::MAX / 2 + 1, 0);
@@ -489,10 +462,6 @@ fn chunks_whose_weights_add_up_past_a_count_are_refused() {
     );
 }
 
-/// An index is used only where its entries lay the chunks out one after
-/// another, as the writer does: one that names other bytes, or a chunk
-/// twice, is damaged, and the chunks, each checked by its own checksum,
-/// are found by scanning instead. The read says the index was not whole.
 #[test]
 fn a_damaged_index_is_passed_over_for_the_chunks() {
     let captures: Vec<Capture> = (1..=3).map(|weight| weighing(weight, 0)).collect();
@@ -513,8 +482,6 @@ fn a_damaged_index_is_passed_over_for_the_chunks() {
     }
 }
 
-/// The capture fuzzer's seed is a whole file of this revision, so that
-/// the fuzzer starts past validation. `MICROSCOPE_UPDATE_SEED=1` rewrites it.
 #[test]
 fn the_fuzzers_seed_is_a_capture_of_this_revision() {
     let path =

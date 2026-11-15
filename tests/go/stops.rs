@@ -1,11 +1,7 @@
-//! What a test reads at a stop of a Go program.
-
 use microscope::{Evaluation, Expression, ScalarValue, VariableState, VariableValue};
 
 use crate::support::Scenario;
 
-/// An integer expression's value at the stop, or `None` where the program's
-/// debug information leaves it unavailable.
 pub async fn integer(scenario: &Scenario, text: &str) -> Option<i128> {
     let expression = Expression::parse(text).expect("an expression");
     let Evaluation::Value { value, .. } = scenario
@@ -29,7 +25,6 @@ pub async fn integer(scenario: &Scenario, text: &str) -> Option<i128> {
     }
 }
 
-/// An address expression's value at the stop, where it is available.
 pub async fn address(scenario: &Scenario, text: &str) -> Option<u64> {
     let expression = Expression::parse(text).expect("an expression");
     let Evaluation::Value { value, .. } = scenario
@@ -49,7 +44,6 @@ pub async fn address(scenario: &Scenario, text: &str) -> Option<u64> {
     }
 }
 
-/// The function and line the stop is at.
 pub async fn place(scenario: &Scenario) -> (String, u64) {
     let location = scenario
         .operation("location", scenario.handle().current_location())

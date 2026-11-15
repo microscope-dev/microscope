@@ -1,10 +1,3 @@
-// A swarm of random user actions against a live session: menu commands,
-// their keys, tab clicks, and tab drags, picked from what the menus offer.
-// After each, every tab strip still shows one tab and no pane has failed;
-// at the end nothing is stuck loading, and the page logged no errors. A
-// failure prints its seed: `MICROSCOPE_SWARM_SEED=... just web-e2e swarm` runs it again.
-// `just web-e2e` runs a short swarm; `MICROSCOPE_SWARM_STEPS=1000` runs one at depth.
-
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, fixture, join, test } from "./server";
@@ -13,17 +6,15 @@ test.use({ program: [fixture("kvstore")] });
 
 const STEPS = Number(process.env.MICROSCOPE_SWARM_STEPS ?? 60);
 
-/** Commands that end what the swarm acts on, or leave the page. */
 const SKIPPED = new Set(["Kill", "Restart", "Disconnect", "Copy link"]);
 
 interface Item {
   menu: string;
   label: string;
-  /** As `aria-keyshortcuts` writes it, which Playwright presses as is. */
+
   keys: string[];
 }
 
-/** A small seeded generator, so a failing run can be run again. */
 function random(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
@@ -35,7 +26,6 @@ function random(seed: number): () => number {
   };
 }
 
-/** Every item of every menu, read from the menu bar. */
 async function readMenus(page: Page): Promise<Item[]> {
   const bar = page.getByRole("menubar");
   const menus = await bar
@@ -61,8 +51,6 @@ async function readMenus(page: Page): Promise<Item[]> {
   return items.filter((item) => !SKIPPED.has(item.label));
 }
 
-/** Closes whatever is open over the page: a menu, the palette, Share. A
- * floating window is part of the layout, and stays. */
 async function dismiss(page: Page): Promise<void> {
   for (let tries = 0; tries < 3; tries++) {
     const open = await page.locator('[role="menu"], .overlay, .popover').count();
@@ -84,7 +72,7 @@ async function exposed(tab: Locator): Promise<boolean> {
 
 async function clickTab(chosen: Locator, done: string[]): Promise<void> {
   const name = await chosen.textContent();
-  // A floating window may cover it, as it would for a person.
+
   if (await exposed(chosen)) {
     await chosen.click();
     await expect(chosen, `clicked ${name}`).toHaveAttribute("aria-selected", "true");
@@ -94,7 +82,6 @@ async function clickTab(chosen: Locator, done: string[]): Promise<void> {
   }
 }
 
-/** What must hold after every action. */
 async function check(page: Page, done: string[]): Promise<void> {
   const broken = await page.evaluate(() => {
     const problems: string[] = [];
@@ -113,8 +100,6 @@ async function check(page: Page, done: string[]): Promise<void> {
 }
 
 test("random commands, keys, and drags leave a working page", async ({ page, microscope }) => {
-  // A step takes about 190 ms in Firefox alone on jlinux3, and took more
-  // than 300 ms beside the other e2e workers there, so each has 600.
   test.setTimeout(Math.max(20_000, STEPS * 600));
   const seed = Number(process.env.MICROSCOPE_SWARM_SEED ?? Math.floor(Math.random() * 2 ** 31));
   test.info().annotations.push({ type: "seed", description: String(seed) });
@@ -131,13 +116,12 @@ test("random commands, keys, and drags leave a working page", async ({ page, mic
       await dismiss(page);
       const roll = next();
       if (roll < 0.4) {
-        // A command from its menu, when the menu offers it now.
         const item = pick(items);
         await page.getByRole("menuitem", { name: item.menu, exact: true }).click();
         const entry = page
           .getByRole("menu", { name: item.menu })
           .getByRole("menuitem", { name: item.label, exact: true });
-        // Absent now, or there and saying why it can't run.
+
         if ((await entry.count()) === 0 || (await entry.getAttribute("aria-disabled")) === "true") {
           await page.keyboard.press("Escape");
           done.push(`skip ${item.label}`);
@@ -154,12 +138,10 @@ test("random commands, keys, and drags leave a working page", async ({ page, mic
         const tabs = page.locator('[role="tab"]:visible');
         const count = await tabs.count();
         if (count > 0) {
-          // Activating a document can reorder the visible groups.
           const id = await tabs.nth(Math.floor(next() * count)).getAttribute("id");
           await clickTab(page.locator(`[id="${id}"]`), done);
         }
       } else {
-        // A tab dragged to a random point of the dock.
         const tabs = page.locator('[data-part=dock] [role="tab"]:visible');
         const count = await tabs.count();
         const dock = await page.locator("[data-part=dock]").boundingBox();
@@ -178,7 +160,6 @@ test("random commands, keys, and drags leave a working page", async ({ page, mic
       await check(page, done);
     }
 
-    // Whatever was asked for arrives.
     await dismiss(page);
     await expect(page.getByText(/^Loading/u).filter({ visible: true })).toHaveCount(0);
   } catch (failure) {

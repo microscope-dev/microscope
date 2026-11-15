@@ -1,9 +1,3 @@
-// The whole page's workbench at a stop: the Debug layout fits common window
-// sizes, a pane in a tab not shown asks the server nothing, the menu bar
-// works by keyboard and says why a command cannot run, and the browser keeps
-// the layout across a reload, starting over when it is wrong for the
-// address.
-
 import { afterEach, expect, it } from "vitest";
 import { commands, page, userEvent } from "vitest/browser";
 
@@ -39,7 +33,6 @@ it.each([
   );
   const dock = (document.querySelector("[data-part=dock]") as HTMLElement).getBoundingClientRect();
   for (const [index, box] of boxes.entries()) {
-    // A tab strip and a few rows at least.
     expect(box.width, `group ${index}`).toBeGreaterThanOrEqual(150);
     expect(box.height, `group ${index}`).toBeGreaterThanOrEqual(80);
     expect(box.right).toBeLessThanOrEqual(dock.right + 0.5);
@@ -53,7 +46,7 @@ it.each([
       expect(apart, `group ${index} overlaps another`).toBe(true);
     }
   }
-  // Each strip stays one line, whatever its tabs say.
+
   for (const strip of document.querySelectorAll('[role="tablist"][aria-label="Panes"]')) {
     expect(strip.getBoundingClientRect().height).toBe(28);
   }
@@ -76,7 +69,7 @@ it("opens a menu by keyboard, walks it, and says why an item cannot run", async 
   const menu = page.getByRole("menu", { name: "Run" });
   await expect.element(menu).toBeVisible();
   await expect.element(menu.getByRole("menuitem", { name: "Continue" })).toHaveFocus();
-  // The program is stopped, so Pause cannot run, and says so.
+
   const pause = menu.getByRole("menuitem", { name: "Pause" });
   await expect.element(pause).toHaveAttribute("aria-disabled", "true");
   expect(pause.element().getAttribute("title")).toMatch(/running|stopped/u);
@@ -94,10 +87,9 @@ it("keeps this browser's layout across a reload, and says once when it can't", a
   const first = await openPage(kvstore(source));
   await first.user.chooseTab("Registers");
   await first.user.press("Alt+Enter");
-  // What a reload would find now. Firefox may drop a save made as the page
-  // goes, so the change must already be kept.
+
   const kept = localStorage.getItem("microscope-layout");
-  // Maximized, the Registers group fills the dock alone.
+
   await first.user.expectGroups([["*Registers"]]);
   closePage();
   localStorage.setItem("microscope-layout", kept ?? "");
@@ -127,22 +119,20 @@ it("shows one group at a time in a narrow window, and any pane from its list", a
 const plus = (layout: Layout, kind: KindId) => open(layout, single(kind), layout.focused).layout;
 
 it("starts the layout over when it is wrong for the address", () => {
-  // A session's panes show nothing without one, however many others the
-  // layout holds.
   expect(misplaced(debugLayout(), "start")).toBe(true);
   expect(misplaced(plus(debugLayout(), KIND.settings), "start")).toBe(true);
   expect(misplaced(plus(debugLayout(), KIND.connect), "start")).toBe(true);
   expect(misplaced(plus(startLayout(), KIND.settings), "start")).toBe(false);
-  // A browser that kept none starts from the address's own.
+
   const empty = { ...startLayout(), panes: {} };
   expect(misplaced(empty, "start")).toBe(true);
   expect(misplaced(empty, "session")).toBe(true);
   expect(misplaced(debugLayout(), "session")).toBe(false);
-  // Start has nothing for a session until one of its panes is open.
+
   expect(misplaced(startLayout(), "session")).toBe(true);
   expect(misplaced(plus(startLayout(), KIND.variables), "session")).toBe(false);
   expect(misplaced(startLayout(), "start")).toBe(false);
-  // A profile needs a connection, not a session.
+
   expect(misplaced(profileLayout("ab", "spin.usprof", {}), "start")).toBe(false);
 });
 
@@ -156,19 +146,19 @@ it("hides the docks left of and below the code by key, and shows one for a pane 
   await expect
     .poll(firsts)
     .toEqual(["*kvstore.c", "*Output", "*Watch", "*Variables", "*Registers"]);
-  // The keyboard left the hidden dock for the code.
+
   await expect
     .poll(() => document.activeElement?.closest("[data-group]"))
     .toBe(document.querySelector("[data-group]"));
   await user.press("Ctrl+`");
   await expect.poll(firsts).toEqual(["*kvstore.c", "*Watch", "*Variables", "*Registers"]);
-  // What is left fills the dock: the code takes the hidden docks' room.
+
   const dock = (document.querySelector("[data-part=dock]") as HTMLElement).getBoundingClientRect();
   const covered = [...document.querySelectorAll("[data-group]")]
     .map((group) => area(group.getBoundingClientRect()))
     .reduce((sum, each) => sum + each, 0);
   expect(covered / area(dock)).toBeGreaterThan(0.98);
-  // Threads is in the hidden left dock, so showing it shows the dock.
+
   await user.press("Alt+1");
   await expect
     .poll(firsts)

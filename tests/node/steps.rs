@@ -1,8 +1,3 @@
-//! JavaScript steps through Node's inspector, held to where V8 itself ends
-//! the same steps under a plain CDP client (`oracle.rs`): into and over
-//! calls, out of frames, recursion, Node's own code that calls back into
-//! the program, builtins that call back, and `await`.
-
 use microscope::{BreakpointOptions, BreakpointSpec, LineNumber, StepSkips};
 
 use crate::oracle::{self, Command, Pause, Planted, Skipping};
@@ -11,7 +6,6 @@ use crate::support::node;
 
 const FIXTURE: &str = "steps.js";
 
-/// The line of the fixture that carries `marker`.
 fn line_of(marker: &str) -> u64 {
     let text = std::fs::read_to_string(node::fixture(FIXTURE)).expect("read the fixture");
     let index = text
@@ -21,8 +15,6 @@ fn line_of(marker: &str) -> u64 {
     index as u64 + 1
 }
 
-/// One case: the marked line it breaks at, the steps it takes there, and
-/// how those steps treat code that is not the program's.
 struct Case {
     marker: &'static str,
     commands: &'static [Command],
@@ -53,7 +45,6 @@ const CASES: [Case; 10] = [
     ),
     case("LEAF", &[Command::Out, Command::Over]),
     case("COUNTDOWN", &[Command::Over, Command::Over, Command::Into]),
-    // Into Node's emit, which reaches the listener only by skipping it.
     case(
         "EMITS",
         &[Command::Into, Command::Out, Command::Over, Command::Into],
@@ -61,7 +52,6 @@ const CASES: [Case; 10] = [
     case("MAPS", &[Command::Into, Command::Over, Command::Out]),
     case("AWAITS", &[Command::Over, Command::Over]),
     case("LISTENER", &[Command::Over, Command::Over]),
-    // A library stops a step until its directory is skipped.
     case("RELAYS", &[Command::Into, Command::Over, Command::Out]),
     Case {
         marker: "RELAYS",
@@ -71,7 +61,6 @@ const CASES: [Case; 10] = [
             enter: false,
         },
     },
-    // A step that enters a runtime's code stops in Node's emit.
     Case {
         marker: "EMITS",
         commands: &[Command::Into, Command::Over],
@@ -82,8 +71,6 @@ const CASES: [Case; 10] = [
     },
 ];
 
-/// Runs one case on one build and returns where microscope stopped and
-/// where V8 paused, each from the breakpoint on.
 async fn run(entry: &str, case: &Case) -> (Vec<Pause>, Vec<Pause>) {
     let line = line_of(case.marker);
     let mut expected = oracle::pauses(
@@ -136,8 +123,6 @@ async fn run(entry: &str, case: &Case) -> (Vec<Pause>, Vec<Pause>) {
     (seen, expected)
 }
 
-/// Where, on the build `entry`, a step does not end where V8's own step
-/// ends.
 async fn lies(entry: &str, cases: &[Case]) -> Vec<String> {
     let mut lies = Vec::new();
     for case in cases {
@@ -154,15 +139,11 @@ async fn lies(entry: &str, cases: &[Case]) -> Vec<String> {
     lies
 }
 
-/// Each step on the build `entry` ends where V8's own step ends.
 async fn steps_end_where_v8_ends_them(entry: &str) {
     let found = lies(entry, &CASES).await;
     assert!(found.is_empty(), "{}", found.join("\n"));
 }
 
-// Each V8 line (`LINES`) is a test of its own: each runs sixty nodes,
-// oracle's and microscope's, in turn, and all three in one test outlast its
-// deadline under `just stress`.
 #[tokio::test]
 async fn javascript_steps_end_where_v8_ends_them_on_26() {
     steps_end_where_v8_ends_them("26").await;

@@ -1,8 +1,3 @@
-//! Running a bound view at one stop. A view reaches the program only
-//! through the evaluator's [`Machine`], which charges the inspection's
-//! budget for every read and every evaluated part, so a presentation's cost
-//! is bounded and the same inputs always stop at the same point.
-
 use std::sync::Arc;
 
 use crate::eval::interp::{self, Outcome, Value};
@@ -24,17 +19,12 @@ use super::scan::{Checkpoints, Scanner, Var};
 use super::summary;
 use super::syntax::Pattern;
 
-/// The size of the pages text is read in, which a read never crosses, so
-/// an unmapped page ends the text rather than failing what came before.
 const PAGE_SIZE: u64 = 4096;
 
-/// Why a view could not present a value.
 #[derive(Debug)]
 pub enum Failure {
-    /// The value shows as it is stored, with this problem beside it.
     Problem(ViewProblem),
 
-    /// The debugger failed, which fails the whole inspection.
     Debugger(crate::Error),
 }
 
@@ -83,25 +73,18 @@ fn unsupported(message: &str) -> Stop {
     ))
 }
 
-/// What running a view presented.
 #[derive(Debug)]
 pub struct Presented {
     pub shape: PresentedShape,
 
-    /// How many elements or entries a sequence or map holds, also when it
-    /// presents as text.
     pub count: Option<crate::PresentedCount>,
     pub text: Option<TextSummary>,
     pub summary: String,
 
-    /// For `value`, the value that stands for this one.
     pub inner: Option<InspectedValue>,
 
-    /// Why the summary stopped short of every element.
     pub partial: Option<ViewProblem>,
 
-    /// How many named children it has: a record's members and the
-    /// view's fields, less those it hides, which come after its elements.
     pub named: u64,
 }
 
@@ -118,7 +101,6 @@ impl Presented {
         }
     }
 
-    /// A value presented as `inner`.
     fn value(inner: InspectedValue) -> Self {
         Self {
             summary: summary::value(inner.type_info.as_ref(), &inner.state),
@@ -128,28 +110,22 @@ impl Presented {
     }
 }
 
-/// One child of a presented value.
 #[derive(Debug)]
 pub enum Child {
     Element(u64, InspectedValue),
 
-    /// A map's entry: its index, key, and value.
     Entry(u64, Box<InspectedValue>, InspectedValue),
     Field(Arc<str>, InspectedValue),
 
-    /// The value as it is stored, which the caller materializes.
     Raw,
 }
 
-/// A machine that answers a view's names: `self` and its members, its
-/// `let`s, each computed once, and its generators' variables.
 pub struct ViewMachine<'m, M: Machine> {
     base: &'m mut M,
     this: M::Place,
     lets: &'m [ViewProgram<M::Step>],
     values: Vec<Option<Value<M::Place>>>,
 
-    /// The generators' variables and clauses' `let`s, by position.
     variables: Vec<Value<M::Place>>,
 }
 
@@ -164,7 +140,6 @@ impl<'m, M: Machine> ViewMachine<'m, M> {
         }
     }
 
-    /// The generators' variables and clauses' `let`s, by position.
     pub fn set_variables(&mut self, variables: &[Value<M::Place>]) {
         self.variables.clear();
         self.variables.extend_from_slice(variables);
@@ -222,7 +197,7 @@ impl<M: Machine> Machine for ViewMachine<'_, M> {
     fn locate(&mut self, object: &Self::Object) -> Result<Self::Place, Stop> {
         match object {
             ViewObject::This => Ok(self.this.clone()),
-            // A global's step reaches it from anywhere.
+
             ViewObject::Member(step) | ViewObject::Global(step) => {
                 let this = self.this.clone();
                 self.base.step(&this, step, &[])
@@ -394,7 +369,6 @@ pub(super) fn truth<M: Machine>(
     }
 }
 
-/// A count: a non-negative integer.
 pub(super) fn count<M: Machine>(
     program: &ViewProgram<M::Step>,
     machine: &mut ViewMachine<'_, M>,
@@ -412,7 +386,6 @@ pub(super) fn count<M: Machine>(
         .ok_or_else(|| refused(format!("the {what} is {value}")))
 }
 
-/// A value of a check's side, for saying why it failed.
 fn side_text<P>(value: &Value<P>) -> String {
     match value {
         Value::Int(integer) => integer.value().to_string(),
@@ -423,7 +396,6 @@ fn side_text<P>(value: &Value<P>) -> String {
     }
 }
 
-/// Runs the view's checks, failing at the first that does not hold.
 fn checks<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut ViewMachine<'_, M>,
@@ -451,7 +423,6 @@ fn checks<M: Machine>(
     Ok(())
 }
 
-/// The shape a value has, once its checks hold, choosing `if` branches.
 fn resolve<'b, M: Machine>(
     bound: &'b BoundView<M::Step>,
     machine: &mut ViewMachine<'_, M>,
@@ -472,7 +443,6 @@ fn resolve<'b, M: Machine>(
         };
     }
 
-    // A `match` that names no value it has is that value's problem.
     if let BoundShape::Unmatched { text, program } = shape {
         let value = interp::value(program, machine)?;
         return Err(refused(format!(
@@ -484,15 +454,11 @@ fn resolve<'b, M: Machine>(
     Ok(shape)
 }
 
-/// A child a view names: a member of its record or a field, of the view
-/// or of an `extend` of it.
 struct Named<'b, St> {
     owner: &'b BoundView<St>,
     field: &'b BoundField<St>,
 }
 
-/// The named children of a view's value, in order: its record's members,
-/// its fields, and its extensions' fields, less those any of them hides.
 fn named<'b, St>(bound: &'b BoundView<St>, shape: &'b BoundShape<St>) -> Vec<Named<'b, St>> {
     let hidden = |name: &Arc<str>| {
         std::iter::once(bound)
@@ -522,7 +488,6 @@ fn named<'b, St>(bound: &'b BoundView<St>, shape: &'b BoundShape<St>) -> Vec<Nam
         .collect()
 }
 
-/// How a view, or the last `extend` of it that says, formats `name`.
 fn format_of<St>(bound: &BoundView<St>, name: &str) -> Option<BoundFormat> {
     bound
         .extensions
@@ -539,8 +504,6 @@ fn format_of<St>(bound: &BoundView<St>, name: &str) -> Option<BoundFormat> {
         })
 }
 
-/// A named child's value, computed in its own view's scope, as its format
-/// writes it.
 fn named_value<M: Machine>(
     bound: &BoundView<M::Step>,
     named: &Named<'_, M::Step>,
@@ -558,8 +521,6 @@ fn named_value<M: Machine>(
     formatted(bound, &named.field.name, value, machine)
 }
 
-/// `value` as the format a view gives `name` writes it, when it gives one
-/// that suits the value.
 fn formatted<M: Machine>(
     bound: &BoundView<M::Step>,
     name: &str,
@@ -597,10 +558,6 @@ fn formatted<M: Machine>(
     Ok(value)
 }
 
-/// How many elements a sequence or map holds, as far as its declared count
-/// and, for random access, its range say. A random-access range that
-/// disagrees with the declared count is refused; a scan's count is checked
-/// as it is generated.
 fn declared_length<M: Machine>(
     scan: &BoundScan<M::Step>,
     machine: &mut ViewMachine<'_, M>,
@@ -637,7 +594,6 @@ fn declared_length<M: Machine>(
     }
 }
 
-/// Presents one value, the result of a program, as inspection presents it.
 fn run_value<M: Machine>(
     program: &ViewProgram<M::Step>,
     machine: &mut ViewMachine<'_, M>,
@@ -648,8 +604,6 @@ fn run_value<M: Machine>(
     }
 }
 
-/// Where the value a `dynamic` shape presents is: what its pointer points
-/// to, as the type it names or the type argument its index chooses.
 fn dynamic_place<M: Machine>(
     pointer: &ViewProgram<M::Step>,
     ty: &BoundDynamic<M::Step>,
@@ -693,7 +647,6 @@ fn dynamic_place<M: Machine>(
     Ok(machine.place_at(address, ty)?)
 }
 
-/// The address of the code a program's value addresses.
 fn code_address<M: Machine>(
     code: &ViewProgram<M::Step>,
     machine: &mut ViewMachine<'_, M>,
@@ -705,8 +658,6 @@ fn code_address<M: Machine>(
     }
 }
 
-/// The type argument of the function whose code `code` addresses that its
-/// parameter `name` names.
 fn function_argument<M: Machine>(
     code: &ViewProgram<M::Step>,
     name: &str,
@@ -724,9 +675,6 @@ fn function_argument<M: Machine>(
         })
 }
 
-/// The one type among `candidates` that `pattern` names, the captures
-/// `known` does not name being the type arguments of the function whose
-/// code `code` addresses, which come before the view's own.
 fn function_type<M: Machine>(
     code: &ViewProgram<M::Step>,
     name: &str,
@@ -773,9 +721,6 @@ fn function_type<M: Machine>(
     }
 }
 
-/// An element, key, or value, with the generators' variables in the
-/// machine. One the view cannot compute, such as one past the address
-/// space, is that element's problem, not the sequence's.
 fn element<M: Machine>(
     program: &ViewProgram<M::Step>,
     machine: &mut ViewMachine<'_, M>,
@@ -795,8 +740,6 @@ fn element<M: Machine>(
     }
 }
 
-/// Where to find a sequence's or map's elements: directly by index, or by
-/// scanning.
 enum Walk<'b, St, P> {
     Direct {
         scan: &'b BoundScan<St>,
@@ -807,8 +750,6 @@ enum Walk<'b, St, P> {
 }
 
 impl<'b, St, P: Clone> Walk<'b, St, P> {
-    /// A walk whose next element is `index`, or `None` when there are
-    /// fewer elements.
     fn at<M: Machine<Step = St, Place = P>>(
         scan: &'b BoundScan<St>,
         declared: Option<u64>,
@@ -831,7 +772,6 @@ impl<'b, St, P: Clone> Walk<'b, St, P> {
             .then_some(Self::Scan(scanner)))
     }
 
-    /// The next element's index, with its variables in the machine.
     fn next<M: Machine<Step = St, Place = P>>(
         &mut self,
         machine: &mut ViewMachine<'_, M>,
@@ -852,7 +792,6 @@ impl<'b, St, P: Clone> Walk<'b, St, P> {
                     return Err(internal("random access is one range"));
                 };
 
-                // A random-access clause has only `let`s after its range.
                 for item in &clause.items {
                     if let super::bind::BoundItem::Let(program) = item {
                         values.push(interp::value(program, machine)?);
@@ -867,7 +806,6 @@ impl<'b, St, P: Clone> Walk<'b, St, P> {
     }
 }
 
-/// One element, or one entry's key and value, at the walk's position.
 fn item<M: Machine>(
     shape: &BoundShape<M::Step>,
     machine: &mut ViewMachine<'_, M>,
@@ -886,7 +824,6 @@ fn item<M: Machine>(
     }
 }
 
-/// Presents `this`, a value of the view's type, as the view says.
 pub fn present<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut M,
@@ -915,8 +852,6 @@ pub fn present<M: Machine>(
             preview(shape, scan, &mut machine, checkpoints)?
         }
         BoundShape::Record { members, .. } => {
-            // The summary shows the record's members the view does not
-            // hide, as their formats write them.
             let shown = named(bound, shape)
                 .into_iter()
                 .filter(|named| {
@@ -954,8 +889,6 @@ pub fn present<M: Machine>(
 
     presented.named = named(bound, shape).len() as u64;
 
-    // Text the view writes `self` as presents the value, which keeps the
-    // children its shape gives it.
     if !matches!(
         shape,
         BoundShape::Value(_) | BoundShape::Text { .. } | BoundShape::Stored
@@ -973,7 +906,6 @@ pub fn present<M: Machine>(
     Ok(presented)
 }
 
-/// A summary's text, with each hole's value's summary in its place.
 fn rendered<M: Machine>(
     pieces: &[super::bind::BoundPiece<M::Step>],
     machine: &mut ViewMachine<'_, M>,
@@ -1000,8 +932,6 @@ fn rendered<M: Machine>(
     Ok(text)
 }
 
-/// The text of `self`, when the view, or the last `extend` of it that
-/// formats `self`, writes it as UTF-8 and its bytes are text.
 fn self_text<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut ViewMachine<'_, M>,
@@ -1039,9 +969,6 @@ fn self_text<M: Machine>(
     }
 }
 
-/// A sequence's or map's count and summary, previewing its first elements.
-/// Without a declared count, the scan goes on to count every element, as
-/// far as the budget allows.
 fn preview<M: Machine>(
     shape: &BoundShape<M::Step>,
     scan: &BoundScan<M::Step>,
@@ -1062,7 +989,6 @@ fn preview<M: Machine>(
             && items.len() < summary::MAX_ELEMENTS
             && characters < summary::MAX_CHARACTERS;
 
-        // With a declared count, nothing past the preview is needed.
         if !previewing && declared.is_some() {
             break;
         }
@@ -1074,15 +1000,11 @@ fn preview<M: Machine>(
                 break;
             }
 
-            // Running out of budget, or memory, while only counting leaves
-            // the count a lower bound.
             Err(Failure::Problem(ViewProblem::Unavailable(reason))) if !previewing => {
                 partial = Some(ViewProblem::Unavailable(reason));
                 break;
             }
 
-            // Running out of budget while looking for the next element
-            // ends the preview there.
             Err(Failure::Problem(ViewProblem::Unavailable(
                 reason @ VariableUnavailableReason::InspectionLimit(_),
             ))) => {
@@ -1121,8 +1043,6 @@ fn preview<M: Machine>(
         characters += rendered.chars().count() + 2;
         items.push(rendered);
 
-        // An element the budget or memory could not provide ends the
-        // preview, rather than spending more on the rest.
         for state in states {
             match state {
                 VariableState::Unavailable(reason) => {
@@ -1164,9 +1084,6 @@ fn preview<M: Machine>(
     })
 }
 
-/// The children `offset..offset + limit` of `this` as the view presents
-/// it: its elements or entries, then its fields, then the stored value.
-/// `elements` is how many elements or entries the presentation counted.
 pub fn children<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut M,
@@ -1179,7 +1096,6 @@ pub fn children<M: Machine>(
     let mut machine = ViewMachine::new(machine, bound, this);
     let shape = resolve(bound, &mut machine)?;
 
-    // A record's members come before the view's fields.
     let named = named(bound, shape);
     let end = offset.saturating_add(limit).min(
         elements
@@ -1209,8 +1125,6 @@ pub fn children<M: Machine>(
                     }));
                 }
 
-                // A budget that ends while the scan looks for the next
-                // element ends the page with the elements it found.
                 Err(failure) if out_of_work(&failure) && !children.is_empty() => {
                     return Ok(children);
                 }
@@ -1219,8 +1133,6 @@ pub fn children<M: Machine>(
 
             let child = item(shape, &mut machine, index)?;
 
-            // A page ends at the first child its budget cannot afford,
-            // which the page's completion then reports.
             if out_of_budget(&child) {
                 return Ok(children);
             }
@@ -1232,8 +1144,6 @@ pub fn children<M: Machine>(
     for index in offset.max(elements)..end {
         let position = usize::try_from(index - elements).unwrap_or(usize::MAX);
 
-        // A member or field the program cannot provide is that child's
-        // problem.
         let child = match named.get(position) {
             Some(child) => Child::Field(
                 Arc::clone(&child.field.name),
@@ -1252,8 +1162,6 @@ pub fn children<M: Machine>(
     Ok(children)
 }
 
-/// The `visualize` statements of a view and of the `extend`s that add to
-/// it, in order, each with the view it belongs to.
 pub fn visualizers<St>(bound: &BoundView<St>) -> Vec<(&BoundView<St>, &BoundVisualizer<St>)> {
     std::iter::once(bound)
         .chain(bound.extensions.iter().map(AsRef::as_ref))
@@ -1265,13 +1173,10 @@ pub fn visualizers<St>(bound: &BoundView<St>) -> Vec<(&BoundView<St>, &BoundVisu
         .collect()
 }
 
-/// An input a drawing hands its renderer, as run at a stop.
 #[derive(Debug)]
 pub enum Input {
     Value(Box<InspectedValue>),
 
-    /// `bytes(PTR, LEN)`: where the bytes are and how many, which the
-    /// caller reads at once.
     Bytes {
         address: u64,
         length: u64,
@@ -1281,14 +1186,8 @@ pub enum Input {
     Text(Arc<str>),
 }
 
-/// An input by name, with the part of the drawn value it is, when it is
-/// one: `""` for the value itself, and none for `bytes(…)` or what the view
-/// computes.
 pub type NamedInput = (Arc<str>, Input, Option<Arc<str>>);
 
-/// Runs the inputs of the `index`th of [`visualizers`], once the view's
-/// checks hold. An input the program cannot provide is that input's
-/// problem, as a field's is.
 pub fn inputs<M: Machine>(
     bound: &BoundView<M::Step>,
     index: usize,
@@ -1333,10 +1232,6 @@ pub fn inputs<M: Machine>(
     Ok(inputs)
 }
 
-/// Where a sequence's elements lie when they lie next to each other in
-/// memory: when the view's elements are `p[i]` for each `i` in `range(n)`,
-/// with `p` a pointer that `i` does not change. The address of the
-/// first, how many there are, the type of each, and its size.
 pub fn contiguous<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut M,
@@ -1382,7 +1277,6 @@ where
     Ok(Some((address, count, element_type, scale)))
 }
 
-/// Whether running stopped because the inspection's budget ran out.
 const fn out_of_work(failure: &Failure) -> bool {
     matches!(
         failure,
@@ -1392,7 +1286,6 @@ const fn out_of_work(failure: &Failure) -> bool {
     )
 }
 
-/// Whether a child is unavailable because the budget ran out.
 fn out_of_budget(child: &Child) -> bool {
     let limited = |value: &InspectedValue| {
         matches!(
@@ -1410,8 +1303,6 @@ fn out_of_budget(child: &Child) -> bool {
 
 const NO_LENGTH: &str = "the value it presents has no length";
 
-/// How many elements or entries `this` holds as the view presents it, or
-/// the length of its text, for `len(v)`.
 pub fn length<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut M,
@@ -1445,9 +1336,8 @@ pub fn length<M: Machine>(
             }
         }
 
-        // A value that holds nothing, such as Go's nil map, has nothing.
         BoundShape::Empty(_) => Ok(0),
-        // A value presented as another has that one's length.
+
         BoundShape::Value(program) => {
             let Value::Place(place) = interp::value(program, &mut machine)? else {
                 return Err(refused(NO_LENGTH));
@@ -1471,7 +1361,6 @@ pub fn length<M: Machine>(
     }
 }
 
-/// The place of the value `this` is presented as, for `*x`.
 pub fn presented_place<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut M,
@@ -1491,7 +1380,6 @@ pub fn presented_place<M: Machine>(
     }
 }
 
-/// The place of element `index` of `this`, for `v[i]`.
 pub fn element_place<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut M,
@@ -1502,7 +1390,6 @@ pub fn element_place<M: Machine>(
     let mut machine = ViewMachine::new(machine, bound, this);
     let shape = resolve(bound, &mut machine)?;
 
-    // A value presented as another has that one's elements.
     if let BoundShape::Value(program) = shape {
         let Value::Place(place) = interp::value(program, &mut machine)? else {
             return Err(refused("the view computes the value it presents"));
@@ -1557,8 +1444,6 @@ pub fn element_place<M: Machine>(
     }
 }
 
-/// The places of the elements of `this`, when its view presents it as a
-/// tuple, for a key of several values; `None` when it presents no tuple.
 pub fn tuple_places<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut M,
@@ -1590,7 +1475,6 @@ pub fn tuple_places<M: Machine>(
     Ok(Some(places))
 }
 
-/// The text a `text` shape presents, at most [`TextSummary::MAX_BYTES`].
 fn read_text<M: Machine>(
     source: &TextSource<M::Step>,
     length: Option<&ViewProgram<M::Step>>,
@@ -1611,9 +1495,6 @@ fn read_text<M: Machine>(
     read_units(machine, address, length, width)
 }
 
-/// The text of `width`-byte characters at `address`, `length` of them or
-/// up to a NUL, decoded from UTF-16 or UTF-32. A length it gives is in
-/// bytes.
 fn read_units<M: Machine>(
     machine: &mut M,
     address: u64,
@@ -1654,8 +1535,6 @@ fn read_units<M: Machine>(
             Err(stop) => return Err(stop.into()),
         };
 
-        // A unit may straddle the chunks, so the search begins at the unit
-        // the chunk's first byte belongs to.
         let first = bytes.len() - bytes.len() % width;
         bytes.extend_from_slice(&chunk);
         if length.is_none()
@@ -1685,8 +1564,6 @@ fn read_units<M: Machine>(
     ))
 }
 
-/// Where a `text` shape's characters are: the first one's address, and
-/// how many there are when the view or its elements say.
 fn text_location<M: Machine>(
     source: &TextSource<M::Step>,
     length: Option<&ViewProgram<M::Step>>,
@@ -1730,8 +1607,6 @@ fn text_location<M: Machine>(
     })
 }
 
-/// Where the text `this` is presented as is, for slicing it: the first
-/// character's address, and how many there are when the view says.
 pub fn text_span<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut M,
@@ -1739,7 +1614,6 @@ pub fn text_span<M: Machine>(
 ) -> Result<Option<(u64, Option<u64>)>, Failure> {
     let mut machine = ViewMachine::new(machine, bound, this);
     match resolve(bound, &mut machine)? {
-        // Slices of text count bytes, which wider characters are not.
         BoundShape::Text { source, .. } if source.width() != 1 => Ok(None),
         BoundShape::Text { source, length } => {
             let (address, length) = text_location(source, length.as_ref(), &mut machine)?;
@@ -1754,7 +1628,6 @@ pub fn text_span<M: Machine>(
             Ok(Some((address, length)))
         }
 
-        // A value presented as another is that one's text.
         BoundShape::Value(program) => {
             let Value::Place(place) = interp::value(program, &mut machine)? else {
                 return Ok(None);
@@ -1768,9 +1641,6 @@ pub fn text_span<M: Machine>(
     }
 }
 
-/// How many elements `this` has room for, as the view's `capacity` field,
-/// or an extension's, says, for `cap(v)`; a view that presents the value as
-/// another gives that one's.
 pub fn capacity<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut M,
@@ -1806,7 +1676,6 @@ pub fn capacity<M: Machine>(
     Ok(machine.presented_capacity(&place)?)
 }
 
-/// A `capacity` field's value, which must be a count.
 fn capacity_of<M: Machine>(
     program: &ViewProgram<M::Step>,
     machine: &mut ViewMachine<'_, M>,
@@ -1823,10 +1692,6 @@ fn capacity_of<M: Machine>(
         .ok_or_else(|| refused(format!("its capacity is {value}")))
 }
 
-/// The place of the value the map `this` holds for `key`, for `m[key]`,
-/// or `None` when it holds no such key. Its entries are searched in order;
-/// a key that could not be read leaves the answer unavailable unless a
-/// later one matches.
 pub fn entry_place<M: Machine>(
     bound: &BoundView<M::Step>,
     machine: &mut M,
@@ -1837,7 +1702,6 @@ pub fn entry_place<M: Machine>(
     let mut machine = ViewMachine::new(machine, bound, this);
     let shape = resolve(bound, &mut machine)?;
 
-    // A value presented as another has that one's entries.
     if let BoundShape::Value(program) = shape {
         let Value::Place(place) = interp::value(program, &mut machine)? else {
             return Err(refused("the view computes the value it presents"));
@@ -1892,10 +1756,6 @@ pub fn entry_place<M: Machine>(
     unreadable.map_or_else(|| Ok(None), |stop| Err(stop.into()))
 }
 
-/// Whether the key a map's view gives for its current entry, by the
-/// program `key_program`, is the tuple `key`, element by element. A key
-/// the view cannot compute leaves the entry unreadable, as an element's
-/// problem does.
 fn tuple_key_matches<M: Machine>(
     key: &[Key],
     key_program: &ViewProgram<M::Step>,
@@ -1922,8 +1782,6 @@ fn tuple_key_matches<M: Machine>(
     crate::eval::target::tuple_matches(key, &place, machine, &mut |machine, at| machine.present(at))
 }
 
-/// Reads text at `address`, `length` bytes or up to a NUL, a page at a
-/// time, at most [`TextSummary::MAX_BYTES`].
 fn read_bytes<M: Machine>(
     machine: &mut M,
     address: u64,

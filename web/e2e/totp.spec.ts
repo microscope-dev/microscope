@@ -1,9 +1,3 @@
-// Two-factor authentication against the real services backend, its TOTP
-// secrets sealed by a fake Cloud KMS: setting it up from the Account pane,
-// signing in with an authenticator code or a recovery code, and turning it
-// off. Codes are computed here from the key the page shows, as an
-// authenticator app would.
-
 import { randomBytes } from "node:crypto";
 import * as path from "node:path";
 
@@ -35,7 +29,6 @@ test.skip(!haveServices, `services is not built at ${servicesBinary}`);
 
 const account = (page: Page) => page.getByRole("tabpanel", { name: "Account" });
 
-/** Saves a screenshot of the Account pane when TOTP_SHOTS names a directory. */
 async function shot(page: Page, name: string): Promise<void> {
   const dir = process.env.TOTP_SHOTS;
   if (dir) {
@@ -63,12 +56,10 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
     /POST \S+\/api\/users\/me\/totp\/disable: 403$/u,
   );
 
-  // Tall enough that a screenshot holds the whole Account pane.
   if (process.env.TOTP_SHOTS) {
     await page.setViewportSize({ width: 1100, height: 1500 });
   }
 
-  // An account, confirmed and signed in with its emailed code.
   await page.goto(`${services.origin}/`);
   await account(page).getByRole("button", { name: "Create one" }).click();
   await account(page).getByLabel("Username").fill(username);
@@ -86,7 +77,6 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
   await expect(account(page)).toContainText("Off. Turn it on");
   await shot(page, "01-off");
 
-  // Set up: the password, then the key, then a code from it.
   await account(page).getByRole("button", { name: "Set up" }).click();
   await account(page).getByLabel("Password").fill(password);
   await shot(page, "02-password");
@@ -122,7 +112,6 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
   expect((await services.mail(email)).subject).toBe("Two-factor authentication is on");
   await shot(page, "05-on");
 
-  // Signing in now takes an authenticator code, and no email is sent.
   await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await signIn(page, username, password);
   await expect(account(page)).toContainText("Enter the code from your authenticator app");
@@ -133,13 +122,12 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
   expect((await services.mail(email)).subject).toBe(
     "Wrong two-factor code for your Microscope account",
   );
-  // The code that turned it on is used up, so the next step's code signs in.
+
   await account(page).getByLabel("Code").fill(totp(secret, 1));
   await account(page).getByRole("button", { name: "Sign in" }).click();
   await expect(account(page)).toContainText(`Signed in as ${username}`);
   await expect(account(page)).toContainText("On. Signing in takes your password");
 
-  // A recovery code, typed the way people copy them.
   await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await signIn(page, email, password);
   await account(page).getByRole("button", { name: "Use a recovery code" }).click();
@@ -151,8 +139,6 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
   await expect(account(page)).toContainText(`Signed in as ${username}`);
   expect((await services.mail(email)).subject).toBe("A Microscope recovery code was used");
 
-  // Turning it off takes the password and a second factor; a used recovery
-  // code is not one.
   await account(page).getByRole("button", { name: "Turn off" }).click();
   await account(page).getByLabel("Password").fill(password);
   await account(page)
@@ -167,7 +153,6 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
   await expect(account(page)).toContainText("Off. Turn it on");
   await shot(page, "08-off-again");
 
-  // A password and the emailed code sign in again.
   await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await signIn(page, username, password);
   await expect(account(page)).toContainText("Enter the code from your email");

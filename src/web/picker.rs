@@ -1,15 +1,10 @@
-//! What the picker offers: paths that complete a typed one, and the
-//! processes one could attach to.
-
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 use super::protocol::{PathEntry, PathKind, Process};
 
-/// The most completions one answer carries.
 const MAX_ENTRIES: usize = 200;
 
-/// Expands a leading `~` and resolves the rest against `cwd`.
 pub fn resolve(text: &str, cwd: &Path, home: Option<&Path>) -> PathBuf {
     match (text.strip_prefix('~'), home) {
         (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
@@ -19,10 +14,6 @@ pub fn resolve(text: &str, cwd: &Path, home: Option<&Path>) -> PathBuf {
     }
 }
 
-/// The entries of the directory `text` names that its last component
-/// begins, in the order a person scans them: directories, executables, then
-/// other files, each alphabetically. Hidden entries appear only once the
-/// typed name begins with a dot.
 pub fn complete(text: &str, cwd: &Path, home: Option<&Path>) -> Vec<PathEntry> {
     let (directory, prefix) = text
         .rfind('/')
@@ -39,7 +30,6 @@ pub fn complete(text: &str, cwd: &Path, home: Option<&Path>) -> Vec<PathEntry> {
                 return None;
             }
 
-            // Follow symbolic links, as running the path would.
             let metadata = std::fs::metadata(entry.path()).ok()?;
             let kind = if metadata.is_dir() {
                 PathKind::Directory
@@ -71,11 +61,9 @@ pub fn complete(text: &str, cwd: &Path, home: Option<&Path>) -> Vec<PathEntry> {
     found
 }
 
-/// This user's processes other than the server itself, newest first.
 pub fn processes(proc: &Path) -> Vec<Process> {
     let me = std::process::id();
 
-    // The owner of this process's own directory is this user.
     let (Ok(entries), Ok(own)) = (
         std::fs::read_dir(proc),
         std::fs::metadata(proc.join("self")),
@@ -118,7 +106,6 @@ pub fn processes(proc: &Path) -> Vec<Process> {
     found
 }
 
-/// Yama's `ptrace_scope`, when the kernel has Yama.
 pub fn ptrace_scope() -> Option<u8> {
     std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope")
         .ok()?
@@ -131,7 +118,6 @@ pub fn ptrace_scope() -> Option<u8> {
 mod tests {
     use super::*;
 
-    /// A directory removed when the test ends.
     struct Scratch(PathBuf);
 
     impl Scratch {
@@ -189,7 +175,6 @@ mod tests {
             [PathKind::Directory, PathKind::Executable, PathKind::File]
         );
 
-        // A home directory, and an absolute path regardless of cwd.
         assert_eq!(
             complete("~/build/kvs", Path::new("/nonexistent"), Some(root))[0].text,
             "~/build/kvstore"

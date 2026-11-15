@@ -1,9 +1,9 @@
-// Loops over iterator functions. Each loop's body is a function of its
-// own that the iterator calls, which a step in the loop treats as the
-// loop's own code: it goes from one pass of the body to the next, and out
-// after the loop, never into the iterator. Count is never inlined, so its
-// body is a function of its own when optimized too; Evens is small
-// enough to be inlined, with the body inside it, when optimized.
+
+
+
+
+
+
 package main
 
 import (
@@ -11,8 +11,8 @@ import (
 	"iter"
 )
 
-// Count yields 0 through n-1.
-//
+
+
 //go:noinline
 func Count(n int) iter.Seq[int] {
 	return func(yield func(int) bool) {
@@ -24,7 +24,7 @@ func Count(n int) iter.Seq[int] {
 	}
 }
 
-// Evens yields the even numbers below n.
+
 func Evens(n int) iter.Seq[int] {
 	return func(yield func(int) bool) {
 		for i := 0; i < n; i += 2 {
@@ -35,7 +35,7 @@ func Evens(n int) iter.Seq[int] {
 	}
 }
 
-// sink keeps a result the compiler would otherwise drop.
+
 var sink int
 
 //go:noinline

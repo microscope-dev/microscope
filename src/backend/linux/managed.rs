@@ -1,10 +1,3 @@
-//! Breakpoint locations language runtimes manage. The debugger keeps no
-//! trap at one: the runtime arms each and reports a hit through one of its
-//! internal hooks. Ownership follows the native split, as for a trap site:
-//! the site record says which user breakpoints own each location. A
-//! runtime is armed whole, with its locations, its step, and which
-//! exceptions stop, whenever any of them changes.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -15,34 +8,24 @@ use crate::{ManagedLocation, RuntimeId};
 use super::Controller;
 use super::native::LinuxTraceOps;
 
-/// The managed locations user breakpoints own, and how each runtime's
-/// arming stands.
 #[derive(Debug, Default)]
 pub(super) struct ManagedSites {
     sites: BTreeMap<ManagedLocation, ManagedSite>,
 
-    /// The number the next new site takes. A site's number is never given
-    /// to another in the same process, so a hit a runtime reports for a
-    /// site since removed names none.
     next: u64,
 
-    /// The runtimes whose arming changed since they were last armed.
     stale: BTreeSet<RuntimeId>,
 
-    /// Why each runtime that could not be armed was not.
     pub(super) unarmed: BTreeMap<RuntimeId, Arc<str>>,
 }
 
-/// One managed location and the breakpoints that own it.
 #[derive(Debug)]
 struct ManagedSite {
-    /// The number the runtime reports a hit of the site by.
     number: u64,
     owners: BTreeSet<BreakpointId>,
 }
 
 impl ManagedSites {
-    /// Gives `owner` the location, numbering it if it is new.
     pub(super) fn own(&mut self, location: &ManagedLocation, owner: BreakpointId) {
         if let Some(site) = self.sites.get_mut(location) {
             site.owners.insert(owner);
@@ -60,8 +43,6 @@ impl ManagedSites {
         self.stale.insert(location.runtime);
     }
 
-    /// Takes the location from `owner`, and forgets it once no breakpoint
-    /// owns it.
     pub(super) fn release(&mut self, location: &ManagedLocation, owner: BreakpointId) {
         let Some(site) = self.sites.get_mut(location) else {
             return;
@@ -74,8 +55,6 @@ impl ManagedSites {
         }
     }
 
-    /// The location the runtime `runtime` numbers `number`, and the
-    /// breakpoints that own it.
     pub(super) fn site(
         &self,
         runtime: RuntimeId,
@@ -87,12 +66,10 @@ impl ManagedSites {
             .map(|(location, site)| (location, &site.owners))
     }
 
-    /// The number the runtime reports a hit of `location` by.
     pub(super) fn number(&self, location: &ManagedLocation) -> Option<u64> {
         self.sites.get(location).map(|site| site.number)
     }
 
-    /// What the runtime `runtime` is to be armed with.
     pub(super) fn arms(&self, runtime: RuntimeId) -> Vec<ManagedArm> {
         self.sites
             .iter()
@@ -104,30 +81,24 @@ impl ManagedSites {
             .collect()
     }
 
-    /// The runtimes whose arming changed since they were last armed,
-    /// which are then counted armed.
     pub(super) fn take_stale(&mut self) -> BTreeSet<RuntimeId> {
         std::mem::take(&mut self.stale)
     }
 
-    /// Marks the runtime's arming changed, so that it is armed again.
     pub(super) fn mark_stale(&mut self, runtime: RuntimeId) {
         self.stale.insert(runtime);
     }
 
-    /// Whether the runtime's arming changed since it was last armed.
     pub(super) fn is_stale(&self, runtime: RuntimeId) -> bool {
         self.stale.contains(&runtime)
     }
 
-    /// Whether `owner` owns the location.
     pub(super) fn owns(&self, location: &ManagedLocation, owner: BreakpointId) -> bool {
         self.sites
             .get(location)
             .is_some_and(|site| site.owners.contains(&owner))
     }
 
-    /// Every location and its owners, for the invariant check.
     pub(super) fn owned(
         &self,
     ) -> impl Iterator<Item = (&ManagedLocation, &BTreeSet<BreakpointId>)> {
@@ -138,11 +109,6 @@ impl ManagedSites {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Arms each runtime whose arming changed with all of it, while every
-    /// thread is stopped. A runtime that cannot be armed keeps why, and is
-    /// armed again at the next change.
-    /// Returns whether the public arming reasons changed. A configuration
-    /// edit publishes its whole change; standalone rearming must notify it.
     #[must_use]
     pub(super) fn sync_runtime_arming(&mut self) -> bool {
         let Some(inferior) = self.session.inferior_mut() else {
@@ -158,8 +124,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         changed
     }
 
-    /// Arms the runtime `runtime` with everything its internal hooks are to
-    /// report: its managed locations, its step, and which exceptions stop.
     pub(super) fn arm_runtime(&mut self, runtime: RuntimeId) -> Result<(), Arc<str>> {
         let result = self.prepare_runtime_arming(runtime);
         if let Some(inferior) = self.session.inferior_mut() {
@@ -186,8 +150,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .cloned()
     }
 
-    /// Publishes only the final readiness change of a standalone operation,
-    /// including any rollback of an unsuccessful step request.
     pub(super) fn with_arming_notification<T>(
         &mut self,
         runtime: RuntimeId,
@@ -224,7 +186,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .into_iter()
             .find(|bound| bound.id == runtime)
         else {
-            // A runtime that is gone took what it was armed with.
             return if breakpoints.is_empty() && step.is_none() && assignment.is_none() {
                 Ok(())
             } else {
@@ -253,8 +214,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.write_for_runtime(&writes)
     }
 
-    /// Marks every loaded runtime that reports events through internal
-    /// hooks to be armed again, as when which exceptions stop changed.
     pub(super) fn rearm_reporting_runtimes(&mut self) {
         let Some(inferior) = self.session.inferior() else {
             return;

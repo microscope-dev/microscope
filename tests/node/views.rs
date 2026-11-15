@@ -1,8 +1,3 @@
-//! Views of JavaScript values, chosen by the classes their prototype chains
-//! name: Node's library types through the built-in views
-//! (`views/javascript-std.views`), and a program's own classes through a
-//! views file, by the path of the script that defines them.
-
 use std::sync::Arc;
 
 use microscope::{
@@ -13,8 +8,6 @@ use microscope::{
 use crate::session::{MATRIX, NodeSession};
 use crate::truth::{Named, threads};
 
-/// Views of the fixture's classes, and of Node's by the identities its
-/// scripts give them, ahead of the built-in views.
 const PROGRAM_VIEWS: &str = "microscope-views 1
 view javascript **::node::views::Point {
     show record { x = self.x, y = self.y }
@@ -30,7 +23,6 @@ view javascript node::internal::url::URL {
 }
 ";
 
-/// Selects the frame of `views` on the printer's thread.
 async fn select_views(session: &NodeSession, native: u64) {
     let handle = session.scenario.handle();
     session
@@ -57,7 +49,6 @@ async fn select_views(session: &NodeSession, native: u64) {
         .await;
 }
 
-/// How microscope presents the expression `text`.
 async fn presentation(session: &NodeSession, text: &str) -> Arc<Presentation> {
     let expression = Expression::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
     match session.scenario.handle().evaluate(&expression).await {
@@ -72,7 +63,6 @@ async fn presentation(session: &NodeSession, text: &str) -> Arc<Presentation> {
     }
 }
 
-/// The one-line text Node gave the value named `name`.
 fn line<'v>(values: &'v [Named], name: &str) -> &'v str {
     &values
         .iter()
@@ -81,7 +71,6 @@ fn line<'v>(values: &'v [Named], name: &str) -> &'v str {
         .line
 }
 
-/// The view that presents `presented`, as its source and header.
 fn view_of(presented: &Presentation) -> (String, String) {
     (
         presented.view.source.to_string(),
@@ -93,7 +82,6 @@ fn std_view(header: &str) -> (String, String) {
     ("javascript-std.views".to_owned(), header.to_owned())
 }
 
-/// A typed array's drawing reads its elements at once, as their bytes.
 async fn drawn(
     session: &NodeSession,
     name: &str,
@@ -163,7 +151,6 @@ async fn drawn(
     }
 }
 
-/// The summary of the field `field` a view gives `presented`.
 async fn field(session: &NodeSession, presented: &Presentation, field: &str) -> Option<String> {
     let ValueChildren::Available(children) = &presented.children else {
         return None;
@@ -196,10 +183,6 @@ async fn field(session: &NodeSession, presented: &Presentation, field: &str) -> 
         })
 }
 
-/// The built-in views present typed arrays, a Buffer among them, with a
-/// line plot that reads their elements at once, and emitters, a subclass's
-/// too, with their listeners, while each still shows as `util.inspect`
-/// writes it. No built-in view presents a URL.
 async fn built_in(session: &NodeSession, values: &[Named], lies: &mut Vec<String>) {
     let context = session.context();
     let floats: Vec<u8> = [1.5_f64, -2.0, 0.25]
@@ -248,7 +231,6 @@ async fn built_in(session: &NodeSession, values: &[Named], lies: &mut Vec<String
         }
     }
 
-    // A URL's state is in private fields that only its own code reads.
     let url = presentation(session, "values.url").await;
     if url.view.source.as_ref() != "microscope" {
         lies.push(format!(
@@ -258,8 +240,6 @@ async fn built_in(session: &NodeSession, values: &[Named], lies: &mut Vec<String
     }
 }
 
-/// A views file presents the program's classes, each by its own view
-/// before its base class's, and Node's by the scripts that define them.
 async fn program(session: &NodeSession, lies: &mut Vec<String>) {
     let context = session.context();
     let handle = session.scenario.handle();
@@ -301,8 +281,6 @@ async fn program(session: &NodeSession, lies: &mut Vec<String>) {
     }
 }
 
-/// On every build, views present Node's library types and the program's
-/// classes by the classes their prototype chains name.
 #[tokio::test]
 async fn views_choose_javascript_classes_by_their_scripts_and_prototypes() {
     let mut lies = Vec::new();

@@ -11,7 +11,6 @@ import { useGo, useLinkPaths } from "./navigation";
 import { fileName } from "./paths";
 import { useFocus } from "./Workspace";
 
-/** Where a stop was, as briefly as it can be said. */
 export function placeText(place: Place | null | undefined): string {
   if (!place) {
     return "an unknown place";
@@ -22,12 +21,11 @@ export function placeText(place: Place | null | undefined): string {
   return place.function ?? place.address;
 }
 
-/** Says when the tab shows a stop the program has left, and offers the way back. */
 export function Banner() {
   const { at, stale } = useFocus();
   const pinned = useTab((current) => current.pinned);
   const [stayed, setStayed] = useState<number | null>(null);
-  // Each document pane has a banner; only the one on screen shows it.
+
   const visible = useVisible();
   if (!at || !visible) {
     return null;
@@ -51,8 +49,6 @@ export function Banner() {
 
 const unpin = () => tab.setState({ pinned: false });
 
-/** The stop shown has passed: where the session is now, and the ways there
- * or to stay. */
 function Passed({ at, stay }: { at: At; stay: (stop: number) => void }) {
   const { state, look } = useFocus();
   const paths = useLinkPaths();

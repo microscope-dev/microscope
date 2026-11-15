@@ -1,5 +1,3 @@
-// The light theme's colors, as the page hands them to renderers.
-
 import type { Palette } from "../src/visualize/sandbox";
 
 export const palette: Palette = {

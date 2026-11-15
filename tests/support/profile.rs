@@ -1,15 +1,5 @@
-//! What a test of a real recording may assert of its samples. The kernel
-//! promises to count every call, not to keep every sample: a ring that other
-//! recordings shrank, or a reader starved of CPU, loses some, and the
-//! profile says so. So a test checks the accounting here, then that each
-//! sample it kept is right (dev/testing.md).
-
 use microscope::profiler::{GapReason, Profile, SampledStack};
 
-/// Checks that the recording counted `calls`, that each is a sample it kept
-/// or one the kernel dropped, and that it dropped any only with its rings
-/// shrunk or sampling paused while it caught up. The samples it kept, for
-/// the caller to check each of.
 pub fn accounted(profile: &Profile, calls: u64) -> Vec<SampledStack> {
     let stacks = profile.stacks();
     let context = context(profile);
@@ -24,9 +14,6 @@ pub fn accounted(profile: &Profile, calls: u64) -> Vec<SampledStack> {
     stacks
 }
 
-/// Checks that the kernel dropped samples or other records only where the
-/// profile says why: its rings shrank, or sampling paused while microscope
-/// caught up.
 pub fn assert_loss_explained(profile: &Profile) {
     let lost = profile.lost_samples() + profile.lost_records();
     assert!(
@@ -38,7 +25,6 @@ pub fn assert_loss_explained(profile: &Profile) {
     );
 }
 
-/// What a failure says of a recording's accounting.
 fn context(profile: &Profile) -> String {
     format!(
         "counted {}, kept {}, lost {} samples and {} other records; \

@@ -1,4 +1,4 @@
-"""A normal program with two requested sites and repeated activations."""
+
 import contextvars
 
 

@@ -1,23 +1,14 @@
-//! Whole-state scripts. PEP 768 executes each in a fresh namespace, so the
-//! monitoring callbacks and generation live in one interpreter-local module.
-
 pub const SOURCE: &str = include_str!("agent.py");
 
-/// How the filename the agent's code is compiled under begins; it ends with
-/// `>`. Like `<string>`, it names no file, so no program's code has it.
 pub const FILENAME_PREFIX: &str = "<microscope agent ";
 
-/// Whether code compiled under `filename` is the agent's.
 #[must_use]
 pub fn is_agent_filename(filename: &str) -> bool {
     filename.starts_with(FILENAME_PREFIX) && filename.ends_with('>')
 }
 
-/// How the name of the directory of a launch's bootstrap for CPython 3.12
-/// and 3.13 begins, which holds it as `sitecustomize.py`.
 pub const BOOTSTRAP_DIRECTORY_PREFIX: &str = ".microscope-python-";
 
-/// Whether code compiled under `filename` is a launch bootstrap's.
 pub fn is_bootstrap_filename(filename: &str) -> bool {
     filename
         .strip_suffix("/sitecustomize.py")
@@ -25,18 +16,12 @@ pub fn is_bootstrap_filename(filename: &str) -> bool {
         .is_some_and(|(_, name)| name.starts_with(BOOTSTRAP_DIRECTORY_PREFIX))
 }
 
-/// How the name of the directory begins that holds the scripts the debugger
-/// has a process's interpreter run, in its `/tmp`; 32 hexadecimal digits
-/// end it.
 pub const SCRIPT_DIRECTORY_PREFIX: &str = ".microscope-";
 
-/// The name of the script of generation `generation` in that directory.
 pub fn script_name(generation: u64) -> String {
     format!("agent-{generation}.py")
 }
 
-/// Whether code compiled under `filename` is a script's the debugger had
-/// the interpreter run, whose code sets the agent up.
 pub fn is_script_filename(filename: &str) -> bool {
     let Some(rest) = filename.strip_prefix("/tmp/") else {
         return false;
@@ -58,16 +43,8 @@ pub fn is_script_filename(filename: &str) -> bool {
             .is_some_and(|generation| digits(generation, u8::is_ascii_digit))
 }
 
-/// The agent's bootstrap, which runs in a namespace its caller fills.
-///
-/// The caller supplies `__microscope_library`, `__microscope_generation`,
-/// and `__microscope_probes`, and may supply `__microscope_step` and
-/// `__microscope_exceptions`. Keeping this separate also lets a cooperative
-/// fixture load the agent.
 pub fn bootstrap() -> Result<String, serde_json::Error> {
     let source = serde_json::to_string(SOURCE)?;
-    // The agent's asserts are debug assertions: compiled in only when
-    // microscope's are, whatever the program's interpreter was told.
     let optimize = if cfg!(debug_assertions) { "0" } else { "1" };
     Ok(format!(
         r"import sys as _sys
@@ -101,28 +78,15 @@ except BaseException:
     ))
 }
 
-/// The transport's flat wire record: event, report kind, number, file, line,
-/// qualified name. Policy-specific breakpoint/step records stay in the runtime.
 pub type Probe<'a> = (&'a str, u8, u64, &'a str, u32, &'a str);
 
-/// The step's wire record: number, kind, native thread, how many callers
-/// its frame has, and its code's address.
 pub type Step = (u64, u8, u64, u32, u64);
 
-/// The assignment's wire record: number, native thread, how many callers
-/// its frame has, its code's address, the variable's name, and the value,
-/// as `["int", "DECIMAL"]`, `["float", BITS]`, `["bool", 0 or 1]`,
-/// `["str", TEXT]`, `["none"]`, or `["object", ADDRESS]`.
 pub type Assignment = (u64, u64, u32, u64, String, serde_json::Value);
 
-/// The exceptions that stop, one bit each, as the agent numbers them in its
-/// commands and reports: each raised, and each uncaught.
 pub const RAISED: u64 = 1;
 pub const UNCAUGHT: u64 = 2;
 
-/// A step's kinds, as the agent numbers them. A step back begins where
-/// its thread runs native code its frame called, and ends at the thread's
-/// next line in that frame or a caller.
 pub const INTO: u8 = 0;
 pub const OVER: u8 = 1;
 pub const OUT: u8 = 2;
@@ -136,8 +100,6 @@ const _: () = assert!(
     "the step kinds' numbers differ"
 );
 
-/// A standalone whole-state script, executable with fresh globals, which
-/// stops at the exceptions whose bits `exceptions` sets.
 pub fn script(
     library: &str,
     generation: u64,
@@ -164,7 +126,6 @@ pub fn script(
     );
     let library = serde_json::to_string(library)?;
     let probes = serde_json::to_string(probes)?;
-    // Integers only, which JSON and Python write alike.
     let step = step.map_or_else(
         || Ok("None".to_owned()),
         |step| serde_json::to_string(&step),
@@ -180,8 +141,6 @@ pub fn script(
     ))
 }
 
-/// The hook's three unsigned 64-bit C arguments, decoded at its entry.
-/// The report and identifier live in registers belonging to this thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Report {
     Armed {
@@ -190,9 +149,6 @@ pub enum Report {
     Breakpoint {
         number: u64,
     },
-    /// Several breakpoint hits of one event, which stop once together:
-    /// `count` nonzero numbers in an array at `address`, which the calling
-    /// thread keeps alive while it is in the hook.
     Breakpoints {
         count: usize,
         address: u64,
@@ -200,20 +156,14 @@ pub enum Report {
     StepEnded {
         number: u64,
     },
-    /// The step could not be followed, for `reason`.
     StepLost {
         number: u64,
         reason: StepLoss,
     },
-    /// The frame a step into is in calls the C function or method at
-    /// `callable`, which the stack keeps alive while the hook runs.
     StepCalls {
         number: u64,
         callable: u64,
     },
-    /// An exception of the kind `bit` names, [`RAISED`] or [`UNCAUGHT`], in
-    /// a record at `address` that the calling thread keeps alive while it is
-    /// in the hook.
     Exception {
         bit: u64,
         address: u64,
@@ -222,21 +172,16 @@ pub enum Report {
         generation: u64,
         failure: Failure,
     },
-    /// The assignment is made, or why it could not be.
     Assigned {
         number: u64,
         failure: Option<AssignmentFailure>,
     },
 }
 
-/// Why the agent could not make an assignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssignmentFailure {
-    /// The frame is not where microscope found it.
     Frame,
-    /// No name of the frame finds the value's object any more.
     Object,
-    /// The interpreter refused to store it.
     Refused,
 }
 
@@ -250,12 +195,9 @@ impl AssignmentFailure {
     }
 }
 
-/// Why the agent could not follow a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepLoss {
-    /// Its frame was not where the debugger found it.
     Frame,
-    /// Its thread ran on before the step began.
     Late,
 }
 
@@ -299,8 +241,6 @@ impl Failure {
     }
 }
 
-/// The most breakpoint hits one report carries: far more than the probes
-/// that can match one event, and a bounded read of the target.
 pub const MAX_HITS: u64 = 4096;
 
 const _: () = assert!(MAX_HITS >= 2, "a report of several hits can carry two");
@@ -314,7 +254,6 @@ pub fn decode(event: u64, number: u64, argument: u64) -> Result<Report, std::syn
         (0, generation, 0..=6) => Ok(Report::Armed { generation }),
         (1, number, 0) if number != 0 => Ok(Report::Breakpoint { number }),
         (1, count @ 2..=MAX_HITS, address) if address != 0 => Ok(Report::Breakpoints {
-            // At most `MAX_HITS`, so it fits.
             count: usize::try_from(count).unwrap_or(usize::MAX),
             address,
         }),
@@ -376,7 +315,6 @@ mod tests {
             .strip_suffix(&super::bootstrap().expect("the bootstrap"))
             .expect("the state comes before the bootstrap");
 
-        // What the agent reads is what CPython makes of those lines.
         let python = std::path::Path::new(
             &std::env::var_os("MICROSCOPE_CPYTHON")
                 .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell"),
@@ -416,8 +354,6 @@ mod tests {
         );
     }
 
-    /// The agent numbers an assignment's outcomes as the runtime does, and
-    /// reads the command's assignment as the runtime writes it.
     #[test]
     fn the_agent_numbers_assignments_as_the_runtime_does() {
         for (status, failure) in [
@@ -448,8 +384,6 @@ mod tests {
         );
     }
 
-    /// Only the name the bootstrap compiles the agent under is the agent's;
-    /// a program's file, or other code compiled from a string, is not.
     #[test]
     fn only_the_agents_code_has_its_filename() {
         assert!(super::is_agent_filename(

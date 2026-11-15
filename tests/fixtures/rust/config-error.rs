@@ -1,6 +1,6 @@
-// A config parser whose typed error main unwraps, for examining a Rust panic
-// by hand: the port "80a0" is no number, so `port()` returns a `BadNumber`
-// and the `unwrap` panics with it.
+
+
+
 
 use std::collections::HashMap;
 use std::fmt;

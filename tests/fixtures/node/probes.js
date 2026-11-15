@@ -1,9 +1,9 @@
-// A program instrumented with microscope's Node package: it waits for a
-// line on its standard input, which the test writes once microscope has
-// read its instrumentation, then marks its work every way the package can, on
-// the main thread and a worker, and ends by defining more sites than the
-// library holds. MICROSCOPE_NODE_ADDON names the package's addon and
-// MICROSCOPE_PROBES_LIBRARY the probes library.
+
+
+
+
+
+
 
 'use strict';
 
@@ -37,8 +37,8 @@ for (const suspending of [async () => {}, function* numbers() {}]) {
   }
 }
 
-// A recording that starts the program switches it on at once, but its marks
-// are safe only once microscope has read it.
+
+
 microscope.frame('started');
 fs.readSync(0, Buffer.alloc(1));
 
@@ -52,9 +52,9 @@ for (let round = 0; round < 3; round++) {
 
 const worker = new threads.Worker(__filename);
 worker.once('message', () => {
-  // A name made anew for each use is a site of its own, until every site
-  // the library's table holds is taken; a wrapped function never called
-  // defines its site and writes nothing.
+
+
+
   for (let number = 0; number < 4100; number++) {
     microscope.wrap(`request ${number}`, () => {});
   }

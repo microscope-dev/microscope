@@ -1,17 +1,17 @@
 microscope-views 1
 
-# Nim's system types as its C backend lays them out under ARC and ORC.
-# Verified against Nim 2.2.4 by tests/fixtures/nim/values.nim.
 
-# A string's characters follow its payload's capacity; an empty string
-# has no payload.
+
+
+
+
 view nim NimStringV2 {
     check len >= 0
     show text((u8*)((usize)p + offsetof(NimStrPayload, data)), len)
 }
 
-# A seq's elements follow its payload's capacity; an empty seq may have
-# no payload.
+
+
 view nim seq<T> {
     check len >= 0 && (len == 0 || p != null)
     show sequence(len) for i in range(len) => p->data[i]

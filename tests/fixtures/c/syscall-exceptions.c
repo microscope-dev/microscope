@@ -1,6 +1,6 @@
-// Makes GOOD getppid calls, FAILED close(-1) calls, which fail with EBADF,
-// and SLOW nanosleeps of 30 ms, each from its own line: the calls a
-// counting recording keeps whole are the failed and the slow ones.
+
+
+
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <sys/syscall.h>

@@ -1,6 +1,3 @@
-//! Async functions under a small executor of the program's own, with no
-//! runtime crate: names, breakpoints, steps within a poll, and values.
-
 use std::process::Stdio;
 
 use microscope::{
@@ -19,7 +16,6 @@ const BUILDS: [&str; 4] = [
 ];
 const SOURCE: &str = "std-async/src/main.rs";
 
-/// A fixture launched to its first stop at the breakpoint `spec`.
 async fn stopped_at(fixture: &str, spec: BreakpointSpec) -> Scenario {
     let mut scenario = Scenario::launch(fixture);
     scenario.add_breakpoint_spec(spec).await;
@@ -37,8 +33,6 @@ async fn stopped_at(fixture: &str, spec: BreakpointSpec) -> Scenario {
     scenario
 }
 
-/// A fixture launched to its first stop at the breakpoint `spec`, which
-/// is then removed, so that only steps stop it.
 async fn stopped_once(fixture: &str, spec: BreakpointSpec) -> Scenario {
     let mut scenario = Scenario::launch(fixture);
     let breakpoint = scenario.add_breakpoint_spec(spec).await;
@@ -64,9 +58,6 @@ fn at(marker: &str) -> BreakpointSpec {
     }
 }
 
-/// Each async body is named for the function its programmer wrote, and an
-/// async block for its function and number, in both builds: optimization
-/// inlines the bodies into one another, and their frames stay.
 #[tokio::test]
 async fn async_bodies_are_named_for_their_functions() {
     for fixture in BUILDS {
@@ -89,9 +80,6 @@ async fn async_bodies_are_named_for_their_functions() {
     }
 }
 
-/// `break leaf` binds the body of the async function, past its dispatch on
-/// the state, never the function that only builds its future: it stops at
-/// the body's first statement, once per call.
 #[tokio::test]
 async fn a_function_breakpoint_binds_an_async_body() {
     for fixture in BUILDS {
@@ -122,8 +110,6 @@ async fn a_function_breakpoint_binds_an_async_body() {
             "{fixture}: {reason:?}"
         );
 
-        // Optimization may leave the argument without a location, but
-        // never with another value.
         assert_eq!(ids.len(), 2, "{fixture}");
         for (id, expected) in ids.iter().zip([3, 4]) {
             assert!(
@@ -136,10 +122,6 @@ async fn a_function_breakpoint_binds_an_async_body() {
     }
 }
 
-/// A breakpoint on an await's line stops when execution arrives at the
-/// await, once per arrival, never again as the future resumes there after
-/// it was pending; and it binds no copy of the line in the code that drops
-/// the future.
 #[tokio::test]
 async fn await_lines_stop_on_arrival_only() {
     for fixture in BUILDS {
@@ -179,26 +161,15 @@ async fn await_lines_stop_on_arrival_only() {
     }
 }
 
-/// What a test expects of a variable an async body lists.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Expected {
-    /// An integer with this value.
     Integer(i128),
 
-    /// A value that is not an integer.
     Other,
 
-    /// No value: it was last written before the await at this marker's
-    /// line, which this poll resumed from, and the future did not keep it.
     NotSaved(&'static str),
 }
 
-/// An async body's frame lists each of its variables once, each with the
-/// value it has now: never the compiler's temporaries, nor the field of
-/// the future that captured an argument beside the variable the body moved
-/// it into. A variable the body last wrote before the await it resumed
-/// from, which the future did not keep, has no value: its stack slot holds
-/// whatever other polls left there.
 #[tokio::test]
 async fn an_async_frame_lists_its_variables_once_with_current_values() {
     use Expected::{Integer, NotSaved, Other};
@@ -259,8 +230,6 @@ async fn an_async_frame_lists_its_variables_once_with_current_values() {
 
             check_variables(fixture, &function, &locals(&scenario).await, &expected);
 
-            // The body's future, which the compiler passes it unnamed, is
-            // `$future`.
             let future = evaluated(&scenario, "$future").await;
             assert_eq!(
                 future
@@ -288,8 +257,6 @@ async fn an_async_frame_lists_its_variables_once_with_current_values() {
     }
 }
 
-/// Checks that a frame lists the variables `expected` says, in order where
-/// nothing is optimized, each once, with no wrong value.
 fn check_variables(
     fixture: &str,
     function: &str,
@@ -307,8 +274,6 @@ fn check_variables(
         );
     }
 
-    // Optimization may leave a variable without a value, but never with a
-    // wrong one, or list it twice.
     for (name, value, state) in listed {
         let Some((_, expected)) = expected.iter().find(|(known, _)| known == name) else {
             panic!("{fixture} {function}: {name} listed: {listed:#?}");
@@ -337,9 +302,6 @@ fn check_variables(
     }
 }
 
-/// `step` on a line that awaits an async function's future stops at the
-/// function's first line in one step, through the future's construction,
-/// `IntoFuture`, `Pin`, and the dispatch on its state.
 #[tokio::test]
 async fn step_enters_an_awaited_async_function_at_its_first_line() {
     for fixture in BUILDS {
@@ -366,11 +328,6 @@ async fn step_enters_an_awaited_async_function_at_its_first_line() {
     }
 }
 
-/// A future prints as the state it holds: where it waits, with what it
-/// keeps there, never as the number that encodes the state. While its body
-/// runs, the state is still the await the poll resumed from. Its children
-/// are the variables it keeps, then the value as stored; the awaited
-/// future, drop flags, and captures the body moved are only under `[raw]`.
 #[tokio::test]
 async fn a_future_prints_as_its_state() {
     for fixture in BUILDS {
@@ -436,9 +393,6 @@ async fn a_future_prints_as_its_state() {
     }
 }
 
-/// `next` over an await whose future is pending waits for its own future
-/// to be polled again, past the polls of the other task that runs the same
-/// function meanwhile, and ends at the line after the await.
 #[tokio::test]
 async fn next_over_a_pending_await_ends_after_it_in_its_own_future() {
     for fixture in ["tokio-std-async-o0"] {
@@ -465,8 +419,6 @@ async fn next_over_a_pending_await_ends_after_it_in_its_own_future() {
     }
 }
 
-/// `next` over an await in a loop stops at each line its future reaches
-/// as the loop goes round, however often the await is pending.
 #[tokio::test]
 async fn next_over_an_await_in_a_loop_goes_round_the_loop() {
     for fixture in ["tokio-std-async-o0"] {
@@ -490,7 +442,6 @@ async fn next_over_an_await_in_a_loop_goes_round_the_loop() {
         let body = line(SOURCE, "// STEP: walk-body");
         let wait = line(SOURCE, "// AWAIT: walk");
 
-        // Each pass adds the step to the total, then awaits again.
         let passes = lines
             .iter()
             .filter(|(line, _)| *line == wait)
@@ -505,8 +456,6 @@ async fn next_over_an_await_in_a_loop_goes_round_the_loop() {
     }
 }
 
-/// `finish` from an async function whose await is pending runs it to its
-/// return, through every poll, and stops in its own awaiter.
 #[tokio::test]
 async fn finish_from_an_async_function_returns_to_its_own_awaiter() {
     for fixture in ["tokio-std-async-o0"] {
@@ -526,10 +475,8 @@ async fn finish_from_an_async_function_returns_to_its_own_awaiter() {
             "{fixture}"
         );
 
-        // The awaiter is the one whose `ready(13)` returned 14.
         assert_eq!(integer(&scenario, "first").await, Some(14), "{fixture}");
 
-        // Its last poll returned what the function did.
         let returned = scenario
             .operation("variables", scenario.handle().variables())
             .await

@@ -1,9 +1,3 @@
-//! The sealed container every image kind shares: a header, a directory of
-//! tables in kind order, each table 64-byte aligned with zeroed padding
-//! between, and an XXH3-64 trailer. A [`Format`] names one kind of image:
-//! its magic, its revision, and its tables' kinds and strides. Debug-info
-//! images and profile captures are two formats over this one container.
-
 use std::fmt::Debug;
 
 use zerocopy::{FromBytes as _, Immutable, IntoBytes};
@@ -14,34 +8,23 @@ use super::validate::{ImageError, Limits};
 use super::{MAX_ROWS, Placed};
 use crate::{Architecture, ByteOrder, PointerWidth, TargetDescription};
 
-/// One kind of image over the container.
 pub trait Format {
-    /// What a table of this format holds.
     type Kind: Copy + Ord + Debug;
 
-    /// The first bytes of every image of the format.
     const MAGIC: [u8; 8];
 
-    /// What the tables mean, beyond their layout: bump it with any change
-    /// to what is stored, so that no older image is read as newer.
     const REVISION: u32;
 
-    /// How many kinds of table the format has.
     const KINDS: usize;
 
-    /// The fingerprint of every record's layout.
     fn fingerprint() -> u64;
 
-    /// The kind a directory number names, if the format has it.
     fn kind(number: u32) -> Option<Self::Kind>;
 
-    /// A kind's number in the directory.
     fn number(kind: Self::Kind) -> u32;
 
-    /// A kind's slot among the format's `KINDS`.
     fn index(kind: Self::Kind) -> usize;
 
-    /// One record's size in a table of `kind`.
     fn stride(kind: Self::Kind) -> usize;
 }
 
@@ -49,9 +32,6 @@ fn malformed(text: impl Into<String>) -> ImageError {
     ImageError::Malformed(text.into())
 }
 
-/// Checks the header, trailer, and directory of an image of `F`, returning
-/// where each table is, by the kind's index; `N` is `F::KINDS`, so that
-/// the directory needs no allocation.
 pub fn structure<F: Format, const N: usize>(
     bytes: &[u8],
     limits: Limits,
@@ -75,7 +55,6 @@ pub fn structure<F: Format, const N: usize>(
     check_directory::<F, N>(bytes, header, trailer_start)
 }
 
-/// Checks what the header says of the image as a whole.
 fn check_header<F: Format>(bytes: &[u8], limits: Limits) -> Result<&Header, ImageError> {
     let (header, _) = Header::ref_from_prefix(bytes).map_err(|_| ImageError::Truncated)?;
     if header.magic != F::MAGIC {
@@ -116,8 +95,6 @@ fn check_header<F: Format>(bytes: &[u8], limits: Limits) -> Result<&Header, Imag
     Ok(header)
 }
 
-/// Checks the directory between the header and the trailer, returning
-/// where each table is.
 fn check_directory<F: Format, const N: usize>(
     bytes: &[u8],
     header: &Header,
@@ -203,7 +180,6 @@ fn check_directory<F: Format, const N: usize>(
     Ok(tables)
 }
 
-/// The rows of one table, as a builder holds them until it seals.
 pub enum TableBytes<'a> {
     Borrowed(&'a [u8]),
     Owned(Box<dyn AsBytes + Send + 'a>),
@@ -218,7 +194,6 @@ impl TableBytes<'_> {
     }
 }
 
-/// Owned rows, as bytes.
 pub trait AsBytes {
     fn bytes(&self) -> &[u8];
 }
@@ -229,7 +204,6 @@ impl<T: IntoBytes + Immutable> AsBytes for Vec<T> {
     }
 }
 
-/// Tables waiting to be sealed into an image of `F`.
 pub struct Tables<'a, F: Format> {
     tables: Vec<(F::Kind, usize, usize, TableBytes<'a>)>,
 }
@@ -245,8 +219,6 @@ impl<'a, F: Format> Tables<'a, F> {
         Self { tables: Vec::new() }
     }
 
-    /// Adds a table of `count` records of `stride` bytes. Empty tables are
-    /// left out.
     pub fn add(&mut self, kind: F::Kind, stride: usize, count: usize, bytes: TableBytes<'a>) {
         if count == 0 {
             return;
@@ -259,16 +231,12 @@ impl<'a, F: Format> Tables<'a, F> {
         self.tables.push((kind, stride, count, bytes));
     }
 
-    /// Adds every table `other` holds: tables are laid out by kind,
-    /// whatever order they are added in.
     pub fn absorb(&mut self, other: Self) {
         for (kind, stride, count, bytes) in other.tables {
             self.add(kind, stride, count, bytes);
         }
     }
 
-    /// Lays out the tables and seals them with the trailer's checksum. The
-    /// caller validates the result as a reader would.
     pub fn seal(mut self, target: TargetDescription) -> Result<AlignedBytes, ImageError> {
         self.tables.sort_by_key(|(kind, ..)| *kind);
         let directory_start = size_of::<Header>();
@@ -306,8 +274,6 @@ impl<'a, F: Format> Tables<'a, F> {
         copy_at(buffer, 0, header.as_bytes());
         copy_at(buffer, directory_start, entries.as_bytes());
 
-        // Each table is freed once copied, so the tables and the image
-        // are not all held at once.
         for ((_, _, _, table), start) in self.tables.into_iter().zip(offsets) {
             copy_at(buffer, start, table.bytes());
         }
@@ -327,8 +293,6 @@ impl<'a, F: Format> Tables<'a, F> {
     }
 }
 
-/// Rewrites the trailer of a whole image to match its body, so a fuzzer's
-/// changes reach the checks past the checksum.
 #[cfg(any(test, feature = "fuzzing"))]
 #[allow(clippy::indexing_slicing, reason = "callers pass a whole image")]
 pub fn reseal(bytes: &mut [u8]) {
@@ -342,7 +306,6 @@ pub fn reseal(bytes: &mut [u8]) {
     );
 }
 
-/// Copies `source` into `buffer` from `start`.
 #[expect(
     clippy::indexing_slicing,
     reason = "`Tables::seal` sizes the buffer from the offsets and lengths it copies at"
@@ -359,7 +322,6 @@ fn copy_at(buffer: &mut [u8], start: usize, source: &[u8]) {
     buffer[start..start + source.len()].copy_from_slice(source);
 }
 
-/// A new image's header.
 fn header<F: Format>(
     target: TargetDescription,
     length: usize,
@@ -388,7 +350,6 @@ fn header<F: Format>(
     })
 }
 
-/// The target a header describes, or `None` for one it cannot.
 pub const fn target_of(header: &Header) -> Option<TargetDescription> {
     let architecture = match header.architecture {
         1 => Architecture::X86_64,
@@ -415,7 +376,6 @@ pub const fn target_of(header: &Header) -> Option<TargetDescription> {
     })
 }
 
-/// The target an image's header describes.
 pub fn target(bytes: &[u8]) -> Result<TargetDescription, ImageError> {
     let (header, _) = Header::ref_from_prefix(bytes).map_err(|_| ImageError::Truncated)?;
     target_of(header).ok_or_else(|| malformed("the header names no target"))

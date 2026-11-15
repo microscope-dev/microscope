@@ -1,24 +1,3 @@
-//! Separate debug files: the debug information a module's own file leaves
-//! out, as distributions ship it, found as gdb finds it.
-//!
-//! A module whose file has no DWARF names its debug file by build-id and by
-//! a `.gnu_debuglink` file name and checksum. The build-id is looked up under
-//! each debug directory's `.build-id`; the link beside the module, in its
-//! `.debug` directory, and under each debug directory at the module's own
-//! directory. A debuginfod server is asked last, and what it sends is kept in
-//! debuginfod's cache, which gdb and other clients share. Every candidate
-//! must prove it describes the module, by build-id or checksum. Only a
-//! session that enables debuginfod asks a server.
-//!
-//! dwz moves the debug information several files share into a supplementary
-//! file, which each names by `.gnu_debugaltlink`, a path and the build-id
-//! the file must have, or by DWARF 5's `.debug_sup`, a path and a checksum
-//! the file's own `.debug_sup` records. It is found as gdb finds it: at that
-//! path, relative to the real directory of the file naming it; by its
-//! identifier under each debug directory's `.build-id`; under each debug
-//! directory's `.dwz` when the path lies under one; and from a debuginfod
-//! server.
-
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt as _;
@@ -29,17 +8,12 @@ use object::{Object, ObjectSection};
 
 use crate::DebugFileOptions;
 
-/// The debug directory every system has.
 const SYSTEM_DEBUG_DIRECTORY: &str = "/usr/lib/debug";
 
-/// How long a debuginfod download may take unless `DEBUGINFOD_TIMEOUT`
-/// says otherwise, as debuginfod's own client allows.
 const DEFAULT_DEBUGINFOD_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// The largest debug file a server may send.
 const DOWNLOAD_LIMIT: u64 = 4 << 30;
 
-/// Where one session looks for separate debug files.
 #[derive(Debug, Clone, Default)]
 pub struct DebugFileSearch {
     directories: Vec<PathBuf>,
@@ -48,39 +22,26 @@ pub struct DebugFileSearch {
     timeout: Option<Duration>,
 }
 
-/// A separate debug file and its contents.
 pub struct DebugFile {
     pub path: PathBuf,
     pub data: Vec<u8>,
 }
 
-/// What a search for a module's separate debug file found.
 #[derive(Default)]
 pub struct Search {
-    /// The file that describes the module.
     pub found: Option<DebugFile>,
 
-    /// When none does, the first file where one was looked for that
-    /// describes another, such as one left from an older build, and why.
     pub rejected: Option<(DebugFile, String)>,
 }
 
-/// The dwz supplementary file some debug information shares.
 pub enum Supplementary {
-    /// The debug information names none.
     None,
     Found(DebugFile),
 
-    /// One is named but cannot be read, for the reason given.
     Missing(String),
 }
 
 impl DebugFileSearch {
-    /// The search the options ask for, with the system's debug directories
-    /// after theirs and debuginfod's settings from the environment where
-    /// the options leave them out. Under nextest the search is the options'
-    /// alone: a test reads none of the machine's debug files, servers, or
-    /// debuginfod's cache.
     pub fn new(options: &DebugFileOptions) -> Self {
         let machine = std::env::var_os("NEXTEST_RUN_ID").is_none();
         let mut directories = options.directories.clone();
@@ -124,9 +85,6 @@ impl DebugFileSearch {
         }
     }
 
-    /// The separate debug file of a module whose own file has no DWARF,
-    /// or, when none describes it, the first that names it but describes
-    /// another.
     pub fn find(&self, path: &Path, object: &object::File<'_>) -> Search {
         if has_dwarf(object) {
             return Search::default();
@@ -136,8 +94,6 @@ impl DebugFileSearch {
         let describes = |data: &[u8]| mismatch(object, data, build_id, None).is_none();
         let rejected = std::cell::RefCell::new(None);
 
-        // A file where the module's build-id or debug link names one, which
-        // is rejected, with why, unless it describes the module.
         let consider = |candidate: &Path, checksum: Option<u32>| {
             let data = crate::image::backing::read_named(candidate).ok()?;
             let file = DebugFile {
@@ -163,9 +119,6 @@ impl DebugFileSearch {
         }
     }
 
-    /// The file with build-id `build_id`, under the debug directories or
-    /// from a server, for a module whose own file is not at hand, as when a
-    /// profile recorded on another host is opened.
     pub fn with_build_id(&self, build_id: &[u8]) -> Option<DebugFile> {
         if build_id.len() < 2 {
             return None;
@@ -183,8 +136,6 @@ impl DebugFileSearch {
             .or_else(|| self.download(build_id, describes))
     }
 
-    /// The file a module's build-id names under the debug directories, or
-    /// else one its debug link names, that `consider` accepts.
     fn find_named(
         &self,
         path: &Path,
@@ -211,7 +162,6 @@ impl DebugFileSearch {
         if let Ok(Some((name, checksum))) = object.gnu_debuglink() {
             let name = Path::new(OsStr::from_bytes(name));
 
-            // A link names a file, never a path elsewhere.
             if name.file_name() == Some(name.as_os_str())
                 && let Some(directory) = path.parent()
             {
@@ -239,8 +189,6 @@ impl DebugFileSearch {
         None
     }
 
-    /// The dwz supplementary file whose debug information the file at
-    /// `path`, `object`, shares.
     pub fn supplementary(&self, path: &Path, object: &object::File<'_>) -> Supplementary {
         let link = match supplementary_link(object) {
             Ok(Some(link)) => link,
@@ -274,8 +222,6 @@ impl DebugFileSearch {
         } else if name.is_absolute() {
             Some(name.to_path_buf())
         } else {
-            // Beside the real file: a build-id entry links to it from
-            // elsewhere.
             fs::canonicalize(path)
                 .ok()
                 .and_then(|path| Some(path.parent()?.join(name)))
@@ -285,8 +231,6 @@ impl DebugFileSearch {
             .and_then(|path| read_if(&path, describes))
             .or_else(|| self.by_build_id(build_id, describes))
             .or_else(|| {
-                // A distribution's path, as `/usr/lib/debug/.dwz/NAME`, under
-                // each debug directory.
                 let within = name.to_str()?.split_once("/.dwz/")?.1;
                 self.directories
                     .iter()
@@ -300,8 +244,6 @@ impl DebugFileSearch {
         )
     }
 
-    /// The file a build-id names under the debug directories that
-    /// `describes` accepts.
     fn by_build_id(
         &self,
         build_id: &[u8],
@@ -317,9 +259,6 @@ impl DebugFileSearch {
         })
     }
 
-    /// Asks the debuginfod servers for a build-id's debug file that
-    /// `describes` accepts, which is first looked for in the cache, and kept
-    /// there once downloaded.
     fn download(
         &self,
         build_id: &[u8],
@@ -377,8 +316,6 @@ impl DebugFileSearch {
     }
 }
 
-/// Debuginfod's own cache: `DEBUGINFOD_CACHE_PATH`, or else under the
-/// user's cache directory.
 fn default_cache() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("DEBUGINFOD_CACHE_PATH") {
         return Some(PathBuf::from(path));
@@ -392,8 +329,6 @@ fn default_cache() -> Option<PathBuf> {
     Some(base.join("debuginfod_client"))
 }
 
-/// Writes a download to the cache whole or not at all, and returns whether
-/// it is there.
 fn keep(path: &Path, data: &[u8]) -> bool {
     let Some(directory) = path.parent() else {
         return false;
@@ -410,7 +345,6 @@ fn keep(path: &Path, data: &[u8]) -> bool {
     kept.is_ok()
 }
 
-/// Reads a file when `describes` accepts its contents.
 fn read_if(path: &Path, describes: impl Fn(&[u8]) -> bool) -> Option<DebugFile> {
     let data = crate::image::backing::read_named(path).ok()?;
     describes(&data).then(|| DebugFile {
@@ -419,9 +353,6 @@ fn read_if(path: &Path, describes: impl Fn(&[u8]) -> bool) -> Option<DebugFile> 
     })
 }
 
-/// Why `data` is no debug file for the module `object`, or `None` when it
-/// is one: an object for its architecture with the checksum its debug link
-/// records, or else with its build-id.
 fn mismatch(
     object: &object::File<'_>,
     data: &[u8],
@@ -458,20 +389,13 @@ fn mismatch(
     }
 }
 
-/// How DWARF names its supplementary file: by a path and the identifier
-/// the file must have.
 struct SupplementaryLink {
     name: Vec<u8>,
     id: Vec<u8>,
 
-    /// Whether DWARF 5's `.debug_sup` names it, by a checksum the file's
-    /// own `.debug_sup` records, rather than `.gnu_debugaltlink` by its
-    /// build-id.
     standard: bool,
 }
 
-/// The supplementary file `object`'s DWARF names, if any: by
-/// `.gnu_debugaltlink`, else by `.debug_sup`, as gdb looks for them.
 fn supplementary_link(object: &object::File<'_>) -> Result<Option<SupplementaryLink>, String> {
     if let Some((name, id)) = object
         .gnu_debugaltlink()
@@ -484,7 +408,6 @@ fn supplementary_link(object: &object::File<'_>) -> Result<Option<SupplementaryL
         }));
     }
 
-    // A supplementary file names none.
     Ok(debug_sup(object)?
         .filter(|sup| !sup.supplementary)
         .map(|sup| SupplementaryLink {
@@ -494,24 +417,17 @@ fn supplementary_link(object: &object::File<'_>) -> Result<Option<SupplementaryL
         }))
 }
 
-/// A `.debug_sup` section (DWARF 5, section 7.3.6).
 struct DebugSup {
-    /// Whether the file holding it is itself a supplementary file.
     supplementary: bool,
 
-    /// The supplementary file's name, empty in a supplementary file.
     name: Vec<u8>,
 
-    /// What identifies the supplementary file.
     checksum: Vec<u8>,
 }
 
-/// The object's `.debug_sup`, if it has one.
 fn debug_sup(object: &object::File<'_>) -> Result<Option<DebugSup>, String> {
     use gimli::Reader as _;
 
-    // By its exact name: looking one up by name that is missing builds the
-    // name of its `.zdebug` form, an allocation in every load.
     let Some(section) = object
         .sections()
         .find(|section| section.name_bytes() == Ok(b".debug_sup"))
@@ -559,10 +475,6 @@ fn debug_sup(object: &object::File<'_>) -> Result<Option<DebugSup>, String> {
     }))
 }
 
-/// Whether `data` is the supplementary file `link` names for `object`: an
-/// object for its architecture with the build-id `.gnu_debugaltlink`
-/// records, or, for `.debug_sup`, a supplementary file whose own
-/// `.debug_sup` records the same checksum or whose build-id it is.
 fn supplementary_file_of(object: &object::File<'_>, data: &[u8], link: &SupplementaryLink) -> bool {
     let Ok(candidate) = object::File::parse(data) else {
         return false;
@@ -584,8 +496,6 @@ fn supplementary_file_of(object: &object::File<'_>, data: &[u8], link: &Suppleme
             .is_some_and(|sup| sup.supplementary && sup.checksum == link.id)
 }
 
-/// Whether an object has DWARF of its own, rather than only the empty
-/// sections a stripped file keeps.
 pub fn has_dwarf(object: &object::File<'_>) -> bool {
     object
         .section_by_name(".debug_info")
@@ -601,8 +511,6 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
-/// The CRC-32 a `.gnu_debuglink` records: the IEEE polynomial, reflected,
-/// as zlib computes it.
 fn crc32(data: &[u8]) -> u32 {
     crc32fast::hash(data)
 }

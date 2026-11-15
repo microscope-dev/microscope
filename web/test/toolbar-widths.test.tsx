@@ -1,8 +1,3 @@
-// The frame's head: the menu bar, with who is here and sharing at its end,
-// and the run toolbar under it only while a program is loaded. At widths
-// where it fits on one row or barely does not, the status pill stays whole
-// and nothing lies over anything else.
-
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
@@ -33,7 +28,7 @@ const runToolbar = () => page.getByRole("toolbar", { name: "Run" });
 it("shows run buttons only for a program, and the status without one only to warn", async () => {
   await page.viewport(1440, 800);
   const server = await mountFrame();
-  // As a profile's session is: nothing to run.
+
   server.send({ type: "state", ...stoppedState({ target: null }) });
   await expect.element(page.getByRole("button", { name: "Share" })).toBeVisible();
   expect(menuRow().contains(page.getByRole("button", { name: "Share" }).element())).toBe(true);

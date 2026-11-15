@@ -1,11 +1,3 @@
-// The console's scrollback and line history, which belong to this tab, and
-// what a line asks for. History lasts across reloads, in this browser.
-//
-// Run control is the page's own: `next`, `continue`, and the rest run the
-// actions the toolbar runs, so they follow the same rules, and the entry says
-// where the program stopped. Everything else goes to microscope, which reads
-// it as an expression or one of its commands.
-
 import { createStore } from "zustand";
 
 import type { ActionName } from "./actions";
@@ -16,23 +8,21 @@ import { read, write } from "./storage";
 export interface Entry {
   id: number;
   line: string;
-  /** The stop it ran at, when it ran at one. */
+
   stop: number | null;
-  /** The answer, once it arrives. */
+
   result?: ConsoleResult;
   error?: string;
-  /** What a run-control line did: where the program stopped, or that it
-   * still runs. */
+
   said?: string;
 }
 
 export interface ConsoleState {
   entries: Entry[];
-  /** Lines run, oldest first. */
+
   history: string[];
 }
 
-/** The most entries kept on screen and lines kept in history. */
 const ENTRIES = 200;
 const HISTORY = 100;
 const KEY = "microscope-console-history";
@@ -47,7 +37,6 @@ export const consoleStore = createStore<ConsoleState>(() => ({
 
 let next = 1;
 
-/** Adds a line being run, returning its entry's id. */
 export function started(line: string, stop: number | null): number {
   const id = next++;
   consoleStore.setState((state) => {
@@ -74,7 +63,6 @@ export function clearConsole(): void {
   consoleStore.setState({ entries: [] });
 }
 
-/** The longest text every candidate starts with. */
 export function commonPrefix(labels: readonly string[]): string {
   if (labels.length === 0) {
     return "";
@@ -89,26 +77,16 @@ export function commonPrefix(labels: readonly string[]): string {
   return prefix;
 }
 
-/** What a console line asks for. */
 export type Asked =
-  /** A run-control action, as the toolbar runs it. */
   | { kind: "action"; action: ActionName }
-  /** `run`: start the program, or start it again. */
   | { kind: "start" }
-  /** Run the thread shown until it reaches a location. */
   | { kind: "advance"; location: string }
-  /** Show code in the Disassembly view: the frame's own, or elsewhere. */
   | { kind: "disassemble"; target: { address: string } | { name: string } | null }
-  /** Step into one call of the line: a function's name or `*0xADDRESS`. */
   | { kind: "into"; call: string }
   | { kind: "clear" }
-  /** A run-control word used wrong, and how to use it. */
   | { kind: "usage"; message: string }
-  /** An expression or another command, which microscope reads. */
   | { kind: "server" };
 
-/** The run-control words, which take no arguments. The terminal's names
- * and aliases, so its habits carry over. */
 const ACTIONS: Readonly<Record<string, ActionName>> = {
   continue: "continue",
   c: "continue",
@@ -129,7 +107,6 @@ const ACTIONS: Readonly<Record<string, ActionName>> = {
   restart: "restart",
 };
 
-/** Actions an empty line runs again, as a terminal debugger repeats them. */
 const REPEATED: ReadonlySet<ActionName> = new Set([
   "continue",
   "over",
@@ -139,19 +116,14 @@ const REPEATED: ReadonlySet<ActionName> = new Set([
   "overInstruction",
 ]);
 
-/** A function, `FILE:LINE`, `FILE:FUNCTION`, or `0xADDRESS`. */
 const LOCATION = /^(?=[^:]*\w)[\w.$/-]+(?::[\w.$]+)?$/u;
-/** A function's name, such as `main`, `ns::fn`, or `std::vec::Vec<T>::push`. */
+
 const SYMBOL = /^[a-z_][\w:.$<>~]*$/iu;
-/** An address the link can hold. */
+
 const ADDRESS = /^0x[0-9a-f]{1,16}$/iu;
-/** A function the line calls, or the call's address. */
+
 const CALL = /^(?:\*0x[0-9a-f]+|[a-z_][\w:]*)$/iu;
 
-/**
- * What `line` asks for. A run-control word is a command only when the rest
- * of the line fits it, so `n + 1` and `c = 2` stay expressions.
- */
 export function asked(line: string): Asked {
   const words = line.trim().split(/\s+/u);
   const [word = "", ...rest] = words;
@@ -192,7 +164,6 @@ export function asked(line: string): Asked {
         : { kind: "server" };
     case "disassemble":
     case "disas": {
-      // With an instruction count it stays microscope's listing.
       if (rest.length > 1) {
         return { kind: "server" };
       }
@@ -222,16 +193,11 @@ export function asked(line: string): Asked {
   }
 }
 
-/** Whether an empty line runs `line` again. */
 export function repeats(line: string): boolean {
   const wanted = asked(line);
   return wanted.kind === "action" && REPEATED.has(wanted.action);
 }
 
-/**
- * What the program did after a run-control line, or null while there is
- * nothing new to say: it still runs, or it is where it was.
- */
 export function outcome(before: Inferior | undefined, after: Inferior | undefined): string | null {
   if (!after || after.state === "running") {
     return null;
@@ -265,7 +231,6 @@ function sameStop(before: Inferior, after: Inferior): boolean {
   return before.state === after.state && before.state !== "stopped";
 }
 
-/** The run-control lines, which `help` adds to microscope's own list. */
 export const RUN_HELP = `
 Run control, which the page runs as its toolbar does:
   continue, c              Continue, or start a program not running

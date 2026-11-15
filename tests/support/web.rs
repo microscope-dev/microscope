@@ -1,11 +1,3 @@
-//! Drives the real `microscope web` as browsers do: a join link's token traded
-//! for a cookie at `/api/login`, then WebSocket clients sending the page's
-//! requests.
-//!
-//! Every message is kept in a transcript printed when a test fails. With
-//! `MICROSCOPE_WEB_TRANSCRIPTS=DIR`, each test also writes its traffic to
-//! `DIR/<test>.jsonl`, which the page's tests replay.
-
 use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
@@ -24,25 +16,20 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::support::flight_recordings;
 
-/// Bounds every wait for the server.
 pub const DEADLINE: Duration = Duration::from_secs(10);
 
 type Transcript = Arc<Mutex<Vec<String>>>;
 
-/// A running `microscope web`, stopped when dropped.
 pub struct Web {
     name: String,
     child: Option<Child>,
     pub address: SocketAddr,
     pub control_token: String,
 
-    /// The path the routes lie under: `/`, or `--public-url`'s.
     pub base: String,
 
-    /// `--public-url`'s host and origin, which a proxy's requests carry.
     pub public: Option<(String, String)>,
 
-    /// Where the printed link opens, when not the root.
     pub link_to: Option<String>,
     transcript: Transcript,
     recording: Option<PathBuf>,
@@ -50,12 +37,10 @@ pub struct Web {
 }
 
 impl Web {
-    /// Starts `microscope web` with `arguments` on a free port.
     pub fn start(name: &str, arguments: &[&str]) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_microscope"));
         command
             .args(["web", "--port", "0"])
-            // Names in presence and notices, and so in transcripts.
             .env("USER", "tester")
             .args(arguments)
             .stdin(Stdio::null())
@@ -101,7 +86,6 @@ impl Web {
             link = printed.trim().strip_prefix("open ").map(str::to_owned);
         }
 
-        // Keep draining stdout so the server never blocks writing to it.
         std::thread::spawn(move || {
             let mut rest = Vec::new();
             let _ = stdout.read_to_end(&mut rest);
@@ -138,7 +122,6 @@ impl Web {
         }
     }
 
-    /// The origin of the server's own pages: its proxy's, when it has one.
     pub fn origin(&self) -> String {
         self.public.as_ref().map_or_else(
             || format!("http://{}", self.address),
@@ -146,15 +129,12 @@ impl Web {
         )
     }
 
-    /// The `Host` its pages' requests carry.
     pub fn host(&self) -> String {
         self.public
             .as_ref()
             .map_or_else(|| self.address.to_string(), |(host, _)| host.clone())
     }
 
-    /// Posts to `/api/login` with these headers, returning the status and
-    /// the `Set-Cookie` value.
     pub fn post_login(
         &self,
         token: &str,
@@ -199,8 +179,6 @@ impl Web {
         (status, cookie)
     }
 
-    /// Sends raw HTTP and returns the response's head and body, which may
-    /// be any bytes.
     pub fn http_bytes(&self, request: &str) -> (String, Vec<u8>) {
         let mut stream = TcpStream::connect(self.address).expect("connect");
         stream
@@ -222,7 +200,6 @@ impl Web {
         (String::from_utf8_lossy(&response).into_owned(), body)
     }
 
-    /// Sends raw HTTP and returns the whole response.
     pub fn http(&self, request: &str) -> String {
         let mut stream = TcpStream::connect(self.address).expect("connect");
         stream
@@ -236,7 +213,6 @@ impl Web {
         response
     }
 
-    /// Logs in with `token` as this server's own page would.
     pub fn cookie(&self, token: &str) -> String {
         let host = self.host();
         let (status, cookie) = self.post_login(token, Some(&self.origin()), Some(&host));
@@ -244,7 +220,6 @@ impl Web {
         cookie.expect("a cookie")
     }
 
-    /// A control client, logged in.
     pub async fn control(&self, name: &str) -> Client {
         let cookie = self.cookie(&self.control_token.clone());
 
@@ -259,7 +234,6 @@ impl Web {
         .expect("connect")
     }
 
-    /// A client with a token another client's `share` made.
     pub async fn joining(&self, name: &str, link: &str) -> Client {
         let token = link.rsplit_once('#').expect("a token in the link").1;
         let cookie = self.cookie(token);
@@ -269,8 +243,6 @@ impl Web {
             .expect("connect")
     }
 
-    /// Opens a WebSocket with these headers, or returns the HTTP status
-    /// that refused it.
     pub async fn connect(
         &self,
         name: &str,
@@ -320,18 +292,14 @@ impl Web {
         }
     }
 
-    /// Stops the server as a terminal's Ctrl-C would and waits for it.
     pub fn interrupt(&mut self) -> std::process::ExitStatus {
         self.stop(nix::sys::signal::Signal::SIGINT)
     }
 
-    /// Stops the server as a supervisor would and waits for it.
     pub fn terminate(&mut self) -> std::process::ExitStatus {
         self.stop(nix::sys::signal::Signal::SIGTERM)
     }
 
-    /// Sends the server `signal` and waits for it to exit. One that has not
-    /// by the deadline is killed, so a failed test leaves no server behind.
     fn stop(&mut self, signal: nix::sys::signal::Signal) -> std::process::ExitStatus {
         let mut child = self.child.take().expect("a running server");
         let pid = nix::unistd::Pid::from_raw(i32::try_from(child.id()).expect("a pid"));
@@ -377,30 +345,24 @@ impl Drop for Web {
     }
 }
 
-/// One tab's connection.
 pub struct Client {
     name: String,
     socket: WebSocketStream<MaybeTlsStream<AsyncTcpStream>>,
     next_id: u64,
 
-    /// Messages received while waiting for something else.
     pending: Vec<Value>,
     transcript: Transcript,
 
-    /// Every message, for the page's replay tests.
     traffic: Vec<Value>,
     started: Instant,
 
-    /// The newest `state` received.
     state: Option<Value>,
 
-    /// Binary frames not yet claimed, by the id of the answer they precede.
     binary: Vec<(u64, Vec<u8>)>,
 }
 
 impl Client {
     fn log(&self, direction: &str, text: &str) {
-        // Bursts of output would bury the rest.
         let text = match text.char_indices().nth(400) {
             Some((end, _)) => format!("{}… ({} bytes)", &text[..end], text.len()),
             None => text.to_owned(),
@@ -423,7 +385,6 @@ impl Client {
         self.socket.send(Message::text(text)).await.expect("send");
     }
 
-    /// Sends a request without waiting, returning its id.
     pub async fn send(&mut self, method: &str, params: Value) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -438,7 +399,6 @@ impl Client {
         id
     }
 
-    /// The next message, from those received earlier first.
     pub async fn next(&mut self) -> Value {
         if !self.pending.is_empty() {
             return self.pending.remove(0);
@@ -485,7 +445,6 @@ impl Client {
         }
     }
 
-    /// Waits for the first message `matches` accepts, keeping the rest.
     pub async fn expect(&mut self, what: &str, matches: impl Fn(&Value) -> bool) -> Value {
         if let Some(index) = self.pending.iter().position(&matches) {
             return self.pending.remove(index);
@@ -503,7 +462,6 @@ impl Client {
         }
     }
 
-    /// Sends a request and waits for its answer.
     pub async fn request(
         &mut self,
         method: &str,
@@ -532,8 +490,6 @@ impl Client {
         }
     }
 
-    /// Draws a value: the `draw` answer and the bytes of the binary frame
-    /// sent before it.
     pub async fn draw(&mut self, params: Value) -> Result<(Value, Vec<u8>), (String, String)> {
         let (drawing, bytes) = self.with_bytes("draw", params).await?;
 
@@ -546,8 +502,6 @@ impl Client {
         Ok((drawing, bytes))
     }
 
-    /// Sends a request whose answer may follow a binary frame: the answer,
-    /// and the frame's bytes, or none.
     pub async fn with_bytes(
         &mut self,
         method: &str,
@@ -562,19 +516,16 @@ impl Client {
         Ok((answer, bytes))
     }
 
-    /// Sends a request that must succeed.
     pub async fn ok(&mut self, method: &str, params: Value) -> Value {
         self.request(method, params)
             .await
             .unwrap_or_else(|error| panic!("{method} failed: {error:?}"))
     }
 
-    /// The newest state received so far, without waiting.
     pub const fn latest_state(&self) -> Option<&Value> {
         self.state.as_ref()
     }
 
-    /// Waits until the newest state satisfies `condition`, returning it.
     pub async fn state(&mut self, what: &str, condition: impl Fn(&Value) -> bool) -> Value {
         if let Some(state) = &self.state
             && condition(state)
@@ -594,7 +545,6 @@ impl Client {
                 self.name
             );
 
-            // A newer state supersedes queued ones.
             if let Some(index) = self
                 .pending
                 .iter()
@@ -618,7 +568,6 @@ impl Client {
         }
     }
 
-    /// Waits until the program is in `inferior` state, such as `stopped`.
     pub async fn inferior(&mut self, inferior: &str) -> Value {
         self.state(&format!("an inferior {inferior}"), |state| {
             state["inferior"]["state"] == inferior
@@ -626,7 +575,6 @@ impl Client {
         .await
     }
 
-    /// Everything printed on `stream` so far, waiting until `ends` is seen.
     pub async fn output_until(&mut self, stream: &str, ends: &str) -> String {
         let mut text = String::new();
         let deadline = Instant::now() + DEADLINE;
@@ -657,8 +605,6 @@ impl Client {
         }
     }
 
-    /// Writes this client's traffic for the page's replay tests when
-    /// `MICROSCOPE_WEB_TRANSCRIPTS` names a directory.
     pub fn save_traffic(&self, name: &str) {
         let Some(directory) = std::env::var_os("MICROSCOPE_WEB_TRANSCRIPTS") else {
             return;
@@ -669,7 +615,6 @@ impl Client {
             .traffic
             .iter()
             .map(|line| {
-                // Keep a burst of output from bloating the checked-in file.
                 let mut line = line.clone();
 
                 if let Some(output) = line["message"]["text"].as_str()
@@ -693,12 +638,10 @@ impl Client {
     }
 }
 
-/// Whether a process still exists, as a zombie or alive.
 pub fn exists(pid: u64) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// Waits until `pid` is gone, failing at the deadline.
 pub fn wait_gone(pid: u64) {
     let deadline = Instant::now() + DEADLINE;
     while exists(pid) {

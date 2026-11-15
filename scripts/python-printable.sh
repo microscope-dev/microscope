@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Writes the Rust table of code points unprintable in every $MICROSCOPE_CPYTHON
-# interpreter's Unicode database, as reported by str.isprintable. Usage:
-#   scripts/python-printable.sh [OUTPUT]
+
+
+
 
 set -euo pipefail
 
@@ -20,7 +20,7 @@ if [[ ${#dirs[@]} -eq 0 ]]; then
     exit 1
 fi
 
-# Each interpreter's unprintable code points, as a byte per code point.
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 tables=()

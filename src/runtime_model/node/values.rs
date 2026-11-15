@@ -1,10 +1,3 @@
-//! Reads JavaScript values from V8's heap into the graph [`super::inspect`]
-//! formats, as deep as inspect shows: objects to level 2 with contents,
-//! level 3 by header only.
-//!
-//! A failed read becomes an unreadable value with its reason, and reading
-//! continues. Unsupported instance types are reported, never guessed.
-
 use std::collections::BTreeMap;
 
 use super::inspect::{
@@ -17,26 +10,18 @@ use super::own::{self, Held};
 use crate::VirtualAddress;
 use crate::image::v8::{Constant, Field};
 
-/// The deepest level at which inspect shows an object's contents.
 const FULL_LEVEL: u32 = 2;
 
-/// Bounds paths that do not increase inspect's level, such as proxy targets
-/// and an error's object-valued stack.
 const MAX_READ_DEPTH: usize = 64;
 
-/// inspect's `maxStringLength`, in UTF-16 units.
 const SHOWN_UNITS: u64 = 10_000;
 
-/// The most units read of a string needed whole, such as a key or name.
 const WHOLE_UNITS: u64 = 1 << 20;
 
-/// Reads the values reachable from a root value into a graph.
 pub(super) struct Builder<'r> {
     pub(super) reader: Reader<'r>,
     pub(super) graph: ValueGraph,
 
-    /// Each object read, by tagged address, and whether its contents were
-    /// read too.
     rows: BTreeMap<u64, (ObjectId, bool)>,
     depth: usize,
 }
@@ -51,7 +36,6 @@ impl<'r> Builder<'r> {
         }
     }
 
-    /// The value of the tagged word `word`, at `level` below the root.
     pub(super) fn value(&mut self, word: u64, level: u32) -> Value {
         if self.depth >= MAX_READ_DEPTH {
             return Value::Unreadable("the object or proxy chain is too long".to_owned());
@@ -112,7 +96,6 @@ impl<'r> Builder<'r> {
         .into())
     }
 
-    /// The graph row for `object`, read at `level`.
     fn object(&mut self, object: Object, level: u32) -> Result<ObjectId, Problem> {
         let object = global_object(&self.reader, object)?;
         let full = level <= FULL_LEVEL;
@@ -135,7 +118,6 @@ impl<'r> Builder<'r> {
             .constant(Constant::HeapObjectTag)?
             .cast_unsigned();
         let address = VirtualAddress::new(object.0 - tag);
-        // Register the row before reading contents so cycles find it.
         let row = self
             .graph
             .push(Row {
@@ -166,7 +148,6 @@ impl<'r> Builder<'r> {
         Ok(row)
     }
 
-    /// The object `object`, at `level`, with its contents where `full`.
     fn contents(&mut self, object: Object, level: u32, full: bool) -> Result<Row, Problem> {
         let reader = self.reader;
         let tag = reader.constant(Constant::HeapObjectTag)?.cast_unsigned();
@@ -234,7 +215,6 @@ impl<'r> Builder<'r> {
             super::typed::data_view(&reader, object, |word| self.value(word, next))?
         } else if is(Constant::JSPrimitiveWrapperType) {
             let value = reader.field(object, Field::JSPrimitiveWrapperValue)?;
-            // A String wrapper's characters are its indexed properties.
             indexed = reader
                 .object(value)?
                 .map(|value| reader.instance_type(value))
@@ -268,8 +248,6 @@ impl<'r> Builder<'r> {
         })
     }
 
-    /// The own enumerable properties of `object`, values at `level`: elements
-    /// by index (skipped if `indexed`, as the kind lists them), then named.
     fn properties(
         &mut self,
         object: Object,
@@ -307,7 +285,6 @@ impl<'r> Builder<'r> {
         Ok(properties)
     }
 
-    /// The slot for a property holding `held`, its value read at `level`.
     pub(super) fn slot(&mut self, held: Held, level: u32) -> Slot {
         if level > FULL_LEVEL + 1 {
             return Slot::Data(Value::Unreadable(
@@ -322,8 +299,6 @@ impl<'r> Builder<'r> {
                 Ok(true) => {
                     let present = |field| -> bool {
                         reader.field(accessor, field).is_ok_and(|word| {
-                            // An unset getter or setter holds null or
-                            // undefined.
                             reader.object(word).ok().flatten().is_some_and(|part| {
                                 !reader.is(part, Constant::OddballType).unwrap_or(true)
                             })
@@ -342,7 +317,6 @@ impl<'r> Builder<'r> {
         }
     }
 
-    /// The number in a Smi or a `HeapNumber`.
     fn number_word(&self, word: u64) -> Result<f64, Problem> {
         let reader = self.reader;
         if let Some(integer) = reader.smi(word)? {
@@ -360,7 +334,6 @@ impl<'r> Builder<'r> {
         number(&reader, object)
     }
 
-    /// An array's length and elements, as inspect lists them.
     fn array(&mut self, object: Object, level: u32, full: bool) -> Result<Array, Problem> {
         let reader = self.reader;
         let length_word = reader.field(object, Field::JSArrayLength)?;
@@ -381,8 +354,6 @@ impl<'r> Builder<'r> {
                 listed_below: 0,
             });
         }
-        // Read every present element, however sparse, so the list is
-        // complete up to the length.
         let present = own::elements(&reader, object, 0..length)?;
         let elements = present
             .into_iter()
@@ -405,7 +376,6 @@ impl<'r> Builder<'r> {
         })
     }
 
-    /// A function's kind and name, as inspect reads them.
     fn function(&mut self, object: Object) -> Result<Function, Problem> {
         let reader = self.reader;
         let name = match lookup::get(&reader, object, lookup::Key::Name("name"))? {
@@ -427,7 +397,6 @@ impl<'r> Builder<'r> {
         let flags = i64::from(reader.int32_field(shared, Field::SharedFunctionInfoFlags)?);
         let class = flags & reader.constant(Constant::SfiIsClassConstructorMask)? != 0;
         if class {
-            // Prefer the class's own `name` property if it has one.
             let own_name = match lookup::own(&reader, object, lookup::Key::Name("name"))? {
                 Some((Held::Data(word), _)) => self.value(word, FULL_LEVEL + 1),
                 Some((Held::Accessor(_), _)) => {
@@ -486,7 +455,6 @@ impl<'r> Builder<'r> {
         Ok(Function { kind, name })
     }
 
-    /// A Map's or a Set's size and first entries, in insertion order.
     fn collection(
         &mut self,
         object: Object,
@@ -521,7 +489,6 @@ impl<'r> Builder<'r> {
         })
     }
 
-    /// A `RegExp`'s source and flags, as its getters give them.
     fn regexp(&self, object: Object) -> Result<Kind, Problem> {
         let reader = self.reader;
         let source = reader
@@ -530,7 +497,6 @@ impl<'r> Builder<'r> {
         let bits = reader
             .smi(reader.field(object, Field::JSRegExpFlags)?)?
             .ok_or("a RegExp's flags are not a Smi")?;
-        // In the order the `flags` getter uses.
         let order = [
             ('d', Constant::JSRegExpHasIndicesShift),
             ('g', Constant::JSRegExpGlobalShift),
@@ -554,7 +520,6 @@ impl<'r> Builder<'r> {
         })
     }
 
-    /// A promise's state and result.
     fn promise(&mut self, object: Object, level: u32) -> Result<PromiseState, Problem> {
         let reader = self.reader;
         let flags = reader
@@ -578,9 +543,6 @@ impl<'r> Builder<'r> {
         })
     }
 
-    /// inspect's `getConstructorName`: the first own `constructor` data
-    /// property on the prototype chain that is a named function `object` is
-    /// an instance of.
     fn constructor(&self, object: Object) -> Result<Constructor, Problem> {
         let reader = self.reader;
         let mut holder = object;
@@ -608,7 +570,6 @@ impl<'r> Builder<'r> {
         match first {
             Some(Some(first)) => self.unnamed(object, first),
             Some(None) if reader.is(object, Constant::JSObjectType)? => {
-                // V8's `GetConstructorName` for `Object.create(null)`.
                 Ok(Constructor::NullPrototype {
                     internal: JsString::from("Object"),
                 })
@@ -617,10 +578,6 @@ impl<'r> Builder<'r> {
         }
     }
 
-    /// `getConstructorName` when no prototype names a constructor: V8's
-    /// name for `object` and each prototype from `first` but the last, then
-    /// the last as `inspect` prints it at depth -1. The last must be an
-    /// ordinary untagged object.
     fn unnamed(&self, object: Object, first: Object) -> Result<Constructor, Problem> {
         let reader = self.reader;
         let name =
@@ -637,7 +594,6 @@ impl<'r> Builder<'r> {
                     return Err("the last prototype has its own Symbol.toStringTag".into());
                 }
                 if own(lookup::Key::Name("href"))? {
-                    // inspect may take it for a URL.
                     return Err("the last prototype has its own href".into());
                 }
                 let end_has_keys = own::elements(&reader, end, 0..u32::MAX)?
@@ -658,7 +614,6 @@ impl<'r> Builder<'r> {
         Err(format!("the prototype chain of {:#x} is too long", object.0).into())
     }
 
-    /// `function.name`, or `None` if it is not a string.
     fn name_of(&self, function: Object) -> Result<Option<JsString>, Problem> {
         let reader = self.reader;
         Ok(
@@ -678,9 +633,6 @@ impl<'r> Builder<'r> {
         )
     }
 
-    /// `object[Symbol.toStringTag]` if it is a string and not an own
-    /// enumerable property. Getters are refused except
-    /// `%TypedArray%.prototype`'s.
     fn tag(&self, object: Object, ty: i64) -> Result<Option<JsString>, Problem> {
         let reader = self.reader;
         let key = lookup::Key::WellKnown("Symbol.toStringTag");
@@ -704,8 +656,6 @@ impl<'r> Builder<'r> {
                     if let Some(getter) = reader.object(getter)?
                         && lookup::is_builtin(&reader, getter, "get [Symbol.toStringTag]")?
                     {
-                        // This getter returns the constructor name for a
-                        // typed array and undefined for anything else.
                         if ty != reader.constant(Constant::JSTypedArrayType)? {
                             return Ok(None);
                         }
@@ -724,7 +674,6 @@ impl<'r> Builder<'r> {
     }
 }
 
-/// The text of the string `object`, its first `limit` units.
 pub(super) fn string(reader: &Reader<'_>, object: Object, limit: u64) -> Result<JsString, Problem> {
     let length = u32::try_from(reader.int32_field(object, Field::StringLength)?)
         .map_err(|_| format!("the string {:#x} has a negative length", object.0))?;
@@ -739,14 +688,12 @@ pub(super) fn string(reader: &Reader<'_>, object: Object, limit: u64) -> Result<
     Ok(JsString::new(units, length))
 }
 
-/// The number a `HeapNumber` holds.
 fn number(reader: &Reader<'_>, object: Object) -> Result<f64, Problem> {
     Ok(f64::from_bits(reader.word(
         reader.field_address(object, Field::HeapNumberValue)?,
     )?))
 }
 
-/// The value an oddball stands for.
 fn oddball(reader: &Reader<'_>, object: Object) -> Result<Value, Problem> {
     let kind = reader.smi_field(object, Field::OddballKind)?;
     let is = |constant| reader.constant(constant).ok() == Some(kind);
@@ -763,7 +710,6 @@ fn oddball(reader: &Reader<'_>, object: Object) -> Result<Value, Problem> {
     })
 }
 
-/// A `BigInt`, from its sign and its digits.
 fn bigint(reader: &Reader<'_>, object: Object) -> Result<BigInt, Problem> {
     let bits = i64::from(
         reader
@@ -782,7 +728,6 @@ fn bigint(reader: &Reader<'_>, object: Object) -> Result<BigInt, Problem> {
         Constant::BigIntLengthMask,
         Some(Constant::BigIntLengthShift),
     )?;
-    // inspect prints a BigInt in full; refuse ones past about a million bits.
     if length > 1 << 14 {
         return Err(format!("the BigInt is too large to show ({length} digits)").into());
     }
@@ -794,7 +739,6 @@ fn bigint(reader: &Reader<'_>, object: Object) -> Result<BigInt, Problem> {
     Ok(BigInt::new(negative, digits))
 }
 
-/// A symbol and its description.
 fn symbol(reader: &Reader<'_>, object: Object) -> Result<Symbol, Problem> {
     let word = reader.field(object, Field::SymbolDescription)?;
     let description = match reader.object(word)? {
@@ -808,7 +752,6 @@ fn symbol(reader: &Reader<'_>, object: Object) -> Result<Symbol, Problem> {
     Ok(Symbol { description })
 }
 
-/// The flags of the symbol `symbol`.
 fn symbol_flags(reader: &Reader<'_>, symbol: Object) -> Result<i64, Problem> {
     Ok(i64::from(
         reader
@@ -817,11 +760,8 @@ fn symbol_flags(reader: &Reader<'_>, symbol: Object) -> Result<i64, Problem> {
     ))
 }
 
-/// Whether `symbol` is private and so never enumerated: V8's internal
-/// private symbols, and class private names and brands.
 pub(super) fn is_private(reader: &Reader<'_>, symbol: Object) -> Result<bool, Problem> {
     let flags = symbol_flags(reader, symbol)?;
-    // Through V8 13.6 a flag bit; from 14.6 any kind but public.
     if let Ok(mask) = reader.constant(Constant::SymbolIsPrivateMask) {
         return Ok(flags & mask != 0);
     }
@@ -834,14 +774,11 @@ pub(super) fn is_private(reader: &Reader<'_>, symbol: Object) -> Result<bool, Pr
     Ok(kind != reader.constant(Constant::PrivateSymbolKindPublic)?)
 }
 
-/// Whether `symbol` is a well-known symbol such as `Symbol.iterator`.
 pub(super) fn is_well_known(reader: &Reader<'_>, symbol: Object) -> Result<bool, Problem> {
     let flags = symbol_flags(reader, symbol)?;
     Ok(flags & reader.constant(Constant::SymbolIsWellKnownSymbolMask)? != 0)
 }
 
-/// For a global proxy (`globalThis`), the global object behind it (its map's
-/// prototype), as V8's `LookupIterator` does; any other object unchanged.
 fn global_object(reader: &Reader<'_>, object: Object) -> Result<Object, Problem> {
     if !reader.is(object, Constant::JSGlobalProxyType)? {
         return Ok(object);

@@ -1,14 +1,8 @@
-//! Syntax highlighting for source listings: a small lexer per language that
-//! finds keywords, strings, comments, and numbers. A file is lexed from its
-//! start, so a comment or string that opened above the lines shown is
-//! still known.
-
 use std::ops::Range;
 use std::path::Path;
 
 use super::terminal::{Renderer, Role};
 
-/// A language the lexer knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
     C,
@@ -18,7 +12,6 @@ pub enum Language {
     Zig,
     Odin,
 
-    /// Fortran's free form.
     Fortran,
     D,
     Nim,
@@ -607,10 +600,6 @@ const PYTHON_KEYWORDS: &[&str] = &[
     "try", "type", "while", "with", "yield",
 ];
 
-/// Whether a Python keyword at the end of `text[..end]` is one there.
-/// `match`, `case`, and `type` are soft: keywords only where they begin
-/// the statement they name, a `match` or `case` ending in a colon or a
-/// `type` alias. Elsewhere they are names, as `type(x)` calls one.
 fn python_soft_keyword_holds(text: &[u8], word: &str, end: usize, line_start: bool) -> bool {
     if !matches!(word, "match" | "case" | "type") {
         return true;
@@ -630,7 +619,6 @@ fn python_soft_keyword_holds(text: &[u8], word: &str, end: usize, line_start: bo
     let after = rest.trim_ascii_start();
 
     if word == "type" {
-        // `type Name = ...` or `type Name[T] = ...`.
         let name = after
             .iter()
             .take_while(|&&byte| is_identifier(byte))
@@ -644,12 +632,10 @@ fn python_soft_keyword_holds(text: &[u8], word: &str, end: usize, line_start: bo
             && (tail.starts_with(b"[") || tail.starts_with(b"=") && !tail.starts_with(b"=="));
     }
 
-    // A name assigned, annotated, or used as an object is no statement.
     if after.first().is_some_and(|byte| b"=:.,)".contains(byte)) {
         return false;
     }
 
-    // The statement's colon ends its line, before any comment.
     let mut quote = None;
     let mut code = rest.len();
     for (offset, &byte) in rest.iter().enumerate() {
@@ -668,13 +654,11 @@ fn python_soft_keyword_holds(text: &[u8], word: &str, end: usize, line_start: bo
         .is_some_and(|code| code.trim_ascii_end().ends_with(b":"))
 }
 
-/// The prefixes a Python string may begin with, in any case.
 const PYTHON_STRING_PREFIXES: &[&[u8]] = &[
     b"", b"r", b"u", b"b", b"f", b"t", b"rb", b"br", b"fr", b"rf", b"tr", b"rt",
 ];
 
 impl Language {
-    /// The language a file's extension names. A `.h` header is C's.
     pub fn of(path: &Path) -> Option<Self> {
         Some(match path.extension()?.to_str()? {
             "c" | "h" => Self::C,
@@ -712,12 +696,10 @@ impl Language {
         }
     }
 
-    /// Whether a keyword is one in any case.
     const fn ignores_case(self) -> bool {
         matches!(self, Self::Fortran | Self::Ada)
     }
 
-    /// What begins a comment that runs to the line's end.
     const fn line_comment(self) -> &'static [u8] {
         match self {
             Self::Fortran => b"!",
@@ -727,8 +709,6 @@ impl Language {
         }
     }
 
-    /// The block comments: what opens and closes each, and whether they
-    /// nest.
     const fn block_comments(self) -> &'static [(&'static [u8], &'static [u8], bool)] {
         match self {
             Self::C | Self::Cpp | Self::Go => &[(b"/*", b"*/", false)],
@@ -739,14 +719,11 @@ impl Language {
         }
     }
 
-    /// Whether a quote within a string is written twice, rather than
-    /// escaped with a backslash.
     const fn doubles_quotes(self) -> bool {
         matches!(self, Self::Fortran | Self::Ada)
     }
 }
 
-/// What a span of source is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Keyword,
@@ -755,11 +732,8 @@ pub enum Kind {
     Number,
 }
 
-/// A highlighted byte range of one line.
 pub type Span = (Range<usize>, Kind);
 
-/// `text` with its `spans` painted and its tabs expanded to stops every
-/// `tab_width` columns, or kept with a width of 0.
 pub fn render(text: &str, spans: &[Span], tab_width: usize, renderer: Renderer) -> String {
     let mut output = String::with_capacity(text.len());
     let mut column = 0;
@@ -813,11 +787,9 @@ const fn is_identifier(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-/// Lexes `text` from its start and returns each line's spans, by line.
 pub fn lex(text: &str, language: Language) -> Vec<Vec<Span>> {
     let tokens = tokens(text.as_bytes(), language);
 
-    // Each token is split at the lines it spans.
     let mut lines = Vec::new();
     let mut spans = Vec::new();
     let mut line_start = 0;
@@ -855,7 +827,6 @@ pub fn lex(text: &str, language: Language) -> Vec<Vec<Span>> {
     lines
 }
 
-/// The highlighted tokens of `text`, in order, by byte range.
 #[expect(clippy::too_many_lines, reason = "one branch per kind of token")]
 fn tokens(text: &[u8], language: Language) -> Vec<Span> {
     let at = |index: usize| text.get(index).copied().unwrap_or(0);
@@ -866,7 +837,6 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
     let mut tokens = Vec::new();
     let mut index = 0;
 
-    // Whether only whitespace precedes `index` on its line.
     let mut line_start = true;
 
     while let Some(&byte) = text.get(index) {
@@ -921,7 +891,6 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
                 index = end;
                 Some(Kind::String)
             } else {
-                // A Rust lifetime or label.
                 index += 1;
                 None
             }
@@ -947,7 +916,6 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
 
             keyword.then_some(Kind::Keyword)
         } else if byte == b'#' && line_start && matches!(language, Language::C | Language::Cpp) {
-            // A preprocessor directive's name.
             index += 1;
             while matches!(at(index), b' ' | b'\t') {
                 index += 1;
@@ -977,15 +945,12 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
     tokens
 }
 
-/// The index of the first `byte` at or after `from`, or the end.
 fn memchr(text: &[u8], from: usize, byte: u8) -> usize {
     text.get(from..)
         .and_then(|rest| rest.iter().position(|candidate| *candidate == byte))
         .map_or(text.len(), |offset| from + offset)
 }
 
-/// Where a block comment opened at `start` by `open` ends, at `close`,
-/// counting those it holds when they nest.
 fn block_comment_end(text: &[u8], start: usize, open: &[u8], close: &[u8], nests: bool) -> usize {
     let mut depth = 0;
     let mut index = start;
@@ -1007,9 +972,6 @@ fn block_comment_end(text: &[u8], start: usize, open: &[u8], close: &[u8], nests
     text.len()
 }
 
-/// Where a string or character quoted by `quote` from `start` ends, after
-/// its closing quote. Only Rust's strings continue past a line's end
-/// without an escaped newline.
 #[expect(
     clippy::indexing_slicing,
     reason = "the loop holds index below text.len()"
@@ -1028,9 +990,6 @@ const fn quoted_end(text: &[u8], start: usize, quote: u8, spans_lines: bool) -> 
     text.len()
 }
 
-/// Where a Python string from `start` ends, after its closing quotes, if a
-/// prefix and a quote begin there. A string quoted once ends with its line
-/// unless a backslash escapes the newline, which Python continues.
 fn python_string_end(text: &[u8], start: usize) -> Option<usize> {
     let (quote_index, quote, prefix) = PYTHON_STRING_PREFIXES.iter().find_map(|prefix| {
         let end = start + prefix.len();
@@ -1058,13 +1017,7 @@ fn python_string_end(text: &[u8], start: usize) -> Option<usize> {
     }
 }
 
-/// Where an f-string or t-string from `start`, which opens with `quote`,
-/// three of them where `triple`, ends after its closing quotes. From 3.12
-/// a field, between braces, holds an expression, which may hold strings in
-/// the string's own quotes and span lines, then after a `:` its format
-/// spec, which is text but for fields of its own; `{{` is a brace.
 fn formatted_end(text: &[u8], start: usize, quote: u8, triple: bool, raw: bool) -> usize {
-    /// What each open brace or bracket holds.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Open {
         Field,
@@ -1104,7 +1057,6 @@ fn formatted_end(text: &[u8], start: usize, quote: u8, triple: bool, raw: bool) 
                 index += 1;
             }
             Some(&top) => {
-                // An expression, whose strings end none of this one.
                 let after_identifier = index
                     .checked_sub(1)
                     .and_then(|previous| text.get(previous))
@@ -1135,9 +1087,6 @@ fn formatted_end(text: &[u8], start: usize, quote: u8, triple: bool, raw: bool) 
     text.len()
 }
 
-/// Where a triple-quoted string from `start`, which opens with three
-/// `quote`s, ends after its closing three. Escapes count, and the string
-/// may span lines.
 fn triple_quoted_end(text: &[u8], start: usize, quote: u8) -> usize {
     let closing = [quote; 3];
     let mut index = start + 3;
@@ -1154,9 +1103,6 @@ fn triple_quoted_end(text: &[u8], start: usize, quote: u8) -> usize {
     text.len()
 }
 
-/// Where a string quoted by `quote` from `start` ends, after its closing
-/// quote, in a language that writes a quote within it twice. It ends with
-/// its line.
 fn doubled_end(text: &[u8], start: usize, quote: u8) -> usize {
     let mut index = start + 1;
     while let Some(&byte) = text.get(index) {
@@ -1171,12 +1117,8 @@ fn doubled_end(text: &[u8], start: usize, quote: u8) -> usize {
     text.len()
 }
 
-/// Where a character literal from `start` ends, or `None` for a Rust
-/// lifetime or an Ada attribute, which also begin with a quote.
 fn character_end(text: &[u8], start: usize, language: Language) -> Option<usize> {
     if language == Language::Ada {
-        // One character between quotes, and not after a name, whose quote
-        // begins an attribute.
         let after_name = start
             .checked_sub(1)
             .and_then(|previous| text.get(previous))
@@ -1192,7 +1134,6 @@ fn character_end(text: &[u8], start: usize, language: Language) -> Option<usize>
         return Some(quoted_end(text, start, b'\'', false));
     }
 
-    // One character, which may take several bytes, then the closing quote.
     let lead = *text.get(start + 1)?;
     let width = match lead {
         b'\'' | b'\n' => return None,
@@ -1208,8 +1149,6 @@ fn character_end(text: &[u8], start: usize, language: Language) -> Option<usize>
     (text.get(after) == Some(&b'\'')).then_some(after + 1)
 }
 
-/// Where a raw string from `start` ends, when one begins there: Rust's
-/// `r#"…"#` and `br"…"`, and C++'s `R"delimiter(…)delimiter"`.
 fn raw_string_end(text: &[u8], start: usize, language: Language) -> Option<usize> {
     match language {
         Language::Rust => {
@@ -1270,7 +1209,6 @@ fn raw_string_end(text: &[u8], start: usize, language: Language) -> Option<usize
                 .get(start..)
                 .is_some_and(|rest| rest.starts_with(b"\"\"\"")) =>
         {
-            // It ends at the last of the quotes that close it.
             let close = find(text, start + 3, b"\"\"\"").map_or(text.len(), |end| end + 3);
             let extra = text
                 .get(close..)
@@ -1285,7 +1223,6 @@ fn raw_string_end(text: &[u8], start: usize, language: Language) -> Option<usize
     }
 }
 
-/// The index at or after `from` where `needle` begins, if it does.
 fn find(text: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     text.get(from..)
         .unwrap_or_default()
@@ -1294,9 +1231,6 @@ fn find(text: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
         .map(|offset| from + offset)
 }
 
-/// Where a number from `start` ends: digits, letters of a radix, suffix, or
-/// exponent, and a point followed by a digit, so that a range `0..5` is
-/// two numbers.
 fn number_end(text: &[u8], start: usize) -> usize {
     let hexadecimal = text
         .get(start..)
@@ -1328,7 +1262,6 @@ fn number_end(text: &[u8], start: usize) -> usize {
 mod tests {
     use super::{Kind, Language, lex};
 
-    /// Each line's highlighted text and its kind.
     fn shown(text: &str, language: Language) -> Vec<Vec<(String, Kind)>> {
         lex(text, language)
             .into_iter()
@@ -1369,8 +1302,6 @@ mod tests {
             ]
         );
 
-        // Rust's comments nest, its strings span lines, and a quote also
-        // begins a lifetime.
         let rust = "/* a /* b */ c */ fn f<'a>(x: &'a u8) -> char {\n    let s = \"one\ntwo\";\n    let r = r#\"x\"y\"#; for i in 0..5 {} 'q'\n}";
         assert_eq!(
             shown(rust, Language::Rust),
@@ -1391,8 +1322,6 @@ mod tests {
             ]
         );
 
-        // Go's raw strings and C++'s span lines; Zig's line strings and C's
-        // ordinary strings end with theirs.
         let go = "s := `one\ntwo` + \"x\"";
         assert_eq!(
             shown(go, Language::Go),
@@ -1428,8 +1357,6 @@ mod tests {
         );
     }
 
-    /// `match`, `case`, and `type` are keywords only where a statement
-    /// they begin is: elsewhere they are names, as `type(x)` calls one.
     #[test]
     fn python_soft_keywords_are_keywords_only_where_they_begin_statements() {
         use Kind::{Comment, Keyword, Number};
@@ -1467,8 +1394,6 @@ type == 1";
         );
     }
 
-    /// From 3.12 an f-string's fields may hold strings in its own quotes,
-    /// which end no string; `{{` is a brace, and opens no field.
     #[test]
     #[expect(
         clippy::literal_string_with_formatting_args,
@@ -1512,8 +1437,6 @@ h = f"{
     fn python_strings_span_lines_and_take_their_prefixes() {
         use Kind::{Comment, Keyword, Number, String};
 
-        // A single-quoted string ends with its line, a triple-quoted one
-        // spans lines, and a `#` or a lone `'` inside a string is its text.
         let python = r#"def f(): return 'it' # note
 t = rb'\d' + f"{x}" + "a#b"
 n = 0x1f + 1.5e-3j
@@ -1561,7 +1484,6 @@ b''' if x else 0
     fn each_language_has_its_own_comments_strings_and_case() {
         use Kind::{Comment, Keyword, Number, String};
 
-        // Odin's block comments nest, and its raw strings are Go's.
         let odin = "/* a /* b */ c */ x := `r\ns` // done";
         assert_eq!(
             shown(odin, Language::Odin),
@@ -1571,8 +1493,6 @@ b''' if x else 0
             ]
         );
 
-        // Fortran's keywords are any case, its comments begin with `!`, and
-        // a quote is doubled within its string.
         let fortran = "INTEGER :: n = 3 ! three\nprint *, 'it''s'";
         assert_eq!(
             shown(fortran, Language::Fortran),
@@ -1582,7 +1502,6 @@ b''' if x else 0
             ]
         );
 
-        // D's `/+` comments nest; its strings span lines.
         let d = "/+ a /+ b +/ c +/ auto s = \"one\ntwo\";";
         assert_eq!(
             shown(d, Language::D),
@@ -1596,8 +1515,6 @@ b''' if x else 0
             ]
         );
 
-        // Nim's comments begin with `#`, its block comments nest, and its
-        // triple-quoted strings span lines.
         let nim = "#[ a #[ b ]# ]# let s = \"\"\"one\n\"two\"\"\"\" # done";
         assert_eq!(
             shown(nim, Language::Nim),
@@ -1611,8 +1528,6 @@ b''' if x else 0
             ]
         );
 
-        // Ada's keywords are any case and its comments begin with `--`; a
-        // quote after a name begins an attribute, not a character.
         let ada =
             "Last : Integer := Items'Last; -- end\nC : Character := 'q'; S : String := \"a\"\"b\";";
         assert_eq!(

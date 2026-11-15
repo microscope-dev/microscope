@@ -1,7 +1,7 @@
-// A small key-value store for the web page's tests and screenshots, like the
-// C one: a producer queues requests, workers apply them to a table and print
-// what they did, and each line of input is echoed. It runs until its input
-// ends.
+
+
+
+
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, Write};
@@ -72,7 +72,7 @@ static QUEUE: Queue = Queue {
 };
 static INPUT_ENDED: AtomicBool = AtomicBool::new(false);
 
-/// Applies one request to the table and says what it did.
+
 fn handle_request(server: &Mutex<Store>, req: &Request) -> i32 {
     let mut store = server.lock().unwrap();
     let store = &mut *store;
@@ -144,7 +144,7 @@ fn main() {
         .map(|id| thread::spawn(move || worker(id)))
         .collect();
     let input = thread::spawn(read_input);
-    // Paces the requests, so the program runs on while people look at it.
+
     let pause = Duration::from_millis(20);
     let mut round: u64 = 0;
     while !INPUT_ENDED.load(Ordering::SeqCst) {

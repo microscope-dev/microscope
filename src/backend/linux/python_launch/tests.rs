@@ -1,7 +1,5 @@
 use super::*;
 
-/// A request waits in the FIFO for the bootstrap; one no thread took is
-/// read back out, and the directory goes with its owner.
 #[test]
 fn requests_wait_until_taken_or_withdrawn_and_the_directory_is_private() {
     let launch = PythonLaunch::create().expect("create the bootstrap");
@@ -34,7 +32,6 @@ fn requests_wait_until_taken_or_withdrawn_and_the_directory_is_private() {
     assert!(launch.request("relative.py").is_err());
     assert!(launch.request("/tmp/two\nlines.py").is_err());
 
-    // A full FIFO refuses rather than blocking the controller.
     let long = format!("/{}", "x".repeat(4000));
     let refused = (0..64).find_map(|_| launch.request(&long).err());
     assert!(
@@ -46,9 +43,6 @@ fn requests_wait_until_taken_or_withdrawn_and_the_directory_is_private() {
     assert!(!directory.exists(), "the directory goes with its owner");
 }
 
-/// Only CPython 3.12 and 3.13 are bootstrapped: by the libpython they
-/// need, or by their own version. Other programs, and files that are not
-/// programs, are launched as they are.
 #[test]
 fn only_cpython_3_12_and_3_13_are_bootstrapped() {
     let root = std::env::var_os("MICROSCOPE_CPYTHON")
@@ -82,7 +76,6 @@ fn only_cpython_3_12_and_3_13_are_bootstrapped() {
         .expect("prepare")
         .expect("a bootstrap for 3.12");
 
-    // A FIFO is no program, and opening it to read would wait for a writer.
     let fifo = launch.directory.join("fifo");
     nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRUSR).expect("a FIFO");
     assert!(!launches_bootstrapped_python(&fifo));
@@ -104,6 +97,5 @@ fn only_cpython_3_12_and_3_13_are_bootstrapped() {
         value(WAKE),
         Some(launch.directory.join("wake").into_os_string())
     );
-    // Only a launch that follows its children keeps the variables for them.
     assert_eq!(value(FOLLOW), None);
 }

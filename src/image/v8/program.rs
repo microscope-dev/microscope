@@ -1,36 +1,15 @@
-//! The programs `slices.gen.rs` holds, and their interpreter: V8's
-//! Torque compiler emits, in `debug-macros.cc`, a function for each slice
-//! of a heap object whose offset and length depend on the object's flags
-//! and counts. Each is translated mechanically, statement by statement,
-//! into a [`Function`] of [`Op`]s over numbered registers, which this
-//! interpreter runs with every read of memory through its caller.
-//!
-//! Every value is 64 bits: an `intptr_t` or `uintptr_t` as itself, a
-//! `uint32_t` zero-extended, a `bool` as 0 or 1, and a tagged word as its
-//! bits. The object is the tagged pointer [`OBJECT`], whose untagged
-//! address is 0, so a field's address is its offset from the object's
-//! start; a read of any other object is refused, as is a Smi that is not
-//! one, an overflow, and a jump that does not go forward.
-
-/// The tagged pointer of the object a slice function is given: V8's heap
-/// object tag, 1, on the address 0.
 pub(super) const OBJECT: i64 = 1;
 
-/// The most calls one slice may nest. Translation refuses recursion, so
-/// this only bounds a damaged program.
 const MAX_DEPTH: usize = 32;
 
-/// A register of a [`Function`]: its parameters come first.
 pub(super) type Register = u8;
 
-/// A value an [`Op`] reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Operand {
     Register(Register),
     Value(i64),
 }
 
-/// A `CodeStubAssembler` shim of two values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Binary {
     IntPtrAdd,
@@ -42,21 +21,15 @@ pub(super) enum Binary {
     Word32NotEqual,
 }
 
-/// One statement of a translated function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Op {
-    /// `to = from`, as a copy, a constant, or a cast that keeps the bits.
     Set(Register, Operand),
     Binary(Binary, Register, Operand, Operand),
 
-    /// `CodeStubAssembler::SmiUntag`: the Smi's value.
     SmiUntag(Register, Operand),
 
-    /// `Internals::IntToSmi`: the Smi of a 32-bit value.
     IntToSmi(Register, Operand),
 
-    /// `base::BitField<_, shift, size, uint32_t>::decode`, of a Smi's
-    /// value when `smi` is set (`Internals::SmiValue`).
     Decode {
         to: Register,
         from: Operand,
@@ -65,29 +38,24 @@ pub(super) enum Op {
         size: u8,
     },
 
-    /// `READ_TAGGED_FIELD_OR_FAIL`: the tagged word at `offset`.
     ReadTagged {
         to: Register,
         object: Operand,
         offset: Operand,
     },
 
-    /// `READ_FIELD_OR_FAIL(uint32_t, ...)`.
     ReadU32 {
         to: Register,
         object: Operand,
         offset: Operand,
     },
 
-    /// `ASSIGN_OR_RETURN` of another translated function, by its index in
-    /// the version's functions.
     Call {
         function: u16,
         arguments: &'static [Operand],
         results: &'static [Register],
     },
 
-    /// `if (condition) goto then; else goto otherwise;`, by op index.
     Branch {
         condition: Operand,
         then: u16,
@@ -96,11 +64,9 @@ pub(super) enum Op {
     Goto(u16),
     Return(&'static [Operand]),
 
-    /// `UNREACHABLE()`.
     Unreachable,
 }
 
-/// One translated function of `debug-macros.cc`.
 #[derive(Debug)]
 pub(super) struct Function {
     pub name: &'static str,
@@ -109,8 +75,6 @@ pub(super) struct Function {
     pub ops: &'static [Op],
 }
 
-/// One version's translation: its functions, and the one of each slice
-/// of a `ScopeInfo`, by index.
 #[derive(Debug)]
 pub(super) struct Translated {
     pub major: u32,
@@ -119,14 +83,10 @@ pub(super) struct Translated {
     pub scope_info: &'static [(super::ScopeInfoSlice, u16)],
 }
 
-/// Reads the little-endian 64-bit word at a byte offset from the
-/// object's untagged start, which is a multiple of 8.
 pub(super) type Read<'a> = dyn FnMut(u64) -> Option<u64> + 'a;
 
-/// The most values a call passes or a function returns.
 const MAX_VALUES: usize = 8;
 
-/// The values a call passes or a function returns, without allocating.
 #[derive(Clone, Copy)]
 struct Values {
     values: [i64; MAX_VALUES],
@@ -160,11 +120,6 @@ impl Values {
 
 const _: () = check(super::slices::TRANSLATED);
 
-/// Checks the generated translations: every function, slice, and call
-/// named exists, every register a function names is one of its own, every
-/// jump goes forward within its function, which ends in a return or
-/// `UNREACHABLE()`, and every call passes and takes as many values as its
-/// callee takes and returns.
 #[expect(
     clippy::indexing_slicing,
     reason = "`const _` runs this at compile time, where an index out of bounds fails the build"
@@ -375,7 +330,6 @@ const fn check_registers(to: Register, reads: &[Operand], registers: u8) {
     }
 }
 
-/// Whether an operand is a value or one of `registers` registers.
 const fn operand(operand: Operand, registers: u8) -> bool {
     match operand {
         Operand::Register(register) => register < registers,
@@ -383,7 +337,6 @@ const fn operand(operand: Operand, registers: u8) -> bool {
     }
 }
 
-/// Whether every return of `function` gives `count` values.
 #[expect(
     clippy::indexing_slicing,
     reason = "only `check`, which `const _` runs at compile time, calls this, so an index out \
@@ -402,7 +355,6 @@ const fn returns(function: &Function, count: usize) -> bool {
     true
 }
 
-/// Runs `functions[function]` on `arguments`, giving what it returns.
 pub(super) fn run(
     functions: &[Function],
     function: u16,
@@ -436,7 +388,6 @@ struct Interpreter<'a, 'r> {
     functions: &'a [Function],
     read: &'a mut Read<'r>,
 
-    /// Every running function's registers, the innermost last.
     stack: Vec<i64>,
 }
 
@@ -540,7 +491,6 @@ impl Interpreter<'_, '_> {
         }
     }
 
-    /// Runs an op that computes one register of the frame at `base`.
     fn step(&mut self, op: Op, base: usize) -> Result<(), String> {
         let registers = self.frame(base);
         let (to, value) = match op {
@@ -596,8 +546,6 @@ impl Interpreter<'_, '_> {
         set(self.frame_mut(base), to, value)
     }
 
-    /// The registers of the frame at `base`: none past the stack's end,
-    /// so that reading one fails.
     fn frame(&self, base: usize) -> &[i64] {
         self.stack.get(base..).unwrap_or_default()
     }
@@ -642,7 +590,6 @@ fn apply(binary: Binary, left: i64, right: i64) -> Result<i64, String> {
     })
 }
 
-/// The value of a 64-bit Smi, whose low 32 bits are zero.
 fn smi_value(word: i64) -> Result<i64, String> {
     if word & 0xffff_ffff != 0 {
         return Err(format!("{:#x} is not a Smi", word.cast_unsigned()));
@@ -651,8 +598,6 @@ fn smi_value(word: i64) -> Result<i64, String> {
     Ok(word >> 32)
 }
 
-/// The byte offset of a field of `object`, which must be the object a
-/// slice function was given.
 fn field_offset(object: i64, offset: i64) -> Result<u64, String> {
     if object != OBJECT {
         return Err(format!(
@@ -664,7 +609,6 @@ fn field_offset(object: i64, offset: i64) -> Result<u64, String> {
     u64::try_from(offset).map_err(|_| format!("a field at {offset}"))
 }
 
-/// The low 32 bits of a value, as C++ converts it to `uint32_t`.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "a conversion to uint32_t keeps the low 32 bits"

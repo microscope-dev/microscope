@@ -1,16 +1,3 @@
-//! The translator of V8's `debug-macros.cc` into the programs of
-//! `src/image/v8/slices.gen.rs`: each function a `ScopeInfo` slice needs,
-//! and every function it calls, statement by statement, for each version.
-//!
-//! Torque writes these functions in a small subset of C++: declarations of
-//! `tmpN` and `phi_bbN_M` locals, `blockN:` labels, `goto`s, `if (x) goto a;
-//! else goto b;`, `ASSIGN_OR_RETURN` of a call, field reads, bit-field
-//! decodes, and returns. Each statement shape this file knows becomes one
-//! or more ops; any other line fails the translation, naming it. Names V8
-//! defines in its headers rather than in Torque, such as
-//! `kScopeInfoMaxInlinedLocalNamesSize` and `ScopeType`'s values, are read
-//! from each version's headers, and a missing one fails too.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -20,10 +7,8 @@ use regex::Regex;
 
 use crate::image::v8::ScopeInfoSlice;
 
-/// What each `ScopeInfo` slice function's name begins with.
 const SCOPE_INFO_SLICE: &str = "TqDebugFieldSliceScopeInfo";
 
-/// One function of `debug-macros.cc`, as written.
 #[derive(Debug, PartialEq, Eq)]
 struct Source {
     parameters: Vec<String>,
@@ -39,9 +24,6 @@ static SIGNATURE: LazyLock<Regex> = LazyLock::new(|| {
     regex(r"^Value<(.+)> (TqDebug\w+)\(d::MemoryAccessor accessor((?:, \w+ \w+)*)\) \{$")
 });
 
-/// Every function `text` defines, by name. Each is guarded by its own
-/// `#ifndef`, so its first definition is the one compiled; any later one
-/// must be the same.
 fn functions(text: &str) -> BTreeMap<String, Source> {
     let mut functions = BTreeMap::new();
     let mut lines = text.lines();
@@ -87,8 +69,6 @@ fn functions(text: &str) -> BTreeMap<String, Source> {
     functions
 }
 
-/// The value of each name `debug-macros.cc` takes from V8's headers, from
-/// `src/common/globals.h` under `v8`.
 fn header_constants(v8: &Path) -> BTreeMap<String, i64> {
     let path = v8.join("src/common/globals.h");
     let globals = std::fs::read_to_string(&path)
@@ -135,8 +115,6 @@ fn header_constants(v8: &Path) -> BTreeMap<String, i64> {
         }
     }
 
-    // Tagged values are 8 bytes in a build without pointer compression,
-    // the only kind the layouts bind to, on x86-64.
     for line in [
         "constexpr int kSystemPointerSize = sizeof(void*);",
         "constexpr int kTaggedSize = kInt32Size;",
@@ -152,26 +130,22 @@ fn header_constants(v8: &Path) -> BTreeMap<String, i64> {
     constants
 }
 
-/// An op whose jumps still name labels.
 enum Pending {
     Text(String),
     Goto(String),
     Branch(String, String, String),
 }
 
-/// The translation of one version.
 struct Translator<'a> {
     sources: &'a BTreeMap<String, Source>,
     constants: &'a BTreeMap<String, i64>,
     used: BTreeSet<String>,
     indices: BTreeMap<String, u16>,
 
-    /// Each function's text, by index; `None` while it is translated.
     functions: Vec<Option<String>>,
 }
 
 impl Translator<'_> {
-    /// The index of the function `name`, translating it first if needed.
     fn function(&mut self, name: &str) -> u16 {
         if let Some(&index) = self.indices.get(name) {
             assert!(
@@ -193,8 +167,6 @@ impl Translator<'_> {
         index
     }
 
-    /// The value of a constant argument: a number, an `IntegerLiteral`, a
-    /// `bool`, or a name from V8's headers.
     fn constant(&mut self, text: &str) -> Option<i64> {
         static LITERAL: LazyLock<Regex> =
             LazyLock::new(|| regex(r"^IntegerLiteral\((false|true), 0x([0-9a-f]+)ull\)$"));
@@ -229,7 +201,6 @@ impl Translator<'_> {
     }
 }
 
-/// The translation of one function.
 struct Body<'t, 'a> {
     translator: &'t mut Translator<'a>,
     name: &'t str,
@@ -298,7 +269,6 @@ impl<'t, 'a> Body<'t, 'a> {
         panic!("{}: no translation of {line:?}", self.name)
     }
 
-    /// `if (x) {`, `goto a;`, `} else {`, `goto b;`, `}`.
     fn branch(&mut self, lines: &[&str]) {
         let joined = lines.join(" ");
         let pattern = regex(r"^if \((\w+)\) \{ goto (block\d+); \} else \{ goto (block\d+); \}$");
@@ -356,7 +326,6 @@ impl<'t, 'a> Body<'t, 'a> {
         }
     }
 
-    /// `ASSIGN_OR_RETURN(results, callee(accessor, arguments));`.
     fn call(&mut self, line: &str, results: &str, callee: &str, arguments: &str) {
         let results = results
             .strip_prefix("std::tie(")
@@ -385,9 +354,6 @@ impl<'t, 'a> Body<'t, 'a> {
                     [left, right],
                 ) => format!("Op::Binary(Binary::{shim}, {to}, {left}, {right})"),
                 ("SmiUntag", [from]) => format!("Op::SmiUntag({to}, {from})"),
-                // Casts between C++ integer types and from a constant
-                // bool, which keep a value's bits as the interpreter
-                // holds them.
                 ("Unsigned" | "BoolConstant", [from]) => format!("Op::Set({to}, {from})"),
                 _ => self.fail(line),
             };
@@ -424,8 +390,6 @@ impl<'t, 'a> Body<'t, 'a> {
         )));
     }
 
-    /// `std::tie(a, b) = (std::make_tuple(x, y));`, which the parameters
-    /// of a slice's or a reference's constructor are copied by.
     fn tie(&mut self, line: &str, targets: &str, sources: &str) {
         let targets = split(targets);
         let sources = split(sources);
@@ -441,7 +405,6 @@ impl<'t, 'a> Body<'t, 'a> {
         }
     }
 
-    /// `to = expression;`.
     fn assign(&mut self, line: &str, to: &str, expression: &str) {
         let to = self.register(to);
         let inner = |text: &str, prefix: &str| {
@@ -482,8 +445,6 @@ impl<'t, 'a> Body<'t, 'a> {
             .unwrap_or_else(|| panic!("{}: {name} is not declared", self.name))
     }
 
-    /// An argument as an operand: a local, a parameter, a constant, or
-    /// Torque's conversion of a constexpr parameter, which keeps it.
     fn operand(&mut self, text: &str) -> String {
         static CONVERSION: LazyLock<Regex> = LazyLock::new(|| {
             regex(
@@ -509,8 +470,6 @@ impl<'t, 'a> Body<'t, 'a> {
         texts.iter().map(|text| self.operand(text)).collect()
     }
 
-    /// The function's text, with each label resolved to the op it
-    /// precedes; every jump must go forward.
     fn finish(self, parameters: usize) -> String {
         let target = |from: usize, label: &str| {
             let to = *self
@@ -557,7 +516,6 @@ fn is_identifier(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-/// Splits a list of arguments at its top-level commas.
 fn split(text: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
@@ -582,8 +540,6 @@ fn split(text: &str) -> Vec<String> {
     parts
 }
 
-/// One version's entry of `slices.gen.rs`, from its `debug-macros.cc`
-/// and its headers.
 fn generate_version(text: &mut String, (major, minor): (u32, u32), macros: &str, v8: &Path) {
     let sources = functions(macros);
     let constants = header_constants(v8);
@@ -639,9 +595,6 @@ fn generate_version(text: &mut String, (major, minor): (u32, u32), macros: &str,
     writeln!(text, "        ],\n    }},").expect("write");
 }
 
-/// The text of `slices.gen.rs` for every version in `versions`, each its
-/// major.minor and its `torque-generated` directory, beside which `v8`
-/// holds its headers; `notice` is V8's license.
 pub(super) fn generate(versions: &[((u32, u32), PathBuf)], notice: &str) -> String {
     let mut text = String::from(
         "// @generated from V8's debug-macros.cc and headers for each supported\n\

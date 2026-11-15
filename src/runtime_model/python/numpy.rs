@@ -1,14 +1,3 @@
-//! numpy arrays store elements as native values, not separate Python objects.
-//!
-//! `PyArrayObject_fields` is public C ABI, unchanged between numpy 1 and 2: data, axes,
-//! shape, strides, base, and dtype. Without extension DWARF, offsets are recorded here
-//! relative to [`Field::ObjectSize`]. Dtype kind, byte order, and type number also retain
-//! their offsets; built-in type numbers identify the same elements in both versions.
-//!
-//! Native-endian bools, integers, and 32-/64-bit floats show elements; unsupported arrays
-//! show shape, dtype, and a reason. Summaries use `array(ELEMENTS, dtype=NAME)` and Python
-//! number notation, with shortest float digits at the element's width (`float32(0.1)` is `0.1`).
-
 use std::sync::Arc;
 
 use super::instances::Class;
@@ -22,9 +11,6 @@ use crate::runtime_model::{
 };
 use crate::{FloatValue, NumberKind, ScalarValue, VirtualAddress};
 
-/// Where `PyArrayObject_fields` keeps each field read, past the object's
-/// header, and the size of those fields, which an array's type's objects
-/// hold at least.
 const DATA: u64 = 0;
 const AXES: u64 = 8;
 const SHAPE: u64 = 16;
@@ -32,8 +18,6 @@ const STRIDES: u64 = 24;
 const DTYPE: u64 = 40;
 pub(super) const FIELDS: u64 = 48;
 
-/// Where `PyArray_Descr` keeps its byte order and its type number, past
-/// the object's header.
 const BYTE_ORDER: u64 = 10;
 const TYPE_NUMBER: u64 = 12;
 
@@ -42,11 +26,8 @@ const _: () = assert!(SHAPE + 8 <= STRIDES && STRIDES + 8 <= DTYPE);
 const _: () = assert!(DTYPE + 8 <= FIELDS);
 const _: () = assert!(BYTE_ORDER < TYPE_NUMBER);
 
-/// The most axes numpy gives an array.
 const MAX_AXES: u64 = 64;
 
-/// An array, or a part of one: its first element, its shape and strides,
-/// and its elements' type.
 #[derive(Debug, Clone)]
 pub(super) struct Array {
     pub(super) data: VirtualAddress,
@@ -55,15 +36,12 @@ pub(super) struct Array {
     pub(super) element: Element,
 }
 
-/// What an array's elements are: those it reads, by their name, or the
-/// name of a type it does not read, and why.
 #[derive(Debug, Clone)]
 pub(super) enum Element {
     Read(ArrayElement, &'static str),
     Unread(String, &'static str),
 }
 
-/// One element's value.
 #[derive(Debug, Clone, Copy)]
 enum Number {
     Bool(bool),
@@ -74,7 +52,6 @@ enum Number {
 }
 
 impl Number {
-    /// The element as the debugger's scalar, its float's bits exact.
     fn scalar(self) -> ScalarValue {
         match self {
             Self::Bool(value) => ScalarValue::Boolean(value),
@@ -85,8 +62,6 @@ impl Number {
         }
     }
 
-    /// The element as Python writes the number; a float with the shortest
-    /// digits that read back as the same number of its own width.
     fn text(self) -> String {
         match self {
             Self::Bool(true) => "True".to_owned(),
@@ -100,8 +75,6 @@ impl Number {
 }
 
 impl Array {
-    /// What kind of value it is: a sequence of its elements on its first
-    /// axis, where it has one and shows them.
     pub(super) fn kind(&self) -> InterpretedKind {
         match (self.shape.first(), &self.element) {
             (Some(&length), Element::Read(..)) => InterpretedKind::Sequence { length },
@@ -109,7 +82,6 @@ impl Array {
         }
     }
 
-    /// The array as the debugger describes it, where it shows elements.
     pub(super) fn interpreted(&self) -> Option<Arc<InterpretedArray>> {
         let Element::Read(element, name) = self.element else {
             return None;
@@ -126,7 +98,6 @@ impl Array {
         })
     }
 
-    /// The part at `index` of its first axis: an array of the rest.
     fn row(&self, index: u64) -> Self {
         debug_assert!(
             self.shape.first().is_some_and(|length| index < *length),
@@ -148,7 +119,6 @@ impl Array {
         }
     }
 
-    /// Its part at `part`, an index on each of its first axes.
     fn part(&self, part: &[u64]) -> Option<Self> {
         let mut array = self.clone();
         for &index in part {
@@ -163,7 +133,6 @@ impl Array {
     }
 }
 
-/// The address `index` strides of `stride` bytes from `data`.
 fn offset(data: VirtualAddress, index: u64, stride: i64) -> VirtualAddress {
     let bytes = i64::try_from(index)
         .unwrap_or(i64::MAX)
@@ -171,7 +140,6 @@ fn offset(data: VirtualAddress, index: u64, stride: i64) -> VirtualAddress {
     VirtualAddress::new(data.get().wrapping_add_signed(bytes))
 }
 
-/// The element of numpy's type number `number`, in byte order `order`.
 fn element(number: i32, order: u8) -> Element {
     let read = |element, name| {
         if order == b'>' {
@@ -225,8 +193,6 @@ fn element(number: i32, order: u8) -> Element {
 }
 
 impl Values<'_, '_> {
-    /// The array the head is of, an object of a type laid out as numpy's
-    /// arrays are.
     pub(super) fn array(&self, head: &Head<'_, '_>) -> Result<Array, Problem> {
         let address = head.address();
         let reader = &self.reader;
@@ -271,7 +237,6 @@ impl Values<'_, '_> {
             return Err(bad());
         }
 
-        // The dtype's byte order, then its type number, a C int.
         let dtype = VirtualAddress::new(le(word(DTYPE)?)?);
         let number_at = usize::try_from(TYPE_NUMBER - BYTE_ORDER).map_err(|_| bad())?;
         let described = reader.bytes(
@@ -303,7 +268,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// The number of type `element` at `at`.
     fn number(&self, at: VirtualAddress, element: ArrayElement) -> Result<Number, Problem> {
         let size = match element {
             ArrayElement::Bool => 1,
@@ -320,7 +284,6 @@ impl Values<'_, '_> {
             .copy_from_slice(&bytes);
         let bits = u64::from_le_bytes(word);
 
-        // An integer narrower than 64 bits, sign-extended from its top bit.
         let signed = |width: u64| {
             let shift = 64 - width * 8;
             Number::Signed((bits << shift).cast_signed() >> shift)
@@ -341,8 +304,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// The text of the array, or its part, `array`, as its summary shows
-    /// it.
     pub(super) fn array_text(&self, array: &Array, summary: &mut Summary) -> String {
         match array.element {
             Element::Read(element, name) => {
@@ -361,8 +322,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The elements of `array`, `depth` axes into an array's summary, as
-    /// nested lists.
     fn nested(
         &self,
         array: &Array,
@@ -382,8 +341,6 @@ impl Values<'_, '_> {
             return "...".to_owned();
         }
 
-        // A row is an object of the summary as an element is, so that an
-        // array whose rows hold no elements is bounded too.
         summary.objects += 1;
         let shown = length.min(SUMMARY_ITEMS);
         let mut texts = Vec::new();
@@ -411,7 +368,6 @@ impl Values<'_, '_> {
         format!("[{}]", texts.join(", "))
     }
 
-    /// The text of the element of type `element` at `at`.
     fn element_text(
         &self,
         at: VirtualAddress,
@@ -428,9 +384,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The children `range` of the part at `part` of the array `array`, of
-    /// the object at `object`, whose class is `class`: its numbers, where
-    /// it has one axis, or else its arrays of the rest.
     pub(super) fn array_children(
         &self,
         (object, class): (VirtualAddress, &Class),

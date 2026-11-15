@@ -1,34 +1,8 @@
-//! Views for microscope, carried in a program's debug information, and kernels
-//! for them, written in Rust.
-//!
-//! [`microscope_views_file!`] embeds a view file in the
-//! `.debug_microscope_views` section of the object that expands it. microscope
-//! presents the module's own types with those views, and no other module's.
-//! [`microscope_kernel!`] embeds a kernel those views may call, with its
-//! source, and [`microscope_visualizer!`] a renderer their drawings may call,
-//! which microscope's web page runs in its sandbox. The section is not loaded
-//! when the program runs, and `strip --strip-debug` removes it with the rest of
-//! the debug information.
-//!
-//! The `kernel` module, built for `wasm32-unknown-unknown`, writes a
-//! kernel itself.
-
 #![no_std]
 
-/// Embeds the view file at `path`, which the assembler reads: relative to
-/// the directory the compiler runs in, so usually written from
-/// `CARGO_MANIFEST_DIR`.
-///
-/// ```ignore
-/// microscope_views::microscope_views_file!(
-///     concat!(env!("CARGO_MANIFEST_DIR"), "/app.views"),
-/// );
-/// ```
 #[macro_export]
 macro_rules! microscope_views_file {
     ($path:expr) => {
-        // A record: kind 1 (view text), format 1, its length, then the
-        // file.
         ::core::arch::global_asm!(
             ".pushsection .debug_microscope_views,\"\",@progbits",
             ".byte 1, 1",
@@ -41,23 +15,9 @@ macro_rules! microscope_views_file {
     };
 }
 
-/// Embeds the kernel `name`, whose module is the file at `module` and
-/// whose source is the file at `source`, so that it is reviewed as that.
-/// The assembler reads both, as [`microscope_views_file!`] says.
-///
-/// ```ignore
-/// microscope_views::microscope_kernel!(
-///     "tree",
-///     concat!(env!("CARGO_MANIFEST_DIR"), "/kernel/src/lib.rs"),
-///     env!("TREE_KERNEL"),
-/// );
-/// ```
 #[macro_export]
 macro_rules! microscope_kernel {
     ($name:expr, $source:expr, $module:expr) => {
-        // A record: kind 2 (kernel), format 1, its length, then the name's
-        // length and the name, the source's length and the source, and the
-        // module.
         ::core::arch::global_asm!(
             ".pushsection .debug_microscope_views,\"\",@progbits",
             ".byte 2, 1",
@@ -78,22 +38,9 @@ macro_rules! microscope_kernel {
     };
 }
 
-/// Embeds the renderer `name`, whose JavaScript is the file at `path`,
-/// which the assembler reads, as [`microscope_views_file!`] says. A view's
-/// `visualize "NAME"` draws with it in microscope's web page, as microscope's
-/// `docs/visualizers.md` describes.
-///
-/// ```ignore
-/// microscope_views::microscope_visualizer!(
-///     "chess-board",
-///     concat!(env!("CARGO_MANIFEST_DIR"), "/chess-board.js"),
-/// );
-/// ```
 #[macro_export]
 macro_rules! microscope_visualizer {
     ($name:expr, $path:expr) => {
-        // A record: kind 3 (renderer), format 1, its length, then the
-        // name's length and the name, and the renderer's JavaScript.
         ::core::arch::global_asm!(
             ".pushsection .debug_microscope_views,\"\",@progbits",
             ".byte 3, 1",
@@ -160,8 +107,6 @@ pub mod kernel {
         unsafe { core::slice::from_raw_parts(arguments, count) }
     }
 
-    /// Fills `buffer` with the program's memory at `address`. A read microscope
-    /// cannot make ends the run, so a kernel never sees one fail.
     pub fn read(address: u64, buffer: &mut [u8]) {
         let length = i32::try_from(buffer.len()).unwrap_or(i32::MAX);
 
@@ -169,7 +114,6 @@ pub mod kernel {
         unsafe { host_read(address, buffer.as_mut_ptr(), length) };
     }
 
-    /// An integer the program's memory holds.
     pub trait Integer: Sized {
         fn from_le(bytes: &[u8]) -> Self;
     }
@@ -188,7 +132,6 @@ pub mod kernel {
 
     integers!(u8, u16, u32, u64, i8, i16, i32, i64);
 
-    /// The integer at `address` in the program's memory.
     #[must_use]
     pub fn load<T: Integer>(address: u64) -> T {
         let mut bytes = [0; 8];
@@ -197,8 +140,6 @@ pub mod kernel {
         T::from_le(bytes)
     }
 
-    /// Yields an item, and returns whether microscope wants another. microscope
-    /// may also stop running the kernel at any call.
     #[must_use]
     pub fn emit(words: &[u64]) -> bool {
         let count = i32::try_from(words.len()).unwrap_or(i32::MAX);

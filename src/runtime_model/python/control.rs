@@ -1,4 +1,3 @@
-//! PEP 768 bootstrap and the acknowledged native command transport.
 use std::sync::Arc;
 
 use super::{PythonRuntime, agent, exceptions, frames, hook, injection, objects, threads, values};
@@ -10,11 +9,6 @@ use crate::runtime_model::{
 use crate::{ImageAddress, ThreadId, VirtualAddress};
 
 impl PythonRuntime {
-    /// Plans the source request `script` on an eligible thread, `only`
-    /// if given, `preferred` first: one that runs the loop or begins to,
-    /// whose next check of its eval breaker runs the request; or the
-    /// thread of a step back, which returns to the loop from the native
-    /// code it calls.
     fn prepare_agent(
         &self,
         stop: &dyn RuntimeStop,
@@ -143,9 +137,6 @@ fn probes<'a>(arming: &Arming<'a>) -> Result<Vec<agent::Probe<'a>>, Arc<str>> {
         .collect()
 }
 
-/// Where a step begins, or an assignment is made, as the agent finds its
-/// frame: the native thread as CPython numbers it, how many callers the
-/// frame has, its code, and the name of the variable asked for, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StepOrigin {
     native: u64,
@@ -155,8 +146,6 @@ struct StepOrigin {
 }
 
 impl super::Reading {
-    /// Where the step from the interpreted frame at `frame` on `thread`
-    /// begins, with the name of the frame's variable in `slot`, if any.
     fn step_origin(
         &self,
         stop: &dyn RuntimeStop,
@@ -186,7 +175,6 @@ impl super::Reading {
                 code: table,
                 code_type,
             };
-            // The agent counts the frame's callers, which must all be read.
             let (frames, end) = walk.thread(state);
             if let Some(end) = end {
                 return Err(
@@ -221,7 +209,6 @@ impl super::Reading {
         })
     }
 
-    /// The assignment the agent is armed with, if one is asked.
     fn assignment(
         &self,
         stop: &dyn RuntimeStop,
@@ -230,7 +217,6 @@ impl super::Reading {
         let Some(asked) = arming.assignment else {
             return Ok(None);
         };
-        // The native ABI reserves zero; the controller's numbers begin at it.
         let number = asked
             .number
             .checked_add(1)
@@ -258,9 +244,6 @@ impl super::Reading {
         )))
     }
 
-    /// The C function the callable at `callable` runs, where it is a
-    /// built-in function or method, or a type's C method; `None` for any
-    /// other callable.
     pub(super) fn native_callee(
         &self,
         stop: &dyn RuntimeStop,
@@ -286,7 +269,6 @@ impl super::Reading {
         })
     }
 
-    /// The step the agent is armed with, if one is active.
     fn step(
         &self,
         stop: &dyn RuntimeStop,
@@ -302,7 +284,6 @@ impl super::Reading {
             crate::StepKind::Out => agent::OUT,
             _ => return Err("Python code steps by lines: into, over, or out".into()),
         };
-        // The native ABI reserves zero; the controller's numbers begin at it.
         let number = active
             .number
             .checked_add(1)
@@ -322,20 +303,15 @@ impl super::Reading {
     }
 }
 
-/// Why 3.13's free-threaded build takes no agent.
 const UNLISTED_CODE: &str = "CPython 3.13's free-threaded build stops listing code to its \
      collector once a second thread starts, so the agent could not find code already running; \
      Python breakpoints need 3.14t or a build with the GIL";
 
 impl PythonRuntime {
-    /// Whether the agent's scripts go to the launch bootstrap: CPython
-    /// before 3.14 has no PEP 768 request.
     const fn bootstrapped(&self) -> bool {
         self.version.minor() < 14
     }
 
-    /// Refuses a build whose agent could not find the code running as it
-    /// is configured.
     const fn agent_refused(&self) -> Option<&'static str> {
         if self.free_threaded && self.version.minor() < 14 {
             Some(UNLISTED_CODE)
@@ -368,8 +344,6 @@ impl RuntimeAgent for PythonRuntime {
             return Err(AgentFailure::Refused(reason.into()));
         }
         if self.bootstrapped() {
-            // The bootstrap's own thread runs the script, wherever any
-            // other is; one that steps back must take it before it runs on.
             if arming.step.is_some_and(|step| step.returning) {
                 return Err(AgentFailure::Refused(
                     "CPython 3.12 and 3.13 cannot run a step back's request on its own thread"
@@ -465,8 +439,6 @@ impl RuntimeAgent for PythonRuntime {
     }
 
     fn assignments_refused(&self) -> Option<&'static str> {
-        // 3.12's f_locals is a copy, and the bootstrap's thread runs
-        // beside the program's, where no proof says what it holds.
         self.bootstrapped().then_some(
             "assignments need CPython 3.14 or later: 3.12 and 3.13 take the agent through a \
              thread of its own, which may hold what an assignment changes",
@@ -697,8 +669,6 @@ impl AgentRequestTicket for Ticket {
             });
         }
 
-        // Keep the shared eval-breaker bit. Other runtime stop requests can
-        // use it too; the handler checks the now-cleared pending flag.
         Ok(AgentRetirement::Retired(writes))
     }
 }

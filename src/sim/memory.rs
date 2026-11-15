@@ -1,11 +1,3 @@
-//! Simulated address spaces: mapped regions with protections, holding
-//! 4 KiB pages that are shared until written.
-//!
-//! The CPU's accesses obey protections and fault where nothing is mapped;
-//! ptrace's ignore protections and fail only where nothing is mapped
-//! (K-MEM-1). Pages loaded from a golden image are shared by every session
-//! that loads it and copied on a session's first write.
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -14,15 +6,12 @@ pub const PAGE_SIZE: u64 = PAGE_BYTES as u64;
 
 pub const PAGE_BYTES: usize = 4096;
 
-/// `si_code` of a fault on unmapped memory.
 pub const SEGV_MAPERR: i32 = 1;
 
-/// `si_code` of a fault on memory mapped without the needed permission.
 pub const SEGV_ACCERR: i32 = 2;
 
 pub type Page = [u8; PAGE_BYTES];
 
-/// What a mapping lets the CPU do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Protection {
     pub read: bool,
@@ -50,7 +39,6 @@ impl Protection {
     };
 }
 
-/// What backs a mapping, as `/proc/<pid>/maps` names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Backing {
     File {
@@ -69,29 +57,19 @@ struct Region {
     backing: Backing,
 }
 
-/// Where the user half of the address space ends with 4-level paging.
-/// What an access at or past it does depends on the machine: a
-/// non-canonical address raises a general-protection fault, one in the
-/// kernel's half a page fault or, with linear address space separation, a
-/// general-protection fault, and with 5-level paging some are user
-/// addresses.
 pub const USER_HALF_END: u64 = 1 << 47;
 
-/// Why the CPU could not access memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryFault {
     pub address: u64,
 
-    /// [`SEGV_MAPERR`] or [`SEGV_ACCERR`].
     pub code: i32,
 }
 
-/// Why the CPU could not access memory, or why the model cannot say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryError {
     Fault(MemoryFault),
 
-    /// What Linux does with an access at `address` depends on what the
     /// model does not know, as `what` says: a model gap.
     Unmodeled {
         address: u64,
@@ -125,23 +103,14 @@ pub enum Access {
     Execute,
 }
 
-/// One process's memory.
 #[derive(Clone, Default)]
 pub struct AddressSpace {
-    /// Mapped regions by start address. Regions never overlap.
     regions: BTreeMap<u64, Region>,
 
-    /// Page contents by page number. A mapped page absent here reads as
-    /// zeros.
     pages: BTreeMap<u64, Arc<Page>>,
 }
 
 impl AddressSpace {
-    /// Maps `[start, end)`, both page-aligned, with nothing mapped there yet.
-    ///
-    /// # Panics
-    ///
-    /// If the range is not page-aligned or overlaps a mapping.
     pub fn map(&mut self, start: u64, end: u64, protection: Protection, backing: Backing) {
         assert!(
             start.is_multiple_of(PAGE_SIZE) && end.is_multiple_of(PAGE_SIZE) && start < end,
@@ -165,8 +134,6 @@ impl AddressSpace {
         );
     }
 
-    /// Installs a whole page's contents, sharing them with whoever else
-    /// holds them.
     pub fn share_page(&mut self, address: u64, page: Arc<Page>) {
         assert!(
             address.is_multiple_of(PAGE_SIZE) && self.region(address).is_some(),
@@ -183,17 +150,6 @@ impl AddressSpace {
             .filter(|region| address < region.end)
     }
 
-    /// Checks that the CPU may access every byte of `[address, address +
-    /// length)`, reporting the first byte it may not.
-    ///
-    /// Three kinds of access are gaps, since what Linux does depends on
-    /// what the model does not know: one reaching past [`USER_HALF_END`];
-    /// one where nothing is mapped and the stack is the next mapping
-    /// above, which Linux grows the stack down over, as far as its
-    /// resource limit and guard gap allow; and a read of memory mapped
-    /// writable or executable but not readable, which x86's page tables
-    /// cannot refuse, though protection keys refuse reads of
-    /// execute-only memory where the CPU has them.
     fn check(&self, address: u64, length: u64, access: Access) -> Result<(), MemoryError> {
         let end = address
             .checked_add(length)
@@ -253,7 +209,6 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// Whether every byte of the range is mapped, whatever its protection.
     fn mapped(&self, address: u64, length: u64) -> bool {
         let mut current = address;
         let Some(end) = address.checked_add(length) else {
@@ -270,7 +225,6 @@ impl AddressSpace {
         true
     }
 
-    /// Copies bytes out without checking anything.
     fn copy_out(&self, address: u64, bytes: &mut [u8]) {
         let mut current = address;
         let mut done = 0;
@@ -292,7 +246,6 @@ impl AddressSpace {
         }
     }
 
-    /// Copies bytes in without checking anything, copying shared pages.
     fn copy_in(&mut self, address: u64, bytes: &[u8]) {
         let mut current = address;
         let mut done = 0;
@@ -313,23 +266,18 @@ impl AddressSpace {
         }
     }
 
-    /// A read by the CPU, which needs read permission.
     pub fn read(&self, address: u64, bytes: &mut [u8]) -> Result<(), MemoryError> {
         self.check(address, bytes.len() as u64, Access::Read)?;
         self.copy_out(address, bytes);
         Ok(())
     }
 
-    /// A write by the CPU, which needs write permission.
     pub fn write(&mut self, address: u64, bytes: &[u8]) -> Result<(), MemoryError> {
         self.check(address, bytes.len() as u64, Access::Write)?;
         self.copy_in(address, bytes);
         Ok(())
     }
 
-    /// Fetches up to `bytes.len()` instruction bytes from executable memory,
-    /// returning how many could be fetched, or the error at `address` when
-    /// none could.
     pub fn fetch(&self, address: u64, bytes: &mut [u8]) -> Result<usize, MemoryError> {
         let mut count = 0;
 
@@ -354,21 +302,16 @@ impl AddressSpace {
         Ok(count)
     }
 
-    /// A `PTRACE_PEEKDATA` word, which ignores protections.
     #[must_use]
     pub fn peek(&self, address: u64) -> Option<u64> {
         let bytes = self.peek_bytes(address, 8)?;
         Some(u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
     }
 
-    /// A `PTRACE_POKEDATA` word, which ignores protections. Returns whether
-    /// the word was mapped.
     pub fn poke(&mut self, address: u64, value: u64) -> bool {
         self.poke_bytes(address, &value.to_le_bytes())
     }
 
-    /// Writes bytes anywhere mapped, ignoring protections, as a debugger
-    /// or a test does. Returns whether every byte was mapped.
     pub fn poke_bytes(&mut self, address: u64, bytes: &[u8]) -> bool {
         let mapped = self.mapped(address, bytes.len() as u64);
         if mapped {
@@ -378,7 +321,6 @@ impl AddressSpace {
         mapped
     }
 
-    /// Reads bytes anywhere mapped, ignoring protections.
     #[must_use]
     pub fn peek_bytes(&self, address: u64, length: usize) -> Option<Vec<u8>> {
         let mut bytes = vec![0; length];
@@ -388,8 +330,6 @@ impl AddressSpace {
         })
     }
 
-    /// The page starting at `address`, a page boundary, as a debugger
-    /// reads it, if it is mapped: a page never written reads as zeros.
     #[must_use]
     pub fn peek_page(&self, address: u64) -> Option<&Page> {
         static ZEROS: Page = [0; PAGE_BYTES];
@@ -398,17 +338,11 @@ impl AddressSpace {
             .then(|| self.page(address).map_or(&ZEROS, |page| &**page))
     }
 
-    /// The contents of the page at `address`, if it was ever written or
-    /// shared in.
     #[must_use]
     pub fn page(&self, address: u64) -> Option<&Arc<Page>> {
         self.pages.get(&(address / PAGE_SIZE))
     }
 
-    /// How many bytes from `address`, at most `length`, the kernel copies
-    /// with page faults disabled, as perf does: readable bytes in pages
-    /// that are present, which the model takes to be those the program
-    /// wrote or the loader filled (K-PERF-3).
     #[must_use]
     pub fn present(&self, address: u64, length: u64) -> u64 {
         let mut current = address;
@@ -428,14 +362,12 @@ impl AddressSpace {
         current.min(end) - address
     }
 
-    /// Whether the CPU may execute `address`.
     #[must_use]
     pub fn executable(&self, address: u64) -> bool {
         self.region(address)
             .is_some_and(|region| region.protection.execute)
     }
 
-    /// The executable regions, as `(start, end)` pairs.
     pub fn executable_ranges(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
         self.regions
             .iter()
@@ -443,8 +375,6 @@ impl AddressSpace {
             .map(|(&start, region)| (start, region.end))
     }
 
-    /// Reads bytes as the kernel would for a system call: all of them, or
-    /// why some are not readable.
     pub fn read_user(&self, address: u64, length: u64) -> Result<Vec<u8>, MemoryError> {
         self.check(address, length, Access::Read)?;
         let length = usize::try_from(length).map_err(|_| MemoryError::Unmodeled {
@@ -456,7 +386,6 @@ impl AddressSpace {
         Ok(bytes)
     }
 
-    /// The address space as `/proc/<pid>/maps` describes it.
     #[must_use]
     pub fn maps(&self) -> String {
         let mut text = String::new();
@@ -486,7 +415,6 @@ impl AddressSpace {
             );
 
             if !name.is_empty() {
-                // The kernel starts names at column 73.
                 let width = text.len() - line_start;
                 text.extend(std::iter::repeat_n(' ', 73_usize.saturating_sub(width)));
                 text.push_str(name);
@@ -503,9 +431,6 @@ impl AddressSpace {
 mod tests {
     use super::*;
 
-    /// The CPU obeys protections while ptrace ignores them, both fail where
-    /// nothing is mapped, and a write copies a shared page instead of
-    /// changing it for everyone who shares it.
     #[test]
     fn protections_bind_the_cpu_but_not_ptrace() {
         let mut space = AddressSpace::default();

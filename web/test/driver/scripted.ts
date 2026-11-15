@@ -1,11 +1,3 @@
-// A debugger the test scripts: it serves one program's source and walks
-// through a list of stops, one per continue or step, answering the page's
-// requests the way `microscope web` does. Its answers are typed against the
-// protocol, so a protocol change breaks the script at compile time rather
-// than leaving it to drift. A request it has no answer for is refused and
-// kept in `unhandled`, which a test expects to be empty: a journey says
-// everything its page asks.
-
 // oxlint-disable-next-line max-classes-per-file -- Refusal is this file's own error type
 import type {
   Frame,
@@ -23,9 +15,9 @@ import type { Asked, FakeServer } from "../fake-server";
 
 export interface ScriptedStop {
   place: Place & { path: string; line: number };
-  /** Why it stopped, as the server says: `breakpoint`, `step`. */
+
   reason: { kind: string; description: string };
-  /** What led to it, as the stop history says: `stepped over`. */
+
   action: string;
   step?: ParamsOf<"step">["kind"];
   frames: Frame[];
@@ -34,7 +26,7 @@ export interface ScriptedStop {
 
 export interface Script {
   program: string;
-  /** Source files by path, as the debug information names them. */
+
   files: Record<string, string>;
   entry: SourceLine;
   stops: ScriptedStop[];
@@ -47,12 +39,11 @@ const PID = 4242;
 const THREAD = 4243;
 
 export class ScriptedDebugger {
-  /** Requests the script has no answer for. */
   readonly unhandled: Asked[] = [];
   readonly #server: FakeServer;
   readonly #script: Script;
   #revision = 0;
-  /** The script's stop the program is at, by index; -1 before it runs. */
+
   #at = -1;
   #running = false;
   #breakpoints: State["breakpoints"] = [];
@@ -65,12 +56,10 @@ export class ScriptedDebugger {
     this.#publish();
   }
 
-  /** How many times the page has asked for `method`. */
   asked(method: Method): number {
     return this.#server.requests.filter((request) => request.method === method).length;
   }
 
-  /** The stop number the page sees for the script's stop at `index`. */
   static stopNumber(index: number): number {
     return index + 1;
   }
@@ -131,8 +120,7 @@ export class ScriptedDebugger {
         incomplete: null,
       }),
       scopes: ({ stop }) => ({ scopes: this.#current(stop).scopes }),
-      // The values the script has, by the expression that reads them again;
-      // others fail as the debugger fails on what it cannot read.
+
       evaluate: ({ stop, expression }) => {
         const rows = this.#current(stop).scopes.flatMap((scope) => scope.rows);
         const row = rows.find((candidate) => candidate.path === expression);
@@ -145,7 +133,7 @@ export class ScriptedDebugger {
         this.#current(stop);
         return { registers: [] };
       },
-      // The script keeps no instructions or signals: their panes show none.
+
       disassemble: ({ stop }) => {
         this.#current(stop);
         return { function: null, marked: null, instructions: [], notes: [] };
@@ -177,7 +165,6 @@ export class ScriptedDebugger {
     }
   }
 
-  /** The stop a request names, which must be the current one. */
   #current(stop: number): ScriptedStop {
     const current = this.#script.stops[this.#at];
     if (this.#running || !current || ScriptedDebugger.stopNumber(this.#at) !== stop) {
@@ -186,7 +173,6 @@ export class ScriptedDebugger {
     return current;
   }
 
-  /** Runs to the next stop: the page sees it run, then stop. */
   #advance(): null {
     this.#running = true;
     this.#later(() => {
@@ -213,7 +199,6 @@ export class ScriptedDebugger {
     return null;
   }
 
-  /** After the answer the page is waiting on, as the server orders them. */
   #later(run: () => void): void {
     queueMicrotask(() => queueMicrotask(run));
   }
@@ -269,7 +254,6 @@ class Refusal extends Error {
   }
 }
 
-/** A frame of C code at `line` of `path`. */
 export function cFrame(index: number, name: string, path: string, line: number): Frame {
   return {
     index,
@@ -283,7 +267,6 @@ export function cFrame(index: number, name: string, path: string, line: number):
   };
 }
 
-/** A value row with no children, as C scalars and null pointers have. */
 export function scalar(name: string, type: string, text: string): Row {
   return {
     name,
@@ -304,8 +287,6 @@ export function scalar(name: string, type: string, text: string): Row {
 
 const KVSTORE = "/work/tests/fixtures/c/kvstore.c";
 
-/** kvstore stopped in handle_request at its breakpoint, then a line on. The
- * source is the real fixture's, so lines match the real program's. */
 export function kvstore(source: string): Script {
   const lineOf = (text: string) => {
     const index = source.split("\n").findIndex((line) => line.includes(text));

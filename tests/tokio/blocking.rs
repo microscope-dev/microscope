@@ -1,9 +1,3 @@
-//! A blocking pool of one thread, with one closure running and two queued:
-//! the running closure is its thread's task, running there, and the queued
-//! ones are listed as queued in the pool, by the ids the program gives
-//! them. A breakpoint in a closure stops in its task on the pool's thread,
-//! and each queued closure runs as its own task in turn.
-
 use std::fs::File;
 use std::process::Stdio;
 
@@ -24,7 +18,6 @@ const BUILDS: [&str; 4] = [
 ];
 const SOURCE: &str = "blocking/src/main.rs";
 
-/// What the program reported at its checkpoint.
 #[derive(Debug, Default)]
 struct Truth {
     blocker: u64,
@@ -55,10 +48,6 @@ async fn stopped_thread(scenario: &mut Scenario) -> ThreadId {
     }
 }
 
-/// At the checkpoint the pool's thread runs the blocker's task, and the
-/// two queued closures wait in its queue in the order they were spawned.
-/// Released, the blocker stops at a breakpoint in its closure, on the
-/// pool's thread, and each queued closure then stops in its own task.
 #[tokio::test]
 async fn the_running_and_queued_closures_are_the_pools_tasks() {
     for fixture in BUILDS {

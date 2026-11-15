@@ -1,7 +1,7 @@
-// The TLS of main.c in a program that creates no threads, so a statically
-// linked glibc build contains no thread library. The program records where
-// its copies are, and with the argument `abort` aborts where it would stop,
-// leaving a core dump.
+
+
+
+
 
 #include <stdint.h>
 #include <stdlib.h>

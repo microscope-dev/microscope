@@ -1,44 +1,20 @@
-//! Object files a just-in-time compiler writes to memory and registers
-//! through the GDB JIT interface, as CPython's JIT does with each trace it
-//! compiles: an ELF image whose sections lie at the addresses the process
-//! runs them at, with the symbols and call-frame information that name and
-//! unwind its code. Each is a module at load bias zero.
-//!
-//! A compiler keeps a list of its objects in its `__jit_debug_descriptor`,
-//! which is read when wanted; microscope plants no breakpoint on the
-//! function a compiler calls after each change, which would stop the
-//! process for every trace. A list read while a compiler changes it is read
-//! as far as it is sound, and what could not be read is said.
-
 use std::hash::{Hash as _, Hasher as _};
 use std::ops::Range;
 use std::path::PathBuf;
 
 use object::{Object as _, ObjectSection as _};
 
-/// The symbol of the interface's descriptor:
-/// `struct jit_descriptor { uint32_t version; uint32_t action_flag;
-/// jit_code_entry *relevant_entry; jit_code_entry *first_entry; }`.
 pub const DESCRIPTOR: &str = "__jit_debug_descriptor";
 
-/// The bytes of a descriptor, which change whenever its compiler registers
-/// or unregisters an object.
 pub const DESCRIPTOR_BYTES: usize = 24;
 
-/// The only version of the interface.
 const VERSION: u32 = 1;
 
-/// The bytes of `struct jit_code_entry { jit_code_entry *next_entry;
-/// jit_code_entry *prev_entry; const char *symfile_addr;
-/// uint64_t symfile_size; }`.
 const ENTRY_BYTES: usize = 32;
 
-/// The most objects one descriptor lists that are read, and the largest
-/// object read.
 const MAX_OBJECTS: usize = 8192;
 const MAX_OBJECT_BYTES: u64 = 16 << 20;
 
-/// One registered object: where its image was, and the image.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JitObject {
     pub address: u64,
@@ -46,9 +22,6 @@ pub struct JitObject {
 }
 
 impl JitObject {
-    /// The module's name: where its image lies and a hash of what it
-    /// holds, so that a compiler that frees an object and writes another
-    /// in its place makes a new module.
     pub fn name(&self) -> PathBuf {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.bytes.hash(&mut hasher);
@@ -59,34 +32,22 @@ impl JitObject {
         ))
     }
 
-    /// The addresses its allocated sections take, which are its code's.
     pub fn code(&self) -> Option<Range<u64>> {
         let object = object::File::parse(self.bytes.as_slice()).ok()?;
         allocated_range(&object).ok().flatten()
     }
 }
 
-/// What the descriptors listed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Registered {
     pub objects: Vec<JitObject>,
 
-    /// The [`outline`] of each object the reader holds already, by where
-    /// its image lies, which is not read again while its outline is the
-    /// same; and the images of those still listed. A compiler adds objects
-    /// to a long list one at a time, which would otherwise be read whole
-    /// at each.
     pub known: std::collections::BTreeMap<u64, Vec<u8>>,
     pub kept: Vec<u64>,
 
-    /// Each object, or part of a list, that could not be read, and why.
     pub problems: Vec<String>,
 }
 
-/// Appends to `witness` the bytes of the descriptor at `descriptor` and of
-/// each entry it lists, which change whenever its compiler registers or
-/// unregisters an object: a new object's entry may be where an old one's
-/// was, leaving the descriptor's own bytes as they were.
 pub fn witness(
     descriptor: u64,
     mut read: impl FnMut(u64, usize) -> Option<Vec<u8>>,
@@ -108,7 +69,6 @@ pub fn witness(
     }
 }
 
-/// The little-endian word at `at` in `bytes`.
 fn word(bytes: &[u8], at: usize) -> Option<u64> {
     bytes
         .get(at..at + 8)
@@ -116,9 +76,6 @@ fn word(bytes: &[u8], at: usize) -> Option<u64> {
         .map(u64::from_le_bytes)
 }
 
-/// The objects the descriptor at `descriptor` lists, but those
-/// `registered` knows, reading at most `budget` bytes of them through
-/// `read`, which gives all the bytes asked for or none.
 pub fn registered(
     descriptor: u64,
     budget: &mut u64,
@@ -141,7 +98,6 @@ pub fn registered(
     match version {
         Some(VERSION) => {}
 
-        // A compiler that has registered nothing may leave it unset.
         Some(0) if word(&header, 16) == Some(0) => return,
         _ => {
             problem(format!(
@@ -206,11 +162,6 @@ pub fn registered(
     registered.objects.extend(objects);
 }
 
-/// The size of an image of `size` bytes, its ELF header, and its section
-/// headers, which say where its sections lie and run, read through
-/// `read` from the image's start. Another image in its place has its own
-/// code's address, unless the code it held was mapped again, as a new
-/// mapping says.
 pub fn outline(size: u64, mut read: impl FnMut(u64, usize) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
     const HEADER: usize = 64;
     let mut outline = size.to_le_bytes().to_vec();
@@ -231,8 +182,6 @@ pub fn outline(size: u64, mut read: impl FnMut(u64, usize) -> Option<Vec<u8>>) -
     Some(outline)
 }
 
-/// The addresses an image's allocated sections take, for an image with no
-/// program headers to say where it lies, as a JIT compiler writes one.
 pub(super) fn allocated_range(
     object: &object::File<'_>,
 ) -> Result<Option<Range<u64>>, gimli::Error> {
@@ -254,8 +203,6 @@ pub(super) fn allocated_range(
     Ok(held)
 }
 
-/// An image as CPython's JIT writes one: no program headers, and code of
-/// `size` bytes in a `.text` at `address`, where it runs.
 #[cfg(test)]
 pub fn test_image(address: u64, size: usize) -> Vec<u8> {
     let mut bytes = Vec::new();

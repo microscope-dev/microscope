@@ -232,8 +232,6 @@ fn descriptors_name_their_paths_and_unknown_calls_print_words() {
     );
 }
 
-/// Every error number prints a name of its own, so a printed result names
-/// one error.
 #[test]
 fn every_error_prints_a_name_of_its_own() {
     let mut seen = std::collections::BTreeMap::new();
@@ -245,8 +243,6 @@ fn every_error_prints_a_name_of_its_own() {
     }
 }
 
-/// Found by `constants_read_back_as_their_value`: futex's modifier bits
-/// past the two it names were dropped.
 #[test]
 fn futex_shows_the_bits_it_does_not_name() {
     let mut out = Tokens::default();
@@ -266,8 +262,6 @@ mod properties {
 
     use super::*;
 
-    /// The names a printed constant may hold, with their values: the
-    /// set's own and those `flags` adds for it.
     fn names_of(set: &str) -> Vec<(u64, &'static str)> {
         let mut names = sets::set(set).expect("a set").names.to_vec();
         match set {
@@ -285,7 +279,6 @@ mod properties {
         names
     }
 
-    /// The value one `|`-separated part of a constant stands for.
     fn read_part(set: &str, part: &str) -> u64 {
         if let Some(hex) = part.strip_prefix("0x") {
             return u64::from_str_radix(hex, 16).expect("hex");
@@ -315,7 +308,6 @@ mod properties {
         }
     }
 
-    /// The value a printed constant stands for.
     fn read_constant(set: &str, text: &str) -> u64 {
         text.split('|')
             .fold(0, |all, part| all | read_part(set, part))
@@ -344,8 +336,6 @@ mod properties {
         ]
     }
 
-    /// A set and a word of it: some of its names together, and sometimes
-    /// any other bits.
     fn set_and_word() -> impl Strategy<Value = (&'static str, u64)> {
         prop::sample::select(sets_used()).prop_flat_map(|set| {
             let names: Vec<u64> = names_of(set).iter().map(|&(value, _)| value).collect();
@@ -361,8 +351,6 @@ mod properties {
         })
     }
 
-    /// Bytes back from a string `quote` printed, and whether `...`
-    /// followed it.
     fn unquote(text: &str) -> (Vec<u8>, bool) {
         let (text, cut) = text
             .strip_suffix("...")
@@ -420,7 +408,6 @@ mod properties {
         (bytes, cut)
     }
 
-    /// The raw value a printed result stands for, or the error it names.
     fn read_result(text: &str) -> Result<i64, Errno> {
         let text = text.strip_prefix(" = ").expect("a result");
         if let Some((sign, error)) = text.split_once(' ')
@@ -434,7 +421,6 @@ mod properties {
             return Err(Errno(number));
         }
 
-        // A descriptor may carry what it refers to.
         let number = text.split_once('<').map_or(text, |(number, _)| number);
         if let Some(hex) = number.strip_prefix("0x") {
             return Ok(u64::from_str_radix(hex, 16).expect("hex").cast_signed());
@@ -449,8 +435,6 @@ mod properties {
         Ok(number.parse().expect("a decimal"))
     }
 
-    /// Any number under any ABI, mostly ones the tables list, with x32's
-    /// own calls.
     fn call_id() -> impl Strategy<Value = SyscallId> {
         prop_oneof![
             (0_usize..3, 0_u32..480)
@@ -460,7 +444,6 @@ mod properties {
         ]
     }
 
-    /// Results: errors, small descriptors and counts, and the edges.
     fn result() -> impl Strategy<Value = i64> {
         prop_oneof![
             -4095_i64..0,
@@ -471,7 +454,6 @@ mod properties {
     }
 
     proptest! {
-        // Futex is one set of about fifty, so its bad bits need more cases.
         #![proptest_config(ProptestConfig::with_cases(1024))]
 
         /// A flag or enumeration constant reads back as the argument's

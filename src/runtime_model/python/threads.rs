@@ -1,38 +1,27 @@
-//! Enumerates interpreters from CPython's runtime state, then each interpreter's threads.
-//! Thread states identify their native thread and innermost frame.
-
 use std::collections::HashSet;
 
 use super::objects::{Problem, Reader};
 use crate::VirtualAddress;
 use crate::image::python::Field;
 
-/// The most interpreters read, and the most thread states of one.
 const MAX_INTERPRETERS: usize = 256;
 const MAX_THREAD_STATES: usize = 1 << 14;
 
 pub(super) use crate::runtime_model::thread_ids::ThreadIds;
 
-/// A thread's state in one interpreter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ThreadState {
     pub(super) address: VirtualAddress,
 
-    /// The interpreter's state, and its number.
     pub(super) interpreter_state: VirtualAddress,
     pub(super) interpreter: i64,
 
-    /// The native thread it runs on, as the process's own namespace
-    /// numbers it.
     pub(super) native: u64,
 
-    /// Its innermost frame, and from 3.15 the frame its chain ends at.
     pub(super) frame: Option<VirtualAddress>,
     pub(super) base: Option<VirtualAddress>,
 }
 
-/// Every thread state of every interpreter of the runtime whose state is
-/// at `runtime`, and why some may be missing.
 pub(super) fn thread_states(
     reader: &Reader<'_>,
     runtime: VirtualAddress,
@@ -55,8 +44,6 @@ pub(super) fn thread_states(
             break;
         }
 
-        // An interpreter that cannot be read ends the list, but not the
-        // threads of those before it.
         let id = match reader.field_word(interpreter, Field::InterpreterId) {
             Ok(id) => id.cast_signed(),
             Err(problem) => {
@@ -83,8 +70,6 @@ pub(super) fn thread_states(
     Ok((states, gaps))
 }
 
-/// Adds the thread states of the interpreter at `interpreter`, numbered
-/// `id`, to `states`, or says why some cannot be read.
 fn interpreter_threads(
     reader: &Reader<'_>,
     interpreter: VirtualAddress,
@@ -109,7 +94,6 @@ fn interpreter_threads(
 
         let state = reader.record(address, Field::ThreadSize)?;
         let frame = match reader.layout.field(Field::CframeCurrentFrame) {
-            // 3.12 keeps the innermost frame in the thread's `_PyCFrame`.
             Some(offset) => match state.pointer(Field::ThreadCurrentFrame)? {
                 Some(cframe) => Some(reader.word(cframe.wrapping_add(offset))?),
                 None => None,

@@ -1,8 +1,3 @@
-//! System-call catchpoints: stopping at a call's entry and exit with its
-//! arguments, result, and path; conditions that read them; every call of
-//! threads that call at once counted; steps that make a caught call; and
-//! catching from a running program.
-
 mod support;
 
 use std::sync::Arc;
@@ -16,11 +11,8 @@ use microscope::{
 use object::{Object as _, ObjectSymbol as _};
 use support::Scenario;
 
-/// The program across a compiler and position-independence pair: the
-/// calls go through libc's wrappers either way.
 const FIXTURES: [&str; 2] = ["catch-gcc-o0", "catch-clang-o2-nopie"];
 
-/// The address a fixture's symbol names in its file.
 fn symbol(fixture: &str, name: &str) -> u64 {
     let bytes = std::fs::read(Scenario::fixture(fixture)).expect("read the fixture");
     let file = object::File::parse(&*bytes).expect("parse the fixture");
@@ -58,7 +50,6 @@ fn caught(reason: &StopReason) -> &SyscallStop {
     }
 }
 
-/// Whether a boolean expression holds in the selected frame.
 async fn holds(scenario: &Scenario, text: &str) -> bool {
     let expression = microscope::Expression::parse(text).expect("test expression");
     match scenario
@@ -93,8 +84,6 @@ async fn a_catchpoint_stops_at_a_calls_entry_and_exit_with_what_it_passed_and_re
         let mut scenario = Scenario::launch(fixture);
         let openat = catch(&scenario, &["openat"], CatchPhase::Both, None).await;
 
-        // The dynamic loader opens libraries first; each of its calls stops
-        // at its entry and its exit.
         let mut entry = scenario.run_to_stop().await;
         while caught(&entry).path.as_deref() != Some("/nonexistent/microscope-catch") {
             entry = scenario.resume_to_stop().await;
@@ -142,7 +131,6 @@ async fn a_catchpoint_stops_at_a_calls_entry_and_exit_with_what_it_passed_and_re
 async fn a_condition_reads_the_call_and_one_it_cannot_judge_stops() {
     let mut scenario = Scenario::launch(FIXTURES[0]);
 
-    // Only the write to stdout stops; the one to stderr is counted.
     let writes = catch(&scenario, &["write"], CatchPhase::Entry, Some("$arg0 == 1")).await;
     let stop = scenario.run_to_stop().await;
     assert_eq!(caught(&stop).args[0], 1);
@@ -155,8 +143,6 @@ async fn a_condition_reads_the_call_and_one_it_cannot_judge_stops() {
         .await;
     scenario.shutdown().await;
 
-    // A call that names no path has no `$path`, so the condition fails and
-    // the call stops, as a breakpoint's unjudgeable condition does.
     let mut scenario = Scenario::launch(FIXTURES[0]);
     let failing = catch(
         &scenario,
@@ -188,7 +174,6 @@ async fn a_condition_reads_the_call_and_one_it_cannot_judge_stops() {
 async fn threads_calling_at_once_have_every_call_counted_and_run_to_their_end() {
     let mut scenario = Scenario::launch(FIXTURES[0]);
 
-    // A condition that never holds makes every call an internal stop.
     let getppid = catch(
         &scenario,
         &["getppid"],
@@ -206,7 +191,6 @@ async fn threads_calling_at_once_have_every_call_counted_and_run_to_their_end() 
         StopReason::Exited(ExitStatus::Code(0))
     );
 
-    // Four threads, a thousand calls each, entry and exit.
     assert_eq!(hit_count(&mut scenario, &getppid).await, 8000);
     scenario.shutdown().await;
 }
@@ -225,7 +209,6 @@ async fn a_catchpoint_added_while_the_program_runs_stops_its_next_call() {
     scenario.shutdown().await;
 }
 
-/// Instruction steps until one stops for something else, which is returned.
 async fn step_until_not_a_step(scenario: &mut Scenario) -> StopReason {
     for _ in 0..10_000 {
         match scenario.step_to_stop(StepKind::Instruction).await {
@@ -237,10 +220,6 @@ async fn step_until_not_a_step(scenario: &mut Scenario) -> StopReason {
     panic!("ten thousand steps stopped for nothing else");
 }
 
-/// An instruction step that makes a call stops at its catchpoints as
-/// continuing does: a step from a caught entry stops at the exit, and a
-/// step onto `syscall` stops at the entry. A call none of them catches
-/// leaves the step where a step across `syscall` would.
 #[tokio::test]
 async fn steps_that_make_a_caught_call_stop_at_its_entry_and_exit() {
     let mut scenario = Scenario::launch(FIXTURES[0]);
@@ -256,7 +235,6 @@ async fn steps_that_make_a_caught_call_stop_at_its_entry_and_exit() {
     assert_eq!((caught(&next).args[0], caught(&next).returned), (1, None));
     scenario.shutdown().await;
 
-    // The stderr write's exit and the stdout write's entry stop nothing.
     let mut scenario = Scenario::launch(FIXTURES[0]);
     catch(&scenario, &["write"], CatchPhase::Entry, Some("$arg0 == 2")).await;
     catch(&scenario, &["write"], CatchPhase::Exit, Some("$arg0 == 1")).await;
@@ -273,15 +251,10 @@ async fn steps_that_make_a_caught_call_stop_at_its_entry_and_exit() {
     scenario.shutdown().await;
 }
 
-/// A thread stopped in a call the kernel will restart, as one attaching
-/// interrupted, makes the call again when it next runs. An instruction step
-/// from there stops at the restarted call's entry, which a catchpoint
-/// catches, rather than running the call unseen.
 #[tokio::test]
 async fn a_step_into_a_restarted_call_stops_at_its_entry() {
     let child = support::ExternalProcess::spawn(&Scenario::fixture("attach-restart"));
 
-    // Attaching interrupts pause(2), which then restarts.
     support::wait_for_system_call(child.process_id(), 34);
     let mut scenario = Scenario::attached("attached in pause", child.attach().await);
     catch(&scenario, &["pause"], CatchPhase::Entry, None).await;
@@ -293,9 +266,6 @@ async fn a_step_into_a_restarted_call_stops_at_its_entry() {
     scenario.shutdown().await;
 }
 
-/// A breakpoint planted on a `syscall` instruction does not hide the call
-/// from a catchpoint: stepping over its trap stops at the call's entry,
-/// and the call's exit stops next.
 #[tokio::test]
 async fn a_call_under_a_breakpoint_stops_at_its_catchpoint() {
     for fixture in FIXTURES {

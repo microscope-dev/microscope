@@ -1,11 +1,5 @@
-//! Suggestions for a mistyped name: the nearest few candidates by edit
-//! distance, computed only after something failed and never acted on.
-
-/// The most suggestions one failure offers.
 const MAX_SUGGESTIONS: usize = 3;
 
-/// The edit distance between two strings, by characters, counting a swap
-/// of neighbors as one edit, or `None` once it exceeds `bound`.
 #[expect(
     clippy::indexing_slicing,
     reason = "rows hold right.len() + 1 cells, and row and column stay within 1..=len"
@@ -19,8 +13,6 @@ fn distance(left: &str, right: &str, bound: usize) -> Option<usize> {
         return None;
     }
 
-    // Rows of the optimal string alignment table: two back, one back, and
-    // the one being filled.
     let mut before = vec![0; right.len() + 1];
     let mut previous = (0..=right.len()).collect::<Vec<_>>();
     let mut current = vec![0; right.len() + 1];
@@ -56,8 +48,6 @@ fn distance(left: &str, right: &str, bound: usize) -> Option<usize> {
     Some(previous[right.len()]).filter(|distance| *distance <= bound)
 }
 
-/// The candidates nearest `word`: those at the least edit distance within
-/// a bound that grows with the word's length, then those it begins.
 pub fn nearest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
     let bound = (word.chars().count() / 3).max(1);
     let mut found = candidates
@@ -73,8 +63,6 @@ pub fn nearest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) ->
     found.sort_unstable();
     found.dedup_by_key(|(.., candidate)| *candidate);
 
-    // Only the nearest by distance are suggested, and then those the word
-    // begins.
     let nearest = found.first().map_or(0, |(rank, ..)| *rank);
     found
         .into_iter()
@@ -84,8 +72,6 @@ pub fn nearest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) ->
         .collect()
 }
 
-/// `did you mean 'a'?`, `'a' or 'b'?`, or `'a', 'b', or 'c'?`, or `None`
-/// when nothing is near.
 pub fn did_you_mean<'a>(
     word: &str,
     candidates: impl IntoIterator<Item = &'a str>,
@@ -121,7 +107,6 @@ mod tests {
         );
         assert_eq!(did_you_mean("zzz", names), None);
 
-        // Short words allow one edit, so `p` suggests nothing long.
         assert_eq!(nearest("mian", names), ["main"]);
         assert_eq!(distance("kitten", "sitting", 3), Some(3));
         assert_eq!(distance("kitten", "sitting", 2), None);

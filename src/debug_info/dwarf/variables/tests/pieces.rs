@@ -1,6 +1,3 @@
-//! Composite storage and the location pieces that build it, against a model
-//! of each bit the object holds (DWARF 5 section 2.6.1.2).
-
 use proptest::prelude::*;
 
 use crate::model::{CompositeStorage, PieceLocation, StoragePiece};
@@ -10,7 +7,6 @@ use super::*;
 
 const BASE: u64 = 0x1000;
 
-/// What a register holds at the stop.
 #[derive(Debug, Clone, Copy)]
 enum Register {
     Value(u64),
@@ -18,8 +14,6 @@ enum Register {
     Missing,
 }
 
-/// A thread at a stop: memory at `BASE` of which some bytes cannot be
-/// read, and registers by number.
 #[derive(Debug, Clone)]
 struct Machine {
     bytes: Vec<u8>,
@@ -28,8 +22,6 @@ struct Machine {
 }
 
 impl Machine {
-    /// The bit `bit` bits past `BASE`, numbered from each byte's least
-    /// significant bit.
     fn memory_bit(&self, bit: u64) -> Bit {
         let index = index(bit / 8);
         match (self.bytes.get(index), self.readable.get(index)) {
@@ -94,7 +86,6 @@ impl VariableRuntime for Machine {
         Some(ImageAddress::new(address.get()))
     }
 
-    /// Reads up to the first byte that cannot be read, as a process would.
     fn read_memory(
         &mut self,
         address: VirtualAddress,
@@ -161,25 +152,19 @@ fn machine() -> impl Strategy<Value = Machine> {
         })
 }
 
-/// What an object holds in one bit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Bit {
     Known(bool),
     Undefined,
     Unavailable(VariableUnavailableReason),
 
-    /// Memory at this address cannot be read.
     Unreadable(u64),
 }
 
-/// A test's bit or byte count as an index.
 fn index(count: u64) -> usize {
     usize::try_from(count).expect("test sizes fit usize")
 }
 
-/// The error a read that meets `address` first among unreadable memory
-/// gives, keeping only that address: where a read starts depends on how
-/// pieces split it.
 fn inaccessible(address: u64) -> EvaluateError {
     VariableUnavailableReason::MemoryInaccessible {
         address: VirtualAddress::new(address),
@@ -190,8 +175,6 @@ fn inaccessible(address: u64) -> EvaluateError {
     .into()
 }
 
-/// A read's result with only what the model decides: the first address
-/// that could not be read, and not why something is malformed.
 fn outcome<T>(
     result: std::result::Result<T, EvaluateError>,
 ) -> std::result::Result<T, EvaluateError> {
@@ -205,9 +188,6 @@ fn outcome<T>(
     })
 }
 
-/// What reading `bits` must produce: their bytes, least significant first,
-/// or else the undefined ranges among them, then the first unavailable
-/// place, then the first unreadable address.
 fn expected_read(bits: &[Bit]) -> std::result::Result<Vec<u8>, EvaluateError> {
     let mut ranges: Vec<crate::ValueBitRange> = Vec::new();
 
@@ -270,7 +250,6 @@ fn expected_read(bits: &[Bit]) -> std::result::Result<Vec<u8>, EvaluateError> {
     Ok(bytes)
 }
 
-/// Where one piece of a built composite is.
 #[derive(Debug, Clone)]
 enum PieceKind {
     Memory { byte: u64, bit_offset: u64 },
@@ -291,7 +270,6 @@ fn piece_kind() -> impl Strategy<Value = PieceKind> {
     ]
 }
 
-/// The composite `kinds` describe, and each of its bits.
 fn composite_and_bits(
     kinds: &[(u64, PieceKind)],
     machine: &Machine,
@@ -352,7 +330,6 @@ fn composite_and_bits(
         offset += size;
     }
 
-    // Whole bytes, as an object has.
     let tail = offset.next_multiple_of(8) - offset;
 
     if tail != 0 {
@@ -371,8 +348,6 @@ fn index_of(bit: u64) -> usize {
     index(bit / 8)
 }
 
-/// What selecting `size` bytes `from` bits into a composite of `bits`, and
-/// reading them, gives.
 fn expected_selection(
     bits: &[Bit],
     from: i64,
@@ -403,7 +378,6 @@ fn readable_machine() -> Machine {
 fn reading_no_bytes_of_a_composite_reads_nothing() {
     let mut machine = readable_machine();
 
-    // 17 bits of memory, then 7 undefined bits.
     let memory = PieceKind::Memory {
         byte: 0,
         bit_offset: 0,
@@ -450,7 +424,6 @@ proptest! {
             start,
         });
 
-        // Selection moves by whole bytes from a start that need not be one.
         let from = i64::try_from(start).expect("a small composite") + delta * 8;
         let expected = expected_selection(&bits, from, size);
         let selected = storage::offset(storage.clone(), delta);
@@ -467,9 +440,6 @@ proptest! {
             prop_assert_eq!(again.as_ref(), Ok(bytes), "narrowed to {:?}", narrowed);
         }
 
-        // A composite numbers its bits from each byte's least significant
-        // one, whatever the byte order; only little-endian targets have
-        // composites.
         let (offset, width) = field;
         let offset = offset.index(index(total - start) + 1) as u64;
         let read_bits = storage::read_bits(
@@ -494,7 +464,6 @@ proptest! {
     }
 }
 
-/// Where a generated piece's bits come from.
 #[derive(Debug, Clone)]
 enum Source {
     Empty,
@@ -539,8 +508,6 @@ fn gimli_pieces(pieces: &[ModelPiece]) -> Vec<gimli::Piece<Reader<'_>>> {
         .collect()
 }
 
-/// A computed value's bits, least significant first, and how it extends
-/// past them: by its sign, by zeros, or not at all.
 fn value_bits(value: Value) -> (u64, u64, Option<bool>) {
     let signed = |value: i64, width| {
         let negative = value < 0;
@@ -562,8 +529,6 @@ fn value_bits(value: Value) -> (u64, u64, Option<bool>) {
     }
 }
 
-/// The bits `size` bits from `bit_offset` within a piece's source hold, or
-/// `None` if the piece reaches past its source or is otherwise malformed.
 fn source_bits(source: &Source, bit_offset: u64, size: u64, machine: &Machine) -> Option<Vec<Bit>> {
     let positions = bit_offset..bit_offset + size;
     match source {
@@ -609,15 +574,10 @@ fn source_bits(source: &Source, bit_offset: u64, size: u64, machine: &Machine) -
                 .map(|bit| Bit::Known(bytes[index_of(bit)] >> (bit % 8) & 1 == 1))
                 .collect()
         }),
-        // A pointer has no bits to read, only a referent.
         Source::ImplicitPointer => (bit_offset == 0).then(|| vec![Bit::Undefined; index(size)]),
     }
 }
 
-/// What the object of `byte_size` bytes that `pieces` describe holds, bit
-/// by bit, under DWARF 5 section 2.6.1.2: each piece in turn, register and
-/// value pieces taking their low bits, and bits no piece covers undefined.
-/// `None` if the pieces are malformed.
 fn model_bits(pieces: &[ModelPiece], byte_size: u64, machine: &Machine) -> Option<Vec<Bit>> {
     let total = byte_size * 8;
     let mut bits = Vec::new();
@@ -645,14 +605,11 @@ fn model_bits(pieces: &[ModelPiece], byte_size: u64, machine: &Machine) -> Optio
     Some(bits)
 }
 
-/// Whether one piece describes all of the object, which then is that
-/// piece's storage.
 fn describes_whole(pieces: &[ModelPiece], byte_size: u64) -> bool {
     matches!(pieces, [piece] if piece.size.is_none_or(|size| size == byte_size * 8)
         && piece.bit_offset.is_none_or(|offset| offset == 0))
 }
 
-/// Builds the storage `pieces` describe and reads all of it.
 fn read_pieces(
     pieces: &[ModelPiece],
     byte_size: u64,
@@ -704,7 +661,6 @@ fn computed_value() -> impl Strategy<Value = Value> {
     ]
 }
 
-/// A source that holds bits: memory, a register, a value, or bytes.
 fn holding_source() -> impl Strategy<Value = Source> {
     prop_oneof![
         3 => (0_u64..64).prop_map(Source::Memory),
@@ -722,8 +678,6 @@ fn source() -> impl Strategy<Value = Source> {
     ]
 }
 
-/// Piece sizes that split `bits` bits, most often all of them, sometimes
-/// leaving a tail or describing too many.
 fn sizes(bits: u64) -> impl Strategy<Value = Vec<u64>> {
     (
         proptest::collection::vec(0..=bits, 0..4),

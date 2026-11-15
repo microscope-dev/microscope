@@ -1,6 +1,6 @@
-// A server that runs on its own, for a debugger to attach to. It prints
-// READY and its address once it accepts connections, answers each
-// /count with how many it has answered, and ends when asked to /quit.
+
+
+
 package main
 
 import (
@@ -15,7 +15,7 @@ import (
 
 var counted atomic.Int64
 
-// count answers with how many counts have been asked for.
+
 func count(writer http.ResponseWriter, request *http.Request) {
 	total := counted.Add(1)
 	fmt.Fprint(writer, total) // SERVED: count

@@ -1,6 +1,3 @@
-//! Each language's rules against the answers CPython 3.12 to 3.15 and
-//! Node 26 gave for the same operations.
-
 use super::{binary, compare, key, shown, truth, unary};
 use crate::eval::error::ErrorKind;
 use crate::eval::number::{Exact, Float};
@@ -49,7 +46,6 @@ fn js(value: LoadedValue) -> Loaded {
     of(Some(Rules::JavaScript), value)
 }
 
-/// An integer the expression writes, which has no language of its own.
 fn literal(value: i128) -> Loaded {
     of(None, LoadedValue::Int(Exact::from(value)))
 }
@@ -86,7 +82,6 @@ fn float(result: Result<Loaded, Stop>) -> f64 {
     }
 }
 
-/// The same double, NaN and the sign of zero included.
 fn same(actual: f64, expected: f64) -> bool {
     actual.to_bits() == expected.to_bits() || (actual.is_nan() && expected.is_nan())
 }
@@ -112,7 +107,6 @@ fn python_divides_integers_into_a_correctly_rounded_float() {
         (7, 2, 3.5),
         (-7, 2, -3.5),
         ((1 << 60) + 1, 3, 3.843_071_682_022_823e17),
-        // Dividing the operands' nearest doubles gives 3346037147578390.0.
         (2_241_844_888_877_521_059, 670, 3_346_037_147_578_389.5),
         (1_157_777_724_344_136_025, 715, 1_619_269_544_537_253.2),
         ((1 << 64) + 3, (1 << 60) + 7, 16.0),
@@ -420,8 +414,6 @@ mod properties {
 
     use super::*;
 
-    /// A nonnegative integer as 64-bit limbs, low first: just enough
-    /// arithmetic to compare a quotient with a double exactly.
     fn wide(value: u128) -> Vec<u64> {
         #[expect(clippy::cast_possible_truncation, reason = "the low limb")]
         let low = value as u64;
@@ -467,14 +459,12 @@ mod properties {
             .unwrap_or(Ordering::Equal)
     }
 
-    /// A positive normal double as `mantissa · 2^exponent`.
     fn parts(value: f64) -> (u128, i32) {
         let bits = value.to_bits();
         let exponent = i32::try_from(bits >> 52).expect("positive") - 1075;
         (u128::from(bits & ((1 << 52) - 1) | 1 << 52), exponent)
     }
 
-    /// The point halfway between two neighboring positive doubles.
     fn midpoint(low: f64, high: f64) -> (u128, i32) {
         let ((low, low_exponent), (high, high_exponent)) = (parts(low), parts(high));
         let exponent = low_exponent.min(high_exponent);
@@ -482,7 +472,6 @@ mod properties {
         (sum, exponent - 1)
     }
 
-    /// `dividend / divisor` against `mantissa · 2^exponent`, exactly.
     fn compare_quotient(
         dividend: u128,
         divisor: u128,
@@ -497,8 +486,6 @@ mod properties {
         compare(&left, &right)
     }
 
-    /// An exact integer: small ones, powers of two and their neighbors,
-    /// and any in range, of either sign.
     fn exact() -> impl Strategy<Value = Exact> {
         let magnitude = prop_oneof![
             0_u128..1000,
@@ -531,7 +518,6 @@ mod properties {
         of(Some(Rules::Python), LoadedValue::Int(value))
     }
 
-    /// `x mod modulus`, in `0..modulus`.
     fn modulo(value: Exact, modulus: u128) -> u128 {
         let rest = value.magnitude() % modulus;
         if value.is_negative() && rest != 0 {

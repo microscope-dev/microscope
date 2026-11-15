@@ -1,10 +1,3 @@
-//! The browser debugger, `microscope web`.
-//!
-//! One server debugs one program at a time and serves it to every tab that
-//! joins: the page, `/api/login`, which turns a join link's token into a
-//! cookie, and `/api/ws`, the WebSocket each tab talks over. Like the CLI
-//! and the DAP adapter, it is a client of [`microscope::DebuggerHandle`].
-
 mod assets;
 mod auth;
 mod connection;
@@ -40,16 +33,11 @@ use auth::{Origins, Tokens};
 use protocol::Role;
 use session::{LaunchSpec, Session, Start};
 
-/// The port tried first, so links stay the same from run to run.
 const DEFAULT_PORT: u16 = 7341;
 
-/// The subprotocol a socket that presents its token offers, as
-/// `microscope-token.TOKEN` beside it; browsers cannot add other headers to a
-/// WebSocket.
 const PROTOCOL: &str = "microscope";
 const TOKEN_PROTOCOL: &str = "microscope-token.";
 
-/// The largest message a tab may send.
 const MAX_MESSAGE: usize = 1024 * 1024;
 
 /// Serves a browser debugger.
@@ -163,10 +151,6 @@ struct App {
 }
 
 impl App {
-    /// The role this request grants. A token the request presents itself is
-    /// good from any page, which could only have it from a join link, as when
-    /// the page is served on its own; the cookie, which a browser adds to
-    /// every page's requests, only from this server's own pages.
     fn authorize(&self, headers: &HeaderMap, presented: Option<&str>) -> Option<Role> {
         if let Some(token) = presented.filter(|token| !token.is_empty()) {
             return self
@@ -203,7 +187,6 @@ impl App {
             .is_some_and(|host| self.origins.knows(host))
     }
 
-    /// The path every route lies under.
     fn base(&self) -> &str {
         self.public
             .as_ref()
@@ -211,15 +194,10 @@ impl App {
     }
 }
 
-/// Runs the server until it is interrupted.
 pub async fn run(args: &WebArgs) -> Result<()> {
-    // Ctrl+C is caught from here on. One that comes while the program starts
-    // ends the server once it has, so nothing is left half launched.
     let terminated = crate::dap::termination()?;
     let cwd = std::env::current_dir().context("the working directory")?;
 
-    // The processes a program starts are debugged too, as the terminal's
-    // [follow] settings say.
     let follow =
         crate::cli::config::Files::read(&cwd, &crate::cli::config::UserFile::choose(false, None))
             .and_then(|files| files.settings(false))
@@ -259,7 +237,6 @@ pub async fn run(args: &WebArgs) -> Result<()> {
         public: args.public_url.clone(),
     });
 
-    // Before any debugger exists: see `terminal`.
     let link = session.join_link(
         Role::Control,
         &profile.map_or_else(|| "/".to_owned(), |id| format!("/profile/{id}")),
@@ -296,13 +273,10 @@ pub async fn run(args: &WebArgs) -> Result<()> {
         stdout.flush()?;
     }
 
-    // The page is served while the program loads, which can take a while,
-    // and a tab that comes meanwhile sees it loading.
     let starting = start.map(|start| {
         session.loading(&start);
         let session = Arc::clone(&session);
         tokio::spawn(async move {
-            // The page shows a failure to start, as the terminal does.
             if let Err(failure) = session.start(start, false).await {
                 eprintln!("error: {}", failure.body().message);
             }
@@ -316,8 +290,6 @@ pub async fn run(args: &WebArgs) -> Result<()> {
         () = terminated => Ok(()),
     };
 
-    // A load in progress is given up; a launch or attach under way is
-    // waited for, and whatever it started is ended below.
     session.stop_loading();
     if let Some(starting) = starting {
         if !starting.is_finished() {
@@ -329,7 +301,6 @@ pub async fn run(args: &WebArgs) -> Result<()> {
 
     session.shutdown().await;
 
-    // Recordings end with the server, and so do the programs they run.
     let profiles = Arc::clone(&app_profiles);
     let _ = tokio::task::spawn_blocking(move || profiles.shutdown()).await;
     drop(keys);
@@ -337,7 +308,6 @@ pub async fn run(args: &WebArgs) -> Result<()> {
     served
 }
 
-/// Every route, under the public URL's path when there is one.
 fn router(app: Arc<App>) -> Router {
     let base = app.base().trim_end_matches('/').to_owned();
     let root_app = Arc::clone(&app);
@@ -350,12 +320,9 @@ fn router(app: Arc<App>) -> Router {
         .fallback(get(page))
         .with_state(app);
 
-    // Behind a proxy, nothing outside the public URL's path is served.
     if base.is_empty() {
         api
     } else {
-        // nest serves the path without its slash but not with it, which is
-        // the URL itself: its page is the root's.
         let root = move |headers: HeaderMap| page(State(root_app), headers, Uri::from_static("/"));
         Router::new()
             .nest(&base, api)
@@ -363,8 +330,6 @@ fn router(app: Arc<App>) -> Router {
     }
 }
 
-/// What to debug, or the profile to serve, by its id: the executable
-/// argument may name either.
 fn what_to_serve(
     args: &WebArgs,
     profiles: &profiles::Profiles,
@@ -391,7 +356,6 @@ fn what_to_serve(
     })
 }
 
-/// Serves `path` when it is a profile, returning its id; a program is not.
 fn open_profile(profiles: &profiles::Profiles, path: &std::path::Path) -> Result<Option<String>> {
     let _span = microscope::span!("web profile open");
     if path.is_dir() {
@@ -401,8 +365,6 @@ fn open_profile(profiles: &profiles::Profiles, path: &std::path::Path) -> Result
         return Ok(Some(id));
     }
 
-    // Only a regular file is read here: a program may be one that blocks
-    // its reader, such as a FIFO, which the page is served while loading.
     if !std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
         return Ok(None);
     }
@@ -498,7 +460,6 @@ async fn socket(
         .on_upgrade(move |socket| connection::serve(socket, session, profiles, role))
 }
 
-/// Trades a join link's token for the cookie that carries it.
 async fn login(State(app): State<Arc<App>>, headers: HeaderMap, body: String) -> Response {
     if !app.is_own_page(&headers) {
         return StatusCode::FORBIDDEN.into_response();
@@ -508,8 +469,6 @@ async fn login(State(app): State<Arc<App>>, headers: HeaderMap, body: String) ->
         return (StatusCode::FORBIDDEN, "this link is not for this server").into_response();
     };
 
-    // A browser holds one cookie for this server, so opening a view link
-    // keeps the control it has rather than taking it away.
     if role == Role::View && app.authorize(&headers, None) == Some(Role::Control) {
         return StatusCode::NO_CONTENT.into_response();
     }
@@ -522,9 +481,6 @@ async fn login(State(app): State<Arc<App>>, headers: HeaderMap, body: String) ->
     )
 }
 
-/// A profile's file, for saving. It is a POST, which carries the `Origin`
-/// that shows the request came from this server's own page, or the token in
-/// its body.
 async fn download(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -543,7 +499,6 @@ async fn download(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
 
-    // Only characters a file name and a header both take.
     let name: String = name
         .chars()
         .map(|char| {
@@ -569,12 +524,6 @@ async fn download(
         .into_response()
 }
 
-/// Says whether this browser's cookie, or the token in the body, grants
-/// access, which a refused WebSocket cannot tell the page.
-///
-/// It and `download` answer pages served anywhere: a browser shows another
-/// page the answer only to a request it sent without cookies, so all that
-/// page learns is whether a token it already holds is good.
 async fn check(State(app): State<Arc<App>>, headers: HeaderMap, body: String) -> Response {
     let status = if app.authorize(&headers, Some(body.trim())).is_some() {
         StatusCode::NO_CONTENT
@@ -604,7 +553,6 @@ async fn page(State(app): State<Arc<App>>, headers: HeaderMap, uri: Uri) -> Resp
         "no-cache"
     };
 
-    // Through a proxy the page may sit in a frame of the proxy's own pages.
     let csp = if app.public.is_some() {
         "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
          frame-ancestors 'self'; base-uri 'none'; form-action 'none'"

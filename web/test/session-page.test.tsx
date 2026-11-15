@@ -1,6 +1,3 @@
-// A link to a session that is not the one running says so, without claiming
-// to know it ever ran.
-
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";

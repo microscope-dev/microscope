@@ -1,6 +1,3 @@
-// What a console line asks for: the run-control words the page runs itself,
-// and everything else, which goes to microscope as it was typed.
-
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
@@ -61,18 +58,16 @@ describe("a console line", () => {
   });
 
   it.each([
-    // Expressions that start with a run-control word's name, in forms the
-    // properties below do not generate.
     "s->key",
     "f(3)",
     "n*2",
     "r[0]",
-    // Arguments the page's commands do not take: microscope says so.
+
     "continue 3",
     "next 2",
     "run --flag",
     "clear 1",
-    // An instruction count keeps microscope's listing.
+
     "disas main 20",
     "disassemble 0x401000 8",
     "disas + 1",

@@ -1,32 +1,15 @@
-//! Source Map v3 (ECMA-426): generated-to-original positions and reverse lookup.
-//!
-//! Maps decode once into segments sorted by generated position and indexed by
-//! original position. Without a segment at or before a position on the same
-//! line, it has no original position; mappings never carry across lines.
-//!
-//! Lines and UTF-16 code-unit columns are zero-based. [`Line`] and [`Column`]
-//! convert to and from one-based stack-trace positions only through named
-//! constructors and accessors.
-//!
-//! Every malformed input is a [`SourceMapError`]. Input sizes are bounded
-//! before decoding, and decoding is linear in the input apart from one sort.
-
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-/// The largest map this decoder reads, in bytes of JSON.
 pub const MAX_MAP_BYTES: usize = 256 << 20;
 
-/// The most segments one map may hold, across all its sections.
 pub const MAX_SEGMENTS: usize = 1 << 24;
 
-/// The most sections one index map may hold.
 pub const MAX_SECTIONS: usize = 1 << 16;
 
-/// A line of a document, counted from zero, as source maps count lines.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Line(u32);
 
@@ -36,7 +19,6 @@ impl Line {
         Self(line)
     }
 
-    /// Converts a one-based line; `None` for zero.
     #[must_use]
     pub const fn from_one_based(line: u32) -> Option<Self> {
         match line.checked_sub(1) {
@@ -50,14 +32,12 @@ impl Line {
         self.0
     }
 
-    /// The line counted from one, or `None` past `u32::MAX`.
     #[must_use]
     pub const fn one_based(self) -> Option<u32> {
         self.0.checked_add(1)
     }
 }
 
-/// A column within a line, counted from zero in UTF-16 code units.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Column(u32);
 
@@ -67,7 +47,6 @@ impl Column {
         Self(column)
     }
 
-    /// The column a one-based count names, or `None` for zero.
     #[must_use]
     pub const fn from_one_based(column: u32) -> Option<Self> {
         match column.checked_sub(1) {
@@ -81,14 +60,12 @@ impl Column {
         self.0
     }
 
-    /// The column counted from one, or `None` past `u32::MAX`.
     #[must_use]
     pub const fn one_based(self) -> Option<u32> {
         self.0.checked_add(1)
     }
 }
 
-/// A place in a document. Positions order by line, then column.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Position {
     pub line: Line,
@@ -105,72 +82,52 @@ impl Position {
 crate::model::id_type!(SourceId, "An original source in one source map's table.");
 crate::model::id_type!(NameId, "A name in one source map's table.");
 
-/// Where a document is: a file, or a URL this module does not read, as an
-/// `https:` or `webpack:` one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Location {
     Path(PathBuf),
     Url(Arc<str>),
 }
 
-/// One original source a map names.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Source {
-    /// The map's `sources` entry as written, or `None` where it is null.
     pub name: Option<Arc<str>>,
 
-    /// Where the entry leads, after `sourceRoot`, from the map's location;
-    /// `None` for a null entry or one that does not resolve to a location.
     pub location: Option<Location>,
 
-    /// The source's text, when the map carries it in `sourcesContent`.
     pub content: Option<Arc<str>>,
 
-    /// Whether the map's `ignoreList` names the source as third-party code.
     pub ignored: bool,
 }
 
-/// The original place a segment maps generated code to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OriginalPlace {
     pub source: SourceId,
     pub line: Line,
     pub column: Column,
 
-    /// The original name, as of the identifier the segment starts at.
     pub name: Option<NameId>,
 }
 
-/// The segment that covers a generated position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Covering {
-    /// The column, on the position's own line, where the segment starts.
     pub start: Column,
 
-    /// Its original place, or `None` for a segment of generated code that
-    /// has none.
     pub original: Option<OriginalPlace>,
 }
 
-/// A generated position whose segment maps to an original line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GeneratedMatch {
     pub generated: Position,
     pub original_column: Column,
 }
 
-/// Which of the segments that map to an original line a breakpoint uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnChoice {
-    /// The line's least original column, across all generated copies.
     LineStart,
 
-    /// The greatest original column at or before this one on the same line.
-    /// None when every segment starts after it.
     Covering(Column),
 }
 
-/// Why a source map or a reference to one cannot be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SourceMapError {
     #[error("the source map's {what} exceeds the limit of {limit}")]
@@ -207,34 +164,22 @@ const fn mappings_error(offset: usize, reason: &'static str) -> SourceMapError {
     SourceMapError::Mappings { offset, reason }
 }
 
-/// A decoded source map.
 #[derive(Debug, Clone)]
 pub struct SourceMap {
     file: Option<Arc<str>>,
     sources: Vec<Source>,
     name_text: String,
 
-    /// Where each name ends in `name_text`; a name starts where the one
-    /// before it ends.
     name_ends: Vec<u32>,
 
-    /// Each segment's generated start, sorted, with segments that start at
-    /// one position in the order the map lists them.
     generated: Vec<Position>,
 
-    /// Each segment's original place, beside `generated`.
     originals: Vec<Option<OriginalPlace>>,
 
-    /// The segments that cover some position and have an original place,
-    /// as indexes into `generated`, sorted by original place and then by
-    /// generated position.
     by_original: Vec<u32>,
 }
 
 impl SourceMap {
-    /// Decodes a map, or an index map of sections, whose own location is
-    /// `base`: the map file's, or for a map inline in a script, the
-    /// script's. Sources resolve against it.
     pub fn parse(json: &[u8], base: &Location) -> Result<Self> {
         if json.len() > MAX_MAP_BYTES {
             return Err(SourceMapError::TooLarge {
@@ -262,7 +207,6 @@ impl SourceMap {
         Ok(map)
     }
 
-    /// The generated file's name as the map gives it.
     #[must_use]
     pub fn file(&self) -> Option<&str> {
         self.file.as_deref()
@@ -296,11 +240,6 @@ impl SourceMap {
         self.generated.len()
     }
 
-    /// The segment covering a generated position: the last one, in the
-    /// map's order, of those that start at the greatest position at or
-    /// before it on the same line. A segment that another starts at the
-    /// same position after covers nothing. `None` when no segment on the
-    /// position's line starts at or before it.
     #[must_use]
     pub fn covering(&self, at: Position) -> Option<Covering> {
         let after = self.generated.partition_point(|start| *start <= at);
@@ -325,16 +264,11 @@ impl SourceMap {
         })
     }
 
-    /// The original place of a generated position: that of the segment
-    /// covering it, if one does and it has one.
     #[must_use]
     pub fn original_at(&self, at: Position) -> Option<OriginalPlace> {
         self.covering(at)?.original
     }
 
-    /// Every generated position whose covering segment maps to `line` of
-    /// `source`, in order of original column and then generated position.
-    /// Each maps back to the same line through [`Self::original_at`].
     pub fn generated_for_line(
         &self,
         source: SourceId,
@@ -369,9 +303,6 @@ impl SourceMap {
             })
     }
 
-    /// The generated positions a breakpoint on `line` of `source` uses,
-    /// chosen by `column`, in generated order. Empty when no segment maps
-    /// to the line: a breakpoint never moves to another line.
     #[must_use]
     pub fn breakpoint_positions(
         &self,
@@ -410,7 +341,6 @@ impl SourceMap {
         *self.originals.get(usize::try_from(index).ok()?)?
     }
 
-    /// Checks the tables against each other.
     pub fn check_invariants(&self) {
         debug_assert_eq!(
             self.generated.len(),
@@ -523,7 +453,6 @@ struct RawOffset {
     column: u32,
 }
 
-/// Decoded segments before they are sorted.
 #[derive(Default)]
 struct Builder {
     sources: Vec<Source>,
@@ -531,8 +460,6 @@ struct Builder {
     name_ends: Vec<u32>,
     segments: Vec<(Position, Option<OriginalPlace>)>,
 
-    /// Each source's id, by its record, in an index map, whose sections
-    /// share a source the spec decodes as one record.
     shared: HashMap<Source, SourceId>,
 }
 
@@ -599,8 +526,6 @@ impl Builder {
         Ok(())
     }
 
-    /// Decodes one map that is not an index map into the tables, its
-    /// generated positions moved by `offset`.
     fn section(
         &mut self,
         raw: &RawMap<'_>,
@@ -726,10 +651,6 @@ impl Builder {
     }
 }
 
-/// Decodes a `mappings` string, whose sources are `sources` and whose names
-/// are the `name_count` from `first_name`, into `out`, its generated
-/// positions moved by `offset`: lines by its line, and the first line's
-/// columns by its column.
 fn decode_mappings(
     text: &[u8],
     sources: &[SourceId],
@@ -863,8 +784,6 @@ fn generated_position(offset: Position, line: u32, column: u32) -> Option<Positi
     Some(position)
 }
 
-/// Decodes one base64 VLQ at `at`, moving `at` past it. Values are limited
-/// to 32 bits, sign included, as ECMA-426's `VLQSignedValue` defines.
 fn decode_vlq(text: &[u8], at: &mut usize) -> Result<i64> {
     let start = *at;
     let mut value: u64 = 0;
@@ -930,10 +849,6 @@ const fn base64_digit(byte: u8) -> Option<u8> {
     }
 }
 
-/// What `sourceRoot` puts before each relative source: the root and a
-/// separating `/`. An empty root puts nothing, as browsers and Mozilla's
-/// library read it, where ECMA-426's text would put a lone `/` and make
-/// every relative source absolute.
 fn source_prefix(root: Option<&str>) -> Option<String> {
     let root = root.filter(|root| !root.is_empty())?;
     Some(if root.ends_with('/') {
@@ -943,9 +858,6 @@ fn source_prefix(root: Option<&str>) -> Option<String> {
     })
 }
 
-/// Where a `sources` entry leads from the map's location. A root goes
-/// before a relative entry only, as browsers apply it: an entry with its
-/// own scheme stands alone.
 fn resolve_source(base: &Location, prefix: Option<&str>, name: &str) -> Option<Location> {
     match prefix {
         Some(prefix) if split_scheme(name).is_none() => {
@@ -960,10 +872,6 @@ fn resolve_source(base: &Location, prefix: Option<&str>, name: &str) -> Option<L
 }
 
 impl Location {
-    /// Where `reference`, a URL or a path relative to this document as a
-    /// URL is relative to its base, leads. A path's percent escapes are
-    /// decoded, and its `.` and `..` segments resolved by name, as URL
-    /// resolution does.
     pub fn resolve(&self, reference: &str) -> Result<Self> {
         if reference.is_empty() {
             return Err(SourceMapError::Url("it is empty"));
@@ -1009,7 +917,6 @@ impl Location {
     }
 }
 
-/// A URL's scheme and what follows its colon, if it begins with one.
 fn split_scheme(text: &str) -> Option<(&str, &str)> {
     let (scheme, rest) = text.split_once(':')?;
     let mut bytes = scheme.bytes();
@@ -1024,8 +931,6 @@ fn strip_query(reference: &str) -> &str {
     reference.split(['?', '#']).next().unwrap_or(reference)
 }
 
-/// The local path a `file:` URL names. A host other than `localhost` is
-/// another machine's.
 fn file_url_path(url: &str) -> Result<PathBuf> {
     let rest = url.get(5..).unwrap_or_default();
     let rest = strip_query(rest);
@@ -1060,8 +965,6 @@ fn file_url_path(url: &str) -> Result<PathBuf> {
     Ok(joined)
 }
 
-/// Resolves a relative reference against a URL with an authority, as
-/// RFC 3986 does; `None` for a base with no `//` authority.
 fn join_url(base: &str, reference: &str) -> Option<String> {
     let (scheme, rest) = split_scheme(base)?;
     let rest = rest.strip_prefix("//")?;
@@ -1090,7 +993,6 @@ fn join_url(base: &str, reference: &str) -> Option<String> {
     ))
 }
 
-/// RFC 3986's `remove_dot_segments` for an absolute path.
 fn remove_dot_segments(path: &str) -> String {
     let segments: Vec<&str> = path.split('/').skip(1).collect();
     let mut out: Vec<&str> = Vec::with_capacity(segments.len());
@@ -1148,20 +1050,14 @@ const fn hex_value(digit: u8) -> Option<u8> {
     }
 }
 
-/// Where a script's source map is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MapReference {
-    /// The map is the JSON of a `data:` URL, whose sources resolve against
-    /// the script's location, as browsers and Node resolve them.
     Inline(Vec<u8>),
 
-    /// The map is the document at this location, whose sources resolve
-    /// against it.
     Document(Location),
 }
 
 impl MapReference {
-    /// Where the source map URL a script at `script` gives leads.
     pub fn resolve(script: &Location, url: &str) -> Result<Self> {
         if let Some((scheme, rest)) = split_scheme(url)
             && scheme.eq_ignore_ascii_case("data")
@@ -1172,7 +1068,6 @@ impl MapReference {
         script.resolve(url).map(Self::Document)
     }
 
-    /// The location the map's sources resolve against.
     #[must_use]
     pub const fn base<'a>(&'a self, script: &'a Location) -> &'a Location {
         match self {
@@ -1182,21 +1077,12 @@ impl MapReference {
     }
 }
 
-/// Finds a script's source map: the URL its last `sourceMappingURL`
-/// comment gives, resolved against `script`, its location. `None` when the
-/// script names no map.
 pub fn locate(script: &Location, text: &str) -> Result<Option<MapReference>> {
     source_mapping_url(text)
         .map(|url| MapReference::resolve(script, url))
         .transpose()
 }
 
-/// The URL in a script's `//# sourceMappingURL=` comment, or the legacy
-/// `//@` one, as ECMA-426's `JavaScriptExtractSourceMapURL` extracts it
-/// without parsing: from the last line backwards, past lines of nothing
-/// but whitespace and comments, stopping at the first line with code. A
-/// comment holding a quote or `*/` makes the extraction fail, since it may
-/// be inside a string or a block comment.
 #[must_use]
 pub fn source_mapping_url(script: &str) -> Option<&str> {
     for line in script.rsplit(['\n', '\r', '\u{2028}', '\u{2029}']) {
@@ -1217,8 +1103,6 @@ pub fn source_mapping_url(script: &str) -> Option<&str> {
     None
 }
 
-/// ECMA-426's `MatchSourceMapURL`: the URL in a comment that matches
-/// `^[@#]\s*sourceMappingURL=(\S*?)\s*$`.
 fn match_source_mapping_url(comment: &str) -> Option<&str> {
     let rest = comment.strip_prefix(['@', '#'])?;
     let rest = rest.trim_start_matches(is_js_regexp_space);
@@ -1227,7 +1111,6 @@ fn match_source_mapping_url(comment: &str) -> Option<&str> {
     (!url.contains(is_js_regexp_space)).then_some(url)
 }
 
-/// ECMAScript's `WhiteSpace`.
 const fn is_js_whitespace(character: char) -> bool {
     matches!(
         character,
@@ -1236,15 +1119,10 @@ const fn is_js_whitespace(character: char) -> bool {
     )
 }
 
-/// What `\s` matches in an ECMAScript regular expression: `WhiteSpace` and
-/// `LineTerminator`.
 const fn is_js_regexp_space(character: char) -> bool {
     is_js_whitespace(character) || matches!(character, '\n' | '\r' | '\u{2028}' | '\u{2029}')
 }
 
-/// The JSON of a `data:` URL, given what follows `data:`: a JSON media
-/// type, with a UTF-8 charset if any, and its body percent-decoded and,
-/// with `;base64`, base64-decoded as the Fetch standard decodes it.
 fn decode_data_url(rest: &str) -> Result<Vec<u8>> {
     if rest.len() > MAX_MAP_BYTES.saturating_mul(2) {
         return Err(SourceMapError::TooLarge {
@@ -1295,7 +1173,6 @@ fn decode_data_url(rest: &str) -> Result<Vec<u8>> {
     Ok(json)
 }
 
-/// The Infra standard's forgiving-base64 decode.
 fn forgiving_base64(input: &[u8]) -> Option<Vec<u8>> {
     let mut digits: Vec<u8> = input
         .iter()

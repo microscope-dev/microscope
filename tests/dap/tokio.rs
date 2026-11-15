@@ -1,16 +1,11 @@
-//! tokio's tasks as a client sees them: as its threads, beside the
-//! program's own threads, without the runtime's idle workers.
-
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Mark, Profile, fixture};
 
-/// The workers fixture, stopped at its checkpoint, with its threads.
 fn at_checkpoint(name: &str) -> (Dap, i64, Vec<(i64, String)>) {
     stopped_at_checkpoint(name, "tokio-workers-o0")
 }
 
-/// A tokio fixture, stopped at its checkpoint, with its threads.
 fn stopped_at_checkpoint(name: &str, program: &str) -> (Dap, i64, Vec<(i64, String)>) {
     let mut dap = Dap::start(name);
     let started = dap.launch(
@@ -43,7 +38,6 @@ fn stopped_at_checkpoint(name: &str, program: &str) -> (Dap, i64, Vec<(i64, Stri
 fn tokio_tasks_are_threads_beside_the_programs_own() {
     let (dap, stopped, listed) = at_checkpoint("tokio tasks");
 
-    // The thread that stopped runs no task, and comes first.
     let (first, name) = &listed[0];
     assert_eq!(*first, stopped, "{listed:?}");
     assert!(name.ends_with("— at breakpoint 1"), "{listed:?}");
@@ -54,7 +48,6 @@ fn tokio_tasks_are_threads_beside_the_programs_own() {
             .count()
     };
 
-    // Each suspended task says what it waits for.
     assert_eq!(named("] leaf — "), 8, "{listed:?}");
     assert_eq!(
         named("] leaf — waiting for 1 of 1 permits"),
@@ -69,17 +62,11 @@ fn tokio_tasks_are_threads_beside_the_programs_own() {
         "{listed:?}"
     );
 
-    // The process's first thread, which waits for the one that stopped, is
-    // the program's own; the runtime's idle workers are left out.
     assert_eq!(listed.len(), 12, "{listed:?}");
     assert_eq!(named("tokio-rt-worker"), 0, "{listed:?}");
     dap.finish();
 }
 
-/// A suspended task's stack is its chain of awaits: the future it awaits,
-/// then each async function at its await, with tokio's own subdued. An
-/// async function's frame shows the locals it keeps, and offers no
-/// registers, which it has none of.
 #[test]
 fn a_suspended_tasks_stack_is_its_chain_of_awaits() {
     let (mut dap, _, listed) = at_checkpoint("tokio awaits");
@@ -126,21 +113,14 @@ fn a_suspended_tasks_stack_is_its_chain_of_awaits() {
         json!({"expression": "leaf_local", "frameId": leaf["id"], "context": "watch"}),
     );
 
-    // Each task records its own number, `me`, in its locals.
     assert_eq!(local["result"], (task * 100 + 3).to_string(), "{local}");
     dap.finish();
 }
 
-/// A thread that blocks on a future shows the future's awaits under a
-/// label, before the frame of tokio's that drives it, and each async
-/// function's frame keeps its locals.
 #[test]
 fn a_blocked_threads_stack_holds_the_future_it_drives() {
     let (mut dap, stopped, listed) = stopped_at_checkpoint("tokio driven", "tokio-drivers-o0");
 
-    // The main thread, whose id is the process's, drives `#[tokio::main]`'s
-    // future while another reaches the checkpoint. Tasks may be listed
-    // before it.
     let process = dap.event(Mark::START, "process", |_| true);
     let main = process["systemProcessId"].as_i64().expect("a process id");
     assert!(
@@ -181,9 +161,6 @@ fn a_blocked_threads_stack_holds_the_future_it_drives() {
     dap.finish();
 }
 
-/// `"stepIntoRuntime": true` lets `stepIn` stop in tokio's own code, as in
-/// its `recv` on stepping into `rx.recv().await`, whose frame the client
-/// shows subdued.
 #[test]
 fn step_into_runtime_stops_in_tokios_code() {
     let source = "tests/fixtures/rust/tokio/shapes/src/main.rs";

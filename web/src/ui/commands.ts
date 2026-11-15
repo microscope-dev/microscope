@@ -1,9 +1,3 @@
-// The debugger's commands, their keys, and what each does. Keys are VS
-// Code's debugger keys, which a page can claim (F5 does not reload, F11 does
-// not go fullscreen), and letters that work whenever no text box has focus,
-// for keyboards without function keys. Commands act on the tab's focus,
-// which the tab store mirrors from the URL.
-
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
 
@@ -67,7 +61,7 @@ import { duplicate, leadingPane, showView } from "./profile/link";
 
 interface Context {
   model: Model;
-  /** The tab's state, as it is when the command runs. */
+
   current: TabState;
   connection: Connection;
   navigate: ReturnType<typeof useNavigate>;
@@ -75,7 +69,6 @@ interface Context {
 
 type Spec = Command<Context>;
 
-/** A run-control action, as the toolbar offers it too. */
 function act(name: ActionName, label: string, menu: "Run" | "Debug", keys: Chord[]): Spec {
   return {
     label,
@@ -86,7 +79,7 @@ function act(name: ActionName, label: string, menu: "Run" | "Debug", keys: Chord
       if (chosen.enabled) {
         return READY;
       }
-      // With nothing to debug, run keys are not the debugger's to claim.
+
       const moot = (name === "continue" || name === "pause") && !model.state?.target;
       return moot ? ABSENT : blocked(chosen.reason);
     },
@@ -99,7 +92,6 @@ function act(name: ActionName, label: string, menu: "Run" | "Debug", keys: Chord
   };
 }
 
-/** Shows one of the session's documents in place of the source. */
 function show(view: View, label: string, letter: string): Spec {
   return {
     label,
@@ -112,8 +104,6 @@ function show(view: View, label: string, letter: string): Spec {
   };
 }
 
-/** Shows a session's pane, opening it where it belongs when it is not
- * open, and moves the keyboard into it. */
 function debugPane(kind: KindId, label: string, number?: number): Spec {
   return {
     label,
@@ -124,7 +114,6 @@ function debugPane(kind: KindId, label: string, number?: number): Spec {
   };
 }
 
-/** The focused profile pane and the link it reads. */
 function profileFocus(): { id: PaneId; link: LinkId } | null {
   const layout = workbench.getState().layout;
   const id = leadingPane(layout);
@@ -132,8 +121,6 @@ function profileFocus(): { id: PaneId; link: LinkId } | null {
   return id && link ? { id, link } : null;
 }
 
-/** Shows the focused profile's pane of a view, opening it when it is not
- * open. */
 function profileView(view: ProfileView | null, label: string): Spec {
   return {
     label,
@@ -155,8 +142,6 @@ function profileView(view: ProfileView | null, label: string): Spec {
   };
 }
 
-/** Opens another pane like the focused profile pane, sharing its
- * selection or starting from a copy of it. */
 function duplicatePane(apart: boolean, label: string): Spec {
   return {
     label,
@@ -177,7 +162,6 @@ function duplicatePane(apart: boolean, label: string): Spec {
   };
 }
 
-/** Shows a pane that needs no session. */
 function pane(
   kind: KindId,
   label: string,
@@ -187,14 +171,12 @@ function pane(
   return { label, menu, keys, available: always, run: () => showPane(kind) };
 }
 
-/** The active tab of the focused group. */
 function focusedPane(): { id: PaneId; group: Group } | null {
   const layout = workbench.getState().layout;
   const group = groups(layout).find((candidate) => candidate.id === layout.focused);
   return group?.active ? { id: group.active, group } : null;
 }
 
-/** Shows the tab beside the focused one. */
 function nextTab(by: 1 | -1): Spec {
   return {
     label: by === 1 ? "Next tab" : "Previous tab",
@@ -214,7 +196,6 @@ function nextTab(by: 1 | -1): Spec {
   };
 }
 
-/** Opens the pane that starts something new. */
 function start(kind: KindId, label: string): Spec {
   return {
     label,
@@ -240,7 +221,6 @@ function theme(chosen: Theme, label: string): Spec {
   };
 }
 
-/** Opens the palette at everything, a session's files, or a line. */
 function palette(
   mode: "all" | "files" | "line",
   label: string,
@@ -251,7 +231,7 @@ function palette(
     label,
     menu,
     keys: [{ key: letter, ctrl: true }],
-    // The palette searches a session's program.
+
     available: ({ current }) => (current.session ? READY : ABSENT),
     run: () => tab.setState({ palette: mode }),
   };
@@ -317,7 +297,6 @@ const always = (): Availability => READY;
 
 const signedIn = (): Availability => (account.getState().now.kind === "in" ? READY : ABSENT);
 
-/** A Window menu arrangement, blocked for as long as it says why. */
 function arrange(label: string, keys: Chord[], why: () => Why, run: () => void): Spec {
   return {
     label,
@@ -333,7 +312,6 @@ function arrange(label: string, keys: Chord[], why: () => Why, run: () => void):
 
 const narrow = () => window.innerWidth < NARROW;
 
-/** The dock left of or below the code, which Ctrl+B and Ctrl+` hide. */
 function codeDock(side: "left" | "bottom") {
   const layout = workbench.getState().layout;
   const code = documentsGroup(layout, tab.getState().files);
@@ -357,7 +335,7 @@ function hideDock(side: "left" | "bottom", label: string, key: string): Spec {
       }
       const before = workbench.getState().layout.focused;
       change((layout) => toggleHidden(layout, dock.id, code));
-      // The keyboard follows the focus out of a dock that went.
+
       const after = workbench.getState().layout;
       const shown = groups(after).find((group) => group.id === after.focused)?.active;
       if (after.focused !== before && shown) {
@@ -476,7 +454,7 @@ export const COMMANDS = registry({
   profileDetails: profileView("details", "File details"),
   duplicateLinked: duplicatePane(false, "New pane like this"),
   duplicateApart: duplicatePane(true, "Copy to a new selection"),
-  // A page microscope web serves is connected to it, with no accounts.
+
   connect: {
     ...pane(KIND.connect, "Connect…", "File"),
     available: () => (standalone ? READY : ABSENT),
@@ -485,7 +463,7 @@ export const COMMANDS = registry({
     ...pane(KIND.account, "Account", "File"),
     available: () => (standalone ? READY : ABSENT),
   },
-  // Only someone signed in to services has projects and organizations.
+
   projects: {
     ...pane(KIND.projects, "Projects", "File"),
     available: signedIn,
@@ -676,13 +654,11 @@ export const COMMANDS = registry({
 export type CommandId = (typeof COMMANDS.ids)[number];
 
 export interface Commands {
-  /** Whether a command can run now, read when asked. */
   availability(id: CommandId): Availability;
-  /** Runs a command if it can run now, and says whether it could. */
+
   run(id: CommandId): Availability;
 }
 
-/** Runs commands against the tab's focus as it is when they run. */
 export function useCommands(): Commands {
   const store = useStoreApi();
   const connection = useConnection();
@@ -701,7 +677,6 @@ export function useCommands(): Commands {
       const command = COMMANDS.get(id);
       const available = command.available(now);
       if (available.state === "ready") {
-        // What an earlier command said no longer holds.
         tab.setState({ flash: null });
         command.run(now);
       }
@@ -712,19 +687,15 @@ export function useCommands(): Commands {
   return { availability, run };
 }
 
-/** The frame one up (toward callers) or down from `at`'s, if the stack of
- * `frames` has it. */
 export function movedFrame(at: At, frames: number, up: boolean): At | null {
   const next = at.frame + (up ? 1 : -1);
   return next >= 0 && next < frames ? { ...at, frame: next } : null;
 }
 
-/** The cursor's line, when it is in the file shown. */
 function cursorShown(current: TabState): { path: string; line: number } | null {
   return current.cursor && current.cursor.path === current.shown?.path ? current.cursor : null;
 }
 
-/** Where F9 acts: the cursor's line, or the line the frame is at. */
 function breakpointLine(current: TabState): { path: string; line: number } | null {
   const cursor = cursorShown(current);
   if (cursor) {

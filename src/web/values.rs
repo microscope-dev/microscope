@@ -1,12 +1,3 @@
-//! A stop's values for the page: scopes, the value tree, watches, and
-//! assignments, presented as the debug adapter presents them.
-//!
-//! A row that expands carries a handle, which belongs to the connection
-//! that asked and the row's stop. The page keeps no handle across stops: it
-//! remembers which paths were open and opens them again in the next stop's
-//! rows. Handles count up for the whole server, so a handle never names two
-//! things and an answer cached by its handle is never wrong.
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -22,19 +13,14 @@ use super::protocol::{self, ErrorKind, FrameAt, Row, Scope, ScopeKey, Scopes};
 use super::session::Failure;
 use crate::present::{self, Code, Expand, Item, ListError, Listed, Presenter, Window, complete};
 
-/// The most rows one `children` request returns.
 const MOST_CHILDREN: u64 = 500;
 
-/// The most statics a scope lists.
 const MOST_STATICS: u64 = 500;
 
-/// The most handles one connection holds at one stop.
 const MOST_HANDLES: usize = 100_000;
 
-/// The most completions one request offers.
 const MOST_COMPLETIONS: usize = 1000;
 
-/// What a handle expands.
 #[derive(Clone)]
 enum Node {
     Children {
@@ -54,14 +40,12 @@ enum Node {
     },
 }
 
-/// Every connection's handles.
 #[derive(Default)]
 pub struct Handles {
     tables: Mutex<HashMap<u32, Table>>,
     next: AtomicU64,
 }
 
-/// One connection's handles, all at one stop of one session.
 struct Table {
     session: String,
     stop: StopId,
@@ -69,7 +53,6 @@ struct Table {
 }
 
 impl Handles {
-    /// Forgets a connection that left.
     pub fn forget(&self, connection: u32) {
         self.tables
             .lock()
@@ -91,7 +74,6 @@ impl Handles {
             nodes: HashMap::new(),
         });
 
-        // A new stop, or a new session, makes the old handles stale.
         if table.session != session || table.stop != stop {
             *table = Table {
                 session: session.to_owned(),
@@ -130,7 +112,6 @@ impl Handles {
     }
 }
 
-/// Reads one connection's values from the current session.
 pub struct Reader<'a> {
     pub handle: DebuggerHandle,
     pub images: Arc<Images>,
@@ -138,7 +119,6 @@ pub struct Reader<'a> {
     pub handles: &'a Handles,
     pub connection: u32,
 
-    /// The session whose stops the handles belong to.
     pub session: String,
 }
 
@@ -151,7 +131,6 @@ impl Reader<'_> {
         }
     }
 
-    /// A row as the page receives it, with a handle when it expands.
     fn row(&self, context: StopContext, row: present::Row) -> Result<Row, Failure> {
         let path = row.evaluate_name().map(ToString::to_string);
         let mut children = None;
@@ -270,7 +249,6 @@ impl Reader<'_> {
                         VariableKind::Unnamed => ScopeKey::Unnamed,
                         _ => ScopeKey::Locals,
                     };
-                    // Arguments and locals show even when there are none.
                     if !matches!(key, ScopeKey::Args | ScopeKey::Locals)
                         && !snapshot
                             .variables
@@ -299,7 +277,6 @@ impl Reader<'_> {
                 }
             }
             Err(error @ microscope::Error::StaleStop) => return Err(error.into()),
-            // A frame in code built without debug information, such as libc.
             Err(microscope::Error::VariableContextUnsupported) => scopes.push(Scope {
                 key: ScopeKey::Locals,
                 name: "Locals".to_owned(),
@@ -388,8 +365,6 @@ impl Reader<'_> {
         self.rows(context, listed.map_err(list_failure)?)
     }
 
-    /// Evaluates `text` in a frame, presenting its value as a row named by
-    /// the text. Watches and hovers read; the console may assign.
     pub async fn evaluate(
         &self,
         at: FrameAt,
@@ -401,7 +376,6 @@ impl Reader<'_> {
         self.evaluated(context, text, expression, mode).await
     }
 
-    /// Evaluates an expression already parsed in `context`, and presents it.
     pub async fn evaluated(
         &self,
         context: StopContext,
@@ -434,9 +408,6 @@ impl Reader<'_> {
         self.present(context, text, expression, evaluation)
     }
 
-    /// Gives a pointer the drawings of what it points to, so that a frame's
-    /// `&mut Board` is drawn as its board. Variables and watches read their
-    /// pointees for this; a page of children never does.
     async fn add_pointee_drawings(&self, row: &mut present::Row) {
         let Some(details) = row.details.as_mut() else {
             return;
@@ -460,7 +431,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Presents what `expression`, written as `text`, evaluated to.
     pub fn present(
         &self,
         context: StopContext,
@@ -522,7 +492,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Assigns `value` to what `path` names, and presents the result.
     pub async fn set_value(&self, at: FrameAt, path: &str, value: &str) -> Result<Row, Failure> {
         let target = Expression::parse(path).map_err(expression_failure)?;
         if target.assignment_target().is_some() {
@@ -542,7 +511,6 @@ impl Reader<'_> {
         Ok(row)
     }
 
-    /// Completes the text of a console line, in a frame when one is given.
     pub async fn complete(
         &self,
         text: &str,
@@ -594,7 +562,6 @@ fn list_failure(failure: ListError) -> Failure {
     }
 }
 
-/// A malformed expression, said on one line.
 pub fn expression_failure(failure: microscope::ExpressionError) -> Failure {
     microscope::Error::Expression(failure).into()
 }

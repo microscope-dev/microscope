@@ -1,17 +1,3 @@
-//! Python name, item, and operand reads without running program code.
-//!
-//! Names resolve to frame variables, module globals, then builtins; attributes use
-//! [`super::instances`]. Dict probes compare equal-hash keys by value for `None`, `bool`,
-//! `int`, `float`, `str`, `bytes`, and `tuple` (itemwise in `tuple_richcompare` order).
-//! Other key types require their own `__eq__` and refuse the lookup if encountered.
-//!
-//! Program-held keys and tuple items match by identity before value, so a NaN finds itself.
-//!
-//! Numbers use CPython hashes, tuples use `tuplehash`, and program NaNs hash by address.
-//! Strings use their stored hash or SipHash-1-3 with the process secret after a dict key
-//! confirms the algorithm. Unknown hashes (e.g. computed NaNs or unreadable secrets) scan
-//! every entry; another key type can be ruled out only by its entry's hash.
-
 use std::sync::Arc;
 
 use super::code::{CodeId, CodeTable};
@@ -30,20 +16,13 @@ use crate::runtime_model::{
 };
 use crate::{TextCompletion, TextSummary, VariableUnavailableReason, VirtualAddress};
 
-/// The most characters of a `str`, or bytes of a `bytes`, an operand reads.
 const OPERAND_TEXT: u64 = 1 << 16;
 
-/// How a `dict`'s table marks a slot no entry has filled, and how far a
-/// probe's perturbation shifts on each step.
 const EMPTY_SLOT: i64 = -1;
 const PERTURB_SHIFT: u32 = 5;
 
-/// How many of a `dict`'s first entries are tried for a `str` key that
-/// shows whether hashing gives the hashes its strings keep.
 const HASH_WITNESSES: u64 = 8;
 
-/// CPython's hashes of numbers are their values modulo this prime,
-/// `2**61 - 1`, and an infinity's is this.
 const HASH_MODULUS: u64 = (1 << 61) - 1;
 const HASH_BITS: u32 = 61;
 const HASH_INFINITY: i64 = 314_159;
@@ -51,19 +30,15 @@ const HASH_INFINITY: i64 = 314_159;
 const _: () = assert!(HASH_MODULUS == (1 << HASH_BITS) - 1);
 const _: () = assert!(28 < HASH_BITS);
 
-/// The primes of xxHash64, by which CPython's `tuplehash` mixes its items'
-/// hashes, and the hash it gives where the mix comes to -1.
 const XXPRIME_1: u64 = 11_400_714_785_074_694_791;
 const XXPRIME_2: u64 = 14_029_467_366_897_019_727;
 const XXPRIME_5: u64 = 2_870_177_450_012_600_261;
 const TUPLE_HASH_ERROR: i64 = 1_546_275_796;
 
-/// How a key of a `dict` compares with a key an expression wrote.
 enum Compared {
     Equal,
     Unequal,
 
-    /// Only the key's own type's code could say: the type's name.
     Unknown(Arc<str>),
 }
 
@@ -72,7 +47,6 @@ fn refused(kind: ErrorKind, message: impl Into<Arc<str>>) -> InterpretedFailure 
 }
 
 impl Values<'_, '_> {
-    /// Why a read failed, as the value's state says.
     pub(super) fn unavailable(&self, problem: Problem) -> InterpretedFailure {
         InterpretedFailure::Unavailable(match self.failed(problem) {
             crate::runtime_model::InterpretedSlot::Limit(exhaustion) => {
@@ -90,8 +64,6 @@ impl Values<'_, '_> {
             .map_err(|problem| self.unavailable(problem))
     }
 
-    /// What `name` means in the frame `frame`, which runs the code in row
-    /// `code` of `table`.
     pub(super) fn name(
         &self,
         table: &CodeTable,
@@ -132,8 +104,6 @@ impl Values<'_, '_> {
         Ok(None)
     }
 
-    /// The object the variable in slot `slot` of the frame `frame` holds,
-    /// which runs the code in row `code` of `table`.
     pub(super) fn variable(
         &self,
         table: &CodeTable,
@@ -180,9 +150,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// Where the variable in slot `slot` of the frame `frame` keeps its
-    /// object, to watch: a variable of a thread's frame that holds its
-    /// object itself, not in a cell a closure shares.
     pub(super) fn watched(
         &self,
         table: &CodeTable,
@@ -224,7 +191,6 @@ impl Values<'_, '_> {
             .map_err(|problem| self.unavailable(problem))
     }
 
-    /// The object a step from the object at `object` reaches.
     pub(super) fn step(
         &self,
         object: VirtualAddress,
@@ -244,8 +210,6 @@ impl Values<'_, '_> {
             read => (read, None),
         };
 
-        // A library type's dict finds its items as a dict does, but for
-        // the keys it holds none for, which its type may make values of.
         let (read, class) = match read {
             Object::Library {
                 class: library,
@@ -328,10 +292,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The value `dict` holds for the very object at `key`, whose hash is
-    /// `hash`, or `None` where it holds no value for that object: found as
-    /// CPython's lookup finds a key it holds, by identity, which compares
-    /// no keys and so runs no code.
     pub(super) fn identical(
         &self,
         dict: Dict,
@@ -378,7 +338,6 @@ impl Values<'_, '_> {
         Err(malformed(dict.object, "dict"))
     }
 
-    /// The value `dict` holds for `key`, or `None` when it holds none.
     pub(super) fn lookup(
         &self,
         dict: Dict,
@@ -388,9 +347,6 @@ impl Values<'_, '_> {
         hash.map_or_else(|| self.scan(dict, key), |hash| self.probe(dict, key, hash))
     }
 
-    /// CPython's hash of `key`, where it is known: text's needs the
-    /// process's secret, which `dict`'s keys may show hashing gives, and a
-    /// tuple's needs each of its items'.
     fn key_hash(
         &self,
         dict: Dict,
@@ -403,13 +359,10 @@ impl Values<'_, '_> {
             InterpretedKey::Object(object) => {
                 let object = address(*object);
                 match self.read(object)? {
-                    // A NaN equals nothing, itself included, so its hash is
-                    // its object's identity.
                     Object::Float(value) if value.is_nan() => {
                         return Ok(Some(hash_pointer(object)));
                     }
 
-                    // A str keeps its hash once one is asked of it.
                     Object::Str { .. } => {
                         let kept = self
                             .reader
@@ -445,12 +398,6 @@ impl Values<'_, '_> {
         Ok(Some(hash_tuple(&hashes)))
     }
 
-    /// The value of the program's object at `object` as a key, one level
-    /// deep: `None`, a `bool`, an `int`, a `float`, or a `str` is its
-    /// value, and a `tuple` holds its items, each the program's object.
-    /// One of any other type only its own code could hash or compare, and
-    /// is refused, as an `int` beyond 128 bits is. `depth` is how deep in
-    /// tuples the object is.
     fn held(
         &self,
         object: VirtualAddress,
@@ -478,8 +425,6 @@ impl Values<'_, '_> {
                     ));
                 }
 
-                // A lone surrogate is no character of UTF-8 text, which
-                // keys hold.
                 if points.iter().any(|point| char::from_u32(*point).is_none()) {
                     return Err(refused(
                         ErrorKind::Unsupported,
@@ -528,8 +473,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// `key` with the program's object it names read as its value, for an
-    /// index of a sequence, which takes no identity.
     fn resolved(&self, key: &InterpretedKey) -> Result<InterpretedKey, InterpretedFailure> {
         match key {
             InterpretedKey::Object(object) => self.held(address(*object), 0),
@@ -537,8 +480,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// A key as Python's `repr` writes it, for messages; an object of the
-    /// program's that cannot be read is written by its address.
     fn key_text(&self, key: &InterpretedKey, depth: usize) -> String {
         match key {
             InterpretedKey::Object(object) => self.held(address(*object), depth).map_or_else(
@@ -559,9 +500,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The value `dict` holds for `key`, whose hash is `hash`, found by
-    /// following the table's probe sequence for the hash, as CPython's
-    /// lookup does.
     fn probe(
         &self,
         dict: Dict,
@@ -585,8 +523,6 @@ impl Values<'_, '_> {
         let mut slot = hash.cast_unsigned() & mask;
         let mut perturb = hash.cast_unsigned();
 
-        // A table always has empty slots, which end a probe in fewer
-        // steps than it has slots, past which the table is malformed.
         for _ in 0..=mask.saturating_mul(2).saturating_add(64) {
             let bytes = self
                 .reader
@@ -601,12 +537,9 @@ impl Values<'_, '_> {
                 return Ok(None);
             }
 
-            // Below empty are the slots of deleted entries, which a probe
-            // passes over.
             if let Ok(index) = u64::try_from(index) {
                 let entry = self.entry(dict, index).map_err(unavailable)?;
 
-                // The very object is found before any hash is compared.
                 if entry.value != VirtualAddress::new(0)
                     && matches!(key, InterpretedKey::Object(object) if address(*object) == entry.key)
                 {
@@ -631,8 +564,6 @@ impl Values<'_, '_> {
         Err(unavailable(malformed(dict.object, "dict")))
     }
 
-    /// The hash of a `dict`'s key: what its entry keeps, or, for a table
-    /// of `str` keys, which keeps none, what the key keeps of itself.
     fn entry_hash(
         &self,
         key: VirtualAddress,
@@ -649,9 +580,6 @@ impl Values<'_, '_> {
             .map_err(|problem| self.unavailable(problem))
     }
 
-    /// The hash of text as a `str` of this process, where it is known:
-    /// once a `str` key of `dict` shows that hashing with the process's
-    /// secret gives the hashes its strings keep.
     fn text_hash(&self, dict: Dict, text: &[u8]) -> Result<Option<i64>, InterpretedFailure> {
         let (Some(secret), Ok(text)) = (self.secret, std::str::from_utf8(text)) else {
             return Ok(None);
@@ -685,8 +613,6 @@ impl Values<'_, '_> {
         Ok((self.hashing.get() == Some(true)).then(|| hash_text(key, &points)))
     }
 
-    /// The value `dict` holds for `key`, whose hash is not known, found by
-    /// comparing every entry.
     fn scan(
         &self,
         dict: Dict,
@@ -717,9 +643,6 @@ impl Values<'_, '_> {
 
         scanned.map_err(|problem| self.unavailable(problem))?;
 
-        // A key is scanned for only where its hash is not known, as a
-        // str's salted for the process, or a NaN's: the matching key's
-        // entry gives it.
         let hash = found.and_then(|(_, hash)| hash);
         for (name, entry) in uncompared {
             if let (Some(hash), Some(entry)) = (hash, entry)
@@ -734,9 +657,6 @@ impl Values<'_, '_> {
         Ok(found.map(|(value, _)| value))
     }
 
-    /// How the key of a `dict`, or an item of one, at `address` compares
-    /// with `wanted`, `depth` tuples deep in the key: the program's own
-    /// object is equal to itself before any value is compared.
     fn compare(
         &self,
         address: VirtualAddress,
@@ -827,11 +747,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// How a `tuple` of `length` items at `items` compares with `wanted`,
-    /// as `tuple_richcompare` compares for `==`: item by item, in order, to
-    /// the shorter's end, the first item that is not equal deciding, and
-    /// then the lengths. An item only its own type's code could compare
-    /// leaves the answer unknown, unless an item before it was unequal.
     fn compare_items(
         &self,
         items: VirtualAddress,
@@ -861,7 +776,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// Why a key of the type named `name` refuses a lookup of `key`.
     fn doubtful(&self, name: &str, key: &InterpretedKey) -> InterpretedFailure {
         refused(
             ErrorKind::Unsupported,
@@ -873,8 +787,6 @@ impl Values<'_, '_> {
         )
     }
 
-    /// The code points of the `str` at `object`, up to [`OPERAND_TEXT`],
-    /// and how many it holds.
     fn code_points(&self, object: VirtualAddress) -> Result<(Vec<u32>, u64), InterpretedFailure> {
         self.reader
             .head(object)
@@ -882,7 +794,6 @@ impl Values<'_, '_> {
             .map_err(|problem| self.unavailable(problem))
     }
 
-    /// The object at `object`, as an operation computes with it.
     pub(super) fn operand(
         &self,
         object: VirtualAddress,
@@ -956,9 +867,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// Why the class `this`, of the metaclass `meta`, gives no item:
-    /// Python finds one by the metaclass's `__getitem__`, or else by the
-    /// class's own `__class_getitem__`, and either runs code.
     fn class_items(
         &self,
         this: &Class,
@@ -990,7 +898,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// The length of the object at `object`, as Python's `len` gives it.
     pub(super) fn length(&self, object: VirtualAddress) -> Result<u64, InterpretedFailure> {
         let read = match self.read(object)? {
             Object::Instance { class, base } => {
@@ -1043,8 +950,6 @@ impl Values<'_, '_> {
     }
 }
 
-/// The position in a sequence of `length` items, `read`, that `key`
-/// indexes, as Python counts a negative index from its end.
 fn position(key: &InterpretedKey, length: u64, read: &Object) -> Result<u64, InterpretedFailure> {
     let index = match key {
         InterpretedKey::Int(index) => *index,
@@ -1079,7 +984,6 @@ fn position(key: &InterpretedKey, length: u64, read: &Object) -> Result<u64, Int
     })
 }
 
-/// Why a tuple key that nests too deep is refused.
 fn too_deep() -> InterpretedFailure {
     refused(
         ErrorKind::Limit,
@@ -1087,7 +991,6 @@ fn too_deep() -> InterpretedFailure {
     )
 }
 
-/// Why an `int` of the program's beyond 128 bits is no key.
 fn beyond_128_bits() -> InterpretedFailure {
     refused(
         ErrorKind::Unsupported,
@@ -1095,7 +998,6 @@ fn beyond_128_bits() -> InterpretedFailure {
     )
 }
 
-/// A `dict` table's slot, a little-endian signed number of its width.
 fn signed(bytes: &[u8]) -> Option<i64> {
     Some(match bytes.len() {
         1 => i64::from(i8::from_le_bytes(bytes.try_into().ok()?)),
@@ -1106,9 +1008,6 @@ fn signed(bytes: &[u8]) -> Option<i64> {
     })
 }
 
-/// CPython's hash of a `str` of `points`, keyed by `key`: SipHash-1-3 of
-/// the code points in the narrowest of the widths CPython keeps them in,
-/// one, two, or four bytes each, and 0 for the empty `str`.
 pub(super) fn hash_text(key: (u64, u64), points: &[u32]) -> i64 {
     if points.is_empty() {
         return 0;
@@ -1135,8 +1034,6 @@ pub(super) fn hash_text(key: (u64, u64), points: &[u32]) -> i64 {
     never_error(siphash13(key, &bytes).cast_signed())
 }
 
-/// SipHash-1-3 of `bytes` keyed by `(k0, k1)`, as CPython's `pyhash.c`
-/// computes it.
 fn siphash13((k0, k1): (u64, u64), bytes: &[u8]) -> u64 {
     const fn round(v: &mut [u64; 4]) {
         v[0] = v[0].wrapping_add(v[1]);
@@ -1181,7 +1078,6 @@ fn siphash13((k0, k1): (u64, u64), bytes: &[u8]) -> u64 {
     v[0] ^ v[1] ^ v[2] ^ v[3]
 }
 
-/// A number a key holds or an expression wrote.
 #[derive(Clone, Copy)]
 enum Number {
     Int(i128),
@@ -1189,7 +1085,6 @@ enum Number {
 }
 
 impl Number {
-    /// Whether two numbers are equal, exactly, as Python compares them.
     #[expect(clippy::float_cmp, reason = "Python compares numbers exactly")]
     fn equals(self, other: Self) -> bool {
         match (self, other) {
@@ -1202,7 +1097,6 @@ impl Number {
     }
 }
 
-/// A float's value as an integer, where it is one that fits in 128 bits.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::float_cmp,
@@ -1214,22 +1108,16 @@ fn integral(value: f64) -> Option<i128> {
         .then_some(value as i128)
 }
 
-/// CPython's hash of a key that is one value, where it does not depend on
-/// the process: `None` for text, whose hash is salted, and for NaN, whose
-/// hash is its object's identity.
 fn hash(key: &InterpretedKey) -> Option<i64> {
     match key {
         InterpretedKey::Int(value) => Some(hash_int(*value)),
         InterpretedKey::Bool(value) => Some(i64::from(*value)),
         InterpretedKey::Float(value) => hash_float(*value),
-        // A constant since CPython 3.12, the oldest microscope reads.
         InterpretedKey::Nothing => Some(0xfca8_6420),
         InterpretedKey::Text(_) | InterpretedKey::Tuple(_) | InterpretedKey::Object(_) => None,
     }
 }
 
-/// CPython's `tuplehash` of a tuple whose items hash to `hashes`: xxHash64's
-/// rounds over them, unchanged from CPython 3.8 to 3.15.
 fn hash_tuple(hashes: &[i64]) -> i64 {
     let mut accumulator = XXPRIME_5;
     for hash in hashes {
@@ -1246,28 +1134,20 @@ fn hash_tuple(hashes: &[i64]) -> i64 {
     }
 }
 
-/// CPython's `Py_HashPointer`: an object's address, rotated right by
-/// four bits, as an object that hashes by identity hashes.
 const fn hash_pointer(object: VirtualAddress) -> i64 {
     never_error(object.get().rotate_right(4).cast_signed())
 }
 
-/// `-1` is CPython's hash for an error, so a value that would hash to it
-/// hashes to `-2`.
 const fn never_error(hash: i64) -> i64 {
     if hash == -1 { -2 } else { hash }
 }
 
-/// CPython's `long_hash`: the value modulo [`HASH_MODULUS`], with the
-/// value's sign.
 pub(super) fn hash_int(value: i128) -> i64 {
     let magnitude = value.unsigned_abs() % u128::from(HASH_MODULUS);
     let magnitude = i64::try_from(magnitude).unwrap_or(i64::MAX);
     never_error(if value < 0 { -magnitude } else { magnitude })
 }
 
-/// CPython's `_Py_HashDouble`: an integral float hashes as the int it
-/// equals, and any other as the rational it is, modulo [`HASH_MODULUS`].
 pub(super) fn hash_float(value: f64) -> Option<i64> {
     if value.is_nan() {
         return None;
@@ -1329,8 +1209,6 @@ pub(super) fn hash_float(value: f64) -> Option<i64> {
     Some(never_error(if value < 0.0 { -signed } else { signed }))
 }
 
-/// C's `frexp` of a finite, non-negative value: a mantissa in [0.5, 1),
-/// or 0, and the power of two that scales it to the value.
 fn frexp(value: f64) -> (f64, i32) {
     debug_assert!(value.is_finite(), "frexp of a float that is not finite");
     debug_assert!(value >= 0.0, "frexp of a negative float");
@@ -1341,7 +1219,6 @@ fn frexp(value: f64) -> (f64, i32) {
     let bits = value.to_bits();
     let biased = i32::try_from((bits >> 52) & 0x7ff).unwrap_or(0);
     if biased == 0 {
-        // A subnormal: scale it into the normal range first.
         let (mantissa, exponent) = frexp(value * f64::from_bits(0x43f0_0000_0000_0000));
         return (mantissa, exponent - 64);
     }
@@ -1354,8 +1231,6 @@ fn frexp(value: f64) -> (f64, i32) {
     (mantissa, biased - 1022)
 }
 
-/// The name of an object's type, as messages show it: a built-in type's
-/// alone, and another's qualified by its module.
 fn type_text(object: &Object) -> String {
     match Values::type_name(object) {
         (Some(module), name) if &*module != "builtins" => format!("{module}.{name}"),
@@ -1363,7 +1238,6 @@ fn type_text(object: &Object) -> String {
     }
 }
 
-/// What kind of key an expression wrote, as a message says it.
 const fn key_kind(key: &InterpretedKey) -> &'static str {
     match key {
         InterpretedKey::Int(_) => "an integer",
@@ -1376,7 +1250,6 @@ const fn key_kind(key: &InterpretedKey) -> &'static str {
     }
 }
 
-/// A key that is one value, as Python writes it.
 fn scalar_text(key: &InterpretedKey) -> String {
     match key {
         InterpretedKey::Int(value) => value.to_string(),
@@ -1398,8 +1271,6 @@ mod tests {
 
     #[test]
     fn text_hashes_as_cpython_hashes_it_with_a_zero_secret() {
-        // Each value is `hash(s)` in CPython 3.12 to 3.14 run with
-        // PYTHONHASHSEED=0, which zeroes the secret.
         let hash = |text: &str| hash_text((0, 0), &text.chars().map(u32::from).collect::<Vec<_>>());
         assert_eq!(hash(""), 0);
         assert_eq!(hash("a"), 4_644_417_185_603_328_019);
@@ -1415,7 +1286,6 @@ mod tests {
 
     #[test]
     fn numbers_hash_as_cpython_hashes_them() {
-        // Each value is `hash(x)` in CPython 3.12 to 3.15.
         assert_eq!(hash_int(0), 0);
         assert_eq!(hash_int(7), 7);
         assert_eq!(hash_int(-1), -2);
@@ -1441,8 +1311,6 @@ mod tests {
 
     #[test]
     fn tuples_hash_as_cpython_hashes_them() {
-        // Each value is `hash(t)` in CPython 3.12 to 3.15, free-threaded
-        // builds included; an item hashes as the tests above check.
         let empty = hash_tuple(&[]);
         assert_eq!(empty, 5_740_354_900_026_072_187);
         assert_eq!(hash_tuple(&[1]), -6_644_214_454_873_602_895);

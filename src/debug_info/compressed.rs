@@ -1,28 +1,13 @@
-//! Section bytes, decompressed only once the size a compressed section's
-//! header claims passes our limits. The header is input: decompressing to
-//! whatever it claims lets a few hostile bytes take gigabytes, and an
-//! allocation that fails aborts the process.
-
 use std::borrow::Cow;
 use std::io::Read as _;
 
 use object::{CompressedData, CompressionFormat, ObjectSection as _};
 use rayon::prelude::*;
 
-/// Claims up to this many bytes pass whatever their ratio. Small sections of
-/// real programs compress up to 66 times (a Rust `.debug_ranges` of 78 KB in
-/// 1.2 KB), and holding one costs little.
 const SMALL_CLAIM: u64 = 1 << 20;
 
-/// How many times its compressed bytes a larger section may claim. With
-/// zlib, no section over 1 MiB in the test programs or the benchmark corpus
-/// compresses more than 14 times.
 const MOST_RATIO: u64 = 64;
 
-/// The most bytes one file's compressed sections may claim to decompress
-/// to by default. The largest file we test, microscope's own debug build,
-/// has 58 MiB; this leaves room for programs hundreds of times larger, and
-/// with [`MOST_RATIO`] reaching it takes 256 MiB of compressed input.
 pub(super) const MOST_PER_FILE: u64 = 16 << 30;
 
 #[derive(Debug, thiserror::Error)]
@@ -60,10 +45,6 @@ pub(super) enum SectionError {
     Format { section: String },
 }
 
-/// The bytes of each of `sections`, empty for one that is missing. The
-/// compressed ones are decompressed in parallel, and only when each claims
-/// no more than [`MOST_RATIO`] times its compressed bytes and together they
-/// claim no more than `most` bytes.
 pub(super) fn read<'data>(
     sections: Vec<Option<object::Section<'data, '_>>>,
     most: u64,
@@ -116,11 +97,9 @@ pub(super) fn read<'data>(
         })
         .collect::<Vec<_>>();
 
-    // In order, so the error reported is the first section's.
     read.into_iter().collect()
 }
 
-/// The bytes of `section`, empty when it is missing, as [`read`] reads them.
 pub(super) fn read_one<'data>(
     section: Option<object::Section<'data, '_>>,
     most: u64,
@@ -128,7 +107,6 @@ pub(super) fn read_one<'data>(
     Ok(read(vec![section], most)?.pop().unwrap_or_default())
 }
 
-/// `data`'s bytes, which [`read`] has checked the claimed size of.
 fn decompress<'data>(
     name: &str,
     data: CompressedData<'data>,
@@ -158,7 +136,6 @@ fn decompress<'data>(
             claimed,
         })?;
 
-    // zlib decompresses into what the claim reserved and no further.
     if data.format == CompressionFormat::Zlib {
         let mut zlib = flate2::Decompress::new(true);
         let status = zlib
@@ -177,9 +154,6 @@ fn decompress<'data>(
         return Ok(Cow::Owned(decompressed));
     }
 
-    // A zstd stream that claims little can still grow without bound, so
-    // read no more than the claim and one byte past it. A section may hold
-    // several frames, and skippable frames among them.
     let mut input = data.data;
     while !input.is_empty() {
         let decoder = match ruzstd::decoding::StreamingDecoder::new(&mut input) {
@@ -229,10 +203,7 @@ mod tests {
         }
     }
 
-    /// A zstd frame of `blocks` RLE blocks, each 128 KiB of one byte: four
-    /// bytes of input for each block, as a bomb is built.
     fn rle_frame(blocks: usize) -> Vec<u8> {
-        // Magic, then a descriptor with no content size and a 128 KiB window.
         let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x38];
         for index in 0..blocks {
             let last = u32::from(index + 1 == blocks);
@@ -243,14 +214,10 @@ mod tests {
         frame
     }
 
-    /// A zstd frame of one compressed block holding `sequences` sequences,
-    /// each a literal byte and a 65,539-byte match of the byte before: three
-    /// bytes of input for each 64 KiB of output (RUSTSEC-2026-0344).
     fn sequence_bomb(sequences: u16) -> Vec<u8> {
         assert!((128..0x7f00).contains(&sequences));
         let literals = usize::from(sequences);
 
-        // Raw literals with a 20-bit size.
         let mut block = vec![
             (0b11 << 2) | u8::try_from(literals & 0xf).expect("four bits"),
             u8::try_from((literals >> 4) & 0xff).expect("a byte"),
@@ -258,16 +225,11 @@ mod tests {
         ];
         block.resize(block.len() + literals, b'a');
 
-        // The count, then every code RLE: literal length 1, repeat offset
-        // 1, and match length code 52, whose 16 extra bits are all zero. The
-        // bitstream ends in its padding marker.
         let [high, low] = sequences.to_be_bytes();
         block.extend_from_slice(&[high | 0x80, low, 0x54, 1, 0, 52]);
         block.resize(block.len() + 2 * literals, 0);
         block.push(1);
 
-        // Magic, then a descriptor with no content size and an 8 MiB
-        // window, then the block's header: last, compressed, its size.
         let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x68];
         let header = 1 | (2 << 1) | (u32::try_from(block.len()).expect("a block") << 3);
         frame.extend_from_slice(&header.to_le_bytes()[..3]);
@@ -275,8 +237,6 @@ mod tests {
         frame
     }
 
-    /// A zlib stream decompresses only to exactly its claim, and only when
-    /// it ends where the section does.
     #[test]
     fn zlib_is_read_to_its_claim() {
         use std::io::Write as _;
@@ -315,16 +275,12 @@ mod tests {
         }
     }
 
-    /// A stream is read only to its claim: one longer fails having held the
-    /// claim and a block past it, not all of its bytes, and one shorter
-    /// fails too. Frames are read in turn and skippable frames skipped.
     #[test]
     fn zstd_is_read_to_its_claim_and_no_further() {
         use crate::test_memory::memory_cap::{start_totals, stop_totals, totals};
 
         let text = b"the quick brown fox jumps over the lazy dog ".repeat(100);
         let mut frames = zstd(&text);
-        // A skippable frame of four bytes, then the stream again.
         frames.extend_from_slice(&[0x50, 0x2a, 0x4d, 0x18, 4, 0, 0, 0, 1, 2, 3, 4]);
         frames.extend_from_slice(&zstd(&text));
         let both = [&text[..], &text[..]].concat();
@@ -340,8 +296,6 @@ mod tests {
             ));
         }
 
-        // 64 MiB from 2 or 3 KiB, claiming 1 KiB: in blocks of 128 KiB, and in
-        // one block that claims more than a block may hold.
         for bomb in [rle_frame(512), sequence_bomb(1024)] {
             start_totals();
             let before = totals();

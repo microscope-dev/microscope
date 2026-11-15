@@ -1,9 +1,3 @@
-// How long the metrics fixture's drawings take with a million samples, from a
-// stop to its picture on screen: `just web-bench [ROUNDS]`. It reports the
-// median and the slowest of ROUNDS stops for each drawing, with the binary
-// MICROSCOPE_WEB_BINARY names (the recipe builds a release one). Not a test:
-// the times depend on the machine.
-
 import * as path from "node:path";
 
 import { chromium } from "@playwright/test";

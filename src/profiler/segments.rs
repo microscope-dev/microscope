@@ -1,25 +1,17 @@
-//! A continuous recording: a directory of segments, each a complete
-//! profile of its span, named by when it ended, the oldest deleted as
-//! they pass the time kept. The directory reads as one profile.
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use super::{Profile, ProfileFileError, ReadProfile};
 use crate::capture::CaptureBuilder;
 
-/// The extension of a segment, whose name is the milliseconds since the
-/// Unix epoch at which it ended.
 const EXTENSION: &str = "usprof";
 
-/// When a segment's file name says it ended, if it names a segment.
 fn ended(path: &Path) -> Option<u64> {
     (path.extension()? == EXTENSION)
         .then_some(())
         .and_then(|()| path.file_stem()?.to_str()?.parse().ok())
 }
 
-/// Every segment in `directory`, oldest first.
 fn segments(directory: &Path) -> std::io::Result<Vec<(u64, PathBuf)>> {
     let mut segments = Vec::new();
 
@@ -42,14 +34,10 @@ fn milliseconds(time: SystemTime) -> u64 {
 }
 
 impl Profile {
-    /// Writes the profile to `directory` as the segment that ends now,
-    /// whole or not at all, and deletes each segment that ended more than
-    /// `keep` ago. Returns where it wrote the segment.
     pub fn write_segment(&self, directory: &Path, keep: Duration) -> std::io::Result<PathBuf> {
         let now = SystemTime::now();
         let ended = milliseconds(now);
 
-        // Two segments within a millisecond take the next free name.
         let mut name = ended;
         let path = loop {
             let path = directory.join(format!("{name:016}.{EXTENSION}"));
@@ -74,8 +62,6 @@ impl Profile {
         Ok(path)
     }
 
-    /// Reads every segment of a continuous recording in `directory` as one
-    /// profile.
     pub fn read_segments(directory: &Path) -> Result<ReadProfile, ProfileFileError> {
         let segments = segments(directory)?;
         if segments.is_empty() {
@@ -119,9 +105,6 @@ mod tests {
     use crate::capture::records::{FrameKind, NONE};
     use crate::model::{Pid, Tid};
 
-    /// Segments that each weigh what a profile may can weigh more
-    /// together: the recording is refused, as one segment of that weight
-    /// is.
     #[test]
     fn segments_whose_weights_add_up_past_a_count_are_refused() {
         let directory =

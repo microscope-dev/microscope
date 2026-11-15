@@ -1,39 +1,39 @@
-// Threads that block in native code for about a millisecond at a time, at
-// sites of known frames, as fast as they can, while V8 collects garbage,
-// moves objects, and deoptimizes code under them, for live reads that must
-// find each thread at one of its sites or leave it out
-// (tests/node/live.rs).
-//
-// node --allow-natives-syntax [V8 flags] live-stress.js ADDON FAST WORKERS SECONDS
-//
-// ADDON and FAST are the built node-addon.node and the build's
-// node-fast-ENTRY.node. The main thread prints `waiting` and waits for a
-// line on its standard input, sent once the recording reads it, so that
-// loading the program's debug information takes none of the run. Then the
-// main thread and WORKERS workers each loop over
-// the sites for SECONDS, in phases of PHASE_MS each: each phase calls the
-// sites through a function of its own, phase0 to phase3 in turn, so that
-// the frames say which phase a thread was in. Each thread prints, the first
-// time it blocks at a site in a phase, the frames with
-// truth.blocking('SITE PHASE TID'), on the line that blocks; `phase TID
-// PHASE TIME` for when it begins a phase; once it has blocked at every site in
-// every phase, `ready TID TIME`; and as it stops, `done TID TIME`, with
-// TIME process.hrtime.bigint(). These times are printed after the loop:
-// printing can itself block. Between ready and done, the thread runs only
-// these sites and the code that leads to them.
-// Calls to churn also report their frames once per caller and phase: V8
-// can wait while compiling churn, before churn has a JavaScript frame.
-//
-// The sites, each of which blocks in native code that JavaScript called:
-//
-//   wait     Atomics.wait with a timeout
-//   nested   Atomics.wait from a callback a Node-API function calls
-//   reviver  Atomics.wait from a JSON.parse reviver
-//   sort     Atomics.wait from an Array.prototype.sort comparator
-//   fast     a nap in a fast API call, from optimized code, or in its slow
-//            callback, from code V8 deoptimized
-//   mixed    Atomics.wait, from code whose argument types change, which V8
-//            deoptimizes as they do
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 'use strict';
 
@@ -47,10 +47,10 @@ const [addonPath, fastPath, workers, seconds] = threads.isMainThread
 const addon = require(addonPath);
 const fast = require(fastPath);
 
-// How long each site blocks, in milliseconds.
+
 const BLOCK_MS = 1;
 
-// How long each phase lasts, in milliseconds, and how many there are.
+
 const PHASE_MS = 400;
 const PHASES = 4;
 
@@ -61,10 +61,10 @@ const churned = new Set();
 let garbage = [];
 let phase = 0;
 
-/**
- * Whether this is the thread's first block at `site` in this phase, which
- * it reports, as the name it reports it by.
- */
+
+
+
+
 function first(site) {
   const name = `${site} ${phase} ${tid}`;
   if (seen.has(name)) {
@@ -74,8 +74,8 @@ function first(site) {
   return name;
 }
 
-// Objects of shapes that change, kept a while, so that the collector moves
-// them and code that read them deoptimizes.
+
+
 function churn(i, site) {
   const name = `churn-${site} ${phase} ${tid}`;
   if (!churned.has(name)) {

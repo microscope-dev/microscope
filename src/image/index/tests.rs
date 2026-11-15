@@ -10,13 +10,8 @@ use crate::{
     SymbolId, SymbolInfo, SymbolKind,
 };
 
-/// Where a case's ranges lie: at the bottom of the address space, or up
-/// to `u64::MAX`.
 const REGIONS: [u64; 2] = [0, u64::MAX - 39];
 
-/// Ranges of one region, some empty, some repeated, each with a value
-/// below `values`, and addresses to look them up at: every range's
-/// edges, and others.
 fn ranges_and_addresses(
     values: u32,
 ) -> impl Strategy<Value = (Vec<(AddressRange<ImageAddress>, u32)>, Vec<u64>)> {
@@ -51,8 +46,6 @@ fn ranges_and_addresses(
     })
 }
 
-/// The intervals containing `address`, by a scan of every entry: each
-/// distinct one once, in descending (start, end, value) order.
 fn scanned(entries: &[(AddressRange<ImageAddress>, u32)], address: u64) -> Vec<(u64, u64, u32)> {
     let mut found = entries
         .iter()
@@ -132,13 +125,11 @@ proptest! {
     }
 }
 
-/// A symbol: code with an extent, sized or unsized data, or neither.
 fn symbol_info(id: u32, (start, length): (u64, u64), shape: u8) -> SymbolInfo {
     let address = ImageAddress::new(start);
     let length = length.min(u64::MAX - start);
     let end = ImageAddress::new(start + length);
 
-    // No code begins at the last address, which no extent can hold.
     let shape = if start == u64::MAX && shape < 2 {
         3
     } else {
@@ -235,8 +226,6 @@ proptest! {
             );
             prop_assert_eq!(view.code_at(at).map(symbols::Symbol::id), code, "at {:#x}", address);
 
-            // An unsized symbol at `u64::MAX` names an address no
-            // interval can end past, and is not found.
             let data = least(
                 &|info| info.storage.is_some_and(|storage| storage.contains(at)),
                 false,

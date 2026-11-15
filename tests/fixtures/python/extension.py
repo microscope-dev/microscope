@@ -1,13 +1,13 @@
-"""Python objects held in a C extension's native frame: the extension's
-inspect() keeps them in PyObject * locals while it calls back into Python,
-which checkpoints with the frame below it. The first argument is the
-directory of the extension built for the interpreter.
 
-Besides the frames and locals, the checkpoint reports what microscope must
-show for each object the native frame holds:
 
-    TRUTH  object  NAME  VALUE
-"""
+
+
+
+
+
+
+
+
 
 import os
 import sys

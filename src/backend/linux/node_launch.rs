@@ -1,9 +1,3 @@
-//! Launch preload that opens Node's inspector and waits for microscope.
-//! `NODE_OPTIONS` prepends `--require` with a private `preload.js`;
-//! `MICROSCOPE_TRACER` restricts it to nodes traced by that thread ID.
-//! The preload restores the environment before the program runs, except
-//! when following child processes, which must inherit it.
-
 use std::ffi::OsString;
 use std::io::Read as _;
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
@@ -16,7 +10,6 @@ use nix::sys::stat::{Mode, fstat};
 
 const PRELOAD: &str = include_str!("../../runtime_model/node/preload.js");
 
-/// The directory's name, under `/tmp`, before its random part.
 const PREFIX: &str = ".microscope-node-";
 
 const TRACER: &str = "MICROSCOPE_TRACER";
@@ -32,7 +25,6 @@ pub(super) enum Ownership {
     Borrowed,
 }
 
-/// Checks a preload console acknowledgement against this process's launch nonce.
 pub(super) fn acknowledge(
     pid: nix::unistd::Pid,
     target: &str,
@@ -93,8 +85,6 @@ fn problem(error: impl std::fmt::Display) -> Arc<str> {
     format!("the Node launch preload failed: {error}").into()
 }
 
-/// Why a launched or followed node's inspector may never start, if its
-/// command line or initial environment reveals a cause.
 pub(super) fn unstarted(pid: i32) -> Option<&'static str> {
     let read = |name| std::fs::read(format!("/proc/{pid}/{name}")).ok();
     unstarted_by(&read("cmdline")?, &read("environ")?)
@@ -114,9 +104,6 @@ fn unstarted_by(command: &[u8], environment: &[u8]) -> Option<&'static str> {
         );
     }
 
-    // Node's own options: NODE_OPTIONS, then the arguments before the
-    // script. One that takes the next argument as its value ends the
-    // search early, which can only miss a flag.
     let arguments = command.split(|&byte| byte == 0).skip(1);
     let options = value("NODE_OPTIONS")
         .into_iter()
@@ -134,8 +121,6 @@ fn unstarted_by(command: &[u8], environment: &[u8]) -> Option<&'static str> {
     )
 }
 
-/// A launch's preload directory. Followed launches retain a cached copy
-/// because a released descendant can still inherit its require path.
 #[derive(Debug)]
 pub(super) struct NodeLaunch {
     directory: PathBuf,
@@ -143,8 +128,6 @@ pub(super) struct NodeLaunch {
 }
 
 impl NodeLaunch {
-    /// Prepares a preload for Node or a launch that follows child processes.
-    /// Adds launch environment overrides for nodes traced by `tracer`.
     pub(super) fn prepare(
         executable: &Path,
         environment: &mut Vec<(OsString, Option<OsString>)>,
@@ -241,8 +224,6 @@ impl NodeLaunch {
         validate_directory(&launch.directory)?;
         std::fs::write(launch.directory.join("preload.js"), PRELOAD).map_err(problem)?;
         if let Some(cached) = cached {
-            // Publish the complete directory atomically: a concurrent launch
-            // must never load a partially written preload.
             match std::fs::rename(&launch.directory, &cached) {
                 Ok(()) => {
                     launch.directory = cached;
@@ -309,8 +290,6 @@ fn validate_preload(directory: &Path) -> Result<(), Arc<str>> {
     Ok(())
 }
 
-/// `path` as a word of `NODE_OPTIONS`, which Node splits at spaces outside
-/// double quotes and reads `\` as escaping the next character within them.
 fn quoted(path: &Path) -> OsString {
     let mut word = vec![b'"'];
     for &byte in path.as_os_str().as_bytes() {
@@ -323,14 +302,10 @@ fn quoted(path: &Path) -> OsString {
     OsString::from_vec(word)
 }
 
-/// Whether `executable` is Node: it exports Node-API, or needs the shared
-/// libnode that does. Only the headers, the dynamic section, and the
-/// dynamic symbols are read, since every launch asks.
 fn launches_node(executable: &Path) -> bool {
     use object::read::elf::{Dyn as _, SectionHeader as _};
     use object::{Object as _, ObjectSymbol as _};
 
-    // Without O_NONBLOCK, opening a FIFO would wait for a writer.
     let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NONBLOCK)
@@ -470,7 +445,6 @@ mod tests {
             ),
             ("node\0--permission\0--allow-inspector\0app.js\0", "", None),
             ("node\0--allow-inspector\0app.js\0", "--permission", None),
-            // The script's own arguments are not Node's.
             ("node\0app.js\0--permission\0", "", None),
             ("node\0--\0--permission\0", "", None),
             ("node\0--permission-audit\0app.js\0", "", None),

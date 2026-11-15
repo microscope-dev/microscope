@@ -1,9 +1,3 @@
-//! A run's shape, chosen from its seed before the session starts.
-//!
-//! Swarm testing (Groce et al.) varies which features are active and how
-//! intensely, rather than enabling everything always, because some bugs
-//! only appear when other activity stays quiet.
-
 use std::fmt;
 
 use super::choices::{Choices, Stream};
@@ -12,7 +6,6 @@ use super::faults::Plan;
 use super::kernel::DebugBehavior;
 use super::schedule::Policy;
 
-/// How likely each kind of action is, relative to the others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Weights {
     pub run: u64,
@@ -30,62 +23,40 @@ pub struct Swarm {
     pub program: usize,
     pub variant: usize,
 
-    /// Which of the program's manifest runs, and so which arguments.
     pub run: usize,
 
-    /// How the world chooses its actions.
     pub policy: Policy,
 
-    /// How often, in a thousand, other actors act before a call the
-    /// controller makes into the kernel.
     pub preempt: u64,
 
-    /// The fault the run plans, if any.
     pub fault: Option<Plan>,
 
-    /// The most instructions one `Run` action executes.
     pub burst: u64,
 
-    /// The controller queue's capacity.
     pub queue_capacity: usize,
 
-    /// The event channel's capacity; small ones make clients lag.
     pub event_capacity: usize,
 
-    /// Whether launches stop at the program's first instruction.
     pub stop_at_entry: bool,
 
-    /// How many requests the client makes before it shuts down.
     pub requests: u64,
 
-    /// How many times the client may launch the program.
     pub launches: u64,
 
-    /// Breakpoints the client adds before its first launch.
     pub early_breakpoints: u64,
 
-    /// How the debug registers answer the tracer.
     pub debug: DebugBehavior,
 
-    /// Whether the client favors watching memory.
     pub watching: bool,
 
-    /// Whether the program starts untraced, for the client to attach to
-    /// before it launches anything, and how many instructions the program
-    /// runs before the client acts.
     pub attach: Option<u64>,
 
-    /// Whether the client stops at system calls.
     pub catching: bool,
 
-    /// Whether the client sometimes sends a lifecycle request before the
-    /// last one is answered: a kill with a launch or attach, and a kill or
-    /// a second shutdown with its shutdown.
     pub overlap: bool,
 }
 
 impl Swarm {
-    /// Chooses a run's shape from the `Swarm` stream.
     pub fn choose(choices: &mut Choices, corpus: &Corpus) -> Self {
         let mut index = |count: usize| {
             usize::try_from(choices.below(Stream::Swarm, count as u64)).expect("an index fits")
@@ -122,9 +93,6 @@ impl Swarm {
             .iter()
             .any(|function| function == "rt_fork");
 
-        // A program that forks plans a fault in three seeds of four: what
-        // becomes of its children when it dies near a fork is much of what
-        // it exists to show.
         let faulty = pick(if forks { &[0, 1, 1, 1] } else { &[0, 1] }) == 1;
         let fault = faulty.then(|| Plan::choose(choices, creates_threads, forks));
 
@@ -149,7 +117,6 @@ impl Swarm {
                 _ => DebugBehavior::Contended(usize::try_from(pick(&[2, 3, 4, 4])).expect("small")),
             },
             watching: pick(&[0, 1]) == 1,
-            // Early enough that most attaches find the program still running.
             attach: (pick(&[0, 1]) == 1).then(|| choices.below(Stream::Swarm, 500)),
             catching: choices.below(Stream::Swarm, 3) == 0,
             overlap: choices.below(Stream::Swarm, 4) == 0,
@@ -185,8 +152,6 @@ impl fmt::Display for Swarm {
     }
 }
 
-/// A simpler choice than a seed's for one part of a run's shape, which the
-/// shrinker tries in its place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Simpler {
     Requests(u64),
@@ -217,8 +182,6 @@ impl Simpler {
         }
     }
 
-    /// The simpler choices that would change `swarm`, in the order the
-    /// shrinker tries them: fewer requests first, the fewest first.
     #[must_use]
     pub fn for_swarm(swarm: &Swarm) -> Vec<Self> {
         let fewer = std::iter::successors(Some(1_u64), |requests| requests.checked_mul(2))

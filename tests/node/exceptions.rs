@@ -1,9 +1,3 @@
-//! JavaScript exceptions through Node's inspector, held to where V8 pauses
-//! at the same exceptions under a plain CDP client (`oracle.rs`), for each
-//! choice of filters: where each stops, whether it is the caught or the
-//! uncaught kind, and that an exception Node's own code catches never
-//! stops.
-
 use std::collections::BTreeMap;
 
 use microscope::{
@@ -15,14 +9,12 @@ use crate::session::{LINES, NodeSession};
 
 const FIXTURE: &str = "exceptions.js";
 
-/// Each choice of filters, and the state V8 is given for it.
 const CHOICES: [(&[&str], &str); 3] = [
     (&["javascript-thrown"], "all"),
     (&["javascript-uncaught"], "uncaught"),
     (&["javascript-thrown", "javascript-uncaught"], "all"),
 ];
 
-/// Runs the fixture with `chosen` filters: its stops and exception messages.
 async fn run(entry: &str, chosen: &[&str]) -> (Vec<Pause>, Vec<String>) {
     let session = NodeSession::unlaunched(entry, FIXTURE);
     let mut stops = ExceptionStops::NONE;
@@ -65,7 +57,6 @@ async fn run(entry: &str, chosen: &[&str]) -> (Vec<Pause>, Vec<String>) {
     (seen, messages)
 }
 
-/// The uncaught filter reports the uncaught kind when both are chosen.
 fn reported(expected: Vec<Pause>, chosen: &[&str]) -> Vec<Pause> {
     expected
         .into_iter()
@@ -78,8 +69,6 @@ fn reported(expected: Vec<Pause>, chosen: &[&str]) -> Vec<Pause> {
         .collect()
 }
 
-/// Where, on the build `entry`, for any choice, an exception does not
-/// stop where V8 pauses at it, as the kind it is, with V8's message.
 pub async fn lies(entry: &str) -> Vec<String> {
     let mut lies = Vec::new();
     let mut expected = BTreeMap::new();
@@ -106,8 +95,6 @@ pub async fn lies(entry: &str) -> Vec<String> {
     lies
 }
 
-/// On every build and for every choice, each exception stops where V8
-/// pauses at it, as the kind it is, with V8's message.
 #[tokio::test]
 async fn javascript_exceptions_stop_where_v8_pauses_at_them() {
     let mut found = Vec::new();

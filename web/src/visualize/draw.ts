@@ -1,21 +1,12 @@
-// Draws a checked picture into the page: as SVG, where every shape's title
-// and select are accessible, or past 2,000 shapes on a canvas the page
-// hit-tests itself, which draws ten thousand dots in a few milliseconds.
-// The canvas's titles and selects answer only the pointer. Either way an
-// image says which of its pixels is under the pointer.
-
 import { assert } from "../assert";
 import { buildCanvas } from "./canvas";
 import { MOST_SHAPES, type Picture, type Shape } from "./picture";
 import { buildSvg } from "./svg";
 
-/** What clicking, or pressing Enter or Space on, a shape with `select` does. */
 export type OnSelect = (path: string) => void;
 
-/** The most shapes the page draws as SVG. */
 const MOST_SVG_SHAPES = 2_000;
 
-/** How many shapes a picture holds, groups and what they hold included. */
 function countShapes(shapes: Shape[]): number {
   let count = 0;
   for (const shape of shapes) {
@@ -27,7 +18,6 @@ function countShapes(shapes: Shape[]): number {
   return count;
 }
 
-/** The picture in a holder, with the tip its hover text shows in. */
 export function buildPicture(picture: Picture, onSelect?: OnSelect): HTMLElement {
   const holder = document.createElement("div");
   holder.classList.add("picture-holder");
@@ -44,7 +34,6 @@ export function buildPicture(picture: Picture, onSelect?: OnSelect): HTMLElement
   return holder;
 }
 
-/** Hover text the page shows itself, beside the pointer. */
 export class Tip {
   readonly element: HTMLDivElement;
   private readonly holder: HTMLElement;
@@ -70,12 +59,10 @@ export class Tip {
   }
 }
 
-/** Which of `count` pixels across `size` the point `offset` into them is on. */
 export function pixelIndex(offset: number, size: number, count: number): number {
   return Math.min(count - 1, Math.max(0, Math.floor((offset / size) * count)));
 }
 
-/** What hovering an image's pixel says. */
 export function pixelName(title: string | undefined, column: number, row: number): string {
   const place = `column ${column}, row ${row}`;
   return title === undefined ? place : `${title}: ${place}`;

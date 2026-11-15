@@ -1,20 +1,20 @@
-//! Eight tasks of one async function, each parked three calls deep at a
-//! different kind of await, on a multi-thread runtime or, given `current`,
-//! a current-thread one. Once every task has registered its await and
-//! nothing runs, the program reports its truth and stops at the
-//! checkpoint `parked`; then it releases every task and joins them.
-//! Each local a test reads is saved across the await, and each task keeps
-//! its own id in `me`.
-//!
-//! Each line that spawns a task is marked with the task's tag, for a
-//! build with `tokio_unstable`, which records where each task was spawned.
-//! In the `wrapped` build, some tasks' futures are wrapped as programs
-//! wrap what they spawn (see `wrap`).
-//!
-//! Beside them, the blocking pool runs one closure, which waits, and has
-//! another queued behind it. On the current-thread runtime, the main
-//! future also wakes the notified task and spawns one more, and neither
-//! has been polled at the checkpoint.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 use std::hint::black_box;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use std::time::Duration;
 use tokio::sync::{Barrier, Mutex, Notify, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-/// What one task waits for.
+
 enum Wait {
     Channel(mpsc::Receiver<u32>),
     Sleep,
@@ -102,11 +102,11 @@ async fn top(wait: Wait) -> u32 {
     got + u32::try_from(top_local % 3).unwrap_or(0)
 }
 
-/// How some tasks' futures are spawned. In the `wrapped` build: the
-/// sleeper's boxed as a trait object, as code that spawns futures of
-/// several types holds them; the notified task's in a task-local scope;
-/// and the oneshot's catching its panic, through the futures crate's
-/// `catch_unwind` and `map`. In every other build, as they are.
+
+
+
+
+
 #[cfg(feature = "wrapped")]
 mod wrap {
     use std::future::Future;
@@ -155,8 +155,8 @@ mod wrap {
     }
 }
 
-/// Spawns every task, waits until each is parked and nothing runs, and
-/// stops at the checkpoint; then releases them and joins them.
+
+
 async fn run(handle: Option<tokio::runtime::Handle>) {
     let (sender, receiver) = mpsc::channel(1);
     let mutex = Arc::new(Mutex::new(3));
@@ -177,8 +177,8 @@ async fn run(handle: Option<tokio::runtime::Handle>) {
         tokio::spawn(top(Wait::Permit(semaphore.clone()))), // SPAWN: permit
     ];
 
-    // The pool's one thread for the program runs the first closure until
-    // it is released, so the second waits in the pool's queue.
+
+
     let (started_sender, started) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
     let blocking = tokio::task::spawn_blocking(move || {
@@ -197,7 +197,7 @@ async fn run(handle: Option<tokio::runtime::Handle>) {
     }
     truth::line(&[&"blocking", &blocking.id(), &"running", &blocking_thread]);
     truth::line(&[&"blocking", &queued.id(), &"queued"]);
-    // Without yielding, the current-thread runtime polls neither of these.
+
     let fresh = handle.is_none().then(|| {
         notify.notify_one();
         truth::line(&[&"woken", &tasks[3].id()]);
@@ -207,7 +207,7 @@ async fn run(handle: Option<tokio::runtime::Handle>) {
     });
     truth::checkpoint("parked", handle.as_ref());
 
-    // The sleepers wait an hour; the rest are released.
+
     tasks.remove(0).abort();
     if let Some(fresh) = fresh {
         fresh.abort();
@@ -245,8 +245,8 @@ fn main() {
             .build()
             .expect("a runtime");
         let handle = runtime.handle().clone();
-        // The checkpoint waits on this thread, outside the runtime, so that
-        // every worker can park.
+
+
         std::thread::scope(|scope| {
             scope.spawn(|| runtime.block_on(run(Some(handle))));
         });

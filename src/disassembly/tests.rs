@@ -42,7 +42,6 @@ fn window(
     (window.boundary, window.shortfall, window.block)
 }
 
-/// Bytes, Intel and AT&T renderings, control flow, and encoded addresses.
 type Case = (
     &'static [u8],
     &'static str,
@@ -51,8 +50,6 @@ type Case = (
     &'static [(InstructionReferenceKind, u64)],
 );
 
-/// Renders each instruction as `address: text`, with `(bad)` and
-/// `(truncated)` for undecodable positions.
 fn listing(block: &DisassemblyBlock) -> Vec<String> {
     block
         .instructions
@@ -69,16 +66,10 @@ fn listing(block: &DisassemblyBlock) -> Vec<String> {
         .collect()
 }
 
-/// `jmp` over two bytes of data that begin a ten-byte `movabs`, followed by
-/// the real code at 0x1004. Decoding straight through swallows the real
-/// instructions.
 fn data_in_code() -> Vec<u8> {
     vec![
-        0xeb, 0x02, // jmp 0x1004
-        0x48, 0xb8, // data: the start of movabs rax, imm64
-        0xb8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1
-        0xc3, // ret
-        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, // padding
+        0xeb, 0x02, 0x48, 0xb8, 0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3, 0x90, 0x90, 0x90, 0x90, 0x90,
+        0x90,
     ]
 }
 
@@ -110,8 +101,6 @@ fn decoding_resumes_at_known_starts_that_an_instruction_overlaps() {
 
 #[test]
 fn context_before_an_address_requires_landing_on_it_from_a_known_start() {
-    // Decoding from the function start crosses 0x1004 inside the movabs, so
-    // nothing before it is proven and the address itself is suspect.
     let mut source =
         FakeSource::new(BASE, data_in_code()).start(BASE, BoundaryEvidence::FunctionRange);
     let (boundary, shortfall, block) = window(&mut source, 0x1004, 3, 2);
@@ -130,7 +119,6 @@ fn context_before_an_address_requires_landing_on_it_from_a_known_start() {
     );
     assert_eq!(listing(&block), ["0x1004: mov eax, 1", "0x1009: ret"]);
 
-    // A program counter proves the address, but still not what precedes it.
     let mut source = source.start(0x1004, BoundaryEvidence::ProgramCounter);
     let (boundary, shortfall, block) = window(&mut source, 0x1004, 3, 1);
     assert_eq!(
@@ -143,7 +131,6 @@ fn context_before_an_address_requires_landing_on_it_from_a_known_start() {
     ));
     assert_eq!(listing(&block), ["0x1004: mov eax, 1"]);
 
-    // Landing exactly on an address proves it and everything before it.
     let (boundary, shortfall, block) = window(&mut source, 0x1009, 3, 1);
     assert_eq!(
         boundary,
@@ -153,8 +140,6 @@ fn context_before_an_address_requires_landing_on_it_from_a_known_start() {
         }
     );
 
-    // Only one instruction lies between the nearest known starts, and the
-    // segment before that one crossed it.
     assert_eq!(
         shortfall,
         Some(ContextShortfall::Desynchronized {
@@ -166,16 +151,8 @@ fn context_before_an_address_requires_landing_on_it_from_a_known_start() {
 
 #[test]
 fn context_spans_consecutive_known_starts_until_enough_or_none_remain() {
-    // Two functions of single-byte and multi-byte instructions.
     let bytes = vec![
-        0x55, // push rbp
-        0x48, 0x89, 0xe5, // mov rbp, rsp
-        0x5d, // pop rbp
-        0xc3, // ret
-        0x53, // push rbx
-        0x31, 0xc0, // xor eax, eax
-        0x5b, // pop rbx
-        0xc3, // ret
+        0x55, 0x48, 0x89, 0xe5, 0x5d, 0xc3, 0x53, 0x31, 0xc0, 0x5b, 0xc3,
     ];
     let mut source = FakeSource::new(BASE, bytes)
         .start(BASE, BoundaryEvidence::FunctionRange)
@@ -206,7 +183,6 @@ fn context_spans_consecutive_known_starts_until_enough_or_none_remain() {
     assert_eq!(block.instructions.len(), 6);
     assert_eq!(block.range.end, VirtualAddress::new(0x1009));
 
-    // Without any known start, nothing proves the address.
     source.starts.clear();
     let (boundary, shortfall, block) = window(&mut source, 0x1009, 2, 1);
     assert_eq!(
@@ -219,7 +195,6 @@ fn context_spans_consecutive_known_starts_until_enough_or_none_remain() {
 
 #[test]
 fn unreadable_memory_truncates_instead_of_guessing() {
-    // mov eax, 1 straddles the end of readable memory at 0x1003.
     let mut source = FakeSource::new(BASE, vec![0x90, 0xb8, 0x01, 0x00, 0x00, 0x00]);
     source.readable[0].end = 0x1003;
     let block = function(&mut source, BASE, 0x1006);
@@ -233,8 +208,6 @@ fn unreadable_memory_truncates_instead_of_guessing() {
         }
     );
 
-    // A truncated instruction's length is unknown, so it never claims to
-    // cross the end of its range.
     let block = function(&mut source, BASE, 0x1002);
     assert_eq!(listing(&block), ["0x1000: nop", "0x1001: (truncated)"]);
     assert!(block.conflicts.is_empty());
@@ -243,7 +216,6 @@ fn unreadable_memory_truncates_instead_of_guessing() {
         BlockCompletion::Unreadable { .. }
     ));
 
-    // Context cannot be proven across memory that cannot be read.
     let mut source = FakeSource::new(BASE, vec![0x90; 8]).start(BASE, BoundaryEvidence::CodeSymbol);
     source.readable[0].start = 0x1002;
     let (boundary, shortfall, block) = window(&mut source, 0x1004, 2, 1);
@@ -258,8 +230,6 @@ fn unreadable_memory_truncates_instead_of_guessing() {
 
 #[test]
 fn undecodable_bytes_advance_one_byte_and_range_ends_are_checked() {
-    // 0x06 (push es) is invalid in 64-bit mode; the call crosses the end of
-    // a range declared one byte too short.
     let mut source = FakeSource::new(BASE, vec![0x06, 0x90, 0xe8, 0, 0, 0, 0, 0xc3]);
     let block = function(&mut source, BASE, 0x1006);
     assert_eq!(
@@ -278,7 +248,6 @@ fn undecodable_bytes_advance_one_byte_and_range_ends_are_checked() {
 
 #[test]
 fn reads_across_chunk_boundaries_and_unaligned_readable_starts() {
-    // A ten-byte instruction straddles a read-chunk boundary.
     let base = READ_CHUNK - 4;
     let mut bytes = vec![0x48, 0xb8, 1, 2, 3, 4, 5, 6, 7, 8];
     bytes.push(0xc3);
@@ -292,7 +261,6 @@ fn reads_across_chunk_boundaries_and_unaligned_readable_starts() {
         ]
     );
 
-    // Readable memory that begins after a chunk's unreadable prefix.
     let mut source = FakeSource::new(READ_CHUNK, vec![0x90; 32]);
     source.readable[0].start = READ_CHUNK + 16;
     let block = function(&mut source, READ_CHUNK + 20, READ_CHUNK + 22);
@@ -363,7 +331,6 @@ fn instructions_render_in_either_syntax_and_report_encoded_addresses() {
             ControlFlow::Sequential,
             &[(InstructionReferenceKind::MemoryOperand, 0x0040_4010)],
         ),
-        // Thread-local storage is not a flat address.
         (
             &[0x64, 0x48, 0x8b, 0x04, 0x25, 0x28, 0x00, 0x00, 0x00],
             "mov rax, fs:[0x28]",
@@ -411,7 +378,6 @@ fn instructions_render_in_either_syntax_and_report_encoded_addresses() {
         }
     }
 
-    // Tokens classify the text for clients that color it.
     let RawDecode::Instruction { tokens, .. } =
         x86(AssemblySyntax::Intel).decode(BASE, &[0xe8, 0x0b, 0x00, 0x00, 0x00], None)
     else {
@@ -432,9 +398,6 @@ fn instructions_render_in_either_syntax_and_report_encoded_addresses() {
     );
 }
 
-/// Decodes one instruction at `BASE`, with a thread stopped there when
-/// `registers` are given. Pointer slots follow at 0x2000: an address at
-/// 0x2000, 0x1010 at 0x2008, and four readable bytes at 0x2010.
 fn indirect_target(code: &[u8], registers: Option<&RegisterFile>) -> Option<IndirectTarget> {
     let mut bytes = vec![0; 0x1018];
     bytes[..code.len()].copy_from_slice(code);
@@ -481,53 +444,48 @@ fn indirect_targets_are_read_from_the_stopped_state() {
     ]);
     let needs = Some(IndirectTarget::NeedsRegisters);
 
-    // Bytes, the target away from the stop, and the target at it.
     let cases: [(&[u8], _, _); 12] = [
-        // Program-counter-relative and absolute slots hold everywhere.
         (
-            &[0xff, 0x25, 0xfa, 0x0f, 0, 0], // jmp [rip+0xffa]
+            &[0xff, 0x25, 0xfa, 0x0f, 0, 0],
             memory(0x2000, 0x1234_5678_9abc_def0),
             memory(0x2000, 0x1234_5678_9abc_def0),
         ),
         (
-            &[0xff, 0x14, 0x25, 0x08, 0x20, 0, 0], // call [0x2008]
+            &[0xff, 0x14, 0x25, 0x08, 0x20, 0, 0],
             memory(0x2008, 0x1010),
             memory(0x2008, 0x1010),
         ),
         (
-            &[0xff, 0x25, 0x0a, 0x10, 0, 0], // jmp [rip+0x100a]
+            &[0xff, 0x25, 0x0a, 0x10, 0, 0],
             unreadable(0x2010, 0x2014),
             unreadable(0x2010, 0x2014),
         ),
-        // Registers are known only at the stop, including the FS base and
-        // a 32-bit address computation.
         (
-            &[0xff, 0xd0], // call rax
+            &[0xff, 0xd0],
             needs.clone(),
             Some(IndirectTarget::Register {
                 target: at(0x1_0000_2008),
             }),
         ),
         (
-            &[0xff, 0x50, 0x08], // call [rax+8]
+            &[0xff, 0x50, 0x08],
             needs.clone(),
             unreadable(0x1_0000_2010, 0x1_0000_2010),
         ),
-        (&[0x67, 0xff, 0x20], needs.clone(), memory(0x2008, 0x1010)), // jmp [eax]
+        (&[0x67, 0xff, 0x20], needs.clone(), memory(0x2008, 0x1010)),
         (
-            &[0x64, 0xff, 0x14, 0x25, 0x10, 0, 0, 0], // call fs:[0x10]
+            &[0x64, 0xff, 0x14, 0x25, 0x10, 0, 0, 0],
             needs.clone(),
             memory(0x2000, 0x1234_5678_9abc_def0),
         ),
         (
-            &[0xff, 0x24, 0xc5, 0x08, 0x20, 0, 0], // jmp [rax*8+0x2008]
+            &[0xff, 0x24, 0xc5, 0x08, 0x20, 0, 0],
             needs.clone(),
             unreadable(0x8_0001_2048, 0x8_0001_2048),
         ),
-        (&[0xc3], needs.clone(), memory(0x2008, 0x1010)), // ret
-        (&[0xc2, 0x08, 0], needs.clone(), memory(0x2008, 0x1010)), // ret 8
-        // Other instructions have no indirect target.
-        (&[0xe8, 0, 0, 0, 0], None, None), // call 0x1005
+        (&[0xc3], needs.clone(), memory(0x2008, 0x1010)),
+        (&[0xc2, 0x08, 0], needs.clone(), memory(0x2008, 0x1010)),
+        (&[0xe8, 0, 0, 0, 0], None, None),
         (&[0x90], None, None),
     ];
 
@@ -540,14 +498,12 @@ fn indirect_targets_are_read_from_the_stopped_state() {
         );
     }
 
-    // Far transfers, returns from interrupts, and branches whose operand
-    // size differs between Intel and AMD processors.
     for code in [
-        &[0x66, 0xff, 0xe0][..], // jmp rax, or jmp ax on AMD
-        &[0x66, 0xc3],           // ret, or retw on AMD
-        &[0xff, 0x28],           // jmp far [rax]
-        &[0x48, 0xcf],           // iretq
-        &[0xcb],                 // retf
+        &[0x66, 0xff, 0xe0][..],
+        &[0x66, 0xc3],
+        &[0xff, 0x28],
+        &[0x48, 0xcf],
+        &[0xcb],
     ] {
         for registers in [None, Some(&registers)] {
             assert_eq!(
@@ -558,7 +514,6 @@ fn indirect_targets_are_read_from_the_stopped_state() {
         }
     }
 
-    // A register the stop does not determine is never guessed.
     let mut unknown = registers;
     unknown.remove(crate::unwind::RAX);
     assert_eq!(indirect_target(&[0xff, 0xd0], Some(&unknown)), needs);
@@ -568,8 +523,6 @@ fn indirect_targets_are_read_from_the_stopped_state() {
     );
 }
 
-/// A byte of code: often one that begins or shapes a branch, a call, or a
-/// load through memory, so that the oracles see indirect targets.
 fn code_byte() -> impl Strategy<Value = u8> {
     prop_oneof![
         prop::sample::select(vec![

@@ -1,5 +1,3 @@
-//! The x86-64 instruction decoder and renderer, built on iced-x86.
-
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -16,14 +14,11 @@ use super::{
 use crate::ByteOrder;
 use crate::unwind::{DwarfRegister, FS_BASE, GS_BASE, RegisterFile};
 
-/// The longest x86-64 instruction encoding the architecture permits.
 const MAX_INSTRUCTION_LENGTH: usize = 15;
 
 pub struct Decoder {
     formatter: Box<dyn Formatter>,
 
-    /// The mnemonics, registers, and punctuation rendered so far, which
-    /// nearly every instruction repeats, so that its tokens share them.
     texts: HashSet<Arc<str>>,
 }
 
@@ -40,8 +35,6 @@ impl Decoder {
         options.set_uppercase_hex(false);
         options.set_space_after_operand_separator(true);
 
-        // Program-counter-relative operands keep their encoded form; the
-        // absolute address they name is reported as a reference instead.
         options.set_rip_relative_addresses(true);
         options.set_branch_leading_zeros(false);
         options.set_show_branch_size(false);
@@ -119,7 +112,6 @@ impl FormatterOutput for Tokens<'_> {
             _ => InstructionTokenKind::Text,
         };
 
-        // Numbers and addresses rarely repeat, so sharing them saves nothing.
         let text = if matches!(
             kind,
             InstructionTokenKind::Number | InstructionTokenKind::Address
@@ -152,11 +144,6 @@ fn flow(instruction: &Instruction) -> ControlFlow {
     }
 }
 
-/// Returns the addresses an instruction alone determines: direct branch
-/// targets and memory operands addressed relative to the instruction or by
-/// an absolute displacement. An FS- or GS-relative operand addresses
-/// thread-local storage rather than the flat address space, so it names no
-/// address.
 fn references(instruction: &Instruction) -> Vec<(InstructionReferenceKind, u64)> {
     let mut references = Vec::new();
     for operand in 0..instruction.op_count() {
@@ -193,9 +180,6 @@ fn references(instruction: &Instruction) -> Vec<(InstructionReferenceKind, u64)>
     references
 }
 
-/// Returns a register's value, read by its x86-64 psABI DWARF number. A
-/// segment register stands for its base address, which is zero in 64-bit
-/// mode except for FS and GS.
 fn register_value(registers: &RegisterFile, register: Register) -> Option<u64> {
     let dwarf = match register {
         Register::ES | Register::CS | Register::SS | Register::DS => return Some(0),
@@ -229,9 +213,6 @@ fn register_value(registers: &RegisterFile, register: Register) -> Option<u64> {
     })
 }
 
-/// Returns where an indirect jump, call, or return finds its target: memory
-/// whose address the instruction alone determines, or, given the registers
-/// it will execute with, any register or memory operand.
 fn indirect(
     instruction: &Instruction,
     bytes: &[u8],
@@ -256,8 +237,6 @@ fn indirect(
     )]
     let encoded = &bytes[..instruction.len()];
 
-    // In 64-bit mode Intel processors ignore an operand-size prefix on a near
-    // branch, while AMD processors narrow its target to 16 bits.
     let amd =
         iced_x86::Decoder::with_ip(64, encoded, instruction.ip(), DecoderOptions::AMD).decode();
     if amd.code() != instruction.code() {
@@ -271,7 +250,6 @@ fn indirect(
         (Code::Jmp_rm64 | Code::Call_rm64, OpKind::Memory) => {
             let size = instruction.memory_size().size();
 
-            // An address without registers holds at every instruction.
             let static_address = instruction.virtual_address(0, 0, |register, _, _| {
                 matches!(
                     register,

@@ -1,15 +1,15 @@
-// A gallery of values of every kind F24's prototype rendered, each named at
-// the checkpoint "gallery" in the frame of gallery(), with its canonical
-// text (truth.js): numbers, BigInts, strings in each of V8's
-// representations, objects and arrays in each of their element and
-// property kinds, nested and cyclic values, collections, classes and their
-// instances, getters, functions, errors, promises, typed arrays, and Buffers.
-//
-// util.inspect formats an error's stack, so the error whose stack nothing
-// has read, unread, is named only at the next checkpoint, "unread", once a
-// test has let the program go on from "gallery": what the program held at
-// "gallery" is a stack of raw call sites, and its text at "unread" is the
-// one Node formats from them.
+
+
+
+
+
+
+
+
+
+
+
+
 
 'use strict';
 
@@ -33,14 +33,14 @@ class Point3 extends Point {
   }
 }
 
-// Strings built at run time, so that V8 keeps each in the representation
-// its name says. Cons and sliced strings need 13 characters at least.
+
+
 function strings() {
   const head = 'concatenated-';
   const long = 'a long one-byte string that a slice points into';
   const thin = ['thin-string', '-key'].join('');
   const keyed = {};
-  // Using it as a key internalizes a copy and makes it a thin string.
+
   keyed[thin] = 1;
   return {
     oneByte: 'hello',
@@ -49,7 +49,7 @@ function strings() {
     sliced: long.substring(7, 30),
     thin,
     internalized: 'length',
-    // Buffer#toString returns an external string past about 1 MB.
+
     external: Buffer.alloc(1100000, 0x78).toString('latin1'),
     empty: '',
     escaped: 'quote \' and "double" and \\ and \n',
@@ -80,12 +80,12 @@ function objects() {
   };
   const nullPrototype = Object.assign(Object.create(null), {bare: true});
   const symbolKeyed = {[Symbol('tag')]: 'symbol value', plain: 1};
-  // No prototype names a constructor, so inspect names each object as V8
-  // does and ends at a prototype whose own prototype is null.
+
+
   function Orphan() {}
   Orphan.prototype = Object.create(null);
-  // Through 13.6 V8 names an instance by its constructor's shared name,
-  // 14.6 by its `name` property: `Renamed`, and `Object` for an empty one.
+
+
   function Named() {}
   Named.prototype = Object.create(null);
   Object.defineProperty(Named, 'name', {value: 'Renamed'});
@@ -229,28 +229,28 @@ function gallery(unread) {
     promises: promises(),
     binary: binary(),
   };
-  // A closure that captures values and unread makes V8 keep both in the
-  // frame's context, where its scope names them at any stop. A variable
-  // no closure captures lives in a register, which only V8's parser can
-  // name (F11).
+
+
+
+
   const captured = () => [values, unread];
   truth.checkpoint('gallery', {locals: paths('values', values)});
   truth.checkpoint('unread', {locals: {unread}});
   return captured;
 }
 
-/**
- * Each value of each group of `values`, named by the expression that reaches
- * it from the variable `root`, as `values.strings.cons`.
- */
+
+
+
+
 function paths(root, values) {
   return Object.fromEntries(Object.entries(values).flatMap(([group, members]) =>
     Object.entries(members).map(([name, value]) => [`${root}.${group}.${name}`, value])));
 }
 
-// The errors in unread, whose stacks nothing reads. Each is made where V8
-// writes a call site in its own way, so inspecting unread at "unread"
-// formats every kind.
+
+
+
 
 class Widget {}
 
@@ -278,8 +278,8 @@ class Shape {
   }
 }
 
-// A plain function's own method. V8 12.4 names the receiver's type by its
-// constructor, Function, and 13.6 by the function itself.
+
+
 function Registry() {}
 Registry.lookup = function lookup() {
   return new Error("a function's method");
@@ -302,7 +302,7 @@ function evaluate() {
 }
 
 // Scripts given line and column offsets, one named by its sourceURL, whose
-// positions V8 counts from the comment's script rather than the offsets.
+
 const vm = require('node:vm');
 const fromUrl = vm.runInThisContext(
   "(function fromUrl() { return new Error('a sourceURL'); })\n//# sourceURL=named-by-url.js",
@@ -339,8 +339,8 @@ function nodeError() {
   throw new Error('Buffer.alloc(-1) did not throw');
 }
 
-// Each function makes its error in one tier, forced with V8's natives,
-// which only code compiled after the flag can call.
+
+
 function inTurbofan() {
   return new Error('in Turbofan code');
 }
@@ -361,7 +361,7 @@ function inSparkplug() {
   return new Error('in Sparkplug code');
 }
 
-/** The error `fn` makes once its code is `tier`'s, which `force` asks for. */
+
 function tiered(natives, fn, force, tier) {
   natives.prepare(fn);
   fn();
@@ -391,14 +391,14 @@ function tieredErrors() {
   return {
     turbofan: tiered(natives, inTurbofan, natives.turbofan, 'turbofan'),
     inlined: tiered(natives, inlining, natives.turbofan, 'turbofan'),
-    // Node 22 builds V8 without Maglev enabled.
+
     ...(natives.hasMaglev() && {maglev: tiered(natives, inMaglev, natives.maglev, 'maglev')}),
     sparkplug: tiered(natives, inSparkplug, natives.sparkplug, 'sparkplug'),
   };
 }
 
-// Each error but topLevel keeps only its own case's frames, so inspecting
-// them all fits in one evaluation's reads.
+
+
 async function unreadErrors(topLevel) {
   const widget = new Widget();
   widget.describe = describeWidget;
@@ -438,7 +438,7 @@ if (process.argv[2] === 'inspection') {
 } else if (process.argv[2] === 'elements') {
   elementBoundary();
 } else if (process.argv[2] === 'with') {
-  // Function's body is sloppy even though this fixture is strict.
+
   /* eslint-disable no-new-func */
   new Function('truth', `
     const outer = 1;

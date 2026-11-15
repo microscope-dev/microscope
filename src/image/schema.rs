@@ -1,16 +1,10 @@
-//! What every table's records look like, and the fingerprint of it all
-//! that each image's header carries: an image whose fingerprint differs
-//! was written by a build whose records differ, and is not read.
-
 use std::sync::OnceLock;
 
 use super::format::{self, TableKind};
 use super::{lines, python, v8};
 
-/// One field of a record: its name, offset, and size.
 pub(super) type Field = (&'static str, usize, usize);
 
-/// One table: its kind, its record's name and size, and its fields.
 pub(super) struct TableSchema {
     pub kind: TableKind,
     pub record: &'static str,
@@ -18,8 +12,6 @@ pub(super) struct TableSchema {
     pub fields: &'static [Field],
 }
 
-/// Every table's layout. A test checks each field against the record's
-/// actual offsets and sizes, so this cannot drift from the code.
 pub(super) const SCHEMA: &[TableSchema] = &[
     TableSchema {
         kind: TableKind::Strings,
@@ -821,13 +813,10 @@ pub(super) const SCHEMA: &[TableSchema] = &[
     intervals(TableKind::ProvedFunctions),
 ];
 
-/// Where a Python runtime record's offsets begin.
 const PYTHON_OFFSETS: usize = 28;
 
-/// Where a V8 runtime record says where its isolates keep their entries.
 const V8_ENTRY_STACK: usize = 268 + 8 * v8::NodeTasks::WORDS;
 
-/// Where a V8 runtime record's offsets begin.
 const V8_OFFSETS: usize = V8_ENTRY_STACK + 12;
 
 const fn keyed(kind: TableKind) -> TableSchema {
@@ -880,14 +869,11 @@ const fn names(kind: TableKind) -> TableSchema {
     }
 }
 
-/// The layout fingerprint: XXH3-64 of the schema's canonical text, with
-/// the container's version.
 pub(super) fn layout_fingerprint() -> u64 {
     static FINGERPRINT: OnceLock<u64> = OnceLock::new();
     *FINGERPRINT.get_or_init(|| twox_hash::XxHash3_64::oneshot(schema_text().as_bytes()))
 }
 
-/// The schema as one line per table.
 pub(super) fn schema_text() -> String {
     use std::fmt::Write as _;
     let mut text = format!("format {}\n", format::FORMAT_VERSION);
@@ -911,7 +897,6 @@ pub(super) fn schema_text() -> String {
     text
 }
 
-/// The name of the record a table holds.
 pub(super) fn record(kind: TableKind) -> &'static str {
     SCHEMA
         .iter()
@@ -919,7 +904,6 @@ pub(super) fn record(kind: TableKind) -> &'static str {
         .map_or("", |table| table.record)
 }
 
-/// The stride the schema gives a table.
 pub(super) fn stride(kind: TableKind) -> usize {
     SCHEMA
         .iter()

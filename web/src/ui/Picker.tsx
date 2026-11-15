@@ -1,7 +1,3 @@
-// Starting something to debug or profile: a pane each for launching a
-// program, attaching to a process, opening a core dump, and recording a
-// profile. A pane closes once it has started what it was for.
-
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   type ChangeEvent,
@@ -33,10 +29,8 @@ import type { PaneProps } from "../workbench/kinds";
 import { close, type KindId, type PaneId } from "../workbench/layout";
 import { change } from "../workbench/store";
 
-/** What `/pick?tab=` names, which an old link may still carry. */
 export type PickerTab = "launch" | "attach" | "core" | "profile";
 
-/** The Start pane each picker tab became. */
 export const PICKED: Readonly<Record<PickerTab, KindId>> = {
   launch: KIND.launch,
   attach: KIND.attach,
@@ -44,23 +38,18 @@ export const PICKED: Readonly<Record<PickerTab, KindId>> = {
   profile: KIND.record,
 };
 
-/** Validates the `?tab=` search parameter. */
 export function pickerSearch(search: Record<string, unknown>): { tab?: PickerTab } {
   const tab = search.tab;
   return tab === "attach" || tab === "core" || tab === "launch" || tab === "profile" ? { tab } : {};
 }
 
-/** A request to start something, and how to retry it replacing the session. */
 interface Pending {
   describe: string;
   send(replace: boolean): Promise<unknown>;
 }
 
-/** Closes a Start pane, its work done. */
 const done = (pane: PaneId) => change((layout) => close(layout, pane));
 
-/** The body of a Start pane: its form, the error it last met until the form
- * is edited, and, when something else is being debugged, whether to end it. */
 export function StartBody({ id, pane }: PaneProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -79,8 +68,7 @@ export function StartBody({ id, pane }: PaneProps) {
         await pending.send(replace);
         setBusy(null);
         done(id);
-        // A session's address follows it to the next session on its own;
-        // elsewhere, the address of the session started is `/`'s.
+
         if (!pathname.startsWith("/s/")) {
           void navigate({ to: "/" });
         }
@@ -180,7 +168,7 @@ function LaunchForm({ working, submit }: FormProps) {
             run,
             replace,
           });
-          // Only what loaded is worth recalling.
+
           setRecent(rememberLaunch(form));
         },
       });
@@ -292,7 +280,6 @@ function RecentChip({ item, onPick }: { item: RecentLaunch; onPick(item: RecentL
   );
 }
 
-/** Handlers that each change one field of a launch form. */
 function useLaunchFields(setForm: Dispatch<SetStateAction<RecentLaunch>>) {
   return useMemo(
     () => ({
@@ -345,14 +332,12 @@ const ENGINES: { engine: SyscallsEngine; label: string; note: string }[] = [
   },
 ];
 
-/** The level of system calls each preset records at, as `record` does. */
 const PRESET_LEVELS: Readonly<Record<RecordPreset, SyscallsLevel>> = {
   production: "counts",
   development: "calls",
   maximum: "full",
 };
 
-/** Records a program, opening its profile as it grows. */
 function RecordForm({ onRecording }: { onRecording(): void }) {
   const connection = useConnection();
   const navigate = useNavigate();
@@ -365,12 +350,11 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
   const [preset, setPreset] = useState<RecordPreset>("development");
   const [function_, setFunction] = useState("");
   const [window_, setWindow] = useState("");
-  // The preset's level until one is chosen.
+
   const [level, setLevel] = useState<SyscallsLevel | null>(null);
   const [engine, setEngine] = useState<SyscallsEngine>("bpf");
   const shownLevel = level ?? PRESET_LEVELS[preset];
-  // ptrace sees a call only by stopping it, so it cannot count without
-  // stopping every one.
+
   const counting = engine === "ptrace" && shownLevel === "counts";
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -619,7 +603,7 @@ export function AttachForm({ working, submit }: FormProps) {
     const matching = (processes ?? []).filter((process) =>
       words.every((word) => `${process.pid} ${process.command}`.toLowerCase().includes(word)),
     );
-    // A typed pid names one process, ahead of newer ones that only mention it.
+
     const named = (process: Process) => (words.includes(String(process.pid)) ? 0 : 1);
     return matching.toSorted((a, b) => named(a) - named(b));
   }, [processes, filter]);
@@ -682,7 +666,7 @@ export function AttachForm({ working, submit }: FormProps) {
             id={id}
             className="input"
             value={filter}
-            // The keyboard goes here when the pane is opened.
+
             data-autofocus
             placeholder="kvstore"
             onChange={type}
@@ -831,7 +815,6 @@ function Field({
   );
 }
 
-/** A path input that completes against the server's disk. */
 export function PathInput({
   id,
   value,
@@ -850,13 +833,13 @@ export function PathInput({
   onlyDirectories?: boolean;
 }) {
   const connection = useConnection();
-  // Suggestions belong to the text they complete; any others are stale.
+
   const [completion, setCompletion] = useState<{ text: string; entries: PathEntry[] } | null>(null);
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState(0);
-  // Tab pressed before the current text's suggestions arrived.
+
   const [tabbed, setTabbed] = useState(false);
-  // Whether an arrow key chose the selected suggestion.
+
   const [picked, setPicked] = useState(false);
   const listId = useId();
   const input = useRef<HTMLInputElement>(null);
@@ -876,12 +859,10 @@ export function PathInput({
               (!onlyDirectories && (!onlyExecutables || entry.kind === "executable")),
           );
           setCompletion({ text: value, entries });
-          // The same text fetched again on focus keeps what the arrow keys chose.
+
           setSelected((index) => Math.min(index, Math.max(entries.length - 1, 0)));
         }
       } catch {
-        // No suggestions, rather than none yet, so Tab is not held back and
-        // one already waiting moves on.
         if (current) {
           setCompletion({ text: value, entries: [] });
         }
@@ -902,7 +883,7 @@ export function PathInput({
       onChange(entry.text);
       setSelected(0);
       setPicked(false);
-      // A directory opens onto its contents; a file is chosen.
+
       setOpen(entry.kind === "directory");
     },
     [onChange],
@@ -910,8 +891,7 @@ export function PathInput({
   const current = completion?.text === value ? completion.entries : null;
   const shown = useMemo(() => (open && current ? current.slice(0, 50) : []), [open, current]);
   assert(selected >= 0, `suggestion ${selected} selected`);
-  // Tab completes a partial name, or takes what the arrow keys chose; in an
-  // empty field or after a directory it moves on, as it would anywhere else.
+
   const completes = picked || (value !== "" && !value.endsWith("/"));
 
   useEffect(() => {
@@ -921,7 +901,6 @@ export function PathInput({
       if (current.length > 0) {
         accept(current[0]);
       } else if (input.current) {
-        // With nothing to complete, the Tab does what the browser would have.
         focusAfter(input.current);
       }
     }
@@ -938,8 +917,7 @@ export function PathInput({
     [onChange],
   );
   const focus = useCallback(() => setOpen(true), []);
-  // A waiting Tab belongs to this opening; left alone, it would complete the
-  // path when the field is next focused.
+
   const dismiss = useCallback(() => {
     setOpen(false);
     setTabbed(false);
@@ -979,7 +957,7 @@ export function PathInput({
         className="input"
         value={value}
         placeholder={placeholder}
-        // The keyboard goes here when the pane is opened.
+
         data-autofocus={autoFocus || undefined}
         spellCheck={false}
         autoComplete="off"
@@ -1008,21 +986,11 @@ export function PathInput({
   );
 }
 
-/**
- * Moves focus as Tab would from `from`, whose tabindex is 0: to the next
- * element in document order with tabindex 0 that can take focus. Positive
- * tabindexes come before every 0 in tab order, so none of them is next. With
- * nothing after it, focus stays, since the browser's own controls are next.
- * Stops some browsers add, such as Chrome's at a scrollable box with nothing
- * focusable inside, are skipped.
- */
 function focusAfter(from: HTMLElement) {
   assert(from.tabIndex === 0, `moving on from tabindex ${from.tabIndex}`);
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
   walker.currentNode = from;
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    // focus() refuses what is disabled, hidden, inert, or not focusable at
-    // all, which tabIndex alone does not show.
     if ((node instanceof HTMLElement || node instanceof SVGElement) && node.tabIndex === 0) {
       node.focus();
       if (document.activeElement === node) {

@@ -1,6 +1,3 @@
-// How the page asks services about organizations and projects, and how it
-// orders projects: the person's own first, then each organization's.
-
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { account, Refused } from "../src/account";
@@ -91,7 +88,6 @@ describe("grouping projects", () => {
   });
 });
 
-/** Answers each request with `answer`, and keeps what was asked. */
 function serve(answer: (method: string, path: string) => Response) {
   const asked: { method: string; path: string; body: unknown }[] = [];
   vi.stubGlobal(

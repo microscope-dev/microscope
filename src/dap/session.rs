@@ -1,10 +1,3 @@
-//! One client's debug session.
-//!
-//! The session handles the client's requests one at a time, in the order
-//! they arrive, and forwards the debugger's events between them. Because a
-//! request that resumes the inferior is answered before the session reads
-//! the events it causes, a response always precedes the stop it leads to.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
@@ -36,52 +29,40 @@ use super::sources::source_json;
 use super::threads::ThreadHandles;
 use crate::cli::{Cli, LaunchSettings, Renderers};
 
-/// How long the session waits for a program's output to drain after it
-/// exits, in case a process it started still holds the output open.
 const OUTPUT_DRAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Sends messages to the client through the connection's writer.
 #[derive(Clone)]
 pub struct Client {
     outgoing: mpsc::Sender<Outgoing>,
     responses: Arc<Mutex<Responses>>,
 }
 
-/// The client's answer to a reverse request: its body or error message.
 pub type Response = Result<Value, String>;
 
-/// Reverse requests awaiting the client's responses.
 #[derive(Default)]
 pub struct Responses {
     next_ticket: u64,
 
-    /// Callers by ticket, until the writer numbers their request.
     unsent: HashMap<u64, oneshot::Sender<Response>>,
 
-    /// Callers by the `seq` of their request.
     sent: HashMap<u64, oneshot::Sender<Response>>,
 
-    /// Whether the connection is gone, so a new request would never be
-    /// answered.
     closed: bool,
 }
 
 impl Responses {
-    /// Records the `seq` the writer gave a request.
     pub fn sent(&mut self, ticket: u64, seq: u64) {
         if let Some(caller) = self.unsent.remove(&ticket) {
             self.sent.insert(seq, caller);
         }
     }
 
-    /// Answers the caller of the request with this `seq`.
     pub fn settle(&mut self, seq: u64, response: Response) {
         if let Some(caller) = self.sent.remove(&seq) {
             let _ = caller.send(response);
         }
     }
 
-    /// Fails every caller once the connection is gone, and every later one.
     pub fn close(&mut self) {
         self.closed = true;
         self.unsent.clear();
@@ -89,7 +70,6 @@ impl Responses {
     }
 }
 
-/// The connection to the client is gone.
 #[derive(Debug, Clone, Copy)]
 pub struct Closed;
 
@@ -107,12 +87,10 @@ impl Client {
         }
     }
 
-    /// The reverse requests the connection's reader and writer settle.
     pub fn responses(&self) -> Arc<Mutex<Responses>> {
         Arc::clone(&self.responses)
     }
 
-    /// Sends a reverse request and waits for the client's response.
     pub(super) async fn request(
         &self,
         command: &'static str,
@@ -184,11 +162,8 @@ impl Client {
     }
 }
 
-/// The `seq` of each request the client cancelled, as text, shared by the
-/// reader that sees the cancellation and the session that honors it.
 pub type Cancelled = Arc<Mutex<HashSet<String>>>;
 
-/// What the reader hands the session.
 #[derive(Debug)]
 pub enum Inbound {
     /// A request the client cancelled before the session reached it.
@@ -199,7 +174,6 @@ pub enum Inbound {
         arguments: Value,
     },
 
-    /// A request that could not be parsed but whose `seq` was recovered.
     Malformed {
         seq: Value,
         command: String,
@@ -207,14 +181,12 @@ pub enum Inbound {
     },
 }
 
-/// Identifies a request to answer.
 #[derive(Debug, Clone)]
 struct Header {
     seq: Value,
     command: String,
 }
 
-/// What the client said it supports.
 #[derive(Debug, Clone, Copy)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -234,8 +206,6 @@ pub(super) struct ClientSupport {
 }
 
 impl ClientSupport {
-    /// What a client that declared nothing supports, as the protocol says:
-    /// lines and columns start at one.
     const UNDECLARED: Self = Self {
         lines_start_at1: true,
         columns_start_at1: true,
@@ -250,27 +220,20 @@ impl ClientSupport {
     };
 }
 
-/// What a session's debugger belongs to, and so what ending it ends.
 enum Owner {
-    /// A core dump's debugger.
     Single(Debugger),
 
-    /// The group the session launched or attached, whose root it shows,
-    /// with the socket its members' sessions connect to.
     Group {
         group: ProcessGroup,
         routes: Option<super::group::Routes>,
     },
 
-    /// A member of a group another session of this adapter hosts.
     Member(GroupHandle, MemberNumber),
 
-    /// Nothing, once the session ended it.
     Ended,
 }
 
 impl Owner {
-    /// The number of the session's process in its group, if it is one's.
     const fn member(&self) -> Option<MemberNumber> {
         match self {
             Self::Group { .. } => Some(1),
@@ -279,7 +242,6 @@ impl Owner {
         }
     }
 
-    /// The group the session's process belongs to, if it is one's.
     fn group(&self) -> Option<&GroupHandle> {
         match self {
             Self::Group { group, .. } => Some(group),
@@ -288,8 +250,6 @@ impl Owner {
         }
     }
 
-    /// Ends what the session owns: a group's members' sessions first, then
-    /// its processes, as [`ProcessGroup::shutdown`] ends them.
     async fn end(&mut self) -> microscope::Result<()> {
         match std::mem::replace(self, Self::Ended) {
             Self::Single(debugger) => debugger.shutdown().await,
@@ -304,36 +264,27 @@ impl Owner {
     }
 }
 
-/// A member no session shows, and why.
 type Unshown = (MemberNumber, String);
 
-/// The program being debugged.
 struct Target {
     owner: Owner,
     handle: DebuggerHandle,
 
-    /// What the debugger and the group report, until each closes.
     events: Option<broadcast::Receiver<DebuggerEvent>>,
     group_events: Option<broadcast::Receiver<GroupEvent>>,
 
-    /// What the client was told of the program.
     run: Run,
 
-    /// The revision of the snapshot that last brought `run` up to date, so
-    /// that the events it already reflects are not told again.
     resynced: u64,
     start: Start,
     stop_on_entry: bool,
     source_paths: microscope::SourcePathMap,
     signals: Vec<(u64, Vec<String>)>,
 
-    /// The policy each signal had before the session changed it.
     default_policies: HashMap<u64, SignalPolicy>,
     applied_policies: HashMap<u64, SignalPolicy>,
     applied_exceptions: microscope::ExceptionStops,
 
-    /// The catchpoint the system-call filter made, and the calls it
-    /// catches.
     applied_syscalls: Option<(
         Arc<[microscope::syscalls::SyscallId]>,
         microscope::CatchpointId,
@@ -342,34 +293,22 @@ struct Target {
     syntax: microscope::AssemblySyntax,
     images: HashMap<ModuleId, Arc<ModuleImage>>,
 
-    /// Recorded source paths by the canonical local path they map to.
     recorded_paths: Option<HashMap<PathBuf, PathBuf>>,
     pumps: Vec<output::Forwarder>,
 
-    /// The settings child sessions carry over.
     inherited: serde_json::Map<String, Value>,
     threads: config::ThreadListing,
 }
 
-/// Where a session is in its life.
 enum Phase {
-    /// Waiting for `initialize`.
     New,
 
-    /// Initialized, with no program yet. `configured` once
-    /// `configurationDone` came first, so the program starts as it loads.
     Initialized { configured: bool },
 
-    /// The program is loaded, and its `launch` or `attach`, whose answer
-    /// `reply` is, waits for `configurationDone` to start it.
     Adopted { target: Target, reply: Header },
 
-    /// The program started, or its start failed or was terminated before
-    /// it began, in which case `configured` is false until the client
-    /// sends `configurationDone` anyway.
     Started { target: Target, configured: bool },
 
-    /// The session is over.
     Ended,
 }
 
@@ -400,61 +339,43 @@ pub struct Session {
     pub(super) client: Client,
     phase: Phase,
 
-    /// What the client said it supports, once it initialized.
     support: ClientSupport,
 
-    /// The group this session's adapter hosts and this session shows a
-    /// member of, when the client connected it to the group's socket.
     route: Option<super::group::Route>,
     log: super::Log,
 
-    /// The requests for members' sessions still waiting for the client.
     follows: Vec<JoinHandle<()>>,
 
-    /// Members whose sessions the client did not start, with why, as the
-    /// requests for them learn it.
     unshown: (
         mpsc::UnboundedSender<Unshown>,
         mpsc::UnboundedReceiver<Unshown>,
     ),
 
-    /// The members no session shows.
     hidden: BTreeSet<MemberNumber>,
     pub(super) breakpoints: Breakpoints,
     pub(super) data: super::watch::Data,
     exceptions: Selection,
-    /// The handles and reads of the stop the client shows, which go with
-    /// it.
+
     pub(super) references: References,
     backtraces: HashMap<ExecutionContext, Arc<Backtrace>>,
     variables: HashMap<(ExecutionContext, StackFrameId), Arc<VariableSnapshot>>,
 
-    /// The client's ids for threads and tasks.
     pub(super) thread_ids: ThreadHandles,
 
-    /// The threads the client was told about, with their client ids.
     threads: BTreeMap<ThreadId, i64>,
 
-    /// The tasks the client was told about, with their client ids.
     pub(super) tasks: BTreeMap<microscope::TaskId, i64>,
 
-    /// The tasks of the last list that run no code, whose stacks are empty.
     pub(super) stackless: BTreeSet<microscope::TaskId>,
 
-    /// The modules the client was told are loaded.
     pub(super) modules: BTreeMap<ModuleId, microscope::LoadedModuleRecord>,
 
-    /// How values show when a request does not say.
     pub(super) display: super::values::Display,
 
-    /// The source files the client was told are loaded, and the modules
-    /// that have each, once it asked.
     pub(super) loaded_sources: Option<BTreeMap<PathBuf, BTreeSet<ModuleId>>>,
 
-    /// Requests read ahead of the one being handled.
     queue: VecDeque<Inbound>,
 
-    /// The `seq` of each request the client cancelled, as text.
     cancelled: Cancelled,
 }
 
@@ -487,16 +408,12 @@ impl Session {
         }
     }
 
-    /// The session for a connection to a group's socket, which shows one of
-    /// `route`'s members, writing what it logs to `log`.
     pub(super) fn serving(mut self, route: Option<super::group::Route>, log: super::Log) -> Self {
         self.route = route;
         self.log = log;
         self
     }
 
-    /// Serves the session until the client disconnects, the connection
-    /// closes, or `shutdown` completes, which counts as a disconnect.
     pub async fn run(
         mut self,
         mut inbox: mpsc::Receiver<Inbound>,
@@ -505,7 +422,6 @@ impl Session {
         tokio::pin!(shutdown);
 
         loop {
-            // Requests set aside while cancelling come first, in order.
             while let Ok(message) = inbox.try_recv() {
                 self.queue.push_back(message);
             }
@@ -572,8 +488,6 @@ impl Session {
 
     async fn message(&mut self, message: Inbound) -> Result<(), Closed> {
         let (header, arguments) = match message {
-            // configurationDone runs whatever a cancel says: a launch or
-            // attach waits on it, and would wait on for one never sent.
             Inbound::Request { seq, command, .. }
                 if self.take_cancellation(&seq) && command != "configurationDone" =>
             {
@@ -614,8 +528,6 @@ impl Session {
         }
     }
 
-    /// Handles one request. `Ok(None)` means the request answers itself,
-    /// as one that acts after its answer does, or defers it.
     async fn dispatch(
         &mut self,
         header: &Header,
@@ -689,8 +601,6 @@ impl Session {
         Ok(Some(body))
     }
 
-    /// Answers with the capabilities, then tells the client it may
-    /// configure the session.
     async fn initialize(
         &mut self,
         header: &Header,
@@ -719,8 +629,6 @@ impl Session {
         Ok(None)
     }
 
-    /// What the client supports. Requests wait for `initialize`, so only a
-    /// request that somehow came before it sees the protocol defaults.
     pub(super) const fn support(&self) -> ClientSupport {
         self.support
     }
@@ -839,8 +747,6 @@ impl Session {
         self.adopt(owner, handle, configuration, header).await
     }
 
-    /// The member of the group this adapter hosts that `member` names, for
-    /// a session the client connected to the group's socket.
     fn member(&self, member: &config::MemberRoute) -> Result<(Owner, DebuggerHandle), ErrorBody> {
         let Some(route) = self
             .route
@@ -866,8 +772,6 @@ impl Session {
         Ok((Owner::Member(route.group.clone(), member.number), handle))
     }
 
-    /// Reports slow work, such as loading debug information, to a client
-    /// that shows progress.
     async fn with_progress<T>(
         &self,
         title: String,
@@ -903,8 +807,6 @@ impl Session {
         Ok(())
     }
 
-    /// Makes a loaded debugger the session's target, and starts it once
-    /// configuration is done, which answers the `launch` or `attach`.
     async fn adopt(
         &mut self,
         owner: Owner,
@@ -935,8 +837,6 @@ impl Session {
         let handle = handle.with_source_paths(source_paths.clone());
         let events = Some(handle.subscribe());
 
-        // The console's commands read no settings files: an editor's
-        // sessions take their settings from its launch arguments.
         let root = crate::cli::config::project_root(
             &working_directory
                 .clone()
@@ -987,7 +887,6 @@ impl Session {
         self.warn_debug_information().await?;
         self.load_views(working_directory, &view_files).await?;
         if let Err(error) = self.apply_signal_policies().await {
-            // The program cannot start as configured: the session has none.
             let phase = std::mem::replace(&mut self.phase, Phase::Initialized { configured });
             if let Some(mut target) = phase.into_target() {
                 let _ = target.owner.end().await;
@@ -996,8 +895,6 @@ impl Session {
         }
 
         if !launched {
-            // A client restarts a core dump by opening it again, and an
-            // attached process by detaching and attaching to it again.
             self.client
                 .event(
                     "capabilities",
@@ -1018,9 +915,6 @@ impl Session {
         Ok(None)
     }
 
-    /// Shows what the group whose root this session shows did: each member
-    /// that joins in a session of its own, and the processes it does not
-    /// debug, so that none disappears silently.
     async fn group_event(&mut self, event: GroupEvent) -> Result<(), Closed> {
         match event {
             GroupEvent::MemberJoined { member, .. } => self.show_member(member).await,
@@ -1080,8 +974,6 @@ impl Session {
         }
     }
 
-    /// Asks the client to show `number` in a session of its own, which it
-    /// connects to the group's socket.
     async fn show_member(&mut self, number: MemberNumber) -> Result<(), Closed> {
         let start_debugging = self.support().start_debugging;
         let log = self.log.clone();
@@ -1135,7 +1027,6 @@ impl Session {
         Ok(())
     }
 
-    /// Says a member is debugged but no session shows it.
     async fn unshown(&mut self, member: MemberNumber, reason: String) -> Result<(), Closed> {
         self.hidden.insert(member);
         self.client
@@ -1147,9 +1038,6 @@ impl Session {
             .await
     }
 
-    /// Presents values with the configuration's view files and the
-    /// project's and user's, and says what kept any of them, or the
-    /// program's own, out.
     async fn load_views(
         &self,
         working_directory: Option<PathBuf>,
@@ -1177,8 +1065,6 @@ impl Session {
         Ok(())
     }
 
-    /// Says what could not be used of the program's debug information; a
-    /// library's is said as it is announced.
     async fn warn_debug_information(&self) -> Result<(), Closed> {
         let Some(handle) = self.handle() else {
             return Ok(());
@@ -1220,9 +1106,6 @@ impl Session {
         }
     }
 
-    /// Starts the adopted target, as both its configuration and `launch`
-    /// or `attach` arrived: answers the deferred request, announces the
-    /// process, and lets it run or reports its first stop.
     async fn start(&mut self) -> Result<(), Closed> {
         let reply = match std::mem::replace(&mut self.phase, Phase::Ended) {
             Phase::Adopted { target, reply } => {
@@ -1256,9 +1139,6 @@ impl Session {
             return Ok(());
         };
 
-        // A launched program is shown from its events, which began before
-        // it. Anything else is shown from the snapshot, which reflects the
-        // events up to it.
         if matches!(target.start, Start::Launch(_)) {
             return Ok(());
         }
@@ -1274,9 +1154,6 @@ impl Session {
             return Ok(());
         };
 
-        // The group runs and stops its members together, and a core dump
-        // is stopped for good: each shows its stop. A process attached to
-        // runs, unless the client asked to see it stopped.
         let attached = matches!(target.start, Start::Attach { .. })
             && !matches!(target.owner, Owner::Member(..));
         if !attached {
@@ -1312,8 +1189,6 @@ impl Session {
         }
     }
 
-    /// Announces a started process: the `process` event, its output, its
-    /// modules, and its threads. Returns the state it started in.
     #[expect(
         clippy::indexing_slicing,
         reason = "the body is a JSON object built here, and indexing an object by key inserts"
@@ -1336,7 +1211,6 @@ impl Session {
             .and_then(|snapshot| snapshot.inferior.live_process());
         let process = process.or_else(|| handle.core_dump().map(|core| core.process_id));
 
-        // A stop the program's events showed while it started stays.
         if let (None, Some(process)) = (self.shown().process(), process) {
             self.set_run(Run::Running(process));
         }
@@ -1352,7 +1226,6 @@ impl Session {
             "pointerSize": 64,
         });
 
-        // A core dump's process is not one on this machine.
         if let Some(process) = process.filter(|_| target.handle.core_dump().is_none()) {
             body["systemProcessId"] = process.get().into();
         }
@@ -1378,16 +1251,13 @@ impl Session {
         Ok(snapshot)
     }
 
-    /// Kills a launched program and launches it again, keeping the session
-    /// and its breakpoints. The new arguments may change how the program is
-    /// started, but not which program.
     async fn restart(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let target = match &mut self.phase {
             Phase::Started {
                 target,
                 configured: true,
             } => target,
-            // Only a start terminated before it began is started unconfigured.
+
             Phase::Started {
                 configured: false, ..
             } => {
@@ -1396,8 +1266,7 @@ impl Session {
                      so there is nothing to restart",
                 ));
             }
-            // Configuration done starts the program, so restarting it before
-            // would start it twice.
+
             Phase::Adopted { .. } => {
                 return Err(ErrorBody::new(
                     "the program has not started yet, so there is nothing to restart",
@@ -1437,7 +1306,6 @@ impl Session {
             Err(error) => Err(self::error(error)),
         };
 
-        // Report the old process's end, without ending the session.
         while let Some(event) = self.queued_event() {
             match event {
                 DebuggerEvent::InferiorExited { status, .. } => {
@@ -1453,8 +1321,6 @@ impl Session {
         Ok(json!({}))
     }
 
-    /// Launches the program, or readies an attached process or core dump,
-    /// returning the `process` event's start method and output pipes.
     async fn begin(&mut self) -> Result<(&'static str, Vec<(OwnedFd, &'static str)>), ErrorBody> {
         let supported = self.support().run_in_terminal;
         let Some(target) = self.phase.target_mut() else {
@@ -1466,7 +1332,6 @@ impl Session {
         };
 
         if launch.console != config::Console::Internal {
-            // The program's streams belong to the terminal.
             super::terminal::launch(
                 &self.client,
                 supported,
@@ -1507,8 +1372,6 @@ impl Session {
     async fn disconnect(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<protocol::DisconnectArguments>(arguments, "disconnect arguments")?;
 
-        // A restart attaches to the process again, so it must survive the
-        // disconnect that begins the restart, whatever else that asks.
         let attached = matches!(
             self.phase.target().map(|target| &target.start),
             Some(Start::Attach { .. })
@@ -1523,11 +1386,7 @@ impl Session {
         Ok(json!({}))
     }
 
-    /// Ends the session: kills a launched program, or one attached to when
-    /// asked, detaches from the rest, and reports the program's end.
     async fn end(&mut self, terminate: Option<bool>) -> Result<(), Closed> {
-        // Every request gets a response, also a start still waiting for
-        // configuration.
         if let Some(reply) = self.abandon_start() {
             self.client
                 .respond(
@@ -1541,8 +1400,7 @@ impl Session {
 
         if let Some(target) = self.phase.target_mut() {
             let launched = matches!(target.start, Start::Launch(_));
-            // A member's session ends with its group, unless asked to end its
-            // process.
+
             let member = matches!(target.owner, Owner::Member(..));
             if terminate.unwrap_or(launched && !member)
                 && target.run.process().is_some()
@@ -1564,7 +1422,6 @@ impl Session {
                 .await?;
         }
 
-        // Report the exit the kill caused, then the session's end.
         while let Some(event) = self.queued_event() {
             self.event(event).await?;
         }
@@ -1577,13 +1434,10 @@ impl Session {
         Ok(())
     }
 
-    /// The next debugger event already received.
     fn queued_event(&mut self) -> Option<DebuggerEvent> {
         self.phase.target_mut()?.events.as_mut()?.try_recv().ok()
     }
 
-    /// Fails a start still waiting for configuration, which leaves the
-    /// session started with no program, and returns the request to answer.
     fn abandon_start(&mut self) -> Option<Header> {
         match std::mem::replace(&mut self.phase, Phase::Ended) {
             Phase::Adopted { target, reply } => {
@@ -1601,8 +1455,6 @@ impl Session {
     }
 
     async fn terminate(&mut self) -> Result<Value, ErrorBody> {
-        // A start still waiting for configuration has no program to end, so
-        // it fails now and never starts.
         if let Some(reply) = self.abandon_start() {
             self.client
                 .respond(
@@ -1626,9 +1478,6 @@ impl Session {
         }
     }
 
-    /// Releases what the session holds once it is over, which ends it.
-    /// Children held but not yet offered to the client are released; those
-    /// offered wait for its answer.
     async fn release(&mut self) {
         if let Some(mut target) = std::mem::replace(&mut self.phase, Phase::Ended).into_target() {
             let _ = target.owner.end().await;
@@ -1637,7 +1486,6 @@ impl Session {
             }
         }
 
-        // The client no longer answers for sessions it was asked to start.
         for follow in self.follows.drain(..) {
             #[expect(
                 clippy::disallowed_methods,
@@ -1651,14 +1499,12 @@ impl Session {
         self.phase.target().map(|target| &target.handle)
     }
 
-    /// The target's debugger, for requests that need a program.
     pub(super) fn target_handle(&self) -> Result<DebuggerHandle, ErrorBody> {
         self.handle()
             .cloned()
             .ok_or_else(|| ErrorBody::new("no program is loaded"))
     }
 
-    /// What the client was told of the program.
     fn shown(&self) -> &Run {
         const NO_PROCESS: &Run = &Run::NoProcess;
         self.phase.target().map_or(NO_PROCESS, |target| &target.run)
@@ -1671,13 +1517,10 @@ impl Session {
             .is_some_and(|events| !events.is_empty())
     }
 
-    /// The stop the client was told about, if it shows one.
     pub(super) fn stop(&self) -> Option<&Stop> {
         self.shown().stop()
     }
 
-    /// Moves what the client was shown of the program to `run`. A stop it
-    /// leaves takes its handles and reads with it.
     fn set_run(&mut self, run: Run) {
         let Some(target) = self.phase.target_mut() else {
             return;
@@ -1692,7 +1535,6 @@ impl Session {
         target.run = run;
     }
 
-    /// The stop the client was told about, for requests that need one.
     pub(super) fn current_stop(&self) -> Result<Stop, ErrorBody> {
         match self.shown() {
             Run::Stopped(_, stop) => Ok(stop.clone()),
@@ -1701,16 +1543,12 @@ impl Session {
         }
     }
 
-    /// Whether the client cancelled the request with this `seq`.
     fn take_cancellation(&self, seq: &Value) -> bool {
         self.cancelled
             .lock()
             .is_ok_and(|mut cancelled| cancelled.remove(&seq.to_string()))
     }
 
-    /// Cancels queued requests that inspect the stop a resume leaves, which
-    /// the client no longer needs. A console command is kept, since it may
-    /// do more than inspect.
     fn cancel_inspections(&mut self) {
         for message in &mut self.queue {
             if let Inbound::Request {
@@ -1749,9 +1587,6 @@ impl Session {
             .filter(|group| !single && group.stops() == microscope::StopScope::Group)
             .cloned();
         if let Some(group) = group {
-            // Every member the group stopped resumes with this one; the
-            // client already shows each one's stop.
-            // The group may not have seen the stop the client shows yet.
             let observed = self
                 .phase
                 .target()
@@ -1809,7 +1644,6 @@ impl Session {
 
         let handle = self.target_handle()?;
 
-        // A step in may go into one target of `stepInTargets`.
         let call = match arguments.target_id {
             Some(target) if kind == StepKind::IntoSource => {
                 Some(self.references.call_of(target).ok_or_else(|| {
@@ -1842,7 +1676,6 @@ impl Session {
         self.set_run(self.shown().resumed());
         self.cancel_inspections();
 
-        // Without this, clients assume only the stepping thread runs.
         self.client
             .event(
                 "continued",
@@ -1853,8 +1686,6 @@ impl Session {
         Ok(json!({}))
     }
 
-    /// The calls of a frame's line that a step in can go into, which only
-    /// the innermost frame has.
     async fn step_in_targets(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<protocol::ScopesArguments>(arguments, "stepInTargets arguments")?;
         self.current_stop()?;
@@ -1884,8 +1715,6 @@ impl Session {
         Ok(json!({"targets": targets}))
     }
 
-    /// Moves a thread to a target `gotoTargets` named, without running it;
-    /// the stop it publishes again follows as a `goto` stop.
     async fn goto(&self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<GotoArguments>(arguments, "goto arguments")?;
         let stop = self.current_stop()?;
@@ -1905,9 +1734,6 @@ impl Session {
     }
 
     async fn pause(&self) -> Result<Value, ErrorBody> {
-        // A group hears of its members through tasks of its own, which may
-        // not yet have heard of an exit this session has told the client
-        // of. The program's own debugger has.
         if matches!(self.shown(), Run::NoProcess)
             && let Some(handle) = self.handle()
             && handle
@@ -1939,8 +1765,6 @@ impl Session {
         }
     }
 
-    /// Says the process executed another program, whose recorded source
-    /// paths replace the old program's.
     async fn program_changed(
         &mut self,
         process: Option<microscope::ProcessId>,
@@ -1950,7 +1774,6 @@ impl Session {
             target.recorded_paths = None;
         }
 
-        // A new launch going back to the launched program is no news.
         let Some(process) = process else {
             return Ok(());
         };
@@ -2032,8 +1855,6 @@ impl Session {
         Ok(())
     }
 
-    /// Tells the client what an event says of where the program is, unless
-    /// it was told already.
     async fn run_event(&mut self, event: DebuggerEvent) -> Result<(), Closed> {
         let Some(target) = self.phase.target() else {
             return Ok(());
@@ -2043,7 +1864,6 @@ impl Session {
             News::Started(process) => {
                 self.set_run(Run::Running(process));
 
-                // The first thread's id is the process id.
                 self.announce_thread(ThreadId::new(process.get())).await
             }
             News::Stopped {
@@ -2062,8 +1882,6 @@ impl Session {
         }
     }
 
-    /// Tells the client the program resumed without its asking, such as
-    /// to receive a termination signal.
     async fn resumed_elsewhere(&mut self) -> Result<(), Closed> {
         let Some(stop) = self.stop().cloned() else {
             return Ok(());
@@ -2082,8 +1900,6 @@ impl Session {
             .await
     }
 
-    /// Explains a stop that a breakpoint's or data breakpoint's unevaluable
-    /// condition caused, naming it by the client's id where it has one.
     async fn condition_failed(
         &self,
         owner: microscope::ConditionOwner,
@@ -2119,7 +1935,6 @@ impl Session {
             .await
     }
 
-    /// Reports a stop to the client.
     #[expect(
         clippy::indexing_slicing,
         reason = "the body is a JSON object built here, and indexing an object by key inserts"
@@ -2215,11 +2030,8 @@ impl Session {
         self.client.event("stopped", body).await
     }
 
-    /// Reports the program's exit, and the session's end unless the
-    /// program is restarting.
     async fn exited(&mut self, status: &ExitStatus, ends_session: bool) -> Result<(), Closed> {
         if let Some(target) = self.phase.target_mut() {
-            // The program's last output comes before its exit.
             for pump in target.pumps.drain(..) {
                 pump.finish(OUTPUT_DRAIN).await;
             }
@@ -2247,13 +2059,11 @@ impl Session {
         }
     }
 
-    /// Reports that the program is gone, and with it the session.
     async fn ended_target(&mut self) -> Result<(), Closed> {
         self.forget_program().await?;
         self.client.event("terminated", json!({})).await
     }
 
-    /// Reports that the program is gone, and its threads with it.
     async fn forget_program(&mut self) -> Result<(), Closed> {
         self.set_run(Run::NoProcess);
         let tasks = std::mem::take(&mut self.tasks).into_values();
@@ -2265,7 +2075,6 @@ impl Session {
         Ok(())
     }
 
-    /// Tells the client which tasks it was told about have ended.
     pub(super) async fn forget_tasks(
         &mut self,
         live: &[microscope::TaskSnapshot],
@@ -2287,13 +2096,10 @@ impl Session {
         Ok(())
     }
 
-    /// What the client's threads are, once a program is loaded.
     pub(super) fn thread_listing(&self) -> Option<config::ThreadListing> {
         self.phase.target().map(|target| target.threads)
     }
 
-    /// What the client knows as a stopped thread: the task it runs, when
-    /// the client's threads are tasks and it runs one, or the thread.
     fn stopped_context(
         &self,
         snapshot: Option<&microscope::StateSnapshot>,
@@ -2320,7 +2126,6 @@ impl Session {
             .unwrap_or(ExecutionContext::Thread(thread))
     }
 
-    /// The client's id for a thread or task it was told about.
     fn client_id(&self, context: ExecutionContext) -> Option<i64> {
         match context {
             ExecutionContext::Thread(thread) => self.threads.get(&thread).copied(),
@@ -2328,7 +2133,6 @@ impl Session {
         }
     }
 
-    /// Tells the client of a thread or task it does not know yet.
     async fn announce(&mut self, context: ExecutionContext) -> Result<(), Closed> {
         let task = match context {
             ExecutionContext::Thread(thread) => return self.announce_thread(thread).await,
@@ -2362,8 +2166,6 @@ impl Session {
         }
     }
 
-    /// Announces the snapshot's threads not yet announced, and the exit of
-    /// announced threads it no longer has.
     async fn announce_threads(
         &mut self,
         snapshot: &microscope::StateSnapshot,
@@ -2393,7 +2195,6 @@ impl Session {
         Ok(())
     }
 
-    /// Tells the client a module is gone.
     pub(super) async fn forget_module(&mut self, id: ModuleId) -> Result<(), Closed> {
         if let Some(target) = self.phase.target_mut() {
             target.images.remove(&id);
@@ -2413,9 +2214,6 @@ impl Session {
         self.remove_loaded_sources(id).await
     }
 
-    /// Catches up after missing events: announces threads and modules, and
-    /// reports the current stop, resume, or exit the client has not heard
-    /// about.
     async fn resync(&mut self) -> Result<(), Closed> {
         let Some(handle) = self.handle().cloned() else {
             return Ok(());
@@ -2447,8 +2245,6 @@ impl Session {
                 Run::Stopped(..) => self.resumed_elsewhere().await,
             },
 
-            // The exit or detach event comes after the gap, as the newest
-            // events stay queued. Only when none is queued was it missed.
             InferiorState::Exited { status, .. }
                 if self.shown().process().is_some() && !self.events_queued() =>
             {
@@ -2465,7 +2261,6 @@ impl Session {
         }
     }
 
-    /// Reports a stop a snapshot showed, unless the client shows it.
     async fn show_stop(
         &mut self,
         process: ProcessId,
@@ -2479,8 +2274,6 @@ impl Session {
 
         self.stopped(process, stop, thread, reason).await
     }
-
-    // Breakpoints.
 
     async fn set_breakpoints(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<SetBreakpointsArguments>(arguments, "setBreakpoints arguments")?;
@@ -2573,8 +2366,6 @@ impl Session {
         self.replace_group(Group::Instructions, wants).await
     }
 
-    /// Replaces a group of breakpoints and answers with its new entries in
-    /// request order.
     async fn replace_group(&mut self, group: Group, wants: Vec<Want>) -> Result<Value, ErrorBody> {
         let entries = breakpoints::replace_group(self, group.clone(), wants).await?;
         let body = entries
@@ -2585,8 +2376,6 @@ impl Session {
         Ok(json!({"breakpoints": body}))
     }
 
-    /// Resolves breakpoints that were waiting for the program and tells
-    /// the client which now are.
     async fn resolve_unresolved(&mut self) -> Result<(), Closed> {
         for (group, entry) in self.breakpoints.unresolved() {
             let state = breakpoints::resolve(self, &group, &entry.want).await;
@@ -2603,7 +2392,6 @@ impl Session {
         Ok(())
     }
 
-    /// Adopts breakpoints made or deleted from the console.
     async fn sync_breakpoints(&mut self) -> Result<(), Closed> {
         let Some(handle) = self.handle().cloned() else {
             return Ok(());
@@ -2637,8 +2425,6 @@ impl Session {
                 .await?;
         }
 
-        // Libraries loading and unloading move breakpoints in and out of
-        // pending.
         for (group, entry) in self.breakpoints.owned_entries() {
             let Some(core) = snapshot
                 .breakpoints
@@ -2666,8 +2452,6 @@ impl Session {
         Ok(())
     }
 
-    /// The state a debugger breakpoint gives the client's breakpoint: where
-    /// it resolved, or that it waits for a module with code for it.
     async fn state_of(&mut self, breakpoint: &microscope::Breakpoint) -> State {
         if !breakpoint.enabled {
             return State::Disabled {
@@ -2692,8 +2476,6 @@ impl Session {
         }
     }
 
-    /// Where a debugger breakpoint resolved: its first location's source
-    /// line and address.
     async fn placement(&mut self, breakpoint: &microscope::Breakpoint) -> Placement {
         let Some(handle) = self.handle().cloned() else {
             return Placement::default();
@@ -2703,14 +2485,11 @@ impl Session {
             return Placement::default();
         };
 
-        // A location's image, and its address there.
         let (image, address, virtual_address) = match (&first.location, first.library) {
             (microscope::BreakpointLocation::Image(address), _) => {
                 (handle.module_image(), *address, None)
             }
 
-            // A runtime's location has no address: it is where the runtime
-            // says it is.
             (microscope::BreakpointLocation::Managed(managed), _) => {
                 return Placement {
                     source: match &managed.place {
@@ -2753,7 +2532,6 @@ impl Session {
         let source = image.source_location(address).and_then(|location| {
             let file = image.source_file(location.file)?;
             let line = match &breakpoint.spec {
-                // A line keeps the file the client named.
                 BreakpointSpec::Source { path, line } => image
                     .source_file_matching(path)
                     .ok()
@@ -2835,9 +2613,6 @@ impl Session {
         Ok(json!({"breakpoints": breakpoints}))
     }
 
-    /// Makes the debugger stop on the signals and exceptions the exception
-    /// filters select, with the configuration's per-signal handling
-    /// applied over them.
     async fn apply_signal_policies(&mut self) -> Result<(), ErrorBody> {
         let Some(target) = self.phase.target_mut() else {
             return Ok(());
@@ -2853,8 +2628,6 @@ impl Session {
             target.applied_exceptions = exceptions;
         }
 
-        // A member has the catchpoints of its group, which its root's
-        // session makes.
         let syscalls = self
             .exceptions
             .syscalls()
@@ -2902,10 +2675,6 @@ impl Session {
         Ok(())
     }
 
-    // Paths.
-
-    /// Where a recorded source file is on this machine: the first place
-    /// the source map finds it, or its recorded path.
     pub(super) fn local_path(&self, recorded: &Path) -> PathBuf {
         let Some(target) = self.phase.target() else {
             return recorded.to_owned();
@@ -2919,9 +2688,6 @@ impl Session {
             .unwrap_or_else(|| recorded.to_owned())
     }
 
-    /// The recorded path of the source file a client path names: the one
-    /// whose local copy it is, or else the only one ending with the most of
-    /// its trailing components.
     pub(super) fn recorded_path(&mut self, client: &Path) -> PathBuf {
         let Some(target) = self.phase.target_mut() else {
             return client.to_owned();
@@ -3002,8 +2768,6 @@ impl Session {
         Ok(trace)
     }
 
-    /// Chooses how values show when a request does not say, and has the
-    /// client read them again when that changes.
     async fn set_value_format(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<protocol::SetValueFormatArguments>(
             arguments,
@@ -3019,8 +2783,6 @@ impl Session {
         Ok(json!({}))
     }
 
-    /// Tells a client that shows values to read them again, after a write
-    /// may have changed any of them.
     pub(super) async fn invalidate_values(&self) {
         if self.support().invalidated {
             let _ = self
@@ -3030,8 +2792,6 @@ impl Session {
         }
     }
 
-    /// Forgets what was read at the current stop, after a write changed
-    /// it; references stay valid, since the stop is the same.
     pub(super) fn forget_reads(&mut self) {
         self.backtraces.clear();
         self.variables.clear();
@@ -3052,12 +2812,10 @@ impl Session {
         Ok(snapshot)
     }
 
-    /// The image of a module the client was told is loaded.
     pub(super) fn loaded_image(&self, module: ModuleId) -> Option<Arc<ModuleImage>> {
         self.phase.target()?.images.get(&module).cloned()
     }
 
-    /// The code of the modules the client was told are loaded.
     pub(super) fn code(&self) -> crate::present::Code {
         let Some(target) = self.phase.target() else {
             return crate::present::Code::default();
@@ -3074,7 +2832,6 @@ impl Session {
         )
     }
 
-    /// The assembly syntax the configuration chose.
     pub(super) fn syntax(&self) -> microscope::AssemblySyntax {
         self.phase
             .target()
@@ -3088,7 +2845,6 @@ impl Session {
             .ok_or_else(|| ErrorBody::new("no program is loaded"))
     }
 
-    /// Converts a client's line to a one-based line, if it is one.
     pub(super) fn line_from_client(&self, line: i64) -> Option<u64> {
         let line = u64::try_from(line).ok()?;
         if self.support().lines_start_at1 {
@@ -3098,7 +2854,6 @@ impl Session {
         }
     }
 
-    /// Converts a one-based line to the client's numbering.
     pub(super) const fn line_to_client(&self, line: u64) -> u64 {
         if self.support().lines_start_at1 {
             line
@@ -3107,7 +2862,6 @@ impl Session {
         }
     }
 
-    /// Converts a one-based column to the client's numbering.
     pub(super) const fn column_to_client(&self, column: u64) -> u64 {
         if self.support().columns_start_at1 {
             column
@@ -3117,7 +2871,6 @@ impl Session {
     }
 }
 
-/// The adapter's capabilities, as `initialize` reports them.
 fn capabilities() -> Value {
     json!({
         "supportsConfigurationDoneRequest": true,
@@ -3162,10 +2915,8 @@ enum Input {
     Message(Inbound),
     Event(Result<DebuggerEvent, broadcast::error::RecvError>),
 
-    /// What the group whose root the session shows did.
     Group(Result<GroupEvent, broadcast::error::RecvError>),
 
-    /// A member no session shows, and why.
     Unshown((MemberNumber, String)),
 }
 
@@ -3187,8 +2938,6 @@ async fn next_event(
     }
 }
 
-/// Applies a configuration's stepping settings to a new debugger, and
-/// returns the policy each signal had before the session changes it.
 async fn step_settings(
     handle: &DebuggerHandle,
     step_into_runtime: bool,
@@ -3210,7 +2959,6 @@ async fn step_settings(
     Ok(default_policies)
 }
 
-/// The debugger's options for a client breakpoint, or why it has none.
 fn breakpoint_options(want: &Want) -> microscope::Result<microscope::BreakpointOptions> {
     Ok(microscope::BreakpointOptions {
         hit_condition: want.hit_condition.as_deref().map(str::parse).transpose()?,
@@ -3224,13 +2972,12 @@ fn breakpoint_options(want: &Want) -> microscope::Result<microscope::BreakpointO
             .as_deref()
             .map(microscope::LogMessage::parse)
             .transpose()?,
-        // A library loaded later may have code for it.
+
         pending: true,
         ..microscope::BreakpointOptions::default()
     })
 }
 
-/// Parses request arguments into their type.
 pub(super) fn parse<T: serde::de::DeserializeOwned>(
     arguments: Value,
     what: &str,
@@ -3238,7 +2985,6 @@ pub(super) fn parse<T: serde::de::DeserializeOwned>(
     config::parse(arguments, what).map_err(ErrorBody::new)
 }
 
-/// Describes a debugger error to the client.
 pub(super) fn error(error: Error) -> ErrorBody {
     match error {
         Error::NotStopped => ErrorBody::not_stopped(),
@@ -3246,8 +2992,6 @@ pub(super) fn error(error: Error) -> ErrorBody {
     }
 }
 
-/// The exit code a client is told: the program's own, or, as a shell
-/// reports it, 128 plus the signal that killed it.
 fn exit_code(status: &ExitStatus) -> i64 {
     match status {
         ExitStatus::Code(code) => *code,
@@ -3255,17 +2999,12 @@ fn exit_code(status: &ExitStatus) -> i64 {
     }
 }
 
-/// The description of a stop the session describes itself, which only
-/// reaches `describe_stop` by a bug.
 const DESCRIBED_ELSEWHERE: &str = "internal: the session describes this stop itself";
 
-/// The DAP reason for a stop.
 pub(super) fn stop_kind(reason: &StopReason) -> &'static str {
     describe_stop(reason).0
 }
 
-/// The `stopped` event's reason, description, and text for a stop that
-/// needs nothing from the session to describe.
 fn describe_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<String>) {
     match reason {
         StopReason::Step { .. }
@@ -3361,7 +3100,6 @@ fn describe_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<S
     }
 }
 
-/// The `stopped` event's reason, description, and text for a step's end.
 fn describe_step_stop(reason: &StopReason) -> (&'static str, Option<String>, Option<String>) {
     match reason {
         StopReason::StepIncomplete { description, .. } => (
@@ -3392,7 +3130,6 @@ fn describe_step_stop(reason: &StopReason) -> (&'static str, Option<String>, Opt
     }
 }
 
-/// What a client shows for each kind of exception a runtime reports.
 pub(super) const fn language_exception_text(
     kind: microscope::LanguageExceptionKind,
 ) -> &'static str {
@@ -3403,7 +3140,6 @@ pub(super) const fn language_exception_text(
     }
 }
 
-/// A signal's name, or its number when it has none.
 pub(super) fn signal_text(code: u64) -> String {
     microscope::signal_name(code).unwrap_or_else(|| format!("signal {code}"))
 }
@@ -3601,7 +3337,6 @@ mod tests {
             ]
         );
 
-        // A cancellation is honored once, by the request's own seq.
         session
             .cancelled
             .lock()

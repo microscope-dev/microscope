@@ -1,12 +1,3 @@
-//! A watchdog iteration posts both a libuv async and a V8 interrupt. `Agent::Stop`
-//! only clears `io_`; either posting can reopen it. Observe the semaphore wait's
-//! return and its next call (also when `RequestIoThreadStart` was inlined), then
-//! a whole main-thread `CheckImmediate` invocation. Its normal native drain has
-//! returned, including any stack-local interrupt queue; Node 26's empty-queue
-//! fast path is safe too. libuv clears `async.pending` before calling `async_cb`,
-//! so `pending=0` is checked only after that outer check phase, at all-stop.
-//! As required by libuv, `uv_run` must not be called reentrantly.
-
 use nix::unistd::Pid;
 
 use crate::backend::linux::native::LinuxTraceOps;

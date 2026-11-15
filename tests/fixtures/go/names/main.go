@@ -1,8 +1,8 @@
-// Functions named the ways Go programmers write them: methods with value
-// and pointer receivers, generic functions and methods, a closure,
-// functions of packages whose paths have several elements, one of which
-// an optimized build inlines, and a frame big enough that the stack must
-// grow.
+
+
+
+
+
 package main
 
 import (
@@ -33,8 +33,8 @@ func (s *Stack[T]) Push(v T) { // names: Push begins
 	s.items = append(s.items, v) // names: Push ends
 }
 
-// The closure main stores here is called through apply, so it stays a
-// function of its own.
+
+
 var hook func(int) int
 
 //go:noinline
@@ -42,8 +42,8 @@ func apply(f func(int) int, x int) int {
 	return f(x)
 }
 
-// grow's frame is larger than a new goroutine's whole stack.
-//
+
+
 //go:noinline
 func grow(seed int) int {
 	var frame [64 << 10]byte

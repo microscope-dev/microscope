@@ -1,13 +1,3 @@
-//! How a Node runtime's inspector connection stands, through every event
-//! that changes it: never looked for, its endpoint unreadable, its
-//! listener missing or ambiguous, connecting, connected, refused, and
-//! closed by Node.
-//!
-//! Every phase is reached, and every event made, through the controller's
-//! entry points and the messages a real loopback connection delivers, so
-//! the table holds however the controller keeps the connection. What a
-//! client sees of it is each breakpoint's pending reason.
-
 use std::net::{SocketAddr, TcpListener};
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
@@ -24,36 +14,26 @@ use crate::protocol::BreakpointSpec;
 use crate::{ImageAddress, RuntimeId};
 use rustix::net::{AddressFamily, SocketType};
 
-/// Where the scripted runtime's `GetTargetIds` is.
 const HOOK: u64 = 0x50;
 
-/// How long the connection stays silent before a row takes it as settled.
 const QUIET: Duration = Duration::from_millis(50);
 
 const TARGET: &str = "0f2b5c1e-uuid";
 
-/// An attached node whose runtime the controller drives through its
-/// inspector, with a breakpoint at line 3 of its script.
 struct Node {
     harness: WatchHarness,
     model: Arc<ScriptedRuntime>,
     runtime: RuntimeId,
 
-    /// The fake inspectors that listen, the first the one Node lists.
     inspectors: Vec<FakeInspector>,
 
-    /// A socket that takes connections and never answers them.
     silent: Option<TcpListener>,
 
-    /// Sockets bound and not listening, which refuse connections and keep
-    /// their ports from other sockets.
     refusing: Vec<OwnedFd>,
 
-    /// Whether the listed inspector was told to close.
     closing: bool,
 }
 
-/// `text` with every loopback port written as `PORT`.
 fn scrub(text: &str) -> String {
     let mut scrubbed = String::new();
     let mut rest = text;
@@ -123,8 +103,6 @@ impl Node {
         }
     }
 
-    /// Makes the node's inspector already open at `address`, as Node lists
-    /// it, or its endpoint unreadable.
     fn endpoint(&self, endpoint: Result<SocketAddr, &str>) {
         *self.model.inspector_endpoint.lock().expect("the script") = Some(
             endpoint
@@ -133,8 +111,6 @@ impl Node {
         );
     }
 
-    /// A fake inspector listens, slower to answer than `QUIET`, so a row
-    /// cannot settle by silence while a connection is still being made.
     fn listen(&mut self) -> SocketAddr {
         let inspector = FakeInspector::lagging(QUIET * 2);
         let address = inspector.address;
@@ -142,7 +118,6 @@ impl Node {
         address
     }
 
-    /// A loopback address that refuses connections while the node lives.
     fn refusing(&mut self) -> SocketAddr {
         let socket =
             rustix::net::socket(AddressFamily::INET, SocketType::STREAM, None).expect("socket");
@@ -155,7 +130,6 @@ impl Node {
         address
     }
 
-    /// A socket listens that never finishes a handshake.
     fn silent(&mut self) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("local address");
@@ -163,14 +137,11 @@ impl Node {
         address
     }
 
-    /// The controller looks for the node's inspector.
     fn open(&mut self) -> String {
         self.harness.controller.open_inspectors();
         "-".to_owned()
     }
 
-    /// The node's main thread lists its inspector target, as a WebSocket
-    /// upgrade makes it do, the process resumed if it was stopped.
     fn listing(&mut self) -> String {
         let stopped = self
             .harness
@@ -188,7 +159,6 @@ impl Node {
         }
     }
 
-    /// A message from a connection that ended long ago.
     fn stale(&mut self) -> String {
         let message = ControllerMessage::Inspector(InspectorMessage {
             generation: 0,
@@ -202,15 +172,11 @@ impl Node {
         "-".to_owned()
     }
 
-    /// Closes the listed inspector, as Node does when its inspector ends.
     fn close(&mut self) {
         self.closing = true;
         self.inspectors[0].close();
     }
 
-    /// Whether the connection has nothing on the way: no handshake but the
-    /// silent socket's, no request the inspector has yet to read, and no
-    /// close the controller has yet to hear.
     fn settled(&self) -> bool {
         let inferior = self
             .harness
@@ -242,8 +208,6 @@ impl Node {
         }
     }
 
-    /// Hands the controller each message the connection delivers until it
-    /// settles and falls quiet, and returns what they were.
     fn quiet(&mut self) -> Vec<String> {
         let mut delivered = Vec::new();
         let started = Instant::now();
@@ -281,9 +245,6 @@ impl Node {
         delivered
     }
 
-    /// Each breakpoint's pending reason, then everything done since last
-    /// asked: messages delivered, requests the inspector got, events
-    /// published, and native actions other than memory traffic.
     fn describe(&mut self) -> String {
         let delivered = self.quiet();
         let snapshot = self.harness.controller.snapshot();
@@ -334,7 +295,6 @@ impl Node {
     }
 }
 
-/// Builds the phase `name`.
 fn phase(name: &str) -> Node {
     let mut node = Node::new();
     match name {
@@ -368,8 +328,6 @@ fn phase(name: &str) -> Node {
         }
         "refused" => {
             let address = node.refusing();
-            // Rows and other tests run beside this one, and none may take
-            // the port while the row expects it refused.
             assert!(
                 TcpListener::bind(address).is_err(),
                 "another socket can take the refused port"
@@ -413,14 +371,10 @@ const EVENTS: [&str; 6] = [
     "stale close",
 ];
 
-/// One event in one phase: what it was answered, and where the connection
-/// settles.
 fn outcome(name: &str, event: &str) -> Option<String> {
     if event == "node closes" && name != "connected" {
         return None;
     }
-    // Whether a launched node's inspector may never start is read from the
-    // process with its pid, which the fake's need not be.
     if name == "launched" && !event.starts_with("listing") {
         return None;
     }
@@ -444,9 +398,6 @@ fn outcome(name: &str, event: &str) -> Option<String> {
     Some(format!("{name} / {event}: {said} -> {}", node.describe()))
 }
 
-/// Each lookup, listing and connection message, in each phase of a
-/// node's inspector connection, ends as it always has: what each
-/// breakpoint waits for, and what the controller did on the way.
 #[test]
 fn each_inspector_event_settles_the_same_in_each_phase() {
     let actual: Vec<String> = std::thread::scope(|scope| {
@@ -471,7 +422,6 @@ fn each_inspector_event_settles_the_same_in_each_phase() {
     );
 }
 
-/// The table's rows, as [`outcome`] writes them.
 const EXPECTED: &[&str] = &[
     "unopened / add: ok -> (b1 Node's inspector has not started yet; b2 Node's inspector has not started yet) messages [] requests [] published [BreakpointsChanged] native []",
     "unopened / open: - -> (b1 Node's inspector has not started yet) messages [] requests [] published [] native []",

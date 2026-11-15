@@ -1,6 +1,3 @@
-//! Reading a stop's values from the page: scopes, the value tree, watches,
-//! changing values, and the console.
-
 use serde_json::{Value, json};
 
 use crate::support::Scenario;
@@ -10,8 +7,6 @@ fn fixture(name: &str) -> String {
     Scenario::fixture(name).display().to_string()
 }
 
-/// Runs kvstore to the line after `handle_request` looks its key up, and
-/// returns that stop's frame.
 async fn stop_in_handle_request(tab: &mut Client) -> Value {
     tab.state("the program loaded", |state| state["session"].is_string())
         .await;
@@ -24,7 +19,6 @@ async fn stop_in_handle_request(tab: &mut Client) -> Value {
     json!({"stop": inferior["stop"], "thread": inferior["thread"], "frame": 0})
 }
 
-/// The row named `name` among `rows`.
 fn row<'a>(rows: &'a Value, name: &str) -> &'a Value {
     rows.as_array()
         .expect("rows")
@@ -57,7 +51,6 @@ async fn scopes_expand_into_children_that_belong_to_their_stop() {
     assert_eq!(req["path"], "req");
     let pointee = req["children"]["handle"].as_u64().expect("req expands");
 
-    // A pointer expands to what it points to, named for the evaluator.
     let fields = tab
         .ok(
             "children",
@@ -75,7 +68,6 @@ async fn scopes_expand_into_children_that_belong_to_their_stop() {
     let len = row(&fields["rows"], "len");
     assert_eq!(len["editable"], true, "{len}");
 
-    // A bounded page of an array's elements, which a later page continues.
     let table = tab
         .ok(
             "evaluate",
@@ -99,7 +91,6 @@ async fn scopes_expand_into_children_that_belong_to_their_stop() {
         .collect::<Vec<_>>();
     assert_eq!(names, ["[60]", "[61]", "[62]", "[63]"]);
 
-    // A handle belongs to its stop: once the program moves on it is stale.
     let thread = frame["thread"].clone();
     tab.ok(
         "step",
@@ -131,7 +122,6 @@ async fn watches_read_values_and_only_changes_write_them() {
     let first = tab.ok("evaluate", evaluate("req->key[0]")).await;
     assert_eq!(first["text"], "117 'u'", "{first}");
 
-    // Watches and hovers never change the program.
     let (kind, message) = tab
         .request("evaluate", evaluate("s->stats.gets = 41"))
         .await
@@ -143,7 +133,6 @@ async fn watches_read_values_and_only_changes_write_them() {
         .expect_err("a malformed expression");
     assert_eq!(kind, "invalid");
 
-    // A change says so to every tab, whose values it makes out of date.
     let before = tab.latest_state().expect("a state")["writes"].clone();
     let written = tab
         .ok(
@@ -182,7 +171,6 @@ async fn the_console_completes_and_runs_commands_in_the_tabs_frame() {
     let commands = tab.ok("complete", json!({"text": "inf"})).await;
     assert_eq!(commands["items"][0]["label"], "info", "{commands}");
 
-    // A frame's names read as themselves; a command reads in the frame.
     let value = tab
         .ok("console", with(&frame, &json!({"line": "req->len"})))
         .await;
@@ -205,7 +193,6 @@ async fn the_console_completes_and_runs_commands_in_the_tabs_frame() {
         .expect_err("run control from the console");
     assert_eq!(kind, "invalid", "{message}");
 
-    // Help lists what the console runs, and nothing it refuses.
     let help = tab.ok("console", json!({"line": "help"})).await;
     let listed = help["output"]
         .as_str()
@@ -218,7 +205,6 @@ async fn the_console_completes_and_runs_commands_in_the_tabs_frame() {
         assert!(!listed.contains(&refused), "{refused} in {help}");
     }
 
-    // A viewer reads values and evaluates, but neither writes nor runs commands.
     let link = tab.ok("share", json!({"role": "view", "to": "/"})).await["url"]
         .as_str()
         .expect("a link")
@@ -260,7 +246,6 @@ async fn functions_are_found_by_any_part_of_their_name() {
             .collect::<Vec<_>>()
     };
 
-    // Before the program runs, where each is declared.
     let found = tab.ok("functions", json!({"query": "handle_req"})).await;
     assert_eq!(found["functions"][0]["name"], "handle_request", "{found}");
     assert_eq!(found["functions"][0]["line"], 89);
@@ -271,7 +256,6 @@ async fn functions_are_found_by_any_part_of_their_name() {
         "{found}"
     );
 
-    // Letters in order find a name, after names that hold them together.
     let scattered = tab.ok("functions", json!({"query": "tfind"})).await;
     assert!(
         names(&scattered).contains(&"table_find".to_owned()),
@@ -287,8 +271,6 @@ async fn functions_are_found_by_any_part_of_their_name() {
     assert!(names(&none).is_empty());
 }
 
-/// After a step out, the locals of the frame returned to include what the
-/// function returned, which expands but which no path names.
 #[tokio::test]
 async fn a_step_out_lists_what_the_function_returned() {
     let web = Web::start("returned", &[&fixture("returns-c-gcc-o2")]);
@@ -342,8 +324,6 @@ async fn a_step_out_lists_what_the_function_returned() {
     assert_eq!(row(&fields["rows"], "d")["text"], "0.5", "{fields}");
 }
 
-/// A backtrace shows the functions that left by tail calls, and selecting
-/// one shows what was passed to it.
 #[tokio::test]
 async fn the_stack_shows_functions_that_left_by_tail_calls() {
     let web = Web::start("tail", &[&fixture("tail-frames-gcc-o2")]);
@@ -391,9 +371,6 @@ async fn the_stack_shows_functions_that_left_by_tail_calls() {
     assert_eq!(row(&arguments["rows"], "value")["text"], "6", "{arguments}");
 }
 
-/// A Python program's stack marks each frame with its language, places
-/// its Python frames where the interpreter recorded them, and folds the
-/// interpreter's frames between them.
 #[tokio::test]
 async fn a_python_stack_marks_its_languages_and_folds_the_interpreter() {
     let core = Scenario::fixture("python-locals-3.14t.core");
@@ -434,8 +411,6 @@ async fn a_python_stack_marks_its_languages_and_folds_the_interpreter() {
         "{frame}"
     );
 
-    // Each fold is two or more of the interpreter's frames, none of them
-    // Python's.
     let folds = trace["folds"].as_array().expect("folds");
     assert!(!folds.is_empty(), "{trace}");
     for fold in folds {
@@ -448,7 +423,6 @@ async fn a_python_stack_marks_its_languages_and_folds_the_interpreter() {
         }
     }
 
-    // Expressions read the frame's objects, and a container expands.
     let at = json!({"stop": stop, "thread": thread, "frame": frame["index"]});
     let evaluate = |expression: &str| with(&at, &json!({"expression": expression}));
     let last = tab.ok("evaluate", evaluate("numbers[-1]")).await;

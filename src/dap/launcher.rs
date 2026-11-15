@@ -1,11 +1,3 @@
-//! `microscope dap-launcher`, which a client runs in a terminal to launch a
-//! program whose streams belong to that terminal. It waits until the adapter
-//! traces it and then executes the program, so the adapter sees the program
-//! from its first instruction.
-//!
-//! It must stay single-threaded, or the exec could happen on a thread the
-//! adapter does not trace, so it runs before any async runtime starts.
-
 use std::ffi::OsString;
 use std::io::{self, Read as _};
 use std::os::unix::net::UnixStream;
@@ -30,7 +22,6 @@ struct LauncherArgs {
     command: Vec<OsString>,
 }
 
-/// Executes the program, returning only when that is impossible.
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     let args = LauncherArgs::parse_from(arguments);
     let error = launch(&args);
@@ -42,12 +33,9 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 .to_string_lossy())
     );
 
-    // The shell's status for a command that could not be executed.
     ExitCode::from(127)
 }
 
-/// Executes the program once the adapter writes that it traces this
-/// process. The socket closes on exec.
 fn launch(args: &LauncherArgs) -> io::Error {
     let mut adapter = match UnixStream::connect(&args.connect) {
         Ok(adapter) => adapter,
@@ -58,7 +46,6 @@ fn launch(args: &LauncherArgs) -> io::Error {
 
     match adapter.read(&mut traced) {
         Ok(1) => {
-            // Unrandomized, as a program the adapter launches itself is.
             if let Ok(persona) = personality::get() {
                 let _ = personality::set(persona | Persona::ADDR_NO_RANDOMIZE);
             }

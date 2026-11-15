@@ -1,6 +1,3 @@
-//! Requests that inspect a stop: threads, stacks, scopes, variables, and
-//! expressions.
-
 use std::sync::Arc;
 
 use microscope::{
@@ -20,17 +17,12 @@ use super::session::{Session, error, parse, signal_text};
 use super::values::{self, Options};
 use crate::present::{self, Filter, Item, ListError, Listed, Presenter, Window, complete};
 
-/// The most children one `variables` request returns.
 const MAX_CHILDREN: u64 = 1024;
 
-/// The most completions one request offers.
 const MAX_COMPLETIONS: usize = 1000;
 
-/// How many tasks one debugger request lists.
 const TASK_PAGE: usize = 1024;
 
-/// A thread's name in a list of tasks, which it is in because it stopped
-/// running none.
 fn thread_name(
     snapshot: &microscope::StateSnapshot,
     context: ExecutionContext,
@@ -46,7 +38,6 @@ fn thread_name(
         .map(|detail| format!(" — {detail}"))
         .unwrap_or_default();
 
-    // A runtime's labels follow the thread's id, as `main (7, isolate 1)`.
     let listed = snapshot.threads.iter().find(|listed| listed.id == thread);
     let mut within = vec![thread.to_string()];
     within.extend(
@@ -68,8 +59,6 @@ fn thread_name(
         ))
 }
 
-/// The stop reasons at which VS Code focuses the first frame with a source
-/// whatever its hint, as its `Thread.getTopStackFrame` does.
 const FOCUSED_REGARDLESS: [&str; 3] = ["breakpoint", "step", "function breakpoint"];
 
 impl Session {
@@ -90,8 +79,6 @@ impl Session {
 
         if let Some(snapshot) = &snapshot {
             for thread in snapshot.threads.iter() {
-                // A thread the stop found stopped for a reason of its own,
-                // such as a breakpoint it hit too, says what stopped it.
                 let stopped = match &thread.state {
                     microscope::ThreadState::Stopped {
                         reason: Some(reason),
@@ -111,8 +98,6 @@ impl Session {
             return Ok(json!({"threads": threads}));
         }
 
-        // Clients need a thread to show, and to pause, even before the
-        // program starts.
         let name = handle.map_or_else(
             || "program".to_owned(),
             |handle| {
@@ -126,14 +111,6 @@ impl Session {
         Ok(json!({"threads": [{"id": 1, "name": name}]}))
     }
 
-    /// The tasks of a stop as the client's threads, or `None` when the
-    /// program has none or the client's threads are the system's.
-    ///
-    /// DAP cannot page threads, so the list is ordered by what a user looks
-    /// for first: the task that stopped, the tasks on threads, any thread
-    /// that stopped running none, and the program's own threads, then the
-    /// program's tasks, and with `runtimeTasks` the runtime's. It is cut
-    /// at `maxTasks`, and a last entry counts the rest.
     async fn task_threads(&mut self, stop: &Stop) -> Result<Option<Vec<Value>>, ErrorBody> {
         let Some(listing) = self.thread_listing().filter(|listing| listing.tasks) else {
             return Ok(None);
@@ -141,8 +118,6 @@ impl Session {
 
         let handle = self.target_handle()?;
 
-        // The runtime's own tasks are left out before paging when they are
-        // not shown, unless the stop is in one.
         let mut tasks = all_tasks(&handle, !listing.runtime_tasks).await?;
         if let ExecutionContext::Task(stopped) = stop.context
             && !tasks.iter().any(|task| task.id == stopped)
@@ -154,7 +129,6 @@ impl Session {
             return Ok(None);
         }
 
-        // A closed client has no use for the list either.
         let _ = self.forget_tasks(&tasks).await;
         self.stackless = tasks
             .iter()
@@ -202,9 +176,6 @@ impl Session {
             })
             .collect::<Vec<_>>();
 
-        // A thread that stopped for a reason of its own but runs no task is
-        // there too, so its stop can be inspected, and so is every thread
-        // of the program's own; only a runtime's idle threads are not.
         for thread in snapshot.threads.iter() {
             let runs_task = matches!(
                 thread.activity,
@@ -250,15 +221,12 @@ impl Session {
         Ok(Some(threads))
     }
 
-    /// A task's name as a thread: its number, the function the program
-    /// wrote that it is in, what it does or why it stopped, and its thread.
     async fn task_name(
         &mut self,
         stop: &Stop,
         task: &microscope::TaskSnapshot,
         stopped: Option<String>,
     ) -> String {
-        // Work that runs no code is what it waits for, then whom it calls.
         if task.stackless {
             let what = task.detail.as_deref().unwrap_or(task.noun);
             let callback = task
@@ -298,7 +266,6 @@ impl Session {
         format!("[{}] {place}{detail}{labels}{thread}", task.id.number)
     }
 
-    /// What stopped a thread, in a thread's name.
     fn stopped_detail(&self, reason: &StopReason) -> String {
         match reason {
             StopReason::Breakpoint { hits, .. } => {
@@ -323,7 +290,6 @@ impl Session {
         let arguments = parse::<StackTraceArguments>(arguments, "stackTrace arguments")?;
         let stop = self.current_stop()?;
         let context = self.thread_ids.context(arguments.thread_id)?;
-        // Work an event loop waits on runs no code, so it has no frames.
         if let ExecutionContext::Task(task) = context
             && self.stackless.contains(&task)
         {
@@ -331,9 +297,6 @@ impl Session {
         }
         let trace = self.backtrace(&stop, context).await?;
 
-        // Where a stack goes on on another, a label heads each run of
-        // frames saying whose stack it is on, and a stack cut short says
-        // so instead of looking complete.
         let switches = trace
             .frames
             .windows(2)
@@ -395,12 +358,6 @@ impl Session {
 
             let mut body = self.stack_frame(stop.id, context, frame).await?;
 
-            // Clients focus the first frame whose source is not
-            // deemphasized, so the frames above the one the debugger
-            // selected at the stop are. At a breakpoint or a step, VS Code
-            // focuses the first frame with any source, so there they have
-            // none, as where an agent's or an interpreter's frames are
-            // above the program's.
             if context == stop.context
                 && frame.id < stop.selected
                 && let Some(object) = body.as_object_mut()
@@ -413,7 +370,6 @@ impl Session {
                 }
             }
 
-            // An iterator recedes behind the loop whose body it runs.
             if let Some(level) = iterates
                 && let Some(object) = body.as_object_mut()
             {
@@ -494,8 +450,6 @@ impl Session {
 
         match crate::present::frames::place(frame, image.as_deref()) {
             Some(place) => {
-                // A runtime's own module, as Node's `node:fs`, is named
-                // without a path no editor could open.
                 let names_file = frame
                     .recorded
                     .as_ref()
@@ -518,9 +472,6 @@ impl Session {
             None => body["presentationHint"] = "subtle".into(),
         }
 
-        // A runtime's machinery, an interpreter's included, and the
-        // wrappers a compiler writes recede, by the frame's role, which a
-        // function only symbols describe has too.
         if frame.role != microscope::CodeRole::Ordinary {
             body["presentationHint"] = "subtle".into();
         }
@@ -528,8 +479,6 @@ impl Session {
         Ok(body)
     }
 
-    /// Adds what a client's frame format asks for to a frame's name: its
-    /// parameters, line, and module.
     async fn decorate(
         &mut self,
         body: &mut Value,
@@ -619,7 +568,6 @@ impl Session {
                         .count()
                 };
 
-                // Locals always show; other scopes only when they have variables.
                 for (kind, name) in present::SCOPES {
                     let variables = count(kind);
                     if variables == 0 && kind != VariableKind::Local {
@@ -669,8 +617,6 @@ impl Session {
             }));
         }
 
-        // A suspended task's frame and an interpreted one have no
-        // registers.
         if frame.is_none_or(|frame| frame.kind.has_registers()) {
             let reference = self
                 .references
@@ -717,9 +663,6 @@ impl Session {
             },
         };
 
-        // A client pages by the count the list was given, so a list of one
-        // kind of row has none of the other to show. A view's list has both,
-        // and the window chooses between them.
         let wanted = window.filter.map(|filter| filter == Filter::Indexed);
         if wanted.is_some_and(|wanted| variables.indexed() == Some(!wanted)) {
             return Ok(json!({"variables": []}));
@@ -729,7 +672,6 @@ impl Session {
         let context = variables.context();
         let rows = self.rows(variables, window, options).await?;
 
-        // Data breakpoints name rows by their list and name.
         for row in &rows {
             if let (Some(name), Some(path)) = (
                 row.get("name").and_then(Value::as_str),
@@ -745,7 +687,6 @@ impl Session {
         Ok(json!({"variables": rows}))
     }
 
-    /// The rows of one list of variables.
     async fn rows(
         &mut self,
         variables: Variables,
@@ -820,7 +761,6 @@ impl Session {
         self.present_all(listed, context, options)
     }
 
-    /// Presents a frame's parameters or locals.
     async fn scope_rows(
         &mut self,
         context: StopContext,
@@ -843,7 +783,6 @@ impl Session {
         self.present_all(listed, context, options)
     }
 
-    /// The module and source file of a frame's location, when it has one.
     async fn frame_of(&mut self, context: StopContext) -> Option<StackFrame> {
         let stop = self.current_stop().ok()?;
         let trace = self.backtrace(&stop, context.execution).await.ok()?;
@@ -854,7 +793,6 @@ impl Session {
             .cloned()
     }
 
-    /// Presents what the shared presenter listed as the client's variables.
     fn present_all(
         &mut self,
         listed: Vec<Listed>,
@@ -893,8 +831,6 @@ impl Session {
         )?)
     }
 
-    /// How to show values: as the client accepts them, and in
-    /// hexadecimal when the request's format or the session says so.
     fn value_options(&self, format: Option<&ValueFormat>) -> Options {
         let support = self.support();
         Options {
@@ -906,10 +842,6 @@ impl Session {
         }
     }
 
-    /// Evaluates an expression for a watch, a hover, the clipboard, or the
-    /// debug console. A console line is a command when it starts with a
-    /// command's name, unless it is an expression whose first name the frame
-    /// knows, so variables such as `x`, `n`, or `list` read as themselves.
     pub(super) async fn evaluate(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<EvaluateArguments>(arguments, "evaluate arguments")?;
         let context = match arguments.frame_id {
@@ -950,7 +882,6 @@ impl Session {
             .await
         {
             Ok(evaluation) => evaluation,
-            // The frame does not know the command's name, so it is the command.
             Err(microscope::Error::Expression(failure))
                 if command.is_some_and(|(_, name)| present::names_only(&failure, name)) =>
             {
@@ -967,8 +898,6 @@ impl Session {
             self.invalidate_values().await;
         }
 
-        // Hover, clipboard, and console show the runtime's multiline text; a
-        // watch shows one line.
         let whole = match (&evaluation, arguments.context.as_deref()) {
             (microscope::Evaluation::Value { value, .. }, Some("hover" | "clipboard" | "repl")) => {
                 match &value.state {
@@ -1014,7 +943,6 @@ impl Session {
             }
         };
 
-        // An evaluation result names its value `result`.
         body.remove("name");
         body.remove("evaluateName");
         let value = body.remove("value").unwrap_or_default();
@@ -1024,8 +952,6 @@ impl Session {
         Ok(Value::Object(body))
     }
 
-    /// Runs a console command in the frame the client focuses, as the
-    /// evaluation of its line.
     async fn console_line(
         &mut self,
         line: &str,
@@ -1047,7 +973,6 @@ impl Session {
             .map_err(|error| ErrorBody::new(format!("{error:#}")))?
             .ok_or_else(|| ErrorBody::new(format!("'{line}' is not a command")))?;
 
-        // `set` changes values the client shows.
         if crate::cli::commands::line_command(line)
             .is_some_and(|(spec, _)| spec.command == crate::cli::commands::Command::Set)
         {
@@ -1058,9 +983,6 @@ impl Session {
         Ok(json!({"result": output, "variablesReference": 0}))
     }
 
-    /// Where a location reference leads: where a variable is declared, or
-    /// where the function a pointer enters is declared, or else the line
-    /// of its first instruction.
     #[expect(
         clippy::indexing_slicing,
         reason = "the body is a JSON object built here, and indexing an object by key inserts"
@@ -1215,7 +1137,6 @@ impl Session {
             .assign(context, &arguments.name, path, &arguments.value, options)
             .await?;
 
-        // A register's row shows its bytes, as the registers list does.
         if register
             && let Some(object) = set.as_object_mut()
             && let Some(value) = object
@@ -1254,7 +1175,6 @@ impl Session {
             .await
     }
 
-    /// Assigns a value and presents the result as both requests answer.
     async fn assign(
         &mut self,
         context: StopContext,
@@ -1304,13 +1224,9 @@ impl Session {
         Ok(Value::Object(body))
     }
 
-    /// Completes the debug console's line: a command as its first word, a
-    /// command's subcommand or signal, or a name, member, or register
-    /// inside an expression.
     pub(super) async fn completions(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<CompletionsArguments>(arguments, "completions arguments")?;
 
-        // Columns count characters; a column past the text completes all of it.
         let column = usize::try_from(arguments.column).unwrap_or(0);
         let offset = if self.support().columns_start_at1 {
             column.saturating_sub(1)
@@ -1375,8 +1291,6 @@ impl Session {
     }
 }
 
-/// An expression's mistake: in the console, pointing at the text it is
-/// about, as the terminal debugger prints it; elsewhere, on one line.
 fn expression_failure(
     text: &str,
     failure: &microscope::ExpressionError,
@@ -1414,7 +1328,6 @@ fn list_error(failure: ListError) -> ErrorBody {
     }
 }
 
-/// Every task at the stop, or every one that runs the program's code.
 async fn all_tasks(
     handle: &microscope::DebuggerHandle,
     program_only: bool,

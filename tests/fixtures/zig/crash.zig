@@ -5,7 +5,7 @@ const Record = struct {
     scale: f64,
 };
 
-// An aligned, non-null address the process never maps.
+
 var crash_target: usize = 8;
 
 noinline fn crashNow(record: *const Record, depth: i32) void {

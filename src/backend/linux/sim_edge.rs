@@ -1,11 +1,3 @@
-//! The simulator's way into the Linux backend.
-//!
-//! [`SimTrace`] answers the controller's ptrace, waitpid, and `/proc`
-//! requests from the simulated kernel. [`SimController`] is a real
-//! [`Controller`] over it, whose queue the simulator's world serves one
-//! message at a time, and which reports the ground truth oracles check.
-//! Everything here translates between the backend's types and the
-//! simulator's; the semantics live in `crate::sim::kernel`.
 #![allow(
     clippy::expect_used,
     clippy::unreachable,
@@ -43,65 +35,45 @@ use crate::sim::kernel::{Kernel, Options, SigInfo, Tgid, Tid, WaitStatus};
 use crate::sim::loader::Image;
 use crate::{Error, Result, VirtualAddress};
 
-/// The edge a simulated controller traces through, recorded in development
-/// builds as production's is.
 #[cfg(debug_assertions)]
 type Edge = super::recorded::Recorded<SimTrace>;
 
 #[cfg(not(debug_assertions))]
 type Edge = SimTrace;
 
-/// What a simulated launch starts.
 pub struct SimLaunch {
     pub image: Arc<Image>,
 
-    /// The path the executable has in the simulation.
     pub path: Arc<str>,
 
-    /// The bytes `AT_RANDOM` names.
     pub random: [u8; 16],
 }
 
-/// The executable a simulated session debugs.
 pub struct SimExecutable {
     pub path: Arc<str>,
     pub data: Arc<[u8]>,
     pub inode: u64,
 }
 
-/// Lets the rest of the simulated machine act before a call the controller
-/// makes into the simulated kernel takes effect: running threads advance,
-/// the waiter reaps, and planned faults fire, as they can between any two
-/// ptrace requests on Linux.
 pub trait Preemption {
     fn before_call(&self);
 }
 
-/// The simulated waiter thread: it reaps its tracer's statuses as
-/// `waitpid` does and queues them for the controller, holding one while the
-/// queue is full.
 pub struct SimWaiter {
-    /// The tracer whose tracees' statuses it reaps.
     tracer: i32,
 
-    /// The controller's queue, once the controller starts its waiter.
     messages: Option<mpsc::Sender<ControllerMessage>>,
 
-    /// A status reaped but not yet queued.
     hand: Option<WaitStatus>,
 }
 
-/// What one collection by the waiter did.
 pub struct Collected {
-    /// The status reaped, if the waiter held none already.
     pub reaped: Option<WaitStatus>,
 
-    /// Whether the status is still held, the queue being full.
     pub held: bool,
 }
 
 impl SimWaiter {
-    /// The waiter of `tracer`'s controller, which has not started it yet.
     #[must_use]
     pub const fn new(tracer: i32) -> Self {
         Self {
@@ -111,19 +83,16 @@ impl SimWaiter {
         }
     }
 
-    /// Whether the controller started its waiter.
     #[must_use]
     pub const fn started(&self) -> bool {
         self.messages.is_some()
     }
 
-    /// The status reaped but not yet queued.
     #[must_use]
     pub const fn holding(&self) -> Option<WaitStatus> {
         self.hand
     }
 
-    /// Whether collecting would do anything now.
     #[must_use]
     pub fn can_collect(&self, kernel: &Kernel) -> bool {
         let Some(messages) = self
@@ -140,8 +109,6 @@ impl SimWaiter {
         }
     }
 
-    /// Reaps one ready status, which `choose` picks, unless one is held
-    /// already, and queues it for the controller if the queue has room.
     pub fn collect(
         &mut self,
         kernel: &mut Kernel,
@@ -174,8 +141,6 @@ impl SimWaiter {
     }
 }
 
-/// Answers the controller's host requests from the simulated kernel, as
-/// the process identifier `tracer`.
 pub struct SimTrace {
     tracer: i32,
     kernel: Rc<RefCell<Kernel>>,
@@ -183,8 +148,6 @@ pub struct SimTrace {
     waiter: Rc<RefCell<SimWaiter>>,
     preemption: Rc<dyn Preemption>,
 
-    /// Stop identifiers count per session, so that a session's identifiers
-    /// do not depend on any other.
     last_stop_id: Cell<u64>,
 }
 
@@ -192,9 +155,6 @@ fn system(errno: Errno) -> Error {
     backend_error(LinuxError::System(errno))
 }
 
-/// A read that failed. Production's recorder leaves reads out, but a failed
-/// one often explains what the controller did next, so the simulation
-/// records it.
 fn failed_read(request: &str, pid: Pid, errno: Errno) -> Error {
     #[cfg(debug_assertions)]
     record!("{request} {pid} -> error {errno}");
@@ -207,12 +167,10 @@ const fn tid(pid: Pid) -> Tid {
     pid.as_raw()
 }
 
-/// The simulated process `pid` numbers.
 const fn tgid(pid: Pid) -> Tgid {
     Tgid::new(pid.as_raw())
 }
 
-/// The options the controller traces every thread with.
 const fn trace_options(exit_kill: bool) -> Options {
     Options {
         trace_clone: true,
@@ -223,8 +181,6 @@ const fn trace_options(exit_kill: bool) -> Options {
 }
 
 impl SimTrace {
-    /// Records that the controller asked for something the simulation does
-    /// not model, and fails the request.
     fn gap<T>(&self, request: &str) -> Result<T> {
         self.kernel
             .borrow_mut()
@@ -232,8 +188,6 @@ impl SimTrace {
         Err(system(Errno::ENOSYS))
     }
 
-    /// The kernel, serving this tracer, once anything due before this call
-    /// has happened.
     fn kernel(&self) -> std::cell::Ref<'_, Kernel> {
         self.preemption.before_call();
         let kernel = self.kernel.borrow();
@@ -248,9 +202,6 @@ impl SimTrace {
         kernel
     }
 
-    /// The memory map of `pid`'s process, as production's `read_maps`
-    /// reads it: a leader that exited before the rest of its process has an
-    /// empty map, and a live thread's describes the process instead.
     fn maps(&self, pid: Pid) -> Result<String> {
         let kernel = self.kernel();
         let Some(maps) = kernel.maps(tid(pid)) else {
@@ -271,8 +222,6 @@ impl SimTrace {
     }
 }
 
-/// The view `PTRACE_GETSIGINFO` gives the controller, filtered as the
-/// production edge filters a real `siginfo_t`.
 #[cfg(test)]
 #[must_use]
 pub fn signal_view(info: SigInfo) -> (i32, i32, Option<i32>, Option<u64>) {
@@ -293,7 +242,6 @@ fn signal_metadata(info: SigInfo) -> SignalMetadata {
     }
 }
 
-/// The kernel's registers and `orig_rax` as `PTRACE_GETREGS` reports them.
 pub(super) const fn user_registers(registers: &Registers, orig_rax: u64) -> libc::user_regs_struct {
     let general = &registers.general;
     libc::user_regs_struct {
@@ -327,11 +275,8 @@ pub(super) const fn user_registers(registers: &Registers, orig_rax: u64) -> libc
     }
 }
 
-/// The flags `PTRACE_SETREGS` lets a tracer change; the rest keep their
-/// values, as Linux's `set_flags` keeps them.
 pub(super) const SETTABLE_FLAGS: u64 = 0x0005_0dd5;
 
-/// Applies `PTRACE_SETREGS` to the kernel's registers.
 pub(super) const fn apply_user_registers(registers: &mut Registers, user: &libc::user_regs_struct) {
     registers.general = [
         user.rax, user.rcx, user.rdx, user.rbx, user.rsp, user.rbp, user.rsi, user.rdi, user.r8,
@@ -343,10 +288,6 @@ pub(super) const fn apply_user_registers(registers: &mut Registers, user: &libc:
     registers.gs_base = user.gs_base;
 }
 
-/// A change `PTRACE_SETREGS` would make to `current` that the model does
-/// not give its meaning: which call a thread at a system-call stop makes,
-/// the segment registers, or the trap and resume flags, which make the
-/// thread trap after every instruction or skip a debug exception.
 pub(super) fn unmodeled_register_change(
     current: &libc::user_regs_struct,
     written: &libc::user_regs_struct,
@@ -408,7 +349,6 @@ impl InspectionOps for SimTrace {
         _process: Pid,
         thread: Pid,
     ) -> Option<crate::runtime_model::TargetThreadId> {
-        // The kernel model has one PID namespace and uses these IDs.
         crate::runtime_model::TargetThreadId::new(u64::try_from(thread.as_raw()).ok()?)
     }
 
@@ -747,115 +687,80 @@ impl LinuxTraceOps for SimTrace {
     }
 }
 
-/// A breakpoint site as the controller holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Site {
     pub original_byte: u8,
     pub installed: bool,
 
-    /// How many owners the site has.
     pub owners: usize,
 
-    /// The executions whose plans own the site.
     pub plans: Vec<u64>,
 
-    /// The user breakpoints that own the site.
     pub users: BTreeSet<u64>,
 }
 
-/// A user breakpoint as the controller holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserBreakpoint {
-    /// Where its locations are in the inferior, while one runs.
     pub addresses: BTreeSet<u64>,
     pub hit_count: u64,
 }
 
-/// What the controller believes about the inferior, which oracles compare
-/// with the simulated kernel.
 #[derive(Debug, Default)]
 pub struct Truth {
-    /// Every breakpoint site of the inferior's address space.
     pub sites: BTreeMap<u64, Site>,
 
-    /// The sites each execution plan installed, by execution.
     pub plan_sites: BTreeMap<u64, BTreeSet<u64>>,
 
-    /// The execution in progress.
     pub active_execution: Option<u64>,
 
-    /// The published stop, if the inferior is stopped.
     pub public_stop: Option<u64>,
 
-    /// The process the controller debugs.
     pub inferior: Option<Tgid>,
 
-    /// Whether the inferior finished launching or attaching, which put its
-    /// breakpoints and watchpoints in place.
     pub established: bool,
 
-    /// The inferior's threads the controller knows.
     pub threads: BTreeSet<Tid>,
 
-    /// The threads the controller holds stopped.
     pub stopped: BTreeSet<Tid>,
 
-    /// The threads the controller asked to stop and waits to hear stop.
     pub stop_requested: BTreeSet<Tid>,
 
-    /// The threads the controller has inside a system call, unless it is
-    /// shutting down, when it takes each thread's stop as it comes.
     pub in_call: Option<BTreeSet<Tid>>,
 
-    /// The user's breakpoints, by identifier.
     pub breakpoints: BTreeMap<u64, UserBreakpoint>,
 
-    /// The hits each watchpoint counted, by identifier.
     pub watchpoints: BTreeMap<u64, u64>,
 
-    /// Each stopped thread's own reason, as the controller holds it.
     pub reasons: BTreeMap<Tid, crate::StopReason>,
 }
 
-/// A real controller over the simulated kernel, with the queue it serves.
 pub struct SimController {
     controller: Controller<Edge>,
 }
 
-/// The channels a simulated client talks to the controller through.
 pub struct ClientChannels {
     pub requests: mpsc::Sender<ControllerMessage>,
     pub events: broadcast::Sender<DebuggerEvent>,
 
-    /// The program the controller's process runs.
     pub program: tokio::sync::watch::Receiver<Arc<crate::ModuleImage>>,
 
-    /// Every event the controller publishes, which no reader falls behind
-    /// on, unlike the clients' subscriptions to `events`.
     pub audit: mpsc::UnboundedReceiver<DebuggerEvent>,
 }
 
-/// A message taken from the controller's queue, to be handled.
 pub struct Delivery {
     message: ControllerMessage,
 
-    /// What the message is, for the trace.
     pub description: String,
 
-    /// The thread a `SIGTRAP` signal-delivery-stop status is about.
     pub trap: Option<Tid>,
 
-    /// Whether the message is a client's request.
     #[cfg(test)]
     pub request: bool,
 
-    /// Whether the message asks the controller to shut down.
     pub shutdown: bool,
 }
 
-/// Everything a simulated controller is built from.
 pub struct SimParts {
-    /// The process identifier the controller traces as.
     pub tracer: i32,
     pub kernel: Rc<RefCell<Kernel>>,
     pub waiter: Rc<RefCell<SimWaiter>>,
@@ -864,16 +769,12 @@ pub struct SimParts {
     pub executable: SimExecutable,
     pub debug_info: DebugInfo,
 
-    /// How many messages the controller's queue holds.
     pub queue_capacity: usize,
 
-    /// How many events the event channel holds.
     pub event_capacity: usize,
 }
 
 impl SimController {
-    /// Builds a controller from `parts`, with the channels a client talks
-    /// to it through.
     #[must_use]
     pub fn new(parts: SimParts) -> (Self, ClientChannels) {
         let (sender, receiver) = mpsc::channel(parts.queue_capacity);
@@ -894,7 +795,6 @@ impl SimController {
         let program = tokio::sync::watch::Sender::new(Arc::clone(&parts.debug_info.image));
         let current = program.subscribe();
         let controller = Controller::new(
-            // A simulated session traces nothing real.
             SessionLease::detached(),
             ExecutableSource {
                 display_path: Arc::new(PathBuf::from(&*executable.path)),
@@ -928,15 +828,12 @@ impl SimController {
         )
     }
 
-    /// Whether a message waits in the queue.
     #[must_use]
     pub fn has_message(&self) -> bool {
         !self.controller.pending.borrow().is_empty()
             || !self.controller.messages.borrow().is_empty()
     }
 
-    /// Takes the message at the front of the queue, or `None` when the
-    /// queue is empty.
     pub fn take(&self) -> Option<Delivery> {
         let message = self.controller.next_message(false)?;
         let (description, trap) = match &message {
@@ -971,14 +868,10 @@ impl SimController {
         })
     }
 
-    /// Handles a message taken from the queue. Returns whether the
-    /// controller keeps running.
     pub fn handle(&mut self, delivery: Delivery) -> bool {
         self.controller.handle_message(delivery.message)
     }
 
-    /// The process the controller debugs, as [`Truth::inferior`] says,
-    /// without building the rest.
     #[must_use]
     pub fn inferior(&self) -> Option<Tgid> {
         self.controller
@@ -987,8 +880,6 @@ impl SimController {
             .map(|inferior| Tgid::new(inferior.tgid.as_raw()))
     }
 
-    /// The published stop, as [`Truth::public_stop`] says, without
-    /// building the rest.
     #[must_use]
     pub fn public_stop(&self) -> Option<u64> {
         self.controller
@@ -999,7 +890,6 @@ impl SimController {
             .map(|stop| stop.id.get())
     }
 
-    /// The controller's beliefs about the inferior.
     #[must_use]
     pub fn truth(&self) -> Truth {
         let inferior = self.controller.session.inferior();
@@ -1107,8 +997,6 @@ impl SimController {
     }
 }
 
-/// The threads the controller has inside a system call, unless it is
-/// `shutting_down`.
 fn in_calls(inferior: &super::Inferior, shutting_down: bool) -> Option<BTreeSet<Tid>> {
     let inside = |thread: &super::TraceThread| {
         !matches!(thread.call, super::catchpoints::CallPosition::Outside)
@@ -1136,9 +1024,6 @@ fn threads_in(inferior: &super::Inferior, state: super::NativeThreadState) -> BT
 mod tests {
     use super::*;
 
-    /// A register write the model would drop is a gap; one that keeps
-    /// what it does not model, as every write the controller reads back
-    /// and changes does, is not.
     #[test]
     fn unmodeled_register_writes_are_gaps() {
         let current = user_registers(&Registers::default(), 39);

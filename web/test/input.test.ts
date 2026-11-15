@@ -1,5 +1,3 @@
-// What people type: debugger keys, program arguments, and environments.
-
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
@@ -105,12 +103,11 @@ describe("debugger keys", () => {
   });
 
   it("reads bracket and backslash chords by the key pressed, whatever it types", () => {
-    // Alt+Shift+] types ’ on a Mac, and Shift makes \ a |.
     expect(pressCode("’", "BracketRight", { altKey: true, shiftKey: true })).toBe("moveTabRight");
     expect(pressCode("‘", "BracketLeft", { altKey: true })).toBe("previousTab");
     expect(pressCode("\\", "Backslash", { ctrlKey: true })).toBe("splitRight");
     expect(pressCode("|", "Backslash", { ctrlKey: true, shiftKey: true })).toBe("splitDown");
-    // Without Alt or Ctrl, a bracket is typed, not a chord.
+
     expect(pressCode("}", "BracketRight", { shiftKey: true })).toBeNull();
   });
 });
@@ -128,7 +125,7 @@ describe("the command registry", () => {
     expect(() => registry({ a: command([{ key: "F5" }]), b: command([{ key: "F5" }]) })).toThrow(
       "F5 is bound to a and to b",
     );
-    // A letter is one press, with or without Shift.
+
     expect(() =>
       registry({ a: command([{ key: "?", shift: true }]), b: command([{ key: "?" }]) }),
     ).toThrow("? is bound to a and to b");

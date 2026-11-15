@@ -1,29 +1,29 @@
-"""Monitoring-to-native transport. The debugger supplies whole-state probes.
 
-A probe is (event name, report kind, number, filename, line, qualified name).
-Empty selectors match any code; line zero matches any line. Conditions and
-expressions are never evaluated here. Event policy belongs to the debugger.
 
-A step is (number, kind, thread, depth, code), with native thread ID,
-caller count, and code object ID identifying its frame. Into (0), over (1),
-and out (2) bind on that thread at the starting stop and follow the frame
-object. Into reports the frame's calls to program C functions, where the
-debugger may stop. Back (3) starts in native code called by the frame and
-ends at the thread's next line in that frame or a caller.
 
-An assignment is (number, thread, depth, code, name, value), identifying
-the frame as above. Values are ["int", DECIMAL], ["float", BITS],
-["bool", 0 or 1], ["str", TEXT], ["none"], or ["object", ID]. Object IDs
-must still name a local, global, builtin, None, True, or False; stale IDs
-are never dereferenced. Assign once on the stopped frame's thread without
-running program code. Retain the old value until that thread's next
-callback, so its destructors cannot run while other threads are stopped.
 
-Exceptions are bits: RAISED (1) reports each exception raised in Python code
-or reaching it; UNCAUGHT (2) each that leaves a thread's outermost Python
-frame. A report carries the exception and a message formed without running
-the program's code.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import sys
 
 if sys.version_info < (3, 12):
@@ -48,7 +48,7 @@ probes = ()
 hook = None
 _library = None
 _owner = None
-_configured_in = None  # The process whose debugger installed the probes.
+_configured_in = None
 _control = None
 _sequence = None
 _local = _thread._local()
@@ -56,52 +56,52 @@ CONTROL_HEADER = 32
 CONTROL_CAPACITY = 65536
 CONTROL_MAGIC = b'MICPYC02'
 discovered = {}
-# Cache symlink equivalence for absolute paths sharing a basename; resolution costs syscalls.
+
 resolved = {}
-# Free-threaded builds can change or free other threads' frames during a read.
+
 FREE_THREADED = 't' in sys.abiflags
 _objects = gc.get_objects
-# Configuration and callbacks can run concurrently in free-threaded builds.
-# No native hook is called while this lock is held.
+
+
 lock = _bootstrap_lock
 
-# Only these events have callback signatures this transport understands.
+
 LOCAL = ("LINE", "PY_START", "PY_RESUME", "PY_RETURN", "PY_YIELD")
 OTHER = ("RAISE", "PY_UNWIND", "PY_THROW")
-# Steps also watch a caller's instructions, and a step into the calls its
-# frame makes, which no probe names.
+
+
 STEPPING = ("INSTRUCTION", "CALL")
 
 step = None
-# The generation that configured the step, which binds only in a callback or
-# call that began before it, at the stop the step begins from.
+
+
 step_generation = None
-# The bound step: [phase, frame]. FRAME watches the stepping frame, CALLER
-# the Python frame it returned to, THREAD any line its thread runs next.
+
+
 stepping = None
-# The code the step adds local events to, and those events.
+
 stepped = None
 INTO, OVER, OUT, BACK = 0, 1, 2, 3
 FRAME, CALLER, THREAD, DONE = 0, 1, 2, 3
-# A coroutine's or async generator's frame yields as it suspends at an
-# await; its step goes on to its next line rather than leaving it.
+
+
 SUSPENDS = 0x80 | 0x100 | 0x200
 
-# The configured assignment, the number of the last one made, and the
-# objects assignments replaced, until their thread's next callback.
+
+
 assignment = None
 assigned = 0
 _kept = []
-# Values an assignment names by kind, and those it may take by identity.
+
 ASSIGNED = ("int", "float", "bool", "str", "none", "object")
 _SINGLETONS = (None, True, False)
 _MISSING = object()
 
 raising = 0
 RAISED, UNCAUGHT = 1, 2
-# The longest exception text a report carries, in characters.
+
 MAX_TEXT = 1000
-# These read what C stores, so no program's code runs as they do.
+
 _args = BaseException.__dict__['args'].__get__
 _traceback = BaseException.__dict__['__traceback__'].__get__
 _qualname = type.__dict__['__qualname__'].__get__
@@ -110,18 +110,18 @@ _mro = type.__dict__['__mro__'].__get__
 _namespace = type.__dict__['__dict__'].__get__
 _BASE_STR = BaseException.__dict__['__str__']
 _KEY_STR = KeyError.__dict__['__str__']
-# A built-in function or method, and a type's C method.
+
 _BUILTIN = type(len)
 _METHOD = type(list.append)
 _bound_to = _BUILTIN.__dict__['__self__'].__get__
 _objclass = _METHOD.__dict__['__objclass__'].__get__
-# The code of the frame that runs a threading.Thread, which catches what
-# the thread raises and gives it to threading.excepthook.
+
+
 _bootstrap = None
 _main_ident = getattr(_thread, '_get_main_thread_ident', None)
 if _main_ident is None:
-    # CPython 3.12 cannot say which thread is the main one. The launch
-    # bootstrap that loads the agent there runs on it, and records it.
+
+
     _MAIN = getattr(sys.modules.get('_microscope_bootstrap'), 'main', None)
     if type(_MAIN) is not int:
         raise RuntimeError("microscope's agent needs its launch bootstrap on CPython 3.12")
@@ -142,8 +142,8 @@ def matches(probe, code):
 
 
 def same_file(path, filename):
-    """Matches absolute paths by symlink resolution when basenames agree.
-    Relative paths match filename suffixes on component boundaries."""
+
+
     if filename == path:
         return True
     if path[0] != '/':
@@ -165,7 +165,7 @@ def clear():
     global tool, probes, step, stepping, stepped, raising
     if tool is not None:
         if not hasattr(monitoring, 'clear_tool_id'):
-            # Before 3.14, freeing a tool leaves its callbacks and events.
+
             monitoring.set_events(tool, 0)
             for event in LOCAL + OTHER + STEPPING:
                 monitoring.register_callback(tool, getattr(events, event), None)
@@ -192,8 +192,8 @@ def dispatch(event, code, location):
 
 
 def together(hits):
-    """Groups an event's breakpoint hits into one stop, like a native address.
-    Reports one ID directly, or count/address of an array kept alive through the hook."""
+
+
     assert all(hit[0] in (1, 2) for hit in hits), f"hit kinds {[hit[0] for hit in hits]}"
     numbers = [number for kind, number, _ in hits if kind == 1]
     others = [hit for hit in hits if hit[0] != 1]
@@ -204,7 +204,7 @@ def together(hits):
 
 
 def reported(notice):
-    """The hits a report carries, by kind and number."""
+
     assert len(notice) in (3, 4), f"a notice of kind {notice[0]} has {len(notice)} fields"
     if len(notice) == 4:
         return [(1, number) for number in notice[3]] if notice[0] == 1 else []
@@ -214,7 +214,7 @@ def reported(notice):
 
 
 def local_mask(code):
-    """The local events `code` takes: its probes', and the step's."""
+
     assert tool is not None, "local events asked for without a tool"
     mask = 0
     for probe in probes:
@@ -226,8 +226,8 @@ def local_mask(code):
 
 
 def global_mask():
-    """The events all code takes: discovery, the probes' other events, and
-    what the bound step watches everywhere."""
+
+
     assert stepping is None or step is not None, f"no step is configured, bound in {stepping[0]}"
     mask = events.PY_START | events.PY_RESUME | events.PY_THROW
     for probe in probes:
@@ -247,7 +247,7 @@ def global_mask():
 
 
 def watch(phase, frame):
-    """Moves the bound step to `phase`/`frame`, updating events and removing obsolete ones."""
+
     global stepped
     assert (frame is None) == (phase in (THREAD, DONE)), f"phase {phase}, framed {frame is not None}"
     stepping[0], stepping[1] = phase, frame
@@ -270,8 +270,8 @@ def watch(phase, frame):
 
 
 def bind(frame):
-    """Binds the configured step to its frame in the chain `frame` is in, on
-    the step's thread; or reports that the frame is not there."""
+
+
     global stepping
     assert stepping is None, f"binding step {step[0]} while it is bound in phase {stepping[0]}"
     assert step[1] != BACK, f"binding step back {step[0]} to a frame"
@@ -282,19 +282,19 @@ def bind(frame):
     index = len(chain) - 1 - step[3]
     stepping = [DONE, None]
     if not 0 <= index < len(chain) or id(chain[index].f_code) != step[4]:
-        return [(2, step[0], 1)]  # The step's frame is not where it was found.
+        return [(2, step[0], 1)]
     watch(FRAME, chain[index])
     return []
 
 
 def waiting(frame, started, event=None):
-    """Applies this thread's assignment and binds its pending step at `event`.
-    `started` is the generation when this callback or call began."""
+
+
     return assigning(frame) + step_waiting(frame, started, event)
 
 
 def assigning(frame):
-    """Applies this thread's assignment once, locating its target in `frame`'s caller chain."""
+
     global assigned
     if (assignment is None or assignment[0] <= assigned
             or assignment[1] != _thread.get_native_id()):
@@ -307,26 +307,26 @@ def assigning(frame):
         frame = frame.f_back
     index = len(chain) - 1 - depth
     if not 0 <= index < len(chain) or id(chain[index].f_code) != code:
-        return [(6, number, 1)]  # The frame is not where it was found.
+        return [(6, number, 1)]
     target = chain[index]
     given = assigned_value(target, value)
     if given is _MISSING:
-        return [(6, number, 2)]  # No name of the frame finds the object.
+        return [(6, number, 2)]
     if sys.version_info < (3, 13):
-        return [(6, number, 3)]  # A function's f_locals is only a copy.
+        return [(6, number, 3)]
     try:
         variables = target.f_locals
         old = variables.get(name, _MISSING)
         variables[name] = given
     except Exception:
-        return [(6, number, 3)]  # The interpreter refused it.
+        return [(6, number, 3)]
     if old is not _MISSING:
         _kept.append(old)
     return [(6, number, 0)]
 
 
 def assigned_value(frame, value):
-    """Decodes a literal or finds an object ID among singletons and the frame's bindings."""
+
     kind = value[0]
     if kind == "int":
         return int(value[1])
@@ -350,7 +350,7 @@ def assigned_value(frame, value):
 
 
 def release():
-    """Lets go the objects assignments replaced, as their thread runs on."""
+
     with lock:
         kept = _kept[:]
         _kept.clear()
@@ -358,7 +358,7 @@ def release():
 
 
 def step_waiting(frame, started, event):
-    """Binds a configured step waiting for this thread."""
+
     global stepping
     if (tool is None or step is None or stepping is not None
             or step[2] != _thread.get_native_id()):
@@ -368,13 +368,13 @@ def step_waiting(frame, started, event):
     assert step_generation is not None, f"step {step[0]} has no generation"
     if step_generation <= started:
         stepping = [DONE, None]
-        return [(2, step[0], 2)]  # Its thread ran on before the step began.
+        return [(2, step[0], 2)]
     return bind(frame)
 
 
 def returned(frame, event):
-    """Ends a step back at the first LINE with fewer callers, or equal depth and matching code.
-    The starting stop was in native code, so this thread's next line follows it."""
+
+
     global stepping
     assert step[1] == BACK, f"step {step[0]} of kind {step[1]} ends as a step back"
     assert stepping is None, f"step back {step[0]} is already bound"
@@ -392,9 +392,9 @@ def returned(frame, event):
 
 
 def native(callable):
-    """Whether a call of `callable` may run a C function of the program's
-    own, where a step into ends: a built-in function or method, or a type's
-    C method, other than the interpreter's built-ins and their types'."""
+
+
+
     kind = type(callable)
     if kind is _BUILTIN:
         bound = _bound_to(callable)
@@ -412,15 +412,15 @@ def builtin_type(cls):
 
 
 def finish():
-    """Ends the bound step where its thread is."""
+
     number = step[0]
     watch(DONE, None)
     return [(2, number, 0)]
 
 
 def leave(frame):
-    """Follows the step out of `frame`, which returns, yields, or unwinds, to
-    its Python caller; or to the next line its thread runs, if none."""
+
+
     assert stepping[0] in (FRAME, CALLER), f"step {step[0]} leaves a frame in phase {stepping[0]}"
     caller = frame.f_back
     if caller is None:
@@ -431,8 +431,8 @@ def leave(frame):
 
 
 def step_event(event, code, frame, arguments):
-    """What the bound step does at `event` in `frame`, running `code`, with
-    the event's `arguments`."""
+
+
     global step
     phase, target = stepping
     assert phase != DONE, f"step {step[0]} takes an event after it ended"
@@ -440,8 +440,8 @@ def step_event(event, code, frame, arguments):
     if frame is target:
         if phase == FRAME:
             if event == 'CALL':
-                # End in C only for described program code; the stack keeps the callable
-                # alive while the hook runs.
+
+
                 if kind == INTO and native(arguments[0]):
                     return [(5, step[0], id(arguments[0]))]
                 return []
@@ -449,14 +449,14 @@ def step_event(event, code, frame, arguments):
                 return finish()
             if event == 'PY_YIELD' and code.co_flags & SUSPENDS:
                 if kind == INTO:
-                    # Into the task's next line, not the loop that runs it.
+
                     step = (step[0], OVER) + step[2:]
                     watch(FRAME, target)
                 return []
             if event in ('PY_RETURN', 'PY_YIELD', 'PY_UNWIND'):
                 return leave(target)
         elif phase == CALLER:
-            # Some instructions have no line, as a handler's first does.
+
             if event == 'INSTRUCTION' and frame.f_lineno is not None:
                 return finish()
             if event == 'PY_UNWIND':
@@ -476,14 +476,14 @@ def discover(code):
         return
     mask = local_mask(code)
     if mask:
-        # Clear a freed tool's lingering events before resetting them; an unchanged mask
-        # leaves its disabled locations disabled until the code starts or resumes.
+
+
         if monitoring.get_local_events(tool, code):
             monitoring.set_local_events(tool, code, 0)
         monitoring.set_local_events(tool, code, mask)
 
-    # Code equality can ignore its filename. Cache by identity and retain
-    # only a weak reference, so dynamic code neither aliases nor leaks.
+
+
     def expired(reference):
         with lock:
             if discovered.get(identity) is reference:
@@ -493,15 +493,15 @@ def discover(code):
 
 
 def running_code():
-    """Code that may be running now, including on other threads."""
+
     if FREE_THREADED:
-        # Never read another thread's frames. The collector tracks code in
-        # this build and lists it while every thread is at a safe point;
-        # code is immutable. Uncalled matching code is instrumented early.
+
+
+
         return [code for code in _objects() if type(code) is CODE
                 and any(probe[0] in LOCAL and matches(probe, code)
                         for probe in probes)]
-    # The GIL keeps another thread's frame objects consistent here.
+
     codes = []
     for frame in sys._current_frames().values():
         while frame is not None:
@@ -516,7 +516,7 @@ def failed(wanted_generation, reason=2):
     try:
         clear()
     except Exception:
-        return (3, generation, 3)  # The previous monitoring state is unknown.
+        return (3, generation, 3)
     return (3, generation, reason)
 
 
@@ -527,7 +527,7 @@ def interference():
         number, report_owner, report_hook = missed
         if number == generation and report_owner == _owner and report_hook is hook:
             return failed(number, 5)
-    # A newer configuration supersedes unsent interference from the old one.
+
     return None
 
 
@@ -539,8 +539,8 @@ def integer(text):
 
 def request(payload):
     text = payload.decode('utf-8')
-    # The wire shape needs only three container levels. Scan strings with
-    # escapes so hostile input cannot exhaust json's recursive decoder.
+
+
     depth, quoted, escaped = 0, False, False
     for byte in payload:
         if quoted:
@@ -562,8 +562,8 @@ def request(payload):
 
 
 def pending():
-    # The helper performs one aligned native load. A byte-wise sequence
-    # copy could straddle an all-stop publication and manufacture an ID.
+
+
     assert _sequence is not None, "a command is read before a transport is loaded"
     wanted_generation = _sequence()
     if wanted_generation <= generation:
@@ -595,8 +595,8 @@ def pending():
 
 
 def emit(report, report_hook, report_owner, report_generation):
-    # Acknowledgements can accept another configuration at this hook.
-    # Keep that iterative: repeated edits must not nest Python scripts.
+
+
     changed = False
     while report is not None:
         assert len(report) in (3, 4), f"a report of kind {report[0]} has {len(report)} fields"
@@ -616,8 +616,8 @@ def emit(report, report_hook, report_owner, report_generation):
 
 
 def interrupted(wanted_generation):
-    # Capture while the configuration lock still proves this owner and
-    # generation. Another thread may configure after exception unwinding.
+
+
     if getattr(_local, 'interruption', None) is None:
         notice = failed(wanted_generation, 6)
         _local.interruption = (notice, hook, _owner, wanted_generation)
@@ -634,8 +634,8 @@ def emit_interruption():
                 interrupted(number)
                 captured = _local.interruption
             else:
-                # A superseded operation cannot mutate the new owner. Its
-                # unsent reports and cleanup are conservatively unconfirmed.
+
+
                 captured = ((3, number, 3), report_hook, report_owner, number)
         _local.interruption = None
     assert captured is None or len(captured) == 4, f"an interruption has {len(captured)} fields"
@@ -646,8 +646,8 @@ def emit_interruption():
 def would_report(event, code, location):
     if dispatch(event, code, location):
         return True
-    # Reentrant entry can precede discovery of LINE events. Check the code's
-    # actual line table, rather than flagging every function in its file.
+
+
     return (event in ('PY_START', 'PY_RESUME', 'PY_THROW')
             and any(matches(probe, code) and probe[0] in LOCAL
                     and (not probe[4] or any(line == probe[4]
@@ -656,9 +656,9 @@ def would_report(event, code, location):
 
 
 def outermost(frame):
-    """Checks uncaught-exception boundaries: main module, a non-main thread's first frame
-    (`_thread` reports), or a threading target (`threading.excepthook` reports).
-    Other main-thread calls from C may handle exceptions, as startup imports do."""
+
+
+
     global _bootstrap
     caller = frame.f_back
     if caller is None and _thread.get_ident() != _main_ident():
@@ -682,8 +682,8 @@ def outermost(frame):
 
 
 def main_module(frame, caller):
-    """Whether `frame` runs the main module's code on the main thread, as the
-    interpreter runs it: called from C, or through runpy alone, for -m."""
+
+
     if frame.f_code.co_name != '<module>' or _thread.get_ident() != _main_ident():
         return False
     names = frame.f_globals
@@ -702,7 +702,7 @@ def main_module(frame, caller):
 
 
 def described(exc):
-    """Formats the traceback's final type/text without running program code; otherwise type only."""
+
     cls = type(exc)
     name = _qualname(cls)
     module = _module(cls)
@@ -731,7 +731,7 @@ def described(exc):
 
 
 def origin(exc):
-    """Where `exc` was raised, by its traceback's innermost entry."""
+
     entry = _traceback(exc)
     innermost = None
     for _ in range(4096):
@@ -747,23 +747,23 @@ def origin(exc):
 
 
 def exception_event(event, frame, exc):
-    """The report of an exception at `event` in `frame`, if one stops: one
-    raised there, or one leaving its thread's Python code there."""
+
+
     assert event in ('RAISE', 'PY_UNWIND'), f"exception report at {event}"
     if not issubclass(type(exc), BaseException):
         return []
     if event == 'RAISE':
         if not raising & RAISED:
             return []
-        # RAISE fires again in each frame an exception unwinds into, whose
-        # traceback then goes on into the frame it called: that is no raise.
+
+
         entry = _traceback(exc)
         following = entry.tb_next if type(entry) is _TRACEBACK else None
         if type(following) is _TRACEBACK and following.tb_frame.f_back is frame:
             return []
         bit, message = RAISED, described(exc)
     else:
-        # Python exits on SystemExit, and prints no traceback.
+
         if (not raising & UNCAUGHT or not outermost(frame)
                 or issubclass(type(exc), SystemExit)):
             return []
@@ -771,7 +771,7 @@ def exception_event(event, frame, exc):
     encoded = message.encode('utf-8', 'backslashreplace')
     text = (ctypes.c_char * len(encoded)).from_buffer_copy(encoded)
     record = (ctypes.c_uint64 * 3)(id(exc), ctypes.addressof(text), len(encoded))
-    # The objects live as long as the report, while the native hook runs.
+
     return [(4, bit, ctypes.addressof(record), (record, text, exc))]
 
 
@@ -813,8 +813,8 @@ def callback(event):
                         if raising and event in ('RAISE', 'PY_UNWIND'):
                             notices.extend(exception_event(event, sys._getframe(1), unused[0]))
                     except Exception:
-                        # A discovery failure supersedes an unreported ready
-                        # acknowledgement produced by this same callback.
+
+
                         notices = [failed(generation)]
                     except BaseException:
                         interrupted(generation)
@@ -829,25 +829,25 @@ def callback(event):
                 superseded = emit(notice, report_hook, report_owner, report_generation)
                 emitted.update(reported(notice))
                 if superseded:
-                    # Recompute unsent hits under the new configuration; stable site numbers
-                    # let us exclude hits already reported.
+
+
                     with lock:
                         notices = [] if tool is None else together([
                             hit for hit in dispatch(event, code, location)
                             if hit[:2] not in emitted])
                         report_hook, report_owner, report_generation = (
                             hook, _owner, generation)
-            # A step configured at this event's stop begins here, before its
-            # thread runs on: either this thread consumed it at the stop, or
-            # another did while this one waited for the lock.
+
+
+
             with lock:
                 notices = waiting(sys._getframe(1), started, event)
                 report_hook, report_owner, report_generation = hook, _owner, generation
             while notices:
                 notice = notices.pop(0)
                 if emit(notice, report_hook, report_owner, report_generation):
-                    # A step back ends here, and the step configured at its
-                    # stop begins here too.
+
+
                     with lock:
                         notices = waiting(sys._getframe(1), started, event)
                         report_hook, report_owner, report_generation = (
@@ -887,7 +887,7 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
     if library == _owner and wanted_generation <= generation:
         return None
 
-    # Validate the complete request before changing the active installation.
+
     if (type(wanted_probes) not in (list, tuple)
             or any(type(probe) not in (list, tuple) for probe in wanted_probes)):
         raise CommandError("invalid microscope monitoring probe collection")
@@ -916,8 +916,8 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
 
     if library != _owner and replacement is None:
         raise RuntimeError("microscope transport owner changed during preparation")
-    # A step already bound goes on from where it is: binding it again later
-    # would begin it where its thread has run to.
+
+
     kept = (step, stepping, step_generation) if (
         wanted_step is not None and step is not None and step[0] == wanted_step[0]) else None
     clear()
@@ -928,7 +928,7 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
     generation = wanted_generation
     assignment = wanted_assignment
     if not wanted_probes and wanted_step is None and not wanted_exceptions:
-        return (0, generation, 6)  # 6 means no tool is registered.
+        return (0, generation, 6)
 
     for candidate in range(6):
         try:
@@ -946,8 +946,8 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
         for event in LOCAL + OTHER + STEPPING:
             monitoring.register_callback(tool, getattr(events, event), callback(event))
         monitoring.set_events(tool, global_mask())
-        # Enable discovery before scanning: another thread can enter code
-        # while this one configures a free-threaded interpreter.
+
+
         if any(probe[0] in LOCAL for probe in probes):
             for code in running_code():
                 discover(code)
@@ -957,7 +957,7 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
                 watch(stepping[0], stepping[1])
         else:
             step, step_generation = wanted_step, generation
-        # A step back waits for its thread's next line everywhere.
+
         monitoring.set_events(tool, global_mask())
     except Exception:
         return failed(generation)
@@ -968,7 +968,7 @@ def configure(library, wanted_generation, wanted_probes, replacement=None,
 
 
 def valid_assignment(wanted):
-    """The assignment `wanted` names, refused unless whole and in range."""
+
     if (type(wanted) not in (list, tuple) or len(wanted) != 6
             or any(type(field) is not int for field in wanted[:4])
             or not 0 < wanted[0] < 2**64 or not 0 < wanted[1] < 2**64
@@ -1004,8 +1004,8 @@ def apply(library, wanted_generation, wanted_probes, wanted_step=None, wanted_ex
             _local.context = (hook, _owner, generation)
             started = generation
             needs_transport = library != _owner
-        # The loader may wait for a thread whose monitoring callback needs
-        # our lock. Load outside it; configure revalidates ownership inside.
+
+
         replacement = transport(library) if needs_transport else None
         with lock:
             next_hook = hook if replacement is None else replacement[1]
@@ -1032,9 +1032,9 @@ def apply(library, wanted_generation, wanted_probes, wanted_step=None, wanted_ex
 
 
 def forking():
-    """Locks before fork so the child cannot inherit another thread's unreleasable lock.
-    Earlier child handlers remain monitored; callbacks reacquire on this thread.
-    Retried loads can register duplicate handlers, so acquire only once."""
+
+
+
     if getattr(_local, 'forking', False):
         return
     lock.acquire()
@@ -1048,8 +1048,8 @@ def forked_parent():
 
 
 def forked():
-    """Disarms inherited monitoring, whose reports have no listener in the child.
-    Preserves child-owned installations configured by an earlier at-fork handler."""
+
+
     lock._at_fork_reinit()
     _local.forking = _local.busy = False
     if _configured_in == _getpid():
@@ -1057,13 +1057,13 @@ def forked():
     try:
         clear()
     except Exception:
-        pass  # Nothing in the child could hear of it.
+        pass
 
 
 _register_at_fork(before=forking, after_in_parent=forked_parent, after_in_child=forked)
 
-# Suppress only our own code objects, never functions guessed from their names,
-# nor those imported from the standard library, as os.path.realpath.
+
+
 _pending = [value.__code__ for value in tuple(globals().values())
             if type(value) is type(matches) and value.__globals__ is globals()]
 _internal = set()
@@ -1081,5 +1081,5 @@ if FREE_THREADED and not gc.is_tracked(matches.__code__):
     raise RuntimeError("microscope cannot find running code safely: this "
                        "free-threaded build's collector does not track code")
 
-# Published only after initialization succeeds; the bootstrap serializes it.
+
 _microscope_loaded = 2

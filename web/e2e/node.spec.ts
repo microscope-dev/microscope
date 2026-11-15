@@ -1,7 +1,3 @@
-// Node programs that start other nodes, debugged from the page: a
-// breakpoint in a .js file, set before the run, stops the node that runs
-// it, which the switcher shows among the group's processes.
-
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
@@ -11,7 +7,6 @@ import { expect, fixture, join, type Microscope, test } from "./server";
 
 const node = path.join(process.env.MICROSCOPE_NODE ?? "", "26", "node");
 
-/** The npm beside the node on PATH, which the dev shell provides. */
 function npm(): string {
   for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
     if (directory.includes("nodejs")) {
@@ -21,8 +16,6 @@ function npm(): string {
   throw new Error(`no nodejs directory on PATH: ${process.env.PATH}`);
 }
 
-/** Writes `files` into a directory of the test's output, and returns it.
- * A package.json of its own keeps web's `"type": "module"` from applying. */
 async function project(files: Record<string, string>): Promise<string> {
   const directory = test.info().outputPath("project");
   await mkdir(directory, { recursive: true });
@@ -33,7 +26,6 @@ async function project(files: Record<string, string>): Promise<string> {
   return directory;
 }
 
-/** Joins `server`'s session and sets a breakpoint at each location. */
 async function breakAt(page: Page, server: Microscope, locations: string[]): Promise<void> {
   await join(page, server.link);
   await expect(page.getByTestId("status")).toContainText("Not started");
@@ -45,8 +37,6 @@ async function breakAt(page: Page, server: Microscope, locations: string[]): Pro
   }
 }
 
-// A node starting under the debugger, through npm's own node first, takes
-// longer than the page's default wait.
 const START = { timeout: 30_000 };
 
 test("npm start stops at the app's breakpoint, its node beside npm's", async ({
@@ -76,7 +66,6 @@ test("npm start stops at the app's breakpoint, its node beside npm's", async ({
   await breakAt(page, server, ["server.js:2"]);
   await page.keyboard.press("F5");
 
-  // The app is the node npm's shell executed, which stopped the group.
   await page.getByRole("tab", { name: /^Processes/u }).click();
   const switcher = page.getByRole("navigation", { name: "Processes" });
   const app = switcher.getByRole("button", { name: /stopped here/u });
@@ -85,7 +74,6 @@ test("npm start stops at the app's breakpoint, its node beside npm's", async ({
   await expect(switcher.getByRole("button", { name: /^\[1\] /u })).toContainText("launched");
   await expect(page.locator(".cm-frame-line")).toContainText("console.log('listening', port);");
 
-  // Continuing runs the app and npm to their ends.
   await page.keyboard.press("F5");
   await expect(switcher.getByRole("button", { name: /^\[1\] /u })).toContainText("exited", START);
   await expect(page.getByTestId("status")).toContainText("Exited");
@@ -108,8 +96,6 @@ test("node --test stops in each file's node at its breakpoint", async ({ page, m
   await breakAt(page, server, ["a.test.js:3", "b.test.js:3"]);
   await page.keyboard.press("F5");
 
-  // Each file runs in a node of its own, started by the runner, which
-  // stops where its file's breakpoint is; the runner runs neither.
   await page.getByRole("tab", { name: /^Processes/u }).click();
   const switcher = page.getByRole("navigation", { name: "Processes" });
   const stopped = switcher.getByRole("button", { name: /stopped here/u });
@@ -136,8 +122,7 @@ test("node --watch stops in the app, and again in the app it restarts", async ({
   microscope,
 }) => {
   test.setTimeout(90_000);
-  // The first run changes its own file and waits to be replaced; the
-  // second, which finds the marker, ends.
+
   const directory = await project({
     "app.js": [
       "const fs = require('node:fs');",
@@ -162,9 +147,6 @@ test("node --watch stops in the app, and again in the app it restarts", async ({
   const first = /^\[(\d+)\]/u.exec((await stopped.textContent()) ?? "")?.[1] ?? "";
   await page.keyboard.press("F5");
 
-  // The watcher ends the app with SIGTERM to start it again, which stops
-  // the group as any signal does, and so does the SIGTERM the app's node
-  // raises again at itself once its handler has run; continuing passes each.
   const status = page.getByTestId("status");
   for (const sent of ["SIGTERM (SI_USER)", "SIGTERM (SI_TKILL)"]) {
     await expect(status).toContainText(sent, START);
@@ -172,8 +154,6 @@ test("node --watch stops in the app, and again in the app it restarts", async ({
     await page.keyboard.press("F5");
   }
 
-  // The restarted app stops at the same line, and the one it replaced has
-  // exited.
   await expect(stopped).not.toContainText(`[${first}]`, START);
   await expect(stopped).toContainText(/\[\d+\] node · (forked|executed) by \[1\]/u);
   await expect(page.locator(".cm-frame-line")).toContainText("const marker =");
@@ -191,8 +171,6 @@ test("a Node core's tasks panel lists its event loops' work, each with its callb
   await join(page, server.link);
   await expect(page.getByTestId("status")).toContainText("Core dump");
 
-  // A timer is what it waits for, then the program's callback, and opens
-  // no stack; a pool job runs on its thread.
   await page.getByRole("tab", { name: /^Tasks/u }).click();
   const tasks = page.getByTestId("tasks");
   const timer = tasks.getByRole("listitem", { name: "task 2", exact: true });
@@ -207,9 +185,6 @@ test("a Node core's tasks panel lists its event loops' work, each with its callb
   await expect(tasks.getByRole("button", { name: /^task \d+$/u })).toHaveCount(2);
   await expect(tasks).toContainText("thread-pool job");
 
-  // Grouped, only the pool jobs open a stack. Their numbers, bit 62 and
-  // the thread ids the core's log names, are above 2^53, and are shown
-  // exactly.
   const log = await readFile(`${fixture("node-tasks-26.core")}.log`, "utf8");
   const jobs = [...log.matchAll(/^TRUTH\tpool\t(\d+)$/gmu)]
     .map((match) => ((1n << 62n) | BigInt(match[1] ?? "")).toString())
@@ -225,7 +200,6 @@ test("a Node core's tasks panel lists its event loops' work, each with its callb
   await expect(uncalled.getByTestId("stackless-task")).toHaveCount(16);
   await expect(uncalled.getByRole("button")).toHaveCount(0);
 
-  // A pool job opens its own thread's stack, through libuv's worker.
   const job = jobs[0] ?? "";
   await groups.getByRole("button", { name: `task ${job}`, exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/task/\\d+\\.${job}/f/`, "u"));

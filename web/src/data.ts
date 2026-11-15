@@ -1,7 +1,3 @@
-// Cache server results by request. forget.ts invalidates results after writes,
-// settings changes, and library loads, even within a stop. Requests lost to a
-// dropped connection are discarded and retried on reconnection.
-
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { assert } from "./assert";
@@ -17,13 +13,12 @@ interface Entry {
   settled?: Settled;
 }
 
-/** The most answers kept; the least recently used go first. */
 const LIMIT = 400;
 
 export class Cache {
   readonly #entries = new Map<string, Entry>();
   readonly #listeners = new Set<() => void>();
-  /** Invalidation counter; changes trigger readers to request fresh data. */
+
   #version = 0;
 
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -40,12 +35,10 @@ export class Cache {
     }
   }
 
-  /** The answer to a request, asked once while it is kept. */
   get(connection: Connection, method: Method, params: unknown): Entry {
     const key = cacheKey(method, params);
     const found = this.#entries.get(key);
     if (found) {
-      // Most recently used last.
       this.#entries.delete(key);
       this.#entries.set(key, found);
       return found;
@@ -85,18 +78,15 @@ export class Cache {
     return entry;
   }
 
-  /** Tells readers to ask again for what is no longer kept. */
   refresh(): void {
     this.#forgot();
   }
 
-  /** Forgets everything, as when the session changes. */
   clear(): void {
     this.#entries.clear();
     this.#forgot();
   }
 
-  /** Forgets answers whose key starts with `prefix`, such as one method's. */
   forget(prefix: string): void {
     assert(prefix.includes(" "), `forgetting by prefix "${prefix}", which names no whole method`);
     let forgot = false;
@@ -119,18 +109,12 @@ function cacheKey(method: Method, params: unknown): string {
 export const cache = new Cache();
 
 export interface Requested<T> {
-  /** The answer, or the previous request's while this one is on its way. */
   data: T | undefined;
   error: RequestError | undefined;
-  /** Whether `data` answers this very request. */
+
   current: boolean;
 }
 
-/**
- * Asks for `method` with `params`, or nothing when params are null, keeping
- * the previous answer on screen until the new one arrives. A pane not on
- * screen keeps what it has and asks for nothing until it is shown.
- */
 export function useRequest<M extends Method>(
   method: M,
   params: (ParamsOf<M> extends undefined ? undefined : ParamsOf<M>) | null,
@@ -139,7 +123,7 @@ export function useRequest<M extends Method>(
   const connection = useConnection();
   const visible = useVisible();
   const key = params === null ? null : cacheKey(method, params);
-  // Cache invalidation triggers a new request.
+
   const version = useSyncExternalStore(source.subscribe, source.version);
   const [shown, setShown] = useState<{ key: string | null; settled?: Settled }>(() => {
     if (key === null || !visible) {
@@ -149,7 +133,6 @@ export function useRequest<M extends Method>(
     return settled ? { key, settled } : { key: null };
   });
 
-  // The key stands for the parameters, which are compared by it.
   const asked = useRef(params);
   // oxlint-disable-next-line react/refs -- the effect reads the latest parameters but reruns only when the key changes
   asked.current = params;

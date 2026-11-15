@@ -1,8 +1,3 @@
-// The dock's splits: children side by side or stacked, sharing the space by
-// weight, with a separator between each two that resizes them by pointer or
-// by keyboard. A drag moves only the two children's styles until it ends, so
-// it renders nothing until the layout takes the new weights.
-
 import {
   Fragment,
   type KeyboardEvent,
@@ -35,10 +30,8 @@ import styles from "./SplitView.module.css";
 
 const css = classOf(styles);
 
-/** The least a pane gets along a split, in pixels. */
 export const LEAST = 120;
 
-/** How far a separator moves for one arrow key press, in pixels. */
 const STEP = 16;
 
 export const NodeView = memo(function NodeView({ node }: { node: Node }) {
@@ -51,15 +44,13 @@ function splitIn(layout: Layout, id: SplitId): Split | null {
 
 const SplitView = memo(function SplitView({ id }: { id: SplitId }) {
   const split = useLayout((layout) => splitIn(layout, id));
-  // As text, so a change elsewhere is the same value.
+
   const hidden = useLayout((layout) => layout.hidden.join(" "));
   const box = useRef<HTMLDivElement>(null);
   if (!split) {
     return null;
   }
-  // Hidden children take no room; the others share all of it by their
-  // weights. Flex grows by less than the free space when the grows sum
-  // below 1, so they are scaled to sum to 1.
+
   const shown = split.children.flatMap((child, index) =>
     hidden.split(" ").includes(child.node.id) ? [] : [index],
   );
@@ -98,23 +89,18 @@ function SplitChild({ node, grow }: { node: Node; grow: number }) {
   );
 }
 
-/** What a separator's drag measures once, as it starts. */
 interface Measure {
-  /** The split's start and length along its axis. */
   start: number;
   length: number;
-  /** Where the two children the separator divides begin and end. */
+
   from: number;
   to: number;
-  /** Separators of other splits along the same axis, to line up with. */
+
   neighbors: number[];
   before: HTMLElement;
   after: HTMLElement;
 }
 
-/** The separator between two children shown side by side: `before` and
- * `after` index the split's children, and `at` is `after`'s place among
- * those shown. */
 function Separator({
   split,
   before: beforeIndex,
@@ -127,7 +113,7 @@ function Separator({
   before: number;
   after: number;
   at: number;
-  /** What the split's weights are multiplied by to grow its children. */
+
   scale: number;
   box: RefObject<HTMLDivElement | null>;
 }) {
@@ -144,8 +130,6 @@ function Separator({
     return pane ? kinds.get(pane.kind).title(pane) : "panes";
   };
 
-  // The two children are resized by hand as the pointer moves, and in the
-  // layout once, when it lets go.
   const down = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
       const measured = measure(box, at, row);
@@ -166,7 +150,7 @@ function Separator({
       });
       if (tracked) {
         event.preventDefault();
-        // So the arrow keys go on resizing it.
+
         event.currentTarget.focus();
       }
     },
@@ -227,7 +211,6 @@ function Separator({
   );
 }
 
-/** Where the separator `at` places among those shown, and what lies around it. */
 function measure(box: RefObject<HTMLDivElement | null>, at: number, row: boolean): Measure {
   const element = box.current;
   assert(element, "a separator outside its split");
@@ -262,8 +245,6 @@ function measure(box: RefObject<HTMLDivElement | null>, at: number, row: boolean
   };
 }
 
-/** The two children's weights, which share `shared`, with the separator at
- * `position`. */
 function shares(measured: Measure, shared: number, position: number): [number, number] {
   const span = measured.to - measured.from;
   const least = Math.min(LEAST, span / 2);
@@ -293,7 +274,6 @@ function commit(split: Split, beforeIndex: number, afterIndex: number, [a, b]: [
   change((layout) => resize(layout, split.id, weights));
 }
 
-/** Gives every child of the split the same share. */
 function evenOut(split: Split) {
   change((layout) =>
     resize(

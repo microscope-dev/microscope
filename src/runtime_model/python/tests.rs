@@ -1,9 +1,3 @@
-//! The walk of Python's frames and thread states over process memory the
-//! tests synthesize. The layout's offsets are the tests' own, not any
-//! CPython's, and the walk reads only what the layout names, so a
-//! structure is written whole and its fields are placed by the builders
-//! below.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -17,34 +11,23 @@ use crate::inspection::InspectionBudget;
 use crate::runtime_model::{InterpretedFrame, RuntimeStop, SampledCode, SampledFrame};
 use crate::{InspectionLimits, LoadBias, ThreadId, VirtualAddress};
 
-/// Where the builders allocate objects first.
 const HEAP: u64 = 0x7000_0000_0000;
 
-/// An address no builder allocates, for pointers to unreadable memory.
 const UNMAPPED: u64 = 0x6000_0000_0000;
 
-/// The source file every code object names.
 const FILE: &str = "app.py";
 
-/// The sizes of the synthetic structures the layout gives.
 const FRAME_SIZE: u64 = 96;
 const CODE_SIZE: u64 = 128;
 const THREAD_SIZE: u64 = 64;
 const STRING_SIZE: u64 = 48;
 
-/// A runtime or an interpreter, whose fields all lie in its first bytes.
 const SMALL: u64 = 32;
 
-/// How far past the start of each allocation memory is mapped: as far as
-/// the model reads an object's head.
 const MAPPED_PAST: u64 = 64;
 
-/// What a walk of one thread returns: its frames and why they end early.
 type Walked = (Vec<InterpretedFrame>, Option<Arc<str>>);
 
-/// The fields and constants of the objects the object model reads: classes
-/// and their dicts, instances' attributes, slots, sets, and the static
-/// types' dicts in the interpreter's state.
 fn object_model(layout: &mut PythonLayout) {
     let fields = [
         (Field::CodeName, 64),
@@ -98,9 +81,6 @@ fn object_model(layout: &mut PythonLayout) {
     layout.set_constant(Constant::MemberObjectEx, 16);
 }
 
-/// The layout the tests read. Each structure's fields are at offsets the
-/// tests choose, within the structure's size, and the constants are the
-/// values the tests' owners and string states use.
 fn layout() -> PythonLayout {
     let mut layout = PythonLayout::default();
     let fields = [
@@ -196,8 +176,6 @@ fn layout() -> PythonLayout {
     layout
 }
 
-/// The layout of a free-threaded build, which also keeps copies of each
-/// code object's bytecode in a `_PyCodeArray`.
 fn free_threaded_layout() -> PythonLayout {
     let mut layout = layout();
     layout.set_field(Field::FrameTlbcIndex, 28);
@@ -207,10 +185,6 @@ fn free_threaded_layout() -> PythonLayout {
     layout
 }
 
-/// The line table entry of `units` code units, at the line `delta` after
-/// the code's first line. A run of up to eight units at a delta of 0 to 2
-/// is the one-line form, which CPython 3.11 and later write as code 10 to
-/// 12; its two column bytes are zero, as the walk does not read them.
 fn one_run(units: u8, delta: u8) -> [u8; 3] {
     assert!(
         (1..=8).contains(&units) && delta <= 2,
@@ -219,30 +193,23 @@ fn one_run(units: u8, delta: u8) -> [u8; 3] {
     [0x80 | ((10 + delta) << 3) | (units - 1), 0, 0]
 }
 
-/// The bytes of the process the tests build, and the threads it stops.
 #[derive(Default)]
 struct Memory {
     bytes: BTreeMap<u64, u8>,
     threads: Vec<ThreadId>,
     target_ids: BTreeMap<ThreadId, Option<crate::runtime_model::TargetThreadId>>,
 
-    /// How many reads were made, for the tests of how much a read costs.
     reads: std::cell::Cell<usize>,
 
-    /// Whether the program runs while read, and bytes at an address that
-    /// read as others for the next so many reads of them that succeed, as
-    /// a frame's do while its thread pops it.
     runs: bool,
     popping: Option<(u64, Vec<u8>, std::cell::Cell<usize>)>,
 }
 
 impl Memory {
-    /// Writes the low `size` bytes of `value`, little-endian, at `address`.
     fn write(&mut self, address: u64, value: u64, size: usize) {
         self.fill(address, &value.to_le_bytes()[..size]);
     }
 
-    /// Writes `bytes` at `address`.
     fn fill(&mut self, address: u64, bytes: &[u8]) {
         for (index, byte) in (0..).zip(bytes) {
             self.bytes.insert(address + index, *byte);
@@ -298,8 +265,6 @@ impl RuntimeStop for Memory {
         self.threads.clone()
     }
 
-    // This fixture's default platform has no PID namespace. Individual
-    // tests override identities, including explicitly unavailable ones.
     fn target_thread_id(&self, thread: ThreadId) -> Option<crate::runtime_model::TargetThreadId> {
         self.target_ids
             .get(&thread)
@@ -308,9 +273,6 @@ impl RuntimeStop for Memory {
     }
 }
 
-/// A process the tests build: its memory, the layout that reads it, the
-/// address of its `PyCode_Type`, where the next object goes, and what it
-/// is aligned to.
 struct Process {
     memory: Memory,
     layout: PythonLayout,
@@ -318,8 +280,6 @@ struct Process {
     next: u64,
     align: u64,
 
-    /// `type`, once the tests' types are made, which every type object
-    /// after it is an object of.
     metatype: u64,
 }
 
@@ -337,10 +297,6 @@ impl Process {
         process
     }
 
-    /// Reserves `size` zeroed bytes, aligned as the process aligns them,
-    /// and returns their address. The memory past them is mapped, as the
-    /// rest of an allocator's pool is, up to [`MAPPED_PAST`] bytes from
-    /// their start, or to the end of their alignment.
     fn alloc(&mut self, size: u64) -> u64 {
         let address = self.next.next_multiple_of(self.align);
         let mapped = size.max(MAPPED_PAST).next_multiple_of(self.align);
@@ -350,13 +306,10 @@ impl Process {
         address
     }
 
-    /// Places each object from here on in mapped blocks of memory of its
-    /// own, which a reader reads by themselves, so that each costs a read.
     const fn spread(&mut self) {
         self.align = objects::BLOCK as u64;
     }
 
-    /// Unmaps the `length` bytes at `address`.
     fn unmap(&mut self, address: u64, length: u64) {
         self.memory
             .bytes
@@ -372,30 +325,23 @@ impl Process {
         }
     }
 
-    /// The offset of `field`, which the layout has.
     fn offset(&self, field: Field) -> u64 {
         self.layout.field(field).expect("the layout has the field")
     }
 
-    /// The value of the constant `constant`.
     fn owner(&self, constant: Constant) -> u64 {
         u64::from(self.layout.constant(constant))
     }
 
-    /// Writes `value`, `width` bytes wide, into `field` of the object at
-    /// `object`.
     fn put(&mut self, object: u64, field: Field, value: u64, width: usize) {
         let at = object + self.offset(field);
         self.memory.write(at, value, width);
     }
 
-    /// Writes the word `value` into `field` of the object at `object`.
     fn word(&mut self, object: u64, field: Field, value: u64) {
         self.put(object, field, value, 8);
     }
 
-    /// A `str` of ASCII `text`, laid out as CPython's compact ASCII
-    /// strings are.
     fn string(&mut self, text: &str) -> u64 {
         let length = text.len() as u64;
         let object = self.alloc(self.offset(Field::UnicodeCompactSize) + length);
@@ -410,7 +356,6 @@ impl Process {
         object
     }
 
-    /// A `bytes` object holding `data`.
     fn bytes(&mut self, data: &[u8]) -> u64 {
         let object = self.alloc(self.offset(Field::BytesData) + data.len() as u64);
         self.word(object, Field::BytesSize, data.len() as u64);
@@ -419,17 +364,12 @@ impl Process {
         object
     }
 
-    /// An empty `tuple`.
     fn empty_tuple(&mut self) -> u64 {
         let object = self.alloc(self.offset(Field::TupleItems));
         self.word(object, Field::TupleSize, 0);
         object
     }
 
-    /// A code object named `name` in [`FILE`], whose first line is
-    /// `first_line`. Each run is a count of code units and the line it is
-    /// on, as a delta from the first line; the bytecode itself is never
-    /// read, only its address.
     fn code(&mut self, name: &str, first_line: u32, runs: &[(u8, u8)]) -> u64 {
         let table: Vec<u8> = runs
             .iter()
@@ -455,13 +395,10 @@ impl Process {
         object
     }
 
-    /// The address of the code unit at index `unit` of `code`'s bytecode.
     fn instruction(&self, code: u64, unit: u64) -> u64 {
         code + self.offset(Field::CodeCodeAdaptive) + unit * CODE_UNIT
     }
 
-    /// An interpreter frame that runs `code` at `instruction`, owned by
-    /// `owner`, whose caller is `previous`.
     fn frame_owned(&mut self, previous: u64, owner: u64, code: u64, instruction: u64) -> u64 {
         let object = self.alloc(self.offset(Field::FrameSize));
         self.word(object, Field::FramePrevious, previous);
@@ -471,21 +408,16 @@ impl Process {
         object
     }
 
-    /// A frame the thread owns, which runs `code` at `instruction`.
     fn frame(&mut self, previous: u64, code: u64, instruction: u64) -> u64 {
         let owner = self.owner(Constant::OwnerThread);
         self.frame_owned(previous, owner, code, instruction)
     }
 
-    /// An entry frame, which ends the frames the evaluation loop runs
-    /// beneath it.
     fn entry(&mut self, previous: u64) -> u64 {
         let owner = self.owner(Constant::OwnerEntry);
         self.frame_owned(previous, owner, 0, 0)
     }
 
-    /// A free-threaded build's `_PyCodeArray`, holding the copies of some
-    /// code object's bytecode.
     fn code_array(&mut self, copies: &[u64]) -> u64 {
         let entries = self.offset(Field::CodeArrayEntries);
         let array = self.alloc(entries + 8 * copies.len() as u64);
@@ -498,15 +430,12 @@ impl Process {
         array
     }
 
-    /// A runtime whose list of interpreters begins at `interpreters`.
     fn runtime(&mut self, interpreters: u64) -> u64 {
         let object = self.alloc(SMALL);
         self.word(object, Field::RuntimeInterpretersHead, interpreters);
         object
     }
 
-    /// An interpreter numbered `id`, the next in its list, and whose list
-    /// of threads begins at `threads`.
     fn interpreter(&mut self, id: i64, next: u64, threads: u64) -> u64 {
         let object = self.alloc(SMALL);
         self.word(object, Field::InterpreterId, id.cast_unsigned());
@@ -515,8 +444,6 @@ impl Process {
         object
     }
 
-    /// A thread state, the next in its interpreter's list, whose innermost
-    /// frame is `frame` and whose native thread is `native`.
     fn thread_state(&mut self, next: u64, frame: u64, native: u64) -> u64 {
         let object = self.alloc(self.offset(Field::ThreadSize));
         self.word(object, Field::ThreadNext, next);
@@ -526,7 +453,6 @@ impl Process {
     }
 }
 
-/// A thread whose innermost frame is `frame`, with no base frame.
 fn innermost(frame: u64) -> ThreadState {
     ThreadState {
         address: VirtualAddress::new(HEAP),
@@ -538,7 +464,6 @@ fn innermost(frame: u64) -> ThreadState {
     }
 }
 
-/// Walks the thread in `state`, with `code` as the code table.
 fn walk(process: &Process, code: &mut CodeTable, state: &ThreadState) -> Walked {
     let mut walk = Walk {
         reader: process.reader(),
@@ -548,13 +473,10 @@ fn walk(process: &Process, code: &mut CodeTable, state: &ThreadState) -> Walked 
     walk.thread(state)
 }
 
-/// Walks the thread whose innermost frame is `frame`, with a fresh code
-/// table.
 fn walk_thread(process: &Process, frame: u64) -> Walked {
     walk(process, &mut CodeTable::default(), &innermost(frame))
 }
 
-/// A frame's place as its path and line.
 fn place(frame: &InterpretedFrame) -> Option<(&str, u32)> {
     frame
         .place
@@ -562,9 +484,6 @@ fn place(frame: &InterpretedFrame) -> Option<(&str, u32)> {
         .map(|place| (place.path.as_ref(), place.line))
 }
 
-/// A frame as a walker in the kernel reads it: the code object it runs,
-/// that object's qualified-name and line-table pointers and first line, its
-/// instruction's offset from its bytecode, and its owner.
 fn sampled(process: &Process, frame: u64) -> SampledFrame {
     let read = |address: u64, width: usize| {
         let mut bytes = [0; 8];
@@ -608,11 +527,8 @@ fn sampled(process: &Process, frame: u64) -> SampledFrame {
     }
 }
 
-/// A frame's function, place, first line, and whether it ends a segment.
 type Found<'a> = (Option<&'a str>, Option<(&'a str, u32)>, Option<u32>, bool);
 
-/// What two walks of a thread found that does not depend on where its
-/// frames are.
 fn found(frames: &[InterpretedFrame]) -> Vec<Found<'_>> {
     frames
         .iter()
@@ -627,10 +543,6 @@ fn found(frames: &[InterpretedFrame]) -> Vec<Found<'_>> {
         .collect()
 }
 
-/// CPython's own code, as the frame it pushes beneath an `__init__` to
-/// check what it returned, says nothing of the program: its frame is
-/// left out, so the `__init__` sits on its caller. Other code at no line
-/// keeps its frame, with a problem.
 #[test]
 fn cpythons_own_frames_are_left_out() {
     let mut process = Process::new(layout());
@@ -675,11 +587,6 @@ fn cpythons_own_frames_are_left_out() {
     }
 }
 
-/// Code `exec` compiled from a string, as each method `dataclasses` makes
-/// is, is named by its frame's function's `__qualname__` where that
-/// function runs the code: the walk and the frames a walker in the kernel
-/// read alike. A function that runs other code, and code from a file, keep
-/// the code's own name.
 #[test]
 fn code_compiled_from_a_string_is_named_by_its_function() {
     let mut process = Process::new(layout());
@@ -751,18 +658,11 @@ fn code_compiled_from_a_string_is_named_by_its_function() {
     };
     assert_eq!(names(&sampled_walk(&process, &chain)), expected);
 
-    // Another function that runs the same code, by another name, is read
-    // anew rather than given the name the code table keeps.
     let moved = function(&mut process, line, "Moved.__init__");
     chain[1].function = Some(moved);
     assert_eq!(names(&sampled_walk(&process, &chain))[1], "Moved.__init__");
 }
 
-/// The frames a walker in the kernel read name the functions and lines
-/// the stopped walk of the same chain does. A code object freed since, and
-/// another put at its address, is no longer the one the walker read, and
-/// its frame is unreadable, though only its line table differs; so is one
-/// whose instruction it could not read.
 #[test]
 fn sampled_frames_read_as_the_stopped_walk_reads_them() {
     let mut process = Process::new(layout());
@@ -825,7 +725,6 @@ fn sampled_frames_read_as_the_stopped_walk_reads_them() {
         frames[1].problem
     );
 
-    // Its name and first line are b's, but its lines are a's.
     process.word(b, Field::CodeLinetable, chain[0].proof.linetable);
     chain[2].offset = sampled(&process, b_frame).offset;
     let (frames, _) = walk(&process, &chain);
@@ -1028,8 +927,6 @@ fn a_base_frame_ends_the_walk_before_it_with_no_problem() {
     assert_eq!(end, None);
 }
 
-/// From 3.15 every thread's chain ends at its base frame, so one that ends
-/// before it was read as the program changed it, which the walk says.
 #[test]
 fn a_chain_that_ends_before_its_base_frame_says_so() {
     let mut process = Process::new(layout());
@@ -1049,7 +946,6 @@ fn a_chain_that_ends_before_its_base_frame_says_so() {
         Some("the thread's frames end before its base frame")
     );
 
-    // A thread that runs no Python code has no frames to end early.
     let idle = ThreadState {
         base: Some(VirtualAddress::new(base)),
         frame: None,
@@ -1126,12 +1022,8 @@ fn a_code_object_whose_header_changes_is_decoded_again() {
     assert_eq!(frames[0].function.as_deref(), Some("new"));
 }
 
-/// A thread state as the tests compare it: its native thread, its
-/// interpreter, and its innermost frame's address.
 type ThreadSummary = (u64, i64, Option<u64>);
 
-/// The thread states of `runtime`, summarized, and the gaps the walk
-/// reports.
 fn states_of(process: &Process, runtime: u64) -> (Vec<ThreadSummary>, Vec<Arc<str>>) {
     let (states, gaps) = threads::thread_states(&process.reader(), VirtualAddress::new(runtime))
         .expect("the runtime's interpreters are readable");
@@ -1213,8 +1105,6 @@ fn a_thread_list_that_loops_is_a_gap_and_keeps_the_threads_before_it() {
     assert_eq!(gaps, ["interpreter 7's list of threads loops"]);
 }
 
-/// Threads are listed in the order of the debugger's ids, which need not
-/// be the order of their native ids, as after the kernel's ids wrap.
 #[test]
 fn a_stops_threads_are_in_the_order_of_their_ids_not_their_native_ids() {
     use crate::runtime_model::RuntimeModel;
@@ -1295,10 +1185,6 @@ mod numpy;
 mod thread_ids;
 mod values;
 
-/// A read of a running thread that catches a frame being popped, whether
-/// its code is cleared or its owner is not one yet, is read again at once,
-/// and kept once a read finds the thread whole; one that never does is
-/// left as read, for the caller to leave out.
 #[test]
 fn a_thread_whose_frames_change_while_read_is_read_again() {
     use crate::runtime_model::RuntimeModel;
@@ -1372,9 +1258,6 @@ fn a_thread_whose_frames_change_while_read_is_read_again() {
     }
 }
 
-/// A runtime whose frames cannot be read, as one of a version microscope
-/// does not know, still finds the activations of its loop, and says why
-/// their frames are missing, which a backtrace notes there.
 #[test]
 fn an_unreadable_runtime_finds_its_loop_and_says_why_its_frames_are_missing() {
     use crate::runtime_model::{Driven, RuntimeModel};
@@ -1417,10 +1300,6 @@ fn an_unreadable_runtime_finds_its_loop_and_says_why_its_frames_are_missing() {
     );
     assert_eq!(model.driven(&evaluating, None), Some(Driven::Interpreted));
 
-    // A loop that called its first instruction's function, which a build
-    // that tail-calls instructions' functions does, is one activation with
-    // it, which the function stands for, as it does where the loop is
-    // inlined into what enters it.
     let named = |name: &str| crate::StackFrame {
         symbol: evaluating
             .symbol
@@ -1443,9 +1322,6 @@ fn an_unreadable_runtime_finds_its_loop_and_says_why_its_frames_are_missing() {
     evaluating.symbol = None;
     assert_eq!(model.driven(&evaluating, None), None);
 
-    // By name, as a stack read outside the debugger is named: of the
-    // interpreter's machinery, only its loop is one, a part split off it
-    // as well, and what enters the loop is not.
     assert!(model.activation("_PyEval_EvalFrameDefault", None));
     assert!(model.activation("_PyEval_EvalFrameDefault.cold", Some("os_open.lto_priv.0")));
     assert!(!model.activation("_PyEval_EvalFrameDefault", Some("_TAIL_CALL_start_frame")));
@@ -1483,7 +1359,6 @@ fn reads_in_a_block_read_before_cost_nothing_and_bytes_in_a_block_not_mapped_who
             blocks: Some(&blocks),
         };
 
-        // Each read in the mapped block is paid for by its first.
         assert_eq!(
             reader.word(VirtualAddress::new(HEAP)),
             Ok(0x0707_0707_0707_0707)
@@ -1497,8 +1372,6 @@ fn reads_in_a_block_read_before_cost_nothing_and_bytes_in_a_block_not_mapped_who
             Ok(vec![7, 7])
         );
 
-        // Bytes reaching into a block that cannot be read are unreadable, and
-        // mapped bytes in such a block are read by themselves.
         assert!(reader.word(VirtualAddress::new(HEAP + block - 4)).is_err());
         assert_eq!(
             reader.word(VirtualAddress::new(alone)),
@@ -1507,14 +1380,9 @@ fn reads_in_a_block_read_before_cost_nothing_and_bytes_in_a_block_not_mapped_who
         assert!(reader.word(VirtualAddress::new(alone + 8)).is_err());
     }
 
-    // The mapped block; the next, which cannot be read, and the bytes
-    // reaching into it; the block of the bytes alone, and those bytes; and
-    // the bytes after them, in the same block.
     assert_eq!(inspection.usage().memory_reads, 6);
 }
 
-/// At the C ABI boundary, absent registers and another hook's reports are
-/// errors. The runtime needs no Python heap reads to decode a valid report.
 #[test]
 fn agent_reports_are_read_from_the_calling_threads_registers() {
     use crate::runtime_model::{HookEvent, HookPlace, RuntimeModel as _};
@@ -1536,7 +1404,6 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
         Ok(HookEvent::Breakpoint { numbers: vec![41] })
     );
 
-    // The native ABI reserves zero; the controller's site IDs begin at zero.
     registers.set(RSI, 1);
     assert_eq!(
         model.hook_event(&stop, hook, &registers),
@@ -1545,7 +1412,6 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
     registers.set(RSI, 0);
     assert!(model.hook_event(&stop, hook, &registers).is_err());
 
-    // Several hits of one event are an array the calling thread holds.
     let mut holding = Memory::default();
     holding.write(0x9000, 3, 8);
     holding.write(0x9008, 1, 8);
@@ -1559,7 +1425,6 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
         })
     );
 
-    // An unreadable array, and the reserved number zero, are errors.
     assert!(model.hook_event(&stop, hook, &registers).is_err());
     registers.set(RSI, 3);
     assert!(model.hook_event(&holding, hook, &registers).is_err());
@@ -1567,7 +1432,6 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
 
     registers.set(RSI, 42);
     registers.set(RDI, 2);
-    // Step numbers are shifted as breakpoint numbers are.
     assert_eq!(
         model.hook_event(&stop, hook, &registers),
         Ok(HookEvent::StepEnded { number: 41 })

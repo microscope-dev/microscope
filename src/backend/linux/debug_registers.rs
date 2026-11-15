@@ -1,51 +1,29 @@
-//! Pure x86-64 debug-register planning for hardware watchpoints.
-//!
-//! The planner maps watched byte ranges onto the four address slots of
-//! DR0-DR3 and their DR7 control bits, and decodes DR6 hit bits back to the
-//! owning watchpoints. It performs no ptrace operations; the Linux edge applies
-//! [`DebugRegisterPlan::programming_sequence`] to every traced thread.
-
 use std::collections::BTreeSet;
 
 use crate::WatchpointId;
 
-/// Address slots provided by DR0-DR3.
 pub const SLOT_COUNT: usize = 4;
 
-/// The widest aligned span one slot can cover on x86-64.
 pub const MAX_SLOT_BYTES: u64 = 8;
 
-/// The debug status register.
 pub const STATUS_REGISTER: usize = 6;
 
-/// The debug control register.
 pub const CONTROL_REGISTER: usize = 7;
 
-/// The architectural DR6 value with no recorded condition, which the kernel
-/// stores as an empty virtual status.
 pub const STATUS_IDLE: u64 = 0xffff_0ff0;
 
-/// DR6 B0-B3: which slots reported a hit.
 const STATUS_HITS: u64 = 0xf;
 
-// Each slot's R/W and LEN fields take four bits of DR7 from bit 16.
 const _: () = assert!(16 + 4 * SLOT_COUNT <= 32, "DR7 has no room for the slots");
 
-// Clearing DR6 must not read as a hit.
 const _: () = assert!(STATUS_IDLE & STATUS_HITS == 0, "idle DR6 reports a hit");
 
-/// The first address Linux refuses for user hardware breakpoints
-/// (`TASK_SIZE_MAX` with 4-level paging). A watched span must end at or
-/// before it.
 const USER_ADDRESS_LIMIT: u64 = 0x7fff_ffff_f000;
 
-/// The memory accesses one slot reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SlotAccess {
-    /// Data writes only.
     Write,
 
-    /// Data reads or writes; x86 has no read-only condition.
     ReadWrite,
 }
 
@@ -58,14 +36,12 @@ impl SlotAccess {
     }
 }
 
-/// One naturally aligned 1, 2, 4, or 8 byte span.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Chunk {
     pub address: u64,
     pub length: ChunkLength,
 }
 
-/// The lengths a debug register watches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ChunkLength {
     One = 1,
@@ -95,27 +71,17 @@ impl Chunk {
     }
 }
 
-/// Why a byte range cannot be covered by debug-register slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeError {
-    /// The range contains no bytes.
     Empty,
 
-    /// The range wraps the address space.
     Overflow,
 
-    /// The range reaches memory the kernel refuses to watch.
     OutsideUserSpace,
 
-    /// Covering the range exactly needs more slots than a thread has.
     TooLarge { required: u64 },
 }
 
-/// Splits `[address, address + length)` into the minimal exact set of
-/// naturally aligned chunks.
-///
-/// Taking the widest aligned chunk at each position is optimal: any cover must
-/// split at every alignment boundary the greedy choice splits at.
 pub fn split_range(address: u64, length: u64) -> Result<Vec<Chunk>, RangeError> {
     if length == 0 {
         return Err(RangeError::Empty);
@@ -149,8 +115,6 @@ pub fn split_range(address: u64, length: u64) -> Result<Vec<Chunk>, RangeError> 
     Ok(chunks)
 }
 
-/// The widest aligned chunk at `cursor`. Callers only ask while `cursor` is
-/// below `end`, so a single byte always fits.
 fn widest_chunk(cursor: u64, end: u64) -> ChunkLength {
     [ChunkLength::Eight, ChunkLength::Four, ChunkLength::Two]
         .into_iter()
@@ -158,7 +122,6 @@ fn widest_chunk(cursor: u64, end: u64) -> ChunkLength {
         .unwrap_or(ChunkLength::One)
 }
 
-/// Counts greedy chunks without materializing an arbitrarily large range.
 fn chunk_count(address: u64, end: u64) -> u64 {
     let mut count = 0;
     let mut cursor = address;
@@ -181,7 +144,6 @@ fn chunk_count(address: u64, end: u64) -> u64 {
     count
 }
 
-/// One programmed slot and the watchpoints sharing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Slot {
     pub chunk: Chunk,
@@ -189,20 +151,17 @@ pub struct Slot {
     pub owners: BTreeSet<WatchpointId>,
 }
 
-/// A watchpoint needs more free slots than remain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapacityError {
     pub required: usize,
     pub available: usize,
 }
 
-/// DR6 reported a hit in a slot this plan does not program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnknownSlots {
     pub status: u64,
 }
 
-/// The debug-register state every traced thread must carry.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DebugRegisterPlan {
     slots: [Option<Slot>; SLOT_COUNT],
@@ -221,10 +180,6 @@ impl DebugRegisterPlan {
         self.slots.iter().filter(|slot| slot.is_none()).count()
     }
 
-    /// Returns a plan that also arms `chunks` for `id`, sharing identical
-    /// slots and otherwise filling the lowest free indices. Writing an address
-    /// makes the kernel reserve that slot for the thread, so reusing low
-    /// indices keeps the reservation footprint minimal.
     pub fn with_watchpoint(
         &self,
         id: WatchpointId,
@@ -275,7 +230,6 @@ impl DebugRegisterPlan {
         Ok(next)
     }
 
-    /// Returns a plan without `id`, freeing every slot it no longer shares.
     pub fn without_watchpoint(&self, id: WatchpointId) -> Self {
         let mut next = self.clone();
         for entry in &mut next.slots {
@@ -294,8 +248,6 @@ impl DebugRegisterPlan {
         next
     }
 
-    /// Panics unless every slot is owned, aligned, and encoded in DR7 as
-    /// planned, and every free slot is clear there.
     fn check_invariants(&self) {
         let control = self.control();
         for (index, slot) in self.slots.iter().enumerate() {
@@ -328,7 +280,6 @@ impl DebugRegisterPlan {
         );
     }
 
-    /// The DR7 value arming every planned slot with a local enable bit.
     pub fn control(&self) -> u64 {
         self.slots
             .iter()
@@ -343,12 +294,6 @@ impl DebugRegisterPlan {
             })
     }
 
-    /// Ordered `(register, value)` writes that install this plan on a thread.
-    ///
-    /// DR7 is cleared first: the kernel validates a new address against the
-    /// slot's existing length bits even while the slot is disabled, so a
-    /// misaligned address after a wider previous use would be refused.
-    /// Addresses follow, then the final control word.
     pub fn programming_sequence(&self) -> Vec<(usize, u64)> {
         let mut writes = vec![(CONTROL_REGISTER, 0)];
         writes.extend(
@@ -365,8 +310,6 @@ impl DebugRegisterPlan {
         writes
     }
 
-    /// The watchpoints whose slots DR6 reports as hit. A hit in an
-    /// unprogrammed slot is never attributed to a guessed owner.
     pub fn owners_for_status(&self, status: u64) -> Result<BTreeSet<WatchpointId>, UnknownSlots> {
         let mut owners = BTreeSet::new();
         for (index, slot) in self.slots.iter().enumerate() {
@@ -382,7 +325,6 @@ impl DebugRegisterPlan {
     }
 }
 
-/// Whether DR6 records any slot hit.
 pub const fn status_has_hits(status: u64) -> bool {
     status & STATUS_HITS != 0
 }
@@ -451,8 +393,6 @@ pub fn fuzz(data: &[u8]) {
     assert_eq!(plan.control(), 0);
 }
 
-/// Panics unless `chunks` cover `[address, address + length)` exactly, in
-/// order, each naturally aligned.
 fn check_exact_cover(address: u64, length: u64, chunks: &[Chunk]) {
     let mut cursor = address;
     for chunk in chunks {
@@ -528,7 +468,6 @@ mod tests {
         }
     }
 
-    /// Brute-force minimal cover over aligned power-of-two chunks.
     fn optimal_chunks(address: u64, length: u64) -> u64 {
         let length = usize::try_from(length).expect("small test length");
         let mut best = vec![u64::MAX; length + 1];
@@ -632,7 +571,6 @@ mod tests {
             .with_watchpoint(WatchpointId::new(1), &[chunk(0x1000)], SlotAccess::Write)
             .unwrap();
 
-        // Observed DR7 readbacks after arming one and four 8-byte write slots.
         assert_eq!(plan.control(), 0x9_0001);
         for (id, address) in [(2, 0x1008), (3, 0x1010), (4, 0x1018)] {
             plan = plan
@@ -754,8 +692,6 @@ mod tests {
         assert!(!status_has_hits(STATUS_IDLE | 1 << 14));
     }
 
-    /// Applies a long deterministic pseudo-random sequence of arm, disarm,
-    /// and decode operations, checking every invariant after each one.
     #[test]
     fn random_operation_sequences_preserve_slot_ownership_invariants() {
         let mut state = 0x9e37_79b9_7f4a_7c15_u64;
@@ -778,7 +714,6 @@ mod tests {
                         continue;
                     }
 
-                    // Few distinct addresses so identical chunks are shared.
                     let address = 0x1000 + (next() % 24);
                     let length = 1 + next() % 12;
                     let access = if next() % 3 == 0 {

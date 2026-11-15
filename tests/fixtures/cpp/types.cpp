@@ -43,8 +43,8 @@ int main() {
     return inspect_types(value, &value, &value, &value, &recursive, &mutual) != 42;
 }
 
-// A static data member has no bytes in an instance. DWARF 4 describes it as
-// a member declaration, DWARF 5 as a variable.
+
+
 struct counted {
     static int instances;
     int value;
@@ -52,7 +52,7 @@ struct counted {
 int counted::instances = 1;
 counted counted_global{2};
 
-// GCC describes a variadic pack with DW_TAG_GNU_template_parameter_pack.
+
 template <typename... Types>
 struct packed_types {
     int count;

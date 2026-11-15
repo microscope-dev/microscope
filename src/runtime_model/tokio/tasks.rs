@@ -1,6 +1,3 @@
-//! Reading tokio's tasks at one stop: each runtime's list, shard by shard,
-//! then the blocking pools' closures, queued and running.
-
 use std::sync::Arc;
 
 use super::layout::{Flavor, Pool, Queues};
@@ -14,8 +11,6 @@ use crate::runtime_model::{
 
 use crate::{RecordedPlace, StackSegment, TaskState, ThreadId, VirtualAddress};
 
-/// One task of a list, checked: it belongs to the list, its vtable is a
-/// task's, and it links back to the task before it.
 #[derive(Debug, Clone, Copy)]
 struct Node {
     id: u64,
@@ -23,13 +18,9 @@ struct Node {
     next: VirtualAddress,
 }
 
-/// Where a page resumes within the runtimes' lists: the runtime's index,
-/// the shard, and the task with the task before it.
 type Resume = (usize, u64, Option<(VirtualAddress, VirtualAddress)>);
 
 impl TokioRuntime {
-    /// Fills a page from `cursor`: the runtimes' lists, then the blocking
-    /// pools' tasks.
     pub(super) fn page(
         &self,
         stop: &dyn RuntimeStop,
@@ -62,10 +53,6 @@ impl TokioRuntime {
         };
 
         if let Some((first, mut shard, mut node)) = resume {
-            // tokio numbers each list once in a process. Two runtimes whose
-            // lists claim one id are damage: only the first is listed, as
-            // `locate` finds a page's task in the first, so that the pages
-            // neither list a task twice nor come back to where they began.
             let list_id = |runtime| self.list(stop, runtime).ok().map(|list| list.id);
             for (index, &runtime) in census.runtimes.iter().enumerate().skip(first) {
                 if let Some(id) = list_id(runtime)
@@ -116,8 +103,6 @@ impl TokioRuntime {
         }
     }
 
-    /// Lists one runtime's tasks from a shard, at a task or the shard's
-    /// head, until the page is full, which it says.
     #[expect(clippy::too_many_lines, reason = "one walk over every shard")]
     fn list_page(
         &self,
@@ -142,7 +127,6 @@ impl TokioRuntime {
         let flavor = runtime.flavor.describe();
         let shard_start = (shard, node.is_some());
 
-        // A list read with no shard changing or damaged holds its count.
         let mut whole = true;
         let mut total = 0;
 
@@ -187,8 +171,6 @@ impl TokioRuntime {
                     break;
                 }
 
-                // tokio keeps each task in the shard its id picks, where
-                // a later page and a search by number look for it.
                 let found = self
                     .node(stop, tasks, &list, at, previous)
                     .and_then(|found| {
@@ -204,7 +186,6 @@ impl TokioRuntime {
                         }
                     });
                 match found {
-                    // A page ends only before a task the next can list.
                     Ok(_) if page.value.tasks.len() == limit => {
                         page.value.next = Some(Cursor::Node(at).encode());
                         return true;
@@ -220,8 +201,6 @@ impl TokioRuntime {
                         total += 1;
                     }
 
-                    // A shard being changed may disagree with itself
-                    // anywhere, which its gap already says.
                     Err(_) if changing => break,
                     Err(reason) => {
                         whole = false;
@@ -240,9 +219,6 @@ impl TokioRuntime {
             shard += 1;
         }
 
-        // A list one page reads whole holds its count. One that pages read
-        // in parts is not counted, which would read it all again, so that
-        // a page costs what its own tasks do.
         if whole && list.counted && shard_start == (0, false) && total != list.count {
             page.gaps.push(
                 format!(
@@ -256,7 +232,6 @@ impl TokioRuntime {
         false
     }
 
-    /// A shard's head, and whether its lock was held at the stop.
     fn shard(
         &self,
         stop: &dyn RuntimeStop,
@@ -264,7 +239,6 @@ impl TokioRuntime {
         list: &List,
         index: u64,
     ) -> Result<(VirtualAddress, bool), Arc<str>> {
-        // A set's one list is its thread's alone, behind no lock.
         if runtime.flavor == Flavor::Local {
             let head = records::pointer(stop, list.shards).ok_or_else(|| {
                 Arc::<str>::from(format!(
@@ -287,8 +261,6 @@ impl TokioRuntime {
         Ok((head, lock.is_held(state)))
     }
 
-    /// Reads the task at `header`, the task after `previous` in its shard,
-    /// or its head when `previous` is null.
     fn node(
         &self,
         stop: &dyn RuntimeStop,
@@ -329,7 +301,6 @@ impl TokioRuntime {
         })
     }
 
-    /// A task's checked vtable and where its trailer is.
     fn trailer(
         &self,
         stop: &dyn RuntimeStop,
@@ -347,8 +318,6 @@ impl TokioRuntime {
         Ok((vtable, header.wrapping_add(offset)))
     }
 
-    /// Where a page resumes at the task `header` a previous page ended
-    /// before, once the task is still in its runtime's list.
     fn locate(
         &self,
         stop: &dyn RuntimeStop,
@@ -382,8 +351,6 @@ impl TokioRuntime {
         Err(stale())
     }
 
-    /// The task after `previous` in a shard, or its head when `previous`
-    /// is null.
     fn follows(
         &self,
         stop: &dyn RuntimeStop,
@@ -402,8 +369,6 @@ impl TokioRuntime {
             .ok_or_else(|| format!("the task at {previous:#x} is unreadable").into())
     }
 
-    /// The task numbered `number` in a runtime's list, at `locator` when
-    /// that still holds it, or else in the shard its number picks.
     fn listed(
         &self,
         stop: &dyn RuntimeStop,
@@ -445,7 +410,6 @@ impl TokioRuntime {
         Err(format!("a shard holds more than its runtime's {} tasks", list.count).into())
     }
 
-    /// The task a reference names, as a page would list it.
     pub(super) fn find(
         &self,
         stop: &dyn RuntimeStop,
@@ -454,8 +418,6 @@ impl TokioRuntime {
     ) -> Result<Option<RuntimeTask>, Arc<str>> {
         let tasks = self.task_layout()?;
 
-        // A runtime whose list cannot be read may hold the task, so it is
-        // absent only once every list was read.
         let mut unreadable = None;
         for &runtime in &census.runtimes {
             match self.listed(stop, tasks, runtime, task.number, task.locator) {
@@ -489,13 +451,6 @@ impl TokioRuntime {
             })
     }
 
-    /// What a thread does for a runtime: a worker polling a listed task
-    /// runs it, as a thread running a set runs the set's task it polls,
-    /// and a pool thread runs its closure's task. A worker with no task,
-    /// polling only its own launch, and a pool thread waiting for a
-    /// closure, are the runtime's idle threads. A thread that never
-    /// entered a runtime, or blocks on one, is the program's own; so is
-    /// the thread a current-thread runtime blocks on, between its tasks.
     pub(super) fn activity(
         &self,
         stop: &dyn RuntimeStop,
@@ -503,7 +458,6 @@ impl TokioRuntime {
     ) -> Result<ThreadActivity, Arc<str>> {
         let context = self.context()?;
 
-        // A program whose sets cannot be read says so in its pages of tasks.
         let locals = self.locals().ok().flatten();
         let found = Self::thread_context(stop, context, locals, thread)?;
         if let Some(found) = found
@@ -543,9 +497,6 @@ impl TokioRuntime {
             stack: StackSegment::Task,
         };
 
-        // A pool thread runs its closure's task, as the blocking tasks list
-        // it. One that entered the runtime blocks on it, or is a worker
-        // whose launch has not yet set its scheduler.
         if !found.worker {
             return Ok(if found.entered { between } else { running });
         }
@@ -558,8 +509,6 @@ impl TokioRuntime {
         )
     }
 
-    /// The blocking pools' tasks: each runtime's queued closures, then
-    /// those threads run.
     fn blocking(
         &self,
         stop: &dyn RuntimeStop,
@@ -603,8 +552,6 @@ impl TokioRuntime {
             census
                 .threads
                 .iter()
-                // A pool's threads neither run a scheduler nor enter the
-                // runtime, as a thread blocking on it does.
                 .filter(|thread| thread.runtime.is_some() && !thread.worker && !thread.entered)
                 .filter_map(|thread| {
                     Some(RuntimeTask {
@@ -618,8 +565,6 @@ impl TokioRuntime {
         found
     }
 
-    /// A runtime's queued blocking tasks, and whether the pool's lock was
-    /// held at the stop.
     fn queued(
         &self,
         stop: &dyn RuntimeStop,
@@ -651,9 +596,6 @@ impl TokioRuntime {
                 shards,
             } => match &*choice.active(stop, inner.wrapping_add(*at))?.name {
                 "Locked" => vec![*locked],
-                // A sharded pool's workers take from every shard in turn,
-                // so the pool has no one order: its tasks are listed
-                // shard by shard, each shard in its own order.
                 "Sharded" => (0..*shards)
                     .map(|index| sharded.shifted(index.wrapping_mul(*stride)))
                     .collect::<Result<_, _>>()?,
@@ -700,9 +642,6 @@ impl TokioRuntime {
                 match entry {
                     Ok(entry) => queued.push(entry),
 
-                    // A thread stopped inside a push may have counted a
-                    // slot it has not yet written: the change the held
-                    // lock's gap reports.
                     Err(_) if changing => break,
                     Err(reason) => return Err(reason),
                 }
@@ -713,12 +652,9 @@ impl TokioRuntime {
     }
 }
 
-/// The longest path of a spawn location read.
 const MAX_PATH: u64 = 4096;
 
 impl TokioRuntime {
-    /// Where the program spawned the task whose header is at `header`, for
-    /// a build that records it.
     pub(super) fn spawned_at(
         &self,
         stop: &dyn RuntimeStop,
@@ -755,9 +691,6 @@ impl TokioRuntime {
 }
 
 impl TokioRuntime {
-    /// The task at `header` that a starter is starting, where it begins;
-    /// `None` for a task a starter that also schedules woken tasks has
-    /// polled before, which it is not starting.
     pub(super) fn started(
         &self,
         stop: &dyn RuntimeStop,
@@ -773,8 +706,6 @@ impl TokioRuntime {
         let (future, ty) = self.future(stop, header)?;
         let chain = futures::walk(self.image.as_ref(), stop, future, ty);
 
-        // A task that has not begun has a root coroutine that has not
-        // either; a woken one has run.
         if schedules && chain.end != ChainEnd::Unresumed {
             return Ok(None);
         }
@@ -795,8 +726,6 @@ impl TokioRuntime {
     }
 }
 
-/// A task as a page lists it, with nothing known of it but its number
-/// and where it is.
 const fn task(number: u64, locator: u64) -> RuntimeTask {
     RuntimeTask {
         number,
@@ -816,8 +745,6 @@ const fn task(number: u64, locator: u64) -> RuntimeTask {
     }
 }
 
-/// The runtime or set that holds a task, where the process has several,
-/// by its flavor and its list's number.
 fn label(census: &Census, runtime: Instance, list: u64) -> crate::runtime_model::TaskLabels {
     if census.runtimes.len() < 2 {
         return Vec::new();
@@ -829,8 +756,6 @@ fn label(census: &Census, runtime: Instance, list: u64) -> crate::runtime_model:
     )]
 }
 
-/// A task of a runtime's list, by its state: running on the thread that
-/// polls it, ready to be polled, suspended, or finished.
 fn owned_task(
     census: &Census,
     runtime: Instance,

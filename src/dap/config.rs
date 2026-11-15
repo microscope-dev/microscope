@@ -1,9 +1,3 @@
-//! Launch and attach configurations.
-//!
-//! Unknown keys, such as the `name`, `type`, and `__sessionId` that clients
-//! add, are ignored. Invalid values are reported with the path of the key
-//! that holds them.
-
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
@@ -16,7 +10,6 @@ use serde::Deserialize;
 use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
-/// How the session obtains its target.
 #[derive(Debug)]
 pub enum Start {
     Launch(Launch),
@@ -24,29 +17,20 @@ pub enum Start {
         process: ProcessId,
         executable: Option<PathBuf>,
 
-        /// The group member this session shows, which the adapter that
-        /// started the session hosts.
         member: Option<MemberRoute>,
     },
     Core(CoreDumpOptions),
 }
 
-/// Where a child session for a group's member connects, and which member
-/// it shows: what the adapter hosting the group puts in the configuration
-/// it asks the client to start.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MemberRoute {
-    /// The socket of the adapter that hosts the group.
     pub socket: PathBuf,
     pub number: microscope::MemberNumber,
 }
 
-/// The key of a configuration that names a [`MemberRoute`]; the editors
-/// route a session whose configuration has it to the socket it names.
 pub const MEMBER_KEY: &str = "__microscopeMember";
 
-/// A program to launch.
 #[derive(Debug, Clone)]
 pub struct Launch {
     pub program: PathBuf,
@@ -56,24 +40,19 @@ pub struct Launch {
     pub console: Console,
 }
 
-/// Where a launched program's standard streams go.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub enum Console {
-    /// The debug console, through the adapter.
     #[default]
     #[serde(rename = "internalConsole")]
     Internal,
 
-    /// A terminal in the client's window.
     #[serde(rename = "integratedTerminal")]
     Integrated,
 
-    /// A terminal in its own window.
     #[serde(rename = "externalTerminal")]
     External,
 }
 
-/// A validated launch or attach configuration.
 #[derive(Debug)]
 pub struct Configuration {
     pub start: Start,
@@ -81,45 +60,29 @@ pub struct Configuration {
     pub source_paths: SourcePathMap,
     pub syntax: AssemblySyntax,
 
-    /// Signal handling applied over the exception filters: each signal's
-    /// actions, as the console's `handle` command takes them.
     pub signals: Vec<(u64, Vec<String>)>,
 
-    /// View files to present values with, ahead of the project's and the
-    /// user's, and where the project's are: in `.microscope/views` under it.
     pub view_files: Vec<PathBuf>,
     pub working_directory: Option<PathBuf>,
 
-    /// Which processes the program starts are debugged too, each in a
-    /// child session.
     pub follow: microscope::FollowPolicy,
 
-    /// The settings a child session's configuration carries over.
     pub inherited: Map<String, Value>,
     pub threads: ThreadListing,
 
-    /// Where modules' separate debug files are found.
     pub debug_files: DebugFileOptions,
 
-    /// Whether steps stop in a language runtime's own code.
     pub step_into_runtime: bool,
 
-    /// The source files steps pass through, as `skipFiles` names them.
     pub step_skips: microscope::StepSkips,
 }
 
-/// What the client's threads are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThreadListing {
-    /// Whether a program with a runtime's tasks, such as Go's goroutines,
-    /// shows them as its threads, rather than its system threads.
     pub tasks: bool,
 
-    /// Whether the tasks a runtime runs for its own work are listed.
     pub runtime_tasks: bool,
 
-    /// The most tasks listed; an entry after them says how many more
-    /// there are.
     pub max_tasks: usize,
 }
 
@@ -140,10 +103,6 @@ enum Threads {
     System,
 }
 
-/// The keys of a configuration that a child session's carries over: how
-/// the session presents and handles a program, which a fork does not
-/// change, and the adapter's `type`, by which a client such as nvim-dap
-/// finds the adapter to start for the child.
 const INHERITED: [&str; 13] = [
     "type",
     "debugDirectories",
@@ -222,8 +181,6 @@ struct Arguments {
     skip_files: Vec<String>,
 }
 
-/// Which processes the program starts are debugged: a mode, or a table as
-/// the settings file's `[follow]`.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum FollowSetting {
@@ -238,7 +195,6 @@ enum Syntax {
     Att,
 }
 
-/// A process id: VS Code's `${command:pickProcess}` produces a string.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Pid {
@@ -246,7 +202,6 @@ enum Pid {
     Text(String),
 }
 
-/// One signal action or several.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Actions {
@@ -254,7 +209,6 @@ enum Actions {
     Many(Vec<String>),
 }
 
-/// Parses a `launch` request's configuration.
 pub fn launch(arguments: Value) -> Result<Configuration, String> {
     let inherited = inherited(&arguments, false);
     let parsed = parse::<Arguments>(arguments, "launch configuration")?;
@@ -289,7 +243,6 @@ pub fn launch(arguments: Value) -> Result<Configuration, String> {
     )
 }
 
-/// Parses an `attach` request's configuration: a process or a core dump.
 pub fn attach(arguments: Value) -> Result<Configuration, String> {
     let inherited = inherited(&arguments, true);
     let parsed = parse::<Arguments>(arguments, "attach configuration")?;
@@ -337,7 +290,6 @@ pub fn attach(arguments: Value) -> Result<Configuration, String> {
     common(parsed, start, inherited, "attach configuration")
 }
 
-/// Where a configuration's separate debug files are found.
 fn debug_files(parsed: &Arguments) -> DebugFileOptions {
     DebugFileOptions {
         directories: parsed.debug_directories.clone(),
@@ -346,8 +298,6 @@ fn debug_files(parsed: &Arguments) -> DebugFileOptions {
     }
 }
 
-/// The settings of `arguments` a child session carries over. An attach
-/// configuration's `program` names the executable of its children too.
 fn inherited(arguments: &Value, attach: bool) -> Map<String, Value> {
     let program = attach.then_some("program");
     INHERITED
@@ -407,8 +357,6 @@ fn common(
             ..crate::cli::config::Follow::default()
         },
         (Some(FollowSetting::Table(follow)), None) => follow,
-        // `followForks` is what `follow` was before processes were
-        // followed into the programs they execute.
         (None, Some(forks)) => crate::cli::config::Follow {
             mode: if forks {
                 crate::cli::config::FollowMode::All
@@ -452,7 +400,6 @@ fn common(
     })
 }
 
-/// Deserializes request arguments, naming the path of an invalid value.
 pub fn parse<T: DeserializeOwned>(arguments: Value, what: &str) -> Result<T, String> {
     serde_path_to_error::deserialize(arguments).map_err(|error| {
         let path = error.path().to_string();
@@ -464,8 +411,6 @@ pub fn parse<T: DeserializeOwned>(arguments: Value, what: &str) -> Result<T, Str
     })
 }
 
-/// Reads source path rules as `[["from", "to"], …]` or `{"from": "to", …}`,
-/// keeping their order: earlier rules are tried first.
 fn source_map<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<[String; 2]>, D::Error> {
     struct Rules;
 
@@ -537,7 +482,6 @@ mod tests {
         assert!(configuration.stop_on_entry);
         assert_eq!(configuration.syntax, AssemblySyntax::Att);
 
-        // Object rules keep their written order, not their sorted order.
         assert_eq!(
             configuration
                 .source_paths
@@ -662,9 +606,6 @@ mod tests {
         ));
     }
 
-    /// `follow` takes a mode or a table as the settings file's; the older
-    /// `followForks` maps onto it; and following is the default, as in the
-    /// command line.
     #[test]
     fn follow_takes_a_mode_a_table_or_the_older_follow_forks() {
         let follow = |extra: Value| {
@@ -708,7 +649,6 @@ mod tests {
         assert!(follow(json!({"follow": "some"})).is_err());
     }
 
-    /// The VS Code extension's manifest documents the configurations.
     fn manifest() -> Value {
         serde_json::from_str(include_str!("../../editors/vscode/package.json")).expect("manifest")
     }
@@ -724,7 +664,6 @@ mod tests {
                 .as_object()
                 .expect("properties");
             for (key, schema) in properties {
-                // A value of the wrong type must be refused at its key.
                 let wrong = if schema["type"] == "boolean" {
                     json!("yes")
                 } else {
@@ -771,8 +710,6 @@ mod tests {
         }
     }
 
-    /// Expands what VS Code would in a configuration's strings: a snippet's
-    /// quoting, escapes, and placeholders, and the variables it substitutes.
     fn expand(value: Value) -> Value {
         match value {
             Value::String(text) => {
@@ -798,7 +735,6 @@ mod tests {
         }
     }
 
-    /// Replaces each snippet placeholder, `${1:text}`, with its text.
     fn with_defaults(text: &str) -> String {
         let mut filled = String::new();
         let mut rest = text;

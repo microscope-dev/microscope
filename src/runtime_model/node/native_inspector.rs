@@ -54,8 +54,6 @@ pub(super) fn startup_pending(
     if handle == 0 || word(stop, handle)? != agent.get() {
         return Err("Node's startup async handle no longer belongs to the created agent".into());
     }
-    // Linux x86-64 UV_HANDLE_FIELDS + UV_ASYNC_PRIVATE_FIELDS (uv/unix.h).
-    // The fixture checks data=0, pending=120 and sizeof(uv_async_t)=128.
     let mut bytes = [0; 4];
     if !stop.read(
         crate::VirtualAddress::new(checked(handle, 120)?),
@@ -95,7 +93,6 @@ pub(super) fn server(
             .map(|index| word(stop, checked(begin, index * 8)?))
             .collect::<Result<Vec<_>, _>>()?
     } else {
-        // uv_handle_t's public UV_HANDLE_FIELDS starts with void* data.
         vec![word(stop, registry)?]
     };
     let mut found = None;
@@ -154,8 +151,6 @@ pub(super) fn message_matches(
     view: crate::VirtualAddress,
     expected: &[u8],
 ) -> Result<bool, Arc<str>> {
-    // v8-inspector.h's StringView is bool, size_t, then a pointer union.
-    // The x86-64 ABI layout is checked against each pinned V8 header.
     let mut is8 = [0];
     if !stop.read(view, &mut is8) {
         return Err("the inspector dispatch's StringView is unreadable".into());
@@ -186,9 +181,6 @@ pub(super) fn message_matches(
     })
 }
 
-/// Whether the `std::string` at `message`, which `MessageReceived` takes,
-/// holds exactly `expected`. Its mangled name's `__cxx11` tag gives
-/// libstdc++'s layout, the data pointer then the length, as `string` reads.
 pub(super) fn received_matches(
     stop: &dyn RuntimeStop,
     message: crate::VirtualAddress,

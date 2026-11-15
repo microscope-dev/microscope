@@ -1,6 +1,3 @@
-//! Stacks that continue from a thread's system stack onto a goroutine's
-//! own, across each of the runtime's stack switches.
-
 use microscope::{
     Backtrace, BreakpointSpec, CodeRole, Evaluation, ExecutionContext, Expression, FrameKind,
     InferiorState, ScalarValue, StackFrameId, StackSegment, StopContext, StopId, StopReason,
@@ -12,11 +9,8 @@ use crate::support::{self, Scenario};
 
 const BUILDS: [&str; 2] = ["stacks-go-o0", "stacks-go-o2"];
 
-/// The most stops a test passes over before the one it waits for.
 const MAX_STOPS: usize = 200;
 
-/// A backtrace's function names, grouped by the stack each run of frames
-/// is on, innermost first.
 fn segments(trace: &Backtrace) -> Vec<(StackSegment, Vec<String>)> {
     let mut segments: Vec<(StackSegment, Vec<String>)> = Vec::new();
     for frame in trace.frames.iter() {
@@ -33,9 +27,6 @@ fn segments(trace: &Backtrace) -> Vec<(StackSegment, Vec<String>)> {
     segments
 }
 
-/// Runs a fixture to a breakpoint on `function`, then on until `wanted`
-/// accepts the backtrace of a thread the breakpoint stopped. Threads that
-/// hit it together stop together, each with its own reason.
 async fn stop_in(
     fixture: &str,
     function: &str,
@@ -48,8 +39,6 @@ async fn stop_in(
     (scenario, trace)
 }
 
-/// From a breakpoint stop, resumes until `wanted` accepts the backtrace of
-/// a thread a breakpoint stopped.
 async fn stop_where(
     scenario: &mut Scenario,
     mut reason: StopReason,
@@ -57,7 +46,6 @@ async fn stop_where(
     wanted: impl Fn(&[(StackSegment, Vec<String>)]) -> bool,
 ) -> Backtrace {
     for _ in 0..MAX_STOPS {
-        // The program's own signals go on to it.
         if let StopReason::Exception(_) = reason {
             reason = scenario.resume_to_stop().await;
             continue;
@@ -145,9 +133,6 @@ async fn system_stack_calls_unwind_onto_their_goroutine() {
     }
 }
 
-/// With the world stopped, every thread's stack unwinds to its first
-/// frame, and a thread running the runtime's code for a goroutine goes on
-/// to the goroutine's stack.
 async fn check_every_thread(scenario: &mut Scenario, fixture: &str) {
     let snapshot = scenario.snapshot().await;
     let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {
@@ -171,9 +156,6 @@ async fn check_every_thread(scenario: &mut Scenario, fixture: &str) {
             .map(|(segment, _)| segment)
             .collect::<Vec<_>>();
 
-        // A stack moves outward only, from a signal stack to a system stack
-        // and from either to the task the thread runs, each once: runs of
-        // frames on one stack are already merged.
         let order = [
             StackSegment::Signal,
             StackSegment::System,
@@ -191,13 +173,9 @@ async fn check_every_thread(scenario: &mut Scenario, fixture: &str) {
 
         let last = match thread.activity.as_ref().expect(&context) {
             ThreadActivity::Task { .. } => StackSegment::Task,
-            // A thread `clone` just made has no g yet, and its stack
-            // begins where `clone` made it.
             ThreadActivity::Idle if innermost == Some("runtime.clone") => StackSegment::Thread,
-            // An idle thread runs the scheduler on its system stack.
             ThreadActivity::Idle => StackSegment::System,
             ThreadActivity::Unknown(reason) => panic!("{context}: {reason}"),
-            // Every thread of a Go program runs the runtime's scheduler.
             ThreadActivity::Outside => panic!("{context}: outside the runtime"),
         };
 
@@ -243,8 +221,6 @@ async fn a_growing_stack_unwinds_onto_its_goroutine() {
             "{context}"
         );
 
-        // The goroutine is in the prologue of the call that needed more
-        // stack, below every call before it.
         let (segment, task) = &found[1];
         assert_eq!(*segment, StackSegment::Task, "{context}");
         let calls = task.iter().take_while(|name| *name == "main.grow").count();
@@ -305,8 +281,6 @@ async fn a_thread_switching_to_a_goroutine_unwinds_on_its_system_stack() {
             panic!("{context}");
         };
 
-        // The scheduler has made the goroutine the thread's own before it
-        // switches to it.
         assert_eq!(*segment, StackSegment::System, "{context}");
         assert_eq!(names.first().map(String::as_str), Some("gogo"), "{context}");
         assert!(
@@ -318,10 +292,6 @@ async fn a_thread_switching_to_a_goroutine_unwinds_on_its_system_stack() {
     }
 }
 
-/// A goroutine that parks switches to the system stack, where the
-/// scheduler may then give the thread to another goroutine, as often to one
-/// that has never run. The goroutine that switched has left the thread, so
-/// its frames are not the thread's: the stack ends at the switch.
 #[tokio::test]
 async fn a_thread_given_to_another_goroutine_ends_where_the_last_switched() {
     for fixture in BUILDS {
@@ -348,8 +318,6 @@ async fn a_thread_given_to_another_goroutine_ends_where_the_last_switched() {
     }
 }
 
-/// The runtime reads the clock through the vDSO from the system stack, and
-/// keeps the goroutine's stack pointer in a register the vDSO preserves.
 #[tokio::test]
 async fn a_vdso_call_unwinds_onto_its_caller() {
     for fixture in BUILDS {
@@ -357,7 +325,6 @@ async fn a_vdso_call_unwinds_onto_its_caller() {
         let start = scenario.add_breakpoint("main.stats").await;
         scenario.run_to_stop().await;
 
-        // The program holds the vDSO's clock_gettime itself.
         let expression = Expression::parse("runtime.vdsoClockgettimeSym").expect("an expression");
         let clock = scenario
             .operation("vDSO clock", scenario.handle().evaluate(&expression))
@@ -382,7 +349,6 @@ async fn a_vdso_call_unwinds_onto_its_caller() {
             .await;
         let reason = scenario.resume_to_stop().await;
 
-        // A goroutine's call, not the scheduler's on an idle thread.
         let trace = stop_where(&mut scenario, reason, fixture, |segments| {
             segments.windows(2).any(|pair| {
                 pair[0].1.iter().any(|name| name == "runtime.nanotime1")
@@ -402,7 +368,6 @@ async fn a_vdso_call_unwinds_onto_its_caller() {
             })
             .collect::<Vec<_>>();
 
-        // The vDSO's frame has no function, and its caller's is named.
         assert_eq!(functions[0], None, "{context}");
         assert_eq!(functions[1], Some("runtime.nanotime1"), "{context}");
         assert!(functions.len() > 3, "{context}");
@@ -421,9 +386,6 @@ async fn a_vdso_call_unwinds_onto_its_caller() {
     }
 }
 
-/// Until a vDSO call has saved its stack pointer, the register that will
-/// hold it holds whatever its caller left there, and the frame is still
-/// on the stack it was called on.
 #[tokio::test]
 async fn a_vdso_call_unwinds_before_it_saves_its_stack_pointer() {
     for fixture in BUILDS {
@@ -445,14 +407,9 @@ async fn a_vdso_call_unwinds_before_it_saves_its_stack_pointer() {
     }
 }
 
-/// A signal's handler runs on the thread's signal stack and returns
-/// through the runtime's signal trampoline, above the frame the signal
-/// interrupted, whose registers the kernel saved in the signal frame.
 #[tokio::test]
 async fn a_signal_handler_unwinds_onto_the_frame_it_interrupted() {
     for fixture in BUILDS {
-        // The runtime's own signals, such as preemption's, may reach the
-        // handler first, even within `main.interrupt`; wait for its kill.
         let (scenario, trace) = stop_in(fixture, "runtime.sighandler", |segments| {
             segments
                 .iter()
@@ -487,8 +444,6 @@ async fn a_signal_handler_unwinds_onto_the_frame_it_interrupted() {
             "{context}"
         );
 
-        // The trampoline's instruction and the interrupted frame's are
-        // their own, not return addresses.
         let trampoline = found[0].1.len() - 1;
 
         for frame in &trace.frames[trampoline..=trampoline + 1] {
@@ -501,9 +456,6 @@ async fn a_signal_handler_unwinds_onto_the_frame_it_interrupted() {
     }
 }
 
-/// A signal that interrupts a thread on its system stack unwinds through
-/// its handler and the system stack onto the goroutine that switched there,
-/// although the thread runs the signal's goroutine, not the system one.
 #[tokio::test]
 async fn a_signal_on_the_system_stack_unwinds_onto_its_goroutine() {
     for fixture in BUILDS {
@@ -573,8 +525,6 @@ async fn a_signal_on_the_system_stack_unwinds_onto_its_goroutine() {
     }
 }
 
-/// The runtime turns a fault into a call to `sigpanic` from the faulting
-/// instruction, which the caller's frame names exactly.
 #[tokio::test]
 async fn a_fault_unwinds_onto_the_instruction_that_faulted() {
     let line = support::source_line("tests/fixtures/go/stacks/main.go", "// the fault");
@@ -612,9 +562,6 @@ fn names(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| (*name).to_owned()).collect()
 }
 
-/// A pointer below its frame's stack pointer points at memory only the
-/// frame's callees use, which they may have freed: the pointer is stale,
-/// and what it pointed at is not shown as if it were still there.
 #[tokio::test]
 async fn a_pointer_below_its_frames_stack_pointer_is_stale() {
     for fixture in BUILDS {

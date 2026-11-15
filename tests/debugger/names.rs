@@ -1,5 +1,3 @@
-//! Go function locations, written the ways Go programmers write them.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -13,9 +11,6 @@ use crate::support::{Scenario, source_line};
 const MAIN: &str = "tests/fixtures/go/names/main.go";
 const SUM: &str = "tests/fixtures/go/names/sum.go";
 
-/// What a location names: the functions its breakpoint must stop in, each
-/// at least once, the file they are in, and for the fixture's own code the
-/// marker of the lines between which every stop must be.
 struct Named {
     location: &'static str,
     functions: &'static [&'static str],
@@ -24,22 +19,18 @@ struct Named {
 }
 
 const NAMED: &[Named] = &[
-    // A generic function's name binds every instantiation.
     Named {
         location: "main.Sum",
         functions: &["main.Sum[go.shape.int]", "main.Sum[go.shape.float64]"],
         file: "names/sum.go",
         lines: Some((SUM, "Sum")),
     },
-    // A method, unqualified in the stopless session.
     Named {
         location: "(*Counter).Add",
         functions: &["main.(*Counter).Add"],
         file: "names/main.go",
         lines: Some((MAIN, "Add")),
     },
-    // A receiver written without its pointer still names its method, here
-    // a generic type's, in each instantiation.
     Named {
         location: "main.Stack.Push",
         functions: &[
@@ -49,8 +40,6 @@ const NAMED: &[Named] = &[
         file: "names/main.go",
         lines: Some((MAIN, "Push")),
     },
-    // And a pointer receiver names a value receiver's method, not the
-    // wrapper the compiler generates for pointers.
     Named {
         location: "main.(*Celsius).Fahrenheit",
         functions: &["main.Celsius.Fahrenheit"],
@@ -63,8 +52,6 @@ const NAMED: &[Named] = &[
         file: "names/main.go",
         lines: Some((MAIN, "closure")),
     },
-    // A package by its name, here unlike its path's last element, and
-    // inlined into main by an optimized build.
     Named {
         location: "rand.IntN",
         functions: &["math/rand/v2.IntN"],
@@ -77,14 +64,12 @@ const NAMED: &[Named] = &[
         file: "encoding/hex/hex.go",
         lines: None,
     },
-    // A package by its path, with a pointer method's receiver plain.
     Named {
         location: "encoding/hex.dumper.Close",
         functions: &["encoding/hex.(*dumper).Close"],
         file: "encoding/hex/hex.go",
         lines: None,
     },
-    // The runtime's function, never the ABI wrapper sharing its name.
     Named {
         location: "runtime.newstack",
         functions: &["runtime.newstack"],
@@ -128,8 +113,6 @@ async fn go_function_locations_stop_in_every_function_they_name() {
 
         for _ in 0..1000 {
             match reason {
-                // Each thread that hit a breakpoint at once with the one the
-                // stop reports keeps its own hit as its reason.
                 StopReason::Breakpoint { .. } => {
                     for (thread, hits) in thread_hits(&scenario).await {
                         let (function, file, line) = stopped_frame(&scenario, thread).await;
@@ -159,7 +142,6 @@ async fn go_function_locations_stop_in_every_function_they_name() {
                     reason = scenario.resume_to_stop().await;
                 }
 
-                // The runtime's preemption signal.
                 StopReason::Exception(ref exception) if exception.code == 23 => {
                     reason = scenario.resume_to_stop().await;
                 }
@@ -196,7 +178,6 @@ async fn go_locations_that_name_too_much_or_nothing_say_why() {
     let fixture = "names-go-o0";
     let mut scenario = Scenario::launch(fixture);
 
-    // Without a stop, a bare name is looked up in every package.
     match scenario
         .handle()
         .add_breakpoint(BreakpointSpec::Function("main".into()))
@@ -209,7 +190,6 @@ async fn go_locations_that_name_too_much_or_nothing_say_why() {
         other => panic!("bare main was not ambiguous: {other:?}"),
     }
 
-    // A file narrows a name to the functions declared in it.
     let file_function = |path: &str, function: &str| BreakpointSpec::FileFunction {
         path: path.into(),
         function: function.into(),
@@ -230,8 +210,6 @@ async fn go_locations_that_name_too_much_or_nothing_say_why() {
         assert_eq!(breakpoint.locations.len(), 2, "sum.go:{function}");
     }
 
-    // A line without a statement is refused with its neighbours that have
-    // one, never moved to either.
     let line = source_line(MAIN, "names: no statement");
 
     match scenario
@@ -255,8 +233,6 @@ async fn go_locations_that_name_too_much_or_nothing_say_why() {
         other => panic!("a line without a statement was not refused: {other:?}"),
     }
 
-    // At a stop, a bare name is first looked up in the stopped frame's
-    // package, and the breakpoint keeps the name it resolved to.
     scenario.add_breakpoint("main.apply").await;
 
     assert!(matches!(
@@ -273,8 +249,6 @@ async fn go_locations_that_name_too_much_or_nothing_say_why() {
     scenario.shutdown().await;
 }
 
-/// Each stopped thread whose own reason is a breakpoint hit, with its
-/// hits.
 async fn thread_hits(scenario: &Scenario) -> Vec<(ThreadId, Arc<[BreakpointHit]>)> {
     scenario
         .operation("snapshot", scenario.handle().snapshot())
@@ -290,7 +264,6 @@ async fn thread_hits(scenario: &Scenario) -> Vec<(ThreadId, Arc<[BreakpointHit]>
         .collect()
 }
 
-/// The function, file, and line `thread` is stopped at.
 async fn stopped_frame(scenario: &Scenario, thread: ThreadId) -> (String, String, u64) {
     let snapshot = scenario
         .operation("snapshot", scenario.handle().snapshot())

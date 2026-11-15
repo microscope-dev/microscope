@@ -1,7 +1,3 @@
-// A call tree as the server sends it, in columns, and the geometry of its
-// flame graph. Nodes are in depth-first order, each node's children
-// largest first, so a subtree is the run of nodes from it to its `end`.
-
 import { assert } from "../assert";
 import type { ProfileKey, ProfileTree } from "../protocol";
 
@@ -9,26 +5,23 @@ export interface CallTree {
   count: number;
   own: Float64Array;
   total: Float64Array;
-  /** Indices into `keys`. */
+
   key: Uint32Array;
   depth: Uint32Array;
-  /** The caller's node, or -1 for a root. */
+
   parent: Int32Array;
-  /** One past each node's last descendant. */
+
   end: Uint32Array;
   keys: ProfileKey[];
-  /** The weight of every sample the query kept. */
+
   weight: number;
   samples: number;
-  /** For a diff, each node's weights in the base, and the base's. */
+
   baseOwn: Float64Array | null;
   baseTotal: Float64Array | null;
   baseWeight: number | null;
 }
 
-/** Decodes an answer and the columns sent before it: own and total
- * weights as little-endian `f64`s, then keys and depths as `u32`s, and
- * for a diff, the base's own and total weights as `f64`s. */
 export function decodeTree(answer: ProfileTree, payload: Uint8Array | undefined): CallTree {
   const count = answer.nodes;
   const bytes = payload ?? new Uint8Array();
@@ -49,7 +42,7 @@ export function decodeTree(answer: ProfileTree, payload: Uint8Array | undefined)
   }
   const parent = new Int32Array(count);
   const end = new Uint32Array(count);
-  // The open ancestors of the node being read, outermost first.
+
   const open: number[] = [];
   for (let node = 0; node < count; node += 1) {
     const at = depth[node] ?? 0;
@@ -92,7 +85,6 @@ export function nameOf(tree: CallTree, node: number): string {
   return tree.keys[tree.key[node] ?? 0]?.name ?? "";
 }
 
-/** A node's path of names from its root. */
 export function pathOf(tree: CallTree, node: number): string[] {
   assert(node >= 0 && node < tree.count, `node ${node} is outside a tree of ${tree.count}`);
   const path: string[] = [];
@@ -106,7 +98,6 @@ export function pathOf(tree: CallTree, node: number): string[] {
   return path.toReversed();
 }
 
-/** The node a path of names from a root reaches, or null. */
 export function findPath(tree: CallTree, path: readonly string[]): number | null {
   let node = -1;
   let from = 0;
@@ -134,8 +125,6 @@ export function findPath(tree: CallTree, path: readonly string[]): number | null
   return node < 0 ? null : node;
 }
 
-/** One node's rectangle: its row, and where it spans across, as
- * fractions of the width. */
 export interface Rect {
   node: number;
   depth: number;
@@ -143,12 +132,6 @@ export interface Rect {
   width: number;
 }
 
-/**
- * The flame graph, roots on top, zoomed to `zoom`: the zoomed node spans
- * the whole width with its subtree below it, its ancestors span it above,
- * and nothing else is drawn. Rectangles narrower than `narrowest` are
- * left out, and so are their subtrees, which are narrower still.
- */
 export function layout(tree: CallTree, zoom: number | null, narrowest: number): Rect[] {
   assert(narrowest >= 0, `narrowest rectangle ${narrowest} is negative`);
   const rects: Rect[] = [];
@@ -174,8 +157,7 @@ export function layout(tree: CallTree, zoom: number | null, narrowest: number): 
     const total = tree.total[zoom] ?? 0;
     scale = total > 0 ? 1 / total : 0;
   }
-  // The next free x of each depth: siblings follow each other, and a
-  // node's first child starts where it does.
+
   const next: number[] = [];
   for (let node = from; node < to;) {
     const depth = tree.depth[node] ?? 0;
@@ -193,7 +175,6 @@ export function layout(tree: CallTree, zoom: number | null, narrowest: number): 
   return rects;
 }
 
-/** Which rectangle holds a point, by row and fraction across. */
 export function hit(rects: readonly Rect[], depth: number, x: number): Rect | null {
   for (const rect of rects) {
     if (rect.depth === depth && x >= rect.x && x < rect.x + rect.width) {
@@ -203,8 +184,6 @@ export function hit(rects: readonly Rect[], depth: number, x: number): Rect | nu
   return null;
 }
 
-/** The nodes whose names `marks` accepts, and the weight under them,
- * counting nested matches once. */
 export function matching(tree: CallTree, marks: (name: string) => boolean) {
   const nodes = new Set<number>();
   let weight = 0;
@@ -224,11 +203,9 @@ export function matching(tree: CallTree, marks: (name: string) => boolean) {
   return { nodes, weight };
 }
 
-/** `open` with every caller of each of `nodes` opened too, so that each
- * of them shows. */
 export function revealed(tree: CallTree, open: Set<number>, nodes: Iterable<number>): Set<number> {
   const next = new Set(open);
-  // Callers already walked from an earlier node, whose callers are open.
+
   const walked = new Set<number>();
   for (const node of nodes) {
     for (let at = tree.parent[node] ?? -1; at >= 0 && !walked.has(at); at = tree.parent[at] ?? -1) {

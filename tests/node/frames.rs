@@ -1,6 +1,3 @@
-//! JavaScript frames as microscope names them, held to what V8's own call
-//! sites reported at the same checkpoint.
-
 use microscope::{Backtrace, SourceLanguage, StackFrame, StackSegment, ThreadId, VariableKind};
 
 use crate::native::check_thread;
@@ -8,8 +5,6 @@ use crate::session::{MATRIX, NodeSession};
 use crate::support::Scenario;
 use crate::truth::{Frame, Thread, check_threads, threads};
 
-/// The JavaScript frames of a backtrace's stack, innermost first, past
-/// those `truth.js` and Node's `fs`, which the fixture parks in, run.
 pub fn javascript(trace: &Backtrace) -> Vec<Frame> {
     javascript_recorded(trace)
         .into_iter()
@@ -17,9 +12,6 @@ pub fn javascript(trace: &Backtrace) -> Vec<Frame> {
         .collect()
 }
 
-/// The JavaScript frames of a backtrace's stack as [`javascript`] gives
-/// them, each with the problem that kept its place unknown, if one did. A
-/// frame with a problem is never taken for V8's own.
 pub fn javascript_recorded(trace: &Backtrace) -> Vec<(Frame, Option<String>)> {
     recorded(
         trace
@@ -35,9 +27,6 @@ pub fn javascript_recorded(trace: &Backtrace) -> Vec<(Frame, Option<String>)> {
     .collect()
 }
 
-/// The functions of a backtrace suspended in await below its stack,
-/// innermost first, each with the problem that kept its place unknown, if
-/// one did.
 pub fn awaiting_recorded(trace: &Backtrace) -> Vec<(Frame, Option<String>)> {
     recorded(
         trace
@@ -48,7 +37,6 @@ pub fn awaiting_recorded(trace: &Backtrace) -> Vec<(Frame, Option<String>)> {
     .collect()
 }
 
-/// The functions of a backtrace suspended in await below its stack.
 pub fn awaiting(trace: &Backtrace) -> Vec<Frame> {
     awaiting_recorded(trace)
         .into_iter()
@@ -56,8 +44,6 @@ pub fn awaiting(trace: &Backtrace) -> Vec<Frame> {
         .collect()
 }
 
-/// The JavaScript frames among `frames`, as V8 would report them, each
-/// with its problem.
 fn recorded<'a>(
     frames: impl Iterator<Item = &'a StackFrame>,
 ) -> impl Iterator<Item = (Frame, Option<String>)> {
@@ -86,7 +72,6 @@ fn recorded<'a>(
         })
 }
 
-/// Each reported thread as microscope reads it at the stop.
 pub async fn observed(scenario: &Scenario, reported: &[Thread]) -> Vec<Thread> {
     let mut observed = Vec::new();
     for thread in reported {
@@ -111,10 +96,6 @@ pub async fn observed(scenario: &Scenario, reported: &[Thread]) -> Vec<Thread> {
     observed
 }
 
-/// On every build, the frames of an ES module and of the TypeScript module
-/// it imports, which V8 names by percent-encoded `file:` URLs, are at the
-/// paths, lines, and columns V8 reported, and each is in its own language;
-/// a module's bindings keep their scope beside a frame's own locals.
 #[tokio::test]
 async fn module_frames_are_at_the_paths_their_urls_name() {
     let mut lies = Vec::new();
@@ -151,7 +132,6 @@ async fn module_frames_are_at_the_paths_their_urls_name() {
             lies.push(format!("{}: languages {languages:?}", session.context()));
         }
 
-        // Module bindings keep their scope beside the frame's own locals.
         let printer = reported.iter().find(|t| t.printer).expect("the printer");
         crate::values::select_function(&session, printer.native, "settle").await;
         let names = ["entries", "label"];
@@ -167,10 +147,6 @@ async fn module_frames_are_at_the_paths_their_urls_name() {
     assert_truthful(&lies);
 }
 
-/// On every build, the frames of `tiers.js` in each tier the build runs
-/// (interpreted, Sparkplug, Maglev, Turbofan, inlined, deoptimized, and
-/// entered on a loop) are the ones V8 reported, the inlined ones included,
-/// and the stack unwinds natively through the code each compiler made.
 #[tokio::test]
 async fn frames_of_every_tier_are_the_ones_v8_reported() {
     let mut lies = Vec::new();
@@ -186,8 +162,6 @@ async fn frames_of_every_tier_are_the_ones_v8_reported() {
             .expect("the printer")
             .native;
         crate::values::optimized_frames_show_no_stale_registers(&session, printer_native).await;
-        // The tier is what makes each frame's reading differ, not a fact
-        // a backtrace reports.
         for frame in reported.iter_mut().flat_map(|thread| &mut thread.frames) {
             frame.tier = None;
         }
@@ -196,9 +170,6 @@ async fn frames_of_every_tier_are_the_ones_v8_reported() {
             lies.push(format!("{}: {lie}", session.context()));
         }
 
-        // Sparkplug's and Turbofan's frames run compiled code on every
-        // build, which no module's file holds; Maglev's and OSR's too,
-        // where the build runs them. The stack unwinds through them all.
         let scenario = &session.scenario;
         let modules = scenario
             .operation("modules", scenario.handle().loaded_modules())
@@ -222,12 +193,8 @@ async fn frames_of_every_tier_are_the_ones_v8_reported() {
     assert_truthful(&lies);
 }
 
-/// What N1 does not read yet, each as text a lie about it contains and
-/// why. Every other lie fails a test; these are printed, and leave with the
-/// work that ends them.
 const GAPS: &[(&[&str], &str)] = &[];
 
-/// Fails on any lie but the known gaps', which it prints.
 pub fn assert_truthful(lies: &[String]) {
     let (known, unknown): (Vec<_>, Vec<_>) = lies.iter().partition(|lie| {
         GAPS.iter()

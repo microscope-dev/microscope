@@ -1,15 +1,9 @@
-// A session whose server is the test: it sees each request and answers
-// when it chooses, so tests can hold an answer back.
-
 import { vi } from "vitest";
 
 import type { TransportHandlers } from "../src/connection";
 import { type ErrorKind, PROTOCOL_VERSION, type ServerMessage } from "../src/protocol";
 import { createSession, type Session } from "../src/store";
 
-/** How often a test checks for what it waits on. vi.waitFor's default of 50ms
- * cost every test at least one interval, since the page connects a tick after
- * it starts. */
 export const POLL = { interval: 2 };
 
 export interface Asked {
@@ -20,16 +14,15 @@ export interface Asked {
 
 export interface FakeServer {
   session: Session;
-  /** Every request so far, in order. */
+
   requests: Asked[];
-  /** Waits for the next request `matches` accepts that is not yet answered. */
+
   next(method: string): Promise<Asked>;
   answer(request: Asked, result: unknown): void;
-  /** Answers a request with an error, as the server refuses one. */
+
   refuse(request: Asked, kind: ErrorKind, message: string): void;
   send(message: ServerMessage): void;
-  /** Calls `listener` with each request from now on, a tick after it is sent,
-   * as a server that answers by itself would see it. */
+
   onRequest(listener: (request: Asked) => void): void;
 }
 

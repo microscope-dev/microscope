@@ -1,12 +1,12 @@
 microscope-views 1
 
-# GCC's libstdc++. Verified against gcc 15.2 and clang 21.1.8 with
-# libstdc++ 15, by tests/fixtures/cpp/containers.cpp, in the C++11 and
-# copy-on-write ABIs, in debug mode, linked statically, and with clang's
-# -gsimple-template-names.
 
-# std::string and its other characters, in the C++11 ABI: a pointer and a
-# length, with short strings in the object's own buffer.
+
+
+
+
+
+
 view c++ std::basic_string<C, _, _> {
     let local = _M_dataplus._M_p == &_M_local_buf[0]
     check local ? _M_string_length < len(_M_local_buf) : _M_string_length <= _M_allocated_capacity
@@ -14,10 +14,10 @@ view c++ std::basic_string<C, _, _> {
     field capacity = local ? len(_M_local_buf) - 1 : _M_allocated_capacity
 }
 
-# The old ABI's copy-on-write string (_GLIBCXX_USE_CXX11_ABI=0). Its length
-# and capacity are in a header just before its characters, which its debug
-# information does not describe: _M_length, _M_capacity, and _M_refcount,
-# three words in all since GCC 3.
+
+
+
+
 view c++ std::basic_string<C, _, _> {
     let characters = _M_dataplus._M_p
     let length = ((usize*)characters)[-3]
@@ -31,7 +31,7 @@ view c++ std::basic_string_view<C, _> {
     show text(_M_str, _M_len)
 }
 
-# std::vector<bool> holds bits, which this view does not bind to.
+
 view c++ std::vector<T, _> {
     let begin = _M_impl._M_start
     let end = _M_impl._M_finish
@@ -41,7 +41,7 @@ view c++ std::vector<T, _> {
     field capacity = storage_end - begin
 }
 
-# An empty std::array has no element array, in libstdc++ or libc++.
+
 view c++ std::array<T, 0> {
     show sequence(0) for i in range(0) => i
 }
@@ -50,16 +50,16 @@ view c++ std::array<T, N> {
     show sequence(N) for i in range(N) => _M_elems[i]
 }
 
-# A span of dynamic extent stores its size; one of fixed extent is its
-# extent.
+
+
 view c++ std::span<T, E> {
     let size = _M_extent._M_extent_value or E
     show sequence(size) for i in range(size) => _M_ptr[i]
 }
 
-# The ordered containers are red-black trees: _M_header's parent is the
-# root, and each node's value is in its _M_storage, an aligned buffer that
-# follows the node's links.
+
+
+
 view c++ std::map<K, V, _, _> {
     type Value = arg(typeof(_M_t), 1)
     type Node = std::_Rb_tree_node<Value>
@@ -92,8 +92,8 @@ view c++ std::multiset<K, _, _> {
         => *(Value*)&((Node*)x)->_M_storage
 }
 
-# The unordered containers keep every node on one list from
-# _M_before_begin; the node type is the one their allocator allocates.
+
+
 view c++ std::unordered_map<K, V, _, _, _> {
     type Value = arg(typeof(_M_h), 1)
     type Node = arg(typeof(_M_h._M_alloc._M_obj), 0)
@@ -122,8 +122,8 @@ view c++ std::unordered_multiset<K, _, _, _> {
         => *(Value*)&((Node*)x)->_M_storage
 }
 
-# A list is a ring through its own _M_node, which holds no element. Under
-# _GLIBCXX_DEBUG, the node types are in std::__cxx1998.
+
+
 view c++ std::list<T, _> {
     type Node = std::_List_node<T> or std::__cxx1998::_List_node<T>
     let sentinel = &_M_impl._M_node
@@ -132,7 +132,7 @@ view c++ std::list<T, _> {
         => *(T*)&((Node*)x)->_M_storage
 }
 
-# The old ABI's list keeps no count.
+
 view c++ std::list<T, _> {
     type Node = std::_List_node<T> or std::__cxx1998::_List_node<T>
     let sentinel = &_M_impl._M_node
@@ -140,15 +140,15 @@ view c++ std::list<T, _> {
         => *(T*)&((Node*)x)->_M_storage
 }
 
-# A forward list keeps no count; its last node links to nothing.
+
 view c++ std::forward_list<T, _> {
     type Node = std::_Fwd_list_node<T> or std::__cxx1998::_Fwd_list_node<T>
     show sequence(_) for x in list(_M_impl._M_head._M_next, n => n->_M_next)
         => *(T*)&((Node*)x)->_M_storage
 }
 
-# A deque's elements are in blocks of equal size, which its start
-# iterator's bounds measure; _M_node points into the map of blocks.
+
+
 view c++ std::deque<T, _> {
     let start = _M_impl._M_start
     let finish = _M_impl._M_finish
@@ -161,8 +161,8 @@ view c++ std::deque<T, _> {
     show sequence(size) for i in range(size) => nodes[(skipped + i) / block][(skipped + i) % block]
 }
 
-# A unique_ptr's pointer is the first element of the tuple that holds it
-# and its deleter. Arrays, unique_ptr<T[]>, have no size to show.
+
+
 view c++ std::unique_ptr<T, _> {
     check sizeof(T) > 0
     type Pointer = arg(typeof(_M_t._M_t), 0)
@@ -171,8 +171,8 @@ view c++ std::unique_ptr<T, _> {
     show if pointer == 0 { empty("nullptr") } else { value(*pointer) }
 }
 
-# A shared_ptr's control block counts its owners and, while it has any,
-# one weak reference for all of them.
+
+
 view c++ std::shared_ptr<T> {
     check sizeof(T) > 0
     let counts = _M_refcount._M_pi
@@ -182,7 +182,7 @@ view c++ std::shared_ptr<T> {
     field weak = counts == 0 ? 0 : counts->_M_weak_count - (strong > 0 ? 1 : 0)
 }
 
-# A weak_ptr whose owners are gone points at a destroyed object.
+
 view c++ std::weak_ptr<T> {
     check sizeof(T) > 0
     let counts = _M_refcount._M_pi
@@ -202,8 +202,8 @@ view c++ std::optional<T> {
     show if _M_payload._M_engaged { value(_M_payload._M_payload._M_value) } else { empty("nullopt") }
 }
 
-# Every alternative is at the start of the union _M_u; _M_index says which
-# one it holds, or all ones when it holds none.
+
+
 view c++ std::variant {
     type Index = typeof(_M_index)
     show if _M_index == (Index)-1 {
@@ -213,9 +213,9 @@ view c++ std::variant {
     }
 }
 
-# A tuple is a chain of _Tuple_impl bases, the Nth holding element N in its
-# _Head_base<N, T> base. These views name tuples of up to six elements. An
-# empty tuple holds nothing, in libstdc++ or libc++.
+
+
+
 view c++ std::tuple<> {
     show record {}
 }
@@ -287,16 +287,16 @@ view c++ std::tuple<A, B, C, D, E, F> {
     }
 }
 
-# A pair's two members, without the empty base libstdc++ gives it. The
-# standard names a pair's members, so this view presents libc++'s too. A
-# pair is a tuple, so a map keyed by pairs is indexed as `m[1, 2]`.
+
+
+
 view c++ std::pair<A, B> {
     show tuple { first = first, second = second }
 }
 
-# The adaptors present the containers they adapt, whose member the
-# standard names c, in either library: a stack from its bottom, a queue
-# from its front, and a priority queue in its heap's order, largest first.
+
+
+
 view c++ std::stack<T, _> {
     show value(c)
 }
@@ -309,8 +309,8 @@ view c++ std::priority_queue<T, _, _> {
     show value(c)
 }
 
-# std::vector<bool> packs its bools into words: an iterator is a word and
-# a bit in it, and the vector runs from _M_start to _M_finish.
+
+
 view c++ std::vector<bool, _> {
     let words = _M_impl._M_start._M_p
     let bits = sizeof(*words) * 8
@@ -322,9 +322,9 @@ view c++ std::vector<bool, _> {
     field capacity = (_M_impl._M_end_of_storage - words) * bits
 }
 
-# A bitset is the positions of the bits it sets. Its words, one or an
-# array of them, are 64 bits on the targets microscope supports; each is read
-# once.
+
+
+
 view c++ std::bitset<N> {
     let words = (u64*)&_M_w
     check sizeof(_M_w) % 8 == 0
@@ -337,7 +337,7 @@ view c++ std::initializer_list<T> {
     show sequence(_M_len) for i in range(_M_len) => _M_array[i]
 }
 
-# A flat map keeps its keys and its values in two vectors, in order.
+
 view c++ std::flat_map<K, V, _, _, _> {
     let keys = _M_cont.keys._M_impl._M_start
     let values = _M_cont.values._M_impl._M_start
@@ -351,9 +351,9 @@ view c++ std::flat_set<K, _, _> {
     show sequence(_M_cont._M_impl._M_finish - keys) for i in range(_M_cont._M_impl._M_finish - keys) => keys[i]
 }
 
-# A duration is a count of its period, written as Go writes durations
-# where the period is one of seconds' that microscope writes. Durations of
-# other periods, and of floats, show as stored.
+
+
+
 view c++ std::chrono::duration<_, std::ratio<1, 1000000000>> {
     show value(__r)
     format self as duration(ns)
@@ -384,8 +384,8 @@ view c++ std::chrono::duration<_, std::ratio<3600, 1>> {
     format self as duration(s)
 }
 
-# The system clock counts nanoseconds from the Unix epoch, shown as the UTC
-# time it is; another clock's time is how long after its own epoch it is.
+
+
 view c++ std::chrono::time_point<std::chrono::system_clock, std::chrono::duration<_, std::ratio<1, 1000000000>>> {
     show value(__d.__r)
     format self as time(ns)
@@ -395,8 +395,8 @@ view c++ std::chrono::time_point<_, _> {
     show value(__d)
 }
 
-# An atomic is the value it holds: an integer's in its base, a bool's and
-# a pointer's in a member, and a float's in a base of its own.
+
+
 view c++ std::atomic<T> {
     let held = _M_i or _M_base._M_i or _M_b._M_p or _M_fp
     show value(held)
@@ -414,13 +414,13 @@ view c++ std::filesystem::path {
     show value(_M_pathname)
 }
 
-# A function with a target is the function that calls it, whose name says
-# what the target is.
+
+
 view c++ std::function<_> {
     show if _M_manager == null { empty("empty") } else { value(_M_invoker) }
 }
 
-# A mutex is the C library's, which glibc.views presents.
+
 view c++ std::mutex {
     show value(_M_mutex)
 }
@@ -429,12 +429,12 @@ view c++ std::recursive_mutex {
     show value(_M_mutex)
 }
 
-# A thread id is the thread's pthread_t, or 0 for no thread.
+
 view c++ std::thread::id {
     show if _M_thread == 0 { empty("no thread") } else { value(_M_thread) }
 }
 
-# An any with a value has a manager for its type, whose name says the type.
+
 view c++ std::any {
     show if _M_manager == null { empty("empty") } else { value(_M_manager) }
 }

@@ -66,9 +66,6 @@ fn bench_smoke_checks_the_nix_corpus_without_host_worker_or_cache_settings() {
     assert!(!scratch.path().join("cache").exists());
 }
 
-/// `record --symbols later` keeps frames as addresses. `report` gives
-/// them the lines this host's files hold and notes the modules it cannot,
-/// and `symbolize` writes in what a debug directory holds.
 #[test]
 fn symbolize_writes_in_symbols_a_recording_left_for_later() {
     let scratch = support::ScratchDir::new("cli-symbolize");
@@ -125,10 +122,6 @@ fn symbolize_writes_in_symbols_a_recording_left_for_later() {
     assert_in_order(&named, &["breakpoint_target", "main"]);
 }
 
-/// Without the BPF engine's privileges, as the tests run, the preset's
-/// level of system calls steps down to none: the recording goes on, says
-/// why in one line, and keeps why in the capture. A level asked for
-/// refuses, as does a filter that does not parse.
 #[test]
 fn a_recording_without_bpf_records_no_calls_unless_they_were_asked_for() {
     let scratch = support::ScratchDir::new("cli-record-unprivileged");
@@ -212,7 +205,6 @@ fn a_recording_without_bpf_records_no_calls_unless_they_were_asked_for() {
     assert!(said.contains("ptrace cannot count"), "{said}");
 }
 
-/// A profile of the probes fixture's zones, in `scratch`.
 fn record_zones(scratch: &support::ScratchDir) -> PathBuf {
     let mut command = Command::new(fixture("build/test-programs/probes"));
     command.arg("zones").stdout(Stdio::null());
@@ -226,10 +218,6 @@ fn record_zones(scratch: &support::ScratchDir) -> PathBuf {
     profile
 }
 
-/// The report lists what the program said, in time order with its thread,
-/// and when each thread's outermost zones began and ended: the main
-/// thread's three rounds, each a label holding zones, and the worker's one
-/// zone around its steps.
 #[test]
 fn report_lists_the_programs_messages_and_each_threads_zones() {
     let scratch = support::ScratchDir::new("cli-messages");
@@ -307,9 +295,6 @@ fn report_lists_the_programs_messages_and_each_threads_zones() {
     }
 }
 
-/// `microscope record` of the probes fixture with `arguments`, while the
-/// test holds the debug-information load of the module named `held`: the
-/// running recording, and the program's output.
 fn record_probes_held(
     scratch: &support::ScratchDir,
     held: &str,
@@ -320,9 +305,6 @@ fn record_probes_held(
     record_held(scratch, held, &program)
 }
 
-/// `microscope record` of `program`, with its arguments and environment,
-/// while the test holds the debug-information load of the module named
-/// `held`: the running recording, and the program's output.
 fn record_held(
     scratch: &support::ScratchDir,
     held: &str,
@@ -352,8 +334,6 @@ fn record_held(
     (child, stdout)
 }
 
-/// Fails, with what microscope said, if a recording left a program's
-/// instrumentation unread, as it says as the recording ends.
 fn assert_probes_read(recorded: &Output) {
     let stderr = String::from_utf8_lossy(&recorded.stderr);
     assert!(
@@ -363,7 +343,6 @@ fn assert_probes_read(recorded: &Output) {
     );
 }
 
-/// The flake's CPython `version`.
 fn cpython(version: &str) -> PathBuf {
     PathBuf::from(
         std::env::var_os("MICROSCOPE_CPYTHON").expect("MICROSCOPE_CPYTHON names the interpreters"),
@@ -372,7 +351,6 @@ fn cpython(version: &str) -> PathBuf {
     .join("python")
 }
 
-/// The next line the program printed, which must be there.
 fn next_line(output: &mut BufReader<std::process::ChildStdout>) -> String {
     let mut line = String::new();
     output.read_line(&mut line).expect("read the program");
@@ -380,8 +358,6 @@ fn next_line(output: &mut BufReader<std::process::ChildStdout>) -> String {
     line.trim_end().to_owned()
 }
 
-/// Lets the held load go once the program has exited, then reports the
-/// recording: what microscope said as it ended, and the profile's report.
 fn release_held_after_exit(
     scratch: &support::ScratchDir,
     held: &str,
@@ -405,11 +381,6 @@ fn release_held_after_exit(
     (stderr, report)
 }
 
-/// A program that exits before microscope found its instrumentation lost
-/// what it recorded, and the recording says so as it ends and in its
-/// report, rather than showing no zones. Here microscope is busy loading
-/// the interpreter, mapped before the library that holds the probes, as a
-/// cold load of a large one keeps it.
 #[test]
 fn a_program_that_exits_before_its_instrumentation_is_read_is_reported() {
     let scratch = support::ScratchDir::new("cli-probes-unread");
@@ -440,9 +411,6 @@ fn a_program_that_exits_before_its_instrumentation_is_read_is_reported() {
     assert!(report.contains(&said), "{report}");
 }
 
-/// A program that exits while microscope is busy, after its exit has
-/// waited as long as it does, wrote records microscope never read, and the
-/// recording says how long before its exit it last read them.
 #[test]
 fn a_program_that_exits_long_after_its_last_read_is_reported() {
     let scratch = support::ScratchDir::new("cli-probes-unread-tail");
@@ -486,10 +454,6 @@ fn a_program_that_exits_long_after_its_last_read_is_reported() {
     assert!(report.contains(&said), "{report}");
 }
 
-/// microscope reads a program's instrumentation before its debug
-/// information loads: the program is found while the load of its own
-/// module is held, and once that load and the program go on, every zone is
-/// read.
 #[test]
 fn a_program_is_found_before_its_debug_information_loads() {
     let scratch = support::ScratchDir::new("cli-probes-found-early");
@@ -502,7 +466,6 @@ fn a_program_is_found_before_its_debug_information_loads() {
     let (mut child, mut output) =
         record_probes_held(&scratch, "probes", &["late".as_ref(), library.as_os_str()]);
 
-    // The program says its pid once found.
     assert!(next_line(&mut output).starts_with("PID "));
     assert!(
         scratch.path().join("probes.hold").exists(),
@@ -526,9 +489,6 @@ fn a_program_is_found_before_its_debug_information_loads() {
     assert!(report.contains("in 2 zones from 2 sites."), "{report}");
 }
 
-/// report's reshaping flags apply in the order given, a bare flag among
-/// them: merging children and then collapsing cycles leaves visit calling
-/// work, while collapsing first keeps children. Neither moves the root.
 #[test]
 fn report_reshapes_stacks_in_the_order_the_flags_are_given() {
     let scratch = support::ScratchDir::new("cli-reshapes");
@@ -544,7 +504,6 @@ fn report_reshapes_stacks_in_the_order_the_flags_are_given() {
         .expect("run microscope record");
     assert!(recorded.status.success(), "{recorded:?}");
     let profile = profile.to_string_lossy();
-    // Each tree row's total and name, indented by depth.
     let tree = |flags: &[&str]| -> Vec<(String, String)> {
         let mut arguments = vec!["report", &*profile, "--tree", "--min-percent", "5"];
         arguments.extend_from_slice(flags);
@@ -558,7 +517,6 @@ fn report_reshapes_stacks_in_the_order_the_flags_are_given() {
             })
             .collect()
     };
-    // Each row's path below main, as `visit/children/work`, in a set.
     let under_main = |rows: Vec<(String, String)>| -> std::collections::BTreeSet<String> {
         let mut stack: Vec<(usize, String)> = Vec::new();
         let mut paths = std::collections::BTreeSet::new();
@@ -619,9 +577,6 @@ fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(name)
 }
 
-/// A microscope command that reads the tests' settings file rather than the
-/// developer's, so that neither theirs nor their locale can change a test's
-/// outcome.
 fn microscope_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_microscope"));
     command.env(
@@ -631,7 +586,6 @@ fn microscope_command() -> Command {
     command
 }
 
-/// Runs microscope in the repository with no standard input.
 fn microscope(arguments: &[&str]) -> Output {
     microscope_command()
         .args(arguments)
@@ -641,7 +595,6 @@ fn microscope(arguments: &[&str]) -> Output {
         .expect("run microscope")
 }
 
-/// Runs `commands` in batch mode after the other `arguments`.
 fn batch_output(arguments: &[&str], commands: &[&str]) -> Output {
     let mut all = vec!["--batch"];
     for command in commands {
@@ -652,14 +605,10 @@ fn batch_output(arguments: &[&str], commands: &[&str]) -> Output {
     microscope(&all)
 }
 
-/// Runs `commands` in batch mode and returns the output of the session,
-/// which must succeed.
 fn batch(arguments: &[&str], commands: &[&str]) -> String {
     assert_success(batch_output(arguments, commands))
 }
 
-/// Runs `commands` through microscope's standard input, which reports each
-/// failed command and carries on, and returns stdout and stderr.
 fn piped(arguments: &[&str], commands: &[&str]) -> (String, String) {
     let output = piped_output(arguments, commands);
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -711,7 +660,6 @@ fn assert_no_sgr(output: &str) {
     );
 }
 
-/// Asserts each expected text appears, in order, after the previous one.
 fn assert_in_order(output: &str, expected: &[&str]) {
     let mut rest = output;
     for text in expected {
@@ -722,8 +670,6 @@ fn assert_in_order(output: &str, expected: &[&str]) {
     }
 }
 
-/// Returns the index of the first output line at or after `from` that
-/// satisfies `predicate`.
 fn line_index(lines: &[&str], from: usize, predicate: impl Fn(&str) -> bool) -> usize {
     lines[from..]
         .iter()
@@ -755,23 +701,14 @@ fn frames_line(needle: &str) -> usize {
         + 1
 }
 
-/// Returns the state letter of a live process, or `None` once it is gone.
 fn process_state(pid: u32) -> Option<char> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
 
-    // The command name may contain anything, so the state follows its last
-    // closing parenthesis.
     stat.rsplit_once(')')?.1.trim_start().chars().next()
 }
 
-/// The harness's deadline for anything a test waits to observe. It bounds
-/// a hung session, never a wait a passing test makes: loading a large
-/// program, such as a tokio fixture, takes seconds on a loaded machine.
 const DEADLINE: Duration = Duration::from_secs(30);
 
-/// A microscope process whose output a test reads as it arrives. It is killed
-/// if the test ends first, which also kills an inferior it launched or attached
-/// to, since microscope traces with `PTRACE_O_EXITKILL`.
 struct Microscope {
     child: Child,
     stdout: mpsc::Receiver<String>,
@@ -780,7 +717,6 @@ struct Microscope {
 }
 
 impl Microscope {
-    /// Starts microscope with piped standard streams.
     fn spawn(command: &mut Command) -> Self {
         let mut child = command
             .stdin(Stdio::piped())
@@ -830,7 +766,6 @@ impl Microscope {
         drop(self.child.stdin.take());
     }
 
-    /// Reads standard output until a line satisfies `predicate`.
     fn line(&mut self, what: &str, predicate: impl Fn(&str) -> bool) -> String {
         let deadline = Instant::now() + DEADLINE;
         loop {
@@ -851,7 +786,6 @@ impl Microscope {
         }
     }
 
-    /// Waits for microscope to exit and returns everything it printed.
     fn finish(mut self) -> std::process::Output {
         let mut status = None;
         support::wait_until("microscope exits", || {
@@ -1065,10 +999,6 @@ fn command_line_errors_explain_themselves() {
     }
 }
 
-/// A panic that ends the controller releases an attached process as a
-/// detach would, whether the panic finds it stopped or running: no trap
-/// of a breakpoint and no watchpoint is left to kill it, and it runs on to
-/// its usual exit. Development builds panic on request.
 #[test]
 fn a_controller_panic_releases_an_attached_process_unharmed() {
     for (after, command) in [("backtrace", "backtrace"), ("continue", "continue")] {
@@ -1092,13 +1022,6 @@ fn a_controller_panic_releases_an_attached_process_unharmed() {
     }
 }
 
-/// A panic that ends the waiter releases an attached process as a detach
-/// would, though no controller hears of a stop again. Development builds
-/// panic the waiter on request as it routes the next status: here, a
-/// thread's stop at the breakpoint, which the kernel won't report again,
-/// so the release must still rewind that thread over the trap. Its many
-/// threads all hit the trap at once, so a release that misses any stop
-/// leaves a thread to die of the trap or run past it mid-instruction.
 #[test]
 fn a_waiter_panic_releases_an_attached_process_unharmed() {
     let mut target =
@@ -1117,8 +1040,6 @@ fn a_waiter_panic_releases_an_attached_process_unharmed() {
         line.starts_with("breakpoint 1 set at attach_breakpoint")
     });
 
-    // The attach stopped the fixture; once continued, it sleeps in its
-    // read until released.
     let pid = u32::try_from(process).expect("PID fits u32");
     support::wait_until("the attached process runs", || {
         process_state(pid) == Some('S')
@@ -1139,10 +1060,6 @@ fn a_waiter_panic_releases_an_attached_process_unharmed() {
     assert_eq!(target.wait().code(), Some(23), "{stderr}");
 }
 
-/// SIGTERM, as `kill` and systemd send it, and SIGHUP, as a dropped SSH
-/// session sends it, end the session as `quit` does, whether the signal
-/// finds the attached process stopped or running: no trap is left to kill
-/// it, and it runs on to its usual exit.
 #[test]
 fn termination_signals_release_an_attached_process_unharmed() {
     for signal in [Signal::SIGTERM, Signal::SIGHUP] {
@@ -1164,8 +1081,6 @@ fn termination_signals_release_an_attached_process_unharmed() {
                 line.starts_with("breakpoint 1 set at attach_breakpoint")
             });
 
-            // The attach stopped the fixture; once continued, it sleeps in
-            // its read until released.
             if running {
                 microscope.send("continue\n");
                 let pid = u32::try_from(process).expect("PID fits u32");
@@ -1191,11 +1106,6 @@ fn termination_signals_release_an_attached_process_unharmed() {
     }
 }
 
-/// A panic in the CLI's own code ends the session as `quit` would, so an
-/// attached process is released with no trap left in it. Development
-/// builds panic on request once the process runs. Its many threads must
-/// each be stopped before a trap can be lifted, so a release cut short
-/// leaves the trap for one of them to hit.
 #[test]
 fn a_cli_panic_releases_an_attached_process_unharmed() {
     let mut target =
@@ -1218,9 +1128,6 @@ fn a_cli_panic_releases_an_attached_process_unharmed() {
     assert_eq!(output.status.code(), Some(1), "{stderr}");
 }
 
-/// `--attach NAME` attaches to the one process of that name, or that runs a
-/// script of that name, and refuses to choose among several, listing each
-/// with what matched.
 #[test]
 fn attach_by_name_needs_exactly_one_process_of_that_name() {
     let directory = support::ScratchDir::new("cli-attach-name");
@@ -1233,7 +1140,6 @@ fn attach_by_name_needs_exactly_one_process_of_that_name() {
     target.release();
     assert_eq!(target.wait().code(), Some(23));
 
-    // A script argument names a process as `node server.js` is named.
     let script = format!("app-{}.js", std::process::id());
     let mut runner = support::ExternalProcess::spawn_command(
         Command::new(fixture("build/test-programs/attach")).arg(directory.path().join(&script)),
@@ -1266,8 +1172,6 @@ fn attach_by_name_needs_exactly_one_process_of_that_name() {
 
 #[test]
 fn color_follows_the_choice_and_the_environment_on_both_streams() {
-    // Redirected output is plain unless color is forced, and `never` wins
-    // over the environment.
     assert_no_sgr(&batch(&[BASIC], &["help"]));
     let colored_help = assert_success(microscope(&["--color", "always", "-h"]));
     assert!(colored_help.contains("\x1b["), "{colored_help:?}");
@@ -1294,7 +1198,6 @@ fn color_follows_the_choice_and_the_environment_on_both_streams() {
     let stderr = String::from_utf8_lossy(&forced.stderr).into_owned();
     assert!(!forced.status.success(), "{stdout}");
 
-    // Help styles command names and aliases, and nothing else.
     assert!(stdout.contains("\x1b[1m\x1b[94mbreak\x1b[0m"), "{stdout:?}");
     assert!(stdout.contains("\x1b[94mb\x1b[0m"), "{stdout:?}");
     assert!(
@@ -1306,8 +1209,6 @@ fn color_follows_the_choice_and_the_environment_on_both_streams() {
         assert!(!stdout.contains(&format!("\x1b[2m{plain}")), "{stdout:?}");
     }
 
-    // Source metadata is styled, and the source's keywords, but not its
-    // names.
     let current = stdout
         .lines()
         .find(|line| line.contains("uint64_t breakpoint_target("))
@@ -1322,15 +1223,12 @@ fn color_follows_the_choice_and_the_environment_on_both_streams() {
         "the keyword was not highlighted: {current:?}"
     );
 
-    // A failed command ends the batch, naming the command.
     assert!(
         stderr.contains("\x1b[1m\x1b[91merror\x1b[0m: --eval #4: unknown command 'invalid'"),
         "{stderr:?}"
     );
 }
 
-/// Unlike plain piped input, `--batch` on standard input ends the session
-/// at the first failing command.
 #[test]
 fn batch_mode_streams_commands_from_stdin() {
     let output = piped_output(
@@ -1368,8 +1266,6 @@ fn command_errors_show_the_usage_or_the_reason() {
         &[
             "run ignored",
             "break",
-            // Only `info symbol` and `info view` take an argument, and they
-            // require one.
             "info symbol",
             "info view",
             "info breakpoints 0x10",
@@ -1446,8 +1342,6 @@ fn help_lists_every_command_and_details_one_by_name_or_alias() {
     }
 }
 
-/// Each other thread a stop finds at a breakpoint gets a line of its own
-/// after the stop's, naming its hit and place, as the threads list has it.
 #[test]
 fn every_co_hit_prints_a_line_of_its_own() {
     let mut commands = vec!["break contended", "run", "threads"];
@@ -1457,8 +1351,6 @@ fn every_co_hit_prints_a_line_of_its_own() {
 
     let stdout = batch(&["build/test-programs/hit-count-threads"], &commands);
 
-    // Every worker is running when the first reaches the breakpoint, and
-    // the stop names the one it is in.
     let header = stdout
         .lines()
         .find(|line| line.starts_with("stopped at breakpoint 1 (hit 1) in contended at "))
@@ -1504,13 +1396,9 @@ fn every_co_hit_prints_a_line_of_its_own() {
         co_hits += reported.len();
     }
 
-    // The workers call `contended` together, so many of their hits come
-    // at the same stop.
     assert!(co_hits > 0, "{stdout}");
 }
 
-/// A thread whose runtime cannot be read says so, and why, rather than
-/// looking like one that runs nothing.
 #[test]
 fn threads_say_when_what_they_run_is_unknown() {
     let stdout = batch(
@@ -1535,10 +1423,6 @@ fn threads_say_when_what_they_run_is_unknown() {
     }
 }
 
-/// tokio's tasks are listed by number, whatever order its lists keep
-/// them in, each saying what it does and the thread it is on, and where
-/// a suspended one waits in the program's own code, past tokio's, and for
-/// what: the first task spawned waits for a message, the second sleeps.
 #[test]
 fn tokio_tasks_are_listed_by_number() {
     let stdout = batch(
@@ -1577,9 +1461,6 @@ fn tokio_tasks_are_listed_by_number() {
     }
 }
 
-/// `task` alone shows the selected task and where it was created: the
-/// call that created a goroutine, and the line tokio recorded spawning a
-/// task from, in a build with `tokio_unstable`.
 #[test]
 fn a_task_says_where_it_was_created() {
     let created = |program: &str, commands: &[&str], source: &str| {
@@ -1616,8 +1497,6 @@ fn a_task_says_where_it_was_created() {
     assert!(creating.trim_start().starts_with("go "), "{creating}");
 }
 
-/// A task's panic stop says where it panicked, on which thread, and in
-/// which task, then the message, and shows the source there.
 #[test]
 fn a_task_panic_says_where_and_in_which_task() {
     let stdout = batch(
@@ -1637,7 +1516,6 @@ fn a_task_panic_says_where_and_in_which_task() {
         "{stdout}"
     );
 
-    // The task is the one the thread list puts on the thread.
     let (thread, task) = header
         .rsplit_once("[thread ")
         .and_then(|(_, rest)| rest.split_once(" of "))
@@ -1658,8 +1536,6 @@ fn a_task_panic_says_where_and_in_which_task() {
     );
 }
 
-/// `finish` from a task's own async function says the task finished, and
-/// what the function's last poll returned, named for the function.
 #[test]
 fn finishing_a_tasks_function_says_the_task_finished() {
     let source = "tests/fixtures/rust/tokio/steps/src/main.rs";
@@ -1688,10 +1564,6 @@ fn finishing_a_tasks_function_says_the_task_finished() {
     );
 }
 
-/// A backtrace folds each run of a runtime's frames into a line that says
-/// which frames it holds, and everything past the dispatch that polls the
-/// task; `bt -r` shows every frame, with its whole name. Frame numbers
-/// count every frame either way, and the selected frame is always shown.
 #[test]
 fn a_runtimes_frames_fold_into_a_line() {
     let stdout = batch(
@@ -1699,13 +1571,11 @@ fn a_runtimes_frames_fold_into_a_line() {
         &["break task_reached", "run", "bt", "bt -r", "frame 20", "bt"],
     );
 
-    // Each backtrace ends saying where unwinding stopped.
     let [folded, raw, selected, _] = stdout.split("\nunwind stopped").collect::<Vec<_>>()[..]
     else {
         panic!("three backtraces: {stdout}");
     };
 
-    // `frame` shows the frame it selects before its source.
     let selected = selected
         .split_once("=> ")
         .and_then(|(_, rest)| rest.split_once('\n'))
@@ -1744,7 +1614,6 @@ fn a_runtimes_frames_fold_into_a_line() {
     );
     assert_eq!(folded.len(), 5, "{stdout}");
 
-    // The selected frame stands alone, with its neighbours folded around it.
     assert!(
         selected.iter().any(|line| line.starts_with("#20 ")),
         "{stdout}"
@@ -1756,9 +1625,6 @@ fn a_runtimes_frames_fold_into_a_line() {
     assert!(selected.len() < raw.len(), "{stdout}");
 }
 
-/// The backtrace of a thread that blocks on a future shows the future's
-/// awaits before the frame that drives it, under a line saying so; where
-/// optimization lost the future, a line says why instead.
 #[test]
 fn a_thread_blocked_on_a_future_shows_its_awaits() {
     let backtrace = |program: &str, mode: &str| {
@@ -1834,7 +1700,6 @@ fn batch_mode_sets_skips_and_amends_breakpoint_hit_conditions() {
         &[
             "breakpoint 1 set at counted at tests/fixtures/c/hit-counts.c:11, stops at hits ==3\n",
             "breakpoint 2 set at 2 locations, stops at hits %4\n",
-            // The fourth hit is the second inline site of the second call.
             "stopped at breakpoint 2 (hit 4) in ",
             "1   +      2  counted at tests/fixtures/c/hit-counts.c:11  hits ==3\n",
             "2   +      4  shared, 2 locations                          hits %4\n",
@@ -1852,13 +1717,10 @@ fn batch_mode_sets_skips_and_amends_breakpoint_hit_conditions() {
     );
 }
 
-/// Runs `commands` in batch mode with the settings file `settings`.
 fn batch_with_settings(settings: &str, arguments: &[&str], commands: &[&str]) -> String {
     let directory = support::ScratchDir::new("cli-settings");
     let path = directory.path().join("config.toml");
 
-    // How long a run took depends on the machine's load, as the settings
-    // every other test uses say.
     let settings = match settings.split_once("[stop]\n") {
         Some((before, after)) => format!("{before}[stop]\nelapsed = false\n{after}"),
         None => format!("{settings}\n[stop]\nelapsed = false\n"),
@@ -1918,7 +1780,6 @@ fn c_base_types_cast_in_a_program_that_describes_none() {
     );
 }
 
-/// A pointer into another module names the function there.
 #[test]
 fn function_pointers_name_the_function_they_enter_in_another_module() {
     let shared = batch(
@@ -1935,9 +1796,6 @@ fn function_pointers_name_the_function_they_enter_in_another_module() {
     );
 }
 
-/// Function pointers' types read as gdb reads them, declarators and all,
-/// and their values name the function they enter, compared over GCC's and
-/// Clang's debug information.
 #[test]
 fn function_types_read_as_gdb_reads_them() {
     let compact = |text: &str| text.split_whitespace().collect::<String>();
@@ -1976,8 +1834,6 @@ fn function_types_read_as_gdb_reads_them() {
                 .and_then(|value| value.rsplit_once(" <"))
                 .map_or("", |(_, function)| function);
 
-            // gdb names a pointer to data by its symbol too; microscope names
-            // only the functions pointers to code enter.
             let expected = if name == "unary_pointer" {
                 ""
             } else {
@@ -1989,10 +1845,6 @@ fn function_types_read_as_gdb_reads_them() {
     }
 }
 
-/// mold and lld describe no PLT stub with call-frame information. A stub
-/// pushes nothing before its jump through the GOT, or a slot index on a
-/// lazy path, so the backtrace counts what the stub pushed before the stop,
-/// at its first instruction and past it.
 #[test]
 fn backtraces_cross_plt_stubs_without_call_frame_information() {
     let output = batch(
@@ -2017,9 +1869,6 @@ fn backtraces_cross_plt_stubs_without_call_frame_information() {
     );
 }
 
-/// glibc defines `timer_create` twice, the old one as
-/// `timer_create@GLIBC_2.2.5`, whose version names it apart. A breakpoint
-/// on the plain name takes both, and one on the versioned name the old.
 #[test]
 fn symbol_versions_tell_apart_definitions_of_one_name() {
     let output = batch(
@@ -2032,8 +1881,6 @@ fn symbol_versions_tell_apart_definitions_of_one_name() {
         ],
     );
 
-    // The default version keeps the plain name, and the old one is named
-    // by its version alone.
     let location = |name: &str| {
         output
             .lines()
@@ -2094,9 +1941,6 @@ fn pending_rust_function_names_offer_loaded_spellings_without_selecting_them() {
     assert!(!output.contains("breakpoint 2"), "{output}");
 }
 
-/// Code without debug information is broken at by its symbols: a function
-/// the program imports waits for its library, and C++ names are read
-/// demangled, with or without their scopes and parameters.
 #[test]
 fn functions_without_debug_information_are_found_by_their_symbols() {
     const MEASURE: &str = "build/test-programs/measure-gcc-nodebug";
@@ -2121,7 +1965,6 @@ fn functions_without_debug_information_are_found_by_their_symbols() {
         ],
     );
 
-    // A name nothing imports or defines is a mistake, not a wait.
     let refused = batch_output(&[MEASURE], &["break printff"]);
     assert!(!refused.status.success());
     assert!(
@@ -2164,7 +2007,6 @@ fn pp_lays_values_out_to_the_width_and_print_formats_combine() {
         "{wide}"
     );
 
-    // With no expression, every local of the frame, expanded.
     assert!(
         wide.contains("(bit_fields) bits = {negative = -3, first = 5, second = 42}\n"),
         "{wide}"
@@ -2211,7 +2053,6 @@ fn pp_lays_values_out_to_the_width_and_print_formats_combine() {
         ],
     );
 
-    // `[print]` chooses what `print` does, and its formats override it.
     let configured = batch_with_settings(
         "[print]\nstyle = \"pretty\"\nradix = \"hexadecimal\"\nwidth = 40\n",
         &records,
@@ -2233,9 +2074,6 @@ fn pp_lays_values_out_to_the_width_and_print_formats_combine() {
     );
 }
 
-/// `catch` lists the exceptions runtimes report and whether each stops,
-/// and chooses whether one does: a Go panic the program recovers from
-/// stops once `catch raised on` asks it to.
 #[test]
 fn catch_chooses_which_exceptions_stop() {
     let (stdout, stderr) = piped(
@@ -2273,9 +2111,6 @@ fn catch_chooses_which_exceptions_stop() {
     );
 }
 
-/// `print/x` writes a number a view presents in hexadecimal, as it would
-/// the number stored, and leaves a value presented as anything else as its
-/// view presents it.
 #[test]
 fn print_x_writes_numbers_views_present_in_hexadecimal() {
     let stdout = batch(
@@ -2307,8 +2142,6 @@ fn print_x_writes_numbers_views_present_in_hexadecimal() {
     );
 }
 
-/// A long sequence of leaves fills its lines, and a map puts each entry on
-/// a line of its own.
 #[test]
 fn pp_fills_long_sequences_and_breaks_maps_by_width() {
     let commands = ["break barrier", "run", "up", "pp many"];
@@ -2337,8 +2170,6 @@ fn pp_fills_long_sequences_and_breaks_maps_by_width() {
     assert_in_order(&wide, &[ordered, "forward = len=2 [0x4, 0x5]\n"]);
 }
 
-/// A stop says where in words, then prints the sections `[stop] show`
-/// names, in order, and `context` prints them again.
 #[test]
 fn a_stop_prints_the_sections_its_settings_name_and_context_prints_them_again() {
     let settings = "[ui]\nunicode = \"never\"\n[stop]\n\
@@ -2361,7 +2192,6 @@ fn a_stop_prints_the_sections_its_settings_name_and_context_prints_them_again() 
     );
     let stop = [
         "stopped at breakpoint 1 (hit 1) in caller at tests/fixtures/c/hit-counts.c:20\n",
-        // The header names the line, so the source does not again.
         "    19 | __attribute__((noinline)) void caller(uint64_t call) {\n\
          +=> 20 |     counted(call);\n",
         "(uint64_t) call = 1\n",
@@ -2392,8 +2222,6 @@ fn a_stop_prints_the_sections_its_settings_name_and_context_prints_them_again() 
     assert_eq!(stdout.matches("2: missing + 1:").count(), 1, "{stdout}");
 }
 
-/// A value that differs from what the last stop showed of the same
-/// activation is marked; a caller's value is compared only with itself.
 #[test]
 fn a_stop_marks_the_values_that_changed_in_the_same_activation() {
     let settings = "[stop]\nshow = [\"locals\"]\n";
@@ -2408,8 +2236,6 @@ fn a_stop_marks_the_values_that_changed_in_the_same_activation() {
         &[
             "(uint64_t) call = 1\n",
             "(uint64_t) call = 2*\n",
-            // main's own `call` was not shown before, so it is not marked
-            // although caller's read 1.
             "#1 ",
             "(uint64_t) call = 2\n",
         ],
@@ -2427,8 +2253,6 @@ fn a_stop_marks_the_values_that_changed_in_the_same_activation() {
     assert!(!stdout.contains("expected = 0*"), "{stdout}");
 }
 
-/// A prefix that names one command runs it, an alias wins over a prefix,
-/// and a prefix of several names them.
 #[test]
 fn unique_prefixes_run_their_command_and_aliases_win() {
     let directory = support::ScratchDir::new("cli-prefixes");
@@ -2467,7 +2291,6 @@ fn unique_prefixes_run_their_command_and_aliases_win() {
     );
 }
 
-/// `edit` opens the editor the settings name at the selected line.
 #[test]
 fn edit_opens_the_editor_at_the_selected_line() {
     let stdout = batch_with_settings(
@@ -2537,8 +2360,6 @@ fn rbreak_breaks_at_matching_functions_and_misspelled_names_suggest_near_ones() 
             "break countd",
             "break hit-count.c:11",
             "run",
-            // libc is loaded now, with far more functions than one pattern
-            // may break at.
             "rbreak .",
             "breakpoints",
         ],
@@ -2597,7 +2418,6 @@ fn breakpoint_and_watchpoint_tables_show_each_ones_state_place_and_options() {
         "{tables}"
     );
 
-    // Several locations are listed beneath, each with its address.
     assert!(lines[3].starts_with("              |- 0x"), "{tables}");
     assert!(
         lines[3].ends_with(&format!("  shared at {path}:16")),
@@ -2658,7 +2478,6 @@ fn breakpoints_take_options_inline_and_lines_from_the_selected_frame() {
             "deleted watchpoints 1, 2\n",
             "breakpoint 5 set at ",
             ", stops at hits ==5, logs \"caller {call} of {last_call}\"\n",
-            // Its fifth hit is the fifth call after the stop at the third.
             "caller 8 of 7\n",
             "inferior exited with status 0\n",
         ],
@@ -2669,7 +2488,6 @@ fn breakpoints_take_options_inline_and_lines_from_the_selected_frame() {
             "usage: break [location] [if condition...] [hits hit-condition] [log message] [disabled]",
             "invalid line offset '+x'",
             "source line numbers are one-based",
-            // A list naming a missing id deletes nothing.
             "breakpoint 9 was not found",
         ],
     );
@@ -2694,8 +2512,6 @@ fn breakpoints_and_watchpoints_are_disabled_enabled_and_advanced_past() {
             "disable w1 2",
             "watchpoints",
             "enable all",
-            // A list naming a missing id changes nothing, so the watchpoint
-            // still stops the next continue.
             "disable 9 w1",
             "disable 3-1",
             "disable x",
@@ -2715,7 +2531,6 @@ fn breakpoints_and_watchpoints_are_disabled_enabled_and_advanced_past() {
             "deleted temporary breakpoint 1\n",
             "2   -      0  caller at tests/fixtures/c/hit-counts.c:20\n",
             "enabled breakpoint 2\n",
-            // Hits while disabled are not counted.
             "stopped at breakpoint 2 (hit 1) in ",
             "stopped after advance in counted at tests/fixtures/c/hit-counts.c:11\n",
             "(uint64_t) call = 4\n",
@@ -2865,7 +2680,6 @@ fn hit_condition_commands_explain_rejected_input() {
             "ignore 1 many",
             "hits one >=2",
             "condition 1 call = 3",
-            // Ignoring zero hits stops at the next one.
             "hits 1 ==9",
             "ignore 1 0",
             "run",
@@ -2929,8 +2743,6 @@ fn strings_print_as_quoted_escaped_text() {
     );
 }
 
-/// Characters wider than a byte print as their numbers and what they are,
-/// and pointers to text of them as the text.
 #[test]
 fn wide_characters_print_as_their_numbers_and_characters() {
     let path =
@@ -2956,7 +2768,6 @@ fn wide_characters_print_as_their_numbers_and_characters() {
             "(char8_t) eight = 97 'a'\n",
             "(char16_t) sixteen = 955 'λ'\n",
             "(char32_t) thirty_two = 129408 '🦀'\n",
-            // A surrogate is a code unit, not a character.
             "(char16_t) surrogate = 55296\n",
             "(const char16_t *) sixteen_text = 0x",
             " \"λx\"\n",
@@ -2971,9 +2782,6 @@ fn wide_characters_print_as_their_numbers_and_characters() {
     assert!(stdout.contains("(char) letter = 955 'λ'\n"), "{stdout}");
 }
 
-/// `print` shows a value as its view presents it, with its elements up to
-/// the inspection's budget; `print/r` and `set views off` show it as
-/// stored; and `info view` says which view presents it, or why none does.
 #[test]
 fn views_present_values_raw_is_one_step_away_and_info_view_explains() {
     let stdout = batch(
@@ -3024,13 +2832,6 @@ fn views_present_values_raw_is_one_step_away_and_info_view_explains() {
     );
 }
 
-/// Values are presented with the session's view files first, then the
-/// project's in `.microscope/views` where the program runs and the user's, then
-/// the program's own;
-/// `views clear` forgets the session's, and a file with an error is
-/// reported without ending the session.
-/// Files given together to `views load` stack as `--views` does: later
-/// files come first.
 #[test]
 fn view_files_loaded_together_stack_as_on_the_command_line() {
     let directory = support::ScratchDir::new("cli-view-order");
@@ -3062,9 +2863,6 @@ fn view_files_loaded_together_stack_as_on_the_command_line() {
     assert_eq!(listings[0], listings[1], "{output}");
 }
 
-/// The project root is the nearest directory with `.microscope/` or `.git`, so
-/// a repository inside another project, as a git worktree often is, is a
-/// project of its own and never reads the outer one's settings or state.
 #[test]
 fn a_repository_inside_a_project_is_its_own_project() {
     let directory = support::ScratchDir::new("cli-project-root");
@@ -3074,7 +2872,6 @@ fn a_repository_inside_a_project_is_its_own_project() {
     fs::create_dir_all(outer.join(".microscope/state")).expect("make the outer project");
     fs::create_dir_all(&subdirectory).expect("make the inner repository");
 
-    // A worktree's `.git` is a file.
     fs::write(inner.join(".git"), "gitdir: elsewhere\n").expect("mark the repository");
     let root = |start: &std::path::Path| {
         let output = microscope_command()
@@ -3097,7 +2894,6 @@ fn a_repository_inside_a_project_is_its_own_project() {
         format!("project root: {}", inner.display())
     );
 
-    // From the outer project's own directories, it is still the root.
     assert_eq!(
         root(&outer.join("worktrees")),
         format!("project root: {}", outer.display())
@@ -3135,8 +2931,6 @@ fn view_files_come_from_the_session_the_project_and_the_user() {
     .expect("write a broken view file");
     let load_broken = format!("views load {}", broken.display());
 
-    // The project is the one microscope runs in, from any of its directories,
-    // wherever the program runs.
     let subdirectory = directory.path().join("src");
     fs::create_dir_all(&subdirectory).expect("make a project subdirectory");
     let output = microscope_command()
@@ -3172,7 +2966,6 @@ fn view_files_come_from_the_session_the_project_and_the_user() {
             "here = the session's",
             "forgot the loaded view files",
             "here = {x: 1, y: 0x2}",
-            // The user's view comes before the program's own.
             "numbers = the user's vector",
             "loaded 1 view file",
             "here = {x: 1, y: 0x2}",
@@ -3184,10 +2977,6 @@ fn view_files_come_from_the_session_the_project_and_the_user() {
     );
 }
 
-/// `microscope views check` says which view presents each of a program's types
-/// that a pattern names, with no process, and fails when a view it was
-/// given presents nothing or binds nothing it names; `views explain` says
-/// why for one type.
 #[test]
 fn views_check_and_explain_a_programs_types_without_a_process() {
     let directory = support::ScratchDir::new("cli-views-check");
@@ -3241,7 +3030,6 @@ fn views_check_and_explain_a_programs_types_without_a_process() {
         ],
     );
 
-    // A view file that cannot be used fails an explanation too.
     let broken = directory.path().join("broken.views");
     fs::write(
         &broken,
@@ -3268,9 +3056,6 @@ fn views_check_and_explain_a_programs_types_without_a_process() {
     );
 }
 
-/// A view's drawings are only drawn by the web page, but `views check`
-/// and `views explain` show them, and the renderers they name, and a
-/// drawing that does not bind fails the check.
 #[test]
 fn views_check_and_explain_show_drawings_and_their_renderers() {
     let directory = support::ScratchDir::new("cli-views-drawings");
@@ -3297,7 +3082,6 @@ fn views_check_and_explain_show_drawings_and_their_renderers() {
             .expect("run microscope views")
     };
 
-    // The program carries its views and the renderer they name.
     let clean = run(&["check".as_ref(), program.as_ref()]);
     assert_in_order(
         &assert_success(clean),
@@ -3345,9 +3129,6 @@ fn views_check_and_explain_show_drawings_and_their_renderers() {
     );
 }
 
-/// A kernel beside a view file is loaded with it, as `NAME.wasm`; the runs
-/// a presentation takes are recorded, and replay with no program; and
-/// `views check` shows each kernel as the source it is built from.
 #[test]
 fn kernels_beside_view_files_present_values_and_their_runs_replay() {
     let directory = support::ScratchDir::new("cli-kernels");
@@ -3427,7 +3208,6 @@ fn kernels_beside_view_files_present_values_and_their_runs_replay() {
         ],
     );
 
-    // A run replays only with the kernel it recorded.
     let unknown = replay(&[]);
     assert!(!unknown.status.success(), "{unknown:?}");
     assert!(
@@ -3454,8 +3234,6 @@ fn kernels_beside_view_files_present_values_and_their_runs_replay() {
     );
 }
 
-/// `print` shows a map's entries as `key: value` and a linked structure's
-/// elements, and says why a broken one shows as stored.
 #[test]
 fn views_print_maps_and_linked_structures() {
     let stdout = batch(
@@ -3491,8 +3269,6 @@ fn views_print_maps_and_linked_structures() {
     );
 }
 
-/// `ptype` names a type with its path and lists its arguments, whatever
-/// the producer called it.
 #[test]
 fn ptype_shows_qualified_names_and_template_arguments() {
     for (program, commands, expected) in [
@@ -3552,7 +3328,6 @@ fn set_changes_values_the_program_then_uses() {
     );
 }
 
-/// A frame with no variables says so, rather than printing nothing.
 #[test]
 fn print_says_when_a_frame_has_no_variables() {
     let stdout = batch(
@@ -3566,8 +3341,6 @@ fn print_says_when_a_frame_has_no_variables() {
     );
 }
 
-/// An array of several dimensions prints as rows of rows, as its program
-/// writes it, and a row the elements shown end inside of is closed.
 #[test]
 fn arrays_of_several_dimensions_print_as_nested_rows() {
     let arguments = ["--color", "never", "build/test-programs/records-c-gcc-o0"];
@@ -3583,8 +3356,6 @@ fn arrays_of_several_dimensions_print_as_nested_rows() {
     );
 }
 
-/// Floats print in every format their programs hold them in, each with
-/// its own precision: a quad precision tenth is a tenth.
 #[test]
 fn floats_of_every_format_print_exactly() {
     for fixture in ["floats-c-gcc", "floats-c-clang"] {
@@ -3600,7 +3371,6 @@ fn floats_of_every_format_print_exactly() {
                 "(float) single = 0.25\n",
                 "(double) precision = 2.5\n",
                 "(long double) extended = 3.125\n",
-                // GCC names `__float128` `_Float128`.
                 "128) quad = 0.1\n",
             ],
         );
@@ -3624,7 +3394,6 @@ fn info_symbol_and_x_describe_memory_by_address() {
     let main = symbol_address(&executable, "main");
     let data = symbol_address(&executable, "pointer_parameter_value");
 
-    // _dl_relocate_static_pie is five bytes long and followed by padding.
     let padding = symbol_address(&executable, "_dl_relocate_static_pie") + 8;
     let commands = [
         "break main".to_owned(),
@@ -3679,8 +3448,6 @@ fn print_dereferences_pointer_chains_and_points_at_what_cannot_be() {
     assert!(stdout.contains("(int) *pointer = 42"), "{stdout}");
     assert!(stdout.contains("(int) **pointer_pointer = 42"), "{stdout}");
 
-    // A failed dereference is labeled with the pointee type (int), not the
-    // operand's pointer type (int *).
     assert!(
         stdout.contains("(int) *null_pointer = <unavailable: cannot dereference a null pointer>"),
         "{stdout}"
@@ -3694,8 +3461,6 @@ fn print_dereferences_pointer_chains_and_points_at_what_cannot_be() {
         "{stdout}"
     );
 
-    // Dereferencing what cannot be dereferenced is the expression's error,
-    // pointed at.
     assert_in_order(
         &stderr,
         &[
@@ -3750,7 +3515,6 @@ fn print_renders_symbolic_enums_variants_and_raw_unions() {
         ],
     );
 
-    // A sum type shows as its active variant.
     for expected in [
         "*value = Integer(42)",
         "*fieldless = Negative (-3)",
@@ -3789,7 +3553,6 @@ fn globals_lists_metadata_and_print_accepts_exact_qualification() {
         ],
     );
 
-    // Each listed name is one `print` accepts for that definition alone.
     assert!(
         stdout.starts_with(
             "one.c::duplicate (volatile int32_t)\ntwo.c::duplicate (volatile int32_t)\nno matching globals\n"
@@ -3804,8 +3567,6 @@ fn globals_lists_metadata_and_print_accepts_exact_qualification() {
     );
 }
 
-/// Runs `commands` at the workers fixture's checkpoint, where its workers
-/// are parked.
 fn at_go_checkpoint(commands: &[&str]) -> String {
     let mut all = vec!["break main.reached", "run"];
     all.extend_from_slice(commands);
@@ -3828,8 +3589,6 @@ fn goroutines_are_listed_by_the_code_the_program_wrote_and_inspected_by_id() {
         "goroutine",
     ]);
 
-    // `goroutines` ends where it says how to list the runtime's own, and
-    // `tasks -a` where `goroutines -g` starts grouping them.
     let (listing, rest) = stdout
         .split_once("`goroutines -a` lists them\n")
         .unwrap_or_else(|| panic!("{stdout}"));
@@ -3838,7 +3597,6 @@ fn goroutines_are_listed_by_the_code_the_program_wrote_and_inspected_by_id() {
         .unwrap_or_else(|| panic!("{stdout}"));
     let lines = listing.lines().collect::<Vec<_>>();
 
-    // Main runs on the stopped thread, and is selected through it.
     let main = lines
         .iter()
         .find(|line| line.starts_with("* [1] main.reached at "))
@@ -3848,7 +3606,6 @@ fn goroutines_are_listed_by_the_code_the_program_wrote_and_inspected_by_id() {
         "{main}"
     );
 
-    // A parked worker is where it waits, not in the runtime parking it.
     let workers = lines
         .iter()
         .filter(|line| line.contains("main.worker at "))
@@ -3879,8 +3636,6 @@ fn goroutines_are_listed_by_the_code_the_program_wrote_and_inspected_by_id() {
         "{stdout}"
     );
 
-    // Each goroutine's frames follow it, the runtime's own folded but
-    // where it parked.
     assert_in_order(
         rest,
         &[
@@ -3894,7 +3649,6 @@ fn goroutines_are_listed_by_the_code_the_program_wrote_and_inspected_by_id() {
         ],
     );
 
-    // A command runs in the goroutine without keeping it selected.
     assert_in_order(
         rest,
         &[
@@ -3927,8 +3681,6 @@ fn goroutines_are_listed_by_the_code_the_program_wrote_and_inspected_by_id() {
     assert_failure(&failure, "goroutine 1 can only run commands that inspect");
 }
 
-/// `step goroutine` follows the line's `go` statement into the goroutine
-/// it starts, which is then selected.
 #[test]
 fn step_goroutine_enters_the_goroutine_the_line_starts() {
     const STEPS: &str = "tests/fixtures/go/steps/main.go";
@@ -3939,7 +3691,6 @@ fn step_goroutine_enters_the_goroutine_the_line_starts() {
         &[
             &format!("break main.go:{go}"),
             "run",
-            // The line's breakpoint is in the goroutine's wrapper too.
             "delete 1",
             "step goroutine",
             "goroutine",
@@ -3964,9 +3715,6 @@ fn step_goroutine_enters_the_goroutine_the_line_starts() {
     assert_failure(&failure, "no call on this line calls sideways");
 }
 
-/// A `-trimpath` build records its sources without the directory it was
-/// built in, which the missing source's reason says, with the way to map
-/// them; `--source-map` then finds them.
 #[test]
 fn a_trimpath_programs_sources_say_why_they_are_missing() {
     const SERVER: &str = "tests/fixtures/go/server/main.go";
@@ -3975,8 +3723,6 @@ fn a_trimpath_programs_sources_say_why_they_are_missing() {
         &["break main.greet", "run"],
     );
 
-    // The fixture's go.mod names its module, so the build records its
-    // sources under that path wherever the checkout is.
     let greet = support::source_line(SERVER, "func greet(");
     let recorded = "./microscope.test/server/main.go";
     assert!(
@@ -4018,7 +3764,6 @@ fn a_cores_goroutines_show_their_labels_and_the_runtimes_their_entries() {
         "{stdout}"
     );
 
-    // The runtime numbers its goroutines in batches, so its own ids vary.
     assert!(
         stdout.lines().any(|line| line.starts_with("  [")
             && line.ends_with("] runtime.forcegchelper — force gc (idle)")),
@@ -4066,8 +3811,6 @@ fn a_watched_goroutine_local_names_its_goroutine_until_its_frame_returns() {
         ],
     );
 
-    // The watch names the goroutine whose stack holds it, as set and as
-    // listed.
     for prefix in ["watchpoint 1 set on counter: ", "1 "] {
         let line = stdout
             .lines()
@@ -4125,8 +3868,6 @@ fn stops_and_list_show_source_from_any_working_directory() {
     let stdout = assert_success(output);
     let line = format!("{}:6", fixture("tests/fixtures/c/basic.c").display());
 
-    // The breakpoint, the stop, and the listing; a root of `/` holds every
-    // path, so they stay absolute.
     assert_eq!(stdout.matches(&line).count(), 3, "{stdout}");
     assert_eq!(
         stdout
@@ -4153,9 +3894,6 @@ fn ctrl_c_pauses_a_running_inferior_before_accepting_more_commands() {
         .and_then(|id| id.parse().ok())
         .unwrap_or_else(|| panic!("no thread ID in {thread:?}"));
 
-    // main's loop is a jump to itself, so the breakpoint must go before the
-    // inferior can run it. Only the continue can make the stopped inferior
-    // runnable again, so once it is, Ctrl-C interrupts the loop.
     microscope.send("delete 1\ncontinue\n");
     support::wait_until("the inferior runs main's loop", || {
         process_state(inferior) == Some('R')
@@ -4169,7 +3907,6 @@ fn ctrl_c_pauses_a_running_inferior_before_accepting_more_commands() {
         line.starts_with("inferior paused in main at ")
     });
 
-    // End of input shuts the session down, killing and reaping the inferior.
     microscope.send("where\n");
     microscope.close_stdin();
     let stdout = assert_success(microscope.finish());
@@ -4188,8 +3925,6 @@ fn ctrl_c_pauses_a_running_inferior_before_accepting_more_commands() {
 
 #[test]
 fn continuing_past_a_sigint_stop_discards_the_interrupt() {
-    // A terminal Ctrl-C signals the inferior as well as microscope. Like gdb,
-    // the CLI must not deliver that SIGINT, which would terminate the inferior.
     let stdout = batch(&["build/test-programs/interrupt"], &["run", "continue"]);
     assert!(stdout.contains("stopped by SIGINT"), "{stdout}");
     assert!(stdout.contains("inferior exited with status 0"), "{stdout}");
@@ -4274,7 +4009,6 @@ fn core_banner_reports_the_signal_and_every_unproven_module() {
     );
     assert!(!stdout.contains("warning"), "{stdout}");
 
-    // Warnings go to stderr, keeping stdout clean.
     let missing = microscope(&[
         "--core",
         "build/test-programs/core-missing-library/crash.core",
@@ -4311,7 +4045,6 @@ fn allowed_module_mismatches_are_named_and_reported() {
         "{stderr}"
     );
 
-    // The line names the file used when it is not at the recorded path.
     let stdout = assert_success(allowed);
     let rebuilt = fs::canonicalize(fixture("build/test-programs/crash-gcc-o0-rebuilt"))
         .expect("canonical fixture");
@@ -4326,7 +4059,6 @@ fn allowed_module_mismatches_are_named_and_reported() {
 
 #[test]
 fn core_module_searches_name_the_files_they_use_and_those_still_missing() {
-    // Without the C library, its recorded build-id says what to supply.
     let directory = support::ScratchDir::new("cli-module-path");
     for name in ["crash-gcc-o0", "libcrash.so"] {
         fs::copy(
@@ -4406,8 +4138,6 @@ fn backtraces_and_where_name_code_without_debug_info_by_symbol_and_module() {
             .unwrap_or_else(|| panic!("no frame containing {needle:?}:\n{stdout}"))
     };
 
-    // An unsized symbol says so; code no symbol names stays unknown, even
-    // where stripping removed a static function between named ones.
     assert!(
         frame(" in asm_unsized+0x6 ")
             .ends_with(" (unsized symbol) from libelf-symbols-stripped.so"),
@@ -4424,7 +4154,6 @@ fn backtraces_and_where_name_code_without_debug_info_by_symbol_and_module() {
     );
     assert!(!stdout.contains("lib_static_helper"), "{stdout}");
 
-    // Frames with source keep showing it instead of a module.
     assert!(frame(" in chain_gap at ").ends_with("tests/fixtures/c/elf-symbols/main.c:69"));
     assert!(frame(" in _start+0x").ends_with(" from elf-symbols-stripped"));
     let location = lines.last().expect("where output");
@@ -4465,7 +4194,6 @@ fn frame_commands_move_through_caller_frames_and_show_their_source() {
             && line.ends_with(&recursive_call)
     });
 
-    // The frame's source follows it, marking its call.
     let marked = line_index(&lines, frame, |line| line.starts_with("=> "));
     assert!(lines[marked].contains("frames_recurse(depth - 1, seed)"));
     let depth = line_index(&lines, marked, |line| line == "(int64_t) depth = 1");
@@ -4487,11 +4215,6 @@ fn frame_commands_move_through_caller_frames_and_show_their_source() {
     line_index(&lines, outermost, |line| line.starts_with("#10 "));
 }
 
-/// An uncaught Python exception, chosen alone before the program runs,
-/// installs the agent with no breakpoint, and stops as the exception leaves
-/// the main thread's code: the stop says what it is and where it was
-/// raised, and the program then ends as Python ends it. The interpreter's
-/// own lack of debug information is no warning: the program is the script.
 #[test]
 fn an_uncaught_python_exception_stops_where_it_leaves_the_program() {
     let interpreter = std::path::PathBuf::from(
@@ -4527,11 +4250,6 @@ fn an_uncaught_python_exception_stops_where_it_leaves_the_program() {
     assert!(!stderr.contains("no debug information"), "{stderr}");
 }
 
-/// Python breakpoints set before the program runs are kept pending, as its
-/// code loads only when it imports it, and stop in the program's own frame,
-/// with the debugger's agent and the interpreter folded, from which `next`
-/// steps the program's line; one in code the program never runs never
-/// stops. A native breakpoint is still checked.
 #[test]
 fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
     let interpreter = std::path::PathBuf::from(
@@ -4580,14 +4298,11 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
         stderr.contains("no source file matching 'missing.c'"),
         "{stderr}"
     );
-    // A bare name is a native function's; the refusal says how to name the
-    // Python one.
     assert!(
         stderr.contains("no function named 'accumulate' was found")
             && stderr.contains("`py:accumulate`"),
         "{stderr}"
     );
-    // A native name misspelled is still found near its own.
     assert!(
         stderr.contains("did you mean 'main'? Write a Python function with `py:`, as in `py:mian`"),
         "{stderr}"
@@ -4629,8 +4344,6 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
     assert!(!stdout.contains("microscope_python_hook"), "{stdout}");
 }
 
-/// A program named without a directory is found as a shell finds it, on
-/// `PATH`, when the current directory has no file of that name.
 #[test]
 fn a_program_named_alone_is_found_on_path() {
     let interpreters = std::path::PathBuf::from(
@@ -4660,7 +4373,6 @@ fn a_program_named_alone_is_found_on_path() {
     let stdout = assert_success(found);
     assert!(stdout.contains("found on PATH"), "{stdout}");
 
-    // A directory of that name is no program, and leaves PATH to find it.
     let directory = support::ScratchDir::new("cli-path-directory");
     std::fs::create_dir(directory.path().join("python")).expect("make a directory");
     let shadowed = microscope_command()
@@ -4698,9 +4410,6 @@ fn a_program_named_alone_is_found_on_path() {
     );
 }
 
-/// A program run through a link runs by the link's name: a multi-call
-/// binary, as coreutils on NixOS and busybox are, chooses what to be from
-/// its `argv[0]`, so `echo` reached through a link to it must stay `echo`.
 #[test]
 fn a_link_to_a_multi_call_binary_runs_as_the_link_names() {
     let echo = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
@@ -4728,9 +4437,6 @@ fn a_link_to_a_multi_call_binary_runs_as_the_link_names() {
     );
 }
 
-/// A virtual environment's interpreter, a link to the one it was made from,
-/// runs as the environment's: Python finds its environment from the path it
-/// is run as, which an activated environment puts first on `PATH`.
 #[test]
 fn a_virtual_environments_python_runs_in_its_environment() {
     let directory = support::ScratchDir::new("cli-venv");
@@ -4773,8 +4479,6 @@ fn a_virtual_environments_python_runs_in_its_environment() {
     );
 }
 
-/// A Python program's core, whose Python frames call each other through
-/// the interpreter's frames on some of its threads.
 const PYTHON_CORE: &str = "build/test-programs/python-locals-3.14t.core";
 
 #[test]
@@ -4807,8 +4511,6 @@ fn python_frames_show_their_source_and_fold_the_interpreters_frames() {
         "the interpreter's frames fold:\n{stdout}"
     );
 
-    // Moving between frames passes over the frames a backtrace folds,
-    // until they are shown.
     let frame = format!("frame {level}");
     let stdout = batch(
         &["--core", PYTHON_CORE],
@@ -4847,7 +4549,6 @@ fn python_frames_show_their_source_and_fold_the_interpreters_frames() {
         shown.starts_with('#') && shown.contains(" in _PyEval_EvalFrameDefault+")
     });
 
-    // Expressions read the frame's objects as Python finds them.
     let stdout = batch(
         &["--core", PYTHON_CORE],
         &[
@@ -4889,8 +4590,6 @@ fn frame_commands_report_the_ends_of_the_stack() {
 
 #[test]
 fn disassembly_follows_the_selected_frame() {
-    // An outer frame's function is shown around its call, marking where
-    // execution returns.
     let stdout = batch(&["--core", FRAMES_CORE], &["frame 3", "disassemble"]);
     let lines = stdout.lines().collect::<Vec<_>>();
     let function = line_index(&lines, 0, |line| {
@@ -5011,7 +4710,6 @@ fn disassemble_renders_the_stopped_function_with_named_targets_and_source_lines(
         .position(|line| line.starts_with("=> "))
         .unwrap_or_else(|| panic!("no stopped instruction in:\n{listing}"));
 
-    // The stop follows the frame setup, under its source line.
     assert!(lines[stopped].contains(" <main+0x4>: "), "{listing}");
     assert!(
         lines[stopped].ends_with(" <disasm_marked_data>") && lines[stopped].contains("call 0x"),
@@ -5083,9 +4781,6 @@ fn disassemble_reports_data_inside_code_and_unproven_addresses() {
     }
 }
 
-/// Each form of indirect target renders once: a slot and what it holds, a
-/// register's target, a target in another module, an unreadable slot, and
-/// a branch form that is not computed. Library tests own the targets.
 #[test]
 fn disassemble_names_the_targets_indirect_branches_read_at_the_stop() {
     let executable = fixture("build/test-programs/disassembly-clang-o2-nopie");
@@ -5130,7 +4825,6 @@ fn disassemble_names_the_targets_indirect_branches_read_at_the_stop() {
         "{stdout}"
     );
 
-    // Away from the stop, a register's target is unknown.
     assert!(find("call rcx", false).ends_with("call rcx"), "{stdout}");
     let got = find(" <.got+0x", false);
     assert!(
@@ -5151,7 +4845,6 @@ fn disassemble_names_the_targets_indirect_branches_read_at_the_stop() {
 
 #[test]
 fn disassemble_shows_a_stop_outside_every_function_and_rejects_bad_requests() {
-    // A call through a null pointer stops where no module or function is.
     let stdout = batch(&["build/test-programs/null-call"], &["run", "disassemble"]);
     assert!(
         stdout.contains("memory inaccessible at 0x0"),
@@ -5196,7 +4889,6 @@ fn disassemble_reads_code_from_core_dumps() {
         "{stdout}"
     );
 
-    // The optimized main has a cold range of its own.
     assert!(
         stdout.contains("range 1 of 2: 0x4010a0..0x4010a5"),
         "{stdout}"
@@ -5247,8 +4939,6 @@ fn registers_show_the_selected_frames_own_values() {
     assert!(!lines[innermost].contains("<not saved>"), "{stdout}");
     let selected = line_index(&lines, innermost, |line| line.starts_with("#5 "));
 
-    // A callee may overwrite rdi without saving it, so frame 5's value is
-    // unknown, while its instruction pointer is its own return address.
     let rdi = line_index(&lines, selected, |line| line.starts_with("rdi "));
     assert!(lines[rdi].ends_with("<not saved>"), "{stdout}");
     let rip = line_index(&lines, selected, |line| line.starts_with("rip "));
@@ -5276,7 +4966,6 @@ fn handle_shows_and_changes_signal_policies_like_gdb() {
         format!("{name:<8}  {stop:<4}  {print:<5}  {pass}")
     };
 
-    // `nostop` keeps printing; `noprint` implies `nostop`.
     for expected in [
         shown("SIGUSR1", "yes", "yes", "yes"),
         shown("SIGUSR1", "no", "yes", "yes"),
@@ -5289,8 +4978,6 @@ fn handle_shows_and_changes_signal_policies_like_gdb() {
         );
     }
 
-    // Received signals are reported in order before the program exits with
-    // every handler but the discarded SIGALRM's.
     let usr1 = line_index(&lines, 0, |line| {
         line.starts_with("thread ")
             && line.contains(" received SIGUSR1 (SI_TKILL) sent by process ")
@@ -5317,7 +5004,6 @@ fn the_terminal_launcher_explains_why_it_cannot_run_the_program() {
         "microscope: cannot run /bin/true: No such file or directory",
     );
 
-    // The adapter went away before it traced the launcher.
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
     let adapter = thread::spawn(move || drop(listener.accept().expect("accept")));
     let output = microscope(&[
@@ -5335,16 +5021,12 @@ fn the_terminal_launcher_explains_why_it_cannot_run_the_program() {
     );
 }
 
-/// A development build streams its flight recording as it goes, so even a
-/// killed session leaves the requests, native calls, wait statuses, and
-/// events that led up to the kill.
 #[cfg(debug_assertions)]
 #[test]
 fn a_killed_session_leaves_its_flight_recording() {
     let scratch = support::ScratchDir::new("flight-recording");
     let recording = scratch.path().join("recording.log");
 
-    // microscope keeps reading its open standard input after the script.
     let microscope = Microscope::spawn(
         microscope_command()
             .env("MICROSCOPE_FLIGHT_RECORDING", &recording)
@@ -5358,7 +5040,6 @@ fn a_killed_session_leaves_its_flight_recording() {
         contents.contains("event InferiorStopped")
     });
 
-    // Dropping kills microscope and reaps it.
     drop(microscope);
 
     let position = |needle: &str| {
@@ -5380,13 +5061,11 @@ fn a_killed_session_leaves_its_flight_recording() {
     .map(position);
     assert!(order.is_sorted(), "out of order {order:?}:\n{contents}");
 
-    // The inferior dies with the debugger that traced it.
     let inferior = contents
         .lines()
         .find_map(|line| line.split_once("spawned ")?.1.parse::<u32>().ok())
         .expect("the recording names the inferior");
 
-    // Once microscope is gone, init reaps the inferior, if it ever does.
     support::wait_until(&format!("inferior {inferior} dies with microscope"), || {
         matches!(process_state(inferior), None | Some('Z'))
     });
@@ -5458,9 +5137,6 @@ fn expressions_print_compute_and_point_at_their_errors() {
     }
 }
 
-/// `info modules` says what describes each module, and for one stripped of
-/// its debug information which separate file it came from, or why the
-/// one found could not be used.
 #[test]
 fn info_modules_names_separate_debug_files_and_why_one_is_unusable() {
     const PROGRAM: &str = "build/test-programs/split/basic-build-id";
@@ -5518,8 +5194,6 @@ fn info_modules_names_separate_debug_files_and_why_one_is_unusable() {
     );
 }
 
-/// A file that is no program the debugger can debug fails to load, saying
-/// what it is instead.
 #[test]
 fn files_that_are_no_program_to_debug_say_what_they_are() {
     let scratch = support::ScratchDir::new("no-program");
@@ -5529,7 +5203,6 @@ fn files_that_are_no_program_to_debug_say_what_they_are() {
     let truncated = scratch.path().join("truncated");
     fs::write(&truncated, &basic[..basic.len() / 2]).expect("write half a program");
 
-    // `e_machine` names AArch64.
     let mut foreign = basic.clone();
     foreign[18..20].copy_from_slice(&183_u16.to_le_bytes());
     let aarch64 = scratch.path().join("aarch64");
@@ -5567,9 +5240,6 @@ fn files_that_are_no_program_to_debug_say_what_they_are() {
     }
 }
 
-/// A batch run whose program replaces itself with another, which
-/// microscope does not follow, fails rather than exiting 0 with the user's
-/// code never debugged, and says why after the stop's own line.
 #[test]
 fn a_batch_run_fails_when_the_program_execs_one_it_does_not_follow() {
     let output = batch_output(&["build/test-programs/thread-exec"], &["run"]);
@@ -5585,11 +5255,6 @@ fn a_batch_run_fails_when_the_program_execs_one_it_does_not_follow() {
     );
 }
 
-/// A batch run in which a member did not take one of the group's
-/// breakpoints fails, as its stops there may be missing, rather than
-/// exiting 0 with an error line the script's caller never reads. A child
-/// that joins as it executes a program has not loaded libc yet, so an
-/// address breakpoint in its parent's libc cannot be planted in it.
 #[test]
 fn a_batch_run_fails_when_a_member_did_not_take_a_breakpoint() {
     let arguments = [
@@ -5601,8 +5266,6 @@ fn a_batch_run_fails_when_a_member_did_not_take_a_breakpoint() {
         "spawn",
     ];
 
-    // Launches disable address randomization, so libc stays where it is
-    // from one run to the next.
     let found = batch(&arguments, &["break main", "run", "break waitpid"]);
     let address = found
         .split_once("waitpid at ")
@@ -5610,8 +5273,6 @@ fn a_batch_run_fails_when_a_member_did_not_take_a_breakpoint() {
         .unwrap_or_else(|| panic!("waitpid's address in:\n{found}"))
         .to_owned();
 
-    // The root never stops there, so the run ends after the child has
-    // joined and exited.
     let output = batch_output(
         &arguments,
         &[
@@ -5635,9 +5296,6 @@ fn a_batch_run_fails_when_a_member_did_not_take_a_breakpoint() {
     );
 }
 
-/// Debug information that cannot be used is warned of as the session
-/// starts, for the program, and as a library loads, and `info modules`
-/// says why beneath each module; a program with none says so.
 #[test]
 fn unusable_debug_information_is_warned_of_and_listed() {
     let scratch = support::ScratchDir::new("unusable-debug-information");
@@ -5706,9 +5364,6 @@ fn unusable_debug_information_is_warned_of_and_listed() {
     );
 }
 
-/// `jump` moves the stopped thread to a line of its function without
-/// running it, by number, by offset, or as `file:line`, and refuses a
-/// location outside the function; `set var` assigns registers.
 #[test]
 fn jump_moves_the_thread_to_resume_elsewhere_in_its_function() {
     let line = |marker: &str| support::source_line("tests/fixtures/c/jump.c", marker);
@@ -5735,7 +5390,6 @@ fn jump_moves_the_thread_to_resume_elsewhere_in_its_function() {
             "(volatile int) status = 0",
             "(u64) $rax = 5",
             "stopped where the thread was moved to resume in checked at tests/fixtures/c/jump.c:18",
-            // Neither `status = value` nor `status += 100` ran.
             "inferior exited with status 0",
         ],
     );
@@ -5809,7 +5463,6 @@ fn step_goes_into_one_call_of_the_line() {
         &output,
         &[
             "stopped at breakpoint 1 (hit 1) in main",
-            // GCC computes the arguments last to first.
             "calls on this line:",
             "  inc",
             "  twice",
@@ -5820,7 +5473,6 @@ fn step_goes_into_one_call_of_the_line() {
             "calls on this line:",
             "  (indirect)",
             "  strlen",
-            // Stepping into code without source goes on to the next line.
             &next,
         ],
     );
@@ -5831,8 +5483,6 @@ fn step_goes_into_one_call_of_the_line() {
     );
 }
 
-/// A backtrace shows the functions that left by tail calls between a frame
-/// and its caller.
 #[test]
 fn backtraces_show_the_functions_that_left_by_tail_calls() {
     let line = |marker: &str| support::source_line("tests/fixtures/c/tail-frames.c", marker);
@@ -5866,9 +5516,6 @@ fn backtraces_show_the_functions_that_left_by_tail_calls() {
     assert!(errors.is_empty(), "{errors}");
 }
 
-/// A session reads and writes the image cache `MICROSCOPE_CACHE_DIR` names,
-/// unless `--no-cache` says not to; a cache it cannot use leaves it
-/// uncached, with a warning.
 #[test]
 fn sessions_cache_images_unless_told_not_to() {
     let directory = support::ScratchDir::new("cli-image-cache");
@@ -5923,10 +5570,6 @@ fn sessions_cache_images_unless_told_not_to() {
     assert!(assert_success(output).contains("breakpoint 1"));
 }
 
-/// A recording whose program's image can't be written to the image cache
-/// says so, in `record` and in `report`, since every later recording reads
-/// the program's debug information again: on a large program, minutes of
-/// CPU with sampling off.
 #[test]
 fn a_recording_says_when_the_cache_cannot_keep_an_image() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -5949,7 +5592,6 @@ fn a_recording_says_when_the_cache_cannot_keep_an_image() {
     let stderr = String::from_utf8_lossy(&recorded.stderr).into_owned();
     assert!(recorded.status.success(), "{stderr}");
 
-    // The program, its loader, libc, and the vDSO, for one reason.
     let note = format!(
         "4 images were not kept in the image cache in {}, so the next recording reads their \
          debug information again: Permission denied (os error 13). They are basic, ",
@@ -5960,9 +5602,6 @@ fn a_recording_says_when_the_cache_cannot_keep_an_image() {
     assert!(report.contains(&note), "{note:?} in\n{report}");
 }
 
-/// `--timings` reports where a session's stops and requests spend their
-/// time, beside its loads: each stop from its last thread stopping to its
-/// publication, the modules it refreshed, and every request.
 #[test]
 fn timings_report_each_stop_and_request() {
     let directory = support::ScratchDir::new("cli-timings");
@@ -5992,8 +5631,6 @@ fn timings_report_each_stop_and_request() {
     }
 }
 
-/// A debugging session profiles its program from outside as it runs: a
-/// stopped program adds no samples, and what it runs after does.
 #[test]
 fn a_session_profiles_its_program_while_it_runs() {
     let scratch = support::ScratchDir::new("cli-profile");
@@ -6049,8 +5686,6 @@ fn a_signal_saves_a_recordings_window_as_it_goes_on() {
     let mut line = || lines.next().expect("a line").expect("read a line");
     assert!(line().contains("saves it"));
 
-    // Until a saved window holds the first phase, which runs until the
-    // program is released.
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut signals = 0;
     loop {
@@ -6072,8 +5707,6 @@ fn a_signal_saves_a_recordings_window_as_it_goes_on() {
     assert!(last.contains("second") && !last.contains("first"), "{last}");
 }
 
-/// A profile's whole call tree. The default report lists only the top
-/// functions, which unsymbolized vDSO addresses, a row each, can fill.
 fn every_function(profile: &Path) -> String {
     let profile = profile.to_string_lossy();
     assert_success(microscope(&[
@@ -6085,9 +5718,6 @@ fn every_function(profile: &Path) -> String {
     ]))
 }
 
-/// A continuous recording writes a segment file as each segment ends, or
-/// as a signal ends one early, and a report of the directory reads them
-/// all as one profile.
 #[test]
 fn a_continuous_recording_writes_segments_that_report_reads_as_one() {
     let scratch = support::ScratchDir::new("cli-continuous");
@@ -6135,15 +5765,12 @@ fn a_continuous_recording_writes_segments_that_report_reads_as_one() {
         std::thread::yield_now();
     }
 
-    // The second phase runs 300 ms, and the last segment holds it.
     let mut stdin = recording.stdin.take().expect("stdin");
     stdin.write_all(b"x").expect("release the program");
     drop(stdin);
     assert!(recording.wait().expect("wait").success());
     assert_eq!(segments(), 2);
 
-    // The second phase's time is mostly in the clock it reads, so it is a
-    // caller in the call tree rather than a function of its own.
     let report = assert_success(microscope(&[
         "report",
         "--tree",
@@ -6152,8 +5779,6 @@ fn a_continuous_recording_writes_segments_that_report_reads_as_one() {
     assert!(report.contains("second"), "{report}");
 }
 
-/// A program whose recorder dies goes on writing its instrumentation only
-/// until it stops hearing from it, then switches every site off.
 #[test]
 fn instrumentation_switches_itself_off_once_its_recorder_dies() {
     let scratch = support::ScratchDir::new("cli-probes-quiet");
@@ -6198,7 +5823,6 @@ fn function_recording_counts_calls_without_capturing_every_stack() {
     assert!(report.contains("with stacks ("), "{report}");
     assert!(report.contains("Stacks are sampled"), "{report}");
     assert!(profile.samples() > 0 && profile.samples() < 4000);
-    // What the kernel dropped is said in calls, when it dropped any.
     let stderr = String::from_utf8_lossy(&recorded.stderr);
     let lost = profile.lost_samples();
     let said = format!(
@@ -6209,9 +5833,6 @@ fn function_recording_counts_calls_without_capturing_every_stack() {
     assert_eq!(stderr.contains("kernel dropped"), lost > 0, "{stderr}");
 }
 
-/// Without frame pointers, a stack unwinds only as far as its copy reaches.
-/// The default copy reaches past a 24 KiB frame, and a copy too short for
-/// it says which larger copy to ask for.
 #[test]
 fn stack_copies_reach_past_large_frames_or_say_how_far_to_copy() {
     let scratch = support::ScratchDir::new("cli-stack-copy");
@@ -6235,17 +5856,12 @@ fn stack_copies_reach_past_large_frames_or_say_how_far_to_copy() {
     };
 
     let complete = tree("default.usprof", &[]);
-    // A sample can land in the dynamic loader, which has no unwind
-    // information, so only the copy's own truncation is ruled out.
     assert!(
         complete.lines().any(|line| line.ends_with("%  _start")),
         "{complete}"
     );
     assert!(!complete.contains("stack copy exhausted"), "{complete}");
 
-    // prod's copy, where the program keeps no frame pointers, reaches past
-    // it too. At prod's 49 Hz the program's 40 ms of CPU sometimes takes no
-    // sample, so this samples faster and keeps prod's copy.
     let production = tree("prod.usprof", &["--preset", "prod", "--rate", "999"]);
     assert!(
         production.lines().any(|line| line.ends_with("%  _start")),
@@ -6264,10 +5880,6 @@ fn stack_copies_reach_past_large_frames_or_say_how_far_to_copy() {
     );
 }
 
-/// The report of a recording of CPython 3.14 running `source`, recorded
-/// with `options`, with the `microscope` package and its library at hand.
-/// The program parks on its standard input until the recording has taken
-/// two snapshots of it and the profile is `ready` otherwise.
 fn snapshotted_python_report(
     scratch: &support::ScratchDir,
     name: &str,
@@ -6303,17 +5915,11 @@ fn snapshotted_python_report(
     assert_success(microscope(&["report", &profile.to_string_lossy()]))
 }
 
-/// The report counts the samples that ran a task only when the snapshots
-/// found tasks: a Python program's thread snapshots read threads, which no
-/// sample runs as a task, and asyncio's tasks are tasks.
 #[test]
 fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
     let scratch = support::ScratchDir::new("cli-thread-snapshots");
     let every = Duration::from_millis(50);
 
-    // Each program runs half a second of its own CPU time once the
-    // recording has taken two snapshots of it, so that microscope has
-    // loaded what it needs and goes on taking them as the program runs.
     let threads = snapshotted_python_report(
         &scratch,
         "threads.usprof",
@@ -6331,8 +5937,6 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
     );
     assert!(!threads.contains("ran a task"), "{threads}");
 
-    // The tasks park in a thread, so that the snapshots before the
-    // release read the loop and its tasks.
     let tasks = snapshotted_python_report(
         &scratch,
         "tasks.usprof",
@@ -6355,15 +5959,9 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
     );
 }
 
-/// The labels microscope gives a thread from its runtime, as whether it
-/// holds the GIL, are not the program's zones: the zones table and its
-/// counts hold only the program's, and the labels get a table of their
-/// own.
 #[test]
 fn runtime_labels_stay_out_of_the_programs_zones() {
     let scratch = support::ScratchDir::new("cli-runtime-labels");
-    // The program runs its zone once microscope has read its sites, as
-    // its marks are recorded only from then.
     let program = "import sys, time, microscope\nwork = microscope.zone('work')\n\
         sys.stdin.readline()\n\
         with work:\n    end = time.monotonic() + 0.5\n    \
@@ -6408,8 +6006,6 @@ fn runtime_labels_stay_out_of_the_programs_zones() {
     assert!(lines[labels + 2].contains(" gil=held "), "{report}");
 }
 
-/// An inlined helper that does a loop's work takes its own time from the
-/// function it was inlined into, unless the report folds inlines.
 #[test]
 fn report_folds_inlined_functions_into_their_callers() {
     let scratch = support::ScratchDir::new("cli-fold-inlines");
@@ -6435,7 +6031,6 @@ fn report_folds_inlined_functions_into_their_callers() {
 
     let folded = assert_success(microscope(&["report", "--fold-inlines", &profile]));
     assert!(row(&folded, "step").is_none(), "{folded}");
-    // All of scan's time is its own once step is part of it.
     let costs = row(&folded, "scan").map(|row| {
         let columns: Vec<_> = row.split_whitespace().collect();
         (columns[0].to_owned(), columns[1].to_owned())
@@ -6458,8 +6053,6 @@ fn report_folds_inlined_functions_into_their_callers() {
     );
 }
 
-/// An inverted tree nests each function's callers under it, out to the
-/// outermost frame, for every function or only the focused one.
 #[test]
 fn report_inverts_the_call_tree_into_callers() {
     let scratch = support::ScratchDir::new("cli-report-invert");
@@ -6493,7 +6086,6 @@ fn report_inverts_the_call_tree_into_callers() {
     let focused = assert_success(microscope(&[
         "report", "--focus", "leaf", "--invert", "--tree", &profile,
     ]));
-    // Each name with where it starts, which its depth indents by two.
     let rows: Vec<(usize, &str)> = focused
         .lines()
         .skip_while(|line| !line.ends_with("function"))
@@ -6525,9 +6117,6 @@ fn report_inverts_the_call_tree_into_callers() {
     assert_failure(&microscope(&["report", "--invert", &profile]), "--tree");
 }
 
-/// The time threads spent off their CPUs is a sum over threads, which can
-/// be many times as long as the recording, so the report says how many it
-/// sums and which thread was off longest.
 #[test]
 fn report_says_off_cpu_time_is_summed_over_threads() {
     let scratch = support::ScratchDir::new("cli-offcpu");
@@ -6556,34 +6145,22 @@ fn report_says_off_cpu_time_is_summed_over_threads() {
         .next()
         .and_then(|count| count.parse().ok())
         .unwrap_or_else(|| panic!("{line:?} begins with no thread count"));
-    // main waits for its three threads, the sleeper naps, and each spinner
-    // is preempted by the other: all four leave their CPUs.
     assert_eq!(threads, 4, "{line}");
     assert!(line.contains(" threads were off their CPUs for "), "{line}");
     assert!(line.contains(" between them: "), "{line}");
     assert!(line.contains(" preempted; longest: "), "{line}");
 }
 
-/// A profile of several processes lists them with their command lines,
-/// and a report can be of one process, one thread, or the processes whose
-/// command line holds some text.
 #[test]
 fn report_lists_processes_and_selects_them() {
     let scratch = support::ScratchDir::new("cli-processes");
     let profile = scratch.path().join("two.usprof");
 
-    // A directory long enough that each command line is too long for the
-    // process table, as a Nix store path makes it: the table must still
-    // tell the processes apart by their arguments.
     let directory = scratch.path().join("d".repeat(100));
     fs::create_dir(&directory).expect("make the long directory");
     let program = directory.join("profile-vdso");
     fs::copy(fixture("build/test-programs/profile-vdso"), &program).expect("copy the program");
     let program = program.to_string_lossy();
-    // Each reads the clock for some 0.6 s. A command line is read when its
-    // process's first sample is processed, and a recorder that stalls
-    // loading debug information can get there 0.2 s after a shorter run
-    // has ended.
     let script = format!("{program} 30000000 & {program} 30000001; wait");
     let recorded = microscope_command()
         .args(["record", "--off-cpu", "off", "-o"])
@@ -6645,7 +6222,6 @@ fn report_lists_processes_and_selects_them() {
             .unwrap_or_else(|| panic!("{line:?}"))
     };
 
-    // One process is part of the whole, and its main thread is all of it.
     let by_pid = selected("--pid", &first.to_string());
     let one = seconds(&by_pid);
     let both = seconds(&selected("--command", "/profile-vdso 3000000"));
@@ -6673,10 +6249,6 @@ fn record_writes_a_profile_that_report_summarizes() {
     let scratch = support::ScratchDir::new("cli-record");
     let profile = scratch.path().join("leaf.usprof");
     let program = fixture("build/test-programs/profile-stacks-gcc-o0");
-    // The fixture keeps frame pointers, so a small copy still completes
-    // every stack. Six deep copies fill the smaller rings a recording gets
-    // while others run beside it, and a starved reader then loses calls
-    // made back to back.
     let recorded = microscope_command()
         .args([
             "record",
@@ -6699,8 +6271,6 @@ fn record_writes_a_profile_that_report_summarizes() {
         "{}",
         String::from_utf8_lossy(&recorded.stderr)
     );
-    // Each thread calls leaf three times, and the report says what the
-    // recording kept of the six.
     let kept = support::profile::accounted(
         &microscope::profiler::Profile::read(&profile)
             .expect("read the profile")
@@ -6763,8 +6333,6 @@ fn record_writes_a_profile_that_report_summarizes() {
         );
     }
 
-    // A base another build recorded may name functions otherwise, which a
-    // comparison says; one this build recorded does not.
     let profile = profile.to_string_lossy();
     let elsewhere = scratch.path().join("elsewhere.usprof");
     microscope::profiler::Profile::of_stacks("executions", &[(&[("leaf", "leaf.c", 1)], 1)])
@@ -6806,7 +6374,6 @@ fn catch_syscall_stops_where_strace_would_print_and_reads_the_call() {
             "(integer) $arg0 = 1",
             r#"stopped at catchpoint c1 as the call returned: write(1, "to stdout\n", 10) = 10"#,
             "(integer) $ret = 10",
-            // Both writes count, at their entries and exits.
             "c1: write at entry and exit, if $arg0 == 1, 4 hits",
             "deleted catchpoint c1",
             "no catchpoints",
@@ -6815,9 +6382,6 @@ fn catch_syscall_stops_where_strace_would_print_and_reads_the_call() {
     );
 }
 
-/// A client that falls behind the debugger's events, as one does when a
-/// stop loads more modules at once than the events it holds, as CPython's
-/// JIT can register, still learns how its execution ended.
 #[test]
 fn a_run_that_misses_events_still_stops() {
     let output = microscope_command()
@@ -6831,7 +6395,6 @@ fn a_run_that_misses_events_still_stops() {
     assert!(stdout.contains("stopped at breakpoint 1"), "{stdout}");
 }
 
-/// Writes an executable script whose first line is `line`.
 fn script(path: &std::path::Path, line: &str) {
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -6839,10 +6402,6 @@ fn script(path: &std::path::Path, line: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("make it executable");
 }
 
-/// A script runs as the kernel runs it: its interpreter, named directly,
-/// through env, or through another script, is followed to exec-target,
-/// whose breakpoint set before the run is hit, and which sees the same
-/// arguments and exits as it does without microscope.
 #[test]
 fn scripts_run_their_interpreters_and_stop_in_the_program_they_reach() {
     let scratch = support::ScratchDir::new("scripts");
@@ -6884,7 +6443,6 @@ fn scripts_run_their_interpreters_and_stop_in_the_program_they_reach() {
         );
     }
 
-    // A script whose interpreter is missing says so before anything runs.
     let missing = scratch.path().join("missing");
     script(&missing, "#!/nonexistent/node --flag");
     let shown = missing.display().to_string();
@@ -6894,7 +6452,6 @@ fn scripts_run_their_interpreters_and_stop_in_the_program_they_reach() {
     );
 }
 
-/// The file `name` resolves to on `PATH`.
 fn which(name: &str) -> PathBuf {
     std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
         .map(|directory| directory.join(name))
@@ -6902,13 +6459,6 @@ fn which(name: &str) -> PathBuf {
         .unwrap_or_else(|| panic!("no {name} on PATH"))
 }
 
-/// In a program that executes another, a breakpoint nothing loaded has
-/// waits for it, with a notice, while a misspelling of a name it has is
-/// still refused. A run goes through the exec, saying so, unless
-/// `catch exec` stops it there.
-/// The processes a launched program forks join the session with its
-/// breakpoints. A run stops in, and selects, the one that stopped; each
-/// member's commands act on it alone; and the run ends with the program.
 #[test]
 fn fork_children_join_the_session_and_each_stops_where_it_hits() {
     let stdout = batch(
@@ -6941,7 +6491,6 @@ fn fork_children_join_the_session_and_each_stops_where_it_hits() {
             "* [2] process ",
             "stopped at breakpoint 1 (hit 1)",
             "selected [1]",
-            // The program waits for its child, which only it does.
             " in wait4",
             "[2] exited with status 0",
             "[3] process ",
@@ -6952,12 +6501,9 @@ fn fork_children_join_the_session_and_each_stops_where_it_hits() {
             "inferior exited with status 0",
         ],
     );
-    // The program's own exit ends the run, and says so once.
     assert!(!stdout.contains("[1] exited"), "{stdout}");
 }
 
-/// `--follow none` leaves every child to run without microscope, which
-/// says so, and the program's breakpoints stay its own.
 #[test]
 fn follow_none_leaves_fork_children_to_run_on_their_own() {
     let stdout = batch(
@@ -6981,10 +6527,6 @@ fn follow_none_leaves_fork_children_to_run_on_their_own() {
     assert!(stdout.contains("inferior exited with status 0"), "{stdout}");
 }
 
-/// A member's copy of a breakpoint may have another id than the group's,
-/// as when the group deleted a breakpoint before the member joined. A stop
-/// at a copy says the copy's temporary breakpoint was deleted only when it
-/// was.
 #[test]
 fn a_members_stop_says_a_temporary_was_deleted_only_when_it_was() {
     let arguments = ["build/test-programs/process-tree", "--", "1", "direct"];
@@ -7018,8 +6560,6 @@ fn a_members_stop_says_a_temporary_was_deleted_only_when_it_was() {
     );
 }
 
-/// `detach process N` lets a stopped member run on alone, without the
-/// group's breakpoints, while the rest of the group stays debugged.
 #[test]
 fn a_detached_member_runs_on_alone() {
     let stdout = batch(
@@ -7041,7 +6581,6 @@ fn a_detached_member_runs_on_alone() {
             "* [1] process ",
             "  [2] process ",
             "  detached",
-            // process-tree exits with the number of children that went wrong.
             "inferior exited with status 0",
         ],
     );
@@ -7081,8 +6620,6 @@ fn a_program_that_executes_another_is_followed_into_it() {
     );
 }
 
-/// `print` shows a JavaScript value across lines as `console.log` writes
-/// it, and `print/l` keeps it to one line.
 #[test]
 fn print_shows_a_javascript_value_as_node_writes_it() {
     let stdout = batch(
@@ -7106,10 +6643,6 @@ fn print_shows_a_javascript_value_as_node_writes_it() {
     );
 }
 
-/// A Node core's `tasks` lists what its event loops wait on, each by what
-/// it waits for and the callback Node will call, and its thread-pool jobs
-/// on their threads; grouped, the items with no callback are one group.
-/// `handles` is the same list under Node's name for it.
 #[test]
 fn a_node_cores_tasks_show_each_callback_and_pool_job() {
     let node = std::path::Path::new(&std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE"))
@@ -7129,17 +6662,12 @@ fn a_node_cores_tasks_show_each_callback_and_pool_job() {
             " — thread-pool job (thread ",
             "1 handle in callback sessionTimeout at tests/fixtures/node/tasks.js:78: 2\n",
             " handles in <no callback>: 7, 9,",
-            // Node calls its tasks handles: `handles` lists them, while
-            // `handle` stays the command that sets how a signal stops.
             "\n  [2] timeout 30000 ms — callback sessionTimeout at ",
             "\nSIGUSR2   no    yes    yes\n",
         ],
     );
 }
 
-/// `tasks` asks for the stacks of only the tasks that have one: in a Node
-/// core, its two thread-pool jobs, and none of its handles, requests, and
-/// timers, each of which would have the runtime walk them all again.
 #[test]
 fn tasks_read_no_stack_of_a_stackless_task() {
     let scratch = support::ScratchDir::new("stackless-backtraces");
@@ -7167,7 +6695,6 @@ fn tasks_read_no_stack_of_a_stackless_task() {
         .filter(|line| line.contains("request backtrace"))
         .count();
     assert_eq!(backtraces, jobs, "{contents}");
-    // A stackless task's stack says why it has none, as `-t` shows it.
     assert!(
         stdout.contains(
             "are unavailable: it has no frames because it does not run until its runtime calls its callback\n"

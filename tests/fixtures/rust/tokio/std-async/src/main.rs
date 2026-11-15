@@ -1,6 +1,6 @@
-//! Async functions under a small executor written with `std::task::Wake`,
-//! with no runtime crate. Two tasks take turns, so each resumes on a stack
-//! the other's polls have overwritten. Lines a test names carry a marker.
+
+
+
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -9,8 +9,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 
-/// A future that is pending twice, then ready, so that an await of it
-/// resumes more often than it is reached.
+
+
 struct Yield {
     pending: u32,
 }
@@ -61,10 +61,10 @@ async fn walk(id: u32) -> u32 {
     total + id
 }
 
-/// A task: a future and whether it has finished.
+
 type Task = Pin<Box<dyn Future<Output = ()>>>;
 
-/// Wakes nothing: the executor polls every task in turn.
+
 struct Noop;
 
 impl Wake for Noop {

@@ -1,13 +1,3 @@
-//! Following the processes a program starts.
-//!
-//! A group's processes are all traced by one tracer thread. A fork child of
-//! a member is handed from its parent's controller to a controller of its
-//! own on the same thread, and so never runs untraced. A process the group
-//! does not debug, such as a shell between npm and node, is watched: the
-//! thread resumes every stop it makes at once and decides again at each
-//! exec, where a process that now runs a program the group debugs gets a
-//! controller whose first stop is that exec.
-
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -28,31 +18,20 @@ use crate::{
     DebuggerEvent, ExecutionId, FollowMode, FollowPolicy, ModuleImage, ProcessId, Result, StopId,
 };
 
-/// A fork child its parent's controller hands to the tracer thread: still
-/// traced by it, stopped in its first stop, and clean of the traps it
-/// inherited.
 pub(super) struct Transfer {
     pub(super) child: Pid,
     pub(super) parent: Pid,
 
-    /// Whether it is a vfork child, which shares its parent's memory until
-    /// it executes a program.
     pub(super) vfork: bool,
 
-    /// The program it runs, which is its parent's, already read.
     pub(super) program: Option<(Executable, DebugInfo)>,
 
-    /// Whether it descends from a launched process, which the group ends
-    /// rather than leaving to run.
     pub(super) launched: bool,
 }
 
-/// A process that changes hands on the tracer thread.
 enum Handover {
     Fork(Transfer),
 
-    /// A watched process that executed a program the group debugs,
-    /// stopped at its exec event, which its new controller is given.
     Exec {
         pid: Pid,
         parent: Option<Pid>,
@@ -60,8 +39,6 @@ enum Handover {
         status: WaitEvent,
     },
 
-    /// A member whose process executed a program the group watches,
-    /// stopped at its exec event, which its controller let go of.
     Demote {
         pid: Pid,
         parent: Option<Pid>,
@@ -70,24 +47,16 @@ enum Handover {
     },
 }
 
-/// What a group's controllers share: its policy, and the processes they
-/// hand to the tracer thread, which takes each once the message that
-/// found it has been served.
 pub(super) struct Following {
     policy: Policy,
     handovers: Mutex<VecDeque<Handover>>,
     settings: Mutex<Settings>,
 }
 
-/// The session settings a group's members share. A client's change to any
-/// member's is recorded here, and every other member takes it before it
-/// serves its next message, as one that joins later does before its first.
 #[derive(Clone, Default)]
 struct Settings {
-    /// Counts the changes, so that a member knows whether it has them all.
     revision: u64,
 
-    /// Each signal's policy, as a client last chose it.
     signals: BTreeMap<Signal, crate::SignalPolicy>,
     exception_stops: Option<crate::ExceptionStops>,
     exec_stops: Option<bool>,
@@ -96,12 +65,10 @@ struct Settings {
     views: Option<Arc<crate::view::ViewSet>>,
     views_enabled: Option<bool>,
 
-    /// The group's catchpoints, whose ids are the same in every member.
     catchpoints: BTreeMap<crate::CatchpointId, crate::Catchpoint>,
     next_catchpoint: u64,
 }
 
-/// A change to the settings a group's members share.
 pub(super) enum Setting {
     Signal(Signal, crate::SignalPolicy),
     ExceptionStops(crate::ExceptionStops),
@@ -126,7 +93,6 @@ impl Following {
         }
     }
 
-    /// A catchpoint id no member of the group has used.
     pub(super) fn next_catchpoint(&self) -> crate::CatchpointId {
         let mut settings = self.settings();
         let id = crate::CatchpointId::new(settings.next_catchpoint);
@@ -142,8 +108,6 @@ impl Following {
         self.push(Handover::Fork(transfer));
     }
 
-    /// Hands over a member's process, stopped at the exec of `program`,
-    /// which the group watches.
     pub(super) fn demote(&self, pid: Pid, parent: Option<Pid>, launched: bool, program: PathBuf) {
         self.push(Handover::Demote {
             pid,
@@ -153,12 +117,10 @@ impl Following {
         });
     }
 
-    /// Whether the group debugs any process its program starts.
     pub(super) fn follows(&self) -> bool {
         self.policy.policy.mode != crate::FollowMode::None
     }
 
-    /// Whether a member that executed `program` stays one.
     pub(super) fn debugs(&self, program: &Path) -> bool {
         let inode = std::fs::metadata(program)
             .ok()
@@ -173,7 +135,6 @@ impl Following {
             .push_back(handover);
     }
 
-    /// The fork children handed over so far, as (child, parent, vfork).
     #[cfg(test)]
     pub(super) fn take_forks(&self) -> Vec<(Pid, Pid, bool)> {
         std::iter::from_fn(|| self.take())
@@ -192,25 +153,17 @@ impl Following {
     }
 }
 
-/// A controller's place in its group.
 pub(super) struct Membership {
     pub(super) following: Arc<Following>,
 
-    /// Whether the controller's process is the group's root, which follows
-    /// every program it executes, rather than one it started.
     pub(super) root: bool,
 
-    /// The member whose process started this one's, if any.
     pub(super) parent: Option<Pid>,
 
-    /// The revision of the group's settings the controller has taken.
     pub(super) settings_taken: u64,
 }
 
 impl<P: super::native::InspectionOps> Controller<P> {
-    /// Records a client's change to the session's settings as the group's,
-    /// when the session is a member of one. A change the group already has,
-    /// as a member taking the group's own makes, is not recorded again.
     pub(super) fn share(&mut self, setting: Setting) {
         let Some(membership) = self.group.as_mut() else {
             return;
@@ -255,9 +208,6 @@ impl<P: super::native::InspectionOps> Controller<P> {
             return;
         }
 
-        // A member that had every earlier change has this one too, as its
-        // own; one that lacks some takes them all again, which repeats this
-        // change harmlessly.
         let complete = membership.settings_taken == settings.revision;
         settings.revision += 1;
         if complete {
@@ -267,15 +217,10 @@ impl<P: super::native::InspectionOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Makes the session a member of a group, whose fork children go to
-    /// `following`.
     pub(super) fn join_group(&mut self, membership: Membership) {
         self.group = Some(membership);
     }
 
-    /// Takes the changes other members made to the group's settings since
-    /// the controller last did. Each is applied as the client's request for
-    /// it would be, so applying one again changes nothing.
     pub(super) fn take_group_settings(&mut self) {
         let Some(membership) = self.group.as_mut() else {
             return;
@@ -343,8 +288,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// The program a fork child of the inferior runs, which is the main
-    /// program the inferior runs now, already read.
     pub(super) fn forked_program(&self, child: Pid) -> Option<(Executable, DebugInfo)> {
         let main = self.modules.get(&self.main.id)?;
         Some((
@@ -365,14 +308,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         ))
     }
 
-    /// The group's queue, when the session hands its fork children to one.
     pub(super) fn following(&self) -> Option<&Arc<Following>> {
         self.group.as_ref().map(|group| &group.following)
     }
 
-    /// Whether a member, stopped at the exec of `program` with no other
-    /// thread left, leaves the group's debugging for its watching: the
-    /// group's root never does, nor a process the policy debugs.
     pub(super) fn demotes_at_exec(&self, program: &Path) -> bool {
         self.group
             .as_ref()
@@ -383,29 +322,20 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// What a group decides about a process whose program it now knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Decision {
-    /// Debug it as a member of its own.
     Debug,
 
-    /// Keep it traced without debugging it, until it executes another
-    /// program.
     Watch,
 }
 
-/// A group's follow policy, with what it needs to judge a program.
 pub(super) struct Policy {
     pub(super) policy: FollowPolicy,
 
-    /// The inode of the program the group was started for, which `auto`
-    /// debugs wherever it runs again.
     pub(super) launched: Option<u64>,
 }
 
 impl Policy {
-    /// Whether the group debugs a process that runs `program`, whose inode
-    /// is `inode`.
     pub(super) fn decide(&self, program: &Path, inode: Option<u64>) -> Decision {
         let named = program
             .file_name()
@@ -434,14 +364,6 @@ impl Policy {
     }
 }
 
-/// The language runtime a program runs that microscope models, by the
-/// marks it leaves in the file: V8's `v8dbg_` symbols or a `libnode`
-/// dependency for Node, CPython's `_PyRuntime` or a `libpython3`
-/// dependency, or Go's build information. A runtime in a library, as
-/// Debian's Node and nixpkgs' CPython keep theirs, is found by the
-/// executable's dependency on it, which its dynamic string table names,
-/// so no library needs to load first. Only headers, the dynamic string
-/// table, and symbol names are read.
 pub(super) fn program_runtime(program: &Path) -> Option<&'static str> {
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -481,8 +403,6 @@ pub(super) fn program_runtime(program: &Path) -> Option<&'static str> {
     None
 }
 
-/// Whether `name` matches `pattern`, where `*` matches any run of
-/// characters and `?` any one.
 pub(super) fn matches_glob(pattern: &str, name: &str) -> bool {
     let pattern = pattern.chars().collect::<Vec<_>>();
     let name = name.chars().collect::<Vec<_>>();
@@ -515,7 +435,6 @@ pub(super) fn matches_glob(pattern: &str, name: &str) -> bool {
         .is_some_and(|rest| rest.iter().all(|c| *c == '*'))
 }
 
-/// The program a process runs now, as `/proc` names it, and its inode.
 fn running_program(pid: Pid) -> Option<(PathBuf, u64)> {
     use std::os::unix::fs::MetadataExt as _;
 
@@ -525,29 +444,21 @@ fn running_program(pid: Pid) -> Option<(PathBuf, u64)> {
     Some((path, inode))
 }
 
-/// How large a member's queues are, as the library sizes a debugger's.
 #[derive(Debug, Clone, Copy)]
 pub struct Capacity {
     pub requests: usize,
     pub events: usize,
 }
 
-/// What a group's owner learns from its tracer thread.
 pub enum GroupNotice {
-    /// A process became a member, debugged by a controller of its own,
-    /// which has yet to publish its first stop.
     Joined(Joined),
 
-    /// A process is watched: it runs `program`, which the group does not
-    /// debug, and stays traced in case it executes one it does.
     Watched {
         process: ProcessId,
         parent: Option<ProcessId>,
         program: PathBuf,
     },
 
-    /// A process executed a program the group would debug but cannot
-    /// load, and runs on watched.
     Unfollowed {
         process: ProcessId,
         program: PathBuf,
@@ -555,15 +466,11 @@ pub enum GroupNotice {
     },
 }
 
-/// A new member's controller and the channels to it.
 pub struct Joined {
     pub process: ProcessId,
 
-    /// The process that started it, a member or a watched process.
     pub parent: Option<ProcessId>,
 
-    /// The program it joined by executing, or none for a fork child,
-    /// which runs its parent's.
     pub executed: Option<PathBuf>,
     pub requests: mpsc::Sender<ControllerMessage>,
     pub events: broadcast::Sender<DebuggerEvent>,
@@ -573,14 +480,12 @@ pub struct Joined {
     pub started: Started,
 }
 
-/// The first stop a new member publishes, before which it runs nothing.
 pub enum Started {
     Fork(oneshot::Receiver<Result<StopId>>),
     Exec(oneshot::Receiver<Result<ExecutionId>>),
 }
 
 impl Started {
-    /// Waits until the member has published its first stop.
     pub async fn wait(self) -> Result<()> {
         let cancelled = |_| crate::Error::RequestCancelled;
         match self {
@@ -590,7 +495,6 @@ impl Started {
     }
 }
 
-/// What a tracer thread needs to serve a group, made where the group is.
 pub(super) struct GroupSetup {
     pub(super) following: Arc<Following>,
     pub(super) notices: mpsc::UnboundedSender<GroupNotice>,
@@ -598,11 +502,8 @@ pub(super) struct GroupSetup {
     pub(super) debug_files: DebugFileSearch,
 }
 
-/// A new controller for the tracer thread to serve, and where it reports
-/// that it ended.
 pub(super) type NewMember = (Box<dyn Hosted>, oneshot::Sender<std::thread::Result<()>>);
 
-/// A group as its tracer thread serves it.
 pub(super) struct Group {
     setup: GroupSetup,
     watcher: Watcher,
@@ -628,9 +529,6 @@ impl Group {
         }
     }
 
-    /// Takes the processes controllers handed over and the statuses of
-    /// watched ones, returning the members made for them, and whether
-    /// anything was served.
     pub(super) fn serve(&mut self, host: &HostContext<'_>) -> (Vec<NewMember>, bool) {
         let mut served = self.watcher.serve();
         let mut members = Vec::new();
@@ -645,14 +543,10 @@ impl Group {
         (members, served)
     }
 
-    /// Whether a watched process has a status waiting, arranging for
-    /// `context` to be woken when one arrives otherwise.
     pub(super) fn poll(&mut self, context: &mut Context<'_>) -> bool {
         self.watcher.poll(context)
     }
 
-    /// Ends watching: launched processes are killed, attached ones
-    /// released. Returns whether every watched process is gone.
     pub(super) fn close(&mut self) -> bool {
         self.watcher.close();
         self.watcher.processes.is_empty()
@@ -777,8 +671,6 @@ impl Group {
                     launched,
                     reply,
                 });
-                // The exec stop the watcher took is the launch's initial
-                // stop, which the new controller serves next.
                 let _ = controller
                     .message_sender
                     .try_send(ControllerMessage::Wait(status));
@@ -787,7 +679,6 @@ impl Group {
         ))
     }
 
-    /// Makes a member's controller for `pid`, which `start` begins.
     fn member(
         &self,
         host: &HostContext<'_>,
@@ -838,49 +729,33 @@ impl Group {
     }
 }
 
-/// How many statuses the watcher's queue holds before the hub keeps the
-/// rest in order for it.
 const WATCHER_CAPACITY: usize = 256;
 
-/// A process the group watches.
 struct Watched {
     parent: Option<Pid>,
     launched: bool,
 }
 
-/// The processes a group traces without debugging. Each stop is resumed
-/// at once with its signal, so a watched process runs as it would
-/// untraced; only its forks, threads, execs, and exits are noted.
 struct Watcher {
     ptrace: LinuxPtrace,
     messages: mpsc::Receiver<ControllerMessage>,
     pending: VecDeque<ControllerMessage>,
 
-    /// Watched processes by thread group.
     processes: BTreeMap<Pid, Watched>,
 
-    /// The thread group of each watched thread.
     threads: BTreeMap<Pid, Pid>,
 
-    /// New threads whose first stop, for the `SIGSTOP` that stopped them
-    /// for the tracer, is yet to be resumed without it.
     fresh: Vec<Pid>,
     following: Arc<Following>,
     notices: mpsc::UnboundedSender<GroupNotice>,
 
-    /// Whether the group is ending, so that a process is ended or released
-    /// at its next stop rather than resumed.
     closing: bool,
 }
 
 impl Watcher {
-    /// Watches `pid`, a process stopped in a stop another owner took, and
-    /// resumes it. `program` names what it executed, when it left a member
-    /// for that.
     fn watch(&mut self, pid: Pid, parent: Option<Pid>, launched: bool, program: Option<PathBuf>) {
         self.processes.insert(pid, Watched { parent, launched });
         self.threads.insert(pid, pid);
-        // Statuses of the process come here from now on.
         self.ptrace.route_here(pid);
 
         if let Some(program) = program {
@@ -939,8 +814,6 @@ impl Watcher {
         }
     }
 
-    /// Kills a launched process, or stops an attached one's threads so
-    /// that each is released at its stop.
     fn end(&self, process: Pid) {
         if self
             .processes
@@ -993,8 +866,6 @@ impl Watcher {
         }
     }
 
-    /// The thread group of a watched thread, learning it for a thread whose
-    /// creation event has not been seen yet.
     fn process_of(&mut self, pid: Pid) -> Pid {
         if let Some(process) = self.threads.get(&pid) {
             return *process;
@@ -1014,9 +885,6 @@ impl Watcher {
         process
     }
 
-    /// Notes a new thread of `process`, which is a new process of its own
-    /// when it is `pid`, started by `parent`. Its first stop is yet to be
-    /// resumed without its `SIGSTOP`.
     fn note_new(&mut self, pid: Pid, process: Pid, parent: Option<Pid>) {
         if self.threads.contains_key(&pid) {
             return;
@@ -1032,8 +900,6 @@ impl Watcher {
         self.fresh.push(pid);
     }
 
-    /// Whether this is a new thread's first stop, whose `SIGSTOP` the
-    /// kernel sent to stop it for its tracer and the program never sees.
     fn first_stop(&mut self, pid: Pid) -> bool {
         let Some(index) = self.fresh.iter().position(|fresh| *fresh == pid) else {
             return false;
@@ -1050,11 +916,7 @@ impl Watcher {
         }
     }
 
-    /// Decides a process that executed a program: it becomes a member, or
-    /// runs on watched.
     fn executed(&mut self, pid: Pid) {
-        // The exec ended every other thread of the process, and the one
-        // that executed it took the leader's id.
         let process = self.process_of(pid);
         self.threads.retain(|_, group| *group != process);
         self.threads.insert(pid, pid);
@@ -1091,8 +953,6 @@ impl Watcher {
         self.resume(pid, None);
     }
 
-    /// Resumes a stopped watched thread, or while the group ends, ends or
-    /// releases it.
     fn resume(&self, pid: Pid, signal: Option<Signal>) {
         let process = self.threads.get(&pid).copied().unwrap_or(pid);
         let attached = self
@@ -1167,8 +1027,6 @@ mod tests {
         assert_eq!(decide(&none, &other), Decision::Watch);
     }
 
-    /// The glob rules, one character at a time: `*` takes any number of
-    /// characters, `?` any one, and anything else itself.
     fn glob_reference(pattern: &[char], name: &[char]) -> bool {
         match pattern.split_first() {
             None => name.is_empty(),
@@ -1179,8 +1037,6 @@ mod tests {
         }
     }
 
-    /// Every pattern of `a`, `b`, `*`, and `?` up to 5 characters agrees
-    /// with the reference on every name of `a` and `b` up to 6.
     #[test]
     fn globs_match_as_the_reference_does_on_every_short_input() {
         fn words(alphabet: &[char], longest: usize) -> Vec<Vec<char>> {

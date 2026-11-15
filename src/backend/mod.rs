@@ -30,35 +30,24 @@ pub use linux::trace_on_exec;
 pub use linux::{Asleep, ThreadFiles};
 pub use linux::{Capacity, GroupBackend, GroupNotice, Joined, Started, spawn_group};
 
-/// Identifies a file independently of the path used to open it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileIdentity {
     pub inode: u64,
 }
 
-/// An executable's contents and identity, read once when a session starts
-/// and kept only until its debug information is read.
 pub struct ExecutableSource {
     pub display_path: Arc<PathBuf>,
 
-    /// The path a launch runs: the one it was named by, links kept, as a
-    /// shell runs it. A virtual environment's interpreter is a link that
-    /// finds its environment from the path it runs as.
     pub launch_path: Arc<PathBuf>,
     pub data: Arc<[u8]>,
     pub identity: FileIdentity,
 
-    /// For an attach target, the start time that keeps a recycled process ID
-    /// from being mistaken for the process whose executable was read.
     pub process_start_time: Option<u64>,
 
-    /// Where the session finds separate debug files.
     pub debug_files: crate::debug_info::DebugFileSearch,
 }
 
 impl ExecutableSource {
-    /// What a session keeps of the executable: its identity and the facts
-    /// process control needs, but none of its bytes.
     pub fn described(self) -> Executable {
         Executable {
             c_library: linux::CLibrary::of_executable(&self.data),
@@ -72,8 +61,6 @@ impl ExecutableSource {
     }
 }
 
-/// What a session keeps of its executable once its debug information is
-/// read.
 #[derive(Clone)]
 pub struct Executable {
     pub display_path: Arc<PathBuf>,
@@ -82,18 +69,11 @@ pub struct Executable {
     pub process_start_time: Option<u64>,
     pub debug_files: crate::debug_info::DebugFileSearch,
 
-    /// The modules this executable's sessions loaded, kept for its next
-    /// session, if it keeps them.
     pub kept: Option<KeptModules>,
 
-    /// The C library the executable runs on, whose structures locate TLS.
     c_library: linux::CLibrary,
 }
 
-/// The debug information sessions of one program loaded from module files,
-/// by each file's path, for its next session to take instead of loading it
-/// again while the file is unchanged. Each keeps the image id it was bound
-/// with, which a later session gives the module too.
 #[derive(Clone, Default)]
 pub struct KeptModules(Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, KeptModule>>>);
 
@@ -111,15 +91,12 @@ impl KeptModules {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The file at `path` as it is now, to tell a kept load from a stale one.
     pub(crate) fn stamp(path: &Path) -> Option<crate::image::backing::FileStamp> {
         fs::metadata(path)
             .ok()
             .map(|metadata| crate::image::backing::FileStamp::of(&metadata))
     }
 
-    /// The image id kept for the file at `path`, while it is the file that
-    /// was loaded.
     pub(crate) fn image(&self, path: &Path) -> Option<crate::ModuleImageId> {
         let stamp = Self::stamp(path)?;
         self.held()
@@ -128,7 +105,6 @@ impl KeptModules {
             .map(|kept| kept.image)
     }
 
-    /// The debug information kept for `path` under image id `image`.
     pub(crate) fn debug(&self, path: &Path, image: crate::ModuleImageId) -> Option<DebugInfo> {
         self.held()
             .get(path)
@@ -136,8 +112,6 @@ impl KeptModules {
             .map(|kept| kept.debug.clone())
     }
 
-    /// Keeps a load of the file at `path`, stamped as it was before the
-    /// load began, in place of any earlier one.
     pub(crate) fn keep(
         &self,
         path: &Path,
@@ -153,8 +127,6 @@ impl KeptModules {
         self.held().insert(path.to_owned(), kept);
     }
 
-    /// The image id after every kept one, which a session numbers its own
-    /// images from.
     pub(crate) fn next_image(&self) -> u32 {
         self.held()
             .values()
@@ -172,16 +144,8 @@ pub fn executable_source(path: &Path) -> Result<ExecutableSource> {
     Ok(source)
 }
 
-/// The most interpreters a script's interpreter line leads through, as
-/// the kernel follows them, before the program that runs is reached.
 const MAX_INTERPRETERS: usize = 4;
 
-/// The program the kernel runs when it executes `program`: `program`
-/// itself, or for a script, the interpreter its `#!` line names, and that
-/// interpreter's own if it is a script too. The kernel reads the first
-/// word after `#!` as the interpreter's path, without searching `PATH`;
-/// the rest of the line and the script's arguments are its business, and
-/// it builds the command line itself.
 fn script_interpreter(program: &Path) -> Result<PathBuf> {
     let mut current = program.to_owned();
 
@@ -213,15 +177,10 @@ fn script_interpreter(program: &Path) -> Result<PathBuf> {
     ))
 }
 
-/// The interpreter a script's `#!` line names, or `None` for a file that
-/// is no script. As the kernel reads it, the line is at most the first 256
-/// bytes, and the path is its first word.
 fn interpreter_line(path: &Path) -> Result<Option<PathBuf>> {
     use std::io::Read as _;
     use std::os::unix::ffi::OsStrExt as _;
 
-    // Reading a FIFO would take bytes its reader needs; the kernel runs
-    // only regular files anyway.
     if !fs::metadata(path)?.is_file() {
         return Ok(None);
     }
@@ -240,9 +199,6 @@ fn interpreter_line(path: &Path) -> Result<Option<PathBuf>> {
     Ok(word.map(|word| PathBuf::from(std::ffi::OsStr::from_bytes(word))))
 }
 
-/// The file a program names: its path, or for a name with no directory and
-/// no file of that name in the current directory, the first executable file
-/// of that name on `PATH`, as gdb finds it.
 fn program_file(path: &Path) -> Result<std::borrow::Cow<'_, Path>> {
     let alone = matches!(
         path.components().collect::<Vec<_>>().as_slice(),
@@ -256,7 +212,6 @@ fn program_file(path: &Path) -> Result<std::borrow::Cow<'_, Path>> {
         .and_then(|directories| {
             std::env::split_paths(&directories)
                 .map(|directory| directory.join(path))
-                // As a shell finds it: a file this user may run.
                 .find(|candidate| {
                     fs::metadata(candidate).is_ok_and(|metadata| metadata.is_file())
                         && nix::unistd::access(candidate, nix::unistd::AccessFlags::X_OK).is_ok()
@@ -266,8 +221,6 @@ fn program_file(path: &Path) -> Result<std::borrow::Cow<'_, Path>> {
         .ok_or_else(|| Error::ProgramNotFound(path.to_owned()))
 }
 
-/// Reads a running process's executable through `/proc`, which works even
-/// when the file has since been replaced or unlinked.
 pub fn process_executable_source(process: ProcessId) -> Result<ExecutableSource> {
     let raw = i32::try_from(process.get())
         .ok()
@@ -280,8 +233,6 @@ pub fn process_executable_source(process: ProcessId) -> Result<ExecutableSource>
     read_executable_source(&proc_exe, display, Some(start_time))
 }
 
-/// Finds a process's `exe` link and the path it names. A leader that exited
-/// before the rest of its process has none, so a live thread's is used.
 fn process_exe_link(process: i32) -> std::io::Result<(PathBuf, PathBuf)> {
     let leader = PathBuf::from(format!("/proc/{process}/exe"));
     let error = match fs::read_link(&leader) {
@@ -320,7 +271,6 @@ fn read_executable_source(
     })
 }
 
-/// A thread's start time in clock ticks since boot.
 pub fn thread_start_time(process: crate::model::Pid, thread: crate::model::Tid) -> Option<u64> {
     linux::thread_start_time(process, thread)
 }
@@ -329,7 +279,6 @@ pub fn process_exited(process: crate::model::Pid) -> bool {
     linux::process_exited(process)
 }
 
-/// Returns field 22 of `/proc/<pid>/stat`, in clock ticks since boot.
 pub fn process_start_time(process: i32) -> Option<u64> {
     linux::process_start_time(process)
 }
@@ -337,17 +286,12 @@ pub fn process_start_time(process: i32) -> Option<u64> {
 pub enum ControllerMessage {
     Request(Request),
     Wait(linux::WaitEvent),
-    /// The controller reached an outstanding agent request deadline.
     AgentTimeout,
 
-    /// A message from a runtime's inspector connection.
     Inspector(linux::InspectorMessage),
 }
 
 impl ControllerMessage {
-    /// Whether the controller serves the message before inspection queued
-    /// ahead of it: run control, and the process events it classifies. A
-    /// burst of inspection never delays a step.
     pub(crate) const fn preempts_inspection(&self) -> bool {
         matches!(
             self,
@@ -364,8 +308,6 @@ impl ControllerMessage {
         )
     }
 
-    /// Whether the message only reads the stop it names, so it may wait
-    /// behind later run control and then fail as a stale request does.
     pub(crate) const fn reads_one_stop(&self) -> bool {
         matches!(
             self,
@@ -393,21 +335,15 @@ impl ControllerMessage {
     }
 }
 
-/// The channels a controller serves.
 pub struct ControllerChannels {
-    /// Lets the controller's waiter thread queue native events.
     pub sender: mpsc::Sender<ControllerMessage>,
     pub receiver: mpsc::Receiver<ControllerMessage>,
     pub events: EventSender,
 }
 
-/// Publishes debugger events to every subscribed client, recording each in
-/// the flight recorder of a development build.
 pub struct EventSender {
     sender: broadcast::Sender<DebuggerEvent>,
 
-    /// A simulated session's copy of every event, for its auditor, which
-    /// must never fall behind as a subscriber can.
     #[cfg(any(test, feature = "sim"))]
     tap: Option<mpsc::UnboundedSender<DebuggerEvent>>,
 }
@@ -419,7 +355,6 @@ impl EventSender {
     ) -> std::result::Result<usize, broadcast::error::SendError<DebuggerEvent>> {
         record!("event {event:?}");
 
-        // An auditor that has gone takes nothing.
         #[cfg(any(test, feature = "sim"))]
         if let Some(tap) = &self.tap {
             let _ = tap.send(event.clone());
@@ -428,8 +363,6 @@ impl EventSender {
         self.sender.send(event)
     }
 
-    /// Publishes to `sender`'s subscribers, and copies every event into
-    /// `tap`.
     #[cfg(any(test, feature = "sim"))]
     pub const fn tapped(
         sender: broadcast::Sender<DebuggerEvent>,
@@ -452,7 +385,6 @@ impl From<broadcast::Sender<DebuggerEvent>> for EventSender {
     }
 }
 
-/// Starts the controller for a live session of `executable`.
 pub fn spawn_controller(
     executable: Executable,
     debug_info: DebugInfo,
@@ -464,7 +396,6 @@ pub fn spawn_controller(
     linux::spawn_controller(executable, debug_info, channels)
 }
 
-/// Opens a core dump and starts the controller serving its stopped snapshot.
 pub fn open_core(
     options: &CoreDumpOptions,
     channels: ControllerChannels,
@@ -472,34 +403,26 @@ pub fn open_core(
     linux::open_core(options, channels)
 }
 
-/// The processes a name names.
 pub fn processes_named(name: &str) -> Result<Vec<crate::NamedProcess>> {
     linux::processes_named(name)
 }
 
-/// Finds a signal's exception code by name.
 pub fn signal_named(name: &str) -> Option<u64> {
     linux::Signal::named(name).map(linux::Signal::code)
 }
 
-/// Names the signal with an exception code.
 pub fn signal_name(code: u64) -> Option<String> {
     linux::Signal::from_code(code).map(linux::Signal::name)
 }
 
-/// The exception codes of every signal, in order.
 pub fn signal_codes() -> impl Iterator<Item = u64> {
     linux::Signal::all().map(linux::Signal::code)
 }
 
-/// Each thread's id and thread pointer in process `pid`, which may be
-/// running, read from its C library's lists of its threads without
-/// stopping it, or why they cannot be.
 pub fn running_thread_pointers(pid: u32) -> std::result::Result<Vec<(u32, u64)>, String> {
     linux::running_thread_pointers(pid)
 }
 
-/// The target namespace id of this process's live thread, when proven.
 pub fn target_thread_ids(
     process: u32,
     threads: &[u32],
@@ -511,7 +434,6 @@ pub fn target_thread_id(process: u32, thread: u32) -> Option<crate::runtime_mode
     linux::target_thread_id(process, thread)
 }
 
-/// Describes the platform's hardware watchpoint support.
 pub fn watchpoint_capabilities() -> crate::WatchpointCapabilities {
     linux::watchpoint_capabilities()
 }
@@ -535,7 +457,6 @@ pub fn fuzz_debug_register_plan(data: &[u8]) {
 mod tests {
     use super::*;
 
-    /// Writes a script under a fresh directory and reads its interpreter.
     fn interpreter_of(head: &[u8]) -> Option<PathBuf> {
         let directory = std::env::temp_dir().join(format!(
             "microscope-interpreter-{}-{}",
@@ -577,8 +498,6 @@ mod tests {
         }
     }
 
-    /// The kernel reads only the first 256 bytes, so a path that runs past
-    /// them is cut where the kernel cuts it.
     #[test]
     fn an_interpreter_line_ends_where_the_kernel_stops_reading() {
         let mut head = b"#!/".to_vec();

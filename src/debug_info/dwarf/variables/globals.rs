@@ -1,5 +1,3 @@
-//! The catalog of global data objects, deduplicated across units.
-
 use crate::debug_info::dwarf::DwarfSet;
 use crate::image::lines::Files;
 use std::borrow::Cow;
@@ -24,29 +22,16 @@ use super::location::copy_data_object_value_with_origins;
 use super::types::TypeArenaBuilder;
 use super::{DataObject, Metadata, MetadataAbsence, ValueDescription};
 
-/// One scope a DIE can be in, as a link to the scope enclosing it.
-///
-/// Every namespace and aggregate of every unit is a scope, and few hold
-/// globals, so a scope keeps the one name it adds, borrowed from the
-/// debug information, and a path is spelled only for a global's scope.
-/// Copying each scope's whole path into one of its own allocated three
-/// times for every aggregate a program declares.
 #[derive(Clone, Default)]
 struct GlobalScope<'data> {
-    /// The scope enclosing this one; the root encloses itself.
     parent: u32,
 
-    /// The name this scope adds to its parent's path, if any.
     name: Option<Cow<'data, str>>,
 
-    /// How many names the path has.
     depth: u32,
     routine: bool,
 }
 
-/// The scope of every DIE outside type units: the distinct scopes, the
-/// first the empty one, and for each unit its DIEs' offsets in order with
-/// the scope each has. Most DIEs share their parent's.
 struct ScopeTable<'data> {
     scopes: Vec<GlobalScope<'data>>,
     units: Vec<UnitScopes>,
@@ -59,7 +44,6 @@ struct UnitScopes {
 }
 
 impl<'data> ScopeTable<'data> {
-    /// The scope of the DIE `key` names, by its index.
     fn get(&self, key: DieKey) -> Option<u32> {
         let unit = self.units.get(key.unit)?;
         let index = unit.offsets.binary_search(&key.offset).ok()?;
@@ -78,13 +62,11 @@ impl<'data> ScopeTable<'data> {
         &self.scopes[index as usize]
     }
 
-    /// A scope's index once it is in the table.
     fn add(&mut self, scope: GlobalScope<'data>) -> u32 {
         self.scopes.push(scope);
         super::row(self.scopes.len() - 1)
     }
 
-    /// The names of a scope's path, outermost first, joined by `::`.
     fn path(&self, index: u32) -> String {
         let mut names = Vec::new();
         let mut current = self.scope(index);
@@ -141,8 +123,6 @@ impl DefinitionIndex {
                 DefinitionResolution::Existing(*definition)
             }
             _ => {
-                // Contradictory producer identities must remain separate and
-                // therefore ambiguous; never select one convincing value.
                 for identity in identities {
                     self.by_identity
                         .entry(Arc::clone(identity))
@@ -173,10 +153,6 @@ pub(super) fn load_globals<'data>(
         units: Vec::with_capacity(units.len()),
     };
 
-    // Pass one records lexical ownership for every DIE. A later definition
-    // may point backward to a declaration nested in a namespace or class.
-    // Each unit numbers its own scopes in parallel, and they are numbered
-    // in unit order once all are read, as a serial pass numbered them.
     let unit_tables = units
         .par_iter()
         .map(|unit| unit_scopes(dwarf, unit))
@@ -185,7 +161,6 @@ pub(super) fn load_globals<'data>(
     for unit_table in unit_tables {
         let (scopes, mut unit_scopes) = unit_table?;
 
-        // A unit's scope `n` past its root is the table's `first + n - 1`.
         let first = super::row(table.scopes.len());
         let global = |local: u32| if local == 0 { 0 } else { first + local - 1 };
 
@@ -206,9 +181,6 @@ pub(super) fn load_globals<'data>(
     let mut globals = Vec::<Global>::new();
     let mut definitions = DefinitionIndex::default();
 
-    // Pass two resolves every non-routine data object independently. Each
-    // unit is searched for them in parallel; what they name is resolved in
-    // unit order, which is the order types and files are numbered in.
     let found = (0..units.len())
         .into_par_iter()
         .map(|unit_index| unit_globals(units, &table, unit_index))
@@ -233,7 +205,6 @@ pub(super) fn load_globals<'data>(
                     }
                 };
 
-            // A malformed linkage name marks this entry malformed, not the module.
             let linkage =
                 |attribute| string_with_origins(dwarf, units, unit, entry, &chain, attribute);
             let linkage_result = match linkage(gimli::DW_AT_linkage_name) {
@@ -371,8 +342,6 @@ pub(super) fn load_globals<'data>(
             objects.push(object);
         }
 
-        // A unit that could not be read to its end fails the load once the
-        // globals before the failure are recorded, as in a serial pass.
         if let Some(error) = error {
             return Err(error);
         }
@@ -381,8 +350,6 @@ pub(super) fn load_globals<'data>(
     Ok(globals)
 }
 
-/// One unit's scopes, its root first and each parent by its index there,
-/// and the scope of each of its DIEs.
 fn unit_scopes<'data>(
     dwarf: &DwarfSet<'data>,
     unit: &gimli::Unit<Reader<'data>>,
@@ -450,7 +417,6 @@ fn unit_scopes<'data>(
         }
     }
 
-    // Entries follow one another, so their offsets are already in order.
     if !unit_scopes.offsets.is_sorted() {
         let mut pairs = unit_scopes
             .offsets
@@ -465,11 +431,8 @@ fn unit_scopes<'data>(
     Ok((table, unit_scopes))
 }
 
-/// A data object DIE outside any routine, its key, and its scope.
 type FoundGlobal<'data> = (DieKey, u32, gimli::DebuggingInformationEntry<Reader<'data>>);
 
-/// The data objects of unit `unit_index` outside any routine, in order,
-/// and the error that ended the search early, if one did.
 fn unit_globals<'data>(
     units: &Units<'data>,
     table: &ScopeTable<'data>,

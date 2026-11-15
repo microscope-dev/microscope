@@ -1,11 +1,3 @@
-//! Run control under load. Workers run the same function at once while
-//! the scheduler moves them between threads, their stacks grow, SIGURG
-//! arrives, and the collector runs again and again. A conditional
-//! breakpoint stops each worker at every 25th round; each stop is stepped
-//! over and finished, then continued. Every step ends in the goroutine it
-//! began in, no hit is lost or reported twice, and the program finishes
-//! its work as it does alone.
-
 use std::collections::BTreeMap;
 use std::process::Stdio;
 
@@ -21,17 +13,12 @@ use crate::support::{Scenario, ScratchDir};
 
 const BUILDS: [&str; 2] = ["torture-go-o0", "torture-go-o2"];
 
-/// The fixture's workers, their rounds, and the rounds the breakpoint
-/// stops at.
 const WORKERS: i128 = 8;
 const ROUNDS: i128 = 200;
 const EVERY: i128 = 25;
 
-/// The most stops a session may take: every hit, each stepped over and
-/// finished, with room for steps that other hits end.
 const MOST_STOPS: usize = 1000;
 
-/// An integer in a thread's innermost frame.
 async fn integer_in(scenario: &Scenario, thread: ThreadId, text: &str) -> i128 {
     let snapshot = scenario
         .operation("snapshot", scenario.handle().snapshot())
@@ -64,8 +51,6 @@ async fn integer_in(scenario: &Scenario, thread: ThreadId, text: &str) -> i128 {
     }
 }
 
-/// Records each thread's hit of `breakpoint` at the stop, by the worker's
-/// own id and round, failing on a hit seen before.
 async fn record_hits(
     scenario: &Scenario,
     breakpoint: BreakpointId,
@@ -130,7 +115,6 @@ async fn steps_under_load_stay_with_their_goroutines_and_lose_no_hit() {
             .await;
         let mut hits = BTreeMap::new();
 
-        // The goroutine the last step began in, and the worker it runs.
         let mut stepping = None;
         let mut stops = 0;
 
@@ -142,7 +126,6 @@ async fn steps_under_load_stay_with_their_goroutines_and_lose_no_hit() {
                 break;
             }
 
-            // Other threads may hit the breakpoint as a step ends, too.
             record_hits(&scenario, breakpoint, &mut hits).await;
             let next = match &reason {
                 StopReason::Breakpoint { .. } => {

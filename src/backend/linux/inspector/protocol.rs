@@ -1,7 +1,3 @@
-//! What microscope reads from Node's inspector that needs no controller:
-//! CDP values, the URL patterns breakpoints are set by, and the sockets a
-//! process listens on.
-
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -11,9 +7,6 @@ use nix::unistd::Pid;
 
 use crate::runtime_model::{ReportedLocal, ReportedValue};
 
-/// Whether `frame` runs a script, as the frames of a V8 pause do: V8's
-/// builtins, such as `Promise.reject`, record a JavaScript function but no
-/// script, and V8 lists no frame for them.
 pub(in crate::backend::linux) fn is_script_frame(frame: &crate::StackFrame) -> bool {
     frame.recorded.as_ref().is_some_and(|recorded| {
         recorded.place.is_some()
@@ -24,8 +17,6 @@ pub(in crate::backend::linux) fn is_script_frame(frame: &crate::StackFrame) -> b
     })
 }
 
-/// The variables a `Runtime.getProperties` reply lists for a scope, in
-/// its order.
 pub(super) fn scope_locals(
     properties: &serde_json::Value,
 ) -> std::result::Result<Vec<ReportedLocal>, Arc<str>> {
@@ -38,8 +29,6 @@ pub(super) fn scope_locals(
             let name = property["name"]
                 .as_str()
                 .ok_or_else(|| Arc::<str>::from("V8 listed a variable with no name"))?;
-            // V8 makes a value it cannot give an accessor, which it lists
-            // with no value.
             let value = if property.get("value").is_none() {
                 ReportedValue::Unavailable
             } else {
@@ -54,7 +43,6 @@ pub(super) fn scope_locals(
         .collect()
 }
 
-/// What a CDP `RemoteObject` says a value is.
 pub(super) fn reported_value(object: &serde_json::Value) -> ReportedValue {
     let text = |key: &str| object[key].as_str().map(Arc::<str>::from);
     match object["type"].as_str() {
@@ -89,10 +77,6 @@ pub(super) fn reported_value(object: &serde_json::Value) -> ReportedValue {
     }
 }
 
-/// A JavaScript regular expression matching the URLs of the scripts at
-/// `path`: V8 names a `CommonJS` script by its path and an ES module by its
-/// `file:` URL, percent-encoded. A relative path matches the scripts whose
-/// paths end with its whole components.
 pub(super) fn url_pattern(path: &str) -> String {
     let mut pattern = String::from(if path.starts_with('/') {
         "^(?:file://)?"
@@ -136,9 +120,6 @@ pub(super) fn url_pattern(path: &str) -> String {
     pattern
 }
 
-/// The loopback TCP sockets process `pid` listens on: its sockets, by the
-/// inodes its descriptors name, that `/proc/PID/net/tcp` lists listening on
-/// 127.0.0.1.
 pub(in crate::backend::linux) fn loopback_listeners(
     pid: Pid,
 ) -> std::result::Result<Vec<SocketAddr>, Arc<str>> {
@@ -164,8 +145,6 @@ pub(in crate::backend::linux) fn loopback_listeners(
     Ok(listeners(&table, &inodes))
 }
 
-/// The sockets of `table`, as `/proc/net/tcp` writes it, listening on
-/// 127.0.0.1 whose inodes are in `inodes`.
 fn listeners(table: &str, inodes: &BTreeSet<u64>) -> Vec<SocketAddr> {
     const LISTEN: &str = "0A";
 
@@ -179,7 +158,6 @@ fn listeners(table: &str, inodes: &BTreeSet<u64>) -> Vec<SocketAddr> {
                 return None;
             }
             let (address, port) = local.split_once(':')?;
-            // The kernel writes the address as a native-endian word.
             let address = Ipv4Addr::from(u32::from_str_radix(address, 16).ok()?.swap_bytes());
             let port = u16::from_str_radix(port, 16).ok()?;
             address

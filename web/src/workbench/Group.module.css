@@ -1,5 +1,3 @@
-/* A group: a strip of tabs over the shown pane. */
-
 .group {
   display: flex;
   flex: 1;
@@ -31,22 +29,16 @@
   color: var(--ink-3);
 }
 
-/* The shown tab of every group is raised into its pane: the pane's own
- * background, a bar over it, and full ink. */
 .group-tab.on {
   background: var(--surface);
   color: var(--ink);
   box-shadow: inset 0 2px 0 var(--ink-3);
 }
 
-/* The group keys go to marks its shown tab with the accent instead. */
 .group.focused .group-tab.on {
   box-shadow: inset 0 2px 0 var(--accent);
 }
 
-/* Each other tab that reads what the focused pane reads, such as the
- * other panes of its profile, is outlined in a dull yellow: related, not
- * shown. */
 .group-tab.linked {
   outline: 1px solid var(--linked-line);
   outline-offset: -1px;
@@ -88,8 +80,6 @@
   text-overflow: ellipsis;
 }
 
-/* The close button sits over the end of the tab, so a press anywhere around
-   it still chooses or drags the tab. */
 .group-tab:has(.group-close) [role="tab"] {
   padding-right: calc(10px + var(--close-size) + var(--close-inset));
 }

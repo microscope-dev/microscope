@@ -1,5 +1,3 @@
-// A drawing's inputs come out of its binary frame exactly, or not at all.
-
 import { describe, expect, it } from "vitest";
 
 import type { DrawInput } from "../src/protocol";
@@ -20,7 +18,7 @@ describe("decodeInputs", () => {
 
   it("refuses numbers or bytes that lie past the frame, naming the input", () => {
     const frame = new Uint8Array(12);
-    // Twelve bytes hold one f64 and half of another.
+
     expect(() =>
       decodeInputs(input({ t: "numbers", kind: "f64", offset: 0, count: 2 }), frame),
     ).toThrow(new DecodeError("samples: 2 f64 numbers at byte 0 lie past the 12 bytes sent"));
@@ -31,7 +29,7 @@ describe("decodeInputs", () => {
 
   it("refuses a count that is not whole, or a kind it does not know", () => {
     const frame = new Uint8Array(8);
-    // One and a half i16 numbers are three whole bytes.
+
     const half = input({ t: "numbers", kind: "i16", offset: 0, count: 1.5 });
     expect(() => decodeInputs(half, frame)).toThrow(DecodeError);
     expect(() => decodeInputs(half, frame)).toThrow("samples: ");

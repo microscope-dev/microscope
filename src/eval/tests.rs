@@ -1,6 +1,3 @@
-//! Runs every example in the language's reference, `docs/expressions.md`,
-//! so that the reference and the implementation cannot drift apart.
-
 use proptest::prelude::*;
 
 use super::bind::{Mode, bind};
@@ -13,7 +10,6 @@ use crate::{FloatValue, IntegerValue, ScalarValue, VariableState, VariableValue}
 
 const REFERENCE: &str = include_str!("../../docs/expressions.md");
 
-/// One `expression => outcome` row of an example block.
 struct Row<'text> {
     line: usize,
     world: Option<&'text str>,
@@ -56,14 +52,12 @@ fn rows() -> Vec<Row<'static>> {
     rows
 }
 
-/// The text of a Markdown code span, in single or double backticks.
 fn code(span: &str) -> Option<&str> {
     span.strip_prefix("`` ")
         .and_then(|inner| inner.strip_suffix(" ``"))
         .or_else(|| span.strip_prefix('`')?.strip_suffix('`'))
 }
 
-/// A value as the reference writes it.
 fn render(value: &VariableValue) -> String {
     match value {
         VariableValue::Scalar(ScalarValue::Signed(value)) => value.to_string(),
@@ -94,8 +88,6 @@ fn render(value: &VariableValue) -> String {
     }
 }
 
-/// What evaluating a row's expression in its world gives, as the reference
-/// writes it.
 fn evaluate(world_name: &str, text: &str) -> String {
     let (mode, text) = text
         .strip_prefix("assign:")
@@ -117,7 +109,6 @@ fn evaluate(world_name: &str, text: &str) -> String {
 
     let outcome = match run(&program, &mut world) {
         Ok(outcome @ (Outcome::Assign { .. } | Outcome::AssignRegister { .. })) => {
-            // The value is the target read again.
             match outcome {
                 Outcome::Assign { target, bytes, .. } => world.write(&target, &bytes),
                 Outcome::AssignRegister {
@@ -144,7 +135,6 @@ fn evaluate(world_name: &str, text: &str) -> String {
                 .map_or("?", |info| info.name.as_ref())
                 .to_owned();
             match (&value.state, cause) {
-                // Text shows as text, and a pointer to it as its address.
                 (
                     VariableState::Available {
                         value,
@@ -155,8 +145,6 @@ fn evaluate(world_name: &str, text: &str) -> String {
                 ) if !matches!(value, VariableValue::Address(_)) => {
                     format!("{} : {name}", crate::quoted_text(text))
                 }
-                // A value a presentation summarizes shows as its summary,
-                // as a Python object's does.
                 (
                     VariableState::Available {
                         presentation: Some(presentation),
@@ -172,7 +160,6 @@ fn evaluate(world_name: &str, text: &str) -> String {
             }
         }
         Ok(Outcome::Range { start, end, .. }) => format!("range {start}..{end}"),
-        // The runtime stores what a dynamic variable is given.
         Ok(Outcome::AssignDynamic { value, .. }) => match value {
             Assigned::Integer(value) => format!("gives {value}"),
             Assigned::Float(value) => format!("gives {value:?}"),
@@ -244,8 +231,6 @@ fn every_example_in_the_reference_holds() {
     );
 }
 
-/// Evaluates `text` in `world`, returning the outcome as the reference
-/// writes it.
 fn outcome(world: &mut super::fake::World, text: &str) -> String {
     let expression = Expression::parse(text).expect("parse");
     let program = bind(&expression, world, Mode::Read).expect("bind");
@@ -458,7 +443,6 @@ fn too_little_work_ends_in_an_unavailable_value_never_a_wrong_one() {
     }
 }
 
-/// Expressions from the language's grammar over the memory world's names.
 fn world_expression() -> impl Strategy<Value = String> {
     let leaf = prop_oneof![
         Just("s"),
@@ -547,11 +531,6 @@ fn world_expression() -> impl Strategy<Value = String> {
     })
 }
 
-/// Whatever an expression is, evaluating it never panics, reads only
-/// mapped memory it may, runs the same twice, and presents the type the
-/// binder computed. Most generated expressions mix types the binder
-/// refuses, so the cases that bind are counted and must not fall below a
-/// floor: about 10% bind.
 #[test]
 fn generated_expressions_evaluate_consistently() {
     use proptest::test_runner::{Config, TestRunner};
@@ -598,34 +577,24 @@ fn generated_expressions_evaluate_consistently() {
     );
 }
 
-/// What an expression of exact integers is: an integer or a truth value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Model {
     Int(Exact),
     Bool(bool),
 }
 
-/// A generated expression and what the reference says of it.
 #[derive(Debug, Clone)]
 struct Part {
     text: String,
 
-    /// Its value, or an arithmetic error at the text of the part that
-    /// failed, in the order evaluation reaches them.
     value: Result<Model, String>,
 
-    /// A literal, or `-` of one: the binder folds those into one literal,
-    /// as it does `-129i8`.
     literal: bool,
 
-    /// The first folded literal out of range, which the binder refuses
-    /// before anything runs, in a branch evaluation would skip too.
     refused: Option<String>,
 }
 
 impl Part {
-    /// The part as an operand in parentheses, which its span then
-    /// includes: an error at the part itself is at the parenthesized text.
     fn grouped(self) -> Self {
         let text = self.text.clone();
         let wrap = move |failed: String| {
@@ -651,7 +620,6 @@ impl Part {
         }
     }
 
-    /// The part combining operands, refused at the first operand that is.
     fn of(text: String, value: Result<Model, String>, operands: &[&Self]) -> Self {
         let refused = operands.iter().find_map(|operand| operand.refused.clone());
         Self {
@@ -670,7 +638,6 @@ fn truth(model: &Model) -> bool {
     }
 }
 
-/// An exact literal as the language may write it.
 fn literal() -> impl Strategy<Value = Part> {
     let value = prop_oneof![
         3 => 0_u128..300,
@@ -697,7 +664,6 @@ fn literal() -> impl Strategy<Value = Part> {
     })
 }
 
-/// `+ - * / % & | ^ << >>` of two operands, and `-` or `~` of one.
 fn integer_parts(inner: BoxedStrategy<Part>) -> impl Strategy<Value = Part> {
     use super::number::BitOperator;
 
@@ -752,7 +718,6 @@ fn integer_parts(inner: BoxedStrategy<Part>) -> impl Strategy<Value = Part> {
     prop_oneof![2 => arithmetic, 1 => prefix]
 }
 
-/// `?:` over a comparison, `&&`, `||`, `!`, or an integer's truth.
 fn conditional_parts(inner: BoxedStrategy<Part>) -> impl Strategy<Value = Part> {
     let comparison = (
         inner.clone(),
@@ -828,15 +793,9 @@ fn conditional_parts(inner: BoxedStrategy<Part>) -> impl Strategy<Value = Part> 
         })
 }
 
-/// Expressions of exact integer literals, with comparisons, truth
-/// operators, and conditionals, each with the value the language's
-/// reference gives it: exact arithmetic within -2^127..2^128, infinite
-/// two's complement for bits, and `&&`, `||`, and `?:` evaluating only
-/// what they need.
 fn literal_expression() -> impl Strategy<Value = Part> {
     literal()
         .prop_recursive(4, 24, 3, |inner| {
-            // Every operand below is written in parentheses.
             let inner = inner.prop_map(Part::grouped).boxed();
             prop_oneof![
                 6 => integer_parts(inner.clone()),
@@ -844,7 +803,6 @@ fn literal_expression() -> impl Strategy<Value = Part> {
             ]
         })
         .prop_flat_map(|whole| {
-            // A whole expression may also be a truth value.
             let comparison = (
                 Just(whole.clone().grouped()),
                 prop::sample::select(vec!["==", "<"]),
@@ -863,8 +821,6 @@ fn literal_expression() -> impl Strategy<Value = Part> {
 }
 
 proptest::proptest! {
-    // A negative operand of a bitwise operator with one above 2^127 is
-    // rare, and took a bug to find; 1024 cases cost about 0.15 s.
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(1024))]
 
     /// Literal arithmetic, comparisons, and truth operators evaluate to
@@ -882,11 +838,6 @@ proptest::proptest! {
     }
 }
 
-/// The evaluator is pure: it reaches a program only through the traits the
-/// debugger implements for it, so none of its code may reach for process
-/// control, debug information, I/O, clocks, or threads. It is one language
-/// for every source language, so it tests for none: what a language's
-/// types mean reaches it as capabilities of those traits. Tests are exempt.
 #[test]
 fn the_evaluator_stays_pure() {
     const FORBIDDEN: [&str; 14] = [
@@ -922,7 +873,6 @@ fn the_evaluator_stays_pure() {
 
         let source = std::fs::read_to_string(&path).expect("read a source file");
 
-        // Code compiled only for tests or the fuzzer may use anything.
         let source = source.split("#[cfg(test)]").next().unwrap_or_default();
         for forbidden in FORBIDDEN {
             assert!(
@@ -938,9 +888,6 @@ fn the_evaluator_stays_pure() {
     assert!(checked >= 6, "the evaluator's sources were found");
 }
 
-/// Found by `literal_expressions_evaluate_to_their_value`: a bitwise result
-/// of two exact integers beyond the range blamed its left operand, which
-/// is a fine value, rather than the operation.
 #[test]
 fn bitwise_results_out_of_range_point_at_the_operation() {
     let text = "(-(0x1)) ^ ((0o_103) | (0xb07d992beac56249596f30113b3d4011))";
@@ -955,7 +902,6 @@ fn bitwise_results_out_of_range_point_at_the_operation() {
         format!("error arithmetic at `{text}`")
     );
 
-    // An exact operand too wide for a typed one is still the culprit.
     assert_eq!(
         evaluate("scalars", "uc | 0x100"),
         "error arithmetic at `0x100`"

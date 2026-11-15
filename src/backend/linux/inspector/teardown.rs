@@ -33,10 +33,6 @@ enum Phase {
     Quiescing,
     Waiting,
     Borrowed(RequestId),
-    /// The borrowed inspector acknowledged the release, and microscope's
-    /// session closes while the program runs: a node that exits with a
-    /// session open waits for its debugger, and its inspector's thread can
-    /// crash when the session drops then.
     Closing,
     Captured {
         pid: Pid,
@@ -190,8 +186,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                     && (!created || inspector.owned_agent.is_some())
             });
         let Some((target, link)) = ready else {
-            // SIGUSR1 has already committed Node to opening a server. Run
-            // its pending callback before closing it; detaching now leaks it.
             return self.start_inspector_cleanup(Cleanup::starting(runtime, deadline));
         };
         let generation = link.generation;
@@ -503,8 +497,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(cleanup) = inferior.inspectors.cleanup.as_mut() {
             cleanup.return_hook = Some(returns_to);
         }
-        // Both functions return void. Tail-calling at Dispatch's entry retains
-        // its caller's stack and callee-saved ABI, without running a JS getter.
         registers.rip = stop.get();
         registers.rdi = agent.get();
         self.ptrace.set_registers(pid, registers)?;
@@ -571,8 +563,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return Ok(false);
             }
         };
-        // The all-stop's SIGSTOPs are collected first; the stop that does
-        // so finishes this barrier again.
         if !self.drain_requested_stops()? {
             self.detach_inferior_reporting(problem.map(Error::RuntimeAgent));
         }

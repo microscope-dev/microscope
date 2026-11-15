@@ -1,21 +1,14 @@
-// Memory as the page shows it: rows of sixteen bytes, and a selection read
-// as the types its length could be. Addresses are bigints, since a 64-bit
-// address does not fit a number. The target is little-endian, as x86-64 is.
-
 import { assert } from "./assert";
 
-/** Bytes shown in each row. */
 export const ROW = 16;
 
-/** What `mem=` names: an address, and the bytes of the value there. */
 export interface Target {
   address: bigint;
   bytes: number | null;
-  /** How many of `bytes` hold a C string, NUL included, when fewer do. */
+
   text: number | null;
 }
 
-/** Parses `0xADDRESS`, `0xADDRESS:BYTES`, or `0xADDRESS:BYTES:TEXT`. */
 export function target(text: string): Target | null {
   const match = /^(0x[0-9a-f]{1,16})(?::([1-9]\d{0,8})(?::([1-9]\d{0,8}))?)?$/iu.exec(text);
   if (!match) {
@@ -29,7 +22,6 @@ export function target(text: string): Target | null {
   return { address: BigInt(match[1] as string), bytes, text: string };
 }
 
-/** A target as a link writes it. */
 export function targetText(shown: Target): string {
   if (!shown.bytes) {
     return hex(shown.address);
@@ -38,7 +30,6 @@ export function targetText(shown: Target): string {
   return `${hex(shown.address)}:${shown.bytes}${text}`;
 }
 
-/** The memory a value row opens, as a link writes it, or null for none. */
 export function rowTarget(row: {
   memory: string | null;
   memoryBytes: number | null;
@@ -56,7 +47,6 @@ export function hex(address: bigint): string {
   return `0x${address.toString(16)}`;
 }
 
-/** The start of the row holding `address`. */
 export function rowStart(address: bigint): bigint {
   assert(address >= 0n, `row of negative address ${address}`);
   return address - (address % BigInt(ROW));
@@ -64,14 +54,10 @@ export function rowStart(address: bigint): bigint {
 
 export interface DumpRow {
   address: bigint;
-  /** Each byte, or null where nothing was read. */
+
   bytes: (number | null)[];
 }
 
-/**
- * `count` rows from the row holding `start`, filled with the bytes read at
- * `start`, given as hexadecimal pairs.
- */
 export function dumpRows(start: bigint, read: string, count: number): DumpRow[] {
   assert(Number.isInteger(count) && count >= 0, `dumping ${count} rows`);
   const first = rowStart(start);
@@ -90,7 +76,6 @@ export function dumpRows(start: bigint, read: string, count: number): DumpRow[] 
   return rows;
 }
 
-/** How a byte reads as text in the dump's right column. */
 export function printable(byte: number | null): string {
   if (byte === null) {
     return " ";
@@ -103,7 +88,6 @@ export interface Reading {
   text: string;
 }
 
-/** The selection read as integers, a float, and text, as its length allows. */
 export function readAs(bytes: readonly number[]): Reading[] {
   const readings: Reading[] = [];
   const width = bytes.length;
@@ -130,12 +114,10 @@ export function readAs(bytes: readonly number[]): Reading[] {
   return readings;
 }
 
-/** A float to the digits its type holds, without trailing zeros. */
 function float(value: number, digits: number): string {
   return Number.isFinite(value) ? String(Number(value.toPrecision(digits))) : String(value);
 }
 
-/** Bytes as a C string literal: printable ASCII as itself, the rest escaped. */
 function quoted(bytes: readonly number[]): string {
   const escapes: Record<number, string> = { 0: "\\0", 9: "\\t", 10: "\\n", 13: "\\r", 34: '\\"' };
   let text = "";

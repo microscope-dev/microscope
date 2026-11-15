@@ -1,13 +1,13 @@
-// What C++ functions return. Before each checkpoint the program prints its
-// own truth, one tab-separated line per value,
-//
-//	TRUTH	<checkpoint>	<path>	<kind>	<value>
-//
-// and then calls reached(checkpoint). Every checkpoint is named `returned-`:
-// the tests finish the function that reached it and inspect what it
-// returned, which is named for the function. Whether a small class is
-// returned in registers depends on whether copying it is trivial, which
-// only some producers record.
+
+
+
+
+
+
+
+
+
+
 #include <cstdio>
 
 volatile long sink;
@@ -40,8 +40,8 @@ struct Derived : Base {
     int own;
 };
 
-// A destructor makes copying it nontrivial, so calls pass it by reference
-// to a copy, and a function returns it in memory however small it is.
+
+
 struct Owner {
     int value;
     ~Owner() { sink = value; }
@@ -60,7 +60,7 @@ __attribute__((noinline)) int area(int n) {
     reach("returned-int");
     return value;
 }
-} // namespace shapes
+}
 
 __attribute__((noinline)) Plain r_plain(int n) {
     Plain value{n + 1, n * -1000000000000L};

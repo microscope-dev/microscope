@@ -1,18 +1,3 @@
-//! Node's event loop's work, as tasks: each JavaScript thread's
-//! `Environment`, reached through its isolate's current context, keeps the
-//! handles and requests it waits on in two lists (`env.h`), whose offsets
-//! Node's `nodedbg_` variables give; its timers are in `internal/timers`'
-//! lists ([`super::timers`]); and libuv's thread pool runs its jobs on
-//! threads of its own ([`super::pool`]).
-//!
-//! A handle or request runs no code until Node calls its callback, so it
-//! has no frames. A thread-pool job runs on its pool thread, whose frames
-//! are its own.
-//!
-//! Numbers are Node's async ids: the main thread's `Environment`'s as Node
-//! gives them, a worker's above `2^32`, by the worker's thread, so that no
-//! two collide and each keeps its number while it lives.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -22,42 +7,25 @@ use crate::image::v8::{Constant, Field, NodeTasks, ScopeInfoSlice, scope_info_sl
 use crate::runtime_model::{RuntimeImage, RuntimeTask, TaskCallback};
 use crate::{TaskState, ThreadId, ThreadLocal};
 
-/// The bit that marks a thread-pool job's number, which is its thread's
-/// with this bit set.
 const POOL_JOB: u64 = 1 << 62;
 
-/// Where a worker's thread sits in the numbers of its `Environment`'s
-/// work.
 const WORKER_SHIFT: u32 = 32;
 
-/// The most entries of one list read: a process waits on far fewer.
 const MOST_ENTRIES: usize = 1 << 16;
 
-/// The libuv handle and request a wrapper owns, past its list node, as
-/// `HandleWrap` (`handle_wrap.h`) declares `handle_` and `ReqWrap`
-/// (`req_wrap.h`) its inline `req_`. Each is proven by the libuv
-/// structure's `data`, which Node points back at the wrapper.
 const HANDLE_AFTER_NODE: u64 = 16;
 const REQUEST_AFTER_NODE: u64 = 24;
 
-/// libuv's public layout (`uv.h`): every handle's and request's `data`
-/// first; a handle's type after its loop, and its flags after
-/// `UV_HANDLE_FIELDS` (`unix.h`'s `next_closing`, then `flags`); a
-/// request's type after `data`; and a file request's operation and path
-/// after `UV_REQ_FIELDS`.
 const UV_HANDLE_TYPE: u64 = 16;
 const UV_HANDLE_FLAGS: u64 = 88;
 const UV_REQUEST_TYPE: u64 = 8;
 const UV_FS_TYPE: u64 = 64;
 const UV_FS_PATH: u64 = 104;
 
-/// libuv's handle flags (`uv-common.h`).
 const UV_HANDLE_CLOSING: u32 = 0x1;
 const UV_HANDLE_ACTIVE: u32 = 0x4;
 const UV_HANDLE_REF: u32 = 0x8;
 
-/// libuv's handle types, from `UV_UNKNOWN_HANDLE` (`uv.h`'s
-/// `UV_HANDLE_TYPE_MAP`, then `UV_FILE`).
 const UV_HANDLE_TYPES: [&str; 18] = [
     "unknown",
     "async",
@@ -79,7 +47,6 @@ const UV_HANDLE_TYPES: [&str; 18] = [
     "file",
 ];
 
-/// libuv's request types, from `UV_UNKNOWN_REQ` (`UV_REQ_TYPE_MAP`).
 const UV_REQUEST_TYPES: [&str; 11] = [
     "unknown",
     "req",
@@ -102,7 +69,6 @@ const _: () = assert!(matches!(UV_REQUEST_TYPES[UV_FS as usize].as_bytes(), b"fs
 const _: () = assert!((UV_HANDLE_CLOSING | UV_HANDLE_ACTIVE | UV_HANDLE_REF).count_ones() == 3);
 const _: () = assert!(WORKER_SHIFT < POOL_JOB.trailing_zeros());
 
-/// libuv's file operations, from `UV_FS_CUSTOM` (`uv_fs_type`).
 const UV_FS_OPERATIONS: [&str; 37] = [
     "custom",
     "open",
@@ -143,8 +109,6 @@ const UV_FS_OPERATIONS: [&str; 37] = [
     "lutime",
 ];
 
-/// Whose `Environment` a task is in: the main thread's, or the worker's
-/// that runs on a thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Owner {
     Main,
@@ -152,7 +116,6 @@ pub(super) enum Owner {
 }
 
 impl Owner {
-    /// The number of the work Node gave `async_id` in this `Environment`.
     pub(super) fn number(self, async_id: f64) -> Result<u64, Problem> {
         let limit = f64::from(u32::MAX);
         if !(1.0..=limit).contains(&async_id) || async_id.fract() != 0.0 {
@@ -167,8 +130,6 @@ impl Owner {
         let number = match self {
             Self::Main => id,
             Self::Worker(thread) => {
-                // Linux's thread ids are below 2^22, and none is 0, whose
-                // numbers would be the main thread's.
                 if thread.get() == 0 {
                     return Err(
                         "a worker on thread 0 has no numbers apart from the main thread's".into(),
@@ -193,8 +154,6 @@ impl Owner {
 }
 
 impl Owner {
-    /// Whose `Environment` the work numbered `number` is in, by the
-    /// numbering [`Owner::number`] gives.
     pub(super) const fn of(number: u64) -> Self {
         match number >> WORKER_SHIFT {
             0 => Self::Main,
@@ -203,11 +162,6 @@ impl Owner {
     }
 }
 
-/// Whether the entry this stop's listing located at `locator` is still the
-/// handle, request, or timer numbered `number`, reading that entry alone: a
-/// wrapper whose JavaScript object points back at it and whose async id
-/// gives the number, or a `Timeout` of the owner's `internal/timers` whose
-/// async id does.
 pub(super) fn located(
     walk: &mut Walk<'_>,
     isolate: ThreadLocal,
@@ -217,7 +171,6 @@ pub(super) fn located(
     let reader = walk.reader;
     let owner = Owner::of(number);
     let Some(timer) = reader.object(locator)? else {
-        // A wrapper is a C++ object, whose address carries no tag.
         let (_, _, persistent) = layouts(&reader, walk.layout)?;
         let (async_id, _) = async_ids(&reader, walk.layout, locator)?;
         return Ok(owner.number(async_id).ok() == Some(number)
@@ -238,12 +191,10 @@ pub(super) fn located(
     super::timers::located(walk, environment, timer, number)
 }
 
-/// The number of the thread-pool job `thread` runs.
 pub(super) const fn pool_job(thread: ThreadId) -> u64 {
     POOL_JOB | thread.get()
 }
 
-/// The pool thread whose job `number` is, if it is a job's.
 pub(super) const fn pool_thread(number: u64) -> Option<ThreadId> {
     if number & POOL_JOB == 0 {
         None
@@ -252,14 +203,12 @@ pub(super) const fn pool_thread(number: u64) -> Option<ThreadId> {
     }
 }
 
-/// One JavaScript thread's `Environment`.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Environment {
     pub(super) address: u64,
     pub(super) owner: Owner,
 }
 
-/// What the walk needs at a stop besides memory.
 pub(super) struct Walk<'a> {
     pub(super) reader: Reader<'a>,
     pub(super) layout: &'a NodeTasks,
@@ -267,8 +216,6 @@ pub(super) struct Walk<'a> {
     pub(super) table: &'a mut Table,
 }
 
-/// Every task of every JavaScript thread's `Environment`, by number, with
-/// why some could not be read.
 pub(super) fn listed(
     walk: &mut Walk<'_>,
     isolate: ThreadLocal,
@@ -292,8 +239,6 @@ pub(super) fn listed(
         }
     }
     tasks.sort_by_key(|task| task.number);
-    // Numbers are unique by Node's async ids; two tasks with one number
-    // mean memory the walk misread.
     if tasks
         .windows(2)
         .any(|pair| matches!(pair, [a, b] if a.number == b.number))
@@ -309,8 +254,6 @@ pub(super) fn listed(
     (tasks, gaps)
 }
 
-/// The `Environment` of each isolate the process's threads hold, with
-/// why any cannot be found.
 fn environments(
     reader: &Reader<'_>,
     layout: &NodeTasks,
@@ -335,9 +278,6 @@ fn environments(
     let main = stop.main_thread();
     let mut found = Vec::new();
     for (isolate, threads) in holders {
-        // From V8 13.6 a helper thread holds an isolate while it compiles
-        // for it. The main thread is known by its id; a worker's thread is
-        // known only where no helper holds its isolate too.
         let (owner, thread) = match (main, threads.as_slice()) {
             (Some(main), _) if threads.contains(&main) => (Owner::Main, main),
             (_, [thread]) => (Owner::Worker(*thread), *thread),
@@ -367,9 +307,6 @@ fn environments(
     found
 }
 
-/// The `Environment` of the context `isolate` entered, as
-/// `Environment::GetCurrent` finds it: the context's embedder data holds
-/// it beside Node's context tag.
 fn environment(reader: &Reader<'_>, layout: &NodeTasks, isolate: u64) -> Result<u64, Problem> {
     let context = reader.word(address_at(isolate, layout.current_context)?)?;
     let context = reader
@@ -403,7 +340,6 @@ fn environment(reader: &Reader<'_>, layout: &NodeTasks, isolate: u64) -> Result<
     Ok(environment)
 }
 
-/// The value of the `index`th of Node's `nodedbg_` variables at this stop.
 fn nodedbg(reader: &Reader<'_>, layout: &NodeTasks, index: usize) -> Result<u64, Problem> {
     let address = layout
         .nodedbg
@@ -413,9 +349,6 @@ fn nodedbg(reader: &Reader<'_>, layout: &NodeTasks, index: usize) -> Result<u64,
     reader.word(address.get())
 }
 
-/// One of an `Environment`'s two lists: where it is in the
-/// `Environment`, where its head is in it, where an entry's node is in
-/// the entry, and where a node keeps its neighbours.
 #[derive(Debug, Clone, Copy)]
 struct List {
     queue: u64,
@@ -425,8 +358,6 @@ struct List {
     previous: u64,
 }
 
-/// The two lists' layouts and where a `BaseObject` keeps its object, from
-/// Node's `nodedbg_` variables, which 22 and 24 set as they start.
 fn layouts(reader: &Reader<'_>, layout: &NodeTasks) -> Result<(List, List, u64), Problem> {
     let value = |index| nodedbg(reader, layout, index);
     let handles = List {
@@ -444,17 +375,12 @@ fn layouts(reader: &Reader<'_>, layout: &NodeTasks) -> Result<(List, List, u64),
         previous: value(11)?,
     };
     let persistent = value(1)?;
-    // An offset into the Environment or a wrapper is never 0, and a node's
-    // two pointers are apart: all zero is a process that has not yet set
-    // them.
     if handles.queue == 0 || requests.queue == 0 || handles.next == handles.previous {
         return Err("Node has not set its nodedbg_ variables yet".into());
     }
     Ok((handles, requests, persistent))
 }
 
-/// The entries of the list `list` of `environment`, innermost first: each
-/// entry's address, proven by its neighbours.
 fn entries(reader: &Reader<'_>, environment: u64, list: List) -> Result<Vec<u64>, Problem> {
     let head = address_at(address_at(environment, list.queue)?, list.head)?;
     let mut found = Vec::new();
@@ -484,7 +410,6 @@ fn entries(reader: &Reader<'_>, environment: u64, list: List) -> Result<Vec<u64>
     Ok(found)
 }
 
-/// The tasks of `environment`'s handles and requests, appended to `tasks`.
 fn lists(
     walk: &mut Walk<'_>,
     environment: Environment,
@@ -529,8 +454,6 @@ fn lists(
     }
 }
 
-/// Whether an entry is a handle, with where its wrapper keeps the pointer
-/// to its libuv handle, or a request, with where its libuv request is.
 #[derive(Debug, Clone, Copy)]
 enum Kind {
     Handle(u64),
@@ -543,10 +466,8 @@ fn u32_at(reader: &Reader<'_>, address: u64) -> Result<u32, Problem> {
     Ok(u32::from_le_bytes(bytes))
 }
 
-/// The C string at `address`, of at most `limit` bytes.
 fn c_string(reader: &Reader<'_>, address: u64, limit: usize) -> Result<String, Problem> {
     let mut text = Vec::new();
-    // The stop's block cache makes each byte's read cheap.
     for at in 0..limit as u64 {
         let mut byte = [0];
         reader.bytes_into(address_at(address, at)?, &mut byte)?;
@@ -558,9 +479,6 @@ fn c_string(reader: &Reader<'_>, address: u64, limit: usize) -> Result<String, P
     Err(format!("the string at {address:#x} is longer than {limit} bytes").into())
 }
 
-/// The name of the class whose vtable `vtable` points into, as its
-/// symbol, `vtable for node::TCPWrap`, gives it: Itanium's vtable pointer
-/// is two words past the vtable's start.
 fn class(walk: &Walk<'_>, vtable: u64) -> Option<String> {
     let pointer = walk
         .reader
@@ -571,9 +489,7 @@ fn class(walk: &Walk<'_>, vtable: u64) -> Option<String> {
     (start.get().checked_add(16) == Some(pointer.get())).then_some(class)
 }
 
-/// The name of Node's async provider `index`, from its table of names.
 fn provider(reader: &Reader<'_>, layout: &NodeTasks, index: u32) -> Result<String, Problem> {
-    // Node has fewer than a hundred providers.
     if index >= 256 {
         return Err(format!("the provider {index} is out of range").into());
     }
@@ -597,7 +513,6 @@ fn provider(reader: &Reader<'_>, layout: &NodeTasks, index: u32) -> Result<Strin
     Ok(name)
 }
 
-/// A wrapper's async id and its trigger's.
 fn async_ids(reader: &Reader<'_>, layout: &NodeTasks, wrap: u64) -> Result<(f64, f64), Problem> {
     Ok((
         f64::from_bits(reader.word(address_at(wrap, layout.async_id)?)?),
@@ -605,9 +520,6 @@ fn async_ids(reader: &Reader<'_>, layout: &NodeTasks, wrap: u64) -> Result<(f64,
     ))
 }
 
-/// The JavaScript object of the `BaseObject` at `wrap`, proven by the
-/// object's own pointer back to it; `None` for a wrapper whose object is
-/// gone.
 fn object(
     reader: &Reader<'_>,
     layout: &NodeTasks,
@@ -628,7 +540,6 @@ fn object(
     Ok(Some(object))
 }
 
-/// What Node calls a handle of `provider` for, in its own words.
 fn handle_noun(provider: &str) -> Option<&'static str> {
     Some(match provider {
         "TCPSERVERWRAP" => "TCP server",
@@ -661,9 +572,6 @@ fn request_noun(provider: &str) -> Option<&'static str> {
     })
 }
 
-/// The property Node calls on a handle's or request's object when its
-/// work is done (`env_properties.h`'s strings): `None` for a provider
-/// whose callback Node keeps elsewhere.
 fn callback_property(provider: &str, request: bool) -> Option<&'static str> {
     if request {
         return (provider != "FSREQPROMISE").then_some("oncomplete");
@@ -678,7 +586,6 @@ fn callback_property(provider: &str, request: bool) -> Option<&'static str> {
     })
 }
 
-/// The task of the wrapper at `wrap`.
 fn entry(
     walk: &mut Walk<'_>,
     environment: Environment,
@@ -736,7 +643,6 @@ fn entry(
         entry: None,
         parent: environment.owner.number(trigger).ok(),
         internal: false,
-        // async_hooks' name for the resource, and the wrapper's class.
         labels: std::iter::once((Arc::from("type"), Arc::from(provider)))
             .chain(class.map(|class| (Arc::from("class"), Arc::from(class))))
             .collect(),
@@ -745,8 +651,6 @@ fn entry(
     })
 }
 
-/// A handle's state and what it is, from its libuv handle at `handle`,
-/// which must point back at its wrapper.
 fn handle_state(
     reader: &Reader<'_>,
     wrap: u64,
@@ -777,7 +681,6 @@ fn handle_state(
     } else if flags & UV_HANDLE_ACTIVE == 0 {
         (TaskState::Blocked, "inactive")
     } else if server {
-        // A server's handle is active once it listens (`uv_listen`).
         (TaskState::Blocked, "listening")
     } else {
         (TaskState::Blocked, "active")
@@ -795,8 +698,6 @@ fn handle_state(
     Ok((state, format!("{noun} — {status}{unreferenced}")))
 }
 
-/// A request's state and what it is, from its libuv request at `request`,
-/// which must point back at its wrapper.
 fn request_state(
     reader: &Reader<'_>,
     wrap: u64,
@@ -853,8 +754,6 @@ fn request_state(
     Ok((TaskState::Blocked, format!("{noun} — pending")))
 }
 
-/// The own data property `name` of `object`, as a tagged word; `None`
-/// where it has none. An accessor is refused: Node's callbacks are data.
 pub(super) fn own_data(
     reader: &Reader<'_>,
     object: Object,
@@ -873,7 +772,6 @@ pub(super) fn own_data(
     Ok(None)
 }
 
-/// The function `word` holds, if it holds one.
 pub(super) fn function(reader: &Reader<'_>, word: u64) -> Result<Option<Object>, Problem> {
     let Some(object) = reader.object(word)? else {
         return Ok(None);
@@ -892,7 +790,6 @@ pub(super) fn shared(reader: &Reader<'_>, function: Object) -> Result<Object, Pr
     )
 }
 
-/// The path of the script `function` was compiled from, if it has one.
 pub(super) fn script_path(
     reader: &Reader<'_>,
     table: &mut Table,
@@ -904,15 +801,10 @@ pub(super) fn script_path(
     Ok(table.path(reader, script)?.map(|path| (script, path)))
 }
 
-/// Whether `path` is one of Node's own scripts, as `node:net`.
 fn is_nodes(path: &str) -> bool {
     path.starts_with("node:")
 }
 
-/// The callback Node will call through the function `word` holds: the
-/// function itself, or where it is a wrapper of Node's, as `fs`'s
-/// `makeCallback` makes, that captures exactly one function of the
-/// program's, that function.
 pub(super) fn callback(
     reader: &Reader<'_>,
     table: &mut Table,
@@ -942,8 +834,6 @@ pub(super) fn callback(
     describe(reader, table, shown).map(Some)
 }
 
-/// The function `function` as its callback: its name, and where its
-/// source begins.
 fn describe(
     reader: &Reader<'_>,
     table: &mut Table,
@@ -972,17 +862,11 @@ fn describe(
     })
 }
 
-/// Where the source of the function `shared` describes begins, as
-/// `SharedFunctionInfo::StartPosition` gives it: from its scope once it
-/// is compiled, else from its uncompiled data; `None` for one with none.
 pub(super) fn start_position(reader: &Reader<'_>, shared: Object) -> Result<Option<u64>, Problem> {
     let held = reader.field(shared, Field::SharedFunctionInfoNameOrScopeInfo)?;
     if let Some(scope) = reader.object(held)?
         && reader.is(scope, Constant::ScopeInfoType)?
     {
-        // Every scope but the empty one keeps its function's positions, as
-        // `ScopeInfo::HasPositionInfo` says, whatever its type: a Node
-        // module's wrapper and Node's own modules are of a script's scope.
         let flags = super::names::scope_flags(reader, scope)?;
         if flags & reader.constant(Constant::ScopeIsEmptyMask)? == 0 {
             let start = if reader.layout.has(Field::ScopeInfoPositionInfo) {
@@ -1035,7 +919,6 @@ mod tests {
     use crate::runtime_model::{ImageSymbol, Member, RuntimeImage};
     use crate::{ImageAddress, IntegerValue, ThreadId, ThreadLocal};
 
-    /// An image with no symbols, whose wrappers have no classes.
     #[derive(Debug)]
     struct Image;
 
@@ -1081,7 +964,6 @@ mod tests {
         }
     }
 
-    /// Node's task layout, its `nodedbg_` variables at 0x100 on.
     fn tasks() -> NodeTasks {
         NodeTasks {
             current_context: 0,
@@ -1099,9 +981,6 @@ mod tests {
         }
     }
 
-    /// Writes the `nodedbg_` variables: the handle list at 0x10 into the
-    /// `Environment` with its nodes `node` into their wrappers, and an
-    /// empty request list at 0x20.
     fn nodedbg(heap: &mut Heap, node: u64) {
         let values: [u64; NODEDBG.len()] = [0, 8, 0x10, 0x20, 0, 0, node, 8, 0, 0, 8, 8];
         for (index, value) in values.into_iter().enumerate() {
@@ -1141,7 +1020,6 @@ mod tests {
         let problem = listed(&heap, u64::MAX - 8).expect_err("the list's head overflows");
         assert!(problem.contains("address space"), "{problem}");
 
-        // A node below its own offset into its wrapper.
         let environment = 0x10000;
         let (handles, requests) = (environment + 0x10, environment + 0x20);
         heap.word(handles, 0x20);

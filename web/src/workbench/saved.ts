@@ -1,7 +1,3 @@
-// A layout as a browser keeps it. What comes back from storage may be from an
-// older page, or edited, or broken, so it is read field by field and checked
-// against every rule before the workbench trusts it.
-
 import {
   type Axis,
   type Child,
@@ -20,17 +16,12 @@ import {
   type SplitId,
 } from "./layout";
 
-/** Raise this, and add a migration, whenever the saved shape changes. */
 export const VERSION = 3;
 
-/** Each turns a saved layout of one version into the next version's. */
 const MIGRATIONS: Readonly<Record<number, (old: unknown) => unknown>> = {
-  // Version 2 can hide docked nodes; nothing was hidden before.
   1: (old) => ({ ...record(old, "the layout"), hidden: [] }),
-  // Version 3 keeps what panes share in links. A profile's pane kept how it
-  // looked at its profile in its params; it reads that from a link now.
+
   2: (old) => {
-    // Converts what it can read; reading the result says what is wrong.
     const layout = record(old, "the layout");
     const { panes } = layout;
     if (typeof panes !== "object" || panes === null || typeof layout.next !== "number") {
@@ -47,7 +38,7 @@ const MIGRATIONS: Readonly<Record<number, (old: unknown) => unknown>> = {
         const params = found.params as { name?: unknown; look?: unknown };
         const link = `l${next++}`;
         const look = (params.look ?? {}) as { view?: unknown };
-        // What it showed opens as that view's pane, looking as it did.
+
         const show = look.view ? { view: look.view, own: look } : null;
         links[link] = { profile: found.key, name: params.name ?? "", look, show };
         return [id, { ...found, params: { name: params.name ?? "", link } }];
@@ -112,7 +103,7 @@ function readLayout(value: unknown): Layout {
     links: Object.fromEntries(
       Object.entries(record(layout.links, "links")).map(([id, held]) => [
         ident<LinkId>(id, "l", "a link"),
-        // JSON.parse makes nothing but JSON.
+
         held as Json,
       ]),
     ),
@@ -125,7 +116,7 @@ function readPane(value: unknown): Pane {
   if (typeof pane.key !== "string") {
     throw new Malformed("a pane's key is not text");
   }
-  // JSON.parse makes nothing but JSON.
+
   return { kind: kind(pane.kind), key: pane.key, params: (pane.params ?? null) as Json };
 }
 
@@ -198,7 +189,6 @@ function count(value: unknown, what: string): number {
   return value;
 }
 
-/** An id: its letter, then its number. */
 function ident<T extends PaneId | GroupId | SplitId | LinkId>(
   value: unknown,
   letter: string,

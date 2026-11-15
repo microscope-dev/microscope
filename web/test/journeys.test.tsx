@@ -1,7 +1,3 @@
-// The journeys of driver/journeys.ts against a scripted debugger: the page
-// as a whole, in milliseconds. e2e/journeys.spec.ts runs the same journeys
-// against a real `microscope web`.
-
 import { afterEach, expect, it } from "vitest";
 import { commands } from "vitest/browser";
 

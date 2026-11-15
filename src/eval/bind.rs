@@ -1,6 +1,3 @@
-//! Binding: resolving an expression's names and types in one scope into a
-//! typed program, and refusing what its types do not allow.
-
 use std::sync::Arc;
 
 use super::error::{ErrorKind, ExpressionError};
@@ -21,41 +18,29 @@ use super::types::{
 
 use crate::{CBaseType, RecordMemberLayout, TypeKind, TypeReference};
 
-/// Whether an expression may assign.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Reading only: hovers, watches, conditions, and log messages.
     Read,
 
-    /// Assigning too: the console and `set var`.
     Assign,
 }
 
-/// The most nodes a bound program may hold.
 const MAX_BOUND_NODES: usize = 4096;
 
-/// The most wrappers `inner` steps through.
 const MAX_INNER_STEPS: usize = 64;
 
 type Bound<S> = Node<<S as Scope>::Object, <S as Scope>::Step>;
 type BindResult<S> = Result<Bound<S>, ExpressionError>;
 
-/// What a bound program's root is made into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Finish {
-    /// The value or place as written.
     AsWritten,
 
-    /// Its truth.
     Truth,
 
-    /// Its value: a place of a scalar type is read, and any other place
-    /// stays one.
     Value,
 }
 
-/// Binds `expression` in `scope`, choosing for each ambiguity the reading
-/// its name has there.
 pub fn bind<S: Scope>(
     expression: &Expression,
     scope: &S,
@@ -64,7 +49,6 @@ pub fn bind<S: Scope>(
     bind_as(expression, scope, mode, Finish::AsWritten)
 }
 
-/// Binds a breakpoint's condition, whose value is its truth.
 pub fn bind_condition<S: Scope>(
     expression: &Expression,
     scope: &S,
@@ -72,9 +56,6 @@ pub fn bind_condition<S: Scope>(
     bind_as(expression, scope, Mode::Read, Finish::Truth)
 }
 
-/// Binds an expression whose value a scope computes once and keeps, as a
-/// view's `let` does: a place of a scalar type is read, and any other
-/// place stays one.
 pub fn bind_value<S: Scope>(
     expression: &Expression,
     scope: &S,
@@ -82,8 +63,6 @@ pub fn bind_value<S: Scope>(
     bind_as(expression, scope, Mode::Read, Finish::Value)
 }
 
-/// The name of the runtime's object type that a path spells, as one
-/// plain name that the scope casts to the objects it models.
 fn dynamic_type<'p, S: Scope>(scope: &S, path: &'p Path) -> Option<&'p str> {
     match path.segments.as_slice() {
         [segment] if !path.global && scope.dynamic_type(&segment.name) => Some(&segment.name),
@@ -91,7 +70,6 @@ fn dynamic_type<'p, S: Scope>(scope: &S, path: &'p Path) -> Option<&'p str> {
     }
 }
 
-/// Whether values of a category convert only through pointers to them.
 const fn aggregate(category: &Category) -> bool {
     matches!(
         category,
@@ -157,8 +135,6 @@ fn bind_as<S: Scope>(
         Finish::Value => binder.value(root)?,
     };
 
-    // A string the expression writes is only compared; one it computes
-    // from the program's text, or a stop's `$path`, is a value of its own.
     if matches!(root.op, Op::Constant(Constant::Text(_)))
         && !matches!(tree.kind(tree.root()), NodeKind::Register(_))
     {
@@ -199,13 +175,10 @@ impl<'a, S: Scope> Binder<'a, S> {
         ExpressionError::new(kind, span, message)
     }
 
-    /// A broken invariant of the binder, which no expression can cause.
     fn broken(span: Span, fact: &str) -> ExpressionError {
         Self::error(span, ErrorKind::Unsupported, format!("internal: {fact}"))
     }
 
-    /// `$arg0` to `$arg5`, `$ret`, or `$path`: what the call that stopped
-    /// the thread passed, returned, or named.
     fn call_value(&mut self, name: &str, span: Span) -> BindResult<S> {
         let unsupported = |message: &str| Self::error(span, ErrorKind::Unsupported, message);
         let call = self
@@ -258,8 +231,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// The type a planned step reaches, refused when it reaches nothing the
-    /// debugger can compute with.
     fn reached(
         result: Option<TypeReference>,
         span: Span,
@@ -270,7 +241,6 @@ impl<'a, S: Scope> Binder<'a, S> {
             .ok_or_else(|| Self::error(span, ErrorKind::Unsupported, message()))
     }
 
-    /// An operand whose type the debugger cannot compute with.
     fn unsupported(&self, span: Span, reason: &str) -> ExpressionError {
         Self::error(
             span,
@@ -279,7 +249,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// The text a span covers, for messages.
     fn quote(&self, span: Span) -> &str {
         span.text(self.text)
     }
@@ -307,8 +276,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         match self.tree().kind(id).clone() {
             NodeKind::Name(path) => self.name(&path, span),
             NodeKind::Register(name) if name == "task" => self.node(Op::Task, Ty::Exact, span),
-            // The frame names its future `$future`, which no source
-            // variable can be named.
             NodeKind::Register(name) if name == "future" => {
                 match self
                     .scope
@@ -398,8 +365,6 @@ impl<'a, S: Scope> Binder<'a, S> {
                 field_span,
                 arrow,
             } => {
-                // `a.b.c` may name a global, as Go's `main.counter` does: the
-                // longest name the scope knows is taken first.
                 if let Some(path) = self.dotted(id) {
                     return self.name(&path, span);
                 }
@@ -501,8 +466,6 @@ impl<'a, S: Scope> Binder<'a, S> {
                 self.inner(operand, span)
             }
 
-            // A map's key binds as one, by `key_node`; a tuple anywhere
-            // else would be a value the evaluator cannot make.
             NodeKind::Tuple(_) => Err(Self::error(
                 span,
                 ErrorKind::Type,
@@ -511,9 +474,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// `inner(x)`: while `x` is a record with exactly one member of
-    /// non-zero size, and no base, that member. Zero-sized markers, such as
-    /// Rust's `PhantomData`, are not counted.
     fn inner(&mut self, mut node: Bound<S>, span: Span) -> BindResult<S> {
         for _ in 0..MAX_INNER_STEPS {
             node = self.settle(node)?;
@@ -560,9 +520,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         ))
     }
 
-    // Names.
-
-    /// A chain of `.name` selections from a name, as one dotted path.
     fn dotted(&self, id: NodeId) -> Option<Path> {
         match self.tree().kind(id) {
             NodeKind::Name(path) => Some(path.clone()),
@@ -584,7 +541,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// The text of a path's first `count` segments.
     fn prefix_text(path: &Path, count: usize) -> String {
         let mut text = String::new();
         for (index, segment) in path.segments.iter().take(count).enumerate() {
@@ -601,8 +557,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         text
     }
 
-    /// Where a path may split into a name and member selections: before
-    /// each `.`, longest name first.
     fn splits(path: &Path) -> impl Iterator<Item = usize> + '_ {
         (1..=path.segments.len()).rev().filter(|&count| {
             path.segments
@@ -611,7 +565,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         })
     }
 
-    /// Where the first `count` segments of a path are.
     #[expect(
         clippy::indexing_slicing,
         reason = "`splits` yields counts from one to the number of segments"
@@ -625,7 +578,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         path.segments[0].span.to(path.segments[count - 1].span)
     }
 
-    /// Whether a path names a value, possibly through members.
     fn names_value(scope: &S, path: &Path) -> Result<bool, ExpressionError> {
         for count in Self::splits(path) {
             let span = Self::prefix_span(path, count);
@@ -734,8 +686,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         self.node(Op::Constant(Constant::Integer(integer)), ty, span)
     }
 
-    // Literals.
-
     fn integer(
         &mut self,
         value: u128,
@@ -789,9 +739,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    // Types.
-
-    /// The type a type name means: a built-in, then the program's.
     fn resolve_type(scope: &S, name: &TypeName) -> Result<Ty, ExpressionError> {
         let span = name.span;
         let query = match &name.base {
@@ -831,8 +778,6 @@ impl<'a, S: Scope> Binder<'a, S> {
                     candidates.join(", ")
                 ),
             )),
-            // C's base types are the target's where the program describes
-            // none, as a Go program describes no `unsigned char`.
             TypeLookup::NotFound => match &name.base {
                 TypeBase::CWords(_)
                     if let Some(c) = CBaseType::from_name(&query.name)
@@ -874,8 +819,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// `offsetof(TYPE, member)`: the byte offset of one of a record's own
-    /// members, as its debug information places it.
     fn offset_constant(&mut self, ty: &Ty, member: &str, span: Span) -> BindResult<S> {
         let name = type_name(self.scope, ty);
         let Ty::Program(reference) = ty else {
@@ -924,8 +867,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// `container_of(PTR, TYPE, member)`: the address of the `TYPE` whose
-    /// `member` is at `PTR`, the member's offset before it.
     fn container_of(
         &mut self,
         pointer: Bound<S>,
@@ -939,8 +880,6 @@ impl<'a, S: Scope> Binder<'a, S> {
             return Err(self.type_error(&pointer, &category, "is not a pointer"));
         };
 
-        // The pointer points to the member's type, or to nothing in
-        // particular, so a mistyped view cannot locate the wrong object.
         let offset = self.offset_constant(&target, member, span)?;
         let member_type = match &target {
             Ty::Program(reference) => {
@@ -993,9 +932,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         self.convert(moved, Ty::Pointer(Arc::new(target)), span)
     }
 
-    // Places and values.
-
-    /// A language reference stands for what it refers to.
     fn settle(&mut self, node: Bound<S>) -> BindResult<S> {
         if matches!(self.category(&node.ty), Category::Reference) {
             return self.deref_place(node);
@@ -1004,8 +940,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         Ok(node)
     }
 
-    /// Follows a place holding a pointer or reference, with the provider's
-    /// own step, which knows implicit pointers and address classes.
     fn deref_place(&mut self, node: Bound<S>) -> BindResult<S> {
         let span = node.span;
         let Ty::Program(from) = node.ty else {
@@ -1041,7 +975,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// The place a pointer value points at.
     fn deref_value(&mut self, pointer: Bound<S>, target: &Ty, span: Span) -> BindResult<S> {
         match target {
             Ty::Program(reference) => self.node(
@@ -1068,9 +1001,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// The interpreter's object the address `operand` gives, as a cast to
-    /// the dynamic type `ty` takes it; a value of a dynamic type already is
-    /// one.
     fn interpreted(&mut self, ty: &str, operand: Bound<S>, span: Span) -> BindResult<S> {
         let operand = self.settle(operand)?;
         if matches!(operand.ty, Ty::Dynamic) {
@@ -1112,7 +1042,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// Dereferences a pointer-typed node, stored or computed.
     fn deref(&mut self, node: Bound<S>, span: Span) -> BindResult<S> {
         let node = self.settle(node)?;
         match self.category(&node.ty) {
@@ -1132,7 +1061,6 @@ impl<'a, S: Scope> Binder<'a, S> {
             )
             .with_hint("cast it to a pointer to the type it points at")),
             Category::Array { .. } => {
-                // `*array` is its first element.
                 let pointer = self.operand(node)?;
                 let Ty::Pointer(element) = pointer.ty.clone() else {
                     return Err(Self::broken(span, "an array decays to a pointer"));
@@ -1141,8 +1069,6 @@ impl<'a, S: Scope> Binder<'a, S> {
                 self.deref_value(pointer, &element, span)
             }
 
-            // A value a view presents as another, as a smart pointer
-            // presents what it points to, dereferences to that one.
             category => match &node.ty {
                 Ty::Program(from)
                     if node.is_place() && !matches!(category, Category::Opaque(_)) =>
@@ -1186,7 +1112,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// The value of a node: a place's scalar is loaded.
     fn value(&mut self, node: Bound<S>) -> BindResult<S> {
         let node = self.settle(node)?;
         if !node.is_place() {
@@ -1206,8 +1131,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// An operand of arithmetic or comparison: arrays decay to a pointer to
-    /// their first element.
     fn operand(&mut self, node: Bound<S>) -> BindResult<S> {
         let node = self.settle(node)?;
         if let Category::Array { element, .. } = self.category(&node.ty)
@@ -1232,7 +1155,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// A truth value: booleans, or numbers and pointers, true when nonzero.
     fn truth(&mut self, node: Bound<S>) -> BindResult<S> {
         let node = self.operand(node)?;
         match self.category(&node.ty) {
@@ -1242,8 +1164,6 @@ impl<'a, S: Scope> Binder<'a, S> {
             | Category::Pointer(_)
             | Category::Null
             | Category::Dynamic) => {
-                // A value of a dynamic type is true as its language says,
-                // as Python's empty containers are false.
                 let node = if matches!(category, Category::Dynamic) {
                     self.dynamic_value(node)?
                 } else {
@@ -1264,14 +1184,10 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    // Operators.
-
     fn unary(&mut self, op: UnaryOp, operand: NodeId, span: Span) -> BindResult<S> {
         if op == UnaryOp::Neg
             && let NodeKind::Integer { value, suffix } = self.tree().kind(operand).clone()
         {
-            // A negative literal of a type, such as `-128i8`, is written as
-            // the negation of a literal that alone would not fit.
             return self.integer(value, suffix, true, span);
         }
 
@@ -1324,8 +1240,6 @@ impl<'a, S: Scope> Binder<'a, S> {
                     ));
                 }
 
-                // A value of a dynamic type is at its object's address,
-                // which holds no type the evaluator knows.
                 let pointee = if matches!(operand.ty, Ty::Dynamic) {
                     Ty::Void
                 } else {
@@ -1338,9 +1252,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// Binds an operand that may be an enumerator of the other operand's
-    /// enumeration, found there when the scope finds no single value by its
-    /// name.
     fn bind_beside(&mut self, id: NodeId, other: Option<&Bound<S>>) -> BindResult<S> {
         let bound = self.bind(id);
         let Err(error) = &bound else {
@@ -1385,8 +1296,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         self.enumerator(Exact::from(found.value), enumeration, self.tree().span(id))
     }
 
-    /// Binds both operands of a binary operator, letting either name an
-    /// enumerator of the other's enumeration.
     fn operands(
         &mut self,
         left: NodeId,
@@ -1440,9 +1349,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         self.binary_bound(op, left, right, span)
     }
 
-    /// `value == Name`: whether a tagged union holds its variant `Name`,
-    /// when `name` is a bare name the scope finds no single value by and
-    /// one of the union's variants has. `None` for any other comparison.
     fn holds_variant(
         &mut self,
         value: NodeId,
@@ -1533,7 +1439,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         .map(Some)
     }
 
-    /// A binary operator other than `&&` and `||` on bound operands.
     fn binary_bound(
         &mut self,
         op: BinaryOp,
@@ -1591,8 +1496,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// The type a bit operation keeps: the wider typed operand's, the
-    /// unsigned one's at equal widths, the left's when both agree.
     fn bitwise_type(&self, left: &Ty, right: &Ty) -> Ty {
         let int = |ty: &Ty| match self.category(ty) {
             Category::Integer { int, .. } => int,
@@ -1783,8 +1686,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// The size of the elements a pointer steps over, zero for a zero-sized
-    /// type, whose elements share one address.
     fn element_size(
         &self,
         pointer: &Bound<S>,
@@ -1857,7 +1758,6 @@ impl<'a, S: Scope> Binder<'a, S> {
             );
         }
 
-        // Text compares with a string literal, equality only.
         if matches!(left.ty, Ty::Text) || matches!(right.ty, Ty::Text) {
             let (text, other) = if matches!(left.ty, Ty::Text) {
                 (left, right)
@@ -2043,11 +1943,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    // Assignment.
-
-    /// `target = value` for a variable of a dynamic type, which takes
-    /// whatever value its runtime makes of the value's, as the runtime
-    /// decides when it is stored.
     fn dynamic_assignment(
         &mut self,
         op: Option<BinaryOp>,
@@ -2082,8 +1977,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// `target = value`, or `target op= value`, which must be the whole
-    /// expression.
     fn assignment(
         &mut self,
         op: Option<BinaryOp>,
@@ -2171,8 +2064,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// `$register = value`: a number the register's width holds, or a
-    /// pointer.
     fn register_assignment(
         &mut self,
         op: Option<BinaryOp>,
@@ -2217,11 +2108,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    // Conversions.
-
-    /// A record in memory cast to one of its base classes: that base's part
-    /// of it, as C++'s `static_cast` selects it. `None` when the target is
-    /// not one of its bases.
     fn upcast(
         &mut self,
         operand: &Bound<S>,
@@ -2362,10 +2248,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    // Members, indices, lengths.
-
-    /// Whether a pointer only stands for a container a view presents,
-    /// which nothing indexes as a pointer.
     fn represents(&self, ty: &Ty) -> bool {
         matches!(ty, Ty::Program(reference) if self.scope.stands_for_container(*reference))
     }
@@ -2451,8 +2333,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// `a[i][j]...`: an array takes as many consecutive indices as it has
-    /// dimensions, and a record any its view gives it.
     fn index(&mut self, id: NodeId) -> BindResult<S> {
         let mut chain = Vec::new();
         let mut current = id;
@@ -2468,8 +2348,6 @@ impl<'a, S: Scope> Binder<'a, S> {
             node = self.settle(node)?;
             let category = self.category(&node.ty);
             match category {
-                // A value of a dynamic type takes a key or an index, as its
-                // type when it runs says.
                 Category::Dynamic if node.is_place() => {
                     node = self.dynamic_index(node, *first, *span)?;
                     pending = later;
@@ -2479,9 +2357,6 @@ impl<'a, S: Scope> Binder<'a, S> {
                     pending = later;
                 }
 
-                // A record has no indexing of its own, nor has a value its
-                // language represents as a pointer; a view that presents it
-                // as a sequence may give it some, one index at a time.
                 ref category @ (Category::Array { .. }
                 | Category::RuntimeArray
                 | Category::Slice(_)
@@ -2498,7 +2373,6 @@ impl<'a, S: Scope> Binder<'a, S> {
                         Category::Array { .. } | Category::RuntimeArray | Category::Slice(_)
                     );
 
-                    // A value a view presents as a map is indexed by key.
                     if !native && let Ok(planned) = self.scope.plan(from, StepKind::Entry) {
                         node = self.entry(node, planned, *first, *span)?;
                         pending = later;
@@ -2557,7 +2431,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         Ok(node)
     }
 
-    /// `p[i]`: the element `i` elements past the one a pointer points to.
     fn pointer_index(
         &mut self,
         node: Bound<S>,
@@ -2585,8 +2458,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         self.deref_value(moved, &target, span)
     }
 
-    /// Refuses a tuple as the index of an array, slice, or pointer, which
-    /// takes one integer in each pair of brackets.
     fn one_index(&self, base: &Bound<S>, index: NodeId) -> Result<(), ExpressionError> {
         if !matches!(self.tree().kind(index), NodeKind::Tuple(_)) {
             return Ok(());
@@ -2629,8 +2500,6 @@ impl<'a, S: Scope> Binder<'a, S> {
                 Ty::Exact,
                 span,
             ),
-            // Text, or a pointer or record a view presents with a length,
-            // such as a Go map.
             Category::Pointer(_) | Category::Record
                 if operand.is_place() && self.measured_as_text(&category, &operand.ty) =>
             {
@@ -2663,9 +2532,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// `cap(x)`: how many elements `x` has room for. An array has room for
-    /// its elements, a slice for what its descriptor records, and anything
-    /// else for what the `capacity` field of its view says.
     fn capacity(&mut self, operand: Bound<S>, span: Span) -> BindResult<S> {
         let operand = self.settle(operand)?;
         let category = self.category(&operand.ty);
@@ -2695,8 +2561,6 @@ impl<'a, S: Scope> Binder<'a, S> {
                 )
             }
 
-            // A record, or a pointer that stands for a container, may have
-            // a view that gives it a capacity.
             Category::Record if operand.is_place() => self.node(
                 Op::Capacity {
                     operand: Box::new(operand),
@@ -2718,7 +2582,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// Whether a slice type's descriptor records a capacity.
     fn records_capacity(&self, ty: &Ty) -> bool {
         let Ty::Program(reference) = ty else {
             return false;
@@ -2729,8 +2592,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         })
     }
 
-    /// Whether a slice type's elements are its language's text, as Rust's
-    /// `str` and Zig's `[]const u8` are.
     fn is_text_slice(&self, ty: &Ty) -> bool {
         let Ty::Program(reference) = ty else {
             return false;
@@ -2740,7 +2601,6 @@ impl<'a, S: Scope> Binder<'a, S> {
             .is_ok_and(|(_, info)| matches!(info.kind, TypeKind::Slice { text: true, .. }))
     }
 
-    /// Whether a type is an array, or a slice of anything but text.
     fn has_elements(&self, ty: &Ty) -> bool {
         match self.category(ty) {
             Category::Array { .. } | Category::RuntimeArray => true,
@@ -2749,15 +2609,11 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// An index or bound, as an integer.
     fn bound_index(&mut self, id: NodeId) -> BindResult<S> {
         let node = self.bind(id)?;
         self.integer_value(node)
     }
 
-    /// `base[start:end]`: a range of an array's or slice's elements, which
-    /// is only ever the whole expression, or the bytes of text between the
-    /// bounds, as a string.
     fn slice(
         &mut self,
         id: NodeId,
@@ -2817,7 +2673,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// `m[key]`: the value a map holds for a key.
     fn entry(
         &mut self,
         map: Bound<S>,
@@ -2840,10 +2695,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// A map's key as written: a tuple of keys, or one key. Where `held`,
-    /// the key indexes a value of a dynamic type, and a value of a dynamic
-    /// type in it stays a place, so that its runtime finds the item by the
-    /// object the program holds.
     fn key_node(
         &mut self,
         id: NodeId,
@@ -2880,9 +2731,6 @@ impl<'a, S: Scope> Binder<'a, S> {
             .map(KeyNode::Tuple)
     }
 
-    /// A map's key: a number, truth value, pointer, or string, or text or
-    /// a tuple the program holds. A value of a dynamic type is loaded,
-    /// unless the key is `held`.
     fn key(&mut self, node: Bound<S>, held: bool) -> BindResult<S> {
         let node = self.value(node)?;
         match self.category(&node.ty) {
@@ -2903,14 +2751,10 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    // Values of a dynamic type.
-
     fn is_dynamic(&self, node: &Bound<S>) -> bool {
         matches!(self.category(&node.ty), Category::Dynamic)
     }
 
-    /// The value of a node of a dynamic type, which the machine loads when
-    /// it is a place.
     fn dynamic_value(&mut self, node: Bound<S>) -> BindResult<S> {
         if !node.is_place() {
             return Ok(node);
@@ -2920,8 +2764,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         self.node(Op::Load(Box::new(node)), Ty::Dynamic, span)
     }
 
-    /// An operand of an operation on a value of a dynamic type: that value,
-    /// or a number or truth value, or a string where `text` allows one.
     fn dynamic_operand(&mut self, node: Bound<S>, text: bool) -> BindResult<S> {
         let node = self.operand(node)?;
         match self.category(&node.ty) {
@@ -2940,8 +2782,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
-    /// Arithmetic or a bit operation of which an operand has a dynamic
-    /// type, whose rules the operands' types when it runs choose.
     fn dynamic_arithmetic(
         &mut self,
         op: BinaryOp,
@@ -2962,8 +2802,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// `x[key]` of a value of a dynamic type: the item its value has for
-    /// the key or index when it runs.
     fn dynamic_index(&mut self, base: Bound<S>, key: NodeId, span: Span) -> BindResult<S> {
         let step = self
             .scope
@@ -2981,9 +2819,6 @@ impl<'a, S: Scope> Binder<'a, S> {
         )
     }
 
-    /// `x.name` of a value of a dynamic type: the attribute its value has
-    /// when it runs. An attribute belongs to a value, not to its type, so
-    /// one a value lacks is refused only then.
     fn dynamic_member(
         &mut self,
         base: Bound<S>,
@@ -3042,7 +2877,6 @@ impl<'a, S: Scope> Binder<'a, S> {
     }
 }
 
-/// Whether `$name` reads the call that stopped the thread.
 fn call_value(name: &str) -> bool {
     matches!(
         name,

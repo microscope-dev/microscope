@@ -1,6 +1,6 @@
-// Exceptions through Node's inspector: one the program catches, a promise
-// rejection it awaits and catches, one in Node's own code that Node
-// catches, and one nothing catches.
+
+
+
 'use strict';
 const fs = require('fs');
 
@@ -27,7 +27,7 @@ try {
 } catch (error) {
   parsed = error.name;
 }
-// Node's own code throws and catches here.
+
 const exists = fs.existsSync('/no/such/file');
 console.log(`parsed ${parsed} exists ${exists}`);
 rejects().then((outcome) => console.log(`rejection ${outcome}`));

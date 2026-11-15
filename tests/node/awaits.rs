@@ -1,9 +1,3 @@
-//! The async functions suspended in await below a thread's stack, and the
-//! promise combinators between them, held to the async frames V8's own call
-//! sites reported at the same checkpoint (`isAsync()`, which V8's
-//! `CaptureAsyncStackTrace` finds), and each placed after the function the
-//! thread resumed.
-
 use microscope::{
     Backtrace, CoreDumpOptions, DrivenFrames, SourceLanguage, StackSegment, ThreadId, VariableKind,
     VariableState,
@@ -16,8 +10,6 @@ use crate::support::truth::Report;
 use crate::truth::{Frame, Thread, check_threads, threads};
 use crate::values::presented;
 
-/// Each checkpoint of `awaits.js`, in order, with the function its printer
-/// resumed, and whether V8's chain ends where several reactions wait.
 pub const CHECKPOINTS: [(&str, &str, bool); 8] = [
     ("chain", "inner", false),
     ("resumed", "middle", false),
@@ -29,14 +21,8 @@ pub const CHECKPOINTS: [(&str, &str, bool); 8] = [
     ("shared", "sharedLeaf", true),
 ];
 
-/// The function the worker resumed, at every checkpoint.
 const WORKER_RESUMED: &str = "workerLeaf";
 
-/// Each way the await chain of `trace`, a backtrace of the thread
-/// `reported`, which resumed `resumed`, is misplaced or partial: its
-/// frames must follow the resumed function's frame, all together, each
-/// with its place known; and the chain may end early only where V8's ends
-/// at a promise several reactions wait for, which a note says.
 pub fn placement(trace: &Backtrace, resumed: &str, ends_early: bool) -> Vec<String> {
     let mut lies = Vec::new();
     let frames = &trace.frames;
@@ -84,13 +70,6 @@ pub fn placement(trace: &Backtrace, resumed: &str, ends_early: bool) -> Vec<Stri
     lies
 }
 
-/// On every build, at every checkpoint, each thread's await chain is the
-/// one V8 reported, after the function the thread resumed, and its stack
-/// is the one V8 reported above it. The variables of `middle`, suspended in
-/// await, are the ones its generator keeps: its argument, `captured` from
-/// its context, by name and by expression, `this`, which its strict call
-/// left undefined, and the string `plain` in the register its frame on the
-/// stack holds it in once the await resumed it.
 #[tokio::test]
 async fn each_await_chain_is_the_one_v8_reported() {
     let mut lies = Vec::new();
@@ -124,9 +103,6 @@ async fn each_await_chain_is_the_one_v8_reported() {
     assert!(lies.is_empty(), "{lies:#?}");
 }
 
-/// In each core dump, taken where `awaits.js` aborted at its first
-/// checkpoint, every thread's await chain is the one V8 reported just
-/// before, after the function the thread resumed.
 #[tokio::test]
 async fn a_cores_await_chains_are_the_ones_v8_reported() {
     let (checkpoint, resumed, ends_early) = CHECKPOINTS[0];
@@ -148,8 +124,6 @@ async fn a_cores_await_chains_are_the_ones_v8_reported() {
     assert!(lies.is_empty(), "{lies:#?}");
 }
 
-/// Each lie the backtraces of the threads `reported` tell at a stop of
-/// `awaits.js` whose printer resumed `resumed`.
 pub async fn check(
     scenario: &Scenario,
     reported: &[Thread],
@@ -192,8 +166,6 @@ pub async fn check(
     lies
 }
 
-/// What `middle`'s suspended variables, read at `chain`, lack of what its
-/// generator keeps.
 async fn suspended_lies(
     session: &NodeSession,
     suspended: &[(String, VariableKind, String)],
@@ -221,8 +193,6 @@ async fn suspended_lies(
     lies
 }
 
-/// Whether `plain` is named the same while `middle` is suspended and once
-/// it runs on the stack again.
 fn plain_lies(
     suspended: &[(String, VariableKind, String)],
     running: &[(String, VariableKind, String)],
@@ -244,8 +214,6 @@ fn plain_lies(
     )]
 }
 
-/// The name, kind, and summary of each variable of the frame of `middle`
-/// on the stack `segment` of the thread `native`, which it selects.
 async fn middle_variables(
     session: &NodeSession,
     native: u64,
@@ -295,9 +263,6 @@ async fn middle_variables(
         .collect()
 }
 
-/// The comparisons fail on a dropped async frame, a wrong line, a wrong
-/// combinator index, a chain that is not there, and one where V8 has none,
-/// and hold for the truth itself.
 #[test]
 fn the_await_truth_fails_on_the_lies_it_looks_for() {
     let truth = crate::truth::saved("awaits", "chain");

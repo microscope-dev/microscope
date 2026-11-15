@@ -1,7 +1,3 @@
-//! One-line summaries in one style for every language and client
-//! (`docs/views.md`): `"text"`, `len=3 [1, 2, 3]`, `None`. Clients render
-//! values with these too, so a summary and a printed value agree.
-
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -14,14 +10,10 @@ use crate::{
     VariableUnavailableReason, VariableValue, VirtualAddress,
 };
 
-/// The most elements a summary previews.
 pub const MAX_ELEMENTS: usize = 16;
 
-/// The most characters a summary's elements take before it stops.
 pub const MAX_CHARACTERS: usize = 96;
 
-/// Text in double quotes, escaping what is not printable, saying when more
-/// text follows or could not be read.
 #[must_use]
 pub fn quoted(text: &TextSummary) -> String {
     let mut output = String::from("\"");
@@ -76,7 +68,6 @@ pub fn quoted(text: &TextSummary) -> String {
     output
 }
 
-/// An integer, in decimal.
 #[must_use]
 pub fn integer(value: IntegerValue) -> String {
     match value {
@@ -85,24 +76,15 @@ pub fn integer(value: IntegerValue) -> String {
     }
 }
 
-/// Which characters a scalar's numbers stand for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Characters {
-    /// None: the scalar is a number.
     None,
 
-    /// Bytes of an encoding the type does not say, of which only ASCII
-    /// is known: C's `char`.
     Bytes,
 
-    /// Unicode code points: UTF-16 and UTF-32 units, `wchar_t`, and
-    /// Rust's `char`.
     Unicode,
 }
 
-/// A scalar, with the printable character a character type's value stands
-/// for: an ASCII one for bytes, and any but a control character for
-/// Unicode.
 #[must_use]
 pub fn scalar(value: &ScalarValue, characters: Characters) -> String {
     let with_character = |number: String, code: Option<u32>| {
@@ -134,8 +116,6 @@ pub fn scalar(value: &ScalarValue, characters: Characters) -> String {
     }
 }
 
-/// A float, exactly as its format holds it: its shortest digits that read
-/// back as it, with an exponent when it is very large or very small.
 #[must_use]
 pub fn float(value: FloatValue) -> String {
     match value {
@@ -153,9 +133,6 @@ pub fn float(value: FloatValue) -> String {
     }
 }
 
-/// [`shortest`] for a float format Rust has no type for: the fewest
-/// significant digits that read back as the value, written as Rust writes
-/// an `f64`.
 fn soft_shortest<F: rustc_apfloat::Float + std::fmt::Display>(value: F) -> String {
     if value.is_nan() {
         return "NaN".to_owned();
@@ -180,9 +157,6 @@ fn soft_shortest<F: rustc_apfloat::Float + std::fmt::Display>(value: F) -> Strin
     decimal(&digits).unwrap_or(digits)
 }
 
-/// A decimal number apfloat wrote, as `-1.25E+30` or `0.001`, written as
-/// [`shortest`] writes one: plain digits from 1e-6 to 1e21, and otherwise
-/// a significand and exponent, as `-1.25e30`.
 fn decimal(text: &str) -> Option<String> {
     let (negative, text) = text
         .strip_prefix('-')
@@ -201,7 +175,6 @@ fn decimal(text: &str) -> Option<String> {
         return None;
     }
 
-    // The digits, and where the decimal point falls among them.
     let all = format!("{whole}{fraction}");
     let leading = all.len() - all.trim_start_matches('0').len();
     let digits = all.trim_matches('0');
@@ -211,7 +184,6 @@ fn decimal(text: &str) -> Option<String> {
 
     let point = i32::try_from(whole.len()).ok()? + exponent - i32::try_from(leading).ok()?;
 
-    // The exponent of the first significant digit.
     let scientific = point - 1;
     let sign = if negative { "-" } else { "" };
     let length = i32::try_from(digits.len()).ok()?;
@@ -243,9 +215,6 @@ fn decimal(text: &str) -> Option<String> {
     })
 }
 
-/// A float's shortest round-trip digits, which take an exponent past 1e21
-/// or below 1e-6, as JavaScript writes numbers, rather than hundreds of
-/// zeros.
 fn shortest<F: std::fmt::Display + std::fmt::LowerExp>(value: F) -> String {
     let scientific = format!("{value:e}");
     let exponent = scientific
@@ -257,8 +226,6 @@ fn shortest<F: std::fmt::Display + std::fmt::LowerExp>(value: F) -> String {
     }
 }
 
-/// ECMA-262 `Number::toString(x)` in radix 10, built from the shortest
-/// round-trip digits that Rust's exponent formatting produces.
 #[must_use]
 pub fn number_to_string(x: f64) -> String {
     if x.is_nan() {
@@ -303,8 +270,6 @@ pub fn number_to_string(x: f64) -> String {
     }
 }
 
-/// util.inspect's `formatNumber`: `Number::toString`, but `-0` for
-/// negative zero.
 #[must_use]
 pub fn javascript_number(x: f64) -> String {
     if x == 0.0 && x.is_sign_negative() {
@@ -314,8 +279,6 @@ pub fn javascript_number(x: f64) -> String {
     number_to_string(x)
 }
 
-/// Python's `repr` of a float: its shortest round-trip digits, in
-/// exponent notation when the exponent is below -4 or at least 16.
 #[must_use]
 pub fn python_float(x: f64) -> String {
     if x.is_nan() {
@@ -341,7 +304,6 @@ pub fn python_float(x: f64) -> String {
     let length = i64::try_from(digits.len()).unwrap_or(i64::MAX);
     let zeros = |count: i64| "0".repeat(usize::try_from(count).unwrap_or(0));
     if (-4..16).contains(&exponent) {
-        // How many digits come before the point.
         let point = exponent + 1;
         return if point <= 0 {
             format!("{sign}0.{}{digits}", zeros(-point))
@@ -362,8 +324,6 @@ pub fn python_float(x: f64) -> String {
     )
 }
 
-/// Which characters a type's integers stand for: a one-byte character
-/// type's are bytes, and a wider one's Unicode code points.
 #[must_use]
 pub const fn characters(type_info: &TypeInfo) -> Characters {
     match &type_info.kind {
@@ -382,8 +342,6 @@ pub const fn characters(type_info: &TypeInfo) -> Characters {
     }
 }
 
-/// A value on one line: its presentation's summary when a view presents
-/// it, its text, a scalar, or a placeholder for an aggregate's parts.
 #[must_use]
 pub fn value(type_info: Option<&TypeInfo>, state: &VariableState) -> String {
     let (value, text, presentation, children) = match state {
@@ -428,7 +386,6 @@ pub fn value(type_info: Option<&TypeInfo>, state: &VariableState) -> String {
         VariableValue::NotAssociated => "<not associated>".to_owned(),
         VariableValue::Function { code, function } => self::function(*code, function.as_deref()),
         VariableValue::Array { .. } | VariableValue::Slice { .. } => "[…]".to_owned(),
-        // A record with no parts has nothing to elide; Rust's is `()`.
         VariableValue::Record if partless => {
             if type_info.is_some_and(|info| info.name.as_ref() == "()") {
                 "()".to_owned()
@@ -447,8 +404,6 @@ pub fn value(type_info: Option<&TypeInfo>, state: &VariableState) -> String {
     }
 }
 
-/// The name an enumeration-like value has: its first exact constant's, or
-/// the flag constants it combines, joined by `|`.
 #[must_use]
 pub fn symbol(value: IntegerValue, matches: &[crate::Enumerator]) -> Option<String> {
     if matches.iter().any(|enumerator| enumerator.value == value) {
@@ -466,8 +421,6 @@ pub fn symbol(value: IntegerValue, matches: &[crate::Enumerator]) -> Option<Stri
     })
 }
 
-/// A function value: the function it calls, `nil`, or the address of
-/// code no debug information names.
 #[must_use]
 pub fn function(code: Option<VirtualAddress>, function: Option<&str>) -> String {
     match (code, function) {
@@ -477,8 +430,6 @@ pub fn function(code: Option<VirtualAddress>, function: Option<&str>) -> String 
     }
 }
 
-/// A count as a summary begins: `len=3`, or `len>=3` when there are at
-/// least that many.
 fn length(count: PresentedCount) -> String {
     match count {
         PresentedCount::Exact(count) => format!("len={count}"),
@@ -486,22 +437,16 @@ fn length(count: PresentedCount) -> String {
     }
 }
 
-/// A sequence's summary: its length and the elements previewed.
 #[must_use]
 pub fn sequence(count: PresentedCount, elements: &[String], complete: bool) -> String {
     bracketed(count, elements, complete, ('[', ']'))
 }
 
-/// A map's summary: its length and the entries previewed, each `key:
-/// value`.
 #[must_use]
 pub fn map(count: PresentedCount, entries: &[String], complete: bool) -> String {
     bracketed(count, entries, complete, ('{', '}'))
 }
 
-/// A record's summary: `{name: value, …}`, or `(value, …)` when its
-/// members are positions, as a tuple's are. `complete` says whether every
-/// member is in `members`.
 #[must_use]
 pub fn record(members: &[(Arc<str>, String)], complete: bool) -> String {
     let positional = members

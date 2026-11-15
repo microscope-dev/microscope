@@ -1,10 +1,3 @@
-//! Launching a program in the client's terminal with `runInTerminal`.
-//!
-//! The client runs `microscope dap-launcher` in a terminal. The launcher
-//! connects to a socket in a directory only this user can enter, which
-//! identifies its process, and waits; once the adapter traces that process,
-//! it is released to execute the program, whose exec completes the launch.
-
 use std::fs::DirBuilder;
 use std::io::{self, Write as _};
 use std::os::unix::fs::DirBuilderExt as _;
@@ -20,11 +13,8 @@ use super::config::{Console, Launch};
 use super::protocol::ErrorBody;
 use super::session::Client;
 
-/// How long the launcher may take to start once the client ran it.
 const LAUNCHER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Launches the program through a launcher the client runs in a terminal,
-/// returning the launch's execution.
 pub(super) async fn launch(
     client: &Client,
     supported: bool,
@@ -103,15 +93,12 @@ pub(super) async fn launch(
 
     handle
         .launch_by_exec(process, stop_on_entry, move || {
-            // A launcher that is gone exits without running the program.
             let _ = launcher.write_all(b"x");
         })
         .await
         .map_err(|error| failed(&error))
 }
 
-/// A socket in a directory only this user can enter, removed when dropped:
-/// what a launcher, or a group member's session, connects to.
 pub(super) struct PrivateSocket {
     directory: PathBuf,
     name: &'static str,
@@ -130,8 +117,6 @@ impl PrivateSocket {
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
 
-            // Creating the directory, never reusing one, keeps another
-            // user's directory of the same name from being trusted.
             match DirBuilder::new().mode(0o700).create(&directory) {
                 Ok(()) => break directory,
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -152,7 +137,6 @@ impl PrivateSocket {
         self.directory.join(self.name)
     }
 
-    /// Accepts the launcher's connection, returning it and its process.
     async fn accept_process(&self) -> io::Result<(std::os::unix::net::UnixStream, ProcessId)> {
         let (stream, _) = self.listener.accept().await?;
         let process = stream

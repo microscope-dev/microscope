@@ -1,32 +1,32 @@
-"""Python instrumentation for microscope: zones, plots, messages, labels, frames, and triggers.
 
-    import microscope
 
-    @microscope.zone("handle")
-    def handle(request):
-        with microscope.label("route", request.route):
-            with microscope.zone("query"):
-                rows = query(request)
-            microscope.plot("rows", len(rows))
-            if not rows:
-                microscope.message("empty", f"no rows for {request.id}")
-            return render(rows)
 
-Sites are defined at their first use, with a name and source location.
-A recording enables sites by name; disabled sites check an in-place state byte.
-Enabled sites write a few bytes to a per-thread ring in the program's memory,
-which microscope reads externally. Sites disable themselves when microscope
-stops reading. Without a recording, nothing is written or sent elsewhere.
 
-The probes SDK's shared library must be beside this package or at
-MICROSCOPE_PROBES_LIBRARY. Without it, instrumentation does nothing;
-`problem` explains why.
 
-`trace_calls(prefix)` times calls in that module and its submodules, with
-zones named by module and qualified name. Only the program can opt in;
-microscope never enables it. A traced function whose site is off costs
-nothing once it has run; recorded, a call costs well under a microsecond.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import ctypes
 import os
 import sys
@@ -37,15 +37,15 @@ __all__ = ['zone', 'label', 'plot', 'message', 'frame', 'trigger', 'listening', 
            'trace_calls', 'problem']
 
 _ZONE, _FRAME, _PLOT, _MESSAGE, _LABEL, _TRIGGER = 1, 2, 3, 4, 5, 6
-# A generator's, coroutine's, or async generator's code.
+
 _SUSPENDS = 0x20 | 0x80 | 0x200
 
-# Why the library could not be used, or None.
+
 problem = None
 
-# Whether to check facts the package's own code guarantees, as
-# `assert not _CHECKED or FACT`. Only microscope's tests turn checks on: a
-# program's own code must never fail because of the package.
+
+
+
 _CHECKED = os.environ.get('MICROSCOPE_SDK_CHECKS') == '1'
 
 
@@ -54,8 +54,8 @@ def _load():
     path = os.environ.get('MICROSCOPE_PROBES_LIBRARY') or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), 'libmicroscope_probes.so')
     try:
-        # Every call is short and never blocks, so it keeps the GIL, which
-        # halves what a call costs.
+
+
         library = ctypes.PyDLL(path)
     except OSError as error:
         problem = f'the probes library could not be loaded: {error}'
@@ -87,7 +87,7 @@ def _load():
         'microscope_probes_reserve': (None, (ctypes.c_uint32,)),
         'microscope_probes_index': (ctypes.c_int32, (site,)),
         'microscope_probes_sites': (site, ()),
-        # Called with a small int, which converts fastest.
+
         'microscope_probes_call_begin': (None, None),
         'microscope_probes_call_end': (None, None),
     }
@@ -109,13 +109,13 @@ _defining = threading.Lock()
 
 _NO_SITE = (0, None)
 
-# The ABI's run-time sites: how many, and the size of each one's record.
+
 _RUNTIME_SITES, _RUNTIME_SITE = 4096, 48
 
 
 def _site(kind, name, file, line):
-    """Returns (site, state byte) for this kind/name/location, or (0, None) if unavailable.
-    A nonzero state byte means enabled."""
+
+
     key = (kind, name, file, line)
     site = _sites.get(key)
     if site is not None or _library is None:
@@ -127,7 +127,7 @@ def _site(kind, name, file, line):
             file_bytes = str(file).encode('utf-8', 'replace')
             address = _library.microscope_probes_define(
                 kind, name_bytes, len(name_bytes), file_bytes, len(file_bytes), line)
-            # The ABI puts a run-time site's state byte at its offset 1.
+
             site = (address, ctypes.c_ubyte.from_address(address + 1)) if address else _NO_SITE
             _sites[key] = site
     assert not _CHECKED or (site[1] is None) == (not site[0]), f'site {site[0]:#x} state'
@@ -135,25 +135,25 @@ def _site(kind, name, file, line):
 
 
 def _caller(depth=2):
-    """The file and line of the code `depth` frames out."""
+
     frame = sys._getframe(depth)
     return frame.f_code.co_filename, frame.f_lineno
 
 
 def listening():
-    """Whether microscope is recording the program's instrumentation."""
+
     return _library is not None and _library.microscope_probes_listening()
 
 
 def found():
-    """Whether microscope has found the program and is recording it. A
-    program a recording starts is listening before microscope finds it."""
+
+
     return _library is not None and _library.microscope_probes_found()
 
 
 class zone:
-    """A span of the thread's time named `name`: a `with` block, or each call
-    of a function it decorates."""
+
+
 
     __slots__ = ('_site', '_state', '_began')
 
@@ -175,7 +175,7 @@ class zone:
     def __call__(self, function):
         flags = getattr(getattr(function, '__code__', None), 'co_flags', 0)
         if flags & _SUSPENDS:
-            # Other tasks run on the thread while it waits, inside its zone.
+
             raise TypeError('a zone is a span of one thread, and cannot span what a '
                             'coroutine or generator awaits or yields')
         site, state = self._site, self._state
@@ -200,8 +200,8 @@ class zone:
 
 
 class label:
-    """Labels the thread's time `name=value` for a `with` block: samples and
-    zones inside it carry the label. The value is cut to 256 bytes."""
+
+
 
     __slots__ = ('_site', '_state', '_value', '_began')
 
@@ -225,15 +225,15 @@ class label:
 
 
 def plot(name, value):
-    """A value of the series `name`."""
+
     site, state = _site(_PLOT, name, *_caller())
     if state is not None and state.value != 0:
         _library.microscope_probes_plot(site, float(value))
 
 
 def message(name, text):
-    """Records a thread-timeline message at `name`, truncated to 256 bytes.
-    Pass a callable to defer text creation until the site is enabled."""
+
+
     site, state = _site(_MESSAGE, name, *_caller())
     if state is not None and state.value != 0:
         if callable(text):
@@ -243,15 +243,15 @@ def message(name, text):
 
 
 def frame(name='frame'):
-    """The end of a frame, for a program that works in frames."""
+
     site, state = _site(_FRAME, name, *_caller())
     if state is not None and state.value != 0:
         _library.microscope_probes_event(site)
 
 
 def trigger(why):
-    """Asks microscope to save the recording's window around this moment,
-    when it keeps one."""
+
+
     site, state = _site(_TRIGGER, why, *_caller())
     if state is not None and state.value != 0:
         _library.microscope_probes_event(site)
@@ -259,16 +259,16 @@ def trigger(why):
 
 _traced = None
 
-# The least size of a ring, as a power of two of records, once calls are
-# traced.
+
+
 _TRACED_RING = 18
 
 
 def trace_calls(prefix):
-    """Times future calls in `prefix` and its submodules as module/qualified-name zones.
-    Generator and coroutine zones end at suspension and restart at resumption.
-    Requires Python 3.12+ monitoring and claims its profiler tool; repeated calls add prefixes.
-    Without the probes library it does nothing."""
+
+
+
+
     global _traced
     if not isinstance(prefix, str):
         raise TypeError(f'a prefix names a module, not {prefix!r}')
@@ -278,8 +278,8 @@ def trace_calls(prefix):
     if _library is None:
         return
     if _traced is None:
-        # A thread that traces its calls writes millions of records a
-        # second, which a ring of 2^18 holds for about 40 ms.
+
+
         _library.microscope_probes_reserve(_TRACED_RING)
         _traced = _Tracer(monitoring)
         _traced.prefixes = (prefix,)
@@ -288,25 +288,25 @@ def trace_calls(prefix):
 
 
 class _Tracer:
-    """Assigns zone sites to traced code objects. Untraced code's events,
-    and a traced site's while it is off, are disabled where they fire, so
-    they cost nothing until a thread that checks every so often finds a
-    site switched on and restarts them."""
+
+
+
+
 
     def __init__(self, monitoring):
         self.monitoring = monitoring
         self.prefixes = ()
-        # By the code's id, as equal code objects may belong to different
-        # files: (site, state), or (None, None) for untraced code. `codes`
-        # keeps each code object, so that its id stays its.
+
+
+
         self.sites = {}
         self.codes = []
-        # Where in `states` lie the state bytes of traced sites that were off
-        # where their events were disabled, and what wakes the thread that
-        # watches them.
+
+
+
         self.waiting = []
         self.ready = threading.Event()
-        # Every run-time site's record, whose state bytes the callbacks read.
+
         records = ctypes.c_ubyte * (_RUNTIME_SITES * _RUNTIME_SITE)
         self.states = memoryview(records.from_address(_library.microscope_probes_sites())).cast('B')
         tool = monitoring.PROFILER_ID
@@ -327,8 +327,8 @@ class _Tracer:
         os.register_at_fork(after_in_child=self.watch)
 
     def callbacks(self):
-        """The callbacks, which run at every call and return of traced code,
-        and so read only what they close over."""
+
+
         get, entry, waiting, states = self.sites.get, self.entry, self.waiting, self.states
         ready = self.ready.set
         disable = self.monitoring.DISABLE
@@ -357,8 +357,8 @@ class _Tracer:
             ready()
             return disable
 
-        # A generator thrown into resumes, and a frame an exception leaves
-        # returns; neither event can be disabled.
+
+
         def thrown(code, offset, exception):
             index, state = get(id(code)) or entry(code)
             if index >= 0 and states[state]:
@@ -372,7 +372,7 @@ class _Tracer:
         return begin, end, thrown, unwind
 
     def add(self, prefix):
-        """Adds `prefix`, reenabling events for previously seen, untraced code."""
+
         with _defining:
             self.prefixes = (*self.prefixes, prefix)
             for key, (index, _) in list(self.sites.items()):
@@ -381,8 +381,8 @@ class _Tracer:
         self.monitoring.restart_events()
 
     def entry(self, code):
-        """The code's site's index and where its state byte lies in
-        `states`, which the callbacks hold to; -1 for untraced code."""
+
+
         module = sys._getframe(2).f_globals.get('__name__')
         traced = isinstance(module, str) and module != __name__ and any(
             module == prefix or module.startswith(prefix + '.') for prefix in self.prefixes)
@@ -398,11 +398,11 @@ class _Tracer:
         return found
 
     def watch(self):
-        """Restarts the events of sites disabled while they were off, once
-        one is on. The thread sleeps until a site is disabled, then checks
-        every 20 ms while microscope listens and every second while it does
-        not, so a program nobody records wakes it once a second at most,
-        and one whose sites are all on never does."""
+
+
+
+
+
         waiting, states, ready = self.waiting, self.states, self.ready
         restart = self.monitoring.restart_events
         listening = _library.microscope_probes_listening
@@ -411,8 +411,8 @@ class _Tracer:
             _name_thread()
             while True:
                 if not waiting:
-                    # Cleared only after waking: `waiting` is checked again,
-                    # so a site disabled meanwhile is not missed.
+
+
                     ready.wait()
                     ready.clear()
                     continue
@@ -424,14 +424,14 @@ class _Tracer:
         threading.Thread(target=check, name=_THREAD_NAME, daemon=True).start()
 
 
-# The name of the SDK's own thread, which microscope's report counts apart
-# from the program's.
+
+
 _THREAD_NAME = 'microscope-sdk'
 
 
 def _name_thread():
-    """Names the calling thread for the kernel, which Python does itself
-    only from 3.14."""
+
+
     try:
         ctypes.CDLL(None).prctl(15, _THREAD_NAME.encode(), 0, 0, 0)
     except (AttributeError, OSError):

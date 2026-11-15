@@ -1,10 +1,3 @@
-//! Values agree with what their programs say they are. Each gallery prints
-//! a tab-separated `TRUTH` line per value before it calls `reached()`, and
-//! the values are read from `reached`'s caller, or from the stopped frame
-//! at another breakpoint. A value microscope shows as available must equal the
-//! truth; in optimized builds it may instead be unavailable for a typed
-//! reason, unless the test requires it.
-
 use std::process::Stdio;
 
 use microscope::{
@@ -15,7 +8,6 @@ use microscope::{
 use super::*;
 use crate::support::ScratchDir;
 
-/// One line a gallery printed: what one value at one checkpoint is.
 #[derive(Debug, Clone)]
 struct Truth {
     checkpoint: String,
@@ -39,33 +31,21 @@ fn truths(output: &str) -> Vec<Truth> {
         .collect()
 }
 
-/// How one gallery build runs and what it must show.
 struct Gallery<'a> {
     fixture: &'a str,
 
-    /// The functions to stop in: `reached`, whose caller is inspected, and
-    /// others inspected where they stop.
     breakpoints: &'a [&'a str],
 
-    /// Checkpoints the run must reach, in order.
     checkpoints: &'a [&'a str],
     optimized: bool,
 
-    /// `checkpoint:path` values an optimized build must show all the same.
     required: &'a [&'a str],
 
-    /// What only the names of the compiler's own variables begin with,
-    /// none of which may be listed.
     reserved: &'a [&'a str],
 
-    /// `checkpoint:path` values a function returned that this build's
-    /// calling convention does not say where to find, which must be shown
-    /// as unknown for that reason.
     unknown: &'a [&'a str],
 }
 
-/// Runs a gallery through every checkpoint and checks every truth it
-/// printed against what microscope shows there.
 async fn check_gallery(gallery: &Gallery<'_>) {
     let fixture = gallery.fixture;
     let scratch = ScratchDir::new("gallery");
@@ -91,8 +71,6 @@ async fn check_gallery(gallery: &Gallery<'_>) {
         match reason {
             StopReason::Breakpoint { .. } => {}
 
-            // Go preempts its threads with SIGURG, which never stops a
-            // program on its own.
             StopReason::Exception(ref exception) if exception.code == 23 => {
                 reason = scenario.resume_to_stop().await;
                 continue;
@@ -136,7 +114,6 @@ async fn check_gallery(gallery: &Gallery<'_>) {
                 continue;
             }
 
-            // The calling convention says where every returned value is.
             let required = returned
                 || gallery
                     .required
@@ -169,8 +146,6 @@ async fn check_gallery(gallery: &Gallery<'_>) {
     }
 
     assert!(failures.is_empty(), "{fixture}:\n{}", failures.join("\n"));
-    // An optimized build may leave values out, but not most of them:
-    // Fortran's O2, the sparsest, shows 28 of 43.
     assert!(
         shown * 2 >= checked,
         "{fixture} shows only {shown} of {checked} values"
@@ -179,8 +154,6 @@ async fn check_gallery(gallery: &Gallery<'_>) {
     assert_eq!(scenario.shutdown().await, Some(ExitStatus::Code(0)));
 }
 
-/// The gallery's check fails on a value other than the program's, and on
-/// a variable listed where the program says there is none.
 #[tokio::test]
 async fn the_gallery_check_fails_on_values_its_program_did_not_report() {
     let fixture = "values-go-o0";
@@ -247,9 +220,6 @@ async fn the_gallery_check_fails_on_values_its_program_did_not_report() {
     scenario.shutdown().await;
 }
 
-/// The variables a checkpoint's truths are about: those of `reached`'s
-/// caller, or of the stopped frame elsewhere, or, for a `returned-`
-/// checkpoint, what that caller returned once it is finished.
 async fn checkpoint_variables(
     scenario: &mut Scenario,
     fixture: &str,
@@ -296,8 +266,6 @@ async fn checkpoint_variables(
         .collect()
 }
 
-/// Checks that the returned value a truth is about is listed, as unknown
-/// because its calling convention does not say where it is.
 fn check_unknown(variables: &[Variable], truth: &Truth) -> Result<(), String> {
     let name = truth
         .path
@@ -320,9 +288,6 @@ fn check_unknown(variables: &[Variable], truth: &Truth) -> Result<(), String> {
     }
 }
 
-/// Checks that a variable the compiler made for itself, named by the
-/// whole path, which may begin with a dot, is not listed but its name
-/// reaches it.
 async fn check_hidden(
     scenario: &Scenario,
     variables: &[Variable],
@@ -343,9 +308,6 @@ async fn check_hidden(
     }
 }
 
-/// Checks what a truth says of the variable rather than of its value: that
-/// it is a result, or, for its type, that a generic value whose type
-/// argument is unknown keeps its shape for a typed reason.
 fn check_variable(
     variable: &Variable,
     truth: &Truth,
@@ -359,8 +321,6 @@ fn check_variable(
         });
     }
 
-    // A generic value whose type argument is unknown keeps its shape, for
-    // a typed reason.
     if truth.kind == "type"
         && let Some(reason) = &variable.unresolved_shape
     {
@@ -381,8 +341,6 @@ fn check_variable(
     None
 }
 
-/// Checks one truth, accepting a typed unavailable or malformed state
-/// when `may_be_unavailable`.
 async fn check_truth(
     scenario: &Scenario,
     variables: &[Variable],
@@ -404,8 +362,6 @@ async fn check_truth(
         return variable.map_or(Ok(()), |variable| Err(format!("is listed: {variable:?}")));
     }
 
-    // Optimized code may describe no variable at all where its value is
-    // gone.
     let Some(variable) = variable else {
         return if may_be_unavailable {
             Ok(())
@@ -414,7 +370,6 @@ async fn check_truth(
         };
     };
 
-    // A value microscope cannot show yet must say so.
     if truth.kind == "unsupported" {
         return match &variable.state {
             VariableState::Unavailable(microscope::VariableUnavailableReason::Unsupported(_)) => {
@@ -439,8 +394,6 @@ async fn check_truth(
 
         let child = child_named(scenario, &state, segment).await;
 
-        // Optimized code may leave out what nothing reads, such as a
-        // variable a closure captured.
         let child = match child {
             Ok(child) => child,
             Err(_) if may_be_unavailable => return Ok(()),
@@ -477,8 +430,6 @@ async fn check_truth(
     }
 }
 
-/// The child a path's segment names among the value's own children, or
-/// else among what a view shows of it.
 async fn child_named(
     scenario: &Scenario,
     state: &VariableState,
@@ -530,9 +481,6 @@ async fn child_named(
     child
 }
 
-/// Whether a path's segment names `child`: a member by its name, an
-/// element by its zero-based index or by its source indices in
-/// parentheses.
 fn named(child: &microscope::ValueChild, segment: &str) -> bool {
     match &child.relationship {
         ValueChildRelationship::Member(member) => member.name.as_deref() == Some(segment),
@@ -555,8 +503,6 @@ fn named(child: &microscope::ValueChild, segment: &str) -> bool {
     }
 }
 
-/// What microscope shows of an available value, written as a truth of `kind`
-/// writes it.
 fn shown(kind: &str, state: &VariableState, type_info: Option<&TypeInfo>) -> String {
     let VariableState::Available { value, text, .. } = state else {
         unreachable!("only available values are shown");
@@ -717,7 +663,6 @@ async fn go_values_agree_with_their_program() {
     }
 }
 
-/// Every checkpoint of a returns gallery, in order.
 const C_RETURNS: &[&str] = &[
     "returned-int",
     "returned-char",
@@ -766,8 +711,6 @@ async fn c_returned_values_agree_with_their_program() {
 
 #[tokio::test]
 async fn cpp_returned_values_agree_with_their_program() {
-    // GCC does not record whether calls pass a class by value, which
-    // decides where a small one is returned.
     let gcc = &[
         "returned-plain:r_plain.a",
         "returned-plain:r_plain.b",
@@ -807,8 +750,6 @@ async fn rust_returned_values_agree_with_their_program() {
             false,
             &["returned-triple:r_triple.a"][..],
         ),
-        // Optimization stops returning the payload of `r_pending`, which
-        // nothing reads, and says the convention no longer holds.
         (
             "returns-rust-o2",
             true,
@@ -836,8 +777,6 @@ async fn rust_returned_values_agree_with_their_program() {
             optimized,
             required: &[],
             reserved: &[],
-            // Rust's own convention is unspecified for aggregates of more
-            // than two scalars.
             unknown,
         })
         .await;
@@ -849,7 +788,6 @@ async fn zig_returned_values_agree_with_their_program() {
     for (fixture, optimized, unknown) in [
         ("returns-zig-o0", false, &[][..]),
         ("returns-zig-o2", true, &[][..]),
-        // Zig's own convention is unspecified for aggregates.
         (
             "returns-zig-self-hosted",
             false,

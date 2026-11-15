@@ -1,6 +1,3 @@
-//! Structures behind pointer arguments, under x86-64 layouts, printed as
-//! strace prints them: abbreviated unless `-v` asks for every field.
-
 use microscope::syscalls::SyscallEvent;
 use microscope::syscalls::blobs;
 use microscope::syscalls::sockaddr::SocketAddress;
@@ -9,7 +6,6 @@ use nix::libc;
 
 use super::{Kind, Tokens, sets};
 
-/// Little-endian reads that come back `None` past the end.
 struct Bytes<'a>(&'a [u8]);
 
 impl Bytes<'_> {
@@ -38,7 +34,6 @@ impl Bytes<'_> {
     }
 }
 
-/// strace's name for a signal's `si_code`.
 pub fn si_code(signal: i32, code: i32) -> String {
     let generic = match code {
         0 => Some("SI_USER"),
@@ -101,7 +96,6 @@ pub fn si_code(signal: i32, code: i32) -> String {
         .map_or_else(|| code.to_string(), |&name| name.to_owned())
 }
 
-/// Bits by name, `|`-joined, with what is left in hex, or `0`.
 fn bits(names: &[(u64, &str)], mut value: u64) -> String {
     let mut parts = Vec::new();
 
@@ -123,7 +117,6 @@ fn bits(names: &[(u64, &str)], mut value: u64) -> String {
     }
 }
 
-/// A file mode as strace prints it: `S_IFREG|0644`.
 pub fn file_mode(mode: u32) -> String {
     let kind = match mode & 0o170_000 {
         0o140_000 => "S_IFSOCK|",
@@ -151,8 +144,6 @@ pub fn file_mode(mode: u32) -> String {
     format!("{kind}{special}{:04o}", mode & 0o777)
 }
 
-/// Signals in a set, as `[INT TERM]`, or its complement as `~[...]` when
-/// most are set.
 fn sigset(bytes: &[u8]) -> String {
     let mut words = [0u64; 1];
     let reader = Bytes(bytes);
@@ -202,8 +193,6 @@ impl Decode<'_, '_> {
         self.out.push(Kind::Constant, text.into());
     }
 
-    /// A resource limit: infinity, or kibibytes when it is a whole number
-    /// of them, as strace names them.
     fn limit(&mut self, value: u64) {
         if value == u64::MAX {
             self.constant("RLIM64_INFINITY");
@@ -214,7 +203,6 @@ impl Decode<'_, '_> {
         }
     }
 
-    /// A file mode: its type and permissions.
     fn mode(&mut self, mode: u32) {
         self.constant(file_mode(mode));
     }
@@ -242,8 +230,6 @@ impl Decode<'_, '_> {
         Some(())
     }
 
-    /// Prints `elements` structures from `bytes`, or the address when the
-    /// bytes do not cover one.
     pub fn structure(mut self, structure: Struct, bytes: &[u8], elements: usize, truncated: bool) {
         #[expect(
             clippy::indexing_slicing,
@@ -285,7 +271,6 @@ impl Decode<'_, '_> {
 
     #[expect(clippy::too_many_lines, reason = "one arm per structure")]
     fn single(&mut self, structure: Struct, b: &Bytes<'_>) -> Option<()> {
-        // Check the whole structure is there before printing any of it.
         let size = structure.size() as usize;
         if structure != Struct::Sockaddr && b.0.len() < size {
             return None;
@@ -293,7 +278,6 @@ impl Decode<'_, '_> {
 
         match structure {
             Struct::Rseq => {
-                // Each field prints when the registered length covers it.
                 let length = b.0.len();
                 self.punct("{");
                 self.field("cpu_id_start");
@@ -339,9 +323,6 @@ impl Decode<'_, '_> {
                     self.punct("}");
                 }
 
-                // strace prints the byte after slice_ctrl once the length
-                // covers slice_ctrl, as zero when the length stops short of
-                // it, so a 32-byte registration prints it too.
                 if length >= 32 {
                     self.punct(", ");
                     self.field("__reserved");
@@ -361,7 +342,6 @@ impl Decode<'_, '_> {
                 self.mode(mode);
                 self.punct(", ");
 
-                // A device has numbers where a file has a size.
                 let kind = b.u32(24)? & 0o170_000;
                 if kind == 0o020_000 || kind == 0o060_000 {
                     self.field("st_rdev");
@@ -584,7 +564,6 @@ impl Decode<'_, '_> {
             Struct::Fds2 => {
                 let process = self.event.process;
 
-                // The call made these descriptors.
                 let made = super::Context {
                     before: false,
                     ..self.context
@@ -676,8 +655,6 @@ impl Decode<'_, '_> {
     fn iovecs(&mut self, b: &Bytes<'_>, elements: usize, truncated: bool) {
         let iovecs = blobs::iovecs(b.0);
 
-        // An output vector holds only as many bytes as the call moved,
-        // across all its buffers.
         let output = self.spec.args.get(self.index).is_some_and(|arg| {
             matches!(
                 arg,
@@ -736,7 +713,6 @@ impl Decode<'_, '_> {
     ) -> Option<()> {
         match structure {
             Struct::Dirents => {
-                // Entries are variable-length; their count is what helps.
                 let mut count = 0;
                 let mut at = 0;
 
@@ -855,14 +831,12 @@ const MSG_FLAGS_FIELD: &[(u64, &str)] = &[
     (0x2000, "MSG_ERRQUEUE"),
 ];
 
-/// A device number as strace prints it, with glibc's split of the bits.
 fn makedev(device: u64) -> String {
     let major = ((device >> 8) & 0xfff) | ((device >> 32) & !0xfff);
     let minor = (device & 0xff) | ((device >> 12) & !0xff);
     format!("makedev({major:#x}, {minor:#x})")
 }
 
-/// A wait status as strace prints it: `{WIFEXITED(s) && WEXITSTATUS(s) == 4}`.
 fn wait_status(status: i32) -> String {
     let low = status & 0x7f;
     let mut text = if low == 0 {
@@ -888,7 +862,6 @@ fn wait_status(status: i32) -> String {
 
     text.push('}');
 
-    // A ptrace event sits above the stop signal.
     let event = (status >> 16) & 0xff;
     if event != 0 {
         let name = match event {
@@ -909,8 +882,6 @@ fn wait_status(status: i32) -> String {
     text
 }
 
-/// A `siginfo_t`, with the fields its signal and code fill, as strace's
-/// `printsiginfo` prints it.
 pub fn siginfo(out: &mut Tokens, bytes: &[u8]) -> Option<()> {
     let b = Bytes(bytes);
     let signo = b.i32(0)?;
@@ -944,7 +915,6 @@ pub fn siginfo(out: &mut Tokens, bytes: &[u8]) -> Option<()> {
     }
 
     if code <= 0 {
-        // Sent by a process: its pid and uid, and a queued value.
         if code == -2 {
             field(
                 out,

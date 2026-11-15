@@ -1,4 +1,4 @@
-"""Ordinary application code: the debugger installs its own transport."""
+
 import sys
 
 

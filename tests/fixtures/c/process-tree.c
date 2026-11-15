@@ -1,15 +1,15 @@
-/* Starts COUNT children and waits for them, as a test runner or a watcher
- * does: `process-tree COUNT HOW [serial]`. Each child, by HOW:
- *   direct  runs child_work after its fork, and exits 0;
- *   signal  runs child_work, then raises SIGUSR1, and exits 0 once its
- *           handler ran;
- *   shell   executes /bin/sh -c "exec-target child", which exits 42;
- *   spawn   is started by posix_spawn, a vfork and an exec, as exec-target;
- *   hang    executes /bin/sh -c "sleep 100; true", and is never waited for.
- * Children run concurrently unless "serial" follows, when each is waited
- * for before the next starts, as a watcher restarts its child. A direct
- * child exits 3 if it ever received SIGCONT. The parent exits with the
- * number of children that did not exit as they should. */
+
+
+
+
+
+
+
+
+
+
+
+
 #define _GNU_SOURCE
 #include <limits.h>
 #include <signal.h>
@@ -44,7 +44,7 @@ __attribute__((noinline)) void children_started(int count) {
     (void)count;
 }
 
-/* The path of exec-target, beside this program. */
+
 static void target_path(char *path, size_t size) {
     static const char target[] = "exec-target";
     ssize_t length = readlink("/proc/self/exe", path, size - 1);

@@ -1,11 +1,3 @@
-//! Every request and outside event in every phase of a session.
-//!
-//! Each row starts an adapter, brings its session to one phase, sends one
-//! request or does one thing to the program, and then disconnects. It
-//! records what the client was told: every response, the events that
-//! matter to a session's phase and run state, and, for an attached
-//! process, how it ended. The rows run in parallel, a few at a time.
-
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -45,28 +37,20 @@ const EVENTS: &[&str] = &[
     "exits",
 ];
 
-/// A session brought to one phase.
 struct Row {
     dap: Dap,
 
-    /// The process an attach phase attached to.
     attached: Option<ExternalProcess>,
 
-    /// The client's id of the thread requests name.
     thread: i64,
 
-    /// A frame of the phase's stop, whose handle a resume ends.
     frame: Option<Value>,
 }
 
-/// Every program a row launches is spin, which never ends by itself: a
-/// row's end, or the row, ends it. A program that could exit on its own
-/// races the row's end, and the row would record whichever came first.
 fn launch_arguments() -> Value {
     json!({"program": fixture("spin")})
 }
 
-/// Kills the session's program from outside, as a crash or `kill -9` does.
 fn kill(dap: &Dap) {
     let pid = dap.process_id().expect("a live process");
     nix::sys::signal::kill(
@@ -80,15 +64,11 @@ fn core_arguments() -> Value {
     json!({"coreFile": fixture("crash-gcc-o0-segv.core"), "program": fixture("crash-gcc-o0")})
 }
 
-/// Sends a request, then waits until the session has handled it: requests
-/// are handled in order, so once a `threads` sent after it is answered, a
-/// request still unanswered is held.
 fn send_and_settle(dap: &mut Dap, command: &str, arguments: Value) {
     dap.send(command, arguments);
     ask(dap, "threads", Value::Null);
 }
 
-/// Sends a request and returns its response, whether it succeeded or not.
 fn ask(dap: &mut Dap, command: &str, arguments: Value) -> Value {
     let sent = dap.send(command, arguments);
     dap.response(sent)
@@ -122,7 +102,6 @@ fn phase(name: &str) -> Row {
             attached = Some(process);
         }
         "running" => {
-            // Rows may begin while the loader still runs.
             let started = dap.begin(
                 Profile::Helix,
                 ("launch", launch_arguments()),
@@ -186,11 +165,6 @@ fn phase(name: &str) -> Row {
     }
 }
 
-/// The events of a request that the row waits for before it disconnects,
-/// so that what it records does not depend on timing.
-/// A program started is announced by its process and then its thread;
-/// spin's `main` loops through its own breakpoint, so a stop there comes
-/// back after each continue.
 fn awaited(name: &str, event: &str) -> &'static [&'static str] {
     let live = matches!(name, "running" | "stopped" | "attached");
     match (event, name) {
@@ -207,9 +181,6 @@ fn awaited(name: &str, event: &str) -> &'static [&'static str] {
     }
 }
 
-/// What the client was told after `mark`: each response, and each event
-/// that says where the session or its program is. Module, breakpoint and
-/// program output events are left out, as their timing is the program's.
 fn told(dap: &mut Dap, mark: Mark) -> String {
     let mut said = Vec::new();
     for message in dap.messages_since(mark) {
@@ -254,13 +225,10 @@ fn told(dap: &mut Dap, mark: Mark) -> String {
         said.push(text);
     }
 
-    // Each stop is waited for here, so the harness counts it as seen.
     dap.events(mark, "stopped");
     said.join(", ")
 }
 
-/// Sends the request, or does to the program what `event` names. Returns
-/// whether that ended the session.
 fn act(row: &mut Row, event: &str) -> bool {
     let dap = &mut row.dap;
     let thread = row.thread;
@@ -310,7 +278,6 @@ fn act(row: &mut Row, event: &str) -> bool {
     false
 }
 
-/// Whether the handle of a frame of the phase's stop is still good.
 fn frame_state(dap: &mut Dap, frame: &Value) -> String {
     let response = ask(dap, "scopes", json!({"frameId": frame}));
     if response["success"] == true {
@@ -325,8 +292,6 @@ fn frame_state(dap: &mut Dap, frame: &Value) -> String {
     }
 }
 
-/// How an attached process ended: one the session let go waits to be
-/// released, and one it killed is gone.
 fn fate(mut process: ExternalProcess, released: bool) -> String {
     if !released {
         let _ = std::io::Write::write_all(&mut process.take_stdin(), b"x");
@@ -343,9 +308,6 @@ fn fate(mut process: ExternalProcess, released: bool) -> String {
     }
 }
 
-/// One event in one phase: what the client was told after it, what it
-/// was told when the session then ended, and how an attached process
-/// ended.
 fn outcome(name: &str, event: &str) -> Option<String> {
     let live = matches!(name, "running" | "stopped" | "attached");
     if (event == "killed outside" && !live) || (event == "exits" && name != "attached") {
@@ -373,8 +335,6 @@ fn outcome(name: &str, event: &str) -> Option<String> {
         after = format!("{after} [frame {}]", frame_state(&mut dap, &frame));
     }
 
-    // A session ends by a disconnect, which a session that was never
-    // initialized refuses; that one ends when its input closes.
     let end = dap.mark();
     if !ended && name != "new" {
         let response = ask(&mut dap, "disconnect", json!({}));
@@ -388,8 +348,6 @@ fn outcome(name: &str, event: &str) -> Option<String> {
     Some(format!("{name} / {event}: {after} | end: {at_end}{fate}"))
 }
 
-/// Every request and outside event, in each phase of a session, is
-/// answered and reported as it always has been.
 #[test]
 fn each_request_in_each_phase_is_answered_and_reported_the_same() {
     let rows = PHASES
@@ -429,7 +387,6 @@ fn each_request_in_each_phase_is_answered_and_reported_the_same() {
     );
 }
 
-/// The table's rows, as [`outcome`] writes them.
 const EXPECTED: &[&str] = &[
     "new / initialize: initialize ok, initialized | end: ",
     "new / launch: launch failed: the client must send initialize before launch | end: ",

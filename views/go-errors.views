@@ -1,34 +1,34 @@
 microscope-views 1
 
-# Go's errors as the text their Error methods return, where the error keeps
-# that text, and the errors they wrap. microscope calls no method, so an error
-# whose method computes its text, as *fs.PathError's does, shows the parts
-# it computes it from. Verified against Go 1.27.1, by
-# tests/fixtures/go/stdlib.
 
-# errors.New.
+
+
+
+
+
+
 view go errors.errorString {
     show text(s.str, s.len)
 }
 
-# fmt.Errorf with one %w keeps its whole text, and the error it wraps.
+
 view go fmt.wrapError {
     show text(msg.str, msg.len)
     field wrapped = err
 }
 
-# fmt.Errorf with several %w.
+
 view go fmt.wrapErrors {
     show text(msg.str, msg.len)
     field wrapped = errs
 }
 
-# errors.Join's text is its errors' texts, a line each.
+
 view go errors.joinError {
     show sequence(len(errs)) for i in range(len(errs)) => errs[i]
 }
 
-# A system call's error number is the text the system gives it.
+
 view go syscall.Errno {
     let texts = global(`syscall.errors`)
     show if self < len(texts) && len(texts[self]) > 0 {

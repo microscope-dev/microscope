@@ -1,33 +1,19 @@
-//! Matching a view's pattern against a type's identity.
-//!
-//! A pattern names what a type is, never how a producer spelled it: its
-//! language, its path from the root with inline namespaces optional and
-//! `**` standing for any run of segments, its base name, and its leading
-//! arguments by position.
-
 use crate::eval::types::TypeSource;
 use crate::type_identity::same_integer;
 use crate::{GoKind, IntegerValue, SourceLanguage, TypeArgument, TypeIdentity, TypeReference};
 
 use super::syntax::{ArgumentPattern, Language, Pattern, Segment};
 
-/// How deeply argument patterns may nest.
 const MAX_DEPTH: usize = 16;
 
-/// An argument a pattern captured by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Captured {
     Type(TypeReference),
     Value(IntegerValue),
 }
 
-/// The arguments a pattern captured, by name.
 pub type Captures = Vec<(String, Captured)>;
 
-/// Whether a view of `language` applies to a type of `actual`. A view of
-/// any language presents values of compiled languages' types, whose
-/// members it names, never Python or JavaScript objects. A `javascript`
-/// view presents the objects of classes a TypeScript file defines too.
 #[must_use]
 pub const fn language_matches(language: Language, actual: SourceLanguage) -> bool {
     matches!(
@@ -55,8 +41,6 @@ pub const fn language_matches(language: Language, actual: SourceLanguage) -> boo
     )
 }
 
-/// The arguments `pattern` captures from a type of `identity`, or `None`
-/// when the pattern does not name the type.
 pub fn matches(
     pattern: &Pattern,
     identity: &TypeIdentity,
@@ -65,8 +49,6 @@ pub fn matches(
     matches_with(pattern, identity, types, Captures::new())
 }
 
-/// As [`matches`], with names already captured, which the type's arguments
-/// must then equal.
 pub fn matches_with(
     pattern: &Pattern,
     identity: &TypeIdentity,
@@ -76,8 +58,6 @@ pub fn matches_with(
     matches_into(pattern, identity, types, &mut captures, 0).then_some(captures)
 }
 
-/// The word a Go pattern names a kind of type with, whatever its name:
-/// `go map<K, V>` is every map.
 #[must_use]
 pub fn go_kind_word(identity: &TypeIdentity) -> Option<&'static str> {
     if identity.language != SourceLanguage::Go {
@@ -112,7 +92,6 @@ fn matches_into(
         return arguments_match(pattern, identity, types, captures, depth);
     }
 
-    // A pattern may spell the inline namespaces a path omits, anywhere.
     let path = pattern
         .path
         .iter()
@@ -130,7 +109,6 @@ fn matches_into(
     path_matches(&path, &actual) && arguments_match(pattern, identity, types, captures, depth)
 }
 
-/// Whether a pattern's leading arguments match the type's.
 fn arguments_match(
     pattern: &Pattern,
     identity: &TypeIdentity,
@@ -142,9 +120,6 @@ fn arguments_match(
         return true;
     };
 
-    // Trailing arguments may be left out, as C++ fills them with defaults,
-    // but a pattern that reaches a parameter pack spells all of it:
-    // `std::tuple<A, B>` names only pairs.
     let whole = identity.pack.is_some_and(|start| arguments.len() >= start);
     (arguments.len() == identity.arguments.len() || !whole)
         && arguments.len() <= identity.arguments.len()
@@ -156,7 +131,6 @@ fn arguments_match(
             })
 }
 
-/// Whether segments match a path from its root, `**` matching any run.
 fn path_matches(pattern: &[&Segment], path: &[&str]) -> bool {
     match pattern.split_first() {
         None => path.is_empty(),
@@ -200,21 +174,16 @@ fn argument_matches(
             })
         }
 
-        // An argument known only by how the type's name spells it, such
-        // as rustc's `str`, matches a pattern that spells it so.
         (ArgumentPattern::Type(pattern), TypeArgument::Unknown(spelled)) => {
             pattern.path.is_empty()
                 && pattern.arguments.is_none()
                 && pattern.base == spelled.as_ref()
         }
 
-        // Any other argument the debugger could not resolve matches only
-        // `_`.
         _ => false,
     }
 }
 
-/// Records a capture; a name captured twice must capture the same thing.
 fn capture(captures: &mut Captures, name: &str, found: Captured, types: &dyn TypeSource) -> bool {
     match captures.iter().find(|(existing, _)| existing == name) {
         None => {

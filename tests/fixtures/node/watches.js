@@ -1,12 +1,12 @@
-// Variables microscope watches in V8's frames: an interpreter register
-// and an argument, whose watches end with the call, before the next call
-// builds its frame in the same place; a captured variable in a context
-// that collections move, young and old, each of whose stores is reported
-// once and nothing else; frames V8 replaces on a loop, from Sparkplug's
-// code and from the interpreter's; and a variable V8 14.6 keeps in a
-// context cell, which is refused. The program prints what it stores. Run
-// it with --expose-gc and --stress-compaction, so that each full
-// collection moves the context.
+
+
+
+
+
+
+
+
+
 
 'use strict';
 
@@ -22,7 +22,7 @@ function counter(rounds) {
 }
 
 function moved() {
-  // Four slots, so that V8 14.6 keeps no context cells in the context.
+
   let a = null;
   let b = 0;
   let c = 0;
@@ -57,16 +57,16 @@ function hot(n) {
   return sum;
 }
 
-// Back to back, so that the second call's frame is the first write in
-// the first's place.
+
+
 const first = counter(3);
 const second = counter(4);
 console.log(`COUNTER ${first}`);
 console.log(`COUNTER ${second}`);
 moved();
 celled();
-// An allocating loop, which V8 replaces while the interpreter runs it,
-// from the bytecode handler's frame, before Sparkplug compiles it.
+
+
 function spin(n) {
   const start = 7;
   noop(); // SPIN

@@ -1,17 +1,6 @@
-//! Each CPU's ring of records, merged into one stream by time.
-//!
-//! A program's records go to the ring of the CPU it ran on, so one ring
-//! holds them in the order they were made: a stack, then the call it
-//! belongs to. Across rings only the times order them. A record with no
-//! time of its own goes with the next timed record of its ring, and the
-//! pair is a group that leaves whole. A ring never lets a group pass one
-//! before it, so even a record stamped earlier than those around it, as a
-//! call its thread ended inside, keeps its place.
-
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 
-/// Records read from the rings and not yet released.
 pub struct Merge<T> {
     rings: Vec<VecDeque<T>>,
 }
@@ -24,22 +13,17 @@ impl<T> Merge<T> {
         }
     }
 
-    /// Takes in a record read from `ring`, after those read before.
     pub fn push(&mut self, ring: usize, record: T) {
         if let Some(held) = self.rings.get_mut(ring) {
             held.push_back(record);
         }
     }
 
-    /// Whether any record is held.
     #[must_use]
     pub fn holds(&self) -> bool {
         self.rings.iter().any(|ring| !ring.is_empty())
     }
 
-    /// Moves to `out`, earliest first, every group whose time is at most
-    /// `cut`, which `time` reads; with no cut, everything, the records no
-    /// timed one followed last.
     pub fn release(
         &mut self,
         cut: Option<u64>,
@@ -86,12 +70,8 @@ mod tests {
 
     use super::*;
 
-    /// A record: its ring, its place in the ring, and its time if it has
-    /// one.
     type Item = (usize, usize, Option<u64>);
 
-    /// Rings of records, each a list of groups: some untimed records and
-    /// a time, which needs not grow along the ring.
     fn rings() -> impl Strategy<Value = Vec<Vec<(usize, u64)>>> {
         prop::collection::vec(prop::collection::vec((0_usize..3, 0_u64..50), 0..12), 1..5)
     }
@@ -168,8 +148,6 @@ mod tests {
                 prop_assert_eq!(&order, ring);
             }
 
-            // An untimed record leaves just before the next record of its
-            // ring, which is the rest of its group, except at the very end.
             for (position, item) in out.iter().enumerate() {
                 if item.2.is_none() && item.1 + 1 < items[item.0].len() {
                     prop_assert_eq!(out.get(position + 1), Some(&items[item.0][item.1 + 1]));
@@ -178,8 +156,6 @@ mod tests {
         }
     }
 
-    /// A record held back for its cut holds back the records after it in
-    /// its ring, however early they were made.
     #[test]
     fn a_held_group_holds_its_ring() {
         let mut merge = Merge::new(2);

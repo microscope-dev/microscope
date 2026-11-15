@@ -1,12 +1,3 @@
-//! The data objects debug information describes, with the scopes that
-//! hold them, their values, and the functions whose frames show them.
-//!
-//! An object names its scope, whose code, inline instance, and frame base
-//! every object declared there shares, so each scope is one row. A
-//! function lists its objects in the order a frame shows them; indexes
-//! find functions by code and Go entry address, objects by their entry's
-//! offset, and DWARF procedures by theirs.
-
 use std::sync::Arc;
 
 use zerocopy::little_endian::{U16, U32, U64};
@@ -22,7 +13,6 @@ use crate::{
     VariableKind,
 };
 
-/// What debug information says of something, or why it says nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Metadata<T> {
     Value(T),
@@ -42,7 +32,6 @@ pub enum ConstantValue {
     Unsigned(u128),
     Signed(i128),
 
-    /// A fixed-width form with implicit zero high bits.
     Fixed(u128),
     Bytes(Arc<[u8]>),
 }
@@ -51,26 +40,21 @@ pub enum ConstantValue {
 pub enum ValueDescription {
     Location(LocationListId),
 
-    /// Boxed, as few data objects are constants and a value is wide.
     Constant(Box<ConstantValue>),
 }
 
-/// A type, or why it is unknown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeResolution {
     Resolved(TypeId),
     Malformed(Arc<str>),
 }
 
-/// A Go local's declaration, and the code instance of the scope declaring
-/// it, whose inlined calls stand for their sites.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoDeclaration {
     pub location: SourceLocation,
     pub instance: Option<CodeInstanceId>,
 }
 
-/// One data object, as [`add_to`] takes it.
 #[derive(Debug, Clone)]
 pub struct DataObject {
     pub debug_info_offset: Option<u64>,
@@ -78,124 +62,83 @@ pub struct DataObject {
     pub name: Arc<str>,
     pub declaration: Option<SourceLocation>,
 
-    /// The code of its scope.
     pub ranges: Arc<[AddressRange<ImageAddress>]>,
 
-    /// For a Go local, its declaration, past whose line it is visible;
-    /// boxed, as most data objects are not Go's.
     pub go_declaration: Option<Box<GoDeclaration>>,
 
-    /// The inline instance owning this variable, or `None` for the physical
-    /// frame. Lookup only sees variables of the selected logical frame.
     pub instance: Option<CodeInstanceId>,
     pub lexical_depth: u32,
     pub order: u64,
     pub type_info: TypeResolution,
 
-    /// For a variable Go moved to the heap, which its debug information
-    /// names `&name`, the type of the pointer its location holds; the
-    /// variable is what that points to.
     pub escaped: Option<TypeId>,
 
-    /// Whether the compiler made it for itself, such as Go's `.dict` and
-    /// `#yield1`: listings leave it out, but its name still reaches it.
     pub hidden: bool,
 
-    /// For `$future`, the future rustc passes the body of an async
-    /// function or block, as a pointer it leaves unnamed: its type.
     pub coroutine: Option<TypeId>,
     pub value: Metadata<ValueDescription>,
     pub frame_base: Metadata<LocationListId>,
     pub malformed: Option<Arc<str>>,
 }
 
-/// How a function returns its values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReturnConvention {
-    /// Go's register ABI on x86-64, which the producer names `regabi`.
     GoRegisters,
 
-    /// The System V x86-64 convention.
     SystemV(Box<SystemV>),
 }
 
-/// The one value a function returns by the System V convention.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemV {
-    /// The function's name, which the value is shown by.
     pub name: Arc<str>,
     pub ty: TypeResolution,
 
-    /// The function's language, which says whether the convention is
-    /// known for aggregates and how C++ passes a class.
     pub language: SourceLanguage,
 
-    /// Whether the producer says optimization changed how the function
-    /// returns, so the convention no longer says where its value is.
     pub rewritten: bool,
 }
 
-/// One variable a Go closure captured: a copy of its value, or, when its
-/// name begins with `&`, a pointer to the variable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Capture {
     pub name: Arc<str>,
 
-    /// Its offset in the closure's context, past the code pointer.
     pub offset: u64,
     pub type_info: TypeResolution,
 }
 
-/// One function whose frames show data objects, as [`add_to`] takes it.
 #[derive(Debug, Clone)]
 pub struct Function {
     pub ranges: Arc<[AddressRange<ImageAddress>]>,
 
-    /// Its objects, in the order a frame shows them.
     pub objects: Vec<u32>,
 
-    /// The name a Go function value calling it shows.
     pub name: Option<Arc<str>>,
 
-    /// The variables a Go closure captured, in its context, or why they
-    /// cannot be known.
     pub captures: Result<Vec<Capture>, Arc<str>>,
 
-    /// How the function returns its values, when that is known.
     pub returns: Option<ReturnConvention>,
 }
 
-/// One global, as [`add_to`] takes it. Its object gives its name,
-/// declaration, and type.
 #[derive(Debug, Clone)]
 pub struct Global {
     pub object: u32,
 
-    /// The producer-normalized source qualification.
     pub qualified_name: Arc<str>,
 
-    /// The linker identity, when the debug information gives one.
     pub linkage_name: Option<Arc<str>>,
 
-    /// Whether the producer marks it as visible outside its unit.
     pub external: bool,
 }
 
-/// What [`add_to`] encodes.
 #[derive(Debug, Default)]
 pub struct Variables {
     pub objects: Vec<DataObject>,
     pub functions: Vec<Function>,
 
-    /// The module's globals, in global order.
     pub globals: Vec<Global>,
 
-    /// Go functions by the address their code begins at, which a func
-    /// value holds.
     pub go_entries: Vec<(ImageAddress, u32)>,
 
-    /// `DW_TAG_dwarf_procedure`s, which an implicit pointer may point
-    /// into, by their entries' offsets.
     pub procedures: Vec<(u64, Metadata<LocationListId>)>,
 }
 
@@ -225,7 +168,6 @@ impl CodeRange {
     }
 }
 
-/// A global: its object, and the names it answers to beyond the object's.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -234,7 +176,6 @@ pub struct GlobalRecord {
     pub object: U32,
     pub qualified_name: U32,
 
-    /// The linkage name, or [`NONE`].
     pub linkage_name: U32,
     pub external: u8,
 }
@@ -243,7 +184,6 @@ impl Record for GlobalRecord {
     const KIND: TableKind = TableKind::Globals;
 }
 
-/// A global of an image.
 #[derive(Debug, Clone, Copy)]
 pub struct GlobalEntry<'a> {
     pub object: Object<'a>,
@@ -252,7 +192,6 @@ pub struct GlobalEntry<'a> {
     pub external: bool,
 }
 
-/// The code, instance, and frame base the objects of one scope share.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -260,10 +199,8 @@ pub struct GlobalEntry<'a> {
 pub struct ScopeRecord {
     pub ranges: Span<CodeRange>,
 
-    /// The inline instance owning the scope, or [`NONE`].
     pub instance: U32,
 
-    /// The code instance a Go local's declaration is in, or [`NONE`].
     pub go_instance: U32,
     pub lexical_depth: U32,
     pub frame_base: U32,
@@ -283,16 +220,12 @@ pub struct ObjectRecord {
     pub declaration: LocationRecord,
     pub scope: U32,
 
-    /// The type, or with [`object_flags::TYPE_MALFORMED`] why it is
-    /// unknown.
     pub ty: U32,
     pub escaped: U32,
     pub coroutine: U32,
 
-    /// What [`ObjectRecord::value_kind`] says it is.
     pub value: U32,
 
-    /// Why the object is malformed, or [`NONE`].
     pub malformed: U32,
     pub debug_info_offset: U64,
     pub kind: u8,
@@ -316,8 +249,6 @@ pub mod object_flags {
     pub const ALL: u8 = HIDDEN | TYPE_MALFORMED | OFFSET | GO_DECLARED;
 }
 
-/// What an object's value, or a frame base, is: a location list, a
-/// constant, an absence, or why it is malformed.
 pub mod value_kinds {
     pub const LOCATION: u8 = 0;
 
@@ -337,10 +268,8 @@ pub mod value_kinds {
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct ConstantRecord {
-    /// The value's low bits, or where a block's bytes begin.
     pub low: U64,
 
-    /// The value's high bits, or a block's length.
     pub high: U64,
     pub kind: u8,
 }
@@ -367,16 +296,11 @@ pub struct VariableFunctionRecord {
     pub ranges: Span<CodeRange>,
     pub objects: Span<Item>,
 
-    /// The name a Go function value shows, or [`NONE`].
     pub name: U32,
 
-    /// The first capture, or with [`function_flags::CAPTURES_MALFORMED`]
-    /// why they are unknown.
     pub captures: Span<CaptureRecord>,
     pub returned_name: U32,
 
-    /// The returned type, or with [`function_flags::RETURNED_MALFORMED`]
-    /// why it is unknown.
     pub returned_type: U32,
     pub other_language: U16,
     pub language: u8,
@@ -414,7 +338,6 @@ pub struct CaptureRecord {
     pub name: U32,
     pub offset: U64,
 
-    /// The type, or when `malformed` is set why it is unknown.
     pub ty: U32,
     pub malformed: u8,
 }
@@ -423,8 +346,6 @@ impl Record for CaptureRecord {
     const KIND: TableKind = TableKind::Captures;
 }
 
-/// Where a function's code begins, ordered by address and then function,
-/// with the furthest end of the code beginning there or before.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -440,7 +361,6 @@ impl Record for FunctionStartRecord {
     const KIND: TableKind = TableKind::FunctionStarts;
 }
 
-/// A key of a sorted index, and the row it names.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -468,7 +388,6 @@ impl Record for DwarfProcedureRecord {
     const KIND: TableKind = TableKind::DwarfProcedures;
 }
 
-/// Why data objects could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the data objects do not fit an image")]
 pub struct TooMany;
@@ -495,7 +414,6 @@ const fn some(value: U32) -> Option<u32> {
     }
 }
 
-/// Encodes a type, or why it is unknown, with whether it is malformed.
 fn resolution(
     strings: &mut StringsBuilder,
     resolution: &TypeResolution,
@@ -510,8 +428,6 @@ fn resolution(
 struct Encoder {
     ranges: Vec<CodeRange>,
 
-    /// Keyed by the ranges themselves, so that the many objects sharing a
-    /// scope look theirs up without copying them first.
     pooled_ranges: foldhash::HashMap<Box<[AddressRange<ImageAddress>]>, U32>,
     scopes: Vec<ScopeRecord>,
     pooled_scopes: foldhash::HashMap<ScopeRecord, u32>,
@@ -520,7 +436,6 @@ struct Encoder {
 }
 
 impl Encoder {
-    /// The first of `ranges`, pooled once.
     fn ranges(
         &mut self,
         ranges: &[AddressRange<ImageAddress>],
@@ -619,7 +534,6 @@ impl Encoder {
         Ok(id.into())
     }
 
-    /// Encodes a value or frame base as its kind and what the kind names.
     fn value(
         &mut self,
         strings: &mut StringsBuilder,
@@ -648,8 +562,6 @@ fn absent(absence: MetadataAbsence) -> (u8, U32) {
     (kind, 0.into())
 }
 
-/// Encodes a location, or why there is none, as its kind and what the
-/// kind names.
 pub(super) fn location(
     strings: &mut StringsBuilder,
     location: &Metadata<LocationListId>,
@@ -668,12 +580,10 @@ const fn variable_kind(kind: VariableKind) -> u8 {
         VariableKind::Local => 2,
         VariableKind::Global => 3,
         VariableKind::Returned => 4,
-        // Only a JavaScript frame has these, and validation refuses the byte.
         VariableKind::Captured | VariableKind::Module | VariableKind::Unnamed => u8::MAX,
     }
 }
 
-/// The kinds a data object can have, by the byte that stores them.
 const VARIABLE_KINDS: [VariableKind; 5] = [
     VariableKind::Parameter,
     VariableKind::Result,
@@ -682,12 +592,6 @@ const VARIABLE_KINDS: [VariableKind; 5] = [
     VariableKind::Returned,
 ];
 
-/// Adds the data objects, their functions, and their indexes to
-/// `builder`, pooling names in `strings`.
-///
-/// # Panics
-///
-/// When a Go declaration is not its object's declaration.
 pub fn add_to(
     builder: &mut Builder<'_>,
     strings: &mut StringsBuilder,
@@ -772,7 +676,6 @@ pub fn add_to(
     Ok(())
 }
 
-/// The lists functions' rows name spans of.
 #[derive(Default)]
 struct FunctionLists {
     objects: Vec<Item>,
@@ -794,7 +697,6 @@ fn encode_function(
         }));
     let mut flags = 0;
 
-    // A malformed list begins at the string that says why, and is empty.
     let captures = match &function.captures {
         Ok(list) => {
             let first = number(lists.captures.len())?;
@@ -856,8 +758,6 @@ fn encode_function(
     Ok(record)
 }
 
-/// Where each function's code begins, by address and then function, with
-/// the furthest end of the code beginning there or before.
 fn function_starts(functions: &[Function]) -> Result<Vec<FunctionStartRecord>, TooMany> {
     let mut starts = Vec::new();
 
@@ -888,10 +788,6 @@ fn function_starts(functions: &[Function]) -> Result<Vec<FunctionStartRecord>, T
         .collect())
 }
 
-/// Of the functions whose code begins as `starts` say, the one `contains`
-/// finds holding `address`: among those beginning at the same address,
-/// the first; otherwise the one beginning nearest before it. A function is
-/// found by any of its ranges, which may overlap another's.
 fn function_at(
     starts: &[FunctionStartRecord],
     address: ImageAddress,
@@ -925,8 +821,6 @@ fn function_at(
     None
 }
 
-/// The functions of a [`Variables`] input by the code they hold, found as
-/// an image's [`VariableView::function_at`] finds them.
 #[derive(Debug)]
 pub struct FunctionIndex<'a> {
     functions: &'a [Function],
@@ -934,7 +828,6 @@ pub struct FunctionIndex<'a> {
 }
 
 impl Variables {
-    /// An index of the functions by the code they hold.
     pub fn function_index(&self) -> Result<FunctionIndex<'_>, TooMany> {
         Ok(FunctionIndex {
             functions: &self.functions,
@@ -944,7 +837,6 @@ impl Variables {
 }
 
 impl<'a> FunctionIndex<'a> {
-    /// The function holding `address`.
     pub fn function_at(&self, address: ImageAddress) -> Option<&'a Function> {
         let holds = |id: u32| {
             self.functions
@@ -956,8 +848,6 @@ impl<'a> FunctionIndex<'a> {
     }
 }
 
-/// An index of `pairs` by key, in which a later pair for a key replaces
-/// an earlier one, as a map's would.
 fn keyed(pairs: impl Iterator<Item = (u64, u32)>) -> Vec<Keyed> {
     let mut sorted = pairs.collect::<Vec<_>>();
     sorted.reverse();
@@ -1039,15 +929,12 @@ fn encode_object(
     })
 }
 
-/// A data object, by its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ObjectId(pub u32);
 
-/// A function whose frames show data objects, by its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VariableFunctionId(pub u32);
 
-/// The data objects of an image.
 #[derive(Debug, Clone, Copy)]
 pub struct VariableView<'a> {
     strings: Strings<'a>,
@@ -1094,7 +981,6 @@ impl<'a> VariableView<'a> {
         }
     }
 
-    /// The object `id` names, which must be one of these.
     #[expect(
         clippy::indexing_slicing,
         reason = "callers pass ids from records and indexes whose validation checks every \
@@ -1114,7 +1000,6 @@ impl<'a> VariableView<'a> {
         }
     }
 
-    /// The function `id` names, which must be one of these.
     #[expect(
         clippy::indexing_slicing,
         reason = "callers pass ids from indexes whose validation checks every function id"
@@ -1131,9 +1016,6 @@ impl<'a> VariableView<'a> {
         }
     }
 
-    /// The function whose code contains `address`: of the functions with
-    /// code beginning last at or before it whose code contains it, the
-    /// first. A function whose own ranges overlap is found by any of them.
     pub fn function_at(self, address: ImageAddress) -> Option<VariableFunction<'a>> {
         function_at(self.starts, address, |id| {
             self.function(VariableFunctionId(id)).contains(address)
@@ -1141,17 +1023,14 @@ impl<'a> VariableView<'a> {
         .map(|id| self.function(VariableFunctionId(id)))
     }
 
-    /// The Go function whose code begins at `address`.
     pub fn go_function(self, address: ImageAddress) -> Option<VariableFunction<'a>> {
         find(self.go_entries, address.get()).map(|id| self.function(VariableFunctionId(id)))
     }
 
-    /// The object whose entry is at `offset` in `.debug_info`.
     pub fn object_at_offset(self, offset: u64) -> Option<Object<'a>> {
         find(self.offsets, offset).map(|id| self.object(ObjectId(id)))
     }
 
-    /// The location of the `DW_TAG_dwarf_procedure` at `offset`.
     pub fn procedure(self, offset: u64) -> Option<Metadata<LocationListId>> {
         let found = self
             .procedures
@@ -1161,12 +1040,10 @@ impl<'a> VariableView<'a> {
         Some(self.location(procedure.location_kind, procedure.location))
     }
 
-    /// The object of the global `index` numbers.
     pub fn global(self, index: usize) -> Option<Object<'a>> {
         Some(self.global_entry(index)?.object)
     }
 
-    /// The global `index` numbers.
     pub fn global_entry(self, index: usize) -> Option<GlobalEntry<'a>> {
         let record = self.globals.get(index)?;
         Some(GlobalEntry {
@@ -1181,7 +1058,6 @@ impl<'a> VariableView<'a> {
         self.globals.len()
     }
 
-    /// The objects of every global, in global order.
     pub fn globals(self) -> impl ExactSizeIterator<Item = Object<'a>> + 'a {
         self.globals
             .iter()
@@ -1220,7 +1096,6 @@ impl<'a> VariableView<'a> {
     }
 }
 
-/// One data object of a [`VariableView`].
 #[derive(Debug, Clone, Copy)]
 pub struct Object<'a> {
     view: VariableView<'a>,
@@ -1250,7 +1125,6 @@ impl<'a> Object<'a> {
         self.record.declaration.get()
     }
 
-    /// The code of its scope.
     pub fn ranges(self) -> impl ExactSizeIterator<Item = AddressRange<ImageAddress>> + 'a {
         self.view
             .ranges(self.scope.ranges)
@@ -1258,12 +1132,10 @@ impl<'a> Object<'a> {
             .map(CodeRange::get)
     }
 
-    /// Whether its scope's code contains `address`.
     pub fn in_scope(self, address: ImageAddress) -> bool {
         self.ranges().any(|range| range.contains(address))
     }
 
-    /// For a Go local, its declaration, past whose line it is visible.
     pub fn go_declaration(self) -> Option<GoDeclaration> {
         if self.record.flags & object_flags::GO_DECLARED == 0 {
             return None;
@@ -1275,7 +1147,6 @@ impl<'a> Object<'a> {
         })
     }
 
-    /// The inline instance owning it, or `None` for the physical frame.
     pub fn instance(self) -> Option<CodeInstanceId> {
         some(self.scope.instance).map(CodeInstanceId::new)
     }
@@ -1291,7 +1162,6 @@ impl<'a> Object<'a> {
         )
     }
 
-    /// The type it is, when it is known.
     pub fn type_id(self) -> Option<TypeId> {
         (self.record.flags & object_flags::TYPE_MALFORMED == 0)
             .then(|| TypeId::new(self.record.ty.get()))
@@ -1323,7 +1193,6 @@ impl<'a> Object<'a> {
         }
     }
 
-    /// Its location list, when its value has one.
     pub fn location(self) -> Option<LocationListId> {
         (self.record.value_kind == value_kinds::LOCATION)
             .then(|| LocationListId(self.record.value.get()))
@@ -1347,7 +1216,6 @@ impl<'a> Object<'a> {
     }
 }
 
-/// One function of a [`VariableView`].
 #[derive(Debug, Clone, Copy)]
 pub struct VariableFunction<'a> {
     view: VariableView<'a>,
@@ -1360,7 +1228,6 @@ impl<'a> VariableFunction<'a> {
         self.id
     }
 
-    /// Whether its code contains `address`.
     pub fn contains(self, address: ImageAddress) -> bool {
         self.view
             .ranges(self.record.ranges)
@@ -1368,7 +1235,6 @@ impl<'a> VariableFunction<'a> {
             .any(|range| range.get().contains(address))
     }
 
-    /// Its objects, in the order a frame shows them.
     pub fn objects(self) -> impl ExactSizeIterator<Item = Object<'a>> + 'a {
         let view = self.view;
         self.record
@@ -1378,13 +1244,10 @@ impl<'a> VariableFunction<'a> {
             .map(move |item| view.object(ObjectId(item.value.get())))
     }
 
-    /// The name a Go function value calling it shows.
     pub fn name(self) -> Option<&'a str> {
         some(self.record.name).map(|name| self.view.strings.get(StrId(name)))
     }
 
-    /// The variables a Go closure captured, in its context, or why they
-    /// cannot be known.
     pub fn captures(self) -> Result<Vec<Capture>, Arc<str>> {
         if self.record.flags & function_flags::CAPTURES_MALFORMED != 0 {
             return Err(self.view.text(self.record.captures.first().into()));
@@ -1403,7 +1266,6 @@ impl<'a> VariableFunction<'a> {
             .collect())
     }
 
-    /// How the function returns its values, when that is known.
     pub fn returns(self) -> Option<ReturnConvention> {
         let record = self.record;
 
@@ -1423,14 +1285,12 @@ impl<'a> VariableFunction<'a> {
     }
 }
 
-/// Where a block constant's bytes are in the pool.
 fn block(record: &ConstantRecord) -> Option<std::ops::Range<usize>> {
     let first = usize::try_from(record.low.get()).ok()?;
     let length = usize::try_from(record.high.get()).ok()?;
     Some(first..first.checked_add(length)?)
 }
 
-/// The location [`location`] encoded as `kind` and `value`.
 pub(super) fn decode_location(
     strings: Strings<'_>,
     kind: u8,
@@ -1445,8 +1305,6 @@ pub(super) fn decode_location(
     }
 }
 
-/// Whether `kind` and `value` are a location [`location`] encodes, of an
-/// image with `lists` lists and `strings`.
 pub(super) fn valid_location(kind: u8, value: U32, lists: usize, strings: Strings<'_>) -> bool {
     match kind {
         value_kinds::LOCATION => (value.get() as usize) < lists,
@@ -1458,7 +1316,6 @@ pub(super) fn valid_location(kind: u8, value: U32, lists: usize, strings: String
     }
 }
 
-/// What the variables' rows may name.
 struct Bounds<'a> {
     strings: Strings<'a>,
     types: usize,
@@ -1484,7 +1341,6 @@ impl Bounds<'_> {
         id.get() == NONE || (id.get() as usize) < self.instances
     }
 
-    /// A type, or with `malformed` why it is unknown.
     fn resolution(&self, ty: U32, malformed: bool) -> bool {
         if malformed {
             self.string(ty)
@@ -1498,7 +1354,6 @@ impl Bounds<'_> {
     }
 }
 
-/// Checks the data objects, their functions, and their indexes.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     let view = VariableView::new(image);
     let bounds = Bounds {

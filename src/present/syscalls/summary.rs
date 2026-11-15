@@ -1,11 +1,8 @@
-//! strace's `-c` table, with microscope's columns beside its own.
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use microscope::syscalls::{Abi, SyscallId, SyscallStats};
 
-/// A column of the table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Column {
     TimePercent,
@@ -18,7 +15,6 @@ pub enum Column {
 }
 
 impl Column {
-    /// strace's columns, in its order.
     pub const DEFAULT: [Self; 6] = [
         Self::TimePercent,
         Self::TotalTime,
@@ -50,7 +46,6 @@ impl Column {
     }
 }
 
-/// Seconds to the microsecond, cut rather than rounded, as strace prints them.
 fn seconds(nanoseconds: u64) -> String {
     format!(
         "{}.{:06}",
@@ -67,7 +62,6 @@ fn name(id: SyscallId) -> String {
     }
 }
 
-/// One cell of the table.
 fn cell(column: Column, stats: &SyscallStats, label: &str, all_time: u64) -> String {
     match column {
         #[expect(clippy::cast_precision_loss, reason = "a percentage")]
@@ -92,16 +86,12 @@ fn cell(column: Column, stats: &SyscallStats, label: &str, all_time: u64) -> Str
     }
 }
 
-/// The table, one line each, busiest first.
 #[must_use]
 pub fn table(calls: &BTreeMap<SyscallId, SyscallStats>, columns: &[Column]) -> Vec<String> {
     let rows = calls.iter().map(|(&id, stats)| (name(id), stats)).collect();
     labelled(rows, columns, "syscall", usize::MAX)
 }
 
-/// The table of rows each named by its label, the column of labels
-/// headed `heading`, showing the `limit` busiest rows; the total counts
-/// every row.
 #[must_use]
 pub fn labelled(
     mut rows: Vec<(String, &SyscallStats)>,

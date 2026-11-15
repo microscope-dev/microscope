@@ -1,8 +1,3 @@
-// Values as a tree. Rows are named by path, so what is open survives the
-// next stop: the link lists open paths, and the same paths open again in
-// the new stop's rows. A value that changed since the stop before is marked,
-// with what it was.
-
 import {
   createContext,
   type FormEvent,
@@ -26,20 +21,17 @@ import { DrawAs, pin } from "./Drawings";
 import { useLook } from "./navigation";
 import { useFocus } from "./Workspace";
 
-/** How many children one page shows. */
 const PAGE = 100;
 
-/** Which rows are open, and whether changes are marked. */
 interface Expansion {
   isOpen(key: string): boolean;
   toggle(key: string): void;
-  /** Whether to compare values with the stop before. */
+
   remember: boolean;
 }
 
 const ExpansionContext = createContext<Expansion | null>(null);
 
-/** The rows the link opens: Variables and Watch. */
 export function LinkedExpansion({ children }: { children: ReactNode }) {
   const { look } = useFocus();
   const change = useLook();
@@ -55,10 +47,6 @@ export function LinkedExpansion({ children }: { children: ReactNode }) {
   return <ExpansionContext value={expansion}>{children}</ExpansionContext>;
 }
 
-/**
- * Rows still showing an earlier answer while this stop's arrives: they are
- * not this stop's values, so nothing compares with them.
- */
 export function Earlier({ children, when }: { children: ReactNode; when: boolean }) {
   const expansion = useExpansion();
   const forgetting = useMemo(() => ({ ...expansion, remember: false }), [expansion]);
@@ -73,7 +61,6 @@ function withOpen<T extends { x?: string[] }>(look: T, x: string[] | undefined):
   return (x ? { ...rest, x } : rest) as T;
 }
 
-/** Rows opened here alone, such as the console's. */
 export function LocalExpansion({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState<string[] | undefined>();
   const expansion = useMemo(
@@ -95,7 +82,6 @@ function useExpansion(): Expansion {
   return expansion;
 }
 
-/** A list of rows under the path `parent`. */
 export function RowList({
   rows,
   parent,
@@ -105,7 +91,6 @@ export function RowList({
   parent: string;
   depth: number;
 }) {
-  // Names can repeat, as shadowed variables do; each repeat is its own row.
   const seen = new Map<string, number>();
   return (
     <>
@@ -126,23 +111,20 @@ export function RowList({
   );
 }
 
-/** Why a row's text is no value: it failed to be read, in red, or it was
- * not read or not saved, dimmed. */
 export type Missing = "failed" | "absent";
 
 interface ValueRowProps {
   row: Row;
   parent: string;
   depth: number;
-  /** Controls at the row's end, such as removing a watch. */
+
   actions?: ReactNode;
-  /** The row says why there is no value. */
+
   missing?: Missing | undefined;
-  /** How many rows with this name come before it, plus one. */
+
   occurrence?: number;
 }
 
-/** One value, which opens to its children. */
 export function ValueRow({ row, parent, depth, actions, missing, occurrence = 1 }: ValueRowProps) {
   const { at, stale } = useFocus();
   const expansion = useExpansion();
@@ -156,7 +138,6 @@ export function ValueRow({ row, parent, depth, actions, missing, occurrence = 1 
   const open = row.children !== null && expansion.isOpen(key);
   let was: string | undefined;
   if (expansion.remember && at && !stale && !row.truncated && !missing) {
-    // Rendering notes what this stop shows, for the stop after it.
     was = recall.before(at.stop, key);
     recall.note(at.stop, key, row.text);
   }
@@ -197,10 +178,6 @@ export function ValueRow({ row, parent, depth, actions, missing, occurrence = 1 
   );
 }
 
-/**
- * What a value's memory offers: showing it, and, for a value stored there,
- * stopping when it changes.
- */
 function RowActions({ row }: { row: Row }) {
   const { at, stale } = useFocus();
   const control = useModel(controls);
@@ -216,9 +193,7 @@ function RowActions({ row }: { row: Row }) {
     assert(memory !== null, "showing the memory of a row with none");
     look((current) => ({ ...current, mem: memory, view: "memory" }), { replace: false });
   }, [look, row]);
-  // The watchpoint on exactly this value's bytes, which the eye removes
-  // rather than adding another. Only the address and size decide it, not the
-  // expression, so the same line reached on another thread watches anew.
+
   const watching = useModel(
     (model) =>
       model.state?.watchpoints.find(
@@ -289,7 +264,6 @@ function RowActions({ row }: { row: Row }) {
   );
 }
 
-/** A value's text, which a double click edits when the value can change. */
 function ValueText({
   row,
   missing,
@@ -379,7 +353,6 @@ function ValueText({
   );
 }
 
-/** A value's children, a page at a time. */
 function ChildRows({ of, parent, depth }: { of: Children; parent: string; depth: number }) {
   const [pages, setPages] = useState(1);
   const known = of.indexed !== null || of.named !== null;
@@ -446,7 +419,6 @@ function useIndent(depth: number) {
   return useMemo(() => ({ paddingLeft: 6 + depth * 14 }), [depth]);
 }
 
-/** A row that only says something, such as why a watch failed. */
 export function messageRow(name: string, text: string): Row {
   return {
     name,

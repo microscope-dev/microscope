@@ -1,9 +1,3 @@
-//! Watches of Python variables: a variable of a frame is watched where it
-//! keeps its object, each store that gives it another object stops in the
-//! frame with the values before and after, as Python shows them, and the
-//! watch ends with the frame. Neither the agent nor a Python breakpoint
-//! takes part, so every build watches so.
-
 use microscope::{
     Error, Expression, StackFrame, StopReason, WatchAccess, WatchScope, Watchpoint,
     WatchpointInvalidation, WatchpointSpec,
@@ -18,7 +12,6 @@ fn expression(text: &str) -> Expression {
     Expression::parse(text).expect("a valid expression")
 }
 
-/// The line of the fixture marked `marker`.
 fn line(marker: &str) -> u32 {
     let text = std::fs::read_to_string(python::fixture(FIXTURE)).expect("read the fixture");
     let index = text
@@ -28,7 +21,6 @@ fn line(marker: &str) -> u32 {
     u32::try_from(index + 1).expect("a small line")
 }
 
-/// The stop's selected frame.
 async fn selected(session: &mut PythonSession) -> StackFrame {
     let id = session
         .scenario
@@ -50,8 +42,6 @@ async fn selected(session: &mut PythonSession) -> StackFrame {
         .expect("the selected frame is in the backtrace")
 }
 
-/// Checks the stop is a hit of the watch that changed `total` from
-/// `previous` to `current`, in `count` at the store.
 async fn changed(session: &mut PythonSession, reason: &StopReason, previous: &str, current: &str) {
     let context = session.context();
     let StopReason::Watchpoint { hits } = reason else {
@@ -81,7 +71,6 @@ async fn changed(session: &mut PythonSession, reason: &StopReason, previous: &st
         "{context}"
     );
 
-    // The source shown is the frame's, not the interpreter's.
     let source = session
         .scenario
         .operation("source", session.scenario.handle().source_context(0))
@@ -97,7 +86,6 @@ async fn changed(session: &mut PythonSession, reason: &StopReason, previous: &st
     );
 }
 
-/// Watches the selected frame's variable `name` for changes.
 async fn watch(session: &PythonSession, name: &str) -> Watchpoint {
     let handle = session.scenario.handle();
     let target = session
@@ -153,8 +141,6 @@ async fn a_variable_is_watched_for_its_frames_life(interpreter: &str) {
         .operation("select count", handle.select_frame(count))
         .await;
 
-    // Only a variable itself is watched: an object an expression reaches
-    // moves and changes as the interpreter likes.
     let refused = handle.resolve_watch_target(&expression("total.real")).await;
     assert!(
         matches!(&refused, Err(Error::WatchTargetUnsupported(reason)) if reason.contains("variable of the frame")),
@@ -163,7 +149,6 @@ async fn a_variable_is_watched_for_its_frames_life(interpreter: &str) {
 
     let total = watch(&session, "total").await;
 
-    // Adding 0 stores the object it held, which is no change.
     session.go_on().await;
     let reason = session.finish_run().await;
     changed(&mut session, &reason, "0", "1").await;
@@ -172,9 +157,6 @@ async fn a_variable_is_watched_for_its_frames_life(interpreter: &str) {
     let reason = session.scenario.resume_to_stop().await;
     changed(&mut session, &reason, "3", "6").await;
 
-    // The next call's frame takes the returned one's place, storing what
-    // the unbound `spare` held: the watch ends there all the same, rather
-    // than go on to report the new frame's `spare`.
     session
         .scenario
         .operation(
@@ -210,10 +192,6 @@ async fn a_variable_is_watched_for_its_frames_life(interpreter: &str) {
     );
     session.shutdown().await;
 }
-
-// One test for each layout family: no offsets table, a free-threaded
-// 3.13, stack references, a free-threaded tail-calling 3.15, and a build
-// linked into its executable.
 
 #[tokio::test]
 async fn a_variable_is_watched_for_its_frames_life_on_3_12() {

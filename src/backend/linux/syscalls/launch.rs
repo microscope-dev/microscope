@@ -1,8 +1,3 @@
-//! Starting a program held between fork and exec.
-//!
-//! An engine then sees it from its first call: the BPF engine adds it to the
-//! traced processes, and the ptrace engine seizes it, before it executes.
-
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::process::{Command, ExitStatus};
 use std::sync::mpsc;
@@ -10,29 +5,22 @@ use std::thread::JoinHandle;
 
 use super::seccomp::Instruction;
 
-/// A child released at its gate.
 pub struct Gate {
     pub pid: u32,
     go: Option<OwnedFd>,
     spawner: Option<JoinHandle<std::io::Result<Option<ExitStatus>>>>,
 
-    /// Dropping it lets a spawner that does not reap its child return.
     hold: Option<mpsc::Sender<()>>,
 }
 
-/// What the gate does once opened.
 #[derive(Debug, Clone, Default)]
 pub struct GateOptions {
-    /// A seccomp filter the child installs before it executes.
     pub filter: Option<Vec<Instruction>>,
 
-    /// Whether the spawning thread waits for the child and reaps it, as
-    /// when nothing traces it. A ptrace engine reaps it itself.
     pub reap: bool,
 }
 
 impl Gate {
-    /// Lets the child execute.
     pub fn open(&mut self) -> std::io::Result<()> {
         let go = self
             .go
@@ -44,8 +32,6 @@ impl Gate {
         Ok(())
     }
 
-    /// Waits for the spawning thread: the program's exit status when the
-    /// thread reaped it, or why it never executed.
     pub fn finish(&mut self) -> std::io::Result<Option<ExitStatus>> {
         drop(self.hold.take());
         self.spawner.take().map_or(Ok(None), |spawner| {
@@ -58,7 +44,6 @@ impl Gate {
 
 impl Drop for Gate {
     fn drop(&mut self) {
-        // A gate dropped unopened ends the child before it executes.
         drop(self.go.take());
         let _ = self.finish();
     }
@@ -68,9 +53,6 @@ fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).map_err(std::io::Error::from)
 }
 
-/// Starts `command` released at a gate. A thread of its own spawns it, because
-/// spawning returns only after the exec, and stays while the child lives:
-/// the child dies with that thread.
 pub fn launch(mut command: Command, options: GateOptions) -> std::io::Result<Gate> {
     let (pid_read, pid_write) = pipe()?;
     let (go_read, go_write) = pipe()?;
@@ -91,7 +73,6 @@ pub fn launch(mut command: Command, options: GateOptions) -> std::io::Result<Gat
                 return child.wait().map(Some);
             }
 
-            // The tracer reaps the child; this thread only outlives it.
             let _ = released.recv();
             drop(child);
             Ok(None)
@@ -124,7 +105,6 @@ fn gate(
     [pid_write, go_read, go_write]: [&OwnedFd; 3],
     filter: Option<Vec<Instruction>>,
 ) {
-    // Built before the fork: the child may not allocate.
     let filter = filter.map(|program| program.into_iter().map(Into::into).collect());
     super::super::sys::before_exec(
         command,
@@ -147,8 +127,6 @@ mod tests {
 
     use super::*;
 
-    /// A gate closed unopened ends its child before it executes, which
-    /// needs the child to have closed its own copy of the gate.
     #[test]
     fn a_gate_closed_unopened_ends_its_child_before_it_executes() {
         let options = GateOptions {
@@ -178,8 +156,6 @@ mod tests {
         );
     }
 
-    /// A launched program dies with the thread that spawned it, as it
-    /// would with the debugger, rather than running on unwatched.
     #[test]
     fn a_launched_program_dies_with_the_thread_that_spawned_it() {
         use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
@@ -195,7 +171,6 @@ mod tests {
         let pid = nix::unistd::Pid::from_raw(gate.pid.cast_signed());
         gate.open().expect("the gate opens");
 
-        // The spawning thread returns once the program executes.
         gate.finish().expect("the program executes");
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let status = loop {

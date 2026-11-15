@@ -1,14 +1,14 @@
-// Template instances whose identities the debugger normalizes: standard
-// containers, a parameter pack, a value parameter, an inline namespace, a
-// local class, and a self-referential template.
+
+
+
 #include <array>
 #include <map>
 #include <string>
 #include <vector>
 
-// libstdc++'s checked vector lives in std::__debug, a namespace that is
-// inline only in debug mode. Here it is an ordinary one, and its vector is
-// a different type from std::vector.
+
+
+
 #if __has_include(<debug/vector>)
 #include <debug/vector>
 #define CHECKED_VECTOR 1
@@ -19,8 +19,8 @@ inline namespace v1 {
 struct Thing {
     int value;
 };
-} // namespace v1
-} // namespace outer
+}
+}
 
 template <typename... Ts> struct Pack {
     int count;

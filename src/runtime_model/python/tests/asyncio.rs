@@ -1,7 +1,3 @@
-//! asyncio's tasks, read from synthetic memory: the lists of tasks each
-//! thread state and interpreter keeps, each task's state, name, and
-//! awaiters, and each suspended task's chain of awaits.
-
 use std::sync::Arc;
 
 use proptest::prelude::*;
@@ -17,18 +13,13 @@ use crate::image::python::{Constant, Field, PythonLayout};
 use crate::runtime_model::TaskState;
 use crate::{InspectionLimits, ThreadId, VirtualAddress};
 
-/// The size of the tests' `asyncio.Task`s, whose fields lie within it.
 const TASK_SIZE: u64 = 72;
 
-/// Where a coroutine embeds its frame, and the size of one.
 const GEN_FRAME: u64 = 32;
 const GEN_SIZE: u64 = GEN_FRAME + FRAME_SIZE;
 
-/// The size of the tests' thread and interpreter states, past their lists.
 const STATE_SIZE: u64 = 64;
 
-/// The tests' layout with asyncio's fields: a task's, a thread state's and
-/// an interpreter's lists of tasks, and a coroutine's state and frame.
 fn asyncio_layout() -> PythonLayout {
     let mut layout = layout();
     let fields = [
@@ -55,7 +46,6 @@ fn asyncio_layout() -> PythonLayout {
         layout.set_field(field, offset);
     }
 
-    // 3.14's states, each the byte of a negative `int8_t`.
     layout.set_constant(Constant::GeneratorCreated, 0xfd);
     layout.set_constant(Constant::GeneratorSuspended, 0xfe);
     layout.set_constant(Constant::GeneratorYieldFrom, 0xff);
@@ -70,8 +60,6 @@ fn asyncio_layout() -> PythonLayout {
     layout
 }
 
-/// A process with asyncio's layout, its built-in types, and `_asyncio`'s
-/// `Task`, whose objects are `size` bytes.
 fn world(size: u64) -> (Process, Types, VirtualAddress) {
     let mut process = Process::new(asyncio_layout());
     let types = process.builtin_types();
@@ -81,14 +69,12 @@ fn world(size: u64) -> (Process, Types, VirtualAddress) {
 }
 
 impl Process {
-    /// An empty circular list whose head is at `field` of `owner`.
     fn empty_list(&mut self, owner: u64, field: Field) -> u64 {
         let head = owner + self.offset(field);
         self.memory.write(head, head, 8);
         head
     }
 
-    /// Links the tasks into the list whose head is at `head`, in order.
     fn link(&mut self, head: u64, tasks: &[u64]) {
         let node = self.offset(Field::TaskNode);
         let next = self.offset(Field::LlistNext);
@@ -104,7 +90,6 @@ impl Process {
         self.memory.write(head + prev, previous, 8);
     }
 
-    /// A task of type `ty` running `coroutine`, named by `name`, an object.
     fn task(&mut self, ty: VirtualAddress, coroutine: u64, name: u64) -> u64 {
         let task = self.object(ty, TASK_SIZE);
         self.word(task, Field::TaskCoro, coroutine);
@@ -112,8 +97,6 @@ impl Process {
         task
     }
 
-    /// A coroutine of `types` in the state `state`, a constant, whose frame
-    /// runs `code`, and awaits `awaited` when it is one.
     fn coroutine(
         &mut self,
         types: &Types,
@@ -143,8 +126,6 @@ impl Process {
     }
 }
 
-/// A thread state of interpreter 0, whose state is `interpreter`, running
-/// on native thread `native`, whose own state is at `address`.
 const fn state(address: u64, interpreter: u64, native: u64) -> ThreadState {
     ThreadState {
         address: VirtualAddress::new(address),
@@ -174,7 +155,6 @@ fn awaits(process: &Process, types: Types, task: u64) -> Awaits {
     })
 }
 
-/// A 3.14 model of `process`, whose runtime state is at `runtime`.
 fn model(process: &Process, types: &Types, runtime: u64) -> super::super::PythonRuntime {
     super::super::PythonRuntime {
         free_threaded: false,
@@ -284,8 +264,6 @@ fn a_type_named_task_whose_objects_are_another_size_is_none() {
     assert_eq!(is_task, Ok(false));
 }
 
-/// A task awaited by more than are named says how many entries of its
-/// set of awaiters were not read, which may hold futures as well as tasks.
 #[test]
 fn a_task_awaited_by_many_names_the_first_and_counts_the_entries_unread() {
     use super::instances::{Slot, set_object};
@@ -628,10 +606,6 @@ fn current_task_and_context_use_proven_identity_and_refuse_missing_proof() {
     assert!(model.task_context(&process.memory, reference).is_err());
 }
 
-/// A task's context is read from the task and the thread states alone, so
-/// a snapshot that asks for each task's reads each list once: a task is
-/// one while its node is linked between neighbors that link back to it,
-/// and with a thread state's running task unknown, which task it runs is.
 #[test]
 fn a_tasks_context_is_its_own_node_and_the_running_tasks() {
     use crate::runtime_model::{RuntimeModel as _, TaskContext, TaskRef};
@@ -669,7 +643,6 @@ fn a_tasks_context_is_its_own_node_and_the_running_tasks() {
     assert!(matches!(context(&process, unlinked), Ok(None)));
     assert!(matches!(context(&process, types.str.get()), Ok(None)));
 
-    // However many tasks the list holds, the context reads as much.
     let reads = |process: &Process| {
         process.memory.reads.set(0);
         let _ = context(process, listed);
@@ -681,7 +654,6 @@ fn a_tasks_context_is_its_own_node_and_the_running_tasks() {
     assert_eq!(reads(&process), few);
     process.link(head, &[listed, other]);
 
-    // A node whose neighbors do not link back to it is no proof.
     let node = process.offset(Field::TaskNode);
     let next = process.offset(Field::LlistNext);
     process.memory.write(other + node + next, listed + node, 8);
@@ -694,7 +666,6 @@ fn a_tasks_context_is_its_own_node_and_the_running_tasks() {
     );
     process.memory.write(other + node + next, head, 8);
 
-    // A thread whose running task cannot be read may run any task.
     process.word(thread, Field::ThreadAsyncioRunningTask, types.str.get());
     let unknown = context(&process, listed);
     assert!(
@@ -705,26 +676,17 @@ fn a_tasks_context_is_its_own_node_and_the_running_tasks() {
     );
 }
 
-/// A change to the lists a model lays out: the node of the task at the
-/// first index has its own link changed, or another list's head is made
-/// to point at it, as lists caught mid-change or overwritten may be.
 #[derive(Debug, Clone)]
 enum Damage {
-    /// Both of the node's links cleared, as asyncio clears a freed task's.
     Cleared(usize),
 
-    /// Its link back points elsewhere: at another node, or anywhere.
     Prev(usize, usize, Option<u64>),
 
-    /// Its link on points elsewhere.
     Next(usize, usize, Option<u64>),
 
-    /// The list of another owner begins at it.
     Shared(usize, usize),
 }
 
-/// The tasks of each thread state's list, then the exited threads', and
-/// of tasks no list holds, with the damage done to them.
 #[derive(Debug, Clone)]
 struct Lists {
     threads: Vec<usize>,
@@ -757,8 +719,6 @@ fn lists(damaged: bool) -> impl Strategy<Value = Lists> {
         })
 }
 
-/// A 3.14 process holding `lists`: the model of it, the tasks each list
-/// holds in order, and the tasks none does.
 struct Laid {
     process: Process,
     types: Types,
@@ -773,7 +733,6 @@ fn lay_out(lists: &Lists) -> Laid {
     let code = process.code("leaf", 1, &[(1, 0)]);
     let resting = process.coroutine(&types, Constant::GeneratorCreated, code, None);
 
-    // Thread states are listed from the first, each linking to the next.
     let mut states = Vec::new();
     let mut next_state = 0;
     for native in (1..=lists.threads.len() as u64).rev() {
@@ -781,7 +740,6 @@ fn lay_out(lists: &Lists) -> Laid {
         states.push(next_state);
     }
     states.reverse();
-    // The interpreter's state holds its list's head whole, both links.
     let interpreter = process.alloc(STATE_SIZE);
     process.word(interpreter, Field::InterpreterId, 0);
     process.word(interpreter, Field::InterpreterNext, 0);
@@ -852,9 +810,6 @@ fn lay_out(lists: &Lists) -> Laid {
     }
 }
 
-/// A task another list's head is made to point at is listed once, and
-/// one whose node asyncio cleared as it freed it is not listed, though a
-/// stale link leads to it: proptest's shrunk cases.
 #[test]
 fn a_task_two_lists_lead_to_or_one_freed_is_listed_once_or_not_at_all() {
     let shared = Lists {
@@ -884,7 +839,6 @@ fn a_task_two_lists_lead_to_or_one_freed_is_listed_once_or_not_at_all() {
     assert!(matches!(context(&laid, laid.listed[0]), Ok(None)));
 }
 
-/// The tasks pages of `limit` list, joined, with each page's gaps.
 fn paged(laid: &Laid, limit: usize) -> (Vec<u64>, Vec<String>) {
     use crate::runtime_model::RuntimeModel as _;
     let model = model(&laid.process, &laid.types, laid.runtime);

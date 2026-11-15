@@ -1,6 +1,6 @@
-// Reports what a program launched under microscope sees of the inspector
-// microscope's preload opened: its own variables, and what the inspector's
-// HTTP server lists to any local client.
+
+
+
 'use strict';
 const http = require('http');
 const inspector = require('inspector');

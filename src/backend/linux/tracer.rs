@@ -1,17 +1,3 @@
-//! One OS thread that owns ptrace for a group of controllers.
-//!
-//! ptrace ties a tracee to the thread that traced it, and the kernel traces
-//! a traced process's fork children to the same thread. So every process a
-//! group debugs or watches is traced by one thread, and each process's
-//! controller runs on it. The thread serves each controller's queue in
-//! turn, through the same `handle_message` a controller of its own thread
-//! runs, and parks while none has a message: a request, a wait status the
-//! hub routed, or an agent's deadline wakes it.
-//!
-//! The thread lives until every controller has ended and every handle to
-//! the tracer is dropped, so a launched process, which dies when the thread
-//! that launched it does, never outlives the group early.
-
 use std::sync::{Arc, mpsc as std_mpsc};
 use std::task::{Context, Wake, Waker};
 use std::thread::{self, JoinHandle, Thread};
@@ -22,33 +8,23 @@ use super::wait_hub::{HubEdge, MemberKey, WaitHub};
 use super::{ControllerMessage, SessionLease};
 use crate::Result;
 
-/// A controller a tracer thread serves.
 pub(super) trait Hosted {
-    /// The next message queued, without waiting.
     fn next_message(&self) -> Option<ControllerMessage>;
 
-    /// Serves one message, and returns whether the controller keeps running.
     fn handle_message(&mut self, message: ControllerMessage) -> bool;
 
-    /// Takes a message from the controller's queue if one is there, and
-    /// otherwise arranges for `context`'s waker to be woken when one is.
     fn poll_queue(&self, context: &mut Context<'_>) -> bool;
 
-    /// When the controller must be served even if no message arrives.
     fn deadline(&self) -> Option<Instant>;
 
-    /// Lets the controller's process go after a panic ended it.
     fn release_after_panic(&mut self);
 }
 
-/// What a controller's edge needs from the tracer thread it runs on.
 pub(super) struct HostContext<'a> {
     hub: &'a WaitHub,
 }
 
 impl HostContext<'_> {
-    /// Joins the wait hub, whose statuses for the member's process go to
-    /// `sender`.
     pub(super) fn membership(&self, sender: mpsc::Sender<ControllerMessage>) -> HubMembership {
         let key = self.hub.register(sender);
         HubMembership {
@@ -60,7 +36,6 @@ impl HostContext<'_> {
 
 use tokio::sync::{mpsc, oneshot};
 
-/// A controller's place in the wait hub, left when it is dropped.
 pub(super) struct HubMembership {
     edge: HubEdge,
     key: MemberKey,
@@ -87,26 +62,18 @@ enum Command {
     },
 }
 
-/// A handle to a tracer thread, through which controllers join it.
 pub(super) struct Tracer {
-    /// Taken only when the handle drops, so that the thread finds it gone
-    /// once woken.
     commands: Option<std_mpsc::Sender<Command>>,
     thread: Thread,
 }
 
-/// What a controller's owner waits for once it asked it to end.
 pub struct Hosting {
     ended: oneshot::Receiver<thread::Result<()>>,
 
-    /// The tracer thread, for an owner that is the only one, so that the
-    /// tracing lease is free once the controller has ended.
     thread: Option<JoinHandle<()>>,
 }
 
 impl Hosting {
-    /// What the owner of a group's member waits for: the tracer thread is
-    /// the group's, and outlives the member.
     pub(super) const fn member(ended: oneshot::Receiver<thread::Result<()>>) -> Self {
         Self {
             ended,
@@ -114,8 +81,6 @@ impl Hosting {
         }
     }
 
-    /// Waits for the controller to end, and for the tracer thread too
-    /// when this hosting owns it. Fails when the controller panicked.
     pub fn join(self) -> std::result::Result<(), ()> {
         let ended = self.ended.blocking_recv().map_err(|_| ())?;
         if let Some(thread) = self.thread {
@@ -127,8 +92,6 @@ impl Hosting {
 }
 
 impl Tracer {
-    /// Starts a tracer thread, which holds the process's tracing lease, and
-    /// returns its handle and its join handle.
     pub(super) fn start(group: Option<GroupSetup>) -> Result<(Self, JoinHandle<()>)> {
         let lease = SessionLease::acquire()?;
         let (commands, received) = std_mpsc::channel();
@@ -145,7 +108,6 @@ impl Tracer {
         ))
     }
 
-    /// Starts a controller that `build` makes on the tracer thread.
     pub(super) fn host(&self, build: Build) -> Result<oneshot::Receiver<thread::Result<()>>> {
         let (ended, receiver) = oneshot::channel();
         self.commands
@@ -157,8 +119,6 @@ impl Tracer {
         Ok(receiver)
     }
 
-    /// Starts a tracer thread serving one controller, which ends when it
-    /// does.
     pub(super) fn alone(build: Build) -> Result<Hosting> {
         let (tracer, thread) = Self::start(None)?;
         let ended = tracer.host(build)?;
@@ -170,11 +130,7 @@ impl Tracer {
 }
 
 impl Drop for Tracer {
-    /// Wakes the thread, which ends once it has no controller left and no
-    /// handle to it.
     fn drop(&mut self) {
-        // The sender goes first: a thread woken before it went would find
-        // the queue only empty, and park again with nothing to wake it.
         drop(self.commands.take());
         self.thread.unpark();
     }
@@ -197,7 +153,6 @@ struct Member {
     ended: Option<oneshot::Sender<thread::Result<()>>>,
 }
 
-/// The tracer thread's loop.
 fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>, group: Option<GroupSetup>) {
     let hub = match WaitHub::new() {
         Ok(hub) => hub,
@@ -216,11 +171,6 @@ fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>, group: O
     let mut group = group.map(|setup| Group::new(setup, &HostContext { hub: &hub }));
 
     loop {
-        // No controller hears of a stop once the waiter panicked, so each
-        // releases its process as after its own panic, and the thread ends:
-        // the kernel then releases what is left, as it would at a crash.
-        // Processes already handed over are adopted first, so that a fork
-        // child loses the traps it inherited.
         if hub.failed() {
             if let Some(group) = &mut group {
                 let (joined, _) = group.serve(&HostContext { hub: &hub });
@@ -254,8 +204,6 @@ fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>, group: O
             }
         }
 
-        // A group's watched processes end only once the group has no
-        // owner left, and every member has ended.
         let watching =
             closed && members.is_empty() && group.as_mut().is_some_and(|group| !group.close());
         if closed && members.is_empty() && !watching {
@@ -311,13 +259,11 @@ fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>, group: O
         }
     }
 
-    // Controllers end before the hub that routes their statuses.
     drop(members);
     drop(group);
     drop(hub);
 }
 
-/// Serves one message to `member`, and returns whether it keeps running.
 fn serve_one(member: &mut Member, message: ControllerMessage) -> bool {
     let started = Instant::now();
     let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -344,8 +290,6 @@ fn serve_one(member: &mut Member, message: ControllerMessage) -> bool {
     }
 }
 
-/// Lets `member`'s process go after `panic`, and tells its owner that the
-/// controller ended with it.
 fn release(member: &mut Member, panic: Box<dyn std::any::Any + Send>) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         member.hosted.release_after_panic();
@@ -355,21 +299,16 @@ fn release(member: &mut Member, panic: Box<dyn std::any::Any + Send>) {
     }
 }
 
-/// The longest one message should hold the tracer thread, which every
-/// other controller on it waits through.
 const LATENCY_BUDGET: std::time::Duration = std::time::Duration::from_millis(50);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Dropping the last handle to an idle tracer thread ends it, however
-    /// the thread's wakeup and the handle's drop interleave.
     #[test]
     fn an_idle_tracer_thread_ends_once_its_handle_is_dropped() {
         for _ in 0..500 {
             let (tracer, thread) = Tracer::start(None).expect("start a tracer thread");
-            // The thread parks, waiting for work, before the handle drops.
             thread::sleep(std::time::Duration::from_micros(200));
             drop(tracer);
             let (done, ended) = std_mpsc::channel();

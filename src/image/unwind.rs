@@ -1,8 +1,3 @@
-//! What unwinding reads once a module is loaded: the call-frame sections
-//! and an index of their entries by address, and Go's function table with
-//! where each Go function saves its caller's frame pointer. These are a
-//! provider's private tables; DWARF and Go interpret their bytes.
-
 use zerocopy::little_endian::{U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -11,32 +6,24 @@ use super::strings::{StrId, Strings, StringsBuilder};
 use super::{Builder, Image, NONE, Record, TableKind};
 use crate::{AddressRange, ImageAddress};
 
-/// Facts about the call-frame sections and Go's table. An image holds one,
-/// or none when nothing describes how its code unwinds.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct UnwindRecord {
-    /// The addresses gimli resolves pointer encodings against.
     pub eh_frame_base: U64,
     pub text_base: U64,
     pub got_base: U64,
 
-    /// Where each section's first malformed entry is, [`WHOLE_SECTION`]
-    /// when the section cannot be enumerated, and why, or [`NONE`].
     pub eh_frame_error_offset: U64,
     pub debug_frame_error_offset: U64,
     pub eh_frame_error: U32,
     pub debug_frame_error: U32,
 
-    /// Where Go's table is, where its code starts, and where `go:func.*`
-    /// is, as Go's table parser reads them.
     pub go_table: U64,
     pub go_text: U64,
     pub go_func: U64,
 
-    /// The Go release that built the image.
     pub go_major: U32,
     pub go_minor: U32,
     pub flags: u8,
@@ -47,7 +34,6 @@ impl Record for UnwindRecord {
     const KIND: TableKind = TableKind::Unwind;
 }
 
-/// [`UnwindRecord::flags`].
 pub mod unwind_flags {
     pub const EH_FRAME_BASE: u8 = 1 << 0;
 
@@ -57,7 +43,6 @@ pub mod unwind_flags {
 
     pub const BIG_ENDIAN: u8 = 1 << 3;
 
-    /// The image has Go's table, in [`super::TableKind::GoTable`].
     pub const GO_TABLE: u8 = 1 << 4;
 
     pub const GO_FUNC: u8 = 1 << 5;
@@ -67,18 +52,12 @@ pub mod unwind_flags {
     pub const ALL: u8 = (1 << 7) - 1;
 }
 
-/// The most words a PLT stub is known to push before it jumps.
 pub const MOST_STUB_PUSHES: u32 = 2;
 
-/// The bits of every register a restored return may name: rbx, rbp, and
-/// r12-r15.
 pub const MOST_RESTORED_REGISTERS: u32 = 0x3f;
 
-/// The error offset of a section that could not be enumerated at all.
 pub const WHOLE_SECTION: u64 = u64::MAX;
 
-/// Where one function of Go's table keeps its caller's frame pointer
-/// saved, by the function's index in the table.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -95,45 +74,31 @@ impl Record for FrameSaveRecord {
 
 const _: () = assert!(size_of::<UnwindRecord>() == 82);
 
-/// One call-frame section's entries by the code they describe, and its
-/// first malformed entry.
 #[derive(Debug, Default)]
 pub struct FdeIndex {
-    /// Every entry that parses and covers code, as an interval valued by
-    /// the entry's offset in its section.
     pub entries: Vec<Interval>,
     pub first_error: Option<(u64, String)>,
 }
 
-/// Where Go's table is and what reading it needs, as
-/// `GoTable::parse` takes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GoTableFacts {
-    /// The table's image address.
     pub address: u64,
 
-    /// The address function offsets are relative to.
     pub text: u64,
 
-    /// The image address of `go:func.*`, when known.
     pub go_func: Option<u64>,
 
-    /// The Go release that built the image, as (major, minor).
     pub release: Option<(u32, u32)>,
 }
 
-/// Go's table, as an image keeps it.
 #[derive(Debug)]
 pub struct GoTableData {
     pub bytes: std::sync::Arc<[u8]>,
     pub facts: GoTableFacts,
 
-    /// Where each function keeps its caller's frame pointer saved, by the
-    /// function's index in the table.
     pub frame_saves: Vec<Option<std::ops::Range<u64>>>,
 }
 
-/// The addresses gimli resolves pointer encodings against.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Bases {
     pub eh_frame: Option<u64>,
@@ -141,7 +106,6 @@ pub struct Bases {
     pub got: Option<u64>,
 }
 
-/// What [`add_to`] encodes.
 #[derive(Debug, Default)]
 pub struct Unwind {
     pub eh_frame: std::sync::Arc<[u8]>,
@@ -152,36 +116,22 @@ pub struct Unwind {
     pub big_endian: bool,
     pub address_size: u8,
 
-    /// Code the Go toolchain compiled.
     pub go_code: Vec<AddressRange<ImageAddress>>,
     pub go: Option<GoTableData>,
 
-    /// Each PLT stub instruction, by how many words the stub has pushed
-    /// before it.
     pub stub_frames: Vec<(AddressRange<ImageAddress>, u32)>,
 
-    /// The instructions at which registers a function's caller keeps are
-    /// already restored, though its call-frame information still names
-    /// the slots it saved them in, each with the registers as bits of
-    /// rbx, rbp, and r12-r15.
     pub restored: Vec<(AddressRange<ImageAddress>, u32)>,
 
-    /// The frame of each instruction of a runtime's code that no
-    /// call-frame information describes, where it is proved, encoded as
-    /// `debug_info`'s frame prover encodes it.
     pub proved_frames: Vec<(AddressRange<ImageAddress>, u32)>,
 
-    /// The code of each function `proved_frames` covers, from its entry.
     pub proved_functions: Vec<AddressRange<ImageAddress>>,
 }
 
-/// Why unwinding information could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the call-frame information does not fit an image")]
 pub struct TooLarge;
 
-/// Adds `unwind` to `builder`, pooling error descriptions in `strings`.
-/// The record's flags for what `unwind` holds.
 fn record_flags(unwind: &Unwind) -> u8 {
     let mut flags = 0;
     for (present, flag) in [
@@ -224,7 +174,6 @@ pub fn add_to<'a>(
         })
     };
 
-    // Each entry's offset is an interval's 32-bit value.
     if [&unwind.eh_frame, &unwind.debug_frame]
         .iter()
         .any(|section| u32::try_from(section.len()).is_err())
@@ -308,18 +257,13 @@ pub fn add_to<'a>(
     Ok(())
 }
 
-/// Why no entry describes an address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FdeMiss<'a> {
-    /// No entry covers it.
     NoEntry,
 
-    /// The section is malformed before any entry covering it: the
-    /// description of the first problem.
     Malformed(&'a str),
 }
 
-/// An index of one section's entries, as a lookup reads it.
 #[derive(Debug, Clone, Copy)]
 pub struct FdeLookup<'a> {
     pub entries: &'a [Interval],
@@ -327,8 +271,6 @@ pub struct FdeLookup<'a> {
 }
 
 impl<'a> FdeLookup<'a> {
-    /// The section offset of the first entry describing `address`, unless
-    /// the section is malformed before it.
     pub fn lookup(self, address: u64) -> Result<usize, FdeMiss<'a>> {
         let first = index::containing(self.entries, ImageAddress::new(address)).min();
         match (first, self.first_error) {
@@ -341,9 +283,6 @@ impl<'a> FdeLookup<'a> {
         }
     }
 
-    /// Where the code the entry [`lookup`](Self::lookup) finds for
-    /// `address` begins: the start of a function, as call-frame
-    /// information describes one function per entry.
     pub fn function_start(self, address: u64) -> Option<u64> {
         let offset = u32::try_from(self.lookup(address).ok()?).ok()?;
         let end = self
@@ -359,7 +298,6 @@ impl<'a> FdeLookup<'a> {
 }
 
 impl FdeIndex {
-    /// The index as a lookup reads it, before the image is sealed.
     #[cfg(test)]
     pub fn lookup(&self) -> FdeLookup<'_> {
         FdeLookup {
@@ -372,7 +310,6 @@ impl FdeIndex {
     }
 }
 
-/// The unwinding tables of a validated image.
 #[derive(Debug, Clone, Copy)]
 pub struct UnwindView<'a> {
     strings: Strings<'a>,
@@ -455,33 +392,25 @@ impl<'a> UnwindView<'a> {
         }
     }
 
-    /// Whether the Go toolchain compiled the code at `address`, by its
-    /// debug information.
     pub fn is_go_code(self, address: ImageAddress) -> bool {
         index::containing(self.image.shared(TableKind::GoCode), address)
             .next()
             .is_some()
     }
 
-    /// How many words the PLT stub running `address` has pushed since
-    /// its call, when `address` is one of a stub's instructions.
     pub fn stub_pushes(self, address: ImageAddress) -> Option<u32> {
         index::containing(self.image.shared(TableKind::StubFrames), address).next()
     }
 
-    /// The registers its caller keeps that the function running `address`
-    /// has already restored there, as bits of rbx, rbp, and r12-r15.
     pub fn restored(self, address: ImageAddress) -> u32 {
         index::containing(self.image.shared(TableKind::RestoredFrames), address)
             .fold(0, |registers, more| registers | more)
     }
 
-    /// The encoded frame proved for the instruction at `address`, if any.
     pub fn proved_frame(self, address: ImageAddress) -> Option<u32> {
         index::containing(self.image.shared(TableKind::ProvedFrames), address).next()
     }
 
-    /// Where the function whose frames are proved at `address` begins.
     pub fn proved_function_start(self, address: ImageAddress) -> Option<u64> {
         self.proved_frame(address)?;
         let functions: &[index::Interval] = self.image.shared(TableKind::ProvedFunctions);
@@ -494,7 +423,6 @@ impl<'a> UnwindView<'a> {
             .map(|function| function.start.get())
     }
 
-    /// Go's table, when the image has it.
     pub fn go(self) -> Option<(&'a [u8], GoTableFacts)> {
         let record = self.record?;
         self.flag(unwind_flags::GO_TABLE).then(|| {
@@ -514,8 +442,6 @@ impl<'a> UnwindView<'a> {
         })
     }
 
-    /// Where each function of Go's table keeps its caller's frame pointer
-    /// saved.
     pub fn frame_saves(self) -> impl ExactSizeIterator<Item = Option<std::ops::Range<u64>>> + 'a {
         self.image
             .table::<FrameSaveRecord>()
@@ -524,7 +450,6 @@ impl<'a> UnwindView<'a> {
     }
 }
 
-/// Checks the unwinding tables.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     let strings = image.strings();
     let records = image.table::<UnwindRecord>();

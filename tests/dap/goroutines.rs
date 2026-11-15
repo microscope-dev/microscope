@@ -1,11 +1,7 @@
-//! Goroutines as a client sees them: as its threads.
-
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Profile, fixture};
 
-/// Launches the workers fixture to its checkpoint, where its workers are
-/// parked, with `extra` launch arguments.
 fn at_checkpoint(extra: Value) -> (Dap, i64) {
     let mut dap = Dap::start("goroutines");
     let started = dap.launch(
@@ -40,7 +36,6 @@ fn threads(dap: &mut Dap) -> Vec<(i64, String)> {
 fn goroutines_are_threads_named_where_the_program_has_them() {
     let (mut dap, stopped) = at_checkpoint(json!({}));
 
-    // The stop names main's goroutine, whose id is the client's.
     assert_eq!(stopped, 1);
     let listed = threads(&mut dap);
     let (first, name) = &listed[0];
@@ -58,7 +53,6 @@ fn goroutines_are_threads_named_where_the_program_has_them() {
         assert_eq!(*name, format!("[{id}] main.worker — chan receive"));
     }
 
-    // The runtime's own goroutines are left out.
     assert!(
         !listed
             .iter()
@@ -66,8 +60,6 @@ fn goroutines_are_threads_named_where_the_program_has_them() {
         "{listed:?}"
     );
 
-    // A parked worker's stack is its own, with the runtime's frames
-    // subdued, and its frame evaluates in its goroutine.
     let worker = workers[0].0;
     let trace = dap.request("stackTrace", json!({"threadId": worker}));
     let frames = trace["stackFrames"].as_array().expect("frames");
@@ -112,15 +104,12 @@ fn launch_options_list_the_runtimes_goroutines_cut_the_list_or_list_threads() {
     let (mut dap, stopped) = at_checkpoint(json!({"threads": "system"}));
     let process = i64::from(dap.process_id().expect("a process"));
 
-    // The main thread is the process's first.
     assert_eq!(stopped, process);
     let system = threads(&mut dap);
     assert!(system.iter().all(|(id, _)| *id >= process), "{system:?}");
     dap.finish();
 }
 
-/// Thousands of goroutines are cut to `maxTasks`, the stopped one
-/// first, with the rest counted in a last entry.
 #[test]
 fn goroutines_are_cut_with_a_count_of_the_rest() {
     let mut dap = Dap::start("scale");
@@ -152,7 +141,6 @@ fn goroutines_are_cut_with_a_count_of_the_rest() {
         &listed[..8]
     );
 
-    // main's goroutine and every parked one.
     assert_eq!(
         listed[1000].1,
         "7194 more goroutines not shown; maxTasks lists 1000"
@@ -174,7 +162,6 @@ fn a_stack_that_crosses_stacks_labels_each_run_of_frames() {
     );
     let stop = dap.stopped(started.mark);
 
-    // Main's goroutine stopped on the system stack.
     assert_eq!(stop.thread, 1, "{stop:?}");
     let trace = dap.request("stackTrace", json!({"threadId": 1}));
     let names = trace["stackFrames"]
@@ -204,7 +191,6 @@ fn a_stack_that_crosses_stacks_labels_each_run_of_frames() {
     );
     assert_eq!(trace["totalFrames"].as_u64(), Some(names.len() as u64));
 
-    // Pages count the labels.
     let page = dap.request(
         "stackTrace",
         json!({"threadId": 1, "startFrame": 4, "levels": 2}),

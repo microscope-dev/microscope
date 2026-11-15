@@ -1,11 +1,6 @@
-// What a thread's kernel lane says under the pointer: the call it waited
-// in, or how many calls returned in the slice; and the budget's steps.
-
 import type { ProfileLane, ProfileWait } from "../protocol";
 import { formatCount, formatDuration, formatInstant } from "./paint";
 
-/** The call `lane`'s thread waited in at `time`, give or take `slack`,
- * the nearest when several are that close. */
 export function waitAt(lane: ProfileLane, time: number, slack: number): ProfileWait | null {
   let found: ProfileWait | null = null;
   let best = Number.POSITIVE_INFINITY;
@@ -19,7 +14,6 @@ export function waitAt(lane: ProfileLane, time: number, slack: number): ProfileW
   return found;
 }
 
-/** The slice of `count` across `range` that holds `time`, or -1. */
 export function sliceAt(range: readonly [number, number], count: number, time: number): number {
   const [start, end] = range;
   if (count <= 0 || end <= start || time < start || time >= end) {
@@ -28,7 +22,6 @@ export function sliceAt(range: readonly [number, number], count: number, time: n
   return Math.min(Math.floor(((time - start) * count) / (end - start)), count - 1);
 }
 
-/** What a kernel lane says at `time`, or null where it has nothing. */
 export function kernelLines(
   lane: ProfileLane,
   range: readonly [number, number],
@@ -53,8 +46,6 @@ export function kernelLines(
   ];
 }
 
-/** The calls `lane`'s thread waited in during `[start, end)`, the longest
- * first, as a tooltip's line says them; null when it waited in none. */
 export function blockedIn(lane: ProfileLane, start: number, end: number): string | null {
   const by = new Map<string, { count: number; ns: number }>();
   for (const wait of lane.waits) {
@@ -75,7 +66,6 @@ export function blockedIn(lane: ProfileLane, start: number, end: number): string
   return `blocked in ${calls.join(", ")}`;
 }
 
-/** The budget's step nearest `time`, give or take `slack`. */
 export function stepAt(
   steps: readonly { time: number; text: string }[],
   time: number,

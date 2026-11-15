@@ -1,13 +1,9 @@
-//! Values in every supported language as a client sees them.
-
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Profile, fixture, line_of, source};
 
-/// Launches a program to its first stop, returning the stopped thread and
-/// its innermost frame.
 fn stop(dap: &mut Dap, program: &str, configuration: &Configuration) -> (i64, Value) {
     let started = dap.launch(Profile::VsCode, &fixture(program), json!({}), configuration);
     let stop = dap.stopped(started.mark);
@@ -16,7 +12,6 @@ fn stop(dap: &mut Dap, program: &str, configuration: &Configuration) -> (i64, Va
     (stop.thread, trace["stackFrames"][0].clone())
 }
 
-/// The variables of a frame's argument and local scopes, by name.
 fn frame_variables(dap: &mut Dap, frame: &Value) -> BTreeMap<String, Value> {
     let scopes = dap.request("scopes", json!({"frameId": frame["id"]}));
     let mut variables = BTreeMap::new();
@@ -48,8 +43,6 @@ fn finish_running(mut dap: Dap, thread: i64) {
     dap.finish();
 }
 
-/// Expands every value under a reference, to a bounded depth, and checks
-/// that each child's `evaluateName` evaluates to the value shown for it.
 fn assert_children_evaluate(
     dap: &mut Dap,
     frame: &Value,
@@ -87,9 +80,6 @@ fn assert_children_evaluate(
 
 #[test]
 fn records_and_enums_expand_and_their_members_evaluate_to_what_they_show() {
-    // Each program's member names to depth 3, so that a language whose
-    // nested rows lost their names fails. C++ base classes have none, so
-    // its records' members are reached through no name.
     for (program, function, members) in [
         ("records-cpp-gcc-o0", "inspect_records", 3),
         ("records-rust-o0", "inspect_records", 34),
@@ -156,8 +146,6 @@ fn step_out_shows_what_the_function_returned() {
         let trace = dap.request("stackTrace", json!({"threadId": thread, "levels": 1}));
         let variables = frame_variables(&mut dap, &trace["stackFrames"][0]);
 
-        // Returned values are listed with the frame's own, and no name
-        // reaches them.
         let count = &variables["returned count"];
         assert_eq!(count["value"], "42", "{program}: {variables:?}");
         assert!(count.get("evaluateName").is_none(), "{program}: {count}");
@@ -167,8 +155,6 @@ fn step_out_shows_what_the_function_returned() {
     }
 }
 
-/// A C function's returned struct, from the registers System V returns
-/// it in, has members to expand.
 #[test]
 fn step_out_shows_what_a_c_function_returned() {
     let program = "returns-c-gcc-o2";
@@ -206,8 +192,6 @@ fn step_out_shows_what_a_c_function_returned() {
     finish_running(dap, thread);
 }
 
-/// The functions that left by tail calls stand between a frame and its
-/// caller in a stack trace, and their scopes show what was passed to them.
 #[test]
 fn stack_traces_show_the_functions_that_left_by_tail_calls() {
     let program = "tail-frames-gcc-o2";
@@ -246,7 +230,6 @@ fn stack_traces_show_the_functions_that_left_by_tail_calls() {
     let variables = frame_variables(&mut dap, &frames[1]);
     assert_eq!(variables["value"]["value"], "6", "{variables:?}");
 
-    // Through `either`, which may have reached `leaf` two ways.
     let resumed = dap.send("continue", json!({"threadId": thread}));
     dap.success(resumed);
     dap.stopped(resumed.mark);
@@ -255,9 +238,6 @@ fn stack_traces_show_the_functions_that_left_by_tail_calls() {
     finish_running(dap, thread);
 }
 
-/// In a Node core, a JavaScript frame is at the file and line V8 recorded,
-/// and a frame of Node's own `node:` scripts names its module without
-/// claiming a file an editor could open.
 #[test]
 fn javascript_frames_show_their_recorded_source() {
     let mut dap = Dap::start("node");
@@ -298,7 +278,6 @@ fn javascript_frames_show_their_recorded_source() {
     let parks = line_of(&source("node/stacks.js"), "truth.park({label})");
     assert_eq!(inner["line"], parks, "{inner}");
 
-    // Every scope with variables is listed, then the activation's registers.
     let scopes = dap.request("scopes", json!({"frameId": inner["id"]}));
     let names: Vec<&str> = scopes["scopes"]
         .as_array()
@@ -319,7 +298,6 @@ fn javascript_frames_show_their_recorded_source() {
         "{scopes}"
     );
 
-    // A watch shows one line; a hover shows the lines `console.log` writes.
     let evaluate = |dap: &mut Dap, context: &str| {
         let body = dap.request(
             "evaluate",
@@ -390,8 +368,6 @@ fn python_frames_show_their_recorded_source_and_their_locals() {
         })
         .expect("the frame of containers");
 
-    // An interpreted frame is where its interpreter recorded it, and runs
-    // no machine code of its own.
     assert!(
         frame["source"]["path"]
             .as_str()
@@ -399,7 +375,6 @@ fn python_frames_show_their_recorded_source_and_their_locals() {
         "{frame}"
     );
 
-    // The checkpoint is the line before the function returns its locals.
     let returns = line_of(&source("python/locals.py"), "return numbers, empty_list");
     assert_eq!(frame["line"], returns - 1, "{frame}");
     assert!(
@@ -422,8 +397,6 @@ fn python_frames_show_their_recorded_source_and_their_locals() {
     assert_eq!(variables["pair"]["value"], "(1, 'two')", "{variables:#?}");
     assert!(variables["numbers"]["variablesReference"].as_i64() > Some(0));
 
-    // Expressions read the frame's objects in every context an editor
-    // evaluates in, and a container expands as a local does.
     for context in ["watch", "hover", "repl"] {
         let evaluate = |dap: &mut Dap, expression: &str| {
             dap.request(

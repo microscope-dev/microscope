@@ -1,5 +1,5 @@
-// Raises SIGUSR1 into a handler that runs on an alternate signal stack, so
-// the handler's frames and the frames it interrupted are not contiguous.
+
+
 
 #define _GNU_SOURCE
 #include <signal.h>

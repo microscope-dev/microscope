@@ -1,6 +1,3 @@
-//! Enabling and disabling breakpoints and watchpoints, temporary
-//! breakpoints, and running to a location with `advance`.
-
 mod support;
 
 use std::path::PathBuf;
@@ -70,7 +67,6 @@ async fn breakpoint(scenario: &mut Scenario, id: BreakpointId) -> Option<Breakpo
         .cloned()
 }
 
-/// Waits until a running program has reached breakpoint `id` `count` times.
 async fn wait_for_hits(scenario: &Scenario, id: BreakpointId, count: u64) {
     wait_for(scenario, count, |snapshot| {
         snapshot
@@ -150,9 +146,6 @@ fn hits(reason: &StopReason) -> &[BreakpointHit] {
     }
 }
 
-/// A breakpoint disabled while the program runs counts nothing and stops
-/// nowhere, keeps its count and definition, and counts again once enabled.
-/// Adding its definition again meanwhile makes a new, enabled breakpoint.
 #[tokio::test]
 async fn a_breakpoint_disabled_while_running_keeps_its_count_until_enabled() {
     let mut scenario = Scenario::launch("hit-count-spin");
@@ -165,7 +158,6 @@ async fn a_breakpoint_disabled_while_running_keeps_its_count_until_enabled() {
     assert_eq!(disabled.hit_condition, spun.hit_condition);
     let frozen = disabled.hit_count;
 
-    // A breakpoint that stops 50 hits later shows the program ran on.
     let probe = counting(&scenario, "spun", "==50").await;
     let stop = running.await.expect("run task").expect("run");
     assert!(
@@ -191,10 +183,6 @@ async fn a_breakpoint_disabled_while_running_keeps_its_count_until_enabled() {
     scenario.shutdown().await;
 }
 
-/// A disabled breakpoint owns no trap, so its library's code moving takes
-/// none along and leaves its locations where the code was. Enabling it
-/// resolves it again where the code went rather than writing a trap where
-/// the code used to be.
 #[tokio::test]
 async fn enabling_a_breakpoint_resolves_it_where_its_code_moved() {
     let mut scenario = Scenario::launch("moved-code");
@@ -226,7 +214,6 @@ async fn enabling_a_breakpoint_resolves_it_where_its_code_moved() {
     let offset = support::breakpoint_address(&reason).get() - first;
     set_enabled(&scenario, answer.id, false).await;
 
-    // Stop once the library's code has moved.
     scenario
         .add_breakpoint_spec(source(
             "tests/fixtures/c/moved-code/main.c",
@@ -264,9 +251,6 @@ async fn enabling_a_breakpoint_resolves_it_where_its_code_moved() {
     scenario.shutdown().await;
 }
 
-/// Stores made while a change watchpoint was disabled are not reported once
-/// it is enabled again: it takes the bytes it then finds as the last
-/// observed value. Every store here repeats the value they made.
 #[tokio::test]
 async fn a_watchpoint_enabled_again_reports_no_change_made_while_disabled() {
     let mut scenario = Scenario::launch("watch-steady-spin");
@@ -280,7 +264,6 @@ async fn a_watchpoint_enabled_again_reports_no_change_made_while_disabled() {
         async move { handle.watch_with(&expression, access, options).await }
     };
 
-    // Counts every store without stopping, to show the program ran on.
     let stores = scenario
         .operation(
             "watch stores",
@@ -323,7 +306,6 @@ async fn a_watchpoint_enabled_again_reports_no_change_made_while_disabled() {
         )
         .await;
 
-    // The workers store 7 over the 5 while the watchpoint is disabled.
     let running = scenario.start_resuming().await;
     wait_for_watch_hits(&scenario, stores.id, 100).await;
     let enabled = scenario.operation("enable", set_enabled(true)).await;
@@ -354,9 +336,6 @@ async fn a_watchpoint_enabled_again_reports_no_change_made_while_disabled() {
     scenario.shutdown().await;
 }
 
-/// A temporary breakpoint survives the hits its hit condition declines and
-/// is deleted by the stop it causes, which clients hear of before the
-/// change to the breakpoints.
 #[tokio::test]
 async fn a_temporary_breakpoint_is_deleted_by_the_stop_it_causes() {
     let mut scenario = Scenario::launch("hit-counts-gcc-o0");
@@ -397,8 +376,6 @@ async fn a_temporary_breakpoint_is_deleted_by_the_stop_it_causes() {
     scenario.shutdown().await;
 }
 
-/// Every thread that reached a temporary breakpoint by its stop is reported
-/// in that one stop, and each runs on unharmed once the trap is gone.
 #[tokio::test]
 async fn threads_reaching_a_temporary_breakpoint_together_share_its_stop() {
     let mut scenario = Scenario::launch("hit-count-threads");
@@ -425,7 +402,6 @@ async fn threads_reaching_a_temporary_breakpoint_together_share_its_stop() {
         }
     }
 
-    // The program checks every call ran exactly once.
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
@@ -433,8 +409,6 @@ async fn threads_reaching_a_temporary_breakpoint_together_share_its_stop() {
     scenario.shutdown().await;
 }
 
-/// `advance` stops where its location is reached, or where the selected
-/// frame returns first, and creates nothing a client sees.
 #[tokio::test]
 async fn advance_runs_to_a_location_or_the_frames_return() {
     let mut scenario = Scenario::launch("hit-counts-gcc-o0");
@@ -444,7 +418,6 @@ async fn advance_runs_to_a_location_or_the_frames_return() {
     scenario.run_to_stop().await;
     scenario.remove_breakpoint(loop_call.id).await;
 
-    // From the location itself, it runs until the location comes round.
     let at = line(&scenario).await;
     assert_eq!(
         scenario
@@ -465,7 +438,6 @@ async fn advance_runs_to_a_location_or_the_frames_return() {
     );
     assert_eq!(global(&scenario, "last_call").await, 1);
 
-    // `main` is never reached again, so `counted` returns first.
     assert_eq!(
         scenario.advance_to_stop(function("main")).await,
         StopReason::Step {
@@ -481,8 +453,6 @@ async fn advance_runs_to_a_location_or_the_frames_return() {
     scenario.shutdown().await;
 }
 
-/// A thread that single-stepped onto a new breakpoint has yet to arrive
-/// there, so an advance from it counts that arrival before going on.
 #[tokio::test]
 async fn advance_from_a_new_breakpoint_counts_the_arrival_it_stands_at() {
     let mut scenario = Scenario::launch("hit-counts-gcc-o0");
@@ -523,8 +493,6 @@ async fn advance_from_a_new_breakpoint_counts_the_arrival_it_stands_at() {
     scenario.shutdown().await;
 }
 
-/// A breakpoint met on the way ends an advance, and the advance leaves no
-/// trap behind: the program then runs to its end.
 #[tokio::test]
 async fn advance_ends_at_a_breakpoint_on_the_way() {
     let mut scenario = Scenario::launch("hit-counts-gcc-o0");

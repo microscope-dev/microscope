@@ -15,12 +15,12 @@ describe("memory", () => {
       text: null,
     });
     expect(target("0x10:0")).toBeNull();
-    // A byte count past what a link may name is malformed.
+
     expect(target("0x10:999999999")).toEqual({ address: 0x10n, bytes: 999999999, text: null });
     expect(target("0x10:1000000000")).toBeNull();
     expect(target(`0x10:${"9".repeat(400)}`)).toBeNull();
     expect(target("main")).toBeNull();
-    // As a link writes it.
+
     expect(targetText({ address: 0x1fn, bytes: 4, text: null })).toBe("0x1f:4");
     expect(targetText({ address: 0x1fn, bytes: null, text: null })).toBe("0x1f");
   });
@@ -28,7 +28,7 @@ describe("memory", () => {
   it("names the string a character array holds within its bytes", () => {
     expect(target("0x10:128:7")).toEqual({ address: 0x10n, bytes: 128, text: 7 });
     expect(targetText({ address: 0x10n, bytes: 128, text: 7 })).toBe("0x10:128:7");
-    // A string fills less than its array, or the array is all string.
+
     expect(target("0x10:7:7")).toBeNull();
     expect(target("0x10:7:8")).toBeNull();
     expect(target("0x10:7:0")).toBeNull();
@@ -44,7 +44,7 @@ describe("memory", () => {
   it("lays bytes out sixteen to a row, from the row holding the address", () => {
     const rows = dumpRows(0x1008n, "41424300", 2);
     expect(rows.map((row) => row.address)).toEqual([0x1000n, 0x1010n]);
-    // Bytes before the read and past its end are not shown as values.
+
     expect(rows[0]?.bytes.slice(6, 13)).toEqual([null, null, 0x41, 0x42, 0x43, 0x00, null]);
   });
 
@@ -63,7 +63,7 @@ describe("memory", () => {
       { as: "i64", text: "-1" },
       { as: "hex", text: "0xffffffffffffffff" },
     ]);
-    // Lengths no integer has read only as text.
+
     expect(readAs([0x61, 0x00, 0x0a])).toEqual([{ as: "text", text: '"a\\0\\n"' }]);
   });
 });

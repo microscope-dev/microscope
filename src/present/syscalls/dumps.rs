@@ -1,20 +1,14 @@
-//! Hex dumps of the data a call read or wrote, as strace's `-e read=` and
-//! `-e write=` print them.
-
 use std::fmt::Write as _;
 
 use microscope::syscalls::blobs;
 use microscope::syscalls::{CaptureState, Outcome, SyscallEvent};
 
-/// Which way data moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Read,
     Write,
 }
 
-/// How a call carries its data: one buffer, or an array of iovecs, as its
-/// second argument; or a message header, whose buffers no engine captures.
 enum Shape {
     Buffer,
     Iovecs,
@@ -33,8 +27,6 @@ fn shape(name: &str) -> Option<(Direction, Shape)> {
     })
 }
 
-/// The descriptor a call moves data through, and which way, when it is a
-/// call strace dumps.
 #[must_use]
 pub fn moves(event: &SyscallEvent) -> Option<(i64, Direction)> {
     let (direction, _) = shape(event.call.name()?)?;
@@ -46,9 +38,6 @@ pub fn moves(event: &SyscallEvent) -> Option<(i64, Direction)> {
     Some((fd, direction))
 }
 
-/// The lines that dump what a call moved: none when it moved nothing. A
-/// buffer captured short says how many bytes it leaves out, and one that
-/// could not be read says so, rather than dumping less in silence.
 #[must_use]
 pub fn dump(event: &SyscallEvent) -> Vec<String> {
     let Some((_, shape)) = event.call.name().and_then(shape) else {
@@ -106,8 +95,6 @@ pub fn dump(event: &SyscallEvent) -> Vec<String> {
     lines
 }
 
-/// Dumps the first `length` bytes of a buffer of which `bytes` were
-/// captured.
 fn buffer(lines: &mut Vec<String>, bytes: &[u8], length: usize) {
     let shown = bytes.get(..length).unwrap_or(bytes);
     for (row, chunk) in shown.chunks(16).enumerate() {

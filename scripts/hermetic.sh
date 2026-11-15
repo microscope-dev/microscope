@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Runs a command in the pinned Nix development shell, entering it unless
-# this already runs there, so that nothing a recipe runs can find the host's
-# tools or settings: the justfile runs every recipe through this.
+
+
+
 set -euo pipefail
 
 if [[ "${MICROSCOPE_HERMETIC:-}" == 1 ]]; then

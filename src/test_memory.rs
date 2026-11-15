@@ -1,6 +1,3 @@
-//! Caps the heap of the library's unit-test process, as `tests/support` caps
-//! each integration-test process.
-
 use std::process::Command;
 
 #[path = "../tests/support/memory_cap.rs"]

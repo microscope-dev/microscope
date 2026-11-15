@@ -1,62 +1,34 @@
-//! Thread-local storage addresses read from glibc's structures.
-//!
-//! glibc exports a `_thread_db_*` descriptor for every structure field a
-//! debugger needs to find a thread's TLS: the field's width in bits, its
-//! element count, and its offset. This module follows glibc's own lookup,
-//! `td_thr_tlsbase`, step by step, reading every offset from the inferior's
-//! descriptors, so a C library of any version describes itself. glibc has
-//! kept that lookup unchanged since 2.27, but for where it finds the loader's
-//! state. Before 2.34, glibc defines the descriptors in libpthread, which a
-//! program that creates no threads need not load, and then they are missing.
-//!
-//! A statically linked program contains the descriptors only with glibc's
-//! thread library, and is read without them: its executable is its only TLS
-//! module, which the start of glibc's thread control block locates.
-
 use std::collections::BTreeSet;
 
 use nix::unistd::Pid;
 
 use super::{DESCRIPTOR_SIZE, ProcessServices, TlsError, dtv, failed, read_word, thread_pointer};
 
-/// The C library, where glibc since 2.34 defines the descriptors. Lookups
-/// fall back to any module that defines them, as libpthread does before.
 const C_LIBRARY: &str = "libc.so.6";
 
-/// The dynamic loader, which exports its own state.
 const LOADER: &str = "ld-linux-x86-64.so.2";
 
-/// A loader with more TLS slotinfo lists than this is corrupt.
 const MAX_SLOTINFO_LISTS: usize = 1 << 16;
 
-/// `TLS_DTV_UNALLOCATED` and every other odd DTV pointer mark a block the
-/// thread has not allocated.
 const UNALLOCATED_BIT: u64 = 1;
 
-/// The size of a DTV slot: a block's address and the allocation to free.
 const DTV_SLOT_SIZE: u64 = 16;
 
-/// The TLS module number glibc gives a statically linked executable.
 const EXECUTABLE_MODULE: u64 = 1;
 
-/// `l_tls_offset` values that name no static TLS block.
 const NO_TLS_OFFSET: u64 = 0;
 const FORCED_DYNAMIC_TLS_OFFSET: u64 = u64::MAX;
 
-/// One `_thread_db_*` field descriptor.
 #[derive(Debug, Clone, Copy)]
 struct Field {
     name: &'static str,
     bits: u32,
 
-    /// The element count of an array field; zero for a flexible array.
     count: u32,
     offset: i32,
 }
 
 impl Field {
-    /// The address of element `index` of this field in the structure at
-    /// `base`.
     fn address(self, base: u64, index: u64) -> Result<u64, TlsError> {
         if self.count != 0 && index >= u64::from(self.count) {
             return Err(failed(format!(
@@ -129,9 +101,6 @@ impl Glibc<'_> {
             offset: i32::from_le_bytes(word(2)?.to_le_bytes()),
         };
 
-        // A zero width marks a field this C library does not have. Element
-        // widths are whole bytes, and x86-64 descriptors are never
-        // byte-swapped.
         if field.bits == 0 || !field.bits.is_multiple_of(8) {
             return Err(failed(format!(
                 "{name} describes an unusable {}-bit field",
@@ -142,10 +111,7 @@ impl Glibc<'_> {
         Ok(field)
     }
 
-    /// Reads element `index` of `field` in the structure at `base`,
-    /// zero-extended.
     fn fetch(&self, field: Field, base: u64, index: u64) -> Result<u64, TlsError> {
-        // Only these widths are values; wider fields are structures.
         if !matches!(field.bits, 8 | 32 | 64) {
             return Err(failed(format!(
                 "{} is a {}-bit field, not a value",
@@ -167,10 +133,6 @@ impl Glibc<'_> {
         self.fetch(self.field(name)?, base, index)
     }
 
-    /// The loader's global state, which a dynamically linked C library
-    /// since 2.34 points at and the loader exports itself before; `None`
-    /// for a statically linked C library, which keeps what it holds in
-    /// variables of its own.
     fn rtld_global(&self) -> Result<Option<u64>, TlsError> {
         Ok(match self.symbol(C_LIBRARY, "__nptl_rtld_global") {
             Ok(pointer) => Some(self.fetch_named("_thread_db___nptl_rtld_global", pointer, 0)?),
@@ -178,7 +140,6 @@ impl Glibc<'_> {
         })
     }
 
-    /// The head of the loader's list of DTV slotinfo arrays.
     fn slotinfo_lists(&self) -> Result<u64, TlsError> {
         if let Some(rtld_global) = self.rtld_global()? {
             return self.fetch_named(
@@ -192,7 +153,6 @@ impl Glibc<'_> {
         self.fetch_named("_thread_db__dl_tls_dtv_slotinfo_list", variable, 0)
     }
 
-    /// The address of module `module`'s DTV slotinfo entry.
     fn slotinfo(&self, module: u64) -> Result<u64, TlsError> {
         let length = self.field("_thread_db_dtv_slotinfo_list_len")?;
         let next = self.field("_thread_db_dtv_slotinfo_list_next")?;
@@ -223,14 +183,12 @@ impl Glibc<'_> {
         )))
     }
 
-    /// The thread's static TLS block of the module at `map`, if it has one.
     fn static_block(&self, thread_pointer: u64, map: u64) -> Result<u64, TlsError> {
         let offset = self.fetch_named("_thread_db_link_map_l_tls_offset", map, 0)?;
         if offset == NO_TLS_OFFSET || offset == FORCED_DYNAMIC_TLS_OFFSET {
             return Err(TlsError::Deferred);
         }
 
-        // x86-64 places static blocks below the thread pointer.
         thread_pointer.checked_sub(offset).ok_or_else(|| {
             failed(format!(
                 "static TLS offset {offset:#x} exceeds the thread pointer"
@@ -238,9 +196,6 @@ impl Glibc<'_> {
         })
     }
 
-    /// Follows `td_thr_tlsbase`: the module's block in the thread's DTV
-    /// when the DTV is current and the block allocated, and otherwise its
-    /// static block.
     fn block(&self, thread_pointer: u64, module: u64) -> Result<u64, TlsError> {
         let entry = self.slotinfo(module)?;
         let map = self.fetch_named("_thread_db_dtv_slotinfo_map", entry, 0)?;
@@ -254,7 +209,6 @@ impl Glibc<'_> {
         let counter = slots.address(dtv, 0)?;
         let dtv_generation = self.fetch_named("_thread_db_dtv_t_counter", counter, 0)?;
 
-        // A DTV older than the module may not have its slot at all.
         if dtv_generation < generation {
             return self.static_block(thread_pointer, map);
         }
@@ -269,8 +223,6 @@ impl Glibc<'_> {
     }
 }
 
-/// Reads the target-namespace TID from the saved thread's own TCB, using
-/// an unambiguous descriptor supplied by the core's verified images.
 pub(super) fn target_thread_id(
     services: &dyn ProcessServices,
     thread: Pid,
@@ -289,17 +241,8 @@ pub(super) fn target_thread_id(
     Ok(tid)
 }
 
-/// The most threads glibc's lists hold before they count as corrupt.
 const MAX_THREADS: usize = 1 << 20;
 
-/// Each live thread's id and descriptor, which x86-64 glibc keeps at the
-/// thread's pointer: the loader's lists of the threads whose stacks the
-/// program gave, the first thread's among them, and of those whose stacks
-/// glibc allocated, walked as `td_ta_thr_iter` walks them. A thread that
-/// has exited, whose id glibc cleared, is left out.
-///
-/// The process may be running, so a list may change while it is read: a
-/// list that does not lead back to its head within the bound fails.
 pub(super) fn thread_pointers(services: &dyn ProcessServices) -> Result<Vec<(u64, u64)>, TlsError> {
     let glibc = Glibc { services };
     let rtld_global = glibc.rtld_global()?.ok_or_else(|| {
@@ -328,8 +271,6 @@ pub(super) fn thread_pointers(services: &dyn ProcessServices) -> Result<Vec<(u64
                 .checked_add_signed(-i64::from(link.offset))
                 .ok_or_else(|| failed(format!("a thread in {list} at {node:#x} overflows")))?;
 
-            // A pid_t: zero once the thread exited, and never negative for
-            // a thread.
             let tid = glibc.fetch(id, descriptor, 0)?;
             if tid != 0 && tid <= u64::from(i32::MAX.cast_unsigned()) {
                 threads.push((tid, descriptor));
@@ -342,8 +283,6 @@ pub(super) fn thread_pointers(services: &dyn ProcessServices) -> Result<Vec<(u64
     Ok(threads)
 }
 
-/// The address of `offset` within the TLS block of the module whose loader
-/// `link_map` is given, for `thread`.
 pub(super) fn tls_address(
     services: &dyn ProcessServices,
     thread: Pid,
@@ -356,7 +295,6 @@ pub(super) fn tls_address(
         return Err(TlsError::NoTls);
     }
 
-    // x86-64 glibc keeps the thread descriptor at the thread pointer.
     let thread_pointer = services
         .registers(thread)
         .ok_or_else(|| failed(format!("the registers of thread {thread} are unavailable")))?
@@ -371,11 +309,6 @@ pub(super) fn tls_address(
         .ok_or_else(|| failed("the TLS address overflows"))
 }
 
-/// The offset below every thread's pointer of the static TLS block of the
-/// module whose `link_map` is at `link_map`, if glibc gave it one, which it
-/// keeps for the module's life: the loader places the block of a module
-/// loaded with the program, or given static TLS later, at that offset in
-/// every thread, and copies it into the threads already running.
 pub(super) fn static_offset(
     services: &dyn ProcessServices,
     link_map: u64,
@@ -385,14 +318,6 @@ pub(super) fn static_offset(
     Ok((offset != NO_TLS_OFFSET && offset != FORCED_DYNAMIC_TLS_OFFSET).then_some(offset))
 }
 
-/// The address of `offset` within the TLS block of a statically linked
-/// program's executable, for `thread`.
-///
-/// The start of glibc's x86-64 thread control block is fixed, as GCC's
-/// stack protector reads its canary at offset 0x28, after the DTV pointer.
-/// The DTV pointer addresses slot 0 of 16-byte slots, and slot N begins with
-/// TLS module N's block. glibc numbers the executable module 1, and gives
-/// every thread its block before the thread runs.
 pub(super) fn static_executable_tls_address(
     services: &dyn ProcessServices,
     thread: Pid,
@@ -405,7 +330,6 @@ pub(super) fn static_executable_tls_address(
         return Err(TlsError::Deferred);
     }
 
-    // The executable's block is static, so it lies below the thread pointer.
     if block >= thread_pointer {
         return Err(failed(format!(
             "the executable's TLS block {block:#x} is not below the thread pointer \
@@ -439,8 +363,6 @@ mod tests {
     const DESCRIPTORS: u64 = 0x1000_0000;
     const FIRST_LIST_LENGTH: u64 = 64;
 
-    /// A process whose C library lays its structures out unlike any real
-    /// glibc, so every offset must come from the descriptors.
     struct Process {
         memory: BTreeMap<u64, u8>,
         symbols: BTreeMap<&'static str, u64>,
@@ -486,8 +408,6 @@ mod tests {
             self.write(address, &words.map(u32::to_le_bytes).concat());
         }
 
-        /// A current DTV whose slot for `module` holds `block`, the module's
-        /// static TLS block lying `static_offset` below the thread pointer.
         fn new(module: u64, block: u64, static_offset: u64) -> Self {
             let mut process = Self {
                 memory: BTreeMap::new(),
@@ -553,9 +473,6 @@ mod tests {
         }
     }
 
-    /// A process with glibc's two lists of threads in its loader state:
-    /// those on stacks the program gave and those on stacks glibc
-    /// allocated, each a list of (descriptor, thread id).
     fn threaded(given: &[(u64, u64)], allocated: &[(u64, u64)]) -> Process {
         const LIST: i32 = 0x2c0;
         const TID: i32 = 0x2d0;
@@ -594,7 +511,6 @@ mod tests {
         process.descriptor("_thread_db_pthread_tid", 32, 1, 0x2d0);
         process.write(THREAD_POINTER + 0x2d0, &7u32.to_le_bytes());
         let descriptor = process.symbols["_thread_db_pthread_tid"];
-        // The note's ID is a host ID, not the target's ID of 7.
         assert_eq!(
             target_thread_id(&process, Pid::from_raw(5000), descriptor),
             Ok(7)
@@ -646,7 +562,6 @@ mod tests {
         unloaded.slotinfo(3, 2, 0);
         assert!(failure(&unloaded).contains("TLS module 3 is not loaded"));
 
-        // The module's DTV slot must exist in the described array.
         let mut short = Process::new(3, 0x5555_0000, 0x80);
         short.descriptor("_thread_db_dtv_dtv", 128, 3, 0x10);
         assert!(failure(&short).contains("outside _thread_db_dtv_dtv"));
@@ -671,8 +586,6 @@ mod tests {
 
     #[test]
     fn a_static_executables_block_is_in_dtv_slot_one() {
-        // A thread of a program without descriptors, whose DTV slot 1 holds
-        // `block`.
         let address = |block: u64| {
             let mut process = Process {
                 memory: BTreeMap::new(),
@@ -696,60 +609,42 @@ mod tests {
         ));
     }
 
-    /// How a C library leads to the loader's slotinfo lists.
     #[derive(Debug, Clone, Copy)]
     enum Loader {
-        /// glibc since 2.34: libc points at the loader's state.
         Pointer,
 
-        /// glibc before 2.34: the loader exports its state.
         Exported,
 
-        /// A statically linked C library holds the lists' head itself.
         Static,
     }
 
-    /// A C library whose descriptors lay its structures out in any way, and
-    /// one thread and module in any state. Offsets and sizes are in words.
     #[derive(Debug, Clone)]
     struct Model {
         loader: Loader,
 
-        /// `l_tls_modid` and `l_tls_offset` in the module's link map.
         link_map: [u32; 2],
 
-        /// The DTV pointer in the thread descriptor.
         dtv_pointer: u32,
 
-        /// The slotinfo lists' head in the loader's state.
         head: u32,
 
-        /// A slotinfo list's length and next list, then its entries.
         list: [u32; 3],
 
-        /// An entry's size, then its generation and link map.
         entry: [u32; 3],
 
-        /// A DTV slot's size, its counter and block, which may share a word
-        /// as in glibc's union, and where the slots start in the DTV.
         slot: [u32; 4],
 
-        /// The widths of the module number, list lengths, generations, and
-        /// the DTV's counter, in bits.
         widths: [u32; 4],
         lists: Vec<u64>,
         module: u64,
         module_generation: u64,
         dtv_generation: u64,
 
-        /// The module's DTV slot: its block, or an odd value when the
-        /// thread has not allocated it.
         block: u64,
         static_offset: u64,
         thread_pointer: u64,
     }
 
-    /// `count` distinct word offsets below `limit`, in any order.
     fn offsets(limit: u32, count: usize) -> impl Strategy<Value = Vec<u32>> {
         subsequence((0..limit).collect::<Vec<_>>(), count).prop_shuffle()
     }
@@ -827,7 +722,6 @@ mod tests {
                     entry: [entry[0].max(entry[1]) + 1 + entry_gap, entry[0], entry[1]],
                     slot: slot.into(),
                     widths,
-                    // Module 0 has no TLS; the loader numbers the rest from 1.
                     module: if no_tls {
                         0
                     } else {
@@ -845,12 +739,10 @@ mod tests {
         )
     }
 
-    /// A byte offset of `words` words, as a descriptor holds it.
     fn word(words: u32) -> i32 {
         i32::try_from(words * 8).expect("small offset")
     }
 
-    /// Where the `index`th word of a structure at `base` is.
     fn at(base: u64, index: u32) -> u64 {
         base + u64::from(index) * 8
     }
@@ -880,8 +772,6 @@ mod tests {
             process
         }
 
-        /// The loader's state and the way to it, returning where it keeps
-        /// the slotinfo lists' head.
         fn loader_state(&self, process: &mut Process) -> u64 {
             let rtld_global = match self.loader {
                 Loader::Pointer => {
@@ -891,8 +781,6 @@ mod tests {
                     process.descriptor("_thread_db___nptl_rtld_global", 64, 1, 0);
                     process.word(NPTL_RTLD_GLOBAL, RTLD_GLOBAL);
 
-                    // The loader exports its state too, which the pointer
-                    // in libc takes precedence over, as in glibc.
                     process.symbols.insert("_rtld_global", 0x2200_0000);
                     RTLD_GLOBAL
                 }
@@ -917,8 +805,6 @@ mod tests {
             at(rtld_global, self.head)
         }
 
-        /// The slotinfo lists from `head`, with the module's entry in one of
-        /// them.
         fn slotinfo_lists(&self, process: &mut Process, head: u64) {
             const LISTS: u64 = 0x3000_0000;
             const LIST_SPACING: u64 = 0x10_0000;
@@ -975,8 +861,6 @@ mod tests {
             }
         }
 
-        /// The thread's DTV: its generation in slot 0's counter, and the
-        /// module's block in its own slot.
         fn dtv(&self, process: &mut Process) {
             let [.., counter_bits] = self.widths;
             let [slot_words, counter, pointer, slots] = self.slot;
@@ -990,7 +874,6 @@ mod tests {
             process.word(at(slot(self.module), pointer), self.block);
         }
 
-        /// What glibc's `td_thr_tlsbase` finds for this thread and module.
         fn expected(&self) -> Result<u64, TlsError> {
             if self.module == 0 {
                 return Err(TlsError::NoTls);
@@ -1024,7 +907,6 @@ mod tests {
     }
 
     impl Process {
-        /// Writes the low `bits` of `value` at `address`.
         fn value(&mut self, address: u64, bits: u32, value: u64) {
             let bytes = value.to_le_bytes();
             self.write(address, &bytes[..bits as usize / 8]);
@@ -1040,9 +922,6 @@ mod tests {
         }
     }
 
-    /// Most layouts reach the walk of the slotinfo lists, and most of those
-    /// find a block, in the DTV or the static area, or find the static
-    /// offset past the thread pointer.
     #[test]
     fn layouts_mostly_reach_the_walk() {
         use proptest::strategy::ValueTree;
@@ -1115,9 +994,6 @@ mod tests {
         }
     }
 
-    /// One of glibc's lists of threads as the property lays it out: an
-    /// intact list, or one whose `index`th link leads back to an earlier
-    /// node or to memory no one mapped.
     #[derive(Debug, Clone, Copy)]
     enum Links {
         Intact,

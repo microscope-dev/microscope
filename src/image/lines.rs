@@ -1,17 +1,3 @@
-//! Source files and line tables.
-//!
-//! Every row a line program emits is kept, with its address in a column of
-//! its own and its location and flags in a 12-byte record; the rare parts
-//! of a row, such as a discriminator or a line too long for 32 bits, are in
-//! a side table by row. Sequences are runs of rows. The ranges of code each
-//! line describes refer to the row whose location they take, and are kept
-//! in interval order, each with the greatest end of it and every range
-//! before it; since each row opens at most one range, in order, a range's
-//! row is also its place in the line program. Two indexes are persisted
-//! with them: statement rows by file and line, and the rows that mark a
-//! prologue's end or an epilogue's start, by address. Each index refers to
-//! its records by row, so validation checks it against them in one pass.
-
 use std::path::PathBuf;
 
 use rayon::slice::ParallelSliceMut as _;
@@ -24,7 +10,6 @@ use crate::{
     SourceLocation, StatementFlags, StatementRow,
 };
 
-/// A source file, by its resolved path.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -37,7 +22,6 @@ impl Record for FileRecord {
     const KIND: TableKind = TableKind::Files;
 }
 
-/// One line-program row's address.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -50,21 +34,15 @@ impl Record for RowAddress {
     const KIND: TableKind = TableKind::LineAddresses;
 }
 
-/// One line-program row's location and flags. A row without a file has
-/// line and column zero; a line or column too wide for its field is
-/// [`WIDE_LINE`] or [`WIDE_COLUMN`] here and whole in the row's extra.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct LineRow {
-    /// The file, or [`NONE`].
     pub file: U32,
 
-    /// The line, zero for none.
     pub line: U32,
 
-    /// The column, zero for the line's left edge.
     pub column: U16,
     pub flags: u8,
     pub reserved: u8,
@@ -74,13 +52,10 @@ impl Record for LineRow {
     const KIND: TableKind = TableKind::LineRows;
 }
 
-/// A line too wide for [`LineRow::line`].
 pub const WIDE_LINE: u32 = u32::MAX;
 
-/// A column too wide for [`LineRow::column`].
 pub const WIDE_COLUMN: u16 = u16::MAX;
 
-/// [`LineRow::flags`].
 pub mod row_flags {
     pub const STATEMENT: u8 = 1 << 0;
 
@@ -88,16 +63,13 @@ pub mod row_flags {
 
     pub const EPILOGUE_BEGIN: u8 = 1 << 2;
 
-    /// The row ends its sequence and describes no code of its own.
     pub const END_SEQUENCE: u8 = 1 << 3;
 
-    /// The row has an entry in the extras table.
     pub const EXTRA: u8 = 1 << 4;
 
     pub const ALL: u8 = STATEMENT | PROLOGUE_END | EPILOGUE_BEGIN | END_SEQUENCE | EXTRA;
 }
 
-/// What a row has that most rows do not.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -108,10 +80,8 @@ pub struct LineExtra {
     pub discriminator: U64,
     pub isa: U64,
 
-    /// The whole line, when the row's is [`WIDE_LINE`].
     pub line: U64,
 
-    /// The whole column, when the row's is [`WIDE_COLUMN`].
     pub column: U64,
 }
 
@@ -119,7 +89,6 @@ impl Record for LineExtra {
     const KIND: TableKind = TableKind::LineExtras;
 }
 
-/// One sequence: a run of rows, the last of which ends it.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -133,8 +102,6 @@ impl Record for LineSequence {
     const KIND: TableKind = TableKind::LineSequences;
 }
 
-/// The code one line describes, with the row whose location it has. The
-/// table is in (start, end, row) order.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -143,12 +110,9 @@ pub struct LineRange {
     pub start: U64,
     pub end: U64,
 
-    /// The greatest end of this range and every range before it, which
-    /// ends a backward search for the ranges containing an address.
     pub prefix_max_end: U64,
     pub row: U32,
 
-    /// Whether the range begins at a recommended breakpoint location.
     pub statement: u8,
 }
 
@@ -156,7 +120,6 @@ impl Record for LineRange {
     const KIND: TableKind = TableKind::LineRanges;
 }
 
-/// A statement row with a location, in (file, line, row) order.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -171,8 +134,6 @@ impl Record for StatementKey {
     const KIND: TableKind = TableKind::StatementIndex;
 }
 
-/// A row that marks a prologue's end or an epilogue's start, in (address,
-/// row) order.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -189,7 +150,6 @@ const _: () = assert!(size_of::<LineRow>() == 12);
 const _: () = assert!(size_of::<RowAddress>() == 8);
 const _: () = assert!(size_of::<LineRange>() == 29);
 
-/// One row as a line program describes it, before it is encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -199,10 +159,8 @@ pub struct Row {
     pub address: u64,
     pub file: Option<SourceFileId>,
 
-    /// Zero when the row names no line.
     pub line: u64,
 
-    /// Zero for the line's left edge.
     pub column: u64,
     pub operation_index: u64,
     pub discriminator: u64,
@@ -214,7 +172,6 @@ pub struct Row {
 }
 
 impl Row {
-    /// The row's location: none without a file or a line.
     pub fn location(&self) -> Option<SourceLocation> {
         Some(SourceLocation {
             file: self.file?,
@@ -223,16 +180,12 @@ impl Row {
         })
     }
 
-    /// Whether the row is one of the public statement rows: it has a
-    /// location or marks a prologue's end or an epilogue's start.
     pub fn is_public(&self) -> bool {
         !self.end_sequence
             && (self.location().is_some() || self.prologue_end || self.epilogue_begin)
     }
 }
 
-/// Line tables being built: rows by sequence, then ranges. Indexes are
-/// built as the tables are sealed.
 #[derive(Debug, Default, Clone)]
 pub struct LineTables {
     pub addresses: Vec<RowAddress>,
@@ -242,7 +195,6 @@ pub struct LineTables {
     pub ranges: Vec<LineRange>,
 }
 
-/// Why line tables could not be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the line tables hold more than {} rows or ranges", super::MAX_ROWS)]
 pub struct TooManyRows;
@@ -255,7 +207,6 @@ fn index(count: usize) -> Result<u32, TooManyRows> {
 }
 
 impl LineTables {
-    /// Where public rows end prologues, in row order.
     pub fn prologue_ends(&self) -> Vec<ImageAddress> {
         self.rows
             .iter()
@@ -265,7 +216,6 @@ impl LineTables {
             .collect()
     }
 
-    /// Starts a sequence; rows pushed until the next start belong to it.
     pub fn begin_sequence(&mut self) -> Result<(), TooManyRows> {
         let first = index(self.rows.len())?;
         index(self.sequences.len())?;
@@ -276,7 +226,6 @@ impl LineTables {
         Ok(())
     }
 
-    /// Adds a row to the current sequence and returns its index.
     pub fn push_row(&mut self, row: &Row) -> Result<u32, TooManyRows> {
         let at = index(self.rows.len())?;
         let Some(sequence) = self.sequences.last_mut() else {
@@ -338,8 +287,6 @@ impl LineTables {
         Ok(at)
     }
 
-    /// Adds the range of code a line describes, taking the location of
-    /// `row`.
     pub fn push_range(
         &mut self,
         range: AddressRange<ImageAddress>,
@@ -357,8 +304,6 @@ impl LineTables {
         Ok(())
     }
 
-    /// Appends `other`'s tables, renumbering its rows, and its files by
-    /// `file`.
     pub fn append(
         &mut self,
         other: &Self,
@@ -397,11 +342,6 @@ impl LineTables {
         Ok(())
     }
 
-    /// Ends each line range where a function symbol begins inside it. A
-    /// line program describes every function it covers from the function's
-    /// first instruction, but its last row before code it does not
-    /// describe, such as hand-written assembly placed after a compiled
-    /// function, runs on to the next row: that code has no source line.
     pub fn clip_at(&mut self, function_starts: &[ImageAddress]) {
         debug_assert!(
             function_starts.is_sorted_by(|earlier, later| earlier < later),
@@ -420,19 +360,15 @@ impl LineTables {
         }
     }
 
-    /// Row `index`, decoded.
     pub fn row(&self, index: usize) -> Row {
         decode_row(&self.addresses, &self.rows, &self.extras, index)
     }
 
-    /// Every public statement row, decoded, in order.
     #[cfg(test)]
     pub fn statement_rows(&self) -> Vec<StatementRow> {
         statement_rows(&self.addresses, &self.rows, &self.extras, &self.sequences).collect()
     }
 
-    /// The public statement rows by address, which the loader's analyses
-    /// of code read before the tables are sealed.
     pub fn statements_by_address(&self) -> StatementsByAddress<'_> {
         let mut order = self
             .sequences
@@ -449,7 +385,6 @@ impl LineTables {
             })
             .collect::<Vec<_>>();
 
-        // Stable, so rows at one address keep line-program order.
         order.sort_by_key(|(index, _)| {
             self.addresses
                 .get(*index as usize)
@@ -470,8 +405,6 @@ impl LineTables {
         }
     }
 
-    /// Where sequence `sequence`'s code ends: at its last row, which ends
-    /// it, or nowhere for one whose rows were given without such a row.
     fn sequence_end(&self, sequence: u32) -> u64 {
         let run = self.sequences.get(sequence as usize);
         debug_assert!(
@@ -492,7 +425,6 @@ impl LineTables {
         .map_or(u64::MAX, |(_, address)| address.address.get())
     }
 
-    /// Every line range, decoded, in order.
     #[cfg(test)]
     pub fn line_entries(&self) -> Vec<crate::model::LineEntry> {
         self.ranges
@@ -505,17 +437,12 @@ impl LineTables {
     }
 }
 
-/// The public statement rows of [`LineTables`] by address, keeping
-/// line-program order among rows at one address, each decoded when asked.
 #[derive(Debug)]
 pub struct StatementsByAddress<'a> {
     tables: &'a LineTables,
 
-    /// Each public row's index and its sequence's.
     order: Vec<(u32, u32)>,
 
-    /// The greatest end of the sequences of each row of `order` and every
-    /// row before it, which ends a backward search for a covering row.
     reaches: Vec<u64>,
 }
 
@@ -545,10 +472,6 @@ impl StatementsByAddress<'_> {
         statement_row(&row, sequence, ordinal)
     }
 
-    /// The line of the row whose code holds `address`: the last row at or
-    /// before it of a sequence whose code reaches past it, unless that row
-    /// has no line. Code between sequences, or past them, has no line: the
-    /// row before it describes other code.
     pub fn line_at(&self, address: ImageAddress) -> Option<crate::LineNumber> {
         let end = self
             .order
@@ -568,7 +491,6 @@ impl StatementsByAddress<'_> {
         None
     }
 
-    /// The rows in `range`, by address.
     pub fn within(
         &self,
         range: AddressRange<ImageAddress>,
@@ -587,20 +509,16 @@ impl StatementsByAddress<'_> {
     }
 }
 
-/// Whether a row has a location: a file and a line.
 pub(super) const fn is_located(row: &LineRow) -> bool {
     row.file.get() != NONE && row.line.get() != 0
 }
 
-/// Whether a row is a public statement row; see [`Row::is_public`].
 pub(super) const fn is_public(row: &LineRow) -> bool {
     row.flags & row_flags::END_SEQUENCE == 0
         && (is_located(row)
             || row.flags & (row_flags::PROLOGUE_END | row_flags::EPILOGUE_BEGIN) != 0)
 }
 
-/// The line of row `index` of the given tables, as [`decode_row`] finds
-/// it, without reading the rest of the row.
 pub(super) fn row_line(rows: &[LineRow], extras: &[LineExtra], index: usize) -> Option<u64> {
     let row = rows.get(index)?;
     if row.line.get() != WIDE_LINE || row.flags & row_flags::EXTRA == 0 {
@@ -614,7 +532,6 @@ pub(super) fn row_line(rows: &[LineRow], extras: &[LineExtra], index: usize) -> 
     Some(extra.map_or_else(|| u64::from(WIDE_LINE), |extra| extra.line.get()))
 }
 
-/// Row `index` of the given tables.
 #[expect(
     clippy::indexing_slicing,
     reason = "callers pass rows the builder made or validation checked: validation checks \
@@ -639,7 +556,6 @@ pub(super) fn decode_row(
         .then(|| {
             let found = extras.binary_search_by_key(&index, |extra| extra.row.get() as usize);
 
-            // Validation pairs every flagged row with an extra.
             debug_assert!(found.is_ok(), "row {index} is flagged, but has no extra");
             found.ok().and_then(|found| extras.get(found))
         })
@@ -669,8 +585,6 @@ pub(super) fn decode_row(
     }
 }
 
-/// The public statement row a row is, with its sequence and its ordinal
-/// within it.
 pub(super) fn statement_row(row: &Row, sequence: u32, ordinal: u32) -> StatementRow {
     StatementRow {
         address: ImageAddress::new(row.address),
@@ -687,7 +601,6 @@ pub(super) fn statement_row(row: &Row, sequence: u32, ordinal: u32) -> Statement
     }
 }
 
-/// Every public statement row of the given tables, in order.
 pub(super) fn statement_rows<'a>(
     addresses: &'a [RowAddress],
     rows: &'a [LineRow],
@@ -707,7 +620,6 @@ pub(super) fn statement_rows<'a>(
         })
 }
 
-/// A line range, decoded.
 pub(super) fn line_entry(
     addresses: &[RowAddress],
     rows: &[LineRow],
@@ -730,15 +642,12 @@ pub(super) fn line_entry(
     })
 }
 
-/// The line ranges in the order they are persisted, and the indexes
-/// persisted beside the line tables.
 pub(super) struct LineIndexes {
     pub ranges: Vec<LineRange>,
     pub statements: Vec<StatementKey>,
     pub boundaries: Vec<ControlBoundary>,
 }
 
-/// Orders `tables`' ranges and builds their indexes.
 pub(super) fn build_indexes(tables: &LineTables) -> LineIndexes {
     let mut ranges = tables.ranges.clone();
     ranges.par_sort_unstable_by_key(|range| (range.start.get(), range.end.get(), range.row.get()));
@@ -790,7 +699,6 @@ pub(super) fn build_indexes(tables: &LineTables) -> LineIndexes {
     }
 }
 
-/// Source paths being interned, in the order first seen.
 #[derive(Debug, Default, Clone)]
 pub struct Files {
     paths: Vec<PathBuf>,
@@ -798,15 +706,11 @@ pub struct Files {
 }
 
 impl Files {
-    /// The file `path` names, added if it is new.
     pub fn intern(&mut self, path: PathBuf) -> SourceFileId {
         if let Some(&id) = self.ids.get(&path) {
             return id;
         }
 
-        // Past `u32::MAX` files, ids repeat, but the image cannot seal: the
-        // paths, each distinct and NUL-terminated, then outgrow the pool's
-        // `u32` offsets.
         let id = SourceFileId::new(u32::try_from(self.paths.len()).unwrap_or(u32::MAX));
         self.paths.push(path.clone());
         self.ids.insert(path, id);
@@ -818,7 +722,6 @@ impl Files {
         id
     }
 
-    /// Forgets every file but the first `len`.
     pub fn truncate(&mut self, len: usize) {
         for path in self.paths.drain(len.min(self.paths.len())..) {
             self.ids.remove(&path);
@@ -831,9 +734,6 @@ impl Files {
         );
     }
 
-    /// The file a relative path names when exactly one absolute path ends
-    /// with it, as a type unit names the file of its declarations;
-    /// otherwise the path itself.
     pub fn intern_suffix(&mut self, path: PathBuf) -> SourceFileId {
         if path.is_relative() {
             let mut matches = self
@@ -856,9 +756,6 @@ impl Files {
     }
 }
 
-/// Line tables for statement rows alone, as a synthetic image describes
-/// them: each sequence's rows in order, at their ordinals, with rows
-/// describing nothing before them, and no ranges.
 #[cfg(test)]
 pub fn from_statement_rows(statements: &[StatementRow]) -> LineTables {
     let mut tables = LineTables::default();
@@ -907,7 +804,6 @@ pub fn from_statement_rows(statements: &[StatementRow]) -> LineTables {
 }
 
 impl LineTables {
-    /// Adds the tables and their indexes to `builder`.
     pub fn add_to<'a>(&'a self, builder: &mut super::Builder<'a>) {
         let indexes = build_indexes(self);
         builder
@@ -922,8 +818,6 @@ impl LineTables {
 }
 
 impl Files {
-    /// Adds the files to `builder` and their paths to `paths`, or `None`
-    /// when a path contains a NUL or the paths do not fit.
     pub fn add_to(
         &self,
         builder: &mut super::Builder<'_>,
@@ -944,8 +838,6 @@ impl Files {
     }
 }
 
-/// Lookups in a validated image's line tables. Every index it reads was
-/// checked against the rows by validation, so no lookup can miss.
 #[derive(Clone, Copy)]
 pub struct LineView<'a> {
     addresses: &'a [RowAddress],
@@ -970,12 +862,10 @@ impl<'a> LineView<'a> {
         }
     }
 
-    /// Row `index`, decoded.
     pub fn row(self, index: usize) -> Row {
         decode_row(self.addresses, self.rows, self.extras, index)
     }
 
-    /// Row `index` as a public statement row.
     fn statement_row(self, at: u32) -> Option<StatementRow> {
         let sequence = self
             .sequences
@@ -1001,12 +891,10 @@ impl<'a> LineView<'a> {
         ))
     }
 
-    /// Every public statement row, in order.
     pub fn statement_rows(self) -> impl Iterator<Item = StatementRow> + 'a {
         statement_rows(self.addresses, self.rows, self.extras, self.sequences)
     }
 
-    /// The line ranges at `indexes`, in line-program order.
     fn entries_in_order(
         self,
         mut indexes: Vec<usize>,
@@ -1022,14 +910,11 @@ impl<'a> LineView<'a> {
         })
     }
 
-    /// Every line range, in line-program order.
     #[cfg(feature = "tools")]
     pub fn line_entries(self) -> impl Iterator<Item = crate::model::LineEntry> + 'a {
         self.entries_in_order((0..self.ranges.len()).collect())
     }
 
-    /// The first line range, in line-program order, that contains
-    /// `address`.
     pub fn line_entry_containing(self, address: ImageAddress) -> Option<crate::model::LineEntry> {
         let address = address.get();
         let mut index = self
@@ -1056,8 +941,6 @@ impl<'a> LineView<'a> {
         first.and_then(|range| line_entry(self.addresses, self.rows, self.extras, range))
     }
 
-    /// The line ranges that start within any of `within`, in line-program
-    /// order.
     pub fn line_entries_starting_in(
         self,
         within: impl IntoIterator<Item = AddressRange<ImageAddress>>,
@@ -1078,8 +961,6 @@ impl<'a> LineView<'a> {
         self.entries_in_order(indexes)
     }
 
-    /// The rows at `address` that mark a prologue's end or an epilogue's
-    /// start, in row order.
     pub fn control_boundaries_at(
         self,
         address: ImageAddress,
@@ -1101,8 +982,6 @@ impl<'a> LineView<'a> {
             .filter_map(move |boundary| self.statement_row(boundary.row.get()))
     }
 
-    /// The statement keys of `file` with lines in `lines`, in (line, row)
-    /// order.
     pub fn statements(
         self,
         file: SourceFileId,
@@ -1121,7 +1000,6 @@ impl<'a> LineView<'a> {
             .unwrap_or_default()
     }
 
-    /// The address of row `index`, a row an index names.
     #[expect(
         clippy::indexing_slicing,
         reason = "callers pass the rows of statement keys and boundaries, which validation \

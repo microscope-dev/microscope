@@ -1,13 +1,9 @@
-//! `formatError` and the stack handling it calls.
-
 use std::collections::BTreeMap;
 
 use super::format::{Change, Ctx, Fault, Listed, to_js_string, truthy, unreadable, unsupported};
 use super::{ErrorDetails, Key, Kind, Object, Slot, Value};
 
 impl<'g> Ctx<'g> {
-    /// `formatError`: the stack as inspect shows it, and the keys minus
-    /// those the stack already shows, plus the hidden ones it prints.
     pub fn format_error(
         &mut self,
         object: &'g Object,
@@ -28,7 +24,6 @@ impl<'g> Ctx<'g> {
         if !keys.is_empty() {
             remove_key(keys, "stack");
             for (key, value) in [("message", &details.message), ("name", &details.name)] {
-                // Hidden when it is not a string, or when the stack shows it.
                 let shown = match value {
                     Value::String(text) => match text.whole() {
                         Some(text) => stack.contains(&text),
@@ -67,7 +62,6 @@ impl<'g> Ctx<'g> {
                 match &property.slot {
                     Slot::Data(value) if self.is_array(value) => {}
                     Slot::Accessor { getter: true, .. } => {
-                        // Node calls the getter to check for an array.
                         self.approximate = true;
                         continue;
                     }
@@ -91,7 +85,6 @@ impl<'g> Ctx<'g> {
                 }
             }
             message => match to_js_string(message) {
-                // `message.length` is undefined, so the search starts at 0.
                 Ok(message) => stack.find(&message).filter(|at| *at > 0).map(|_| 0),
                 Err(Fault::Throws) => return unsupported("a message Node's inspect throws on"),
                 Err(Fault::Visible(text)) => return text,
@@ -119,7 +112,6 @@ impl<'g> Ctx<'g> {
         stack
     }
 
-    /// `getStackString`.
     fn stack_string(&mut self, details: &ErrorDetails) -> Result<String, Fault> {
         match &details.stack {
             Value::String(stack) if stack.length() != 0 => stack
@@ -140,8 +132,6 @@ impl<'g> Ctx<'g> {
         }
     }
 
-    /// `getStackFrames`: the frame lines, minus those shared with the cause
-    /// and repeats.
     fn stack_frames(
         &mut self,
         object: &Object,
@@ -158,7 +148,6 @@ impl<'g> Ctx<'g> {
         let cause = match cause.map(|property| &property.slot) {
             Some(Slot::Data(value)) => Some(value),
             Some(Slot::Accessor { getter, .. }) => {
-                // Node calls the getter.
                 self.approximate |= *getter;
                 None
             }
@@ -219,8 +208,6 @@ impl<'g> Ctx<'g> {
         Ok(frames)
     }
 
-    /// `improveStack`: renames the stack's first line to inspect's name for
-    /// the error when they differ.
     fn improve_stack(
         &self,
         mut stack: String,
@@ -260,7 +247,6 @@ impl<'g> Ctx<'g> {
         stack
     }
 
-    /// Whether `Array.isArray` holds for a value, through proxies.
     fn is_array(&self, value: &Value) -> bool {
         let mut value = value;
         loop {
@@ -276,7 +262,6 @@ impl<'g> Ctx<'g> {
     }
 }
 
-/// `ErrorPrototypeToString`.
 fn error_to_string(details: &ErrorDetails) -> Result<String, Fault> {
     let name = match &details.name {
         Value::Undefined => "Error".to_owned(),
@@ -295,12 +280,10 @@ fn error_to_string(details: &ErrorDetails) -> Result<String, Fault> {
     })
 }
 
-/// Whether a key is the string `name`.
 fn key_is(key: &Key, name: &str) -> bool {
     matches!(key, Key::String(key) if key.units().iter().copied().eq(name.encode_utf16()))
 }
 
-/// Removes the first key named `name`.
 fn remove_key(keys: &mut Vec<Listed<'_>>, name: &str) {
     if let Some(at) = keys
         .iter()
@@ -310,7 +293,6 @@ fn remove_key(keys: &mut Vec<Listed<'_>>, name: &str) {
     }
 }
 
-/// `/^([A-Z][a-z_ A-Z0-9[\]()-]+)(?::|\n {4}at)/`'s group.
 fn leading_name(stack: &str) -> Option<&str> {
     let (first, rest) = stack.as_bytes().split_first()?;
     if !first.is_ascii_uppercase() {
@@ -328,7 +310,6 @@ fn leading_name(stack: &str) -> Option<&str> {
     (rest.starts_with(':') || rest.starts_with("\n    at")).then(|| &stack[..end])
 }
 
-/// `/^([a-z_A-Z0-9-]*Error)$/`'s group.
 fn whole_error_name(stack: &str) -> Option<&str> {
     (stack.ends_with("Error")
         && stack
@@ -337,8 +318,6 @@ fn whole_error_name(stack: &str) -> Option<&str> {
     .then_some(stack)
 }
 
-/// `identicalSequenceRange`: the length and start in `a` of the first run
-/// of more than three lines of `a` that also appears in `b`.
 #[allow(
     clippy::suspicious_operation_groupings,
     reason = "the run in `b` starts at `position`, the run in `a` at `i`"
@@ -368,15 +347,12 @@ fn identical_sequence_range(a: &[String], b: &[&str]) -> (usize, usize) {
     (0, 0)
 }
 
-/// A block of frames that repeats right after itself.
 struct Repeat {
-    /// Where the first repetition starts.
     offset: usize,
     length: usize,
     repeats: usize,
 }
 
-/// `getDuplicateErrorFrameRanges`.
 fn duplicate_frame_ranges(frames: &[String]) -> Vec<Repeat> {
     const MINIMUM: usize = 3;
     let mut result = Vec::new();
@@ -413,8 +389,6 @@ fn duplicate_frame_ranges(frames: &[String]) -> Vec<Repeat> {
             continue;
         }
         let mut extra_steps = if current + 1 < at.len() {
-            // The GCD of the distances to the same line, keeping the divisors
-            // found along the way as fallbacks.
             let mut steps: Vec<usize> = Vec::new();
             let mut gcd = 0;
             for p in at.iter().skip(current) {

@@ -1,13 +1,13 @@
 microscope-views 1
 
-# Go's runtime. Verified against Go 1.27.1, by tests/fixtures/go/containers.
-# A Go map, channel, or interface is matched by its kind, whatever its name.
 
-# A map is a pointer to a swiss table (Go 1.24 and later). A small map's
-# dirPtr is one group of eight slots; a larger map's is a directory of
-# tables, each in as many consecutive entries as its depth leaves it, the
-# first of which its index names. A slot is full when its control byte's
-# top bit is clear.
+
+
+
+
+
+
+
 view go map<K, V> {
     type Group = typeof(*(**self.dirPtr).groups.data)
     show if self == null {
@@ -27,8 +27,8 @@ view go map<K, V> {
     }
 }
 
-# A channel is a pointer to its hchan, whose buffer is a ring of dataqsiz
-# elements, the next to be received at recvx.
+
+
 view go chan<T> {
     show if self == null {
         empty("nil")

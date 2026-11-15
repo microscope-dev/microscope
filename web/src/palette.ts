@@ -1,14 +1,8 @@
-// How the palette matches what is typed: case aside, a whole name first,
-// then names it begins, names that hold it, and names that hold its letters
-// in order, as the server ranks functions. Shorter names come first among
-// equals.
-
 import { assert } from "./assert";
 
 export interface Score {
-  /** 0 for the whole name, up to 3 for scattered letters. */
   rank: number;
-  /** The positions of the characters matched. */
+
   marks: number[];
 }
 
@@ -39,10 +33,6 @@ export function score(text: string, query: string): Score | null {
   return { rank: 3, marks };
 }
 
-/**
- * The `limit` items whose text best matches `query`, or the first `limit`
- * as they are when nothing is typed.
- */
 export function best<T>(
   items: readonly T[],
   query: string,

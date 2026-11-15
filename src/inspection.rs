@@ -3,7 +3,6 @@ use crate::{
     VariableUnavailableReason,
 };
 
-/// The largest limits a client may request for one operation.
 pub const MAX_INSPECTION_LIMITS: InspectionLimits = InspectionLimits {
     variables: 4_096,
     value_nodes: 4_096,
@@ -13,10 +12,6 @@ pub const MAX_INSPECTION_LIMITS: InspectionLimits = InspectionLimits {
     expression_work: 10_240_000,
 };
 
-/// Tracks the resources one inspection operation has used against its limits.
-///
-/// Exhaustion is sticky: once any reservation fails, every later one fails
-/// with the same exhaustion, so a truncated result reports its first cause.
 #[derive(Debug)]
 pub struct InspectionBudget {
     limits: InspectionLimits,
@@ -79,9 +74,6 @@ impl InspectionBudget {
             .saturating_sub(self.usage.memory_bytes)
     }
 
-    /// A budget of a quarter of what remains, for work such as a view's
-    /// summary, whose exhaustion must not end the operation: the operation
-    /// then [`absorb`](Self::absorb)s what it used.
     pub fn share(&self) -> Self {
         let remaining = self.limits.remaining_after(self.usage);
         let quarter = |value: u64| value / 4;
@@ -96,8 +88,6 @@ impl InspectionBudget {
         })
     }
 
-    /// Charges what a [`share`](Self::share)d budget used, which never
-    /// exceeds what remained.
     pub fn absorb(&mut self, used: InspectionUsage) {
         let usage = &mut self.usage;
         usage.variables = usage.variables.saturating_add(used.variables);
@@ -127,8 +117,6 @@ impl InspectionBudget {
         ])
     }
 
-    /// The exhaustion one read of `bytes` would cause, if any, without
-    /// recording it.
     pub fn memory_shortfall(&self, bytes: u64) -> Option<InspectionExhaustion> {
         if let Some(exhaustion) = self.exhaustion {
             return Some(exhaustion);
@@ -152,10 +140,6 @@ impl InspectionBudget {
         })
     }
 
-    /// Reserves one read of at most `bytes`, or of as many as remain. A read
-    /// the budget cannot afford is described without exhausting the budget,
-    /// so a caller can cut its own work short without failing the rest of
-    /// the inspection.
     pub fn consume_memory_up_to(&mut self, bytes: usize) -> Result<usize, InspectionExhaustion> {
         let wanted = u64::try_from(bytes).unwrap_or(u64::MAX);
         let granted = usize::try_from(self.remaining_memory_bytes())
@@ -177,7 +161,6 @@ impl InspectionBudget {
         self.reserve(&[(InspectionLimit::ExpressionWork, amount)])
     }
 
-    /// Reserves every request or, if any would exceed its limit, none.
     fn reserve(&mut self, requests: &[(InspectionLimit, u64)]) -> Result<(), InspectionExhaustion> {
         if let Some(exhaustion) = self.exhaustion {
             return Err(exhaustion);
@@ -210,7 +193,6 @@ impl InspectionBudget {
         exhaustion
     }
 
-    /// Returns a resource's limit and current usage.
     const fn resource(&self, resource: InspectionLimit) -> (u64, u64) {
         let (limits, usage) = (&self.limits, &self.usage);
         match resource {
@@ -298,7 +280,6 @@ mod tests {
         assert!(budget.consume_value_nodes(1).is_err());
         assert_eq!(budget.usage().value_nodes, 0);
 
-        // A variable and its value node are reserved together or not at all.
         let mut limits = limits();
         limits.value_nodes = 1;
         let mut budget = InspectionBudget::new(limits);

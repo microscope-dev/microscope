@@ -1,5 +1,3 @@
-//! Signal policy: which signals stop, are reported, and are delivered.
-
 use super::*;
 use microscope::{DebuggerEvent, SignalPolicy};
 
@@ -28,8 +26,6 @@ async fn signals_are_named_and_follow_gdbs_default_policy() {
     let mut scenario = Scenario::launch("signal-policy");
     let mut events = scenario.handle().subscribe();
 
-    // SIGUSR1 and the real-time signal stop; SIGALRM, SIGURG, SIGCHLD, and
-    // SIGWINCH are delivered without stopping or being reported.
     assert!(matches!(
         scenario.run_to_stop().await,
         StopReason::Exception(info) if info.code == code("SIGUSR1")
@@ -39,7 +35,6 @@ async fn signals_are_named_and_follow_gdbs_default_policy() {
         StopReason::Exception(info) if info.code == 35 && info.description.starts_with("SIG35 ")
     ));
 
-    // Every signal was delivered, so every handler ran.
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(63))
@@ -135,8 +130,6 @@ async fn policies_decide_what_stops_is_reported_and_is_delivered() {
 
     let mut events = handle.subscribe();
 
-    // Nothing stops. SIGALRM, whose default action would kill the program,
-    // and the real-time signal are discarded, so their handlers never run.
     assert_eq!(
         scenario.run_to_stop().await,
         StopReason::Exited(ExitStatus::Code(1 | 4 | 8 | 16))
@@ -168,8 +161,6 @@ async fn policies_decide_what_stops_is_reported_and_is_delivered() {
         "only signals whose policy prints are reported: {received:?}"
     );
 
-    // raise() sends with tgkill, which names the sending process: the
-    // program itself.
     let process = process.expect("the program launched").get();
     assert_eq!(
         received[0].1,
@@ -179,11 +170,6 @@ async fn policies_decide_what_stops_is_reported_and_is_delivered() {
     scenario.shutdown().await;
 }
 
-/// A step over the last line of a function returns into the middle of its
-/// caller's line and single-steps to its end. There it reaches the start
-/// of the next line, where a breakpoint declines its hit, with a signal
-/// pending: the handler runs, and the step ends at the start of that line,
-/// as it would have without the signal.
 #[tokio::test]
 async fn a_step_ends_at_a_declined_breakpoint_a_signal_reached_first() {
     let path = "tests/fixtures/c/signal-steps.c";
@@ -311,8 +297,6 @@ async fn steps_run_signal_handlers_without_stopping_in_them() {
     );
     assert_eq!(function(&scenario).await.as_deref(), Some("sum_to"));
 
-    // Single steps cross the system call that signals the thread: its
-    // handler runs to completion and the step ends after the instruction.
     let mut steps = 0;
 
     while handled(&scenario).await == 0 {
@@ -335,7 +319,6 @@ async fn steps_run_signal_handlers_without_stopping_in_them() {
     );
     assert_eq!(function(&scenario).await.as_deref(), Some("main"));
 
-    // Source steps cross it too, in the next two calls.
     for (kind, crossed) in [(StepKind::OverSource, 2), (StepKind::IntoSource, 3)] {
         let mut steps = 0;
 
@@ -372,7 +355,6 @@ async fn go_preemption_signals_never_stop_the_program() {
     let mut scenario = Scenario::launch("preempt-go");
     let urgent = code("SIGURG");
 
-    // Reporting SIGURG proves the runtime sent it while the program ran.
     scenario
         .operation(
             "report SIGURG",
@@ -404,7 +386,6 @@ async fn go_preemption_signals_never_stop_the_program() {
             }
             Ok(_) => {}
 
-            // So many signals arrived that this subscriber fell behind.
             Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
                 preemptions += skipped;
             }
@@ -412,13 +393,10 @@ async fn go_preemption_signals_never_stop_the_program() {
         }
     }
 
-    // The program finishes only once it has received eight.
     assert!(preemptions >= 8, "only {preemptions} preemption signals");
     scenario.shutdown().await;
 }
 
-/// A breakpoint instruction the program executes itself is the program's
-/// stop, not one of the debugger's, and the program resumes after it.
 #[tokio::test]
 async fn a_program_trap_stops_as_the_programs_and_resumes_after_it() {
     let mut scenario = Scenario::launch("program-trap");

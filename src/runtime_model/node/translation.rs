@@ -1,62 +1,26 @@
-//! Which JavaScript functions an optimized frame runs at its call, and at
-//! which bytecode, as V8's `OptimizedJSFrame::Summarize` reads them.
-//!
-//! Optimized (Maglev and Turbofan) code keeps, for each call that may
-//! deoptimize, how to rebuild the interpreter's frames it stands for: its
-//! safepoint table maps the call's return address to a deoptimization
-//! index, the index to a translation in the code's deoptimization data,
-//! and the translation names each frame, outermost first, with the
-//! function's `SharedFunctionInfo` and the offset of the bytecode it was
-//! at. This holds where the code's own position table does not, which a
-//! build may leave empty (Maglev in 13.6 collects positions only when a
-//! profiler asks).
-
 use super::objects::{Object, Problem, Reader};
 use super::positions;
 use crate::image::v8::{Constant, Field, TranslationOpcode, Translations, V8Layout};
 
-/// The most bytes of a safepoint table read.
 const MAX_SAFEPOINT_TABLE: u64 = 1 << 20;
 
-/// The most frames one translation stands for.
 const MAX_FRAMES: i32 = 1 << 10;
 
-/// Where a JavaScript frame of a translation is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Offset {
-    /// At the bytecode at this offset in its function's bytecode, or at
-    /// its entry, `kFunctionEntryBytecodeOffset`.
     Bytecode(i64),
 
-    /// In the continuation of the JavaScript builtin with this id, which
-    /// V8 summarizes as the builtin's code at offset 0: a function whose
-    /// script is none.
     Builtin(i64),
 }
 
-/// A JavaScript frame an optimized frame stands for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct JsFrame {
-    /// Its function's `SharedFunctionInfo`.
     pub(super) shared: Object,
     pub(super) offset: Offset,
 
-    /// Whether V8 calls it as a constructor: it follows a construct
-    /// stub's frame, which the translation keeps and V8's summary skips.
     pub(super) constructor: bool,
 }
 
-/// The JavaScript frames, innermost first, that the optimized `code` stands
-/// for at its instruction `pc_offset` bytes from its start, the frame's pc
-/// (a caller's is its return address, past its call), as V8's
-/// `OptimizedJSFrame::Summarize` gives them. `shared` is the frame's
-/// function's: Maglev code keeps no deoptimization index at its entry,
-/// which V8 summarizes as that function at its entry.
-///
-/// An error for code that is neither Maglev's nor Turbofan's (V8
-/// summarizes a builtin's frame as an interpreted one), for a translation
-/// that names a WebAssembly function inlined into JavaScript, and for
-/// anything unreadable or other than V8 writes.
 pub(super) fn call_site(
     reader: &Reader<'_>,
     code: Object,
@@ -121,8 +85,6 @@ pub(super) fn call_site(
         .collect()
 }
 
-/// The `SharedFunctionInfo` the literal `index` of `literals` holds,
-/// strongly or weakly.
 fn literal_function(reader: &Reader<'_>, literals: Object, index: i64) -> Result<Object, Problem> {
     let word = reader.element(literals, index)?;
     let weak_tag = reader
@@ -148,8 +110,6 @@ fn literal_function(reader: &Reader<'_>, literals: Object, index: i64) -> Result
         .ok_or_else(|| format!("the translation's literal {index} is no function").into())
 }
 
-/// The bytes of `code`'s safepoint table: its metadata's first, which
-/// follows its instructions, up to its handler table.
 fn safepoint_table(reader: &Reader<'_>, code: Object) -> Result<Vec<u8>, Problem> {
     let start = reader.field(code, Field::CodeInstructionStart)?;
     let size = u64::from(
@@ -167,30 +127,23 @@ fn safepoint_table(reader: &Reader<'_>, code: Object) -> Result<Vec<u8>, Problem
     Ok(bytes)
 }
 
-/// How one kind of code lays out its safepoint table.
 #[derive(Debug, Clone, Copy)]
 struct SafepointFormat {
     length_offset: usize,
     configuration_offset: usize,
     header_size: usize,
 
-    /// Each field of the entry configuration, as `(shift, mask)`.
     has_deopt_data: (u32, u32),
     register_indexes_size: (u32, u32),
     pc_size: (u32, u32),
     deopt_index_size: (u32, u32),
 
-    /// The bytes between an entry's deoptimization data and its
-    /// registers: Maglev's count of extra spill slots.
     between: usize,
 
-    /// Whether the table is Maglev's, which finds a safepoint only at its
-    /// exact pc.
     maglev: bool,
 }
 
 impl SafepointFormat {
-    /// Maglev code's format, or Turbofan's.
     fn of(layout: &V8Layout, maglev: bool) -> Result<Self, Problem> {
         use Constant as C;
 
@@ -253,9 +206,6 @@ impl SafepointFormat {
     }
 }
 
-/// One entry of a safepoint table: its pc's offset, and with
-/// deoptimization data its index and its trampoline's pc, each `None` for
-/// none.
 #[derive(Debug, Clone, Copy)]
 struct Safepoint {
     pc: i64,
@@ -263,7 +213,6 @@ struct Safepoint {
     trampoline: Option<i64>,
 }
 
-/// The little-endian integer of `size` bytes at `at` of `bytes`.
 fn read_le(bytes: &[u8], at: usize, size: usize) -> Result<u32, Problem> {
     let field = at
         .checked_add(size)
@@ -276,8 +225,6 @@ fn read_le(bytes: &[u8], at: usize, size: usize) -> Result<u32, Problem> {
         .fold(0, |value, byte| (value << 8) | u32::from(*byte)))
 }
 
-/// The entries of the safepoint table `table`, and whether they keep
-/// deoptimization data.
 fn safepoints(table: &[u8], format: &SafepointFormat) -> Result<(Vec<Safepoint>, bool), Problem> {
     let length = read_le(table, format.length_offset, 4)?.cast_signed();
     let configuration = read_le(table, format.configuration_offset, 4)?;
@@ -317,7 +264,6 @@ fn safepoints(table: &[u8], format: &SafepointFormat) -> Result<(Vec<Safepoint>,
         let at = format.header_size + index * entry_size;
         let pc = i64::from(read_le(table, at, pc_size)?);
         let (deopt_index, trampoline) = if has_deopt_data {
-            // Each is stored plus one, so that 0 is none.
             let deopt_index = read_le(table, at + pc_size, deopt_index_size)?.checked_sub(1);
             let trampoline =
                 read_le(table, at + pc_size + deopt_index_size, pc_size)?.checked_sub(1);
@@ -334,11 +280,6 @@ fn safepoints(table: &[u8], format: &SafepointFormat) -> Result<(Vec<Safepoint>,
     Ok((entries, has_deopt_data))
 }
 
-/// The deoptimization index of the safepoint at `pc_offset` in `table`, as
-/// V8's `SafepointTable::FindEntry` or `MaglevSafepointTable::FindEntry`
-/// finds it, or `None` for a Maglev safepoint that keeps none, as at its
-/// function's entry. An error where V8 would find no safepoint, or a
-/// Turbofan one without an index.
 fn deopt_index(
     table: &[u8],
     format: &SafepointFormat,
@@ -366,8 +307,6 @@ fn deopt_index(
         .ok_or_else(|| "the Turbofan code keeps no deoptimization index at the frame's pc".into())
 }
 
-/// `SafepointTable::TryFindEntry`: the last entry whose trampoline is at or
-/// before `pc_offset`, or else the last whose pc is.
 fn turbofan_entry(
     entries: &[Safepoint],
     has_deopt_data: bool,
@@ -386,8 +325,6 @@ fn turbofan_entry(
             return candidate;
         }
     }
-    // The first entry that is the last or whose successor is past the pc,
-    // unless it is past the pc itself.
     let index = (0..entries.len()).find(|&index| {
         entries
             .get(index + 1)
@@ -397,9 +334,6 @@ fn turbofan_entry(
     (entry.pc <= pc_offset).then_some(entry)
 }
 
-/// `MaglevSafepointTable::FindEntry`: the entry whose trampoline or pc is
-/// exactly `pc_offset`, or `None` for the default entry, which keeps no
-/// deoptimization data.
 fn maglev_entry(entries: &[Safepoint], has_deopt_data: bool, pc_offset: i64) -> Option<Safepoint> {
     if has_deopt_data {
         for entry in entries {
@@ -413,8 +347,6 @@ fn maglev_entry(entries: &[Safepoint], has_deopt_data: bool, pc_offset: i64) -> 
     entries.iter().find(|entry| entry.pc == pc_offset).copied()
 }
 
-/// A JavaScript frame as a translation names it: its function by its
-/// index in the deoptimization data's literals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TranslatedFrame {
     literal: i64,
@@ -422,9 +354,6 @@ struct TranslatedFrame {
     constructor: bool,
 }
 
-/// The JavaScript frames, outermost first, of the translation at `index` of
-/// `bytes`, as V8's `Summarize` walks it: each frame in turn, a
-/// construct stub's marking the next JavaScript frame as a constructor's.
 fn summarize(
     bytes: &[u8],
     index: i64,
@@ -501,9 +430,6 @@ fn summarize(
     Ok(frames)
 }
 
-/// The VLQ-encoded unsigned integer at `at` of `bytes`, as V8's
-/// `base::VLQDecodeUnsigned` reads it: 7 bits a byte, least significant
-/// first, each but the last with its top bit set.
 fn vlq_unsigned(bytes: &[u8], at: &mut usize) -> Result<u32, Problem> {
     let mut value: u32 = 0;
     for shift in (0..=28).step_by(7) {
@@ -519,19 +445,12 @@ fn vlq_unsigned(bytes: &[u8], at: &mut usize) -> Result<u32, Problem> {
     Err("a translation's operand is too long".into())
 }
 
-/// The VLQ-encoded signed integer at `at` of `bytes`, its sign in its
-/// lowest bit, as `base::VLQDecode` reads it.
 fn vlq_signed(bytes: &[u8], at: &mut usize) -> Result<i32, Problem> {
     let bits = vlq_unsigned(bytes, at)?;
     let magnitude = (bits >> 1).cast_signed();
     Ok(if bits & 1 == 1 { -magnitude } else { magnitude })
 }
 
-/// A walk of a translation, as V8's `DeoptTranslationIterator`: an
-/// opcode byte of at least the opcodes' count, or an explicit
-/// `MATCH_PREVIOUS_TRANSLATION`, repeats opcodes and their operands from
-/// the translation a `BEGIN`'s lookback distance names, past the ones
-/// already matched.
 struct Translation<'a> {
     bytes: &'a [u8],
     opcodes: &'a Translations,
@@ -542,9 +461,6 @@ struct Translation<'a> {
 }
 
 impl<'a> Translation<'a> {
-    /// A walk from the translation at `index`, which begins with a `BEGIN`.
-    /// A compressed translation, as `--turbo-compress-frame-translations`
-    /// writes, does not: it is refused here.
     fn new(bytes: &'a [u8], index: i64, opcodes: &'a Translations) -> Result<Self, Problem> {
         let index = usize::try_from(index).map_err(|_| "a translation index is negative")?;
         let opcode = bytes
@@ -572,8 +488,6 @@ impl<'a> Translation<'a> {
         })
     }
 
-    /// The next operand, signed, from the previous translation while
-    /// opcodes are repeated from it.
     fn next_operand(&mut self) -> Result<i32, Problem> {
         if self.from_previous == 0 {
             return vlq_signed(self.bytes, &mut self.index);
@@ -599,7 +513,6 @@ impl<'a> Translation<'a> {
         Ok(())
     }
 
-    /// The previous translation is before this one, as V8 writes it.
     fn check_previous(&self) -> Result<(), Problem> {
         if self.previous < self.index {
             Ok(())
@@ -608,8 +521,6 @@ impl<'a> Translation<'a> {
         }
     }
 
-    /// The opcode at the previous translation's place, which is no
-    /// repetition.
     fn opcode_at_previous(&mut self) -> Result<usize, Problem> {
         let number = usize::from(
             *self
@@ -644,7 +555,6 @@ impl<'a> Translation<'a> {
         self.index < self.bytes.len() || self.from_previous > 1
     }
 
-    /// The number of the next opcode, as `NextOpcode`.
     fn next_opcode(&mut self) -> Result<usize, Problem> {
         self.from_previous = self.from_previous.saturating_sub(1);
         if self.from_previous > 0 {
@@ -701,8 +611,6 @@ impl<'a> Translation<'a> {
         }
     }
 
-    /// The counts of frames and of JavaScript frames the translation's
-    /// `BEGIN` gives, past its lookback distance.
     fn enter_begin(&mut self) -> Result<(i32, i32), Problem> {
         self.next_opcode()?;
         self.next_operand()?;
@@ -711,8 +619,6 @@ impl<'a> Translation<'a> {
         Ok((frames, js_frames))
     }
 
-    /// The number of the next opcode that begins a frame, past the values
-    /// of the frame before it.
     fn seek_next_frame(&mut self) -> Result<usize, Problem> {
         while self.has_next_opcode() {
             let number = self.next_opcode()?;
@@ -742,7 +648,6 @@ mod tests {
     };
     use crate::image::v8::{TranslationOpcode as T, Translations, V8Layout, V8Version};
 
-    /// Each V8 version microscope reads.
     const VERSIONS: [(u32, u32); 3] = [(12, 4), (13, 6), (14, 6)];
 
     fn layout((major, minor): (u32, u32)) -> V8Layout {
@@ -758,7 +663,6 @@ mod tests {
         .expect("the version's opcodes")
     }
 
-    /// `value` as V8's `VLQEncodeUnsigned` writes it.
     fn unsigned(bytes: &mut Vec<u8>, mut value: u32) {
         loop {
             let low = u8::try_from(value & 0x7f).expect("seven bits");
@@ -771,12 +675,10 @@ mod tests {
         }
     }
 
-    /// `value` as `VLQEncode` writes it, its sign in its lowest bit.
     fn signed(bytes: &mut Vec<u8>, value: i32) {
         unsigned(bytes, (value.unsigned_abs() << 1) | u32::from(value < 0));
     }
 
-    /// Appends `opcode` and its operands, as many as the version gives it.
     fn op(bytes: &mut Vec<u8>, opcodes: &Translations, opcode: T, operands: &[i32]) {
         let number = opcodes.number(opcode).expect("an opcode of the version");
         let (_, count) = opcodes.opcode(number).expect("an opcode");
@@ -787,8 +689,6 @@ mod tests {
         }
     }
 
-    /// An interpreted frame's operands for the version: its bytecode
-    /// offset and function, then the rest, which are not read.
     fn interpreted(
         opcodes: &Translations,
         with_return: bool,
@@ -821,9 +721,6 @@ mod tests {
         assert!(vlq_unsigned(&[0x80], &mut at).is_err());
     }
 
-    /// A safepoint table of `entries`, each `(pc, deoptimization index,
-    /// trampoline)`, as V8's builders emit one: 1-byte pcs and indices, no
-    /// registers, deoptimization data when any entry has an index.
     fn safepoint_table(
         format: &SafepointFormat,
         entries: &[(u8, Option<u8>, Option<u8>)],
@@ -847,14 +744,10 @@ mod tests {
             }
             table.extend(std::iter::repeat_n(0x55, format.between));
         }
-        // The tagged slots' bits follow the entries.
         table.extend([0xff; 4]);
         table
     }
 
-    /// A Turbofan call finds the last safepoint at or before its pc, or
-    /// its trampoline's; a Maglev one only its own, or none, as at its
-    /// function's entry.
     #[test]
     fn a_call_finds_its_deoptimization_index_as_v8_does() {
         for version in VERSIONS {
@@ -901,9 +794,6 @@ mod tests {
         }
     }
 
-    /// Two translations, the second repeating the first's frame from it:
-    /// a caller at bytecode 5 that called a constructor, inlined, at 12,
-    /// and then a builtin's continuation.
     fn translations(opcodes: &Translations) -> (Vec<u8>, usize) {
         let mut bytes = Vec::new();
         op(&mut bytes, opcodes, T::BeginWithoutFeedback, &[0, 4, 2]);
@@ -920,14 +810,12 @@ mod tests {
         op(&mut bytes, opcodes, T::OptimizedOut, &[]);
 
         let second = bytes.len();
-        // The distance back from the opcode to the first's BEGIN, less one.
         let mut lookback = Vec::new();
         unsigned(&mut lookback, u32::try_from(second).unwrap());
         bytes.push(u8::try_from(opcodes.number(T::BeginWithFeedback).unwrap()).unwrap());
         bytes.extend(&lookback);
         signed(&mut bytes, 2);
         signed(&mut bytes, 2);
-        // Implicitly, the first's interpreted frame and its literal.
         bytes.push(u8::try_from(opcodes.count() + 2).unwrap());
         op(
             &mut bytes,
@@ -939,10 +827,6 @@ mod tests {
         (bytes, second)
     }
 
-    /// A translation names its JavaScript frames outermost first, each
-    /// with its function's literal and its bytecode, a constructor's after
-    /// a construct stub, and a builtin's continuation by its builtin;
-    /// repeated opcodes are read from the translation they repeat.
     #[test]
     fn translations_name_their_javascript_frames() {
         for version in VERSIONS {
@@ -972,13 +856,11 @@ mod tests {
         }
     }
 
-    /// What V8 would not have written is refused, never read past.
     #[test]
     fn translations_refuse_what_v8_does_not_write() {
         for version in VERSIONS {
             let opcodes = opcodes(version);
             let (bytes, second) = translations(opcodes);
-            // Not at a BEGIN, as in a compressed translation.
             assert!(
                 summarize(&bytes, 1, opcodes, 1)
                     .unwrap_err()
@@ -1010,7 +892,6 @@ mod tests {
                 "{version:?}"
             );
 
-            // A repetition from a translation that is not before it.
             let mut forward = Vec::new();
             op(&mut forward, opcodes, T::BeginWithoutFeedback, &[0, 1, 1]);
             forward.push(u8::try_from(opcodes.count() + 3).unwrap());

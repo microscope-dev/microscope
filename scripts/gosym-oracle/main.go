@@ -1,8 +1,8 @@
-// Records what Go's own debug/gosym reads from an executable's function
-// table: every function's name, entry, and end, and the source position of
-// sampled addresses in each. Tests compare microscope's reader with it.
-//
-// Usage: gosym-oracle EXECUTABLE
+
+
+
+
+
 package main
 
 import (
@@ -70,11 +70,11 @@ func record(path string) error {
 	return nil
 }
 
-// textStart is the address function offsets are relative to: the linker's
-// runtime.text symbol, or for a stripped image the start of .text, which is
-// where the Go linker puts runtime.text when it links the image itself. An
-// externally linked, stripped image has no known text start, so the oracle
-// is recorded only for images Go linked.
+
+
+
+
+
 func textStart(file *elf.File) (uint64, error) {
 	if symbols, err := file.Symbols(); err == nil {
 		for _, symbol := range symbols {

@@ -1,4 +1,4 @@
 {
-	// The microscope launch configurations debug with the microscope this checkout builds.
+
 	"microscope.path": "${workspaceFolder}/target/debug/microscope"
 }

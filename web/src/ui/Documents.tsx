@@ -1,9 +1,3 @@
-// The code at the focus, as panes: a Source pane for each open file, and
-// Disassembly, Memory, and Drawings. Source shows the file and lines the link
-// names, or else the frame's own line, or, before the program runs, its main
-// function (D2). A frame with no source shows its instructions instead. The
-// address says which document is shown, and the documents group follows it.
-
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 
 import { assert } from "../assert";
@@ -34,12 +28,11 @@ import { useInlineValues } from "./source/inline";
 import { type MarkKind, type Marks, SourceView } from "./source/SourceView";
 import { useFocus } from "./Workspace";
 
-/** The file a tab shows and where in it, before its text arrives. */
 export interface Shown {
   path: string;
-  /** The line to bring into view. */
+
   line: number | null;
-  /** The lines the link selects. */
+
   selection: { line: number; end: number } | null;
 }
 
@@ -59,8 +52,6 @@ export function useShown(): Shown | null {
   return own;
 }
 
-/** What the focus shows when no link names a file: the frame's line, or
- * before the program runs, its main function. */
 function useOwnSource(): Shown | null {
   const { at, trace, state } = useFocus();
   const sources = useRequest("sources", state.session ? undefined : null).data;
@@ -74,8 +65,6 @@ function useOwnSource(): Shown | null {
   return null;
 }
 
-/** The view shown: the address's, or else source, or a sourceless frame's
- * instructions. */
 function useView(): { view: View; sourceless: boolean } {
   const { at, trace, look } = useFocus();
   const shown = useShown();
@@ -84,7 +73,6 @@ function useView(): { view: View; sourceless: boolean } {
   return { view: look.view ?? (sourceless ? "disassembly" : "source"), sourceless };
 }
 
-/** What the document panes' tabs do, given by the session's workspace. */
 const documents: {
   show(path: string): void;
   close(path: string): void;
@@ -99,8 +87,6 @@ export const showDocument = (path: string) => documents.show(path);
 export const closeDocument = (path: string) => documents.close(path);
 export const showView = (view: View) => documents.view(view);
 
-/** Keeps the tab's open files and the documents group in step with the
- * address. Renders nothing. */
 export function Documents() {
   const { at, look: current } = useFocus();
   const shown = useShown();
@@ -112,13 +98,10 @@ export function Documents() {
 
   const path = shown?.path;
   const line = shown?.line ?? null;
-  // Before paint, so a file newly shown never appears without its tab. A
-  // file closed opens again at every new stop, when its line moves, or when
-  // something asks for it.
+
   const stop = at?.stop;
   const asked = useTab((state) => state.asked);
-  // Closing the last file shows the focus's own place, which stays closed:
-  // this names the showing it must not reopen.
+
   const unasked = useRef<string | null>(null);
   useLayoutEffect(() => {
     const skip = unasked.current === `${path}:${line}:${stop}:${asked}`;
@@ -127,7 +110,7 @@ export function Documents() {
       openFile(path);
     }
   }, [path, line, stop, asked]);
-  // A file closed stays closed until something shows it again.
+
   const open = path !== undefined && files.includes(path);
   const place =
     current.src ??
@@ -143,10 +126,7 @@ export function Documents() {
     change((layout) => arrange(layout, files, open && path ? path : null, view));
   }, [files, path, open, view]);
 
-  // The tabs act through these, which close over this render's focus.
   useLayoutEffect(() => {
-    // A file's tab follows the focus when the focus shows that file by
-    // itself, or else shows where the file was last shown.
     documents.show = (chosen) => {
       const where = tab.getState().places[chosen];
       look(
@@ -160,8 +140,7 @@ export function Documents() {
         { replace: false, ask: true },
       );
     };
-    // Closing the file shown shows its neighbor, the next one or else the one
-    // before it. Closing the last drops it from the address.
+
     documents.close = (closed) => {
       const index = files.indexOf(closed);
       assert(index >= 0, `closing a file not among the ${files.length} open`);
@@ -182,7 +161,6 @@ export function Documents() {
   return null;
 }
 
-/** One file's source, or while none is open, why there is nothing to show. */
 export function SourceBody({ pane }: PaneProps) {
   const { at, stale } = useFocus();
   const shown = useShown();
@@ -243,13 +221,11 @@ export function DisassemblyBody() {
   );
 }
 
-/** How many drawings the stop shows. */
 export function DrawingsBadge() {
   const drawings = useCards().length;
   return drawings > 0 ? <span className="badge">{drawings}</span> : null;
 }
 
-/** Lines with breakpoints in a file, and what kind each is. */
 export function breakpointLines(
   breakpoints: readonly Breakpoint[],
   path: string,
@@ -272,7 +248,7 @@ export function breakpointLines(
         lines.set(place.line, kind);
       }
     }
-    // One set at a line no code has yet shows where it was asked for.
+
     const asked = askedAt(breakpoint, path);
     if (knownBreakpointPlaces(breakpoint).length === 0 && asked && !lines.has(asked)) {
       lines.set(asked, "pending");
@@ -289,7 +265,6 @@ function SourceFile({ shown }: { shown: Shown }) {
   const look = useLook();
   const source = useRequest("source", { path: shown.path });
 
-  // Values show for the frame shown, while its stop is the program's.
   const live = at && !stale ? at : null;
   const frame = frameAt(trace, at);
   const frameSource = frame?.source?.path === shown.path ? frame.source : null;

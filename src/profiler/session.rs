@@ -1,7 +1,3 @@
-//! Running a recording: starting a program under its events, or attaching
-//! them to one that runs, then draining the events into a capture until the
-//! program ends or the recording is stopped.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,23 +21,19 @@ use crate::backend::perf;
 use crate::capture::records::{AccountKind, GapReason, MarkerKind};
 use crate::model::Pid;
 
-/// A recording and how its program ended.
 #[derive(Debug)]
 pub struct Recording {
     pub profile: Profile,
     pub status: ExitStatus,
 }
 
-/// A recording of a process that was running already.
 #[derive(Debug)]
 pub struct Attachment {
     pub profile: Profile,
 
-    /// Whether the process exited, rather than the recording being stopped.
     pub exited: bool,
 }
 
-/// Runs `command` to its exit, recording it.
 pub fn record(command: Command, options: &RecordOptions) -> Result<Recording, RecordError> {
     let stop = AtomicBool::new(false);
     record_watched(
@@ -56,38 +48,21 @@ pub fn record(command: Command, options: &RecordOptions) -> Result<Recording, Re
     )
 }
 
-/// What a recording does while it runs, for a live view of it.
 pub struct Watch<'a> {
-    /// How often the profile so far is published, at most: the first
-    /// comes within a quarter second, and each wait doubles up to this.
     pub every: Duration,
 
-    /// Takes the profile so far: once when the program has started, when
-    /// it holds nothing yet, and every `every` after.
     pub publish: &'a mut dyn FnMut(Profile),
 
-    /// Ends the recording once set: a program the recording started is
-    /// killed, and one it attached to goes on without it.
     pub stop: &'a AtomicBool,
 
-    /// Saves the profile so far when triggered, as the recording goes on.
     pub save: Option<Save<'a>>,
 }
 
-/// A trigger, and what takes the profile when it fires: with a rolling
-/// window, the window as it is, and with segments, the segment so far,
-/// which ends there. Segments are saved as each ends too.
 pub struct Save<'a> {
-    /// Fires once set, and is cleared as the profile is taken.
     pub trigger: &'a AtomicBool,
     pub to: &'a mut dyn FnMut(Profile),
 }
 
-/// Readies `command` to be recorded. Recording every site, it names the
-/// recorder in the environment, so that the program records from its first
-/// site, before the recorder finds it (`abi::RECORDER`). Its arguments are
-/// kept from `command` itself, as the program may exit before /proc shows
-/// them.
 fn ready(command: &mut Command, options: &RecordOptions, processor: &mut record::Processor) {
     if options.probes == ProbeSelection::All {
         command.env(
@@ -102,8 +77,6 @@ fn ready(command: &mut Command, options: &RecordOptions, processor: &mut record:
         .setting(super::ARGUMENTS, &super::encode_arguments(arguments));
 }
 
-/// Records `command` as [`record`] does, publishing the profile so far as
-/// `watch` asks.
 pub fn record_watched(
     mut command: Command,
     options: &RecordOptions,
@@ -142,8 +115,6 @@ pub fn record_watched(
     let mut walker = None;
     let mut refused = None;
     let launched = perf::launch(command, &events, &launch, |pid, events| {
-        // The program runs on the events before the program can start a
-        // thread that would inherit them without it.
         if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
             match Walker::attach(events, &mut processor, options.kernel_stacks) {
                 Ok(mut attached) => {
@@ -185,8 +156,6 @@ pub fn record_watched(
         stack_copy,
     );
 
-    // A program that failed to execute ends the recording with why, below,
-    // without having been published as started.
     let started = executed.recv().is_ok().then_some(pid);
     events.read_while(|| {
         drive(
@@ -227,8 +196,6 @@ pub fn record_watched(
     Ok(Recording { profile, status })
 }
 
-/// How to start the program: at fixed addresses for a breakpoint source,
-/// and stopping only the calls the ptrace engine traces.
 fn launch_options(options: &RecordOptions, fixed: bool) -> perf::LaunchOptions {
     let ptraced = options.syscalls.engine == SyscallEngine::Ptrace
         && options.syscalls.level != SyscallLevel::Off;
@@ -239,10 +206,6 @@ fn launch_options(options: &RecordOptions, fixed: bool) -> perf::LaunchOptions {
     }
 }
 
-/// Records the running process `pid`, which goes on as it was.
-///
-/// The events follow it from outside, and nothing stops it. The recording ends when
-/// the process exits or `watch` stops it, and publishes as `watch` asks.
 pub fn record_attached(
     pid: u32,
     options: &RecordOptions,
@@ -300,9 +263,6 @@ pub fn record_attached(
         stack_bytes,
         stack_copy,
     );
-    // The process's images are read now, so the engine is told its layout
-    // before the first sample: until it is, every interpreted frame it
-    // walks is unknown.
     if let Some(walker) = &mut walker {
         walker.refresh(&mut processor);
         events.start();
@@ -344,31 +304,16 @@ pub fn record_attached(
     })
 }
 
-/// How long after the program starts the BPF engine's records are drained
-/// every millisecond, rather than every ten, so that it is told each
-/// interpreter's layout before the program runs much Python.
 const EARLY_DRAINS: Duration = Duration::from_millis(50);
 
-/// How soon the BPF engine is told each Python process's threads anew
-/// once one starts or ends. A thread's state names it only once the thread
-/// runs, so the engine is told again at this pace until what it is told
-/// stops changing.
 const WALK_REFRESH: Duration = Duration::from_millis(20);
 
-/// How long the engine goes untold while no thread starts or ends. What it
-/// is told only spares it a search: a thread it was not told of has its
-/// state found by searching the interpreter's threads. Reading every
-/// thread's state every 20 ms was a third to half of what `prod` spent
-/// sampling a Python program.
 const WALK_RECHECK: Duration = Duration::from_secs(1);
 
-/// The BPF engine for Python stacks, and what it has been told.
 struct Walker {
     sampler: Sampler,
     next: std::time::Instant,
 
-    /// How long until the next telling, and what was told last: the
-    /// processor's count of thread changes, and each process's threads.
     every: Duration,
     changes: u64,
     #[expect(
@@ -377,12 +322,9 @@ struct Walker {
     )]
     told: Vec<(u32, u64, Vec<(u32, u64, u64)>)>,
 
-    /// The processes whose layout it has, each with the program it ran
-    /// then, and those it was told it cannot have.
     laid_out: std::collections::BTreeMap<u32, u64>,
     refused: std::collections::BTreeSet<u32>,
 
-    /// The processes some of whose threads it could not be told of.
     troubled: std::collections::BTreeSet<u32>,
 }
 
@@ -393,8 +335,6 @@ impl From<SamplerError> for RecordError {
 }
 
 impl Walker {
-    /// Loads the engine onto `events`, which must not yet sample, and has
-    /// `processor` splice what it writes.
     fn attach(
         events: &perf::Events,
         processor: &mut record::Processor,
@@ -415,9 +355,6 @@ impl Walker {
         })
     }
 
-    /// Tells the engine each Python process's layout, once, as soon as a
-    /// drain has read the mapping of its interpreter, and its threads,
-    /// when due; and forgets the processes that are gone.
     fn refresh(&mut self, processor: &mut record::Processor) {
         for walked in processor.walked_early() {
             if !self.laid_out.contains_key(&walked.pid) {
@@ -449,8 +386,6 @@ impl Walker {
         self.told = told;
         self.next = now + self.every;
         let sampler = &mut self.sampler;
-        // A process gone, or one that exec'd since it was laid out, has a
-        // layout that no longer fits it.
         self.laid_out.retain(|pid, program| {
             let fits = walked
                 .iter()
@@ -467,8 +402,6 @@ impl Walker {
                 continue;
             }
 
-            // Threads it is not told of have unknown frames, which the
-            // recording says why once.
             let failed = self
                 .sampler
                 .set_threads(walked.pid, &walked.threads)
@@ -486,13 +419,6 @@ impl Walker {
         }
     }
 
-    /// Tells the engine the V8 layout of the program at `program`, which
-    /// process `pid` is about to run, before it runs. Otherwise it is told
-    /// only once processing reads the program's image, most of a second
-    /// for node without the image cache, and every JavaScript frame
-    /// sampled until then is unknown. The process is not laid out yet:
-    /// the layout processing finds replaces this one, with the current
-    /// isolate placed where that needs the program's load bias.
     fn lay_out_before(&mut self, processor: &mut record::Processor, pid: u32, program: &Path) {
         let Some(path) = which(program).and_then(|path| std::fs::canonicalize(path).ok()) else {
             return;
@@ -510,8 +436,6 @@ impl Walker {
         }
     }
 
-    /// Tells the engine the layout of the process `walked` is of, or the
-    /// recording why it cannot: whether the engine has it.
     fn lay_out(&mut self, processor: &mut record::Processor, walked: &Walked) -> bool {
         let set = walked.layout.clone().and_then(|layout| {
             match layout {
@@ -538,8 +462,6 @@ impl Walker {
         }
     }
 
-    /// Counts the records the rings had no room for, or says why they
-    /// cannot be counted.
     fn finish(&self, processor: &mut record::Processor) {
         let builder = processor.builder();
         match self.sampler.lost() {
@@ -566,7 +488,6 @@ impl Walker {
     }
 }
 
-/// A processor for `options`, and for a breakpoint's repeats.
 fn processor(
     options: &RecordOptions,
     breakpoint: Option<Calls>,
@@ -601,7 +522,6 @@ fn processor(
     processor
 }
 
-/// Records how the recording was made.
 fn settings(
     processor: &mut record::Processor,
     options: &RecordOptions,
@@ -640,7 +560,6 @@ fn settings(
             if options.kernel_stacks { "on" } else { "off" }.into(),
         ),
         ("source", options.source.to_string()),
-        // Which build recorded it, as another may name frames otherwise.
         ("recorder", env!("MICROSCOPE_SOURCES_DIGEST").to_owned()),
         ("weight", options.source.unit().to_owned()),
         ("stack bytes", stack_bytes.to_string()),
@@ -694,12 +613,9 @@ fn settings(
     }
 }
 
-/// `options` with their system calls stepped down where the engine cannot
-/// run and the level was the preset's.
 fn resolved(options: &RecordOptions) -> Result<RecordOptions, RecordError> {
     let mut options = options.clone();
     options.syscalls.resolve().map_err(RecordError::Syscalls)?;
-    // A process has one tracer, which a snapshot that stops it needs too.
     let stops = (options.task_snapshots.is_some() && !options.live_snapshots)
         || matches!(options.python, Some(PythonEngine::Snapshot { .. }));
     if options.syscalls.engine == SyscallEngine::Ptrace
@@ -716,12 +632,6 @@ fn resolved(options: &RecordOptions) -> Result<RecordOptions, RecordError> {
     Ok(options)
 }
 
-/// Drains `events` into `processor` until `ended`, which waits up to a
-/// timeout for the program to end and says whether it has, publishing and saving
-/// as `watch` asks, and holding to the budget, window, and snapshots of
-/// `options`, once the program `started` names has started. When `watch`
-/// stops the recording, `stop` ends it at once when it says so, or else
-/// waits for `ended`.
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -749,8 +659,6 @@ fn drive(
         .map(|pid| Collector::new(pid, options.probes.clone(), options.probe_timeout));
     let started = started.is_some();
 
-    // A cut recording reads its counts this often, and the processor
-    // counts each once the records before it are in: cuts fall there.
     let observing = match options.cuts {
         Cuts::Whole => None,
         Cuts::Window(span) | Cuts::Segments(span) => Some(
@@ -769,8 +677,6 @@ fn drive(
         Cuts::Whole | Cuts::Window(_) => None,
     };
     let mut pending_save = None;
-    // A watcher sees the calls so far beside the samples. Copying them
-    // costs the recording CPU, so an unwatched one publishes samples alone.
     let watched = watch.every != Duration::MAX;
     let live = |processor: &mut record::Processor| {
         let capture = processor.snapshot();
@@ -808,13 +714,8 @@ fn drive(
             observed = std::time::Instant::now();
         }
 
-        // Every record stamped before this has been written by the time
-        // the next drain begins, but for a stalled CPU.
         let watermark = monotonic().saturating_sub(WATERMARK_DELAY);
         if !finished {
-            // Drains begin a period apart, or back to back while processing
-            // takes longer: a drain that waited its whole period after a
-            // slow one would leave the reader's queue that much fuller.
             let mut wait = if walker.is_some() && begun.elapsed() < EARLY_DRAINS {
                 Duration::from_millis(1)
             } else {
@@ -827,26 +728,18 @@ fn drive(
                     events.hold(perf::Hold::Budget, !on);
                     (toggling, monotonic())
                 });
-                // While the budget pauses sampling only the sideband's
-                // records come, few enough to wait for the next edge.
                 wait = if pacer.sampling() {
                     wait.min(edge)
                 } else {
                     edge.min(Duration::from_millis(100))
                 };
             }
-            // A snapshot asked for more often than the drain's own pace
-            // is taken when due, not at the next drain.
             let due = snapshots.iter().map(Snapshots::due_in).min();
-            // A drain that stopped at a module to load goes on at once.
             let wait = if processor.stopped_at_load() {
                 Duration::ZERO
             } else {
                 due.map_or(wait, |due| wait.min(due))
             };
-            // Paused, the rings fill too slowly to need waking for, and
-            // waiting on the program alone costs a fraction of a poll of
-            // every ring, and still ends the recording when it exits.
             if pacer.as_ref().is_none_or(Pacer::sampling) {
                 events.wait(wait);
             } else {
@@ -870,8 +763,6 @@ fn drive(
             processor.gap(start, end, GapReason::Behind);
         }
         processor.collection_cpu(events.reader_cpu());
-        // A paused engine walks no stacks, so telling it of threads can
-        // wait until sampling is back on, and costs nothing meanwhile.
         if let Some(walker) = &mut walker
             && pacer.as_ref().is_none_or(Pacer::sampling)
         {
@@ -885,25 +776,18 @@ fn drive(
                 probes.drain(processor);
             }
         }
-        // The debug information of what the drain stopped at loads once
-        // the collector has read the instrumentation it found.
         processor.load_stopped();
 
         if let Some(end) = disabled_at {
             break end;
         }
 
-        // A snapshot reads the program's modules as processed, which a
-        // drain stopped at a module to load has not finished: it waits for
-        // the next drain, at once.
         if !processor.stopped_at_load() {
             for snapshots in &mut snapshots {
                 snapshots.when_due(processor, events);
             }
         }
 
-        // A program's trigger, or a call's, saves the window as
-        // microscope's does.
         let triggered = processor.take_triggered();
         let called = syscalls.is_some_and(SyscallTrace::take_trigger);
         if let Some(save) = &mut watch.save {
@@ -962,9 +846,6 @@ fn drive(
     }
 }
 
-/// Saves the profile so far when `save`'s trigger fires or the program
-/// `triggered` one, once the counts read then are `pending` no more, or
-/// when a segment of `segments`' length since its last cut is due.
 fn save_when_due(
     save: &mut Save<'_>,
     processor: &mut record::Processor,
@@ -984,7 +865,6 @@ fn save_when_due(
     let due = segments
         .as_ref()
         .is_some_and(|(every, cut)| cut.elapsed() >= *every);
-    // Any counts counted at all are at or after 0.
     let ready = pending.map_or(due && processor.observed(0), |at| processor.observed(at));
     if !ready {
         return;
@@ -1000,13 +880,10 @@ fn save_when_due(
         *cut = std::time::Instant::now();
     }
 
-    // The calls of the same span, on the same clock.
     let capture = syscalls.map_or_else(|| capture.clone(), |trace| trace.cut(&capture));
     (save.to)(Profile { capture });
 }
 
-/// What takes the snapshots `options` asks of process `pid`: of its
-/// tasks, and of its threads for a Python engine that reads them.
 fn snapshotters(pid: u32, options: &RecordOptions) -> Vec<Snapshots> {
     let tasks = options.task_snapshots.map(|every| {
         let reads = Reads {
@@ -1034,9 +911,6 @@ fn snapshotters(pid: u32, options: &RecordOptions) -> Vec<Snapshots> {
         .collect()
 }
 
-/// What a live read that began `late` after it was due and took `took`
-/// says of reads asked for `every` so often: that they ran less often than
-/// asked, where the next was due before this one ended.
 fn fell_behind(late: Duration, took: Duration, every: Duration) -> Option<String> {
     (late + took > every).then(|| {
         format!(
@@ -1049,9 +923,6 @@ fn fell_behind(late: Duration, took: Duration, every: Duration) -> Option<String
     })
 }
 
-/// Takes a task snapshot every so often, once the program's debug
-/// information is read, with every event off while it holds the program
-/// stopped.
 struct Snapshots {
     pid: u32,
     every: Duration,
@@ -1063,7 +934,6 @@ struct Snapshots {
     next: std::time::Instant,
     observed: bool,
 
-    /// When the last snapshot, or the recording, began.
     previous: u64,
 }
 
@@ -1074,7 +944,6 @@ impl Snapshots {
             ..crate::DebugFileOptions::default()
         };
 
-        // Read beside the recording, which drains on meanwhile.
         let program = PathBuf::from(format!("/proc/{pid}/exe"));
         let loading = std::thread::Builder::new()
             .name("microscope-snapshot-load".into())
@@ -1101,8 +970,6 @@ impl Snapshots {
         }
     }
 
-    /// How long until the next snapshot is due; none is due while the
-    /// snapshotter still loads, which the drain's own pace checks on.
     fn due_in(&self) -> Duration {
         if self.snapshotter.is_none() {
             return Duration::MAX;
@@ -1119,8 +986,6 @@ impl Snapshots {
         if let Some(loading) = self.loading.take_if(|loading| loading.is_finished()) {
             match loading.join() {
                 Ok(Ok(snapshotter)) => {
-                    // Reads are due from now on, not from when the
-                    // recording began loading what they need.
                     self.snapshotter = Some(snapshotter);
                     self.next = std::time::Instant::now();
                 }
@@ -1158,7 +1023,6 @@ impl Snapshots {
         }
     }
 
-    /// Takes a snapshot when one is due.
     fn when_due(&mut self, processor: &mut record::Processor, events: &perf::Events) {
         if std::time::Instant::now() < self.next {
             return;
@@ -1170,8 +1034,6 @@ impl Snapshots {
         };
 
         if self.live {
-            // The program runs on, and the samples it writes meanwhile
-            // arrive as any do.
             let code = processor.code_for_read(
                 Pid::new(self.pid),
                 || monotonic().saturating_sub(WATERMARK_DELAY),
@@ -1183,18 +1045,12 @@ impl Snapshots {
             let late = std::time::Instant::now().saturating_duration_since(self.next);
             let modules = processor.modules_of(Pid::new(self.pid));
             let taken = snapshotter.take_live(self.reads, &modules, &code);
-            // Reads keep their rate, whatever each takes up to the
-            // interval. One that ran late is followed an interval after it
-            // ended, so that reads do not bunch on a loaded machine, and
-            // none makes up for those missed.
             let now = std::time::Instant::now();
             self.next += self.every;
             if self.next <= now {
                 self.next = now + self.every;
             }
 
-            // A program that exited, with which the recording ends, has no
-            // tasks.
             if let Live::Taken(snapshot) = taken {
                 self.observed = true;
                 let end = monotonic();
@@ -1202,9 +1058,6 @@ impl Snapshots {
                 processor.live_task_snapshot(Pid::new(self.pid), (start, end), weight, &snapshot);
                 processor.map_live_code(Pid::new(self.pid), end, &snapshot.unmapped_code);
                 self.previous = start;
-                // A snapshot keeps its first problem whole, which may be
-                // another, so falling behind is a note of its own: the read
-                // did not fail, it was late.
                 let took = Duration::from_nanos(end.saturating_sub(start));
                 if let Some(note) = fell_behind(late, took, self.every) {
                     processor.snapshot_noted(start, &note);
@@ -1214,7 +1067,6 @@ impl Snapshots {
             return;
         }
 
-        // Only sampling pauses, as `Events::stop` says.
         events.hold(perf::Hold::Snapshot, true);
 
         let modules = processor.modules_of(Pid::new(self.pid));
@@ -1222,8 +1074,6 @@ impl Snapshots {
         let taken = snapshotter.take(self.reads, &modules);
         let end = monotonic();
 
-        // With sampling off, every sample from before the pause is in the
-        // rings, and the snapshot claims each sample before it.
         processor.ingest_drained(
             |blocks| {
                 events.drain_blocks(blocks);
@@ -1242,7 +1092,6 @@ impl Snapshots {
                 self.previous = start;
             }
 
-            // A program that exited is not attached to, and has no tasks.
             Err(_) if tasks::exited(self.pid) => {}
             Err(error) => {
                 self.observed = true;
@@ -1253,47 +1102,33 @@ impl Snapshots {
     }
 }
 
-/// `duration` in nanoseconds, at least one.
 fn nanoseconds(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos())
         .unwrap_or(u64::MAX)
         .max(1)
 }
 
-/// Samples a share of each budget period, in one span at a random offset
-/// so that it cannot keep step with a periodic program, and asks the
-/// controller once a period how large the next share is.
 struct Pacer<'a> {
     budget: Budget,
     controller: Controller,
 
-    /// What to give up before samples, and the trace that gives it up.
     ladder: Ladder,
     syscalls: Option<&'a SyscallTrace>,
 
-    /// When the period began, how long it lasts, and the span of it to
-    /// sample.
     period: u64,
     length: u64,
     window: (u64, u64),
 
-    /// How long sampling last took to turn on, and off.
     toggled: (u64, u64),
 
-    /// Whether sampling is on, and since when.
     pace: Pace,
 
-    /// What the period has sampled so far, and what microscope's process,
-    /// its loading of debug information, and the trace's programs had cost
-    /// when it began, and how many calls they had traced.
     sampled: u64,
     cpu: Duration,
     loading: Duration,
     kernel: Duration,
     calls: u64,
 
-    /// What the process took while sampling was off this period, and what
-    /// it had taken when sampling last turned off.
     paused_cpu: Duration,
     paused_at: Duration,
     random: u64,
@@ -1328,14 +1163,10 @@ impl<'a> Pacer<'a> {
         }
     }
 
-    /// Whether sampling is on.
     const fn sampling(&self) -> bool {
         matches!(self.pace, Pace::On { .. })
     }
 
-    /// Turns sampling on or off with `toggle` as the schedule says at
-    /// `now`, and says how long until it next changes. `toggle` says when
-    /// it began and ended turning sampling on or off.
     fn pace(
         &mut self,
         now: u64,
@@ -1382,8 +1213,6 @@ impl<'a> Pacer<'a> {
         Duration::from_nanos(next - now)
     }
 
-    /// Ends the period at `now`, lets the controller choose the share of
-    /// the next one, and places its window.
     fn next_period(&mut self, now: u64, length: u64, processor: &mut record::Processor) {
         let cpu = process_cpu();
         match &mut self.pace {
@@ -1443,7 +1272,6 @@ impl<'a> Pacer<'a> {
 
         let span = length / u64::from(STEPS) * u64::from(self.controller.steps());
 
-        // xorshift: a period's offset needs only to be unpredictable.
         self.random ^= self.random << 13;
         self.random ^= self.random >> 7;
         self.random ^= self.random << 17;
@@ -1451,9 +1279,6 @@ impl<'a> Pacer<'a> {
         self.window = (now + offset, now + offset + span);
     }
 
-    /// Moves down the ladder after a period over budget, or up it after
-    /// enough under, and says so in the capture. A period counts as over
-    /// while the controller samples less than all of it.
     fn climb(
         &mut self,
         now: u64,
@@ -1503,7 +1328,6 @@ impl<'a> Pacer<'a> {
         }
     }
 
-    /// Ends the recording at `now`: a pause it ends in is a gap to the end.
     fn finish(self, now: u64, processor: &mut record::Processor) {
         if let Pace::Paused { since } = self.pace {
             processor.gap(since, now, GapReason::Budget);
@@ -1511,7 +1335,6 @@ impl<'a> Pacer<'a> {
     }
 }
 
-/// The CPU time microscope's whole process has spent.
 fn process_cpu() -> Duration {
     use nix::sys::resource::{UsageWho, getrusage};
     getrusage(UsageWho::RUSAGE_SELF).map_or(Duration::ZERO, |usage| {
@@ -1526,16 +1349,12 @@ fn process_cpu() -> Duration {
     })
 }
 
-/// Whether the budget has sampling on, and since when.
 #[derive(Debug, Clone, Copy)]
 enum Pace {
     On { since: u64 },
     Paused { since: u64 },
 }
 
-/// The event that takes `source`'s samples in `program`, and for a
-/// breakpoint, where it counts calls. A breakpoint's addresses assume the
-/// program loads at `bias`, or where it does without address randomization.
 fn perf_source(
     program: &Path,
     source: &SampleSource,
@@ -1554,7 +1373,6 @@ fn perf_source(
             (
                 perf::Source::Breakpoint {
                     address: calls.loaded().get(),
-                    // Go stack checks must be read at every hit to reject retries.
                     period: if calls.repeats_when.is_some() {
                         1
                     } else {
@@ -1567,7 +1385,6 @@ fn perf_source(
     })
 }
 
-/// The bytes of stack each sample of `program` copies, and why.
 fn stack_copy(
     processor: &mut record::Processor,
     program: &Path,
@@ -1602,10 +1419,8 @@ fn stack_copy(
     }
 }
 
-/// How far behind a drain records are processed.
 const WATERMARK_DELAY: u64 = 20_000_000;
 
-/// Now, by `CLOCK_MONOTONIC`, which times what perf records.
 pub(super) fn monotonic() -> u64 {
     nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC).map_or(0, |time| {
         u64::try_from(time.tv_sec()).unwrap_or(0) * 1_000_000_000
@@ -1613,7 +1428,6 @@ pub(super) fn monotonic() -> u64 {
     })
 }
 
-/// The file a command names, as `execvp` would find it.
 pub(super) fn which(program: &Path) -> Option<PathBuf> {
     if program.components().count() > 1 {
         return Some(program.to_owned());
@@ -1630,17 +1444,11 @@ pub(super) fn which(program: &Path) -> Option<PathBuf> {
 mod tests {
     use std::time::Duration;
 
-    /// A budget pause is a gap from when sampling finished turning off to
-    /// when it began turning back on, and one still open when the recording
-    /// ends ends there. A recording that ends sampling has no gap at its
-    /// end.
     #[test]
     fn a_budget_pause_is_a_gap_from_sampling_off_to_sampling_on() {
         let processor =
             || super::record::Processor::new(crate::debug_info::DebugFileSearch::default(), 64);
 
-        // Sampling is on until 3,000 of a period that outlasts the test, and
-        // turning it on or off takes 100 ns.
         let budget = super::Budget {
             cpu: 0.01,
             period: Duration::from_hours(1),
@@ -1688,8 +1496,6 @@ mod tests {
         assert_eq!(sampling.gaps(), []);
     }
 
-    /// The program runs for a fraction of a second: long enough that the
-    /// snapshotter reads it before it exits, far short of the interval.
     #[test]
     fn a_program_ending_before_its_first_task_snapshot_explains_the_empty_result() {
         let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1716,8 +1522,6 @@ mod tests {
         );
     }
 
-    /// Processing may be busy loading debug information longer than a
-    /// small ring holds calls. Collection must keep draining meanwhile.
     #[test]
     fn breakpoint_samples_are_read_while_processing_is_busy() {
         use nix::sched::{CpuSet, sched_getaffinity, sched_setaffinity};
@@ -1747,11 +1551,6 @@ mod tests {
             ring_pages: 32,
             switches: false,
         };
-        // The reader, which this thread starts, shares the program's CPU,
-        // and the program runs only when nothing else there would: once a
-        // sample wakes the reader, the program waits until it has drained.
-        // A reader on a CPU of its own could be kept off it by a busy
-        // machine for as long as the ring takes to fill.
         sched_setaffinity(Pid::from_raw(0), &affinity).expect("pin the reader");
         let mut command = std::process::Command::new("chrt");
         command.args(["--idle", "0"]).arg(program).arg("1000000");
@@ -1762,8 +1561,6 @@ mod tests {
                 no_address_randomization: true,
                 filter: None,
             },
-            // Both threads must write the same ring, whose 128 KiB
-            // holds only three 32 KiB samples, not all six calls.
             |pid, _| {
                 sched_setaffinity(Pid::from_raw(pid.cast_signed()), &affinity)
                     .map_err(|error| error.to_string())
@@ -1795,9 +1592,6 @@ mod tests {
         assert_eq!(samples, 6, "every counted call has its sample");
     }
 
-    /// At a low rate the reader sleeps long between drains, but a
-    /// recording stopped while the program runs on, as Ctrl-C stops it,
-    /// still ends at once.
     #[test]
     fn collection_at_a_low_rate_stops_at_once() {
         let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1828,7 +1622,6 @@ mod tests {
             |_, _| Ok(()),
         )
         .expect("launch the program");
-        // Let the reader settle into its wait before stopping.
         let stopping = events.read_while(|| {
             std::thread::sleep(Duration::from_millis(30));
             std::time::Instant::now()
@@ -1839,8 +1632,6 @@ mod tests {
         assert!(stopped < Duration::from_millis(20), "took {stopped:?}");
     }
 
-    /// A full collection queue must not turn breakpoint counting off:
-    /// samples may be lost, but the number of calls must remain exact.
     #[test]
     fn a_full_breakpoint_queue_keeps_counting_calls() {
         use nix::sched::{CpuSet, sched_getaffinity, sched_setaffinity};
@@ -1881,18 +1672,12 @@ mod tests {
                 no_address_randomization: true,
                 filter: None,
             },
-            // Pinned before it executes, the program writes all its records
-            // to one ring, which bounds what collection can hold below.
             |pid, _| {
                 sched_setaffinity(Pid::from_raw(pid.cast_signed()), &affinity)
                     .map_err(|error| error.to_string())
             },
         )
         .expect("launch the program");
-        // The program writes 20000 samples of 32 KiB, but the ring holds
-        // only 15: a reader starved by a busy machine reads few of them. A
-        // queue of 64 MiB needs over a hundred timely drains to fill; one
-        // of 1 MiB needs two or three.
         let queue = 1024 * 1024;
         events.set_queue_bytes(queue);
         let status = events
@@ -1907,8 +1692,6 @@ mod tests {
         let mut records = Vec::new();
         events.drain(&mut records);
         assert!(records.len() >= queue, "the queue filled");
-        // The drain that fills the queue takes at most a ring, and the ring
-        // holds at most as much again at the end.
         let ring = options.ring_pages * 4096;
         assert!(
             records.len() <= queue + 2 * ring,
@@ -1917,9 +1700,6 @@ mod tests {
         );
     }
 
-    /// A live read says reads ran less often than asked once the next was
-    /// due before it ended, whether it took long or began late, as on a
-    /// machine too busy to wake the recorder in time.
     #[test]
     fn a_live_read_that_ends_after_the_next_was_due_says_so() {
         let ms = Duration::from_millis;

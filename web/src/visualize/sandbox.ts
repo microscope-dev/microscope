@@ -1,24 +1,11 @@
-// The page's side of the sandbox: one hidden, sandboxed frame per tab,
-// served by microscope at /visualizer-frame, which keeps a worker per card.
-// The page talks to it over a port it hands the frame, never through the
-// window, runs at most four draws at once, and ends a draw that takes
-// longer than two seconds by ending its worker. A live renderer keeps a
-// worker of its own while its card is on screen, at most four at once, and
-// draws the frames the page asks for; one that stops answering, or floods
-// the page with messages, is ended. A frame that does not start within
-// five seconds, or is reloaded or removed, fails every draw and live
-// session it holds, and the page starts another sandbox for the next.
-
 import { assert } from "../assert";
 
-/** A renderer: its name, its JavaScript, and the digest that names both. */
 export interface RendererCode {
   name: string;
   digest: string;
   source: string;
 }
 
-/** Where a renderer failed: its file and line when the browser says. */
 export interface RendererFailure {
   message: string;
   file: string | null;
@@ -26,7 +13,6 @@ export interface RendererFailure {
   column: number | null;
 }
 
-/** The colors `microscope.theme` holds, in the page's current theme. */
 export interface Palette {
   ink: string;
   ink2: string;
@@ -41,30 +27,25 @@ export interface Palette {
   series: string[];
 }
 
-/** What a renderer's function gets beside its inputs. */
 export interface DrawContext {
   previous: unknown;
-  /** The part of the drawn value each input is, or null. */
+
   paths: Record<string, string | null>;
   width: number;
   theme: "light" | "dark";
   palette: Palette;
 }
 
-/** What a live renderer's functions get beside its inputs; `width` and
- * `height` are the canvas's size in CSS pixels. */
 export interface LiveContext extends DrawContext {
   height: number;
 }
 
 export type Outcome =
   | { kind: "picture"; picture: unknown }
-  /** The renderer is live: it draws in a session of its own. */
   | { kind: "live" }
   | { kind: "failed"; failure: RendererFailure }
   | { kind: "timeout" };
 
-/** The pointer as a live renderer sees it, in the canvas's pixels. */
 export interface LivePointer {
   type: "down" | "move" | "up" | "wheel" | "leave";
   x: number;
@@ -78,7 +59,6 @@ export interface LivePointer {
   alt: boolean;
 }
 
-/** A key pressed while a live renderer's canvas has focus. */
 interface LiveKey {
   key: string;
   shift: boolean;
@@ -86,13 +66,11 @@ interface LiveKey {
   alt: boolean;
 }
 
-/** Why a live session ended on its own. */
 export type LiveFailure =
   | { kind: "failed"; failure: RendererFailure }
   | { kind: "unresponsive" }
   | { kind: "lost" };
 
-/** Where a renderer failed and why, as the page shows it. */
 export function failureText(failure: RendererFailure): string {
   const column = failure.column === null ? "" : `:${failure.column}`;
   const line = failure.line === null ? "" : `:${failure.line}${column}`;
@@ -100,60 +78,50 @@ export function failureText(failure: RendererFailure): string {
   return `${where}${failure.message}`;
 }
 
-/** What a live session tells the page. */
 export interface LiveListener {
-  /** The session waits for one of the four that run to end. */
   waiting(): void;
-  /** The session has its worker; it waits while four others run. */
+
   started(): void;
-  /** A frame, or null when the renderer has drawn nothing yet. */
+
   frame(bitmap: ImageBitmap | null): void;
   redraw(): void;
   animate(on: boolean): void;
   caption(text: string): void;
   hint(text: string | null): void;
   select(path: string): void;
-  /** The session ended, its worker with it. */
+
   failed(failure: LiveFailure): void;
 }
 
-/** A live renderer running for a card. */
 export interface LiveSession {
-  /** Asks for one frame; the listener's `frame` answers it. */
   frame(time: number): void;
   update(input: unknown, context: LiveContext): void;
-  /** The canvas's new size, in device pixels. */
+
   resize(width: number, height: number): void;
   pointer(event: LivePointer): void;
   key(event: LiveKey): void;
-  /** Ends the session and its worker. */
+
   stop(): void;
 }
 
-/** How long a draw may take before its worker is ended. */
 export const DRAW_TIMEOUT = 2_000;
-/** How long the frame may take to say it is ready. Its page is small and
- * served by microscope, so this is long only for a slow remote server; a
- * frame that misses it is replaced on the next draw. */
+
 export const READY_TIMEOUT = 5_000;
-/** How many draws run at once. */
+
 const PARALLEL = 4;
-/** How many live renderers run at once. */
+
 const LIVE_PARALLEL = 4;
-/** How often a live worker is asked whether it still answers. */
+
 const PING_EVERY = 1_000;
-/** How long a live worker may take to answer before it is ended. */
+
 export const UNRESPONSIVE = 2_000;
-/** How many pointer and key events a session keeps until it starts. */
+
 const MOST_EARLY = 256;
-/** How often the watchdog looks. */
+
 const WATCH_EVERY = 100;
-/** How many messages besides frames a live worker may send between two of
- * the watchdog's looks. Its worker sends a few per message from the page. */
+
 const MOST_TOLD = 1_000;
 
-/** Where the frame is. A failed frame never recovers: the page starts a new
- * sandbox instead. */
 type FrameState =
   | { kind: "loading" }
   | { kind: "ready"; port: MessagePort }
@@ -194,11 +162,10 @@ type FrameMessage =
   | { type: "lost"; card: string }
   | { type: "pong"; card: string };
 
-/** What a live session's worker says, by its card. */
 interface Live {
   listener: LiveListener;
   pong(): void;
-  /** Counts a message besides a frame. */
+
   told(): void;
   end(failure: LiveFailure): void;
 }
@@ -206,25 +173,24 @@ interface Live {
 export class Sandbox {
   private readonly frame: HTMLIFrameElement;
   private state: FrameState = { kind: "loading" };
-  /** Settles once the frame is no longer loading. */
+
   private readonly loaded: Promise<void>;
   private settle: () => void = () => {};
   private readonly readyTimer: ReturnType<typeof setTimeout>;
   private readonly pending = new Map<number, Pending>();
-  /** Draws waiting for a turn, told whether they may go ahead. */
+
   private readonly waiting: ((go: boolean) => void)[] = [];
   private running = 0;
   private next = 1;
-  /** Renderers known to be live, by digest: drawing one starts no worker. */
+
   private readonly liveDigests = new Set<string>();
-  /** Running live sessions, by the card their worker is kept for. */
+
   private readonly lives = new Map<string, Live>();
-  /** Live sessions waiting for one of the four to end. */
+
   private readonly liveWaiting: ((go: boolean) => void)[] = [];
   private liveRunning = 0;
   private nextLive = 1;
 
-  /** Starts the frame at `url`, the server's /visualizer-frame. */
   constructor(url: string) {
     this.frame = document.createElement("iframe");
     this.frame.setAttribute("sandbox", "allow-scripts");
@@ -233,13 +199,10 @@ export class Sandbox {
     this.loaded = new Promise((resolve) => {
       this.settle = resolve;
     });
-    // A frame that loads without saying ready, or never loads, would hold
-    // every draw on the page.
+
     this.readyTimer = setTimeout(() => this.lose(NOT_STARTED), READY_TIMEOUT);
     let greeted = false;
     this.frame.addEventListener("load", () => {
-      // A second load is a navigation or reload: the workers and the port
-      // the first document held are gone.
       if (greeted) {
         this.lose(LOST);
         return;
@@ -257,20 +220,17 @@ export class Sandbox {
         }
       });
       channel.port1.start();
-      // The frame's origin is opaque, so it has no name to post to.
+
       this.frame.contentWindow?.postMessage({ type: "hello" }, "*", [channel.port2]);
     });
     this.frame.src = url;
     document.body.append(this.frame);
   }
 
-  /** Whether the sandbox failed or was closed, so the page needs another. */
   get spent(): boolean {
     return this.state.kind === "failed" || this.state.kind === "closed";
   }
 
-  /** Draws `input` with `renderer` in the worker of `card`, starting one
-   * when the card has none or had another renderer. */
   async draw(
     card: string,
     renderer: RendererCode,
@@ -301,7 +261,6 @@ export class Sandbox {
         digest: renderer.digest,
         resolve,
         timer: setTimeout(() => {
-          // A removed frame says nothing; its draws are not the renderer's fault.
           if (!this.frame.isConnected) {
             this.lose(LOST);
             return;
@@ -315,8 +274,6 @@ export class Sandbox {
     });
   }
 
-  /** Runs the live `renderer` for `card` in a worker of its own, once
-   * fewer than four others run, until the page stops it or it fails. */
   live(
     card: string,
     renderer: RendererCode,
@@ -325,7 +282,6 @@ export class Sandbox {
     size: { width: number; height: number },
     listener: LiveListener,
   ): LiveSession {
-    // A worker of its own: messages from an earlier session never reach it.
     const key = `${card}~live${this.nextLive++}`;
     let current = { input, context, size };
     let port: MessagePort | null = null;
@@ -334,7 +290,7 @@ export class Sandbox {
     let pinged = 0;
     let told = 0;
     let watchdog: ReturnType<typeof setInterval> | null = null;
-    // The pointer and keys sent while the session waits for its worker.
+
     const early: Record<string, unknown>[] = [];
     const send = (message: Record<string, unknown>, transfer: Transferable[] = []) => {
       port?.postMessage({ ...message, card: key }, transfer);
@@ -450,7 +406,6 @@ export class Sandbox {
     };
   }
 
-  /** Ends the card's worker, and with it any draw it has not answered. */
   release(card: string): void {
     this.fail(card, {
       message: "the drawing was cancelled",
@@ -467,7 +422,6 @@ export class Sandbox {
     })();
   }
 
-  /** Removes the frame, ending every worker. */
   dispose(): void {
     clearTimeout(this.readyTimer);
     this.state = { kind: "closed" };
@@ -492,8 +446,6 @@ export class Sandbox {
     this.frame.remove();
   }
 
-  /** The frame's state once it is no longer loading. A frame that is gone
-   * from the page is lost, though nothing tells the page. */
   private async opened(): Promise<FrameState> {
     await this.loaded;
     if (this.state.kind === "ready" && !this.frame.isConnected) {
@@ -506,7 +458,6 @@ export class Sandbox {
     return state.kind === "failed" ? state.failure : problem(CLOSED);
   }
 
-  /** Fails the frame, every draw it holds, and every live session. */
   private lose(message: string): void {
     if (this.state.kind === "failed" || this.state.kind === "closed") {
       return;
@@ -515,7 +466,7 @@ export class Sandbox {
     const failure = problem(message);
     this.state = { kind: "failed", failure };
     this.settle();
-    // Not `lost`: to a live card that means its WebGL context.
+
     for (const live of this.lives.values()) {
       live.end({ kind: "failed", failure });
     }
@@ -534,8 +485,6 @@ export class Sandbox {
         this.finish(message.id, { kind: "picture", picture: message.picture });
         break;
       case "live": {
-        // The card's worker found a live renderer; a session of its own
-        // draws it, so this one ends.
         const digest = this.pending.get(message.id)?.digest;
         if (digest !== undefined) {
           this.liveDigests.add(digest);
@@ -610,7 +559,6 @@ export class Sandbox {
     }
   }
 
-  /** Fails every draw of `card`, as when its renderer did not load. */
   private fail(card: string, failure: RendererFailure): void {
     for (const [id, pending] of this.pending) {
       if (pending.card === card) {
@@ -631,15 +579,12 @@ export class Sandbox {
     pending.resolve(outcome);
   }
 
-  /** Ends a draw's turn, giving it to the next that waits. */
   private leave(): void {
     this.running -= 1;
     assert(this.running >= 0, `${this.running} draws run`);
     this.waiting.shift()?.(true);
   }
 
-  /** Waits until fewer than LIVE_PARALLEL live sessions run, and says
-   * whether this one may start. */
   private liveTurn(): Promise<boolean> {
     if (this.state.kind === "closed") {
       return Promise.resolve(false);
@@ -658,8 +603,6 @@ export class Sandbox {
     });
   }
 
-  /** Waits until fewer than PARALLEL draws run, and says whether this
-   * one may run: not once the sandbox is closed. */
   private turn(): Promise<boolean> {
     if (this.state.kind === "closed") {
       return Promise.resolve(false);
@@ -679,13 +622,11 @@ export class Sandbox {
   }
 }
 
-// The eight categorical hues, in the order validated for each theme.
 const SERIES = {
   light: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"],
   dark: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
 };
 
-/** What a renderer's function gets, in the theme the page shows now. */
 export function contextFor(
   previous: unknown,
   paths: Record<string, string | null>,
@@ -695,7 +636,6 @@ export function contextFor(
   return { previous, paths, width, theme, palette: palette(theme) };
 }
 
-/** The theme the page shows now. */
 export function currentTheme(): "light" | "dark" {
   const chosen = document.documentElement.dataset.theme;
   if (chosen === "light" || chosen === "dark") {
@@ -706,8 +646,6 @@ export function currentTheme(): "light" | "dark" {
 
 let colors: CanvasRenderingContext2D | null = null;
 
-/** `color` as `#rrggbb`, which a canvas writes an opaque color as; a
- * built stylesheet may shorten `#ffffff` to `#fff`. */
 function sixDigits(color: string): string {
   colors ??= document.createElement("canvas").getContext("2d");
   if (colors === null) {
@@ -718,7 +656,6 @@ function sixDigits(color: string): string {
   return String(colors.fillStyle);
 }
 
-/** The page's own colors, as its stylesheet gives them now. */
 export function palette(theme: "light" | "dark"): Palette {
   const style = getComputedStyle(document.documentElement);
   const token = (name: string) => sixDigits(style.getPropertyValue(`--${name}`).trim());

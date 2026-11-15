@@ -1,18 +1,18 @@
 microscope-views 1
 
-# tokio. Verified against tokio 1.52.3 and 1.53.2 by
-# tests/fixtures/rust/tokio/values, whose markers say what each value shows.
-#
-# tokio wraps most of its state in cells of its own around std's (its loom
-# UnsafeCell, Mutex, and atomics), which inner() steps through.
 
-# A task's id, as tokio numbers its tasks.
+
+
+
+
+
+
 view rust tokio::runtime::task::id::Id {
     show value(inner(inner(self)))
 }
 
-# A waker of a tokio task: its data is the task's header, whose vtable says
-# where in the task its id is. Another waker shows as stored.
+
+
 view rust core::task::wake::Waker {
     let header = waker.data as *tokio::runtime::task::core::Header
     show if waker.vtable == &global(`tokio::runtime::task::waker::WAKER_VTABLE`) {
@@ -22,15 +22,15 @@ view rust core::task::wake::Waker {
     }
 }
 
-# A join handle is its task's cell, whose type only the task's vtable says:
-# a Cell<T, S> polled by poll::<T, S>.
+
+
 view rust tokio::runtime::task::join::JoinHandle<_> {
     let header = inner(raw.ptr)
     show dynamic(header, tokio::runtime::task::core::Cell<T, S> of header->vtable->poll)
 }
 
-# A task's cell holds its future until it finishes, then its output until
-# its join handle takes it.
+
+
 view rust tokio::runtime::task::core::Cell<_, _> {
     let stage = inner(core.stage.stage)
     let task = core.task_id
@@ -45,8 +45,8 @@ view rust tokio::runtime::task::core::Cell<_, _> {
     field task = task
 }
 
-# A task that did not return, as tokio's own Display writes it. Its panic's
-# payload is under [raw].
+
+
 view rust tokio::runtime::task::error::JoinError {
     show match repr {
         Cancelled => empty("task {id} was cancelled")
@@ -54,9 +54,9 @@ view rust tokio::runtime::task::error::JoinError {
     }
 }
 
-# The tasks a semaphore's waiters belong to, in the order the semaphore
-# serves them: from the back of its queue, where each waiter joins at the
-# front.
+
+
+
 view rust tokio::sync::batch_semaphore::Waitlist {
     type Waiter = tokio::sync::batch_semaphore::Waiter
     show sequence(_) for w in list(*(&queue.tail as *usize) as *Waiter, p => *(&inner(p->pointers).prev as *usize) as *Waiter)
@@ -64,8 +64,8 @@ view rust tokio::sync::batch_semaphore::Waitlist {
     field closed = closed
 }
 
-# A semaphore's permits count, shifted left by one, those it has left, and
-# its low bit says it is closed.
+
+
 view rust tokio::sync::batch_semaphore::Semaphore {
     let permits = inner(permits)
     show value(permits >> 1)
@@ -77,13 +77,13 @@ view rust tokio::sync::semaphore::Semaphore {
     show value(ll_sem)
 }
 
-# A future that waits for permits: how many it still needs.
+
 view rust tokio::sync::batch_semaphore::Acquire {
     let needed = queued ? inner(node.state) : num_permits
     show empty("waiting for {needed} of {num_permits} permits")
 }
 
-# A Mutex is a semaphore of one permit: held while that permit is out.
+
 view rust tokio::sync::mutex::Mutex<T> {
     show value(c.value)
     field locked = inner(s.permits) >> 1 == 0
@@ -94,10 +94,10 @@ view rust tokio::sync::mutex::MutexGuard<T> {
     show value(lock->c.value)
 }
 
-# An RwLock is a semaphore of mr permits: a reader takes one and a writer
-# all of them. A waiter may hold some of the permits it waits for, and only
-# the one the semaphore serves next can, so the readers are the permits out
-# less those.
+
+
+
+
 view rust tokio::sync::rwlock::RwLock<T> {
     type Waiter = tokio::sync::batch_semaphore::Waiter
     type Acquire = tokio::sync::batch_semaphore::Acquire
@@ -119,10 +119,10 @@ view rust tokio::sync::rwlock::write_guard::RwLockWriteGuard<T> {
     show value(*inner(data))
 }
 
-# An mpsc channel's messages are in blocks of slots, a slot ready once its
-# bit in its block's ready_slots is set, from the receiver's index to the
-# senders' tail position. Its senders and receiver present it, with what
-# they say of it.
+
+
+
+
 view rust tokio::sync::mpsc::chan::Chan<T, _> {
     type Block = tokio::sync::mpsc::block::Block<T>
     let rx = inner(rx_fields)
@@ -136,8 +136,8 @@ view rust tokio::sync::mpsc::chan::Chan<T, _> {
         => b->values.0[s].0.value.value.value.0
 }
 
-# The future mpsc's recv awaits, which polls the channel its receiver
-# holds.
+
+
 view rust core::future::poll_fn::PollFn<tokio::sync::mpsc::**::recv::`{async_fn#0}`::`{closure_env#0}`<_>> {
     let chan = inner(f._ref__self__chan->inner.ptr)->data
     show empty("receiving; senders: {inner(chan.tx_count)}")
@@ -174,9 +174,9 @@ view rust tokio::sync::mpsc::unbounded::UnboundedReceiver<T> {
     field senders = inner(chan.tx_count)
 }
 
-# A oneshot channel holds its value once it is sent, until it is received.
-# Its state's bits say the sender is done (2), having sent or been dropped,
-# or the receiver closed it (4).
+
+
+
 view rust tokio::sync::oneshot::Inner<T> {
     let state = inner(state)
     let held = inner(value)
@@ -197,8 +197,8 @@ view rust tokio::sync::oneshot::Receiver<T> {
     show if inner == None { empty("received") } else { value(inner(inner.Some.0.ptr)->data) }
 }
 
-# A watch channel's value, and its version, which counts by two above its
-# closed bit.
+
+
 view rust tokio::sync::watch::Shared<T> {
     let state = inner(state)
     show value(inner(value).data.value)
@@ -211,15 +211,15 @@ view rust tokio::sync::watch::Sender<T> {
     show value(inner(shared.ptr)->data)
 }
 
-# A receiver has seen the value when its version is the channel's.
+
 view rust tokio::sync::watch::Receiver<T> {
     let shared = inner(shared.ptr)->data
     show value(shared)
     field seen = inner(version) == (inner(shared.state) & -2)
 }
 
-# A broadcast channel keeps its last messages in a ring of slots, the
-# message at position i in slot i & mask while the slot's position says so.
+
+
 view rust tokio::sync::broadcast::Sender<T> {
     let shared = inner(shared.ptr)->data
     let tail = inner(shared.tail).data.value
@@ -229,8 +229,8 @@ view rust tokio::sync::broadcast::Sender<T> {
     field capacity = len(shared.buffer)
 }
 
-# A receiver's messages are those from its next position to the channel's
-# tail that the ring still holds.
+
+
 view rust tokio::sync::broadcast::Receiver<T> {
     let shared = inner(shared.ptr)->data
     let tail = inner(shared.tail).data.value
@@ -242,8 +242,8 @@ view rust tokio::sync::broadcast::Receiver<T> {
     field lagged = tail.pos - next > len(shared.buffer)
 }
 
-# A Notify's state's low two bits say it is empty (0), has waiters (1), or
-# holds a notification (2).
+
+
 view rust tokio::sync::notify::Notify {
     type Waiter = tokio::sync::notify::Waiter
     let state = inner(state) & 3
@@ -256,8 +256,8 @@ view rust tokio::sync::notify::Notify {
     }
 }
 
-# A future that waits for a Notify, by its state, and while it waits, by
-# the notification its waiter holds once one is sent to it.
+
+
 view rust tokio::sync::notify::Notified {
     let sent = inner(waiter.notification.0) != 0
     show match state {
@@ -268,13 +268,13 @@ view rust tokio::sync::notify::Notified {
     field notify = *notify
 }
 
-# A sleep's deadline, against the runtime's own clock: the time its timer
-# driver last read, its start and the milliseconds its wheel has turned
-# since. A runtime that has been idle reads late. tokio 1.53 keeps the
-# deadline and the runtime's handle in the sleep, and makes its timer only
-# when it is first polled; 1.52 kept both in its timer; 1.47 kept them in a
-# timer that was a struct, not yet one of a choice of timers, and its timer
-# driver's state outside the choice of drivers that 1.51 added.
+
+
+
+
+
+
+
 view rust tokio::time::sleep::Sleep {
     let at = deadline or entry.Traditional.0.deadline or entry.deadline
     let scheduler = driver or entry.Traditional.0.driver or entry.driver
@@ -301,8 +301,8 @@ view rust tokio::time::instant::Instant {
     show value(std)
 }
 
-# A JoinSet's tasks are the join handles in its two lists, of tasks that
-# have woken it and of those that have not.
+
+
 view rust tokio::task::join_set::JoinSet<T> {
     type Entry = tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<T>>
     let lists = inner(inner(inner.lists.ptr)->data).data.value
@@ -312,9 +312,9 @@ view rust tokio::task::join_set::JoinSet<T> {
         => e->value.0.value.value.0
 }
 
-# A socket is its file descriptor, which the source the I/O driver
-# registered wraps in mio's type, std's, and std's own wrappers, as deep as
-# std nests that kind of socket.
+
+
+
 view rust tokio::net::tcp::stream::TcpStream {
     show match io.io {
         None => empty("deregistered")
@@ -350,7 +350,7 @@ view rust tokio::net::unix::listener::UnixListener {
     }
 }
 
-# A stream's halves are the stream they read or write.
+
 view rust tokio::net::tcp::split::ReadHalf {
     show value(*self.0)
 }
@@ -383,7 +383,7 @@ view rust tokio::net::unix::split_owned::OwnedWriteHalf {
     show value(inner(inner.ptr)->data)
 }
 
-# Buffers are what they read or write, with the bytes they hold between.
+
 view rust tokio::io::util::buf_reader::BufReader<_> {
     show value(inner)
     field buffered = cap - pos
@@ -398,8 +398,8 @@ view rust tokio::io::util::lines::Lines<_> {
     show value(reader)
 }
 
-# The futures that read and write, as what they still read or write and
-# from or to what.
+
+
 view rust tokio::io::util::read::Read<_> {
     show empty("reading up to {len(buf)} bytes from {*reader}")
 }
@@ -412,15 +412,15 @@ view rust tokio::io::util::write_all::WriteAll<_> {
     show empty("writing {len(buf)} bytes to {*writer}")
 }
 
-# The future Lines::next_line awaits, which reads from its lines' reader.
+
 view rust core::future::poll_fn::PollFn<tokio::io::util::lines::**::next_line::`{async_fn#0}`::`{closure_env#0}`<_>> {
     show empty("reading a line from {f._ref__self->reader}")
     field lines = *f._ref__self
 }
 
-# The future a socket's operations await until the I/O driver finds the
-# socket ready, by the readiness it waits for: readable (1), writable (2),
-# or both. The socket is the awaiting frame's.
+
+
+
 view rust tokio::runtime::io::scheduled_io::Readiness {
     let interest = inner(waiter).interest.0
     show match state {

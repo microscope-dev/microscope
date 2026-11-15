@@ -1,8 +1,8 @@
-// Makes ROUNDS rounds of openat, read, and close of /dev/zero on each of
-// THREADS threads, paced to RATE calls a second on each thread (as fast as
-// it can when RATE is 0), from a few frames deep, then prints the calls it
-// made and the nanoseconds they took: a steady load or a burst for the BPF
-// engine's ring.
+
+
+
+
+
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <pthread.h>
@@ -43,9 +43,9 @@ static __attribute__((noinline)) int nested(int depth) {
 
 static void *work(void *argument) {
     (void)argument;
-    // Stack above every call, written so that its pages are there to
-    // read, so that each call's copy of its stack (-k=dwarf) is whole, as
-    // a deeper program's is.
+
+
+
     char above[16384];
     memset(above, 1, sizeof above);
     __asm__ volatile("" : : "r"(above) : "memory");
@@ -54,7 +54,7 @@ static void *work(void *argument) {
         if (nested(4)) {
             _exit(2);
         }
-        // Pacing reads the vDSO clock, which makes no system call.
+
         if (rate > 0) {
             double due = start + (double)(round + 1) * 3e9 / rate;
             while (now() < due) {

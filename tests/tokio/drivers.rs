@@ -1,8 +1,3 @@
-//! Futures that `block_on` drives, which no runtime lists as tasks: the
-//! thread that drives one shows the future's chain of awaits before the
-//! frame that drives it, with each async function's saved variables, as a
-//! suspended task's backtrace does.
-
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::PathBuf;
@@ -27,9 +22,6 @@ const BUILDS: [&str; 4] = [
 ];
 const SOURCE: &str = "drivers/src/main.rs";
 
-/// How the fixture drives its future: `#[tokio::main]`'s, a
-/// current-thread runtime's `Runtime::block_on`, and a multi-thread
-/// runtime's `Handle::block_on`.
 #[derive(Debug, Clone, Copy)]
 enum Mode {
     Main,
@@ -37,8 +29,6 @@ enum Mode {
     Handle,
 }
 
-/// The fixture stopped at its checkpoint, and what it reported there: the
-/// thread that drives the future, and the values the future recorded.
 struct Driven {
     scenario: Scenario,
     driver: ThreadId,
@@ -99,8 +89,6 @@ impl Driven {
     }
 }
 
-/// The async functions the driven future runs, innermost first, each with
-/// the line it awaits at.
 fn awaits(mode: Mode) -> Vec<(String, u64)> {
     let mut awaits = vec![
         ("waiting".to_owned(), line(SOURCE, "// AWAIT: waiting")),
@@ -117,7 +105,6 @@ fn awaits(mode: Mode) -> Vec<(String, u64)> {
     awaits
 }
 
-/// A backtrace's frames, a line each.
 fn listing(trace: &Backtrace) -> String {
     let frames = trace
         .frames
@@ -144,7 +131,6 @@ fn listing(trace: &Backtrace) -> String {
     )
 }
 
-/// The frames of the future a frame drives, and the frame after them.
 fn spliced(trace: &Backtrace) -> Option<(&[microscope::StackFrame], &microscope::StackFrame)> {
     let start = trace
         .frames
@@ -162,12 +148,6 @@ fn spliced(trace: &Backtrace) -> Option<(&[microscope::StackFrame], &microscope:
     ))
 }
 
-/// The thread that drives a future shows the future's chain of awaits,
-/// from the future it waits on out to the async function `block_on` was
-/// given, just before tokio's frame that drives it; each async frame keeps
-/// the local its function recorded. Where the debug information loses the
-/// variable that holds the future, the backtrace says so at that frame
-/// instead.
 async fn driven_futures_show_their_awaits(mode: Mode) {
     for fixture in BUILDS {
         let context = format!("{fixture} {mode:?}");
@@ -193,8 +173,6 @@ async fn driven_futures_show_their_awaits(mode: Mode) {
             .await;
 
         let Some((future, driver)) = spliced(&trace) else {
-            // Only an optimized build may lose the future, and then the
-            // backtrace says where and why.
             assert!(fixture.ends_with("o3"), "{context}: {}", listing(&trace));
             let [unfollowed] = &trace.unfollowed[..] else {
                 panic!("{context}: {}", listing(&trace));
@@ -257,7 +235,6 @@ async fn driven_futures_show_their_awaits(mode: Mode) {
             "{context}: {driver:#?}"
         );
 
-        // Only one future is driven, once.
         assert_eq!(
             trace
                 .frames

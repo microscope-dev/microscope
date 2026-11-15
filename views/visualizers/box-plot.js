@@ -1,21 +1,4 @@
 // @ts-check
-// The built-in box-plot: each group's spread.
-//
-//   groups       a map, record, or array of groups, each its samples or
-//                its summary: a record of min, q1, median, q3, and max;
-//                `values` may hold them instead
-//   labels       optional, one per group when groups are an array
-//   error        optional: "sd" for the mean ± one standard deviation,
-//                "ci95" for the mean ± 1.96 standard errors, or numbers,
-//                one half-width per group, with
-//   mean         numbers, one per group, when error gives numbers
-//   error_label  optional: what the error bars are, as "±1 sd"
-//
-// Boxes run from the first quartile to the third, with a line at the
-// median, from samples by selection with linear interpolation (type 7).
-// Whiskers reach the furthest samples within 1.5 × IQR of the box (Tukey),
-// and samples beyond are outliers, drawn up to 1,000 a group and counted.
-// A tick marks each median at the stop before.
 
 const HEIGHT = 280;
 const LEFT = 56;
@@ -33,9 +16,7 @@ microscope.draw((input, { previous, width, paths }) => {
     try {
       for (const group of groupsOf(previous.groups ?? previous.values, null, previous.labels))
         before.set(group.name, group.stats.median);
-    } catch {
-      // The stop before had no groups this chart reads.
-    }
+    } catch {}
   }
   const W = Math.round(Math.min(Math.max(width, 320), 1600));
   const right = W - 16;
@@ -265,7 +246,6 @@ microscope.draw((input, { previous, width, paths }) => {
   return microscope.picture({ width: W, height: HEIGHT, shapes, caption: caption.join(" · ") });
 });
 
-/** Each group's name, its statistics, and the part it is. */
 function groupsOf(value, path, labels) {
   /** @type {[any, any][]} */
   let pairs;
@@ -295,8 +275,6 @@ function groupsOf(value, path, labels) {
   }));
 }
 
-/** The part of the drawn value a group is: an array's element or a
- * record's member, never a map's entry, which is no member. */
 function partOf(path, keyed, array, key, index) {
   if (path === null || path === undefined || keyed) return;
   if (array) return `${path}[${index}]`;
@@ -304,7 +282,6 @@ function partOf(path, keyed, array, key, index) {
   return path === "" ? key : `${path}.${key}`;
 }
 
-/** Whether `entry` is a map's [key, group] pair. */
 function isEntry(entry) {
   return (
     Array.isArray(entry) &&
@@ -322,7 +299,6 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !isSequence(value);
 }
 
-/** A group's quartiles, whiskers, and outliers, from its samples or as given. */
 function statsOf(group, name) {
   if (isRecord(group)) {
     const read = (member) => {
@@ -403,7 +379,6 @@ function statsOf(group, name) {
   };
 }
 
-/** Each group's error bar, if any, and what the bars are. */
 function errorsOf(input, groups) {
   const kind = input.error;
   /** @type {({ mean: number, half: number } | null)[] & { label?: string }} */
@@ -434,8 +409,6 @@ function errorsOf(input, groups) {
   });
 }
 
-/** The p-quantile by selection, linear between order statistics (type 7);
- * it reorders `values`. */
 function quantile(values, p) {
   const n = values.length;
   const h = (n - 1) * p;

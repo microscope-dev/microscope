@@ -1,10 +1,3 @@
-//! What reading values of some types takes beyond their layout: the
-//! dictionary entry naming a Go shape's type argument, how C++ passes a
-//! class, the float type of a complex number's parts, and the expressions
-//! that find an aggregate's children at run time.
-//!
-//! Each fact is a table sorted by its key, at most one row per key.
-
 use std::sync::Arc;
 
 use zerocopy::little_endian::{U32, U64};
@@ -15,8 +8,6 @@ use super::strings::{StrId, Strings, StringsBuilder};
 use super::{Builder, Image, NONE, Record, SharedRecord, TableKind};
 use crate::TypeId;
 
-/// A child of an aggregate whose place an expression computes, or a part
-/// of an array bounded at run time that one does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum LayoutChild {
     Member(u32),
@@ -33,17 +24,13 @@ pub enum LayoutChild {
         part: BoundPart,
     },
 
-    /// Where an array's elements are.
     DataLocation,
 
-    /// Whether an array is allocated.
     Allocated,
 
-    /// Whether an array is associated with storage.
     Associated,
 }
 
-/// Which bound of a dimension an expression computes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BoundPart {
     Lower,
@@ -55,26 +42,17 @@ impl BoundPart {
     const ALL: [Self; 3] = [Self::Lower, Self::Extent, Self::Stride];
 }
 
-/// What [`add_to`] encodes, in any order, at most once for each key.
 #[derive(Debug, Clone, Default)]
 pub struct TypeFacts {
-    /// The dictionary entry each Go shape typedef names.
     pub dictionary_indices: Vec<(TypeId, u64)>,
 
-    /// Whether each C++ class whose producer says how calls pass it is
-    /// passed by value.
     pub passed_by_value: Vec<(TypeId, bool)>,
 
-    /// The float type of complex numbers' parts, by the part's name and
-    /// size.
     pub complex_parts: Vec<(Arc<str>, u64, TypeId)>,
 
-    /// The expression finding each child of an aggregate laid out at run
-    /// time.
     pub dynamic_layouts: Vec<(TypeId, LayoutChild, ExpressionId)>,
 }
 
-/// A fact of one type.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -109,10 +87,8 @@ impl Record for ComplexPartRecord {
 pub struct DynamicLayoutRecord {
     pub aggregate: U32,
 
-    /// The member, base, or variant, as the kind says.
     pub first: U32,
 
-    /// A variant's member.
     pub second: U32,
     pub expression: U32,
     pub kind: u8,
@@ -140,7 +116,6 @@ pub mod children {
     pub const ASSOCIATED: u8 = 7;
 }
 
-/// Why type facts could not be encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the type facts do not fit an image")]
 pub struct TooMany;
@@ -172,7 +147,6 @@ fn facts(pairs: impl Iterator<Item = (TypeId, u64)>) -> Vec<TypeFactRecord> {
         .collect()
 }
 
-/// Adds the type facts to `builder`, pooling names in `strings`.
 pub fn add_to(
     builder: &mut Builder<'_>,
     strings: &mut StringsBuilder,
@@ -231,7 +205,6 @@ pub fn add_to(
     Ok(())
 }
 
-/// The type facts of an image.
 #[derive(Debug, Clone, Copy)]
 pub struct TypeFactsView<'a> {
     strings: Strings<'a>,
@@ -260,19 +233,14 @@ impl<'a> TypeFactsView<'a> {
         }
     }
 
-    /// The dictionary entry the Go shape typedef `ty` names.
     pub fn dictionary_index(self, ty: TypeId) -> Option<u64> {
         fact(self.dictionary, ty)
     }
 
-    /// Whether calls pass the C++ class `ty` by value, when its producer
-    /// says.
     pub fn passed_by_value(self, ty: TypeId) -> Option<bool> {
         fact(self.passed, ty).map(|value| value != 0)
     }
 
-    /// The float type of the parts of a complex number whose part is
-    /// `name` and `size` bytes.
     pub fn complex_part(self, name: &str, size: u64) -> Option<TypeId> {
         let key =
             |part: &ComplexPartRecord| (self.strings.get(StrId(part.name.get())), part.size.get());
@@ -283,7 +251,6 @@ impl<'a> TypeFactsView<'a> {
             .map(|part| TypeId::new(part.ty.get()))
     }
 
-    /// The expression finding `child` of the aggregate `aggregate`.
     pub fn dynamic_layout(self, aggregate: TypeId, child: LayoutChild) -> Option<ExpressionId> {
         let (kind, first, second) = encode_child(child);
         let key = (aggregate.get(), kind, first, second);
@@ -302,7 +269,6 @@ impl<'a> TypeFactsView<'a> {
     }
 }
 
-/// Checks the type facts.
 pub(super) fn validate(image: &Image) -> Result<(), String> {
     let view = TypeFactsView::new(image);
     let types = image.table::<super::types::TypeRecord>().len();

@@ -1,26 +1,26 @@
-// One stack with a frame of every tier V8 can put on it, each recorded by
-// truth.tier() from inside the frame, for --allow-natives-syntax:
-//
-// turbofan > inlined > maglev > sparkplug > deoptimized > osr > ignition
-//   > checkpoint("tiers")
-//
-// inlined runs inside turbofan's frame. deoptimized enters Turbofan code
-// and leaves it at a map check the warm-up never failed; osr enters Maglev
-// or Turbofan code on its loop. A tier this build cannot put on the stack
-// is reported unavailable, with the reason, and its frame keeps the tier
-// it has.
-//
-// Every call the optimized frames make is warmed with the same targets and
-// argument types it makes for real, or the frame would deoptimize at it.
-// Each call from one tier's function to the next goes through `chain` with
-// a decoy target too, so that no compiler inlines its callee; only
-// turbofan's call of inlined is monomorphic, to be inlined.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 'use strict';
 
 const truth = require('./truth.js');
 
-// The most loop iterations osr runs waiting for its optimized code.
+
 const OSR_ITERATIONS = 10_000_000;
 
 function turbofan(real, chain) {
@@ -60,7 +60,7 @@ function osr(real, chain) {
     }
     const optimized = truth.tierOf(osr) !== 'ignition';
     if (optimized) {
-      // The active OSR code must remain readable after its cache entry is gone.
+
       %ClearFunctionFeedback(osr);
     }
     const depth = chain[4](optimized, chain);
@@ -109,6 +109,6 @@ if (%IsMaglevEnabled()) {
 %OptimizeFunctionOnNextCall(deoptimized);
 %OptimizeFunctionOnNextCall(turbofan);
 
-// A weight of another shape, which deoptimized's code has never seen.
+
 chain[5] = {heavy: true, weight: 2};
 turbofan(true, chain);

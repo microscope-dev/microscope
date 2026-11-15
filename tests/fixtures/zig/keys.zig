@@ -1,6 +1,6 @@
-//! Maps keyed by tuples, which an expression indexes by a tuple key.
-//! Prints `EXPECT\t<expression>\t<kind>\t<value>` to standard error for
-//! each, as the map's own lookup finds it, then calls barrier().
+
+
+
 
 const std = @import("std");
 
@@ -33,8 +33,8 @@ pub fn main() !void {
     var triple = std.AutoHashMap(struct { i8, u16, i64 }, i32).init(allocator);
     try triple.put(.{ 1, 2, 3 }, 6);
     try triple.put(.{ -1, 2, 3 }, 4);
-    // A managed map presents the unmanaged one it holds, whose entries
-    // are found by any key.
+
+
     var ages = std.AutoHashMap(i32, i32).init(allocator);
     try ages.put(1, 10);
     var points = std.AutoHashMap(Point, i32).init(allocator);

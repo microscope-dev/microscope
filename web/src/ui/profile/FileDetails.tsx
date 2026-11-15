@@ -39,20 +39,17 @@ import { useAnswer, useProfile } from "./context";
 
 type Tab = "metadata" | "samples";
 
-/** About how wide the pane draws its charts, which spaces their ticks. */
 const CHART_WIDTH = 600;
 
 const NAMES: Record<Tab, string> = { metadata: "Metadata", samples: "Samples" };
 const BOTH: Tab[] = ["metadata", "samples"];
 const METADATA_ONLY: Tab[] = ["metadata"];
 
-/** What the profile holds and how it was recorded, and its file to
- * download, in a pane of its own. */
 export function FileDetails() {
   const { profile, summary } = useProfile();
   const info = useModel((model) => model.profiles.find((each) => each.id === profile));
   const answer = useAnswer("profileInspect", { profile, revision: info?.revision ?? 0 });
-  // A trace of system calls alone has no samples to describe.
+
   const tabs = summary.samples > 0 ? BOTH : METADATA_ONLY;
   const [tab, setTab] = useState<Tab>("metadata");
   const chosen = useRef<HTMLButtonElement>(null);
@@ -67,7 +64,7 @@ export function FileDetails() {
       event.preventDefault();
       const step = event.key === "ArrowRight" ? 1 : -1;
       setTab((now) => tabs[(tabs.indexOf(now) + step + tabs.length) % tabs.length] ?? now);
-      // The tab chosen takes focus once it renders as chosen.
+
       requestAnimationFrame(() => chosen.current?.focus());
     },
     [tabs],
@@ -267,7 +264,6 @@ function Metadata({
   );
 }
 
-/** The whole command, in a section of its own. */
 function Command({ command }: { command: ProfileCommand }) {
   return (
     <Section title="Command">
@@ -276,8 +272,6 @@ function Command({ command }: { command: ProfileCommand }) {
   );
 }
 
-/** The whole command, one argument to a line, as a shell reads it, and a
- * button that copies the line a shell runs. */
 export function CommandBlock({ command }: { command: ProfileCommand }) {
   const [copied, setCopied] = useState<"copied" | "failed" | null>(null);
   const block = useRef<HTMLDivElement>(null);
@@ -286,7 +280,7 @@ export function CommandBlock({ command }: { command: ProfileCommand }) {
       setCopied("copied");
       return;
     }
-    // Selected, it can still be copied by hand.
+
     if (block.current) {
       window.getSelection()?.selectAllChildren(block.current);
     }
@@ -474,10 +468,9 @@ function Ending({
   );
 }
 
-/** Samples by stack depth, a bar to a depth, the median's marked. */
 function Depths({ depths, samples }: { depths: number[]; samples: number }) {
   const median = medianDepth(depths);
-  // A stack is at least one frame deep, unless some samples have none.
+
   const first = (depths[0] ?? 0) > 0 ? 0 : 1;
   const counts = useMemo(() => depths.slice(first), [depths, first]);
   const labels = useMemo(
@@ -500,8 +493,6 @@ function Depths({ depths, samples }: { depths: number[]; samples: number }) {
   );
 }
 
-/** Bars of `counts`, named by `labels`, each read out below the axis in
- * `children` when pointed at or focused. */
 function Histogram({
   counts,
   labels,
@@ -514,8 +505,7 @@ function Histogram({
   labels: string[];
   samples: number;
   marked?: number;
-  /** Whether every bar takes the main color, as when the bars are the
-   * samples themselves rather than a shape of them. */
+
   filled?: boolean;
   children: ReactNode;
 }) {
@@ -558,7 +548,6 @@ function Histogram({
   );
 }
 
-/** A histogram's bar, a button that reads itself out. */
 function Column({
   index,
   count,
@@ -592,13 +581,11 @@ function Column({
   );
 }
 
-/** A mark under a chart, `at` its share of the way across. */
 function Tick({ at, label }: { at: number; label: string }) {
   const style = useMemo(() => ({ left: `${at * 100}%` }), [at]);
   return <span style={style}>{label}</span>;
 }
 
-/** A label, a value, and whether the value is a warning. */
 function Fact({ name, value, warn = false }: { name: string; value: string; warn?: boolean }) {
   return (
     <tr>
@@ -618,7 +605,6 @@ function Facts({ children }: { children: ReactNode }) {
 
 type BarKind = "main" | "context" | "warn";
 
-/** A cell holding `value`'s share of `of`, and after it `rest`'s. */
 function Bar({
   value,
   rest = 0,
@@ -660,7 +646,6 @@ function fileName(info: ProfileInfo): string {
   return info.name.endsWith(".usprof") ? info.name : `${info.name}.usprof`;
 }
 
-/** Downloads the profile as a file. */
 async function saveProfile(info: ProfileInfo) {
   const response = await fetch(serverUrl(`api/profile/${info.id}`), {
     method: "POST",
@@ -677,7 +662,6 @@ async function saveProfile(info: ProfileInfo) {
   URL.revokeObjectURL(link.href);
 }
 
-/** Downloads the profile as a file, which `microscope web` opens again. */
 function Download({ info }: { info: ProfileInfo }) {
   const [failure, setFailure] = useState<string | null>(null);
   const download = useCallback(() => {

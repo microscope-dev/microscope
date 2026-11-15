@@ -1,6 +1,3 @@
-// A profile's panes in the workbench: which open, where, and what each
-// shares with the others through their link.
-
 import { describe, expect, it } from "vitest";
 
 import { KIND } from "../src/documents";
@@ -40,7 +37,6 @@ const summary = (change: Partial<ProfileSummary> = {}): ProfileSummary =>
 
 const G0 = "g0" as GroupId;
 
-/** The pane of a view, by view, failing when there is not exactly one. */
 function only(layout: Layout, view: ProfileView | null): PaneId {
   const found = (Object.keys(layout.panes) as PaneId[]).filter(
     (id) => viewOf(layout.panes[id] as Pane) === view,
@@ -55,7 +51,6 @@ const kindsIn = (layout: Layout, pane: PaneId) =>
 const focusedPane = (layout: Layout) =>
   groups(layout).find((group) => group.id === layout.focused)?.active;
 
-/** A profile opened and arranged as its summary says. */
 function arranged(look = {}, of = summary()): { layout: Layout; link: LinkId } {
   const opened = openProfile(emptyLayout(), "p1", "x.usprof", look, G0);
   const link = linkOf(opened.layout.panes[opened.pane] as Pane) as LinkId;
@@ -73,10 +68,9 @@ describe("a profile's panes", () => {
     expect(kindsIn(layout, flame)).toEqual(["flame", "tree", "functions", "kernel"]);
     expect(groupOf(layout, flame)?.active).toBe(flame);
     expect(kindsIn(layout, only(layout, "zones"))).toEqual(["zones"]);
-    // The overview keeps the focus it had.
+
     expect(focusedPane(layout)).toBe(overview);
 
-    // A pane closed stays closed.
     const closed = close(layout, only(layout, "tree"));
     const again = arrange(closed, link, summary());
     expect(again).toBe(closed);
@@ -87,21 +81,17 @@ describe("a profile's panes", () => {
     const opened = openProfile(emptyLayout(), "p1", "live", { view: "zones" }, G0);
     const link = linkOf(opened.layout.panes[opened.pane] as Pane) as LinkId;
 
-    // Nothing recorded yet calls for nothing, and the asked-for view waits.
     const empty = summary({ samples: 0, syscalls: 0, zoneSites: [] });
     const waiting = arrange(opened.layout, link, empty, true);
     expect(Object.keys(waiting.panes)).toEqual([opened.pane]);
     expect(readLink(waiting.links[link])?.show?.view).toBe("zones");
 
-    // Samples open the stacks. The zones it asked for are not there, so it
-    // lets go of them and keeps the focus.
     const sampled = arrange(waiting, link, summary({ zoneSites: [] }), true);
     expect(viewOpen(sampled, "p1", "flame")).toBe(true);
     expect(readLink(sampled.links[link])?.show).toBeNull();
     expect(focusedPane(sampled)).toBe(opened.pane);
     expect(arrange(sampled, link, summary({ zoneSites: [] }), true)).toBe(sampled);
 
-    // The tree shown stays shown as zones open beside it.
     const tree = only(sampled, "tree");
     const looking = activate(sampled, tree);
     const zoned = arrange(looking, link, summary(), true);
@@ -110,7 +100,6 @@ describe("a profile's panes", () => {
     expect(focusedPane(zoned)).toBe(tree);
     expect(checkLayout(zoned)).toEqual([]);
 
-    // Closed, a view stays closed as the recording goes on and ends.
     const closed = close(zoned, only(zoned, "zones"));
     expect(arrange(closed, link, summary(), false)).toBe(closed);
   });
@@ -152,7 +141,7 @@ describe("a profile's panes", () => {
     const tree = only(layout, "tree");
     expect(focusedPane(layout)).toBe(tree);
     expect(lookOf(layout, tree)).toMatchObject({ view: "tree", invert: "1", fn: "leaf" });
-    // The inversion was the tree's; the function chosen is everyone's.
+
     expect(lookOf(layout, only(layout, "flame"))?.invert).toBeUndefined();
     expect(lookOf(layout, only(layout, "flame"))?.fn).toBe("leaf");
   });
@@ -202,7 +191,7 @@ describe("a profile's panes", () => {
     expect(Object.keys(explored.layout.links)).toEqual([link]);
     expect(linkOf(explored.layout.panes[explored.pane] as Pane)).toBe(link);
     expect(viewOf(explored.layout.panes[explored.pane] as Pane)).toBeNull();
-    // Arranging it again opens nothing new.
+
     const again = arrange(explored.layout, link, summary());
     expect(Object.keys(again.panes)).toHaveLength(Object.keys(explored.layout.panes).length);
   });
@@ -229,7 +218,6 @@ describe("a profile's panes", () => {
     ]);
     expect(focusedPane(shown.layout)).toBe(shown.pane);
 
-    // An address asks for it before the summary is read.
     const asked = arranged({ view: "details" }).layout;
     expect(focusedPane(asked)).toBe(only(asked, "details"));
     expect(checkLayout(asked)).toEqual([]);
@@ -265,7 +253,6 @@ describe("another pane like one", () => {
     const forkChanged = storeLook(fork.layout, flame, { view: "flame", fn: "leaf" }).layout;
     expect(lookOf(forkChanged, fork.pane)?.fn).toBe("work");
 
-    // Two twins do not collide, and the fork outlives what it was copied from.
     const third = duplicate(twin.layout, flame, false);
     expect(third && Object.keys(third.layout.panes)).toHaveLength(8);
     let alone = fork.layout;
@@ -325,7 +312,7 @@ describe("an address", () => {
     expect(named.panes[opened.pane]?.params).toMatchObject({ name: "x.usprof" });
     const link = linkOf(named.panes[opened.pane] as Pane) as LinkId;
     expect(readLink(named.links[link])?.name).toBe("x.usprof");
-    // An address that does not know it yet keeps it.
+
     const kept = showAddress(named, "p1", "", { fn: "f" }, G0);
     expect(kept.panes[opened.pane]?.params).toMatchObject({ name: "x.usprof" });
   });

@@ -1,14 +1,14 @@
-//! Two tasks deadlocked: each holds one `tokio::sync::Mutex` and waits for
-//! the other's. Once both wait and the workers are parked, the program
-//! reports its truth and stops at the checkpoint `deadlock`, then exits,
-//! as nothing would ever wake either task.
+
+
+
+
 
 use std::sync::Arc;
 
 use tokio::sync::{Barrier, Mutex};
 
-/// Locks `first`, waits until the other task has locked its own, then
-/// waits for `second`, which the other task holds.
+
+
 async fn grab(name: &'static str, first: Arc<Mutex<u64>>, second: Arc<Mutex<u64>>, both: Arc<Barrier>) {
     let me = truth::start();
     truth::value(me, "holds", name);

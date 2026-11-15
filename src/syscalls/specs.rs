@@ -1,48 +1,16 @@
-//! What each system call's arguments are, which drives decoding in both
-//! engines: which arguments are descriptors or paths, which point at bytes
-//! worth copying and how many, and how to print the rest.
-//!
-//! The table was first generated from the `SYSCALL_DEFINE` prototypes in
-//! Linux 7.2's `include/linux/syscalls.h`, then corrected by hand. Each
-//! entry is a signature in a small language, parsed once:
-//!
-//! - Scalars: `i` an `int`, `l` a `long`, `u` an `unsigned int`, `z` a
-//!   `size_t` or `unsigned long`, `x` hex, `o` octal, `p` an opaque
-//!   pointer, `fd`, `dfd` (a directory descriptor or `AT_FDCWD`), `pid`,
-//!   `uid`, `gid`, `sig`, `mode` (permission bits).
-//! - Named values: `F:set` for flags and `E:set` for one value of a set
-//!   that `src/present/syscalls` names.
-//! - Strings: `path`, a file name; `str`, any other string; `strv`, an
-//!   array of strings, as `execve`'s `argv`.
-//! - Memory: `<` for what the call reads, `>` for what it writes, `<>` for
-//!   both, then a structure's name, or `buf:LEN` for bytes whose length is
-//!   argument N (`aN`), the result (`ret`), or the integer argument N
-//!   points at (`*aN`). Arrays of structures name their count the same
-//!   way, as in `<iovec:a2`.
-//! - The result follows `->`: `i`, `u`, `x`, `o`, `fd`, `pid`, or `none`
-//!   for a call that does not return.
-//!
-//! Classes follow the signature. `file` (takes a path) and `desc` (takes
-//! or makes a descriptor) are derived; the rest are written down.
-
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use super::model::{Abi, SyscallId};
 
-/// How to read and print one argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arg {
-    /// An `int`: the low 32 bits, signed.
     Int,
 
-    /// A `long` or `loff_t`.
     Long,
 
-    /// An `unsigned int`: the low 32 bits.
     Uint,
 
-    /// A `size_t` or `unsigned long`.
     Size,
     Hex,
     Octal,
@@ -60,7 +28,6 @@ pub enum Arg {
     Str,
     StrArray,
 
-    /// Memory behind a pointer.
     Mem {
         direction: Direction,
         kind: MemKind,
@@ -68,16 +35,12 @@ pub enum Arg {
     },
 }
 
-/// Which way a call moves the memory behind a pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    /// The call reads it: worth reading at entry.
     In,
 
-    /// The call writes it: only meaningful at exit, and only on success.
     Out,
 
-    /// Both.
     InOut,
 }
 
@@ -93,29 +56,22 @@ impl Direction {
     }
 }
 
-/// What a pointer points at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemKind {
-    /// Raw bytes: the count is a byte length.
     Bytes,
 
-    /// Structures of a known layout: the count is how many, one when
-    /// unstated.
     Struct(Struct),
 }
 
-/// How many bytes, or structures, a pointer covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Count {
     One,
     Arg(u8),
     Return,
 
-    /// The integer argument N points at.
     PointedBy(u8),
 }
 
-/// The structures the decoders know, with their x86-64 sizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Struct {
     Stat,
@@ -123,11 +79,9 @@ pub enum Struct {
     Statfs,
     Timespec,
 
-    /// Two timespecs, as `utimensat` takes.
     Timespec2,
     Timeval,
 
-    /// Two timevals, as `utimes` takes.
     Timeval2,
     Itimerval,
     Itimerspec,
@@ -147,7 +101,6 @@ pub enum Struct {
     Int,
     U64,
 
-    /// The two descriptors `pipe` writes.
     Fds2,
     Siginfo,
     CloneArgs,
@@ -159,15 +112,12 @@ pub enum Struct {
     Dirents,
     Tms,
 
-    /// `struct rseq`, as long as the call's length says.
     Rseq,
 
-    /// The status `wait4` writes.
     WaitStatus,
 }
 
 impl Struct {
-    /// Bytes in one, under x86-64.
     #[must_use]
     pub const fn size(self) -> u32 {
         match self {
@@ -249,7 +199,6 @@ impl Struct {
     }
 }
 
-/// How to print a call's result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ret {
     Int,
@@ -259,11 +208,9 @@ pub enum Ret {
     Fd,
     Pid,
 
-    /// The call does not return when it succeeds.
     None,
 }
 
-/// A class of calls, as strace's `%file`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Class {
     File,
@@ -323,7 +270,6 @@ impl Class {
         }
     }
 
-    /// The class `%name` names, accepting strace's synonyms.
     #[must_use]
     pub fn named(name: &str) -> Option<Self> {
         match name {
@@ -337,7 +283,6 @@ impl Class {
     }
 }
 
-/// A set of classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Classes(u16);
 
@@ -358,7 +303,6 @@ impl Classes {
     }
 }
 
-/// One call's arguments, result, and classes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spec {
     pub args: Vec<Arg>,
@@ -367,7 +311,6 @@ pub struct Spec {
 }
 
 impl Spec {
-    /// The memory arguments, with their argument numbers.
     pub fn memory(&self) -> impl Iterator<Item = (u8, Direction, MemKind, Count)> + '_ {
         self.args
             .iter()
@@ -384,7 +327,6 @@ impl Spec {
     }
 }
 
-/// Every call's signature, under x86-64 names.
 const SIGNATURES: &[(&str, &str, &str)] = &[
     ("read", "fd >buf:ret z -> i", ""),
     ("write", "fd <buf:a2 z -> i", ""),
@@ -827,8 +769,6 @@ const SIGNATURES: &[(&str, &str, &str)] = &[
     ("file_setattr", "dfd path p z F:at -> i", ""),
 ];
 
-/// Calls whose i386 arguments differ from their x86-64 namesakes', as a
-/// 64-bit offset split across two registers does. They print raw.
 const I386_DIFFERS: &[&str] = &[
     "mmap",
     "pread64",
@@ -851,7 +791,6 @@ const I386_DIFFERS: &[&str] = &[
     "clone",
 ];
 
-/// Why a signature did not parse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError(pub String);
 
@@ -942,7 +881,6 @@ fn arg(token: &'static str) -> Result<Arg, ParseError> {
     })
 }
 
-/// Parses one signature and its written classes.
 pub fn parse(signature: &'static str, classes: &str) -> Result<Spec, ParseError> {
     let (args, ret) = signature
         .split_once("->")
@@ -970,8 +908,6 @@ pub fn parse(signature: &'static str, classes: &str) -> Result<Spec, ParseError>
 
     let mut set = Classes::default();
 
-    // `-desc` keeps a call that takes a descriptor out of %desc, as
-    // strace's tables do for a few.
     let mut not_desc = false;
 
     for name in classes.split_whitespace() {
@@ -989,8 +925,6 @@ pub fn parse(signature: &'static str, classes: &str) -> Result<Spec, ParseError>
         set.insert(Class::File);
     }
 
-    // strace's %desc: calls that take or make descriptors, a directory's
-    // included, except the network's, which are %net alone.
     let makes = |arg: &Arg| {
         matches!(
             arg,
@@ -1020,8 +954,6 @@ static SPECS: LazyLock<BTreeMap<&'static str, Spec>> = LazyLock::new(|| {
     SIGNATURES
         .iter()
         .filter_map(|&(name, signature, classes)| {
-            // A test parses every signature; a call without one prints its
-            // arguments as raw words.
             let spec = parse(signature, classes);
             debug_assert!(spec.is_ok(), "{name}: {spec:?}");
             Some((name, spec.ok()?))
@@ -1029,8 +961,6 @@ static SPECS: LazyLock<BTreeMap<&'static str, Spec>> = LazyLock::new(|| {
         .collect()
 });
 
-/// What is known of each call, in the order its ABI's table lists them,
-/// so that looking a call up compares no names.
 static BY_CALL: LazyLock<[Vec<Known>; 3]> = LazyLock::new(|| {
     Abi::ALL.map(|abi| {
         super::table::calls(abi)
@@ -1056,19 +986,16 @@ fn known(id: SyscallId) -> Option<Known> {
     id.abi.of(&BY_CALL).get(index).copied()
 }
 
-/// The spec of a call, when its arguments are known under its ABI.
 #[must_use]
 pub fn spec(id: SyscallId) -> Option<&'static Spec> {
     known(id)?.spec
 }
 
-/// The spec of a call by its name, whatever its ABI.
 #[must_use]
 pub fn spec_named(name: &str) -> Option<&'static Spec> {
     SPECS.get(name)
 }
 
-/// The names the kernel gives a call's arguments, which `-N` prints.
 #[must_use]
 pub fn arg_names(id: SyscallId) -> Option<&'static [&'static str]> {
     known(id)?.arg_names
@@ -1081,8 +1008,6 @@ fn arg_names_named(name: &str) -> Option<&'static [&'static str]> {
         .map(|&(_, names)| names)
 }
 
-/// The names every flag and enumeration argument uses, for the decoders'
-/// tests.
 pub fn sets() -> impl Iterator<Item = &'static str> {
     SPECS.values().flat_map(|spec| {
         spec.args.iter().filter_map(|arg| match *arg {
@@ -1110,8 +1035,6 @@ mod tests {
             );
         }
 
-        // Every 64-bit call has a spec, so none prints as raw words, and
-        // names for as many arguments as its spec has.
         for &(_, name) in table::calls(Abi::X86_64) {
             assert!(names.contains(name), "{name} has no spec");
             let arity = spec_named(name).expect("a spec").args.len();

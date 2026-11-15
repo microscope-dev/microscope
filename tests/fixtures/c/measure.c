@@ -1,6 +1,6 @@
-/* Built without debug information, so that breakpoints find its functions,
- * and the C library's, by their symbols: `strlen` among them, an indirect
- * function whose implementation the loader chooses for the machine. */
+
+
+
 #include <stdio.h>
 #include <string.h>
 

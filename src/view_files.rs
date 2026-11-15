@@ -1,19 +1,9 @@
-//! The view files a client loads for a session, besides those it is
-//! given.
-//!
-//! They are the project's, every `*.views` file in `.microscope/views` at the
-//! project root, and the user's, in `$XDG_CONFIG_HOME/microscope/views` or
-//! `~/.config/microscope/views`, each directory's in name order. A project's
-//! views come before the user's, being about the project's own types.
-
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use crate::view::syntax::MAX_FILE_BYTES;
 
-/// One view file's name, as errors and `info view` give it, and text, with
-/// the kernels and renderers beside it that its views call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewFile {
     pub name: String,
@@ -22,7 +12,6 @@ pub struct ViewFile {
     pub renderers: Vec<RendererFile>,
 }
 
-/// A renderer beside a view file, `NAME.js` for the renderer `NAME`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RendererFile {
     pub name: String,
@@ -30,7 +19,6 @@ pub struct RendererFile {
     pub source: String,
 }
 
-/// A kernel beside a view file, `NAME.wasm` for the kernel `NAME`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelFile {
     pub name: String,
@@ -38,8 +26,6 @@ pub struct KernelFile {
     pub module: Vec<u8>,
 }
 
-/// The project's and then the user's view files, and why any could not be
-/// read. A directory that does not exist holds none.
 #[must_use]
 pub fn discover(project_root: &Path) -> (Vec<ViewFile>, Vec<String>) {
     let mut files = Vec::new();
@@ -58,7 +44,6 @@ pub fn discover(project_root: &Path) -> (Vec<ViewFile>, Vec<String>) {
     (files, errors)
 }
 
-/// Where the user's view files are.
 #[must_use]
 pub fn user_directory() -> Option<PathBuf> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
@@ -68,12 +53,6 @@ pub fn user_directory() -> Option<PathBuf> {
     Some(config.join("microscope/views"))
 }
 
-/// Reads one view file and the kernels and renderers beside it that its
-/// views call.
-///
-/// It reads at most one byte more than a view file may hold, so that the
-/// parser refuses one too long without reading all of it. A kernel or
-/// renderer with no file beside it may be a built-in one.
 pub fn read(path: &Path) -> Result<ViewFile, String> {
     let name = path.display().to_string();
     let bytes = read_at_most(path, MAX_FILE_BYTES)?;
@@ -138,8 +117,6 @@ pub fn read(path: &Path) -> Result<ViewFile, String> {
     })
 }
 
-/// A file's bytes, up to one more than `limit`, so that what reads them
-/// can refuse one too long without reading all of it.
 fn read_at_most(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     let name = path.display();
     let file = fs::File::open(path).map_err(|error| format!("{name}: {error}"))?;
@@ -150,7 +127,6 @@ fn read_at_most(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// Every `*.views` file in a directory, in name order.
 fn read_directory(directory: &Path) -> (Vec<ViewFile>, Vec<String>) {
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,

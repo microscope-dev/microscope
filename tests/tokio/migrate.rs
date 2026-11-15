@@ -1,9 +1,3 @@
-//! A task that parks on one worker and resumes on another thread, while a
-//! task of the program's holds the thread it left in `block_in_place`:
-//! `next` over the await follows the task to the thread it resumes on, the
-//! held thread still runs the holding task, the thread that took over its
-//! worker's core is a worker, and the program agrees on every thread.
-
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::process::Stdio;
@@ -34,7 +28,6 @@ async fn stopped_thread(scenario: &mut Scenario) -> ThreadId {
     }
 }
 
-/// The fields of the program's one `TRUTH` line of `kind`.
 fn reported(text: &str, kind: &str) -> Vec<u64> {
     let report = Report::parse(text);
     let fields = report
@@ -52,10 +45,6 @@ fn reported(text: &str, kind: &str) -> Vec<u64> {
         .collect()
 }
 
-/// Stopped where the task awaits, `next` waits while the task parks and a
-/// holder takes its thread, then ends on the next line in the same task on
-/// another thread. There the left thread runs the holder, in its
-/// `block_in_place`, and two other threads hold the runtime's two cores.
 #[tokio::test]
 async fn next_over_an_await_follows_its_task_to_another_thread() {
     for fixture in BUILDS {
@@ -141,9 +130,6 @@ async fn next_over_an_await_follows_its_task_to_another_thread() {
             "{fixture}"
         );
 
-        // The worker that took over the held thread's core is new, and
-        // holds a core as the other worker does: it runs the migrated task
-        // or is idle.
         let cores = activities
             .iter()
             .filter(|(thread, activity)| {

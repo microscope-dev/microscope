@@ -1,7 +1,3 @@
-// Single sign-on in the Account and Organization panes (sso.ts): the
-// buttons that sign in with Google or GitHub, the account's ways in, an
-// organization's sign-in link, and the identity provider its owners set up.
-
 import {
   type ChangeEvent,
   type FocusEvent,
@@ -48,18 +44,14 @@ import {
 } from "../sso";
 import { Confirm, Loading, useAction, useLoaded } from "./Orgs";
 
-/** The providers services offers, or null until it says, or if it cannot. */
 function useProviders(): Providers | null {
   return useFeatures()?.sso ?? null;
 }
 
-/** Whether services and this browser can both add passkeys. */
 function usePasskeys(): boolean {
   return useFeatures()?.passkeys === true && supported();
 }
 
-/** Signing in or up with Google or GitHub, for whichever services offers,
- * after any other way in the form gives as `children`. */
 export function ContinueWith({ children }: { children?: ReactNode }) {
   const offered = useProviders();
   if (!children && (!offered || (!offered.google && !offered.github))) {
@@ -82,16 +74,12 @@ export function ContinueWith({ children }: { children?: ReactNode }) {
   );
 }
 
-/** The organization sign-in link the page was opened at, until it is used
- * or put away. */
 export const orgLink = createStore<{ key: string | null }>(() => ({ key: null }));
 
 function closeOrgLink() {
   orgLink.setState({ key: null });
 }
 
-/** `/sso#key=`: whose single sign-on it is, and the way through it. Signed
- * in, it connects the organization's identity provider to the account. */
 export function OrgLink() {
   const key = useStore(orgLink, (state) => state.key);
   const now = useAccount();
@@ -165,9 +153,6 @@ function used(passkey: Passkey): string {
     : `Last used ${day(passkey.last_used_at)}`;
 }
 
-/** The ways into the signed-in account: its password, each outside account
- * connected to it, and its passkeys. The last one cannot go. Absent while
- * there is nothing to add and nothing added. */
 export function SignInMethods() {
   const offered = useProviders();
   const passkeys = usePasskeys();
@@ -228,7 +213,7 @@ export function SignInMethods() {
             <li key={identity.id}>
               <span className="name">{describe(identity)}</span>
               <span className="muted">{identity.email}</span>
-              {/* The last way in cannot go, so it has no Disconnect. */}
+              {}
               {ways > 1 && (
                 <span className="end">
                   <Forget
@@ -308,7 +293,6 @@ export function SignInMethods() {
   );
 }
 
-/** A way in that can go, once the person confirms it. */
 function Forget({
   label,
   question,
@@ -353,8 +337,6 @@ function ConnectButton({
   );
 }
 
-/** Asks the person to prove who they are before a change to how they sign
- * in, below the control that asked, and then makes the change. */
 function ProveItsYou({ asked }: { asked: "methods" | "org-link" }) {
   const retry = useStore(proving, (state) => (state.asked === asked ? state.retry : null));
   return retry && <Prove retry={retry} />;
@@ -382,7 +364,6 @@ function Prove({ retry }: { retry: () => Promise<void> }) {
     (event: FormEvent) => {
       event.preventDefault();
       run(async () => {
-        // Too many wrong passwords sign the session out, which the pane shows.
         await verify(password).catch((failure: Error) => {
           if (failure instanceof Refused && failure.status === 401) {
             void checkAccount();
@@ -395,8 +376,7 @@ function Prove({ retry }: { retry: () => Promise<void> }) {
     },
     [run, password, retry],
   );
-  // Signing in again with a passkey makes this session a recent one. The
-  // change waits unless it signed in to the same account.
+
   const passkey = useCallback(
     () =>
       run(async () => {
@@ -488,7 +468,6 @@ function Prove({ retry }: { retry: () => Promise<void> }) {
   );
 }
 
-/** A value to copy into another system, as it must be pasted. */
 function Copyable({ label, value, note }: { label: string; value: string; note?: ReactNode }) {
   const id = useId();
   const noteId = useId();
@@ -527,10 +506,9 @@ function Copyable({ label, value, note }: { label: string; value: string; note?:
   );
 }
 
-/** The organization's own identity provider, for its owners to set up. */
 export function OrgSingleSignOn({ org }: { org: Org }) {
   const offered = useProviders();
-  // Wrapped, since services answers null for an organization without one.
+
   const loaded = useLoaded(
     () => loadOrgSso(org.id).then((settings) => ({ settings })),
     String(org.id),
@@ -662,8 +640,7 @@ function Connection(props: {
           </ul>
         )
       )}
-      {/* Until the identity provider is saved, nothing is on to turn off;
-          the form's Cancel setup backs out instead. */}
+      {}
       {settings.idp && (
         <div className="actions">
           <Confirm
@@ -681,9 +658,9 @@ function IdpForm(props: {
   org: Org;
   settings: OrgSso;
   done: () => void;
-  /** Stops editing a saved identity provider. */
+
   cancel: (() => void) | null;
-  /** Backs out of setting one up for the first time. */
+
   abandon: (() => Promise<unknown>) | null;
 }) {
   const idp = props.settings.idp;

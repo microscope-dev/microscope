@@ -1,6 +1,3 @@
-//! Static array offsets, which a fixed layout gives, against the offsets a
-//! layout bounded at run time gives.
-
 use std::collections::BTreeSet;
 
 use proptest::prelude::*;
@@ -9,8 +6,6 @@ use super::super::inspect::{array_source_indices, element_byte_offset};
 use super::super::runtime_array::{adjacent_strides, element_offset};
 use super::*;
 
-/// An array's dimensions, its order and element size, and indices into it,
-/// each within its dimension or a little outside.
 fn array() -> impl Strategy<Value = (Vec<ArrayDimension>, ArrayOrdering, u64, Vec<i128>)> {
     let dimension = (
         prop_oneof![4 => -3_i128..=3, 1 => Just(i128::MIN), 1 => Just(i128::MAX - 3)],
@@ -43,7 +38,6 @@ fn array() -> impl Strategy<Value = (Vec<ArrayDimension>, ArrayOrdering, u64, Ve
         })
 }
 
-/// Every source index of an array, in row-major order.
 fn every_index(dimensions: &[ArrayDimension]) -> Vec<Vec<i128>> {
     dimensions
         .iter()
@@ -61,7 +55,6 @@ fn every_index(dimensions: &[ArrayDimension]) -> Vec<Vec<i128>> {
         })
 }
 
-/// What finding an element's offset gives, from either layout.
 #[derive(Debug, PartialEq, Eq)]
 enum Offset {
     At(i64),
@@ -109,8 +102,6 @@ proptest! {
 
         prop_assert_eq!(&fixed, &runtime);
 
-        // An index is out of bounds exactly when one of its parts is, and
-        // the first such part is the one named.
         let outside = dimensions.iter().zip(&indices).find(|(dimension, index)| {
             **index < dimension.lower_bound
                 || **index - dimension.lower_bound >= i128::from(dimension.count)

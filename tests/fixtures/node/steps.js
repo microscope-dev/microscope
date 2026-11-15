@@ -1,6 +1,6 @@
-// Steps through Node's inspector. Each function is a case the step tests
-// drive from a breakpoint on its marked line; cdp_oracle.js runs the same
-// steps under Node's own inspector, which says where each one ends.
+
+
+
 'use strict';
 const { EventEmitter } = require('events');
 const path = require('path');
@@ -17,14 +17,14 @@ function calls(n) {
   return b;
 }
 
-// Recursion: a step over the inner call stops in this activation.
+
 function countdown(n) {
   if (n === 0) return 0; // COUNTDOWN
   const rest = countdown(n - 1);
   return rest + n;
 }
 
-// A listener Node's own emit calls: a step into emit reaches it.
+
 function listener(value) {
   return value + 1; // LISTENER
 }
@@ -37,14 +37,14 @@ function emits() {
   return joined;
 }
 
-// A library calling back: a step into relay reaches the listener when
-// the library is skipped.
+
+
 function relays() {
   const relayed = relay(listener, 2); // RELAYS
   return relayed;
 }
 
-// A builtin calling back: a step into map reaches the callback.
+
 function maps() {
   const values = [1, 2].map((value) => value * 3); // MAPS
   return values;

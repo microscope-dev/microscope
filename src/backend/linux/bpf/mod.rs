@@ -1,21 +1,10 @@
-//! What microscope's BPF programs share. Their C sources live here beside
-//! this module: `build.rs` compiles each `*.bpf.c` into `OUT_DIR`, and every
-//! program writes the records of `records.h`, which the Rust side mirrors
-//! field for field. The syscall engine's loader is
-//! `super::syscalls::bpf`; the profiler's is [`sampler`].
-
 pub mod sampler;
 
-/// The programs' `loop_helper`: 1 on kernels with `bpf_loop` (5.17), whose
-/// callbacks the verifier checks once where it walks a plain loop's every
-/// step, which costs over 100 ms on a long one.
 pub fn loop_helper() -> u32 {
     use aya::util::KernelVersion;
     u32::from(KernelVersion::current().is_ok_and(|version| version >= KernelVersion::new(5, 17, 0)))
 }
 
-/// An object's BTF: each struct's size and its members' names and byte
-/// offsets, which tests hold the Rust mirrors of its structs to.
 #[cfg(test)]
 pub fn btf_structs(object: &[u8]) -> std::collections::BTreeMap<String, (u32, Vec<(String, u32)>)> {
     use object::{Object as _, ObjectSection as _};
@@ -42,7 +31,6 @@ pub fn btf_structs(object: &[u8]) -> std::collections::BTreeMap<String, (u32, Ve
         let vlen = (info & 0xffff) as usize;
         at += 12;
 
-        // Each kind's trailing data, by the BTF format.
         let trailing = match kind {
             1 | 14 | 15 | 17 => 4,
             3 => 12,
@@ -68,8 +56,6 @@ pub fn btf_structs(object: &[u8]) -> std::collections::BTreeMap<String, (u32, Ve
     structs
 }
 
-/// Holds each Rust mirror of a C struct to the struct in an object's BTF:
-/// each entry is `(mirror, "c_name", [fields])`, the fields in order.
 #[cfg(test)]
 macro_rules! assert_mirrors {
     ($object:expr, $(($type:ty, $c:literal, [$($field:ident),* $(,)?])),* $(,)?) => {{

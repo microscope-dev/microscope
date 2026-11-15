@@ -8,8 +8,6 @@ pub(super) mod frames;
 const MAX_PROLOGUE_BYTES: usize = 256;
 const MAX_PROLOGUE_INSTRUCTIONS: usize = 64;
 
-/// Explains why an instruction prefix cannot be proven to contain only an
-/// x86-64 System V prologue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PrologueAnalysisError {
     Empty,
@@ -21,11 +19,6 @@ pub(super) enum PrologueAnalysisError {
     UnsupportedInstruction,
 }
 
-/// Proves that every byte before a candidate source row is a frame-pointer
-/// x86-64 System V prologue: frame setup, callee-save pushes, a constant
-/// stack allocation, and unmodified argument copies between registers and
-/// frame slots. Anything else is rejected, so an optimized function's real
-/// work is never skipped.
 pub(super) fn prove_prologue_prefix(
     bytes: &[u8],
     instruction_pointer: u64,
@@ -78,10 +71,6 @@ pub(super) fn prove_prologue_prefix(
     Ok(())
 }
 
-/// The registers besides rsp that the x86-64 System V ABI has a function
-/// return with as its caller left them, in the order of
-/// `dwarf::X86_64_CALLEE_SAVED_REGISTERS`, whose bits [`restored_by`]
-/// and [`runs_to_return`] name them by.
 const CALLEE_SAVED: [Register; 6] = [
     Register::RBX,
     Register::RBP,
@@ -91,15 +80,10 @@ const CALLEE_SAVED: [Register; 6] = [
     Register::R15,
 ];
 
-/// The most instructions an epilogue runs to its return once it has
-/// restored its caller's registers.
 const MAX_RETURN_INSTRUCTIONS: usize = 32;
 
-/// Every register its caller keeps, as bits of [`CALLEE_SAVED`].
 pub(super) const ALL_CALLEE_SAVED: u32 = (1 << CALLEE_SAVED.len()) - 1;
 
-/// Reads the code of epilogues, reusing one decoder's buffers for all of
-/// an image's: a load reads thousands.
 pub(super) struct Epilogues {
     info: InstructionInfoFactory,
 }
@@ -111,11 +95,6 @@ impl Epilogues {
         }
     }
 
-    /// Where the near return ends that `code`, at `instruction_pointer`, runs
-    /// straight to, writing neither rsp nor a register its caller keeps; `None`
-    /// if it does not. At a return, as the ABI requires, those registers hold
-    /// what the caller left in them, so code that runs straight to one without
-    /// writing them holds those values already.
     pub(super) fn runs_to_return(&mut self, code: &[u8], instruction_pointer: u64) -> Option<u64> {
         let mut decoder = Decoder::with_ip(64, code, instruction_pointer, DecoderOptions::NONE);
         for _ in 0..MAX_RETURN_INSTRUCTIONS {
@@ -134,10 +113,6 @@ impl Epilogues {
         None
     }
 
-    /// Where the run of `code`, at `instruction_pointer`, that keeps the
-    /// registers `kept`, bits of [`CALLEE_SAVED`], ends: before the first
-    /// instruction that writes one of them or rsp, or past the first that may
-    /// go elsewhere, as a code path a jump reaches proves nothing.
     pub(super) fn keeps(&mut self, code: &[u8], instruction_pointer: u64, kept: u32) -> u64 {
         let mut decoder = Decoder::with_ip(64, code, instruction_pointer, DecoderOptions::NONE);
         let mut end = instruction_pointer;
@@ -167,10 +142,6 @@ impl Epilogues {
     }
 }
 
-/// The register its caller keeps, as a bit of [`CALLEE_SAVED`], that the
-/// last instruction of `code`, at `instruction_pointer`, loads from the
-/// top of the stack as it frees the frame: a `pop`, or `leave`, which
-/// loads rbp. `None` unless `code` decodes into whole instructions.
 pub(super) fn restored_by(code: &[u8], instruction_pointer: u64) -> Option<u32> {
     let mut decoder = Decoder::with_ip(64, code, instruction_pointer, DecoderOptions::NONE);
     let mut last = None;
@@ -192,8 +163,6 @@ pub(super) fn restored_by(code: &[u8], instruction_pointer: u64) -> Option<u32> 
     Some(1 << index)
 }
 
-/// The next whole instruction, or `None` at the end or before bytes that
-/// are none.
 fn decoded(decoder: &mut Decoder<'_>) -> Option<Instruction> {
     if !decoder.can_decode() {
         return None;
@@ -203,7 +172,6 @@ fn decoded(decoder: &mut Decoder<'_>) -> Option<Instruction> {
     (instruction.code() != Code::INVALID).then_some(instruction)
 }
 
-/// The full registers `instruction` may write.
 fn written<'a>(
     info: &'a mut InstructionInfoFactory,
     instruction: &Instruction,
@@ -228,9 +196,6 @@ fn decode(decoder: &mut Decoder<'_>) -> Result<Instruction, PrologueAnalysisErro
     Ok(instruction)
 }
 
-// Structural prologue checks compare exact registers: operand-size overrides
-// (`push bp`, `mov ebp, esp`) are not the canonical eight-byte frame
-// operations this proof requires.
 pub(super) fn is_push_register(instruction: &Instruction, register: Register) -> bool {
     instruction.mnemonic() == Mnemonic::Push
         && instruction.op_count() == 1
@@ -281,9 +246,6 @@ fn is_argument_copy(instruction: &Instruction, tainted: &mut TaintedRegisters) -
             let source = full_register(instruction.op1_register());
             let destination = full_register(instruction.op0_register());
 
-            // Redefining the stack or frame pointer is never argument homing;
-            // accepting it would prove away real work that destroys the frame
-            // this analysis just validated.
             if matches!(destination, Register::RSP | Register::RBP) {
                 return false;
             }
@@ -344,9 +306,6 @@ const fn is_copy_mnemonic(mnemonic: Mnemonic) -> bool {
     )
 }
 
-// Frame accesses require the exact 64-bit RBP base with no segment override:
-// an FS/GS prefix targets thread-local storage rather than the stack, and an
-// address-size override truncates the effective address to EBP.
 fn is_plain_frame_access(instruction: &Instruction) -> bool {
     instruction.memory_index() == Register::None
         && instruction.segment_prefix() == Register::None
@@ -455,7 +414,6 @@ mod tests {
     type Case = (&'static [u8], u64, Result<(), PrologueAnalysisError>);
 
     const PROLOGUES: [Case; 16] = [
-        // gcc -O0 parameter homing
         (
             &[
                 0x55, 0x48, 0x89, 0xe5, 0x89, 0xc8, 0x45, 0x89, 0xc2, 0x45, 0x89, 0xc8, 0xf3, 0x0f,
@@ -466,7 +424,6 @@ mod tests {
             0x1129,
             Ok(()),
         ),
-        // A stack argument copy and callee-save bookkeeping
         (
             &[
                 0x55, 0x48, 0x89, 0xe5, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x45, 0x10, 0x48,
@@ -475,7 +432,6 @@ mod tests {
             0x1000,
             Ok(()),
         ),
-        // endbr64 before the prologue
         (
             &[
                 0xf3, 0x0f, 0x1e, 0xfa, 0x55, 0x48, 0x89, 0xe5, 0x89, 0x7d, 0xfc,
@@ -483,7 +439,6 @@ mod tests {
             0x1000,
             Ok(()),
         ),
-        // gcc -O2 real work at entry
         (
             &[
                 0x48, 0xc7, 0x05, 0x7d, 0x2e, 0x00, 0x00, 0x63, 0x00, 0x00, 0x00,
@@ -491,7 +446,6 @@ mod tests {
             0x11e0,
             Err(MissingFramePointerSave),
         ),
-        // Real work after frame setup
         (
             &[
                 0x55, 0x48, 0x89, 0xe5, 0xc7, 0x45, 0xfc, 0x63, 0x00, 0x00, 0x00,
@@ -499,13 +453,11 @@ mod tests {
             0x1000,
             Err(UnsupportedInstruction),
         ),
-        // Control flow after frame setup
         (
             &[0x55, 0x48, 0x89, 0xe5, 0xeb, 0x00],
             0x1000,
             Err(UnsupportedInstruction),
         ),
-        // A stack probe
         (
             &[
                 0x55, 0x48, 0x89, 0xe5, 0x48, 0x81, 0xec, 0x00, 0x10, 0x00, 0x00, 0x48, 0x83, 0x0c,
@@ -514,7 +466,6 @@ mod tests {
             0x1000,
             Err(UnsupportedInstruction),
         ),
-        // An rsp-relative argument store
         (
             &[
                 0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x20, 0x48, 0x89, 0x3c, 0x24,
@@ -522,7 +473,6 @@ mod tests {
             0x1000,
             Err(UnsupportedInstruction),
         ),
-        // mov rsp, rdi; mov rbp, rdi; mov rbp, [rbp+0x10]
         (
             &[0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0xfc],
             0x1000,
@@ -538,14 +488,12 @@ mod tests {
             0x1000,
             Err(UnsupportedInstruction),
         ),
-        // push bp; mov ebp, esp
         (
             &[0x66, 0x55, 0x48, 0x89, 0xe5],
             0x1000,
             Err(MissingFramePointerSave),
         ),
         (&[0x55, 0x89, 0xe5], 0x1000, Err(MissingFramePointerSetup)),
-        // mov fs:[rbp-8], rdi; mov [ebp-8], rdi
         (
             &[0x55, 0x48, 0x89, 0xe5, 0x64, 0x48, 0x89, 0x7d, 0xf8],
             0x1000,
@@ -556,18 +504,11 @@ mod tests {
             0x1000,
             Err(UnsupportedInstruction),
         ),
-        // A candidate inside an instruction
         (&[0x55, 0x48, 0x89], 0x1000, Err(InvalidInstruction)),
     ];
 
-    /// Code runs straight to a return keeping the registers its caller
-    /// keeps only when nothing on the way writes one, the stack pointer, or
-    /// goes elsewhere: CPython's `_PyObject_Malloc` after its `leave`,
-    /// clearing the registers it may.
     #[test]
     fn only_code_that_keeps_the_callers_registers_runs_to_its_return() {
-        // xor edx, edx; xor ecx, ecx; xor esi, esi; xor edi, edi;
-        // xor r8d, r8d; ret
         let tail = [
             0x31, 0xd2, 0x31, 0xc9, 0x31, 0xf6, 0x31, 0xff, 0x45, 0x31, 0xc0, 0xc3,
         ];
@@ -585,23 +526,14 @@ mod tests {
         );
 
         let cases: [&[u8]; 9] = [
-            // pop rbx; ret
             &[0x5b, 0xc3],
-            // mov rbx, rax; ret
             &[0x48, 0x89, 0xc3, 0xc3],
-            // xor r12d, r12d; ret
             &[0x45, 0x31, 0xe4, 0xc3],
-            // add rsp, 8; ret
             &[0x48, 0x83, 0xc4, 0x08, 0xc3],
-            // leave; ret
             &[0xc9, 0xc3],
-            // jmp to the next instruction; ret
             &[0xeb, 0x00, 0xc3],
-            // ret 8, which frees its caller's arguments
             &[0xc2, 0x08, 0x00],
-            // no return
             &[0x31, 0xd2],
-            // an instruction cut short
             &[0x48, 0x89],
         ];
 
@@ -614,14 +546,10 @@ mod tests {
         }
     }
 
-    /// A frame freed by a `pop` or `leave` restores the register it loads,
-    /// which code keeps until it writes it or may go elsewhere: CPython
-    /// 3.15's handlers, which pop rbp and jump to the next.
     #[test]
     fn a_pop_restores_the_register_it_loads_until_it_is_written() {
         const RBX: u32 = 1;
         const RBP: u32 = 2;
-        // add rsp, 0x30; pop rbp
         assert_eq!(
             restored_by(&[0x48, 0x83, 0xc4, 0x30, 0x5d], 0x1000),
             Some(RBP)
@@ -629,7 +557,6 @@ mod tests {
         assert_eq!(restored_by(&[0xc9], 0x1000), Some(RBP));
         assert_eq!(restored_by(&[0x5b], 0x1000), Some(RBX));
 
-        // pop rax; pop bp; add rsp, 8; a pop cut short
         for code in [
             &[0x58][..],
             &[0x66, 0x5d],
@@ -639,7 +566,6 @@ mod tests {
             assert_eq!(restored_by(code, 0x1000), None, "{code:x?}");
         }
 
-        // cmp qword [r8+rax*8], 0x1a01d40; je; jmp [r8+rax*8]
         let dispatch = [
             0x49, 0x81, 0x3c, 0xc0, 0x40, 0x1d, 0xa0, 0x01, 0x0f, 0x84, 0x5c, 0xd1, 0xff, 0xff,
             0x41, 0xff, 0x24, 0xc0,
@@ -648,7 +574,6 @@ mod tests {
             Epilogues::new().keeps(&dispatch, 0x1a0_4bd6, RBP),
             0x1a0_4be4
         );
-        // mov rbp, rdi; ret, which moves rsp
         assert_eq!(
             Epilogues::new().keeps(&[0x48, 0x89, 0xfd, 0xc3], 0x1000, RBP),
             0x1000
@@ -657,7 +582,6 @@ mod tests {
             Epilogues::new().keeps(&[0x48, 0x89, 0xfd, 0xc3], 0x1000, RBX),
             0x1003
         );
-        // push rax
         assert_eq!(Epilogues::new().keeps(&[0x50], 0x1000, RBX), 0x1000);
     }
 

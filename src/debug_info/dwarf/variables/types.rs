@@ -1,5 +1,3 @@
-//! Normalizing DWARF type DIEs into the platform-neutral type graph.
-
 use crate::debug_info::dwarf::DwarfSet;
 use crate::image::lines::Files;
 use std::collections::{BTreeMap, VecDeque};
@@ -63,110 +61,65 @@ pub(super) struct TypeArenaBuilder<'a, 'data> {
     pub(super) image: ModuleImageId,
     pub(super) by_die: Layered<DieMap<TypeId>>,
 
-    /// What the prepass read of every unit, which building types only
-    /// reads.
     pub(super) context: Arc<TypeContext>,
     pub(super) entries: Rows<TypeEntry>,
     pub(super) explicit_names: Marks,
 
-    /// The arguments identities spell by name, which resolve once every
-    /// identity exists.
     pub(super) pending_arguments: Vec<super::identity::PendingArguments>,
     pub(super) resolution_depth: usize,
     pub(super) byte_order: ByteOrder,
     pub(super) limit_type: Option<TypeId>,
 
-    /// The shared `void` that qualifiers and typedefs without a target name.
     pub(super) void_type: Option<TypeId>,
 
-    /// The character [`Self::character_type`] made, once it has.
     pub(super) character_type: Option<TypeId>,
     pub(super) dynamic_record_layouts: HashMap<DynamicAggregateLayoutKey, ExpressionId>,
 
-    /// Where every location is pooled.
     pub(super) pool: &'a std::sync::Mutex<super::location::LocationsBuilder>,
 
-    /// The DIEs [`Children`] read into.
     pub(super) die_buffers: &'a DieBuffers<'data>,
     pub(super) record_member_declarations: Vec<AggregateMemberDeclaration>,
 
-    /// What the records the loader builds may still cost.
     pub(super) budget: crate::debug_info::dwarf::budget::Meter,
 
-    /// What each named type's identity is built from, by its identifier.
-    /// Nearly every type is named and identifiers are dense, so a vector
-    /// holds them in a third of the hash map's memory: the map's buckets
-    /// were mostly empty and every one was touched.
     pub(super) identity_parts: Rows<Option<IdentityParts>>,
 
-    /// The Go parts of each Go type's identity, apart so that no other
-    /// type's parts make room for them.
     pub(super) go_identity_parts: Layered<HashMap<TypeId, GoParts>>,
 
-    /// The float type each complex type's parts have, by the part's name
-    /// and size.
     pub(super) complex_parts: HashMap<(Arc<str>, u64), TypeId>,
 
-    /// Go's generic type parameters: each typedef of a shape that names
-    /// its type argument's entry in the function's dictionary.
     pub(super) go_dict_indices: Layered<HashMap<TypeId, u64>>,
 
-    /// Whether each C++ class whose producer says how calls pass it is
-    /// passed by value, in registers where it fits, rather than by
-    /// reference to a copy.
     pub(super) passed_by_value: Layered<HashMap<TypeId, bool>>,
 
-    /// The group whose units' types this arena builds, when it builds one
-    /// group's apart from the others', and each unit's group.
     pub(super) home: Option<(usize, &'a [usize])>,
 
-    /// Whether it was asked for a type of another group, which a walk of
-    /// every unit in order may have built before this one.
     pub(super) foreign: bool,
 
-    /// The DIEs it took for another's type, in order, when it builds one
-    /// group's.
     pub(super) aliases: Vec<DieKey>,
 }
 
-/// What the type arena's prepass found in every unit.
 #[derive(Clone)]
 pub(super) struct TypeContext {
     pub(super) type_definitions: DieMap<DieKey>,
     pub(super) ambiguous_type_declarations: DieMap<()>,
 
-    /// Where each unit's DIEs begin. A reference to any other offset
-    /// points into the middle of a DIE, whose bytes could decode as
-    /// convincing nonsense.
     pub(super) die_offsets: Vec<Bits>,
     pub(super) unit_languages: Vec<Option<gimli::DwLang>>,
 
-    /// The language each unit's producer proves, where it does.
     pub(super) produced_languages: Vec<Option<SourceLanguage>>,
 
-    /// The scopes enclosing each type DIE that has any.
     pub(super) type_scopes: DieMap<ScopePath>,
 
-    /// The declaration each out-of-line type definition completes.
     pub(super) definition_declarations: DieMap<DieKey>,
 }
 
-/// A set of small numbers, one bit each: the offsets at which one unit's
-/// DIEs begin, one bit per byte of the unit, or the types built with
-/// explicit names.
-///
-/// A set of offsets cost a hash table entry, about 16 bytes, per DIE: some
-/// 300 MB for the large benchmark program's 20 million, all live while its
-/// types are built. Its DIEs average eight bytes, so a bit per byte, 20 MB,
-/// is a sixteenth of that, and a lookup is one load instead of a hash and a
-/// probe.
 #[derive(Clone, Default)]
 pub(super) struct Bits {
     words: Vec<u64>,
 }
 
 impl Bits {
-    /// Room for the offsets of a unit `length` bytes long.
     fn with_length(length: usize) -> Self {
         Self {
             words: vec![0; length.div_ceil(64)],
@@ -176,8 +129,6 @@ impl Bits {
     pub(super) fn insert(&mut self, value: usize) {
         let word = value / 64;
 
-        // The set grows to fit: a unit's DIEs lie within its length, but a
-        // header that lies about it must not lose one.
         if word >= self.words.len() {
             self.words.resize(word + 1, 0);
         }
@@ -200,7 +151,6 @@ impl Bits {
         self.words.iter().all(|word| *word == 0)
     }
 
-    /// Adds every number of `other`.
     pub(super) fn union(&mut self, other: &Self) {
         if other.words.len() > self.words.len() {
             self.words.resize(other.words.len(), 0);
@@ -211,7 +161,6 @@ impl Bits {
         }
     }
 
-    /// The numbers in the set, in order.
     pub(super) fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.words.iter().enumerate().flat_map(|(index, word)| {
             let mut word = *word;
@@ -226,24 +175,17 @@ impl Bits {
     }
 }
 
-/// How many member declarations are read in parallel before their files
-/// are interned: enough to keep every worker busy, few enough that their
-/// paths take a few megabytes rather than one per member of the program.
 const MEMBER_DECLARATION_CHUNK: usize = 1 << 15;
 
-/// What the type arena's prepass reads of one unit.
 struct UnitPrepass {
     offsets: Bits,
     language: Option<gimli::DwLang>,
 
-    /// The language the unit's producer or name proves, where it does.
     produced: Option<SourceLanguage>,
 
-    /// Each type DIE declared in a scope, and the scope's segments.
     scoped_types: Vec<(DieKey, Arc<[ScopeSegment]>)>,
     inline_namespaces: Vec<Vec<Arc<str>>>,
 
-    /// Each out-of-line type definition and the declaration it completes.
     definitions: Vec<(DieKey, DieKey)>,
 }
 
@@ -269,9 +211,6 @@ impl UnitPrepass {
         let mut first = true;
         let mut scopes = Vec::<(isize, ScopeSegment)>::new();
 
-        // The path of the first `n` scopes at `n`, shared by the types
-        // declared in them. Leaving a scope keeps its parents' paths, so
-        // the types after a record share one path with those before it.
         let mut paths_at = Vec::<Option<Arc<[ScopeSegment]>>>::new();
         let Ok(mut walk) = DieWalk::new(unit) else {
             return prepass;
@@ -290,8 +229,6 @@ impl UnitPrepass {
                 offset: die.offset.0,
             };
 
-            // Paths are resolved once every unit is read, since a
-            // function's name may live in another unit.
             if is_type_die_tag(die.tag) && !scopes.is_empty() {
                 paths_at.resize(scopes.len() + 1, None);
 
@@ -305,16 +242,11 @@ impl UnitPrepass {
                 prepass.scoped_types.push((key, Arc::clone(segments)));
             }
 
-            // Only the root, namespaces, and types have attributes
-            // this reads; a function scopes the types in it by its
-            // offset alone.
             if die.tag == gimli::DW_TAG_subprogram && !first {
                 scopes.push((depth, ScopeSegment::Function(key)));
                 continue;
             }
 
-            // A D module scopes what it declares; Zig's names spell
-            // their own modules.
             let scopes_or_names = first
                 || die.tag == gimli::DW_TAG_namespace
                 || (d && die.tag == gimli::DW_TAG_module)
@@ -381,7 +313,6 @@ impl UnitPrepass {
     }
 }
 
-/// The language a unit's producer or name proves, from its root DIE.
 fn unit_produced_language(
     dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
@@ -399,7 +330,6 @@ fn unit_produced_language(
     )
 }
 
-/// What the loader keeps of a finished type graph.
 pub(super) struct BuiltTypes {
     pub(super) entries: Vec<TypeEntry>,
     pub(super) dynamic_record_layouts: HashMap<DynamicAggregateLayoutKey, ExpressionId>,
@@ -408,8 +338,6 @@ pub(super) struct BuiltTypes {
     pub(super) passed_by_value: HashMap<TypeId, bool>,
     pub(super) image: ModuleImageId,
 
-    /// The arguments identities spell by name, which deduplication
-    /// resolves.
     pub(super) pending_arguments: Vec<super::identity::PendingArguments>,
 }
 
@@ -449,65 +377,49 @@ pub(super) enum DynamicAggregateChild {
         member: usize,
     },
 
-    /// A bound of a dimension of an array bounded at run time.
     Bound {
         dimension: usize,
         part: crate::image::type_facts::BoundPart,
     },
 
-    /// Where an array's elements are.
     DataLocation,
 
-    /// Whether an array is allocated.
     Allocated,
 
-    /// Whether an array is associated with storage.
     Associated,
 }
 
-/// `DW_OP_push_object_address; DW_OP_deref`: the address the value's
-/// first word holds.
 const DEREFERENCE_OBJECT: [u8; 2] = [gimli::DW_OP_push_object_address.0, gimli::DW_OP_deref.0];
 
-/// A subrange's bound, count, or stride, as its attribute gives it.
 pub(super) enum SubrangeBound<'data> {
     Constant(i128),
 
-    /// The value of an expression.
     Computed {
         expression: gimli::Expression<Reader<'data>>,
         byte_size: u8,
         signed: bool,
     },
 
-    /// What the program stored where an expression says.
     Stored {
         expression: gimli::Expression<Reader<'data>>,
         byte_size: u8,
     },
 
-    /// The value of the variable at this offset in `.debug_info`.
     Variable(u64),
 }
 
-/// A subrange's lower bound, where it ends, and its byte stride.
 type Subrange<'data> = (
     SubrangeBound<'data>,
     Extent<'data>,
     Option<SubrangeBound<'data>>,
 );
 
-/// Where a subrange ends.
 pub(super) enum Extent<'data> {
     Upper(SubrangeBound<'data>),
     Count(SubrangeBound<'data>),
     Unknown,
 }
 
-/// Whether an aggregate's child DIE describes its scope, such as a method,
-/// nested type, static member, or template parameter, rather than bytes of
-/// an instance. Any type may be declared in a scope: GCC nests the
-/// qualified types a class's methods use in the class.
 const fn is_scope_only_child(tag: gimli::DwTag) -> bool {
     is_type_die_tag(tag)
         || matches!(
@@ -555,8 +467,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         die_buffers: &'a DieBuffers<'data>,
         budget: crate::debug_info::dwarf::budget::Meter,
     ) -> Self {
-        // Each unit is read on its own in parallel and merged in unit order,
-        // which is the order a serial walk recorded everything in.
         let prepasses = (0..units.len())
             .into_par_iter()
             .map(|unit_index| UnitPrepass::read(dwarf, units, type_signatures, unit_index))
@@ -626,9 +536,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             aliases: Vec::new(),
         };
 
-        // Types in one scope share its segments, so each distinct list is
-        // resolved once, in parallel, as a path may name another unit's
-        // function.
         let mut distinct = HashMap::<*const ScopeSegment, usize>::new();
         let mut lists = Vec::new();
         let scoped_types = scoped_types
@@ -661,8 +568,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         builder
     }
 
-    /// Makes everything built so far the base that the walks of units
-    /// share.
     pub(super) fn freeze(&mut self) {
         self.by_die.freeze();
         self.entries.freeze();
@@ -701,7 +606,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
     }
 
-    /// The DIE an attribute of a DIE in unit `unit_index` refers to.
     pub(super) fn reference(
         &self,
         unit_index: usize,
@@ -712,8 +616,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             .flatten()
     }
 
-    /// Builds the type an attribute refers to, if any, so that the type
-    /// index knows it; a malformed reference only goes unbuilt.
     pub(super) fn reach(
         &mut self,
         unit_index: usize,
@@ -722,7 +624,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let _ = self.type_reference(unit_index, value);
     }
 
-    /// Builds the type an attribute of a DIE in unit `unit_index` refers to.
     fn type_reference(
         &mut self,
         unit_index: usize,
@@ -738,7 +639,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }))
     }
 
-    /// The direct children of the DIE at `offset` in unit `unit_index`.
     pub(super) fn children(
         &self,
         unit_index: usize,
@@ -753,7 +653,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         ))
     }
 
-    /// The language unit `unit_index`'s producer proves, if it does.
     pub(super) fn produced_language(&self, unit_index: usize) -> Option<SourceLanguage> {
         self.context
             .produced_languages
@@ -762,7 +661,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             .flatten()
     }
 
-    /// The language a unit's `DW_AT_language` names.
     pub(super) fn dwarf_language(&self, unit_index: usize) -> Option<gimli::DwLang> {
         self.context
             .unit_languages
@@ -775,19 +673,14 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         self.produced_language(unit_index) == Some(SourceLanguage::Zig)
     }
 
-    /// The id of the next type, unless the types fill every id but those
-    /// [`Self::reserved_id`] gives.
     fn next_id(&self) -> Option<TypeId> {
         (self.entries.len() < MAX_BUILT_TYPES).then(|| self.reserved_id())
     }
 
-    /// The id of the next type, for the few types made once each: void,
-    /// the character, and the type past the work limit.
     fn reserved_id(&self) -> TypeId {
         TypeId::new(super::row(self.entries.len()))
     }
 
-    /// The row of a type this arena numbered.
     #[expect(
         clippy::indexing_slicing,
         reason = "`reserved_id` names the next row, which is pushed before any type refers to it"
@@ -796,7 +689,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         &mut self.entries[id.index()]
     }
 
-    /// A built type through the names typedefs give it.
     fn unnamed(&self, mut id: TypeId) -> Option<&TypeInfo> {
         for _ in 0..MAX_TYPE_RESOLUTION_DEPTH {
             match self.entries.get(id.index())? {
@@ -816,7 +708,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         None
     }
 
-    /// The byte size of a built type, if it has one.
     fn byte_size_of(&self, id: TypeId) -> Option<u64> {
         match self.entries.get(id.index())? {
             TypeEntry::Resolved(info) => info.byte_size,
@@ -892,8 +783,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         id
     }
 
-    /// Returns `void`. Producers omit `DW_AT_type` to mean it, so a
-    /// `const void` or `typedef void T` has no target DIE to resolve.
     pub(super) fn void_type(&mut self) -> TypeReference {
         let reference = TypeReference {
             image: self.image,
@@ -913,7 +802,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         reference
     }
 
-    /// The one-byte character of a string type that names none.
     fn character_type(&mut self) -> TypeReference {
         let reference = TypeReference {
             image: self.image,
@@ -998,8 +886,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         Err("type declaration/definition references form a cycle".into())
     }
 
-    /// Builds the type at a DIE that [`Self::canonical_type_key`] validated
-    /// as a type DIE.
     fn build(&mut self, key: DieKey, id: TypeId) -> Built {
         let units: &'a Units<'data> = self.units;
         let unit = units
@@ -1021,8 +907,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             string_with_origins(self.dwarf, units, unit, &entry, &origins, gimli::DW_AT_name)
                 .map_err(malformed)?;
 
-        // Self-hosted Zig names a type declared in another by its own name,
-        // and says which one it is in.
         let explicit_name = match explicit_name {
             Some(name) if self.is_zig(key.unit) && entry.attr_value(DW_AT_ZIG_PARENT).is_some() => {
                 Some(
@@ -1037,8 +921,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             self.explicit_names.insert(id.index());
         }
 
-        // Validate the tag's mandatory attributes first: an unusable size
-        // returns an opaque type early, which must not mask a defect.
         if let Some(defect) = self.mandatory_attribute_defect(&entry, key.unit) {
             return Err(defect);
         }
@@ -1062,8 +944,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             None
         };
 
-        // GNAT passes an array of an unconstrained type as a record of
-        // pointers to its elements and bounds, which is the array.
         if slice_layout.is_none()
             && let Some(array) = self.ada_fat_pointer(&entry, key.unit)
         {
@@ -1114,7 +994,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         Ok(built)
     }
 
-    /// Builds a type by its tag.
     #[expect(
         clippy::too_many_arguments,
         reason = "the tag's builders take the attributes validated for every type"
@@ -1190,7 +1069,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 explicit_size,
                 TypeKind::Unspecified,
             )),
-            // A Go func is a pointer to its closure context.
             gimli::DW_TAG_subroutine_type
                 if self.language(unit_index) == SourceLanguage::Go
                     && Self::go_kind(entry) == Some(GoKind::Func)
@@ -1207,7 +1085,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 self.build_signature_type(entry, unit_index, reference, explicit_name)
             }
 
-            // A type this backend does not model is opaque, not defective.
             tag => Ok(opaque(
                 reference,
                 explicit_name.unwrap_or_else(|| Arc::from(format!("{tag:?}"))),
@@ -1254,7 +1131,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             .map_or(RecordMemberLayout::Runtime, RecordMemberLayout::ByteOffset)
     }
 
-    /// A defect in the attributes a type's tag requires.
     fn mandatory_attribute_defect(
         &self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -1293,13 +1169,10 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 self.target_defect(entry, unit_index, "type", TargetRequirement::Required)
             }
 
-            // A pointer's target is optional (`void *`), but must be a type.
             _ => self.target_defect(entry, unit_index, "type", TargetRequirement::Optional),
         }
     }
 
-    /// A defect in a `DW_AT_type` target: absent though required, or not a
-    /// type DIE.
     fn target_defect(
         &self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -1346,10 +1219,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let name = explicit_name.unwrap_or_else(|| Arc::from("<unnamed base type>"));
         let byte_size = explicit_size.ok_or("base type has no byte size")?;
         if byte_size == 0 {
-            // Zig's storage-less `void` payload and Rust's unit type `()` are
-            // zero-byte base types with no bits to decode, whatever their
-            // encoding: `void` is unspecified, and the others hold nothing,
-            // as an empty structure does.
             let kind = if name.as_ref() == "void" {
                 TypeKind::Unspecified
             } else {
@@ -1371,14 +1240,10 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 Some(BaseTypeEncoding::ComplexFloating)
             }
 
-            // `char8_t`, `char16_t`, `char32_t`, and Rust's `char` are code
-            // units of UTF-8, UTF-16, and UTF-32.
             gimli::DW_ATE_UTF if matches!(byte_size, 1 | 2 | 4) => {
                 Some(BaseTypeEncoding::UnsignedCharacter)
             }
 
-            // C++'s `wchar_t` is a type of its own, which compilers encode
-            // as an integer; on Linux it holds UTF-32.
             gimli::DW_ATE_signed if name.as_ref() == "wchar_t" => {
                 Some(BaseTypeEncoding::SignedCharacter)
             }
@@ -1573,8 +1438,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let mut children = self.children(unit_index, entry.offset())?;
 
         while let Some(child) = children.next_child()? {
-            // rustc declares an enumeration's methods inside it, and its
-            // generic arguments, none of which change its values.
             if matches!(
                 child.tag(),
                 gimli::DW_TAG_subprogram
@@ -1634,7 +1497,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         ))
     }
 
-    /// A function's type: what it returns and what its parameters are.
     fn build_signature_type(
         &mut self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -1665,8 +1527,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                     );
                 }
                 gimli::DW_TAG_unspecified_parameters => variadic = true,
-                // Producers may describe more, such as template parameters,
-                // which a signature does not need.
                 _ => {}
             }
         }
@@ -1679,7 +1539,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             prototyped,
         };
 
-        // Named from its parts once every type is built.
         let name = explicit_name.unwrap_or_else(|| Arc::from("<function>"));
 
         Ok(resolved(reference, name, None, kind))
@@ -1693,13 +1552,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         self.type_reference(unit_index, entry.attr_value(gimli::DW_AT_type))
     }
 
-    /// Every integer constant a unit declares at its top level, such as a
-    /// Go package's `const`s, by name. Constants of other types are left
-    /// out; values come from each constant's own type, read before typed Go
-    /// constants turn their types into enumerations.
     pub(super) fn named_constants(&mut self) -> BTreeMap<Arc<str>, IntegerValue> {
-        // Each unit is searched for its constants in parallel; their types
-        // are built in unit order, which numbers them.
         let units: &Units<'data> = self.units;
         let found = units
             .par_iter()
@@ -1847,7 +1700,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         self.declare_go_named_constants(constants);
     }
 
-    /// Makes each typed Go constant's type an enumeration of its constants.
     fn declare_go_named_constants(&mut self, constants: BTreeMap<TypeId, NamedConstantCollection>) {
         for (target, collection) in constants {
             match collection {
@@ -1887,14 +1739,9 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
     }
 
-    /// Gives each aggregate's members their declarations, or makes an
-    /// aggregate malformed when one of its members' cannot be read.
     pub(super) fn populate_record_member_declarations(&mut self, files: &mut Files) {
         let pending = std::mem::take(&mut self.record_member_declarations);
 
-        // Each declaration is read on its own in parallel, and their files
-        // interned in the order noted, which numbers them as a serial pass.
-        // A chunk at a time, so that only a chunk's paths are held at once.
         let mut declarations = Vec::with_capacity(pending.len());
 
         for chunk in pending.chunks(MEMBER_DECLARATION_CHUNK) {
@@ -1938,7 +1785,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
     }
 
-    /// Where the member whose DIE is `key` is declared.
     fn member_declaration(
         &self,
         key: DieKey,
@@ -1984,9 +1830,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         let names_phase = crate::span!("types.names");
 
-        // Most types are named explicitly and keep their names, so only the
-        // others are rendered, and with one set of the types being visited,
-        // which every rendering leaves empty.
         let mut visiting = HashSet::new();
         let names = (0..self.entries.len())
             .map(|index| {
@@ -2013,7 +1856,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         self.assign_identities();
     }
 
-    /// The finished graph, once [`Self::finalize_type_graph`] has run.
     pub(super) fn finish(self) -> BuiltTypes {
         BuiltTypes {
             entries: self.entries.into_flat(),
@@ -2026,7 +1868,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
     }
 
-    /// The type a built pointer type points to.
     pub(super) fn pointee(&self, pointer: TypeId) -> Option<TypeId> {
         match self.entries.get(pointer.index()) {
             Some(TypeEntry::Resolved(TypeInfo {
@@ -2041,8 +1882,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
     }
 
-    /// Gives each complex type's real and imaginary parts a float type:
-    /// the program's own float of that name and size, or one made for it.
     fn add_complex_parts(&mut self) {
         let mut parts = Vec::new();
         for (index, entry) in self.entries.iter().enumerate() {
@@ -2102,10 +1941,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
     }
 
-    /// Renders a type's source-style name from its targets' names. Cycles
-    /// and chains deeper than the resolution limit, which only malformed
-    /// metadata builds, render as `<type #N>` instead of recursing without
-    /// bound on the controller thread's stack.
     fn render_type_name(&self, id: TypeId, visiting: &mut HashSet<TypeId>) -> Arc<str> {
         if visiting.len() >= MAX_TYPE_RESOLUTION_DEPTH || !visiting.insert(id) {
             return Arc::from(format!("<type #{}>", id.get()));
@@ -2126,15 +1961,12 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             | TypeKind::Reference { .. }
             | TypeKind::Array { .. }
             | TypeKind::Signature { .. } => {
-                // `declare` guards against cycles itself.
                 visiting.remove(&id);
                 let declared = self.declare(id, String::new(), visiting);
                 visiting.insert(id);
                 Arc::from(declared)
             }
 
-            // A qualified pointer qualifies its declarator, as in
-            // `int (* const)(int)`.
             TypeKind::Modified { modifier, target }
                 if modifier_keyword(*modifier).is_some()
                     && self.modified_target_is_indirection(target.id) =>
@@ -2183,9 +2015,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         false
     }
 
-    /// Renders a type as C declares it around `inner`, the declarator
-    /// built so far: `int (*)(int)` is a pointer to `int (int)`, whose
-    /// parameter list binds tighter than its `*`.
     fn declare(&self, id: TypeId, inner: String, visiting: &mut HashSet<TypeId>) -> String {
         let join = |base: &str, inner: String| {
             if inner.is_empty() {
@@ -2267,8 +2096,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                     .map(|parameter| self.render_type_name(parameter.id, visiting).to_string())
                     .collect::<Vec<_>>();
 
-                // An unprototyped C function's `()` says nothing of its
-                // parameters, though producers describe them as variadic.
                 let unprototyped = list.is_empty() && !*prototyped;
                 if *variadic && !unprototyped {
                     list.push("...".to_owned());
@@ -2302,9 +2129,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         declared
     }
 
-    /// Declares a pointer or reference to `target`, parenthesized where
-    /// the target's own declarator binds tighter, as an array's or a
-    /// function's does.
     fn declare_indirection(
         &self,
         target: TypeId,
@@ -2400,8 +2224,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
     ) -> Built {
         let target = self.target(entry, unit_index)?;
 
-        // An absent target means `void`, except on a typedef declaration,
-        // which is incomplete.
         let declaration = strict_flag(entry, gimli::DW_AT_declaration).unwrap_or(false);
         let target = match target {
             None if !declaration => Some(self.void_type()),
@@ -2439,7 +2261,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             ));
         }
 
-        // Only a declaration keeps an absent target; a qualifier cannot be one.
         let target = target.ok_or("type modifier has no target")?;
         let Some(modifier) = type_modifier(entry.tag()) else {
             return Err("type modifier has no modifier kind".into());
@@ -2872,8 +2693,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }))
     }
 
-    /// Builds one member of the aggregate `aggregate`, recording its
-    /// declaration and any location computed at run time.
     #[expect(
         clippy::too_many_arguments,
         reason = "a member keeps its owner, location identity, access, and declaration provenance"
@@ -2932,7 +2751,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         Ok(member)
     }
 
-    /// Builds the `index`th base class of the aggregate `aggregate`.
     fn build_base(
         &mut self,
         child: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -2977,8 +2795,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         })
     }
 
-    /// Records the location expression of a member whose offset is computed
-    /// at run time.
     fn record_dynamic_layout(
         &mut self,
         child: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -3129,7 +2945,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         ))
     }
 
-    /// A variant part's discriminant and variants.
     #[expect(
         clippy::too_many_lines,
         reason = "a variant part's discriminator and arms validate one nested DIE contract"
@@ -3274,8 +3089,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             });
         }
 
-        // A sum with no stored tag selects among its variants by which can
-        // hold a value, not by selectors; one with none holds no value.
         if !matches!(discriminant, VariantDiscriminant::Absent) {
             if variants.is_empty() {
                 return Err(VariantMetadataError::Malformed(
@@ -3289,8 +3102,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         Ok((discriminant, variants))
     }
 
-    /// Records whether calls pass a C++ class by value, when its producer
-    /// says.
     fn note_calling_convention(
         &mut self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -3307,8 +3118,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
     }
 
-    /// The size of a Zig packed struct that Zig's own backend describes by
-    /// the integer that backs it.
     fn packed_size(
         &mut self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -3374,8 +3183,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         while let Some(child) = children.next_child()? {
             match child.tag() {
-                // A DWARF 4 static data member is a declaration with no bytes
-                // in an instance.
                 gimli::DW_TAG_member
                     if strict_flag(child, gimli::DW_AT_declaration).unwrap_or(false) => {}
                 gimli::DW_TAG_member | gimli::DW_TAG_inheritance
@@ -3442,11 +3249,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         Ok(resolved(reference, name, explicit_size, kind))
     }
 
-    /// A self-hosted Zig optional pointer, `?*T` or `?[*]T`, as the pointer
-    /// it is: a union of a pointer's size whose discriminant is the
-    /// pointer's own bits, `null` when they are 0, and whose other variant
-    /// is the pointer, as the LLVM backend describes it. Any other type is
-    /// itself.
     fn zig_nullable_pointer(&self, info: TypeInfo) -> TypeInfo {
         let info_of = |reference: TypeReference| match self.entries.get(reference.id.index()) {
             Some(TypeEntry::Resolved(info)) => Some(info),
@@ -3585,11 +3387,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         Ok(resolved(reference, name, explicit_size, kind))
     }
 
-    /// An Odin union as the variant its tag selects. Odin describes one as
-    /// a union of its `tag` and of each variant, named `v` and the tag value
-    /// that selects it; a tag no variant is named for, 0 unless the union is
-    /// `#no_nil`, is nil. A union without a tag, which holds one pointer
-    /// whose null is nil, stays a union.
     fn normalize_odin_union(
         &mut self,
         unit_index: usize,
@@ -3658,8 +3455,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             ));
         }
 
-        // Every member's path is found before any is changed, so a union
-        // that cannot be normalized keeps its declarations as they were.
         let mut paths = Vec::new();
         for (position, metadata) in self.record_member_declarations.iter().enumerate() {
             if metadata.aggregate != aggregate {
@@ -3773,8 +3568,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             return Err("bit-field has no bit offset".into());
         }
 
-        // A member placed by its first bit alone, as Zig's own backend
-        // places a packed struct's, spans its type's bits.
         if let Some(bit_offset) = entry
             .attr(gimli::DW_AT_data_bit_offset)
             .and_then(gimli::Attribute::udata_value)
@@ -3830,10 +3623,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         )
     }
 
-    /// Whether `entry` is the record GNAT passes an array of an
-    /// unconstrained type as: artificial, with only a pointer to the
-    /// elements, `P_ARRAY`, first, and one to the bounds, `P_BOUNDS`. Its
-    /// array's bounds are found from the record. Returns the array's entry.
     fn ada_fat_pointer(
         &self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -3891,8 +3680,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         (unit.entry(array).ok()?.tag() == gimli::DW_TAG_array_type).then_some(array)
     }
 
-    /// An array, whose elements are where `data_location` finds them from
-    /// the value's place when it is given.
     fn build_array(
         &mut self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -3911,8 +3698,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 .unwrap_or_else(|| Arc::from("<dynamic array>"))
         };
 
-        // A stride for the whole array, or one in bits, spaces elements as
-        // nothing here reads.
         if entry.attr(gimli::DW_AT_byte_stride).is_some()
             || entry.attr(gimli::DW_AT_bit_stride).is_some()
         {
@@ -3992,8 +3777,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             );
         };
 
-        // Producers rarely give a C array a size of its own: it is its
-        // elements', laid end to end.
         let byte_size = explicit_size.or_else(|| {
             let element_size = self.byte_size_of(element.id)?;
             dimensions.iter().try_fold(element_size, |size, dimension| {
@@ -4013,8 +3796,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         ))
     }
 
-    /// An array bounded at run time, recording the expressions that find
-    /// its bounds and where its elements are.
     #[expect(
         clippy::too_many_arguments,
         reason = "the array's entry, identity, and the subranges already read"
@@ -4049,7 +3830,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                     expressions.push((child, expression));
                 }
 
-                // An array that says it is always allocated is.
                 Some(gimli::AttributeValue::Flag(true))
                     if attribute != gimli::DW_AT_data_location => {}
                 Some(_) => {
@@ -4123,7 +3903,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         ))
     }
 
-    /// Records the expressions that find an array's parts at run time.
     fn record_array_layouts(
         &mut self,
         unit_index: usize,
@@ -4152,8 +3931,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         Ok(())
     }
 
-    /// How an array of `rank` dimensions lays out its elements: row by row,
-    /// but Fortran's go column by column unless the array says otherwise.
     fn array_ordering(
         &self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -4174,7 +3951,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             None => ArrayOrdering::RowMajor,
         };
 
-        // One dimension has one order.
         Ok(if rank == 1 {
             ArrayOrdering::RowMajor
         } else {
@@ -4182,8 +3958,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         })
     }
 
-    /// A subrange's lower bound, where it ends, and its stride, or why
-    /// they are unsupported.
     fn read_subrange(
         &self,
         unit_index: usize,
@@ -4225,8 +3999,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         Ok((lower, extent, stride))
     }
 
-    /// The size and signedness of a subrange's index type, which give its
-    /// computed bounds' values: a target word, signed, when it names none.
     fn index_type(
         &self,
         unit_index: usize,
@@ -4251,8 +4023,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         size.map_or(word, |size| (size, index_type_is_signed(unit, subrange)))
     }
 
-    /// One bound, count, or stride of a subrange, as its attribute gives
-    /// it, or why it is unsupported.
     fn subrange_bound(
         &self,
         unit_index: usize,
@@ -4300,9 +4070,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
     }
 
-    /// A Fortran `character(len=N)`: N characters, counted from one, of
-    /// the type it names, or else of one byte each. A length the program
-    /// decides at run time is where the string says.
     fn build_string_type(
         &mut self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -4355,7 +4122,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             );
         }
 
-        // With a length of its own, a string's byte size is the length's.
         let Some(byte_size) = explicit_size else {
             return Ok(opaque(
                 reference,
@@ -4391,8 +4157,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         ))
     }
 
-    /// A subrange type, as Ada's `range -128 .. 127`, is a type of its own
-    /// that holds its base type's values within its bounds.
     fn build_subrange_type(
         &mut self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -4496,7 +4260,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         for word in counts.into_iter().flatten() {
             let field_type = &field(word)?;
-            // Odin names its integers, as `int`, by typedefs.
             let valid = matches!(self.unnamed(field_type.id), Some(TypeInfo {
                 kind: TypeKind::Base(BaseType {
                     encoding: BaseTypeEncoding::Unsigned | BaseTypeEncoding::Signed,
@@ -4529,8 +4292,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 }
 
 impl TypeArenaBuilder<'_, '_> {
-    /// A slice's element type: what its data member points to, or a string
-    /// type's bytes.
     fn slice_element(
         &mut self,
         layout: SliceLayout,
@@ -4559,35 +4320,24 @@ impl TypeArenaBuilder<'_, '_> {
     }
 }
 
-/// Which language's slice descriptor a structure is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SliceLayout {
-    /// `{data_ptr, length}`: a pointer to a slice or `str`.
     Rust,
 
-    /// `{data_ptr, length}`: a pointer to a string type, such as `Path`,
-    /// `OsStr`, or `CStr`, which wraps the unsized array of bytes it holds.
     RustBytes(DieKey),
 
-    /// `{ptr, len}`.
     Zig,
 
-    /// `{array, len, cap}`.
     Go,
 
-    /// `{data, len}`: Odin's slices and strings.
     Odin,
 
-    /// `{data, len, cap, allocator}`: Odin's dynamic arrays, whose
-    /// allocator is two words.
     OdinDynamic,
 
-    /// `{length, ptr}`: D's slices and strings.
     D,
 }
 
 impl SliceLayout {
-    /// The descriptor's members, in order, each at the word of its index.
     const fn members(self) -> &'static [&'static str] {
         match self {
             Self::Rust | Self::RustBytes(_) => &["data_ptr", "length"],
@@ -4599,7 +4349,6 @@ impl SliceLayout {
         }
     }
 
-    /// How many words the descriptor is.
     const fn word_count(self) -> u64 {
         match self {
             Self::OdinDynamic => 5,
@@ -4607,7 +4356,6 @@ impl SliceLayout {
         }
     }
 
-    /// Which of the descriptor's words hold its parts.
     const fn words(self) -> SliceWords {
         match self {
             Self::Rust | Self::RustBytes(_) | Self::Zig | Self::Odin => SliceWords::POINTER_LENGTH,
@@ -4616,8 +4364,6 @@ impl SliceLayout {
         }
     }
 
-    /// Whether a slice so named is the language's text: Rust's `str`, and
-    /// Zig's `[]const u8` and its sentinel-terminated forms.
     fn is_text(self, name: &str) -> bool {
         match self {
             Self::Rust => {
@@ -4629,8 +4375,6 @@ impl SliceLayout {
             Self::RustBytes(_) => true,
             Self::Zig => matches!(name, "[]const u8" | "[:0]const u8" | "[:0]u8"),
             Self::Odin => name == "string",
-            // D's strings, and any slice of its characters, however
-            // qualified: `char[]`, `const(wchar)[]`.
             Self::D => {
                 matches!(name, "string" | "wstring" | "dstring")
                     || name.strip_suffix("[]").is_some_and(|element| {
@@ -4649,16 +4393,6 @@ impl SliceLayout {
 }
 
 impl<'data> TypeArenaBuilder<'_, 'data> {
-    /// Which language's slice descriptor a structure DIE is, judged by its
-    /// shape and by what its language says, never by a library's names.
-    ///
-    /// rustc emits each pointer to a slice or `str` as a structure of a data
-    /// pointer and a length outside every module, whatever it names it:
-    /// `&[T]`, `*const [T]` when optimizing, `&mut [T]`, `Box<[T]>`. A
-    /// pointer to a type with an unsized tail, such as `&Path`, has the same
-    /// shape, but its length counts the tail, so it is not a slice, unless
-    /// the tail is bytes that wrappers alone hold, as in `Path`. Go marks
-    /// slices by kind, and Zig spells them `[]T` and `[:s]T`.
     fn slice_layout(
         &self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -4681,8 +4415,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
                 name if name.starts_with("[dynamic]") => Some(SliceLayout::OdinDynamic),
                 _ => None,
             },
-            // A D slice is named for its element, and a string for its
-            // characters.
             SourceLanguage::D => {
                 let name = name?;
                 if !(name.ends_with("[]") || matches!(name, "string" | "wstring" | "dstring")) {
@@ -4717,7 +4449,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         }
     }
 
-    /// A structure's members' names and type DIEs, in order.
     fn member_types(
         &self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -4750,9 +4481,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         Some(members)
     }
 
-    /// Whether a pointer DIE points to a type whose last member is unsized,
-    /// such as `Path` or `RcInner<str>`. Anything unreadable counts as
-    /// unsized, so that a doubtful pointer is never presented as a slice.
     fn points_to_unsized(&self, pointer: DieKey) -> bool {
         const MAX_DEPTH: usize = 16;
         let target = |key: DieKey| -> Option<(
@@ -4814,11 +4542,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         true
     }
 
-    /// Whether a record's last member runs past the record's end, as an
-    /// unsized tail does when rustc describes it by its element alone:
-    /// `struct Tail { head: u32, tail: [u16] }` is 4 bytes whose `tail` is a
-    /// `u16` at offset 4. A member of no size may sit at the end of a sized
-    /// record, and a size that cannot be read proves nothing.
     fn tail_overruns(
         &self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -4865,8 +4588,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
             .is_some_and(|end| end > size)
     }
 
-    /// The size of the type a DIE describes, through typedefs and
-    /// qualifiers, when the DIE states it.
     fn die_byte_size(&self, mut key: DieKey) -> Option<u64> {
         const MAX_DEPTH: usize = 16;
 
@@ -4902,9 +4623,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         None
     }
 
-    /// The unsized array of bytes a pointer DIE's target holds, when that
-    /// target is records each of a single member at offset zero, ending in
-    /// the array, as `Path`, `OsStr`, and `CStr` are.
     fn string_bytes(&self, pointer: DieKey) -> Option<DieKey> {
         const MAX_DEPTH: usize = 16;
         let entry = |key: DieKey| {
@@ -4934,9 +4652,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
 
             match current_entry.tag() {
                 gimli::DW_TAG_structure_type => {
-                    // The one member: whether it is at offset zero, and
-                    // its type. A second member, or an error before one,
-                    // ends the search.
                     let mut children = self.children(current.unit, current_entry.offset()).ok()?;
                     let mut only = None;
 
@@ -4981,7 +4696,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         None
     }
 
-    /// Whether an array type DIE has a dimension with no count.
     pub(super) fn array_is_unsized(&self, array: DieKey) -> bool {
         let Ok(mut children) = self.children(array.unit, gimli::UnitOffset(array.offset)) else {
             return true;
@@ -5000,9 +4714,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
     }
 }
 
-/// Where an array of a unit's language begins when its subrange does not
-/// say: DWARF's default lower bound for the language, which a language not
-/// in the standard's table does not have.
 fn default_lower_bound(language: Option<gimli::DwLang>, source: SourceLanguage) -> Option<i128> {
     if matches!(
         source,
@@ -5028,10 +4739,6 @@ fn default_lower_bound(language: Option<gimli::DwLang>, source: SourceLanguage) 
     }
 }
 
-/// Resolves a type DIE's `DW_AT_address_class`, which defaults to zero. A
-/// class too large to represent is unsupported, and any other non-constant
-/// form defective: either read as the default class would use semantics the
-/// producer never specified.
 fn resolve_address_class(
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
     reference: TypeReference,
@@ -5055,9 +4762,6 @@ fn resolve_address_class(
     }
 }
 
-/// Resolves a type DIE's `DW_AT_byte_size`: `None` when it is absent, and
-/// otherwise the size or the terminal entry for a size that is unusable or
-/// defective. Only an absent size may fall back to a default.
 fn resolve_explicit_size(
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
     reference: TypeReference,
@@ -5084,21 +4788,16 @@ fn resolve_explicit_size(
     }
 }
 
-/// A type built, or why its metadata is malformed.
 type Built = std::result::Result<TypeEntry, Arc<str>>;
 
 fn malformed(error: impl std::fmt::Display) -> Arc<str> {
     error.to_string().into()
 }
 
-/// Gives the members `declarations` names their declarations.
 fn declare_members(
     kind: &mut TypeKind,
     declarations: impl Iterator<Item = (AggregateMemberPath, Option<SourceLocation>)>,
 ) {
-    // A record's lists are its own until types merge, so each is written
-    // in place; copying a list for each member it declares made a variant
-    // part's cost grow with the square of its members.
     let (mut direct, mut discriminant, mut variants) = match kind {
         TypeKind::Record { members, .. } | TypeKind::Union { members, .. } => {
             (Some(members), None, None)
@@ -5145,7 +4844,6 @@ fn declare_members(
     }
 }
 
-/// A type with no identity yet.
 const fn resolved(
     reference: TypeReference,
     name: Arc<str>,
@@ -5161,7 +4859,6 @@ const fn resolved(
     })
 }
 
-/// A type whose representation is unsupported.
 fn opaque(
     reference: TypeReference,
     name: Arc<str>,
@@ -5178,11 +4875,8 @@ fn opaque(
     )
 }
 
-/// Go's `DW_AT_go_dict_index`: which entry of a generic function's
-/// dictionary holds a type parameter's argument.
 const DW_AT_GO_DICT_INDEX: gimli::DwAt = gimli::DwAt(0x2906);
 
-/// Whether an encoding is a float or a pair of them.
 const fn is_floating(encoding: BaseTypeEncoding) -> bool {
     matches!(
         encoding,
@@ -5190,7 +4884,6 @@ const fn is_floating(encoding: BaseTypeEncoding) -> bool {
     )
 }
 
-/// The integral `BaseTypeEncoding` of a `DW_ATE_*` encoding.
 const fn integer_encoding(encoding: gimli::DwAte) -> Option<BaseTypeEncoding> {
     Some(match encoding {
         gimli::DW_ATE_boolean => BaseTypeEncoding::Boolean,
@@ -5202,15 +4895,6 @@ const fn integer_encoding(encoding: gimli::DwAte) -> Option<BaseTypeEncoding> {
     })
 }
 
-/// Spare DIEs for [`Children`] to read into, kept for the whole load.
-///
-/// A DIE owns a vector of its decoded attributes, so reading children into
-/// a DIE of their own allocated once for every aggregate, enumeration,
-/// array, and signature a load builds, several times for each record. Each
-/// [`Children`] takes a DIE from here and gives it back when dropped, so a
-/// load allocates only as many as it nests. The builder is shared with the
-/// threads that build identities, so the spares are behind a lock, which
-/// costs less uncontended than the allocation it saves.
 #[derive(Default)]
 pub(super) struct DieBuffers<'data>(
     std::sync::Mutex<Vec<gimli::DebuggingInformationEntry<Reader<'data>>>>,
@@ -5232,10 +4916,6 @@ impl<'data> DieBuffers<'data> {
             .push(entry);
     }
 
-    /// The DIE at `offset`, which `raw` starts at, read into a spare as
-    /// `gimli::Unit::entry` reads it. Resolving a type reads its DIE twice,
-    /// once to find its definition and once to build it, which allocated
-    /// the DIE's attributes each time.
     fn read(
         &self,
         mut raw: gimli::EntriesRaw<'_, Reader<'data>>,
@@ -5255,8 +4935,6 @@ impl<'data> DieBuffers<'data> {
     }
 }
 
-/// A DIE read into a spare from [`DieBuffers`], which it goes back to when
-/// dropped.
 pub(super) struct SpareEntry<'a, 'data> {
     entry: gimli::DebuggingInformationEntry<Reader<'data>>,
     buffers: &'a DieBuffers<'data>,
@@ -5277,8 +4955,6 @@ impl Drop for SpareEntry<'_, '_> {
     }
 }
 
-/// The direct children of one DIE, read one at a time into one reused DIE
-/// and lent from it.
 pub(super) struct Children<'a, 'data> {
     raw: gimli::EntriesRaw<'a, Reader<'data>>,
     entry: gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -5298,8 +4974,6 @@ impl<'a, 'data> Children<'a, 'data> {
         }
     }
 
-    /// The next child, or `None` after the last. After an error there are
-    /// no more.
     pub(super) fn next_child(
         &mut self,
     ) -> std::result::Result<Option<&gimli::DebuggingInformationEntry<Reader<'data>>>, Arc<str>>
@@ -5321,12 +4995,10 @@ impl<'a, 'data> Children<'a, 'data> {
         }
     }
 
-    /// Reads the next child into the DIE, returning whether there is one.
     fn advance(&mut self) -> gimli::Result<bool> {
         if !self.started {
             self.started = true;
 
-            // The parent itself, whose attributes nothing here reads.
             let Some(parent) = self.raw.read_abbreviation()? else {
                 return Ok(false);
             };
@@ -5337,12 +5009,8 @@ impl<'a, 'data> Children<'a, 'data> {
             }
         }
 
-        // The parent is at depth zero and its children at one. Their own
-        // children are skipped by their abbreviations, without decoding
-        // the attributes nothing here reads.
         while !self.raw.is_empty() {
             if self.raw.next_depth() <= 1 {
-                // A null entry ends the children.
                 return self.raw.read_entry(&mut self.entry);
             }
 
@@ -5362,7 +5030,6 @@ impl Drop for Children<'_, '_> {
     }
 }
 
-/// Whether a type DIE's `DW_AT_type` must be present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TargetRequirement {
     Required,
@@ -5375,19 +5042,12 @@ fn named_type_relationship(tag: gimli::DwTag, language: SourceLanguage) -> Named
     }
 
     match language {
-        // Nim's are the C typedefs it compiles to.
         SourceLanguage::C | SourceLanguage::Cpp | SourceLanguage::Nim => {
             NamedTypeRelationship::Synonym
         }
 
-        // A Rust type alias is the type it names: Rust has no typedef of a
-        // distinct type. Releases after 1.97 describe `usize` and `isize`
-        // as typedefs of `u64` and `i64`, which must stay integers.
         SourceLanguage::Rust => NamedTypeRelationship::Synonym,
 
-        // Odin's typedefs are its `distinct` types, and wrappers that name
-        // its own types, as `int`; GNAT's name Ada's types, as an access
-        // type.
         SourceLanguage::Go | SourceLanguage::Odin | SourceLanguage::Ada => {
             NamedTypeRelationship::Distinct
         }
@@ -5409,9 +5069,6 @@ const fn type_modifier(tag: gimli::DwTag) -> Option<TypeModifier> {
     }
 }
 
-/// Whether a DIE tag denotes a type. A `DW_AT_type` edge must name one of
-/// these; a reference to any other tag is defective metadata. Tags this backend
-/// does not model still count as types and are surfaced as opaque.
 pub(super) const fn is_type_die_tag(tag: gimli::DwTag) -> bool {
     matches!(
         tag,
@@ -5460,9 +5117,7 @@ impl TypeMetadataEntry for TypeEntry {
     }
 }
 
-/// A module's types, as the loader builds them or an image keeps them.
 pub(super) trait TypeEntries {
-    /// The type `id` names, or why its metadata is unusable.
     fn entry(&self, id: TypeId) -> std::result::Result<&TypeInfo, Arc<str>>;
 }
 
@@ -5553,9 +5208,6 @@ pub(super) fn propagate_wrapper_sizes(types: &mut [TypeEntry]) {
               and `visited` and `assigned` hold that many"
 )]
 pub(super) fn inline_storage_cycle_nodes(types: &[TypeEntry]) -> Vec<usize> {
-    // The edges are kept flat, each node's after the one before: a vector
-    // of their own for each node, and another of predecessors, allocated
-    // twice for every type a load builds.
     let mut targets = Vec::new();
     let mut edges = Edges::default();
 
@@ -5634,12 +5286,10 @@ pub(super) fn inline_storage_cycle_nodes(types: &[TypeEntry]) -> Vec<usize> {
     cyclic_nodes
 }
 
-/// A graph's edges, each node's targets after the node before's.
 #[derive(Default)]
 struct Edges {
     targets: Vec<usize>,
 
-    /// Where each node's targets end.
     ends: Vec<usize>,
 }
 
@@ -5653,8 +5303,6 @@ impl Edges {
         &self.targets[start..self.ends[node]]
     }
 
-    /// The same graph with every edge turned around, each node's
-    /// predecessors in the order their edges were added.
     #[expect(
         clippy::indexing_slicing,
         reason = "every target is a node, below `ends.len()`, and the counted predecessors fill \
@@ -5673,7 +5321,6 @@ impl Edges {
             *end = total;
         }
 
-        // Each node's predecessors fill its slot from its start.
         let mut next = ends.clone();
         let mut targets = vec![0; self.targets.len()];
 
@@ -5767,9 +5414,6 @@ fn inline_storage_targets(kind: &TypeKind, targets: &mut Vec<usize>) {
         | TypeKind::Pointer { .. }
         | TypeKind::Reference { .. }
         | TypeKind::Slice { .. }
-
-        // A Fortran type may hold an allocatable array of itself, whose
-        // elements are elsewhere.
         | TypeKind::RuntimeArray { .. }
         | TypeKind::Named { target: None, .. }
         | TypeKind::Unspecified
@@ -5777,8 +5421,6 @@ fn inline_storage_targets(kind: &TypeKind, targets: &mut Vec<usize>) {
     }
 }
 
-/// The word a qualifier is written with, or `None` for `_Atomic`, which
-/// wraps its type instead.
 const fn modifier_keyword(modifier: TypeModifier) -> Option<&'static str> {
     Some(match modifier {
         TypeModifier::Const => "const",

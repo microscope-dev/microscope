@@ -1,12 +1,3 @@
-//! Where a V8 module keeps what its process's data says only at run time,
-//! read from the code of the short accessors V8 compiles for it: the JS
-//! dispatch table's base, from `ExternalReference::js_dispatch_table_address`
-//! or, where no symbol names it, from the exported `v8::IsolateGroup`'s
-//! `GetDefault` and destructor; and the embedded blob's bounds, from
-//! `v8::Isolate::GetEmbeddedCodeRange`.
-//! Each decoder accepts only the instruction shapes it names, and otherwise
-//! reports the first instruction it did not expect.
-
 use std::sync::Arc;
 
 use iced_x86::{Decoder, DecoderOptions, Instruction, MemorySize, Mnemonic, OpKind, Register};
@@ -15,36 +6,22 @@ use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
 use crate::ImageAddress;
 use crate::image::v8::{DispatchTable, EmbeddedBlob, NodeRelease, V8Version};
 
-/// What the name of `ExternalReference::js_dispatch_table_address` begins
-/// with: 13.6's takes no argument and 14.6's an isolate.
 const DISPATCH_TABLE_ADDRESS: &str =
     "_ZN2v88internal17ExternalReference25js_dispatch_table_address";
 
-/// `v8::Isolate::GetEmbeddedCodeRange(void const**, unsigned long*)`, which
-/// every build exports with V8's API.
 pub(super) const GET_EMBEDDED_CODE_RANGE: &str = "_ZN2v87Isolate20GetEmbeddedCodeRangeEPPKvPm";
 
-/// The exported `v8::IsolateGroup::GetDefault()`, which loads the default
-/// group's pointer from its variable.
 const GET_DEFAULT_GROUP: &str = "_ZN2v812IsolateGroup10GetDefaultEv";
 
-/// The exported `v8::IsolateGroup::~IsolateGroup()`, which releases the
-/// group it holds, under either of its two names for the same body.
 const GROUP_HANDLE_DESTRUCTORS: [&str; 2] =
     ["_ZN2v812IsolateGroupD1Ev", "_ZN2v812IsolateGroupD2Ev"];
 
-/// `v8::Isolate::IsInUse()`, which every build exports with V8's API.
 pub(super) const IS_IN_USE: &str = "_ZN2v87Isolate7IsInUseEv";
 
-/// The most bytes of an accessor's code decoded.
 const ACCESSOR_BYTES: usize = 96;
 
-/// The most bytes of the internal `IsolateGroup`'s destructor decoded. The
-/// table's teardown comes second, within the first 100 bytes.
 const DESTRUCTOR_BYTES: usize = 192;
 
-/// `ExternalEntityTable::kSegmentSize`: the 64 KiB first segment the
-/// table's teardown frees.
 const SEGMENT_SIZE: u64 = 0x1_0000;
 
 const _: () = assert!(
@@ -56,8 +33,6 @@ const _: () = assert!(
     "the segment size must fit the 32-bit immediate the teardown moves"
 );
 
-/// The address of the function symbol named `name`, or of the first whose
-/// name begins with it when `prefix`.
 fn function(object: &object::File<'_>, name: &str, prefix: bool) -> Option<u64> {
     object
         .symbols()
@@ -76,9 +51,6 @@ fn function(object: &object::File<'_>, name: &str, prefix: bool) -> Option<u64> 
         .map(|symbol| symbol.address())
 }
 
-/// The instructions at `address`, in a text section of `object`, from
-/// which a function's prologue's `endbr64`, `push rbp`, and `mov rbp, rsp`
-/// are left out, to the first `ret` or `jmp` within `ACCESSOR_BYTES`.
 pub(super) fn instructions(
     object: &object::File<'_>,
     address: u64,
@@ -86,7 +58,6 @@ pub(super) fn instructions(
     instructions_within(object, address, ACCESSOR_BYTES)
 }
 
-/// As `instructions`, within `limit` bytes.
 fn instructions_within(
     object: &object::File<'_>,
     address: u64,
@@ -137,14 +108,10 @@ fn unexpected(what: &str, instruction: Option<&Instruction>) -> Arc<str> {
     )
 }
 
-/// Whether `instruction` is `mov rax, [base + displacement]`, a 64-bit
-/// load with no index, and its displacement.
 fn load_into_rax(instruction: &Instruction, base: Register) -> Option<u64> {
     load(instruction, Register::RAX, base)
 }
 
-/// Whether `instruction` is `mov to, [base + displacement]` with no index,
-/// and its displacement.
 fn load(instruction: &Instruction, to: Register, base: Register) -> Option<u64> {
     (instruction.mnemonic() == Mnemonic::Mov
         && instruction.op_count() == 2
@@ -157,11 +124,6 @@ fn load(instruction: &Instruction, to: Register, base: Register) -> Option<u64> 
         .then(|| instruction.memory_displacement64())
 }
 
-/// Where the JS dispatch table of `version`'s module `object` is: none
-/// before 13.6, whose functions hold their code. From 13.6 the local
-/// function `ExternalReference::js_dispatch_table_address` says. A library
-/// without local symbols, such as Debian's libnode, does not name it; for
-/// 13.6, `exported_dispatch_table` then reads the table from exported code.
 pub(super) fn dispatch_table(
     object: &object::File<'_>,
     version: V8Version,
@@ -186,58 +148,6 @@ pub(super) fn dispatch_table(
     decode_dispatch_table(&instructions(object, address)?, &what).map(Some)
 }
 
-/// Where 13.6's JS dispatch table is, from code V8's API exports, for a
-/// module that does not name `js_dispatch_table_address`. In 13.6 the
-/// table is the `js_dispatch_table_` member of the internal `IsolateGroup`
-/// that `IsolateGroup::default_isolate_group_` points to, and its base is
-/// the table's first word.
-///
-/// `decode_group_variable` finds the variable in
-/// `v8::IsolateGroup::GetDefault()` (`deps/v8/src/api/api.cc` and
-/// `src/init/isolate-group.h` of Node 24.22.1):
-///
-/// ```c++
-/// IsolateGroup IsolateGroup::GetDefault() {
-///   return IsolateGroup(i::IsolateGroup::AcquireDefault());
-/// }
-/// static IsolateGroup* AcquireDefault() { return GetDefault()->Acquire(); }
-/// V8_INLINE static IsolateGroup* GetDefault() { return default_isolate_group_; }
-/// ```
-///
-/// The base's offset in the group is the first word the group's destructor
-/// clears. `decode_handle_release`, `decode_release`, and `decode_deletion`
-/// follow `v8::IsolateGroup::~IsolateGroup()` through
-/// `i::IsolateGroup::Release()`'s `delete this` to that destructor, which
-/// tears the table down right after its page pool
-/// (`src/init/isolate-group.cc`):
-///
-/// ```c++
-/// IsolateGroup::~IsolateGroup() {
-///   ...
-///   page_pool_->TearDown();
-///
-/// #ifdef V8_ENABLE_LEAPTIERING
-///   js_dispatch_table_.TearDown();
-/// #endif  // V8_ENABLE_LEAPTIERING
-/// ```
-///
-/// The table's `TearDown` frees its first segment through `vas_`'s vtable
-/// (`src/sandbox/external-entity-table-inl.h`), then clears `base_` before
-/// deleting and clearing `vas_` (`src/common/segmented-table-inl.h`):
-///
-/// ```c++
-///     this->vas_->FreePages(this->vas_->base(), kSegmentSize);
-///   ...
-///   Base::TearDown();
-///
-/// void SegmentedTable<Entry, size>::TearDown() {
-///   base_ = nullptr;
-///   delete vas_;
-///   vas_ = nullptr;
-/// }
-/// ```
-///
-/// `base_` is the word just before `vas_` (`src/common/segmented-table.h`).
 pub(super) fn exported_dispatch_table(
     object: &object::File<'_>,
 ) -> Result<DispatchTable, Arc<str>> {
@@ -279,8 +189,6 @@ pub(super) fn exported_dispatch_table(
     })
 }
 
-/// The next of `code`, as `read` reads it, or the error that it is not of
-/// the shape `read` accepts.
 fn next_as<'a, T>(
     code: &mut impl Iterator<Item = &'a Instruction>,
     what: &str,
@@ -290,10 +198,6 @@ fn next_as<'a, T>(
     next.and_then(read).ok_or_else(|| unexpected(what, next))
 }
 
-/// Whether `instruction` writes no register but rsp, or writes a 64-bit
-/// register other than `held`: a push, `sub rsp, n`, a store to the
-/// frame, a move between registers, or a load of the stack protector's
-/// value from `fs:0x28`.
 fn keeps(instruction: &Instruction, held: Option<Register>) -> bool {
     let register = |operand: u32| {
         (instruction.op_kind(operand) == OpKind::Register)
@@ -330,10 +234,6 @@ fn keeps(instruction: &Instruction, held: Option<Register>) -> bool {
     }
 }
 
-/// The variable `GetDefault`'s `instructions` load the group's pointer
-/// from: `mov r, [rip + variable]`, or `lea r, [rip + variable]` and `mov
-/// r, [r]`, then `Acquire`'s `lock add dword [r], 1`. Only what `keeps`
-/// accepts may come before or between them.
 fn decode_group_variable(instructions: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
     let mut addressed: Option<(Register, u64)> = None;
     let mut loaded: Option<(Register, u64)> = None;
@@ -375,8 +275,6 @@ fn decode_group_variable(instructions: &[Instruction], what: &str) -> Result<u64
     Err(unexpected(what, None))
 }
 
-/// Whether `instruction` is `lock add dword [group], 1`, an increment of
-/// the reference count that begins `IsolateGroup`.
 fn acquires(instruction: &Instruction, group: Register) -> bool {
     instruction.mnemonic() == Mnemonic::Add
         && instruction.has_lock_prefix()
@@ -389,13 +287,11 @@ fn acquires(instruction: &Instruction, group: Register) -> bool {
         && instruction.immediate(1) == 1
 }
 
-/// The target of `instruction` if it is a near branch of `mnemonic`.
 fn branch(instruction: &Instruction, mnemonic: Mnemonic) -> Option<u64> {
     (instruction.mnemonic() == mnemonic && instruction.op0_kind() == OpKind::NearBranch64)
         .then(|| instruction.near_branch_target())
 }
 
-/// Whether `instruction` is `test register, register`.
 fn tests(instruction: &Instruction, register: Register) -> bool {
     instruction.mnemonic() == Mnemonic::Test
         && instruction.op0_kind() == OpKind::Register
@@ -404,7 +300,6 @@ fn tests(instruction: &Instruction, register: Register) -> bool {
         && instruction.op1_register() == register
 }
 
-/// The value of `instruction` if it is `mov register, immediate`.
 fn moves_immediate(instruction: &Instruction, register: Register) -> Option<u64> {
     (instruction.mnemonic() == Mnemonic::Mov
         && instruction.op0_kind() == OpKind::Register
@@ -413,8 +308,6 @@ fn moves_immediate(instruction: &Instruction, register: Register) -> Option<u64>
         .then(|| instruction.immediate(1))
 }
 
-/// The displacement of `instruction` if it is `mov qword [base +
-/// displacement], 0`.
 fn clears(instruction: &Instruction, base: Register) -> Option<u64> {
     (instruction.mnemonic() == Mnemonic::Mov
         && instruction.op0_kind() == OpKind::Memory
@@ -427,8 +320,6 @@ fn clears(instruction: &Instruction, base: Register) -> Option<u64> {
         .then(|| instruction.memory_displacement64())
 }
 
-/// Whether `instruction` calls a virtual function through the vtable in
-/// rax: `call [rax + slot]`.
 fn calls_virtual(instruction: &Instruction) -> bool {
     instruction.mnemonic() == Mnemonic::Call
         && instruction.op0_kind() == OpKind::Memory
@@ -437,9 +328,6 @@ fn calls_virtual(instruction: &Instruction) -> bool {
         && instruction.segment_prefix() == Register::None
 }
 
-/// Where `v8::IsolateGroup::~IsolateGroup`'s `instructions` tail-call the
-/// group's `Release`: `mov rdi, [rdi]` (`isolate_group_`), `test rdi,
-/// rdi`, `je`, and `jmp Release`.
 fn decode_handle_release(instructions: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
     let mut code = instructions.iter();
     next_as(&mut code, what, |next| {
@@ -452,8 +340,6 @@ fn decode_handle_release(instructions: &[Instruction], what: &str) -> Result<u64
     next_as(&mut code, what, |next| branch(next, Mnemonic::Jmp))
 }
 
-/// Where `Release`'s `instructions` go to delete the group once its count
-/// reaches zero: `lock sub dword [rdi], 1` and `je`.
 fn decode_release(instructions: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
     let mut code = instructions.iter();
     next_as(&mut code, what, |next| {
@@ -471,10 +357,6 @@ fn decode_release(instructions: &[Instruction], what: &str) -> Result<u64, Arc<s
     next_as(&mut code, what, |next| branch(next, Mnemonic::Je))
 }
 
-/// The destructor that `delete this`'s `instructions` call, and the size
-/// they free: `call destructor`, then `mov esi, size` and `jmp` to `operator
-/// delete`. Only what `keeps` accepts may come before the call, and after
-/// it only moves of registers, loads from the frame, and `leave`.
 fn decode_deletion(instructions: &[Instruction], what: &str) -> Result<(u64, u64), Arc<str>> {
     let mut code = instructions.iter();
     let destructor = loop {
@@ -519,27 +401,6 @@ fn decode_deletion(instructions: &[Instruction], what: &str) -> Result<(u64, u64
     Err(unexpected(what, None))
 }
 
-/// The offset of the dispatch table's base in the group, from the
-/// destructor's `instructions`: after its prologue, which may keep `this`
-/// in a register a call preserves, `page_pool_->TearDown()` as `mov rdi,
-/// [this + page_pool_]` and `call`, then the table's teardown, exactly:
-///
-/// ```text
-/// mov rdi, [this + vas_]
-/// mov edx, 0x10000          ; kSegmentSize
-/// mov rax, [rdi]
-/// mov rsi, [rdi + base]     ; vas_->base()
-/// call [rax + FreePages]
-/// mov rdi, [this + vas_]
-/// mov qword [this + base_], 0
-/// test rdi, rdi
-/// je the last instruction
-/// mov rax, [rdi]
-/// call [rax + deleting destructor]
-/// mov qword [this + vas_], 0
-/// ```
-///
-/// with `base_ + 8 == vas_`.
 fn decode_table_teardown(instructions: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
     let mut code = instructions.iter();
     let mut this = Register::RDI;
@@ -614,11 +475,6 @@ fn decode_table_teardown(instructions: &[Instruction], what: &str) -> Result<u64
     Ok(base)
 }
 
-/// The dispatch table an accessor's `instructions` return the base of:
-/// `mov rax, [rdi + offset]` from the isolate it is passed; or the
-/// isolate group's pointer variable loaded, by `mov rax, [rip + group]` or
-/// by `lea rax, [rip + group]` and `mov rax, [rax]`, then `mov rax,
-/// [rax + offset]`. Nothing after may write rax before it returns.
 pub(super) fn decode_dispatch_table(
     instructions: &[Instruction],
     what: &str,
@@ -658,8 +514,6 @@ pub(super) fn decode_dispatch_table(
     Ok(table)
 }
 
-/// Checks that the rest of an accessor returns without writing rax, as
-/// one that checks its result and calls a fatal error otherwise does.
 fn returns_rax<'a>(
     code: impl Iterator<Item = &'a Instruction>,
     what: &str,
@@ -678,23 +532,17 @@ fn returns_rax<'a>(
     Err(unexpected(what, None))
 }
 
-/// What a register of `GetEmbeddedCodeRange` holds, as far as its decoder
-/// follows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Value {
     Unknown,
 
-    /// Where the blob's code is stored: the first argument, rsi.
     CodeOut,
 
-    /// Where its code's size is stored: the second, rdx.
     SizeOut,
 
-    /// What the call at this index of the calls returned.
     Returned(usize),
 }
 
-/// The registers a call may change, by the System V ABI.
 const CALLER_SAVED: [Register; 8] = [
     Register::RCX,
     Register::RDX,
@@ -706,17 +554,12 @@ const CALLER_SAVED: [Register; 8] = [
     Register::R11,
 ];
 
-/// What `GetEmbeddedCodeRange` stores and calls: the targets of its calls,
-/// and which call's result it stores as the code and which as its size.
 struct Flow {
     calls: Vec<u64>,
     code: Option<Value>,
     size: Option<Value>,
 }
 
-/// Follows `GetEmbeddedCodeRange`'s `instructions` from its arguments to
-/// its stores, through moves, calls, and pushes and pops of callee-saved
-/// registers; any other instruction is refused.
 fn follow(instructions: &[Instruction], what: &str) -> Result<Flow, Arc<str>> {
     let mut registers = Registers([Value::Unknown; 16]);
     registers.set(Register::RSI, Value::CodeOut);
@@ -779,7 +622,6 @@ fn follow(instructions: &[Instruction], what: &str) -> Result<Flow, Arc<str>> {
     Err(unexpected(what, None))
 }
 
-/// What each general-purpose register holds, by its 64-bit register.
 struct Registers([Value; 16]);
 
 impl Registers {
@@ -806,8 +648,6 @@ impl Registers {
     }
 }
 
-/// Records a store `mov [base], source` of `GetEmbeddedCodeRange`
-/// through one of its arguments.
 fn store(
     instruction: &Instruction,
     registers: &Registers,
@@ -834,10 +674,6 @@ fn store(
     Ok(())
 }
 
-/// The variable an embedded blob accessor at `address` returns, and
-/// whether it is 64 bits wide, a pointer, rather than 32, a size: `mov
-/// rax|eax, [rip + variable]`, then `pop rbp` and zeroing of other
-/// registers at most, and `ret`.
 fn blob_accessor(object: &object::File<'_>, address: u64) -> Result<(u64, bool), Arc<str>> {
     let what = format!("the embedded blob accessor at {address:#x}");
     let code = instructions(object, address)?;
@@ -871,11 +707,6 @@ fn blob_accessor(object: &object::File<'_>, address: u64) -> Result<(u64, bool),
     Err(unexpected(&what, None))
 }
 
-/// Where `object`'s embedded blob's bounds are kept, from the code of its
-/// `v8::Isolate::GetEmbeddedCodeRange`: by data flow, the call whose result
-/// it stores through its first argument returns the code, and the one
-/// through its second the code's size. Of its two other calls, the one
-/// returning a pointer returns the data and the other the data's size.
 pub(super) fn embedded_blob(object: &object::File<'_>) -> Result<EmbeddedBlob, Arc<str>> {
     let what = "v8::Isolate::GetEmbeddedCodeRange";
     let address = function(object, GET_EMBEDDED_CODE_RANGE, false)
@@ -889,8 +720,6 @@ pub(super) fn embedded_blob(object: &object::File<'_>) -> Result<EmbeddedBlob, A
     assign_blob(&flow, &accessors, what)
 }
 
-/// The blob's variables, from the calls `flow` stores the results of and
-/// the variables and widths of the `accessors` they call.
 fn assign_blob(
     flow: &Flow,
     accessors: &[(u64, bool)],
@@ -944,26 +773,10 @@ fn assign_blob(
     })
 }
 
-/// The exported `napi_get_node_version`, which gives its caller the
-/// address of the `napi_node_version` that holds Node's version.
 const GET_NODE_VERSION: &str = "napi_get_node_version";
 
-/// That `napi_node_version`, a static local of the function, by its name
-/// where the module keeps local symbols.
 const NODE_VERSION: &str = "_ZZ21napi_get_node_versionE7version";
 
-/// The Node release that built `object`: the major, minor, and patch
-/// numbers that begin the `napi_node_version` the exported
-/// `napi_get_node_version` returns (`src/js_native_api_v8.cc`):
-///
-/// ```c++
-/// static const napi_node_version version = {
-///     NODE_MAJOR_VERSION, NODE_MINOR_VERSION, NODE_PATCH_VERSION,
-///     NODE_RELEASE};
-/// ```
-///
-/// The static is found by its symbol, or from the function's code in a
-/// module without local symbols, such as Debian's libnode.
 pub(super) fn node_release(object: &object::File<'_>) -> Result<NodeRelease, Arc<str>> {
     let named = object
         .symbols()
@@ -996,12 +809,6 @@ pub(super) fn node_release(object: &object::File<'_>) -> Result<NodeRelease, Arc
     })
 }
 
-/// The address of the `napi_node_version` that `napi_get_node_version`'s
-/// `instructions` store through its `result`, rsi: after an optional
-/// `mov eax, imm`, `test rdi, rdi; je` and `test rsi, rsi; je`, then
-/// either `mov qword [rsi], imm` or `lea r, [rip + version]` and `mov
-/// [rsi], r`. Instructions that zero a vector register, which clear the
-/// environment's last error, may come anywhere.
 fn decode_node_version(instructions: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
     let zeroes_vector = |instruction: &&Instruction| {
         matches!(instruction.mnemonic(), Mnemonic::Pxor | Mnemonic::Xorps)
@@ -1067,23 +874,12 @@ fn decode_node_version(instructions: &[Instruction], what: &str) -> Result<u64, 
     })
 }
 
-/// How far into an isolate it keeps the stack of its entries, as the
-/// exported `v8::Isolate::IsInUse` reads it:
-///
-/// ```cpp
-/// bool IsInUse() { return entry_stack_ != nullptr; }
-/// ```
-///
-/// which every build compiles to `mov rax, [rdi + offset]; test rax, rax;
-/// setne al`, with the isolate in rdi. A build's configuration moves the
-/// member: official Node 26 keeps it at 0xffe0, nixpkgs' at 0xfff0.
 pub(super) fn entry_stack(object: &object::File<'_>) -> Result<u64, Arc<str>> {
     let function = function(object, IS_IN_USE, false)
         .ok_or_else(|| -> Arc<str> { format!("the module names no {IS_IN_USE}").into() })?;
     decode_entry_stack(&instructions(object, function)?, IS_IN_USE)
 }
 
-/// The offset `IsInUse`'s `instructions` load and test.
 fn decode_entry_stack(instructions: &[Instruction], what: &str) -> Result<u64, Arc<str>> {
     let mut code = instructions.iter();
     let offset = next_as(&mut code, what, |instruction| {
@@ -1116,7 +912,6 @@ mod tests {
     fn napi_get_node_version_of_another_shape_is_refused() {
         const CHECKS: [u8; 10] = [0x48, 0x85, 0xff, 0x74, 0x10, 0x48, 0x85, 0xf6, 0x74, 0x10];
 
-        // Another register stored: lea rax, [rip + 0x100]; mov [rsi], rcx
         let other = decode(
             &[
                 &CHECKS[..],
@@ -1127,12 +922,9 @@ mod tests {
         let refused = decode_node_version(&other, "napi_get_node_version").unwrap_err();
         assert!(refused.contains("is `mov [rsi],rcx`"), "{refused}");
 
-        // A store through rdi: mov qword [rdi], 0x1000
         let elsewhere = decode(&[&CHECKS[..], &[0x48, 0xc7, 0x07, 0, 0x10, 0, 0, RET]].concat());
         assert!(decode_node_version(&elsewhere, "napi_get_node_version").is_err());
 
-        // No check of the result pointer: test rdi, rdi; je; mov qword
-        // [rsi], 0x1000
         let unchecked = decode(&[
             0x48, 0x85, 0xff, 0x74, 0x10, 0x48, 0xc7, 0x06, 0, 0x10, 0, 0, RET,
         ]);
@@ -1142,16 +934,13 @@ mod tests {
 
     #[test]
     fn a_dispatch_table_accessor_of_another_shape_is_refused_by_its_instruction() {
-        // A further load of the table's base: mov rax, [rax].
         let loads_again = decode(&[0x48, 0x8b, 0x87, 0x68, 0x02, 0, 0, 0x48, 0x8b, 0x00, RET]);
         let refused = decode_dispatch_table(&loads_again, "accessor").unwrap_err();
         assert!(refused.contains("is `mov rax,[rax]`"), "{refused}");
 
-        // Another register: mov rcx, [rdi + 8].
         let elsewhere = decode(&[0x48, 0x8b, 0x4f, 0x08, RET]);
         assert!(decode_dispatch_table(&elsewhere, "accessor").is_err());
 
-        // A group loaded with no offset after it.
         let short = decode(&[0x48, 0x8b, 0x05, 0, 1, 0, 0, RET]);
         assert!(decode_dispatch_table(&short, "accessor").is_err());
         assert!(decode_dispatch_table(&[], "accessor").is_err());
@@ -1159,7 +948,6 @@ mod tests {
 
     #[test]
     fn a_get_default_of_another_shape_is_refused_by_its_instruction() {
-        // The group's register overwritten before its load: mov rax, rdi.
         let overwritten = decode(&[
             0x48, 0x8d, 0x05, 0, 1, 0, 0, 0x48, 0x89, 0xf8, 0x48, 0x8b, 0x00, 0xf0, 0x83, 0x00,
             0x01,
@@ -1167,68 +955,53 @@ mod tests {
         let refused = decode_group_variable(&overwritten, "get").unwrap_err();
         assert!(refused.contains("is `mov rax,rdi`"), "{refused}");
 
-        // Another register incremented: lock add dword [rcx], 1.
         let elsewhere = decode(&[0x48, 0x8b, 0x15, 0, 1, 0, 0, 0xf0, 0x83, 0x01, 0x01, RET]);
         assert!(decode_group_variable(&elsewhere, "get").is_err());
 
-        // A group loaded and never acquired.
         let unacquired = decode(&[0x48, 0x8b, 0x15, 0, 1, 0, 0, RET]);
         assert!(decode_group_variable(&unacquired, "get").is_err());
     }
 
     #[test]
     fn the_group_handles_destructor_leads_to_the_groups_deletion() {
-        // mov rdi, [rdi]; test rdi, rdi; je; jmp Release
         let handle = decode(&[
             0x48, 0x8b, 0x3f, 0x48, 0x85, 0xff, 0x74, 0x08, 0xe9, 0, 0, 0, 0,
         ]);
         assert_eq!(decode_handle_release(&handle, "handle"), Ok(0x100d));
 
-        // lock sub dword [rdi], 1; je deletion; ret
         let release = decode(&[0xf0, 0x83, 0x2f, 0x01, 0x74, 0x0a, RET]);
         assert_eq!(decode_release(&release, "release"), Ok(0x1010));
 
-        // Debian: sub rsp, 0x10; mov [rbp - 8], rdi; call destructor; mov
-        // rdi, [rbp - 8]; mov esi, 0x3280; leave; jmp operator delete
         let debian = decode(&[
             0x48, 0x83, 0xec, 0x10, 0x48, 0x89, 0x7d, 0xf8, 0xe8, 0, 0, 0, 0, 0x48, 0x8b, 0x7d,
             0xf8, 0xbe, 0x80, 0x32, 0, 0, 0xc9, 0xe9, 0, 0, 0, 0,
         ]);
         assert_eq!(decode_deletion(&debian, "delete"), Ok((0x100d, 0x3280)));
 
-        // Official: push rbx; mov rbx, rdi; sub rsp, 8; call destructor;
-        // mov rdi, rbx; mov rbx, [rbp - 8]; mov esi, 0x3280; leave; jmp
         let official = decode(&[
             0x53, 0x48, 0x89, 0xfb, 0x48, 0x83, 0xec, 0x08, 0xe8, 0, 0, 0, 0, 0x48, 0x89, 0xdf,
             0x48, 0x8b, 0x5d, 0xf8, 0xbe, 0x80, 0x32, 0, 0, 0xc9, 0xe9, 0, 0, 0, 0,
         ]);
         assert_eq!(decode_deletion(&official, "delete"), Ok((0x100d, 0x3280)));
 
-        // No size freed before the jump.
         let no_size = decode(&[0xe8, 0, 0, 0, 0, 0xc9, 0xe9, 0, 0, 0, 0]);
         assert!(decode_deletion(&no_size, "delete").is_err());
-        // A release that is not a decrement: lock add dword [rdi], 1.
         let added = decode(&[0xf0, 0x83, 0x07, 0x01, 0x74, 0x0a, RET]);
         assert!(decode_release(&added, "release").is_err());
     }
 
-    /// The internal `IsolateGroup`'s destructor, as Debian's begins, with
-    /// the table's `base_` and `vas_` at `base` and `vas`, and `base_`
-    /// cleared before `vas_` is deleted or, if not `in_order`, after.
     fn teardown(base: u16, vas: u16, in_order: bool) -> Vec<Instruction> {
         let [base_low, base_high] = base.to_le_bytes();
         let [vas_low, vas_high] = vas.to_le_bytes();
-        // push rbx; mov rbx, rdi; sub rsp, 0x18; mov rdi, [rdi + 0x10];
-        // call PagePool::TearDown
         let mut bytes = vec![
             0x53, 0x48, 0x89, 0xfb, 0x48, 0x83, 0xec, 0x18, 0x48, 0x8b, 0x7f, 0x10, 0xe8, 0, 0, 0,
             0,
         ];
-        let load_vas = [0x48, 0x8b, 0xbb, vas_low, vas_high, 0, 0]; // mov rdi, [rbx + vas]
+        let load_vas = [0x48, 0x8b, 0xbb, vas_low, vas_high, 0, 0];
         bytes.extend(load_vas);
-        bytes.extend([0xba, 0, 0, 1, 0]); // mov edx, 0x10000
-        bytes.extend([0x48, 0x8b, 0x07, 0x48, 0x8b, 0x77, 0x18]); // mov rax, [rdi]; mov rsi, [rdi + 0x18]
-        bytes.extend([0xff, 0x50, 0x28]); // call [rax + 0x28]
+        bytes.extend([0xba, 0, 0, 1, 0]);
+        bytes.extend([0x48, 0x8b, 0x07, 0x48, 0x8b, 0x77, 0x18]);
+        bytes.extend([0xff, 0x50, 0x28]);
         bytes.extend(load_vas);
         let clear_base = [0x48, 0xc7, 0x83, base_low, base_high, 0, 0, 0, 0, 0, 0];
         let delete = [
@@ -1242,90 +1015,78 @@ mod tests {
             bytes.extend(clear_base);
         }
         bytes.extend([0x48, 0xc7, 0x83, vas_low, vas_high, 0, 0, 0, 0, 0, 0]);
-        bytes.extend([0x48, 0x8b, 0x7b, 0x20]); // mov rdi, [rbx + 0x20]: what follows
+        bytes.extend([0x48, 0x8b, 0x7b, 0x20]);
         decode(&bytes)
     }
 
     #[test]
     fn a_teardown_of_another_shape_is_refused() {
-        // base_ cleared only after vas_ is deleted.
         let late = decode_table_teardown(&teardown(0x3270, 0x3278, false), "dtor").unwrap_err();
         assert!(late.contains("is `test rdi,rdi`"), "{late}");
 
-        // A word cleared that is not the one just before vas_.
         let apart = decode_table_teardown(&teardown(0x3268, 0x3278, true), "dtor").unwrap_err();
         assert!(
             apart.contains("clears 0x3268 and deletes 0x3278"),
             "{apart}"
         );
 
-        // Cut short before vas_ is cleared.
         let mut short = teardown(0x3270, 0x3278, true);
         short.truncate(short.len() - 2);
         assert!(decode_table_teardown(&short, "dtor").is_err());
     }
 
-    /// Node 26's `GetEmbeddedCodeRange`, whose calls' results reach its
-    /// stores through other registers, and one that stores in the other
-    /// order, as Node 24's does.
     fn range(code_first: bool) -> Vec<Instruction> {
         const CALL: [u8; 5] = [0xe8, 0, 0, 0, 0];
         let mut bytes = vec![0x41, 0x57, 0x41, 0x56, 0x53];
-        bytes.extend([0x48, 0x89, 0xd3, 0x49, 0x89, 0xf6]); // mov rbx, rdx; mov r14, rsi
+        bytes.extend([0x48, 0x89, 0xd3, 0x49, 0x89, 0xf6]);
         bytes.extend(CALL);
         if code_first {
-            bytes.extend([0x49, 0x89, 0xc7]); // mov r15, rax
+            bytes.extend([0x49, 0x89, 0xc7]);
             bytes.extend(CALL);
-            bytes.extend([0x41, 0x89, 0xc4]); // mov r12d, eax
+            bytes.extend([0x41, 0x89, 0xc4]);
             bytes.extend(CALL);
             bytes.extend(CALL);
-            bytes.extend([0x4d, 0x89, 0x3e]); // mov [r14], r15
+            bytes.extend([0x4d, 0x89, 0x3e]);
         } else {
             bytes.extend(CALL);
             bytes.extend(CALL);
-            bytes.extend([0x41, 0x89, 0xc4]); // mov r12d, eax
+            bytes.extend([0x41, 0x89, 0xc4]);
             bytes.extend(CALL);
-            bytes.extend([0x49, 0x89, 0x06]); // mov [r14], rax
+            bytes.extend([0x49, 0x89, 0x06]);
         }
-        bytes.extend([0x44, 0x89, 0xe0, 0x48, 0x89, 0x03]); // mov eax, r12d; mov [rbx], rax
+        bytes.extend([0x44, 0x89, 0xe0, 0x48, 0x89, 0x03]);
         bytes.extend([0x5b, 0x41, 0x5e, 0x41, 0x5f, RET]);
         decode(&bytes)
     }
 
     #[test]
     fn an_embedded_code_range_of_another_shape_is_refused() {
-        // The code's size stored from a pointer's accessor.
         let flow = follow(&range(true), "range").expect("a flow");
         let wrong = [(0x10, true), (0x18, true), (0x20, true), (0x28, false)];
         assert!(assign_blob(&flow, &wrong, "range").is_err());
         assert!(assign_blob(&flow, &wrong[..3], "range").is_err());
 
-        // A store through a register no argument reached: mov [rcx], rax.
         let mut stray = range(true);
         stray.truncate(stray.len() - 6);
         stray.extend(decode(&[0x48, 0x89, 0x01, RET]));
         let refused = follow(&stray, "range").err().expect("refused");
         assert!(refused.contains("mov [rcx],rax"), "{refused}");
 
-        // An instruction the decoder does not follow: add rax, 1.
         let mut added = decode(&[0x48, 0x83, 0xc0, 0x01]);
         added.extend(range(true));
         assert!(follow(&added, "range").is_err());
 
-        // Returning before storing either.
         let flow = follow(&decode(&[RET]), "range").expect("a flow");
         assert!(assign_blob(&flow, &[], "range").is_err());
     }
 
     #[test]
     fn is_in_use_gives_the_offset_of_the_entries() {
-        // mov rax, [rdi + 0xffe0]; test rax, rax; setne al; ret
         let official = decode(&[
             0x48, 0x8b, 0x87, 0xe0, 0xff, 0, 0, 0x48, 0x85, 0xc0, 0x0f, 0x95, 0xc0, RET,
         ]);
         assert_eq!(decode_entry_stack(&official, IS_IN_USE), Ok(0xffe0));
 
-        // Another register loaded, or compared otherwise, is refused.
         let other = decode(&[
             0x48, 0x8b, 0x86, 0xe0, 0xff, 0, 0, 0x48, 0x85, 0xc0, 0x0f, 0x95, 0xc0, RET,
         ]);

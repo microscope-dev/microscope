@@ -1,6 +1,3 @@
-//! CPython 3.12+ rules: bools count as integers 0/1 but retain bool results where Python does.
-//! Integers beyond microscope's 128-bit arithmetic are refused.
-
 use std::cmp::Ordering;
 use std::num::FpCategory;
 
@@ -12,14 +9,12 @@ use crate::eval::syntax::ast::{BinaryOp, UnaryOp};
 use crate::eval::syntax::binary_text;
 use crate::eval::target::{Key, Loaded, LoadedValue, Stop};
 
-/// A number as Python computes with it.
 #[derive(Debug, Clone, Copy)]
 enum Number {
     Int(Exact),
     Float(f64),
 }
 
-/// A value as a number, a `bool` counting as 0 or 1.
 fn number(value: &LoadedValue) -> Option<Number> {
     match value {
         LoadedValue::Bool(value) => Some(Number::Int(Exact::from(u128::from(*value)))),
@@ -63,7 +58,6 @@ pub(super) fn compare(op: BinaryOp, left: &Loaded, right: &Loaded) -> Result<boo
     let ordering = match (number(&left.value), number(&right.value)) {
         (Some(left), Some(right)) => numbers(left, right),
         _ => match (&left.value, &right.value) {
-            // UTF-8 byte order matches Python's character order.
             (LoadedValue::Text(left), LoadedValue::Text(right))
             | (LoadedValue::Bytes(left), LoadedValue::Bytes(right)) => {
                 Some(texts(left, right, equality, |left, right| {
@@ -100,7 +94,6 @@ pub(super) fn compare(op: BinaryOp, left: &Loaded, right: &Loaded) -> Result<boo
                     ));
                 }
 
-                // Values of different kinds are unequal.
                 None
             }
         },
@@ -109,7 +102,6 @@ pub(super) fn compare(op: BinaryOp, left: &Loaded, right: &Loaded) -> Result<boo
     Ok(holds(op, ordering))
 }
 
-/// The exact order of two numbers; `None` when either is NaN.
 fn numbers(left: Number, right: Number) -> Option<Ordering> {
     match (left, right) {
         (Number::Int(left), Number::Int(right)) => Some(left.cmp(&right)),
@@ -122,7 +114,6 @@ fn numbers(left: Number, right: Number) -> Option<Ordering> {
 }
 
 pub(super) fn binary(op: BinaryOp, left: &Loaded, right: &Loaded) -> Result<LoadedValue, Stop> {
-    // `bool`'s own `&`, `|`, and `^` give a `bool`.
     if let (LoadedValue::Bool(left), LoadedValue::Bool(right)) = (&left.value, &right.value) {
         match op {
             BinaryOp::BitAnd => return Ok(LoadedValue::Bool(left & right)),
@@ -156,8 +147,6 @@ pub(super) fn binary(op: BinaryOp, left: &Loaded, right: &Loaded) -> Result<Load
     }
 }
 
-/// A number as a `float`, as Python converts an `int` for arithmetic with
-/// one: the nearest, ties to even.
 fn float(number: Number) -> f64 {
     match number {
         Number::Int(value) => nearest(value),
@@ -194,7 +183,6 @@ fn integers(op: BinaryOp, left: Exact, right: Exact) -> Result<LoadedValue, Stop
     result.map(LoadedValue::Int).map_err(arithmetic)
 }
 
-/// The remainder of division rounded down, which has the divisor's sign.
 fn floored_rem(left: Exact, right: Exact) -> Result<Exact, NumberError> {
     let rem = left.rem(right)?;
     let floored = if !rem.is_zero() && rem.is_negative() != right.is_negative() {
@@ -210,17 +198,11 @@ fn floored_rem(left: Exact, right: Exact) -> Result<Exact, NumberError> {
     Ok(floored)
 }
 
-/// How many of a quotient's leading bits are kept before it is rounded:
-/// a double's 53, a guard bit, and a last bit that also records whether
-/// any bit below it is set.
 const KEPT: u32 = 55;
 
 const _: () = assert!(KEPT == f64::MANTISSA_DIGITS + 2);
 const _: () = assert!(KEPT < u64::BITS);
 
-/// `left / right` rounded once to the nearest double, ties to even, as
-/// CPython's `long_true_divide` gives it. Dividing the operands' nearest
-/// doubles would round twice.
 fn true_divide(left: Exact, right: Exact) -> f64 {
     let magnitude = quotient(left.magnitude(), right.magnitude());
     if left.is_negative() == right.is_negative() {
@@ -230,15 +212,11 @@ fn true_divide(left: Exact, right: Exact) -> f64 {
     }
 }
 
-/// `dividend / divisor` for a nonzero divisor, by long division to `KEPT`
-/// bits.
 fn quotient(dividend: u128, divisor: u128) -> f64 {
     if dividend == 0 || divisor == 0 {
         return 0.0;
     }
 
-    // The weight of the dividend's bit that the next step brings down,
-    // 2^position; below the point its bits are zero.
     let mut position = 127 - dividend.leading_zeros().cast_signed();
     let mut remainder: u128 = 0;
     let mut bits: u64 = 0;
@@ -254,8 +232,6 @@ fn quotient(dividend: u128, divisor: u128) -> f64 {
             0
         };
 
-        // The remainder is below the divisor, so doubling it overflows by
-        // at most the bit shifted out.
         let carried = remainder >> 127 == 1;
         remainder = (remainder << 1) | next;
         let bit = carried || remainder >= divisor;
@@ -284,8 +260,6 @@ fn quotient(dividend: u128, divisor: u128) -> f64 {
     #[allow(clippy::cast_precision_loss, reason = "the one rounding, to nearest")]
     let rounded = bits as f64;
 
-    // Scaling by a power of two is exact: the quotient lies within
-    // [2^-128, 2^128].
     debug_assert!(
         (1..2047).contains(&(position + 1023)),
         "a quotient scales by 2^{position}, which is no normal double",
@@ -311,8 +285,6 @@ fn floats(op: BinaryOp, left: f64, right: f64) -> Result<f64, Stop> {
     })
 }
 
-/// CPython's `float_rem`: C's `fmod`, moved to the divisor's sign, and a
-/// zero with the divisor's sign.
 fn float_rem(left: f64, right: f64) -> f64 {
     let rem = left % right;
     if is_zero(rem) {
@@ -324,11 +296,6 @@ fn float_rem(left: f64, right: f64) -> f64 {
     }
 }
 
-/// Whether `op` could compute a value from operands that are not both
-/// numbers: an object's type defines its own operators; text, bytes, and
-/// collections are joined, and combined as sets, with each other; and
-/// with a number they are repeated by `*` and formatted by `%`. Anything
-/// else, such as nothing with a number, is Python's type error.
 fn computes(op: BinaryOp, left: &Loaded, right: &Loaded) -> bool {
     let joined = |value: &Loaded| {
         matches!(
@@ -360,7 +327,6 @@ pub(super) fn unary(op: UnaryOp, operand: &Loaded) -> Result<LoadedValue, Stop> 
             "`~` applies to integers, not floats",
         )),
         _ => Err(refused(
-            // Only an object's own type may define the operator.
             if operand.value == LoadedValue::Object {
                 ErrorKind::Unsupported
             } else {
@@ -371,8 +337,6 @@ pub(super) fn unary(op: UnaryOp, operand: &Loaded) -> Result<LoadedValue, Stop> 
     }
 }
 
-/// A value as the key of an index: a number, truth value, text, or the
-/// value for nothing.
 pub(super) fn key(value: &Loaded) -> Result<Key, Stop> {
     match &value.value {
         LoadedValue::Int(value) => Ok(Key::Integer(*value)),
@@ -383,7 +347,6 @@ pub(super) fn key(value: &Loaded) -> Result<Key, Stop> {
             TextCompletion::Complete => Ok(Key::Text(text.bytes.to_vec())),
             completion => Err(super::incomplete(completion)),
         },
-        // Bytes, a tuple, or an object may be a key, by its type's hash.
         _ => Err(refused(
             ErrorKind::Unsupported,
             format!(

@@ -1,9 +1,3 @@
-//! microscope attached to the running `server` fixture: its listener's and its
-//! connection's tasks are listed as a launched program's would be, each
-//! with what it waits for, a request stops at a breakpoint in the handler
-//! on the connection's task, and once detached the server answers the
-//! request it was stopped in and goes on serving.
-
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -25,11 +19,8 @@ const BUILDS: [&str; 4] = [
 ];
 const SOURCE: &str = "server/src/main.rs";
 
-/// How long a client waits for an answer, which a server the debugger
-/// wrongly left stopped never sends.
 const ANSWER_TIMEOUT: Duration = Duration::from_mins(1);
 
-/// One connection to the server.
 struct Client {
     writer: TcpStream,
     reader: BufReader<TcpStream>,
@@ -64,12 +55,6 @@ impl Client {
     }
 }
 
-/// Attached to a server with one connection, the listener's task waits
-/// for its socket to be readable and the connection's for its next line,
-/// on the socket the server names; a line sent while the server is stopped
-/// stops at the handler's breakpoint on the connection's task, with the
-/// count it answers. Detached, the server answers it and the next, and
-/// quits when asked.
 #[tokio::test]
 async fn an_attached_servers_task_is_listed_and_it_serves_once_detached() {
     for fixture in BUILDS {
@@ -121,8 +106,6 @@ async fn an_attached_servers_task_is_listed_and_it_serves_once_detached() {
             );
         }
 
-        // Having accepted or answered, each task waits again, or is on its
-        // way back to its await.
         for (function, waits_for) in [
             ("listen", "waiting until readable".to_owned()),
             ("serve", format!("reading a line from fd {fd}")),

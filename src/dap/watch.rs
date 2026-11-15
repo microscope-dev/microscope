@@ -1,5 +1,3 @@
-//! Data breakpoints: watchpoints on values the client picks.
-
 use std::collections::{BTreeMap, HashMap};
 
 use microscope::{
@@ -11,25 +9,18 @@ use serde_json::{Value, json};
 use super::protocol::{self, DataBreakpointInfoArguments, ErrorBody, SetDataBreakpointsArguments};
 use super::session::{Closed, Session, error, parse};
 
-/// One data breakpoint the client set.
 #[derive(Debug, Clone)]
 pub struct DataEntry {
     pub id: i64,
     data_id: String,
     access: WatchAccess,
 
-    /// The condition and hit condition as the client wrote them, blank ones
-    /// as none.
     conditions: Conditions,
     pub watchpoint: Result<WatchpointId, String>,
 
-    /// Whether the console disabled its watchpoint, as the client was last
-    /// told.
     disabled: bool,
 }
 
-/// A data breakpoint's condition and hit condition as the client wrote
-/// them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Conditions {
     condition: Option<String>,
@@ -51,7 +42,6 @@ impl Conditions {
         }
     }
 
-    /// The debugger's options for them, or why they have none.
     fn options(&self) -> microscope::Result<WatchpointOptions> {
         Ok(WatchpointOptions {
             hit_condition: self.hit_condition.as_deref().map(str::parse).transpose()?,
@@ -65,17 +55,14 @@ impl Conditions {
     }
 }
 
-/// The data breakpoints of a session.
 #[derive(Debug, Default)]
 pub struct Data {
-    /// What each data id the client was given watches.
     targets: HashMap<String, WatchpointSpec>,
     next_target: u64,
     pub entries: Vec<DataEntry>,
 }
 
 impl Data {
-    /// The client's ids of the data breakpoints a stop hit.
     pub fn hit(&self, hits: &[WatchpointHit]) -> Vec<i64> {
         self.entries
             .iter()
@@ -91,8 +78,6 @@ impl Data {
             .collect()
     }
 
-    /// Forgets the data breakpoints of watchpoints that no longer exist and
-    /// returns their client ids.
     pub fn forget(&mut self, watchpoints: &[WatchpointId]) -> Vec<i64> {
         let mut forgotten = Vec::new();
         self.entries.retain(|entry| {
@@ -109,10 +94,6 @@ impl Data {
     }
 }
 
-/// The protocol's name for an access kind. A `write` data breakpoint stops
-/// when the value changes, as clients present it ("Break on Value Change")
-/// and as gdb's and lldb's adapters arm it; its `store` mode stops at every
-/// store instead, even of the value already held.
 const fn access_name(access: WatchAccess) -> Option<&'static str> {
     match access {
         WatchAccess::Change => Some("write"),
@@ -122,7 +103,6 @@ const fn access_name(access: WatchAccess) -> Option<&'static str> {
     }
 }
 
-/// The modes a data breakpoint may have, as `initialize` reports them.
 pub fn modes() -> Value {
     json!([
         {
@@ -140,8 +120,6 @@ pub fn modes() -> Value {
     ])
 }
 
-/// The accesses a client's data breakpoint watches, from its access type
-/// and mode.
 fn access_of(access_type: Option<&str>, mode: Option<&str>) -> Result<WatchAccess, String> {
     let change = match mode {
         None | Some("change") => true,
@@ -152,7 +130,6 @@ fn access_of(access_type: Option<&str>, mode: Option<&str>) -> Result<WatchAcces
     match (access_type, change) {
         (None | Some("write"), true) => Ok(WatchAccess::Change),
         (None | Some("write"), false) => Ok(WatchAccess::Write),
-        // Every access includes every store.
         (Some("readWrite"), _) if mode != Some("change") => Ok(WatchAccess::ReadWrite),
         (Some("read"), true) if mode.is_none() => Ok(WatchAccess::Read),
         (Some("read" | "readWrite"), true) => {
@@ -260,8 +237,6 @@ impl Session {
         let arguments =
             parse::<SetDataBreakpointsArguments>(arguments, "setDataBreakpoints arguments")?;
 
-        // Before a program is loaded, nothing is watched, and each data
-        // breakpoint says why.
         let handle = self.target_handle().ok();
         let wanted = arguments
             .breakpoints
@@ -275,9 +250,6 @@ impl Session {
             })
             .collect::<Vec<_>>();
 
-        // Watchpoints use scarce debug registers, so release first, along
-        // with those whose new conditions leave them unarmed. Kept entries
-        // are keyed by their place in the request.
         let mut kept = BTreeMap::new();
         let mut previous = std::mem::take(&mut self.data.entries).into_iter();
 
@@ -309,8 +281,6 @@ impl Session {
                 match handle.remove_watchpoint(watchpoint).await {
                     Ok(_) | Err(microscope::Error::WatchpointNotFound(_)) => {}
                     Err(error) => {
-                        // Keep every entry that may still be armed, so a
-                        // later request can release it.
                         self.data.entries =
                             kept.into_values().chain([entry]).chain(previous).collect();
                         return Err(self::error(error));
@@ -362,8 +332,6 @@ impl Session {
         Ok(json!({"breakpoints": body}))
     }
 
-    /// Applies the conditions a kept data breakpoint was sent with to its
-    /// watchpoint, which keeps its hits.
     async fn amend_data(
         &self,
         mut entry: DataEntry,
@@ -419,8 +387,6 @@ impl Session {
             .map_err(|error| error.to_string())
     }
 
-    /// Removes the client's data breakpoints whose watchpoints are gone,
-    /// such as those the console deleted.
     pub(super) async fn sync_data(&mut self) -> Result<(), Closed> {
         let Ok(handle) = self.target_handle() else {
             return Ok(());
@@ -446,7 +412,6 @@ impl Session {
             self.data_removed(id).await?;
         }
 
-        // The console enables and disables watchpoints too.
         let mut changed = Vec::new();
         for entry in &mut self.data.entries {
             let Ok(id) = entry.watchpoint else {
@@ -484,7 +449,6 @@ impl Session {
             .await
     }
 
-    /// Reports data breakpoints whose watched storage ended.
     pub(super) async fn data_invalidated(
         &mut self,
         invalidated: &[microscope::InvalidatedWatchpoint],
@@ -505,7 +469,6 @@ impl Session {
         Ok(())
     }
 
-    /// Describes what a data breakpoint stop's accesses did to each value.
     pub(super) async fn watch_description(&self, hits: &[WatchpointHit]) -> String {
         let Ok(handle) = self.target_handle() else {
             return String::new();

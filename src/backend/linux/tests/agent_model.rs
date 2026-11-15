@@ -1,16 +1,3 @@
-//! Random sequences of a client's edits and runs, and of what the program
-//! and its agent do, against a runtime agent's installation. The agent's
-//! side is known exactly, from what the controller asked of the agent and
-//! what the test made it do, and after every step the controller must
-//! agree with it: a breakpoint is ready only where the agent holds its
-//! site, all are once it acknowledged the newest request that has them,
-//! a stale report changes nothing, one script at a time is outstanding,
-//! only an outstanding source request refuses a thread-only continue, the
-//! acknowledgement alarm is set exactly while an unexpired request is
-//! outstanding and the program runs, and a detach leaves no request behind.
-//!
-//! Every step is valid in every state, so the sequences are plain vectors.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 
@@ -22,43 +9,30 @@ use super::*;
 
 #[derive(Debug, Clone, Copy)]
 enum Step {
-    /// The client adds a breakpoint at the line, unless one is there.
     Add(u64),
 
-    /// The client removes the breakpoint at the line, if one is there.
     Remove(u64),
     Continue,
 
-    /// The client continues only the leader, which no source request
-    /// goes to.
     ContinueLeader,
     Pause,
 
-    /// The source request's thread takes it from its slot.
     Take,
 
-    /// The agent acknowledges the newest request.
     Ack,
 
-    /// The agent acknowledges the request before the newest.
     StaleAck,
 
-    /// The agent fails, running the request before the newest.
     StaleFailure,
 
-    /// The agent fails, running the newest request or later.
     Failure,
 
-    /// The acknowledgement alarm rings once the budget is spent.
     Alarm,
 
-    /// A thread enters the interpreter where the controller traps it.
     Entry,
 
-    /// Whether the interpreter has a thread a source request can go to.
     Thread(bool),
 
-    /// Whether the agent refuses requests before any write.
     Refuse(bool),
 }
 
@@ -87,57 +61,41 @@ fn step() -> impl Strategy<Value = Step> {
     ]
 }
 
-/// How the newest request stands.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Newest {
-    /// The agent reported on it, or none was made.
     #[default]
     Reported,
     Outstanding,
 
-    /// Outstanding, with its budget spent.
     Expired,
 }
 
-/// What the agent was asked and holds, as the test knows it.
 #[derive(Debug, Default)]
 struct Agent {
-    /// The sites each request carries, and whether it is a source request.
     published: BTreeMap<u64, (BTreeSet<u64>, bool)>,
     newest: Option<u64>,
     state: Newest,
 
-    /// Whether the agent runs callbacks, which read commands: it loaded a
-    /// configuration and has not failed since.
     live: bool,
 
-    /// The sites of the request the agent last acknowledged, since it last
-    /// failed.
     held: BTreeSet<u64>,
 
-    /// The generations whose script files exist.
     scripts: BTreeSet<u64>,
 
-    /// Whether the agent's files were ever made.
     files: bool,
 }
 
-/// One case: the controller with its agent, and what the test knows.
 struct Case {
     session: Session,
     agent: Agent,
 
-    /// The breakpoint at each line, and its site's number.
     breakpoints: BTreeMap<u64, (u64, u64)>,
     next_breakpoint: u64,
     next_site: u64,
 
-    /// Whether the last step's agent acknowledged the newest request.
     acknowledged: bool,
 }
 
-/// The generation a logged request publishes, and whether it is a source
-/// request.
 fn published(entry: &str) -> Option<(u64, bool)> {
     let source = entry
         .strip_prefix("inject /tmp/agent/agent-")
@@ -178,12 +136,10 @@ impl Case {
         }
     }
 
-    /// Reads what the controller asked of the agent and its files.
     fn read_log(&mut self) {
         let logged = std::mem::take(&mut *self.session.agent.log.lock().expect("the log"));
         for entry in logged {
             if let Some((generation, source)) = published(&entry) {
-                // Only a detach's disarming command is left unawaited.
                 self.agent
                     .published
                     .insert(generation, (sites(&entry), source));
@@ -223,7 +179,6 @@ impl Case {
                 .is_some_and(|(_, source)| *source)
     }
 
-    /// Each breakpoint's id, site, and pending reason, if any.
     fn pending(&self) -> Vec<(u64, u64, Option<String>)> {
         let snapshot = self.session.run.snapshot();
         self.breakpoints
@@ -243,8 +198,6 @@ impl Case {
             .collect()
     }
 
-    /// Whether the newest request may be reported on: a thread runs a
-    /// source request, and a live agent reads a command or fails.
     fn agent_can_report(&self, failure: bool) -> bool {
         let Some((_, source)) = self
             .agent
@@ -343,8 +296,6 @@ impl Case {
         self.check(step, stopped_before);
     }
 
-    /// Continues only the leader, which is refused while a source request
-    /// that another thread is to run is outstanding.
     fn continue_leader(&mut self) {
         if self.running() {
             return;
@@ -359,14 +310,11 @@ impl Case {
             assert!(!self.running(), "a refused continue ran the program");
         } else {
             assert_eq!(said, "ok", "a thread-only continue");
-            // The other thread stays stopped: stop the leader too,
-            // so that every later step finds both alike.
             let said = self.session.pause()();
             assert_eq!(said, "ok", "pausing the leader");
         }
     }
 
-    /// The agent reports on the newest request, or the one before it.
     fn report(&mut self, step: Step, before: &[(u64, u64, Option<String>)]) {
         let failure = matches!(step, Step::Failure | Step::StaleFailure);
         if !self.agent_can_report(failure) {
@@ -466,8 +414,6 @@ impl Case {
                         said.contains("unconfirmed"),
                         "a detach after a thread took the source request: {said}"
                     );
-                    // The thread may be running the request's handler, which
-                    // still reads the agent's files.
                     assert!(
                         !logged
                             .iter()

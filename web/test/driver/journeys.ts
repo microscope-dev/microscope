@@ -1,11 +1,5 @@
-// Journeys through the page, written once against `User`. Each names the
-// program it expects, which each backend provides: the real fixture, or a
-// script of it (scripted.ts).
-
 import type { User } from "./user";
 
-/** In kvstore, breaks where handle_request starts its answer, steps over
- * that line, and reads the local it set. */
 export async function breakStepAndRead(user: User): Promise<void> {
   await user.addBreakpoint("kvstore.c:92");
   await user.press("F5");
@@ -15,7 +9,6 @@ export async function breakStepAndRead(user: User): Promise<void> {
   await user.expectValue("Variables", "status", "0");
 }
 
-/** The Debug layout stopped in kvstore's handle_request. */
 const DEBUG = (documents: string[], bottom: string[]) => [
   ["*Threads", "Tasks", "Processes"],
   ["*Call Stack", "Stops"],
@@ -27,8 +20,6 @@ const DEBUG = (documents: string[], bottom: string[]) => [
   ["*Registers"],
 ];
 
-/** In kvstore, stops where handle_request starts its answer, and moves among
- * the panes by tab, key, and menu, closing one and bringing it back. */
 export async function switchPanes(user: User): Promise<void> {
   await user.addBreakpoint("kvstore.c:92");
   await user.press("F5");

@@ -1,7 +1,7 @@
-// A small key-value store for the web page's tests and screenshots, like the
-// C one: a producer queues requests, workers apply them to a table and print
-// what they did, and each line of input is echoed. It runs until its input
-// ends.
+
+
+
+
 package main
 
 import (
@@ -51,7 +51,7 @@ var (
 	output     sync.Mutex
 )
 
-// handleRequest applies one request to the table and says what it did.
+
 func handleRequest(s *server, req *request) int {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -112,7 +112,7 @@ func main() {
 		readInput()
 		close(input)
 	}()
-	// Paces the requests, so the program runs on while people look at it.
+
 	for round := 0; !inputEnded.Load(); round++ {
 		req := request{op: opPut, key: fmt.Sprintf("user:%d", 1000+round%24), value: names[round%4]}
 		if round%3 == 2 {

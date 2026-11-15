@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Runs a command so that it cannot exhaust the machine's memory: in its own
-# systemd scope capped at half the memory (or MICROSCOPE_MEMORY_MAX), without
-# swap, and first in line for the OOM killer, so a runaway job dies instead
-# of the desktop session.
+
+
+
+
 
 set -euo pipefail
 

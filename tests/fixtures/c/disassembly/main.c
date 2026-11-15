@@ -1,6 +1,6 @@
-// Code whose disassembly the tests check: a direct call, a call through the
-// procedure linkage table, program-counter-relative data, hand-written code
-// with data inside it (layout.S), and indirect branches (indirect.S).
+
+
+
 #include <stdio.h>
 
 int disasm_marked_data(void);

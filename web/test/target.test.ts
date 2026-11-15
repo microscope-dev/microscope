@@ -1,6 +1,3 @@
-// Reading the join links a page served on its own is given, and which
-// microscope each tab talks to.
-
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { parseJoinLink, remote, setRemote } from "../src/target";
@@ -31,7 +28,6 @@ describe("a join link", () => {
   });
 });
 
-/** Storage as a browser keeps it, for one area. */
 function area(): Storage {
   const items = new Map<string, string>();
   return {
@@ -46,8 +42,6 @@ function area(): Storage {
   };
 }
 
-/** Makes `tab` the one whose sessionStorage the page reads. Every tab
- * shares the browser's localStorage. */
 function inTab(tab: Storage) {
   vi.stubGlobal("sessionStorage", tab);
 }
@@ -68,16 +62,15 @@ describe("the microscope a tab talks to", () => {
     inTab(first);
     setRemote(here);
     inTab(second);
-    // A new tab starts with the latest choice.
+
     expect(remote()).toEqual(here);
     setRemote(local);
 
-    // The first tab keeps its microscope, as it would across a reload.
     inTab(first);
     expect(remote()).toEqual(here);
     inTab(second);
     expect(remote()).toEqual(local);
-    // A third tab starts with the second's, the latest.
+
     inTab(area());
     expect(remote()).toEqual(local);
   });
@@ -108,7 +101,7 @@ describe("the microscope a tab talks to", () => {
 
     setRemote(null);
     expect(remote()).toBeNull();
-    // A new tab starts with nothing, the latest choice.
+
     inTab(area());
     expect(remote()).toBeNull();
   });

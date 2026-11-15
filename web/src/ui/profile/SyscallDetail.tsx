@@ -9,9 +9,6 @@ import { prepare, useWidth } from "./canvas";
 import { token, useAnswer, useProfile } from "./context";
 import { Unanswered } from "./parts";
 
-/** One call's heat map of latency over the range, its histogram against
- * the whole trace's, its errors, and where its slow and failed calls came
- * from. */
 export function Detail({ call, query }: { call: string; query: SyscallQuery }) {
   const selected = useMemo(
     () => ({ ...query, filter: `${query.filter} trace=${call}`.trim() }),
@@ -34,7 +31,6 @@ export function Detail({ call, query }: { call: string; query: SyscallQuery }) {
   );
 }
 
-/** The call's latencies against the whole trace's, its errors, and its callers. */
 function Histograms({ data }: { data: SyscallDetail }) {
   const [first, last] = shownBuckets(data.whole, data.selected);
   const most = largest(data.selected, largest(data.whole, 1));
@@ -109,13 +105,11 @@ function Histograms({ data }: { data: SyscallDetail }) {
   );
 }
 
-/** A histogram bar `percent` wide. */
 function Fill({ className, percent }: { className: string; percent: number }) {
   const style = useMemo(() => ({ width: `${percent}%` }), [percent]);
   return <span className={className} style={style} />;
 }
 
-/** Calls by when they returned, across, and how long they took, up. */
 function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
   const { look, setLook } = useProfile();
   const [box, width] = useWidth();
@@ -124,7 +118,7 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
   const buckets = Math.max(1, Math.min(512, Math.floor(width / 4)));
   const answer = useAnswer("syscallHeatmap", width > 0 ? { ...query, buckets } : null);
   const data = answer.data;
-  // Only the latencies that occur, so the cells stay tall.
+
   const [first, last] = useMemo(() => {
     if (!data) {
       return [0, -1];
@@ -171,7 +165,7 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
         }
       }
     }
-    // Failures over the rest, never too faint to find among many calls.
+
     context.fillStyle = token("--error");
     for (let slice = 0; slice < slices; slice++) {
       for (let row = first; row <= last; row++) {
@@ -200,7 +194,7 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
       const bounds = event.currentTarget.getBoundingClientRect();
       const slices = data.counts.length / data.rows;
       const slice = Math.floor(((event.clientX - bounds.left) / bounds.width) * slices);
-      // Whole-pixel coordinates can fall just outside a fractional box.
+
       const row = Math.min(
         Math.max(
           last - Math.floor(((event.clientY - bounds.top) / bounds.height) * (last - first + 1)),
@@ -236,8 +230,7 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
         ) : null}
         {mostFailed > 0 ? <span className="failed-key"> · failed</span> : null}
       </h3>
-      {/* Measured without the section's padding, and never wider than
-          it, so the canvas cannot widen the column it is measured in. */}
+      {}
       <div ref={box} className="plot">
         {answer.error ? (
           <div className="empty error">{answer.error.message}</div>

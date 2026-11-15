@@ -1,9 +1,3 @@
-//! Thousands of parked goroutines. Paging through the program's
-//! goroutines returns each exactly once, as many as the runtime counts,
-//! leaving the runtime's own out before paging; each page's work is
-//! bounded however many goroutines there are; and a goroutine's frames
-//! are found without reading every other goroutine.
-
 use std::collections::BTreeSet;
 use std::process::Stdio;
 
@@ -14,7 +8,6 @@ use microscope::{
 
 use crate::support::{Scenario, ScratchDir};
 
-/// Small pages make a whole-list rescan exceed the budget even at this scale.
 const PAGE: usize = 64;
 
 #[tokio::test]
@@ -54,7 +47,6 @@ async fn goroutines_page_once_each_with_bounded_work() {
         assert!(page.gaps.is_empty(), "{:?}", page.gaps);
         assert!(page.tasks.len() <= PAGE);
 
-        // Reading a page never reads the whole goroutine list.
         assert!(
             page.usage.memory_reads <= 32 * PAGE as u64,
             "{:?}",

@@ -1,11 +1,3 @@
-//! Type identities from DWARF: each type's language, the scopes that
-//! enclose it, its template parameters, and Go's type attributes.
-//!
-//! The structure comes from DWARF wherever DWARF has it. Names are parsed
-//! only where it does not: GCC omits some templates' parameters, rustc omits
-//! const generic parameters, and Go and Zig emit none. A parsed argument
-//! names a type only when exactly one type matches it.
-
 use crate::debug_info::dwarf::DwarfSet;
 use std::sync::Arc;
 
@@ -34,18 +26,12 @@ const DW_AT_GO_ELEM: gimli::DwAt = gimli::DwAt(0x2902);
 const DW_AT_GO_EMBEDDED_FIELD: gimli::DwAt = gimli::DwAt(0x2903);
 const DW_AT_GO_RUNTIME_TYPE: gimli::DwAt = gimli::DwAt(0x2904);
 
-/// The inline namespaces of C++ standard libraries, for units older than
-/// DWARF 5's `DW_AT_export_symbols`. libstdc++'s `__cxx1998` is not one: it
-/// holds the containers that debug mode's inline `__debug` replaces.
 const INLINE_NAMESPACES: [&str; 6] = ["__1", "__Cr", "__ndk1", "__cxx11", "__8", "__debug"];
 
-/// The scopes enclosing a type DIE, outermost first.
 #[derive(Clone, Default)]
 pub(super) struct ScopePath {
-    /// The named scopes.
     pub(super) path: Arc<[Arc<str>]>,
 
-    /// The inline namespaces among them, which names may spell or omit.
     pub(super) inline: Arc<[Arc<str>]>,
 }
 
@@ -55,16 +41,12 @@ impl ScopePath {
     }
 }
 
-/// What a type's identity is built from, recorded as the type is built.
 #[derive(Clone)]
 pub(super) struct IdentityParts {
-    /// The DIE the type was built from.
     pub(super) die: DieKey,
 
-    /// Arguments from template parameter DIEs, by position.
     pub(super) template: Vec<TypeArgument>,
 
-    /// Where a template parameter pack's arguments begin.
     pub(super) pack: Option<usize>,
 }
 
@@ -76,7 +58,6 @@ pub(super) struct GoParts {
 }
 
 impl GoParts {
-    /// Replaces each type these name with `map` of it.
     pub(super) fn map_references(&mut self, map: impl Fn(TypeReference) -> TypeReference) {
         for reference in [&mut self.key, &mut self.element].into_iter().flatten() {
             *reference = map(*reference);
@@ -84,41 +65,27 @@ impl GoParts {
     }
 }
 
-/// How a DIE contributes to the scope path of the types nested in it.
 #[derive(Clone)]
 pub(super) enum ScopeSegment {
-    /// A named type, whose nested types it scopes.
     Named(Arc<str>),
 
-    /// A namespace not marked inline here, which may still be inline: GCC
-    /// copies namespaces into type units without their marks. `listed`
-    /// when its unit predates the mark and its name is in
-    /// [`INLINE_NAMESPACES`].
     Namespace { name: Arc<str>, listed: bool },
 
-    /// A function, whose name may live on its declaration.
     Function(DieKey),
 
-    /// An inline namespace, which names need not spell.
     Inline(Arc<str>),
 
-    /// A scope that names nothing, such as an anonymous type.
     Transparent,
 }
 
-/// The offset of a Go type's runtime type descriptor. Go gives the types it
-/// synthesizes for its runtime none.
 pub(super) fn go_runtime_type(entry: &gimli::DebuggingInformationEntry<Reader<'_>>) -> Option<u64> {
     match entry.attr_value(DW_AT_GO_RUNTIME_TYPE)? {
-        // Go's linker writes the offset from `runtime.types` in the
-        // attribute's address form, not the descriptor's address.
         gimli::AttributeValue::Addr(offset) => Some(offset),
         value => value.udata_value(),
     }
     .filter(|offset| *offset != 0)
 }
 
-/// Whether Go embeds a struct member.
 pub(super) fn go_embedded(entry: &gimli::DebuggingInformationEntry<Reader<'_>>) -> bool {
     entry
         .attr(DW_AT_GO_EMBEDDED_FIELD)
@@ -128,10 +95,6 @@ pub(super) fn go_embedded(entry: &gimli::DebuggingInformationEntry<Reader<'_>>) 
         })
 }
 
-/// The language a unit's producer or name proves where its
-/// `DW_AT_language` does not: Zig's LLVM backend and Odin say their units
-/// are C99, and Nim compiles each module to C in a file named for it, as
-/// `@mvalues.nim.c`.
 pub(in crate::debug_info) fn produced_language(
     producer: Option<&str>,
     name: Option<&str>,
@@ -150,8 +113,6 @@ pub(in crate::debug_info) fn produced_language(
     }
 }
 
-/// A unit's language: what its producer proves, else what its
-/// `DW_AT_language` says.
 pub(in crate::debug_info) const fn source_language(
     language: Option<gimli::DwLang>,
     produced: Option<SourceLanguage>,
@@ -194,8 +155,6 @@ pub(in crate::debug_info) const fn source_language(
     }
 }
 
-/// The namespaces a D module scopes what it declares in, one for each
-/// part of its name: `std.array` is `std`, then `array`.
 pub(super) fn module_segments(
     dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
@@ -215,8 +174,6 @@ pub(super) fn module_segments(
         .unwrap_or_default()
 }
 
-/// How a DIE scopes the types nested in it, or `None` when it is not a
-/// scope. `cpp` when the DIE's unit is C++.
 pub(super) fn scope_segment(
     dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
@@ -238,8 +195,6 @@ pub(super) fn scope_segment(
                 Some(name) if inline => ScopeSegment::Inline(name),
                 None if inline => ScopeSegment::Transparent,
                 Some(name) => ScopeSegment::Namespace {
-                    // Producers older than the mark still use these names
-                    // for inline namespaces.
                     listed: cpp
                         && unit.encoding().version < 5
                         && exported.is_none()
@@ -267,8 +222,6 @@ pub(super) fn scope_segment(
     }
 }
 
-/// The full path of an inline namespace, its own name last, from the
-/// segments enclosing it.
 pub(super) fn inline_namespace_path(
     segments: &[(isize, ScopeSegment)],
     name: &Arc<str>,
@@ -286,7 +239,6 @@ pub(super) fn inline_namespace_path(
 }
 
 impl<'data> TypeArenaBuilder<'_, 'data> {
-    /// A function's name, from its own DIE or the declaration it completes.
     fn function_name(&self, key: DieKey) -> Option<Arc<str>> {
         let mut current = key;
         for _ in 0..4 {
@@ -311,9 +263,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         None
     }
 
-    /// Resolves a scope stack into a path. A namespace is inline when any
-    /// unit marks the namespace with the same full path inline, or when no
-    /// unit marks any namespace and its own unit lists it.
     pub(super) fn scope_path(
         &self,
         segments: &[ScopeSegment],
@@ -368,7 +317,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         )
     }
 
-    /// Records what a named type's identity is built from.
     pub(super) fn record_identity_parts(
         &mut self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -406,9 +354,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         });
     }
 
-    /// The arguments a type's template parameter DIEs describe, with packs
-    /// flattened, and where its pack begins. A parameter whose value or type
-    /// cannot be read is unknown.
     fn template_arguments(
         &mut self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -417,15 +362,10 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         let mut arguments = Vec::new();
         let mut pack = None;
 
-        // Every named aggregate comes here, so its children, mostly its
-        // members, are read in place rather than cloned to find the few
-        // that are parameters.
         let Ok(mut children) = self.children(unit_index, entry.offset()) else {
             return (arguments, pack);
         };
 
-        // LDC describes an associative array as a record holding typedefs
-        // of its key and value types.
         let d = self.language(unit_index) == SourceLanguage::D;
         let mut associative = [None, None];
         let mut read = 0;
@@ -479,10 +419,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         (arguments, pack)
     }
 
-    /// The generic type arguments of the function whose DIE is `key`, each
-    /// with its parameter's name: the function's own template type
-    /// parameters, or those of the declaration it completes, where rustc
-    /// puts a method's.
     pub(super) fn function_generics(&mut self, key: DieKey) -> Vec<(Arc<str>, TypeId)> {
         let mut current = key;
         for _ in 0..4 {
@@ -541,15 +477,12 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         Vec::new()
     }
 
-    /// The argument one template parameter DIE describes.
     fn parameter_argument(
         &mut self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
         unit_index: usize,
     ) -> Option<TypeArgument> {
         Some(match entry.tag() {
-            // An unsized array is no type of its own: rustc describes both
-            // `str` and `[u8]` as one, so the name's spelling says which.
             gimli::DW_TAG_template_type_parameter
                 if self.unsized_array_argument(entry, unit_index) =>
             {
@@ -557,7 +490,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
             }
             gimli::DW_TAG_template_type_parameter => match self.target(entry, unit_index) {
                 Ok(Some(target)) => TypeArgument::Type(target),
-                // A type parameter without a type is `void`.
                 Ok(None) => TypeArgument::Type(self.void_type()),
                 Err(_) => self.unknown_argument(entry, unit_index),
             },
@@ -577,7 +509,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         })
     }
 
-    /// Whether a type parameter DIE's type is an array of unknown length.
     fn unsized_array_argument(
         &self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -599,7 +530,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
             && self.array_is_unsized(target)
     }
 
-    /// A value parameter's integer, decoded by its type.
     fn template_value(
         &mut self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -619,7 +549,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         )
     }
 
-    /// An argument known only by its parameter's name.
     fn unknown_argument(
         &self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -634,7 +563,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         TypeArgument::Unknown(name.unwrap_or_else(|| Arc::from("?")))
     }
 
-    /// Go's kind, runtime type, key, and element for a type DIE.
     fn go_parts(
         &mut self,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -673,7 +601,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         })
     }
 
-    /// The Go kind a type DIE records, if any.
     pub(super) fn go_kind(
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
     ) -> Option<GoKind> {
@@ -685,17 +612,7 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         Some(GoKind::from_abi(kind))
     }
 
-    /// Gives every named type its identity, once names are final.
     pub(super) fn assign_identities(&mut self) {
-        // Each identity reads only its own type and the scopes, so they
-        // are built in parallel and stored in order.
-        // An indexed collect splits alike however the work is stolen.
-        // Most identities share their parts with what is already built, so
-        // the parts are shared rather than copied: every type in one scope
-        // has its path, most names are their own base, and most types take
-        // no arguments. Each identity is boxed where it is built: a vector
-        // of whole identities beside their boxes held two copies of every
-        // one at the load's peak.
         let no_arguments = Arc::<[TypeArgument]>::from([]);
         let built = (0..self.entries.len())
             .into_par_iter()
@@ -713,8 +630,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
                 let go = self.go_identity_parts.get(&id);
                 let language = self.language(parts.die.unit);
 
-                // Nim's C names each seq type for a hash of its element
-                // type; it is that type's `seq`.
                 if language == SourceLanguage::Nim
                     && let Some(element) = self.nim_seq_element(info)
                 {
@@ -732,8 +647,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
                     return Some((index, language, Arc::new(identity), Vec::new()));
                 }
 
-                // D's associative arrays are each `AssociativeArray` of
-                // their key and value types, as druntime once named them.
                 if language == SourceLanguage::D && d_associative_array(info, parts) {
                     let identity = TypeIdentity {
                         language,
@@ -752,8 +665,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
                 let parsed = TypeName::parse(&info.name, NameSyntax::of(language));
                 let scopes = self.type_path(parts.die);
 
-                // Only Go, Zig, and Odin names spell their packages and
-                // modules.
                 let path = if parsed.path.is_empty() {
                     scopes.path
                 } else {
@@ -810,9 +721,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         }
     }
 
-    /// The element type of a Nim seq, as Nim's C lays one out: a
-    /// `tySequence__` record of its `len` and `p`, which points to a
-    /// record of its `cap` and its elements, `data`, a flexible array.
     fn nim_seq_element(&self, info: &TypeInfo) -> Option<TypeReference> {
         let members = |info: &TypeInfo, names: [&str; 2]| match &info.kind {
             TypeKind::Record {
@@ -892,8 +800,6 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         }
     }
 
-    /// The scopes enclosing the DIE a type was built from, or those of the
-    /// declaration it completes.
     fn type_path(&self, die: DieKey) -> ScopePath {
         self.context
             .type_scopes
@@ -909,14 +815,9 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
     }
 }
 
-/// The names of the typedefs LDC nests in an associative array's record
-/// for its key and value types.
 const D_KEY: &str = "__key_t";
 const D_VALUE: &str = "__val_t";
 
-/// Whether a D type is an associative array as LDC describes one: `V[K]`,
-/// a record of one pointer, `ptr`, to druntime's table, holding typedefs
-/// of its key and value types.
 fn d_associative_array(info: &TypeInfo, parts: &IdentityParts) -> bool {
     let TypeKind::Record {
         members,
@@ -935,8 +836,6 @@ fn d_associative_array(info: &TypeInfo, parts: &IdentityParts) -> bool {
         && matches!(members.as_ref(), [member] if member.name.as_deref() == Some("ptr"))
 }
 
-/// The positions of a type's identity whose arguments its name spells,
-/// which resolve once every identity exists.
 #[derive(Debug, Clone)]
 pub(super) struct PendingArguments {
     pub(super) entry: usize,
@@ -944,15 +843,6 @@ pub(super) struct PendingArguments {
     pub(super) positions: Vec<usize>,
 }
 
-/// Resolves the arguments `pending` names, parsed from names, once every
-/// identity exists: an argument resolves when the types it could name are
-/// one, and names the first of them.
-///
-/// With `classes`, each type's class of types whose fields and references
-/// are alike, a name is matched against the first of each class only,
-/// since it names every type of a class or none; the types it names are
-/// then every member of the classes matched. Those need not all be the
-/// same type, as copies of a cyclic type are not.
 pub(super) fn resolve_parsed_arguments(
     entries: &mut [TypeEntry],
     image: ModuleImageId,
@@ -978,8 +868,6 @@ pub(super) fn resolve_parsed_arguments(
     drop(index_phase);
     let _resolve_phase = crate::span!("types.identities.resolve");
 
-    // The first pointer type to each type, by the target's identity, for
-    // arguments spelled as pointers.
     let mut pointers = HashMap::new();
     let spelled_pointer = pending.iter().any(|pending| {
         matches!(
@@ -1009,14 +897,9 @@ pub(super) fn resolve_parsed_arguments(
         }
     }
 
-    // Many names spell the same argument, which resolves alike each time,
-    // so each spelling resolves once. A spelling's answer depends on nothing
-    // but the spelling, and finding it searches every type its base names,
-    // thousands in a large program, so the spellings resolve in parallel.
     let (spellings, ordered) = spellings(entries, pending);
     crate::count!("type_arguments_spelled", ordered.len());
 
-    // An indexed collect splits alike however the work is stolen.
     let answers = ordered
         .par_iter()
         .map(|(text, language)| {
@@ -1063,11 +946,8 @@ pub(super) fn resolve_parsed_arguments(
     }
 }
 
-/// A spelling of a type argument, in its language.
 type Spelling = (Arc<str>, SourceLanguage);
 
-/// The spellings of the arguments `pending` names, each once in the order
-/// first named, and where each is in that order.
 fn spellings(
     entries: &[TypeEntry],
     pending: &[PendingArguments],
@@ -1099,8 +979,6 @@ fn spellings(
     (spellings, ordered)
 }
 
-/// Each type's class of types alike to every name, with the members of
-/// each class in identifier order; without classes, each type is its own.
 struct Alike<'a> {
     classes: Option<&'a [u32]>,
     members: Vec<Vec<TypeId>>,
@@ -1126,8 +1004,6 @@ impl<'a> Alike<'a> {
         Self { classes, members }
     }
 
-    /// Whether names are matched against the type `index` numbers: the
-    /// first of its class.
     fn searchable(&self, index: usize) -> bool {
         self.classes.is_none_or(|classes| {
             classes
@@ -1138,7 +1014,6 @@ impl<'a> Alike<'a> {
         })
     }
 
-    /// The types alike to `reference`, itself among them.
     fn members(&self, reference: TypeReference) -> Vec<TypeReference> {
         self.classes
             .and_then(|classes| classes.get(reference.id.index()))
@@ -1169,8 +1044,6 @@ impl TypeLookup for EntryLookup<'_> {
     }
 }
 
-/// Combines the arguments DWARF describes with those a name spells. Returns
-/// the arguments, their origin, and the positions still to resolve.
 fn merge_arguments(
     parts: &IdentityParts,
     go: Option<&GoParts>,
@@ -1206,8 +1079,6 @@ fn merge_arguments(
             Some(texts) if !texts.is_empty() => parsed(texts),
             _ => (Vec::new(), ArgumentOrigin::None, Vec::new()),
         },
-        // The name spells each parameter: an unreadable one takes its
-        // spelling, which may still resolve.
         Some(texts) if texts.len() == template.len() => {
             let mut pending = Vec::new();
             let arguments = template
@@ -1226,8 +1097,6 @@ fn merge_arguments(
             (arguments, ArgumentOrigin::Dwarf, pending)
         }
 
-        // rustc omits const parameters: the name's integers fill the
-        // positions the parameters skip, if that accounts for every one.
         Some(texts) if texts.len() > template.len() => {
             let mut described = template.iter();
             let merged = texts
@@ -1244,8 +1113,6 @@ fn merge_arguments(
                     (arguments, ArgumentOrigin::Dwarf, Vec::new())
                 }
 
-                // Positions the parameters cannot be placed in come from
-                // the name alone, rather than out of place.
                 _ => parsed(texts),
             }
         }
@@ -1253,9 +1120,6 @@ fn merge_arguments(
     }
 }
 
-/// What a parsed argument spells: a value, or the one type it names in the
-/// type's own language. Types several units define alike are one type;
-/// several distinct types, or none, leave it unknown.
 fn resolve_argument(
     text: &str,
     language: SourceLanguage,
@@ -1268,8 +1132,6 @@ fn resolve_argument(
         return Some(TypeArgument::Value(value));
     }
 
-    // A pointer, as GCC spells `int*` in a pack it leaves out: the pointer
-    // type whose target is the type its spelling resolves to.
     if let Some(target) = text.trim_end().strip_suffix('*') {
         let Some(TypeArgument::Type(target)) =
             resolve_argument(target.trim_end(), language, index, lookup, pointers, alike)

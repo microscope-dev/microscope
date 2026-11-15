@@ -1,23 +1,9 @@
-//! The sizes of V8's bytecodes, generated from `bytecodes.h` and
-//! `bytecode-operands.h` for `src/image/v8/bytecodes.gen.rs`: the table V8
-//! keeps as `Bytecodes::kBytecodeSizes`, three rows, one per operand scale
-//! (1, 2, 4), of one size per bytecode in `BYTECODE_LIST`'s order. A
-//! bytecode is one byte, and each operand adds its type's unscaled size,
-//! times the scale where the type is scalable (`bytecode-traits.h`).
-//!
-//! The lists are macros that call one another. Each is expanded only
-//! through its own callbacks and the lists it names. Any other call, an
-//! unknown operand type or size, or two `#ifdef` definitions of a list
-//! that disagree fails.
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use regex::Regex;
 
-/// The parameters and body of each definition of each function-like macro
-/// of `text`, its comments removed and its lines joined.
 pub(super) fn defines(text: &str) -> BTreeMap<String, Vec<(Vec<String>, String)>> {
     let text = Regex::new(r"(?s)/\*.*?\*/")
         .expect("a pattern")
@@ -38,7 +24,6 @@ pub(super) fn defines(text: &str) -> BTreeMap<String, Vec<(Vec<String>, String)>
     macros
 }
 
-/// Each call `NAME(arguments)` at the top level of a macro's body.
 fn calls(body: &str) -> Vec<(String, Vec<String>)> {
     let head = Regex::new(r"(\w+)\s*\(").expect("a pattern");
     let mut found = Vec::new();
@@ -69,8 +54,6 @@ fn calls(body: &str) -> Vec<(String, Vec<String>)> {
     found
 }
 
-/// The entries the list macro `name` gives its callbacks, each by its
-/// arguments, through the lists it calls.
 pub(super) fn expand(
     macros: &BTreeMap<String, Vec<(Vec<String>, String)>>,
     name: &str,
@@ -107,8 +90,6 @@ pub(super) fn expand(
     expansions.into_iter().next().unwrap_or_default()
 }
 
-/// Each bytecode's name and its sizes at the scales 1, 2, and 4, from a
-/// version's `bytecodes.h` and `bytecode-operands.h`.
 pub(super) fn sizes(bytecodes: &str, operands: &str) -> Vec<(String, [u8; 3])> {
     let operand_macros = defines(operands);
     let mut infos = BTreeMap::new();
@@ -161,15 +142,12 @@ pub(super) fn sizes(bytecodes: &str, operands: &str) -> Vec<(String, [u8; 3])> {
         .collect()
 }
 
-/// The table `Bytecodes::kBytecodeSizes` holds: each scale's row in turn.
 pub(super) fn table(sizes: &[(String, [u8; 3])]) -> Vec<u8> {
     (0..3)
         .flat_map(|row| sizes.iter().map(move |(_, own)| own[row]))
         .collect()
 }
 
-/// The generated file, with each version of `versions` (its major.minor
-/// and its Torque output's directory) beside its headers.
 pub(super) fn generate(versions: &[((u32, u32), PathBuf)], notice: &str) -> String {
     let mut text = String::from(
         "// @generated from V8's src/interpreter/bytecodes.h and\n\
@@ -229,8 +207,6 @@ pub(super) fn generate(versions: &[((u32, u32), PathBuf)], notice: &str) -> Stri
     text
 }
 
-/// The number of `SuspendGenerator` in `BYTECODE_LIST`'s order, which must
-/// keep the operands an await's frame is read by.
 fn suspend_generator(bytecodes: &str) -> u8 {
     let list = expand(&defines(bytecodes), "BYTECODE_LIST");
     let number = list
@@ -250,8 +226,6 @@ fn suspend_generator(bytecodes: &str) -> u8 {
     u8::try_from(number).expect("a bytecode's number is a byte")
 }
 
-/// A list's entries come from its callbacks and from the lists it calls,
-/// in order, and a call of anything else fails.
 #[test]
 fn lists_expand_through_the_lists_they_call() {
     let header = "\
@@ -272,8 +246,6 @@ fn lists_expand_through_the_lists_they_call() {
     assert!(std::panic::catch_unwind(|| expand(&unknown, "LIST")).is_err());
 }
 
-/// A bytecode's size at each scale is one byte and its operands', only
-/// the scalable ones scaled.
 #[test]
 fn a_bytecode_is_its_byte_and_its_operands() {
     let operands = "\

@@ -1,12 +1,12 @@
-// A pool of workers, and goroutines parked in every state a program names,
-// checked against the runtime's own account of them.
-//
-// Before each checkpoint every other goroutine is parked where the program
-// put it, which the program observes in its own goroutine dump rather than
-// waiting for. The checkpoint then prints `TRUTH` lines from the runtime:
-// each goroutine's id, status, and frames, and the thread running main.
-// `runtime.Stack` dumps as `GOTRACEBACK=single` does whatever the setting,
-// so the dump leaves out the runtime's own goroutines and frames.
+
+
+
+
+
+
+
+
+
 package main
 
 import (
@@ -19,17 +19,17 @@ import (
 	"time"
 )
 
-// sink keeps calls the compiler would otherwise drop.
+
 var sink int
 
-// reached is where tests stop at a checkpoint.
-//
+
+
 //go:noinline
 func reached(name string) {
 	sink += len(name)
 }
 
-// truth prints one tab-separated line a test checks the debugger against.
+
 func truth(fields ...any) {
 	text := make([]string, len(fields))
 	for index, field := range fields {
@@ -38,28 +38,28 @@ func truth(fields ...any) {
 	fmt.Println("TRUTH\t" + strings.Join(text, "\t"))
 }
 
-// goroutine is one goroutine of a dump: its id, status, and frames.
+
 type goroutine struct {
 	id     string
 	status string
 	frames []string
 }
 
-// dump parses the runtime's dump of every goroutine the program started.
+
 func dump() []goroutine {
 	buffer := make([]byte, 1<<20)
 	text := string(buffer[:runtime.Stack(buffer, true)])
 	var goroutines []goroutine
 	for _, block := range strings.Split(strings.TrimSpace(text), "\n\n") {
 		lines := strings.Split(block, "\n")
-		// goroutine 18 [chan receive, 2 minutes, locked to thread]:
+
 		header := strings.TrimSuffix(strings.TrimPrefix(lines[0], "goroutine "), ":")
 		id, rest, _ := strings.Cut(header, " ")
 		status := strings.TrimSuffix(strings.TrimPrefix(rest, "["), "]")
 		status, _, _ = strings.Cut(status, ",")
 		current := goroutine{id: id, status: status}
-		// Each frame is a call line followed by its tab-indented position;
-		// the dump may end with the line that created the goroutine.
+
+
 		for index := 1; index+1 < len(lines); index += 2 {
 			call := lines[index]
 			if strings.HasPrefix(call, "created by ") {
@@ -75,7 +75,7 @@ func dump() []goroutine {
 	return goroutines
 }
 
-// me is the calling goroutine's id, from the header of its own dump.
+
 func me() string {
 	buffer := make([]byte, 64)
 	header := string(buffer[:runtime.Stack(buffer, false)])
@@ -83,7 +83,7 @@ func me() string {
 	return id
 }
 
-// awaitStatuses yields until the dump shows a goroutine in each status.
+
 func awaitStatuses(statuses ...string) {
 	for {
 		seen := map[string]int{}
@@ -104,7 +104,7 @@ func awaitStatuses(statuses ...string) {
 	}
 }
 
-// checkpoint prints the runtime's account of every goroutine, then stops.
+
 func checkpoint(name string) {
 	goroutines := dump()
 	truth("checkpoint", name)
@@ -119,7 +119,7 @@ func checkpoint(name string) {
 	reached(name)
 }
 
-// worker squares the jobs it receives until there are none left.
+
 func worker(jobs <-chan int, results chan<- int, group *sync.WaitGroup) {
 	defer group.Done()
 	for job := range jobs {
@@ -128,7 +128,7 @@ func worker(jobs <-chan int, results chan<- int, group *sync.WaitGroup) {
 }
 
 func main() {
-	// The thread main reports stays the one it runs on.
+
 	runtime.LockOSThread()
 
 	jobs := make(chan int)
@@ -139,7 +139,7 @@ func main() {
 		go worker(jobs, results, &workers)
 	}
 
-	// One goroutine for each other way a program parks one.
+
 	var lock sync.Mutex
 	lock.Lock()
 	go func() {
@@ -180,8 +180,8 @@ func main() {
 		reader.Read(buffer)
 	}()
 
-	// A blocking read the runtime does not poll keeps its thread in the
-	// system call.
+
+
 	var raw [2]int
 	if err := syscall.Pipe(raw[:]); err != nil {
 		panic(err)

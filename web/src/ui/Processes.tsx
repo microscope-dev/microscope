@@ -1,6 +1,3 @@
-// The Processes pane selects which process the session shows and lets a
-// stopped child detach without ending the other processes.
-
 import { useCallback, useState } from "react";
 
 import { assert } from "../assert";
@@ -10,7 +7,6 @@ import { useConnection, useModel } from "../store";
 import { flash } from "../tab";
 import { useFocus } from "./Workspace";
 
-/** A member's program, by file name, as `ps` names it. */
 export function memberName(member: Member): string {
   const word = member.command.split(" ")[0];
   assert(word !== undefined, `member ${member.number} command split into nothing`);
@@ -18,7 +14,6 @@ export function memberName(member: Member): string {
   return program.slice(program.lastIndexOf("/") + 1) || `process ${member.pid ?? "?"}`;
 }
 
-/** How a member joined, in a few words. */
 export function joinedText(member: Member): string {
   switch (member.joined) {
     case "launched":
@@ -42,7 +37,6 @@ const STATES: Record<Member["state"], string> = {
   lost: "lost",
 };
 
-/** Whether the group has more than its own program's process to show. */
 export function showsProcesses(group: Group | null | undefined): group is Group {
   return (group?.members.length ?? 0) > 1;
 }

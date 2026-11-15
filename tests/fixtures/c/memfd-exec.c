@@ -1,5 +1,5 @@
-// Maps anonymous executable memory backed by a memfd, as JIT compilers do.
-// /proc/<pid>/maps lists it as "/memfd:jit (deleted)", a path naming no file.
+
+
 
 #define _GNU_SOURCE
 #include <sys/mman.h>

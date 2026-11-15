@@ -1,17 +1,3 @@
-//! Code a runtime generated into anonymous memory, whose frames keep the
-//! frame-pointer chain by the runtime's convention: V8's compiled
-//! JavaScript, and its builtins where no symbol names them.
-//!
-//! No table describes such code, and its functions' bounds are not known,
-//! so a frame is found from the instructions at the frame's own address.
-//! The runtime calls only from a frame it has entered, whose rbp holds the
-//! address of the word that saved the caller's, 16 bytes below the
-//! canonical frame address. That holds at each call and through the body.
-//! Only a frame stopped at the first two instructions of a prologue
-//! (`push rbp`, `mov rbp, rsp`) or at a return has not entered it or has
-//! left it, which those instructions prove. A caller's address is the last
-//! byte of the call it made, which is never one of those.
-
 use std::path::Path;
 use std::sync::Arc;
 
@@ -22,17 +8,10 @@ use super::{DebugInfo, UnwindInfo};
 use crate::unwind::{MemoryReader, RegisterFile, UnwindStep};
 use crate::{AddressRange, ImageAddress, ModuleImageId, UnwindTermination, VirtualAddress};
 
-/// How many bytes are read before a frame's address, which hold the call
-/// a caller made: the longest call V8 emits, through memory with a 32-bit
-/// displacement, is seven.
 const BEFORE: u64 = 8;
 
-/// How many bytes are read from a frame's address, which hold the longest
-/// instruction a frame is proved by.
 const FROM: u64 = 8;
 
-/// The debug information of the runtime's code `range` holds, at the
-/// addresses the process runs it.
 pub fn load(
     path: &Path,
     id: ModuleImageId,
@@ -41,8 +20,6 @@ pub fn load(
     load_named(path, id, range, Vec::new())
 }
 
-/// The debug information of the runtime's code `range` holds, as [`load`]
-/// gives it, with `symbols` naming its functions.
 pub(super) fn load_named(
     path: &Path,
     id: ModuleImageId,
@@ -74,14 +51,8 @@ pub(super) fn load_named(
     })
 }
 
-/// Unwinds the runtime's frames by its convention. Image addresses are the
-/// process's.
 struct RuntimeCodeUnwind;
 
-/// The canonical frame address of the runtime's frame whose address in the
-/// process is `address`: its instruction in the innermost frame, the last
-/// byte of its call in a caller. The frame is found by the runtime's
-/// convention, from the code at `address`, as [`load`]'s are.
 pub fn cfa_at(
     address: VirtualAddress,
     registers: &RegisterFile,
@@ -90,8 +61,6 @@ pub fn cfa_at(
     frame_cfa(frame(address, memory), registers)
 }
 
-/// The caller of the runtime's frame whose address in the process is
-/// `address`, as [`cfa_at`] finds the frame.
 pub fn caller_at(
     address: VirtualAddress,
     registers: &RegisterFile,
@@ -100,7 +69,6 @@ pub fn caller_at(
     frame_caller(frame(address, memory), registers, memory)
 }
 
-/// The frame at `address` of the process, by the instructions around it.
 fn frame(address: VirtualAddress, memory: &mut dyn MemoryReader) -> CodeFrame {
     let address = address.get();
     let based = CodeFrame::Based {
@@ -114,16 +82,12 @@ fn frame(address: VirtualAddress, memory: &mut dyn MemoryReader) -> CodeFrame {
     for word in [start, address] {
         match memory.read_u64(VirtualAddress::new(word)) {
             Some(value) => bytes.extend_from_slice(&value.to_le_bytes()),
-            // Code that cannot be read proves no instruction.
             None => return based,
         }
     }
     frame_at(&bytes, start, address).unwrap_or(based)
 }
 
-/// The frame proved at `address` by the bytes from `start`, which hold
-/// the instructions around it, if they prove one other than the
-/// convention's.
 fn frame_at(bytes: &[u8], start: u64, address: u64) -> Option<CodeFrame> {
     let at = usize::try_from(address - start).ok()?;
     let ends_call = (2..=7).any(|length: usize| {
@@ -214,15 +178,12 @@ mod tests {
 
     const START: u64 = 0x1000;
 
-    /// The frame at the byte `at` of `code`, which begins at `START`.
     fn frame(code: &[u8], at: u64) -> Option<CodeFrame> {
         frame_at(code, START, START + at)
     }
 
     #[test]
     fn a_frame_entering_or_leaving_is_proved_by_its_instructions() {
-        // push rbp; mov rbp, rsp; push rsi; call [r13+0x40]; mov rsp, rbp;
-        // pop rbp; ret
         let code = [
             0x55, 0x48, 0x89, 0xe5, 0x56, 0x41, 0xff, 0x55, 0x40, 0x48, 0x89, 0xec, 0x5d, 0xc3,
         ];
@@ -238,8 +199,6 @@ mod tests {
                 caller_frame_pointer: CallerFramePointer::Saved(16),
             })
         );
-        // The body, the end of the call a caller made, and the epilogue
-        // until rbp is the caller's hold the convention.
         for at in [4, 5, 8, 9, 12] {
             assert_eq!(frame(&code, at), None, "{at}");
         }
@@ -248,11 +207,8 @@ mod tests {
 
     #[test]
     fn the_end_of_a_call_is_a_callers_frame_whatever_its_bytes_say() {
-        // call rel32 whose last byte is 0xc3, a ret on its own, then
-        // push rbp; mov rbp, rsp, which is a prologue only from its start.
         let code = [0xe8, 0x00, 0x00, 0x00, 0xc3, 0x55, 0x48, 0x89, 0xe5];
         assert_eq!(frame(&code, 4), None);
-        // A call's last byte that is a push of rbp is the call's.
         let code = [0xe8, 0x00, 0x00, 0x00, 0x55, 0x48, 0x89, 0xe5];
         assert_eq!(frame(&code, 4), None);
     }

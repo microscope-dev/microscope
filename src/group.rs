@@ -1,17 +1,3 @@
-//! A process group: the processes a program starts that microscope debugs
-//! together.
-//!
-//! Each process has one tracer thread. The root launches or attaches as a
-//! single session does. Children accepted by the follow policy become
-//! members with their own [`DebuggerHandle`]; the rest are watched until
-//! they execute a program the policy accepts. Members are numbered in join
-//! order from 1 (the root), and keep their numbers after exiting.
-//!
-//! Each member gets the root's breakpoints before running an instruction,
-//! and subsequent changes reach every member. Unless [`StopScope`] says
-//! otherwise, a stop in any member pauses all other members before
-//! [`GroupEvent::GroupStopped`] is published.
-
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,10 +12,8 @@ use crate::{
     ResumeScope, StopReason, StopScope,
 };
 
-/// A member's number in its group, stable for the group's life.
 pub type MemberNumber = u32;
 
-/// A group stop, as [`GroupEvent::GroupStopped`] reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupStop {
     pub member: MemberNumber,
@@ -38,74 +22,49 @@ pub struct GroupStop {
     pub reason: StopReason,
 }
 
-/// One continue or resume of a whole group. The group stop that ends it
-/// names it, so a client can tell its own stop from an older one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupExecutionId(u64);
 
-/// What a group reports about its processes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GroupEvent {
-    /// A process became a member, with the group's breakpoints planted
-    /// before it ran an instruction, except any that a
-    /// [`GroupEvent::BreakpointNotMirrored`] after this one names.
     MemberJoined {
         member: MemberNumber,
         process: ProcessId,
 
-        /// The member whose process started it, or none when a watched
-        /// process did.
         parent: Option<MemberNumber>,
 
-        /// The program it joined by executing; none for a fork child,
-        /// which runs its parent's.
         executed: Option<PathBuf>,
     },
 
-    /// A member's process exited.
     MemberExited {
         member: MemberNumber,
         status: ExitStatus,
     },
 
-    /// A member's process executed a program the group does not debug, and
-    /// is watched from now on.
     MemberWatched {
         member: MemberNumber,
         program: PathBuf,
     },
 
-    /// A process the group watches executed `program`, which it does not
-    /// debug either.
     ProcessWatched {
         process: ProcessId,
 
-        /// The process that started it, when the group knew it.
         parent: Option<ProcessId>,
         program: PathBuf,
     },
 
-    /// A process executed a program the group would debug but cannot
-    /// load, and runs on watched.
     ProcessUnfollowed {
         process: ProcessId,
         program: PathBuf,
         reason: String,
     },
 
-    /// Member `member` failed to take a change to the group's breakpoint
-    /// `breakpoint`, so its copy may differ from the root's or be missing.
-    /// Each later change to the root's breakpoints tries again.
     BreakpointNotMirrored {
         member: MemberNumber,
         breakpoint: BreakpointId,
         reason: String,
     },
 
-    /// A member stopped, and every other member is stopped too. `stop` is
-    /// the member's stop, as its own session names it, so a client can
-    /// tell this stop from an earlier one with the same reason. `execution`
-    /// is the continue or resume this stop ends, if it ends one.
     GroupStopped {
         member: MemberNumber,
         stop: crate::StopId,
@@ -116,9 +75,6 @@ pub enum GroupEvent {
     /// A member's process was released to run on its own.
     MemberDetached { member: MemberNumber },
 
-    /// A member's session ended while its process was still debugged, as a
-    /// failure in microscope ends one. Its process was killed if the session
-    /// launched it and would have killed it on shutdown, and released to run
     /// on its own otherwise.
     MemberLost { member: MemberNumber },
 
@@ -126,50 +82,38 @@ pub enum GroupEvent {
     GroupExited,
 }
 
-/// Where a member is in its life.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemberState {
-    /// It has no process yet, as a root before its launch.
     NotStarted,
     Running,
     Stopped(StopReason),
     Exited(ExitStatus),
 
-    /// Its process executed `program`, which the group watches.
     Watched(PathBuf),
 
-    /// Its process was detached, and runs on its own.
     Detached,
 
-    /// Its session failed, and released or killed its process.
     Lost,
 }
 
-/// A member as [`ProcessGroup::members`] lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Member {
     pub number: MemberNumber,
     pub process: Option<ProcessId>,
     pub parent: Option<MemberNumber>,
 
-    /// The program it joined by executing, if it did.
     pub executed: Option<PathBuf>,
 
-    /// Its command line, as `/proc` showed it when it joined.
     pub command: String,
     pub state: MemberState,
 }
 
-/// The processes a program starts that microscope debugs together.
-///
-/// Its [`GroupHandle`], which it dereferences to, is what clients share.
 pub struct ProcessGroup {
     handle: GroupHandle,
     task: Option<tokio::task::JoinHandle<()>>,
     backend: Option<backend::GroupBackend>,
 }
 
-/// A clonable client of a running [`ProcessGroup`].
 #[derive(Clone)]
 pub struct GroupHandle {
     shared: Arc<Shared>,
@@ -177,7 +121,6 @@ pub struct GroupHandle {
     events: broadcast::Sender<GroupEvent>,
     root: DebuggerHandle,
 
-    /// What a stop in one member stops.
     stops: StopScope,
 }
 
@@ -185,18 +128,11 @@ struct Shared {
     members: Mutex<Vec<Member>>,
     handles: Mutex<BTreeMap<MemberNumber, DebuggerHandle>>,
 
-    /// The root's breakpoint each member's copy of one is, by the member
-    /// and the copy's id.
     copies: Mutex<BTreeMap<(MemberNumber, BreakpointId), BreakpointId>>,
 
-    /// Whether the group reported a process it could not follow, or a
-    /// member that did not take a change to the breakpoints. A client
-    /// whose events fell behind reads these instead.
     unfollowed: AtomicBool,
     unmirrored: AtomicBool,
 
-    /// The last group stop reported, for a client whose events fell
-    /// behind.
     last_stop: Mutex<Option<GroupStop>>,
 }
 
@@ -224,9 +160,6 @@ enum Command {
 }
 
 impl ProcessGroup {
-    /// Makes a group whose root is a session for `program`, which a client
-    /// launches or attaches through [`GroupHandle::root`]. The processes it
-    /// starts are followed as `policy` says.
     pub fn new(program: Program, policy: FollowPolicy) -> Result<Self> {
         let stops = policy.stop;
         let (root, mut backend) = Debugger::for_group(program, policy)?;
@@ -265,12 +198,6 @@ impl ProcessGroup {
         })
     }
 
-    /// Attaches a group's root to `process`, following the processes it
-    /// starts from now on as `policy` says, and returns once the root is
-    /// stopped. Its program is read from `executable` when given, and
-    /// otherwise from the process. Processes it started before are not
-    /// adopted. Ending the group releases every process it debugs or
-    /// watches.
     pub async fn attach(
         process: ProcessId,
         executable: Option<&std::path::Path>,
@@ -303,15 +230,11 @@ impl ProcessGroup {
         }
     }
 
-    /// A clonable handle for the group's clients.
     #[must_use]
     pub fn handle(&self) -> GroupHandle {
         self.handle.clone()
     }
 
-    /// Ends every member, killing launched processes and releasing attached
-    /// ones, then the processes the group watches, and joins the tracer
-    /// thread.
     pub async fn shutdown(mut self) -> Result<()> {
         let result = self.handle.command(Command::Shutdown).await;
         if let Some(task) = self.task.take() {
@@ -337,10 +260,6 @@ impl std::ops::Deref for ProcessGroup {
     }
 }
 
-/// A group dropped without [`ProcessGroup::shutdown`] ends the same way,
-/// on its driver's task, without waiting for it, as a dropped [`Debugger`]
-/// does. Aborting the driver would stop it partway through whatever it was
-/// doing to its members.
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
         if self.task.take().is_some() {
@@ -351,14 +270,11 @@ impl Drop for ProcessGroup {
 }
 
 impl GroupHandle {
-    /// The root member's handle, through which the group's program is
-    /// launched or attached, and whose breakpoints are the group's.
     #[must_use]
     pub fn root(&self) -> DebuggerHandle {
         self.root.clone()
     }
 
-    /// The handle of member `number`, while it has one.
     #[must_use]
     pub fn member(&self, number: MemberNumber) -> Option<DebuggerHandle> {
         self.shared
@@ -369,7 +285,6 @@ impl GroupHandle {
             .cloned()
     }
 
-    /// Every member so far, in the order they joined.
     #[must_use]
     pub fn members(&self) -> Vec<Member> {
         self.shared
@@ -379,8 +294,6 @@ impl GroupHandle {
             .clone()
     }
 
-    /// The last group stop the group reported, which a client whose events
-    /// fell behind may have missed.
     #[must_use]
     pub fn last_stop(&self) -> Option<GroupStop> {
         self.shared
@@ -390,15 +303,11 @@ impl GroupHandle {
             .clone()
     }
 
-    /// Whether the group has reported a process it could not follow, as a
-    /// [`GroupEvent::ProcessUnfollowed`].
     #[must_use]
     pub fn missed_a_process(&self) -> bool {
         self.shared.unfollowed.load(Ordering::Relaxed)
     }
 
-    /// Whether the group has reported a member that did not take a change
-    /// to the breakpoints, as a [`GroupEvent::BreakpointNotMirrored`].
     #[must_use]
     pub fn missed_a_breakpoint_change(&self) -> bool {
         self.shared.unmirrored.load(Ordering::Relaxed)
@@ -409,25 +318,11 @@ impl GroupHandle {
         self.events.subscribe()
     }
 
-    /// Resumes every stopped member. A stop a member made while the group
-    /// was stopping is reported instead, as a [`GroupEvent::GroupStopped`],
-    /// without resuming anything.
-    ///
-    /// This resumes whatever stop each member is at now. A client that
-    /// showed a stop continues from it with
-    /// [`continue_from`](Self::continue_from) instead.
-    ///
-    /// Returns the execution the group stop that ends it names.
     pub async fn continue_all(&self) -> Result<GroupExecutionId> {
         self.command(|reply| Command::ContinueAll(None, reply))
             .await
     }
 
-    /// Continues as [`continue_all`](Self::continue_all) does, from member
-    /// `observed.0`'s stop `observed.1`, which a client showed. That member
-    /// resumes first, at that stop; when the stop is no longer current, or
-    /// the member is not stopped, the continue fails with its error and
-    /// resumes nothing.
     pub async fn continue_from(
         &self,
         observed: (MemberNumber, crate::StopId),
@@ -436,18 +331,11 @@ impl GroupHandle {
             .await
     }
 
-    /// What a stop in one member stops: the group, or that member alone.
     #[must_use]
     pub const fn stops(&self) -> StopScope {
         self.stops
     }
 
-    /// Resumes every stopped member, including those whose stops
-    /// [`continue_all`](Self::continue_all) would report first, for a client
-    /// that already shows each member's stop on its own. `observed` is the
-    /// stop the client showed, from the member's own events, which the
-    /// group may not have seen yet; it is resumed all the same, first. When
-    /// it is no longer current, the resume fails and resumes nothing.
     pub async fn resume_all(
         &self,
         observed: Option<(MemberNumber, crate::StopId)>,
@@ -456,19 +344,10 @@ impl GroupHandle {
             .await
     }
 
-    /// Pauses every running member, and reports the group stop once they
-    /// are stopped.
-    ///
-    /// Returns the execution that group stop names: the continue under way,
-    /// or one the pause begins. It is none where the group has no stop of
-    /// its own to report, as when a member's stop already stops the group,
-    /// or nothing runs yet.
     pub async fn pause_all(&self) -> Result<Option<GroupExecutionId>> {
         self.command(Command::PauseAll).await
     }
 
-    /// The group's breakpoint, which is the root's, that member `number`'s
-    /// breakpoint `id` is a copy of; the root's own are themselves.
     #[must_use]
     pub fn group_breakpoint(&self, number: MemberNumber, id: BreakpointId) -> Option<BreakpointId> {
         if number == 1 {
@@ -483,8 +362,6 @@ impl GroupHandle {
             .copied()
     }
 
-    /// Releases member `number`'s process, stopped, to run on its own; the
-    /// rest of the group is unchanged. The root cannot be detached alone.
     pub async fn detach(&self, number: MemberNumber) -> Result<()> {
         self.command(|reply| Command::Detach(number, reply)).await
     }
@@ -501,14 +378,8 @@ impl GroupHandle {
     }
 }
 
-/// How long an attach waits for the group to see the root's stop. The root
-/// has already stopped when the wait begins, so this is only the hop from
-/// its session to the group.
 const ATTACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Waits until the group has seen the root stop at its attach. When the
-/// group's events fell behind, the root's state says whether the stop was
-/// among those lost.
 async fn attach_seen(
     events: &mut broadcast::Receiver<GroupEvent>,
     shared: &Shared,
@@ -547,42 +418,27 @@ async fn attach_seen(
         })
 }
 
-/// A member as the group's driver keeps it.
 struct Live {
     debugger: Debugger,
     handle: DebuggerHandle,
     process: Option<ProcessId>,
 
-    /// The member's newest stop the group knows: the one it joined in,
-    /// which is not one of its own, the last one the group handled, which
-    /// a resync may find again, or one a client resumed before its event
-    /// arrived. A session's stop ids only grow, so the member's events for
-    /// this stop and every earlier one are behind the group.
     seen: Option<crate::StopId>,
 
-    /// The revision of the member's state a resync after a lag took in
-    /// whole; its events up to that revision came before it, and applying
-    /// them now would take the member back.
     resynced: u64,
 
-    /// The member's copy of each of the root's breakpoints, by the root's
-    /// id, with the root's settings it was given.
     mirrored: BTreeMap<BreakpointId, (BreakpointId, Settings)>,
     run: Run,
 }
 
-/// Whether a member runs, as its driver last learned.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Run {
-    /// Stopped, or not started yet.
     Stopped,
     Running,
 
-    /// Exited, detached, watched elsewhere, or lost with its session.
     Gone,
 }
 
-/// What a breakpoint's copy must agree on with the root's.
 #[derive(Clone, PartialEq, Eq)]
 struct Settings {
     enabled: bool,
@@ -604,16 +460,10 @@ impl Settings {
     }
 }
 
-/// Where the group is in a group stop.
 #[derive(Debug)]
 enum Phase {
     Running,
 
-    /// Members are being paused for `first`'s stop, or for a pause of the
-    /// whole group when it is none. `paused` holds the members that stopped
-    /// for it, at their stops, in order, and `was_stopped` whether the
-    /// group was stopped before: a stop nobody stopped for leaves the group
-    /// as it was. A member that moves on is no longer stopped for it.
     Stopping {
         first: Option<MemberStop>,
         waiting: BTreeSet<MemberNumber>,
@@ -623,7 +473,6 @@ enum Phase {
     Stopped,
 }
 
-/// A stop a member published: the member, the stop, and why it stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MemberStop {
     member: MemberNumber,
@@ -631,32 +480,20 @@ struct MemberStop {
     reason: StopReason,
 }
 
-/// The group's stop rule, apart from the members it pauses and resumes:
-/// where the group is in a group stop, the stops it has yet to report,
-/// and the client resumes `C` that wait for it to finish stopping. Each
-/// method says what the driver must do.
 #[derive(Debug)]
 struct Stops<C> {
     scope: StopScope,
     phase: Phase,
 
-    /// Stops members made while the group stopped for another's, each
-    /// reported at a later continue instead of resuming, if its member is
-    /// still there.
     pending: VecDeque<MemberStop>,
 
-    /// Continues and resumes a client asked for while the group stopped,
-    /// served once it has: the pauses under way are part of that stop.
     deferred: Vec<C>,
 }
 
-/// What a member's stop asks of the driver.
 #[derive(Debug, PartialEq, Eq)]
 enum StopAction {
-    /// Report a group stop.
     Report(MemberStop),
 
-    /// Pause every other running member for this stop.
     PauseOthers(MemberStop),
 }
 
@@ -678,10 +515,7 @@ impl<C> Stops<C> {
         matches!(self.phase, Phase::Stopping { .. })
     }
 
-    /// Applies the group's stop rule to a stop member `number` published.
     fn stopped(&mut self, stop: MemberStop) -> Option<StopAction> {
-        // Each member's stop is its own, and one of those a pause of the
-        // whole group waits for.
         if self.scope == StopScope::Process {
             let _ = self.paused(stop.member, Some(stop.clone()));
             return Some(StopAction::Report(stop));
@@ -690,22 +524,16 @@ impl<C> Stops<C> {
         match &mut self.phase {
             Phase::Running => Some(StopAction::PauseOthers(stop)),
             Phase::Stopping { .. } => self.paused(stop.member, Some(stop)).map(StopAction::Report),
-            // A member a client resumed alone, as a step resumes it, stops
-            // again while the rest of the group stays stopped.
+
             Phase::Stopped => Some(StopAction::Report(stop)),
         }
     }
 
-    /// Begins a group stop for `first`'s stop, or for a pause of the whole
-    /// group, waiting for the members being paused; returns the group
-    /// stop to report if none is.
     fn pause_all(
         &mut self,
         first: Option<MemberStop>,
         waiting: BTreeSet<MemberNumber>,
     ) -> Option<MemberStop> {
-        // A client's pause while the group stops joins the stop under way,
-        // which keeps the stop it is for.
         if let Phase::Stopping {
             waiting: awaited, ..
         } = &mut self.phase
@@ -731,11 +559,6 @@ impl<C> Stops<C> {
         self.paused(0, None)
     }
 
-    /// Notes that member `number` was continued through its own session.
-    /// Where each member's stop is its own, the group is then no longer
-    /// stopped as a whole, so members that join are resumed. A stop under
-    /// way no longer stops for it, and names another member's stop: the
-    /// earliest of their own stops made for it, if any.
     fn continued(&mut self, number: MemberNumber) {
         match &mut self.phase {
             Phase::Stopped if self.scope == StopScope::Process => self.phase = Phase::Running,
@@ -753,12 +576,7 @@ impl<C> Stops<C> {
         }
     }
 
-    /// Notes that member `number` stopped at `stop`, or will not stop
-    /// when it is none, while the group stops, and returns the group stop
-    /// to report once none is left running.
     fn paused(&mut self, number: MemberNumber, stop: Option<MemberStop>) -> Option<MemberStop> {
-        // A member that will not stop has moved on from, or gone from,
-        // any stop it left waiting.
         if stop.is_none() {
             self.pending.retain(|waiting| waiting.member != number);
         }
@@ -777,8 +595,6 @@ impl<C> Stops<C> {
         if let Some(stop) = stop {
             paused.push((stop.member, stop.stop));
 
-            // Where each member's stop is reported as its own, none is
-            // the group's.
             if self.scope == StopScope::Group && stop.reason != StopReason::Pause {
                 if first.is_none() {
                     *first = Some(stop);
@@ -812,8 +628,6 @@ impl<C> Stops<C> {
         stop
     }
 
-    /// Keeps a client's continue or resume while members are still
-    /// pausing, or gives it back to be served now.
     fn defer(&mut self, command: C) -> Option<C> {
         if self.is_stopping() {
             self.deferred.push(command);
@@ -823,8 +637,6 @@ impl<C> Stops<C> {
         Some(command)
     }
 
-    /// The continues and resumes that waited for the group to finish
-    /// stopping, once it has.
     fn take_deferred(&mut self) -> Vec<C> {
         if self.is_stopping() {
             return Vec::new();
@@ -833,30 +645,22 @@ impl<C> Stops<C> {
         std::mem::take(&mut self.deferred)
     }
 
-    /// Whether the group stop under way waits for member `number`.
     fn awaits(&self, number: MemberNumber) -> bool {
         matches!(&self.phase, Phase::Stopping { waiting, .. } if waiting.contains(&number))
     }
 
-    /// Whether a continue would report a stop rather than resume.
     fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
 
-    /// The members whose stops wait to be reported.
     fn pending_members(&self) -> BTreeSet<MemberNumber> {
         self.pending.iter().map(|stop| stop.member).collect()
     }
 
-    /// Forgets the stops yet to report, for a client that showed them.
     fn discard_pending(&mut self) {
         self.pending.clear();
     }
 
-    /// Begins a continue of the group: returns a stop to report instead,
-    /// or sets the group running, for the driver to resume its members.
-    /// A waiting stop is reported only if `current` says its member is
-    /// still there; one whose member a client moved on is dropped.
     fn continue_all(&mut self, current: impl Fn(&MemberStop) -> bool) -> Option<MemberStop> {
         while let Some(stop) = self.pending.pop_front() {
             if current(&stop) {
@@ -874,16 +678,11 @@ enum Internal {
     Event(MemberNumber, DebuggerEvent),
     PauseFailed(MemberNumber),
 
-    /// The member's events came faster than the group read them, and the
-    /// oldest were lost.
     Lagged(MemberNumber),
 
-    /// The member's session ended.
     Ended(MemberNumber),
 }
 
-/// The task that runs a group: it adopts members, keeps their breakpoints
-/// the root's, and stops them together.
 struct Driver {
     shared: Arc<Shared>,
     root: DebuggerHandle,
@@ -892,7 +691,6 @@ struct Driver {
     next_number: MemberNumber,
     stops: Stops<Command>,
 
-    /// The continue or resume under way, which the next group stop ends.
     execution: Option<GroupExecutionId>,
     next_execution: u64,
     internal: (
@@ -942,8 +740,6 @@ impl Driver {
         mut commands: mpsc::UnboundedReceiver<Command>,
     ) {
         loop {
-            // A member's events are served before a client's command, so
-            // that a command acts on the group as the events left it.
             tokio::select! {
                 biased;
                 Some(internal) = self.internal.1.recv() => self.internal(internal).await,
@@ -963,7 +759,6 @@ impl Driver {
         }
     }
 
-    /// Handles what a member's forwarder sent.
     async fn internal(&mut self, internal: Internal) {
         match internal {
             Internal::Event(member, event) => self.event(member, event).await,
@@ -974,7 +769,6 @@ impl Driver {
         self.after_internal().await;
     }
 
-    /// Serves a client's command, but for a shutdown, which ends the loop.
     async fn serve(&mut self, command: Command) {
         match command {
             command @ (Command::ContinueAll(..) | Command::ResumeAll(..)) => {
@@ -993,8 +787,6 @@ impl Driver {
                     self.pause_all(None);
                     let _ = reply.send(Ok(execution));
                 } else {
-                    // With nothing running yet, the root pauses as it
-                    // starts, or says it is not running.
                     let root = self.root.clone();
                     tokio::spawn(async move {
                         let paused = match root.pause().await {
@@ -1011,15 +803,12 @@ impl Driver {
         }
     }
 
-    /// Forwards a member's events to the driver.
     fn forward(&self, member: MemberNumber, handle: &DebuggerHandle) {
         let mut events = handle.subscribe();
         let handle = handle.clone();
         let internal = self.internal.0.clone();
         tokio::spawn(async move {
             loop {
-                // Events go first, so that the session's end follows every
-                // event it sent.
                 let event = tokio::select! {
                     biased;
                     event = events.recv() => event,
@@ -1049,10 +838,6 @@ impl Driver {
         });
     }
 
-    /// Catches up with member `number` after its oldest events were lost.
-    /// A lag loses the oldest events, never the newest, so the stop or
-    /// exit that ends a burst still comes; what is lost is how the member
-    /// got there: its process, that it ran, and breakpoint changes.
     async fn resync(&mut self, number: MemberNumber) {
         let Some(handle) = self.members.get(&number).map(|live| live.handle.clone()) else {
             return;
@@ -1061,8 +846,6 @@ impl Driver {
             return;
         };
 
-        // A member not running is left to its newest events, which a lag
-        // keeps, as its exit or detach is.
         let applies = snapshot.inferior.live_process().is_some();
         if let Some(live) = self.members.get_mut(&number)
             && applies
@@ -1081,9 +864,6 @@ impl Driver {
                 self.shared
                     .update(number, |member| member.state = MemberState::Running);
 
-                // The stop the group waits for may be among what the
-                // snapshot covers, as one a client moved the member on
-                // from, and its event is dropped as old: pause it again.
                 if self.stops.awaits(number) {
                     self.pause(number, &handle);
                 }
@@ -1096,8 +876,6 @@ impl Driver {
             } => {
                 self.adopt_process(number, process_id);
 
-                // A stop newer than the one the group knows means the
-                // member ran in between, as the lost events said.
                 if self
                     .members
                     .get(&number)
@@ -1114,8 +892,6 @@ impl Driver {
         }
     }
 
-    /// Notes member `number`'s process, whose start the group may have
-    /// missed, leaving whether it runs to the caller.
     fn adopt_process(&mut self, number: MemberNumber, process: ProcessId) {
         let Some(live) = self.members.get_mut(&number) else {
             return;
@@ -1136,8 +912,6 @@ impl Driver {
         });
     }
 
-    /// Notes that member `number`'s session ended. One that still debugged
-    /// its process failed, and released or killed it.
     fn ended(&mut self, number: MemberNumber) {
         let Some(live) = self.members.get_mut(&number) else {
             return;
@@ -1175,8 +949,6 @@ impl Driver {
                 parent,
                 program,
             } => {
-                // The member's own report that its process left it may
-                // have come first.
                 let left = self
                     .shared
                     .members
@@ -1225,8 +997,6 @@ impl Driver {
         }
     }
 
-    /// Adopts a new member: plants the root's breakpoints while it is in
-    /// its first stop, then resumes it unless the group is stopped.
     async fn join(&mut self, joined: Joined) {
         let process = joined.process;
         let parent = joined.parent.and_then(|parent| self.number_of(parent));
@@ -1297,8 +1067,6 @@ impl Driver {
             member.state = MemberState::Stopped(reason);
         }
 
-        // A stopped group must not expose a joining member as running
-        // while its snapshot is still on the way.
         self.shared
             .members
             .lock()
@@ -1334,8 +1102,6 @@ impl Driver {
     }
 
     async fn event(&mut self, number: MemberNumber, event: DebuggerEvent) {
-        // A member the group released may still have events on the way,
-        // which no longer say anything about the group.
         let Some(live) = self.members.get(&number) else {
             return;
         };
@@ -1390,8 +1156,6 @@ impl Driver {
         }
     }
 
-    /// Handles member `number`'s stop `stop_id`, from its event or from a
-    /// resync after a lag.
     async fn stop_event(
         &mut self,
         number: MemberNumber,
@@ -1433,7 +1197,6 @@ impl Driver {
     }
 
     fn set_running(&mut self, number: MemberNumber, running: bool) {
-        // A member that is gone stays gone until it starts again.
         if let Some(live) = self.members.get_mut(&number)
             && live.run != Run::Gone
         {
@@ -1441,7 +1204,6 @@ impl Driver {
         }
     }
 
-    /// Applies the group's stop rule to a stop a member published.
     fn stopped(&mut self, stop: MemberStop) {
         match self.stops.stopped(stop) {
             Some(StopAction::Report(stop)) => self.report(stop),
@@ -1470,7 +1232,6 @@ impl Driver {
         });
     }
 
-    /// Pauses every running member but the one whose stop `first` is.
     fn pause_all(&mut self, first: Option<MemberStop>) {
         let stopped = first.as_ref().map(|first| first.member);
         let mut waiting = BTreeSet::new();
@@ -1487,10 +1248,6 @@ impl Driver {
         self.settled(stop);
     }
 
-    /// Reports the group stop that just completed, if any. One that ended
-    /// with nothing to report, as when every member it waited for went,
-    /// leaves the group running, and the execution it would have ended is
-    /// over: a later stop must not name it.
     fn settled(&mut self, stop: Option<MemberStop>) {
         match stop {
             Some(stop) => self.report(stop),
@@ -1499,13 +1256,10 @@ impl Driver {
         }
     }
 
-    /// Pauses member `number` for the group stop under way, which hears
-    /// of it only if the pause fails.
     fn pause(&self, number: MemberNumber, handle: &DebuggerHandle) {
         let handle = handle.clone();
         let internal = self.internal.0.clone();
         tokio::spawn(async move {
-            // AlreadyStopped means its stop event is still on the way.
             if let Err(error) = handle.pause().await
                 && !matches!(error, Error::AlreadyStopped)
             {
@@ -1515,8 +1269,6 @@ impl Driver {
         });
     }
 
-    /// Notes that member `number` stopped, or will not, while the group
-    /// stops, and reports the group stop once none is left running.
     fn paused(&mut self, number: MemberNumber, stop: Option<MemberStop>) {
         let was_stopping = self.stops.is_stopping();
         let stop = self.stops.paused(number, stop);
@@ -1525,10 +1277,6 @@ impl Driver {
         }
     }
 
-    /// Resumes member `number` at `stop`, which a client showed, perhaps
-    /// from the member's own events before they reached the group. The
-    /// member's session refuses a stop that is no longer current, so that a
-    /// client's continue never resumes a stop it did not see.
     async fn resume_observed(&mut self, number: MemberNumber, stop: crate::StopId) -> Result<()> {
         let live = self
             .members
@@ -1547,8 +1295,6 @@ impl Driver {
             )
             .await?;
 
-        // The member's events for this stop and any before it may still be
-        // on their way, and must not report them.
         debug_assert!(
             Some(stop) >= live.seen,
             "member {number} resumed at {stop}, older than its stop {:?}",
@@ -1559,7 +1305,6 @@ impl Driver {
         Ok(())
     }
 
-    /// Fails unless member `number` is still at `stop`.
     async fn still_at(&self, number: MemberNumber, stop: crate::StopId) -> Result<()> {
         let live = self
             .members
@@ -1572,26 +1317,17 @@ impl Driver {
         }
     }
 
-    /// Serves the continues and resumes that waited for the group to
-    /// finish stopping, once it has.
     async fn after_internal(&mut self) {
         for command in self.stops.take_deferred() {
             self.resume(command).await;
         }
     }
 
-    /// Serves a client's continue or resume of the group. One asked while
-    /// members are still pausing waits for them, or a pause under way
-    /// would land after the resume and stop the group again.
     async fn resume(&mut self, command: Command) {
         let Some(command) = self.stops.defer(command) else {
             return;
         };
 
-        // The execution begins before the members resume, as a stop waiting
-        // to be reported ends it at once. One that fails resumed nothing,
-        // and leaves the execution under way, if any, to the stop that ends
-        // it.
         self.next_execution += 1;
         let execution = GroupExecutionId(self.next_execution);
         let previous = self.execution.replace(execution);
@@ -1608,8 +1344,6 @@ impl Driver {
                 let _ = reply.send(begun(self, continued));
             }
             Command::ContinueAll(Some((number, stop)), reply) => {
-                // A stop to report resumes nothing, but the client must
-                // still be continuing from the stop it showed.
                 let (observed, shown) = if self.stops.has_pending() {
                     (self.still_at(number, stop).await, Some((number, stop)))
                 } else {
@@ -1643,9 +1377,6 @@ impl Driver {
         }
     }
 
-    /// Continues the group once the member a client showed has resumed,
-    /// which is enough even with no other member stopped or able to
-    /// resume. With `shown`, that member is resumed here, at that stop.
     async fn continue_rest(&mut self, shown: Option<(MemberNumber, crate::StopId)>) -> Result<()> {
         match self.continue_all(shown).await {
             Err(_) if shown.is_none() => Ok(()),
@@ -1654,13 +1385,7 @@ impl Driver {
         }
     }
 
-    /// Reports a stop that waited, or resumes each stopped member at the
-    /// stop the group knows, or, for member `shown.0`, at the stop
-    /// `shown.1` a client showed, which the group may not have read.
     async fn continue_all(&mut self, shown: Option<(MemberNumber, crate::StopId)>) -> Result<()> {
-        // A waiting stop is reported only where its member still is: a
-        // client may have moved it on through its own session since, and
-        // the group may not have seen that yet.
         let mut current = BTreeMap::new();
         for number in self.stops.pending_members() {
             if let Some(live) = self
@@ -1681,14 +1406,9 @@ impl Driver {
             return Ok(());
         }
 
-        // Once any member resumed, the execution is under way and the
-        // continue succeeded: a member that could not resume, such as one
-        // whose controller is gone, is reported by its own events.
         let mut resumed = false;
         let mut failure = None;
         for (&number, live) in &mut self.members {
-            // The member a client showed stopped may be stopped though the
-            // group has yet to read it.
             let shown = shown
                 .filter(|(member, _)| *member == number)
                 .map(|(_, stop)| stop);
@@ -1700,8 +1420,6 @@ impl Driver {
             let resumable = |stop| Some(stop) == seen || Some(stop) == shown;
             match continue_stopped(&live.handle, resumable).await {
                 Ok(stop) => {
-                    // Its events for the stop it left are now behind the
-                    // group, as resume_observed notes.
                     live.seen = live.seen.max(Some(stop));
                     live.run = Run::Running;
                     resumed = true;
@@ -1720,9 +1438,6 @@ impl Driver {
         }
     }
 
-    /// Deletes the group's temporary breakpoints a member's stop hit, as
-    /// the member deleted its copies: the first stop a temporary breakpoint
-    /// causes in any member deletes it.
     async fn end_temporaries(&mut self, number: MemberNumber, reason: &StopReason) {
         let StopReason::Breakpoint { hits, .. } = reason else {
             return;
@@ -1748,7 +1463,6 @@ impl Driver {
         }
     }
 
-    /// Makes every member's breakpoints the root's again.
     async fn mirror_all(&mut self) {
         let Ok(snapshot) = self.root.snapshot().await else {
             return;
@@ -1771,8 +1485,6 @@ impl Driver {
         }
     }
 
-    /// Releases member `number`, which must be stopped, and ends its
-    /// session.
     async fn detach(&mut self, number: MemberNumber) -> Result<()> {
         if number == 1 {
             return Err(Error::RootDetached);
@@ -1788,8 +1500,6 @@ impl Driver {
             return Err(Error::NotStopped);
         }
 
-        // A member whose session fails before it releases its process
-        // stays, for the session's end to say it was lost.
         live.handle
             .request(|reply| crate::protocol::Request::ReleaseOnShutdown { reply })
             .await?;
@@ -1811,7 +1521,7 @@ impl Driver {
 
     async fn shutdown(&mut self) -> Result<()> {
         let mut result = Ok(());
-        // Members end before the root, whose process started theirs.
+
         let numbers = self.members.keys().rev().copied().collect::<Vec<_>>();
         for number in numbers {
             if let Some(live) = self.members.remove(&number)
@@ -1831,10 +1541,6 @@ impl Driver {
     }
 }
 
-/// Continues a member at its current stop, if `resumable` says it may.
-/// A stop the group has not seen is not resumed: its event is still on
-/// its way, and the group reports the stop when it arrives. Returns the
-/// stop it resumed from.
 async fn continue_stopped(
     handle: &DebuggerHandle,
     resumable: impl Fn(crate::StopId) -> bool,
@@ -1862,11 +1568,6 @@ async fn continue_stopped(
         .map(|_| stop_id)
 }
 
-/// Makes a member's breakpoints the root's `breakpoints`: each one the
-/// member lacks is added, kept pending where nothing it has loaded has it,
-/// each changed one is changed, and each the root removed is removed.
-/// Returns what the member failed to take, which stays due, so that the
-/// next mirror tries it again.
 async fn mirror(
     shared: &Shared,
     number: MemberNumber,
@@ -1904,8 +1605,6 @@ async fn mirror(
             continue;
         };
         match handle.remove_breakpoint(copy).await {
-            // A copy already gone, as a temporary one the member hit
-            // deletes itself, is as good as removed.
             Ok(_) | Err(Error::BreakpointNotFound(_)) => {
                 live.mirrored.remove(&id);
                 copies.insert(copy, None);
@@ -1940,8 +1639,6 @@ async fn mirror(
             Some((copy, old)) if *old != settings => {
                 let copy = *copy;
 
-                // Each setting is tried even after one fails, so the copy
-                // gets as close to the root's as it can.
                 let results = [
                     handle.set_breakpoint_enabled(copy, settings.enabled).await,
                     handle
@@ -1976,7 +1673,6 @@ async fn mirror(
     failures
 }
 
-/// A process's command line, its arguments joined by spaces.
 fn command_line(process: ProcessId) -> String {
     std::fs::read(format!("/proc/{}/cmdline", process.get()))
         .map(|line| {
@@ -1999,7 +1695,6 @@ mod stops_model;
 mod tests {
     use super::*;
 
-    /// A group whose root is in `state`, as an attach waits on it.
     fn attaching(state: MemberState) -> Shared {
         Shared {
             members: Mutex::new(vec![Member {
@@ -2018,8 +1713,6 @@ mod tests {
         }
     }
 
-    /// What fails a batch run is kept as the group's state, not only sent
-    /// as events, which a client that falls behind may never read.
     #[tokio::test]
     async fn a_group_keeps_what_it_could_not_follow() {
         let (mut driver, _received) = driver(StopScope::Group);
@@ -2050,7 +1743,6 @@ mod tests {
         assert!(handle.missed_a_breakpoint_change());
     }
 
-    /// How an attach's wait ends without waiting for its timeout.
     async fn attach_answer(
         events: &mut broadcast::Receiver<GroupEvent>,
         root: MemberState,
@@ -2064,8 +1756,6 @@ mod tests {
         .expect("the attach is answered at once")
     }
 
-    /// An attach ends at the group's stop, and fails at once when the
-    /// process exits or its session fails instead.
     #[tokio::test]
     async fn an_attach_ends_at_the_group_stop_and_fails_if_the_process_ends() {
         let cases = [
@@ -2095,8 +1785,6 @@ mod tests {
         }
     }
 
-    /// When the group's events fell behind, the stop may be among those
-    /// lost, and the root's state says how the attach went.
     #[tokio::test]
     async fn an_attach_whose_events_fell_behind_reads_the_roots_state() {
         let cases = [
@@ -2116,8 +1804,6 @@ mod tests {
         }
     }
 
-    /// An attach the group never sees stop fails instead of waiting on,
-    /// whether or not its events fell behind.
     #[tokio::test]
     async fn an_attach_the_group_never_sees_stop_times_out() {
         for lagged in [false, true] {
@@ -2143,12 +1829,10 @@ mod tests {
         }
     }
 
-    /// A driver for an unlaunched root, and the group's events.
     fn driver(scope: StopScope) -> (Driver, broadcast::Receiver<GroupEvent>) {
         driver_of("fork", scope)
     }
 
-    /// A driver for an unlaunched root running test program `program`.
     fn driver_of(program: &str, scope: StopScope) -> (Driver, broadcast::Receiver<GroupEvent>) {
         let root = Debugger::new(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2168,8 +1852,6 @@ mod tests {
         (Driver::new(shared, events, root, scope), received)
     }
 
-    /// Serves the members' events as the driver's loop does, until the
-    /// group reports a stop or that every member is gone.
     async fn next_group_stop(
         driver: &mut Driver,
         received: &mut broadcast::Receiver<GroupEvent>,
@@ -2197,7 +1879,6 @@ mod tests {
             .expect("the group stops in time")
     }
 
-    /// Member `member`'s stop numbered `stop`, for `reason`.
     fn at(member: MemberNumber, stop: u64, reason: StopReason) -> MemberStop {
         MemberStop {
             member,
@@ -2216,9 +1897,6 @@ mod tests {
         }
     }
 
-    /// A client that shows each member's stop may resume before the group
-    /// has stopped the rest. The pause still on its way to a member is
-    /// part of that group stop, not a stop of its own.
     #[tokio::test]
     async fn a_resume_while_the_group_stops_waits_for_the_pauses_under_way() {
         let (mut driver, mut received) = driver(StopScope::Group);
@@ -2255,10 +1933,6 @@ mod tests {
             .expect("end the root session");
     }
 
-    /// A member stepped through its own session can stop again before
-    /// the group sees its events. A continue of the group must leave that
-    /// stop for its event to report, not resume it and then report it
-    /// while the member runs.
     #[tokio::test]
     async fn a_continue_leaves_a_stop_the_group_has_not_seen() {
         let (mut driver, mut received) = driver_of("basic", StopScope::Group);
@@ -2287,7 +1961,6 @@ mod tests {
             .await
             .expect("remove the breakpoint");
 
-        // The step's events wait for the driver until after the continue.
         let mut own = root.subscribe();
         root.start_step(
             shown,
@@ -2332,10 +2005,6 @@ mod tests {
             .expect("end the root session");
     }
 
-    /// A stop queued for a later continue is reported only while its
-    /// member is still there. A client that moved the member on through
-    /// its own session, as a step does, leaves the queued stop behind:
-    /// the continue reports the step's stop, not the one the member left.
     #[tokio::test]
     async fn a_continue_drops_a_queued_stop_its_member_has_left() {
         let (mut driver, mut received) = driver_of("basic", StopScope::Group);
@@ -2367,15 +2036,12 @@ mod tests {
             .await
             .expect("remove the breakpoint");
 
-        // The root's stop waits to be reported, as one does when another
-        // member's stop was the group's.
         driver.stops.pending.push_back(MemberStop {
             member: 1,
             stop: shown,
             reason: hit,
         });
 
-        // The client steps the root alone, and the group sees it stop.
         root.start_step(
             shown,
             thread_id,
@@ -2402,8 +2068,6 @@ mod tests {
             "{stepped:?}"
         );
 
-        // A continue reports no stop the root has left; it resumes the
-        // root, which runs to its exit.
         driver.continue_all(None).await.expect("continue the group");
         assert_eq!(
             next_group_stop(&mut driver, &mut received).await,
@@ -2416,10 +2080,6 @@ mod tests {
             .expect("end the root session");
     }
 
-    /// A client that shows a member's stops from its own events can
-    /// resume it through the group twice before the group sees the first
-    /// of them. Both stops are behind the group then, and neither may stop
-    /// it while the member runs on.
     #[tokio::test]
     async fn a_resume_leaves_every_earlier_stop_behind() {
         let (mut driver, mut received) = driver_of("basic", StopScope::Group);
@@ -2434,7 +2094,6 @@ mod tests {
             .await
             .expect("launch the root");
 
-        // The group learns the root's process, and none of its stops.
         loop {
             let Internal::Event(member, event) =
                 driver.internal.1.recv().await.expect("the root's events")
@@ -2452,7 +2111,6 @@ mod tests {
             }
         }
 
-        // The client resumes each call of breakpoint_target as it sees it.
         for _ in 0..2 {
             let stop = tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 loop {
@@ -2484,9 +2142,6 @@ mod tests {
             .expect("end the root session");
     }
 
-    /// Found by the model in `stops_model`: where each member's stop is
-    /// its own, a pause of the whole group still ends once each member
-    /// stopped or will not, reporting no stop of its own.
     #[test]
     fn a_pause_of_members_that_stop_alone_ends_with_their_stops() {
         let mut stops = Stops::new(StopScope::Process);
@@ -2508,9 +2163,6 @@ mod tests {
         assert_eq!(stops.paused(1, None), None, "member 1 never stopped");
     }
 
-    /// Found by the model in `stops_model`: a pause that fails for member
-    /// 1 must not report member 1 as stopped. The group stop names a
-    /// member that did stop, and with none, nothing stopped the group.
     #[test]
     fn a_pause_of_the_group_names_a_member_that_stopped() {
         let mut stops = Stops::<()>::new(StopScope::Group);
@@ -2527,9 +2179,6 @@ mod tests {
         assert!(stops.is_running(), "nothing stopped the group");
     }
 
-    /// Where each member's stop is its own, a pause of the whole group
-    /// leaves it stopped only until a client continues a member alone:
-    /// then a fork child that joins is resumed rather than left stopped.
     #[tokio::test]
     async fn a_member_continued_alone_ends_a_pause_of_members_that_stop_alone() {
         let (mut driver, _received) = driver(StopScope::Process);
@@ -2553,8 +2202,6 @@ mod tests {
             .expect("end the root session");
     }
 
-    /// Found by the model in `stops_model`: a client pauses the group
-    /// just as a member's breakpoint has begun to stop it.
     #[test]
     fn a_pause_during_a_group_stop_keeps_the_stop_it_is_for() {
         let mut stops = Stops::<()>::new(StopScope::Group);
@@ -2591,7 +2238,6 @@ mod tests {
             was_stopped: false,
         };
 
-        // The root's pause fails, and then it stops at its breakpoint.
         driver.paused(1, None);
         root.launch_with(crate::LaunchOptions::default())
             .await

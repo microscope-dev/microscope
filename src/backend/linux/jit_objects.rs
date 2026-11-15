@@ -1,7 +1,3 @@
-//! The objects JIT compilers registered through the GDB JIT interface (see
-//! [`crate::debug_info::gdb_jit`]), read at a stop to be modules of their
-//! own, as the vDSO is.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -14,17 +10,11 @@ use super::Controller;
 use super::memory::read_logical_block;
 use super::native::LinuxTraceOps;
 
-/// The most bytes read of all objects at one stop. A frame in the code of
-/// an object left unread is unnamed, and unwinding stops there.
 const MAX_TOTAL_BYTES: u64 = 64 << 20;
 
-/// The objects registered at a stop: each module's name and load bias, and
-/// the bytes of each, by its name.
 pub(super) type JitObjects = (Vec<(PathBuf, LoadBias)>, BTreeMap<PathBuf, Vec<u8>>);
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// The objects every JIT compiler in the process registered, read
-    /// through thread `pid`.
     pub(super) fn observe_jit_objects(&self, pid: Pid) -> JitObjects {
         let mut observed = Vec::new();
         let mut objects = BTreeMap::new();

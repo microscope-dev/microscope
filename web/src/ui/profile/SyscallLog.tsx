@@ -6,7 +6,6 @@ import type { SyscallLine, SyscallQuery, SyscallSite, SyscallToken } from "../..
 import { useAnswer, useProfile } from "./context";
 import { Unanswered } from "./parts";
 
-/** Tokens colored as the CLI colors them. */
 export function Tokens({ tokens }: { tokens: SyscallToken[] }) {
   return (
     <>
@@ -22,8 +21,6 @@ export function Tokens({ tokens }: { tokens: SyscallToken[] }) {
 
 const PAGE = 500;
 
-/** The trace as strace prints it, a page at a time; a call's line opens
- * its arguments, bytes, and stack. */
 export function Log({ query }: { query: SyscallQuery }) {
   const { look } = useProfile();
   const [pages, setPages] = useState(1);
@@ -55,7 +52,6 @@ export function Log({ query }: { query: SyscallQuery }) {
   );
 }
 
-/** A call's line, and when open its arguments, bytes, and stack. */
 function LogLine({ line, open }: { line: SyscallLine; open: boolean }) {
   const { setLook, summary } = useProfile();
   const toggle = useCallback(
@@ -126,7 +122,6 @@ function Call({ event }: { event: number }) {
   );
 }
 
-/** Where a frame's function goes in the samples' views. */
 const FRAME_LINKS: {
   label: string;
   title: string;
@@ -138,7 +133,6 @@ const FRAME_LINKS: {
   { label: "source", title: "on its source lines", view: "functions", own: { ann: "lines" } },
 ];
 
-/** A stack frame's function, which selects it in the samples' views. */
 function Frame({ name }: { name: string }) {
   return (
     <span className="frame-links">
@@ -164,7 +158,7 @@ function FrameLink({
   own?: OwnLook | undefined;
 }) {
   const { setLook } = useProfile();
-  // The view's pane keeps how it draws, but for what the link asks of it.
+
   const show = useCallback(
     () =>
       setLook(
@@ -188,7 +182,6 @@ function FrameLink({
   );
 }
 
-/** Where a call was made, with the lines around it. */
 function Site({ site }: { site: SyscallSite }) {
   return (
     <figure className="call-site" data-testid="syscall-site">

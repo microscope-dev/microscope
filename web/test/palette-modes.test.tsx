@@ -1,6 +1,3 @@
-// The palette says why it lists nothing, and every item it lists does
-// something or says why it cannot.
-
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 

@@ -16,7 +16,6 @@ const BUTTONS: { name: ActionName; glyph: string; label?: string }[] = [
   { name: "kill", glyph: "■", label: "Kill" },
 ];
 
-/** The run buttons and where the program is. */
 export function RunToolbar() {
   const hello = useModel((model) => model.hello !== null);
   const control = useModel((model) => model.hello?.role === "control");
@@ -35,8 +34,6 @@ export function RunToolbar() {
   );
 }
 
-/** One of the run buttons, which runs its command. It reads only what it
- * shows, so output arriving does not render the toolbar again. */
 function ActionButton({ name, glyph, label }: { name: ActionName; glyph: string; label?: string }) {
   const { run } = useCommands();
   const at = useTab((current) => current.at);

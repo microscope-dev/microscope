@@ -1,5 +1,3 @@
-//! Memory and disassembly requests.
-
 use microscope::{
     DisassemblyQuery, DisassemblyRange, InstructionContent, MAX_WINDOW_AFTER, MAX_WINDOW_BEFORE,
     MemoryReadCompletion, StopContext, VirtualAddress,
@@ -12,13 +10,10 @@ use super::protocol::{
 
 use super::session::{Session, error, parse};
 
-/// The most bytes one `readMemory` request returns.
 const MAX_READ: u64 = 1024 * 1024;
 
-/// The most bytes the debugger reads at once.
 const READ_CHUNK: u64 = 64 * 1024;
 
-/// The most instructions one `disassemble` request returns.
 const MAX_INSTRUCTIONS: i64 = 16 * 1024;
 
 const PAGE_SIZE: u64 = 4096;
@@ -48,8 +43,6 @@ impl Session {
                 .map_err(error)?;
             bytes.extend_from_slice(&read.bytes);
             if let MemoryReadCompletion::Incomplete { next_address, .. } = read.completion {
-                // The rest of the page is unreadable too; past it, nothing
-                // is known.
                 let page_end = (next_address.get() / PAGE_SIZE + 1) * PAGE_SIZE;
                 unreadable = (page_end - next_address.get()).min(requested - bytes.len() as u64);
                 break;
@@ -144,8 +137,6 @@ impl Session {
         Ok(json!({"instructions": rows}))
     }
 
-    /// One decoded instruction as a row, naming its source when the source
-    /// file differs from the previous row's.
     async fn instruction_row(
         &mut self,
         instruction: &microscope::DisassembledInstruction,
@@ -207,7 +198,6 @@ impl Session {
             && let Some(image) = self.image(module).await
             && let Some(file) = image.source_file(source.file)
         {
-            // The source is given once for each run of one file.
             if *previous_file != Some((module, source.file)) {
                 body.insert(
                     "location".to_owned(),
@@ -233,8 +223,6 @@ impl Session {
         Value::Object(body)
     }
 
-    /// Decodes the instructions a plan needs around `anchor`, in windows no
-    /// larger than the debugger decodes at once.
     async fn decode(
         &self,
         context: StopContext,
@@ -279,7 +267,6 @@ impl Session {
             .unwrap_or(block.instructions.len());
         decoded.instructions = block.instructions.to_vec();
 
-        // Later windows continue after the end, or before the beginning.
         while decoded.instructions.len() - decoded.anchor < plan.after {
             let Some(last) = decoded.instructions.last() else {
                 break;
@@ -349,25 +336,19 @@ impl Session {
     }
 }
 
-/// Instructions decoded around an anchor address.
 #[derive(Debug)]
 struct Decoded {
-    /// The anchor address.
     address: u64,
     instructions: Vec<microscope::DisassembledInstruction>,
 
-    /// The index of the first instruction at or after the anchor.
     anchor: usize,
 }
 
-/// Which rows a `disassemble` request asks for, relative to its anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Plan {
-    /// The first row's offset from the anchor in instructions.
     first: i64,
     count: usize,
 
-    /// Instructions needed before the anchor and from it onward.
     before: usize,
     after: usize,
 }
@@ -375,15 +356,10 @@ struct Plan {
 enum Row<'a> {
     Instruction(&'a microscope::DisassembledInstruction),
 
-    /// No proven instruction is known here; the address keeps rows in
-    /// order, one byte beyond the nearest known edge.
     Padding(u64),
 }
 
 impl Plan {
-    /// A plan for `count` rows from `first`. Rows further from the anchor
-    /// than a request's most instructions are padding, since finding them
-    /// would decode without bound.
     fn new(first: i64, count: i64) -> Self {
         let reach = i128::from(MAX_INSTRUCTIONS);
         let end = i128::from(first) + i128::from(count);
@@ -395,15 +371,12 @@ impl Plan {
         }
     }
 
-    /// Exactly `count` rows: decoded instructions where there are some, and
-    /// padding before and after them.
     fn rows<'a>(&self, decoded: &'a Decoded) -> impl Iterator<Item = Row<'a>> + 'a {
         let instructions = &decoded.instructions;
         let anchor = i128::try_from(decoded.anchor).unwrap_or(i128::MAX);
         let length = i128::try_from(instructions.len()).unwrap_or(i128::MAX);
         let first = i128::from(self.first);
         (0..self.count).map(move |row| {
-            // Wide enough that no anchor, offset, and row overflow.
             let index = anchor + first + i128::try_from(row).unwrap_or(i128::MAX);
             if let Some(instruction) = usize::try_from(index)
                 .ok()
@@ -422,8 +395,6 @@ impl Plan {
     }
 }
 
-/// `count` as a window size, held to `max`: a larger count gets the most a
-/// window holds.
 fn window_size(count: usize, max: u32) -> u32 {
     u32::try_from(count).unwrap_or(u32::MAX).min(max)
 }
@@ -449,7 +420,6 @@ fn padding_address(
     }
 }
 
-/// Reads a memory reference with a byte offset.
 fn reference(reference: &str, offset: Option<i64>) -> Result<u64, ErrorBody> {
     protocol::address(reference)
         .and_then(|address| protocol::offset(address, offset))
@@ -461,7 +431,6 @@ fn reference(reference: &str, offset: Option<i64>) -> Result<u64, ErrorBody> {
         })
 }
 
-/// Decodes standard base64, with or without padding.
 fn unbase64(text: &str) -> Option<Vec<u8>> {
     let value = |byte: u8| match byte {
         b'A'..=b'Z' => Some(byte - b'A'),
@@ -493,7 +462,6 @@ fn unbase64(text: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// Encodes bytes as standard base64 with padding.
 #[expect(
     clippy::indexing_slicing,
     reason = "each index is masked to six bits, which index the 64-letter alphabet"
@@ -526,7 +494,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// An offset from the edges of `i64`, near zero, or anywhere.
     fn offset() -> impl Strategy<Value = i64> {
         prop_oneof![
             prop::sample::select(vec![
@@ -543,8 +510,6 @@ mod tests {
         ]
     }
 
-    /// Instructions laid end to end from `base`, and the index of the
-    /// first one at or after the anchor.
     fn decoded() -> impl Strategy<Value = Decoded> {
         (
             prop_oneof![Just(0_u64), 0..1_u64 << 48],
@@ -631,8 +596,6 @@ mod tests {
         }
     }
 
-    /// The property's shrunk failure: the row after one at `i64::MAX`
-    /// instructions overflowed, and the plan asked for that many.
     #[test]
     fn far_offsets_give_padding_without_decoding_without_bound() {
         let instruction = microscope::DisassembledInstruction {
@@ -676,7 +639,6 @@ mod tests {
             assert_eq!(unbase64(text).as_deref(), Some(bytes));
         }
 
-        // Clients may leave out the padding.
         assert_eq!(unbase64("Zg"), Some(b"f".to_vec()));
         assert_eq!(unbase64("Z"), None);
         assert_eq!(unbase64("Zm9v!"), None);

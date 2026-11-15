@@ -1,6 +1,3 @@
-//! What `PTRACE_GET_SYSCALL_INFO` reports of a thread stopped at a system
-//! call, which the syscall tracer and the debugger's catchpoints share.
-
 use nix::errno::Errno;
 use nix::libc;
 use nix::unistd::Pid;
@@ -16,17 +13,14 @@ pub const OP_SECCOMP: u8 = 3;
 
 pub const AUDIT_ARCH_X86_64: u32 = 0xc000_003e;
 
-/// What `PTRACE_GET_SYSCALL_INFO` says about a stopped thread.
 #[derive(Debug, Clone, Copy)]
 pub struct SyscallInfo {
     pub op: u8,
     pub arch: u32,
 
-    /// For an entry or seccomp stop.
     pub number: u64,
     pub args: [u64; 6],
 
-    /// For an exit stop.
     pub value: i64,
 }
 
@@ -52,11 +46,6 @@ pub fn syscall_info(pid: Pid) -> Result<SyscallInfo, Errno> {
     })
 }
 
-/// The call a thread is in and its arguments, read from its registers.
-///
-/// This serves an exit stop whose entry went unseen: the kernel keeps the
-/// number in `orig_rax` and leaves the argument registers as the call
-/// found them.
 #[must_use]
 pub fn from_registers(arch: u32, registers: &libc::user_regs_struct) -> (SyscallId, [u64; 6]) {
     let r = registers;
@@ -67,7 +56,6 @@ pub fn from_registers(arch: u32, registers: &libc::user_regs_struct) -> (Syscall
         args: if arch == AUDIT_ARCH_X86_64 {
             [r.rdi, r.rsi, r.rdx, r.r10, r.r8, r.r9]
         } else {
-            // i386 passes them in ebx, ecx, edx, esi, edi, and ebp.
             [r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rbp].map(|word| word & 0xffff_ffff)
         },
         value: 0,
@@ -76,7 +64,6 @@ pub fn from_registers(arch: u32, registers: &libc::user_regs_struct) -> (Syscall
     (call_id(&info), info.args)
 }
 
-/// The call an entry or seccomp stop is for.
 #[must_use]
 pub const fn call_id(info: &SyscallInfo) -> SyscallId {
     #[expect(clippy::cast_possible_truncation, reason = "call numbers are small")]

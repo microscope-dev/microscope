@@ -1,5 +1,5 @@
-"""Exec into the same interpreter and source, requiring fresh installation:
-the agent's, or on 3.12 and 3.13 none, since only a launch has a bootstrap."""
+
+
 import os
 import sys
 
@@ -12,7 +12,7 @@ def target():
 print('EXEC RESULT', target(), flush=True)
 agent = sys.modules.get('_microscope_agent')
 print('AGENT LIBRARY', agent._owner if agent else None, flush=True)
-# 3.12's and 3.13's launch bootstrap, by the FIFO it reads.
+
 for fd in os.listdir('/proc/self/fd'):
     try:
         held = os.readlink(f'/proc/self/fd/{fd}')

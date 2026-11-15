@@ -1,9 +1,9 @@
-"""The agent's exception reports, read as the controller reads them.
 
-A fake hook stands in for the debugger: at each report of an exception it
-reads the record the report points to, the exception's address and its
-message, and notes where the program is.
-"""
+
+
+
+
+
 import ctypes
 import json
 import os
@@ -12,8 +12,8 @@ import threading
 import _thread
 import types
 
-# As the launch bootstrap records on 3.12, which cannot say which thread
-# is the main one.
+
+
 sys.modules.setdefault('_microscope_bootstrap', types.SimpleNamespace(main=threading.get_ident()))
 agent = types.ModuleType('_microscope_agent')
 agent._bootstrap_lock = threading.RLock()
@@ -26,14 +26,14 @@ SOURCE = open(__file__).read().splitlines()
 
 
 def line(marker):
-    """The line that carries `# marker`."""
+
     return next(number for number, text in enumerate(SOURCE, 1)
                 if text.endswith('# ' + marker))
 
 
 def program_frame():
-    """The program's frame the agent reported from: below the fake hook's
-    frames and the agent's own."""
+
+
     frame = sys._getframe(1)
     while id(frame.f_code) not in agent.INTERNAL:
         frame = frame.f_back
@@ -43,7 +43,7 @@ def program_frame():
 
 
 class Debugger:
-    """The controller's side: every report, and each exception's."""
+
 
     def __init__(self):
         self.reports = []
@@ -86,7 +86,7 @@ def calls_raises():
 
 
 class Loud(Exception):
-    """An exception whose text runs the program's own code."""
+
     ran = False
 
     def __str__(self):
@@ -101,8 +101,8 @@ def lookup():
 debugger = Debugger()
 
 if mode == 'raised':
-    # Each raise reports once, where it is raised, with what Python would
-    # print: not again as it unwinds, nor as a handler re-raises it.
+
+
     debugger.configure(RAISED)
     try:
         calls_raises()
@@ -146,17 +146,17 @@ if mode == 'raised':
     check(not debugger.failures(), debugger.reports)
 
 elif mode == 'uncaught':
-    # Only an exception that leaves its thread's Python code reports: in a
-    # threading.Thread, as threading takes it to its excepthook, in a
-    # thread nothing in Python called, and in the main module; not one
-    # caught, not SystemExit, and not one C may handle on the main thread.
+
+
+
+
     debugger.configure(UNCAUGHT)
     try:
         calls_raises()
     except ValueError:
         pass
     try:
-        # Code named as the main module is not it, when Python runs it.
+
         exec(compile("raises('nested')", '<nested>', 'exec'),
              {'__name__': '__main__', 'raises': raises})
     except ValueError:
@@ -192,10 +192,10 @@ elif mode == 'uncaught':
     check((bit, function) == (UNCAUGHT, 'bare'), debugger.exceptions)
     check(message.startswith('ValueError: bare, raised in raises at '), message)
 
-    # Python deletes the main module's __file__ as its code finishes.
+
     def finished(source=__file__):
-        # An atexit callback's exception, which C reports as ignored, is
-        # not uncaught; the main module's is, where it leaves the module.
+
+
         sys.unraisablehook = sys.__unraisablehook__
         check(len(debugger.exceptions) == 3, debugger.exceptions)
         bit, _, message, function, at = debugger.exceptions[2]
@@ -206,7 +206,7 @@ elif mode == 'uncaught':
         debugger.configure(0)
         check(not debugger.failures(), debugger.reports)
         print('EXCEPTIONS AGENT OK', mode, flush=True)
-        # The exception it left with would make its status 1.
+
         os._exit(0)
 
     import atexit
@@ -216,8 +216,8 @@ elif mode == 'uncaught':
     raises('leaves')  # LEAVES
 
 elif mode == 'off':
-    # With no exception chosen, an armed agent takes no exception events,
-    # and the choice changes with each configuration.
+
+
     probe = ('PY_START', 1, 7, __file__, 0, 'calls_raises')
     check(debugger.configure(0, [probe]) != 6, debugger.reports)
     check(not agent.monitoring.get_events(agent.tool) & agent.events.RAISE, 'RAISE armed')
@@ -237,10 +237,10 @@ elif mode == 'off':
     check(not debugger.exceptions, debugger.exceptions)
 
 elif mode == 'internal':
-    # What the agent raises and catches itself while it configures, as
-    # resolving a path that does not exist, is not the program's: it
-    # reports nothing and costs no coverage. The library function that
-    # raises it is the program's to break in, not the agent's own.
+
+
+
+
     import os.path
     check(id(os.path.realpath.__code__) not in agent.INTERNAL, 'realpath is internal')
     check(id(agent.matches.__code__) in agent.INTERNAL, 'the agent is not internal')
@@ -252,8 +252,8 @@ elif mode == 'internal':
     debugger.configure(0)
 
 elif mode == 'malformed':
-    # A malformed choice of exceptions is refused whole, keeping nothing of
-    # it; through the command slot, it disarms and says so.
+
+
     for wanted in (4, -1, '1', 1.0, None, True):
         before = agent.generation
         try:
@@ -269,7 +269,7 @@ elif mode == 'malformed':
     agent._control[32:32 + len(payload)] = payload
     agent._control[16:20] = len(payload).to_bytes(4, 'little')
     agent._control[8:16] = wanted.to_bytes(8, 'little')
-    # The next function the program enters takes the command.
+
     line('LOUD')
     check(debugger.reports[-1] == (3, wanted, 2) and agent.tool is None, debugger.reports)
 

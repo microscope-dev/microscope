@@ -1,38 +1,28 @@
-//! The traced processes and threads: who made whom, what each runs, and
-//! how each ended, from the trace's spawn, exec, and exit events.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::model::{Pid, ProcessEnd, Tid, TraceEvent};
 
-/// One traced process.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Process {
     pub pid: Pid,
     pub parent: Option<Pid>,
 
-    /// Images it ran, in order, with when each exec happened.
     pub images: Vec<(u64, Arc<str>)>,
     pub threads: Vec<Tid>,
 
-    /// When the trace first saw it.
     pub started: u64,
     pub ended: Option<(u64, ProcessEnd)>,
 }
 
-/// Every process a trace saw.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProcessTree {
     processes: BTreeMap<Pid, Process>,
 
-    /// Each thread's process.
     threads: BTreeMap<Tid, Pid>,
 }
 
 impl ProcessTree {
-    /// Records a process the trace began with, as a launched program or an
-    /// attached process.
     pub fn root(&mut self, pid: Pid, time: u64, image: Option<Arc<str>>) {
         let process = self.processes.entry(pid).or_insert_with(|| Process {
             pid,
@@ -106,7 +96,6 @@ impl ProcessTree {
                 });
                 entry.images.push((time, path.clone()));
 
-                // Every other thread is gone after an exec.
                 entry.threads.retain(|&thread| thread == process.leader());
             }
             TraceEvent::Exit { process, time, end } => {
@@ -123,7 +112,6 @@ impl ProcessTree {
         }
     }
 
-    /// The process a thread belongs to, when the trace knows.
     #[must_use]
     pub fn process_of(&self, thread: Tid) -> Option<Pid> {
         self.threads.get(&thread).copied()
@@ -138,7 +126,6 @@ impl ProcessTree {
         self.processes.values()
     }
 
-    /// Processes that have not ended.
     pub fn live(&self) -> impl Iterator<Item = Pid> + '_ {
         self.processes
             .values()

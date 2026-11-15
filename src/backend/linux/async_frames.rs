@@ -1,10 +1,3 @@
-//! A suspended future's frames: the chain of awaits it holds, from the
-//! future it waits on out to the async function it began in, for a
-//! suspended task's whole stack, or spliced into a thread's stack before
-//! the frame that drives it. No thread runs them, so they have no
-//! registers; each async function's variables are the members its state
-//! keeps.
-
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -36,9 +29,6 @@ use super::interpreted::{Placed, interpreted_frame};
 use super::native::InspectionOps;
 use super::{Controller, Inferior, RuntimeModule};
 
-/// What describing one suspended task in a list may cost: far less than an
-/// inspection, since a page may hold thousands, and enough for any of the
-/// views of what tokio's futures wait for.
 const DESCRIPTION_LIMITS: InspectionLimits = InspectionLimits {
     variables: 16,
     value_nodes: 64,
@@ -48,16 +38,12 @@ const DESCRIPTION_LIMITS: InspectionLimits = InspectionLimits {
     expression_work: 256_000,
 };
 
-/// A suspended task's frames, innermost first, each with the future it
-/// was read from, and why they end.
 pub(super) struct AsyncStack {
     pub(super) frames: Vec<StackFrame>,
     pub(super) futures: Vec<futures::AsyncFrame>,
     pub(super) termination: UnwindTermination,
 }
 
-/// Why the future a frame drives cannot be read, and its declared type
-/// when the debug information says it.
 pub(super) struct Unread {
     pub(super) reason: Arc<str>,
     pub(super) declared: Option<TypeReference>,
@@ -69,7 +55,6 @@ impl Unread {
     }
 }
 
-/// One variable of a suspended async frame: a member of its future.
 pub(super) struct SavedVariable<'a> {
     pub(super) name: &'a Arc<str>,
     pub(super) ty: TypeReference,
@@ -79,8 +64,6 @@ pub(super) struct SavedVariable<'a> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// The frames of a suspended task's stack, or `None` for a stack a
-    /// thread's or task's registers begin.
     pub(super) fn async_stack(
         &self,
         inferior: &Inferior,
@@ -89,7 +72,6 @@ impl<P: InspectionOps> Controller<P> {
         self.async_stack_counted(inferior, root, None)
     }
 
-    /// [`Self::async_stack`], counting its reads in `usage` when given.
     fn async_stack_counted(
         &self,
         inferior: &Inferior,
@@ -127,7 +109,6 @@ impl<P: InspectionOps> Controller<P> {
         }))
     }
 
-    /// A suspended task's backtrace, or `None` for any other stack.
     pub(super) fn async_backtrace(
         &self,
         inferior: &Inferior,
@@ -141,8 +122,6 @@ impl<P: InspectionOps> Controller<P> {
         }))
     }
 
-    /// One frame of a suspended task, and what evaluates its variables, or
-    /// `None` for any other stack.
     pub(super) fn resolve_async_frame(
         &self,
         inferior: &Inferior,
@@ -168,9 +147,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(Some(self.suspended_frame(id, frame, future)))
     }
 
-    /// Each frame of a future a chain awaits with what it waits for: the
-    /// summary of the view that presents the future.
-    /// The views share one inspection's budget.
     pub(super) fn describe_awaited(
         &self,
         inferior: &Inferior,
@@ -184,10 +160,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// What a suspended task waits for: what its chain of awaits ends at,
-    /// as the view that presents that future summarizes it, within a small
-    /// budget of its own, which `usage` is charged with, as are the reads
-    /// that follow the chain.
     pub(super) fn task_awaiting(
         &self,
         inferior: &Inferior,
@@ -237,7 +209,6 @@ impl<P: InspectionOps> Controller<P> {
         let resolved = self.suspended_frame(frame.id, frame.clone(), &leaf);
         let scope = self.frame_for(inferior, stop_id, root, &resolved);
 
-        // The backtrace is itself the request run control waits behind.
         let mut machine = StopMachine::new(&scope, budget, false);
         let place = StopPlace {
             module: module.loaded.id,
@@ -258,8 +229,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// The frame of a suspended future, which runs no code, and what
-    /// evaluates its variables.
     pub(super) fn suspended_frame(
         &self,
         id: StackFrameId,
@@ -302,13 +271,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// A stack's frames with what a runtime's frames drive spliced in
-    /// before each, all renumbered, and why any is shown in part or not at
-    /// all: the chain of awaits of each future one polls, and the segment
-    /// of interpreted frames each activation of an interpreter's loop runs
-    /// (see [`super::interpreted`]). A future being polled runs on the
-    /// stack itself, so a driver below a frame that runs a coroutine is
-    /// left as it is.
     pub(super) fn splice_driven(
         &self,
         inferior: &Inferior,
@@ -338,7 +300,6 @@ impl<P: InspectionOps> Controller<P> {
             return Ok(expanded);
         }
 
-        // The notes' frame identifiers would be the unspliced trace's.
         debug_assert!(
             expanded.trace.unfollowed.is_empty(),
             "splicing a trace that already notes {} futures not followed",
@@ -354,10 +315,6 @@ impl<P: InspectionOps> Controller<P> {
         };
         let mut drivers = drivers.into_iter().peekable();
 
-        // Frames of one runtime may each drive the same future, as its
-        // scheduler's closure does within its `block_on`: the future shows
-        // once, before the innermost frame that reads it, and a frame that
-        // cannot read its future is noted only if no other frame shows one.
         let mut shown = BTreeSet::new();
         let mut unread = None;
         let origins = expanded.trace.frames.iter().zip(&expanded.origins);
@@ -418,8 +375,6 @@ impl<P: InspectionOps> Controller<P> {
             spliced.unfollowed.extend(unread);
         }
 
-        // Frames whose place is unknown follow every frame of the stack,
-        // and stand for its outermost.
         if let (Some(reason), Some(outermost)) = (
             placement.unplaced_reason.take(),
             stack.frames.len().checked_sub(1),
@@ -435,25 +390,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(spliced)
     }
 
-    /// Where the future is that thread `pid`'s innermost activation polls,
-    /// running the body of the coroutine `coroutine`, found from the future
-    /// held by the runtime frame that polls it (a task's poller, or a
-    /// driver such as `block_on`): for a body whose debug information does
-    /// not say where it keeps its future, as no Rust before 1.93 does. A
-    /// future no runtime polls, as one a hand-written executor runs, is
-    /// not found. `at` names the body's frame, when the caller has one;
-    /// otherwise the body is the innermost frame that runs `coroutine`.
-    ///
-    /// Each frame between the driver and the body that runs a coroutine
-    /// polls the next one's future, which it awaits; so outward from the
-    /// body to the driver, those frames run the coroutines of the driven
-    /// future's chain of awaits, outermost first, one for one. The body's
-    /// future is the chain's at its place, once every frame out to the
-    /// driver runs the coroutine the chain has there. A future polled other
-    /// than by an await, as a combinator such as `join!` polls its own,
-    /// ends the chain at a future that is no coroutine, which the frames
-    /// then go past: nothing is found, rather than another future of the
-    /// same function.
     pub(super) fn polled_future(
         &self,
         pid: nix::unistd::Pid,
@@ -477,7 +413,6 @@ impl<P: InspectionOps> Controller<P> {
             )
             .ok()?;
         let frames = &expanded.trace.frames;
-        // The coroutine a frame of the program's own code runs, if any.
         let runs = |frame: &StackFrame| {
             frame
                 .function
@@ -486,11 +421,6 @@ impl<P: InspectionOps> Controller<P> {
                 .and_then(|function| function.coroutine)
         };
 
-        // The body: the frame `at` when it runs the coroutine, or else the
-        // innermost frame that does, in the innermost activation, which is
-        // the one a step begins in. A frame chosen by its id must run the
-        // coroutine itself, so a recursive function's outer frame never
-        // takes the future of an inner one.
         let body = match at {
             Some(at) => frames
                 .iter()
@@ -505,16 +435,11 @@ impl<P: InspectionOps> Controller<P> {
                 .map(|(body, _)| body)?,
         };
 
-        // The frames out to the driver that run coroutines, outermost
-        // last, and the driver.
         let runtimes = self.runtimes(inferior);
         let mut bodies = Vec::new();
         let mut driver = None;
         for (index, frame) in frames.iter().enumerate().skip(body) {
             let inner = index.checked_sub(1).and_then(|inner| frames.get(inner));
-            // A task's poller holds the task's future, and a driver such
-            // as `block_on` holds a future no task does; either is where
-            // the chain the bodies run begins.
             let polls = runtimes
                 .iter()
                 .filter(|runtime| {
@@ -547,9 +472,6 @@ impl<P: InspectionOps> Controller<P> {
             )
             .ok()?;
 
-        // Every body but the innermost is running in the await its frame's
-        // line is at, which its future does not yet store if it has not
-        // suspended there before.
         bodies.reverse();
         let lines: Vec<_> = bodies
             .iter()
@@ -580,18 +502,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// Each future the runtimes' frames of a stack drive, once however many
-    /// frames drive it, read whether or not the frames inner to its driver
-    /// poll it now; and why a future some frame drives cannot be read.
-    ///
-    /// Its chain of awaits is read as [`Self::polled_future`] reads one:
-    /// each frame out to the driver that runs a coroutine, up to the
-    /// frame that polls a task, runs the next coroutine of the chain, in
-    /// the await its line is at. Where the line names no one await, as a
-    /// macro's await is described at the macro's line but run at its
-    /// caller's, the await is the one whose future the frame inner to it
-    /// polls. Coroutines the chain does not reach, as a combinator such as
-    /// `join!` polls them, are running in a state that none says.
     pub(super) fn driven_futures(
         &self,
         inferior: &Inferior,
@@ -693,8 +603,6 @@ impl<P: InspectionOps> Controller<P> {
         (driven, unread)
     }
 
-    /// The chain of awaits of the future `driven` holds, whose coroutines
-    /// `bodies` run, outermost first, each in the await its frame is at.
     #[expect(clippy::too_many_arguments, reason = "a stack's parts and the future")]
     fn bodies_chain(
         &self,
@@ -706,7 +614,6 @@ impl<P: InspectionOps> Controller<P> {
         (module, object, ty): (&RuntimeModule, VirtualAddress, TypeReference),
         bodies: &[Body],
     ) -> futures::AwaitChain {
-        // The future each body's inner frame polls, as its `self`.
         let polled: Vec<_> = bodies
             .iter()
             .map(|body| {
@@ -740,9 +647,6 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
-    /// The chain of awaits of the future the frame `driver` drives through
-    /// its variable `variable`, and the module that describes it; or why
-    /// the future cannot be read, and its declared type when known.
     #[expect(clippy::too_many_arguments, reason = "a stack's parts and the frame")]
     fn driven_chain(
         &self,
@@ -762,9 +666,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok((module, chain))
     }
 
-    /// The future the frame `driver` drives through its variable
-    /// `variable`, its type, and the module that describes it; or why the
-    /// future cannot be read, and its declared type when known.
     #[expect(clippy::too_many_arguments, reason = "a stack's parts and the frame")]
     fn driven_root(
         &self,
@@ -786,8 +687,6 @@ impl<P: InspectionOps> Controller<P> {
             return Err(Unread::new(unread(&"is not in memory"), declared));
         };
 
-        // The future a function was passed moves to be pinned, and where
-        // it was still reads as a future that never began.
         if !futures::pinned(module.image.as_ref(), ty) {
             return Err(Unread::new(
                 unread(&"is not the pinned future here"),
@@ -798,8 +697,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok((module, object, ty))
     }
 
-    /// The future the frame `frame` polls through its pinned `self`, as a
-    /// future's `poll` does, wherever the pointer is kept.
     fn polled_self(
         &self,
         inferior: &Inferior,
@@ -831,9 +728,6 @@ impl<P: InspectionOps> Controller<P> {
         Some(VirtualAddress::new(u64::from_le_bytes(word)))
     }
 
-    /// Where the variable `variable` of the frame `frame` is, its type,
-    /// and the module that describes it; or why it cannot be read, and its
-    /// declared type when known.
     #[expect(clippy::too_many_arguments, reason = "a stack's parts and the frame")]
     fn frame_variable(
         &self,
@@ -910,8 +804,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok((module, located.storage, ty, declared))
     }
 
-    /// The variables a suspended async frame shows, each read from its
-    /// future: those of `query`.
     pub(super) fn async_variables(
         &self,
         stop_id: StopId,
@@ -972,7 +864,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(variables)
     }
 
-    /// The variables a suspended async frame holds, in its future.
     pub(super) fn saved_variables<'a>(
         &'a self,
         resolved: &ResolvedFrame,
@@ -993,7 +884,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(saved(coroutine, state, object, ty))
     }
 
-    /// The module whose image describes a suspended task's future.
     fn suspended_module(&self, module: &LoadedModule, ty: TypeReference) -> Result<&RuntimeModule> {
         self.modules
             .get(&module.id)
@@ -1002,7 +892,6 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// Why a chain of awaits ends, as a backtrace's termination.
 fn termination(end: ChainEnd) -> UnwindTermination {
     match end {
         ChainEnd::Leaf | ChainEnd::Unresumed | ChainEnd::Finished => UnwindTermination::Complete,
@@ -1017,7 +906,6 @@ fn termination(end: ChainEnd) -> UnwindTermination {
     }
 }
 
-/// Why a chain of awaits ends before its end, if it does.
 fn end_reason(end: &ChainEnd) -> Option<Arc<str>> {
     match termination(end.clone()) {
         UnwindTermination::Complete => None,
@@ -1025,7 +913,6 @@ fn end_reason(end: &ChainEnd) -> Option<Arc<str>> {
     }
 }
 
-/// A trace with frames spliced in, as it is built.
 struct Spliced {
     frames: Vec<StackFrame>,
     origins: Vec<FrameOrigin>,
@@ -1035,9 +922,6 @@ struct Spliced {
 }
 
 impl Spliced {
-    /// Interpreted code is machinery only when it is the debugger's own
-    /// agent, which calls nothing but the debugger's hook: what runs inside
-    /// it is machinery too.
     fn hide_inside_agent(&mut self) {
         let Some(agent) = self.frames.iter().position(|frame| {
             matches!(frame.kind, FrameKind::Interpreted { .. })
@@ -1053,13 +937,10 @@ impl Spliced {
         }
     }
 
-    /// The frame the next frame pushed will be.
     fn here(&self) -> Result<StackFrameId> {
         frame_u32(self.frames.len()).map(StackFrameId::new)
     }
 
-    /// Notes that the frames the next frame pushed drives are not all
-    /// shown, and why.
     fn note(&mut self, frames: DrivenFrames, reason: Arc<str>) -> Result<()> {
         let driver = self.here()?;
         self.unfollowed.push(Unfollowed {
@@ -1070,8 +951,6 @@ impl Spliced {
         Ok(())
     }
 
-    /// Pushes an interpreted frame on the stack `segment`, which the
-    /// physical frame `activation` runs or stands for.
     fn push_interpreted(&mut self, frame: Placed, segment: StackSegment, activation: usize) {
         self.frames.push(interpreted_frame(&frame.frame, segment));
         self.origins.push(FrameOrigin {
@@ -1081,12 +960,6 @@ impl Spliced {
         self.interpreted.push(frame);
     }
 
-    /// Pushes the functions suspended in await that wait for the one the
-    /// trace's frame `index` resumed, which follow that function's frames,
-    /// from `chains`, each by its frame, with the runtime that keeps them,
-    /// and notes why a chain ends early, if it does. The physical frame
-    /// `activation` stands for them. They are no activation's of an
-    /// interpreter's loop, so each keeps its problem.
     fn push_awaiting(
         &mut self,
         chains: &[(usize, crate::RuntimeId, crate::runtime_model::Awaiting)],
@@ -1128,7 +1001,6 @@ impl Spliced {
         Ok(())
     }
 
-    /// The finished trace, its frames numbered by their levels.
     fn expanded(mut self, trace: Backtrace) -> Result<Expanded> {
         self.hide_inside_agent();
         for (level, frame) in self.frames.iter_mut().enumerate() {
@@ -1151,14 +1023,6 @@ impl Spliced {
     }
 }
 
-/// The future the innermost of `bodies` polls, given the functions of the
-/// frames between a driver and it that run coroutines, outermost first,
-/// and the chain of awaits of the future the driver drives: the chain's
-/// coroutine at the innermost body's place, once each body runs the
-/// coroutine the chain has at its own, as `runs` says. `None` when any
-/// does not, or the chain ends first: a body that polls a future other
-/// than by an await, as a combinator does, polls one past where the chain
-/// can follow, and the future at its place is another.
 fn polled_by(
     bodies: &[crate::FunctionId],
     chain: &futures::AwaitChain,
@@ -1182,9 +1046,6 @@ fn polled_by(
     polled
 }
 
-/// The state of `coroutine` whose await is at `line`, the line its running
-/// frame is at: the one suspension there, or unknown when the line has
-/// none or several, as two awaits on one line would.
 fn awaiting_at(
     coroutine: &CoroutineInfo,
     line: Option<&crate::SourceLocation>,
@@ -1206,9 +1067,6 @@ fn awaiting_at(
     }
 }
 
-/// The frames inner to the driver `frames[driver]` that run coroutines, as
-/// `runs` says, outermost first, up to one that `polls` a task's future,
-/// whose frames run that task.
 fn bodies(
     frames: &[StackFrame],
     driver: usize,
@@ -1234,9 +1092,6 @@ fn bodies(
         .collect()
 }
 
-/// The coroutines of `bodies` that `chain` does not reach, which run in a
-/// state none says; `None` unless each coroutine it does reach, outermost
-/// first, is the one its body runs.
 fn running_beside(
     module: &RuntimeModule,
     chain: &futures::AwaitChain,
@@ -1268,18 +1123,14 @@ fn running_beside(
     })
 }
 
-/// A frame that runs a coroutine, inner to the frame that drives it.
 struct Body {
     function: crate::FunctionId,
     coroutine: crate::TypeId,
     line: Option<crate::SourceLocation>,
 
-    /// Its index in the stack's frames.
     frame: usize,
 }
 
-/// The state of `coroutine`, at `object`, whose awaited future is at
-/// `polled`: the one suspension that awaits there, or unknown.
 fn awaiting(
     coroutine: &CoroutineInfo,
     object: VirtualAddress,
@@ -1298,11 +1149,6 @@ fn awaiting(
     }
 }
 
-/// Each frame of `frames`, innermost first, that drives frames the stack
-/// does not show, with what `driven` says it drives, given the frame inner
-/// to it, and who says so. A future being polled runs on the stack itself,
-/// so a frame below one that runs a coroutine drives no future the stack
-/// does not already show.
 fn drivers<R>(
     frames: &[StackFrame],
     driven: impl Fn(&StackFrame, Option<&StackFrame>) -> Option<(Driven, R)>,
@@ -1326,7 +1172,6 @@ fn drivers<R>(
     drivers
 }
 
-/// The variables a coroutine of type `ty` at `object` holds in `state`.
 fn saved<'a>(
     coroutine: &'a CoroutineInfo,
     state: &'a crate::CoroutineState,
@@ -1340,7 +1185,6 @@ fn saved<'a>(
                 return None;
             };
 
-            // A member past the end of memory is no variable to read.
             let address = VirtualAddress::new(object.get().checked_add(offset)?);
             Some(SavedVariable {
                 name: member.name.as_ref()?,
@@ -1349,7 +1193,6 @@ fn saved<'a>(
                     id: member.type_ref.id,
                 },
                 address,
-                // An async function's captures are its arguments.
                 kind: if capture && coroutine.kind == crate::CoroutineKind::AsyncFunction {
                     VariableKind::Parameter
                 } else {
@@ -1361,13 +1204,10 @@ fn saved<'a>(
         .collect()
 }
 
-/// A frame level or count as `u32`. No unwound stack comes near `u32::MAX`
-/// frames, but a longer one must not wrap into duplicate levels.
 fn frame_u32(value: usize) -> Result<u32> {
     u32::try_from(value).map_err(|_| Error::internal("a stack has more frames than u32 levels"))
 }
 
-/// A frame of a suspended task's chain of awaits.
 fn async_frame(
     image: &ModuleImage,
     module: &LoadedModule,
@@ -1423,8 +1263,6 @@ fn async_frame(
     built
 }
 
-/// Where the one out-of-line function that runs a coroutine resumes in
-/// `state`, when the debugger decoded its dispatch.
 pub fn resume_address(
     image: &ModuleImage,
     functions: &[crate::Function<'_>],
@@ -1447,8 +1285,6 @@ pub fn resume_address(
 mod tests {
     use super::*;
 
-    /// A frame of code in `role` that no debug information describes, or
-    /// of an async function's coroutine when `coroutine`.
     fn frame(level: u32, role: CodeRole, coroutine: bool) -> StackFrame {
         let mut frame = StackFrame::new(level, FrameKind::Physical, None, VirtualAddress::new(1));
         frame.role = role;
@@ -1467,9 +1303,6 @@ mod tests {
         frame
     }
 
-    /// A chain of futures, innermost first, as the walk returns it: a
-    /// coroutine of type `ty` at `object` for each `(object, ty)`, then a
-    /// leaf when `leaf`.
     fn chain(coroutines: &[(u64, u32)], leaf: bool) -> futures::AwaitChain {
         let reference = |id: u32| TypeReference {
             image: crate::ModuleImageId::new(0),
@@ -1508,29 +1341,18 @@ mod tests {
         }
     }
 
-    /// Before Rust 1.93 a body's debug information does not say where its
-    /// future is, so the body's place on the stack says which: out from
-    /// it to the driver, each frame that runs a coroutine runs the next of
-    /// the driven chain, outermost first. The future found is the one at
-    /// the innermost body's place, and only when every frame on the way
-    /// agrees, so a recursive or combined future never yields another
-    /// instance of the same function's future.
     #[test]
     fn a_body_polls_the_future_at_its_place_in_the_driven_chain() {
         let id = crate::FunctionId::new;
-        // Function N runs coroutine type N + 10.
         let runs = |future: &futures::AsyncFrame, function: crate::FunctionId| {
             future.ty.id.get() == function.get() + 10
         };
-        // Written outermost first, as the driver awaits them; the chain
-        // keeps them innermost first.
         let awaits = chain(&[(0x100, 11), (0x200, 12), (0x300, 13)], true);
 
         assert_eq!(
             polled_by(&[id(1), id(2), id(3)], &awaits, runs),
             Some(VirtualAddress::new(0x300))
         );
-        // A body nearer the driver polls a future nearer it.
         assert_eq!(
             polled_by(&[id(1), id(2)], &awaits, runs),
             Some(VirtualAddress::new(0x200))
@@ -1540,21 +1362,14 @@ mod tests {
             Some(VirtualAddress::new(0x100))
         );
 
-        // A frame on the way that runs another coroutine than the chain's
-        // there, as one polled by a combinator does, finds nothing, even
-        // where the innermost body's coroutine matches.
         assert_eq!(polled_by(&[id(1), id(5), id(3)], &awaits, runs), None);
         assert_eq!(polled_by(&[id(2), id(3)], &awaits, runs), None);
 
-        // More bodies than the chain has coroutines: the innermost polls a
-        // future the chain does not reach; the leaf is no coroutine.
         assert_eq!(
             polled_by(&[id(1), id(2), id(3), id(4)], &awaits, runs),
             None
         );
 
-        // The same function's future at two places, as a recursive async
-        // function's are: each body finds its own.
         let recursive = chain(&[(0x100, 11), (0x200, 11)], false);
         assert_eq!(
             polled_by(&[id(1), id(1)], &recursive, runs),
@@ -1568,9 +1383,6 @@ mod tests {
         assert_eq!(polled_by(&[], &awaits, runs), None);
     }
 
-    /// A running coroutine's state is the one suspension at its frame's
-    /// line, in its own file; a line with none, two awaits on one line,
-    /// or a frame without a line leave it unknown rather than guessed.
     #[test]
     fn a_running_coroutine_is_in_the_await_at_its_line() {
         let at = |file: u32, line: u64| crate::SourceLocation {
@@ -1589,7 +1401,6 @@ mod tests {
             kind: crate::CoroutineKind::AsyncFunction,
             state: crate::StateMember { offset: 0, size: 1 },
             states: Arc::new([
-                // The function's header, where it begins, is no await.
                 state(0, crate::CoroutineStateKind::Unresumed, Some(at(0, 10))),
                 state(3, suspended(0), Some(at(0, 12))),
                 state(4, suspended(1), Some(at(0, 14))),
@@ -1608,9 +1419,6 @@ mod tests {
         assert_eq!(choice(None), futures::StateChoice::Unknown);
     }
 
-    /// Drivers are found by what the model says of a frame, which a
-    /// frame's code role alone can decide, and a future polled within a
-    /// coroutine's poll is not driven again.
     #[test]
     fn drivers_are_the_frames_a_model_says_drive_and_no_future_runs_within() {
         let future = Driven::Future { variable: "future" };
@@ -1627,8 +1435,6 @@ mod tests {
         assert_eq!(drivers(&frames[3..], driven), [(0, future, ())]);
         assert!(drivers(&frames, |_, _| None::<(Driven, ())>).is_empty());
 
-        // An interpreter's loop runs its frames on the stack, wherever it
-        // is; whether one does may turn on the frame it called.
         let interpreted = |frame: &StackFrame, _: Option<&StackFrame>| {
             (frame.role != CodeRole::Ordinary).then_some((Driven::Interpreted, ()))
         };
@@ -1643,9 +1449,6 @@ mod tests {
         assert_eq!(drivers(&frames, calling), [(3, Driven::Interpreted, ())]);
     }
 
-    /// What runs inside the debugger's agent, the innermost interpreted
-    /// frame that is machinery, is machinery too; the program's frames
-    /// outside it, and stacks without it, keep their roles.
     #[test]
     fn frames_inside_the_agent_are_machinery() {
         let interpreted = |level, role| {
@@ -1691,7 +1494,6 @@ mod tests {
             ]
         );
 
-        // A native frame the interpreter runs is not the agent.
         let unchanged = vec![
             frame(0, CodeRole::Ordinary, false),
             frame(1, CodeRole::Interpreter, false),

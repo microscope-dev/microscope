@@ -1,5 +1,5 @@
-// Raises signals whose handling the debugger's signal policy decides. The
-// exit status has one bit per signal whose handler ran.
+
+
 #define _GNU_SOURCE
 
 #include <signal.h>
@@ -37,7 +37,7 @@ int main(void) {
             return 100;
         }
     }
-    // An inherited mask must not keep the fixture's signals pending.
+
     if (sigprocmask(SIG_UNBLOCK, &unblocked, NULL) != 0) {
         return 100;
     }

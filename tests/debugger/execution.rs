@@ -1,5 +1,3 @@
-//! Breakpoints, threads, signals, memory, and session lifecycle.
-
 use super::*;
 
 #[tokio::test]
@@ -100,7 +98,6 @@ async fn breakpoint_edits_publish_one_revision_or_change_nothing() {
     assert_eq!(before.revision, revision + 1);
     assert!(before.breakpoints.is_empty());
 
-    // Edits that fail change nothing.
     assert!(matches!(
         scenario
             .handle()
@@ -134,8 +131,6 @@ async fn breakpoint_edits_publish_one_revision_or_change_nothing() {
     assert_eq!(after.revision, before.revision);
     assert_eq!(after.breakpoints, before.breakpoints);
 
-    // Deleting one of two breakpoints at a site keeps the other, and
-    // deleting the one a thread stopped at lets it run the instruction.
     let function = scenario.add_breakpoint("breakpoint_target").await;
     let source = scenario.add_source_breakpoint("basic.c", 6).await;
     assert_eq!(function.locations[0].location, source.locations[0].location);
@@ -273,7 +268,6 @@ async fn breakpoint_memory_and_event_state_follow_one_consistent_scenario() {
         0x1122_3344_5566_7788
     );
 
-    // Reads are bounded, belong to the stop, and hide breakpoint traps.
     let value_bytes = scenario
         .operation(
             "read microscope_value bytes",
@@ -428,8 +422,6 @@ async fn stops_in_a_shared_library_show_that_librarys_own_source() {
         StopReason::Breakpoint { .. }
     ));
 
-    // Source-file identifiers belong to the library's image; resolving them
-    // in the main image would name main.c, or no file at all.
     let location = scenario
         .operation("location", scenario.handle().current_location())
         .await;
@@ -524,8 +516,6 @@ async fn inline_function_breakpoints_resolve_every_concrete_instance() {
 
 #[tokio::test]
 async fn inline_breakpoint_hits_select_the_matching_concrete_instance() {
-    // The program calls leaf five times, so a stop count independent of
-    // the image's catalog shows an instance it left out.
     for fixture in [
         "inline-gcc-o1",
         "inline-gcc-o2",
@@ -600,9 +590,6 @@ async fn inline_breakpoint_hits_select_the_matching_concrete_instance() {
     }
 }
 
-/// A process the debugger's own process started outside the session, as a
-/// shell starts the reader of a `2> >(…)` redirection before it runs the
-/// debugger, outlives the inferior without holding up its end.
 #[tokio::test]
 async fn a_child_from_outside_the_session_never_delays_its_end() {
     let _outsider = support::ExternalProcess::spawn(&Scenario::fixture("attach"));
@@ -702,7 +689,6 @@ async fn pthread_breakpoint_establishes_a_coherent_all_stop_snapshot() {
         )
         .await;
 
-    // Unknown and unrepresentable thread IDs fail without disturbing the stop.
     for unknown in [0, 1 << 40, u64::MAX].map(microscope::ThreadId::new) {
         assert!(matches!(
             scenario.handle().select_context(unknown).await,
@@ -728,9 +714,6 @@ async fn pthread_breakpoint_establishes_a_coherent_all_stop_snapshot() {
     scenario.shutdown().await;
 }
 
-/// Resumes the `threads` fixture until it exits, after which each of its two
-/// workers has hit `breakpoint` once. The second hit stops on its own unless it was
-/// reported with the first.
 async fn finish_worker_hits(scenario: &mut Scenario, breakpoint: microscope::BreakpointId) {
     let mut reason = scenario.resume_to_stop().await;
     if let StopReason::Breakpoint { hits, .. } = &reason {
@@ -788,7 +771,6 @@ async fn repeated_thread_creation_and_exit_loses_no_breakpoint_events() {
         Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
     ));
 
-    // A client whose events lagged still learns how the program ended.
     let ended = scenario.snapshot().await.inferior;
     assert!(
         matches!(
@@ -945,15 +927,11 @@ async fn forked_children_are_released_without_inherited_breakpoints() {
         StopReason::Breakpoint { .. }
     ));
 
-    // The child also runs shared_work; an inherited trap would kill it with
-    // SIGTRAP and the parent would exit 5. Its SIGCHLD does not stop the
-    // parent.
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
     );
 
-    // The child was let go, and said so once, naming its parent.
     let mut launched = None;
     let mut released = Vec::new();
     while let Ok(event) = events.try_recv() {
@@ -985,8 +963,6 @@ async fn stops_survive_executable_mappings_that_name_no_file() {
         StopReason::Breakpoint { .. }
     ));
 
-    // The mapping that names no file leaves the program's own frames, and
-    // the list of modules, readable.
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
@@ -1064,8 +1040,6 @@ async fn nonleader_exec_rewrites_the_thread_registry_and_invalidates_the_image()
     let snapshot = scenario.snapshot().await;
     assert_eq!(snapshot.threads.len(), 1);
 
-    // The program is a memfd's, which no path reads, and the refusal says
-    // which program and why.
     let refusal = scenario.handle().resume().await;
     let Err(Error::Backend(message)) = &refusal else {
         panic!("resumed after an exec into an unreadable program: {refusal:?}");
@@ -1076,8 +1050,6 @@ async fn nonleader_exec_rewrites_the_thread_registry_and_invalidates_the_image()
         "{message}"
     );
 
-    // The catalog describes the program from before the exec, so every
-    // view through it refuses.
     assert!(matches!(
         scenario.handle().variables().await,
         Err(Error::Backend(_))
@@ -1181,7 +1153,6 @@ async fn launch_options_start_the_program_with_its_arguments_environment_directo
         })
         .await;
 
-    // argc counts the program name and both arguments.
     assert_eq!(reason, StopReason::Exited(ExitStatus::Code(3)));
     scenario.shutdown().await;
 
@@ -1212,8 +1183,6 @@ async fn launch_options_start_the_program_with_its_arguments_environment_directo
 
 #[tokio::test]
 async fn launched_programs_run_at_the_same_addresses_every_time() {
-    // As under gdb, a rerun shows the same pointers and stack contents even
-    // when the debugger itself runs randomized.
     support::randomize_addresses();
     let mut layouts = Vec::new();
     for _ in 0..2 {
@@ -1252,8 +1221,6 @@ async fn stop_at_entry_ends_the_launch_before_the_loader_runs() {
 
     assert_eq!(reason, StopReason::Entry);
 
-    // The first instruction belongs to the dynamic loader, which has not
-    // mapped the program's libraries yet.
     let registers = scenario
         .operation("entry registers", scenario.handle().registers())
         .await;
@@ -1288,7 +1255,6 @@ async fn stop_at_entry_ends_the_launch_before_the_loader_runs() {
         "the C library is mapped before the loader ran: {modules:?}"
     );
 
-    // Execution from the entry stop reaches user breakpoints as usual.
     assert!(matches!(
         scenario.resume_to_stop().await,
         StopReason::Breakpoint { .. }
@@ -1312,8 +1278,6 @@ async fn pause_during_launch_ends_the_launch_execution_in_a_coherent_stop() {
     let mut scenario = Scenario::new("pause during launch", Scenario::fixture("spin"));
     let run = scenario.start_launching().await;
 
-    // The initial exec stop may be processed before or after this request;
-    // either order must end the launch execution in one inspectable pause.
     let reason = timeout(Duration::from_secs(2), scenario.handle().pause())
         .await
         .expect("pause timed out")
@@ -1350,13 +1314,10 @@ async fn pause_stops_a_process_whose_main_thread_exited() {
         panic!("the inferior is not running");
     };
 
-    // Linux reports the main thread's exit only after the worker's, so the
-    // stop cannot wait for it.
     wait_for_zombie(process_id);
     let reason = scenario.operation("pause", scenario.handle().pause()).await;
     assert_eq!(reason, StopReason::Pause);
 
-    // As after attaching, the exited main thread is not listed.
     let snapshot = scenario.snapshot().await;
     assert_eq!(snapshot.threads.len(), 1, "{:?}", snapshot.threads);
     assert!(matches!(
@@ -1368,7 +1329,6 @@ async fn pause_stops_a_process_whose_main_thread_exited() {
         .operation("read the worker's registers", scenario.handle().registers())
         .await;
 
-    // A breakpoint added at the stop is in place when the worker resumes.
     let breakpoint = scenario.add_source_breakpoint("exited-leader.c", 9).await;
     let reason = scenario.resume_to_stop().await;
     assert!(
@@ -1385,8 +1345,6 @@ async fn pause_cancels_an_active_source_execution_plan() {
     scenario.add_breakpoint("step_forever").await;
     scenario.run_to_stop().await;
 
-    // The breakpoint is in the loop body, where it would end the finish
-    // before the pause could.
     scenario.remove_all_breakpoints().await;
 
     let snapshot = scenario.snapshot().await;
@@ -1429,8 +1387,6 @@ async fn pause_cancels_an_active_source_execution_plan() {
             .all(|thread| matches!(thread.state, ThreadState::Stopped { .. }))
     );
 
-    // A finish breakpoint the pause left behind would stop the program
-    // before it exits.
     let release = scenario
         .operation(
             "resolve step release",
@@ -1478,14 +1434,11 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
         scenario.handle().clone().with_source_paths(map)
     };
 
-    // Unmapped, the recorded path names nothing on this machine.
     assert!(matches!(
         scenario.handle().source_context(0).await,
         Err(Error::SourceFileMissing { path, tried }) if path == recorded && tried == [recorded.clone()]
     ));
 
-    // The first rewrite that exists is read and reported; the debug
-    // information keeps naming the recorded file.
     let copy = ScratchDir::new("source-map");
     let copied = copy.path().join("tests/fixtures/c/basic.c");
     fs::create_dir_all(copied.parent().unwrap()).unwrap();
@@ -1525,7 +1478,6 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
         "    uint64_t first = breakpoint_target(); /* copy */"
     );
 
-    // A missing source names every place it was looked for.
     let handle = map(&[(Path::new("/nonexistent/microscope"), &absent)]);
 
     assert!(matches!(
@@ -1534,7 +1486,6 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
             if path == recorded && tried == [absent.join("tests/fixtures/c/basic.c"), recorded.clone()]
     ));
 
-    // A candidate that exists but cannot be read is reported, not skipped.
     let unreadable = copy.path().join("unreadable");
     fs::create_dir_all(unreadable.join("tests/fixtures/c/basic.c")).unwrap();
     let handle = map(&[
@@ -1547,7 +1498,6 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
         Err(Error::SourceFileRead { path, .. }) if path == unreadable.join("tests/fixtures/c/basic.c")
     ));
 
-    // Each handle keeps its own map.
     let mapped = map(&[(Path::new("/nonexistent/microscope"), repository)]);
     assert_eq!(
         *scenario
@@ -1571,8 +1521,6 @@ async fn function_breakpoints_stop_at_every_function_with_the_name() {
     let mut scenario = Scenario::launch("same-names");
     let image = scenario.handle().module_image().clone();
 
-    // A file that only calls shared_entry describes it by a declaration,
-    // which never competes with its definition.
     assert!(image.function_named("shared_entry").is_ok());
     assert!(matches!(
         image.function_named("helper"),
@@ -1641,7 +1589,6 @@ async fn source_breakpoints_move_to_the_next_line_with_code_in_their_function() 
         .expect("source file")
         .id;
 
-    // Resolving a moved line again leaves it where it is.
     for requested in [comment, blank, code] {
         assert_eq!(image.breakpoint_line(file, requested), Some(code));
     }
@@ -1746,7 +1693,6 @@ async fn killing_ends_the_inferior_but_keeps_the_session() {
 
     assert!(!std::path::Path::new(&format!("/proc/{first}")).exists());
 
-    // The same program launches again, keeping its breakpoints.
     let relaunched = scenario.run_to_stop().await;
     assert!(
         matches!(&relaunched, StopReason::Breakpoint { hits, .. } if hits.iter().map(|hit| hit.breakpoint).eq([breakpoint.id])),
@@ -1797,7 +1743,6 @@ async fn killing_a_running_or_attached_process_ends_it() {
 
     debugger.shutdown().await.expect("shut down");
 
-    // The test spawned the process, so the debugger's wait reaped it.
     assert!(!std::path::Path::new(&format!("/proc/{process}")).exists());
 }
 
@@ -1813,7 +1758,6 @@ async fn terminating_asks_the_program_to_end_without_stopping_it() {
         "SIGTERM stops by default"
     );
 
-    // While running, once the program handles the signal.
     scenario.add_breakpoint("terminate_tick").await;
     assert!(matches!(
         scenario.run_to_stop().await,
@@ -1835,7 +1779,6 @@ async fn terminating_asks_the_program_to_end_without_stopping_it() {
         StopReason::Exited(ExitStatus::Code(7))
     );
 
-    // While stopped: the program resumes to receive the signal.
     scenario.add_breakpoint("terminate_tick").await;
     assert!(matches!(
         scenario.run_to_stop().await,
@@ -1873,8 +1816,6 @@ async fn a_line_breakpoint_stops_where_the_line_begins_not_at_its_later_statemen
     let line_of = |marker| source_line("tests/fixtures/c/reexec.c", marker);
     let mut scenario = Scenario::launch("reexec");
 
-    // The loop's header has statements for its start and for each test of
-    // its condition; only its start is a place to stop.
     let header = line_of("for (int index = 1;");
     let image = scenario.handle().module_image().clone();
     let file = image
@@ -1886,7 +1827,6 @@ async fn a_line_breakpoint_stops_where_the_line_begins_not_at_its_later_statemen
     let loop_start = scenario.add_source_breakpoint("reexec.c", header).await;
     assert_eq!(loop_start.locations.len(), 1);
 
-    // Its body runs once per argument, stopping each time.
     let body = scenario
         .add_source_breakpoint("reexec.c", line_of("puts(argv[index]);"))
         .await;
@@ -1895,7 +1835,6 @@ async fn a_line_breakpoint_stops_where_the_line_begins_not_at_its_later_statemen
     loop {
         match scenario.resume_or_run().await {
             StopReason::Breakpoint { hits: stop, .. } => hits.push(stop[0].breakpoint),
-            // The first image only executes itself again.
             StopReason::Exec { followed: true } => {}
             StopReason::Exited(_) => break,
             other => panic!("stopped for {other:?}"),

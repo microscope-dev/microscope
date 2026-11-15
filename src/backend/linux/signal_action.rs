@@ -73,9 +73,6 @@ fn deliver_at_stop(
     interrupted: &mut Option<crate::backend::linux::PendingSignal>,
     wait: &crate::backend::linux::wait_hub::DirectWait,
 ) -> Result<()> {
-    // The query leaves a real signal-delivery stop. Substitution here selects
-    // the proven disposition before any sibling can replace it. A queued kill
-    // followed by resuming all threads would reopen that race.
     edge.step(pid, Some(Signal::SIGUSR1))?;
     let (status, _) = wait_stopped(edge, pid, wait);
     if let WaitEvent::Stopped(_, signal) = status {
@@ -219,8 +216,6 @@ fn query_stopped(
         return outcome;
     }
     loop {
-        // GETREGS requires a ptrace stop. In particular, a failed resume
-        // or a timeout is not permission to write into a running task.
         let restored = edge.registers(pid).and_then(|_| {
             for (index, word) in words.into_iter().enumerate() {
                 edge.write_word(pid, scratch + index as u64 * 8, word)?;

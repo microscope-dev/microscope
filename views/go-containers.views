@@ -1,18 +1,18 @@
 microscope-views 1
 
-# Go's container and math/big packages. Verified against Go 1.27.1, by
-# tests/fixtures/go/stdlib.
 
-# A list is a ring of elements through its root, which holds no value; a
-# list never used has no ring yet (container/list/list.go).
+
+
+
+
 view go `container/list`.List {
     show sequence(len) for e in list(len == 0 ? null : root.next, p => p->next == &root ? null : p->next)
         => e->Value
 }
 
-# An integer is its sign and the words of its magnitude, least significant
-# first (math/big/int.go). One of up to two words is a number; a longer one
-# shows its words.
+
+
+
 view go `math/big`.Int {
     let words = len(abs)
     let low = words == 0 ? (u128)0 : (u128)abs[0]

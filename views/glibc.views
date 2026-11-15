@@ -1,11 +1,11 @@
 microscope-views 1
 
-# The GNU C library's types. Verified against glibc 2.42 with gcc 15.2 and
-# clang 21.1.8, by tests/fixtures/cpp/containers.cpp and
-# tests/fixtures/c/glibc.c.
 
-# A mutex's lock word is 0 while no thread holds it; a thread that holds it
-# records itself as its owner, and a recursive mutex counts how many times.
+
+
+
+
+
 view any pthread_mutex_t {
     show if __data.__lock == 0 { empty("unlocked") } else { empty("locked") }
     field owner = __data.__owner

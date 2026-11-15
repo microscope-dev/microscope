@@ -1,6 +1,3 @@
-// Below the source: disassembly, memory, registers, watchpoints, signals,
-// and modules.
-
 import type { Page } from "@playwright/test";
 
 import { stopInHandleRequest, valueRow } from "./kvstore";
@@ -10,7 +7,6 @@ test.use({ program: [fixture("kvstore")] });
 
 const disassembly = (page: Page) => page.getByTestId("disassembly");
 
-/** The instruction the frame shown is executing. */
 const marked = (page: Page) => disassembly(page).locator(".asm-row[aria-current='true']");
 
 test("disassembly marks the frame's instruction and follows its calls", async ({
@@ -26,12 +22,11 @@ test("disassembly marks the frame's instruction and follows its calls", async ({
   await expect(marked(page)).toContainText("mov dword ptr [rbp-0xc], 0");
   const source = disassembly(page).getByRole("button", { name: /kvstore\.c:92$/u });
   await expect(source).toBeVisible();
-  // The source text reads after where it is, not over it.
+
   const place = await source.locator(".asm-place").boundingBox();
   const text = await source.getByText("int status = 0;").boundingBox();
   expect(text && place && text.x >= place.x + place.width).toBe(true);
 
-  // A call links where it goes, and the browser comes back.
   await disassembly(page).getByRole("link", { name: "table_find" }).click();
   await expect(page).toHaveURL(/[?&]asm=0x[0-9a-f]+/u);
   await expect(page.getByTestId("disassembly-function")).toHaveText("table_find");
@@ -43,21 +38,17 @@ test("disassembly marks the frame's instruction and follows its calls", async ({
   await expect(marked(page)).toContainText("movl $0, -0xc(%rbp)");
   await page.getByRole("button", { name: "Intel" }).click();
 
-  // Stepping an instruction stays in disassembly, at the next one. The
-  // breakpoint goes first, so the other worker cannot stop the step.
   await page.getByRole("button", { name: "Remove breakpoint 1" }).click();
   await page.keyboard.press("Shift+S");
   await expect(marked(page)).toContainText("mov rax, [rbp-0x20]");
   await expect(page).toHaveURL(/[?&]view=disassembly/u);
 
-  // A source line goes back to the source.
   await disassembly(page)
     .getByRole("button", { name: /kvstore\.c:93$/u })
     .click();
   await expect(page).toHaveURL(/[?&]src=[^&]*kvstore\.c:93/u);
   await expect(page).not.toHaveURL(/view=/u);
 
-  // A frame with no source shows its code instead.
   await page
     .getByTestId("stack")
     .getByRole("button", { name: /start_thread/u })
@@ -103,15 +94,13 @@ test("registers, watchpoints, signals, and modules", async ({ page, microscope }
   await page.getByRole("button", { name: "Remove breakpoint 1" }).click();
   await page.keyboard.press("Shift+S");
   await expect(rip.locator(".value-text.changed")).toBeVisible();
-  // The innermost frame's registers change in place.
+
   await valueRow(page, "registers", "r11").locator(".value-text").dblclick();
   const input = page.getByRole("textbox", { name: "New value of r11" });
   await input.fill("0x2a");
   await input.press("Enter");
   await expect(valueRow(page, "registers", "r11")).toContainText("0x000000000000002a");
 
-  // The eye toggles the watchpoint on the value's bytes rather than adding
-  // another.
   const eye = valueRow(page, "variables", "status").getByRole("button", {
     name: "Watch status for changes",
   });
@@ -132,7 +121,7 @@ test("registers, watchpoints, signals, and modules", async ({ page, microscope }
   await page.getByRole("tab", { name: "Signals" }).click();
   const stop = page.getByRole("checkbox", { name: "Stop on SIGUSR1" });
   await expect(stop).toBeChecked();
-  // The box shows the policy the debugger has, once it has it.
+
   await stop.click();
   await expect(stop).not.toBeChecked();
 

@@ -4,8 +4,8 @@
 #include <stdint.h>
 #include <sys/prctl.h>
 
-// Every thread reaches `spun` without end, so the debugger always has hits to
-// skip when a client pauses, attaches, amends a hit condition, or shuts down.
+
+
 enum { WORKERS = 3 };
 
 _Atomic uint64_t spins;

@@ -1,5 +1,3 @@
-//! Modules, source files, and the lines breakpoints can use.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,9 +38,6 @@ impl Session {
         Ok(json!({"modules": modules, "totalModules": records.len()}))
     }
 
-    /// Brings the client's modules up to date: announces the loaded ones it
-    /// has not heard about, such as the program itself, which no load event
-    /// reports, and removes those unloaded while events were missed.
     pub(super) async fn announce_modules(&mut self) -> Result<(), Closed> {
         let Some(handle) = self.target_handle().ok() else {
             return Ok(());
@@ -91,9 +86,6 @@ impl Session {
             )
             .await?;
 
-        // What could not be used of a library's debug information, and what
-        // kept its own views out, once, when it loads; the program's are
-        // said when the session starts.
         if let (Some(image), Ok(handle)) = (&image, self.target_handle())
             && image.id() != handle.module_image().id()
         {
@@ -110,15 +102,10 @@ impl Session {
             .await
     }
 
-    /// Lists the source files of every loaded module. From then on,
-    /// `loadedSource` events keep the client's list current as modules
-    /// load and unload; a client that never asks is spared an event for
-    /// every file of every module.
     pub(super) async fn loaded_sources(&mut self) -> Result<Value, ErrorBody> {
         let handle = self.target_handle()?;
         let mut sources = BTreeMap::<PathBuf, BTreeSet<ModuleId>>::new();
 
-        // Before the program runs, its own image is what is loaded.
         if self.modules.is_empty() {
             for file in handle.module_image().source_files() {
                 sources.entry(self.local_path(&file.path)).or_default();
@@ -143,8 +130,6 @@ impl Session {
         Ok(body)
     }
 
-    /// Tells a client keeping a list of loaded sources about a module's
-    /// files it did not list yet.
     async fn add_loaded_sources(
         &mut self,
         module: ModuleId,
@@ -180,8 +165,6 @@ impl Session {
         Ok(())
     }
 
-    /// Tells a client keeping a list of loaded sources about the files no
-    /// loaded module has once a module is gone.
     pub(super) async fn remove_loaded_sources(&mut self, module: ModuleId) -> Result<(), Closed> {
         let Some(sources) = self.loaded_sources.as_mut() else {
             return Ok(());
@@ -226,7 +209,6 @@ impl Session {
             return Ok(json!({"breakpoints": []}));
         };
 
-        // The program's lines, and those of the libraries loaded now.
         let mut images = vec![handle.module_image()];
         images.extend(
             self.code()
@@ -249,8 +231,6 @@ impl Session {
         Ok(json!({"breakpoints": lines}))
     }
 
-    /// The places a thread may be moved to on a line: the line itself, or
-    /// the next with code, as a breakpoint there would slide.
     pub(super) fn goto_targets(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<GotoTargetsArguments>(arguments, "gotoTargets arguments")?;
         self.current_stop()?;
@@ -337,7 +317,6 @@ pub(super) fn module_json(record: &LoadedModuleRecord, image: Option<&ModuleImag
 
         module["symbolStatus"] = status.into();
 
-        // A separate debug file, when the module's own was stripped.
         if let Some(debug_file) = image.debug_file() {
             module["symbolFilePath"] = debug_file.display().to_string().into();
         } else if debug_information {

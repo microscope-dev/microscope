@@ -1,12 +1,3 @@
-//! The resume points the debugger decodes from each async body's dispatch,
-//! checked against the processor running it: at every entry to a body,
-//! the test reads the state its future holds and steps one instruction at
-//! a time until the dispatch leaves for that state, which must be where
-//! the debugger says it goes. At a body's first entry it first writes each
-//! of the coroutine's states into the future in turn, so that states the
-//! program never resumes from are checked too, and puts the registers and
-//! the state back before the program goes on.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -20,21 +11,15 @@ use microscope::{
 use crate::stops::{integer, line};
 use crate::support::Scenario;
 
-/// What the test knows of one body that runs its own dispatch.
 struct Body {
     name: String,
 
-    /// Where the future's state number is, and its size.
     state: (u64, u64),
     dispatch: Arc<[AddressRange<ImageAddress>]>,
 
-    /// The state's number, its kind, the line it waits at, and where the
-    /// debugger says the dispatch leaves for it.
     points: BTreeMap<u64, (CoroutineStateKind, u64, ImageAddress)>,
 }
 
-/// Every out-of-line async body whose dispatch the debugger decoded, by
-/// where its code begins.
 fn bodies(image: &ModuleImage) -> BTreeMap<ImageAddress, Body> {
     let mut bodies = BTreeMap::new();
     for instance in image.code_instances() {
@@ -128,7 +113,6 @@ async fn the_processor_leaves_each_dispatch_where_the_debugger_says() {
             let entry = register(&scenario, "pc").await;
             let body = &bodies[&ImageAddress::new(entry - bias)];
 
-            // The future is the body's first argument.
             let state_at = VirtualAddress::new(register(&scenario, "rdi").await + body.state.0);
 
             let read = scenario
@@ -171,8 +155,6 @@ async fn the_processor_leaves_each_dispatch_where_the_debugger_says() {
             "{fixture}: {reason:?}"
         );
 
-        // Every body ran from its start, and resumed from each await the
-        // program waits at.
         let waits = ["// AWAIT: leaf", "// AWAIT: middle", "// AWAIT: walk"]
             .map(|marker| line("std-async/src/main.rs", marker));
 
@@ -199,8 +181,6 @@ async fn the_processor_leaves_each_dispatch_where_the_debugger_says() {
     }
 }
 
-/// The general registers that hold a value on entry to a function, and
-/// that its prologue may change.
 const SAVED: [&str; 16] = [
     "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9", "r10", "r11", "r12", "r13",
     "r14", "r15",
@@ -238,8 +218,6 @@ async fn assign(scenario: &Scenario, text: &str) {
         .await;
 }
 
-/// Steps one instruction at a time until the thread leaves `body`'s
-/// dispatch, and returns where it went.
 async fn leave_dispatch(scenario: &mut Scenario, body: &Body, bias: u64) -> ImageAddress {
     loop {
         let pc = ImageAddress::new(register(scenario, "pc").await - bias);
@@ -251,9 +229,6 @@ async fn leave_dispatch(scenario: &mut Scenario, body: &Body, bias: u64) -> Imag
     }
 }
 
-/// Checks where `body`'s dispatch leaves for each of its states, written
-/// in turn into the future's state at `state_at`, from the body's `entry`,
-/// putting the registers back after each.
 async fn probe_every_state(
     scenario: &mut Scenario,
     fixture: &str,

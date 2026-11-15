@@ -1,10 +1,3 @@
-//! Programs that fail, debugged from start to finish. Each case runs once
-//! on its own first, and the debugged run must end the same way: with the
-//! same exit status, and with the message the runtime printed. Where the
-//! runtime reports a panic nothing recovers, or a fatal error, the session
-//! stops there first, with the runtime's message and the frame at fault
-//! selected.
-
 use std::process::{Command, Stdio};
 
 use microscope::{
@@ -18,20 +11,14 @@ use crate::support::{self, Scenario, ScratchDir};
 const BUILDS: [&str; 2] = ["failing-go-o0", "failing-go-o2"];
 const SOURCE: &str = "tests/fixtures/go/failing/main.go";
 
-/// Where a case stops first.
 #[derive(Clone, Copy)]
 enum Expected {
-    /// A panic nothing recovered, with the frame selected that raised it,
-    /// and the line marked in the source.
     Unhandled(&'static str, &'static str),
 
-    /// A fatal error.
     Fatal,
 
-    /// The program's own breakpoint instruction.
     ProgramBreakpoint,
 
-    /// No stop: the program ends as it does alone.
     Nothing,
 }
 
@@ -40,23 +27,18 @@ const CASES: [(&str, Expected); 18] = [
         "nil-map",
         Expected::Unhandled("main.writeNilMap", "nil map"),
     ),
-    // The fault's frame is selected, below the runtime's signal panic.
     (
         "nil-dereference",
         Expected::Unhandled("main.dereference", "dereference"),
     ),
     ("recovered", Expected::Nothing),
     ("index", Expected::Unhandled("main.index", "index")),
-    // Errors and stringers print as their text, other values as the
-    // runtime prints them.
     ("wrapped", Expected::Unhandled("main.raise", "raise")),
     ("stringer", Expected::Unhandled("main.raise", "raise")),
     ("float", Expected::Unhandled("main.raise", "raise")),
     ("custom", Expected::Unhandled("main.raise", "raise")),
     ("custom-float", Expected::Unhandled("main.raise", "raise")),
     ("goroutine", Expected::Unhandled("main.raise", "raise")),
-    // A panic in a deferred call during a panic, and one raised again
-    // after it was recovered, print the panics before it.
     ("nested", Expected::Unhandled("main.raise", "raise")),
     ("repanic", Expected::Unhandled("main.raise", "raise")),
     ("deadlock", Expected::Fatal),
@@ -67,8 +49,6 @@ const CASES: [(&str, Expected); 18] = [
     ("exit", Expected::Nothing),
 ];
 
-/// How a case ends when it runs alone: its exit code, standard output,
-/// and standard error.
 fn alone(fixture: &str, case: &str) -> (Option<i32>, String, String) {
     let output = Command::new(Scenario::fixture(fixture))
         .arg(case)
@@ -82,7 +62,6 @@ fn alone(fixture: &str, case: &str) -> (Option<i32>, String, String) {
     )
 }
 
-/// The task numbered `number`, if it is listed.
 async fn listed(scenario: &Scenario, number: u64) -> Option<TaskSnapshot> {
     let page = scenario
         .operation("tasks", scenario.handle().tasks(None, 64))
@@ -96,8 +75,6 @@ async fn listed(scenario: &Scenario, number: u64) -> Option<TaskSnapshot> {
 #[tokio::test]
 async fn failing_programs_stop_where_the_runtime_reports_them() {
     for fixture in BUILDS {
-        // One session launches every case in turn, since loading the
-        // build's debug information is most of what a case costs.
         let mut scenario = crate::invariants::checked(fixture);
         for (case, expected) in CASES {
             let context = format!("{fixture} {case}");
@@ -133,8 +110,6 @@ async fn failing_programs_stop_where_the_runtime_reports_them() {
                         panic!("{context}: {reason:?}");
                     };
 
-                    // The runtime prints the same message, which for a
-                    // fault goes on with the signal that raised it.
                     assert!(
                         printed.contains(exception.message.as_ref()),
                         "{context}: {:?} is not in {printed}",
@@ -150,7 +125,6 @@ async fn failing_programs_stop_where_the_runtime_reports_them() {
                             "{context}"
                         );
 
-                        // The value the program panicked with can be shown.
                         let text = exception.value.as_deref().expect("a panic's value");
                         let expression = Expression::parse(text).expect("an expression");
                         let Evaluation::Value { value, .. } = scenario
@@ -174,10 +148,6 @@ async fn failing_programs_stop_where_the_runtime_reports_them() {
 
                     check_case(&scenario, case, &context).await;
 
-                    // Go's checkdead unlocks the scheduler before it calls
-                    // fatal, and nothing marks the program panicking until
-                    // fatal runs on, so another thread going idle meanwhile
-                    // may report the same deadlock; each report stops.
                     let checkdead = matches!(case, "deadlock" | "goexit");
                     let mut next = scenario.resume_to_stop().await;
                     while checkdead
@@ -196,8 +166,6 @@ async fn failing_programs_stop_where_the_runtime_reports_them() {
                 panic!("{context}: {reason:?}");
             };
 
-            // A program's own breakpoint kills it when no debugger runs it,
-            // and runs on past it when one does.
             let debugged = std::fs::read_to_string(&errors).expect("read standard error");
             if matches!(expected, Expected::ProgramBreakpoint) {
                 assert_eq!(code, 0, "{context}");
@@ -205,8 +173,6 @@ async fn failing_programs_stop_where_the_runtime_reports_them() {
             } else {
                 assert_eq!(Some(code), status.map(i64::from), "{context}");
 
-                // What the program printed, as a recovered panic's handler,
-                // or nothing from the deferred calls `os.Exit` skips.
                 let shown = std::fs::read_to_string(&out).expect("read standard output");
                 assert_eq!(shown, output, "{context}");
                 assert_eq!(
@@ -221,15 +187,12 @@ async fn failing_programs_stop_where_the_runtime_reports_them() {
     }
 }
 
-/// What holds at a case's stop beyond its message and frame.
 async fn check_case(scenario: &Scenario, case: &str, context: &str) {
     match case {
-        // The other goroutines are listed.
         "goroutine" => {
             assert!(listed(scenario, 1).await.is_some(), "{context}");
         }
 
-        // Each says what it waits for.
         "deadlock" => assert_eq!(
             listed(scenario, 1)
                 .await
@@ -238,8 +201,6 @@ async fn check_case(scenario: &Scenario, case: &str, context: &str) {
             Some("select (no cases)"),
             "{context}"
         ),
-        // The overflowing stack is deeper than a backtrace goes, which
-        // says so.
         "overflow" => {
             let trace = scenario
                 .operation("backtrace", scenario.handle().backtrace())
@@ -254,7 +215,6 @@ async fn check_case(scenario: &Scenario, case: &str, context: &str) {
     }
 }
 
-/// A case launched with these exceptions stopping, to its first stop.
 async fn launched(fixture: &str, case: &str, stops: ExceptionStops) -> (Scenario, StopReason) {
     let mut scenario = crate::invariants::checked(fixture);
     scenario
@@ -289,9 +249,6 @@ async fn exceptions_stop_as_chosen() {
         .with("raised", true)
         .expect("Go declares its panics");
     for fixture in BUILDS {
-        // Each panic stops as it is raised, in the frame that raised it,
-        // the one the program recovers from too. The runtime's own errors
-        // read as their methods would put them.
         let (mut scenario, reason) = launched(fixture, "recovered", raised).await;
         let (kind, message) = exception(&reason, fixture);
         assert_eq!(kind, LanguageExceptionKind::Raised, "{fixture}");
@@ -310,7 +267,6 @@ async fn exceptions_stop_as_chosen() {
         assert_eq!(reason, StopReason::Exited(ExitStatus::Code(0)), "{fixture}");
         scenario.shutdown().await;
 
-        // One nothing recovers stops again as it ends the program.
         let (mut scenario, reason) = launched(fixture, "float", raised).await;
         let first = exception(&reason, fixture);
         assert_eq!(
@@ -329,8 +285,6 @@ async fn exceptions_stop_as_chosen() {
         assert_eq!(reason, StopReason::Exited(ExitStatus::Code(2)), "{fixture}");
         scenario.shutdown().await;
 
-        // With none chosen, a fault the runtime turns into a panic neither
-        // stops for its signal nor for the panic.
         let none = ExceptionStops::NONE;
         let (scenario, reason) = launched(fixture, "nil-dereference", none).await;
         assert_eq!(reason, StopReason::Exited(ExitStatus::Code(2)), "{fixture}");
@@ -338,11 +292,6 @@ async fn exceptions_stop_as_chosen() {
     }
 }
 
-/// The runtime preempts a goroutine through the stack check that begins
-/// most functions: it sets the goroutine's stack guard so the check fails,
-/// and the goroutine yields, to run the function again from its first
-/// instruction, perhaps on another thread. A panic preempted as it begins
-/// is still one panic, which stops once.
 #[tokio::test]
 async fn a_panic_preempted_as_it_begins_stops_once() {
     let raised = ExceptionStops::default()
@@ -353,8 +302,6 @@ async fn a_panic_preempted_as_it_begins_stops_once() {
         let (kind, _) = exception(&reason, fixture);
         assert_eq!(kind, LanguageExceptionKind::Raised, "{fixture}");
 
-        // In the runtime's frame, r14 holds the goroutine, whose stack
-        // guard the check compares the stack pointer with at 16(R14).
         let trace = scenario
             .operation("backtrace", scenario.handle().backtrace())
             .await;
@@ -369,7 +316,6 @@ async fn a_panic_preempted_as_it_begins_stops_once() {
         let g = integer(&scenario, "$r14").await.expect("the goroutine");
         let guard = u64::try_from(g).expect("an address") + 16;
 
-        // `stackPreempt`, which always fails the check.
         scenario
             .operation(
                 "request preemption",

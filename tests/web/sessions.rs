@@ -1,5 +1,3 @@
-//! Choosing what to debug, running it, and sharing it between tabs.
-
 use serde_json::{Value, json};
 
 use crate::support::{ExternalProcess, Scenario, ScratchDir};
@@ -28,7 +26,6 @@ async fn a_loaded_program_waits_for_continue_then_runs_to_its_exit_with_output()
 
     tab.ok("continue", json!({})).await;
 
-    // The program reads its input until it ends.
     tab.ok("input", json!({"text": "", "eof": true})).await;
     assert!(
         tab.output_until("stderr", "err 3")
@@ -50,7 +47,6 @@ async fn a_loaded_program_waits_for_continue_then_runs_to_its_exit_with_output()
         "{exited}"
     );
 
-    // A continue starts it again.
     tab.ok("continue", json!({})).await;
     tab.ok("input", json!({"text": "", "eof": true})).await;
     tab.output_until("stdout", "out 1").await;
@@ -58,9 +54,6 @@ async fn a_loaded_program_waits_for_continue_then_runs_to_its_exit_with_output()
     tab.save_traffic("run-to-exit");
 }
 
-/// Input typed while the program does not read waits for it, however much
-/// there is, and reaches it whole, once, and in order: more than a pipe
-/// holds, then a line after it.
 #[tokio::test]
 async fn input_a_stopped_program_has_not_read_reaches_it_whole_and_in_order() {
     let program = fixture("stdin-digest");
@@ -164,7 +157,6 @@ async fn a_tab_that_joins_late_sees_the_recent_output_once() {
     let web = Web::start("late", &["--run", &program]);
     let mut early = web.control("early").await;
 
-    // Input reaches only a program that has been launched.
     early.inferior("running").await;
     early.ok("input", json!({"text": "", "eof": true})).await;
     early.output_until("stdout", "burst done").await;
@@ -172,7 +164,6 @@ async fn a_tab_that_joins_late_sees_the_recent_output_once() {
     let mut late = web.control("late").await;
     let output = late.output_until("stdout", "stdin: eof").await;
 
-    // The burst pushed the first lines out of the history it keeps.
     assert!(!output.contains("out 1"), "{output:.80}");
     assert_eq!(output.matches("burst done").count(), 1);
     assert!(output.len() <= 256 * 1024 + 64, "{} bytes", output.len());
@@ -229,7 +220,6 @@ async fn the_picker_replaces_one_session_with_another_only_when_asked() {
     )
     .await;
 
-    // The answer follows the new session's state, so the page can open it.
     let second = tab.latest_state().expect("a state").clone();
     assert!(
         second["target"]["program"]
@@ -250,7 +240,6 @@ async fn the_picker_replaces_one_session_with_another_only_when_asked() {
     assert_eq!(kind, "failed");
     assert!(message.contains("/nonexistent/program"), "{message}");
 
-    // Neither does a process that is gone or a core dump that is missing.
     for (method, params) in [
         ("attach", json!({"pid": 999_999_999, "replace": true})),
         (
@@ -262,7 +251,6 @@ async fn the_picker_replaces_one_session_with_another_only_when_asked() {
         assert_eq!(kind, "failed", "{message}");
     }
 
-    // What does not open leaves the session it would replace.
     let state = tab.latest_state().expect("a state");
     assert_eq!(state["session"], second["session"], "{state}");
     assert!(
@@ -302,7 +290,6 @@ async fn attaching_from_the_picker_and_ending_leaves_the_process_running() {
     tab.state("nothing debugged", |state| state["session"].is_null())
         .await;
 
-    // Detached, it runs on: released, it exits with its own status.
     process.release();
     assert_eq!(process.wait().code(), Some(23));
 }
@@ -316,7 +303,6 @@ async fn an_attached_process_resumes_at_once_with_resume_and_runs_on_after() {
     let running = tab.inferior("running").await;
     assert_eq!(running["target"]["kind"], "attach");
 
-    // Not in a tracing stop: blocked on its own read, as before the attach.
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).expect("status");
     let state = status
         .lines()
@@ -348,7 +334,6 @@ async fn the_page_is_served_while_the_program_loads() {
     let scratch = ScratchDir::new("web-loading");
     let program = scratch.path().join("kvstore");
 
-    // Loading reads the FIFO, which blocks until something writes it.
     nix::unistd::mkfifo(&program, nix::sys::stat::Mode::S_IRWXU).expect("create FIFO");
     let web = Web::start("loading", &[program.to_str().expect("a UTF-8 path")]);
     let mut tab = web.control("tab").await;
@@ -368,8 +353,6 @@ async fn the_page_is_served_while_the_program_loads() {
         .await;
 }
 
-/// A load that never ends, as of a FIFO no one writes or a hung network
-/// file system, launches nothing, so the server ends without waiting for it.
 #[tokio::test]
 async fn terminating_the_server_while_the_program_loads_ends_it() {
     let scratch = ScratchDir::new("web-loading-stop");
@@ -392,7 +375,6 @@ async fn terminating_the_server_while_the_program_loads_ends_it() {
 async fn interrupting_the_server_while_it_starts_the_program_shuts_it_down() {
     let program = fixture("spin");
 
-    // The link is printed before the program starts, so this lands mid-launch.
     let mut web = Web::start("early-shutdown", &["--run", &program]);
     let status = web.interrupt();
     assert!(status.success(), "{status}");
@@ -419,8 +401,6 @@ async fn restart_runs_the_program_again() {
     assert!(message.contains("already started"), "{message}");
     assert!(exists(pid(&again)));
 
-    // Racing keys and double clicks send a second pause or continue; what
-    // they are told is so, in the page's words.
     tab.ok("pause", json!(null)).await;
     let stop = tab.inferior("stopped").await["inferior"]["stop"].clone();
     let (_, message) = tab
@@ -436,8 +416,6 @@ async fn restart_runs_the_program_again() {
     assert_eq!(message, "the program is not stopped");
 }
 
-/// Copies each module the foreign core recorded, as its machine had it, to
-/// where it lies under `root`.
 fn foreign_sysroot(core: &std::path::Path, root: &std::path::Path) {
     let debugger = microscope::Debugger::open_core(&microscope::CoreDumpOptions {
         allow_module_mismatch: true,
@@ -485,7 +463,6 @@ async fn a_core_from_another_machine_opens_with_its_files_from_a_sysroot() {
     let core = Scenario::fixture("core-foreign/crash.core");
     let core_path = core.to_str().expect("a UTF-8 path").to_owned();
 
-    // This machine has another build at the executable's recorded path.
     let web = Web::start("core-without-sysroot", &["--core", &core_path]);
     let mut tab = web.control("tab").await;
     tab.state("the core refused", |state| {
@@ -509,10 +486,6 @@ async fn a_core_from_another_machine_opens_with_its_files_from_a_sysroot() {
     assert_eq!(opened["target"]["kind"], "core");
 }
 
-/// Each stop is credited to the tab whose request started the run it
-/// ended. A request that fails starts nothing, so the stop that ends
-/// another tab's run is not credited to it; a pause is credited with the
-/// run it stops.
 #[tokio::test]
 async fn each_stop_is_credited_to_the_tab_that_ran_the_program_to_it() {
     let program = fixture("stdin-digest");
@@ -527,7 +500,6 @@ async fn each_stop_is_credited_to_the_tab_that_ran_the_program_to_it() {
         .ok("addBreakpoint", json!({"location": "stdin-digest.c:13"}))
         .await;
 
-    // The program waits for input while alice's run is under way.
     first.ok("continue", json!({"stop": entry})).await;
     first.inferior("running").await;
     second.ok("pause", json!(null)).await;
@@ -555,8 +527,6 @@ async fn each_stop_is_credited_to_the_tab_that_ran_the_program_to_it() {
         "{state}"
     );
 
-    // Bob's continue from the stop the program has left fails, and runs
-    // nothing of the program alice continued.
     first.ok("continue", json!({"stop": pause})).await;
     first.inferior("running").await;
     let (kind, _) = second

@@ -1,6 +1,3 @@
-// Settings this browser keeps: the theme, the name others see in a session,
-// and saved layouts; and every key, from the command registry.
-
 import { type ChangeEvent, type FormEvent, useCallback, useId, useState } from "react";
 
 import { isString, read, write } from "../storage";

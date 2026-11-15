@@ -1,10 +1,3 @@
-// Drives a real `microscope web` through a few steps and saves a screenshot
-// after each, printing the page's errors: the quickest look at one interaction.
-// `node e2e/probe.ts PROGRAM STEP...`, where a step is `key:F5`, `click:TEXT`,
-// `type:TEXT`, `wait:TEXT`, `goto:PATH`, `eval:JS`, or `sleep:MS`; `views:PATH`
-// and `arg:TEXT`, wherever they are, start microscope with that views file or
-// hand the program that argument.
-
 import * as path from "node:path";
 
 import { chromium } from "@playwright/test";
@@ -40,7 +33,6 @@ try {
         await page.keyboard.press(argument);
         break;
       case "click":
-        // Whatever shows the text: its own, a label, or a placeholder.
         await page
           .getByText(argument)
           .or(page.getByLabel(argument))

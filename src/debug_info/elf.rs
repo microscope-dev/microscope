@@ -1,13 +1,3 @@
-//! ELF symbol tables, normalized into module-image symbols.
-//!
-//! The static (`.symtab`), dynamic (`.dynsym`), and embedded `MiniDebugInfo`
-//! (`.gnu_debugdata`) tables are merged into one catalog. Only defined code
-//! symbols in executable sections receive an extent, so only they can name
-//! machine code; only sized data symbols in allocated sections name storage.
-//! Each PLT stub is named `name@plt` after the function it jumps to, as
-//! binutils names them. Where one name has several definitions, symbol
-//! versions tell them apart, as `memcpy@GLIBC_2.2.5` does an old `memcpy`.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::Arc;
@@ -24,8 +14,6 @@ use crate::{
     SymbolTableSources, ThreadLocal,
 };
 
-/// Bounds the decompressed size of an embedded symbol table so a malformed or
-/// hostile module cannot exhaust memory.
 const EMBEDDED_TABLE_LIMIT: usize = 64 << 20;
 
 pub struct SymbolTable {
@@ -34,7 +22,6 @@ pub struct SymbolTable {
     pub sources: SymbolTableSources,
 }
 
-/// A section of the module image, identified by its name and address range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ImageSection<'data> {
     name: &'data [u8],
@@ -48,24 +35,15 @@ struct RawSymbol {
     exported: bool,
     size: u64,
 
-    /// The image's executable section that defines a code symbol.
     code_section: Option<(u64, u64)>,
 
-    /// The image's allocated section that defines a data symbol.
     storage_section: Option<(u64, u64)>,
 
-    /// Whether a table defines the symbol without a version.
     unversioned: bool,
 
-    /// The versions the dynamic table defines the symbol in, each with
-    /// whether it is the name's default version, which the static linker
-    /// binds new references to.
     versions: Vec<(Box<[u8]>, bool)>,
 }
 
-/// Loads every symbol table of an ELF image. `unwind_functions` are the code
-/// ranges the image's call-frame information describes; their starts bound
-/// the inferred extents of unsized symbols.
 pub fn load_symbols(
     object: &object::File<'_>,
     debug_object: Option<&object::File<'_>>,
@@ -80,9 +58,6 @@ pub fn load_symbols(
 
     collect(object, object.symbols(), &sections, false, &mut raw);
 
-    // A separate debug file keeps the static table its module was stripped
-    // of, with the module's section headers, which match by identity as an
-    // embedded object's do.
     if let Some(debug_object) = debug_object {
         collect(
             debug_object,
@@ -118,16 +93,6 @@ pub fn load_symbols(
     }
 }
 
-/// Where each thread's copy of each thread-local variable the image
-/// defines is, as the image's code finds it on x86-64.
-///
-/// A symbol's value is its offset in the image's block of thread-local
-/// storage. A library's code reaches a variable through a GOT slot that the
-/// loader fills, by an `R_X86_64_TPOFF64` relocation, with the variable's
-/// offset from the thread pointer, or else through `__tls_get_addr`, which
-/// finds the library's block through the thread's dynamic thread vector.
-/// An executable's block lies just below the thread pointer, at the
-/// block's size rounded up to its alignment.
 pub fn load_thread_locals(
     object: &object::File<'_>,
 ) -> BTreeMap<Arc<str>, Result<ThreadLocal, Arc<str>>> {
@@ -153,8 +118,6 @@ pub fn load_thread_locals(
             continue;
         };
 
-        // Two variables of one name, such as two files' statics, are told
-        // apart by neither.
         let address = symbol.address();
         offsets
             .entry(name.into())
@@ -170,8 +133,6 @@ pub fn load_thread_locals(
         return BTreeMap::new();
     }
 
-    // The GOT slots the loader fills, by the offset in the block each is
-    // for.
     let mut slots = BTreeMap::new();
 
     for (address, relocation) in object.dynamic_relocations().into_iter().flatten() {
@@ -246,24 +207,6 @@ pub fn load_thread_locals(
         .collect()
 }
 
-/// Where the thread-local variable that the function at `address` reads
-/// is, decoded from the function's own code, for a variable no symbol
-/// names, as a stripped library's: V8's `v8::Isolate::GetCurrent` reads
-/// `g_current_isolate_`, which only the library's debug package names.
-///
-/// The function may jump straight to the code that reads it, and may open
-/// a frame first. That code is one of the four sequences the x86-64 TLS
-/// ABI defines, with the linker's relaxations:
-///
-/// - general dynamic: `lea rdi, [rip+pair]` with a 0x66 prefix, then a
-///   call to `__tls_get_addr`; the pair's second word, or the
-///   `R_X86_64_DTPOFF64` relocation that fills it, holds the offset;
-/// - local dynamic: the same lea without the prefix, the call, then an
-///   access at a displacement from rax, which is the offset;
-/// - initial exec: `mov reg, [rip+slot]`, where the loader fills the slot
-///   by an `R_X86_64_TPOFF64` relocation, then an fs-relative access;
-/// - local exec, an executable's own: an fs-relative access at a fixed
-///   displacement.
 pub fn accessor_thread_local(
     object: &object::File<'_>,
     address: u64,
@@ -272,8 +215,6 @@ pub fn accessor_thread_local(
         object.dynamic_relocations().into_iter().flatten().collect();
     match tls_access(object, &relocations, address)? {
         TlsAccess::Found(place) => Ok(place),
-        // A function that only jumps elsewhere, as an exported wrapper of
-        // an internal accessor does.
         TlsAccess::Jump(target) => match tls_access(object, &relocations, target)? {
             TlsAccess::Found(place) => Ok(place),
             TlsAccess::Jump(_) => Err("the accessor jumps more than once".into()),
@@ -281,14 +222,11 @@ pub fn accessor_thread_local(
     }
 }
 
-/// What the code of an accessor begins with.
 enum TlsAccess {
     Found(ThreadLocal),
     Jump(u64),
 }
 
-/// The thread-local variable the code at `address` reads, or where it
-/// jumps first.
 fn tls_access(
     object: &object::File<'_>,
     relocations: &BTreeMap<u64, object::Relocation>,
@@ -346,7 +284,6 @@ fn tls_access(
         if r_type(pair) != Some(elf::R_X86_64_DTPMOD64) {
             return Err("the accessor's lea names no module and offset pair".into());
         }
-        // Only the general-dynamic sequence's lea carries the prefix.
         let at = usize::try_from(first.ip() - address).unwrap_or(usize::MAX);
         if bytes.get(at) == Some(&0x66) {
             let offset = dynamic_pair_offset(object, relocations, pair + 8)?;
@@ -391,9 +328,6 @@ fn tls_access(
     Err("the accessor reads no thread-local variable the TLS ABI's way".into())
 }
 
-/// The offset a general-dynamic pair's second word, at `slot`, holds once
-/// loaded: what its `R_X86_64_DTPOFF64` relocation computes, or, for a
-/// variable only its module sees, what the linker wrote there.
 fn dynamic_pair_offset(
     object: &object::File<'_>,
     relocations: &BTreeMap<u64, object::Relocation>,
@@ -433,9 +367,6 @@ fn dynamic_pair_offset(
         .ok_or_else(|| "the pair's offset is not in the image".into())
 }
 
-/// Whether an ELF image is an executable rather than a library: one the
-/// system links as such, or one that names a loader or says it is a
-/// position-independent executable.
 fn is_executable(elf: &object::read::elf::ElfFile64<'_>) -> bool {
     let endian = elf.endian();
     if elf.elf_header().e_type(endian) == elf::ET_EXEC
@@ -459,9 +390,6 @@ fn is_executable(elf: &object::read::elf::ElfFile64<'_>) -> bool {
         })
 }
 
-/// Collects the symbols of a `MiniDebugInfo` section: an xz-compressed ELF
-/// object whose static symbol table holds the functions the dynamic table
-/// omits.
 fn collect_embedded(
     object: &object::File<'_>,
     section: &object::Section<'_, '_>,
@@ -493,8 +421,6 @@ fn unusable(reason: &str) -> EmbeddedSymbolTable {
     }
 }
 
-/// Whether the image has a `PT_TLS` segment. An empty one gives threads no
-/// storage, and loaders assign it no TLS module.
 pub fn has_thread_local_storage(object: &object::File<'_>) -> bool {
     fn any_tls<Elf: FileHeader>(file: &ElfFile<'_, Elf>) -> bool {
         let endian = file.endian();
@@ -510,9 +436,6 @@ pub fn has_thread_local_storage(object: &object::File<'_>) -> bool {
     }
 }
 
-/// Returns the image's allocated sections, ordered by address. Empty
-/// sections are omitted, as is a thread-local `.tbss`, whose addresses are
-/// only a template layout and overlap the sections that follow it.
 pub fn load_sections(object: &object::File<'_>) -> Vec<SectionInfo> {
     let mut sections = object
         .sections()
@@ -541,7 +464,6 @@ pub fn load_sections(object: &object::File<'_>) -> Vec<SectionInfo> {
         .collect::<Vec<_>>();
     sections.sort();
 
-    // ELF numbers sections with `u32`s, so every section has an id.
     sections
         .into_iter()
         .zip(0..=u32::MAX)
@@ -560,14 +482,11 @@ pub fn load_sections(object: &object::File<'_>) -> Vec<SectionInfo> {
         .collect()
 }
 
-/// The image's sections that can define symbol extents and storage.
 struct ImageSections<'data> {
     code: Vec<ImageSection<'data>>,
     storage: Vec<ImageSection<'data>>,
 }
 
-/// Returns the address ranges of an image's executable sections, or of its
-/// executable segments when it has no section headers.
 pub(super) fn executable_ranges(object: &object::File<'_>) -> Vec<AddressRange<ImageAddress>> {
     let range = |start: u64, size: u64| {
         Some(AddressRange {
@@ -598,13 +517,10 @@ const fn is_code(flags: u64) -> bool {
     flags & required == required
 }
 
-/// Whether a section can hold the storage of data symbols: allocated and
-/// not thread-local.
 const fn holds_storage(flags: u64) -> bool {
     flags & elf::SHF_ALLOC as u64 != 0 && flags & elf::SHF_TLS as u64 == 0
 }
 
-/// The image's sections whose ELF flags `accept` takes.
 fn image_sections<'data>(
     object: &object::File<'data>,
     accept: fn(u64) -> bool,
@@ -635,7 +551,6 @@ fn image_section<'data>(
     })
 }
 
-/// Decompresses an xz stream into at most `limit` bytes.
 fn decompress(compressed: &[u8], limit: usize) -> Result<Vec<u8>, Arc<str>> {
     struct Bounded {
         data: Vec<u8>,
@@ -680,7 +595,6 @@ fn collect<'data, S>(
     S: ObjectSymbol<'data>,
 {
     for symbol in symbols {
-        // Undefined, absolute, and common symbols have no image address.
         let SymbolSection::Section(index) = symbol.section() else {
             continue;
         };
@@ -694,8 +608,6 @@ fn collect<'data, S>(
             elf::STT_GNU_IFUNC => SymbolKind::IndirectFunction,
             elf::STT_OBJECT | elf::STT_COMMON => SymbolKind::Data,
             elf::STT_NOTYPE => SymbolKind::Unknown,
-            // Section and file symbols name no entity, and a thread-local
-            // symbol's value is an offset into a TLS block, not an address.
             _ => continue,
         };
 
@@ -714,11 +626,7 @@ fn collect<'data, S>(
             continue;
         }
 
-        // A symbol from the embedded object refers to that object's copy of
-        // the section header table, so sections are matched by identity.
         let defining = source.section_by_index(index).ok();
-        // A label names no code, except the process's entry point, which
-        // glibc's dynamic loader defines as one: where a stack ends.
         let names_code = matches!(kind, SymbolKind::Function | SymbolKind::IndirectFunction)
             || (kind == SymbolKind::Unknown && entry_label(name));
         let code_section = names_code
@@ -734,8 +642,6 @@ fn collect<'data, S>(
             .filter(|section| image_sections.storage.contains(section))
             .map(|section| (section.start, section.end));
 
-        // Symbols are keyed by their name bytes so that names which are not
-        // UTF-8 stay distinct.
         let entry = raw
             .entry((Box::from(name), symbol.address()))
             .or_insert_with(|| RawSymbol {
@@ -750,13 +656,10 @@ fn collect<'data, S>(
             });
         entry.exported |= exported;
 
-        // The dynamic table's versions are read separately.
         entry.unversioned |= !exported;
     }
 }
 
-/// Records the versions the dynamic table's version section gives each
-/// defined dynamic symbol.
 fn collect_versions(object: &object::File<'_>, raw: &mut BTreeMap<(Box<[u8]>, u64), RawSymbol>) {
     let versions = match object {
         object::File::Elf64(elf) => elf
@@ -794,11 +697,6 @@ fn collect_versions(object: &object::File<'_>, raw: &mut BTreeMap<(Box<[u8]>, u6
     }
 }
 
-/// Spells the versions of the definitions of a name that several
-/// addresses share, as binutils does: older versions as `name@VERSION`,
-/// then the default version as `name@@VERSION` where the plain name would
-/// still name several addresses. The plain name stays where a table
-/// defines it without a version, or as the default version.
 fn distinguish_versions(
     raw: BTreeMap<(Box<[u8]>, u64), RawSymbol>,
 ) -> BTreeMap<(Box<[u8]>, u64), RawSymbol> {
@@ -822,7 +720,6 @@ fn distinguish_versions(
                 entry.insert(symbol);
             }
 
-            // A static table may already hold the versioned spelling.
             std::collections::btree_map::Entry::Occupied(mut entry) => {
                 let existing: &mut RawSymbol = entry.get_mut();
                 existing.exported |= symbol.exported;
@@ -867,13 +764,6 @@ fn distinguish_versions(
     respell(respell(raw, false), true)
 }
 
-/// Names each PLT stub after the function whose GOT slot its indirect jump
-/// reads: the symbol a `JUMP_SLOT` or `GLOB_DAT` relocation fills the slot
-/// with, or for an `IRELATIVE` one, the indirect function whose resolver
-/// fills it. A stub is one section entry long, and local to the image.
-/// The GOT slots the loader fills with functions' addresses: those that
-/// relocations name a function for, and those an indirect function of the
-/// module's own fills.
 fn got_slots(object: &object::File<'_>) -> Vec<GotSlot> {
     if object.architecture() != object::Architecture::X86_64 {
         return Vec::new();
@@ -892,7 +782,6 @@ fn got_slots(object: &object::File<'_>) -> Vec<GotSlot> {
             ) => object
                 .dynamic_symbol_table()
                 .and_then(|table| table.symbol_by_index(index).ok())
-                // A data import's slot holds no function.
                 .filter(|symbol| symbol.kind() != object::SymbolKind::Data)
                 .and_then(|symbol| symbol.name().ok())
                 .filter(|name| !name.is_empty())
@@ -925,8 +814,6 @@ fn collect_plt(
 
     let endian = elf.endian();
 
-    // An indirect function is named by its exported symbol first, then by
-    // the first of its names.
     let mut resolvers = BTreeMap::<u64, (bool, &[u8])>::new();
 
     for ((name, address), symbol) in raw.iter() {
@@ -986,8 +873,6 @@ fn collect_plt(
             continue;
         };
 
-        // A section past the last address is malformed, and its stubs
-        // have no addresses.
         let Some(end) = start.checked_add(code.len() as u64) else {
             continue;
         };
@@ -1014,20 +899,10 @@ fn collect_plt(
     }
 }
 
-/// How many words each PLT stub's instructions find pushed since its call,
-/// for the stubs whose start `uncovered` says no call-frame information
-/// describes, as mold and lld leave them: an interval per instruction,
-/// valued by the words pushed before it. A stub runs straight from its
-/// start: a jump through its GOT slot either leaves it or, before lazy
-/// binding, falls through to the next instruction. A direct jump leaves
-/// it, and an instruction a stub has no reason to run ends what is known
-/// of it. The `.plt` header is left out: what is pushed when it runs
-/// depends on the stub that jumped to it.
 pub fn plt_frames(
     object: &object::File<'_>,
     uncovered: impl Fn(ImageAddress) -> bool,
 ) -> Vec<(AddressRange<ImageAddress>, u32)> {
-    /// The most instructions a stub of 16 bytes or fewer runs.
     const MOST_STUB_INSTRUCTIONS: usize = 4;
     let object::File::Elf64(elf) = object else {
         return Vec::new();
@@ -1050,8 +925,6 @@ pub fn plt_frames(
 
             let header = usize::from(name == b".plt");
 
-            // A section past the last address is malformed, and its stubs
-            // have no addresses.
             section.address().checked_add(code.len() as u64)?;
             Some((section.address(), code, entry_size, header))
         })
@@ -1080,7 +953,6 @@ pub fn plt_frames(
     frames
 }
 
-/// Adds the frames of the stub whose code is `code`, at `address`.
 fn stub_frames(code: &[u8], address: u64, frames: &mut Vec<(AddressRange<ImageAddress>, u32)>) {
     use iced_x86::{Decoder, DecoderOptions, FlowControl, Mnemonic, OpKind, Register};
     let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
@@ -1142,14 +1014,11 @@ fn stub_frames(code: &[u8], address: u64, frames: &mut Vec<(AddressRange<ImageAd
         }
     }
 
-    // A stub leaves by a jump; code that reaches none is no stub.
     if !jumps {
         frames.truncate(first);
     }
 }
 
-/// The GOT slot a PLT stub's `jmp *slot(%rip)` reads, past any `endbr64`
-/// or other instructions before it.
 fn got_slot(code: &[u8], address: u64) -> Option<u64> {
     use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind};
     let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
@@ -1201,12 +1070,8 @@ fn normalize(
         })
         .collect::<Vec<_>>();
 
-    // Lossily spelled names may repeat at one address, so their bytes break
-    // the tie and keep the order deterministic.
     symbols.sort_by(|left, right| (left.0, &left.1, &left.2).cmp(&(right.0, &right.1, &right.2)));
 
-    // A table of more symbols than `u32` ids number would take a file of
-    // some hundred gigabytes.
     debug_assert!(
         u32::try_from(symbols.len()).is_ok(),
         "{} symbols",
@@ -1232,15 +1097,10 @@ fn normalize(
         .collect()
 }
 
-/// Whether an untyped symbol of this name is the label a process starts
-/// at, which names the code after it as a function would.
 fn entry_label(name: &[u8]) -> bool {
     super::roles::symbol_role(&String::from_utf8_lossy(name)) == crate::CodeRole::Outermost
 }
 
-/// Determines the storage a data symbol of `size` bytes names in the
-/// allocated section `[section.0, section.1)`: empty for an unsized symbol,
-/// and none when the symbol or its declared size lies outside the section.
 fn storage(
     address: u64,
     size: u64,
@@ -1255,13 +1115,6 @@ fn storage(
     )
 }
 
-/// Determines the code named by a symbol in the executable section
-/// `[section.0, section.1)`.
-///
-/// A declared extent must lie within the section. An unsized symbol extends
-/// to the first evidence of other code: the next code symbol, the next
-/// unwind-table function, or the section end. An unwind-table function that
-/// begins at the symbol also bounds it by its own end.
 fn extent(
     address: u64,
     size: u64,
@@ -1303,9 +1156,6 @@ fn extent(
     })
 }
 
-/// Normalizes the symbol tables of either a raw ELF file or an object
-/// synthesized from structured input, then checks catalog and lookup
-/// invariants at every symbol boundary and at input-chosen addresses.
 #[cfg(any(test, feature = "fuzzing"))]
 #[allow(
     clippy::expect_used,
@@ -1396,9 +1246,6 @@ pub(super) fn fuzz(data: &[u8]) {
     fuzz_lookups(&image, &symbols, data);
 }
 
-/// Checks lookups at every extent boundary and at input-chosen addresses: a
-/// result contains its address and outranks every other containing extent,
-/// and no address inside an extent goes unnamed.
 #[cfg(any(test, feature = "fuzzing"))]
 #[allow(
     clippy::expect_used,
@@ -1454,8 +1301,6 @@ fn fuzz_lookups(image: &crate::ModuleImage, symbols: &[SymbolInfo], data: &[u8])
     }
 }
 
-/// Checks that a description names its address's section and prefers a
-/// code symbol, naming data only through declared storage.
 #[cfg(any(test, feature = "fuzzing"))]
 #[allow(
     clippy::expect_used,
@@ -1494,9 +1339,6 @@ fn assert_description(image: &crate::ModuleImage, symbols: &[SymbolInfo], addres
     }
 }
 
-/// Synthesizes a relocatable x86-64 object: one byte sizes the executable
-/// section, and each following six-byte record defines a symbol or a
-/// call-frame entry from a small pool of colliding names.
 #[cfg(any(test, feature = "fuzzing"))]
 #[expect(
     clippy::indexing_slicing,
@@ -1592,8 +1434,6 @@ mod tests {
 
     use super::*;
 
-    /// Bytes with up to eight of them overwritten and the rest maybe cut,
-    /// as damage to a file.
     fn damaged(bytes: &[u8]) -> impl proptest::strategy::Strategy<Value = Vec<u8>> + use<> {
         use proptest::prelude::*;
 
@@ -1643,8 +1483,6 @@ mod tests {
         }
     }
 
-    /// Each accessor of the TLS fixture reads, by the model its code
-    /// uses, the variable the symbols place where the decode does.
     #[test]
     fn accessors_are_decoded_to_their_variables_under_every_tls_model() {
         let fixture = |name: &str| {
@@ -1660,7 +1498,6 @@ mod tests {
         for (data, accessor, variable) in [
             (&library, "tls_general_get", "tls_general"),
             (&library, "tls_hidden_get", "tls_hidden"),
-            // Local dynamic: the first variable it reads.
             (&library, "tls_local_get", "tls_local_first"),
             (&library, "tls_initial_get", "tls_initial"),
             (&program, "tls_program_get", "tls_program"),
@@ -1679,8 +1516,6 @@ mod tests {
             );
         }
 
-        // The library's code reaches each variable but the initial-exec one
-        // only through its module's block.
         let object = object::File::parse(library.as_slice()).expect("an ELF file");
         let placed = load_thread_locals(&object);
         for (name, offset) in [("tls_general", 0x20), ("tls_hidden", 0x18)] {
@@ -1688,7 +1523,6 @@ mod tests {
         }
         assert!(matches!(placed["tls_initial"], Ok(ThreadLocal::Slot(_))));
 
-        // A function that reads no thread-local variable is refused.
         let set = object
             .symbols()
             .find(|symbol| symbol.name() == Ok("tls_set"))
@@ -1697,7 +1531,6 @@ mod tests {
         assert!(accessor_thread_local(&object, set).is_err());
     }
 
-    /// One symbol of a synthesized relocatable object.
     struct Spec {
         name: &'static [u8],
         value: u64,
@@ -1742,9 +1575,6 @@ mod tests {
         tls: write::SectionId,
     }
 
-    /// Writes an x86-64 relocatable object with a 0x40-byte executable
-    /// section, a data section, and a thread-local section. Relocatable
-    /// sections all begin at address zero.
     fn object(
         architecture: Architecture,
         symbols: impl FnOnce(&Sections) -> Vec<Spec>,
@@ -1844,7 +1674,6 @@ mod tests {
                 vec![
                     Spec::new("sized", text).at(0x00, 0x10),
                     Spec::new("unsized", text).at(0x10, 0),
-                    // A label inside a function is cataloged but names no code.
                     Spec::new("label", text)
                         .at(0x18, 0)
                         .typed(elf::STT_NOTYPE, elf::STB_LOCAL),
@@ -1857,12 +1686,10 @@ mod tests {
                     Spec::new("overflowing", text).at(0x30, u64::MAX),
                     Spec::new("past_section", text).at(0x38, 0x10),
                     Spec::new("unsized_last", text).at(0x3c, 0),
-                    // A function symbol outside executable code names no code.
                     Spec::new("misplaced", Section(sections.data)).at(0x0, 0x4),
                     Spec::new("object", Section(sections.data))
                         .at(0x8, 0x8)
                         .typed(elf::STT_OBJECT, elf::STB_GNU_UNIQUE),
-                    // These have no image address.
                     Spec::new("thread_local", Section(sections.tls))
                         .at(0x8, 0x8)
                         .typed(elf::STT_TLS, elf::STB_GLOBAL),
@@ -1884,7 +1711,6 @@ mod tests {
                 ("misplaced", Function, Global, None),
                 ("sized", Function, Global, Some((0x00, 0x10))),
                 ("object", Data, Global, None),
-                // Unsized code ends at the next code symbol, not at a label.
                 ("unsized", Function, Global, Some((0x10, 0x20))),
                 ("label", Unknown, Local, None),
                 ("local", Function, Local, Some((0x20, 0x28))),
@@ -1895,7 +1721,6 @@ mod tests {
             ]
         );
 
-        // Identifiers are dense in address-then-name order.
         assert!(table.symbols.iter().enumerate().all(|(index, symbol)| {
             symbol.id == SymbolId::new(u32::try_from(index).expect("test symbol count"))
         }));
@@ -1923,9 +1748,6 @@ mod tests {
             Some(SymbolExtentProvenance::Inferred)
         );
 
-        // Call-frame entries are evidence of function boundaries: one that
-        // begins at an unsized symbol ends it, and one that begins later caps
-        // it even where no symbol names that code.
         let table = load(&data, &[(0x10, 0x14), (0x3c, 0x3e)]);
         assert_eq!(summary(&table)[3].3, Some((0x10, 0x14)));
         assert_eq!(summary(&table)[9].3, Some((0x3c, 0x3e)));
@@ -1933,11 +1755,6 @@ mod tests {
         assert_eq!(summary(&table)[3].3, Some((0x10, 0x18)));
     }
 
-    /// A process's entry point may be a bare label, as glibc's dynamic
-    /// loader's `_start` is, with no type, size, or call-frame entry. It
-    /// still names the entry code, up to the next function, so a stack of
-    /// a program starting up ends there complete. Other labels still name
-    /// no code.
     #[test]
     fn an_untyped_entry_point_names_its_code() {
         use write::SymbolSection::Section;
@@ -2058,9 +1875,6 @@ mod tests {
         .map(|(name, range)| (name.to_owned(), range));
         assert_eq!(storage, BTreeMap::from(expected));
 
-        // Relocatable sections all begin at zero; only the thread-local
-        // template that occupies no addresses and the unallocated note are
-        // left out.
         let sections = load_sections(&object)
             .into_iter()
             .map(|section| {
@@ -2189,8 +2003,6 @@ mod tests {
         );
     }
 
-    /// Each instruction of a PLT stub finds pushed what the stub pushed
-    /// before it, whichever linker wrote it; code no stub runs is no stub.
     #[test]
     fn plt_stubs_count_the_words_they_push() {
         let frames = |code: &[u8]| {
@@ -2209,14 +2021,11 @@ mod tests {
         let jump_to_header = [0xe9, 0, 0, 0, 0];
         let endbr64 = [0xf3, 0x0f, 0x1e, 0xfa];
 
-        // GNU ld and lld: through the GOT, or before binding on to the
-        // header with the stub's index pushed.
         assert_eq!(
             frames(&[&jump_through_got[..], &push_index, &jump_to_header].concat()),
             [(0, 6, 0), (6, 11, 0), (11, 16, 1)]
         );
 
-        // GNU ld's lazy half of an IBT stub, and its `.plt.sec` half.
         assert_eq!(
             frames(&[&endbr64[..], &push_index, &[0xf2], &jump_to_header].concat()),
             [(0, 4, 0), (4, 9, 0), (9, 15, 1)]
@@ -2226,19 +2035,16 @@ mod tests {
             [(0, 4, 0), (4, 11, 0), (11, 13, 0)]
         );
 
-        // mold: the index in r11, and padding no stub runs.
         assert_eq!(
             frames(&[&[0x41, 0xbb, 1, 0, 0, 0][..], &jump_through_got, &[0xcc; 4]].concat()),
             [(0, 6, 0), (6, 12, 0)]
         );
 
-        // `.plt.got`.
         assert_eq!(
             frames(&[&jump_through_got[..], &[0x66, 0x90]].concat()),
             [(0, 6, 0), (6, 8, 0)]
         );
 
-        // What moves the stack otherwise, or never jumps, is no stub.
         assert_eq!(
             frames(&[&[0x48, 0x83, 0xec, 0x08][..], &jump_through_got].concat()),
             []
@@ -2252,8 +2058,6 @@ mod tests {
         );
     }
 
-    /// A PLT section whose flags say it holds no code names no stubs, as
-    /// no other symbol is placed outside code.
     #[test]
     fn a_plt_that_is_not_code_has_no_stubs() {
         let mut data =
@@ -2273,7 +2077,6 @@ mod tests {
             )
         };
 
-        // sh_flags is the third field of the section header.
         let flags = usize::try_from(header + 8).expect("an offset");
         data[flags..flags + 8].fill(0);
 
@@ -2288,11 +2091,8 @@ mod tests {
         assert!(inside.is_empty(), "{inside:?}");
     }
 
-    /// A malformed section whose code runs past the last address holds no
-    /// stub, rather than overflowing the address of one.
     #[test]
     fn a_plt_past_the_last_address_has_no_stubs() {
-        // endbr64; jmp *0(%rip); nopw 0(%rax,%rax): one 16-byte stub.
         const STUB: [u8; 16] = [
             0xf3, 0x0f, 0x1e, 0xfa, 0xff, 0x25, 0, 0, 0, 0, 0x66, 0x0f, 0x1f, 0x44, 0, 0,
         ];

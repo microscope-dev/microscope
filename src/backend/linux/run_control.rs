@@ -1,6 +1,3 @@
-//! All-stop execution control: resuming threads, repairing breakpoint
-//! sites, and publishing coherent stops.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -80,17 +77,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         };
 
-        // At an agent's hook, the innermost frames are the agent's: a
-        // step by lines from the innermost, or out of it, begins at the
-        // program's frame the stop blames, which it selected.
         let frame = match kind {
             StepKind::IntoSource | StepKind::OverSource | StepKind::Out
                 if frame == StackFrameId::INNERMOST && into_call.is_none() =>
             {
                 match self.reported_frame(stop_id, pid) {
                     Some(blamed) => blamed,
-                    // A native step from here would step the agent's own
-                    // machinery.
                     None if self.agent_hook(pid).is_some() => {
                         let _ = reply.send(Err(Error::FrameStepUnsupported(
                             "the agent's stop names no frame of the program to step from".into(),
@@ -118,8 +110,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         }
 
-        // A step into a chosen call executes the line up to it, never only
-        // entering an inline frame.
         let virtual_step = if into_call.is_some() {
             Ok(None)
         } else {
@@ -128,7 +118,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         match virtual_step {
             Ok(Some((execution, stopped))) => {
-                // Acknowledge the step before publishing the stop it caused.
                 let _ = reply.send(Ok(execution));
                 let _ = self.events.send(stopped);
                 return;
@@ -142,7 +131,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let task = self.step_task(pid);
 
-        // A step into a new task steps over its line until a task starts.
         let (requested, kind) = (
             kind,
             match kind {
@@ -177,7 +165,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.reply_execution(result, scope, reply);
     }
 
-    /// Fails a stale or invalid step before any unwinding can.
     fn validate_step(
         &self,
         process_id: ProcessId,
@@ -201,7 +188,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         }
 
-        // A runtime steps from a frame it interprets, wherever it is.
         if frame.get() != 0
             && kind != StepKind::Out
             && self.interpreted_frame(stop_id, pid, frame).is_none()
@@ -215,9 +201,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Runs until thread `pid` reaches a location `spec` resolves to, or
-    /// `frame` returns first: a step out whose plan also holds the
-    /// location's addresses, so the stop that ends it removes them.
     #[expect(
         clippy::too_many_arguments,
         reason = "an advance names its stop, thread, frame, location, scope, and exception disposition"
@@ -240,14 +223,10 @@ impl<P: LinuxTraceOps> Controller<P> {
                 let mut start = self.step_start(pid, StepKind::Out, frame)?;
                 start.targets = targets;
 
-                // An async function's frame returns once its future is
-                // ready, not each time its poll returns `Pending`.
                 if frame.get() == 0 {
                     start.awaiting = self.await_step(pid, StepKind::Out, &start);
                 }
 
-                // Reaching a location stops as an advance; the frame
-                // returning first, as the step out it runs as.
                 self.begin_execution(
                     process_id,
                     stop_id,
@@ -268,7 +247,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.reply_execution(result, scope, reply);
     }
 
-    /// The addresses an advance's location resolves to.
     pub(super) fn advance_targets(
         &self,
         spec: crate::BreakpointSpec,
@@ -300,8 +278,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.sync_debug_registers()?;
         self.refresh_watch_baselines()?;
 
-        // A thread standing at its advance's location goes on until it
-        // comes round.
         let standing = match &kind {
             ActiveKind::Step { owner, start, .. } if !start.targets.is_empty() => {
                 let at = VirtualAddress::new(self.ptrace.registers(owner.thread)?.rip);
@@ -318,8 +294,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.install_plan(&kind, execution_id)?;
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
-        // One that trapped there steps over the trap as any other does; one
-        // that has yet to execute the trap arrives there first.
         if let Some((pid, at)) = standing
             && inferior.thread(pid)?.trap != (AtTrap::MustStepOver { at })
             && let ActiveKind::Step { start, .. } = &mut kind
@@ -337,9 +311,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        // A thread the execution resumes is out of the stop its reason
-        // describes, even one that waits stopped for another's repair. A
-        // stop that forms before it runs must not publish that reason again.
         for &pid in &resume_threads {
             inferior.thread_mut(pid)?.reason = None;
         }
@@ -357,8 +328,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.open_inspectors();
         if let Err(error) = self.advance_execution() {
-            // SIGKILL took threads out of the stop as they were resumed: the
-            // execution has begun, and runs on into the program's end.
             if is_vanished_tracee(&error) && self.release_superseded_threads(None) {
                 self.bump_revision();
                 return Ok(execution_id);
@@ -381,8 +350,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(execution_id)
     }
 
-    /// Plants a step's plan breakpoints for `execution`, removing those it
-    /// planted when one cannot be.
     fn install_plan(&mut self, kind: &ActiveKind, execution: ExecutionId) -> Result<()> {
         if let ActiveKind::RuntimeStep { runtime, kind, .. } = kind {
             return self.install_native_entry(*runtime, *kind, execution);
@@ -481,8 +448,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         validate_process(inferior, requested_process)?;
         let execution_id = inferior.run.execution().ok_or(Error::AlreadyStopped)?.id;
 
-        // Running JavaScript pauses in its inspector, which names its
-        // locals; the native all-stop follows if it does not in time.
         if self.interrupt_javascript() {
             return Ok(execution_id);
         }
@@ -490,7 +455,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(execution_id)
     }
 
-    /// Stops every thread for a client's pause, wherever each is.
     pub(super) fn pause_natively(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if let Some(barrier) = inferior.run.barrier_mut() {
@@ -498,8 +462,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
 
-        // Every thread is past its exit event, so none is left to stop: the
-        // exit ends the execution, and with it the pause.
         if inferior
             .threads
             .values()
@@ -508,8 +470,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
 
-        // A launching or starting thread has no stop to request: its first
-        // stop completes the barrier.
         let triggering_thread = inferior
             .threads
             .iter()
@@ -523,9 +483,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 ))
                 .then_some(pid)
             })
-            // With no thread to ask, the stopped threads wait only for those
-            // past their exit events, or for none, as when a main thread
-            // resumed alone exited and left its siblings held.
             .or_else(|| {
                 inferior.threads.iter().find_map(|(&pid, thread)| {
                     matches!(thread.state, NativeThreadState::Stopped).then_some(pid)
@@ -551,9 +508,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let active = inferior.run.execution().ok_or(Error::NotRunning)?;
         let (kind, resume_threads) = (active.kind.clone(), active.resume_threads.clone());
 
-        // A thread re-trapping at a breakpoint after its signal handler runs
-        // alone, holding its siblings back until its repair. One whose trap
-        // was removed since will never trap there, so runs with them.
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         for thread in inferior.threads.values_mut() {
             if thread.retrap.is_some_and(|address| {
@@ -582,10 +536,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 progress_owed,
                 ..
             } => {
-                // A stepping thread that is exiting, or that SIGKILL took out
-                // of its stop on the way to its exit, can step no further. A
-                // leader exiting alone is reported only after every other
-                // thread, which run on in the step's scope meanwhile.
                 let exiting = self
                     .session
                     .inferior()
@@ -605,8 +555,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                         *progress_owed = false;
                     }
 
-                    // A thread running freely to a guard has no step to judge
-                    // until it returns there.
                     if self.step_runs_to_guard() {
                         self.start_user_step(thread, kind)?;
                     } else {
@@ -634,10 +582,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Steps the next thread over its trap, lifting the trap's site and
-    /// reinstalling any other a repair lifted, or advances the execution
-    /// once no thread is left to. Only one thread steps over a trap at a
-    /// time, with the others stopped.
     pub(super) fn start_next_repair(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if inferior.repairing().is_some() {
@@ -664,15 +608,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.advance_execution();
         };
 
-        // A thread stopped at a breakpoint cannot also hold a pending signal:
-        // a signal stop rewinds no PC and repairs nothing.
         if inferior.thread(pid)?.pending_signal.is_some() {
             return Err(backend_error(LinuxError::UnexpectedWait(format!(
                 "repair thread {pid} has a pending signal"
             ))));
         }
 
-        // The threads at one site step over it under one lift.
         if inferior
             .breakpoints
             .get(&address)
@@ -688,8 +629,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         inferior.trap_event(pid, TrapEvent::RepairStarted)?;
 
-        // Stepping over the trap of a call that a step into another passes
-        // enters it, to run to its return.
         self.guard_unchosen_call(pid)?;
         self.resume_native(pid, Resume::Step, false, ExpectedStop::None)
     }
@@ -711,8 +650,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
 
-        // A step from a native stop holds the main thread until V8 is sure
-        // to pause it (`inspector::steps::Gate`).
         if self.step_gate_holds(pid) {
             return Ok(());
         }
@@ -720,11 +657,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.resume_native(pid, Resume::Continue, true, ExpectedStop::None)
     }
 
-    /// Resumes one stopped thread and records the stop it should report next.
-    ///
-    /// With `deliver_signal`, the thread's pending signal is delivered and
-    /// consumed; otherwise it stays pending. The thread's own stop reason is
-    /// cleared either way, since it no longer describes a current stop.
     pub(super) fn resume_native(
         &mut self,
         pid: Pid,
@@ -732,9 +664,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         deliver_signal: bool,
         expected: ExpectedStop,
     ) -> Result<()> {
-        // A step that makes a system call, the user's or one over a
-        // breakpoint's trap, stops at its entry and exit, which the
-        // catchpoints judge.
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let repairing = inferior.thread(pid)?.trap.repairing().is_some();
         let stepping_call = matches!(resume, Resume::Step)
@@ -746,7 +675,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let holds = inferior.holds_signals(inferior.thread(pid)?, &expected);
         let thread = inferior.thread_mut(pid)?;
 
-        // A thread in its exit stop runs on to its exit.
         debug_assert!(
             matches!(
                 thread.state,
@@ -756,14 +684,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             thread.state
         );
 
-        // A pending signal is delivered only if its policy passes it.
         let mut signal = deliver_signal
             .then(|| thread.pending_signal.map(|pending| pending.signal))
             .flatten()
             .filter(|signal| self.signals.get(*signal).pass);
 
-        // A held signal arrives with the thread's next continue that holds
-        // none, unless another signal arrives then.
         if matches!(resume, Resume::Continue) && signal.is_none() && !holds {
             signal = thread
                 .held_signal
@@ -786,9 +711,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         match result {
             Ok(()) => thread.state = NativeThreadState::Running,
-            // Only SIGKILL takes a thread out of its ptrace-stop, typically
-            // because a sibling resumed just before it called `exit_group`.
-            // Its exit status is still delivered and retires it.
             Err(error) if is_vanished_tracee(&error) => thread.state = NativeThreadState::Exiting,
             Err(error) => return Err(error),
         }
@@ -832,8 +754,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.restart_after_internal(pid)
             }
 
-            // Resumes once the refresh has taken the trap out, and the
-            // breakpoints that follow the code are installed where it went.
             ClassifiedStop::CarriedTrap => {
                 record!("{pid} executed a trap carried by moved or copied code");
                 self.session
@@ -847,8 +767,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.restart_after_internal(pid)
             }
             ClassifiedStop::Breakpoint(address) => self.handle_breakpoint_stop(pid, address),
-            // The program goes on after its own trap, which it raised for
-            // the debugger; the SIGTRAP is not delivered.
             ClassifiedStop::ProgramTrap(address) => self.begin_visible_stop(
                 pid,
                 StopReason::ProgramBreakpoint {
@@ -862,7 +780,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.begin_visible_stop(pid, StopReason::Exception(exception_info(signal)))
             }
 
-            // Its exit event or exit status arrives next.
             ClassifiedStop::Superseded => {
                 let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
                 inferior.thread_mut(pid)?.state = NativeThreadState::Running;
@@ -882,9 +799,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         address: VirtualAddress,
     ) -> Result<()> {
-        // A thread re-executing a trap after signal delivery interrupted its
-        // repair reaches a hit that was already counted. It ran alone, so
-        // its siblings are stopped.
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior.trap_event(pid, TrapEvent::Hit(address))?;
         let thread = inferior.thread_mut(pid)?;
@@ -916,11 +830,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.arrive_unstopped(pid, address)
     }
 
-    /// Goes on from a trap at `address` at which no user breakpoint stops:
-    /// none owns the site, each declined the hit by its hit condition, or
-    /// an edit applied while the stop formed dropped every hit that
-    /// stopped. Whatever else owns the site, such as the active step's
-    /// plan, meets the thread there.
     fn arrive_unstopped(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
         if let Some(reason) = self.runtime_hook_stop(pid, address) {
             return self.begin_visible_stop(pid, reason);
@@ -954,7 +863,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.reach_plan_site(pid, address, kind);
         }
 
-        // A JavaScript step into a Node-API function goes on into it.
         if self.reach_native_entry(pid, address) {
             return if self.barrier_active() {
                 self.finish_barrier_if_ready()
@@ -963,17 +871,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             };
         }
 
-        // A runtime step into native code ends where its own thread enters
-        // the function it called.
         if let Some(kind) = self.runtime_step_arrival(pid, address) {
             return self.begin_visible_stop(pid, StopReason::Step { kind });
         }
 
-        // A declined user hit, or another thread at a stepping plan's site,
-        // which is not the user's to see. A source step that single-stepped
-        // onto a declined site may end there, with the hit counted once;
-        // one running freely to a guard, through a signal handler or a call
-        // it passes, does not.
         if let Some((_, kind)) = step
             && !steps_instructions(kind)
             && !self.step_runs_to_guard()
@@ -989,11 +890,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Goes on with the active step at a site of its plan, which its own
-    /// thread or task reached.
     fn reach_plan_site(&mut self, pid: Pid, address: VirtualAddress, kind: StepKind) -> Result<()> {
-        // A step out may go on from its function's return address, so
-        // what the function returned is read as it arrives there.
         self.note_returned_values(pid);
 
         if self.is_advance_target(address) {
@@ -1022,7 +919,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if self.begin_following(pid, kind)? || self.wait_for_loop(pid, kind)? {
-            // The step goes on by single steps, or by its new plan.
             return self.go_on_without_plan(pid, address, Some(kind));
         }
 
@@ -1048,8 +944,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if let Some(reason) = self.user_step_stop(pid, kind)? {
-            // The plan's sites, this one among them, are removed when
-            // the stop is published.
             return self.begin_visible_stop(pid, reason);
         }
 
@@ -1058,8 +952,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.repair_when_alone(pid, address)
     }
 
-    /// Whether the active step's thread runs freely until it returns to a
-    /// guard.
     fn step_runs_to_guard(&self) -> bool {
         self.session
             .inferior()
@@ -1069,8 +961,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
     }
 
-    /// Notes a hit at a site of the debugger's own: the loader's report of
-    /// a change to the loaded libraries, a stack mover, or a resolver.
     fn note_internal_sites(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
         if self.is_loader_site(address) {
             self.queue_module_refresh()?;
@@ -1082,8 +972,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.note_inspector_hook(pid, address)
     }
 
-    /// Ends an advance whose thread reached one of its targets, unless it
-    /// arrived where it stood when the advance began, and so goes on.
     pub(super) fn reach_advance_target(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
         if !self.take_standing_arrival(address) {
             return self.begin_visible_stop(
@@ -1101,10 +989,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Goes on from a site at which a step removed its own plan: a user
-    /// breakpoint that declined this hit still owns the site, which the
-    /// thread then steps over; otherwise the thread goes on by single
-    /// steps of `stepping`, or runs.
     pub(super) fn go_on_without_plan(
         &mut self,
         pid: Pid,
@@ -1148,8 +1032,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.finish_traced_instruction(pid, expected)
     }
 
-    /// Completes the single-step a thread was expected to make, which no
-    /// reported watchpoint ended.
     fn finish_traced_instruction(&mut self, pid: Pid, expected: ExpectedStop) -> Result<()> {
         if self.barrier_active() {
             return self.settle_trace_during_barrier(pid, expected);
@@ -1170,11 +1052,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Handles a debug exception a running thread took after accessing
-    /// watched memory. When no watchpoint it reported stops at the access,
-    /// because the access changed nothing a change watchpoint watches or a
-    /// condition declined it, the thread carries on as if it had not
-    /// trapped.
     fn handle_watch_stop(&mut self, pid: Pid, owners: BTreeSet<WatchpointId>) -> Result<()> {
         let expected = self
             .session
@@ -1201,10 +1078,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Stops for an instruction that accessed watched memory. A repair step's
-    /// instruction has executed, which completes the repair. The stop turns
-    /// internal if no hit remains to report once every thread is stopped, and
-    /// a stepping thread's instruction then counts toward its step.
     pub(super) fn finish_watched_instruction(
         &mut self,
         pid: Pid,
@@ -1236,9 +1109,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .is_some_and(|inferior| inferior.run.barrier().is_some())
     }
 
-    /// Records a trace stop that arrived while every thread is being
-    /// stopped. A completed repair stays complete; the stepping thread's
-    /// instruction is evaluated if the execution resumes.
     pub(super) fn settle_trace_during_barrier(
         &mut self,
         pid: Pid,
@@ -1267,9 +1137,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.finish_barrier_if_ready()
     }
 
-    /// Applies the signal's policy to a signal-delivery stop: a visible
-    /// stop, or delivering or discarding the signal as the thread resumes
-    /// what it was doing.
     pub(super) fn handle_signal_stop(&mut self, pid: Pid, pending: PendingSignal) -> Result<()> {
         const QUIET: SignalPolicy = SignalPolicy {
             stop: false,
@@ -1278,7 +1145,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
-        // The debugger's own request to end the inferior never stops it.
         let terminating = inferior
             .terminating
             .as_mut()
@@ -1341,8 +1207,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Stops for a signal. One that interrupted a step over a trap runs
-    /// its handler when the thread resumes, which returns to the trap.
     fn stop_for_signal(&mut self, pid: Pid, pending: PendingSignal) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if let Some(address) = inferior.thread(pid)?.trap.repairing() {
@@ -1358,10 +1222,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.begin_visible_stop(pid, StopReason::Exception(pending_exception_info(pending)))
     }
 
-    /// Handles a signal that arrived before a thread stepped over its
-    /// breakpoint site. A delivered signal runs its handler first, with the
-    /// site restored so no other thread can pass it, and the thread repairs
-    /// the site when it reaches it again; a discarded one repeats the step.
     fn signal_during_repair(
         &mut self,
         pid: Pid,
@@ -1400,11 +1260,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Handles a signal that arrived before the stepping thread executed
-    /// its next instruction. A discarded signal repeats the step. A
-    /// delivered one runs its handler at full speed: a guard at the
-    /// interrupted instruction resumes the step when the handler returns
-    /// there, so the step never stops inside the handler.
     fn signal_during_step(
         &mut self,
         pid: Pid,
@@ -1452,15 +1307,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Handles a site of a step's plan that its task reached on the way to
-    /// where the step may end: the start of a task the step goes into, or
-    /// the return from a signal handler. Returns whether it did.
     fn reach_waypoint(&mut self, pid: Pid, address: VirtualAddress) -> Result<bool> {
         if self.reach_new_task(pid, address)? {
             return Ok(true);
         }
 
-        // The step's task is back on its plan, from wherever it escaped to.
         if let Some(start) = self.active_step_mut() {
             start.escape = None;
         }
@@ -1468,9 +1319,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.reach_resume_guard(pid, address)
     }
 
-    /// Recognizes the stepping thread's return from a signal handler to the
-    /// instruction it interrupted, where the step resumes. Returns whether
-    /// the site was the guard and has been handled.
     fn reach_resume_guard(&mut self, pid: Pid, address: VirtualAddress) -> Result<bool> {
         let Some((execution, kind, guard, planned)) = self
             .session
@@ -1497,8 +1345,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         if self.stack_position(pid, &self.ptrace.registers(pid)?) != guard.stack {
-            // The handler itself ran the interrupted code. A site only the
-            // guard owns is passed; a planned one is evaluated as usual.
             if planned {
                 return Ok(false);
             }
@@ -1512,13 +1358,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if planned {
-            // The step's own site is evaluated as if no signal had arrived.
             return Ok(false);
         }
 
-        // Removing the guard restores the interrupted instruction, which the
-        // step now executes, unless a breakpoint still owns the site: then
-        // the thread hit that breakpoint, and steps over its trap.
         self.remove_breakpoint_owner(address, BreakpointOwner::Plan(execution))?;
         let trapped = matches!(
             self.session
@@ -1529,9 +1371,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             AtTrap::MustStepOver { .. }
         );
         if trapped {
-            // A source step that reached a breakpoint's site judges it at the
-            // trap there, as a hit the breakpoint declines; the signal came
-            // first, so it judges the site now.
             if !steps_instructions(kind)
                 && let Some(reason) = self.user_step_stop(pid, kind)?
             {
@@ -1541,7 +1380,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
             self.repair_when_alone(pid, address)?;
         } else if guard.call {
-            // A passed call may return to where the line ends.
             self.complete_user_step(pid, kind)?;
         } else {
             self.start_user_step(pid, kind)?;
@@ -1552,7 +1390,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Whether `pid` steps over a trap.
     pub(super) fn repairs(&self, pid: Pid) -> bool {
         self.session
             .inferior()
@@ -1566,14 +1403,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ok_or(Error::NotRunning)?
             .trap_event(pid, TrapEvent::Stepped)?;
 
-        // A repaired stepping thread executed its next instruction.
         self.note_step_progress(pid);
         self.start_next_repair()
     }
 
-    /// Records a stop the client must see and begins stopping every other
-    /// thread, unless a barrier is already doing so. Among coincident stops,
-    /// the highest-priority reason is published.
     pub(super) fn begin_visible_stop(&mut self, pid: Pid, reason: StopReason) -> Result<()> {
         let reason = self.dropped_step_reason(self.requested_step_reason(reason));
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
@@ -1585,8 +1418,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.raise_barrier(pid, reason)
     }
 
-    /// Publishes `reason` from `pid` once every thread is stopped. A barrier
-    /// already in progress publishes the most important reason it sees.
     pub(super) fn raise_barrier(&mut self, pid: Pid, reason: StopReason) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if let Some(barrier) = inferior.run.barrier_mut() {
@@ -1617,8 +1448,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             };
 
             inferior.thread_mut(triggering_thread)?.reason = Some(reason.clone());
-            // A stop the failed resume already began keeps the edits it
-            // holds, and publishes the failure.
             if let Some(barrier) = inferior.run.barrier_mut() {
                 barrier.offer(Some(triggering_thread), reason);
             } else {
@@ -1647,20 +1476,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         for pid in running {
             let thread = inferior.thread_mut(pid)?;
             if attached {
-                // Any ptrace-stop after an interrupt, such as a clone event,
-                // satisfies it without the stop it asked for, so a seized
-                // thread is always asked again. Interrupts coalesce, and one
-                // that outlives its barrier is absorbed when it stops.
                 let _ = self.ptrace.interrupt(pid)?;
             } else if !thread.debugger_stop_pending {
-                // A clone or another ptrace event can stop this thread and
-                // satisfy an earlier barrier before its requested SIGSTOP is
-                // delivered. Standard signals coalesce, so retain that
-                // outstanding request instead of sending an indistinguishable
-                // duplicate for the next barrier.
                 match self.ptrace.request_stop(tgid, pid) {
-                    // The waiter already reaped the thread, whose exit
-                    // status is on its way and retires it.
                     Err(error) if is_vanished_tracee(&error) => {}
                     result => result?,
                 }
@@ -1673,9 +1491,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// The thread that presents a stop `triggering_thread` caused. A leader
-    /// that exited alone, as one a pause asked to stop, has no frame to
-    /// present; a stopped thread presents the stop instead.
     fn presenting_thread(&self, triggering_thread: Pid) -> Pid {
         self.session
             .inferior()
@@ -1693,13 +1508,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .unwrap_or(triggering_thread)
     }
 
-    /// Applies the edits requested while the stop formed, then settles the
-    /// reasons of threads whose breakpoint or watchpoint they changed.
-    ///
-    /// Returns the trap at which the active step's thread stopped for a
-    /// breakpoint hit the edits dropped. A hit that stops preempts what
-    /// else owns the site, such as the step's own plan, so the step has
-    /// yet to meet the thread there.
     fn apply_pending_edits(&mut self) -> Result<Option<(Pid, VirtualAddress)>> {
         let edits = self
             .session
@@ -1725,8 +1533,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }))
     }
 
-    /// The thread running the active step and the site at which a user
-    /// breakpoint's hit stopped it, if one did.
     fn stepping_thread_hit(&self) -> Option<(Pid, VirtualAddress)> {
         let inferior = self.session.inferior()?;
         let ActiveKind::Step { owner, .. } = inferior.run.execution()?.kind else {
@@ -1757,13 +1563,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
 
-        // A vfork child runs in the memory its parent's traps are in, so the
-        // stop waits until that child execs or exits.
         if self.settle_vfork_windows()? {
             return Ok(());
         }
 
-        // From the last thread stopping to the stop's publication.
         let _span = crate::span!("stop");
         if self.session.attaching() {
             if self.seize_untraced_threads()? {
@@ -1778,9 +1581,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.restore_active_breakpoints()?;
 
         if let Some((pid, address)) = self.apply_pending_edits()? {
-            // The step meets its thread at the trap now. However it goes
-            // on, it completes this stop again, with no edit left to drop
-            // a hit.
             return self.arrive_unstopped(pid, address);
         }
 
@@ -1809,7 +1609,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.end_runtime_step();
         self.end_runtime_assignment();
 
-        // An image exec(2) replaced has no loader rendezvous to follow.
         let exec_replaced = self
             .session
             .inferior()
@@ -1830,15 +1629,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.publish_stop(triggering_thread, reason)
     }
 
-    /// Publishes the stop a ready barrier makes, which `triggering_thread`
-    /// made for `reason`.
     fn publish_stop(&mut self, triggering_thread: Pid, reason: StopReason) -> Result<()> {
         let triggering_thread = self.presenting_thread(triggering_thread);
         let presentation = self.presentation_for_thread(triggering_thread, Some(&reason))?;
         let returned = self.capture_returned(triggering_thread, &reason);
 
-        // Last, so that a process ending while the stop forms keeps the
-        // temporary breakpoints of a stop never published.
         let temporaries_removed = self.remove_stopped_temporaries()?;
         self.mark_published_pause(triggering_thread, &reason);
         let stop_id = self.ptrace.allocate_stop_id()?;
@@ -1849,12 +1644,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             thread.expected = ExpectedStop::None;
         }
 
-        // Any stop answers a client's pause, so its deadline must not
-        // stop the threads again after the next continue.
         inferior.inspectors.end_interrupt();
 
-        // Once the request to end has been delivered, a stop hands the
-        // signal back to its policy.
         inferior.terminating = inferior
             .terminating
             .filter(|terminating| !terminating.delivered);
@@ -1872,12 +1663,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let process_id = process_id(inferior.tgid);
-        // A stop an agent reported is about the program's frame, not the
-        // agent's hook it entered; and a store to an interpreted variable is
-        // about the variable's frame, not the interpreter's code that made
-        // it.
-        // A thread an inspector holds paused is in its script, whatever
-        // the reason, as at an interrupt V8 took.
         let reported = self.inspector_holds(debug_thread_id(triggering_thread))
             || match reason {
                 StopReason::LanguageException(_) | StopReason::Breakpoint { address: None, .. } => {
@@ -1933,8 +1718,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             reason,
         });
 
-        // The temporary breakpoints the stop deleted are gone from every
-        // snapshot of it; their change is published after it.
         if temporaries_removed {
             self.publish_breakpoints_changed();
         }
@@ -1948,7 +1731,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Reads every thread's name, which it may have changed while running.
     pub(super) fn refresh_thread_names(&mut self) {
         let Some(inferior) = self.session.inferior_mut() else {
             return;
@@ -1959,8 +1741,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Resumes a thread whose stop publishes nothing as it was going, or
-    /// leaves it stopped for the barrier in progress.
     pub(super) fn restart_after_internal(&mut self, pid: Pid) -> Result<()> {
         if self.barrier_active() {
             return self.finish_barrier_if_ready();
@@ -1988,9 +1768,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// Panics if `inferior` is not in the state a stop is published from:
-/// every thread stopped, none stepping over a trap, every trap in place,
-/// and none of the active execution's traps left.
 fn check_publishable(inferior: &Inferior, stop_id: StopId) {
     for (&pid, thread) in &inferior.threads {
         debug_assert!(

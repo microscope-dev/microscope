@@ -1,12 +1,12 @@
-"""Deterministic monitoring transport contracts, isolated per scenario."""
+
 import gc
 import sys
 import threading
 import types
 import weakref
 
-# As the launch bootstrap records on 3.12, which cannot say which thread
-# is the main one.
+
+
 sys.modules.setdefault('_microscope_bootstrap', types.SimpleNamespace(main=threading.get_ident()))
 agent = types.ModuleType('discovery_agent')
 agent._bootstrap_lock = threading.RLock()
@@ -51,8 +51,8 @@ elif mode == 'fault':
         reports.clear()
         agent.apply(library, 1, (probe,))
         assert target() == 1
-        # A free-threaded build instruments matching code as it configures,
-        # so the configuration itself reports the fault.
+
+
         acknowledged = [] if 't' in sys.abiflags else [(0, 1)]
         assert [r[:2] for r in reports[:-1]] == acknowledged, reports
         assert reports[-1] == (3, 1, 2), reports
@@ -156,8 +156,8 @@ elif mode == 'delegated':
         raise AssertionError('delegating coroutine did not finish')
     assert reports == [(1, 46, 0)], reports
 elif mode == 'identity':
-    # Code equality ignores filename. A WeakSet/WeakKeyDictionary is not
-    # an identity cache and would conflate these distinct source places.
+
+
     other_code = target.__code__.replace(co_filename='/unmatched.py')
     assert other_code == target.__code__ and other_code is not target.__code__
     other = types.FunctionType(other_code, globals())
@@ -220,9 +220,9 @@ elif mode in ('coexist', 'coexist_matching'):
     assert target() == 1
     if mode == 'coexist_matching':
         assert reports == [(1, 42, 0)], reports
-        # CPython can reactivate the other tool's disabled locations when
-        # this code changes from one LINE tool to several. Registrations
-        # remain intact; unrelated code must stay disabled.
+
+
+
         assert all(code is target.__code__ and location == line
                    for code, location in disabled)
         print('SHARED CODE REACTIVATED', bool(disabled))
@@ -236,9 +236,9 @@ elif mode in ('coexist', 'coexist_matching'):
     assert unrelated() == 1 and not disabled
     sys.monitoring.free_tool_id(0)
 elif mode == 'running':
-    # Code another thread is running at installation is instrumented. A
-    # free-threaded build never reads that thread's frames to find it: the
-    # thread runs concurrently, and its frames can change under the reader.
+
+
+
     started, spinning, results = threading.Event(), [True], []
     def worker():
         started.set()
@@ -265,8 +265,8 @@ elif mode == 'running':
     assert not thread.is_alive() and results == [42], results
     assert reports == [(1, 47, 0)], reports
 elif mode == 'together':
-    # One event's breakpoint hits are one report, so they stop once; a
-    # single hit is reported whole.
+
+
     import ctypes
     def record(event, number, argument):
         if event == 1 and argument:
@@ -290,7 +290,7 @@ elif mode == 'matching':
     here = os.path.abspath(__file__)
     name = os.path.basename(here)
     directory = os.path.basename(os.path.dirname(here))
-    # An absolute path names one file; a relative one ends whole paths.
+
     assert same(here, here)
     assert same(name, here) and same(directory + '/' + name, here)
     assert same(name, name) and same(name, directory + '/' + name)
@@ -298,7 +298,7 @@ elif mode == 'matching':
     assert not same('/elsewhere/' + name, here)
     assert not same(here, name), 'a relative filename is not resolved'
     assert not same(here + 'x', here)
-    # A link names the same file, from either side.
+
     with tempfile.TemporaryDirectory() as linked:
         link = os.path.join(linked, name)
         os.symlink(here, link)

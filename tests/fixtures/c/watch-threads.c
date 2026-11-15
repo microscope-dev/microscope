@@ -5,9 +5,9 @@
 
 enum { WORKERS = 2, ITERATIONS = 40, CHURN = 16 };
 
-// Incremented under a lock: every store is a distinct, ordered write.
+
 volatile uint64_t locked_counter;
-// Incremented without a lock: stores race, but each still executes once.
+
 volatile uint64_t racing_counter;
 _Thread_local volatile int64_t tls_value;
 volatile int64_t *volatile first_worker_tls;

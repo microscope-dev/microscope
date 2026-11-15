@@ -1,7 +1,3 @@
-//! Steps through tokio tasks' async functions, across awaits that are
-//! pending while the other tasks run the same code, on a multi-thread and
-//! a current-thread runtime, and in a `LocalSet`.
-
 use std::process::Stdio;
 
 use microscope::{
@@ -22,17 +18,10 @@ const BUILDS: [&str; 4] = [
 ];
 const SOURCE: &str = "steps/src/main.rs";
 
-/// Whether a build is optimized, which may keep no value of a variable,
-/// and inlines one async function's body into another's, whose return
-/// value is then not returned.
 fn optimized(fixture: &str) -> bool {
     fixture.ends_with("-o3")
 }
 
-/// The runtimes the fixture runs its tasks on, by their argument: a
-/// `LocalSet` only in the unoptimized build, since stepping in one takes
-/// the paths a current-thread runtime does, and the runtimes tests cover
-/// its optimized build.
 fn modes(fixture: &str) -> impl Iterator<Item = Option<&'static str>> {
     [None, Some("current")]
         .into_iter()
@@ -46,8 +35,6 @@ fn at(marker: &str) -> BreakpointSpec {
     }
 }
 
-/// The fixture in `mode`, stopped at the first arrival at `marker`, whose
-/// breakpoint is then removed so that only steps stop it.
 async fn stopped_once(fixture: &str, mode: Option<&str>, marker: &str) -> Scenario {
     let mut scenario = checked(fixture);
     let breakpoint = scenario.add_breakpoint_spec(at(marker)).await;
@@ -67,7 +54,6 @@ async fn stopped_once(fixture: &str, mode: Option<&str>, marker: &str) -> Scenar
     scenario
 }
 
-/// The number of the task the stopped thread runs.
 pub async fn stopped_task(scenario: &mut Scenario) -> u64 {
     let snapshot = scenario.snapshot().await;
     let InferiorState::Stopped { thread_id, .. } = snapshot.inferior else {
@@ -86,18 +72,12 @@ pub async fn stopped_task(scenario: &mut Scenario) -> u64 {
     }
 }
 
-/// A step of `kind` that completes, and the function and line it ends at.
 async fn step(scenario: &mut Scenario, kind: StepKind) -> (String, u64) {
     let reason = scenario.step_to_stop(kind).await;
     assert_eq!(reason, StopReason::Step { kind });
     place(scenario).await
 }
 
-/// `next` over an await that is pending, while the other tasks run the
-/// same function and arrive where it resumes, ends at the next line in
-/// the same task, once its gate opens: in the async function the step
-/// began in, and in its caller for a pending await the function itself
-/// passes on.
 #[tokio::test]
 async fn next_over_a_pending_await_ends_on_the_next_line_of_its_task() {
     for fixture in BUILDS {
@@ -121,8 +101,6 @@ async fn next_over_a_pending_await_ends_on_the_next_line_of_its_task() {
                 );
                 assert_eq!(stopped_task(&mut scenario).await, task, "{context}");
 
-                // The await keeps no copy of the argument, whose slot on
-                // the stack another poll may have written.
                 assert_eq!(integer(&scenario, "me").await, None, "{context}");
                 scenario.shutdown().await;
             }
@@ -130,8 +108,6 @@ async fn next_over_a_pending_await_ends_on_the_next_line_of_its_task() {
     }
 }
 
-/// `next` over an await in a loop, which yields once each time round,
-/// stops at the loop's lines each time round, in the same task.
 #[tokio::test]
 async fn next_goes_round_a_loop_of_awaits() {
     for fixture in BUILDS {
@@ -162,10 +138,6 @@ async fn next_goes_round_a_loop_of_awaits() {
     }
 }
 
-/// `finish` from an async function runs it through every poll to its
-/// return, after none, one, or many polls that return `Pending`, and
-/// stops in its awaiter in the same task, with what its last poll
-/// returned.
 #[tokio::test]
 async fn finish_returns_to_the_awaiter_in_the_same_task() {
     for fixture in BUILDS {
@@ -175,9 +147,6 @@ async fn finish_returns_to_the_awaiter_in_the_same_task() {
                 ("// STEP: inner", "outer", "// AWAIT: outer"),
                 ("// STEP: round", "task", "// AWAIT: rounds"),
             ] {
-                // Optimized, `inner` is inlined into `outer` and names no
-                // future, so its return looks like its pending await: the
-                // step goes on to the next line the awaiter reaches.
                 let after = if optimized(fixture) && from == "// STEP: inner" {
                     "// STEP: outer-after"
                 } else {
@@ -214,9 +183,6 @@ async fn finish_returns_to_the_awaiter_in_the_same_task() {
     }
 }
 
-/// A step past the end of a task's own async function ends where the
-/// function's future returns to tokio, saying the task finished: `next`
-/// from its last line, and `finish`, which shows what it returned.
 #[tokio::test]
 async fn a_step_past_a_tasks_end_says_it_finished() {
     for fixture in BUILDS {
@@ -232,7 +198,6 @@ async fn a_step_past_a_tasks_end_says_it_finished() {
                 assert!(output.is_some() || optimized(fixture), "{context}");
                 let mut reason = scenario.step_to_stop(kind).await;
 
-                // `next` stops at the closing brace first.
                 if reason == (StopReason::Step { kind }) {
                     assert_eq!(place(&scenario).await.0, "task", "{context}");
                     reason = scenario.step_to_stop(kind).await;
@@ -273,9 +238,6 @@ async fn a_step_past_a_tasks_end_says_it_finished() {
     }
 }
 
-/// A breakpoint whose condition names a task by `$task` stops only in that
-/// task, every time round its loop, on whichever worker runs it, while
-/// every task's arrival counts as a hit: the line's executions.
 #[tokio::test]
 async fn a_task_condition_stops_only_in_its_task() {
     for fixture in BUILDS {
@@ -368,10 +330,6 @@ async fn tasks_at_the_gate_stay_suspended_until_the_first_task_resumes() {
     }
 }
 
-/// A step of a task no thread runs, selected by its number, waits for the
-/// task to resume, on whichever thread, and goes on from its await: `next`
-/// from its innermost async function stops at that function's next line,
-/// and `finish` from an outer function's frame returns to its awaiter.
 #[tokio::test]
 async fn a_step_of_a_suspended_task_waits_for_it_to_resume() {
     for fixture in BUILDS {
@@ -387,8 +345,6 @@ async fn a_step_of_a_suspended_task_waits_for_it_to_resume() {
             ] {
                 let context = format!("{fixture} {mode:?} {kind:?}");
 
-                // No task passes the gate before the first stops past it,
-                // so the tasks no thread runs wait at the gate.
                 let mut scenario = stopped_once(fixture, mode, "// STEP: inner-after").await;
                 let page = scenario
                     .operation("tasks", scenario.handle().tasks(None, 16))
@@ -424,9 +380,7 @@ async fn a_step_of_a_suspended_task_waits_for_it_to_resume() {
                 );
                 assert_eq!(stopped_task(&mut scenario).await, task.number, "{context}");
 
-                // Optimized, the await keeps nothing the step can name.
                 if kind == StepKind::OverSource && !optimized(fixture) {
-                    // What the await keeps of the task's own number.
                     assert_eq!(
                         integer(&scenario, "before").await,
                         Some(i128::from(task.number) * 10),
@@ -440,11 +394,6 @@ async fn a_step_of_a_suspended_task_waits_for_it_to_resume() {
     }
 }
 
-/// While a step waits for its task to resume, another task's breakpoint
-/// ends it there, as a breakpoint ends any step, and the step does not
-/// come back later. On the current-thread runtime the first task to reach
-/// its gate runs alone until it waits there, so the others are certain to
-/// reach the breakpoint before it.
 #[tokio::test]
 async fn another_tasks_breakpoint_ends_a_waiting_step() {
     for fixture in BUILDS {
@@ -465,7 +414,6 @@ async fn another_tasks_breakpoint_ends_a_waiting_step() {
         let other = stopped_task(&mut scenario).await;
         assert_ne!(other, task, "{fixture}");
 
-        // The third task stops there too, and then the program ends.
         let reason = scenario.resume_to_stop().await;
         assert!(
             matches!(reason, StopReason::Breakpoint { .. }),
@@ -484,10 +432,6 @@ async fn another_tasks_breakpoint_ends_a_waiting_step() {
     }
 }
 
-/// `stepi` and `nexti` in an async function's body execute one instruction
-/// there, as in any function, and `advance` to a line past the awaits of
-/// a loop runs across each poll that returns `Pending` to that line, in
-/// the same task, as `finish` does to the function's return.
 #[tokio::test]
 async fn instruction_steps_and_advance_in_an_async_function() {
     for fixture in BUILDS {
@@ -526,8 +470,6 @@ async fn instruction_steps_and_advance_in_an_async_function() {
             );
             assert_eq!(stopped_task(&mut scenario).await, task, "{context}");
 
-            // Both rounds ran, each after a `Pending` poll; optimized, the
-            // sum is kept nowhere the debugger can name.
             if !optimized(fixture) {
                 assert_eq!(integer(&scenario, "total").await, Some(3), "{context}");
             }
@@ -537,10 +479,6 @@ async fn instruction_steps_and_advance_in_an_async_function() {
     }
 }
 
-/// `step task` on a line that spawns a task stops at the first line of
-/// the task it spawned, in that task, on whichever thread runs it: the
-/// first of the program's tasks, which says it is the task the step
-/// stopped in. The tasks spawned after it run the same code meanwhile.
 #[tokio::test]
 async fn step_task_on_a_spawn_line_stops_at_the_new_tasks_first_line() {
     for fixture in BUILDS {
@@ -552,8 +490,6 @@ async fn step_task_on_a_spawn_line_stops_at_the_new_tasks_first_line() {
                 "// SPAWN: runtime"
             };
 
-            // An optimized build keeps no breakpoint on the spawn's own
-            // line, which a step from the line before still reaches.
             let mut scenario = stopped_once(fixture, mode, "let handle = match").await;
             assert_eq!(
                 step(&mut scenario, StepKind::OverSource).await,
@@ -590,9 +526,6 @@ async fn step_task_on_a_spawn_line_stops_at_the_new_tasks_first_line() {
     }
 }
 
-/// `step task` on a line that spawns no task ends where `next` does, as
-/// on a line that wakes a task the runtime schedules as it would a new
-/// one.
 #[tokio::test]
 async fn step_task_on_a_line_that_spawns_none_ends_as_next_does() {
     let fixture = BUILDS[0];
@@ -612,9 +545,6 @@ async fn step_task_on_a_line_that_spawns_none_ends_as_next_does() {
     }
 }
 
-/// `step task` on a line of a task that spawns another stops at the first
-/// line of the task it spawned, wherever the runtime runs it, and the step
-/// belongs to the new task from then on.
 #[tokio::test]
 async fn step_task_from_a_task_follows_the_task_it_spawns() {
     for fixture in BUILDS {
@@ -622,8 +552,6 @@ async fn step_task_from_a_task_follows_the_task_it_spawns() {
         let mut scenario = stopped_once(fixture, Some("nested"), "// BEFORE: nested").await;
         let parent = stopped_task(&mut scenario).await;
 
-        // The step from the line before ends on the spawn's line, which an
-        // optimized build runs as part of the line before.
         let mut place = step(&mut scenario, StepKind::IntoNewTask).await;
         if place == ("parent".to_owned(), line(SOURCE, "// SPAWN: nested")) {
             place = step(&mut scenario, StepKind::IntoNewTask).await;

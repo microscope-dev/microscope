@@ -1,24 +1,17 @@
-// What a renderer returns, checked before the page shows any of it. A
-// picture is refused whole, naming the first shape at fault and why, and
-// never cleaned: unknown properties, numbers that are not finite, colors
-// that are not colors, path data outside SVG's grammar, and pictures over
-// the limits are all refused.
-
 import { assert } from "../assert";
 
-/** The most shapes a picture holds, groups included. */
 export const MOST_SHAPES = 100_000;
-/** How deeply groups nest. */
+
 const MOST_DEPTH = 32;
-/** The widest or tallest a picture is, in its own units. */
+
 const MOST_SIDE = 32_768;
-/** The longest text, title, or caption, in characters. */
+
 export const MOST_TEXT = 4_096;
-/** The most pixels a picture's images hold, together. */
+
 export const MOST_PIXELS = 16 * 1024 * 1024;
-/** The most coordinates polylines and polygons hold, together. */
+
 const MOST_POINTS = 4_000_000;
-/** The longest path data, in characters. */
+
 const MOST_PATH = 4 * 1024 * 1024;
 
 export interface Style {
@@ -76,7 +69,6 @@ export interface Picture {
   caption?: string;
 }
 
-/** Why a picture was refused, naming where. */
 export class PictureError extends Error {
   constructor(message: string) {
     super(message);
@@ -106,7 +98,6 @@ const PROPERTIES: Record<Shape["type"], { required: string[]; optional: string[]
 
 const BASELINES = new Set(["auto", "alphabetic", "middle", "central", "hanging", "ideographic"]);
 
-// CSS's named colors.
 const NAMED = new Set(
   (
     "aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue " +
@@ -136,7 +127,6 @@ const FUNCTION = new RegExp(
   "iu",
 );
 
-/** Whether `value` is a color the page shows: hex, rgb(), hsl(), or a name. */
 function isColor(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 64) {
     return false;
@@ -148,7 +138,6 @@ function isColor(value: unknown): value is string {
   );
 }
 
-/** A path into the drawn value: member names, `.`, and integer indices. */
 export function isSelect(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -157,7 +146,6 @@ export function isSelect(value: unknown): value is string {
   );
 }
 
-// Each command and how many numbers each of its repetitions takes.
 const ARGUMENTS: Record<string, number> = {
   m: 2,
   l: 2,
@@ -171,8 +159,6 @@ const ARGUMENTS: Record<string, number> = {
   z: 0,
 };
 
-/** Whether `d` is SVG path data: commands, each with whole repetitions of
- * its numbers, starting with a move. */
 export function isPathData(d: unknown): d is string {
   if (typeof d !== "string" || d.length > MOST_PATH) {
     return false;
@@ -218,7 +204,6 @@ interface Totals {
   points: number;
 }
 
-/** Checks what a renderer returned, and returns it as a picture. */
 export function validate(value: unknown): Picture {
   const where = "the picture";
   const picture = object(value, where);
@@ -250,7 +235,7 @@ function shapes(value: unknown, within: string, depth: number, totals: Totals): 
   if (depth > MOST_DEPTH) {
     throw new PictureError(`${within}: groups nest more than ${MOST_DEPTH} deep`);
   }
-  // Each item is a shape at least, so a list too long is refused unread.
+
   if (totals.shapes + value.length > MOST_SHAPES) {
     throw new PictureError(`the picture has more than ${MOST_SHAPES} shapes`);
   }
@@ -349,8 +334,6 @@ function size(value: unknown, what: string): void {
   }
 }
 
-/** A picture's width or height: none would scale it without end, and past
- * MOST_SIDE its canvas would be too large to draw. */
 function side(value: unknown, what: string): void {
   const length = finite(value, what);
   if (length <= 0) {
@@ -507,15 +490,10 @@ function image(item: Record<string, unknown>, where: string, totals: Totals): vo
   }
 }
 
-/** Whether a shape is a line, which is drawn by its stroke, never filled,
- * and in ink unless it says otherwise. */
 export function isLine(item: Shape): boolean {
   return item.type === "line" || item.type === "polyline";
 }
 
-/** Frees the images a renderer drew on canvases of its own, in a picture
- * that will not be drawn again. It may be one the page refused, so it is
- * walked warily: cycles and all, it visits at most MOST_SHAPES shapes. */
 export function closeImages(picture: unknown): void {
   if (typeof ImageBitmap === "undefined") {
     return;

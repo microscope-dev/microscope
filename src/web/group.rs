@@ -1,13 +1,3 @@
-//! The processes a web session debugs together, and the one its tabs look
-//! at.
-//!
-//! A launched or attached program is debugged as a [`microscope::ProcessGroup`].
-//! The session selects one member at a time: the state every tab receives
-//! describes it, and every request about the program acts on its handle,
-//! except breakpoints, which are the group's and go to its root. The
-//! selection belongs to the session rather than to a tab, as the state does.
-//! A stop of the group selects the member that stopped.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -25,7 +15,6 @@ use super::session::{Outlet, observe, publish};
 use crate::cli::format;
 use crate::cli::terminal::Renderer;
 
-/// The member requests act on, and the images its code is read from.
 #[derive(Clone)]
 pub struct View {
     pub member: MemberNumber,
@@ -33,19 +22,15 @@ pub struct View {
     pub images: Arc<Images>,
 }
 
-/// The session's selected member, shared by its requests and its pump.
 pub struct Selection {
     view: Mutex<View>,
 
-    /// Every member's images, made once, so each keeps what it fetched.
     images: Mutex<BTreeMap<MemberNumber, Arc<Images>>>,
 
-    /// Wakes the pump to publish the newly selected member.
     changed: Notify,
 }
 
 impl Selection {
-    /// Selects the group's root, or the one process debugged.
     pub fn new(handle: DebuggerHandle, images: Arc<Images>) -> Self {
         Self {
             images: Mutex::new(BTreeMap::from([(1, Arc::clone(&images))])),
@@ -72,7 +57,6 @@ impl Selection {
             .member
     }
 
-    /// Member `member`'s images, made the first time they are asked for.
     fn images(&self, member: MemberNumber, handle: &DebuggerHandle) -> Arc<Images> {
         Arc::clone(
             self.images
@@ -83,8 +67,6 @@ impl Selection {
         )
     }
 
-    /// Selects `member`, whose handle is `handle`, and has the pump publish
-    /// its state.
     pub fn select(&self, member: MemberNumber, handle: DebuggerHandle) {
         let images = self.images(member, &handle);
         *self.view.lock().unwrap_or_else(PoisonError::into_inner) = View {
@@ -96,42 +78,30 @@ impl Selection {
     }
 }
 
-/// A member's events, as the pump receives them.
 type MemberEvent = (MemberNumber, Result<DebuggerEvent, RecvError>);
 
-/// Publishes the selected member's state after every burst of events in
-/// the group, and says what the group's processes did.
 pub struct Pump {
     pub state: Arc<watch::Sender<Arc<State>>>,
     pub outlet: Outlet,
     pub group: Option<GroupHandle>,
     pub selection: Arc<Selection>,
 
-    /// How the root joined: launched or attached.
     pub root: Joined,
 
-    /// Each member's describer, which keeps its stops; the root's is made
-    /// with the session.
     describers: BTreeMap<MemberNumber, Describer>,
 
-    /// The member whose stop last stopped the group, and that stop.
     stopped: Option<MemberNumber>,
     seen_stop: Option<(MemberNumber, StopId)>,
 
-    /// The members whose events the pump forwards.
     watched: BTreeSet<MemberNumber>,
 
-    /// Each member's latest revision seen. A state's revision is their sum,
-    /// which never goes back as the selection moves between members.
     revisions: BTreeMap<MemberNumber, u64>,
 
     forward: mpsc::UnboundedSender<MemberEvent>,
     received: mpsc::UnboundedReceiver<MemberEvent>,
 
-    /// The tasks that forward members' events, which end with the pump.
     forwarders: JoinSet<()>,
 
-    /// Who started each run, which the root's describer shares.
     credits: Arc<Credits>,
 }
 
@@ -145,7 +115,6 @@ impl Pump {
         joined: Joined,
     ) -> Self {
         let (forward, received) = mpsc::unbounded_channel();
-        // An attached group starts stopped where its root was attached.
         let stopped = (joined == Joined::Attached && group.is_some()).then_some(1);
         let credits = Arc::clone(&root.credits);
         Self {
@@ -166,14 +135,10 @@ impl Pump {
         }
     }
 
-    /// The state to publish first, before the pump runs.
     pub async fn first_state(&mut self) -> Option<State> {
         self.describe().await
     }
 
-    /// Runs until the session's debugger ends. `root` is the root's events,
-    /// subscribed before the first state was described, and `group` the
-    /// group's.
     pub async fn run(
         mut self,
         root: broadcast::Receiver<DebuggerEvent>,
@@ -205,11 +170,9 @@ impl Pump {
                 },
                 () = self.selection.changed.notified() => {}
 
-                // A run credited after its stop was shown shows it now.
                 () = self.credits.landed.notified() => {}
             }
 
-            // Take every event already queued, so the burst publishes once.
             while let Ok((member, event)) = self.received.try_recv() {
                 self.member_event(member, event);
             }
@@ -236,7 +199,6 @@ impl Pump {
         )
     }
 
-    /// Forwards member `member`'s events to the pump.
     fn watch(&mut self, member: MemberNumber, mut events: broadcast::Receiver<DebuggerEvent>) {
         if !self.watched.insert(member) {
             return;
@@ -253,8 +215,6 @@ impl Pump {
         });
     }
 
-    /// The selected member's state, or none once the session's debugger
-    /// has ended. A member whose session ended gives way to the root.
     async fn describe(&mut self) -> Option<State> {
         let mut view = self.selection.view();
         let snapshot = match view.handle.snapshot().await {
@@ -283,8 +243,6 @@ impl Pump {
         Some(state)
     }
 
-    /// Member `member`'s describer, made the first time it is needed with
-    /// the session's counters and the member's images.
     fn describer(
         &mut self,
         member: MemberNumber,
@@ -307,8 +265,6 @@ impl Pump {
         self.describers.get_mut(&member)
     }
 
-    /// A member's snapshot with its copies of the group's breakpoints under
-    /// the group's ids, which tabs edit them by.
     fn translate(&self, member: MemberNumber, mut snapshot: StateSnapshot) -> StateSnapshot {
         let Some(group) = self.group.as_ref().filter(|_| member != 1) else {
             return snapshot;
@@ -332,7 +288,6 @@ impl Pump {
         snapshot
     }
 
-    /// The group as tabs see it, with `selected` selected.
     fn group_state(&self, selected: MemberNumber) -> Option<protocol::Group> {
         let group = self.group.as_ref()?;
         let members = group.members();
@@ -354,8 +309,6 @@ impl Pump {
     }
 
     fn member_event(&mut self, member: MemberNumber, event: Result<DebuggerEvent, RecvError>) {
-        // The state the page shows is read whole each time; only the lines
-        // the lost events would have logged are missing.
         let event = match event {
             Ok(event) => event,
             Err(RecvError::Lagged(missed)) => {
@@ -427,8 +380,6 @@ impl Pump {
                 }
                 self.stopped = Some(member);
                 self.seen_stop = Some((member, stop));
-                // A pause stops no member in particular, so the selection
-                // stays unless its member is gone.
                 if (reason != StopReason::Pause || !live(&members, selected))
                     && is_stopped(&members, member)
                     && let Some(handle) = group.member(member)
@@ -448,7 +399,6 @@ impl Pump {
                     self.selection.select(next.number, handle);
                 }
             }
-            // The program's end shows as the root's.
             GroupEvent::GroupExited if selected != 1 => {
                 self.selection.select(1, group.root());
             }
@@ -456,9 +406,6 @@ impl Pump {
         }
     }
 
-    /// Catches up from the group's state after missing `missed` of its
-    /// events, which may have held a group stop, members that joined, or
-    /// the selected member's end.
     fn caught_up(&mut self, missed: u64) {
         self.missed(missed);
         let Some(group) = self.group.clone() else {
@@ -509,8 +456,6 @@ impl Pump {
     }
 }
 
-/// The next event of the group, or how many it missed, or none once it has
-/// ended; forever none without a group.
 async fn next_group_event(
     events: Option<&mut broadcast::Receiver<GroupEvent>>,
 ) -> Option<Result<GroupEvent, u64>> {
@@ -525,7 +470,6 @@ async fn next_group_event(
     }
 }
 
-/// Whether member `number` has a process microscope debugs.
 fn live(members: &[microscope::Member], number: MemberNumber) -> bool {
     members.iter().any(|member| {
         member.number == number
@@ -542,7 +486,6 @@ fn is_stopped(members: &[microscope::Member], number: MemberNumber) -> bool {
     })
 }
 
-/// A member's stop with the group's breakpoint ids in place of its copies'.
 fn group_reason(group: &GroupHandle, member: MemberNumber, reason: StopReason) -> StopReason {
     match reason {
         StopReason::Breakpoint { address, hits } => StopReason::Breakpoint {
@@ -561,7 +504,6 @@ fn group_reason(group: &GroupHandle, member: MemberNumber, reason: StopReason) -
     }
 }
 
-/// A member as tabs see it. `root` is how the group's root joined.
 fn describe_member(
     group: &GroupHandle,
     member: &microscope::Member,
@@ -611,9 +553,6 @@ fn describe_member(
     }
 }
 
-/// The line the console shows for a group event, if any: the terminal's,
-/// and also the processes the group watches, and which member stopped the
-/// group once it has several.
 fn group_line(
     group: &GroupHandle,
     event: &GroupEvent,
@@ -649,8 +588,6 @@ mod tests {
 
     use super::*;
 
-    /// A pump whose group events fell behind still shows the group stopped,
-    /// as the group's own state says, when the stop was among those lost.
     #[tokio::test]
     async fn a_pump_that_missed_the_group_stop_shows_it() {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -678,7 +615,6 @@ mod tests {
         .await
         .expect("the group stops");
 
-        // The pump's group events, from which a burst pushed the stop.
         let (sender, events) = broadcast::channel(4);
         for _ in 0..8 {
             sender
@@ -718,7 +654,6 @@ mod tests {
         .is_ok();
         assert!(shown, "the page never shows the group stopped");
 
-        // The pump ends with the root's session.
         drop(sender);
         tokio::time::timeout(Duration::from_secs(10), group.shutdown())
             .await

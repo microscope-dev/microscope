@@ -1,16 +1,6 @@
-//! What each wait status and event does to a pid that is not a live thread
-//! of the inferior: one never seen, a thread that exited before an attach
-//! seized it or before its exit was collected, a stop or exit that came
-//! before the event announcing it, and a fork child on its way to being
-//! released, killed, or handed to the session's group.
-//!
-//! Every record is made through the controller's messages and wait
-//! statuses, and only [`record`] reads how the controller keeps them.
-
 use super::lifecycle::{ATTACHED, CHILD, attach, idle};
 use super::*;
 
-/// What the controller holds of `pid`, wherever it holds it.
 fn record(harness: &WatchHarness, pid: Pid) -> String {
     let mut held = Vec::new();
     match &harness.controller.session {
@@ -63,16 +53,12 @@ fn session(harness: &WatchHarness) -> &'static str {
     }
 }
 
-/// A process running one thread, `parent`, with a trap at [`HIT_SITE`]
-/// that a child it forks inherits.
 fn running() -> (WatchHarness, Pid) {
     let harness = hit_harness(1, ">=1");
     let parent = harness.threads[0];
     (harness, parent)
 }
 
-/// A process attached to while [`CHILD`], one of its listed threads,
-/// could not be seized, or was found exiting when interrupted.
 fn attached(unseizable: bool) -> (WatchHarness, Pid) {
     let mut harness = idle();
     if unseizable {
@@ -110,8 +96,6 @@ fn first_stop(harness: &mut WatchHarness) {
         .handle_wait(WaitEvent::Stopped(CHILD, Signal::SIGSTOP));
 }
 
-/// Makes the record `name` of [`CHILD`], returning the harness and the
-/// inferior's one thread.
 fn made(name: &str) -> (WatchHarness, Pid) {
     let (mut harness, parent) = match name {
         "unseized" => attached(true),
@@ -169,8 +153,6 @@ const EVENTS: [&str; 8] = [
     "parent exits",
 ];
 
-/// One event of [`CHILD`] with one record of it: where the record and the
-/// session end up, and what the controller asked of the kernel.
 fn outcome(name: &str, happened: &str) -> String {
     let (mut harness, parent) = made(name);
     let before = record(&harness, CHILD);
@@ -206,7 +188,6 @@ fn outcome(name: &str, happened: &str) -> String {
             ))
         }
         "parent exits" => {
-            // The tracer still traces the child, whatever became of it.
             harness.trace().traced_children.borrow_mut().push(CHILD);
             vec![
                 WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
@@ -251,10 +232,6 @@ fn outcome(name: &str, happened: &str) -> String {
     )
 }
 
-/// Each wait status and event of a pid that is not a live thread ends as
-/// it always has, for each thing the controller can know of it: which
-/// record it keeps after, whether the session lives on, and what it asks
-/// the kernel to do with the pid and its parent.
 #[test]
 fn each_event_of_a_pid_that_is_not_a_live_thread_settles_the_same() {
     let actual: Vec<String> = RECORDS

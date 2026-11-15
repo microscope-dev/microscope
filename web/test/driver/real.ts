@@ -1,6 +1,3 @@
-// The real backend: a Playwright page on a real `microscope web`, pressed and
-// typed into as a person would, in Chromium and Firefox.
-
 import { expect, type Page } from "@playwright/test";
 
 import { parseChord, toPlaywright, type User, type ValuePane } from "./user";

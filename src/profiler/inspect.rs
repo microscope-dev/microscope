@@ -1,59 +1,36 @@
-//! What a profile holds, for the page's Inspect dialog: the command it
-//! recorded, its modules and processes, the shape of its samples, and the
-//! bytes each of its tables takes.
-
 use super::{ARGUMENTS, Profile, arguments_setting};
 use crate::capture::records::{AccountKind, CaptureTable, FrameKind};
 
-/// How many equal slices of the span samples are counted in.
 pub const TIME_BINS: usize = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inspection {
-    /// The command the recording ran or attached to: its first process's,
-    /// or for a system call trace, the one it ran.
     pub command: Option<InspectedCommand>,
 
-    /// Every process the recording saw, in the order it saw them.
     pub processes: Vec<InspectedProcess>,
     pub modules: Vec<InspectedModule>,
 
-    /// Samples by how many frames their stack holds, the index being the
-    /// depth. A truncation marker is no frame.
     pub depths: Vec<u64>,
 
-    /// Samples in each of [`TIME_BINS`] slices of the span; empty when the
-    /// samples keep no times or there are none.
     pub over_time: Vec<u64>,
 
-    /// Distinct stacks samples ended in.
     pub distinct_stacks: u64,
     pub frames: u64,
 
-    /// Frames that have source lines.
     pub frames_with_lines: u64,
 
-    /// What the events counted, sampled or not, in the weight's unit.
     pub counted: u64,
 
-    /// Bytes of stack the kernel copied.
     pub stack_bytes: u64,
 
-    /// Samples whose stack copy microscope shortened while it was behind.
     pub shortened: u64,
 
-    /// Nanoseconds of microscope's CPU time spent before the program was
-    /// recorded, and reading debug information after collection ended.
     pub recorder_setup: u64,
     pub recorder_finishing: u64,
 
-    /// Bytes of rows each table that has any holds, as a saved file stores
-    /// them.
     pub tables: Vec<(&'static str, u64)>,
 }
 
-/// A command line: its arguments when the recording kept them apart, and
-/// the line they make joined with spaces, which older recordings keep alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectedCommand {
     pub arguments: Option<Vec<String>>,
@@ -72,15 +49,12 @@ pub struct InspectedModule {
     pub path: String,
     pub size: u64,
 
-    /// Its GNU build ID in hex, if it has one.
     pub build_id: Option<String>,
 
-    /// Distinct frames of its code the samples hold.
     pub frames: u64,
 }
 
 impl Profile {
-    /// What the profile holds, for a person looking it over.
     #[must_use]
     pub fn inspect(&self) -> Inspection {
         let capture = &self.capture;
@@ -160,8 +134,6 @@ impl Profile {
         }
     }
 
-    /// The command the recording ran or attached to: its first process's,
-    /// or for a system call trace, the one it ran.
     #[must_use]
     pub fn recorded_command(&self) -> Option<InspectedCommand> {
         let first = (!self.capture.processes.is_empty())
@@ -171,8 +143,6 @@ impl Profile {
         first.or_else(|| self.command_of(ARGUMENTS, self.setting("program").map(str::to_owned)))
     }
 
-    /// A command from the arguments under `key`, or `text` alone when the
-    /// recording did not keep them apart.
     fn command_of(&self, key: &str, text: Option<String>) -> Option<InspectedCommand> {
         let arguments = self
             .setting(key)
@@ -185,14 +155,10 @@ impl Profile {
         Some(InspectedCommand { arguments, text })
     }
 
-    /// Samples by the depth of their stacks. A parent comes before its
-    /// children, so each node's depth is known by the time its children are.
     fn depths(&self) -> Vec<u64> {
         let capture = &self.capture;
         let mut depth = Vec::with_capacity(capture.stacks.len());
         for (index, node) in capture.stacks.iter().enumerate() {
-            // depth holds every node before this one, so a parent at or
-            // after it, or NONE, is not found.
             debug_assert_eq!(depth.len(), index, "depths of stack nodes before {index}");
             let above = depth.get(node.parent.get() as usize).copied().unwrap_or(0);
             let marker = capture
@@ -215,8 +181,6 @@ impl Profile {
         counts
     }
 
-    /// Samples in each slice of the span. A recording still running has no
-    /// end yet, so its last sample stands for it.
     fn over_time(&self) -> Vec<u64> {
         let samples = &self.capture.samples;
         if samples.is_empty() {
@@ -363,7 +327,6 @@ mod tests {
         let c = builder.frame(FrameKind::Native, other, 0x30, 0);
         let cut = builder.truncation(Truncation::StackCopyExhausted, module);
 
-        // Depths 3, 3, 1, 2 (a marker below two frames), and no stack at all.
         let deep = builder.stack(&[c, b, a]);
         let shallow = builder.stack(&[a]);
         let cut_short = builder.stack(&[cut, b, a]);
@@ -411,7 +374,6 @@ mod tests {
         let mut builder = CaptureBuilder::new();
         let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
 
-        // 600 ns over 60 bins is 10 ns each; check both sides of each edge.
         builder.setting("start", "1000");
         builder.setting("end", "1599");
         for time in [1000, 1009, 1010, 1300, 1589, 1590, 1599] {

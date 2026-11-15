@@ -1,8 +1,3 @@
-//! Goroutines that run the same function at once. A step stays with the
-//! goroutine it began in, whichever thread the scheduler resumes it on,
-//! whatever siblings run meanwhile on its thread, and wherever the runtime
-//! copies its stack.
-
 use std::collections::BTreeSet;
 use std::process::Stdio;
 
@@ -14,7 +9,6 @@ use crate::support::{self, Scenario};
 const BUILDS: [&str; 2] = ["siblings-go-o0", "siblings-go-o2"];
 const SOURCE: &str = "tests/fixtures/go/siblings/main.go";
 
-/// The lines of the loop, in the order each round runs them.
 const ROUND: [&str; 5] = [
     "// WALK: add",
     "// WALK: yield",
@@ -23,12 +17,8 @@ const ROUND: [&str; 5] = [
     "// WALK: loop",
 ];
 
-/// How many steps each walk takes: enough rounds for the scheduler to move
-/// the goroutine, and for its stack to grow more than once.
 const STEPS: usize = 60;
 
-/// A program stopped in one goroutine's loop, with no breakpoint left, and
-/// the runtime given `processors` processors.
 async fn in_the_loop(fixture: &str, processors: &str) -> Scenario {
     let mut scenario = crate::invariants::checked(fixture);
     let breakpoint = scenario
@@ -58,14 +48,11 @@ async fn in_the_loop(fixture: &str, processors: &str) -> Scenario {
 async fn a_step_stays_with_its_goroutine() {
     let round = ROUND.map(|marker| support::source_line(SOURCE, marker));
     for fixture in BUILDS {
-        // One processor runs every sibling on the stepping thread; several
-        // resume the goroutine wherever one is free.
         for processors in ["1", "4"] {
             let context = format!("{fixture} with {processors} processors");
             let mut scenario = in_the_loop(fixture, processors).await;
             let task = integer(&scenario, "$task").await.expect("a task");
 
-            // The program's own name for the goroutine, where it is known.
             let id = integer(&scenario, "id").await;
             if fixture.ends_with("o0") {
                 assert_eq!(id, Some(task), "{context}");
@@ -96,8 +83,6 @@ async fn a_step_stays_with_its_goroutine() {
                 }
             }
 
-            // Unoptimized, the walk visits every line of each round in
-            // order; optimized code may visit them in another.
             if fixture.ends_with("o0") {
                 let expected = round.iter().copied().cycle().skip(1).take(STEPS);
                 assert_eq!(walked, expected.collect::<Vec<_>>(), "{context}");
@@ -110,8 +95,6 @@ async fn a_step_stays_with_its_goroutine() {
 
             eprintln!("{context}: the goroutine ran on threads {threads:?}");
 
-            // Every sibling returns to the same place, and only this
-            // goroutine's return ends the step.
             let reason = scenario.step_to_stop(StepKind::Out).await;
             assert_eq!(
                 reason,
@@ -135,8 +118,6 @@ async fn finish_returns_to_its_caller_after_the_stack_moves() {
     for fixture in BUILDS {
         let mut scenario = crate::invariants::checked(fixture);
 
-        // Each goroutine first reaches this depth in its first deep call,
-        // whose deeper calls then grow its stack again.
         let breakpoint = scenario
             .operation(
                 "conditional breakpoint",
@@ -196,7 +177,6 @@ async fn finish_returns_to_its_caller_after_the_stack_moves() {
             assert_eq!(depth, 17, "{fixture}");
         }
 
-        // The caller's frame is where the runtime copied it.
         if fixture.ends_with("o0") {
             let after = address(&scenario, "&pad").await;
             assert!(before.is_some() && after.is_some(), "{fixture}");
@@ -226,9 +206,6 @@ async fn stepping_through_the_scheduler_returns_to_the_same_goroutine() {
         scenario.remove_breakpoint(breakpoint.id).await;
         let task = integer(&scenario, "$task").await.expect("a task");
 
-        // A step begun in the runtime may stop there, but it passes over
-        // the switch to the scheduler's stack, which parks the goroutine,
-        // and goes on where the goroutine resumes, back to the program.
         let mut visited = Vec::new();
 
         loop {
@@ -244,7 +221,6 @@ async fn stepping_through_the_scheduler_returns_to_the_same_goroutine() {
             assert_eq!(integer(&scenario, "$task").await, Some(task), "{fixture}");
             let (function, _) = place(&scenario).await;
 
-            // Optimized, the first statement may be in the next call.
             if function.starts_with("main.") {
                 break;
             }

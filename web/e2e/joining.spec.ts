@@ -1,5 +1,3 @@
-// Getting into a session: links, cookies, and what a tab shows without one.
-
 import { expect, expectErrors, join, test } from "./server";
 
 test("a join link opens the session and leaves no token in the address", async ({
@@ -17,7 +15,7 @@ test("a cookie from an earlier microscope on the same port asks for a link", asy
   microscope,
 }) => {
   await join(page, microscope.link);
-  // A later server on this port mints new tokens: copy the old cookie there.
+
   const next = await microscope.start([]);
   const port = new URL(next.origin).port;
   const [old] = await page.context().cookies(microscope.origin);
@@ -33,6 +31,6 @@ test("a cookie from an earlier microscope on the same port asks for a link", asy
   await expect(
     page.getByText("This browser has not joined this microscope session yet"),
   ).toBeVisible();
-  // Nothing here can control a program it cannot see.
+
   await expect(page.locator("[data-action]")).toHaveCount(0);
 });

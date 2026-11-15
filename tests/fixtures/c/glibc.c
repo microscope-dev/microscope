@@ -1,6 +1,6 @@
-// The GNU C library's types, which the built-in views present. Each `VIEW:`
-// marker says what its expression must show, evaluated in main() where
-// barrier() is called.
+
+
+
 
 #define _GNU_SOURCE
 #include <pthread.h>

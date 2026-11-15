@@ -1,5 +1,5 @@
-// Lines without code, inside and between functions, for source breakpoints
-// that move to the next line with code.
+
+
 volatile int sliding_sink;
 
 __attribute__((noinline)) int first_function(int value) {

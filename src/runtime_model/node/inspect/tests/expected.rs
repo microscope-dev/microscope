@@ -1,9 +1,3 @@
-//! What Node prints for the values the tests build, each taken from
-//! running `util.inspect(value, { customInspect: false })` under Node 22,
-//! 24, and 26.
-
-/// A value's label, Node 26's text, and Node 24's and 22's where they
-/// differ from the next newer version.
 pub const NODE: &[(&str, &str, Option<&str>, Option<&str>)] = &[
     (
         "mixedNumbers",

@@ -1,13 +1,3 @@
-//! Debian's node, whose shared libnode is stripped of the symbols that
-//! name V8's builtins and of their call-frame information: the debugger
-//! finds the builtins where the process says V8 keeps them, and unwinds
-//! them by V8's convention.
-//!
-//! Debian's node runs only inside the mount namespace its `enter` makes
-//! (flake.nix), so each test runs itself again there, as uid 0 of a user
-//! namespace, with the harness and the debugger: the outer run waits for
-//! the inner one, which debugs, and fails with its output.
-
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -21,17 +11,12 @@ use crate::stacks::check_isolates;
 use crate::support::{ExternalProcess, Scenario, ScratchDir, node};
 use crate::truth::{check_threads, threads};
 
-/// The build, as the flake names it.
 const DEBIAN: &str = "debian-24";
 
-/// Set in the run inside the namespace.
 const INSIDE: &str = "MICROSCOPE_NODE_DEBIAN_INSIDE";
 
-/// How long the run inside the namespace may take.
 const DEADLINE: Duration = Duration::from_secs(60);
 
-/// Whether this is the run inside the namespace; if not, runs the test
-/// `name` there and fails as it does.
 fn inside(name: &str) -> bool {
     if std::env::var_os(INSIDE).is_some() {
         return true;
@@ -46,8 +31,6 @@ fn inside(name: &str) -> bool {
         .stderr(Stdio::piped())
         .spawn()
         .expect("enter Debian's namespace");
-    // The output is read as it is written, so that a full pipe never
-    // stops the run.
     let mut stdout = child.stdout.take().expect("the run's output");
     let mut stderr = child.stderr.take().expect("the run's errors");
     let out = std::thread::spawn(move || {
@@ -88,11 +71,6 @@ fn inside(name: &str) -> bool {
     false
 }
 
-/// Each thread `stacks.js` parks is labelled with its isolate, which a
-/// symbol Debian strips names the variable of, and has the interpreted
-/// frames V8 reported, though no symbol names the builtin that runs them,
-/// and unwinds natively
-/// through V8's builtins, and their copies, to where it began.
 #[tokio::test]
 async fn debian_parked_threads_are_the_ones_v8_reported_and_unwind_to_where_they_began() {
     if !inside(
@@ -132,10 +110,6 @@ async fn debian_parked_threads_are_the_ones_v8_reported_and_unwind_to_where_they
     assert!(lie.is_none(), "{context}: {lie:?}");
 }
 
-/// The stack of `tiers.js` unwinds through the builtins and the code each
-/// compiler made to `_start`, and its frames of every tier, inlined ones
-/// included, are the ones V8 reported. Debian's build has no symbol for the
-/// JS dispatch table, so it is found from V8's exported code.
 #[tokio::test]
 async fn debian_frames_of_every_tier_are_the_ones_v8_reported() {
     if !inside("debian::debian_frames_of_every_tier_are_the_ones_v8_reported") {
@@ -163,7 +137,6 @@ async fn debian_frames_of_every_tier_are_the_ones_v8_reported() {
         .operation("backtrace", scenario.handle().backtrace())
         .await;
     let (compiled, _) = check_thread(&context, true, &trace, &modules);
-    // A backtrace does not report tiers, so compare frames without them.
     for frame in reported.iter_mut().flat_map(|thread| &mut thread.frames) {
         frame.tier = None;
     }
@@ -174,8 +147,6 @@ async fn debian_frames_of_every_tier_are_the_ones_v8_reported() {
     assert!(lie.is_none(), "{context}: {lie:?}");
 }
 
-/// Debian's libnode names `GetTargetIds` only in its dynamic table, where
-/// microscope finds it to read and hide the inspector's address.
 #[tokio::test]
 async fn debian_launched_nodes_inspector_is_shown_to_no_one() {
     if !inside("debian::debian_launched_nodes_inspector_is_shown_to_no_one") {
@@ -184,10 +155,6 @@ async fn debian_launched_nodes_inspector_is_shown_to_no_one() {
     crate::inspector::check_hidden(DEBIAN).await;
 }
 
-/// On Debian's node, every kind of breakpoint stops, logs, and waits as
-/// asked, and each exception stops where V8 pauses at it, with V8's frames
-/// and locals at every stop; a worker stops
-/// and steps on its own thread; and an attached node stops too.
 #[tokio::test]
 async fn debian_breakpoints_and_exceptions_match_v8() {
     if !inside("debian::debian_breakpoints_and_exceptions_match_v8") {
@@ -320,9 +287,6 @@ async fn debian_detach_closes_its_owned_inspector_and_preserves_a_borrowed_one()
     }
 }
 
-/// At every checkpoint of `awaits.js`, each thread's await chain is the
-/// one V8 reported: the builtins that resume an await, which no symbol
-/// names in Debian's build, have the numbers of its V8 release's.
 #[tokio::test]
 async fn debian_await_chains_are_the_ones_v8_reported() {
     if !inside("debian::debian_await_chains_are_the_ones_v8_reported") {
@@ -346,9 +310,6 @@ async fn debian_await_chains_are_the_ones_v8_reported() {
     assert!(lies.is_empty(), "{lies:#?}");
 }
 
-/// Debian's event loop work is what its fixture reported: its handles,
-/// requests, and timers, and a named gap for the pool its shared libuv
-/// keeps.
 #[tokio::test]
 async fn debian_tasks_are_the_ones_node_reported() {
     if !inside("debian::debian_tasks_are_the_ones_node_reported") {
@@ -359,11 +320,6 @@ async fn debian_tasks_are_the_ones_node_reported() {
     }
 }
 
-/// Debian's V8 reserves its code range below `libnode`, so an attach, which
-/// maps what the process holds in address order, meets the range before it
-/// knows the process carries V8. The range is V8's code all the same once
-/// `libnode` is mapped: samples in it unwind on into `libnode`, as a
-/// launched recording's do, rather than end at an unmapped address.
 #[test]
 fn debian_attached_samples_unwind_through_v8s_generated_code() {
     struct Killed(std::process::Child);
@@ -374,7 +330,6 @@ fn debian_attached_samples_unwind_through_v8s_generated_code() {
         }
     }
 
-    // Samples whose frame in V8's code a frame in `libnode` called.
     const ENOUGH: usize = 10;
     const SPINNING: Duration = Duration::from_secs(15);
     const RECORDING: Duration = Duration::from_secs(30);
@@ -435,9 +390,6 @@ fn debian_attached_samples_unwind_through_v8s_generated_code() {
     );
 }
 
-/// On Debian's node, whose libnode keeps each thread's isolate in dynamic
-/// thread-local storage, live snapshots read each thread blocked in native
-/// code as V8 reported it, and leave out the one that runs JavaScript.
 #[test]
 fn debian_live_snapshots_read_each_blocked_thread() {
     if !inside("debian::debian_live_snapshots_read_each_blocked_thread") {
@@ -446,8 +398,6 @@ fn debian_live_snapshots_read_each_blocked_thread() {
     crate::live::check(DEBIAN);
 }
 
-/// On Debian's node, live snapshots read a thread parked under a frame of
-/// every tier V8 runs as V8 reported it.
 #[test]
 fn debian_live_snapshots_read_every_tier() {
     if !inside("debian::debian_live_snapshots_read_every_tier") {
@@ -456,9 +406,6 @@ fn debian_live_snapshots_read_every_tier() {
     crate::live::check_tiers(DEBIAN);
 }
 
-/// On Debian's node, whose V8 is in a library the recorder loads the debug
-/// information of as its first reads are due, those reads find the code V8
-/// mapped meanwhile.
 #[test]
 fn debian_live_snapshots_read_threads_from_their_start() {
     if !inside("debian::debian_live_snapshots_read_threads_from_their_start") {

@@ -16,16 +16,16 @@ static void write_half(void) {
     }
 }
 
-// Writes from a thread created after any debugger attached.
+
 static void *writer(void *argument) {
     (void)argument;
     write_half();
     return NULL;
 }
 
-// Announces the watched word's address, waits to be released, then writes it
-// repeatedly from the main thread and from a new thread. Exits 0 only if every
-// write happened.
+
+
+
 int main(void) {
     char release;
 

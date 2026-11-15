@@ -1,6 +1,6 @@
-// A method that inlines another and a lambda, for names in profiles: built
-// with line tables only, as Chromium builds, its DWARF names the method
-// `spin` with no class or namespace, and only its symbol says whose it is.
+
+
+
 #include <cstdlib>
 
 namespace names {
@@ -23,7 +23,7 @@ unsigned long Worker::spin(unsigned long rounds) {
     return total;
 }
 
-} // namespace names
+}
 
 int main(int argc, char **argv) {
     unsigned long rounds = argc > 1 ? std::strtoul(argv[1], nullptr, 10) : 1;

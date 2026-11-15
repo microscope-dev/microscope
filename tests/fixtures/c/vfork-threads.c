@@ -1,7 +1,7 @@
-// A sibling thread blocks in read while the main thread vforks, so the
-// debugger must stop the sibling in its system call for the vfork window and
-// then resume it, where it reaches thread_work under restored traps. The
-// vfork child runs child_work, which the debugger must not stop for.
+
+
+
+
 
 #define _GNU_SOURCE
 #include <pthread.h>

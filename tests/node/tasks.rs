@@ -1,10 +1,3 @@
-//! Node's event loop's work as tasks (`tests/fixtures/node/tasks.js`): each
-//! handle, request, and timer of the main thread's and a worker's
-//! `Environment`, numbered by the async id `async_hooks` saw Node give it,
-//! of the type `async_hooks` named, triggered by the resource `async_hooks`
-//! said, ref'd as `hasRef()` says, with the fixture's callback at its line;
-//! and each busy thread of libuv's pool, as `/proc` names them.
-
 use std::collections::BTreeSet;
 
 use microscope::{
@@ -19,7 +12,6 @@ use crate::truth::threads;
 
 const FIXTURE: &str = "tasks.js";
 
-/// A live resource as `async_hooks` saw it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resource {
     pub id: u64,
@@ -29,13 +21,11 @@ pub struct Resource {
     pub callback: Option<(String, u32)>,
 }
 
-/// What the fixture said of itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Truth {
     pub resources: Vec<Resource>,
     pub pool: BTreeSet<u64>,
 
-    /// The worker's thread and its timer's async id.
     pub worker: (u64, u64),
 }
 
@@ -45,7 +35,6 @@ fn number<T: std::str::FromStr>(field: &str) -> T {
         .unwrap_or_else(|_| panic!("a number, not {field:?}"))
 }
 
-/// The truth `report` holds, whose checkpoint is `lines`.
 pub fn truth(report: &Report, lines: &[Vec<String>]) -> Truth {
     let mut resources = Vec::new();
     let mut pool = BTreeSet::new();
@@ -83,7 +72,6 @@ pub fn truth(report: &Report, lines: &[Vec<String>]) -> Truth {
     }
 }
 
-/// One task as microscope shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Seen {
     pub number: u64,
@@ -118,7 +106,6 @@ fn seen(task: &TaskSnapshot) -> Seen {
     }
 }
 
-/// The tasks a stopped scenario lists, and its gaps.
 async fn listed(scenario: &Scenario) -> (Vec<Seen>, Vec<String>) {
     let mut tasks = Vec::new();
     let mut gaps = Vec::new();
@@ -136,8 +123,6 @@ async fn listed(scenario: &Scenario) -> (Vec<Seen>, Vec<String>) {
     }
 }
 
-/// Whether `observed`, with `gaps`, is what `truth` says, for a build that
-/// links libuv's pool where `pool`. An error says every lie.
 pub fn check(observed: &[Seen], gaps: &[String], truth: &Truth, pool: bool) -> Result<(), String> {
     let mut lies = Vec::new();
     let (worker, timer) = truth.worker;
@@ -153,7 +138,6 @@ pub fn check(observed: &[Seen], gaps: &[String], truth: &Truth, pool: bool) -> R
             continue;
         }
         if task.number >> 32 != 0 {
-            // Another of the worker's own, as its message port.
             if task.number >> 32 != worker {
                 lies.push(format!(
                     "{task:?} is numbered for no thread that runs JavaScript"
@@ -196,8 +180,6 @@ pub fn check(observed: &[Seen], gaps: &[String], truth: &Truth, pool: bool) -> R
         if real.kind == "TCPSERVERWRAP" && !task.detail.contains("listening") {
             lies.push(format!("the server shows {:?}", task.detail));
         }
-        // async_hooks destroys a message port only after it closed, which
-        // the fixture's own ports, transferred, are doing.
         let closing = real.kind == "MESSAGEPORT"
             && task.state == TaskState::Exited
             && task.detail.contains("closing");
@@ -205,7 +187,6 @@ pub fn check(observed: &[Seen], gaps: &[String], truth: &Truth, pool: bool) -> R
             lies.push(format!("{} is {:?}: {}", real.id, task.state, task.detail));
         }
     }
-    // A message port async_hooks has not yet seen destroyed may be closed.
     for real in truth
         .resources
         .iter()
@@ -232,9 +213,6 @@ pub fn check(observed: &[Seen], gaps: &[String], truth: &Truth, pool: bool) -> R
     }
 }
 
-/// Whether the pool jobs in `observed`, and `gaps`, are what `truth` says
-/// for a build that links libuv's pool where `pool`; each lie is added to
-/// `lies`.
 fn check_pool(
     observed: &[Seen],
     gaps: &[String],
@@ -280,12 +258,10 @@ fn check_pool(
     }
 }
 
-/// Whether the build `entry` links libuv, and so its pool, into its node.
 fn links_pool(entry: &str) -> bool {
     !entry.contains('-')
 }
 
-/// A scratch directory holding a FIFO no one writes, for the fixture.
 pub fn fifo() -> (ScratchDir, String) {
     let scratch = ScratchDir::new("node-tasks");
     let path = scratch.path().join("fifo");
@@ -298,7 +274,6 @@ pub fn fifo() -> (ScratchDir, String) {
     (scratch, path)
 }
 
-/// What, on the build `entry`, the tasks get wrong.
 pub async fn task_lies(entry: &str) -> Result<(), String> {
     let (_scratch, fifo) = fifo();
     let mut session = NodeSession::launch(entry, FIXTURE, &[], &[&fifo]).await;
@@ -311,7 +286,6 @@ pub async fn task_lies(entry: &str) -> Result<(), String> {
         .map_err(|lies| format!("{context}:\n{lies}\nlisted: {observed:#?}"))
 }
 
-/// On every build, the tasks are the resources Node said it waits on.
 #[tokio::test]
 async fn nodes_handles_requests_timers_and_pool_jobs_are_the_ones_it_reported() {
     let mut lies = Vec::new();
@@ -323,8 +297,6 @@ async fn nodes_handles_requests_timers_and_pool_jobs_are_the_ones_it_reported() 
     assert!(lies.is_empty(), "{}", lies.join("\n\n"));
 }
 
-/// Each core holds the tasks its fixture reported just before it aborted,
-/// with Node's `nodedbg_` variables read from the core's memory.
 #[tokio::test]
 async fn a_cores_tasks_are_the_ones_node_reported() {
     let mut wrong = Vec::new();
@@ -349,10 +321,6 @@ async fn a_cores_tasks_are_the_ones_node_reported() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
 }
 
-/// The comparison fails on a dropped task, a wrong callback line, a wrong
-/// trigger, a wrong ref, a worker's timer numbered as the main thread's, a
-/// missing pool job, and a pool gap where a pool is linked; and holds for
-/// a faithful list.
 #[tokio::test]
 async fn the_tasks_comparison_fails_on_the_lies_it_looks_for() {
     let name = "node-tasks-26.core";
@@ -437,10 +405,6 @@ async fn the_tasks_comparison_fails_on_the_lies_it_looks_for() {
     );
 }
 
-/// In each core, a listed handle, request, or timer, the main thread's or
-/// the worker's, has no frames and says why; a thread-pool job's frames
-/// are its pool thread's, through libuv's worker; and a number Node never
-/// gave names no task.
 #[tokio::test]
 async fn a_cores_stackless_tasks_refuse_frames_and_pool_jobs_have_their_threads() {
     let mut wrong = Vec::new();

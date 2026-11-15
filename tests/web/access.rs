@@ -1,5 +1,3 @@
-//! Who may use the server: only this run's links, only from its own pages.
-
 use serde_json::json;
 
 use crate::web::Web;
@@ -19,7 +17,6 @@ async fn only_a_join_links_token_from_the_servers_own_page_logs_in() {
         "{cookie}"
     );
 
-    // A wrong token, another page, a rebound name, or no browser at all.
     let refused = [
         web.post_login("c-0000", Some(&origin), Some(&host)),
         web.post_login(&token, Some("http://evil.example"), Some(&host)),
@@ -76,8 +73,6 @@ async fn the_socket_refuses_other_pages_names_and_cookies() {
     assert_eq!(hello["version"], 2);
 }
 
-/// A page served on its own, by another origin, holds the token itself and
-/// presents it; the cookie is still good only from this server's pages.
 #[tokio::test]
 async fn a_token_the_page_presents_is_good_from_any_page() {
     let web = Web::start("presented", &[]);
@@ -202,8 +197,6 @@ async fn a_browser_with_control_keeps_it_when_it_opens_a_view_link() {
     let control = web.cookie(&web.control_token.clone());
     let viewing = web.cookie(&view);
 
-    // A browser holds one cookie per server: a view link must not replace
-    // control, but control replaces viewing.
     let login = |token: &str, cookie: &str| {
         web.http(&format!(
             "POST {}api/login HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nCookie: {cookie}\r\n\
@@ -242,7 +235,6 @@ async fn malformed_requests_are_answered_not_fatal() {
         .await;
     assert_eq!(answer["error"]["kind"], "invalid");
 
-    // The connection still works.
     let (kind, _) = client
         .request("continue", json!({}))
         .await
@@ -280,7 +272,6 @@ async fn a_public_url_serves_everything_under_its_path_to_its_proxy_and_nothing_
     let page = get("/debug/7/s/abc/stop/1/t/2/f/0", "proxy.example");
     assert!(page.starts_with("HTTP/1.1 200"), "{page}");
 
-    // The URL itself, with and without its slash, is the page.
     for root in ["/debug/7/", "/debug/7"] {
         let page = get(root, "proxy.example");
         assert!(
@@ -289,7 +280,6 @@ async fn a_public_url_serves_everything_under_its_path_to_its_proxy_and_nothing_
         );
     }
 
-    // The proxy's own pages may frame it; no other page may.
     assert!(page.contains("frame-ancestors 'self'"), "{page}");
     for outside in ["/s/abc", "/api/check", "/debug/8/s/abc", "/debug/7x/s/abc"] {
         let refused = get(outside, "proxy.example");
@@ -299,7 +289,6 @@ async fn a_public_url_serves_everything_under_its_path_to_its_proxy_and_nothing_
     let unknown = get("/debug/7/s/abc", "evil.example");
     assert!(unknown.starts_with("HTTP/1.1 421"), "{unknown}");
 
-    // The cookie goes back only under the path, and only over HTTPS.
     let token = web.control_token.clone();
     let login = web.http(&format!(
         "POST /debug/7/api/login HTTP/1.1\r\nHost: proxy.example\r\nOrigin: https://proxy.example\r\n\
@@ -318,7 +307,6 @@ async fn a_public_url_serves_everything_under_its_path_to_its_proxy_and_nothing_
     let mut client = web.control("tab").await;
     assert_eq!(client.next().await["type"], "hello");
 
-    // Shared links name the proxy.
     let link = client
         .ok("share", json!({"role": "view", "to": "/s/abc"}))
         .await;
@@ -332,9 +320,6 @@ async fn a_public_url_serves_everything_under_its_path_to_its_proxy_and_nothing_
     assert!(web.interrupt().success());
 }
 
-/// Renderers run in a frame of their own whose origin is opaque, whose
-/// policy allows no request, and whose one script is named by a nonce
-/// chosen for each response.
 #[tokio::test]
 async fn the_renderers_frame_is_sandboxed_and_allows_no_request() {
     let web = Web::start("frame", &[]);

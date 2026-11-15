@@ -1,7 +1,3 @@
-// A hostile renderer tries every way out of the sandbox while listeners on
-// the machine record what arrives. Every attempt must fail and nothing may
-// arrive (dev/web-ui.md, Visualizer sandbox).
-
 import { createSocket } from "node:dgram";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -13,8 +9,6 @@ import type { Locator, Page } from "@playwright/test";
 import { card, drawAt } from "./drawings";
 import { expect, expectErrors, fixture, join, type Microscope, test } from "./server";
 
-/** Runs hostile.js, as a picture or live, with listeners recording what
- * arrives; `outcomes` reads what each probe did from the card. */
 async function probe(
   page: Page,
   microscope: Microscope,
@@ -22,7 +16,6 @@ async function probe(
   mode: "picture" | "live",
   outcomes: (drawn: Locator) => Promise<string[]>,
 ): Promise<void> {
-  // Firefox reports the import() its policy blocked.
   if (browserName === "firefox") {
     expectErrors(/Content-Security-Policy: .*import\.js/u);
   }
@@ -69,7 +62,6 @@ async function probe(
       expect(outcome).toMatch(/: (absent|blocked)$/u);
     }
 
-    // What the test sends itself arrives, after anything the renderer sent.
     await fetch(`http://127.0.0.1:${ports.http}/control`);
     udp.send("control", ports.udp, "127.0.0.1");
     await expect.poll(() => arrived.length).toBe(2);
@@ -103,7 +95,7 @@ test("a hostile live renderer reaches nothing, with WebGL in use", async ({
     const caption = drawn.locator(".drawing-caption");
     await expect(caption).toHaveText(/ · probes done$/u);
     const [kind, ...found] = (await caption.textContent())?.split(" · ") ?? [];
-    // Headless Firefox has no WebGL; Chromium's runs on SwiftShader.
+
     expect(kind).toBe(browserName === "firefox" ? "2d" : "webgl2");
     return found.slice(0, -1);
   });

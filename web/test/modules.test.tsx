@@ -1,6 +1,3 @@
-// A module microscope could not read says so in words, and one with no
-// separate debug file says none, as its Symbols column does.
-
 import { afterEach, expect, it } from "vitest";
 import { page } from "vitest/browser";
 

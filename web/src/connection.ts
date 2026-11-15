@@ -1,7 +1,3 @@
-// The tab's one connection to `microscope web`: requests with typed answers,
-// server messages turned into model events, and reconnecting after a drop.
-// The transport is injected so tests drive it without a socket.
-
 import { assert } from "./assert";
 import { base } from "./base";
 import type { ModelEvent } from "./model";
@@ -18,7 +14,7 @@ import { presented, remote, serverUrl, standalone } from "./target";
 export interface TransportHandlers {
   open(): void;
   message(text: string): void;
-  /** A binary frame: an answer's bytes, sent just before the answer. */
+
   binary?(data: ArrayBuffer): void;
   close(): void;
 }
@@ -28,10 +24,8 @@ export interface Transport {
   close(): void;
 }
 
-/** Opens a transport; each call is one attempt. */
 export type Connect = (handlers: TransportHandlers) => Transport;
 
-/** Whether the browser holds a token this server accepts. */
 export type Authorized = () => Promise<boolean>;
 
 interface Pending {
@@ -43,42 +37,33 @@ export interface ConnectionOptions {
   connect: Connect;
   authorized: Authorized;
   emit(event: ModelEvent): void;
-  /** Delays between reconnection attempts, the last repeating. */
+
   backoff?: readonly number[];
   now?: () => number;
 }
 
-/** Where the connection is. Each attempt makes its own phase, and an event
- * from a transport or check counts only while its phase is the current one,
- * so a late close from a replaced socket changes nothing. */
 type Phase =
   | { kind: "stopped" }
-  /** Asking the server whether this browser may connect. */
   | { kind: "authorizing" }
-  /** On a socket, open once the transport says so. `transport` is null
-   * until `connect` returns. */
   | { kind: "socket"; transport: Transport | null; open: boolean }
-  /** Waiting to try again. */
   | { kind: "waiting"; timer: ReturnType<typeof setTimeout> };
 
 export class Connection {
   readonly #options: ConnectionOptions;
   #phase: Phase = { kind: "stopped" };
-  /** Attempts that failed since the last hello, which pick the backoff. */
+
   #attempt = 0;
-  /** Whether the server has said hello since `start`. Until it has, a
-   * failed attempt means it cannot be reached, not that it was lost. */
+
   #reached = false;
   #nextId = 1;
   #pending = new Map<number, Pending>();
-  /** Bytes sent ahead of the answers they belong to, by request. */
+
   #binary = new Map<number, Uint8Array>();
 
   constructor(options: ConnectionOptions) {
     this.#options = options;
   }
 
-  /** Connects, and keeps reconnecting until stopped. */
   start(): void {
     if (this.#phase.kind !== "stopped") {
       return;
@@ -88,7 +73,6 @@ export class Connection {
     void this.#attemptConnection();
   }
 
-  /** Whether it was started and not stopped since. */
   get started(): boolean {
     return this.#phase.kind !== "stopped";
   }
@@ -104,7 +88,6 @@ export class Connection {
     this.#failPending();
   }
 
-  /** Sends a request, resolving with its answer. */
   request<M extends Method>(
     method: M,
     ...params: ParamsOf<M> extends undefined ? [] : [ParamsOf<M>]
@@ -177,13 +160,10 @@ export class Connection {
     if (current()) {
       socket.transport = transport;
     } else {
-      // It closed, or was stopped, as it connected.
       transport.close();
     }
   }
 
-  /** Keeps a frame of bytes, an 8-byte little-endian request id and the
-   * bytes, for the answer that follows it. */
   #receiveBinary(data: ArrayBuffer): void {
     if (data.byteLength < 8) {
       return;
@@ -235,8 +215,6 @@ export class Connection {
     this.#options.emit({ type: "message", message, at: (this.#options.now ?? Date.now)() });
   }
 
-  /** Says the server is away, lost after it answered or never reached,
-   * and waits to try again. */
   #lost(): void {
     this.#options.emit({ type: "link", link: this.#reached ? "reconnecting" : "unreachable" });
     const backoff = this.#options.backoff ?? [100, 250, 500, 1000, 2000];
@@ -263,8 +241,6 @@ export class Connection {
   }
 }
 
-/** Leaves the session while the browser keeps the page to come back to, with
- * its socket maybe still open, and rejoins when the page is shown again. */
 export function leaveWhileCached(connection: Connection, page: EventTarget): void {
   let paused = false;
   page.addEventListener("pagehide", (event) => {
@@ -281,9 +257,6 @@ export function leaveWhileCached(connection: Connection, page: EventTarget): voi
   });
 }
 
-/** Connects a browser WebSocket to the page's server: the one that served
- * it, with its cookie, or the remote one, offering the token as a
- * subprotocol, the only header a page may give a WebSocket. */
 export const browserConnect: Connect = (handlers) => {
   const url = new URL(serverUrl("api/ws"), location.href);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -305,13 +278,8 @@ export const browserConnect: Connect = (handlers) => {
   };
 };
 
-/** How long the server has to answer whether the browser may connect. A
- * host that drops packets, such as one that is off, would otherwise keep
- * the page waiting for the browser's own timeout, minutes away. */
 const CHECK_TIMEOUT = 5000;
 
-/** Asks the server whether this browser's cookie or token is good. A page
- * served on its own that has no server yet has neither. */
 export const browserAuthorized: Authorized = async () => {
   if (standalone && !remote()) {
     return false;
@@ -331,8 +299,6 @@ export const browserAuthorized: Authorized = async () => {
   throw new Error(`unexpected status ${response.status}`);
 };
 
-/** Trades a join link's token for this server's cookie: false when the server
- * refuses the token, and throws when it could not answer. */
 export async function login(token: string): Promise<boolean> {
   const response = await fetch(`${base}api/login`, {
     method: "POST",
@@ -348,8 +314,6 @@ export async function login(token: string): Promise<boolean> {
   throw new Error(`unexpected status ${response.status}`);
 }
 
-/** Trades a token once its answer is known; a trade that could not reach the
- * server is forgotten, so trying again asks again. */
 export function tradeOnce(trade: (token: string) => Promise<boolean> = login) {
   let trading: Promise<boolean> | null = null;
   return (token: string): Promise<boolean> => {

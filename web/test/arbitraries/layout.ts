@@ -1,8 +1,3 @@
-// Layouts as a person makes them: by a run of operations from an empty one.
-// An operation names panes, groups, and splits by position, read against the
-// layout it is applied to, so every generated run is a plausible one and
-// shrinks to a shorter run.
-
 import * as fc from "fast-check";
 
 import {
@@ -141,8 +136,6 @@ export const step: fc.Arbitrary<Step> = fc.oneof(
   },
 );
 
-// Long runs, which build layouts several splits deep; short ones are still
-// reached by shrinking.
 export const steps = fc.array(step, { maxLength: 40, size: "max" });
 
 function pick<T>(list: readonly T[], index: number): T | undefined {
@@ -165,7 +158,6 @@ function targetAt(layout: Layout, chosen: TargetChoice): Target | undefined {
   return group && { ...chosen, group: group.id };
 }
 
-/** Applies one step, or leaves the layout be when it names nothing there. */
 export function apply(layout: Layout, chosen: Step): Layout {
   switch (chosen.op) {
     case "open":
@@ -234,10 +226,8 @@ export function apply(layout: Layout, chosen: Step): Layout {
   }
 }
 
-/** The layout a run of operations makes from an empty one. */
 export function runLayout(run: readonly Step[]): Layout {
   return run.reduce((made, chosen) => apply(made, chosen), emptyLayout());
 }
 
-/** A layout some run of operations made. */
 export const layout: fc.Arbitrary<Layout> = steps.map((run) => runLayout(run));

@@ -1,8 +1,3 @@
-// How a function's instructions map to the source they were compiled
-// from: where its basic blocks begin, the tree of its lines and what was
-// inlined at each, which lines get a tint, how runs of inlined code are
-// named, and how a line's instructions fall into runs.
-
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
@@ -29,8 +24,6 @@ import {
 } from "../src/profile/code";
 import type { ProfileCode, ProfileInstruction, ProfileSourceFile } from "../src/protocol";
 
-/** An instruction whose text, such as `jne 0x10`, is tokenized as the
- * decoder does: its mnemonic, then an address operand or other text. */
 function instruction(address: number, text: string, own = 0, total = own): ProfileInstruction {
   const [mnemonic = "", operand] = text.split(" ");
   const tokens: [string, string][] = [["mnemonic", mnemonic]];
@@ -64,11 +57,11 @@ describe("codeRows", () => {
           instruction(0x101, "cmp rdi, 0"),
           instruction(0x105, "je 0x110"),
           instruction(0x107, "add rax, 1"),
-          // Jumps out of the listing: no row to follow.
+
           instruction(0x10b, "jmp 0x9000"),
           instruction(0x110, "jne 0x101"),
           instruction(0x112, "ret"),
-          // Reached only by a jump from elsewhere, if at all.
+
           instruction(0x113, "nop"),
         ],
       ],
@@ -83,19 +76,18 @@ describe("codeRows", () => {
 
   it("starts a basic block after each jump and return and at each jump's target", () => {
     expect(rows.filter((row) => row.leads).map((row) => row.instruction.address)).toEqual([
-      // jne's target.
       0x101,
-      // After je.
+
       0x107,
-      // After jmp; also je's target.
+
       0x110,
-      // After jne.
+
       0x112,
-      // After ret.
+
       0x113,
-      // The next symbol.
+
       0x2000,
-      // After ud2.
+
       0x2002,
     ]);
   });
@@ -116,9 +108,6 @@ describe("codeRows", () => {
   });
 });
 
-/** scan in app.c (file 0), whose line 4 runs step inlined, which runs
- * get from Rust's library (file 1) inlined at its line 14; line 8 runs
- * step inlined again. Lines run innermost first, as the server sends them. */
 const FUNCTIONS = ["scan", "step", "<core::option::Option<u8>>::get"];
 const FILES: ProfileSourceFile[] = [
   {
@@ -165,7 +154,7 @@ const ROWS = codeRows(
         ],
       },
       { ...instruction(5, "ret"), lines: [[0, 0, 18]] },
-      // Only library code inlined here.
+
       {
         ...instruction(6, "nop", 0, 0),
         lines: [
@@ -178,8 +167,6 @@ const ROWS = codeRows(
 );
 const TREE = inlineTree(ROWS);
 
-/** The tree's line of `function` at `number`, reached through `path`,
- * the lines above it outermost first. */
 function lineAt(...path: [number, number][]): TreeLine {
   let lines = TREE.calls.flatMap((call) => call.lines);
   let found: TreeLine | undefined;
@@ -197,8 +184,7 @@ describe("inlineTree", () => {
     expect(TREE.calls[0]?.lines.map((line) => line.line)).toEqual([3, 4, 8, 18]);
 
     const four = lineAt([0, 4]);
-    // Its own instruction is the call, which spends nothing itself; the
-    // rest is step's and get's.
+
     expect([four.own, four.inside, four.total]).toEqual([0, 7, 14]);
     expect(four.rows).toEqual([1, 2, 3]);
     expect(four.inlined.map((call) => call.function)).toEqual([1]);
@@ -218,7 +204,6 @@ describe("inlineTree", () => {
     expect(here.rows).toEqual([1]);
   });
 
-  /** Random chains: up to 4 deep, of 3 functions, 2 files, and 5 lines. */
   const chain = fc.array(
     fc.tuple(
       fc.integer({ min: 0, max: 2 }),
@@ -246,15 +231,14 @@ describe("inlineTree", () => {
         const lines = [...tree.lines.values()];
         const sum = (of: (row: CodeRow) => number, among = rows) =>
           among.reduce((all, row) => all + of(row), 0);
-        // One comparison per case: an expect for each line and step made the
-        // 10,000 cases of `just web-props` run into the test timeout.
+
         const under = (line: (typeof lines)[number]) =>
           rows.filter((_, index) => tree.paths[index]?.includes(line));
         expect({
           own: lines.reduce((all, line) => all + line.own, 0),
           paths: tree.paths.map((path) => [
             path.length,
-            // Each step down is a function inlined at the line above.
+
             path.every((line, depth) => line.call.at === (depth === 0 ? null : path[depth - 1])),
           ]),
           lines: lines.map((line) => [line.rows, line.inside, line.total, line.inside]),
@@ -265,7 +249,7 @@ describe("inlineTree", () => {
             under(line).map((row) => rows.indexOf(row)),
             sum((row) => row.instruction.own, under(line)),
             sum((row) => row.instruction.total, under(line)),
-            // What runs under a line is its own and what was inlined there.
+
             line.own +
               line.inlined
                 .flatMap((call) => call.lines)
@@ -291,17 +275,14 @@ describe("ownCodeAt and inlinedFrom", () => {
   });
 
   it("names the innermost function of the program's own code, past library code", () => {
-    // get is the library's; step, inlined into scan, is the program's.
     expect(ownCodeAt(TREE.paths[1] ?? [], FILES)).toBe(1);
     expect(ownCodeAt(TREE.paths[0] ?? [], FILES)).toBe(0);
     expect(ownCodeAt(TREE.paths[6] ?? [], FILES)).toBe(0);
-    // A function's own code has no bracket; library code alone is named
-    // by the outermost function inlined.
+
     expect(inlinedFrom(TREE, FILES)).toEqual([null, 1, null, 1, 1, null, 2]);
   });
 });
 
-/** Entries as text, such as `line 1:14` for line 14 one level deep. */
 function shown(entries: readonly SourceEntry[]): string[] {
   return entries.map((entry) => {
     switch (entry.kind) {
@@ -317,7 +298,6 @@ function shown(entries: readonly SourceEntry[]): string[] {
   });
 }
 
-/** Lines without code from `from` to `to`, as `shown` reads them. */
 function range(depth: number, from: number, to: number): string[] {
   return Array.from({ length: to - from + 1 }, (_, index) => `text ${depth}:${from + index}`);
 }
@@ -346,13 +326,13 @@ describe("sourceEntries", () => {
       "call 1:step",
       "line 1:14",
       "call 2:<core::option::Option<u8>>::get",
-      // Its file cannot be read, so it is its line alone.
+
       "line 2:9",
       `gap 1:${FOLD}`,
       "line 1:19",
     ]);
     expect(entries[10]).toBe("text 0:5");
-    // Line 8's step stays closed.
+
     expect(entries.filter((entry) => entry.startsWith("call"))).toHaveLength(2);
   });
 
@@ -395,7 +375,7 @@ describe("sourceEntries", () => {
 describe("tintsOf and tintOfPath", () => {
   it("tints the hottest lines, and under an open tinted line its hottest in shades of its hue", () => {
     const closed = tintsOf(TREE, new Set());
-    // By the own weight under them: 4, 8, 3; 18 ran nothing.
+
     expect(closed.get(lineAt([0, 4]).key)).toBe(30);
     expect(closed.get(lineAt([0, 8]).key)).toBe(140);
     expect(closed.get(lineAt([0, 3]).key)).toBe(280);
@@ -405,7 +385,7 @@ describe("tintsOf and tintOfPath", () => {
     const open = tintsOf(TREE, new Set([lineAt([0, 4]).key]));
     expect(open.get(lineAt([0, 4], [1, 14]).key)).toBe(30);
     expect(open.get(lineAt([0, 4], [1, 19]).key)).toBe(58);
-    // Not open, so not tinted.
+
     expect(open.has(lineAt([0, 8], [1, 14]).key)).toBe(false);
   });
 
@@ -428,7 +408,7 @@ describe("tintsOf and tintOfPath", () => {
           [
             { ...instruction(0, "mov", 9), lines: [[0, 0, 0]] },
             { ...instruction(1, "add", 1), lines: [[0, 0, 5]] },
-            // Inlined at line 5 with no line of its own.
+
             {
               ...instruction(2, "sub", 8),
               lines: [
@@ -444,10 +424,10 @@ describe("tintsOf and tintOfPath", () => {
     const five = [...tree.lines.values()].find((line) => line.line === 5) as TreeLine;
     const closed = tintsOf(tree, new Set());
     expect(closed.has(zero?.key ?? "")).toBe(false);
-    // The hottest hue goes to the hottest line that has a number.
+
     expect(closed.get(five.key)).toBe(30);
     expect(tintOfPath(tree.paths[0] ?? [], new Set(), closed)).toBeUndefined();
-    // Closed, line 5 holds the inlined code and tints it; open, its line 0 shows.
+
     expect(tintOfPath(tree.paths[2] ?? [], new Set(), closed)).toBe(30);
     const open = new Set([five.key]);
     expect(shownLine(tree.paths[2] ?? [], open)?.line).toBe(0);
@@ -486,10 +466,10 @@ describe("tintsOf and tintOfPath", () => {
               continue;
             }
             expect(line.inside + line.total).toBeGreaterThan(0);
-            // Code of no source line is hatched, never tinted.
+
             expect(line.line).toBeGreaterThan(0);
             const above = line.call.at;
-            // A line inlined somewhere is tinted only under an open, tinted line.
+
             expect(!above || (open.has(above.key) && tints.has(above.key))).toBe(true);
             const level = above?.key ?? "";
             byLevel.set(level, (byLevel.get(level) ?? 0) + 1);
@@ -505,9 +485,8 @@ describe("tintsOf and tintOfPath", () => {
 
 describe("openingLine and linesAbove", () => {
   it("opens on the program's own hottest line, library code weighed where it was inlined", () => {
-    // get's 5 count on step's line 14, which beats step's 3 at line 8.
     expect(openingLine(TREE, ROWS, FILES)).toBe(lineAt([0, 4], [1, 14]));
-    // Read as the program's own, get's line is the hottest.
+
     const own = FILES.map((each) => ({ ...each, path: "/src/app.c" }));
     const get = lineAt([0, 4], [1, 14], [2, 9]);
     expect(openingLine(TREE, ROWS, own)).toBe(get);
@@ -533,7 +512,6 @@ describe("runsOf", () => {
           ),
         ).toEqual(rows);
         for (const [index, [, last]] of runs.entries()) {
-          // No two runs touch, so each is as long as it can be.
           expect(runs[index + 1]?.[0] ?? Infinity).toBeGreaterThan(last + 1);
         }
       }),

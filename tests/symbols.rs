@@ -12,8 +12,6 @@ use microscope::{
 };
 use support::Scenario;
 
-/// Each executable of the ELF symbol fixture and the library it loads. The
-/// gcc, clang, and non-PIE builds load libraries with full symbol tables.
 const VARIANTS: [(&str, &str); 5] = [
     ("elf-symbols-gcc-o0", "libelf-symbols-gcc.so"),
     ("elf-symbols-clang-o2", "libelf-symbols-clang.so"),
@@ -22,33 +20,23 @@ const VARIANTS: [(&str, &str); 5] = [
     ("elf-symbols-minidebug", "libelf-symbols-minidebug.so"),
 ];
 
-/// What one frame of the fixture's fault backtrace must show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Expected {
-    /// Library code named by a symbol with a declared size.
     Library(&'static str),
 
-    /// Library code named by an unsized symbol.
     UnsizedLibrary(&'static str),
 
-    /// Library code that no symbol names.
     Unnamed,
 
-    /// Main-image code that debug information describes.
     Debug(&'static str),
 
-    /// C-library code that some symbol names.
     LibC,
 
-    /// C-library code named by a known public symbol.
     LibCSymbol(&'static str),
 
-    /// Main-image code that only its symbol names.
     MainSymbol(&'static str),
 }
 
-/// The fault backtrace from the innermost frame outward. Stripping removes
-/// the static helper's only symbol.
 fn expected_chain(library: &str) -> Vec<Expected> {
     use Expected::{Debug, LibC, LibCSymbol, Library, MainSymbol, Unnamed, UnsizedLibrary};
     let helper = if library == "libelf-symbols-stripped.so" {
@@ -85,7 +73,6 @@ fn expected_chain(library: &str) -> Vec<Expected> {
     ]
 }
 
-/// The modules of one stopped process, with their file names and images.
 struct Modules {
     snapshot: LoadedModuleSnapshot,
     images: BTreeMap<microscope::ModuleId, Arc<ModuleImage>>,
@@ -174,9 +161,6 @@ fn frame_symbol<'a>(frame: &'a StackFrame, context: &str) -> &'a SymbolLocation 
     })
 }
 
-/// Checks every frame's symbol against its module's catalog: the symbol
-/// exists, its offset is measured to the frame's own instruction, and its
-/// extent contains the address the frame was looked up by.
 fn assert_frame_symbols_are_consistent(trace: &Backtrace, modules: &Modules, context: &str) {
     for frame in trace.frames.iter() {
         let Some(symbol) = &frame.symbol else {
@@ -222,8 +206,6 @@ fn assert_frame_symbols_are_consistent(trace: &Backtrace, modules: &Modules, con
     }
 }
 
-/// Checks the fault backtrace frame by frame, then the layout facts that make
-/// each case meaningful.
 fn assert_fault_chain(trace: &Backtrace, modules: &Modules, executable: &str, library: &str) {
     let context = format!("{executable} with {library}");
     let expected = expected_chain(library);
@@ -258,7 +240,6 @@ fn assert_fault_chain(trace: &Backtrace, modules: &Modules, executable: &str, li
                     "{frame_context}"
                 );
 
-                // Symbols never stand in for debug information.
                 assert!(frame.function.is_none(), "{frame_context}");
                 assert!(frame.source.is_none(), "{frame_context}");
                 assert!(frame.code_instance.is_none(), "{frame_context}");
@@ -274,7 +255,6 @@ fn assert_fault_chain(trace: &Backtrace, modules: &Modules, executable: &str, li
                 assert_eq!(function.name.as_ref(), name, "{frame_context}");
                 assert!(frame.source.is_some(), "{frame_context}");
 
-                // Debug-info frames also carry their linkage symbol.
                 let symbol = frame_symbol(frame, &frame_context);
                 assert_eq!(symbol.name.as_ref(), name, "{frame_context}");
                 assert_eq!(symbol.provenance, SymbolExtentProvenance::Declared);
@@ -301,8 +281,6 @@ fn assert_fault_chain(trace: &Backtrace, modules: &Modules, executable: &str, li
     assert_library_layout(trace, modules, library, &expected, &context);
 }
 
-/// Checks the layout facts that make each library case of the fault chain
-/// meaningful.
 fn assert_library_layout(
     trace: &Backtrace,
     modules: &Modules,
@@ -320,8 +298,6 @@ fn assert_library_layout(
             .expect("expected frame")
     };
 
-    // The callback call ends asm_noreturn_caller, so the return address is
-    // asm_after_noreturn's first byte; the frame still belongs to the caller.
     let noreturn = &trace.frames[position("asm_noreturn_caller")];
     let context = context.to_owned();
     let caller = symbol_named(image, "asm_noreturn_caller");
@@ -334,7 +310,6 @@ fn assert_library_layout(
         "{context}"
     );
 
-    // The chain continues from the call after the nested symbol ends.
     let outer = &trace.frames[position("asm_nested_outer")];
     let inner = symbol_named(image, "asm_nested_inner")
         .extent()
@@ -347,8 +322,6 @@ fn assert_library_layout(
         "{context}: {outer_offset:#x}"
     );
 
-    // Every name of the alias group shares one extent, and binding and
-    // underscores select the global name.
     let alias = symbol_named(image, "asm_alias_global");
     let mut aliases = image
         .symbols()
@@ -374,15 +347,12 @@ fn assert_library_layout(
     expected_aliases.sort_unstable();
     assert_eq!(aliases, expected_aliases, "{context}");
 
-    // The resolver's ordinary name wins over the indirect-function symbol
-    // that shares its extent.
     let resolver = symbol_named(image, "asm_resolver_impl");
     let indirect = symbol_named(image, "asm_indirect");
     assert_eq!(indirect.kind(), SymbolKind::IndirectFunction, "{context}");
     assert_eq!(resolver.kind(), SymbolKind::Function, "{context}");
     assert_eq!(indirect.extent(), resolver.extent(), "{context}");
 
-    // An unsized symbol with its own call-frame entry ends with that entry.
     let oracle = Oracle::read(&[library]);
     let unsized_symbol = symbol_named(image, "asm_unsized");
     let unsized_extent = unsized_symbol.extent().expect("code");
@@ -394,8 +364,6 @@ fn assert_library_layout(
 
     assert_eq!(unsized_extent.provenance, SymbolExtentProvenance::Inferred);
 
-    // Without one, it ends where the next function begins. Once stripping
-    // removes that function's symbol, only its call-frame entry bounds it.
     let leaf_extent = symbol_named(image, "asm_unsized_leaf")
         .extent()
         .expect("code");
@@ -443,13 +411,8 @@ fn open_core(executable: &str) -> Scenario {
     )
 }
 
-/// A live process names its code without debug information, and its data,
-/// by ELF symbols, as readelf's tables do.
 #[tokio::test]
 async fn live_processes_name_code_and_data_by_elf_symbols() {
-    // cores_agree_with_gdb_and_readelf checks every variant's chain against
-    // gdb and readelf; the nested symbols here are the same hand-written
-    // assembly in each, so one with symbols and one stripped suffice.
     for (index, (executable, library)) in
         VARIANTS
             .into_iter()
@@ -470,9 +433,6 @@ async fn live_processes_name_code_and_data_by_elf_symbols() {
 
         let site = scenario.add_breakpoint("chain_nested_site").await;
 
-        // asm_nested_outer calls back before, within, and after its nested
-        // symbol. The first return address is the nested symbol's first byte,
-        // so only a lookup before the return address names the outer symbol.
         for expected in ["asm_nested_outer", "asm_nested_inner"] {
             let stop = if expected == "asm_nested_outer" {
                 scenario.run_to_stop().await
@@ -514,8 +474,6 @@ async fn live_processes_name_code_and_data_by_elf_symbols() {
 
         assert_fault_chain(&trace, &modules, executable, library);
 
-        // The stop location belongs to the library that faulted, which has no
-        // source to show.
         let location = scenario
             .operation("location", scenario.handle().current_location())
             .await;
@@ -545,7 +503,6 @@ async fn live_processes_name_code_and_data_by_elf_symbols() {
     }
 }
 
-/// One frame of gdb's backtrace of a core.
 #[derive(Debug)]
 struct GdbFrame {
     address: Option<u64>,
@@ -560,7 +517,6 @@ fn gdb_backtrace(core: &str) -> Vec<GdbFrame> {
 
     text.lines()
         .map(|line| {
-            // "#N  0xADDRESS in NAME (...) ..." or "#N  NAME (...) at FILE:LINE"
             let rest = line.split_once(' ').expect("frame number").1.trim_start();
 
             let (address, rest) = match rest.split_once(" in ") {
@@ -571,8 +527,6 @@ fn gdb_backtrace(core: &str) -> Vec<GdbFrame> {
                 _ => (None, rest),
             };
 
-            // A versioned name, such as clock_gettime@GLIBC_2.2.5, names
-            // its symbol without the version.
             let name = rest.split(" (").next().expect("frame name");
 
             GdbFrame {
@@ -584,11 +538,6 @@ fn gdb_backtrace(core: &str) -> Vec<GdbFrame> {
         .collect()
 }
 
-/// A core names frames without debug info as the live process does, and
-/// gdb's backtrace of the same core is an independent oracle for both the
-/// unwound frames and their names. Names may differ only by choosing another
-/// symbol at the same address. Its symbol catalogs and address descriptions
-/// match readelf.
 #[tokio::test]
 async fn cores_agree_with_gdb_and_readelf() {
     for (index, (executable, library)) in VARIANTS.into_iter().enumerate() {
@@ -619,14 +568,8 @@ async fn cores_agree_with_gdb_and_readelf() {
     }
 }
 
-/// No file backs the vDSO, so a core that faulted in it reads its image from
-/// the dumped memory, at the address the auxiliary vector records. gdb's
-/// backtrace of the same core places and names every frame alike, the
-/// vDSO's unexported helper as unnamed.
 #[tokio::test]
 async fn vdso_cores_agree_with_gdb() {
-    // The vDSO is the same whatever the build; each mode is a different vDSO
-    // function, and one optimized caller is enough.
     for (variant, mode) in [
         ("gcc-o0", "clock"),
         ("gcc-o0", "time"),
@@ -674,9 +617,6 @@ async fn vdso_cores_agree_with_gdb() {
     }
 }
 
-/// Checks a backtrace against gdb's of the same core: the same frames at
-/// the same addresses, debug-info frames named alike, and symbol frames
-/// named alike or by another symbol at the same address.
 fn assert_agrees_with_gdb(trace: &Backtrace, modules: &Modules, gdb: &[GdbFrame], context: &str) {
     assert_eq!(trace.frames.len(), gdb.len(), "{context}: {gdb:#?}");
 
@@ -722,38 +662,27 @@ fn assert_agrees_with_gdb(trace: &Backtrace, modules: &Modules, gdb: &[GdbFrame]
     }
 }
 
-/// readelf's reading of one ELF file's sections and symbol tables.
 struct Oracle {
     files: Vec<OracleFile>,
 
-    /// Data symbols defined in allocated, non-thread-local sections, each
-    /// with the end of its section.
     data: Vec<(OracleSymbol, u64)>,
 }
 
 struct OracleFile {
     executable_sections: BTreeMap<u32, (u64, u64)>,
 
-    /// Every allocated section that occupies addresses, by section index:
-    /// its name, range, and whether it is thread-local.
     allocated_sections: BTreeMap<u32, (String, u64, u64, bool)>,
 
-    /// The flags of every allocated section, by name.
     section_flags: BTreeMap<String, String>,
     symbols: Vec<OracleSymbol>,
 
-    /// The code range of every call-frame entry.
     unwind: Vec<(u64, u64)>,
 
-    /// The entry size of every executable section, by section index.
     entry_sizes: BTreeMap<u32, u64>,
 
-    /// The PLT stubs objdump names, as `name@plt`, with their addresses.
     plt: Vec<(String, u64)>,
 }
 
-/// Whether readelf's symbol names code: a function, or the process's entry
-/// point even as a bare label, as glibc's dynamic loader defines it.
 fn names_code(symbol: &OracleSymbol) -> bool {
     match symbol.kind {
         Some(SymbolKind::Function | SymbolKind::IndirectFunction) => true,
@@ -770,17 +699,13 @@ struct OracleSymbol {
     kind: Option<SymbolKind>,
     binding: Option<SymbolBinding>,
 
-    /// The defining section, or `None` for undefined, absolute, and common.
     section: Option<u32>,
     dynamic: bool,
 
-    /// The version a dynamic symbol has, and whether it is the default.
     version: Option<(String, bool)>,
 }
 
 impl Oracle {
-    /// Reads the oracles of one module. Several files describe a module with
-    /// an embedded symbol table.
     fn read(names: &[&str]) -> Self {
         let mut oracle = Self {
             files: names.iter().map(|name| OracleFile::read(name)).collect(),
@@ -804,10 +729,6 @@ impl Oracle {
         oracle
     }
 
-    /// Spells the versions readelf reads where they tell apart definitions
-    /// of one name at several addresses: older versions as `name@VERSION`,
-    /// then the default as `name@@VERSION` where its plain name would
-    /// still name several addresses.
     fn distinguish_versions(&mut self) {
         for default in [false, true] {
             let mut addresses = BTreeMap::<String, BTreeSet<u64>>::new();
@@ -836,11 +757,6 @@ impl Oracle {
         }
     }
 
-    /// Adds a local function symbol for each PLT stub objdump names, one
-    /// section entry long. objdump names a stub whose slot an
-    /// `R_X86_64_IRELATIVE` relocation fills by its resolver's address,
-    /// `*ABS*+0x...@plt`; microscope names it after the indirect function the
-    /// resolver is: an exported one first, then the first by name.
     fn add_plt_symbols(&mut self) {
         let mut stubs = Vec::new();
         for (index, file) in self.files.iter().enumerate() {
@@ -879,8 +795,6 @@ impl Oracle {
         }
     }
 
-    /// The indirect function whose resolver is at the hexadecimal
-    /// `resolver`: an exported one first, then the first by name.
     fn indirect_function_at(&self, resolver: &str) -> Option<String> {
         let resolver = u64::from_str_radix(resolver, 16).expect("resolver");
         self.symbols()
@@ -967,7 +881,6 @@ impl OracleFile {
                 && let Some((index, rest)) = section.split_once(']')
                 && let Ok(index) = index.trim().parse::<u32>()
             {
-                // Name Type Address Off Size ES [Flg] Lk Inf Al
                 let fields = rest.split_whitespace().collect::<Vec<_>>();
                 if fields.len() == 10 && fields[6].contains('A') {
                     let start = u64::from_str_radix(fields[2], 16).expect("section address");
@@ -980,7 +893,6 @@ impl OracleFile {
 
                     section_flags.insert(fields[0].to_owned(), fields[6].to_owned());
 
-                    // A thread-local NOBITS section only describes a template.
                     let template = fields[6].contains('T') && fields[1] == "NOBITS";
                     if size != 0 && !template {
                         allocated_sections.insert(
@@ -998,7 +910,6 @@ impl OracleFile {
                 continue;
             }
 
-            // Num: Value Size Type Bind Vis Ndx Name
             let fields = trimmed.split_whitespace().collect::<Vec<_>>();
             if fields.len() < 8
                 || !fields[0].ends_with(':')
@@ -1022,17 +933,12 @@ impl OracleFile {
     }
 }
 
-/// One symbol of readelf's table, from its fields
-/// `Num: Value Size Type Bind Vis Ndx Name`.
 fn symbol_row(fields: &[&str], dynamic: bool) -> OracleSymbol {
     let size = fields[2].strip_prefix("0x").map_or_else(
         || fields[2].parse().expect("decimal symbol size"),
         |hex| u64::from_str_radix(hex, 16).expect("hex symbol size"),
     );
 
-    // readelf appends versions to dynamic symbol names, `@@` for the
-    // default. A static table may itself hold versioned names, which
-    // are kept.
     let (name, version) = match fields[7].split_once('@') {
         Some((name, version)) if dynamic => (
             name.to_owned(),
@@ -1067,8 +973,6 @@ fn symbol_row(fields: &[&str], dynamic: bool) -> OracleSymbol {
     }
 }
 
-/// A call-frame entry's code range, from readelf's line
-/// `OFFSET LENGTH CIE_POINTER FDE cie=OFFSET pc=START..END`.
 fn fde_range(line: &str) -> Option<(u64, u64)> {
     let (start, end) = line
         .contains(" FDE ")
@@ -1080,7 +984,6 @@ fn fde_range(line: &str) -> Option<(u64, u64)> {
     ))
 }
 
-/// A PLT stub objdump names, from its line `ADDRESS <name@plt>:`.
 fn plt_stub(line: &str) -> Option<(String, u64)> {
     let (address, rest) = line.split_once(" <")?;
     let name = rest
@@ -1092,9 +995,6 @@ fn plt_stub(line: &str) -> Option<(String, u64)> {
     ))
 }
 
-/// Compares one module image's symbols with readelf's reading of the same
-/// file: the catalog holds exactly the symbols the policy admits, with the
-/// kind, binding, and export status the tables record.
 fn assert_catalog_matches_oracle(image: &ModuleImage, oracle: &Oracle, context: &str) {
     let mut admitted = BTreeMap::<(String, u64), Vec<&OracleSymbol>>::new();
     for (_, symbol) in oracle.symbols() {
@@ -1149,8 +1049,6 @@ fn assert_catalog_matches_oracle(image: &ModuleImage, oracle: &Oracle, context: 
     assert_sections_match_oracle(image, &oracle.files[0], context);
 }
 
-/// Checks that the image catalogs exactly the allocated sections readelf
-/// lists as occupying addresses, with their ranges and permissions.
 fn assert_sections_match_oracle(image: &ModuleImage, oracle: &OracleFile, context: &str) {
     let mut expected = oracle
         .allocated_sections
@@ -1189,8 +1087,6 @@ fn assert_sections_match_oracle(image: &ModuleImage, oracle: &OracleFile, contex
     }
 }
 
-/// Checks that exactly the data symbols readelf places in allocated,
-/// non-thread-local sections name storage, sized as declared or empty.
 fn assert_data_storage_matches_oracle(
     oracle: &Oracle,
     catalog: &BTreeMap<(String, u64), Symbol<'_>>,
@@ -1241,17 +1137,12 @@ fn assert_data_storage_matches_oracle(
     );
 }
 
-/// Checks every code symbol's extent against the sizes, sections, and
-/// call-frame entries readelf reports, and probes lookups at both ends of
-/// every sized function.
 fn assert_code_extents_match_oracle(
     image: &ModuleImage,
     oracle: &Oracle,
     catalog: &BTreeMap<(String, u64), Symbol<'_>>,
     context: &str,
 ) {
-    // The start of every code symbol in each executable section bounds the
-    // inferred extents of unsized symbols.
     let mut code_starts = BTreeSet::new();
     let mut code_symbols = Vec::new();
     for (file, symbol) in oracle.symbols() {
@@ -1298,9 +1189,6 @@ fn assert_code_extents_match_oracle(
         assert_eq!(extent.range.start, symbol.address(), "{context}");
 
         if oracle_symbol.size == 0 {
-            // The first evidence of other code: the next code symbol, the next
-            // call-frame entry, the end of an entry beginning at the symbol,
-            // or the section end.
             let address = symbol.address().get();
             let end = code_starts
                 .range(address + 1..)
@@ -1367,7 +1255,6 @@ fn assert_code_extents_match_oracle(
     );
 }
 
-/// Compares the symbol catalog of every module with a readelf oracle.
 fn assert_catalogs_match_oracles(modules: &Modules, executable: &str, library: &str) {
     let mut compared = BTreeSet::new();
     for record in modules.snapshot.modules.iter() {
@@ -1432,7 +1319,6 @@ async fn rust_frames_without_debug_info_are_named_by_demangled_symbols() {
         })
         .collect::<Vec<_>>();
 
-    // Optimization is off, so the volatile write is a call of its own.
     let executable = "crash-rust-nodebug".to_owned();
     assert_eq!(
         names[..3],
@@ -1473,9 +1359,6 @@ async fn go_frames_without_dwarf_are_named_from_the_function_table() {
 
     assert_frame_symbols_are_consistent(&trace, &modules, "go");
 
-    // Go's function table names the function and its line. The core holds
-    // no stack, so the caller the table locates cannot be read, and the
-    // debugger says so rather than guessing one.
     assert!(
         matches!(
             trace.termination,
@@ -1522,8 +1405,6 @@ async fn thread_local_symbols_have_no_runtime_address() {
     scenario.add_breakpoint("main").await;
     scenario.run_to_stop().await;
 
-    // A thread-local symbol's value is an offset into each thread's block,
-    // so relocating it like an address would name unrelated memory.
     assert!(matches!(
         scenario.handle().runtime_address("tls_pointer").await,
         Err(Error::SymbolNotFound(name)) if name == "tls_pointer"
@@ -1555,8 +1436,6 @@ async fn instructions_outside_every_module_have_no_location() {
     );
 
     for scenario in [live, open_core("null-call")] {
-        // No module describes address zero, so there is no location to report
-        // and nothing to unwind with, rather than a guess from the main image.
         assert!(matches!(
             scenario.handle().current_location().await,
             Err(Error::AddressOutsideModule)
@@ -1588,18 +1467,12 @@ async fn instructions_outside_every_module_have_no_location() {
     }
 }
 
-/// What readelf's tables say about one image address.
 #[derive(Debug)]
 struct ExpectedDescription {
-    /// The innermost allocated section containing the address.
     section: Option<String>,
 
-    /// The data symbols, by name and address, that may name the address
-    /// when no code symbol does: those with the innermost declared storage
-    /// containing it or, failing that, unsized ones at exactly the address.
     data: Vec<(String, u64)>,
 
-    /// Whether the data symbols are unsized.
     unsized_data: bool,
 }
 
@@ -1657,7 +1530,6 @@ impl Oracle {
         }
     }
 
-    /// Returns the addresses at and around every symbol and section boundary.
     fn boundary_probes(&self) -> BTreeSet<u64> {
         let symbols = self.symbols().flat_map(|(_, symbol)| {
             let end = symbol.address.saturating_add(symbol.size);
@@ -1679,11 +1551,6 @@ impl Oracle {
     }
 }
 
-/// Describes every boundary address of one module through the public
-/// request path, at the runtime address the loader chose, and checks the
-/// section and symbol against readelf: a code symbol whose extent contains
-/// the address wins, and otherwise only declared storage, or an unsized data
-/// symbol at exactly the address, names it.
 async fn assert_module_descriptions(
     scenario: &Scenario,
     modules: &Modules,
@@ -1780,7 +1647,6 @@ async fn assert_module_descriptions(
     described
 }
 
-/// Checks the layout cases the fixture's data objects exist for.
 async fn assert_data_object_descriptions(
     scenario: &Scenario,
     modules: &Modules,
@@ -1827,7 +1693,6 @@ async fn assert_data_object_descriptions(
         named(".data", "asm_data_outer", 4, Declared)
     );
 
-    // The innermost storage wins, and the outer object resumes after it.
     assert_eq!(
         describe(library, "asm_data_inner", 7).await,
         named(".data", "asm_data_inner", 7, Declared)
@@ -1837,7 +1702,6 @@ async fn assert_data_object_descriptions(
         named(".data", "asm_data_outer", 0x10, Declared)
     );
 
-    // An unsized object names only its own address.
     assert_eq!(
         describe(library, "asm_data_unsized", 0).await,
         named(".data", "asm_data_unsized", 0, Inferred)
@@ -1859,7 +1723,6 @@ async fn assert_data_object_descriptions(
         named(".bss", "symbols_sink", 3, Declared)
     );
 
-    // Nothing is mapped at the null page.
     let description = scenario
         .operation(
             "describe address",
@@ -1870,9 +1733,6 @@ async fn assert_data_object_descriptions(
     assert_eq!(description.module, None, "{executable}");
 }
 
-/// Checks the descriptions of the variant's data objects and of every
-/// boundary address of its modules. The shared C library and loader are
-/// checked only for the first variant.
 async fn assert_descriptions(
     scenario: &Scenario,
     modules: &Modules,

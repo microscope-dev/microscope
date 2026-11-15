@@ -1,16 +1,3 @@
-//! A capture file: a header, sealed chunks, and an index of them.
-//!
-//! A writer appends each chunk as it is sealed and never
-//! seeks, so a recording cut short by a crash still holds every chunk it
-//! finished. A reader uses the index when it is whole, and otherwise finds
-//! the chunks by scanning, reading every complete one.
-//!
-//! ```text
-//! "USCOPEPF" | version u32 | flags u32
-//! ( length u64 | chunk: one sealed image of CaptureFormat )*
-//! "USCOPEIX" | count u32 | ( offset u64, length u64 )* | index length u64 | "USCOPEND"
-//! ```
-
 use super::{Capture, CaptureBuilder};
 use crate::image::{AlignedBytes, ImageError};
 
@@ -21,7 +8,6 @@ const INDEX_MAGIC: [u8; 8] = *b"USCOPEIX";
 const END_MAGIC: [u8; 8] = *b"USCOPEND";
 const HEADER: usize = 16;
 
-/// Why bytes are not a capture file.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FileError {
     #[error("the file is not a microscope capture")]
@@ -37,7 +23,6 @@ pub enum FileError {
     Chunk(ImageError),
 }
 
-/// Writes a capture file chunk by chunk.
 #[derive(Debug)]
 pub struct Writer<W: std::io::Write> {
     out: W,
@@ -57,7 +42,6 @@ impl<W: std::io::Write> Writer<W> {
         })
     }
 
-    /// Appends one sealed chunk.
     pub fn chunk(&mut self, chunk: &AlignedBytes) -> std::io::Result<()> {
         let bytes = chunk.as_bytes();
         let length = bytes.len() as u64;
@@ -68,7 +52,6 @@ impl<W: std::io::Write> Writer<W> {
         self.out.flush()
     }
 
-    /// Writes the index and returns the output.
     pub fn finish(mut self) -> std::io::Result<W> {
         let mut index = Vec::with_capacity(12 + 16 * self.chunks.len());
         index.extend_from_slice(&INDEX_MAGIC);
@@ -92,7 +75,6 @@ impl<W: std::io::Write> Writer<W> {
     }
 }
 
-/// Writes one capture as a whole file.
 pub fn write(capture: &Capture, out: impl std::io::Write) -> std::io::Result<()> {
     let _span = crate::span!("capture write");
     let chunk = capture
@@ -104,21 +86,15 @@ pub fn write(capture: &Capture, out: impl std::io::Write) -> std::io::Result<()>
     Ok(())
 }
 
-/// What reading a file found.
 #[derive(Debug)]
 pub struct Read {
-    /// Every chunk merged into one capture.
     pub capture: Capture,
 
-    /// Chunks read.
     pub chunks: usize,
 
-    /// Whether the file ended without its index, as one cut short does,
-    /// or its index was damaged.
     pub truncated: bool,
 }
 
-/// Reads a capture file, merging its chunks.
 pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
     let _span = crate::span!("capture read");
     if bytes.len() < HEADER || bytes.first_chunk::<8>() != Some(&FILE_MAGIC) {
@@ -148,8 +124,6 @@ pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
             .get(offset..offset.saturating_add(length))
             .ok_or(FileError::Chunk(ImageError::Truncated))?;
 
-        // Chunks are read from aligned copies: a table's records are read in
-        // place, and the file's bytes need not be aligned.
         let mut aligned =
             AlignedBytes::zeroed(chunk.len()).ok_or(FileError::Chunk(ImageError::TooLarge))?;
         aligned.as_mut_bytes().copy_from_slice(chunk);
@@ -180,7 +154,6 @@ pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
     })
 }
 
-/// The chunks the index lists, if the file ends with a whole one.
 fn index(bytes: &[u8]) -> Option<Vec<(u64, u64)>> {
     let end = bytes.len().checked_sub(16)?;
     let (length, magic) = bytes.get(end..)?.split_first_chunk::<8>()?;
@@ -215,9 +188,6 @@ fn index(bytes: &[u8]) -> Option<Vec<(u64, u64)>> {
         })
         .collect::<Option<_>>()?;
 
-    // The writer lays the chunks out one after another, from the header to
-    // the index: an index that says otherwise is damaged, and the chunks,
-    // each with its own checksum, are found by scanning.
     let mut next = Some(HEADER as u64);
     for &(offset, length) in &spans {
         if next.and_then(|next| next.checked_add(8)) != Some(offset) {
@@ -230,7 +200,6 @@ fn index(bytes: &[u8]) -> Option<Vec<(u64, u64)>> {
     (next == Some(start as u64)).then_some(spans)
 }
 
-/// The complete chunks from the header on, for a file without its index.
 fn scan(bytes: &[u8]) -> Vec<(u64, u64)> {
     let mut spans = Vec::new();
     let mut position = HEADER;
@@ -260,8 +229,6 @@ fn scan(bytes: &[u8]) -> Vec<(u64, u64)> {
     spans
 }
 
-/// Reads a capture file with every chunk's checksum made to match, and
-/// queries one it accepts. A capture read must write and read back the same.
 #[cfg(any(test, feature = "fuzzing"))]
 #[allow(
     clippy::expect_used,

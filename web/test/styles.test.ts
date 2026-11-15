@@ -1,13 +1,9 @@
-// Dark mode is written twice, once for the system setting and once for the
-// chosen theme, so the two copies must not drift apart.
-
 import { readFileSync } from "node:fs";
 
 import { expect, it } from "vitest";
 
 const css = readFileSync("src/styles.css", "utf8");
 
-/** The custom properties declared in the first rule that `selector` opens. */
 function declared(selector: string): Map<string, string> {
   const start = css.indexOf(`${selector} {`);
   expect(css).toContain(`${selector} {`);

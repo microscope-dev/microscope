@@ -1,24 +1,15 @@
-//! Two aggregates compared: call trees merged path by path, and costs row
-//! by row, matched by the names views show, so that a base may come from
-//! another profile whose keys are its own.
-
 use std::collections::{BTreeMap, VecDeque};
 
 use super::{CallTree, Costs, Keys, index};
 use crate::capture::records::NONE;
 
-/// Which aggregate a node's or row's key belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     Current,
 
-    /// A path or key only the base has.
     Base,
 }
 
-/// The paths of two call trees, each with both trees' weights, in the
-/// current tree's order and then the base's: parents before children, a
-/// node's descendants up to its `end`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiffTree {
     pub key: Vec<u32>,
@@ -44,7 +35,6 @@ impl DiffTree {
     }
 }
 
-/// A tree's children of `node`, or its roots for [`NONE`].
 #[expect(
     clippy::indexing_slicing,
     reason = "`aggregate` lays a tree out with each node's subtree ending within it"
@@ -64,8 +54,6 @@ fn children(tree: &CallTree, node: u32) -> Vec<u32> {
     found
 }
 
-/// One node of the merged tree: its node in each tree, if any, and the key
-/// and side it shows.
 struct Pair {
     key: u32,
     side: Side,
@@ -75,11 +63,6 @@ struct Pair {
     depth: u32,
 }
 
-/// Merges two trees path by path, a path matching where its names do.
-///
-/// Of siblings that share a name, each is paired with the same function,
-/// by its module and place, where the other tree has it, and the rest in
-/// order, the first of each tree's left, then the second.
 #[must_use]
 #[expect(
     clippy::indexing_slicing,
@@ -133,7 +116,6 @@ pub fn diff_trees(current: (&Keys<'_>, &CallTree), base: (&Keys<'_>, &CallTree))
     out
 }
 
-/// The merged children of a node of each tree, current's first.
 #[expect(
     clippy::indexing_slicing,
     reason = "`children` gives nodes of each tree, and `pair` positions within `theirs`"
@@ -195,8 +177,6 @@ fn pairs(
     paired
 }
 
-/// Each key's name, by side, as views show it, and with its module and
-/// place, found once.
 #[derive(Default)]
 struct Names {
     known: BTreeMap<(bool, u32), (String, String)>,
@@ -221,10 +201,6 @@ impl Names {
     }
 }
 
-/// Pairs each of `ours` with one of `theirs`, each named and named with
-/// its module and place: with the same function where `theirs` has it,
-/// and otherwise with the first left of the same name. Returns the one
-/// each of `ours` is paired with, and which of `theirs` are paired.
 fn pair(ours: &[(String, String)], theirs: &[(String, String)]) -> (Vec<Option<usize>>, Vec<bool>) {
     let mut taken = vec![false; theirs.len()];
     #[expect(
@@ -257,7 +233,6 @@ fn pair(ours: &[(String, String)], theirs: &[(String, String)]) -> (Vec<Option<u
     (matched, taken)
 }
 
-/// One key's cost now and in the base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiffCost {
     pub key: u32,
@@ -268,9 +243,6 @@ pub struct DiffCost {
     pub base_total: u64,
 }
 
-/// Merges two aggregates' costs by name, current's rows first, then the
-/// base's that it lacks. Keys that share a name pair as siblings of a tree
-/// do.
 #[must_use]
 pub fn diff_costs(current: (&Keys<'_>, &Costs), base: (&Keys<'_>, &Costs)) -> Vec<DiffCost> {
     let named = |(keys, costs): (&Keys<'_>, &Costs)| -> Vec<(String, String)> {

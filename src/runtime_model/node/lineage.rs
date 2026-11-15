@@ -1,13 +1,3 @@
-//! The identities that choose a JavaScript object's view: those of the
-//! constructors its prototype chain names, nearest first.
-//!
-//! A class is its constructor function's name, in a path made from the
-//! script that defines the function: `node:internal/url` gives
-//! `node::internal::url::URL`, and `/app/models.js` gives
-//! `app::models::Point`. A builtin, which has no script, has its name
-//! alone. Each prototype names its class by its own `constructor` data
-//! property; one without such a function names none.
-
 use std::sync::Arc;
 
 use super::lookup::{self, Key};
@@ -18,11 +8,8 @@ use crate::image::v8::{Constant, Field};
 use crate::runtime_model::{InterpretedHandle, interpreted_identity};
 use crate::{SourceLanguage, TypeIdentity};
 
-/// Prototype chains are a few objects long; stop after this many.
 const MAX_PROTOTYPES: usize = 64;
 
-/// The identities of the classes the prototype `class` and the prototypes
-/// after it name, nearest first.
 pub(super) fn lineage(
     reader: &Reader<'_>,
     class: InterpretedHandle,
@@ -48,8 +35,6 @@ pub(super) fn lineage(
     Err(format!("{word:#x} has too many prototypes").into())
 }
 
-/// The identity of the class whose constructor is `function`, or `None`
-/// for a constructor that is no function or has no name of its own.
 fn identity(reader: &Reader<'_>, function: Object) -> Result<Option<TypeIdentity>, Problem> {
     let functions = reader.constant(Constant::FirstJSFunctionType)?
         ..=reader.constant(Constant::LastJSFunctionType)?;
@@ -61,8 +46,6 @@ fn identity(reader: &Reader<'_>, function: Object) -> Result<Option<TypeIdentity
         Field::JSFunctionSharedFunctionInfo,
         Constant::SharedFunctionInfoType,
     )?;
-    // The function's own name, as `function.name` starts out, never one
-    // V8 inferred from where the function was assigned.
     let Some(name) = super::names::shared_name(reader, shared)?.0 else {
         return Ok(None);
     };
@@ -81,8 +64,6 @@ fn identity(reader: &Reader<'_>, function: Object) -> Result<Option<TypeIdentity
     }))
 }
 
-/// The module path of the script named `name`: `node` and the parts of a
-/// `node:` id, or a file's directories and its name without its extension.
 fn module_path(name: &str) -> Vec<Arc<str>> {
     if let Some(id) = name.strip_prefix("node:") {
         return std::iter::once("node")

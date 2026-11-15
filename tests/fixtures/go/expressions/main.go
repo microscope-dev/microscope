@@ -1,7 +1,7 @@
-// Prints `EXPECT\t<expression>\t<kind>\t<value>` for each expression the
-// debugger must agree with, then calls barrier(). A kind of `text` is the
-// text a string holds, `range` the elements a slice of an array or slice
-// holds, and `error` the kind of error the expression must be.
+
+
+
+
 package main
 
 import (
@@ -16,9 +16,9 @@ type inner struct {
 	ll int64
 }
 
-// Base and Side are embedded in node at depth one, and deep through an
-// embedded pointer at depth two: node's W is Base's, which hides deep's,
-// and its shared is both Base's and Side's, which Go refuses to choose.
+
+
+
 type Base struct {
 	W      int
 	shared int
@@ -102,10 +102,10 @@ func main() {
 		spots:   map[inner]int{{1, 2}: 7},
 		queue:   make(chan int, 4),
 	}
-	// Enough entries for several groups; a key is found by searching
-	// them. The hash seed differs on every run, and with it where each
-	// key lies, so the map is small enough that two searches of every
-	// group fit an inspection's memory reads whatever the order.
+
+
+
+
 	for index := 1; index <= 40; index++ {
 		f.squares[index] = index * index
 	}
@@ -124,11 +124,11 @@ func main() {
 	expect("f.flag", "bool", f.flag)
 	expect("f.real * 2", "f64", fmt.Sprintf("%#x", math.Float64bits(f.real*2)))
 
-	// nil is null.
+
 	expect("f.ptr != nil", "bool", f.ptr != nil)
 	expect("f.nothing == nil", "bool", f.nothing == nil)
 
-	// Capacities.
+
 	expect("cap(f.arr)", "int", cap(f.arr))
 	expect("cap(f.slice)", "int", cap(f.slice))
 	expect("cap(f.room)", "int", cap(f.room))
@@ -136,7 +136,7 @@ func main() {
 	expect("cap(f.queue)", "int", cap(f.queue))
 	expect("len(f.queue)", "int", len(f.queue))
 
-	// Promoted fields.
+
 	expect("f.node.W", "int", f.node.W)
 	expect("f.node.Q", "int", f.node.Q)
 	expect("f.node.M", "int", f.node.M)
@@ -145,7 +145,7 @@ func main() {
 	expect("f.node.own + f.node.Base.shared", "int", f.node.own+f.node.Base.shared)
 	expect("f.node.shared", "error", "ambiguous-name")
 
-	// Slices of arrays, slices, and strings.
+
 	expect("f.arr[1:3]", "range", rangeText(f.arr[1:3]))
 	expect("f.slice[1:]", "range", rangeText(f.slice[1:]))
 	expect("f.slice[:2]", "range", rangeText(f.slice[:2]))
@@ -161,7 +161,7 @@ func main() {
 		expect("f.slice[1:4]", "error", "bounds")
 	}
 
-	// Maps by key.
+
 	expect(`f.ages["bob"]`, "int", f.ages["bob"])
 	expect("f.ages[f.who]", "int", f.ages[f.who])
 	expect(`f.ages[f.essay[1:2]]`, "error", missing(f.ages, f.essay[1:2]))
@@ -172,7 +172,7 @@ func main() {
 	expect("f.squares[40] + f.squares[1]", "int", f.squares[40]+f.squares[1])
 	expect("f.squares[2.0]", "int", f.squares[int(2.0)])
 	expect(`f.squares["3"]`, "error", "type")
-	// A struct is no tuple, so a tuple key never finds a struct's entry.
+
 	expect("f.spots[1, 2]", "error", "type")
 	if _, held := f.squares[0]; !held {
 		expect("f.squares[0]", "error", "missing-key")
@@ -181,7 +181,7 @@ func main() {
 	runtime.KeepAlive(f)
 }
 
-// The elements of a slice, as the harness writes a range.
+
 func rangeText(elements []int32) string {
 	parts := make([]string, len(elements))
 	for index, element := range elements {
@@ -190,7 +190,7 @@ func rangeText(elements []int32) string {
 	return strings.Join(parts, ",")
 }
 
-// The error a key the map does not hold must be.
+
 func missing(m map[string]int, key string) string {
 	if _, held := m[key]; held {
 		return "none"

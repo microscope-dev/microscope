@@ -1,8 +1,3 @@
-// A live renderer's canvas: the frames its worker draws, shown while the
-// card is on screen. The page asks for each frame on an animation frame,
-// one at a time, and only when the renderer wants one; it forwards the
-// pointer, and the keys while the canvas has focus, as numbers and flags.
-
 import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
@@ -29,7 +24,6 @@ import {
   UNRESPONSIVE,
 } from "../visualize/sandbox";
 
-/** What a live card draws: one stop's inputs, and the stop's before. */
 export interface LiveJob {
   stop: number;
   source: RendererCode;
@@ -38,10 +32,9 @@ export interface LiveJob {
   previous: unknown;
 }
 
-/** The shortest and tallest a live canvas is, in CSS pixels. */
 const SHORTEST = 240;
 const TALLEST = 560;
-/** The widest or tallest a live canvas's pixels are. */
+
 const MOST_PIXELS = 4096;
 
 interface Size {
@@ -77,8 +70,6 @@ function liveProblem(failure: LiveFailure): string {
   }
 }
 
-/** Keys a renderer never gets: the debugger's function keys, and Escape,
- * which gives focus back to the page. */
 const KEPT = /^(?:F\d+|Escape|Tab)$/u;
 
 export function LiveDrawing({
@@ -88,10 +79,9 @@ export function LiveDrawing({
   sandbox,
   onSelect,
 }: {
-  /** The card's id, which names its worker. */
   card: string;
   job: LiveJob;
-  /** Whether the card is on screen: the renderer runs only then. */
+
   active: boolean;
   sandbox: () => Sandbox;
   onSelect(path: string): void;
@@ -110,28 +100,25 @@ export function LiveDrawing({
     latest.current = job;
     select.current = onSelect;
   });
-  // The job the session last had, so a new one is sent once.
+
   const sent = useRef<LiveJob | null>(null);
   const size = useRef<Size | null>(null);
   const tip = useRef<Tip | null>(null);
   const pointer = useRef<MouseEvent | null>(null);
-  // The frame loop: one frame in flight, asked for on an animation frame
-  // when the renderer wants one or animates.
+
   const loop = useRef({
     started: false,
     wanted: false,
     animating: false,
     inFlight: false,
     request: null as number | null,
-    // What the frame in flight shows: the stop, and how many pointer and
-    // key events the renderer had by then, which the canvas then names.
+
     asked: { stop: -1, events: 0 },
   });
-  // The sessions started, and the events forwarded in this one.
+
   const starts = useRef(0);
   const events = useRef(0);
 
-  // These read only refs, so they never change.
   const schedule = useCallback(() => {
     const state = loop.current;
     if (!state.started || state.inFlight || state.request !== null) {
@@ -177,7 +164,6 @@ export function LiveDrawing({
       const scale = bounds.width > 0 ? measured.device.width / bounds.width : 1;
       let wheel = 0;
       if (event instanceof WheelEvent) {
-        // Lines and pages as pixels, as most mice give them.
         const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? bounds.height : 1;
         wheel = event.deltaY * unit;
       }
@@ -197,9 +183,6 @@ export function LiveDrawing({
     [counted],
   );
 
-  // The canvas takes its size from the card's width as soon as it is laid
-  // out, session or not, so the cards around it do not move later; a new
-  // size reaches a running renderer.
   useLayoutEffect(() => {
     const element = holder.current;
     assert(element !== null, "live drawing mounted without its holder");
@@ -208,8 +191,7 @@ export function LiveDrawing({
       const before = size.current;
       size.current = next;
       setHeight(next.css.height);
-      // Its pixels too, until a frame sizes them: sizing a canvas clears
-      // it, so later a frame of the new size replaces the last at once.
+
       const shown = canvas.current;
       if (shown !== null && shown.dataset.stop === undefined) {
         shown.width = next.device.width;
@@ -229,8 +211,6 @@ export function LiveDrawing({
     return () => observer.disconnect();
   }, [want]);
 
-  // The session runs while the card is on screen and ends when it leaves;
-  // coming back starts it afresh with the inputs of then.
   useEffect(() => {
     const shown = canvas.current;
     assert(shown !== null, "live drawing mounted without its canvas");
@@ -248,7 +228,7 @@ export function LiveDrawing({
     sent.current = first;
     events.current = 0;
     starts.current += 1;
-    // The canvas says which session, stop, and events its frame shows.
+
     shown.dataset.session = String(starts.current);
     shown.dataset.sent = "0";
     delete shown.dataset.stop;
@@ -319,7 +299,6 @@ export function LiveDrawing({
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- the session reads its job and callbacks through refs; a new renderer is a new component
   }, [active, failure, restarts]);
 
-  // A new stop, or the same in a new theme, updates the renderer.
   useEffect(() => {
     const live = session.current;
     const measured = size.current;
@@ -332,7 +311,6 @@ export function LiveDrawing({
     want();
   });
 
-  // The hover text shows in the page's own tip.
   useEffect(() => {
     const element = holder.current;
     assert(element !== null, "live drawing mounted without its holder");
@@ -345,7 +323,6 @@ export function LiveDrawing({
     };
   }, []);
 
-  // The wheel zooms the drawing, not the page, so it cannot be passive.
   useEffect(() => {
     const shown = canvas.current;
     assert(shown !== null, "live drawing mounted without its canvas");
@@ -374,7 +351,6 @@ export function LiveDrawing({
   const sized = useMemo(() => ({ height }), [height]);
   const press = useCallback(
     (event: ReactPointerEvent<HTMLCanvasElement>) => {
-      // Without scrolling: the press is where the pointer is now.
       event.currentTarget.focus({ preventScroll: true });
       event.currentTarget.setPointerCapture(event.pointerId);
       forward("down", event.nativeEvent);
@@ -409,7 +385,7 @@ export function LiveDrawing({
         ctrl: event.ctrlKey,
         alt: event.altKey,
       });
-      // A plain key is the renderer's; a combination is the page's too.
+
       if (!event.ctrlKey && !event.altKey && !event.metaKey) {
         event.preventDefault();
         event.stopPropagation();

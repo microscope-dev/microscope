@@ -11,8 +11,8 @@ __attribute__((noinline)) unsigned long leaf(unsigned long n) {
     return sum;
 }
 
-// main's frame is larger than the 16 KiB stack copy that preset dev used to
-// make, so unwinding past it needs a deeper copy.
+
+
 int main(int argc, char **argv) {
     volatile char frame[24 * 1024];
     memset((char *)frame, 1, sizeof frame);

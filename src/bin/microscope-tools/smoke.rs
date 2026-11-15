@@ -1,5 +1,3 @@
-//! The portable resource gate; broad profiling stays in `bench`.
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

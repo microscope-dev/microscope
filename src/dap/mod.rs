@@ -1,9 +1,3 @@
-//! The Debug Adapter Protocol server, `microscope dap`.
-//!
-//! Editors such as VS Code, Neovim, Zed, Helix, and Emacs talk to it over
-//! stdin and stdout, or over TCP with `--port`. Like the CLI, it is one
-//! client of [`microscope::DebuggerHandle`].
-
 mod breakpoints;
 mod config;
 mod group;
@@ -63,10 +57,6 @@ pub struct DapArgs {
     connect: Option<PathBuf>,
 }
 
-/// Appends messages to the `--log` file.
-/// Where the adapter records the protocol messages, if anywhere, and the
-/// label of the session they belong to, for a session other than the one
-/// the adapter was started for.
 #[derive(Clone, Default)]
 struct Log(Option<Arc<Mutex<File>>>, Option<Arc<str>>);
 
@@ -82,14 +72,11 @@ impl Log {
         }
     }
 
-    /// The same log, for messages of the session `label` names.
     fn labelled(&self, label: String) -> Self {
         Self(self.0.clone(), Some(label.into()))
     }
 }
 
-/// Runs the adapter until its client disconnects, or with `--port` and
-/// `--listen` until it is interrupted.
 pub async fn run(args: &DapArgs) -> Result<()> {
     if let Some(socket) = &args.connect {
         return relay(socket).await;
@@ -120,8 +107,6 @@ pub async fn run(args: &DapArgs) -> Result<()> {
     }
 }
 
-/// Copies stdin to the group socket at `socket` and what it answers to
-/// stdout, until either side closes.
 async fn relay(socket: &std::path::Path) -> Result<()> {
     let stream = tokio::net::UnixStream::connect(socket)
         .await
@@ -138,8 +123,6 @@ async fn relay(socket: &std::path::Path) -> Result<()> {
         stdout.flush().await
     };
     tokio::pin!(sent, received);
-    // The session is over once the adapter closes it. A client that closes
-    // first ends it by the shutdown, and is still sent the adapter's answers.
     tokio::select! {
         result = &mut received => result,
         result = &mut sent => match result {
@@ -150,9 +133,6 @@ async fn relay(socket: &std::path::Path) -> Result<()> {
     .context("failed to relay the session")
 }
 
-/// Completes when the adapter is asked to stop: an editor closing the
-/// session may send SIGTERM, SIGINT, or SIGHUP instead of disconnecting.
-/// The signals are caught from this call on, before the future is polled.
 pub fn termination() -> Result<impl Future<Output = ()>> {
     let signal = crate::termination::first_of([
         SignalKind::terminate(),
@@ -166,9 +146,6 @@ pub fn termination() -> Result<impl Future<Output = ()>> {
     })
 }
 
-/// Serves one client over stdin and stdout. Anything else that writes to
-/// stdout or stderr, such as a panic message, is redirected to the client's
-/// console so it cannot corrupt the protocol stream.
 async fn serve_stdio(log: Log) -> Result<()> {
     let stop = termination()?;
     let protocol_out = nix::unistd::dup(std::io::stdout()).context("failed to duplicate stdout")?;
@@ -199,7 +176,6 @@ async fn listen(address: SocketAddr, log: Log) -> Result<()> {
         log.record("--", &format!("client {peer} connected"));
         let (read, write) = stream.into_split();
 
-        // A session ends early when the adapter is asked to stop.
         let (stopped, stopping) = tokio::sync::oneshot::channel::<()>();
         let session = serve(
             BufReader::new(read),
@@ -229,8 +205,6 @@ async fn listen(address: SocketAddr, log: Log) -> Result<()> {
     }
 }
 
-/// Serves one client: reads its messages, runs its session, and writes the
-/// session's messages back in order.
 async fn serve<R, W>(
     reader: R,
     writer: W,
@@ -262,14 +236,9 @@ async fn serve<R, W>(
     ));
     let console = console.and_then(|read| output::spawn(read, "console", client.clone()).ok());
 
-    // The session holds the last sender of the client's messages, so the
-    // writer ends once the session does. With its console's command line,
-    // it is a large future.
     let session = Session::new(client, cancelled).serving(route, log);
     Box::pin(session.run(inbox, shutdown)).await;
 
-    // A client that has not closed its stream keeps the reader waiting for
-    // messages no session will take.
     #[expect(
         clippy::disallowed_methods,
         reason = "the reader only reads messages, which no one takes now"
@@ -283,8 +252,6 @@ async fn serve<R, W>(
     let _ = writer.await;
 }
 
-/// Reads the client's messages until the stream ends or breaks framing,
-/// then fails the reverse requests still awaiting a response.
 async fn read_messages<R: AsyncBufRead + Unpin>(
     reader: R,
     inbound: mpsc::Sender<Inbound>,
@@ -318,7 +285,6 @@ async fn read_frames<R: AsyncBufRead + Unpin>(
         };
 
         if frame.origin {
-            // Only a web page sends Origin; it must not drive a debugger.
             log.record("!!", "refused a message with an Origin header");
             return;
         }
@@ -330,10 +296,6 @@ async fn read_frames<R: AsyncBufRead + Unpin>(
                 command,
                 arguments,
             }) => {
-                // A cancellation must be seen before the session reaches the
-                // request it cancels, so the reader records it. Requests are
-                // numbered in the order they are sent, so one a cancel names
-                // was sent before it: a later request is not the one meant.
                 if command == "cancel"
                     && let Some(request) = arguments.get("requestId").filter(|id| !id.is_null())
                     && request
@@ -385,7 +347,6 @@ async fn read_frames<R: AsyncBufRead + Unpin>(
     }
 }
 
-/// Numbers and writes the session's messages until every sender is gone.
 async fn write_messages<W: AsyncWrite + Unpin>(
     mut writer: W,
     mut messages: mpsc::Receiver<Outgoing>,

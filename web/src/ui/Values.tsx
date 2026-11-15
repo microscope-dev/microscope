@@ -1,8 +1,3 @@
-// The right column: watches, which the link carries, and the frame's
-// variables. Both read the stop the tab shows, and only while it is the
-// program's: a passed stop's values are gone, and a running program's are
-// moving.
-
 import { type ChangeEvent, type FormEvent, useCallback, useMemo, useState } from "react";
 
 import { assert } from "../assert";
@@ -13,7 +8,6 @@ import { useLook } from "./navigation";
 import { Earlier, LinkedExpansion, messageRow, RowList, ValueRow } from "./ValueTree";
 import { useFocus } from "./Workspace";
 
-// Disassembly and Drawings still import these from here.
 export { errorClass, hidden } from "./hidden";
 
 export function Variables() {
@@ -130,7 +124,6 @@ export function Watch() {
       <LinkedExpansion>
         <ul className="value-list" aria-label="Watches" data-testid="watches">
           {watches.map((expression, index) => {
-            // A repeated watch is its own row, as a repeated name is.
             const occurrence = watches.slice(0, index).filter((w) => w === expression).length + 1;
             return (
               <WatchRow

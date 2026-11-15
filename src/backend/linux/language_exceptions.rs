@@ -1,9 +1,3 @@
-//! The breakpoints language runtimes own: one at each runtime function
-//! that reports an exception the user wants to stop at, with the runtime's
-//! own account of the exception when a thread enters it; and one at each
-//! of a runtime's internal hooks, armed whatever stops, at whose every hit
-//! the runtime says whether the thread stops.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -19,25 +13,20 @@ use super::native::{InspectionOps, LinuxTraceOps};
 use super::registers::x86_64_registers;
 use super::{BreakpointOwner, Controller, debug_thread_id};
 
-/// A runtime function whose entry a runtime's breakpoint is at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct HookSite {
     runtime: RuntimeId,
     purpose: HookPurpose,
 }
 
-/// Why a runtime's breakpoint is where it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HookPurpose {
-    /// The function reports an exception that stops.
     Exception(RuntimeHook),
 
-    /// The function is an internal hook.
     Internal(HookPlace),
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Changes which exceptions stop, and returns the previous choice.
     pub(super) fn set_exception_stops(&mut self, stops: ExceptionStops) -> Result<ExceptionStops> {
         let previous = std::mem::replace(&mut self.exception_stops, stops);
         if self.sites_live() {
@@ -50,9 +39,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(previous)
     }
 
-    /// Installs a breakpoint at each loaded runtime's internal hooks and
-    /// at its hook for each exception that stops, and removes the rest. The
-    /// runtimes' signals take their defaults from the same runtimes.
     pub(super) fn sync_runtime_hooks(&mut self) -> Result<()> {
         let Some(inferior) = self.session.inferior() else {
             return Ok(());
@@ -103,8 +89,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                             .map(move |address| (address, HookPurpose::Internal(hook)))
                     });
 
-                // An internal hook asks at every hit, so it outranks an
-                // exception's hook at the same function.
                 exceptions.chain(internal).map(|(address, purpose)| {
                     (
                         address,
@@ -125,8 +109,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map(|(address, _)| *address)
             .collect::<Vec<_>>();
 
-        // Each hook is forgotten only once its trap is, so that a failed
-        // removal is retried.
         for address in stale {
             remove_breakpoint_owner_from(
                 &self.ptrace,
@@ -156,7 +138,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Where each loaded image that exports the function `name` has it.
     fn exported_functions(
         &self,
         inferior: &super::Inferior,
@@ -176,12 +157,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .collect()
     }
 
-    /// Why a thread at `address` stops, when a runtime's breakpoint there
-    /// stops it: an exception's hook stops for the exception it reports,
-    /// and an internal hook for what the runtime says its event is, as a
-    /// managed breakpoint's hit, judged as a trap's is. A report the
-    /// runtime's memory cannot give is still a stop, which says why it is
-    /// missing.
     pub(super) fn runtime_hook_stop(
         &mut self,
         pid: Pid,
@@ -276,8 +251,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// The program's frame an agent's report blames, when thread `pid` is
-    /// at an agent's hook at the stop `stop_id`.
     pub(super) fn reported_frame(
         &self,
         stop_id: crate::protocol::StopId,
@@ -292,8 +265,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.blamed_frame(inferior, &trace)
     }
 
-    /// The hook of the agent that stopped thread `pid`, if an agent did, as
-    /// at a breakpoint it reported or a step's end.
     pub(super) fn agent_hook(&self, pid: Pid) -> Option<&HookSite> {
         let registers = self.ptrace.registers(pid).ok()?;
         self.session
@@ -303,16 +274,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             .filter(|site| matches!(site.purpose, HookPurpose::Internal(HookPlace::Companion(_))))
     }
 
-    /// Whether thread `pid` is where the agent of the runtime `runtime`
-    /// stopped it, at the agent's hook, as at a breakpoint it reported.
     pub(super) fn at_agent_hook(&self, pid: Pid, runtime: RuntimeId) -> bool {
         self.agent_hook(pid)
             .is_some_and(|site| site.runtime == runtime)
     }
 
-    /// Why thread `pid` stops at one event's hits of the managed locations
-    /// the runtime `runtime` numbers `numbers`, if a breakpoint that owns
-    /// one stops. One since removed is owned by none.
     fn managed_hit(&mut self, pid: Pid, runtime: RuntimeId, numbers: &[u64]) -> Option<StopReason> {
         let managed = &self.session.inferior()?.managed;
         let owners: BTreeSet<_> = numbers
@@ -331,8 +297,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    /// What the runtime `runtime` reports of the stopped thread `pid` at
-    /// one of its hooks, through `read`.
     pub(super) fn read_hook<T>(
         &self,
         pid: Pid,
@@ -363,8 +327,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    /// Selects the frame of thread `pid` that its interpreter keeps at
-    /// `frame`, where the thread runs it.
     pub(super) fn select_interpreted_frame(&mut self, pid: Pid, frame: crate::VirtualAddress) {
         let Some(stop) = self
             .session
@@ -396,10 +358,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Selects the frame a runtime's report blames: for an exception, the
-    /// first one the program wrote, below the runtime's own frames that
-    /// report it and the runtime's library code that raised it; for a hit
-    /// a runtime reports, the program's frame it happened in.
     pub(super) fn select_blamed_frame(&mut self, pid: Pid) {
         let Some(inferior) = self.session.inferior() else {
             return;
@@ -433,15 +391,11 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// The frame of `trace`, a stack that entered a runtime's hook, that
-    /// the hook's report blames: the innermost ordinary frame that is not
-    /// the runtime's own source.
     pub(super) fn blamed_frame(
         &self,
         inferior: &super::Inferior,
         trace: &crate::Backtrace,
     ) -> Option<crate::StackFrameId> {
-        // A thread an inspector holds paused is in its innermost script.
         if let crate::ExecutionContext::Thread(thread) = trace.context
             && self.inspector_holds(thread)
         {
@@ -452,7 +406,6 @@ impl<P: InspectionOps> Controller<P> {
                 .map(|frame| frame.id);
         }
 
-        // The runtime whose hook the thread entered.
         let runtime = trace
             .frames
             .first()

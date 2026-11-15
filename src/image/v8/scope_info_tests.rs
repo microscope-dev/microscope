@@ -1,12 +1,7 @@
-//! The translated `ScopeInfo` slices against layouts derived by hand from
-//! each version's `scope-info.tq`, on synthetic objects.
-
 use super::{ScopeInfoSlice, Slice, V8Version, scope_info_slice};
 
 const VERSIONS: [(u32, u32); 3] = [(12, 4), (13, 6), (14, 6)];
 
-/// A word no field the slices read holds: not a Smi, so a read of the
-/// wrong word fails or decodes as something else.
 const FILLER: u64 = 0x0bad_f00d_0000_0011;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,8 +31,6 @@ const TYPES: [Type; 10] = [
     Type::ReplMode,
 ];
 
-/// `ScopeType`'s value, from `globals.h`: 13.6 moved `SCRIPT_SCOPE` first
-/// and added `REPL_MODE_SCOPE`.
 fn type_value(version: (u32, u32), kind: Type) -> Option<u32> {
     let order: &[Type] = if version == (12, 4) {
         &TYPES[..9]
@@ -59,7 +52,6 @@ fn type_value(version: (u32, u32), kind: Type) -> Option<u32> {
     u32::try_from(index).ok()
 }
 
-/// What the conditions of `scope-info.tq` read.
 #[derive(Debug, Clone, Copy)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -72,12 +64,10 @@ struct Scope {
     sloppy_eval: bool,
     saved_class_variable: bool,
 
-    /// `VariableAllocationInfo`: `NONE` is 0.
     function_variable: u32,
     inferred_name: bool,
     outer: bool,
 
-    /// 12.4's `has_locals_block_list` and `is_empty`.
     locals_block_list: bool,
     empty: bool,
 }
@@ -98,7 +88,6 @@ impl Scope {
         }
     }
 
-    /// `ScopeFlags`, whose bits every version places alike up to bit 27.
     fn flags(&self, version: (u32, u32)) -> u32 {
         let mut flags = type_value(version, self.kind).expect("a type the version has");
         flags |= u32::from(self.sloppy_eval) << 4;
@@ -113,8 +102,6 @@ impl Scope {
         flags
     }
 
-    /// The object's words: 12.4 keeps its flags as a Smi; later versions
-    /// as a uint32 beside 4 bytes of padding, which hold filler here.
     fn memory(&self, version: (u32, u32)) -> Vec<u64> {
         let smi = |value: u64| value << 32;
         let mut words = vec![FILLER; 8];
@@ -134,9 +121,6 @@ impl Scope {
     }
 }
 
-/// Each slice's place, laid out by hand from the version's
-/// `scope-info.tq`: each part after the last, of its length in items of
-/// its size in bytes.
 fn expected(version: (u32, u32), scope: &Scope) -> Vec<(ScopeInfoSlice, Option<Slice>)> {
     use ScopeInfoSlice as S;
 
@@ -183,8 +167,6 @@ fn expected(version: (u32, u32), scope: &Scope) -> Vec<(ScopeInfoSlice, Option<S
         parts.push((S::UnusedParameterBits, u64::from(function), 8));
     }
 
-    // 12.4's variable part begins after its flags and two counts; later
-    // ones' after the fixed position info too.
     let mut offset = if version == (12, 4) { 32 } else { 48 };
     let mut places: Vec<_> = parts
         .into_iter()
@@ -211,7 +193,6 @@ fn v8(version: (u32, u32)) -> V8Version {
     }
 }
 
-/// The translated slice, read from `words`.
 fn slice(
     version: (u32, u32),
     slice: ScopeInfoSlice,
@@ -234,8 +215,6 @@ fn check(version: (u32, u32), scope: &Scope) {
     }
 }
 
-/// Every scope type each version has, with context locals on both sides
-/// of the inline limit, and every flag a slice's presence depends on.
 #[test]
 fn every_slice_is_where_scope_info_tq_puts_it() {
     let mut cases = 0;
@@ -245,10 +224,8 @@ fn every_slice_is_where_scope_info_tq_puts_it() {
                 continue;
             }
 
-            // None, then the two sides of the inline limit.
             for context_locals in [0, 74, 75] {
                 for bits in 0u32..(1 << 7) {
-                    // Only 12.4 reads the last two flags.
                     if version != (12, 4) && bits >= 32 {
                         continue;
                     }
@@ -274,14 +251,10 @@ fn every_slice_is_where_scope_info_tq_puts_it() {
     assert_eq!(cases, (9 * 128 + 20 * 32) * 3 * 3);
 }
 
-/// A few places written out, so that a layout misread from
-/// `scope-info.tq` alike by the oracle and the translation shows.
 #[test]
 fn slices_of_three_scopes_are_at_the_offsets_worked_by_hand() {
     use ScopeInfoSlice as S;
 
-    // A 14.6 function with two context locals, a context-allocated
-    // function variable, and an inferred name.
     let mut function = Scope::new(Type::Function, 2);
     function.function_variable = 2;
     function.inferred_name = true;
@@ -300,8 +273,6 @@ fn slices_of_three_scopes_are_at_the_offsets_worked_by_hand() {
     assert_eq!(slice((14, 6), S::UnusedParameterBits, &words), at(104, 1));
     assert_eq!(slice((14, 6), S::PositionInfo, &words), Ok(None));
 
-    // A 13.6 module with 80 context locals, past the inline limit, and
-    // three module variables.
     let mut module = Scope::new(Type::Module, 80);
     module.module_variables = 3;
     let words = module.memory((13, 6));
@@ -317,8 +288,6 @@ fn slices_of_three_scopes_are_at_the_offsets_worked_by_hand() {
     assert_eq!(slice((13, 6), S::DependentCode, &words), at(784, 0));
     assert_eq!(slice((13, 6), S::UnusedParameterBits, &words), Ok(None));
 
-    // A 12.4 class scope with exactly the inline limit of locals: an
-    // empty one has no positions.
     let mut class = Scope::new(Type::Class, 75);
     let words = class.memory((12, 4));
     assert_eq!(slice((12, 4), S::ContextLocalNames, &words), at(32, 0));
@@ -334,8 +303,6 @@ fn slices_of_three_scopes_are_at_the_offsets_worked_by_hand() {
     assert_eq!(slice((12, 4), S::DependentCode, &words), Ok(None));
 }
 
-/// A version with no translation, a word that cannot be read, and a
-/// count that is no Smi are errors, never a place.
 #[test]
 fn unreadable_or_unlike_scope_infos_are_errors() {
     let scope = Scope::new(Type::Function, 3);
@@ -346,7 +313,6 @@ fn unreadable_or_unlike_scope_infos_are_errors() {
     .expect_err("no translation");
     assert!(error.contains("11.3 has no ScopeInfo slices"), "{error}");
 
-    // Every version reads the flags first, then the count at +24.
     for version in VERSIONS {
         let words = scope.memory(version);
         let error = scope_info_slice(

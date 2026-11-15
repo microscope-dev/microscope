@@ -1,6 +1,3 @@
-//! `formatValue`, `formatRaw`, and the formatters and line breaking they
-//! call, from Node's `lib/internal/util/inspect.js`.
-
 use super::text::{
     bigint_to_string, escape, f16_to_f64, is_identifier, iso_date, js_len, number_to_string,
     pad_end, pad_start, str_escape, string_width,
@@ -14,17 +11,11 @@ use std::fmt::Write as _;
 
 use crate::VirtualAddress;
 
-/// `depth`: how many levels below the root inspect prints contents.
 pub const DEPTH: usize = 2;
-/// `breakLength`.
 const BREAK_LENGTH: usize = 80;
-/// `compact`: how many inner levels inspect lines up on one line.
 const COMPACT: usize = 3;
-/// `maxArrayLength`, which also bounds Set, Map, and buffer entries.
 const MAX_ARRAY_LENGTH: usize = 100;
-/// `maxStringLength`.
 const MAX_STRING_LENGTH: usize = 10_000;
-/// `kMinLineLength`: strings this long or shorter are never split.
 const MIN_LINE_LENGTH: usize = 16;
 
 pub fn inspect(graph: &ValueGraph, value: &Value, node: NodeRelease, layout: Layout) -> Inspected {
@@ -46,35 +37,27 @@ pub fn inspect(graph: &ValueGraph, value: &Value, node: NodeRelease, layout: Lay
     }
 }
 
-/// The text for a part the reader could not read.
 pub fn unreadable(reason: &str) -> String {
     format!("<unreadable: {reason}>")
 }
 
-/// The text for a state this port does not reproduce.
 pub fn unsupported(what: &str) -> String {
     format!("<unsupported: {what}>")
 }
 
-/// Why a JavaScript conversion gave no text.
 pub enum Fault {
-    /// Node's code throws here.
     Throws,
-    /// The text to print instead.
     Visible(String),
 }
 
-/// `kObjectType`, `kArrayType`, and `kArrayExtrasType`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Entries {
     Object,
     ArrayExtras,
 }
 
-/// An own property inspect lists, and whether it is enumerable.
 pub type Listed<'g> = (&'g Property, bool);
 
-/// What fills an object's braces before its properties.
 enum Contents<'g> {
     None,
     Array(&'g Array),
@@ -86,46 +69,27 @@ enum Contents<'g> {
     Weak,
 }
 
-/// A change to `inspect.js` within a release line, made in the 24 and 26
-/// releases listed in [`Ctx::has`] and later.
 #[derive(Clone, Copy)]
 pub enum Change {
-    /// `isBelowBreakLength` returns early for an infinite `breakLength`,
-    /// refusing only entries with line breaks.
     InfiniteBreakLength,
-    /// `getPrefix` leaves out a `Symbol.toStringTag` equal to the
-    /// constructor's name, or to the tag's last dotted part.
     TagByName,
-    /// `formatError` lists a `SuppressedError`'s own `error` and
-    /// `suppressed`.
     SuppressedKeys,
-    /// `formatExtraProperties` reads a getter before indenting two columns,
-    /// so a detached `DataView`'s throw leaves the indentation unchanged.
     ExtraBeforeIndent,
 }
 
-/// inspect's `ctx`, with the options fixed at their defaults or at
-/// [`Layout::Line`]'s.
 pub struct Ctx<'g> {
     pub graph: &'g ValueGraph,
     pub major: u32,
     node: NodeRelease,
-    /// `compact: true` and `breakLength: Infinity`.
     line: bool,
     pub indentation: usize,
-    /// The objects being formatted, innermost last, by address.
     seen: Vec<VirtualAddress>,
-    /// `ctx.circular`: objects that refer back to themselves, numbered from
-    /// 1 in the order found.
     circular: Vec<VirtualAddress>,
-    /// `ctx.currentDepth`: the level of the object last entered.
     current_depth: usize,
     pub approximate: bool,
 }
 
 impl<'g> Ctx<'g> {
-    /// Whether the target Node release has `change`. Each landed in 26, some
-    /// also in 24, none in 22. Modules for 23 and 25 are refused earlier.
     pub const fn has(&self, change: Change) -> bool {
         let (on_24, on_26) = match change {
             Change::InfiniteBreakLength => (Some(21), 8),
@@ -139,7 +103,6 @@ impl<'g> Ctx<'g> {
         }
     }
 
-    /// `formatValue`.
     pub fn format_value(&mut self, value: &Value, level: usize) -> String {
         match value {
             Value::Undefined => "undefined".to_owned(),
@@ -156,7 +119,6 @@ impl<'g> Ctx<'g> {
         }
     }
 
-    /// `formatValue` past the primitives: proxies, cycles, then `formatRaw`.
     fn format_object(&mut self, id: ObjectId, level: usize) -> String {
         let graph = self.graph;
         let Some(mut object) = graph.object(id) else {
@@ -176,8 +138,6 @@ impl<'g> Ctx<'g> {
                     return unreadable("a proxy's target");
                 };
                 if self.major < 26 {
-                    // Node 22 and 24 format the target directly, running
-                    // its traps if it is a proxy.
                     if matches!(next.kind, Kind::Proxy { .. }) {
                         return unsupported(&format!(
                             "a proxy of a proxy, whose traps Node {} runs",
@@ -214,7 +174,6 @@ impl<'g> Ctx<'g> {
         wrap_proxies(formatted, proxies)
     }
 
-    /// `formatRaw`.
     #[allow(
         clippy::too_many_lines,
         reason = "one branch per kind, in the order inspect.js tests them"
@@ -445,7 +404,6 @@ impl<'g> Ctx<'g> {
         self.reduce_to_single_string(output, &base, (&open, close), entries, level, Some(object))
     }
 
-    /// `getConstructorName`, or the text to print instead of the object.
     fn constructor_name(constructor: &Constructor, level: usize) -> Result<Option<String>, String> {
         match constructor {
             Constructor::Named(name) => name
@@ -462,8 +420,6 @@ impl<'g> Ctx<'g> {
                 let (Some(names), Some(end)) = (names, end.whole()) else {
                     return Err(unreadable("a truncated constructor name"));
                 };
-                // `inspect(end, { depth: -1 })` of an ordinary object whose
-                // prototype is null.
                 let end = if *end_has_keys {
                     format!("[{end}: null prototype]")
                 } else {
@@ -476,7 +432,6 @@ impl<'g> Ctx<'g> {
         }
     }
 
-    /// `getPrefix`.
     pub fn prefix(
         &self,
         constructor: Option<&str>,
@@ -520,7 +475,6 @@ impl<'g> Ctx<'g> {
         format!("{constructor}{size} ")
     }
 
-    /// `getCtxStyle`.
     fn ctx_style(&self, object: &Object, constructor: Option<&str>, tag: &str) -> String {
         let mut fallback = String::new();
         if constructor.is_none() {
@@ -537,7 +491,6 @@ impl<'g> Ctx<'g> {
         self.prefix(constructor, tag, &fallback, "")
     }
 
-    /// `getFunctionBase` and `getClassBase`.
     fn function_base(
         &mut self,
         function: &Function,
@@ -611,7 +564,6 @@ impl<'g> Ctx<'g> {
         base
     }
 
-    /// `getBoxedBase`.
     fn boxed_base(&mut self, primitive: &Value, constructor: Option<&str>, tag: &str) -> String {
         let kind = match primitive {
             Value::Number(_) => "Number",
@@ -639,7 +591,6 @@ impl<'g> Ctx<'g> {
         base
     }
 
-    /// `formatPrimitive` of a string.
     fn format_string(&self, value: &JsString) -> String {
         let length = usize::try_from(value.length()).unwrap_or(usize::MAX);
         let shown = length.min(MAX_STRING_LENGTH);
@@ -666,7 +617,6 @@ impl<'g> Ctx<'g> {
         str_escape(units) + &trailer
     }
 
-    /// `formatProperty` of an object's own property.
     fn format_property(
         &mut self,
         property: &Property,
@@ -674,8 +624,6 @@ impl<'g> Ctx<'g> {
         entries: Entries,
         level: usize,
     ) -> String {
-        // `compact: true` indents an object's values three columns. With an
-        // infinite `breakLength`, no value starts on its own line.
         let extra = usize::from(self.line && entries == Entries::Object);
         self.indentation += extra;
         let text = self.format_slot(&property.slot, level);
@@ -684,7 +632,6 @@ impl<'g> Ctx<'g> {
         format!("{name}: {text}")
     }
 
-    /// `formatProperty`'s value: the slot formatted two columns further in.
     fn format_slot(&mut self, slot: &Slot, level: usize) -> String {
         match slot {
             Slot::Data(Value::Undefined)
@@ -713,7 +660,6 @@ impl<'g> Ctx<'g> {
         }
     }
 
-    /// `formatProperty`'s name for a key.
     fn property_name(&self, key: &Key, enumerable: bool) -> String {
         if self.major < 24 {
             return match key {
@@ -749,7 +695,6 @@ impl<'g> Ctx<'g> {
         }
     }
 
-    /// `formatExtraProperties` for an `ArrayBuffer`'s or a `DataView`'s getters.
     fn format_extra_property(&mut self, object: &Object, key: &str, level: usize) -> String {
         let value = match (&object.kind, key) {
             (Kind::ArrayBuffer { byte_length, .. }, "byteLength") => number(*byte_length),
@@ -767,8 +712,6 @@ impl<'g> Ctx<'g> {
                 "byteOffset",
             ) => number(view.byte_offset),
             (Kind::DataView { view: None, buffer }, key) => {
-                // The getter throws. Before 26, Node has already indented two
-                // columns and never undoes it.
                 if !self.has(Change::ExtraBeforeIndent) {
                     self.indentation += 2;
                 }
@@ -786,7 +729,6 @@ impl<'g> Ctx<'g> {
         format!("[{key}]: {text}")
     }
 
-    /// `value.buffer.byteLength`.
     fn buffer_byte_length(&self, buffer: &Value) -> Value {
         if let Value::Object(id) = buffer
             && let Some(object) = self.graph.object(*id)
@@ -797,7 +739,6 @@ impl<'g> Ctx<'g> {
         Value::Unreadable("a DataView's buffer".to_owned())
     }
 
-    /// `formatArray` and `formatSpecialArray`.
     fn format_array(&mut self, array: &Array, level: usize) -> Vec<String> {
         let length = usize::try_from(array.length).unwrap_or(usize::MAX);
         let listed_below = usize::try_from(array.listed_below).unwrap_or(usize::MAX);
@@ -827,7 +768,6 @@ impl<'g> Ctx<'g> {
         output
     }
 
-    /// `formatSpecialArray`: an array with holes from `start` on.
     fn format_special_array(
         &mut self,
         array: &Array,
@@ -888,7 +828,6 @@ impl<'g> Ctx<'g> {
         output
     }
 
-    /// `formatSet`.
     fn format_set(&mut self, size: u32, values: &[Value], level: usize) -> Vec<String> {
         let size = usize::try_from(size).unwrap_or(usize::MAX);
         let shown = MAX_ARRAY_LENGTH.min(size);
@@ -908,7 +847,6 @@ impl<'g> Ctx<'g> {
         output
     }
 
-    /// `formatMap`.
     fn format_map(&mut self, size: u32, entries: &[(Value, Value)], level: usize) -> Vec<String> {
         let size = usize::try_from(size).unwrap_or(usize::MAX);
         let shown = MAX_ARRAY_LENGTH.min(size);
@@ -929,7 +867,6 @@ impl<'g> Ctx<'g> {
         output
     }
 
-    /// `formatPromise`.
     fn format_promise(&mut self, state: &PromiseState, level: usize) -> Vec<String> {
         let (value, rejected) = match state {
             PromiseState::Pending => return vec!["<pending>".to_owned()],
@@ -946,7 +883,6 @@ impl<'g> Ctx<'g> {
         }]
     }
 
-    /// `reduceToSingleString`.
     fn reduce_to_single_string(
         &mut self,
         output: Vec<String>,
@@ -984,16 +920,12 @@ impl<'g> Ctx<'g> {
         format!("{base_space}{open}{indentation}  {joined}{indentation}{close}")
     }
 
-    /// `reduceToSingleString` with `compact: true` and an infinite
-    /// `breakLength`.
     fn reduce_to_line(&self, output: &[String], base: &str, (open, close): (&str, &str)) -> String {
         let space_base = if base.is_empty() {
             String::new()
         } else {
             format!(" {base}")
         };
-        // `isBelowBreakLength`. With the infinite `breakLength` early return,
-        // entries with line breaks are refused too; before, only `base` was.
         let below = !base.contains('\n')
             && (!self.has(Change::InfiniteBreakLength)
                 || !output.iter().any(|entry| entry.contains('\n')));
@@ -1010,7 +942,6 @@ impl<'g> Ctx<'g> {
         format!("{open}{first}{joined} {close}")
     }
 
-    /// `groupArrayElements`: an array's entries in aligned columns.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -1028,7 +959,6 @@ impl<'g> Ctx<'g> {
         let mut max_length = 0;
         let mut output_length = output.len();
         if MAX_ARRAY_LENGTH < output.len() {
-            // Leaves "... n more items" out.
             output_length -= 1;
         }
         let mut data_len = Vec::with_capacity(output_length);
@@ -1103,7 +1033,6 @@ impl<'g> Ctx<'g> {
         output
     }
 
-    /// Whether `typeof value[i]` is `number` or `bigint`.
     fn is_numeric_element(&mut self, object: &Object, i: usize) -> bool {
         match &object.kind {
             Kind::TypedArray { length, .. } => u64::try_from(i).is_ok_and(|i| i < *length),
@@ -1126,7 +1055,6 @@ impl<'g> Ctx<'g> {
                     Some(Slot::Data(Value::Number(_) | Value::BigInt(_))) => true,
                     Some(Slot::Data(_)) | None => false,
                     Some(Slot::Accessor { getter, .. }) => {
-                        // Node calls the getter.
                         self.approximate |= *getter;
                         false
                     }
@@ -1137,8 +1065,6 @@ impl<'g> Ctx<'g> {
     }
 }
 
-/// `getConstructorName` along a chain without constructors: each object's
-/// V8 name, then its prototype's text in angle brackets.
 fn unnamed_constructor(names: &[String], end: &str, level: usize) -> Option<String> {
     let (first, rest) = names.split_first()?;
     if level > DEPTH {
@@ -1152,7 +1078,6 @@ fn unnamed_constructor(names: &[String], end: &str, level: usize) -> Option<Stri
     Some(format!("{first} <{inner}>"))
 }
 
-/// Node 26 wraps the target's text in `Proxy(...)` once per proxy.
 fn wrap_proxies(mut text: String, proxies: usize) -> String {
     for _ in 0..proxies {
         text = format!("Proxy({text})");
@@ -1160,7 +1085,6 @@ fn wrap_proxies(mut text: String, proxies: usize) -> String {
     text
 }
 
-/// `isBelowBreakLength`.
 fn is_below_break_length(output: &[String], start: usize, base: &str) -> bool {
     let mut total = output.len() + start;
     if total + output.len() > BREAK_LENGTH {
@@ -1175,7 +1099,6 @@ fn is_below_break_length(output: &[String], start: usize, base: &str) -> bool {
     base.is_empty() || !base.contains('\n')
 }
 
-/// `remainingText`.
 fn remaining_text(remaining: usize) -> String {
     format!("... {remaining} more item{}", plural(remaining))
 }
@@ -1184,17 +1107,14 @@ const fn plural(count: usize) -> &'static str {
     if count > 1 { "s" } else { "" }
 }
 
-/// `formatNumber`.
 pub fn format_number(value: f64) -> String {
     crate::view::summary::javascript_number(value)
 }
 
-/// `formatBigInt`.
 fn format_bigint(value: &BigInt) -> String {
     format!("{}n", bigint_to_string(value))
 }
 
-/// A JavaScript number of a byte count.
 #[allow(
     clippy::cast_precision_loss,
     reason = "JavaScript holds the count as a double"
@@ -1203,7 +1123,6 @@ const fn number(count: u64) -> Value {
     Value::Number(count as f64)
 }
 
-/// `formatTypedArray`.
 fn format_typed_array(element: ElementType, length: u64, bytes: &[u8]) -> Vec<String> {
     let length = usize::try_from(length).unwrap_or(usize::MAX);
     let shown = MAX_ARRAY_LENGTH.min(length);
@@ -1227,7 +1146,6 @@ fn format_typed_array(element: ElementType, length: u64, bytes: &[u8]) -> Vec<St
     output
 }
 
-/// `formatArrayBuffer`.
 fn format_array_buffer(byte_length: u64, bytes: Option<&[u8]>) -> Vec<String> {
     let Some(bytes) = bytes else {
         return vec!["(detached)".to_owned()];
@@ -1246,7 +1164,6 @@ fn format_array_buffer(byte_length: u64, bytes: Option<&[u8]>) -> Vec<String> {
 }
 
 impl ElementType {
-    /// The constructor's name, which is also the tag.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Int8 => "Int8Array",
@@ -1264,7 +1181,6 @@ impl ElementType {
         }
     }
 
-    /// The bytes in an element.
     pub const fn size(self) -> usize {
         match self {
             Self::Int8 | Self::Uint8 | Self::Uint8Clamped => 1,
@@ -1274,7 +1190,6 @@ impl ElementType {
         }
     }
 
-    /// An element's text, from exactly `size` little-endian bytes.
     fn format(self, bytes: &[u8]) -> String {
         debug_assert_eq!(
             bytes.len(),
@@ -1309,7 +1224,6 @@ impl ElementType {
     }
 }
 
-/// `split(/(?<=\n)/)`: the units cut after each line feed but the last unit.
 fn split_after_newlines(units: &[u16]) -> impl Iterator<Item = &[u16]> {
     let mut rest = units;
     std::iter::from_fn(move || {
@@ -1326,8 +1240,6 @@ fn split_after_newlines(units: &[u16]) -> impl Iterator<Item = &[u16]> {
     })
 }
 
-/// A value as a template literal converts it, or the text to print when the
-/// conversion throws or would call into the program.
 fn template_text(value: &Value) -> String {
     to_js_string(value).unwrap_or_else(|fault| match fault {
         Fault::Throws => unsupported("a conversion that throws in Node's inspect"),
@@ -1335,7 +1247,6 @@ fn template_text(value: &Value) -> String {
     })
 }
 
-/// `Symbol.prototype.toString`'s units.
 fn symbol_units(symbol: &Symbol) -> Option<Vec<u16>> {
     let mut units: Vec<u16> = "Symbol(".encode_utf16().collect();
     if let Some(description) = &symbol.description {
@@ -1348,12 +1259,10 @@ fn symbol_units(symbol: &Symbol) -> Option<Vec<u16>> {
     Some(units)
 }
 
-/// `Symbol.prototype.toString`.
 fn symbol_text(symbol: &Symbol) -> Option<String> {
     symbol_units(symbol).map(|units| String::from_utf16_lossy(&units))
 }
 
-/// JavaScript's `ToBoolean`.
 pub fn truthy(value: &Value) -> bool {
     match value {
         Value::Undefined | Value::Null => false,
@@ -1365,7 +1274,6 @@ pub fn truthy(value: &Value) -> bool {
     }
 }
 
-/// JavaScript's `ToString` where it needs no call into the program.
 pub fn to_js_string(value: &Value) -> Result<String, Fault> {
     match value {
         Value::Undefined => Ok("undefined".to_owned()),

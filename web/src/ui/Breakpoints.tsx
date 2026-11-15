@@ -18,7 +18,6 @@ import { useLook, useShowSource } from "./navigation";
 import { fileName } from "./paths";
 import { useFocus } from "./Workspace";
 
-/** Every breakpoint and watchpoint, where it landed, and how often it was hit. */
 export function Breakpoints() {
   const { state } = useFocus();
   const control = useModel(controls);
@@ -68,7 +67,6 @@ export function BreakpointsBadge() {
   return count > 0 ? <span className="count">{count}</span> : null;
 }
 
-/** Short source location, falling back to the requested location. */
 export function placeLabel(breakpoint: Breakpoint): string {
   const place = firstBreakpointPlace(breakpoint);
   if (place?.path && place.line) {
@@ -81,7 +79,6 @@ export function placeLabel(breakpoint: Breakpoint): string {
   return asked?.[2] ?? breakpoint.location;
 }
 
-/** A breakpoint's active locations, or why it remains pending. */
 export function breakpointTitle(breakpoint: Breakpoint): string {
   const places = breakpoint.places
     .map((at) => `${at.function ?? at.address} ${at.path ? `${at.path}:${at.line}` : ""}`)
@@ -92,10 +89,6 @@ export function breakpointTitle(breakpoint: Breakpoint): string {
   return places || `${breakpoint.location}: ${PENDING}`;
 }
 
-/**
- * Shows a breakpoint's code: its line, or its instructions where it has no
- * line. Returns why it cannot, when it cannot.
- */
 export function useShowBreakpoint(): (breakpoint: Breakpoint) => string | null {
   const showSource = useShowSource();
   const look = useLook();
@@ -105,7 +98,7 @@ export function useShowBreakpoint(): (breakpoint: Breakpoint) => string | null {
       showSource(place.path, place.line);
       return null;
     }
-    // A pending place's address is not where the code will load.
+
     const placed = breakpoint.places[0];
     if (placed) {
       look((current) => ({ ...current, asm: placed.address, view: "disassembly" }), {
@@ -117,15 +110,13 @@ export function useShowBreakpoint(): (breakpoint: Breakpoint) => string | null {
   };
 }
 
-/** What stops a breakpoint or watchpoint, besides being reached. */
 interface Conditions {
   condition: string | null;
   hitCondition: string | null;
-  /** Breakpoints alone log instead of stopping. */
+
   logMessage?: string | null;
 }
 
-/** Conditions as a row says them, or "" when there are none. */
 function conditionText(conditions: Conditions): string {
   if (conditions.logMessage) {
     return `log "${conditions.logMessage}"`;
@@ -237,10 +228,6 @@ function BreakpointEditor({ breakpoint, close }: { breakpoint: Breakpoint; close
   );
 }
 
-/**
- * Edits conditions in place: a condition, a hit condition, and, when
- * `initial` has the field, a log message.
- */
 function ConditionEditor({
   title,
   initial,
@@ -346,7 +333,6 @@ function ConditionEditor({
   );
 }
 
-/** Adds a breakpoint at whatever is typed. */
 function Adder() {
   const connection = useConnection();
   const [text, setText] = useState("");
@@ -391,10 +377,9 @@ const ACCESS: Record<WatchAccess, string> = {
   read: "read",
 };
 
-/** A watchpoint: what it watches, when it stops, and how often it was hit. */
 function WatchRow({ watchpoint, control }: { watchpoint: Watchpoint; control: boolean }) {
   const connection = useConnection();
-  // The tab store holds one breakpoint's editor; a watchpoint's is its own.
+
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const label = watchpoint.expression ?? `${watchpoint.address}:${watchpoint.bytes}`;
@@ -474,10 +459,6 @@ function WatchRow({ watchpoint, control }: { watchpoint: Watchpoint; control: bo
   );
 }
 
-/**
- * Adds a watchpoint on an expression, read in the frame shown, or on bytes
- * at an address.
- */
 function WatchAdder() {
   const { at, stale } = useFocus();
   const connection = useConnection();
@@ -529,10 +510,6 @@ function WatchAdder() {
   );
 }
 
-/**
- * Exception filters start collapsed because most apply to other languages.
- * The summary counts enabled filters.
- */
 function Exceptions({ control }: { control: boolean }) {
   const session = useModel((model) => model.state?.session);
   const exceptions = useRequest("exceptions", session ? undefined : null);

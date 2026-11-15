@@ -1,7 +1,7 @@
-//! Maps keyed by tuples, which an expression indexes by a tuple key. Prints
-//! `EXPECT\t<expression>\t<kind>\t<value>` for each, as the map's own
-//! lookup finds it, then calls barrier(). Unlike most Rust fixtures, this
-//! one uses std, whose maps it keys.
+
+
+
+
 
 use std::collections::{BTreeMap, HashMap};
 use std::hint::black_box;

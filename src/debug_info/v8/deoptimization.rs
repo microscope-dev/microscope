@@ -1,8 +1,3 @@
-//! Extracts safepoint table layouts, deoptimization slots, and translation
-//! opcodes from V8 headers for `OptimizedJSFrame::Summarize` decoding.
-//! Checks that their encoding matches the runtime model. Constants go in
-//! `layouts.gen.rs`; per-version opcodes in `src/image/v8/translation.gen.rs`.
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -10,8 +5,6 @@ use std::path::PathBuf;
 use super::headers::Headers;
 use crate::image::v8::TranslationOpcode;
 
-/// The fields of both safepoint tables' entry configurations the runtime
-/// model reads; the Turbofan table's tagged slots' bytes are not.
 const CONFIGURATION: [&str; 4] = [
     "HasDeoptDataField",
     "RegisterIndexesSizeField",
@@ -19,7 +12,6 @@ const CONFIGURATION: [&str; 4] = [
     "DeoptIndexSizeField",
 ];
 
-/// The safepoint tables, by class, with their header.
 const SAFEPOINT_TABLES: [(&str, &str); 2] = [
     ("SafepointTable", "src/codegen/safepoint-table.h"),
     (
@@ -28,8 +20,6 @@ const SAFEPOINT_TABLES: [(&str, &str); 2] = [
     ),
 ];
 
-/// Adds to `constants`, by the names [`crate::image::v8::Constant`] gives
-/// them, what reading a deoptimization translation needs.
 pub(super) fn add_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>) {
     check_code_metadata(headers);
     for (class, file) in SAFEPOINT_TABLES {
@@ -96,12 +86,10 @@ pub(super) fn add_constants(headers: &Headers, constants: &mut BTreeMap<String, 
     check_translation_encoding(headers);
 }
 
-/// `text` with each run of whitespace one space.
 fn collapsed(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Fails unless `file` says `text`, whitespace aside.
 fn check_says(headers: &Headers, file: &str, text: &str) {
     assert!(
         collapsed(headers.file(file)).contains(&collapsed(text)),
@@ -109,9 +97,6 @@ fn check_says(headers: &Headers, file: &str, text: &str) {
     );
 }
 
-/// Checks that optimized code's safepoint table is where the runtime model
-/// looks: at the start of its metadata, which follows its instructions, up
-/// to its handler table.
 fn check_code_metadata(headers: &Headers) {
     for (file, text) in [
         (
@@ -141,10 +126,6 @@ fn check_code_metadata(headers: &Headers) {
     }
 }
 
-/// Checks that a safepoint table's entries are laid out as the runtime
-/// model reads them: each `entry_size()` bytes from the header, its pc,
-/// then with deoptimization data its index and trampoline pc, each plus
-/// one, then for Maglev its extra spill slots' byte, then its registers.
 fn check_entries(headers: &Headers, class: &str, file: &str) {
     let body = collapsed(headers.class_text(file, class));
     let maglev = class == "MaglevSafepointTable";
@@ -183,10 +164,6 @@ fn check_entries(headers: &Headers, class: &str, file: &str) {
     );
 }
 
-/// Checks that a translation is a byte per opcode with VLQ operands, as
-/// `base/vlq.h` decodes them, and that no build compresses it unless asked:
-/// `--turbo-compress-frame-translations` is off by default with zlib and
-/// without.
 fn check_translation_encoding(headers: &Headers) {
     let flags = "src/flags/flag-definitions.h";
     let text = collapsed(headers.file(flags));
@@ -213,7 +190,6 @@ fn check_translation_encoding(headers: &Headers) {
     }
 }
 
-/// `src/image/v8/translation.gen.rs`: each version's translation opcodes.
 pub(super) fn generate(versions: &[((u32, u32), PathBuf)], notice: &str) -> String {
     let mut text = String::from(
         "// @generated from V8's src/deoptimizer/translation-opcode.h for each\n\
@@ -238,7 +214,6 @@ pub(super) fn generate(versions: &[((u32, u32), PathBuf)], notice: &str) -> Stri
     );
     for ((major, minor), torque) in versions {
         let v8 = torque.parent().expect("a version's directory").join("v8");
-        // The opcodes do not depend on leaptiering.
         let headers = Headers::read(&v8, *major > 12);
         let (opcodes, js_frames, frames) = headers.translation_opcodes();
         writeln!(text, "    Translations {{").expect("write");
@@ -247,7 +222,6 @@ pub(super) fn generate(versions: &[((u32, u32), PathBuf)], notice: &str) -> Stri
         writeln!(text, "        frame_opcodes: {frames},").expect("write");
         writeln!(text, "        opcodes: &[").expect("write");
         for (name, operands) in opcodes {
-            // 12.4 spells JavaScript JAVA_SCRIPT.
             let own = name.replace("JAVA_SCRIPT_", "JAVASCRIPT_");
             let opcode = TranslationOpcode::named(&own)
                 .unwrap_or_else(|| panic!("V8 {major}.{minor} has an unknown opcode {name}"));

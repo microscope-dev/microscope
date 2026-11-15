@@ -1,9 +1,3 @@
-//! Split DWARF: a program whose compile units each keep their DIEs in a
-//! `.dwo` file of their own, as Chromium builds by default. The program
-//! holds a skeleton of each unit, which names the file and keeps the line
-//! table; the file holds the unit's functions, inlines, variables, and
-//! types. Each file found is read in its skeleton's place.
-
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
@@ -13,14 +7,9 @@ use rayon::prelude::*;
 
 use super::{Reader, Sections, text};
 
-/// An image's DWARF, and that of each `.dwo` file one of its units came
-/// from, which the unit's strings, addresses, and ranges are read through
-/// ([`super::unit_dwarf`]). It is the image's own DWARF everywhere else.
 pub(in crate::debug_info) struct DwarfSet<'data> {
     main: gimli::Dwarf<Reader<'data>>,
 
-    /// Each file's DWARF, by where its `.debug_info.dwo` lies in memory,
-    /// in order.
     split: Vec<(std::ops::Range<usize>, gimli::Dwarf<Reader<'data>>)>,
 }
 
@@ -42,8 +31,6 @@ impl<'data> From<gimli::Dwarf<Reader<'data>>> for DwarfSet<'data> {
 }
 
 impl<'data> DwarfSet<'data> {
-    /// The DWARF of the `.dwo` file `unit` was read from, if it was read
-    /// from one.
     pub(super) fn split_of(
         &self,
         unit: &gimli::Unit<Reader<'data>>,
@@ -58,15 +45,11 @@ impl<'data> DwarfSet<'data> {
         range.contains(&at).then_some(dwarf)
     }
 
-    /// The image's own DWARF.
     pub(super) const fn main(&self) -> &gimli::Dwarf<Reader<'data>> {
         &self.main
     }
 }
 
-/// Whether `unit` is a skeleton, which names a `.dwo` file holding the rest
-/// of it: DWARF 5's skeleton unit, or before it a compile unit with GNU's
-/// `DW_AT_GNU_dwo_id`.
 pub(super) fn is_skeleton(unit: &gimli::Unit<Reader<'_>>) -> bool {
     match unit.header.type_() {
         gimli::UnitType::Skeleton(_) => true,
@@ -75,14 +58,8 @@ pub(super) fn is_skeleton(unit: &gimli::Unit<Reader<'_>>) -> bool {
     }
 }
 
-/// A skeleton's `.dwo` file: the bytes read, or where it was looked for
-/// first when it was not found.
 pub(super) type Found = Result<(PathBuf, Vec<u8>), PathBuf>;
 
-/// Reads the `.dwo` file of each skeleton among `units`, by index: from its
-/// compile directory, as the compiler wrote it, then beside `program`,
-/// where a build that names its directory `.`, as Chromium's does, or a
-/// program copied with its `.dwo` files puts it.
 pub(super) fn read_files(
     dwarf: &gimli::Dwarf<Reader<'_>>,
     units: &[gimli::Unit<Reader<'_>>],
@@ -115,11 +92,6 @@ pub(super) fn read_files(
         .collect()
 }
 
-/// What the image cache keys a program's image by beyond its bytes when
-/// its DWARF is split: where each skeleton's `.dwo` file was found, with
-/// its size, inode, and modification time, or that none was, so that an
-/// image is built again when one is rebuilt, appears, or goes. `None` for
-/// a program whose first compile unit is no skeleton.
 pub(super) fn fingerprint(object: &object::File<'_>, program: &Path) -> Option<Vec<u8>> {
     use std::os::unix::fs::MetadataExt as _;
 
@@ -128,8 +100,6 @@ pub(super) fn fingerprint(object: &object::File<'_>, program: &Path) -> Option<V
     } else {
         RunTimeEndian::Big
     };
-    // Parsing a unit reads its line program, addresses, and ranges too,
-    // so every section is loaded; uncompressed ones are only borrowed.
     let (sections, _) = super::load_sections(object, super::LoadLimits::default()).ok()?;
     let dwarf = sections.borrow(|section| EndianSlice::new(section, endian));
     let mut headers = dwarf.units();
@@ -182,7 +152,6 @@ pub(super) fn fingerprint(object: &object::File<'_>, program: &Path) -> Option<V
     Some(fingerprint)
 }
 
-/// Where the `.dwo` file `name` may be, in the order it is looked for.
 fn candidates(directory: &Path, compiled: Option<&Path>, name: &Path) -> Vec<PathBuf> {
     if name.is_absolute() {
         return vec![name.to_owned()];
@@ -201,8 +170,6 @@ fn candidates(directory: &Path, compiled: Option<&Path>, name: &Path) -> Vec<Pat
     paths
 }
 
-/// The DWARF sections of a `.dwo` file's `bytes`, or `None` when they are
-/// not an object with them.
 pub(super) fn sections(bytes: &[u8]) -> Option<Sections<'_>> {
     let object = object::File::parse(bytes).ok()?;
     let mut wanted = Vec::new();
@@ -221,14 +188,9 @@ pub(super) fn sections(bytes: &[u8]) -> Option<Sections<'_>> {
         .ok()?
         .into_iter();
 
-    // gimli asks for the sections in the same order both times.
     DwarfSections::load(|_| Ok::<_, ()>(data.next().unwrap_or(Cow::Borrowed(&[])))).ok()
 }
 
-/// `main` with the DWARF of each `.dwo` file of `files`, and `units` with
-/// the split unit each holds in place of its skeleton, at the skeleton's
-/// index. A file whose unit does not match its skeleton's id, or cannot be
-/// read, leaves the skeleton in place.
 pub(super) fn with_split_units<'data>(
     main: gimli::Dwarf<Reader<'data>>,
     mut units: Vec<gimli::Unit<Reader<'data>>>,
@@ -242,8 +204,6 @@ pub(super) fn with_split_units<'data>(
             let mut dwo = sections.borrow(|section| EndianSlice::new(section, endian));
             dwo.make_dwo(&main);
 
-            // The skeleton keeps the line table, whose file names its own
-            // strings hold.
             dwo.debug_line_str = main.debug_line_str;
             dwo.populate_abbreviations_cache(gimli::AbbreviationsCacheStrategy::Duplicates);
             let mut headers = dwo.units();
@@ -276,7 +236,6 @@ pub(super) fn with_split_units<'data>(
 
     let mut split = Vec::with_capacity(read.len());
     for (index, unit, range, dwo) in read {
-        // `read` kept only the indexes `units.get` found.
         if let Some(slot) = units.get_mut(index) {
             *slot = unit;
         }

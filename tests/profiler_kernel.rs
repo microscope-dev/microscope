@@ -60,8 +60,6 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
         let output = command
             .arg("--")
             .arg(Scenario::fixture("profile-kernel"))
-            // Copy enough per call to measure kernel work rather than
-            // the overhead of libc's syscall wrapper.
             .args(["200000", "65536"])
             .stdin(Stdio::null())
             .output()
@@ -110,7 +108,6 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
         u128::from(sampled) * 10 >= u128::from(counted) * 9,
         "sampled {sampled} of {counted} ns"
     );
-    // The read's callers reach past libc's wrappers to the program.
     let callers = Command::new(env!("CARGO_BIN_EXE_microscope"))
         .args(["report", "--focus", "[kernel: read]", "--invert", "--tree"])
         .arg(scratch.path().join("true.usprof"))
@@ -122,7 +119,6 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
         "{callers}"
     );
 
-    // Loading the BPF walker is setup, not a cost of the program running.
     let (used, _) = kernel.recorder_cpu();
     let setup = kernel.recorder_setup();
     assert!(
@@ -136,7 +132,6 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
     );
 }
 
-/// Each path of `tree` that weight ends at, outermost first, by name.
 fn ending_paths(tree: &CallTree, keys: &Keys<'_>) -> Vec<(Vec<String>, u64)> {
     (0..tree.key.len())
         .filter(|&node| tree.own[node] > 0)
@@ -153,9 +148,6 @@ fn ending_paths(tree: &CallTree, keys: &Keys<'_>) -> Vec<(Vec<String>, u64)> {
         .collect()
 }
 
-/// The samples taken during a call are those of the function that made
-/// it, and each call as a leaf weighs what no sample stands for: a sleep's
-/// whole length, a call the kernel ran on its CPU next to nothing.
 #[test]
 #[ignore = "needs CAP_BPF and CAP_PERFMON; use MICROSCOPE_BPF_LAUNCHER"]
 fn samples_during_calls_and_calls_as_leaves_account_for_each_others_time() {
@@ -179,8 +171,6 @@ fn samples_during_calls_and_calls_as_leaves_account_for_each_others_time() {
     );
     let profile = Profile::read(&path).expect("read the recording").profile;
     let keys = profile.keys(Granularity::Function);
-    // Calls in the order of their rows, each with its stack. The runtime
-    // makes calls of its own before main, so take the loop's.
     let calls: Vec<(String, Vec<String>)> = profile
         .syscalls()
         .events

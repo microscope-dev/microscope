@@ -1,12 +1,3 @@
-//! What recording system calls costs a program, measured on a getppid loop.
-//!
-//! The loop times its own calls and prints the nanoseconds each took, bare
-//! and recorded at each level with the preset that picks it, and, as the
-//! tax every other process pays while the BPF engine's tracepoints are
-//! attached, unrecorded beside a recording of another program. Setups are interleaved so that drift in the machine
-//! falls on every one alike. The loop runs on cores of its own, and microscope
-//! on others that share their last-level cache, as `overhead` places them.
-
 use std::io::{BufRead as _, BufReader, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -16,40 +7,27 @@ use serde::{Deserialize, Serialize};
 
 use super::overhead::{Placement, median};
 
-/// The ways the loop runs: bare, recorded at the production preset's
-/// counts and the development preset's calls, and unrecorded while
-/// another program is recorded.
 pub const SETUPS: [&str; 4] = ["bare", "counts", "calls", "untargeted"];
 
-/// One run of the loop under one setup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
     pub setup: String,
     pub ns_per_call: f64,
 }
 
-/// What to measure.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// Where the built fixtures are.
     pub programs: PathBuf,
 
-    /// The microscope executable traced runs use.
     pub microscope: PathBuf,
 
-    /// Starts microscope with `CAP_BPF` and `CAP_PERFMON`: the `microscope-bpf`
-    /// wrapper, given the executable and its arguments.
     pub launcher: PathBuf,
 
-    /// Runs of each setup.
     pub runs: usize,
 
-    /// Calls each run of the loop makes.
     pub calls: u64,
 }
 
-/// Runs every setup `options.runs` times, telling `progress` of each run as
-/// it ends.
 pub fn measure(options: &Options, mut progress: impl FnMut(&Run)) -> Result<Vec<Run>> {
     if !options.launcher.exists() {
         bail!(
@@ -86,7 +64,6 @@ fn run(setup: &str, options: &Options, placement: &Placement, taskset: &Path) ->
     let burst = options.programs.join("syscall-burst");
     let calls = options.calls.max(1).to_string();
 
-    // The loop runs on the program's CPUs, wherever microscope does.
     let mut looping = Command::new(taskset);
     looping
         .arg("--cpu-list")
@@ -122,8 +99,6 @@ fn run(setup: &str, options: &Options, placement: &Placement, taskset: &Path) ->
     }
 }
 
-/// Runs the loop, or microscope tracing it, and reads the nanoseconds a call
-/// the loop printed.
 fn timed(mut command: Command) -> Result<f64> {
     let output = command
         .stdin(Stdio::null())
@@ -145,8 +120,6 @@ fn timed(mut command: Command) -> Result<f64> {
         .with_context(|| format!("the loop printed no time: {stdout:?}"))
 }
 
-/// A recording of a program that waits on its input, so that the BPF
-/// engine's tracepoints stay attached while the loop runs unrecorded.
 struct Tracing {
     child: Child,
 }
@@ -165,7 +138,6 @@ impl Tracing {
             .spawn()
             .context("recording another program")?;
 
-        // The program runs only once the engine's programs are attached.
         let stdout = child.stdout.take().context("the traced program's output")?;
         let mut line = String::new();
         BufReader::new(stdout).read_line(&mut line)?;
@@ -178,7 +150,6 @@ impl Tracing {
         Ok(Self { child })
     }
 
-    /// Ends the traced program by closing its input, and waits for microscope.
     fn finish(&mut self) -> Result<()> {
         drop(self.child.stdin.take());
         let status = self.child.wait()?;
@@ -202,7 +173,6 @@ impl Drop for Tracing {
     }
 }
 
-/// The program named `name` on `PATH`.
 fn which(name: &str) -> Result<PathBuf> {
     std::env::var_os("PATH")
         .iter()
@@ -212,21 +182,16 @@ fn which(name: &str) -> Result<PathBuf> {
         .with_context(|| format!("{name} is not on PATH"))
 }
 
-/// One setup, over its runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Summary {
     pub setup: String,
     pub ns_per_call: f64,
 
-    /// Nanoseconds a call more than bare.
     pub added_ns: f64,
 
-    /// Bare's spread, the range of its runs, in nanoseconds: the noise a
-    /// cost is read against.
     pub noise_ns: f64,
 }
 
-/// Each setup by the medians of its runs.
 #[must_use]
 pub fn summarize(runs: &[Run]) -> Vec<Summary> {
     fn of<'a>(runs: &'a [Run], setup: &'a str) -> impl Iterator<Item = f64> + 'a {

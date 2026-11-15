@@ -1,6 +1,6 @@
-// Strings in the forms C programs keep them, for text summaries: pointers,
-// arrays with and without a terminator, escapes, text longer than a summary
-// holds, text that runs into unreadable memory, and wide text.
+
+
+
 #define _DEFAULT_SOURCE
 
 #include <stddef.h>
@@ -22,7 +22,7 @@ __attribute__((noinline)) int strings_target(const char *greeting, const char *e
     const char16_t *sixteen = u"sixteen \u03bb \U0001F980";
     const char32_t *thirty_two = U"thirty-two \U0001F980";
     wchar_t wide_buffer[8] = L"buf";
-    // An unpaired surrogate is not a character.
+
     char16_t lone[3] = {u'a', 0xd800, 0};
     __asm__ volatile("" : : "g"(greeting), "g"(escaped), "g"(long_text), "g"(edge),
                      "g"(buffer), "g"(unterminated), "g"(null_text), "g"(invalid),
@@ -34,7 +34,7 @@ __attribute__((noinline)) int strings_target(const char *greeting, const char *e
 int main(void) {
     static char long_text[600];
     memset(long_text, 'x', sizeof long_text - 1);
-    // Text that fills the end of a readable page, with the next page gone.
+
     char *pages = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (pages == MAP_FAILED || munmap(pages + 4096, 4096) != 0) {
         return 100;

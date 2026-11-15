@@ -1,15 +1,3 @@
-//! Reads C-defined standard-library values using structures copied in `scripts/cpython-layouts.c`:
-//! `collections.deque`, `defaultdict`, and `OrderedDict`; `datetime`'s types; and `decimal.Decimal`.
-//!
-//! Recognition requires a C-defined type with matching module, name, and object size.
-//! Same-named nonmatching types are ordinary objects; subclasses retain the base value.
-//!
-//! Summaries follow the type's C `repr`, including its type-name spelling; items are children.
-//! `OrderedDict` uses node order, which `move_to_end` changes without changing dict order.
-//! `Decimal` exponents use `E`, matching the default context's `capitals`.
-//!
-//! numpy's `ndarray` requires matching module/name and room for its public fields ([`super::numpy`]).
-
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -21,18 +9,11 @@ use crate::VirtualAddress;
 use crate::image::python::{Constant, Field};
 use crate::runtime_model::InterpretedKind;
 
-/// The most digits of a `Decimal`'s coefficient read: one with more is
-/// shown by its size.
 const MAX_DECIMAL_DIGITS: u64 = 1 << 10;
 
-/// libmpdec's number keeps its coefficient in words of this many decimal
-/// digits each, below [`DECIMAL_RADIX`].
 const DECIMAL_WORD_DIGITS: u64 = 19;
 const DECIMAL_RADIX: u64 = 10_000_000_000_000_000_000;
 
-/// The bits of a libmpdec number's `flags` that give its sign and its
-/// kind, as `mpdecimal.h` defines them: negative, infinite, a quiet NaN,
-/// and a signaling NaN.
 const DECIMAL_NEGATIVE: u8 = 1;
 const DECIMAL_INFINITE: u8 = 2;
 const DECIMAL_NAN: u8 = 4;
@@ -55,7 +36,6 @@ const _: () = assert!(
     "each of a Decimal's flags is its own bit"
 );
 
-/// One of the standard library's types that only C defines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LibraryType {
     Deque,
@@ -70,15 +50,12 @@ pub(super) enum LibraryType {
     NdArray,
 }
 
-/// The size a type's objects must have: that of the structure the layout
-/// copies, or at least this many bytes past the object's header.
 #[derive(Clone, Copy)]
 pub(super) enum Size {
     Exact(Field),
     AtLeast(u64),
 }
 
-/// Each type, by its module and name, and the size of its objects.
 const LIBRARY: [(&str, &str, LibraryType, Size); 10] = [
     (
         "collections",
@@ -143,8 +120,6 @@ const LIBRARY: [(&str, &str, LibraryType, Size); 10] = [
 ];
 
 impl LibraryType {
-    /// The type named `name` in `module`, and the size its objects must
-    /// have, if one is.
     pub(super) fn named(module: Option<&str>, name: &str) -> Option<(Self, Size)> {
         LIBRARY
             .iter()
@@ -153,10 +128,7 @@ impl LibraryType {
     }
 }
 
-/// An object of one of the types, as far as presenting it needs it read.
 pub(super) enum Library {
-    /// A deque of `length` items, the first at `index` of the block at
-    /// `block`, and the most it holds, if it is bounded.
     Deque {
         block: VirtualAddress,
         index: u64,
@@ -164,13 +136,11 @@ pub(super) enum Library {
         maxlen: Option<u64>,
     },
 
-    /// A dict, and what makes the value of a key it holds none for.
     DefaultDict {
         dict: Dict,
         factory: Option<VirtualAddress>,
     },
 
-    /// A dict, and the first node of the list that orders its keys.
     OrderedDict {
         dict: Dict,
         first: VirtualAddress,
@@ -191,8 +161,6 @@ pub(super) enum Library {
         microseconds: i32,
     },
 
-    /// A fixed offset from UTC, a `timedelta`, and its name, if it was
-    /// given one.
     TimeZone {
         offset: VirtualAddress,
         name: Option<VirtualAddress>,
@@ -208,8 +176,6 @@ pub(super) struct Date {
     day: u8,
 }
 
-/// A time of day, and its fold: 1 for the second of two times a clock
-/// shows twice.
 #[derive(Clone, Copy)]
 pub(super) struct Time {
     hour: u8,
@@ -219,8 +185,6 @@ pub(super) struct Time {
     fold: u8,
 }
 
-/// A libmpdec number's flags, exponent, and little-endian [`DECIMAL_WORD_DIGITS`]-digit words,
-/// or just its digit count when too large to read.
 pub(super) enum Decimal {
     Read {
         flags: u8,
@@ -233,7 +197,6 @@ pub(super) enum Decimal {
 }
 
 impl Library {
-    /// What kind of value it is.
     pub(super) fn kind(&self) -> InterpretedKind {
         match self {
             Self::Deque { length, .. } => InterpretedKind::Sequence { length: *length },
@@ -252,8 +215,6 @@ impl Library {
         }
     }
 
-    /// Whether it holds other objects, as a container does, which a
-    /// summary nests.
     pub(super) const fn contains(&self) -> bool {
         matches!(
             self,
@@ -261,7 +222,6 @@ impl Library {
         )
     }
 
-    /// The `dict` it is, if it is one.
     pub(super) const fn dict(&self) -> Option<Dict> {
         match self {
             Self::DefaultDict { dict, .. } | Self::OrderedDict { dict, .. } => Some(*dict),
@@ -271,9 +231,6 @@ impl Library {
 }
 
 impl Values<'_, '_> {
-    /// The library type the type at `ty`, of `flags`, named `name` in
-    /// `module`, is: where C defines it and its objects are the size of
-    /// the structure the layout copies.
     pub(super) fn library_type(
         &self,
         ty: VirtualAddress,
@@ -296,9 +253,6 @@ impl Values<'_, '_> {
         Ok(sized.then_some(library))
     }
 
-    /// The object the head is of, of the library type `class`, which an
-    /// object of the type at `ty` holds: `ty` is `class` or derives from
-    /// it.
     pub(super) fn library(
         &self,
         head: &Head<'_, '_>,
@@ -322,9 +276,6 @@ impl Values<'_, '_> {
                 bytes.try_into().map_err(|_| malformed(address, "object"))?,
             ))
         };
-        // A time or datetime has a tzinfo only where its `hastzinfo`, in
-        // the head every `datetime` type shares, says so: one made without
-        // is allocated short of the field.
         let tzinfo = |field| -> Result<Option<VirtualAddress>, Problem> {
             if head.field_byte(Field::DateHasTzinfo)? == 0 {
                 return Ok(None);
@@ -407,8 +358,6 @@ impl Values<'_, '_> {
         }))
     }
 
-    /// The dict the head's object is, as a `defaultdict` or an
-    /// `OrderedDict` is first.
     fn dict_of(&self, head: &Head<'_, '_>) -> Result<Dict, Problem> {
         match self.dict(head)? {
             Object::Dict(dict) => Ok(dict),
@@ -416,7 +365,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The libmpdec number of the `Decimal` the head is of.
     fn decimal(&self, head: &Head<'_, '_>) -> Result<Decimal, Problem> {
         let address = head.address();
         let bad = || malformed(address, "Decimal");
@@ -429,8 +377,6 @@ impl Values<'_, '_> {
             return Ok(Decimal::Large { digits });
         }
 
-        // A number's words hold exactly its digits; an infinity has none,
-        // and a NaN only the digits of its payload, if it has one.
         if length != digits.div_ceil(DECIMAL_WORD_DIGITS)
             || (!special && length == 0)
             || (flags & DECIMAL_INFINITE != 0 && length != 0)
@@ -470,8 +416,6 @@ impl Values<'_, '_> {
         })
     }
 
-    /// The items `range` of the deque whose first of `length` items is at
-    /// `index` of the block at `block`.
     pub(super) fn deque_items(
         &self,
         (block, index, length): (VirtualAddress, u64, u64),
@@ -534,10 +478,6 @@ impl Values<'_, '_> {
         Ok(items)
     }
 
-    /// Calls `each` with each of the `OrderedDict`'s items in `range`, in
-    /// the order its nodes keep, from the node at `first`, until it fails.
-    /// Each node holds a key of the dict, the very object, which a probe
-    /// for its hash finds.
     pub(super) fn linked_entries(
         &self,
         (dict, first): (Dict, VirtualAddress),
@@ -574,8 +514,6 @@ impl Values<'_, '_> {
         Ok(())
     }
 
-    /// The text of an object of a library type, `value`, whose type's C
-    /// names it `name`, where it is `depth` containers deep in a summary.
     pub(super) fn library_text(
         &self,
         name: &str,
@@ -583,7 +521,6 @@ impl Values<'_, '_> {
         depth: usize,
         summary: &mut Summary,
     ) -> String {
-        // A collection's own C writes its type's name without its module.
         let short = name.rsplit_once('.').map_or(name, |(_, name)| name);
         match value {
             Library::Deque {
@@ -685,8 +622,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The text of a `defaultdict` within itself, as its `repr` writes it:
-    /// its dict is the part `repr` has already entered.
     pub(super) fn recurring_library_text(
         &self,
         name: &str,
@@ -717,7 +652,6 @@ impl Values<'_, '_> {
         )
     }
 
-    /// Appends a time's tzinfo to its text, unless it is `None`.
     fn tzinfo_text(
         &self,
         text: &mut String,
@@ -731,9 +665,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// Whether the object at `offset` is a `timedelta` of no time, as the
-    /// offset of the one `timezone` CPython makes of no offset and no name
-    /// is: UTC.
     fn zero_delta(&self, offset: VirtualAddress) -> bool {
         matches!(
             self.object(offset),
@@ -749,13 +680,10 @@ impl Values<'_, '_> {
     }
 }
 
-/// A count CPython keeps as a signed size.
 fn signed(size: u64, address: VirtualAddress) -> Result<u64, Problem> {
     u64::try_from(size.cast_signed()).map_err(|_| malformed(address, "object"))
 }
 
-/// A date's packed bytes: its year, two bytes, high first, then its month
-/// and its day.
 fn date(data: &[u8], address: VirtualAddress) -> Result<Date, Problem> {
     let &[high, low, month, day] = data else {
         return Err(malformed(address, "date"));
@@ -767,8 +695,6 @@ fn date(data: &[u8], address: VirtualAddress) -> Result<Date, Problem> {
     })
 }
 
-/// A time's packed bytes: its hour, minute, and second, then its
-/// microsecond, three bytes, high first.
 fn time(data: &[u8], fold: u8, address: VirtualAddress) -> Result<Time, Problem> {
     let &[hour, minute, second, high, middle, low] = data else {
         return Err(malformed(address, "time"));
@@ -782,8 +708,6 @@ fn time(data: &[u8], fold: u8, address: VirtualAddress) -> Result<Time, Problem>
     })
 }
 
-/// A time's hour and minute, then its second and its microsecond where
-/// they are not 0, as its `repr` writes them.
 fn clock(time: Time) -> String {
     let Time {
         hour,
@@ -801,8 +725,6 @@ fn clock(time: Time) -> String {
     }
 }
 
-/// A `timedelta`'s arguments, as its `repr` writes them: each part that is
-/// not 0, by its keyword, or `0`.
 fn delta(days: i32, seconds: i32, microseconds: i32) -> String {
     let parts: Vec<String> = [
         ("days", days),
@@ -820,7 +742,6 @@ fn delta(days: i32, seconds: i32, microseconds: i32) -> String {
     }
 }
 
-/// Appends a keyword argument to a `repr`'s text, within its parentheses.
 fn keyword(text: &mut String, argument: &str) {
     if text.ends_with(')') {
         text.pop();
@@ -831,13 +752,10 @@ fn keyword(text: &mut String, argument: &str) {
     text.push(')');
 }
 
-/// How many decimal digits `word` has; 0 has one.
 fn word_digits(word: u64) -> u64 {
     word.checked_ilog10().map_or(1, |log| u64::from(log) + 1)
 }
 
-/// A libmpdec number in scientific notation, as `mpd_to_sci` writes it
-/// with capitals: libmpdec's `_mpd_to_string`, without its other formats.
 fn scientific(flags: u8, exponent: i64, words: &[u64]) -> String {
     debug_assert!(
         !words.is_empty() || flags & (DECIMAL_INFINITE | DECIMAL_NAN | DECIMAL_SIGNALING) != 0,
@@ -881,10 +799,6 @@ fn scientific(flags: u8, exponent: i64, words: &[u64]) -> String {
         return text;
     }
 
-    // The number of digits left of the point, were the exponent 0, and
-    // where the point is written, relative to the coefficient's first
-    // digit: exponent notation, past the first digit, unless the number
-    // is an integer or a fraction of fewer than six leading zeros.
     let digits = i128::try_from(coefficient.len()).unwrap_or(i128::MAX);
     let exponent = i128::from(exponent);
     let left = digits + exponent;
@@ -923,8 +837,6 @@ fn scientific(flags: u8, exponent: i64, words: &[u64]) -> String {
 mod tests {
     use super::*;
 
-    /// The words of a coefficient, least significant first, from its
-    /// digits.
     fn words(digits: &str) -> Vec<u64> {
         let mut words = Vec::new();
         let mut end = digits.len();
@@ -936,8 +848,6 @@ mod tests {
         words
     }
 
-    /// Each case's text is Python's `str(Decimal(text))`, which writes the
-    /// number back as it reads it.
     #[test]
     fn a_decimal_is_written_as_mpd_to_sci_writes_it() {
         let cases: &[(&str, u8, i64, &str)] = &[

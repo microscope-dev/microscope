@@ -1,14 +1,14 @@
-// Threads that a step must let run. In the default mode a worker waits at a
-// gate that the main thread opens only on the line that joins it, so at a
-// stop on that line the worker cannot have finished, and stepping over the
-// line completes only if the worker runs. With `spin` the gate opens at once
-// and the main thread runs until the debugger sets `main_released` instead.
-// With `race`, a racer thread keeps running the same functions the main
-// thread steps through, so it reaches every internal breakpoint of the main
-// thread's steps; it never sleeps, so whenever it runs it advances
-// `racer_rounds`. The worker uses plain operations on its atomics: the
-// <stdatomic.h> macros declare block-scoped locals whose uninitialized
-// values a debugger shows.
+
+
+
+
+
+
+
+
+
+
+
 #define _GNU_SOURCE
 
 #include <pthread.h>

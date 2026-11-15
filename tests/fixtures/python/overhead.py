@@ -1,6 +1,6 @@
-# The profiler's Python workload (`just profile-overhead --only python`):
-# CPU-bound Python code a few calls deep, writing a line as each unit of
-# work ends, until it is stopped.
+
+
+
 
 import sys
 

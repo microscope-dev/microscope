@@ -1,5 +1,3 @@
-//! Process groups: the processes a program starts, debugged together.
-
 use super::*;
 
 use std::collections::BTreeSet;
@@ -12,7 +10,6 @@ use tokio::sync::broadcast;
 
 const DEADLINE: Duration = Duration::from_secs(20);
 
-/// A group for a fixture, with its events subscribed from the start.
 struct Group {
     inner: ProcessGroup,
     events: broadcast::Receiver<GroupEvent>,
@@ -44,8 +41,6 @@ impl Group {
             .expect("add the breakpoint");
     }
 
-    /// Adds a breakpoint the root's program does not have, for a program
-    /// a member executes.
     async fn break_pending(&self, function: &str) {
         self.inner
             .root()
@@ -74,7 +69,6 @@ impl Group {
             .expect("launch the root");
     }
 
-    /// The next group event, which must arrive before the deadline.
     async fn next(&mut self) -> GroupEvent {
         let event = timeout(DEADLINE, self.events.recv())
             .await
@@ -84,8 +78,6 @@ impl Group {
         event
     }
 
-    /// Waits for the next group stop, returning the member that stopped
-    /// and why; fails if the group exits first.
     async fn stop(&mut self) -> (MemberNumber, StopReason) {
         loop {
             match self.next().await {
@@ -96,8 +88,6 @@ impl Group {
         }
     }
 
-    /// Continues the group through every stop until every member exited,
-    /// returning the members that stopped, in order.
     async fn run_to_exit(&mut self) -> Vec<(MemberNumber, StopReason)> {
         let mut stops = Vec::new();
         loop {
@@ -113,7 +103,6 @@ impl Group {
         }
     }
 
-    /// Every member that has a process is stopped, as /proc shows it.
     fn assert_all_stopped(&self) {
         for member in self.inner.members() {
             if !matches!(member.state, MemberState::Stopped(_)) {
@@ -149,7 +138,6 @@ impl Group {
     }
 }
 
-/// The state letter /proc gives a process, or none once it is gone.
 fn process_state(process: ProcessId) -> Option<char> {
     let stat = fs::read_to_string(format!("/proc/{}/stat", process.get())).ok()?;
     stat.rsplit_once(") ")?.1.chars().next()
@@ -167,8 +155,6 @@ async fn a_fork_child_joins_with_the_groups_breakpoints_before_it_runs() {
 
     let stops = group.run_to_exit().await;
 
-    // The parent and the child each stop once in shared_work. Had the
-    // child run before its breakpoint was planted, it would not stop.
     let mut members = stops
         .iter()
         .filter(|(_, reason)| function_breakpoint(reason))
@@ -192,7 +178,6 @@ async fn a_fork_child_joins_with_the_groups_breakpoints_before_it_runs() {
         .expect("the child joined");
     assert_eq!(joined, (2, Some(1), None));
 
-    // The parent exits 0 only when its child exited normally.
     assert_eq!(
         group.root_status(),
         MemberState::Exited(ExitStatus::Code(0))
@@ -226,7 +211,6 @@ async fn without_following_a_fork_child_runs_on_its_own() {
     group.shutdown().await;
 }
 
-/// The members that stopped at a breakpoint, in number order.
 fn breakpoint_members(stops: &[(MemberNumber, StopReason)]) -> Vec<MemberNumber> {
     let mut members = stops
         .iter()
@@ -253,7 +237,6 @@ async fn concurrent_children_each_join_and_stop() {
     let stops = group.run_to_exit().await;
     assert_eq!(breakpoint_members(&stops), [2, 3, 4], "{stops:#?}");
 
-    // Every child exited 0, so none received a trap or a SIGCONT.
     assert_eq!(
         group.root_status(),
         MemberState::Exited(ExitStatus::Code(0))
@@ -274,9 +257,6 @@ async fn the_roots_signal_policy_is_every_members() {
     group.break_at("child_work").await;
     group.launch(&["2", "signal", "serial"]).await;
 
-    // [2] stops before it raises SIGUSR1, which stops by default. The
-    // root's new policy must reach [2], already a member, and [3], which
-    // joins after it.
     let (member, reason) = group.stop().await;
     assert_eq!(member, 2, "{reason:?}");
     group
@@ -303,8 +283,6 @@ async fn the_roots_signal_policy_is_every_members() {
     );
     assert_eq!(breakpoint_members(&stops), [3], "{stops:#?}");
 
-    // Each child exits 0 only when its handler ran, so the signal was
-    // delivered to both.
     assert_eq!(
         group.root_status(),
         MemberState::Exited(ExitStatus::Code(0))
@@ -326,13 +304,11 @@ async fn the_roots_catchpoints_are_every_members() {
         .expect("catch tgkill");
     group.launch(&["1", "signal"]).await;
 
-    // Only the child calls tgkill, to raise its SIGUSR1.
     let (member, reason) = group.stop().await;
     assert_eq!(member, 2, "{reason:?}");
     let StopReason::Syscall(stop) = reason else {
         panic!("expected the catchpoint's stop, got {reason:?}");
     };
-    // A catchpoint has the same id in every member.
     assert_eq!(*stop.catchpoints, [catchpoint.id]);
     group.shutdown().await;
 }
@@ -359,8 +335,6 @@ async fn a_child_is_watched_through_a_shell_and_joins_at_the_program_it_executes
     group.launch(&["2", "shell"]).await;
 
     let stops = group.run_to_exit().await;
-    // The children that ran exec-target stopped in it; the forked copies
-    // of tree, which became shells, never did.
     let stopped = breakpoint_members(&stops);
     assert_eq!(stopped.len(), 2, "{stops:#?}");
     let members = group.inner.members();
@@ -376,7 +350,6 @@ async fn a_child_is_watched_through_a_shell_and_joins_at_the_program_it_executes
         assert_eq!(member.state, MemberState::Exited(ExitStatus::Code(42)));
     }
 
-    // Each fork child left the group for watching when it became a shell.
     let watched = group
         .seen
         .iter()
@@ -404,8 +377,6 @@ async fn a_vfork_child_is_watched_until_it_executes_a_program_to_debug() {
     let members = group.inner.members();
     assert_eq!(members.len(), 17, "{members:#?}");
     for member in &members[1..] {
-        // A vfork child never becomes a member before its exec, so it
-        // joins by executing, and is not the root's fork child.
         assert!(member.executed.is_some(), "{member:#?}");
         assert_eq!(member.state, MemberState::Exited(ExitStatus::Code(42)));
     }
@@ -427,8 +398,6 @@ async fn shutdown_ends_every_process_the_group_launched() {
     group.break_at("children_started").await;
     group.launch(&["2", "hang"]).await;
 
-    // Both children are shells by the time the root stops, or soon after;
-    // wait until each has started sleep.
     let (member, _) = group.stop().await;
     assert_eq!(member, 1);
     group.inner.continue_all().await.expect("continue");
@@ -437,7 +406,6 @@ async fn shutdown_ends_every_process_the_group_launched() {
         if let GroupEvent::ProcessWatched {
             process, program, ..
         } = group.next().await
-            // nixpkgs' sleep is coreutils' program of many names.
             && (program.ends_with("sleep") || program.ends_with("coreutils"))
         {
             sleepers.insert(process);
@@ -454,8 +422,6 @@ async fn shutdown_ends_every_process_the_group_launched() {
 
     group.shutdown().await;
     for process in sleepers.iter().chain(&shells).chain([&root]) {
-        // A process killed and reported to the tracer stays a zombie
-        // until its parent, or init once that parent died too, reaps it.
         let state = process_state(*process);
         assert!(
             matches!(state, None | Some('Z' | 'X')),
@@ -496,19 +462,12 @@ async fn an_attached_groups_fork_children_join_and_are_released_with_it() {
         }
     }
 
-    // Released, the parent exits with its child's code: 7 for a child that
-    // ran its work once and never received SIGCONT.
     group.shutdown().await;
     parent.release();
     wait_for_zombie(parent.process_id());
     assert_eq!(parent.wait().code(), Some(7));
 }
 
-/// The group follows every event of its members, however far its tasks
-/// fall behind them, as a busy runtime leaves them. Here the runtime's only
-/// thread is held while the root launches and starts hundreds of threads,
-/// more events than a subscriber keeps: the group still knows the root's
-/// process, that it ran, and that it stopped.
 #[tokio::test(flavor = "current_thread")]
 async fn the_group_misses_no_member_event_however_far_it_falls_behind() {
     use microscope::DebuggerEvent;
@@ -518,8 +477,6 @@ async fn the_group_misses_no_member_event_however_far_it_falls_behind() {
     group.break_at("burst_done").await;
     let mut probe = group.inner.root().subscribe();
 
-    // Launched from a thread of its own, since this one runs no task until
-    // the root has stopped.
     let root = group.inner.root();
     let launcher = std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
@@ -571,10 +528,6 @@ async fn the_group_misses_no_member_event_however_far_it_falls_behind() {
     group.shutdown().await;
 }
 
-/// Reading the program to attach to, which takes seconds for a large one,
-/// runs off the runtime's threads, so other tasks, such as a web server's
-/// tabs, go on meanwhile. A FIFO that no one writes holds the read until
-/// the test opens it for writing.
 #[tokio::test(flavor = "current_thread")]
 async fn reading_the_program_to_attach_to_leaves_the_runtime_free() {
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -584,8 +537,6 @@ async fn reading_the_program_to_attach_to_leaves_the_runtime_free() {
     let fifo = scratch.path().join("program");
     nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).expect("make the FIFO");
 
-    // A read that holds the runtime's only thread stops this test's task
-    // too, so a thread of its own ends the read at the deadline.
     let (finished, watching) = std::sync::mpsc::channel::<()>();
     let expired = Arc::new(AtomicBool::new(false));
     let watchdog = std::thread::spawn({
@@ -611,7 +562,6 @@ async fn reading_the_program_to_attach_to_leaves_the_runtime_free() {
         }
     });
 
-    // A writer opens without waiting only once the read has the FIFO open.
     let writer = loop {
         assert!(
             !expired.load(Ordering::SeqCst),
@@ -640,7 +590,6 @@ async fn reading_the_program_to_attach_to_leaves_the_runtime_free() {
     watchdog.join().expect("the watchdog");
 }
 
-/// The node on `PATH`, which the dev shell provides.
 fn node() -> std::path::PathBuf {
     std::env::var_os("PATH")
         .and_then(|path| {
@@ -651,9 +600,6 @@ fn node() -> std::path::PathBuf {
         .expect("node is on PATH in the dev shell")
 }
 
-/// A breakpoint in a JavaScript file a member runs stops that member
-/// through its own inspector: each file `node --test` runs in a node of
-/// its own stops once at its line, which only it loads.
 #[tokio::test]
 async fn each_file_node_test_runs_stops_at_its_javascript_breakpoint() {
     support::flight_recordings::watch_scenarios();
@@ -731,9 +677,6 @@ async fn each_file_node_test_runs_stops_at_its_javascript_breakpoint() {
     group.shutdown().await;
 }
 
-/// `npm start` runs npm's own node, which starts a shell, which executes
-/// the app's node. npm and the app are members; the shell is watched
-/// between them, and the app stops at a breakpoint set before the run.
 #[tokio::test]
 async fn npm_start_is_followed_through_its_shell_into_the_app() {
     let scratch = support::ScratchDir::new("group-npm-start");
@@ -822,8 +765,6 @@ async fn npm_start_is_followed_through_its_shell_into_the_app() {
     group.shutdown().await;
 }
 
-/// Waits for the group to report that `member` did not take a change to
-/// the group's `breakpoint`.
 async fn not_mirrored(group: &mut Group, member: MemberNumber, breakpoint: BreakpointId) {
     loop {
         if let GroupEvent::BreakpointNotMirrored {
@@ -838,9 +779,6 @@ async fn not_mirrored(group: &mut Group, member: MemberNumber, breakpoint: Break
     }
 }
 
-/// A member that fails to take a change to the group's breakpoint must not
-/// look as if it had it: the group reports the failure, and does not record
-/// the change as mirrored, so the next change reports it again.
 #[tokio::test]
 async fn a_breakpoint_change_a_member_fails_to_take_is_reported_and_stays_due() {
     let mut group = Group::new("process-tree", FollowPolicy::default());
@@ -855,7 +793,6 @@ async fn a_breakpoint_change_a_member_fails_to_take_is_reported_and_stays_due() 
     assert!(function_breakpoint(&reason), "{reason:?}");
     assert_eq!(member, 2);
 
-    // The member's copy goes, so no change to it can take.
     let child = group.inner.member(member).expect("the member's handle");
     let copy = child
         .snapshot()
@@ -880,7 +817,6 @@ async fn a_breakpoint_change_a_member_fails_to_take_is_reported_and_stays_due() 
     .expect("set the condition");
     not_mirrored(&mut group, member, original.id).await;
 
-    // The change is still due, so the next one tries it again.
     root.add_breakpoint(BreakpointSpec::Function("children_started".to_owned()))
         .await
         .expect("add another breakpoint");
@@ -907,8 +843,6 @@ async fn a_member_detached_alone_runs_on_without_its_traps() {
     group.inner.detach(member).await.expect("detach the member");
     assert!(group.inner.member(member).is_none());
 
-    // The detached child left its stop at the breakpoint without the trap,
-    // so it exits 0, and its parent with it.
     group.inner.continue_all().await.expect("continue");
     let stops = group.run_to_exit().await;
     assert!(

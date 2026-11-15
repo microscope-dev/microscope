@@ -1,6 +1,3 @@
-// What a thread's kernel lane says under the pointer, and the budget's
-// step nearest it.
-
 import { describe, expect, it } from "vitest";
 
 import { blockedIn, kernelLines, sliceAt, stepAt, waitAt } from "../src/profile/kernel";
@@ -35,7 +32,7 @@ describe("a kernel lane under the pointer", () => {
       { call: "read", start: 26, end: 40 },
     ];
     expect(waitAt(lane({ waits }), 15, 0)?.call).toBe("futex");
-    // Between them, the nearer edge wins.
+
     expect(waitAt(lane({ waits }), 24, 3)?.call).toBe("read");
     expect(waitAt(lane({ waits }), 22, 3)?.call).toBe("futex");
     expect(waitAt(lane({ waits }), 23, 2)).toBeNull();

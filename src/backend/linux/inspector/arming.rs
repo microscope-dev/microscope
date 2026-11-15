@@ -1,9 +1,3 @@
-//! What each isolate is armed with: the runtime's managed locations, as V8
-//! breakpoints set by URL and at the places source maps lead their lines
-//! to, and which exceptions pause it. A location is ready once any
-//! isolate placed it, since a script loads only in the isolates that run
-//! it.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -19,7 +13,6 @@ use crate::runtime_model::{Arming, ManagedArm, inspector_protocol};
 use crate::{ManagedPlace, RuntimeId};
 
 impl Inspector {
-    /// Whether the managed location `number` is set, or why it waits.
     pub(super) fn readiness(&self, number: u64) -> std::result::Result<(), Arc<str>> {
         if let Status::Failed { reason, .. } = &self.status {
             return Err(Arc::clone(reason));
@@ -83,9 +76,6 @@ impl Inspector {
 }
 
 impl Inspector {
-    /// Why the line location `number` waits for its script, with the
-    /// nearest names of the scripts loaded, as a mistyped path's likeliest
-    /// meaning.
     fn unloaded(&self, number: u64) -> Arc<str> {
         const UNLOADED: &str = "no script by that name has loaded yet";
         let Some(path) = self.desired.iter().find_map(|arm| match &arm.place {
@@ -94,8 +84,6 @@ impl Inspector {
         }) else {
             return UNLOADED.into();
         };
-        // A loaded script is named as the location names its own: by as
-        // many trailing components, or whole.
         let depth = (!path.starts_with('/')).then(|| path.split('/').count());
         let loaded = (self.status.isolates().values())
             .flat_map(|isolate| isolate.scripts.values())
@@ -117,9 +105,6 @@ impl Inspector {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Arms the runtime `runtime`, whose inspector the debugger drives,
-    /// with `arming`. Its locations are set over the connection when there
-    /// is one, and each is ready once V8 places it.
     pub(in crate::backend::linux) fn arm_inspector(
         &mut self,
         runtime: RuntimeId,
@@ -158,8 +143,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 main,
             )?),
         };
-        // A step from a native stop holds the main thread until its pause
-        // is handed to it; V8 holds the thread for any other step.
         let number = inspector
             .step
             .as_ref()
@@ -183,8 +166,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Brings what each isolate of `runtime` holds to what the runtime is
-    /// armed with, connecting first when it can.
     pub(super) fn sync_inspector(&mut self, runtime: RuntimeId) {
         let Some(inspectors) = self
             .session
@@ -220,11 +201,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Notes that the script `id` at `url`, in the isolate `session`
-    /// reaches, names the source map at `map`, and sets the line
-    /// breakpoints in its sources there. A breakpoint set by a path that
-    /// is the script's own is withdrawn: its lines are the generated
-    /// code's, not the source's.
     pub(super) fn script_mapped(
         &mut self,
         runtime: RuntimeId,
@@ -281,7 +257,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.publish_breakpoints_changed();
     }
 
-    /// Notes what V8 answered to setting a breakpoint in `runtime`.
     #[cfg_attr(
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")
@@ -339,7 +314,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
                 answer(placement, result);
                 record!("location {number} is {:?}", placement.state);
-                // A sentinel's pause waits for the last of its script's.
                 let deferred = isolate
                     .ready_deferred()
                     .map(|pause| (session.clone(), pause));
@@ -356,8 +330,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Whether the managed location `number` of `runtime` is set, or why
-    /// it waits, when the runtime's inspector arms it.
     pub(in crate::backend::linux) fn inspector_readiness(
         &self,
         runtime: RuntimeId,
@@ -368,8 +340,6 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// Where an isolate's breakpoints are set: its session over a connection,
-/// with the source maps of the process's scripts.
 struct Target<'a> {
     connection: &'a Connection,
     session: &'a Session,
@@ -383,9 +353,6 @@ impl Target<'_> {
     }
 }
 
-/// Brings an isolate to `desired` and `pausing`: sets the locations it
-/// lacks, removes those no longer wanted, holds a sentinel while any is
-/// a line, and tells it which exceptions pause it when that changed.
 fn sync_isolate(
     target: &Target<'_>,
     isolate: &mut Isolate,
@@ -436,8 +403,6 @@ fn sync_isolate(
                         Some((Arc::clone(id), Arc::clone(path)))
                     })
                     .collect::<Vec<_>>();
-                // A path that is a mapped script's own names the source
-                // compiled into it, at lines only the map knows.
                 if !mapped
                     .iter()
                     .any(|(_, script)| maps::names(Path::new(&**script), Path::new(&**path)))
@@ -468,15 +433,11 @@ fn sync_isolate(
         }
         isolate.sites.insert(number, site);
     }
-    // A function breakpoint is placed in each function the search finds.
     if searching {
         functions::search(target.connection, target.session, isolate);
     }
 }
 
-/// Holds the isolate's sentinel while `desired` has a line or a function,
-/// with the pattern they call for, and removes it once none is. A
-/// function may be in any script, `node_modules` too.
 fn sync_sentinel(target: &Target<'_>, isolate: &mut Isolate, desired: &BTreeMap<u64, &ManagedArm>) {
     let functions = desired
         .values()
@@ -528,9 +489,6 @@ fn sync_sentinel(target: &Target<'_>, isolate: &mut Isolate, desired: &BTreeMap<
     });
 }
 
-/// Sets a breakpoint on `line` of the source at `path` at each place its
-/// map leads that line to in `script`, its id and path, that `site` does
-/// not already hold.
 fn place_mapped(
     target: &Target<'_>,
     site: &mut Site,
@@ -572,7 +530,6 @@ fn place_mapped(
     record!("the source map of {path_of_script}: {:?}", map.map().err());
 }
 
-/// Withdraws the breakpoint `site` holds by its path.
 fn withdraw_by_path(target: &Target<'_>, site: &mut Site) {
     site.placements.retain_mut(|placement| {
         if placement.mapped.is_some() {
@@ -594,7 +551,6 @@ fn withdraw_by_path(target: &Target<'_>, site: &mut Site) {
     });
 }
 
-/// Notes V8's answer to setting `placement`.
 fn answer(
     placement: &mut Placement,
     result: std::result::Result<serde_json::Value, super::super::cdp::CdpError>,
@@ -612,8 +568,6 @@ fn answer(
                     set.pointer("/actualLocation/columnNumber")
                         .and_then(serde_json::Value::as_u64),
                 );
-            // `setBreakpoint` answers its one location, and
-            // `setBreakpointByUrl` all it found.
             let placed = set
                 .get("locations")
                 .and_then(serde_json::Value::as_array)
@@ -630,8 +584,6 @@ fn answer(
 }
 
 impl Isolate {
-    /// The sentinel's pause it holds, once nothing it waits for remains:
-    /// a search of its functions, or the breakpoints set in its script.
     pub(super) fn ready_deferred(&mut self) -> Option<serde_json::Value> {
         let waits = self.search.is_some()
             || self.deferred.as_ref().is_some_and(|pause| {
@@ -641,8 +593,6 @@ impl Isolate {
     }
 }
 
-/// Whether a mapped breakpoint among `placements` in the script of the
-/// pause `pause` that V8 reported is not yet answered.
 pub(super) fn awaits_mapped<'a>(
     mut placements: impl Iterator<Item = &'a Placement>,
     pause: &serde_json::Value,

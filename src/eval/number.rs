@@ -1,12 +1,3 @@
-//! The numbers of the expression language.
-//!
-//! Arithmetic is exact: an [`Exact`] holds the true result of `+ - * / %`
-//! anywhere in [−2^127, 2^128 − 1], every value a 128-bit integer of either
-//! signedness holds, and refuses results beyond it. Bit operations act on a
-//! [`Bits`] pattern and keep its width, because they describe a
-//! representation rather than a quantity. A [`Float`] keeps its IEEE format,
-//! and mixed formats compute in the widest.
-
 use std::cmp::Ordering;
 use std::fmt;
 
@@ -15,29 +6,20 @@ use rustc_apfloat::{Float as _, FloatConvert as _, Round};
 
 use crate::FloatValue;
 
-/// The widest integer type the language names.
 pub const MAX_WIDTH: u8 = 128;
 
-// A mask shifts a `u128` by its bits less the width.
 const _: () = assert!(MAX_WIDTH as u32 <= u128::BITS);
 
-/// Why an operation on numbers has no result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumberError {
-    /// The exact result lies outside [−2^127, 2^128 − 1].
     OutOfRange,
 
-    /// The divisor of `/` or `%` is zero.
     DivisionByZero,
 
-    /// A shift amount is negative, or at least the shifted type's width.
     ShiftAmount,
 
-    /// An exact operand of a bit operation does not fit the typed operand's
-    /// width as either a signed or an unsigned value.
     DoesNotFit(IntType),
 
-    /// A NaN has no integer value.
     NotANumber,
 }
 
@@ -58,16 +40,12 @@ impl fmt::Display for NumberError {
     }
 }
 
-/// An exact integer in [−2^127, 2^128 − 1].
-///
-/// Zero is never negative, so equal values are equal representations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Exact {
     negative: bool,
     magnitude: u128,
 }
 
-/// The magnitude of the most negative exact integer, 2^127.
 const MOST_NEGATIVE: u128 = 1 << 127;
 
 impl Exact {
@@ -76,7 +54,6 @@ impl Exact {
         magnitude: 0,
     };
 
-    /// The integer with this sign and magnitude, if it is in range.
     const fn new(negative: bool, magnitude: u128) -> Result<Self, NumberError> {
         if negative && magnitude > MOST_NEGATIVE {
             return Err(NumberError::OutOfRange);
@@ -96,14 +73,12 @@ impl Exact {
         self.negative
     }
 
-    /// The absolute value.
     pub const fn magnitude(self) -> u128 {
         self.magnitude
     }
 
     pub const fn to_i128(self) -> Option<i128> {
         if self.negative {
-            // The magnitude is at most 2^127, whose negation is i128::MIN.
             Some(0_i128.wrapping_sub_unsigned(self.magnitude))
         } else if self.magnitude <= i128::MAX.unsigned_abs() {
             Some(self.magnitude.cast_signed())
@@ -137,8 +112,6 @@ impl Exact {
     }
 
     pub fn sub(self, rhs: Self) -> Result<Self, NumberError> {
-        // The negated operand may be out of range though the difference is
-        // not, so negate without the range check.
         let negated = Self {
             negative: !rhs.negative && rhs.magnitude != 0,
             magnitude: rhs.magnitude,
@@ -155,7 +128,6 @@ impl Exact {
         Self::new(self.negative != rhs.negative, magnitude)
     }
 
-    /// Division truncating toward zero.
     pub const fn div(self, rhs: Self) -> Result<Self, NumberError> {
         if rhs.is_zero() {
             return Err(NumberError::DivisionByZero);
@@ -167,7 +139,6 @@ impl Exact {
         )
     }
 
-    /// The remainder of truncating division, with the dividend's sign.
     pub const fn rem(self, rhs: Self) -> Result<Self, NumberError> {
         if rhs.is_zero() {
             return Err(NumberError::DivisionByZero);
@@ -180,8 +151,6 @@ impl Exact {
         Self::new(!self.negative, self.magnitude)
     }
 
-    /// The value as an infinite two's complement pattern: its sign
-    /// extension and its low 128 bits.
     const fn twos_complement(self) -> (bool, u128) {
         if self.negative {
             (true, self.magnitude.wrapping_neg())
@@ -190,10 +159,8 @@ impl Exact {
         }
     }
 
-    /// The value an infinite two's complement pattern denotes.
     const fn from_twos_complement(sign: bool, low: u128) -> Result<Self, NumberError> {
         if sign {
-            // `low - 2^128`; a zero `low` would be −2^128.
             if low == 0 {
                 return Err(NumberError::OutOfRange);
             }
@@ -221,7 +188,6 @@ impl Exact {
         Self::from_twos_complement(sign, low)
     }
 
-    /// `self · 2^amount`.
     pub fn shl(self, amount: Self) -> Result<Self, NumberError> {
         let amount = shift_amount(amount)?;
         if self.is_zero() {
@@ -235,7 +201,6 @@ impl Exact {
         Self::new(self.negative, self.magnitude << amount)
     }
 
-    /// `floor(self / 2^amount)`, an arithmetic shift.
     pub fn shr(self, amount: Self) -> Result<Self, NumberError> {
         let amount = shift_amount(amount)?;
         if !self.negative {
@@ -246,15 +211,11 @@ impl Exact {
             return Self::new(true, 1);
         }
 
-        // Rounding the magnitude up rounds the value down. The magnitude is
-        // at most 2^127, so adding at most 2^127 − 1 cannot overflow.
         let rounded = self.magnitude + ((1 << amount) - 1);
         Self::new(true, rounded >> amount)
     }
 }
 
-/// A shift amount, which must not be negative. Amounts beyond `u32` are
-/// clamped, since every shift by 128 or more has the same result.
 fn shift_amount(amount: Exact) -> Result<u32, NumberError> {
     if amount.negative {
         return Err(NumberError::ShiftAmount);
@@ -323,7 +284,6 @@ impl fmt::Display for Exact {
     }
 }
 
-/// A bitwise operator that combines two operands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BitOperator {
     And,
@@ -331,7 +291,6 @@ pub enum BitOperator {
     Xor,
 }
 
-/// The width and signedness of an integer type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IntType {
     width: u8,
@@ -339,13 +298,11 @@ pub struct IntType {
 }
 
 impl IntType {
-    /// The 128-bit signed integer type.
     pub const I128: Self = Self {
         width: MAX_WIDTH,
         signed: true,
     };
 
-    /// The type of this width and signedness; widths run from 1 to 128.
     pub const fn new(width: u8, signed: bool) -> Option<Self> {
         if width == 0 || width > MAX_WIDTH {
             return None;
@@ -362,7 +319,6 @@ impl IntType {
         self.signed
     }
 
-    /// The bits of a pattern of this width.
     const fn mask(self) -> u128 {
         u128::MAX >> (128 - self.width as u32)
     }
@@ -388,13 +344,10 @@ impl IntType {
         Exact::from(u128::MAX.checked_shr(128 - u32::from(bits)).unwrap_or(0))
     }
 
-    /// Whether this type holds `value` exactly.
     pub fn contains(self, value: Exact) -> bool {
         self.min() <= value && value <= self.max()
     }
 
-    /// The type two typed operands of a bit operation share: the wider,
-    /// and at equal widths the unsigned.
     pub fn common(self, other: Self) -> Self {
         match self.width.cmp(&other.width) {
             Ordering::Less => other,
@@ -407,17 +360,14 @@ impl IntType {
     }
 }
 
-/// A two's complement pattern of a typed integer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Bits {
     ty: IntType,
 
-    /// The pattern, with every bit above the width clear.
     raw: u128,
 }
 
 impl Bits {
-    /// The pattern of `value` truncated to `ty`'s width, as casts truncate.
     pub const fn truncate(ty: IntType, value: Exact) -> Self {
         let (_, low) = value.twos_complement();
         Self {
@@ -426,7 +376,6 @@ impl Bits {
         }
     }
 
-    /// The pattern of `value` in `ty`, if `ty` holds it exactly.
     pub fn exactly(ty: IntType, value: Exact) -> Result<Self, NumberError> {
         if ty.contains(value) {
             Ok(Self::truncate(ty, value))
@@ -435,8 +384,6 @@ impl Bits {
         }
     }
 
-    /// The pattern of an exact operand meeting a typed one in a bit
-    /// operation, which must fit the width as a signed or unsigned value.
     pub fn fitting(ty: IntType, value: Exact) -> Result<Self, NumberError> {
         let signed = IntType {
             width: ty.width,
@@ -455,7 +402,6 @@ impl Bits {
         }
     }
 
-    /// The pattern in `raw`'s low bits.
     pub const fn from_raw(ty: IntType, raw: u128) -> Self {
         Self {
             ty,
@@ -471,11 +417,9 @@ impl Bits {
         self.raw
     }
 
-    /// The integer the pattern denotes under its type's signedness.
     pub fn value(self) -> Exact {
         let top = 1_u128 << (self.ty.width - 1);
         if self.ty.signed && self.raw & top != 0 {
-            // `raw − 2^width`, whose magnitude is `2^width − raw`.
             Exact {
                 negative: true,
                 magnitude: (!self.raw & self.ty.mask()) + 1,
@@ -485,7 +429,6 @@ impl Bits {
         }
     }
 
-    /// The same value converted to `ty`, truncating as a cast does.
     pub fn cast(self, ty: IntType) -> Self {
         Self::truncate(ty, self.value())
     }
@@ -494,7 +437,6 @@ impl Bits {
         Self::from_raw(self.ty, !self.raw)
     }
 
-    /// Combines two patterns of one type.
     pub fn bitwise(self, operator: BitOperator, rhs: Self) -> Self {
         debug_assert_eq!(self.ty, rhs.ty);
         let raw = match operator {
@@ -515,13 +457,11 @@ impl Bits {
         Ok(amount)
     }
 
-    /// Shifts left, dropping the bits shifted past the width.
     pub fn shl(self, amount: Exact) -> Result<Self, NumberError> {
         let amount = self.checked_amount(amount)?;
         Ok(Self::from_raw(self.ty, self.raw << amount))
     }
 
-    /// Shifts right: arithmetically for a signed type, logically otherwise.
     pub fn shr(self, amount: Exact) -> Result<Self, NumberError> {
         let amount = self.checked_amount(amount)?;
         if self.ty.signed {
@@ -533,7 +473,6 @@ impl Bits {
     }
 }
 
-/// An integer operand: exact, or a typed pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Integer {
     Exact(Exact),
@@ -555,8 +494,6 @@ impl Integer {
         }
     }
 
-    /// `& | ^`: at the width of the widest typed operand, keeping its type,
-    /// or in infinite two's complement when both are exact.
     pub fn bitwise(self, operator: BitOperator, rhs: Self) -> Result<Self, NumberError> {
         let (left, right) = match (self, rhs) {
             (Self::Exact(left), Self::Exact(right)) => {
@@ -573,7 +510,6 @@ impl Integer {
         Ok(Self::Typed(left.bitwise(operator, right)))
     }
 
-    /// `<<`: the shifted operand's type alone decides the result's.
     pub fn shl(self, amount: Exact) -> Result<Self, NumberError> {
         match self {
             Self::Exact(value) => value.shl(amount).map(Self::Exact),
@@ -581,7 +517,6 @@ impl Integer {
         }
     }
 
-    /// `>>`: the shifted operand's type alone decides the result's.
     pub fn shr(self, amount: Exact) -> Result<Self, NumberError> {
         match self {
             Self::Exact(value) => value.shr(amount).map(Self::Exact),
@@ -590,7 +525,6 @@ impl Integer {
     }
 }
 
-/// An IEEE binary floating-point format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FloatFormat {
     Binary16,
@@ -602,7 +536,6 @@ pub enum FloatFormat {
 }
 
 impl FloatFormat {
-    /// The format of a float type's values, when microscope computes with it.
     pub(crate) const fn of(layout: crate::model::FloatLayout) -> Self {
         use crate::model::FloatLayout;
         match layout {
@@ -615,7 +548,6 @@ impl FloatFormat {
         }
     }
 
-    /// How many bytes a value of the format takes in memory.
     pub const fn size(self) -> u64 {
         match self {
             Self::Binary16 | Self::BFloat16 => 2,
@@ -625,7 +557,6 @@ impl FloatFormat {
         }
     }
 
-    /// The format's name in microscope's expressions.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Binary16 => "f16",
@@ -638,7 +569,6 @@ impl FloatFormat {
     }
 }
 
-/// A floating-point value in its own format.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Float {
     Binary16(Half),
@@ -649,8 +579,6 @@ pub enum Float {
     Binary128(Quad),
 }
 
-/// The format two floats' operations are done in: the wider, and binary32
-/// for binary16 with bfloat16, neither of which holds the other's values.
 fn wider(left: FloatFormat, right: FloatFormat) -> FloatFormat {
     match (left, right) {
         (FloatFormat::Binary16, FloatFormat::BFloat16)
@@ -659,7 +587,6 @@ fn wider(left: FloatFormat, right: FloatFormat) -> FloatFormat {
     }
 }
 
-/// A floating-point operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FloatOperator {
     Add,
@@ -667,12 +594,9 @@ pub enum FloatOperator {
     Mul,
     Div,
 
-    /// The remainder of truncating division, with the dividend's sign.
     Rem,
 }
 
-/// Applies `$body` to the value inside a [`Float`] of any format, binding
-/// it to `$value`.
 macro_rules! each_format {
     ($float:expr, $value:ident => $body:expr) => {
         match $float {
@@ -705,7 +629,6 @@ impl Float {
 
     pub fn to_value(self) -> FloatValue {
         match self {
-            // The bit patterns are exactly as wide as the narrowing casts.
             #[allow(clippy::cast_possible_truncation, reason = "binary16 has 16 bits")]
             Self::Binary16(value) => FloatValue::Binary16(value.to_bits() as u16),
 
@@ -738,7 +661,6 @@ impl Float {
         Self::Binary64(Double::from_bits(u128::from(value.to_bits())))
     }
 
-    /// The value as a double, rounded to nearest, ties to even.
     pub fn to_f64(self) -> f64 {
         let value: Double = self.to();
 
@@ -757,19 +679,15 @@ impl Float {
         }
     }
 
-    /// The value in `format`, rounded to nearest, ties to even.
     pub fn convert(self, format: FloatFormat) -> Self {
         self.rounded(format).0
     }
 
-    /// The value in `format`, where it holds it exactly.
     pub fn convert_exactly(self, format: FloatFormat) -> Option<Self> {
         let (converted, loses_info) = self.rounded(format);
         (!loses_info).then_some(converted)
     }
 
-    /// The value in `format`, rounded to nearest, ties to even, and
-    /// whether rounding changed it.
     fn rounded(self, format: FloatFormat) -> (Self, bool) {
         let mut loses_info = false;
         let converted = each_format!(self, value => match format {
@@ -786,7 +704,6 @@ impl Float {
         (converted, loses_info)
     }
 
-    /// The integer's nearest value in `format`, ties to even.
     pub fn from_exact(value: Exact, format: FloatFormat) -> Self {
         fn convert<F: rustc_apfloat::Float>(value: Exact) -> F {
             let magnitude = F::from_u128_r(value.magnitude, Round::NearestTiesToEven).value;
@@ -807,7 +724,6 @@ impl Float {
         }
     }
 
-    /// Applies an operator in the wider of the two formats.
     pub fn binary(operator: FloatOperator, left: Self, right: Self) -> Self {
         fn apply<F: rustc_apfloat::Float>(operator: FloatOperator, left: F, right: F) -> F {
             let round = Round::NearestTiesToEven;
@@ -830,7 +746,6 @@ impl Float {
         }
     }
 
-    /// The value in the format of `IeeeFloat<S>`, rounded to nearest.
     fn to<S: rustc_apfloat::ieee::Semantics>(self) -> rustc_apfloat::ieee::IeeeFloat<S> {
         let mut loses_info = false;
         each_format!(self, value => value.convert(&mut loses_info).value)
@@ -856,7 +771,6 @@ impl Float {
         each_format!(self, value => value.is_zero())
     }
 
-    /// The IEEE order of two floats, in the wider format; `None` for NaN.
     pub fn compare(self, other: Self) -> Option<Ordering> {
         fn compare<F: rustc_apfloat::Float>(left: F, right: F) -> Option<Ordering> {
             left.partial_cmp(&right)
@@ -872,8 +786,6 @@ impl Float {
         }
     }
 
-    /// The value truncated toward zero, saturated to the exact range, and
-    /// whether truncation lost a fraction or saturation lost magnitude.
     fn truncated(self) -> Result<(Exact, bool), NumberError> {
         fn truncate<F: rustc_apfloat::Float>(value: F) -> (Exact, bool) {
             let mut is_exact = false;
@@ -883,7 +795,6 @@ impl Float {
                 Exact::from(value.to_u128_r(128, Round::TowardZero, &mut is_exact).value)
             };
 
-            // Negative zero converts exactly to zero.
             (exact, is_exact || value.is_zero())
         }
 
@@ -893,12 +804,10 @@ impl Float {
         Ok(each_format!(self, value => truncate(value)))
     }
 
-    /// The exact order of a float and an integer; `None` for NaN.
     pub fn compare_exact(self, integer: Exact) -> Option<Ordering> {
         let (truncated, is_exact) = self.truncated().ok()?;
         match truncated.cmp(&integer) {
             Ordering::Equal if is_exact => Some(Ordering::Equal),
-            // A lost fraction or magnitude lies on the float's side of zero.
             Ordering::Equal => Some(if each_format!(self, value => value.is_negative()) {
                 Ordering::Less
             } else {
@@ -908,8 +817,6 @@ impl Float {
         }
     }
 
-    /// Converts to an integer type as a cast does: truncating toward zero
-    /// and saturating at the type's bounds. NaN has no integer value.
     pub fn to_int(self, ty: IntType) -> Result<Bits, NumberError> {
         let (value, _) = self.truncated()?;
         let saturated = value.clamp(ty.min(), ty.max());

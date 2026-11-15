@@ -1,5 +1,5 @@
-// Threads that call one function as fast as they can until released, so a
-// breakpoint edited while they run races with their traps.
+
+
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>

@@ -1,7 +1,3 @@
-//! Values optimized code splits across places, recovers from its callers'
-//! call sites, or points at without an address (`locations/main.c`). Every stage
-//! of the program is on the stack when it stops in `locations_stop`.
-
 use microscope::{
     EntryValueUnavailableReason, Evaluation, Expression, FloatValue, InspectedValue,
     OptimizedOutReason, VariableValue, VariableValueSource,
@@ -11,12 +7,8 @@ use super::*;
 
 const VARIANTS: [&str; 3] = ["gcc-o2", "gcc-o2-nopie", "clang-o2"];
 
-/// The builds for values in registers or nowhere in memory, where linking
-/// changes nothing.
 const REGISTER_VARIANTS: [&str; 2] = ["gcc-o2", "clang-o2"];
 
-/// Launches a build of the fixture with `arguments` and stops in
-/// `locations_stop`.
 async fn stopped(variant: &str, arguments: &[&str]) -> Scenario {
     let mut scenario = Scenario::launch(&format!("locations-{variant}"));
     scenario.add_breakpoint("locations_stop").await;
@@ -35,7 +27,6 @@ async fn stopped(variant: &str, arguments: &[&str]) -> Scenario {
     scenario
 }
 
-/// Selects the innermost frame that runs `function`.
 async fn select(scenario: &Scenario, function: &str) {
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
@@ -101,7 +92,6 @@ async fn unavailable(scenario: &Scenario, text: &str) -> VariableUnavailableReas
     }
 }
 
-/// The address an expression evaluates to, or its refusal's message.
 async fn address(scenario: &Scenario, text: &str) -> Result<u64, String> {
     match scenario
         .handle()
@@ -184,8 +174,6 @@ async fn a_wide_integer_in_two_registers_reads_whole() {
 async fn members_of_a_partly_kept_record_are_judged_by_their_own_bits() {
     let scenario = stopped("clang-o2", &[]).await;
 
-    // Both halves are on the stack, one after the other: the record is
-    // simply in memory.
     select(&scenario, "split_point").await;
     assert!((binary64(&scenario, "point.x").await - 21.5).abs() < f64::EPSILON);
     assert!((binary64(&scenario, "point.y").await - 22.5).abs() < f64::EPSILON);
@@ -193,7 +181,6 @@ async fn members_of_a_partly_kept_record_are_judged_by_their_own_bits() {
     assert_eq!(address(&scenario, "&point.x").await, Ok(record));
     assert_eq!(address(&scenario, "&point.y").await, Ok(record + 8));
 
-    // Clang keeps only `y`, in a register this frame's callee may change.
     select(&scenario, "wide_value").await;
     assert!(matches!(
         inspect(&scenario, "point").await.state,
@@ -223,8 +210,6 @@ async fn a_member_pointing_at_a_value_with_no_address_is_an_implicit_pointer() {
         select(&scenario, "implicit_member").await;
         assert_eq!(integer(&scenario, "ref.count").await, 402, "{variant}");
         if variant.starts_with("gcc") {
-            // `ref.pointer` points at `local`, which has no address, and GCC
-            // keeps no value for `local` here either.
             assert!(matches!(
                 inspect(&scenario, "ref.pointer").await.state,
                 VariableState::Available {
@@ -265,7 +250,6 @@ async fn parameters_held_only_on_entry_are_recovered_from_their_callers() {
                 ("entry_values", "second", 102),
                 ("chain_outer", "value", 203),
                 ("chain_inner", "value", 203),
-                // GCC's clone drops `unused`; the caller still computes it.
                 ("removed_parameter", "unused", 201),
             ]
         } else {
@@ -293,7 +277,6 @@ async fn parameters_held_only_on_entry_are_recovered_from_their_callers() {
         }
 
         if gcc {
-            // `main`'s caller is the C library's, which describes no calls.
             select(&scenario, "main").await;
             assert_eq!(
                 unavailable(&scenario, "argv").await,
@@ -311,13 +294,9 @@ async fn entry_values_follow_the_one_possible_chain_of_tail_calls() {
     for variant in ["gcc-o2", "gcc-o2-nopie"] {
         let mut scenario = stopped(variant, &["tail"]).await;
 
-        // `main` called `relay`, which jumped to `tail_target` passing its
-        // own argument plus one: the only way `relay` reaches it.
         select(&scenario, "tail_target").await;
         assert_eq!(integer(&scenario, "value").await, 43, "{variant}");
 
-        // `main` called `ping`, but `pong` may have jumped back into it
-        // since, with another argument.
         assert!(matches!(
             scenario.resume_to_stop().await,
             StopReason::Breakpoint { .. }
@@ -342,10 +321,7 @@ async fn an_entry_value_lost_further_out_says_whose_caller_lost_it() {
     for variant in VARIANTS {
         let scenario = stopped(variant, &["a", "b", "c"]).await;
 
-        // `forwarded` was called by `forwarding`, which passed on what its
-        // own caller, `main`, passed it through a pointer.
         let lost = if variant.starts_with("gcc") {
-            // GCC describes no call through the pointer.
             select(&scenario, "forwarding").await;
             assert_eq!(
                 unavailable(&scenario, "value").await,
@@ -354,7 +330,6 @@ async fn an_entry_value_lost_further_out_says_whose_caller_lost_it() {
             );
             NoCallSite
         } else {
-            // Clang's says the target was in a register the call clobbered.
             UnknownTarget
         };
 
@@ -374,8 +349,6 @@ async fn a_library_function_recovers_what_the_program_passed_it() {
     for variant in VARIANTS {
         let scenario = stopped(variant, &["library"]).await;
 
-        // `main` called `locations_in_library` through the procedure linkage
-        // table: its call site names the library function only by symbol.
         select(&scenario, "locations_in_library").await;
         assert_eq!(integer(&scenario, "value").await, 52, "{variant}");
         assert_eq!(
@@ -402,7 +375,6 @@ async fn a_library_function_recovers_what_the_program_passed_it() {
 
             assert_eq!(stop.address, callback, "{variant}");
         } else {
-            // Clang's call site does not say what it passed.
             assert_eq!(
                 unavailable(&scenario, "stop").await,
                 VariableUnavailableReason::EntryValue(EntryValueUnavailableReason::NoParameter),
@@ -419,10 +391,6 @@ async fn tail_calls_another_module_may_have_taken_are_not_followed() {
     for variant in VARIANTS {
         let scenario = stopped(variant, &["interposed"]).await;
 
-        // `main` called the library's `locations_interposing`, which jumped
-        // to `locations_interposed` through its procedure linkage table. The
-        // program defines one too, which took the jump and passed on 114
-        // where the library's own would have passed 15.
         select(&scenario, "locations_interposed_target").await;
         assert_eq!(
             integer(&scenario, "locations_library_sink").await,
@@ -445,8 +413,6 @@ async fn a_call_through_a_kept_pointer_says_where_it_went() {
     for variant in VARIANTS {
         let scenario = stopped(variant, &["pointer"]).await;
 
-        // `main` keeps the pointer it calls `forwarding` through in a
-        // register its callees preserve, which its call site names.
         select(&scenario, "forwarded").await;
         assert_eq!(integer(&scenario, "value").await, 2, "{variant}");
         if variant.starts_with("gcc") {
@@ -458,7 +424,6 @@ async fn a_call_through_a_kept_pointer_says_where_it_went() {
     }
 }
 
-/// Assigns `value` to `target` in the selected frame.
 async fn assign(scenario: &Scenario, target: &str, value: &str) -> microscope::Result<Evaluation> {
     scenario
         .handle()
@@ -501,8 +466,6 @@ async fn a_value_in_several_places_is_neither_changed_nor_watched() {
 
     scenario.shutdown().await;
 
-    // Clang describes `point` in two pieces of memory, one after the other:
-    // one place, which can be changed.
     let scenario = stopped("clang-o2", &[]).await;
     select(&scenario, "split_point").await;
     assign(&scenario, "point.y", "30.5")

@@ -1,7 +1,7 @@
 {
 	"version": "0.2.0",
 	"configurations": [
-	
+
 		{
 			"name": "Debug microscope",
 			"type": "lldb",
@@ -17,7 +17,7 @@
 				"./build/test-programs/step"
 			]
 		},
-		// Test programs to debug with the microscope extension (editors/vscode).
+
 		{
 			"name": "C: segfault with worker threads",
 			"type": "microscope",
@@ -52,8 +52,8 @@
 			"cwd": "${workspaceFolder}"
 		},
 		{
-			// Runs to its exit unless stopped: break in tests/fixtures/rust/variables.rs
-			// at line 33 for scalars, or line 80 for pointers, structs, and slices.
+
+
 			"name": "Rust: variables",
 			"type": "microscope",
 			"request": "launch",

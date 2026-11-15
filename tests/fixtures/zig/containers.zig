@@ -1,8 +1,8 @@
-//! Standard library containers, which the built-in views present, and sum
-//! types, which the debugger presents without a view. Each
-//! `VIEW:` marker says what its expression must show, evaluated in main()
-//! where barrier() is called; `problem:` says the view must refuse the
-//! value, and why.
+
+
+
+
+
 
 const std = @import("std");
 
@@ -61,13 +61,13 @@ pub fn main() !void {
     defer strings.deinit(allocator);
     try strings.put(allocator, "k", 1);
     var no_ordered: std.AutoArrayHashMapUnmanaged(i32, i32) = .empty; // VIEW: no_ordered => len=0 {}
-    // A list whose length passes its capacity.
+
     var past_capacity: std.ArrayList(i32) = .empty; // VIEW: past_capacity => problem: check
     const storage = [_]i32{ 10, 11, 12, 13 };
     past_capacity.items = @constCast(storage[0..4]);
     past_capacity.capacity = 2;
 
-    // Bytes are text when they are valid UTF-8 without control characters.
+
     var text: std.ArrayList(u8) = .empty; // VIEW: text => "hello"
     defer text.deinit(allocator);
     try text.appendSlice(allocator, "hello");
@@ -113,12 +113,12 @@ pub fn main() !void {
     defer written.deinit();
     try written.writer.writeAll("out");
 
-    // Optionals, error unions, and tagged unions, which the debugger
-    // presents as the variant each holds.
+
+
     var some: ?u32 = 5; // VIEW: some => 5
     var none: ?u32 = null; // VIEW: none => null
     var value: u64 = 9;
-    // A nullable pointer is a pointer.
+
     var some_pointer: ?*u64 = &value; // VIEW: some_pointer => stored
     var no_pointer: ?*u64 = null; // VIEW: no_pointer => stored
     var success: Failure!u32 = fallible(false); // VIEW: success => 7

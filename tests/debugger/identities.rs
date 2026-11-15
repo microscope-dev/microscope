@@ -1,5 +1,3 @@
-//! Type identities: what a type is, whatever a producer named it.
-
 use super::*;
 use microscope::{
     ArgumentOrigin, GoKind, IntegerValue, SliceWords, SourceLanguage, TypeArgument, TypeIdentity,
@@ -18,7 +16,6 @@ fn identity(info: &TypeInfo) -> &TypeIdentity {
         .unwrap_or_else(|| panic!("{} has no identity: {info:?}", info.name))
 }
 
-/// The one type, however many units define it, with this identity.
 fn only<'a>(
     image: &'a ModuleImage,
     language: SourceLanguage,
@@ -44,7 +41,6 @@ fn only<'a>(
     info(image, first)
 }
 
-/// The one type, however many units define it, that a name means.
 fn spelled<'a>(image: &'a ModuleImage, name: &str) -> &'a TypeInfo {
     let found = image.types_named(name);
     let first = *found
@@ -72,7 +68,6 @@ fn argument_type<'a>(image: &'a ModuleImage, argument: &TypeArgument) -> &'a Typ
     }
 }
 
-/// The type's arguments, as their names or values.
 fn argument_names(image: &ModuleImage, identity: &TypeIdentity) -> Vec<String> {
     identity
         .arguments
@@ -97,9 +92,6 @@ fn named<'a>(image: &'a ModuleImage, name: &str) -> &'a TypeInfo {
         .unwrap_or_else(|| panic!("no type is named {name}"))
 }
 
-/// Both C++ standard libraries keep their containers in inline namespaces
-/// and name them differently, and GCC omits some templates' parameters. An
-/// identity is the same whichever compiler and library built the program.
 #[tokio::test]
 async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
     use SourceLanguage::Cpp;
@@ -113,7 +105,6 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
 
         let vector = only(&image, Cpp, &["std"], "vector");
 
-        // A type a class declares in its scope adds nothing to its layout.
         assert!(
             matches!(vector.kind, TypeKind::Record { .. }),
             "{fixture}: {vector:?}"
@@ -128,8 +119,6 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
             "int"
         );
 
-        // GCC describes no parameters for allocator<int>, so its name gives
-        // them, resolved to the type they spell.
         let allocator = identity(argument_type(&image, &vector.arguments[1]));
         assert_eq!(
             (allocator.path.as_ref(), allocator.base.as_ref()),
@@ -139,8 +128,6 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
 
         assert_eq!(argument_names(&image, allocator), ["int"], "{fixture}");
 
-        // Type units copy namespaces without their inline marks, which
-        // the units that define them carry.
         only(&image, Cpp, &["std"], "basic_string");
 
         let map = identity(only(&image, Cpp, &["std"], "map"));
@@ -150,7 +137,6 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
             "int"
         );
 
-        // A parameter pack is flattened, and a value parameter is a value.
         let pack = identity(only(&image, Cpp, &[], "Pack"));
         assert_eq!(
             argument_names(&image, pack),
@@ -182,13 +168,10 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
             "{fixture}: {array:?}"
         );
 
-        // A user's inline namespace collapses too; a local class is scoped
-        // by its function.
         let thing = identity(only(&image, Cpp, &["outer"], "Thing"));
         assert_eq!(thing.origin, ArgumentOrigin::None, "{fixture}");
         only(&image, Cpp, &["main"], "Local");
 
-        // A self-referential template's member points at the same identity.
         let node = only(&image, Cpp, &[], "Node");
         assert!(
             matches!(argument_names(&image, identity(node)).as_slice(), [long] if long == "long" || long == "long int"),
@@ -216,10 +199,6 @@ async fn cpp_template_identities_do_not_depend_on_the_compiler_or_library() {
     }
 }
 
-/// rustc names a slice `&[T]` unoptimized and `*const [T]` optimized, and
-/// spells mutable slices and boxed slices differently again. Their shape
-/// says what they are. A pointer to a type with an unsized tail has the
-/// same shape but carries the tail's length, so it is not a slice.
 #[tokio::test]
 async fn rust_identities_and_fat_pointers_follow_structure_not_spelling() {
     use SourceLanguage::Rust;
@@ -235,8 +214,6 @@ async fn rust_identities_and_fat_pointers_follow_structure_not_spelling() {
             "{fixture}"
         );
 
-        // rustc describes type parameters but not const ones, which the
-        // name supplies.
         let wrapper = identity(only(&image, Rust, &["generics"], "Wrapper"));
         assert_eq!(argument_names(&image, wrapper), ["u8", "3"], "{fixture}");
 
@@ -284,8 +261,6 @@ async fn rust_identities_and_fat_pointers_follow_structure_not_spelling() {
     }
 }
 
-/// Go identifies maps, channels, and slices by kind, whatever they are
-/// named, and names generic instances without describing their parameters.
 #[tokio::test]
 async fn go_identities_come_from_kinds_and_instance_names() {
     use SourceLanguage::Go;
@@ -321,10 +296,6 @@ async fn go_identities_come_from_kinds_and_instance_names() {
     }
 }
 
-/// Zig names generic instances by their calls and spells slices and
-/// sentinels in its own syntax. Its text slices and sentinel pointers read
-/// as text, charged to the inspection's budget: text the budget cannot
-/// afford is cut short and says why, without failing the inspection.
 #[tokio::test]
 async fn zig_identities_text_and_text_budgets_follow_zig_syntax() {
     use SourceLanguage::Zig;
@@ -356,7 +327,6 @@ async fn zig_identities_text_and_text_budgets_follow_zig_syntax() {
     for (name, text) in [
         ("text", Some(complete("hello"))),
         ("terminated", Some(complete("zero"))),
-        // A C string's extent reaches through its NUL.
         (
             "c_text",
             Some(microscope::TextSummary {
@@ -376,7 +346,6 @@ async fn zig_identities_text_and_text_budgets_follow_zig_syntax() {
 
     assert_eq!(text.as_deref().cloned(), Some(complete("hello")));
 
-    // Three bytes short of the whole text.
     let limits = microscope::InspectionLimits {
         memory_bytes: full.usage.memory_bytes - 3,
         ..microscope::InspectionLimits::default()
@@ -414,8 +383,6 @@ async fn zig_identities_text_and_text_budgets_follow_zig_syntax() {
     scenario.shutdown().await;
 }
 
-/// Stops a fixture at the line holding `marker`, in its source under
-/// `tests/fixtures`.
 async fn stop_at_marker(fixture: &str, source: &str, marker: &str) -> Scenario {
     let line = source_line(&format!("tests/fixtures/{source}"), marker);
     let file = source.rsplit('/').next().expect("a file name");
@@ -449,9 +416,6 @@ async fn size_of(scenario: &Scenario, text: &str) -> i128 {
     }
 }
 
-/// An expression names a type as a person writes it: qualified or not,
-/// with the arguments a template's defaults leave out omitted, whatever
-/// the producer named it.
 #[tokio::test]
 async fn expressions_name_types_by_their_identities() {
     for (fixture, source, sizes) in [
@@ -462,8 +426,6 @@ async fn expressions_name_types_by_their_identities() {
                 ("sizeof(std::`vector<int>`)", 24),
                 ("sizeof(outer::Thing)", 4),
                 ("sizeof(`Fixed<3, short>`)", 6),
-                // A namespace no unit marks inline is not inline, even when
-                // a library names its inline namespaces alike elsewhere.
                 ("sizeof(std::__debug::`vector<int>`)", 56),
             ][..],
         ),
@@ -516,7 +478,6 @@ fn complete(text: &str) -> microscope::TextSummary {
     }
 }
 
-/// Rust's text slices read as text, and byte slices do not.
 #[tokio::test]
 async fn rust_text_slices_read_as_text() {
     let scenario =

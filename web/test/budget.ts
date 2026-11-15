@@ -1,20 +1,9 @@
-// How long one test may take. The suite runs on every save, so a slow test
-// is a defect: make it faster, or give it a budget of its own below with the
-// reason it cannot be faster. A test in a browser waits on real key presses,
-// garbage collection, and modules loading cold, so its budget leaves room
-// for that. Budgets fit jlinux3, the slowest machine we run on, where tests
-// take about twice as long as on jlinux1. A budget of a test's own is about
-// half again its time. `just web-props` runs without budgets.
-
 import { afterEach, beforeEach, expect, inject } from "vitest";
 
-/** Tests outside a browser: logic over data. */
 const UNIT = 150;
 
-/** Tests rendering in Chromium. */
 const BROWSER = 1_500;
 
-/** Tests that cannot meet their project's budget, by file and full name. */
 export const OWN: Record<string, { ms: number; why: string }> = {
   "test/live.test.tsx :: a live renderer > is ended when a function it returned never settles": {
     ms: 4_500,
@@ -45,7 +34,6 @@ export const OWN: Record<string, { ms: number; why: string }> = {
   },
 };
 
-/** Files whose every test has a budget of its own, and why. */
 export const FILES: Record<string, { ms: number; why: string }> = {
   "test/journeys.test.tsx": {
     ms: 3_500,
@@ -59,7 +47,6 @@ beforeEach(() => {
   started = performance.now();
 });
 
-// A deeper property search is meant to take its time.
 const searching = inject("proptestCases") !== "";
 
 afterEach(() => {

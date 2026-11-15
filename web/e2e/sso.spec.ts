@@ -1,9 +1,3 @@
-// Single sign-on against the real services backend and services' mock
-// identity provider, which stands in for Google, GitHub, and an
-// organization's SAML identity provider: its sign-in pages are where a
-// person would sign in to the real ones. Everything else is real: the
-// redirects, services' checks of what comes back, and the page.
-
 import { randomBytes } from "node:crypto";
 import * as path from "node:path";
 
@@ -17,7 +11,7 @@ const test = base.extend<{ services: Services }>({
   services: async ({ context }, provide, info) => {
     allowErrors(
       /GET \S+\/api\/users\/me: 401$/u,
-      // The mock's sign-in pages have no icon.
+
       /GET http:\/\/127\.0\.0\.1:\d+\/favicon\.ico: 404$/u,
     );
     const services = await startServices({ sso: true });
@@ -37,7 +31,6 @@ const test = base.extend<{ services: Services }>({
 
 test.skip(!haveServices, `services is not built at ${servicesBinary}`);
 
-// Tall enough that a screenshot holds the whole pane.
 test.beforeEach(async ({ page }) => {
   if (process.env.SSO_SHOTS) {
     await page.setViewportSize({ width: 1100, height: 1500 });
@@ -46,7 +39,6 @@ test.beforeEach(async ({ page }) => {
 
 const account = (page: Page) => page.getByRole("tabpanel", { name: "Account" });
 
-/** Saves a screenshot of `what` when SSO_SHOTS names a directory. */
 async function shot(page: Page, name: string, what = account(page)): Promise<void> {
   const dir = process.env.SSO_SHOTS;
   if (dir) {
@@ -54,10 +46,8 @@ async function shot(page: Page, name: string, what = account(page)): Promise<voi
   }
 }
 
-/** A new address, unique in the shared database. */
 const address = () => `e2e-${randomBytes(6).toString("hex")}@example.com`;
 
-/** Signs in on the mock's page as someone it does not list. */
 async function atProvider(
   page: Page,
   who: { email: string; login?: string; fault?: string },
@@ -93,7 +83,6 @@ test("signs up with Google, connects GitHub, and signs in with either", async ({
   await expect(account(page).getByRole("link", { name: "Continue with GitHub" })).toBeVisible();
   await shot(page, "01-signed-out");
 
-  // A new person: their account is made, its email already verified by Google.
   await continueWith(page, "Google");
   await atProvider(page, { email });
   await expect(account(page)).toContainText(`(${email})`);
@@ -101,7 +90,6 @@ test("signs up with Google, connects GitHub, and signs in with either", async ({
   await expect(methods(page)).toHaveText(/^Google\s*\S+@example\.com$/u);
   await shot(page, "02-google-only");
 
-  // Connecting GitHub leaves and comes back to the same account.
   await account(page).getByRole("button", { name: "Connect GitHub" }).click();
   await atProvider(page, { email, login });
   await expect(account(page).getByRole("status")).toHaveText(
@@ -113,21 +101,17 @@ test("signs up with Google, connects GitHub, and signs in with either", async ({
   const username = /Signed in as (\S+)/u.exec((await account(page).textContent()) ?? "")?.[1];
   expect(username).toBeTruthy();
 
-  // GitHub signs in to it.
   await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await continueWith(page, "GitHub");
   await atProvider(page, { email, login });
   await expect(account(page)).toContainText(`Signed in as ${username} (${email})`);
 
-  // Disconnecting Google leaves GitHub as the only way in, which cannot go.
   const google = methods(page).getByRole("listitem").filter({ hasText: "Google" });
   await google.getByRole("button", { name: "Disconnect" }).click();
   await google.getByRole("button", { name: "Disconnect" }).click();
   await expect(methods(page)).toHaveText(/^GitHub\s*\S+$/u);
   await expect(account(page).getByRole("button", { name: "Connect Google" })).toBeVisible();
 
-  // Google now makes a different account, since it is no longer connected
-  // and the address is taken: services refuses rather than link by email.
   await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await continueWith(page, "Google");
   await atProvider(page, { email });
@@ -161,7 +145,6 @@ test("an owner sets up SAML, and a new person signs in through it and joins", as
   expectErrors(/PUT \S+\/api\/orgs\/\d+\/sso: 400$/u);
   const orgPane = page.getByRole("tabpanel", { name: org });
 
-  // An owner, signed up with Google, makes an organization.
   await page.goto(`${services.origin}/`);
   await continueWith(page, "Google");
   await atProvider(page, { email: address() });
@@ -174,9 +157,6 @@ test("an owner sets up SAML, and a new person signs in through it and joins", as
     .getByRole("button", { name: "Settings" })
     .click();
 
-  // Services' values go to the identity provider; its values come back.
-  // Until the identity provider is saved, nothing is on to turn off; the
-  // owner can back out instead.
   await orgPane.getByRole("button", { name: "Set up single sign-on" }).click();
   await expect(orgPane.getByLabel("ACS URL (reply URL)")).toBeVisible();
   await expect(orgPane.getByRole("button", { name: "Turn off single sign-on" })).toHaveCount(0);
@@ -208,13 +188,11 @@ test("an owner sets up SAML, and a new person signs in through it and joins", as
   await shot(page, "06-org-configured", orgPane);
   const signInLink = await link.inputValue();
 
-  // Someone new, in their own browser, follows the link.
   const elsewhere = await browser.newContext();
   try {
     const other = await elsewhere.newPage();
     const email = address();
 
-    // A forged assertion beside the signed one is refused.
     await other.goto(signInLink);
     await expect(account(other).getByRole("heading", { name: org })).toBeVisible();
     await shot(other, "07-org-link");
@@ -231,8 +209,6 @@ test("an owner sets up SAML, and a new person signs in through it and joins", as
       .click();
     await atProvider(other, { email });
 
-    // An identity provider does not vouch for the address the way Google
-    // does, so services, which sends email here, has it confirmed first.
     await expect(account(other).getByRole("status")).toHaveText(
       `Check ${email} for a link to confirm your address, then sign in again.`,
     );
@@ -254,13 +230,11 @@ test("an owner sets up SAML, and a new person signs in through it and joins", as
     await elsewhere.close();
   }
 
-  // The owner turns it off; the link stops working.
   await orgPane.getByRole("button", { name: "Turn off single sign-on" }).click();
   await orgPane.getByRole("button", { name: "Turn off single sign-on" }).click();
   await expect(orgPane.getByRole("button", { name: "Set up single sign-on" })).toBeVisible();
 });
 
-/** A password account, confirmed and signed in with its emailed code. */
 async function passwordAccount(page: Page, services: Services) {
   const username = `e2e-${randomBytes(6).toString("hex")}`;
   const email = `${username}@example.com`;
@@ -294,13 +268,10 @@ test("a change to how an account signs in asks for the password once the sign-in
   );
   const { email, password } = await passwordAccount(page, services);
 
-  // Just signed in, so connecting needs nothing more.
   await account(page).getByRole("button", { name: "Connect Google" }).click();
   await atProvider(page, { email });
   await expect(methods(page)).toHaveText(/^Password\s*Google\s*\S+\s*Disconnect$/u);
 
-  // Services' answer once ten minutes have passed, which the page cannot
-  // wait for: the first disconnect gets it. Everything after is real.
   let refused = false;
   await page.route("**/api/users/me/identities/*", async (route) => {
     if (route.request().method() === "DELETE" && !refused) {
@@ -337,7 +308,6 @@ test("an account with two-factor authentication still needs its code after Googl
   test.setTimeout(30_000);
   const { username, email, password } = await passwordAccount(page, services);
 
-  // It connects Google, then turns on two-factor authentication.
   await account(page).getByRole("button", { name: "Connect Google" }).click();
   await atProvider(page, { email });
   await expect(methods(page)).toHaveText(/^Password\s*Google\s*\S+\s*Disconnect$/u);
@@ -351,7 +321,6 @@ test("an account with two-factor authentication still needs its code after Googl
   await account(page).getByRole("button", { name: "Done" }).click();
   await expect(account(page)).toContainText("On. Signing in takes your password");
 
-  // Google alone is not enough.
   await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await continueWith(page, "Google");
   await atProvider(page, { email });

@@ -1,8 +1,3 @@
-//! Turning the pieces a location expression describes into storage, resolved
-//! once at the stop: registers, computed values, and implicit values are
-//! captured as bytes, memory stays an address read when needed, and implicit
-//! pointers and undefined bits stay what they are.
-
 use std::sync::Arc;
 
 use gimli::{Location, Piece, Reader as _, RunTimeEndian, Value};
@@ -19,8 +14,6 @@ use super::evaluate::{EvaluateError, dwarf_value_bytes, evaluation_error};
 use super::storage;
 use super::{MAX_EVALUATION_MEMORY_BYTES, MAX_LOCATION_PIECES};
 
-/// The storage of a `byte_size`-byte object that `pieces` describe, whose
-/// scalar type is `scalar` when it has one.
 pub(super) fn storage_from_pieces(
     pieces: &[Piece<Reader<'_>>],
     byte_size: u64,
@@ -54,7 +47,6 @@ pub(super) fn storage_from_pieces(
     }
 }
 
-/// The storage of an object one location describes entirely.
 fn whole(
     piece: &Piece<Reader<'_>>,
     byte_size: u64,
@@ -108,15 +100,12 @@ fn whole(
             if let Some(scalar) = scalar {
                 dwarf_value_bytes(*value, scalar, target)?
             } else {
-                // Without a scalar type, the object holds the value's low
-                // bits, extended as a piece would extend them.
                 let mut raw = extended_value(*value, byte_size.saturating_mul(8))?.to_vec();
                 raw.truncate(size);
                 raw.into()
             },
         )),
         Location::Bytes { value } => {
-            // Like a piece of one, an implicit value must cover the object.
             let raw = implicit_bytes(value)?;
             let Some(raw) = raw.get(..size) else {
                 return Err(EvaluateError::Malformed(
@@ -134,8 +123,6 @@ fn whole(
     }
 }
 
-/// The storage of an object several pieces describe, or one that describes
-/// only part of it.
 fn composite(
     pieces: &[Piece<Reader<'_>>],
     byte_size: u64,
@@ -181,7 +168,6 @@ fn composite(
         offset = end;
     }
 
-    // Bits no piece describes are undefined (DWARF 5 section 2.6.1.2).
     if offset < bits {
         push(
             &mut resolved,
@@ -209,8 +195,6 @@ fn composite(
     Ok(storage::narrow(composite, byte_size))
 }
 
-/// Appends a piece, joining it to the previous one when together they are
-/// one run of memory or of undefined bits.
 fn push(pieces: &mut Vec<StoragePiece>, piece: StoragePiece) {
     if let Some(last) = pieces.last_mut() {
         let joined = match (&last.location, &piece.location) {
@@ -246,9 +230,6 @@ fn push(pieces: &mut Vec<StoragePiece>, piece: StoragePiece) {
     pieces.push(piece);
 }
 
-/// Where a piece of `size` bits from `bit_offset` within its location is,
-/// under the rules of DWARF 5 section 2.6.1.2: register and value pieces
-/// take their low-order bits.
 fn piece_location(
     location: &Location<Reader<'_>>,
     bit_offset: u64,
@@ -286,7 +267,6 @@ fn piece_location(
                 }
             }
 
-            // The other pieces may still be read.
             Err(VariableRuntimeError::Unavailable(reason)) => PieceLocation::Unavailable(reason),
             Err(error) => return Err(error.into()),
         },
@@ -325,9 +305,6 @@ fn piece_location(
     })
 }
 
-/// A computed value's bytes, least significant first, covering `needed`
-/// bits: a typed integer extends by its signedness, and a generic value by
-/// zeros only when that does not change what it means.
 fn extended_value(value: Value, needed: u64) -> Result<Arc<[u8]>, EvaluateError> {
     let (bytes, signed): (Vec<u8>, Option<bool>) = match value {
         Value::Generic(value) => (value.to_le_bytes().to_vec(), None),
@@ -353,7 +330,6 @@ fn extended_value(value: Value, needed: u64) -> Result<Arc<[u8]>, EvaluateError>
 
     let negative = bytes.last().is_some_and(|byte| byte & 0x80 != 0);
     let fill = match (value, signed, negative) {
-        // A float, or a generic value that zeros would make positive.
         (Value::F32(_) | Value::F64(_), ..) | (_, None, true) => None,
         (_, Some(true), true) => Some(0xff),
         (_, Some(_), _) | (_, None, false) => Some(0),

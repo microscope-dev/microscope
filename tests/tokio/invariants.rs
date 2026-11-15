@@ -1,18 +1,3 @@
-//! What holds at every stop of a tokio program, whatever a test is about.
-//! A scenario from [`checked`] runs [`check_tokio_stop`] after each stop,
-//! so a bug surfaces in whichever test reaches it.
-//!
-//! - Every thread is accounted for: what it does for the runtime is known.
-//! - The tasks are listed whole, each once. Only a list the program was
-//!   changing at the stop may be stale, and the page says so, as it says
-//!   when tokio's version is not the one verified.
-//! - A thread runs a task exactly when the list puts the task on it, but
-//!   for a worker's own launch, which the list puts on its worker.
-//! - A thread running a task has tokio's dispatch among its frames.
-//! - A suspended task's backtrace is its chain of awaits: it ends where the
-//!   chain does, or says why it cannot go on; each async frame is a future
-//!   of its own, and names its function.
-
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -26,30 +11,24 @@ use microscope::{
 
 use crate::support::Scenario;
 
-/// The most tasks a stop's check reads.
 const MAX_TASKS: usize = 4096;
 
-/// A scenario of `fixture` that checks every stop.
 pub fn checked(fixture: &str) -> Scenario {
     Scenario::launch(fixture).checking_stops(check_tokio_stop)
 }
 
-/// Checks the invariants of the stop the debugger is at.
 pub fn check_tokio_stop(
     handle: DebuggerHandle,
 ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
     Box::pin(async move { check(&handle).await })
 }
 
-/// A stop as the checks see it: each thread with what it does and its
-/// backtrace, and the tasks with the gaps of their pages.
 #[derive(Clone)]
 struct Stop {
     threads: Vec<(ThreadId, ThreadActivity, Backtrace)>,
     tasks: Vec<TaskSnapshot>,
     gaps: Vec<String>,
 
-    /// Each suspended task's backtrace.
     suspended: Vec<(u64, Backtrace)>,
 }
 
@@ -57,7 +36,6 @@ async fn check(handle: &DebuggerHandle) -> Result<(), String> {
     read(handle).await?.map_or(Ok(()), |stop| check_stop(&stop))
 }
 
-/// The stop the debugger is at, or `None` when it is at none.
 async fn read(handle: &DebuggerHandle) -> Result<Option<Stop>, String> {
     let failed = |what: &str, error: microscope::Error| format!("{what}: {error}");
 
@@ -114,7 +92,6 @@ async fn read(handle: &DebuggerHandle) -> Result<Option<Stop>, String> {
     for task in tasks.iter().filter(|task| {
         matches!(task.state, TaskState::Blocked | TaskState::Runnable) && task.thread.is_none()
     }) {
-        // A blocking closure no thread runs yet has no future of its own.
         if task.detail.as_deref() == Some("queued in the blocking pool") {
             continue;
         }
@@ -140,9 +117,6 @@ async fn read(handle: &DebuggerHandle) -> Result<Option<Stop>, String> {
 }
 
 fn check_stop(stop: &Stop) -> Result<(), String> {
-    // A list may be changing, tokio's version may be one the debugger was
-    // not checked against, and an optimized build may lose the future
-    // that runs a local set; nothing else is missing.
     if let Some(gap) = stop.gaps.iter().find(|gap| {
         !gap.contains("was being changed at the stop")
             && !gap.contains("its runtime is read as tokio")
@@ -171,9 +145,6 @@ fn check_stop(stop: &Stop) -> Result<(), String> {
                     ));
                 }
 
-                // Its frames reach tokio's dispatch, unless the thread is in
-                // glibc's clone3, starting another, which ends its unwind
-                // information before the syscall.
                 let in_clone3 = match trace.termination {
                     UnwindTermination::NoUnwindInfo { address } => {
                         trace.frames.last().is_some_and(|frame| {
@@ -229,10 +200,6 @@ fn check_stop(stop: &Stop) -> Result<(), String> {
     Ok(())
 }
 
-/// A suspended task's backtrace ends where its chain of awaits does, or
-/// says why it cannot go on, and each async frame is a future of its own
-/// that names its function. A future may begin where the one it awaits
-/// does, which its function tells apart.
 fn check_awaits(trace: &Backtrace) -> Result<(), String> {
     if !matches!(
         trace.termination,
@@ -262,9 +229,6 @@ fn check_awaits(trace: &Backtrace) -> Result<(), String> {
     Ok(())
 }
 
-/// A thread's frames of a future it drives are a chain of awaits that
-/// names its functions, just before a frame of tokio's that drives it, and
-/// each future the trace does not show is noted at such a frame.
 fn check_driven(trace: &Backtrace) -> Result<(), String> {
     let driver = |frame: Option<&microscope::StackFrame>| {
         frame.is_some_and(|frame| {
@@ -312,20 +276,12 @@ fn check_driven(trace: &Backtrace) -> Result<(), String> {
     Ok(())
 }
 
-/// The checks fail on the faults they look for: a task listed twice or
-/// on a thread that does not run it, a thread running a task the list
-/// leaves off it or without tokio's dispatch, an unknown thread, a gap
-/// other than a list changing, and an await chain that repeats a future
-/// or names no function.
 #[tokio::test]
 async fn the_checks_fail_on_the_faults_they_look_for() {
     let mut scenario = checked("tokio-workers-o0");
     scenario.add_breakpoint("task_reached").await;
     scenario.run_to_stop().await;
 
-    // The first task to arrive may stop every thread before any other task
-    // has suspended, so stop at each task's arrival until one has: the
-    // eight tasks all arrive before the program goes on.
     let suspended_in_async = |stop: &Stop| {
         stop.suspended.iter().any(|(_, trace)| {
             trace
@@ -440,8 +396,6 @@ async fn the_checks_fail_on_the_faults_they_look_for() {
     scenario.shutdown().await;
 }
 
-/// The checks fail on a thread's future with no frame of tokio's to
-/// drive it, and on a future noted at a frame that drives none.
 #[tokio::test]
 async fn the_checks_fail_on_a_future_nothing_drives() {
     let mut scenario = checked("tokio-drivers-o0");
@@ -455,7 +409,6 @@ async fn the_checks_fail_on_a_future_nothing_drives() {
 
     check_stop(&stop).expect("the stop holds");
 
-    // The thread that blocks on the runtime drives the future it was given.
     let (driving, last) = stop
         .threads
         .iter()

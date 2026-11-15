@@ -1,5 +1,5 @@
 // @ts-check
-// Draws a life board: one byte a cell, 1 for alive, row by row.
+
 microscope.draw(({ cells, columns, generation }, { previous }) => {
   const rows = cells.length / columns;
   const pixels = new Uint8ClampedArray(cells.length * 4);

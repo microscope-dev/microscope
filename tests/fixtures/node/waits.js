@@ -1,7 +1,7 @@
-// Main and WORKERS threads wait 2 ms at a time until stdin releases them.
-// Startup snapshots must find the code V8 just mapped for each isolate.
-//
-// node waits.js WORKERS
+
+
+
+
 
 'use strict';
 

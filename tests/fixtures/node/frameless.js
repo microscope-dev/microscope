@@ -1,14 +1,14 @@
-// JavaScript that calls a Node-API addon whose code runs with rbp holding
-// no frame pointer (frameless.c), so that a walk of the frame-pointer chain
-// from inside it reads none of the JavaScript frames that called it. The
-// first argument is the path of the built addon; then one of:
-//
-//   --opens          every 10 ms until standard input ends, probe() opens
-//                    /dev/random through node:fs, whose frames a walk
-//                    follows, then framelessOpens() opens /dev/zero
-//                    through the addon
-//   --spin SECONDS   framelessSpins() spins in the addon for SECONDS, a few
-//                    milliseconds a call
+
+
+
+
+
+
+
+
+
+
+
 
 'use strict';
 

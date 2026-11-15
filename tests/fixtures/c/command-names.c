@@ -1,5 +1,5 @@
-// Variables named like the console's commands, and a file static that a
-// local shadows, for the debug console and the Statics scope.
+
+
 
 struct point {
     int x;

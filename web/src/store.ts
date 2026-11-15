@@ -1,6 +1,3 @@
-// The tab's model in a store React components subscribe to, and the one
-// connection that feeds it.
-
 import { createContext, useContext } from "react";
 import { createStore, type StoreApi, useStore } from "zustand";
 
@@ -12,7 +9,6 @@ export interface Session {
   connection: Connection;
 }
 
-/** Creates a store and a connection that feeds it. */
 export function createSession(
   options: Omit<ConnectionOptions, "emit">,
   onEvent?: (event: ModelEvent) => void,
@@ -38,7 +34,6 @@ function useSession(): Session {
   return session;
 }
 
-/** Selects from the model, rerendering when the selection changes. */
 export function useModel<T>(select: (model: Model) => T): T {
   return useStore(useSession().store, select);
 }

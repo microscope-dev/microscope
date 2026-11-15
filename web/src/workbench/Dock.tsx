@@ -1,8 +1,3 @@
-// The dock: the layout's tree of splits and groups, filling the space it is
-// given, or the one maximized group until it is restored, with floating
-// windows above. In a narrow window it shows one group at a time, with a
-// list to choose any pane from, and nothing floats.
-
 import {
   type ChangeEvent,
   type KeyboardEvent,
@@ -31,10 +26,8 @@ import styles from "./Dock.module.css";
 
 const css = classOf(styles);
 
-/** Below this width the dock shows one group at a time. */
 export const NARROW = 720;
 
-/** The least a floating window is resized to. */
 const LEAST = { width: 200, height: 120 } as const;
 
 const narrowQuery = () => window.matchMedia(`(max-width: ${NARROW - 1}px)`);
@@ -54,7 +47,7 @@ export function Dock({ setup }: { setup: DockSetup }) {
   const root = useLayout((layout) => layout.root);
   const maximized = useLayout((layout) => layout.maximized);
   const focused = useLayout((layout) => layout.focused);
-  // Bottom to top, as text so an unchanged list is the same value.
+
   const stacked = useLayout((layout) => layout.floating.map((window) => window.group.id).join(" "));
   const windows = stacked === "" ? [] : (stacked.split(" ") as GroupId[]);
   const narrow = useNarrow();
@@ -75,8 +68,6 @@ export function Dock({ setup }: { setup: DockSetup }) {
               {maximized ? <GroupView id={maximized} /> : <NodeView node={root} />}
             </div>
             {size &&
-              // In a fixed order, raised by z-index: moving a window's element
-              // would drop the pointer it is being dragged by.
               windows
                 .toSorted()
                 .map((id) => (
@@ -89,8 +80,6 @@ export function Dock({ setup }: { setup: DockSetup }) {
   );
 }
 
-/** The dock's size as it changes, measured before the first paint so
- * windows a kept layout floats show at once. */
 function useSize(element: RefObject<HTMLDivElement | null>) {
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   useLayoutEffect(() => {
@@ -107,9 +96,6 @@ function useSize(element: RefObject<HTMLDivElement | null>) {
   return size;
 }
 
-/** A group floating above the dock: a title bar that moves it and docks it
- * when dropped on a tab strip or the dock's edge, and a grip that resizes
- * it. It is drawn inside the dock, however the dock has shrunk. */
 const FloatingWindow = memo(function FloatingWindow({
   id,
   bounds,
@@ -130,7 +116,7 @@ function WindowFrame({
   layer,
 }: {
   id: GroupId;
-  /** Where the layout puts the window, which may be off the dock now. */
+
   placed: Rect;
   bounds: { width: number; height: number };
   layer: number;
@@ -168,8 +154,6 @@ function WindowFrame({
     [id, rect, bounds],
   );
 
-  // The window is resized by hand as the pointer moves, and in the layout
-  // once, when it lets go.
   const gripDown = useCallback(
     (event: PointerEvent<HTMLButtonElement>) => {
       const box = element.current;
@@ -189,14 +173,13 @@ function WindowFrame({
       });
       if (tracked) {
         event.preventDefault();
-        // So the arrow keys go on resizing it.
+
         event.currentTarget.focus();
       }
     },
     [id, rect, bounds],
   );
 
-  // Working in a window raises it.
   const raise = useCallback(() => {
     const { layout } = workbench.getState();
     if (layout.floating.at(-1)?.group.id !== id) {
@@ -269,7 +252,6 @@ function grown(rect: Rect, dx: number, dy: number, bounds: { width: number; heig
   };
 }
 
-/** Every pane, to show any of them when one group fills the dock. */
 function PanePicker() {
   const { kinds } = useDock();
   const options = useLayout((layout) =>

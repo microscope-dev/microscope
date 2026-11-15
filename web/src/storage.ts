@@ -1,8 +1,3 @@
-// Per-browser conveniences kept in localStorage: a chosen name, the theme,
-// recent launches; and per-tab ones in sessionStorage, such as a tab's open
-// files. Storage may be unavailable, so every access is guarded.
-
-/** Where a convenience lives: the browser's, or the tab's alone. */
 export type Area = "local" | "session";
 
 const storage = (area: Area) => (area === "local" ? localStorage : sessionStorage);
@@ -28,9 +23,7 @@ export function read<T>(
 export function write(key: string, value: unknown, area: Area = "local"): void {
   try {
     storage(area).setItem(key, JSON.stringify(value));
-  } catch {
-    // A private window; the convenience is lost, nothing else.
-  }
+  } catch {}
 }
 
 export const isString = (value: unknown): value is string => typeof value === "string";
@@ -55,7 +48,6 @@ export const isRecentLaunches = (value: unknown): value is RecentLaunch[] =>
       ),
   );
 
-/** Remembers a launch, most recent first, without duplicates. */
 export function rememberLaunch(launch: RecentLaunch): RecentLaunch[] {
   const previous = read("microscope-recent", [], isRecentLaunches).filter(
     (item) => item.program !== launch.program || item.arguments !== launch.arguments,

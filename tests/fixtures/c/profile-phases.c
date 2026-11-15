@@ -1,7 +1,7 @@
-// A program that works in two phases. The first spins until a byte on
-// its standard input releases it, which a helper thread waits for; the
-// second spins for SECOND_MS. So a profiler can save a window of the
-// first phase and know the second has not begun.
+
+
+
+
 #include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>

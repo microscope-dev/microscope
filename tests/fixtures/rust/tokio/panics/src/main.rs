@@ -1,13 +1,13 @@
-//! Rust panics of every kind a debugger stops at, one per run, chosen by
-//! the first argument. The program's own panic hook prints each panic's
-//! message and location as a `TRUTH` line, then runs the default hook, so
-//! a test can compare the debugger's report with the program's. Each
-//! panicking line carries a `PANIC:` marker.
+
+
+
+
+
 
 use std::hint::black_box;
 use std::panic::{self, AssertUnwindSafe};
 
-/// Reports every panic as the program sees it, then as Rust would.
+
 fn install_hook() {
     let default = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
@@ -15,14 +15,14 @@ fn install_hook() {
         let (file, line) = info
             .location()
             .map_or(("-", 0), |location| (location.file(), location.line()));
-        // The task that panicked, as tokio numbers it, if a task did.
+
         let task = tokio::task::try_id().map_or_else(|| "-".to_owned(), |id| id.to_string());
         truth::line(&[&"panic", &message, &file, &line, &task]);
         default(info);
     }));
 }
 
-/// Panics as it is dropped.
+
 struct Bomb;
 
 impl Drop for Bomb {
@@ -73,8 +73,8 @@ fn main() {
             panic!("unwinding"); // PANIC: unwinding
         }
         "silent" => {
-            // A hook that never reads the payload leaves its message
-            // unformatted.
+
+
             panic::set_hook(Box::new(|_| {}));
             let caught = panic::catch_unwind(AssertUnwindSafe(|| formatted(3)));
             truth::line(&[&"recovered", &caught.is_err()]);

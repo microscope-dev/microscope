@@ -1,11 +1,11 @@
 microscope-views 1
 
-# LLVM's libc++. Verified against clang 21.1.8 with libc++ 21, by
-# tests/fixtures/cpp/containers.cpp, with and without -fstandalone-debug.
 
-# std::string: a short string's characters are in the object, a long
-# string's in its buffer, and one bit tells them apart. A long string's
-# capacity is stored halved on little-endian targets.
+
+
+
+
+
 view c++ std::basic_string<C, _, _> {
     check __rep_.__s.__is_long_ || __rep_.__s.__size_ < len(__rep_.__s.__data_)
     check !__rep_.__s.__is_long_ || __rep_.__l.__size_ <= __rep_.__l.__cap_ * 2
@@ -20,8 +20,8 @@ view c++ std::basic_string_view<C, _> {
     show text(__data_, __size_)
 }
 
-# libc++ 19 and later name the capacity `__cap_`; earlier versions keep it
-# in a compressed pair.
+
+
 view c++ std::vector<T, _> {
     let capacity_end = __cap_ or __end_cap_.__value_
     check __begin_ <= __end_ && __end_ <= capacity_end
@@ -29,8 +29,8 @@ view c++ std::vector<T, _> {
     field capacity = capacity_end - __begin_
 }
 
-# An empty std::array is presented by libstdc++.views's view, which reads
-# nothing.
+
+
 view c++ std::array<T, N> {
     show sequence(N) for i in range(N) => __elems_[i]
 }
@@ -40,8 +40,8 @@ view c++ std::span<T, E> {
     show sequence(size) for i in range(size) => __data_[i]
 }
 
-# The ordered containers are red-black trees whose end node's left child is
-# the root. The node type is the one their allocator allocates.
+
+
 view c++ std::map<K, V, _, _> {
     type Node = arg(typeof(__tree_.__node_alloc_), 0)
     show map(__tree_.__size_)
@@ -70,7 +70,7 @@ view c++ std::multiset<K, _, _> {
         => ((Node*)x)->__value_
 }
 
-# The unordered containers keep every node on one list from __first_node_.
+
 view c++ std::unordered_map<K, V, _, _, _> {
     type Node = arg(typeof(__table_.__node_alloc_), 0)
     show map(__table_.__size_) for x in list(__table_.__first_node_.__next_, n => n->__next_)
@@ -95,7 +95,7 @@ view c++ std::unordered_multiset<K, _, _, _> {
         => ((Node*)x)->__value_
 }
 
-# A list is a ring through its own __end_, which holds no element.
+
 view c++ std::list<T, _> {
     type Node = arg(typeof(__node_alloc_), 0)
     let sentinel = &__end_
@@ -103,17 +103,17 @@ view c++ std::list<T, _> {
         => ((Node*)x)->__value_
 }
 
-# A forward list keeps no count; its last node links to nothing.
+
 view c++ std::forward_list<T, _> {
     type Node = arg(typeof(__alloc_), 0)
     show sequence(_) for x in list(__before_begin_.__next_, n => n->__next_)
         => ((Node*)x)->__value_
 }
 
-# A deque's elements are in blocks, which __map_ points to, starting
-# __start_ elements into the first. Neither the object nor its debug
-# information holds a block's size: libc++ makes a block 4096 bytes of
-# elements, or 16 elements of 256 bytes or more.
+
+
+
+
 view c++ std::deque<T, _> {
     let block = sizeof(T) < 256 ? 4096 / sizeof(T) : 16
     let map = __map_.__begin_
@@ -124,19 +124,19 @@ view c++ std::deque<T, _> {
     show sequence(size) for i in range(size) => map[(start + i) / block][(start + i) % block]
 }
 
-# A unique_ptr keeps its pointer beside its deleter: as __ptr_ of an
-# anonymous member, or, before libc++ 20, of a compressed pair. Arrays,
-# unique_ptr<T[]>, have no size to show.
+
+
+
 view c++ std::unique_ptr<T, _> {
     check sizeof(T) > 0
     let pointer = __ptr_.__value_ or __ptr_
     show if pointer == 0 { empty("nullptr") } else { value(*pointer) }
 }
 
-# A shared_ptr's control block counts its owners less one, and its weak
-# references less one, of which its owners together hold one. Without
-# -fstandalone-debug, its debug information describes no control block,
-# and the next view shows no counts.
+
+
+
+
 view c++ std::shared_ptr<T> {
     check sizeof(T) > 0
     let strong = __cntrl_ == 0 ? 0 : __cntrl_->__shared_owners_ + 1
@@ -150,8 +150,8 @@ view c++ std::shared_ptr<T> {
     show if __ptr_ == 0 { empty("nullptr") } else { value(*__ptr_) }
 }
 
-# Whether a weak_ptr's object still exists is in the control block alone,
-# so without it a weak_ptr shows as stored.
+
+
 view c++ std::weak_ptr<T> {
     check sizeof(T) > 0
     let strong = __cntrl_ == 0 ? 0 : __cntrl_->__shared_owners_ + 1
@@ -170,8 +170,8 @@ view c++ std::optional<T> {
     show if __engaged_ { value(__val_) } else { empty("nullopt") }
 }
 
-# Every alternative is at the start of the union __data; __index says which
-# one it holds, or all ones when it holds none.
+
+
 view c++ std::variant {
     type Index = typeof(__impl_.__index)
     show if __impl_.__index == (Index)-1 {
@@ -181,9 +181,9 @@ view c++ std::variant {
     }
 }
 
-# A tuple's element N is the __value_ of its __tuple_leaf<N, T> base. These
-# views name tuples of up to six elements; libstdc++.views names the empty
-# one for both libraries.
+
+
+
 view c++ std::tuple<A> {
     type L0 = std::__tuple_leaf<0, A>
     show record { 0 = ((L0)__base_).__value_ }
@@ -251,8 +251,8 @@ view c++ std::tuple<A, B, C, D, E, F> {
     }
 }
 
-# std::vector<bool> packs its bools into words, from the first bit of the
-# first, and counts its capacity in words.
+
+
 view c++ std::vector<bool, _> {
     let bits = sizeof(*__begin_) * 8
     check __size_ <= __cap_ * bits
@@ -260,9 +260,9 @@ view c++ std::vector<bool, _> {
     field capacity = __cap_ * bits
 }
 
-# A bitset is the positions of the bits it sets. Its words, one or an
-# array of them, are 64 bits on the targets microscope supports; each is read
-# once.
+
+
+
 view c++ std::bitset<N> {
     let words = (u64*)&__first_
     check sizeof(__first_) % 8 == 0
@@ -275,7 +275,7 @@ view c++ std::initializer_list<T> {
     show sequence(__size_) for i in range(__size_) => __begin_[i]
 }
 
-# A flat map keeps its keys and its values in two vectors, in order.
+
 view c++ std::flat_map<K, V, _, _, _> {
     let keys = __containers_.keys.__begin_
     let values = __containers_.values.__begin_
@@ -289,9 +289,9 @@ view c++ std::flat_set<K, _, _> {
     show sequence(__keys_.__end_ - keys) for i in range(__keys_.__end_ - keys) => keys[i]
 }
 
-# A duration is a count of its period, written as Go writes durations
-# where the period is one of seconds' that microscope writes. Durations of
-# other periods, and of floats, show as stored.
+
+
+
 view c++ std::chrono::duration<_, std::ratio<1, 1000000000>> {
     show value(__rep_)
     format self as duration(ns)
@@ -322,9 +322,9 @@ view c++ std::chrono::duration<_, std::ratio<3600, 1>> {
     format self as duration(s)
 }
 
-# The system clock counts microseconds from the Unix epoch, shown as the
-# UTC time it is; another clock's time is how long after its own epoch it
-# is.
+
+
+
 view c++ std::chrono::time_point<std::chrono::system_clock, std::chrono::duration<_, std::ratio<1, 1000000>>> {
     show value(__d_.__rep_)
     format self as time(us)
@@ -351,13 +351,13 @@ view c++ std::filesystem::path {
     show value(__pn_)
 }
 
-# A function with a target points to the object that calls it, which
-# shows as the class it dynamically is, whose name says what the target is.
+
+
 view c++ std::function<_> {
     show if __f_.__f_ == null { empty("empty") } else { value(*__f_.__f_) }
 }
 
-# A mutex is the C library's, which glibc.views presents.
+
 view c++ std::mutex {
     show value(__m_)
 }
@@ -366,12 +366,12 @@ view c++ std::recursive_mutex {
     show value(__m_)
 }
 
-# A thread id is the thread's pthread_t, or 0 for no thread.
+
 view c++ std::__thread_id {
     show if __id_ == 0 { empty("no thread") } else { value(__id_) }
 }
 
-# An any with a value has a handler for its type, whose name says the type.
+
 view c++ std::any {
     show if __h_ == null { empty("empty") } else { value(__h_) }
 }

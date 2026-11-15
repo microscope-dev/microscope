@@ -1,11 +1,11 @@
-"""A command boundary, reentrant user code, and preserved user interrupts."""
+
 import json
 import sys
 import threading
 import types
 
-# As the launch bootstrap records on 3.12, which cannot say which thread
-# is the main one.
+
+
 sys.modules.setdefault('_microscope_bootstrap', types.SimpleNamespace(main=threading.get_ident()))
 agent = types.ModuleType('_microscope_agent')
 agent._bootstrap_lock = threading.RLock()
@@ -47,8 +47,8 @@ if mode == 'drain':
             queued = True
             queue(2, (probe,))
     agent.hook = record
-    # A step's end is reported after the breakpoint hit at its line, so the
-    # configuration consumed at the hit supersedes it.
+
+
     agent.apply(library, 1, (probe, ('LINE', 2, 43, __file__, probe[4], '')))
     records.clear()
     assert target() == 42
@@ -57,8 +57,8 @@ if mode == 'drain':
     assert target() == 42
     assert records == [(1, 42, 0)], records
 elif mode == 'drain_together':
-    # A configuration consumed at a report of several hits adds one at the
-    # same line; only the new hit is reported after it.
+
+
     import ctypes
     queued = False
     def record(*report):
@@ -90,8 +90,8 @@ elif mode == 'drain_race':
         except BaseException as error:
             errors.append(error)
     agent.hook = record
-    # The step's end, reported after the hit, is superseded by another
-    # thread's configuration while the hit's report is in the hook.
+
+
     agent.apply(library, 1, (probe, ('LINE', 2, 43, __file__, probe[4], '')))
     records.clear()
     worker = threading.Thread(target=run)
@@ -231,10 +231,10 @@ elif mode == 'reentry_race':
     assert records == [(1, 42, 0)], records
 elif mode == 'interrupt_race':
     agent.apply(library, 1, (probe,))
-    # Any thread starting a Python function may consume the queued command,
-    # so the main thread waits on bare locks, which start none, until the
-    # worker has taken it: returning from `worker.start()` while the worker
-    # queued once took the interruption on the main thread instead.
+
+
+
+
     go, entered = threading.Lock(), threading.Lock()
     go.acquire()
     entered.acquire()
@@ -325,19 +325,19 @@ elif mode in ('keyboard', 'exit', 'custom', 'cancelled', 'timeout'):
     assert records == [(3, 2, 6)], records
     assert agent.tool is None
 elif mode == 'fork':
-    # A process forks while another thread holds the agent's lock in a
-    # callback: the fork waits for it, so the child, whose fork handlers
-    # run monitored before the agent's, never waits on a lock no thread of
-    # its own holds. The child is disarmed; the parent keeps its agent.
+
+
+
+
     import _thread
     import os
     import select
     import time
-    # Only `target` takes line events, so the module's own lines, which
-    # fork, run as uninstrumented code does, never waiting for the lock.
+
+
     agent.apply(library, 1, (probe[:5] + ('target',),), None, agent.RAISED)
-    # Native locks, whose waits call no Python function the agent would
-    # take its lock to discover while the holder keeps it.
+
+
     go, held = _thread.allocate_lock(), _thread.allocate_lock()
     go.acquire()
     held.acquire()
@@ -347,8 +347,8 @@ elif mode == 'fork':
         go.acquire()
         with agent.lock:
             held.release()
-            # Holds the lock until the fork waits for it in the agent's
-            # handler.
+
+
             deadline = time.monotonic() + 30
             while sys._current_frames()[forker].f_code.co_name != 'forking':
                 if time.monotonic() > deadline:
@@ -394,8 +394,8 @@ elif mode == 'fork':
     target()
     assert records == [(1, 42, 0)] and agent.tool is not None, records
 elif mode == 'fork_again':
-    # A load retried after its fork handlers were registered registers
-    # them again: a fork runs each twice, and leaves the lock as it was.
+
+
     import os
     os.register_at_fork(before=agent.forking, after_in_parent=agent.forked_parent,
                         after_in_child=agent.forked)

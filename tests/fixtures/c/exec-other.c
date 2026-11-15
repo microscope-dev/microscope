@@ -1,6 +1,6 @@
-/* Executes exec-target, a program other than itself, from its directory:
- * from the main thread, or from a second thread when its argument is
- * "thread". Exits with 90 or above only when the exec fails. */
+
+
+
 #define _DEFAULT_SOURCE
 #include <limits.h>
 #include <pthread.h>

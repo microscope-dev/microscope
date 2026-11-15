@@ -10,15 +10,12 @@ use crate::model::{Pid, Tid};
 
 const FUNCTIONS: [&str; 5] = ["a", "b", "c", "d", "e"];
 
-/// Goroutines 1 to 3 by choice, the second labeled, and this choice for
-/// none.
 const UNNAMED: u32 = 3;
 
 fn task_row(choice: u32) -> u32 {
     if choice == UNNAMED { NONE } else { choice }
 }
 
-/// How a query by task names a task by its choice.
 fn group_name(choice: u32) -> String {
     match choice {
         UNNAMED => "[no task known]".to_owned(),
@@ -27,13 +24,6 @@ fn group_name(choice: u32) -> String {
     }
 }
 
-/// A capture of `stacks` (frame choices, innermost first, and whether a
-/// truncation ends them), `samples` (thread, time, weight, stack, task
-/// choice), and `waits` (time, weight, stack, task choice). Frame 5 has no
-/// symbols, frames 6 and 7 inline one function into another, frame 8 is
-/// `a` again in the module made again at the same path, as node's perf
-/// map makes it, and frame 9 is another `a`, of another module. Each
-/// frame's lines are at lines of their own.
 fn capture(
     stacks: &[(Vec<usize>, bool)],
     samples: &[(u32, i64, u64, usize, u32)],
@@ -123,7 +113,6 @@ fn line(function: &str) -> LineInput<'_> {
     }
 }
 
-/// A transform of a key, by what views show of it.
 #[derive(Debug, Clone)]
 enum Named {
     Focus(String),
@@ -133,8 +122,6 @@ enum Named {
     Cycles,
 }
 
-/// `path` with each cycle cut out, walked from its outermost frame: a
-/// function already on the path cuts it back to its earlier call.
 fn loop_erased(path: &[String]) -> Vec<String> {
     let mut kept: Vec<String> = Vec::new();
     for step in path {
@@ -147,7 +134,6 @@ fn loop_erased(path: &[String]) -> Vec<String> {
     kept
 }
 
-/// What views show of a key: its name and its module's.
 fn shown(keys: &Keys<'_>, key: u32) -> String {
     format!(
         "{} [{}]",
@@ -156,12 +142,6 @@ fn shown(keys: &Keys<'_>, key: u32) -> String {
     )
 }
 
-/// What views show of each key of a frame, innermost first, worked out
-/// from the capture's tables alone: a function by its name, a line by its
-/// function's name, file, and number, and code no symbols describe, or
-/// any code at address granularity, by its module and address. Each shows
-/// its module's file name, so that a module made again at one path is one
-/// module.
 fn naive_frame(capture: &Capture, frame: u32, granularity: Granularity) -> Vec<String> {
     let record = &capture.frames[frame as usize];
     if record.kind == FrameKind::Truncated as u8 {
@@ -201,8 +181,6 @@ fn naive_frame(capture: &Capture, frame: u32, granularity: Granularity) -> Vec<S
         .collect()
 }
 
-/// The keys of a sample's path, as views show them, computed from the
-/// capture's tables alone.
 fn naive_path(
     capture: &Capture,
     (stack, granularity): (u32, Granularity),
@@ -256,14 +234,10 @@ fn key_named(keys: &Keys<'_>, name: &str) -> Option<u32> {
     (0..index(keys.count())).find(|key| keys.name(*key) == name)
 }
 
-/// Stacks, samples, and waits as [`capture`] takes them.
 type Stacks = Vec<(Vec<usize>, bool)>;
 type Samples = Vec<(u32, i64, u64, usize, u32)>;
 type Waits = Vec<(i64, u64, usize, u32)>;
 
-/// A range, threads, transforms by kind and key, and inversion; whether
-/// waits are queried, tasks by choice, and whether by task; and the
-/// granularity.
 type Selection = (
     (
         Option<(i64, i64)>,
@@ -275,7 +249,6 @@ type Selection = (
     Granularity,
 );
 
-/// How many frames [`capture`] makes.
 const FRAMES: usize = 10;
 
 fn strategy() -> impl Strategy<Value = (Stacks, (Samples, Waits), Selection)> {
@@ -313,8 +286,6 @@ fn strategy() -> impl Strategy<Value = (Stacks, (Samples, Waits), Selection)> {
     })
 }
 
-/// What the oracle follows: each selected sample's or wait's task, stack,
-/// and weight.
 fn selected(
     capture: &Capture,
     range: Option<(i64, i64)>,
@@ -364,7 +335,6 @@ proptest! {
         prop_assert_eq!(capture.validate(), Ok(()));
         let keys = Keys::new(&capture, granularity);
 
-        // Every key a frame has, by what views show of it: one key each.
         let mut shown_keys: BTreeMap<String, u32> = BTreeMap::new();
         for frame in 0..index(capture.frames.len()) {
             for &key in keys.frame(frame) {
@@ -399,7 +369,6 @@ proptest! {
             query.transforms.push(transform);
         }
 
-        // The oracle: each selected sample alone.
         let mut expected_totals: BTreeMap<Vec<String>, u64> = BTreeMap::new();
         let mut expected_functions: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         let mut expected_weight = 0;
@@ -454,7 +423,6 @@ proptest! {
             let earlier = totals.insert(path.clone(), tree.total[node]);
             prop_assert!(earlier.is_none(), "{:?} is two nodes", path);
 
-            // A node's subtree is the run of deeper nodes after it.
             let end = tree.end[node] as usize;
             prop_assert!(end > node && end <= tree.len());
             prop_assert!((node + 1..end).all(|inner| tree.depth[inner] > tree.depth[node]));
@@ -496,7 +464,6 @@ fn density_buckets_kept_samples_by_lane_and_time() {
         ..Query::default()
     };
 
-    // The sample at 10 lies outside [0, 10).
     assert_eq!(
         density(&capture, &keys, &all, 2, Lanes::Threads),
         [(0, vec![1, 2]), (1, vec![0, 4])]
@@ -543,7 +510,6 @@ fn off_cpu_time_falls_in_each_slice_it_overlaps() {
         ..Query::default()
     };
 
-    // Slices of ten from 0; b was off from before the range to after it.
     assert_eq!(
         off_cpu(&capture, &query, 4),
         [
@@ -560,7 +526,6 @@ fn off_cpu_time_falls_in_each_slice_it_overlaps() {
         ]
     );
 
-    // Slices of an uneven range share it out without losing any.
     let uneven = Query {
         range: Some((0, 10)),
         threads: Some(vec![b]),
@@ -572,8 +537,6 @@ fn off_cpu_time_falls_in_each_slice_it_overlaps() {
     assert_eq!(lanes[0].blocked.iter().sum::<u64>(), 10, "{lanes:?}");
 }
 
-/// The analysis is pure: it reads captures and nothing else, so a query
-/// answers the same wherever it runs. Tests are exempt.
 #[test]
 fn the_analysis_stays_pure() {
     const FORBIDDEN: [&str; 11] = [
@@ -615,8 +578,6 @@ fn the_analysis_stays_pure() {
     assert!(checked >= 3, "the analysis's sources were found");
 }
 
-/// Each path of the tree that samples end at, outermost first, with the
-/// weight that ends there.
 fn ending_paths(tree: &CallTree, keys: &Keys<'_>) -> BTreeMap<Vec<String>, u64> {
     (0..tree.len())
         .filter(|node| tree.own[*node] > 0)
@@ -712,7 +673,6 @@ fn a_logical_stack_is_a_tasks_own_under_its_dispatch() {
         ])
     );
 
-    // The native stacks are one switch away.
     let native = aggregate(&capture, &keys, &Query::default());
     assert_eq!(
         ending_paths(&native, &keys)[&names(&[
@@ -728,10 +688,6 @@ fn a_logical_stack_is_a_tasks_own_under_its_dispatch() {
     );
 }
 
-/// A Python program's capture: a sample of a mixed stack, its interpreted
-/// frames inside the activations of the interpreter that run them and
-/// calling native code, and one of a thread that runs no Python, with the
-/// frames of `Server.handle` and the native `decode` it calls.
 fn python_capture() -> (Capture, u32, u32) {
     use crate::CodeRole::{Interpreter, Ordinary};
     let mut builder = CaptureBuilder::new();
@@ -791,11 +747,6 @@ fn python_capture() -> (Capture, u32, u32) {
     (builder.finish(), handle, decode)
 }
 
-/// A Python program's stacks are mixed, its interpreted frames inside the
-/// activations of the interpreter that run them. The Python look shows
-/// them from the outermost in, without the interpreter, and with the native
-/// code they call; the native look shows only what the thread ran; and a
-/// stack with no interpreted frame is the same in every look.
 #[test]
 fn python_mixed_and_native_looks_of_one_stack() {
     let (capture, handle, decode) = python_capture();
@@ -862,7 +813,6 @@ fn python_mixed_and_native_looks_of_one_stack() {
         ])
     );
 
-    // An interpreted frame has no address: by address, it is its line.
     let keys = Keys::new(&capture, Granularity::Address);
     let shown: Vec<String> = keys
         .frame(handle)
@@ -874,13 +824,8 @@ fn python_mixed_and_native_looks_of_one_stack() {
     assert!(!keys.interpreted(keys.frame(decode)[0]));
 }
 
-/// A frame of an anonymous function: its file, three lines into its
-/// function, or none for compiled code; where its function is declared;
-/// and its sample's weight.
 type Anonymous<'a> = (Option<&'a str>, Option<(&'a str, u32)>, u64);
 
-/// A capture of one sample of each frame of `places`, each of an anonymous
-/// interpreted function as V8 names them, and the frames.
 fn anonymous(places: &[Anonymous<'_>]) -> (Capture, Vec<u32>) {
     let mut builder = CaptureBuilder::new();
     let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
@@ -903,10 +848,6 @@ fn anonymous(places: &[Anonymous<'_>]) -> (Capture, Vec<u32>) {
     (builder.finish(), frames)
 }
 
-/// A function a module made again names keys once: node's perf map is
-/// read again as V8 compiles more, each reading a new module over V8's code
-/// at one path, and the native view once listed one JavaScript function as
-/// 274 rows. A function of that name in another module stays apart.
 #[test]
 fn a_function_of_a_remade_module_is_one_key() {
     let mut builder = CaptureBuilder::new();
@@ -933,10 +874,6 @@ fn a_function_of_a_remade_module_is_one_key() {
     assert_eq!(keys.named("JS:*lint").len(), 2);
 }
 
-/// Functions of one name, as many lint rules' `create` are, each have an
-/// exact name that a focus takes and that picks out that function alone,
-/// while a name no other function has stays as it is. The browser selects
-/// functions by these names, and once could select neither `create`.
 #[test]
 fn functions_that_share_a_name_each_have_an_exact_name() {
     let mut builder = CaptureBuilder::new();
@@ -971,10 +908,6 @@ fn functions_that_share_a_name_each_have_an_exact_name() {
     }
 }
 
-/// An anonymous JavaScript function is named for where it is declared, as
-/// V8's stack traces show it, so that no row is blank, `--focus` can name
-/// it, and two of them pair in a diff only if declared in one place. A
-/// native function with no name is not one.
 #[test]
 fn an_anonymous_function_is_named_for_where_it_is_declared() {
     let linter = Some(("/app/lib/linter.js", 557));
@@ -1057,8 +990,6 @@ fn an_anonymous_function_is_named_for_where_it_is_declared() {
     assert_eq!(paired, expected);
 }
 
-/// A capture of one sample of each of `stacks`, outermost first, with its
-/// weight, each function a frame of its own.
 fn named_stacks(stacks: &[(&[&str], u64)]) -> Capture {
     let mut builder = CaptureBuilder::new();
     let module = builder.module("/bin/app", None, [0; 16], 0);
@@ -1084,10 +1015,6 @@ fn named_stacks(stacks: &[(&[&str], u64)]) -> Capture {
     builder.finish()
 }
 
-/// Collapsing every cycle cuts each path back to a function's first call
-/// whenever it is called again, however the call came round: directly, by
-/// two functions calling each other, by three, and again after the path
-/// left the cycle. Totals at the roots stay what they were.
 #[test]
 fn collapsing_cycles_cuts_each_path_back_to_the_first_call() {
     let capture = named_stacks(&[
@@ -1122,15 +1049,11 @@ fn collapsing_cycles_cuts_each_path_back_to_the_first_call() {
             (path(&["main", "self", "work"]), 1),
             (path(&["main", "visit", "children", "work"]), 2),
             (path(&["a", "b", "c", "work"]), 4),
-            // a b a c a: the second a cuts back to the first, then c is
-            // new, then the third a cuts c off again.
             (path(&["a"]), 8),
             (path(&["main", "visit"]), 16),
         ])
     );
 
-    // Own cost moves to the outermost call; the roots' totals do not
-    // change, though a function only a cut cycle ran loses that sample.
     let costs = |transforms: Vec<Transform>| {
         let query = Query {
             transforms,
@@ -1152,13 +1075,11 @@ fn collapsing_cycles_cuts_each_path_back_to_the_first_call() {
     }
     assert_eq!((plain["b"].1, collapsed["b"].1), (12, 4));
 
-    // Inverted, each path from its innermost frame is cut the same way.
     assert_eq!(
         paths(vec![Transform::CollapseCycles], true)[&path(&["work", "c", "b", "a"])],
         4
     );
 
-    // A collapse of one function leaves cycles through others.
     let self_key = keys.named("self")[0];
     let one = paths(vec![Transform::CollapseRecursion(self_key)], false);
     assert_eq!(one[&path(&["main", "self", "work"])], 1);
@@ -1168,10 +1089,6 @@ fn collapsing_cycles_cuts_each_path_back_to_the_first_call() {
     );
 }
 
-/// A C++ function is named with its parameter list, which can run past
-/// 200 characters, so a name without it picks the function out when it
-/// is the only one so named; overloads are all found, for the caller to
-/// tell apart; and a name nothing has finds the names that contain it.
 #[test]
 fn a_name_without_its_parameters_finds_the_function() {
     let capture = named_stacks(&[(
@@ -1200,8 +1117,6 @@ fn a_name_without_its_parameters_finds_the_function() {
         ["blink::Paint(float) const", "blink::Paint(int) const"]
     );
 
-    // A whole name still wins over another's prefix, and a prefix that
-    // stops inside a name is no match.
     assert_eq!(keys.named("operator()").len(), 1);
     assert!(keys.named("blink::PaintLayer").is_empty());
     assert!(keys.named("content::Renderer").is_empty());
@@ -1215,21 +1130,14 @@ fn a_name_without_its_parameters_finds_the_function() {
     assert!(keys.similar("nothing like it", 5).is_empty());
 }
 
-/// A sample: its thread, time, weight, and task choice.
 type Sample = (u32, i64, u64, u32);
 
-/// A capture of label spans `route=vN` (thread, start, length, N), and of
-/// samples of one stack, goroutine 2 labeled `phase=spin`.
 fn labeled(spans: &[(u32, i64, i64, u32)], samples: &[Sample]) -> Capture {
     labeled_off(spans, samples, &[])
 }
 
-/// A span of time off a CPU: thread, start, length, and whether it was
-/// preempted rather than blocked.
 type Off = (u32, i64, u64, bool);
 
-/// [`labeled`], its threads off their CPUs for `off`, which may not overlap
-/// on one thread.
 fn labeled_off(spans: &[(u32, i64, i64, u32)], samples: &[Sample], off: &[Off]) -> Capture {
     let mut builder = CaptureBuilder::new();
     let module = builder.module("/bin/app", None, [0; 16], 0);
@@ -1286,9 +1194,6 @@ fn labeled_off(spans: &[(u32, i64, i64, u32)], samples: &[Sample], off: &[Off]) 
     builder.finish()
 }
 
-/// A sample carries the labels of the spans open on its thread at its
-/// time, and its task's: a query of a label keeps exactly the samples that
-/// carry it, and one by a key roots each at its innermost value.
 fn samples_carry_the_open_labels(
     spans: &[(u32, i64, i64, u32)],
     samples: &[Sample],
@@ -1297,9 +1202,6 @@ fn samples_carry_the_open_labels(
     let capture = labeled(spans, samples);
     let keys = Keys::new(&capture, Granularity::Function);
 
-    // The innermost route a sample carries: the latest-starting span
-    // that covers it, of two that start together the shorter, and of
-    // two alike the first recorded, which the capture nests inside.
     let route = |&(thread, time, _, _): &Sample| {
         spans
             .iter()
@@ -1362,7 +1264,6 @@ fn samples_carry_the_open_labels(
     }
 
     if spans.is_empty() {
-        // A key no label has roots every sample at its absence.
         expected = expected
             .into_values()
             .map(|weight| ("[no such label]".to_owned(), weight))
@@ -1373,8 +1274,6 @@ fn samples_carry_the_open_labels(
     Ok(())
 }
 
-/// Found by the property below: two spans alike but for their value, so
-/// the first recorded is the innermost.
 #[test]
 fn of_two_alike_spans_the_first_recorded_is_innermost() {
     samples_carry_the_open_labels(&[(1, 35, 27, 0), (1, 35, 27, 1)], &[(1, 35, 1, 0)], 0).unwrap();
@@ -1417,7 +1316,6 @@ proptest! {
         range in (0..300_i64, 1..300_i64),
         fold in 1..40_i64,
     ) {
-        // Each thread's spans off its CPU, one after another.
         let mut at = [0_i64; 2];
         let off: Vec<Off> = gaps
             .iter()
@@ -1454,7 +1352,6 @@ proptest! {
             }
         }
 
-        // Threads are told apart by row in the blocks, by choice here.
         let rows: BTreeMap<u32, (i64, i64, i64)> = drawn
             .into_iter()
             .map(|(row, totals)| (capture.threads[row as usize].tid.get() - 1, totals))
@@ -1493,7 +1390,6 @@ proptest! {
         }
         prop_assert_eq!((marked, rest), (inside, outside));
 
-        // Nothing is chosen of a site the profile does not have.
         let none = ChosenZones { sites: &[], band: None };
         let blocks = zone_blocks(&capture, range, None, fold, Some(none));
         prop_assert!(blocks.iter().all(|block| !block.chosen));
@@ -1521,7 +1417,6 @@ proptest! {
             prop_assert!(block.count == 1 || block.end - block.start <= fold, "{:?}", block);
         }
 
-        // The spans in the range, as recorded, each thread's choice its row.
         let mut expected: BTreeMap<u32, u32> = BTreeMap::new();
         let mut recorded: Vec<(u32, i64, i64, String)> = Vec::new();
         for &(thread, start, length, value) in &spans {
@@ -1541,9 +1436,6 @@ proptest! {
             recorded.swap_remove(found.unwrap_or_default());
         }
 
-        // Of two zones, the one that begins first, or of two that begin
-        // together the longer, holds the other where the other begins
-        // inside it, and is drawn above it.
         for outer in &alone {
             for inner in alone.iter().filter(|inner| inner.thread == outer.thread) {
                 let first = (outer.start, std::cmp::Reverse(outer.end)) < (inner.start, std::cmp::Reverse(inner.end));
@@ -1555,9 +1447,6 @@ proptest! {
     }
 }
 
-/// A zone scope keeps a sample once where any zone of its site, in or out
-/// of the band as asked, covers it on its own thread, however the zones
-/// nest; and the stats of the same band count and rank exactly its zones.
 fn a_scope_keeps_the_samples_inside_its_zones(
     spans: &[(u32, i64, i64, u32)],
     samples: &[Sample],
@@ -1625,9 +1514,6 @@ fn a_scope_keeps_the_samples_inside_its_zones(
     Ok(())
 }
 
-/// A series is every site of one name, binned by time: each bin keeps its
-/// first, last, lowest, and highest value, values no axis can show are
-/// counted, not drawn, and the value before the range holds into it.
 #[test]
 fn a_plot_keeps_each_bins_extremes_and_counts_what_it_cannot_draw() {
     let mut builder = CaptureBuilder::new();
@@ -1674,8 +1560,6 @@ fn a_plot_keeps_each_bins_extremes_and_counts_what_it_cannot_draw() {
     let only = plot_series(&capture, (0, 50), Some(&[two]), 1);
     assert_eq!((only.len(), only[0].values, only[0].unshown), (1, 1, 1));
 
-    // A value holds until the next: a range between values still shows
-    // the one before it, and whether one follows.
     let between = plot_series(&capture, (20, 35), None, 1);
     let held: Vec<(&str, Option<f64>, bool, usize)> = between
         .iter()
@@ -1700,7 +1584,6 @@ fn a_plot_keeps_each_bins_extremes_and_counts_what_it_cannot_draw() {
     );
 }
 
-/// Validation lets a plot be of no site, which is a series of no name.
 #[test]
 fn a_plot_of_no_site_is_read() {
     let mut capture = labeled(&[(0, 0, 10, 1)], &[(0, 5, 1, UNNAMED)]);
@@ -1722,8 +1605,6 @@ fn a_plot_of_no_site_is_read() {
     );
 }
 
-/// The functions diffs' stacks choose from: a name and its module. Two
-/// names are each two functions, of two modules, as views name them alike.
 const NAMED: [(&str, &str); 6] = [
     ("a", "/bin/app"),
     ("b", "/bin/app"),
@@ -1733,12 +1614,8 @@ const NAMED: [(&str, &str); 6] = [
     ("b", "/lib/libz.so"),
 ];
 
-/// A stack of indices into [`NAMED`], innermost first, and its weight.
 type WeightedStack = (Vec<usize>, u64);
 
-/// A capture of one thread's samples of stacks of [`NAMED`], innermost
-/// first, its functions made in `order`, so that their keys are in that
-/// order.
 fn stacks_of(samples: &[WeightedStack], order: &[usize]) -> Capture {
     let mut builder = CaptureBuilder::new();
     let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
@@ -1761,8 +1638,6 @@ fn stacks_of(samples: &[WeightedStack], order: &[usize]) -> Capture {
     builder.finish()
 }
 
-/// The weight of the samples whose path of names, outermost first, is
-/// each path, and of those whose path begins with it.
 fn path_weights(samples: &[WeightedStack]) -> BTreeMap<Vec<&'static str>, (u64, u64)> {
     let mut paths: BTreeMap<Vec<&'static str>, (u64, u64)> = BTreeMap::new();
     for (stack, weight) in samples {
@@ -1776,9 +1651,6 @@ fn path_weights(samples: &[WeightedStack]) -> BTreeMap<Vec<&'static str>, (u64, 
     paths
 }
 
-/// Each name's own and total weight, summed over the functions of that
-/// name: a sample is in a function's total once however often it calls
-/// it.
 fn name_costs(samples: &[WeightedStack]) -> BTreeMap<&'static str, (u64, u64)> {
     let mut costs: BTreeMap<&'static str, (u64, u64)> = BTreeMap::new();
     for (stack, weight) in samples {
@@ -1794,7 +1666,6 @@ fn name_costs(samples: &[WeightedStack]) -> BTreeMap<&'static str, (u64, u64)> {
     costs
 }
 
-/// How many functions of each name the samples call.
 fn named_functions(samples: &[WeightedStack]) -> BTreeMap<&'static str, usize> {
     let called: std::collections::BTreeSet<usize> = samples
         .iter()
@@ -1815,17 +1686,10 @@ fn weighted_stacks() -> impl Strategy<Value = Vec<WeightedStack>> {
     )
 }
 
-/// Every function's place, in some order.
 fn order() -> impl Strategy<Value = Vec<usize>> {
     Just((0..NAMED.len()).collect::<Vec<_>>()).prop_shuffle()
 }
 
-/// Two profiles' trees merge into one whose every path holds exactly each
-/// profile's own and total weight there, whichever has it, nested as trees
-/// are, however each made its functions and wherever two share a name, a
-/// function paired with itself where both have it; and their costs merge
-/// so that each function of each profile has one row, and each name's are
-/// each profile's.
 #[expect(
     clippy::too_many_lines,
     reason = "each check reads against the two profiles built above it"
@@ -1849,8 +1713,6 @@ fn a_diff_holds_each_profiles_weight(
         Side::Base => base_keys.name(diff.key[node]),
     };
 
-    // Each path's own and total weight now and before, over every node
-    // of that path of names.
     let mut paths: BTreeMap<Vec<&'static str>, [(u64, u64); 2]> = BTreeMap::new();
 
     for node in 0..diff.len() {
@@ -1893,8 +1755,6 @@ fn a_diff_holds_each_profiles_weight(
         );
     }
 
-    // A path the base has too, function for function, is paired with
-    // it, not with another function of the same names.
     let mut functions_before: BTreeMap<Vec<usize>, (u64, u64)> = BTreeMap::new();
     for (stack, weight) in theirs {
         let path: Vec<usize> = stack.iter().rev().copied().collect();
@@ -1954,7 +1814,6 @@ fn a_diff_holds_each_profiles_weight(
     let mut summed: [BTreeMap<String, (u64, u64)>; 2] = Default::default();
     let mut current_rows = Vec::new();
 
-    // A function the base calls too is paired with itself.
     let mut costs_before: BTreeMap<usize, (u64, u64)> = BTreeMap::new();
     for (stack, weight) in theirs {
         costs_before.entry(stack[0]).or_default().0 += weight;
@@ -2005,7 +1864,6 @@ fn a_diff_holds_each_profiles_weight(
     prop_assert_eq!(now, named(name_costs(ours)));
     prop_assert_eq!(before, named(name_costs(theirs)));
 
-    // Every function has a row, and a row pairs at most one of each.
     current_rows.sort_unstable();
     let rows_now = current_rows.len();
     current_rows.dedup();
@@ -2030,8 +1888,6 @@ fn a_diff_holds_each_profiles_weight(
     Ok(())
 }
 
-/// Found by the property below: the current profile's `b` paired with the
-/// base's other `b`, which came first, rather than with itself.
 #[test]
 fn a_diff_pairs_a_function_with_itself_before_another_of_its_name() {
     let order: Vec<usize> = (0..NAMED.len()).collect();
@@ -2055,13 +1911,8 @@ proptest! {
     }
 }
 
-/// A call: its thread, when it entered and returned, and its stack's
-/// functions, innermost first, or none.
 type Call = (u32, i64, i64, Option<Vec<usize>>);
 
-/// A capture of `calls` and `samples` (thread, time, stack of functions)
-/// on threads 0 and 1, of the functions `a` to `e`, and of one zone site,
-/// `phase`, with `zones` (thread, start, end).
 fn traced(
     calls: &[Call],
     samples: &[(u32, i64, Vec<usize>)],
@@ -2135,11 +1986,8 @@ fn traced(
     builder.finish()
 }
 
-/// A transform and the name of the function it applies to.
 type OfFunction<'n> = (fn(u32) -> Transform, &'n str);
 
-/// The rows of the calls `query` keeps, with `transform` of the function
-/// `name`, if any.
 fn kept_calls(capture: &Capture, query: &Query, transform: Option<OfFunction<'_>>) -> Vec<usize> {
     let keys = Keys::new(capture, Granularity::Function);
     let mut query = query.clone();
@@ -2157,11 +2005,9 @@ fn kept_calls(capture: &Capture, query: &Query, transform: Option<OfFunction<'_>
 #[test]
 fn a_query_keeps_the_calls_made_under_its_function_on_its_threads_and_in_its_zones() {
     let calls: [Call; 5] = [
-        // d under b under a, on each thread, and d under c under a.
         (0, 10, 12, Some(vec![3, 1, 0])),
         (1, 20, 22, Some(vec![3, 1, 0])),
         (0, 30, 32, Some(vec![3, 2, 0])),
-        // No stack, and one whose entry went unseen.
         (0, 40, 41, None),
         (1, crate::capture::records::UNSEEN, 52, Some(vec![1, 0])),
     ];
@@ -2186,7 +2032,6 @@ fn a_query_keeps_the_calls_made_under_its_function_on_its_threads_and_in_its_zon
     };
     assert_eq!(kept_calls(&capture, &second, under_b), [1, 4]);
 
-    // By when each returned.
     let ranged = Query {
         range: Some((12, 41)),
         ..Query::default()
@@ -2209,7 +2054,6 @@ fn samples_during_calls_are_those_their_threads_took_inside_them() {
     let calls: [Call; 3] = [
         (0, 10, 20, Some(vec![3])),
         (1, 10, 20, Some(vec![3])),
-        // Still running at the end.
         (0, 50, crate::capture::records::UNSEEN, Some(vec![3])),
     ];
     let samples = [
@@ -2236,7 +2080,6 @@ fn samples_during_calls_are_those_their_threads_took_inside_them() {
     assert_eq!(during(Vec::new()), 0);
 }
 
-/// A sample's thread, time, and stack of indexes into `FUNCTIONS`.
 type Sampled = (u32, i64, Vec<usize>);
 
 fn calls_and_samples() -> impl Strategy<Value = (Vec<Call>, Vec<Sampled>)> {
@@ -2355,8 +2198,6 @@ fn a_kernel_lane_counts_calls_where_they_returned_and_spans_the_calls_a_thread_w
                 failed: slices(&[]),
                 long: vec![(1, 12, 47)],
             },
-            // The call still running at the end waits to it, and counts
-            // where it entered.
             KernelLane {
                 thread: 1,
                 calls: slices(&[(5, 1), (7, 1)]),
@@ -2366,7 +2207,6 @@ fn a_kernel_lane_counts_calls_where_they_returned_and_spans_the_calls_a_thread_w
         ]
     );
 
-    // A thread chosen keeps only its lane, and no range draws nothing.
     let one = kernel_lanes(
         &capture,
         &keys,
@@ -2437,8 +2277,6 @@ proptest! {
 
 #[test]
 fn calls_as_leaves_weigh_what_no_sample_of_their_thread_stands_for() {
-    // Thread 0 calls from a > b, for 100 ns, sampled for 30 of them; thread
-    // 1 calls with no stack, unsampled; one call's return went unseen.
     let calls: [Call; 3] = [
         (0, 100, 200, Some(vec![1, 0])),
         (1, 50, 90, None),
@@ -2471,7 +2309,6 @@ fn calls_as_leaves_weigh_what_no_sample_of_their_thread_stands_for() {
             (path(&[&second]), 40),
         ])
     );
-    // Calls are no samples, and without asking there are none.
     assert_eq!(keys.aggregate(&leaves).samples, 2);
     assert!(
         paths(&Query::default())
@@ -2479,8 +2316,6 @@ fn calls_as_leaves_weigh_what_no_sample_of_their_thread_stands_for() {
             .all(|path| !path.iter().any(|name| name.starts_with('[')))
     );
 
-    // A call's leaf is a key like any other: a focus on it keeps its calls,
-    // and a drop of it removes them.
     let focus = Query {
         transforms: vec![Transform::Focus(keys.syscall(0, number))],
         ..leaves.clone()
@@ -2492,7 +2327,6 @@ fn calls_as_leaves_weigh_what_no_sample_of_their_thread_stands_for() {
     };
     assert!(!paths(&drop).contains_key(&path(&[&second])));
 
-    // Samples during a call keep that call's leaf and no other.
     let during = Query {
         during: Some(vec![0]),
         ..leaves.clone()
@@ -2502,7 +2336,6 @@ fn calls_as_leaves_weigh_what_no_sample_of_their_thread_stands_for() {
         BTreeMap::from([(path(&["a", "b"]), 30), (path(&["a", "b", &first]), 70)])
     );
 
-    // Inverted, the call is the root its callers hang from.
     let inverted = Query {
         invert: true,
         ..leaves

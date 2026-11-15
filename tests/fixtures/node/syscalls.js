@@ -1,32 +1,32 @@
-// System calls made from JavaScript frames of each tier, for
-// --allow-natives-syntax: each opens a path that names the call, and just
-// before the open, on the same line, prints the stack V8's own call sites
-// give for it:
-//
-//     TRUTH  call   PATH  NATIVE-ID  TIER
-//     TRUTH  frame  PATH  DEPTH  FUNCTION  FILE  LINE
-//
-// TIER is the tier of the frame at DEPTH 0, which makes the open, as
-// truth.tierOf() reads it: ignition, sparkplug, maglev, or turbofan.
-// FUNCTION, FILE, and LINE are getFunctionName(), getFileName(), and
-// getLineNumber(), or - where V8 has none. The frames of node:fs that run
-// the open are above DEPTH 0 and not reported.
-//
-// The main thread opens /dev/full from a Turbofan frame, which a Sparkplug
-// frame called, which an interpreted frame called, then /dev/zero from the
-// Sparkplug frame and /dev/null from the interpreted one; then a worker
-// opens /dev/urandom from an interpreted frame. Every function is warmed by
-// opening /dev/random, which the tests ignore, so that the optimized code
-// has seen the call it makes.
-//
-// With --hold, for the BPF engine, which reads V8 a moment after the
-// program starts and the stacks a moment after each call:
-//   - the TRUTH lines go to stderr, as the trace takes stdout;
-//   - until stdin says "go", the program opens /dev/random from the
-//     function probe every 20 ms, so that the test can see when the
-//     engine names JavaScript frames;
-//   - then it makes its calls, and the worker stays alive until stdin
-//     ends, so that the engine reads its isolate while it lives.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 'use strict';
 
@@ -34,7 +34,7 @@ const fs = require('node:fs');
 const threads = require('node:worker_threads');
 const truth = require('./truth.js');
 
-// The path warm-up calls open, which no test looks at.
+
 const WARM = '/dev/random';
 
 const HOLD = process.argv.slice(2).includes('--hold');
@@ -51,11 +51,11 @@ function nativeId() {
   return Number(fs.readlinkSync('/proc/thread-self').split('/').pop());
 }
 
-/**
- * Prints the stack of the caller of `flags`, which opens `path` on the
- * line that called it, with `fn`, the caller's function, for its tier; and
- * returns the flags the open takes.
- */
+
+
+
+
+
 function flags(path, fn) {
   if (path === WARM) {
     return 'r';
@@ -124,8 +124,8 @@ function main() {
   }
   %CompileBaseline(sparkplugOpens);
   %OptimizeFunctionOnNextCall(turbofanOpens);
-  // ignition > sparkplug > turbofan: each opens its own path after its
-  // callee has, so the innermost, Turbofan's, comes first.
+
+
   ignitionOpens('/dev/null', [(p, c) => sparkplugOpens('/dev/zero',
     [(q, d) => turbofanOpens('/dev/full', d)])]); // MAIN
   return new threads.Worker(__filename, {argv: process.argv.slice(2)});

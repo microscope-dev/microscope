@@ -1,9 +1,3 @@
-//! Native stacks through the code CPython's JIT writes to memory, which it
-//! registers, with the call-frame information that unwinds it, through the
-//! GDB JIT interface: a stop in C that the JIT's code called unwinds through
-//! that code to the program's outermost frame, names it, and places the
-//! Python frames it runs; and a profile's samples do as much.
-
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -17,7 +11,6 @@ use crate::support::python;
 
 const FIXTURE: &str = "jit.py";
 
-/// The line of the fixture marked `marker`.
 fn line(marker: &str) -> u32 {
     let text = std::fs::read_to_string(python::fixture(FIXTURE)).expect("read the fixture");
     let index = text
@@ -27,7 +20,6 @@ fn line(marker: &str) -> u32 {
     u32::try_from(index + 1).expect("a small line")
 }
 
-/// On 3.15, whose JIT `PYTHON_JIT=1` turns on.
 #[tokio::test]
 async fn a_stack_unwinds_through_the_jits_code() {
     let directory = extension_directory("3.15");
@@ -151,17 +143,11 @@ fn assert_jit_stack(trace: &Backtrace, context: &str) {
     );
 }
 
-/// The JIT's code, named as the debugger names it.
 const JIT_CODE: &str = "py::jit:executor";
 
-/// How many samples in the JIT's code a profile waits for, and how long.
 const JIT_SAMPLES: usize = 200;
 const JIT_DEADLINE: Duration = Duration::from_secs(30);
 
-/// A profile of the loop as the JIT's code runs it names that code and
-/// unwinds through it to the program's outermost frame. The objects are
-/// read as their samples are, so the program runs until the profile holds
-/// enough.
 #[test]
 fn a_profile_unwinds_through_the_jits_code() {
     let mut command = Command::new(python::interpreter("3.15"));
@@ -205,8 +191,6 @@ fn a_profile_unwinds_through_the_jits_code() {
         jitted.len()
     );
 
-    // Each through the JIT's code reaches the program's outermost frame;
-    // a few may be caught as a trace sets up its frame.
     let short: Vec<_> = jitted
         .iter()
         .filter(|stack| {

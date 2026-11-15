@@ -1,7 +1,3 @@
-//! Expressions in a Python frame, each giving what CPython's own `eval`
-//! gave in that frame, or refused where Python would run code microscope
-//! does not run, or compute a result microscope does not compute.
-
 use std::collections::BTreeMap;
 
 use microscope::{
@@ -12,19 +8,13 @@ use microscope::{
 use crate::locals::{Stop, presented, reported_locals};
 use crate::session::{PythonSession, VERSIONS};
 
-/// What microscope must do with an expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Expect {
-    /// Give what CPython gave: the same value, or the error that stands
-    /// for the exception CPython raised.
     Agrees,
 
-    /// Refuse it, whatever CPython gave.
     Refuses(ExpressionErrorKind),
 }
 
-/// An expression as each language writes it, and what microscope must do
-/// with it.
 #[derive(Debug, Clone, Copy)]
 pub struct Case {
     pub python: &'static str,
@@ -32,7 +22,6 @@ pub struct Case {
     expect: Expect,
 }
 
-/// An expression both languages write alike, on which they agree.
 pub const fn agrees(text: &'static str) -> Case {
     Case {
         python: text,
@@ -41,7 +30,6 @@ pub const fn agrees(text: &'static str) -> Case {
     }
 }
 
-/// An expression both languages write alike, which microscope refuses.
 pub const fn refuses(text: &'static str, kind: ExpressionErrorKind) -> Case {
     Case {
         python: text,
@@ -50,7 +38,6 @@ pub const fn refuses(text: &'static str, kind: ExpressionErrorKind) -> Case {
     }
 }
 
-/// An expression each language writes its own way, on which they agree.
 const fn spelled(python: &'static str, microscope: &'static str) -> Case {
     Case {
         python,
@@ -59,15 +46,12 @@ const fn spelled(python: &'static str, microscope: &'static str) -> Case {
     }
 }
 
-/// Every expression the fixture evaluates in its frame of `values`.
 const CASES: &[Case] = &[
-    // Names: a local before a global, a global before a built-in.
     agrees("count"),
     agrees("LIMIT"),
     agrees("max"),
     agrees("None"),
     agrees("True"),
-    // Numbers, with truth values counting as 0 and 1.
     agrees("count + negative"),
     agrees("count - LIMIT"),
     agrees("count * ratio"),
@@ -109,8 +93,6 @@ const CASES: &[Case] = &[
     agrees("-ratio * 1e308 * 10"),
     agrees("-ratio * 0"),
     refuses("huge + 1", ExpressionErrorKind::Arithmetic),
-    // Comparisons: numbers exactly, text by its characters, and values of
-    // different types unequal.
     agrees("count == 7"),
     agrees("count != 7"),
     agrees("count > 6.5"),
@@ -126,13 +108,11 @@ const CASES: &[Case] = &[
     agrees("data == \"ab\""),
     refuses("count < name", ExpressionErrorKind::Type),
     refuses("numbers == numbers", ExpressionErrorKind::Unsupported),
-    // Truth.
     spelled("not empty", "!empty"),
     spelled("not numbers", "!numbers"),
     spelled("not name", "!name"),
     spelled("not None", "!None"),
     refuses("point", ExpressionErrorKind::Unsupported).truth(),
-    // Items of sequences, from their ends when negative.
     agrees("numbers[0]"),
     agrees("numbers[-1]"),
     agrees("numbers[-3]"),
@@ -144,7 +124,6 @@ const CASES: &[Case] = &[
     agrees("nested[\"a\"][1][\"b\"][0]"),
     refuses("name[0]", ExpressionErrorKind::Unsupported),
     agrees("count[0]"),
-    // Keys of dicts, found by hash as Python finds them.
     agrees("ages[\"bob\"]"),
     agrees("ages[name]"),
     agrees("ages[wide]"),
@@ -167,7 +146,6 @@ const CASES: &[Case] = &[
     agrees("many[\"k299\"]"),
     agrees("many[\"k3\"]"),
     refuses("doubtful[7]", ExpressionErrorKind::Unsupported),
-    // Tuple keys, compared item by item as Python compares tuples.
     agrees("grid[(1, 2)]"),
     agrees("grid[1, 2]"),
     agrees("grid[cell]"),
@@ -198,7 +176,6 @@ const CASES: &[Case] = &[
     refuses("keyed[seven, 1]", ExpressionErrorKind::Unsupported),
     refuses("keyed[7, 1]", ExpressionErrorKind::Unsupported),
     refuses("grid[numbers, 1]", ExpressionErrorKind::Unsupported),
-    // Lengths.
     agrees("len(name)"),
     agrees("len(wide)"),
     agrees("len(astral)"),
@@ -209,7 +186,6 @@ const CASES: &[Case] = &[
     agrees("len(ages)"),
     agrees("len(many)"),
     agrees("len(count)"),
-    // Attributes: in a dict or values, inline or kept apart, and in slots.
     agrees("point.x"),
     agrees("point.y"),
     agrees("point.x + point.y * 10"),
@@ -236,7 +212,6 @@ const CASES: &[Case] = &[
     agrees("sys.maxsize"),
     agrees("os.sep"),
     agrees("os.missing_name"),
-    // Cells, sets, and frozensets.
     agrees("captured[1]"),
     agrees("len(captured)"),
     agrees("len(digits)"),
@@ -245,8 +220,6 @@ const CASES: &[Case] = &[
     spelled("not no_digits", "!no_digits"),
     refuses("digits == digits", ExpressionErrorKind::Unsupported),
     agrees("digits[0]"),
-    // Objects of classes deriving from built-in types, which hold their
-    // values, and the items and lengths a type's own code gives.
     agrees("tagged.tag"),
     agrees("pair_nt[0]"),
     agrees("pair_nt[-1]"),
@@ -280,15 +253,12 @@ const CASES: &[Case] = &[
     refuses("tagged + 1", ExpressionErrorKind::Unsupported),
     refuses("-point", ExpressionErrorKind::Unsupported),
     refuses("labels[data]", ExpressionErrorKind::Unsupported),
-    // Functions, built-in functions and methods, code, classes, and
-    // modules, by their names.
     agrees("reader"),
     agrees("length"),
     agrees("append"),
     agrees("code"),
     agrees("klass"),
     agrees("sys"),
-    // What only running the program's code could give.
     refuses("numbers + numbers", ExpressionErrorKind::Unsupported),
     refuses("name + name", ExpressionErrorKind::Unsupported),
     refuses("described.x", ExpressionErrorKind::Unsupported),
@@ -303,8 +273,6 @@ const CASES: &[Case] = &[
 ];
 
 impl Case {
-    /// The case for the truth of the expression, which Python asks with
-    /// `not not`.
     const fn truth(self) -> Self {
         Self {
             python: "not not point",
@@ -314,20 +282,15 @@ impl Case {
     }
 }
 
-/// What microscope gave for an expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// A value, in the text CPython's `repr` gives it.
     Value(String),
 
-    /// An error of this kind.
     Error(ExpressionErrorKind),
 
-    /// No value, for the reason given.
     Missing(String),
 }
 
-/// What microscope gives for `text` in the frame `at`.
 pub async fn outcome(stop: &Stop<'_>, at: StopContext, text: &str) -> Outcome {
     let expression = Expression::parse(text).unwrap_or_else(|error| panic!("{text}: {error:?}"));
     match stop.scenario.handle().at(at).evaluate(&expression).await {
@@ -358,8 +321,6 @@ pub async fn outcome(stop: &Stop<'_>, at: StopContext, text: &str) -> Outcome {
     }
 }
 
-/// The error kind that stands for the exception CPython raised, by its
-/// type's name.
 fn standing_for(exception: &str) -> Option<ExpressionErrorKind> {
     Some(match exception {
         "KeyError" | "AttributeError" => ExpressionErrorKind::MissingKey,
@@ -370,9 +331,7 @@ fn standing_for(exception: &str) -> Option<ExpressionErrorKind> {
     })
 }
 
-/// Checks what microscope gave for a case against what CPython gave.
 pub fn check(case: &Case, reported: &str, outcome: &Outcome) -> Result<(), String> {
-    // A type error says Python's own operation is one.
     if case.expect == Expect::Refuses(ExpressionErrorKind::Type) && reported != "!TypeError" {
         return Err(format!(
             "`{}`: a type error, where CPython gave {reported}",
@@ -399,8 +358,6 @@ pub fn check(case: &Case, reported: &str, outcome: &Outcome) -> Result<(), Strin
     }
 }
 
-/// What CPython gave for each expression the fixture evaluated, by its
-/// text.
 pub fn reported_results(truth: &[Vec<String>]) -> std::collections::BTreeMap<&str, &str> {
     truth
         .iter()
@@ -409,9 +366,6 @@ pub fn reported_results(truth: &[Vec<String>]) -> std::collections::BTreeMap<&st
         .collect()
 }
 
-/// The attributes CPython reported of each local whose class the fixture
-/// defines, by the local's name: each attribute's name and canonical text,
-/// in order.
 fn reported_attributes(truth: &[Vec<String>]) -> BTreeMap<&str, Vec<(&str, &str)>> {
     let mut locals: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
     for fields in truth {
@@ -430,8 +384,6 @@ fn reported_attributes(truth: &[Vec<String>]) -> BTreeMap<&str, Vec<(&str, &str)
     locals
 }
 
-/// Each attribute child's name and text: the children that are fields,
-/// after any elements or entries.
 fn shown_attributes(children: &[ValueChild]) -> Vec<(String, String)> {
     children
         .iter()
@@ -451,8 +403,6 @@ fn shown_attributes(children: &[ValueChild]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Checks the attributes an instance shows, each one's name and text,
-/// against those CPython reported for it, in order.
 fn check_attributes(shown: &[(String, String)], reported: &[(&str, &str)]) -> Result<(), String> {
     let expected: Vec<(String, String)> = reported
         .iter()
@@ -467,9 +417,6 @@ fn check_attributes(shown: &[(String, String)], reported: &[(&str, &str)]) -> Re
     }
 }
 
-/// Every expression gives what CPython gave in the same frame, or is
-/// refused as its case says, on every version and GIL mode; and each
-/// instance's children are the attributes CPython reported for it.
 #[tokio::test]
 async fn each_expression_gives_what_cpython_gave_in_the_frame() {
     let texts: Vec<&str> = CASES.iter().map(|case| case.python).collect();
@@ -500,8 +447,6 @@ async fn each_expression_gives_what_cpython_gave_in_the_frame() {
             }
         }
 
-        // Each local is shown as CPython's canonical text, and each whose
-        // class the fixture defines has the attributes CPython reported.
         let variables = stop.variables(printer, "values").await;
         let locals = reported_locals(&truth);
         let reported_values = locals
@@ -528,8 +473,6 @@ async fn each_expression_gives_what_cpython_gave_in_the_frame() {
             let variable = local(&variables, name, &stop);
             let mut children = all_children(&stop, &variable.state).await;
 
-            // A view presents the object as something else; it is still
-            // the object as stored one step away.
             if let Some(raw) = children
                 .iter()
                 .find(|child| matches!(child.relationship, ValueChildRelationship::Raw))
@@ -547,7 +490,6 @@ async fn each_expression_gives_what_cpython_gave_in_the_frame() {
     }
 }
 
-/// Every child of a presented value.
 pub async fn all_children(stop: &Stop<'_>, state: &VariableState) -> Vec<ValueChild> {
     match state {
         VariableState::Available {
@@ -565,7 +507,6 @@ pub async fn all_children(stop: &Stop<'_>, state: &VariableState) -> Vec<ValueCh
     }
 }
 
-/// The local `name` of `variables`, which the frame must have.
 pub fn local<'v>(variables: &'v [Variable], name: &str, stop: &Stop<'_>) -> &'v Variable {
     variables
         .iter()

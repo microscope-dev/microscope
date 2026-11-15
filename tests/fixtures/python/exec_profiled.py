@@ -1,8 +1,8 @@
-"""A program that runs Python until a line arrives on its standard input,
-and then replaces itself with another interpreter running profiled.py,
-which the first argument names: a profile must read the second program's
-frames by its own interpreter, not by what the first one's modules said.
-"""
+
+
+
+
+
 
 import os
 import sys

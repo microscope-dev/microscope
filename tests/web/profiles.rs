@@ -1,6 +1,3 @@
-//! Profiles a server serves, whatever it debugs: what one holds, its call
-//! tree's columns, its functions, and its timeline, as the page reads them.
-
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
@@ -14,31 +11,20 @@ use serde_json::{Value, json};
 use crate::support::{Scenario, ScratchDir};
 use crate::web::{Client, Web};
 
-/// A recording of the stacks fixture's six calls, written to `path`.
 struct Calls {
     path: std::path::PathBuf,
 
-    /// The samples it kept of the six, all of them unless the kernel
-    /// dropped some it accounted for, and how many of those each thread
-    /// made, by thread id.
     kept: u64,
     by_thread: std::collections::BTreeMap<u64, u64>,
 }
 
-/// A profile of each of the six calls of `leaf` in the stacks fixture:
-/// three on the main thread and three on its worker.
 fn record_calls(scratch: &ScratchDir) -> Calls {
     record_calls_of(scratch, "leaf", "calls.usprof")
 }
 
-/// A profile of each call of `symbol` in the stacks fixture, in `name`.
 fn record_calls_of(scratch: &ScratchDir, symbol: &str, name: &str) -> Calls {
     let mut command = Command::new(Scenario::fixture("profile-stacks-gcc-o0"));
     command.arg("1").stdout(Stdio::null());
-    // The fixture keeps frame pointers, so a small copy still completes
-    // every stack. Six deep copies fill the smaller rings a recording gets
-    // while others run beside it, and a starved reader then loses calls
-    // made back to back.
     let options = RecordOptions {
         source: SampleSource::Function {
             symbol: symbol.into(),
@@ -70,8 +56,6 @@ fn record_calls_of(scratch: &ScratchDir, symbol: &str, name: &str) -> Calls {
     }
 }
 
-/// A diff's nodes: each one's path of names from the root, and its own
-/// weight now and in the base.
 fn diff_nodes(tree: &Value, bytes: &[u8]) -> Vec<(Vec<String>, u64, u64)> {
     let count = usize::try_from(tree["nodes"].as_u64().expect("a count")).expect("a count");
     assert_eq!(bytes.len(), count * 40, "six columns of {count} nodes");
@@ -91,9 +75,6 @@ fn diff_nodes(tree: &Value, bytes: &[u8]) -> Vec<(Vec<String>, u64, u64)> {
     nodes
 }
 
-/// A tree or functions answer with a base holds both profiles' weights,
-/// against another profile or a profile's own other self; a base in
-/// another profile cannot keep this one's thread filter.
 #[tokio::test]
 async fn a_profile_diffs_against_another_and_against_itself() {
     let scratch = ScratchDir::new("web-diff");
@@ -126,7 +107,6 @@ async fn a_profile_diffs_against_another_and_against_itself() {
 
     let (leaf, middle) = (id("calls.usprof"), id("middle.usprof"));
 
-    // Against itself, nothing changed anywhere.
     let (answer, bytes) = tab
         .with_bytes(
             "profileTree",
@@ -138,7 +118,6 @@ async fn a_profile_diffs_against_another_and_against_itself() {
     let same = diff_nodes(&answer, &bytes);
     assert!(same.iter().all(|(_, own, base)| own == base), "{same:?}");
 
-    // Against the calls of middle, each profile's weight is on its paths.
     let (answer, bytes) = tab
         .with_bytes(
             "profileTree",
@@ -192,8 +171,6 @@ async fn a_profile_diffs_against_another_and_against_itself() {
     focus_and_refusal(&mut tab, &leaf, &middle, kept).await;
 }
 
-/// A focus on what the base never ran leaves it nothing, not an error; a
-/// base in another profile cannot keep this one's thread filter.
 async fn focus_and_refusal(tab: &mut Client, leaf: &str, middle: &str, kept: u64) {
     let (answer, _) = tab
         .with_bytes(
@@ -221,8 +198,6 @@ async fn focus_and_refusal(tab: &mut Client, leaf: &str, middle: &str, kept: u64
     assert!(refused.1.contains("thread or task filter"), "{refused:?}");
 }
 
-/// A call tree's nodes, from its answer and the columns before it: each
-/// node's path of names from the root, own weight, and total weight.
 fn nodes(tree: &Value, bytes: &[u8]) -> Vec<(Vec<String>, u64, u64)> {
     let count = usize::try_from(tree["nodes"].as_u64().expect("a count")).expect("a count");
     assert_eq!(bytes.len(), count * 24, "four columns of {count} nodes");
@@ -275,8 +250,6 @@ pub async fn tree(tab: &mut Client, query: Value) -> Vec<(Vec<String>, u64, u64)
     nodes(&answer, &bytes)
 }
 
-/// A directory of a continuous recording's segments is served as one
-/// profile holding every segment's samples.
 #[tokio::test]
 async fn a_directory_of_segments_is_served_as_one_profile() {
     let scratch = ScratchDir::new("web-segments");
@@ -323,7 +296,6 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
     let web = Web::start("profile", &[path.to_str().expect("a path")]);
     let mut tab = web.control("tab").await;
 
-    // The server serves the profile, and its link opens it.
     let listed = tab
         .expect("the profiles", |message| message["type"] == "profiles")
         .await;
@@ -346,7 +318,6 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
     let threads = summary["threads"].as_array().expect("threads");
     assert_eq!(samples_by_thread(threads), by_thread, "{summary}");
 
-    // Every call ends in leaf, under main's descent or the worker's.
     let everything = tree(&mut tab, json!({"profile": id})).await;
     let leaves: Vec<_> = everything.iter().filter(|(_, own, _)| *own > 0).collect();
     assert!(
@@ -362,8 +333,6 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
         .sum();
     assert_eq!(roots, kept);
 
-    // Collapsing cycles names no function. `descend` calls only itself, so
-    // each run of it merges into its first call.
     let query = json!({"profile": id, "transforms": [{"op": "collapseCycles"}]});
     let mut expected = everything
         .iter()
@@ -377,7 +346,6 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
     assert_ne!(expected, everything);
     assert_eq!(tree(&mut tab, query).await, expected);
 
-    // Focused on middle and inverted: middle's callers, from it outward.
     let callers = tree(
         &mut tab,
         json!({"profile": id, "invert": true, "transforms": [{"op": "focus", "name": "middle"}]}),
@@ -386,8 +354,6 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
     assert_eq!(callers[0], (vec!["middle".to_owned()], 0, kept));
     assert_eq!(callers[1].0, ["middle", "outer"]);
 
-    // One thread's samples only, the worker's when any of its calls were
-    // kept.
     if let Some(worker) = threads.iter().find(|thread| thread["tid"] != thread["pid"]) {
         let one_thread = tree(&mut tab, json!({"profile": id, "threads": [worker["row"]]})).await;
         assert!(
@@ -415,7 +381,6 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
         (json!(kept), json!(kept))
     );
 
-    // Each sample falls in one slice of one thread's lane.
     let timeline = tab
         .ok("profileTimeline", json!({"profile": id, "buckets": 10}))
         .await;
@@ -430,7 +395,6 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
 
     inspected(&mut tab, &id, &path, kept).await;
 
-    // A transform names something the profile has, or fails.
     let (kind, message) = tab
         .with_bytes(
             "profileTree",
@@ -443,7 +407,6 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
     tab.save_traffic("profile");
 }
 
-/// Each served thread's samples, by its thread id.
 fn samples_by_thread(threads: &[Value]) -> std::collections::BTreeMap<u64, u64> {
     threads
         .iter()
@@ -454,8 +417,6 @@ fn samples_by_thread(threads: &[Value]) -> std::collections::BTreeMap<u64, u64> 
         .collect()
 }
 
-/// The summary names the recorded command; Inspect, its file and every
-/// sample once.
 async fn inspected(tab: &mut Client, id: &str, path: &std::path::Path, kept: u64) {
     let summary = tab.ok("profile", json!({"profile": id})).await;
     let arguments = &summary["command"]["arguments"];
@@ -482,9 +443,6 @@ async fn inspected(tab: &mut Client, id: &str, path: &std::path::Path, kept: u64
     assert!(tables > 0 && tables < on_disk, "{tables} of {on_disk}");
 }
 
-/// A profile of the waits fixture with task snapshots, once two of them
-/// have found its three receivers waiting, one after a snapshot found the
-/// spinner with its labels.
 fn record_waits(scratch: &ScratchDir) -> std::path::PathBuf {
     let (reader, mut writer) = std::io::pipe().expect("pipe");
     let mut command = Command::new(Scenario::fixture("profile-go-waits"));
@@ -562,8 +520,6 @@ async fn a_profile_shows_where_tasks_waited_and_what_each_ran() {
     assert!(spinner["weight"].as_u64() > Some(0), "{spinner}");
     assert!(summary["taskSamples"].as_u64() > Some(0));
 
-    // The waits weigh what every task waited, and each receiver's root
-    // is its own task by task.
     let waits = tree(&mut tab, json!({"profile": id, "source": "waits"})).await;
     let roots: u64 = waits
         .iter()
@@ -589,7 +545,6 @@ async fn a_profile_shows_where_tasks_waited_and_what_each_ran() {
     assert_eq!(receivers.len(), 3, "{receivers:?}");
     assert!(receivers.iter().all(|name| name.starts_with("goroutine ")));
 
-    // The spinner's samples alone, in a lane of their own.
     let row = spinner["row"].clone();
     let spun = tree(&mut tab, json!({"profile": id, "tasks": [row]})).await;
     assert!(!spun.is_empty());
@@ -610,7 +565,6 @@ async fn a_profile_shows_where_tasks_waited_and_what_each_ran() {
     assert!(lanes.iter().all(|lane| lane["thread"].is_null()));
 }
 
-/// Waits for the profiles list to show `id` as `matches` accepts.
 pub async fn listed(
     tab: &mut Client,
     id: &str,
@@ -643,7 +597,6 @@ async fn a_recording_grows_live_stops_when_asked_and_downloads_whole() {
         .await;
     let id = started["profile"].as_str().expect("an id").to_owned();
 
-    // The profile is published as it grows, each time a new revision.
     let mut samples = 0;
     let mut revision = 0;
     while samples == 0 {
@@ -671,14 +624,12 @@ async fn a_recording_grows_live_stops_when_asked_and_downloads_whole() {
         .and_then(|pid| pid.parse().ok())
         .expect("the program's pid");
 
-    // The preset's calls, or why there are none.
     match setting("syscalls").as_deref() {
         Some("calls") => assert_eq!(setting("syscall engine").as_deref(), Some("bpf")),
         Some("off") => assert!(setting("syscalls not recorded").is_some(), "{summary}"),
         level => panic!("{level:?}: {summary}"),
     }
 
-    // A viewer may look but not stop it.
     let link = tab.ok("share", json!({"role": "view", "to": "/"})).await;
     let mut viewer = web
         .joining("viewer", link["url"].as_str().expect("a link"))
@@ -702,7 +653,6 @@ async fn a_recording_grows_live_stops_when_asked_and_downloads_whole() {
     );
     crate::web::wait_gone(pid);
 
-    // The file the page saves is the whole profile.
     let summary = tab.ok("profile", json!({"profile": id})).await;
     let cookie = web.cookie(&web.control_token.clone());
     let (head, body) = web.http_bytes(&format!(
@@ -769,7 +719,6 @@ async fn a_program_that_cannot_start_fails_its_recording() {
     assert!(message.contains("starting the program failed"), "{message}");
 }
 
-/// A profile of the probes fixture's nested zones and labels.
 fn record_zones(scratch: &ScratchDir) -> std::path::PathBuf {
     let mut command = Command::new(Scenario::fixture("probes"));
     command.arg("zones").stdout(Stdio::null());
@@ -779,8 +728,6 @@ fn record_zones(scratch: &ScratchDir) -> std::path::PathBuf {
     path
 }
 
-/// A zones answer's blocks: thread, depth, name, zone count, and whether
-/// its zones are the ones asked for.
 fn blocks(answer: &Value, bytes: &[u8]) -> Vec<(u64, u32, String, u32, bool)> {
     let count = usize::try_from(answer["blocks"].as_u64().expect("a count")).expect("small");
     assert_eq!(bytes.len(), count * 64);
@@ -793,8 +740,6 @@ fn blocks(answer: &Value, bytes: &[u8]) -> Vec<(u64, u32, String, u32, bool)> {
         u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("four bytes"))
     };
 
-    // A block's time inside its zones fits between its ends, and its time
-    // off the CPU inside that.
     for at in 0..count {
         let (start, end, covered) = (time(0, at), time(1, at), time(2, at));
         assert!(
@@ -822,8 +767,6 @@ fn blocks(answer: &Value, bytes: &[u8]) -> Vec<(u64, u32, String, u32, bool)> {
         .collect()
 }
 
-/// The zone recording's summary lists each of its zone and label sites,
-/// with how many times each ran, and lost none of them.
 fn assert_zone_sites(summary: &Value) {
     assert_eq!(summary["probes"]["overwritten"], 0, "{summary}");
     assert_eq!(summary["labelKeys"], json!(["round"]));
@@ -866,7 +809,6 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
     let summary = tab.ok("profile", json!({"profile": id})).await;
     assert_zone_sites(&summary);
 
-    // Wide enough, every zone is a block of its own, at its depth.
     let (answer, bytes) = tab
         .with_bytes(
             "profileZones",
@@ -889,7 +831,6 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
     assert_eq!(depth_of("leaf"), [3, 3, 3], "{drawn:?}");
     assert_eq!(answer["marks"].as_array().map(Vec::len), Some(7));
 
-    // Each round's plotted value, in a bin of its own.
     let plots = answer["plots"].as_array().expect("plots");
     assert_eq!(plots.len(), 1, "{plots:?}");
     assert_eq!(
@@ -904,7 +845,6 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
         .collect();
     assert_eq!(lows, [0.0, 1.0, 2.0]);
 
-    // Ten pixels wide, each thread's track folds into a block per depth.
     let (answer, bytes) = tab
         .with_bytes("profileZones", json!({"profile": id, "width": 10}))
         .await
@@ -918,8 +858,6 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
     assert!(folded.len() < drawn.len());
     assert!(folded.iter().all(|block| !block.4), "none asked for");
 
-    // The zones of a site asked for fold only with each other, so as
-    // narrow as the rest they are still told apart; a band narrows them.
     let zones_of = |site: &str, band: Option<[u64; 2]>| json!({"profile": id, "width": 10, "site": site, "band": band});
     let (answer, bytes) = tab
         .with_bytes("profileZones", zones_of("leaf", None))
@@ -962,7 +900,6 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
 
     zone_scopes(&mut tab, &id).await;
 
-    // A label is a query's filter too: one no sample carries keeps none.
     let filtered = tree(&mut tab, json!({"profile": id, "labels": ["round=9"]})).await;
     assert!(filtered.is_empty());
     let failed = tab
@@ -971,7 +908,6 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
     assert!(failed.is_err());
 }
 
-/// The weight of every sample a tree query keeps.
 async fn kept(tab: &mut Client, query: Value) -> u64 {
     let (answer, _) = tab
         .with_bytes("profileTree", query)
@@ -980,10 +916,6 @@ async fn kept(tab: &mut Client, query: Value) -> u64 {
     answer["weight"].as_u64().expect("a weight")
 }
 
-/// A query of a site's zones keeps the samples inside them, on their own
-/// thread, nested ones included; a band narrows them, its outside is the
-/// rest, and a diff's base can be that rest. Names no zone has, and bands
-/// with nothing in them, are errors.
 async fn zone_scopes(tab: &mut Client, id: &str) {
     let scoped = |zones: Value| json!({"profile": id, "zones": zones});
 
@@ -1023,7 +955,6 @@ async fn zone_scopes(tab: &mut Client, id: &str) {
     assert_eq!(kept(tab, scoped(everything)).await, step);
     assert_eq!(kept(tab, scoped(rest)).await, 0);
 
-    // The band against the rest of its site: here the rest is all of it.
     let (answer, _) = tab
         .with_bytes(
             "profileTree",
@@ -1048,8 +979,6 @@ async fn zone_scopes(tab: &mut Client, id: &str) {
     }
 }
 
-/// A zone the program slept through is served as time blocked off its CPU,
-/// not time it ran.
 #[tokio::test]
 async fn a_zone_says_how_long_its_thread_was_off_its_cpu() {
     let scratch = ScratchDir::new("web-nap");
@@ -1101,8 +1030,6 @@ async fn a_zone_says_how_long_its_thread_was_off_its_cpu() {
     );
 }
 
-/// A function's samples are served on its source lines, with the text
-/// around them, and on its instructions.
 #[tokio::test]
 async fn a_function_is_served_on_its_lines_and_its_instructions() {
     let scratch = ScratchDir::new("web-annotate");
@@ -1142,14 +1069,11 @@ async fn a_function_is_served_on_its_lines_and_its_instructions() {
     assert_eq!(code["blocks"][0]["symbol"], "leaf");
     assert_eq!(code["blocks"][0]["instructions"][0]["own"], kept);
     assert!(code["unlined"].is_null(), "{code}");
-    // Each instruction's text comes in pieces that say what each is.
     assert_eq!(
         code["blocks"][0]["instructions"][0]["tokens"],
         json!([["mnemonic", "push"], ["text", " "], ["register", "rbp"]])
     );
 
-    // The first instruction is leaf's, on a line of leaf's own file, which
-    // comes first and weighs that line with the instruction's samples.
     let [function, file, line] = code["blocks"][0]["instructions"][0]["lines"]
         .as_array()
         .and_then(|lines| lines.last())

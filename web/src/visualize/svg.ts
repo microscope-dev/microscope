@@ -1,7 +1,3 @@
-// Builds a checked picture as SVG, element by element: every attribute is
-// one the builder names, and text goes in as text, never as markup. Images
-// are canvases the page paints, which name the pixel under the pointer.
-
 import { assert } from "../assert";
 import { type OnSelect, pixelIndex, pixelName, type Tip } from "./draw";
 import { isLine, type Picture, type Shape, type Style } from "./picture";
@@ -9,7 +5,6 @@ import { isLine, type Picture, type Shape, type Style } from "./picture";
 const SVG = "http://www.w3.org/2000/svg";
 const HTML = "http://www.w3.org/1999/xhtml";
 
-/** The picture as an `<svg>`, scaled to fit its container and never cropped. */
 export function buildSvg(picture: Picture, onSelect?: OnSelect, tip?: Tip): SVGSVGElement {
   assert(
     picture.width > 0 && Number.isFinite(picture.width),
@@ -28,7 +23,7 @@ export function buildSvg(picture: Picture, onSelect?: OnSelect, tip?: Tip): SVGS
     svg.setAttribute("aria-label", picture.caption);
   }
   svg.classList.add("picture");
-  // Shapes inherit the page's ink unless they say otherwise.
+
   svg.style.fill = "var(--ink)";
   svg.style.stroke = "none";
   svg.style.fontSize = "12px";
@@ -38,8 +33,6 @@ export function buildSvg(picture: Picture, onSelect?: OnSelect, tip?: Tip): SVGS
   return svg;
 }
 
-/** What building a shape's element needs: whether a group around it has a
- * title or select, which the shape answers the pointer for. */
 interface Building {
   onSelect: OnSelect | undefined;
   tip: Tip | undefined;
@@ -110,14 +103,13 @@ function element(shape: Shape, building: Building): SVGElement {
     outline(node, shape);
   }
   styled(node, shape);
-  // An image's title goes with the pixel the tip names.
+
   if (shape.title !== undefined && shape.type !== "image") {
     const title = document.createElementNS(SVG, "title");
     title.textContent = shape.title;
     node.prepend(title);
   }
-  // A shape that says nothing, such as a piece on its square or marks
-  // over an image, lets the pointer through to the shapes beneath it.
+
   if (shape.type !== "group" && !owned) {
     node.style.pointerEvents = "none";
   }
@@ -130,7 +122,6 @@ function element(shape: Shape, building: Building): SVGElement {
     node.addEventListener("keydown", (event) => {
       const { key } = event as KeyboardEvent;
       if (key === "Enter" || key === " ") {
-        // Space would scroll the page, as it does past a real button.
         event.preventDefault();
         onSelect(path);
       }

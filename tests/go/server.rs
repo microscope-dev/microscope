@@ -1,7 +1,3 @@
-//! An HTTP server and its client in one process. A handler runs on the
-//! goroutine the server started for its connection, and a handler's panic,
-//! which the server recovers from, is no stop of its own.
-
 use std::process::Stdio;
 
 use microscope::{ExitStatus, LaunchOptions, StopReason};
@@ -35,8 +31,6 @@ async fn a_handler_stops_on_its_connection_and_a_recovered_panic_does_not() {
     assert_eq!(place(&scenario).await, ("main.greet".to_owned(), line));
     assert_eq!(integer(&scenario, "len(name)").await, Some(6));
 
-    // The handler runs on its connection's goroutine, which the server
-    // started, through net/http to where the goroutine began.
     let trace = scenario
         .operation("backtrace", scenario.handle().backtrace())
         .await;
@@ -68,8 +62,6 @@ async fn a_handler_stops_on_its_connection_and_a_recovered_panic_does_not() {
         "{handling:#?}"
     );
 
-    // The server recovers from the other handler's panic: the program goes
-    // on to its end, its client having seen the connection close.
     scenario.remove_breakpoint(breakpoint.id).await;
     assert_eq!(
         scenario.resume_to_stop().await,

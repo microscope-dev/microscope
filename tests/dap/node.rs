@@ -1,20 +1,12 @@
-//! Node through its inspector, as an editor drives it: a breakpoint in a
-//! `.js` file, a step, the frame's scopes by JavaScript's names, and an
-//! exception the program throws.
-
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Profile, Stopped, line_of, source};
 use crate::support::node;
 
-/// The line of the acceptance fixture marked `marker`.
 fn line(marker: &str) -> u64 {
     line_of(&source("node/uat.js"), &format!("// {marker}"))
 }
 
-/// Matches VS Code's `Thread.getTopStackFrame`: first frame with source.
-/// Except at breakpoints and steps, skips `subtle` or `deemphasize` hints
-/// on the frame (or its source if absent), since V8 pauses in native code.
 fn top(dap: &mut Dap, stop: &Stopped) -> Value {
     let trace = dap.request(
         "stackTrace",
@@ -36,7 +28,6 @@ fn top(dap: &mut Dap, stop: &Stopped) -> Value {
         .unwrap_or_else(|| panic!("no frame has source to focus: {trace}"))
 }
 
-/// The frame's scopes, by name, and the variables of the one named `scope`.
 fn scope(dap: &mut Dap, frame: &Value, scope: &str) -> (Vec<String>, Vec<Value>) {
     let scopes = dap.request("scopes", json!({"frameId": frame["id"]}));
     let scopes = scopes["scopes"].as_array().expect("scopes").clone();
@@ -81,7 +72,6 @@ fn a_launched_node_program_breaks_steps_and_stops_where_it_throws() {
         },
     );
 
-    // An editor lists JavaScript's filters before any program runs.
     let filters: Vec<&str> = started.capabilities["exceptionBreakpointFilters"]
         .as_array()
         .expect("filters")
@@ -103,7 +93,6 @@ fn a_launched_node_program_breaks_steps_and_stops_where_it_throws() {
             .is_some_and(|path| path.ends_with("tests/fixtures/node/uat.js")),
         "{frame}"
     );
-    // V8 pauses at the statement's first expression, `side * side`.
     let column = std::fs::read_to_string(&script)
         .expect("the fixture")
         .lines()
@@ -124,8 +113,6 @@ fn a_launched_node_program_breaks_steps_and_stops_where_it_throws() {
     assert_eq!(value(&locals, "result"), "16", "{locals:?}");
     let (_, arguments) = scope(&mut dap, &frame, "Arguments");
     assert_eq!(value(&arguments, "side"), "4", "{arguments:?}");
-    // At a pause every local is named, so none is left unnamed; the
-    // script's top level declares no bindings, so there is no Module.
     assert_eq!(
         names,
         ["Arguments", "Locals", "Global", "Registers"],
@@ -160,9 +147,6 @@ fn a_launched_node_program_breaks_steps_and_stops_where_it_throws() {
     dap.finish();
 }
 
-/// In a Node core, each handle, request, and timer of its event loops is a
-/// thread named by what it waits for and its callback, with no frames, and
-/// a thread-pool job is its pool thread's, with that thread's frames.
 #[test]
 fn a_node_cores_event_loop_work_is_listed_as_threads() {
     let mut dap = Dap::start("node tasks");
@@ -180,8 +164,6 @@ fn a_node_cores_event_loop_work_is_listed_as_threads() {
         .as_array()
         .expect("threads")
         .clone();
-    // Every task, though Node numbers pool jobs above 2^62 and a worker's
-    // work above 2^32, is a thread of its own, by an id DAP can carry.
     let ids: std::collections::BTreeSet<i64> = threads
         .iter()
         .map(|thread| thread["id"].as_i64().expect("an integer id"))

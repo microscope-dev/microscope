@@ -1,5 +1,3 @@
-//! The flight recording a development build keeps of each failing test.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,9 +8,6 @@ use crate::support::flight_recordings::{
 };
 use crate::support::{Scenario, wait_until};
 
-/// A scenario that fails mid-session leaves a recording of the requests,
-/// native control calls, wait statuses, and events that led to the failure,
-/// ending with the failure itself.
 #[test]
 fn failing_scenarios_keep_a_flight_recording() {
     let failing = thread::Builder::new()
@@ -63,8 +58,6 @@ fn failing_scenarios_keep_a_flight_recording() {
     assert!(order.is_sorted(), "out of order {order:?}:\n{contents}");
     fs::remove_file(&path).expect("remove the deliberate recording");
 
-    // Dropping the failed scenario's debugger still kills and reaps the
-    // inferior.
     let inferior = contents
         .lines()
         .find_map(|line| line.split_once("spawned ")?.1.parse::<i32>().ok())
@@ -74,11 +67,8 @@ fn failing_scenarios_keep_a_flight_recording() {
     });
 }
 
-/// Set in the runs of [`a_recorded_run`] that fail.
 const FAIL: &str = "MICROSCOPE_TEST_FAIL_RECORDED_RUN";
 
-/// A test whose adapter streamed a recording, failing when [`FAIL`] is set.
-/// [`failures_keep_their_recordings_through_later_runs`] runs it.
 #[test]
 #[ignore = "run by failures_keep_their_recordings_through_later_runs"]
 fn a_recorded_run() {
@@ -90,9 +80,6 @@ fn a_recorded_run() {
     assert!(std::env::var_os(FAIL).is_none(), "deliberate failure");
 }
 
-/// A failing run's recordings survive later passing runs of the same test,
-/// which leave none of their own, while the oldest runs past the bound, and
-/// recordings named for no run, lose theirs.
 #[test]
 fn failures_keep_their_recordings_through_later_runs() {
     const TEST: &str = "flight_recorder::a_recorded_run";
@@ -118,8 +105,6 @@ fn failures_keep_their_recordings_through_later_runs() {
         fs::remove_file(path).expect("remove an earlier recording");
     }
 
-    // Runs that were killed before they could discard their recordings,
-    // one more than the bound, and a recording no run is named for.
     let older = (0..=KEPT_RUNS)
         .map(|run| directory.join(format!("{TEST}.{run:013}-1.log")))
         .collect::<Vec<_>>();

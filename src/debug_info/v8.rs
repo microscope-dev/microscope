@@ -1,27 +1,3 @@
-//! V8, the JavaScript engine Node.js embeds: what its images say about
-//! themselves.
-//!
-//! V8 compiles its builtins ahead of time into an embedded blob, which a
-//! build that keeps its local symbols names: `v8_Default_embedded_blob_code_`
-//! where the blob begins, and a `Builtins_` function symbol for each builtin.
-//! No call-frame information describes them. Their frames are V8's own,
-//! which keep the frame-pointer chain at each call they make: rbp holds the
-//! address of the word that saved the caller's, with the return address in
-//! the word above it.
-//!
-//! A module is a V8 runtime when it exports V8's `v8dbg_` constants, as
-//! every Node executable and libnode does, for debuggers: about 480 `int`s
-//! in its data, which give its frames' layout, its tags, its instance types,
-//! and some of its objects' fields. [`runtime`] reads them by name with
-//! V8's version, from `v8::internal::Version`, and binds the module to the
-//! layout generated for that major.minor version from V8's Torque output
-//! ([`layouts`]), which holds the fields the constants leave out. This is
-//! the exception to reading layouts only from what the target describes
-//! that CPython's provider takes as well: the layouts are generated, never
-//! hand-copied, and checked against the binary's own constants wherever
-//! both name a field or an instance type, and a version microscope has no
-//! layout of is refused by name, never read by the nearest one's.
-
 #[rustfmt::skip]
 #[path = "v8/layouts.gen.rs"]
 mod layouts;
@@ -73,20 +49,12 @@ use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
 
 use crate::image::v8::{Constant, DYNAMIC_SYMBOLS, Field, V8Layout, V8Runtime, V8Version};
 
-/// A constant every V8 build exports, in its dynamic table too, for
-/// debuggers: where a frame keeps its function.
 const FRAME_FUNCTION_OFFSET: &str = "v8dbg_off_fp_function";
 
-/// Whether `image` is V8's, which generates code whose frames keep the
-/// frame-pointer chain at its calls. Its debugger constants say so, but a
-/// build without postmortem support, as Chrome's, has none of them, and
-/// still has its embedded builtins.
 pub fn is_v8(image: &crate::ModuleImage) -> bool {
     image.symbol_named(FRAME_FUNCTION_OFFSET).is_ok() || image.symbol_named(EMBEDDED_BLOB).is_ok()
 }
 
-/// Whether the object being read carries V8's debugger constants, whose
-/// interpreter frames its JavaScript walker reads.
 pub(super) fn carries_runtime(object: &object::File<'_>) -> bool {
     object
         .symbols()
@@ -94,21 +62,14 @@ pub(super) fn carries_runtime(object: &object::File<'_>) -> bool {
         .any(|symbol| symbol.name() == Ok(FRAME_FUNCTION_OFFSET))
 }
 
-/// The symbol at which the embedded builtins begin.
 const EMBEDDED_BLOB: &str = "v8_Default_embedded_blob_code_";
 
-/// What the symbol of each builtin's code begins with.
 const BUILTIN: &str = "Builtins_";
 
 use crate::image::v8::CURRENT_ISOLATE;
 
-/// The exported function that reads [`CURRENT_ISOLATE`].
 const GET_CURRENT: &str = "_ZN2v87Isolate10GetCurrentEv";
 
-/// Adds to `thread_locals` where each thread's current isolate is, when
-/// `object` is V8's and no symbol names its variable, as in a shared
-/// library stripped of its local symbols: the exported accessor's code
-/// says. A variable a symbol names is left as the symbol places it.
 pub(super) fn add_thread_locals(
     object: &object::File<'_>,
     thread_locals: &mut std::collections::BTreeMap<
@@ -132,9 +93,6 @@ pub(super) fn add_thread_locals(
     );
 }
 
-/// The address and code of each embedded builtin `object` names, in
-/// address order. An image that is not V8's, or that names no builtin,
-/// has none.
 pub(super) fn builtins<'data>(object: &object::File<'data>) -> Vec<(u64, &'data [u8])> {
     let Some(blob) = object
         .symbols()
@@ -173,22 +131,15 @@ pub(super) fn builtins<'data>(object: &object::File<'data>) -> Vec<(u64, &'data 
     builtins
 }
 
-/// A layout generated from one V8 version's Torque output.
 pub(super) struct Generated {
     pub major: u32,
     pub minor: u32,
     pub fields: &'static [(Field, u32)],
 
-    /// The instance types and bit fields [`Constant`] names.
     pub constants: &'static [(Constant, i64)],
 
-    /// Every instance type Torque assigns, by name, which the binary's
-    /// own `v8dbg_type_` constants are checked against.
     pub instance_types: &'static [(&'static str, u16)],
 
-    /// The value V8's headers give each `v8dbg_` constant they define too,
-    /// by the constant's name without `v8dbg_`, which the binary's must
-    /// equal where it exports the constant.
     pub checked: &'static [(&'static str, i64)],
 }
 
@@ -267,8 +218,6 @@ const _: () = {
     }
 };
 
-/// The layout generated for V8 `major.minor`, before any build's own
-/// constants complete it, for tests of what reads it.
 #[cfg(test)]
 pub fn generated_layout(major: u32, minor: u32) -> Option<V8Layout> {
     layouts::GENERATED
@@ -277,11 +226,8 @@ pub fn generated_layout(major: u32, minor: u32) -> Option<V8Layout> {
         .map(Generated::layout)
 }
 
-/// What the names of V8's own constants begin with.
 const PREFIX: &str = "v8dbg_";
 
-/// `v8::internal::Version`'s `major_`, `minor_`, `build_`, and `patch_`,
-/// which every build exports.
 const VERSION: [&str; 4] = [
     "_ZN2v88internal7Version6major_E",
     "_ZN2v88internal7Version6minor_E",
@@ -289,9 +235,6 @@ const VERSION: [&str; 4] = [
     "_ZN2v88internal7Version6patch_E",
 ];
 
-/// The `v8dbg_class_` constants, as `Class__field`, that give a field the
-/// generated layout gives too, which must agree. A field may have more
-/// than one, and each constant is suffixed with its field's type.
 const CHECKED_FIELDS: &[(Field, &str)] = &[
     (Field::HeapObjectMap, "HeapObject__map"),
     (Field::StringLength, "String__length"),
@@ -456,22 +399,15 @@ const _: () = {
     }
 };
 
-/// What a module exports of V8's constants and version.
 #[derive(Debug, Default)]
 struct Exports {
-    /// Every `v8dbg_` constant, by its symbol's name.
     values: BTreeMap<String, i64>,
     version: [Option<u32>; 4],
 
-    /// Whether it names any `v8dbg_` constant in its own symbol table, not
-    /// only in its dynamic one.
     in_symbol_table: bool,
     sandbox: bool,
 }
 
-/// The V8 runtime the module carries, read from the module's own file: a
-/// separate debug file keeps no data sections' bytes. A module that
-/// exports no `v8dbg_` constants carries none.
 pub(super) fn runtime(object: &object::File<'_>) -> Option<V8Runtime> {
     let exports = exports(object);
     let mut runtime = describe(&exports)?;
@@ -486,11 +422,9 @@ pub(super) fn runtime(object: &object::File<'_>) -> Option<V8Runtime> {
     Some(runtime)
 }
 
-/// Why a runtime whose version is unknown cannot be read.
 const UNKNOWN_VERSION: &str =
     "it exports V8's v8dbg_ constants but not v8::internal::Version, so its version is unknown";
 
-/// The V8 runtime of a module that exports `exports`, if it is V8's.
 fn describe(exports: &Exports) -> Option<V8Runtime> {
     if !exports.values.contains_key(FRAME_FUNCTION_OFFSET) {
         return None;
@@ -535,8 +469,6 @@ fn describe(exports: &Exports) -> Option<V8Runtime> {
     })
 }
 
-/// Reads every `v8dbg_` constant and V8's version from `object`'s symbol
-/// and dynamic symbol tables, the first a name is defined in.
 fn exports(object: &object::File<'_>) -> Exports {
     let mut exports = Exports::default();
     let tables = object
@@ -573,17 +505,11 @@ fn exports(object: &object::File<'_>) -> Exports {
     exports
 }
 
-/// Whether a symbol named `name` exists only in a build with V8's
-/// sandbox: the `v8::V8::*Sandbox*` functions of its public API, which
-/// `v8.h` declares only under `V8_ENABLE_SANDBOX` and every build exports
-/// with the rest of the API, or a member of `v8::internal::Sandbox`.
 fn is_sandbox_api(name: &str) -> bool {
     (name.starts_with("_ZN2v82V8") && name.contains("Sandbox"))
         || name.starts_with("_ZN2v88internal7Sandbox")
 }
 
-/// The `int` a symbol names: its bytes in the file, or 0 where its section
-/// keeps none, as `.bss`.
 fn int_value(object: &object::File<'_>, symbol: &object::Symbol<'_, '_>) -> Option<i64> {
     if !matches!(symbol.size(), 0 | 4) {
         return None;
@@ -598,9 +524,6 @@ fn int_value(object: &object::File<'_>, symbol: &object::Symbol<'_, '_>) -> Opti
     Some(i64::from(i32::from_le_bytes(bytes.try_into().ok()?)))
 }
 
-/// The layout of the V8 runtime of version `version` whose `v8dbg_`
-/// constants are `values`, by symbol name, with `sandbox` saying whether
-/// it was built with V8's sandbox; or why it cannot be read.
 fn bind(
     version: V8Version,
     values: &BTreeMap<String, i64>,
@@ -651,8 +574,6 @@ fn bind(
     Ok(layout)
 }
 
-/// Checks that each `v8dbg_` constant the binary exports whose value V8's
-/// headers give too has that value.
 fn check_constants(
     version: V8Version,
     generated: &Generated,
@@ -672,10 +593,6 @@ fn check_constants(
     Ok(())
 }
 
-/// Refuses a build whose objects are not laid out as the generated
-/// layouts assume: one with pointer compression, whose tagged values are
-/// 4 bytes; with 31-bit Smis; or with V8's sandbox, which requires
-/// pointer compression too and keeps external pointers in tables.
 fn refuse_configuration(
     version: V8Version,
     values: &BTreeMap<String, i64>,
@@ -727,8 +644,6 @@ fn refuse_configuration(
     Ok(())
 }
 
-/// Every `v8dbg_class_` constant of `field`, written `Class__field`, with
-/// the type its name ends with.
 fn class_values<'a>(
     values: &'a BTreeMap<String, i64>,
     field: &str,
@@ -740,8 +655,6 @@ fn class_values<'a>(
         .map(|(name, &value)| (name.as_str(), value))
 }
 
-/// Checks that each field the binary's constants give is where the
-/// generated layout puts it, and that the layout has it.
 fn check_fields(
     version: V8Version,
     layout: &V8Layout,
@@ -771,9 +684,6 @@ fn check_fields(
     Ok(())
 }
 
-/// Checks that each instance type the binary exports, whose name Torque
-/// assigns, has the number Torque gave it: a build configured unlike the
-/// release, as without Intl or Temporal, numbers them differently.
 fn check_instance_types(
     version: V8Version,
     generated: &Generated,
@@ -804,7 +714,6 @@ fn check_instance_types(
     Ok(())
 }
 
-/// Checks that the layout has every field and constant its version needs.
 fn check_complete(version: V8Version, layout: &V8Layout) -> Result<(), Arc<str>> {
     let minor = (version.major, version.minor);
     if let Some(field) = Field::ALL
@@ -825,8 +734,6 @@ fn check_complete(version: V8Version, layout: &V8Layout) -> Result<(), Arc<str>>
     Ok(())
 }
 
-/// The first version with V8's leaptiering, in which a function has a
-/// dispatch handle instead of its code, and the trusted space.
 const LEAPTIERING: (u32, u32) = (13, 6);
 
 const _: () = assert!(
@@ -834,7 +741,6 @@ const _: () = assert!(
     "leaptiering must precede 14.6, whose fields and constants assume it"
 );
 
-/// Whether V8 `major.minor` has `field`, which its layout must then give.
 fn requires_field(field: Field, version: (u32, u32)) -> bool {
     match field {
         Field::JSFunctionCode
@@ -859,9 +765,6 @@ fn requires_field(field: Field, version: (u32, u32)) -> bool {
     }
 }
 
-/// Whether V8 `major.minor` has `constant`, which its layout must then
-/// give. A frame type that no frame of the model's needs, or that only
-/// some versions have, is read where the binary exports it.
 fn requires_constant(constant: Constant, version: (u32, u32)) -> bool {
     use Constant as C;
 
@@ -956,9 +859,6 @@ fn requires_constant(constant: Constant, version: (u32, u32)) -> bool {
 mod tests {
     use super::*;
 
-    /// Every build in the dev shell's matrix places each thread's current
-    /// isolate: by its symbol, or, in Debian's libnode, which names none,
-    /// by the code of the accessor it exports.
     #[test]
     fn every_build_places_the_current_isolate() {
         let root = std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE; run in the dev shell");
@@ -982,7 +882,6 @@ mod tests {
             add_thread_locals(&object, &mut thread_locals);
             let place = thread_locals.get(CURRENT_ISOLATE);
             match entry {
-                // F28: the offset its debug package's symbol gives.
                 "debian-24" => assert_eq!(place, Some(&Ok(crate::ThreadLocal::Dynamic(0x170)))),
                 _ => assert!(
                     matches!(
@@ -997,11 +896,6 @@ mod tests {
         }
     }
 
-    /// V8's scan of the stack for its heap, `PushAllRegistersAndIterateStack`,
-    /// is written by hand with no call-frame information, and every
-    /// collection runs under it: a sample there unwinds to its caller by
-    /// the frame its instructions build. It once ended a fifth of the
-    /// stacks of a large lint with "no unwind information".
     #[test]
     fn the_heaps_stack_scan_unwinds_to_its_caller() {
         use object::{Object as _, ObjectSymbol as _};
@@ -1062,9 +956,6 @@ mod tests {
         patch: 34,
     };
 
-    /// The constants of a build of V8 14.6 that binds: each scalar its
-    /// layout needs, the fields of `Code`, and one field and one instance
-    /// type that agree with its generated layout.
     fn exported() -> BTreeMap<String, i64> {
         let mut values: BTreeMap<String, i64> = Constant::ALL
             .iter()
@@ -1228,7 +1119,6 @@ mod tests {
         descriptors.insert("v8dbg_prop_desc_size".to_owned(), 2);
         assert!(refused(&descriptors, false).contains("v8dbg_prop_desc_size is 2"));
 
-        // A type Torque does not assign, as a string's, is not checked.
         let mut string = exported();
         string.insert(
             "v8dbg_type_SeqOneByteString__SEQ_ONE_BYTE_STRING_TYPE".to_owned(),
@@ -1247,8 +1137,6 @@ mod tests {
         values.remove("v8dbg_CodeKindFieldMask");
         assert!(refused(&values, false).contains("layout has no v8dbg_CodeKindFieldMask"));
 
-        // A frame type only some versions have is read where it is
-        // exported.
         let mut values = exported();
         values.remove("v8dbg_frametype_WasmJspiFrame");
         assert!(bind(V14_6, &values, false).is_ok());

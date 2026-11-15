@@ -1,12 +1,3 @@
-//! The variables of a JavaScript frame: the receiver and arguments on the
-//! stack above the frame pointer, captured variables by name from the
-//! context chain (named by each context's `ScopeInfo`), and the other locals
-//! as numbered interpreter registers.
-//!
-//! V8 keeps no names for locals that no closure captures (F11), so registers
-//! are shown as `r0`, `r1`, and so on. Optimized frames show no registers
-//! because their deoptimization translation is not read.
-
 use std::collections::BTreeSet;
 
 use std::sync::Arc;
@@ -15,45 +6,27 @@ use super::objects::{Object, Problem, Reader, address_at};
 use crate::image::v8::{Constant, Field, ScopeInfoSlice, scope_info_slice};
 use crate::runtime_model::{InterpretedFrameRef, ReportedLocal, ReportedValue};
 
-/// The most contexts a chain is followed through.
 pub(super) const MAX_CONTEXTS: usize = 256;
 
-/// The most arguments or registers of a frame read.
 const MAX_SLOTS: i64 = 1 << 16;
 
-/// Where a frame's variable is, and which kind it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Kind {
-    /// `this`.
     Receiver,
-    /// The argument at this position.
     Argument(u32),
-    /// A captured variable in a context the frame's function created: a
-    /// function, block, or catch scope.
     Local,
-    /// A variable from a context outside the function, captured when the
-    /// closure was created.
     Captured,
-    /// A top-level binding of a module, or a top-level `let`, `const`, or
-    /// `class` of any script.
     Module,
-    /// An interpreter register, by number, and why it has no name.
     Register {
         index: u32,
         unnamed: Option<Problem>,
     },
-    /// An interpreter register, by number, that the runtime's debugging
-    /// interface named.
     Named(u32),
-    /// A local the runtime's debugging interface named in an optimized
-    /// frame, whose stack locals microscope cannot find.
     Optimized,
-    /// `globalThis`, the realm's global proxy.
     Global,
 }
 
 impl Kind {
-    /// The kind the debugger shows the variable as.
     pub(super) const fn shown(&self) -> crate::VariableKind {
         match self {
             Self::Receiver | Self::Argument(_) => crate::VariableKind::Parameter,
@@ -66,45 +39,27 @@ impl Kind {
     }
 }
 
-/// Why an interpreter register has no name.
 pub(super) const UNNAMED: &str =
     "V8 only records names for variables that a closure uses, so these have none";
 
-/// A level at which values are read without their contents.
 const HEADER_LEVEL: u32 = 3;
 
-/// Why an optimized frame's stack locals cannot be read.
 const OPTIMIZED: &str =
     "V8 optimized this frame and keeps its locals where microscope cannot read them";
 
-/// The names a frame's parameters and registers take from what the
-/// runtime's debugging interface reported.
 #[derive(Debug, Default)]
 struct Binding {
-    /// By parameter position.
     parameters: Vec<Option<Arc<str>>>,
 
-    /// By register number. A name declared again in an inner block names
-    /// only the inner register.
     registers: Vec<Option<Arc<str>>>,
 
-    /// The registers of `let` and `const` variables V8 has not initialized,
-    /// whose hole it did not write.
     uninitialized: BTreeSet<u32>,
 }
 
-/// Why a variable has no value yet: a `let`, `const`, or `class` before
-/// its declaration ran.
 pub(super) const UNINITIALIZED: &str = "the variable is not initialized yet";
 
 pub(super) const WITH_CONTEXT: &str = "lookup crosses a with context, whose object and Symbol.unscopables microscope does not evaluate";
 
-/// Binds the locals `reported` names, in declaration order, to the frame:
-/// the first `parameter_count` to its parameters, and the rest that no
-/// context of the frame (`own`) holds to its registers from register
-/// `first`. The binding stands only if every value matches what the slot
-/// holds now (F17); a catch binding or a destructuring temporary breaks the
-/// order.
 fn bind(
     reader: &Reader<'_>,
     reported: &[ReportedLocal],
@@ -123,7 +78,6 @@ fn bind(
     let mut binding = Binding::default();
     let (parameters, locals) = reported.split_at(parameter_count.min(reported.len()));
     for (index, local) in parameters.iter().enumerate() {
-        // A captured parameter's current value is in its context.
         if own.contains(&*local.name) {
             binding.parameters.push(None);
             continue;
@@ -152,7 +106,6 @@ fn bind(
         if local.value == ReportedValue::Unavailable && !super::own::is_hole(reader, word)? {
             binding.uninitialized.insert(index);
         }
-        // The inner declaration of a name is the one in scope.
         for earlier in &mut binding.registers {
             if earlier.as_deref() == Some(&*local.name) {
                 *earlier = None;
@@ -185,7 +138,6 @@ fn bind(
     Ok(binding)
 }
 
-/// How many formal parameters `function` declares.
 pub(super) fn parameters(reader: &Reader<'_>, function: Object) -> Result<usize, Problem> {
     let shared = reader.typed_field(
         function,
@@ -197,20 +149,14 @@ pub(super) fn parameters(reader: &Reader<'_>, function: Object) -> Result<usize,
         reader.field_address(shared, Field::SharedFunctionInfoFormalParameterCount)?,
         &mut count,
     )?;
-    // The count includes the receiver.
     let count =
         i64::from(u16::from_le_bytes(count)) - reader.constant(Constant::JSArgcReceiverSlots)?;
     usize::try_from(count).map_err(|_| format!("the function declares {count} parameters").into())
 }
 
-/// Whether the tagged word `word` is the value `reported` describes: the
-/// same primitive, or an object of the same class.
 fn holds(reader: &Reader<'_>, word: u64, reported: &ReportedValue) -> Result<bool, Problem> {
     use super::inspect::Value;
 
-    // V8's debugger reports a `let` before its initialization as
-    // unavailable, whose register holds the hole, or undefined where V8
-    // left out the hole's write.
     if super::own::is_hole(reader, word)? {
         return Ok(matches!(reported, ReportedValue::Unavailable));
     }
@@ -243,24 +189,16 @@ fn holds(reader: &Reader<'_>, word: u64, reported: &ReportedValue) -> Result<boo
     })
 }
 
-/// One variable of a frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Variable {
     pub(super) name: String,
     pub(super) kind: Kind,
 
-    /// Its tagged word, or why it can't be read. The hole means a `let` or
-    /// `const` that is not initialized yet.
     pub(super) word: Result<u64, Problem>,
 
-    /// Where the word is, in the frame or in a context its chain reaches,
-    /// where microscope knows.
     pub(super) at: Option<u64>,
 }
 
-/// The variables of the JavaScript frame `frame`, in display order: `this`,
-/// arguments, context variables from the innermost scope out (each name
-/// once), registers, script and module bindings, then `globalThis`.
 pub(super) fn variables(
     reader: &Reader<'_>,
     frame: InterpretedFrameRef,
@@ -268,21 +206,16 @@ pub(super) fn variables(
     scoped_variables(reader, frame).map(|(variables, _)| variables)
 }
 
-/// The displayed variables, and whether lookup of a name not among them
-/// must cross a `with` environment before reaching the global object.
 pub(super) fn scoped_variables(
     reader: &Reader<'_>,
     frame: InterpretedFrameRef,
 ) -> Result<(Vec<Variable>, bool), Problem> {
-    // A frame on the stack is at its frame pointer, which is aligned; a
-    // function suspended in await is at its generator, a tagged pointer.
     if let Some(object) = reader.object(frame.address.get())? {
         return suspended_variables(reader, object);
     }
     stack_variables(reader, frame)
 }
 
-/// The variables of a JavaScript frame on the stack, at its frame pointer.
 fn stack_variables(
     reader: &Reader<'_>,
     frame: InterpretedFrameRef,
@@ -295,7 +228,6 @@ fn stack_variables(
     };
     let mut found = Vec::new();
 
-    // The argument count includes the receiver, kept untagged.
     let word = reader.word(at(Constant::StandardFrameArgCOffset)?)?;
     let argc = word
         .cast_signed()
@@ -307,8 +239,6 @@ fn stack_variables(
     let context = reader
         .object(context)?
         .ok_or("the frame's context is not an object")?;
-    // An arrow's `this` comes from where it was defined, not from the
-    // caller. V8 keeps it as a context local only if the arrow uses it.
     let this = if is_arrow(reader, function)? {
         lexical_this(reader, context)?.unwrap_or_else(|| {
             Err("V8 did not keep `this` because the arrow function does not use it".into())
@@ -326,8 +256,6 @@ fn stack_variables(
     let closure = reader.field(function, Field::JSFunctionContext)?;
     let (mut captured, crossed_with) = context_variables(reader, context, closure, &mut seen)?;
     let file = at(Constant::UnoptimizedFrameRegisterFileFromFp)?;
-    // Optimized code, even code entered on a loop that kept the
-    // interpreter's frame, leaves its registers stale.
     let count = if frame.live_registers {
         registers(reader, fp, function)?
     } else {
@@ -358,8 +286,6 @@ fn stack_variables(
 
     found.extend(arguments(argc, &parameters, &argument, first));
 
-    // A named local shadows the variables of outer scopes, as JavaScript
-    // resolves it.
     for (index, name) in names.iter().enumerate() {
         if let (Some(name), Ok(index)) = (name, u32::try_from(index)) {
             seen.insert(name.to_string());
@@ -399,10 +325,6 @@ fn stack_variables(
     Ok((found, crossed_with))
 }
 
-/// The variables of a function suspended in await, as its generator object
-/// keeps them: its receiver, the arguments and registers it saved when it
-/// suspended, and its contexts' variables; or none for the frame of a
-/// promise combinator, `object` the function V8 made for one element.
 fn suspended_variables(
     reader: &Reader<'_>,
     object: Object,
@@ -436,8 +358,6 @@ fn suspended_variables(
     let saved = reader
         .object(reader.field(generator, Field::JSGeneratorObjectParametersAndRegisters)?)?
         .ok_or("the generator's saved registers are not an array")?;
-    // V8 saves the formal parameters, then the registers the suspend
-    // names (`ExportParametersAndRegisterFile`).
     let parameter_count = u32::try_from(parameters(reader, function)?)
         .map_err(|_| "the function declares too many parameters")?;
     for index in 0..parameter_count {
@@ -445,7 +365,6 @@ fn suspended_variables(
             name: format!("arguments[{index}]"),
             kind: Kind::Argument(index),
             word: reader.element(saved, i64::from(index)),
-            // In the generator's heap array, which no watch follows.
             at: None,
         });
     }
@@ -474,16 +393,12 @@ fn suspended_variables(
     Ok((found, crossed_with))
 }
 
-/// The context the function suspended in the generator `generator` runs
-/// in.
 fn suspended_context(reader: &Reader<'_>, generator: Object) -> Result<Object, Problem> {
     reader
         .object(reader.field(generator, Field::JSGeneratorObjectContext)?)?
         .ok_or_else(|| "the generator's context is not an object".into())
 }
 
-/// The context of the frame `frame`: a frame's on the stack, or that of a
-/// function suspended in await.
 pub(super) fn frame_context(
     reader: &Reader<'_>,
     frame: InterpretedFrameRef,
@@ -502,8 +417,6 @@ pub(super) fn frame_context(
         .ok_or_else(|| "the frame's context is not an object".into())
 }
 
-/// The script and module bindings of the realm of `context` that `seen`
-/// does not already hold, then `globalThis`.
 fn script_bindings(
     reader: &Reader<'_>,
     context: Object,
@@ -523,8 +436,6 @@ fn script_bindings(
                     } else {
                         word
                     },
-                    // The realm's table holds it, which no frame's chain
-                    // reaches.
                     at: None,
                 });
             }
@@ -543,25 +454,17 @@ fn script_bindings(
     Ok(found)
 }
 
-/// The names a frame's stack slots take at this stop, from what the
-/// runtime's debugging interface reported.
 #[derive(Debug, Default)]
 struct Names {
     parameters: Vec<Option<Arc<str>>>,
     registers: Vec<Option<Arc<str>>>,
     uninitialized: BTreeSet<u32>,
 
-    /// Why the registers keep their numbers, where the interface named
-    /// them but the binding failed.
     unnamed: Option<Problem>,
 
-    /// The locals of an optimized frame, by name, without their values.
     optimized: Vec<Variable>,
 }
 
-/// The [`Names`] of the frame at `fp` running `function`, whose contexts
-/// hold `captured` and which has `count` registers, or none for an
-/// optimized frame.
 fn stack_names(
     reader: &Reader<'_>,
     (fp, function): (u64, Object),
@@ -583,9 +486,6 @@ fn stack_names(
         }
     };
     let Some(count) = count else {
-        // Each name the interface gave, with why its value cannot be
-        // found. A parameter's slot holds the value passed, which optimized
-        // code may since have replaced, so the slot keeps its number.
         let optimized = reported
             .iter()
             .filter(|local| {
@@ -610,8 +510,6 @@ fn stack_names(
         .filter(|variable| variable.kind == Kind::Local)
         .map(|variable| variable.name.as_str())
         .collect::<BTreeSet<_>>();
-    // A generator's or an async function's first register holds its
-    // generator object, an internal local V8's debugger does not report.
     let bound = parameters(reader, function).and_then(|parameter_count| {
         let bind = |first| {
             bind(
@@ -643,10 +541,6 @@ fn stack_names(
     }
 }
 
-/// The frame's `argc` arguments, each named by its parameter where the
-/// binding named it, then the declared parameters the call did not pass,
-/// whose slots V8 fills with undefined. The receiver is at `first`, and
-/// each argument after it.
 fn arguments(
     argc: i64,
     parameters: &[Option<Arc<str>>],
@@ -678,8 +572,6 @@ fn arguments(
     found
 }
 
-/// How many registers the frame at `fp` has, or `None` for an optimized
-/// frame, whose bytecode slot does not hold `function`'s bytecode.
 pub(super) fn registers(
     reader: &Reader<'_>,
     fp: u64,
@@ -708,8 +600,6 @@ pub(super) fn registers(
     Ok(u32::try_from(count).ok())
 }
 
-/// The variables of `context` and its outer contexts up to the native
-/// context, each name once. Contexts before `closure` are the frame's own.
 fn context_variables(
     reader: &Reader<'_>,
     mut context: Object,
@@ -764,8 +654,6 @@ fn context_variables(
     Err("the frame has too many contexts".into())
 }
 
-/// Whether `function` is an arrow function, as V8's `IsArrowFunction`
-/// decides from its kind.
 fn is_arrow(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
     let shared = reader.typed_field(
         function,
@@ -780,8 +668,6 @@ fn is_arrow(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
         .contains(&kind))
 }
 
-/// Whether `function` is a generator or an async function, whose frame
-/// can be suspended and resumed.
 pub(super) fn is_resumable(reader: &Reader<'_>, function: Object) -> Result<bool, Problem> {
     let shared = reader.typed_field(
         function,
@@ -807,7 +693,6 @@ pub(super) fn is_resumable(reader: &Reader<'_>, function: Object) -> Result<bool
     .any(|constant| reader.constant(*constant).ok() == Some(kind)))
 }
 
-/// The `this` local of `context` or the nearest outer context that has one.
 fn lexical_this(
     reader: &Reader<'_>,
     mut context: Object,
@@ -831,7 +716,6 @@ fn lexical_this(
     Err("the frame has too many contexts".into())
 }
 
-/// The tagged word in the slot `index` of `context`.
 pub(super) fn slot(reader: &Reader<'_>, context: Object, index: Constant) -> Result<u64, Problem> {
     let index = u64::try_from(reader.constant(index)?).map_err(|_| "a negative context slot")?;
     reader.word(address_at(
@@ -840,18 +724,14 @@ pub(super) fn slot(reader: &Reader<'_>, context: Object, index: Constant) -> Res
     )?)
 }
 
-/// A context local's name and its tagged word, or why it cannot be read.
 pub(super) type Local = (String, Result<u64, Problem>);
 
-/// Each named local of `context` with its word. Like V8's debugger, this
-/// skips V8's internal locals (names starting with `.`) and `this`.
 pub(super) fn locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Problem> {
     let mut found = all_locals(reader, context)?;
     found.retain(|(name, _)| name != "this");
     Ok(found)
 }
 
-/// As [`locals`], with `this` where the context keeps it.
 fn all_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Problem> {
     Ok(located_locals(reader, context)?
         .into_iter()
@@ -859,8 +739,6 @@ fn all_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<Local>, Proble
         .collect())
 }
 
-/// Each named local of `context`, `this` among them, with where its word
-/// is.
 fn located_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<(String, u64)>, Problem> {
     let scope = slot(reader, context, Constant::ContextScopeInfoIndex)?;
     let scope = reader
@@ -910,10 +788,6 @@ fn located_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<(String, u
     Ok(found)
 }
 
-/// The index and tagged name of each of the `count` context locals of
-/// `scope` (untagged start `start`), in index order. Past V8's
-/// `kScopeInfoMaxInlinedLocalNamesSize`, names are in a
-/// `NameToIndexHashTable` that maps each name to its index.
 fn local_names(
     reader: &Reader<'_>,
     scope: Object,
@@ -976,7 +850,6 @@ fn local_names(
     for entry in 0..capacity {
         let at = first + entry * size;
         let name = word(at + key)?;
-        // An empty or deleted entry's key is an oddball, no name.
         let Some(object) = reader.object(name)? else {
             continue;
         };

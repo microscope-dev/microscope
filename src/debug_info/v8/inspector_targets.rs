@@ -22,7 +22,6 @@ fn body(object: &object::File<'_>, name: &str) -> Option<Vec<iced_x86::Instructi
 fn caller(object: &object::File<'_>, name: &str) -> Option<ImageAddress> {
     let body = body(object, name)?;
     let mut calls = body.iter().filter(|instruction| {
-        // SocketServerDelegate declares GetTargetIds as its fifth virtual.
         instruction.code() == iced_x86::Code::Call_rm64
             && instruction.op0_kind() == OpKind::Memory
             && instruction.memory_base().is_gpr64()
@@ -75,7 +74,6 @@ fn source(object: &object::File<'_>) -> Option<(ImageAddress, u64)> {
         if instruction.flow_control() != FlowControl::Next {
             return None;
         }
-        // Before the first branch/call, rsi still denotes the entry delegate.
         if factory
             .info(instruction)
             .used_registers()
@@ -145,8 +143,6 @@ mod tests {
     #[test]
     fn every_target_caller_and_source_is_proven_and_mutations_refuse() {
         let root = std::env::var_os("MICROSCOPE_NODE").expect("pinned Node builds");
-        // One build of each toolchain: the matrix test proves the layout
-        // on every build.
         for entry in ["24", "nixpkgs-24", "debian-24"] {
             let directory = std::path::Path::new(&root).join(entry);
             let path = directory.join(if entry == "debian-24" {
@@ -192,8 +188,8 @@ mod tests {
             for (index, offset) in mutations.into_iter().enumerate() {
                 let original = bytes[offset];
                 bytes[offset] = match index {
-                    5 => 0x75,          // A divergent prefix cannot prove unconditional loads.
-                    6 => original & !8, // A 32-bit load is not the source pointer.
+                    5 => 0x75,
+                    6 => original & !8,
                     _ => original ^ 4,
                 };
                 let object = object::File::parse(bytes.as_slice()).unwrap();

@@ -1,6 +1,3 @@
-//! Settings files: where they are found, how they layer, how strictly they
-//! are read, launch configurations, and trusting a project.
-
 mod support;
 
 use std::fs;
@@ -14,8 +11,6 @@ fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(name)
 }
 
-/// A scratch project with a user settings file beside it, and a state
-/// directory for what microscope records.
 struct Project {
     directory: support::ScratchDir,
 }
@@ -46,7 +41,6 @@ impl Project {
             .expect("write the local file");
     }
 
-    /// microscope run in the project, with its own user file and state.
     fn command(&self, arguments: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_microscope"));
         command
@@ -88,7 +82,6 @@ fn failed(output: &Output) -> String {
     stderr
 }
 
-/// Asserts each expected text appears, in order, after the previous one.
 fn assert_in_order(output: &str, expected: &[&str]) {
     let mut rest = output;
     for text in expected {
@@ -99,7 +92,6 @@ fn assert_in_order(output: &str, expected: &[&str]) {
     }
 }
 
-/// `output` without the "(ran 1.42s)" a stop after a slow run ends with.
 fn without_elapsed(output: &str) -> String {
     let mut kept = String::new();
     let mut rest = output;
@@ -120,9 +112,6 @@ fn show_line<'a>(shown: &'a str, key: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no {key} in:\n{shown}"))
 }
 
-/// Each setting comes from the first of a flag, the environment, the local
-/// file, the project's, the user's, and the default that sets it, and
-/// tables merge key by key.
 #[test]
 fn settings_layer_flags_environment_local_project_user_and_defaults() {
     let project = Project::new("config-precedence");
@@ -154,19 +143,14 @@ fn settings_layer_flags_environment_local_project_user_and_defaults() {
         .0
     };
 
-    // The local file's context, the project's hidden bytes, and the flag's
-    // syntax over the user's.
     let plain = session(&["--disassembly-syntax", "intel"], true);
 
-    // After the breakpoint's line and the stop's header, `list`'s. A stop
-    // after a run of a second or more, as under load, says how long it ran.
     let plain = without_elapsed(&plain);
     let listing = plain
         .split("basic.c:10\n")
         .nth(3)
         .expect("the listing after the stop's");
 
-    // The line has a breakpoint, which the margin marks.
     assert!(
         listing
             .trim_start_matches(['+', '\u{25cf}'])
@@ -179,8 +163,6 @@ fn settings_layer_flags_environment_local_project_user_and_defaults() {
     );
     assert!(plain.contains("<main>: push rbp"), "{plain}");
 
-    // NO_COLOR outranks the user's `color = "always"`, which applies
-    // without it, even in batch mode.
     assert!(!plain.contains("\x1b["), "{plain}");
     let colored = session(&[], false);
     assert!(colored.contains("\x1b["), "{colored}");
@@ -215,9 +197,6 @@ fn settings_layer_flags_environment_local_project_user_and_defaults() {
     );
 }
 
-/// An invalid file stops startup with its position and the nearest valid
-/// key, `--no-config` starts anyway, and `config check` fails the same
-/// way; `config init` writes a valid file once.
 #[test]
 fn invalid_settings_stop_startup_at_their_position_with_a_suggestion() {
     let project = Project::new("config-errors");
@@ -247,9 +226,6 @@ fn invalid_settings_stop_startup_at_their_position_with_a_suggestion() {
     assert!(stderr.contains("already exists"), "{stderr}");
 }
 
-/// A launch configuration starts by name, with its arguments, environment,
-/// directory, and startup commands; the command line overrides them; and
-/// with several, microscope alone lists them rather than choosing.
 #[test]
 fn launch_configurations_start_by_name_and_are_never_guessed() {
     let project = Project::new("config-launch");
@@ -275,8 +251,6 @@ fn launch_configurations_start_by_name_and_are_never_guessed() {
         "{stdout}"
     );
 
-    // The only configuration starts alone, and the command line's
-    // arguments and environment replace and override its own.
     let (stdout, _) = succeeded(&project.run(&[
         "--batch",
         "--trust-project",
@@ -304,9 +278,6 @@ fn launch_configurations_start_by_name_and_are_never_guessed() {
     );
 }
 
-/// Startup commands run from every file in order, then the launch
-/// configuration's, then `-e`, after `[signals]` applies, and an alias
-/// stands for its command.
 #[test]
 fn startup_commands_accumulate_from_every_file_in_order() {
     let project = Project::new("config-startup");
@@ -335,10 +306,6 @@ fn startup_commands_accumulate_from_every_file_in_order() {
     );
 }
 
-/// A project's startup commands, aliases, and launch configurations apply
-/// only once trusted: a session that cannot ask fails and says how, the
-/// flag trusts it for one session, `config trust` until they change, and
-/// `trust = "never"` leaves them out and says so.
 #[test]
 fn a_project_acts_only_once_trusted() {
     let project = Project::new("config-trust");
@@ -369,7 +336,6 @@ fn a_project_acts_only_once_trusted() {
     let (stdout, _) = succeeded(&project.run(&session));
     assert!(stdout.contains("SIGUSR2"), "{stdout}");
 
-    // A presentation setting changes without asking again; a command does.
     project.project("[startup]\ncommands = [\"handle SIGUSR2\"]\n[ui]\nprompt = \">> \"\n");
     succeeded(&project.run(&session));
     project.project("[startup]\ncommands = [\"handle SIGHUP\"]\n");
@@ -386,7 +352,6 @@ fn a_project_acts_only_once_trusted() {
         "{stderr}"
     );
 
-    // A project cannot trust itself.
     project.project("[projects]\ntrust = \"always\"\n");
     let stderr = failed(&project.run(&session));
     assert!(
@@ -395,8 +360,6 @@ fn a_project_acts_only_once_trusted() {
     );
 }
 
-/// Asked in a terminal, `yes` trusts the project until its commands
-/// change, so the next session does not ask.
 #[test]
 fn an_interactive_session_asks_once_whether_to_trust_a_project() {
     use expectrl::Expect as _;
@@ -434,9 +397,6 @@ fn an_interactive_session_asks_once_whether_to_trust_a_project() {
     session.expect(expectrl::Eof).expect("exit");
 }
 
-/// `[step] runtime = "enter"` makes `step` stop in a runtime's own code,
-/// here tokio's receive, and `set step-runtime off` makes the next step go
-/// over it again.
 #[test]
 fn the_step_setting_enters_the_runtime_until_turned_off() {
     let project = Project::new("config-step-runtime");
@@ -444,7 +404,6 @@ fn the_step_setting_enters_the_runtime_until_turned_off() {
     let shapes = fixture("build/test-programs/tokio-shapes-o0");
     let source = "tests/fixtures/rust/tokio/shapes/src/main.rs";
 
-    // The first receive's marker is also the start of the second's.
     let at = |marker: &str| format!("break {source}:{}", support::source_line(source, marker));
     let (first, again) = (at("// INTO: recv"), at("// INTO: recv-again"));
     let output = project.run(&[

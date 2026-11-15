@@ -1,17 +1,8 @@
-//! Map and Set, read from their ordered hash tables (`ordered-hash-table.h`).
-//! The table is a fixed array: counts of live entries, deleted entries and
-//! buckets, then the buckets, then the entries in insertion order. Each
-//! entry is its key, its value for a map, and its chain. A deleted entry's
-//! key is the hole.
-
 use super::objects::{Object, Problem, Reader};
 use super::own::{MAX_ENTRIES, is_hole};
 use super::typed::SHOWN;
 use crate::image::v8::{Constant, Field};
 
-/// The size of `object` (a `JSMap` if `map`, else a `JSSet`) and its first
-/// entries in insertion order, up to inspect's limit: each key, plus its
-/// value for a map. If `full` is false, only the size.
 #[allow(
     clippy::type_complexity,
     reason = "a key and a map's value, as tagged words"
@@ -25,7 +16,6 @@ pub(super) fn entries(
     all_entries(reader, object, map, if full { SHOWN } else { 0 })
 }
 
-/// Like [`entries`], but reads up to `limit` entries.
 #[allow(
     clippy::type_complexity,
     reason = "a key and a map's value, as tagged words"

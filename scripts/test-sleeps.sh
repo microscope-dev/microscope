@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Fails when a test or fixture sleeps where the list below does not class
-# it. A test that waits a while and then acts on what it hopes has happened
-# breaks under load (dev/testing.md): it should wait on what it can observe.
-# Each sleep left is one of:
-#
-#   poll      inside a loop that fails at a deadline, which must be named
-#             within the 15 lines above it
-#   workload  the program's job is to run, or pace itself, that long
-#   parked    the sleep is the state the test reads
-#
-# An entry is a sleep's file and its line's text, trimmed, so it outlives
-# edits to the lines around it. An entry that matches nothing fails too.
+
+
+
+
+
+
+
+
+
+
+
+
 set -euo pipefail
 
 pattern='(thread::sleep|time::sleep|sleep_until|time\.sleep|asyncio\.sleep|setTimeout|usleep|nanosleep|time\.Sleep|\bsleep)\(|Atomics\.wait\(([^,()]*,){3}|\bsleep [0-9]'
@@ -100,7 +100,7 @@ while IFS= read -r hit; do
   text=${rest#*:}
   text="${text#"${text%%[![:space:]]*}"}"
   text="${text%"${text##*[![:space:]]}"}"
-  # Comments, and yielding to the event loop, sleep nothing.
+
   [[ "$text" =~ ^(//|#|/\*|\*) || "$text" == *'asyncio.sleep(0)'* ]] && continue
 
   key="$file"$'\t'"$text"

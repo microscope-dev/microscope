@@ -1,8 +1,3 @@
-// Passkeys against the real services backend, with Chromium's virtual
-// authenticator standing in for the person's device: it makes real keys and
-// signs real challenges, and services checks them as it would a phone's.
-// Firefox has no such authenticator, so these run in Chromium only.
-
 import { randomBytes } from "node:crypto";
 import * as path from "node:path";
 
@@ -37,7 +32,6 @@ test.skip(
 
 const account = (page: Page) => page.getByRole("tabpanel", { name: "Account" });
 
-/** Saves a screenshot of the Account pane when PASSKEY_SHOTS names a directory. */
 async function shot(page: Page, name: string): Promise<void> {
   const dir = process.env.PASSKEY_SHOTS;
   if (dir) {
@@ -45,7 +39,6 @@ async function shot(page: Page, name: string): Promise<void> {
   }
 }
 
-/** A platform authenticator that checks who is there, like Touch ID. */
 async function device(page: Page): Promise<{ cdp: CDPSession; id: string }> {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("WebAuthn.enable");
@@ -62,7 +55,6 @@ async function device(page: Page): Promise<{ cdp: CDPSession; id: string }> {
   return { cdp, id: authenticatorId };
 }
 
-/** Signs up, confirms the address, and signs in with the emailed code. */
 async function join(page: Page, services: Services): Promise<{ username: string }> {
   const username = `e2e-${randomBytes(6).toString("hex")}`;
   const email = `${username}@example.com`;
@@ -93,7 +85,7 @@ async function signOut(page: Page): Promise<void> {
 
 test("adds a passkey, signs in with it and no code, and removes it", async ({ page, services }) => {
   test.setTimeout(30_000);
-  // The removed passkey, which the device still offers.
+
   expectErrors(/POST \S+\/api\/passkeys\/sign-in\/finish: 401$/u);
   const { cdp, id } = await device(page);
   const { username } = await join(page, services);
@@ -111,9 +103,6 @@ test("adds a passkey, signs in with it and no code, and removes it", async ({ pa
   expect(credentials[0]?.isResidentCredential).toBe(true);
   expect(credentials[0]?.rpId).toBe("localhost");
 
-  // The sign-in form offers the passkey in the username field's autofill,
-  // where the virtual authenticator picks it at once, as a person would. It
-  // takes the passkey alone: no password, and no emailed code.
   const autofilled = page.waitForResponse(
     (response) => response.url().endsWith("/api/passkeys/sign-in/finish") && response.ok(),
   );
@@ -124,7 +113,6 @@ test("adds a passkey, signs in with it and no code, and removes it", async ({ pa
   const after = await cdp.send("WebAuthn.getCredentials", { authenticatorId: id });
   expect(after.credentials[0]?.signCount).toBeGreaterThan(0);
 
-  // In a browser without that autofill, the button does it.
   await page.addInitScript(() => {
     PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false);
   });
@@ -134,7 +122,6 @@ test("adds a passkey, signs in with it and no code, and removes it", async ({ pa
   await account(page).getByRole("button", { name: "Sign in with a passkey" }).click();
   await expect(account(page)).toContainText(`Signed in as ${username}`);
 
-  // A second one from the same device is refused by the device itself.
   await account(page).getByRole("button", { name: "Add a passkey" }).click();
   await account(page).getByRole("button", { name: "Add passkey" }).click();
   await expect(account(page).getByRole("alert")).toHaveText(
@@ -147,7 +134,6 @@ test("adds a passkey, signs in with it and no code, and removes it", async ({ pa
   await row.getByRole("button", { name: "Remove" }).click();
   await expect(methods).not.toContainText("Passkey");
 
-  // The device still has it, but it no longer signs in to anything.
   await signOut(page);
   await account(page).getByRole("button", { name: "Sign in with a passkey" }).click();
   await expect(account(page).getByRole("alert")).toHaveText(

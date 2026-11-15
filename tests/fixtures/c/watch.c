@@ -8,12 +8,12 @@
 #include <time.h>
 #include <unistd.h>
 
-// Each phase is an out-of-line function so a scenario can stop at its entry,
-// arm watchpoints, and observe exactly the accesses that phase makes.
+
+
 
 struct __attribute__((packed, aligned(8))) packed_record {
     uint8_t lead;
-    volatile uint32_t field; // starts one byte past an 8-byte boundary
+    volatile uint32_t field;
     uint8_t tail[3];
 };
 
@@ -64,7 +64,7 @@ __attribute__((noinline)) void size_stores(void) {
     watch_oversized.bytes[32] = 1;
 }
 
-// One 16-byte store covering both words of the pair.
+
 __attribute__((noinline)) void paired_store(void) {
     __asm__ volatile("pcmpeqb %%xmm0, %%xmm0\n\t"
                      "movdqu %%xmm0, (%0)"
@@ -73,7 +73,7 @@ __attribute__((noinline)) void paired_store(void) {
                      : "xmm0", "memory");
 }
 
-// A locked compare-exchange that fails still writes its destination back.
+
 __attribute__((noinline)) void failed_exchange(void) {
     uint64_t expected = ~watch_u64;
     __asm__ volatile("lock cmpxchgq %2, (%1)"
@@ -83,7 +83,7 @@ __attribute__((noinline)) void failed_exchange(void) {
     watch_sink = (int64_t)expected;
 }
 
-// Fills the first three words of the wide record one byte per iteration.
+
 __attribute__((noinline)) void repeated_store(void) {
     void *destination = (void *)&watch_wide;
     size_t count = 24;
@@ -106,8 +106,8 @@ __attribute__((noinline)) void retarget_pointer(void) {
     pointee_first = 3;
 }
 
-// read(2) fills the watched word inside the kernel, which no hardware
-// watchpoint observes; the following user-mode increment is observed.
+
+
 __attribute__((noinline)) void kernel_write(void) {
     int pipes[2];
     uint64_t value = 0x1234;
@@ -132,7 +132,7 @@ __attribute__((noinline)) void handler_write(void) {
     if (sigaction(SIGUSR1, &action, NULL) != 0) {
         _exit(71);
     }
-    // The handler must run even when the launcher blocked SIGUSR1.
+
     sigset_t unblocked;
     sigemptyset(&unblocked);
     if (sigaddset(&unblocked, SIGUSR1) != 0 ||
@@ -145,14 +145,14 @@ __attribute__((noinline)) void handler_write(void) {
     }
 }
 
-// A scenario may send SIGUSR1 while stopped here, so the handler runs while
-// the thread still has to repair this breakpoint.
+
+
 __attribute__((noinline)) void await_signal(void) {
     watch_sink = 1;
 }
 
-// The untraced child must not inherit the parent's watchpoints: a hit would
-// kill it with SIGTRAP.
+
+
 __attribute__((noinline)) void fork_write(void) {
     pid_t child = fork();
     if (child == 0) {
@@ -167,7 +167,7 @@ __attribute__((noinline)) void fork_write(void) {
     watch_i32 = 4321;
 }
 
-// The coarse clock is computed entirely by user-mode vDSO code.
+
 __attribute__((noinline)) void vdso_write(void) {
     if (clock_gettime(CLOCK_MONOTONIC_COARSE, &watch_time) != 0) {
         _exit(74);
@@ -206,8 +206,8 @@ __attribute__((noinline)) void steady_store(void) {
     watch_steady = 7;
 }
 
-// Stores the value the watched variable already holds on most lines, directly,
-// in calls, and in a loop, so steps cross stores that change nothing.
+
+
 __attribute__((noinline)) void steady_stores(void) {
     watch_steady = 7;
     steady_store();
@@ -223,9 +223,9 @@ __attribute__((noinline)) void steady_change(void) {
     watch_steady = 8;
 }
 
-// read(2) fills the word inside the kernel, unobserved; the user-mode store
-// of the same value then leaves memory as it was, yet differs from what the
-// debugger last observed.
+
+
+
 __attribute__((noinline)) void kernel_then_same_store(void) {
     int pipes[2];
     uint64_t value = 0x99;

@@ -1,8 +1,3 @@
-//! The system calls microscope makes with no safe wrapper: what a launched
-//! child does between fork and exec, the ptrace requests nix cannot make,
-//! and `tgkill`. The rest of the backend reaches them through the safe
-//! functions here.
-
 use std::io;
 use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
@@ -15,39 +10,21 @@ use nix::unistd::Pid;
 
 use super::core_dump::FXSAVE_SIZE;
 
-// The kernel's numbers for the requests nix's `Request` lacks with musl.
-// glibc declares requests unsigned and musl signed, so they convert to
-// whichever `libc::ptrace` takes.
 const PTRACE_GET_SYSCALL_INFO: u16 = 0x420e;
 
-/// What a launched child does between fork and exec, in this order.
 #[derive(Default)]
 pub(super) struct BeforeExec {
-    /// Die with the thread that launched it, and fail if its process has
-    /// already exited.
     pub dies_with_parent: bool,
 
-    /// Run without address space randomization.
     pub fixed_addresses: bool,
 
-    /// Wait at a gate before going on.
     pub gate: Option<Gate>,
 
-    /// A seccomp filter to install. It is built before the fork, because
-    /// the child may not allocate.
     pub filter: Option<Vec<libc::sock_filter>>,
 
-    /// Ask its parent to trace it.
     pub traced: bool,
 }
 
-/// The pipes a child waits at: it writes its process ID to `pid`, closes
-/// its copy of `go_write`, which only the parent may hold open, and waits
-/// for one byte from `go_read`. A parent that closes `go_write` instead
-/// cancels the launch.
-///
-/// The parent keeps the descriptors open until the child has exec'd or
-/// failed, and the child inherits them.
 #[derive(Clone, Copy)]
 pub(super) struct Gate {
     pub pid: RawFd,
@@ -55,7 +32,6 @@ pub(super) struct Gate {
     pub go_write: RawFd,
 }
 
-/// Makes `command`'s child do what `plan` says between fork and exec.
 #[allow(
     unsafe_code,
     reason = "pre_exec is the only way to act in the child between fork and exec"
@@ -89,8 +65,6 @@ fn in_child(plan: &BeforeExec, parent: i32) -> io::Result<()> {
     }
 
     if let Some(filter) = &plan.filter {
-        // An unprivileged process may install a filter only once it can
-        // gain no privileges by executing.
         rustix::thread::set_no_new_privs(true)?;
         install_filter(filter)?;
     }
@@ -160,8 +134,6 @@ fn install_filter(filter: &[libc::sock_filter]) -> io::Result<()> {
     Ok(())
 }
 
-/// Resumes or detaches a stopped tracee with `request`, delivering
-/// `signal` to it. nix's wrappers cannot deliver real-time signals.
 #[allow(unsafe_code, reason = "a raw ptrace request")]
 pub(super) fn ptrace_with_signal(
     request: ptrace::Request,
@@ -187,8 +159,6 @@ pub(super) fn ptrace_with_signal(
     Errno::result(result).map(drop)
 }
 
-/// A stopped tracee's siginfo, as the 128 bytes the kernel wrote, so no
-/// field is read through libc's union.
 #[allow(unsafe_code, reason = "a raw ptrace request")]
 pub(super) fn siginfo(pid: Pid) -> Result<[u8; 128], Errno> {
     let mut buffer = [0_u8; 128];
@@ -207,8 +177,6 @@ pub(super) fn siginfo(pid: Pid) -> Result<[u8; 128], Errno> {
     Errno::result(result).map(|_| buffer)
 }
 
-/// What `PTRACE_GET_SYSCALL_INFO` reports of a tracee stopped at a system
-/// call, as bytes, with any the kernel did not write left zero.
 #[allow(unsafe_code, reason = "a raw ptrace request")]
 pub(super) fn syscall_info(pid: Pid) -> Result<[u8; 88], Errno> {
     let mut buffer = [0_u8; 88];
@@ -227,8 +195,6 @@ pub(super) fn syscall_info(pid: Pid) -> Result<[u8; 88], Errno> {
     Errno::result(result).map(|_| buffer)
 }
 
-/// A stopped tracee's x87 and SSE registers, as the FXSAVE image the kernel
-/// wrote, so the layout is the kernel's and not a C library's.
 #[allow(unsafe_code, reason = "a raw ptrace request")]
 pub(super) fn floating_registers(pid: Pid) -> Result<[u8; FXSAVE_SIZE], Errno> {
     let mut buffer = [0_u8; FXSAVE_SIZE];
@@ -247,7 +213,6 @@ pub(super) fn floating_registers(pid: Pid) -> Result<[u8; FXSAVE_SIZE], Errno> {
     Errno::result(result).map(|_| buffer)
 }
 
-/// Sends `signal` to one thread of `process`.
 #[allow(unsafe_code, reason = "neither nix nor rustix wraps tgkill")]
 pub(super) fn tgkill(process: Pid, thread: Pid, signal: i32) -> Result<(), Errno> {
     // SAFETY: tgkill takes three integers, passed as the `long`s the

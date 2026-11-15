@@ -1,10 +1,3 @@
-//! The CDP client that drives Node's inspector over its WebSocket, with
-//! workers reached through `NodeWorker` tunnels.
-//!
-//! One thread owns the socket: it connects, completes the handshake, writes
-//! queued requests, and reads replies and events into the caller's sink. The
-//! caller never touches the network, so it never blocks on the target.
-
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -21,27 +14,19 @@ use serde_json::{Value, json};
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{HandshakeError, Message, WebSocket};
 
-/// The largest message, and frame, the transport accepts from the target.
 pub(super) const MAX_MESSAGE: usize = 64 << 20;
 
-/// The most workers nested inside one another that a session may name.
 pub(super) const MAX_SESSION_DEPTH: usize = 8;
 
-/// How long the transport's thread waits for the inspector to answer the
-/// close microscope sends, before it gives the connection up unanswered.
 const CLOSE_ANSWER: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Requests waiting for the transport's thread to write them.
 const QUEUE_LENGTH: usize = 256;
 
-/// Requests and worker envelopes queued or waiting for replies.
 const MAX_OUTSTANDING: usize = 4096;
 
 const SEND_TO_WORKER: &str = "NodeWorker.sendMessageToWorker";
 const FROM_WORKER: &str = "NodeWorker.receivedMessageFromWorker";
 
-/// The isolate a message goes to or comes from, as the `NodeWorker`
-/// session ids from the main isolate down. The empty path is the main isolate.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct Session(Arc<[Arc<str>]>);
 
@@ -50,7 +35,6 @@ impl Session {
         Self(Arc::new([]))
     }
 
-    /// The worker that `session_id` names inside this session's isolate.
     pub(super) fn worker(&self, session_id: &str) -> Self {
         Self(
             self.0
@@ -66,7 +50,6 @@ impl Session {
     }
 }
 
-/// A request's id, unique across its connection and never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct RequestId(u64);
 
@@ -94,7 +77,6 @@ pub(super) enum CdpError {
     TooDeep,
 }
 
-/// What the transport delivers to its sink.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Incoming {
     /// The handshake completed.
@@ -111,13 +93,11 @@ pub(super) enum Incoming {
     },
     /// A message the transport could not take as a reply or an event.
     Malformed { session: Session, reason: Arc<str> },
-    /// The last message, after a reply to every outstanding request.
-    /// `answered` is whether microscope closed the connection and the
+
     /// inspector answered the close, having ended microscope's session.
     Closed { reason: Arc<str>, answered: bool },
 }
 
-/// A connection to one inspector. Dropping it closes the connection.
 pub(super) struct Connection {
     shared: Arc<Shared>,
     queue: SyncSender<Outgoing>,
@@ -126,29 +106,24 @@ pub(super) struct Connection {
 }
 
 struct Shared {
-    /// Why the connection ended, once it has. A request is queued only while
-    /// this is `None`, so none is queued after the last replies.
     ended: Mutex<Option<Arc<str>>>,
     closing: AtomicBool,
     next_id: AtomicU64,
-    /// Includes queued requests and every unanswered worker envelope.
+
     outstanding: AtomicUsize,
-    /// An eventfd that wakes the transport's thread from `poll`.
+
     wake: OwnedFd,
 }
 
-/// One request, wrapped in a `sendMessageToWorker` for each worker hop.
 struct Outgoing {
     id: u64,
     session: Session,
-    /// The id of each wrapper and the session it was sent on.
+
     hops: Vec<(u64, Session)>,
     text: String,
 }
 
 impl Connection {
-    /// Connects without waiting; the caller must keep the target running for
-    /// the handshake. The sink runs on the transport thread; false stops it.
     pub(super) fn open(
         address: SocketAddr,
         path: &str,
@@ -189,9 +164,6 @@ impl Connection {
         })
     }
 
-    /// Queues a request; requests made before `Connected` are sent after the
-    /// handshake, in order. Fails without blocking when the queue or the
-    /// outstanding-request limit is full, or the connection has closed.
     pub(super) fn send(
         &self,
         session: &Session,
@@ -209,7 +181,6 @@ impl Connection {
         request.insert("params".into(), params);
         let mut text = Value::Object(request).to_string();
 
-        // Wrap from the innermost worker out, each hop on its parent session.
         let mut hops = Vec::with_capacity(session.0.len());
         for (depth, session_id) in session.0.iter().enumerate().rev() {
             let hop = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
@@ -257,22 +228,16 @@ impl Connection {
         Ok(RequestId(id))
     }
 
-    /// Ends the connection without waiting. The transport's thread sends the
-    /// inspector a close and waits, up to [`CLOSE_ANSWER`], for its answer;
-    /// it then answers every outstanding request with `Closed` and delivers
-    /// `Closed`.
     pub(super) fn close(&self) {
         self.shared.closing.store(true, Ordering::Release);
         self.shared.wake();
     }
 
-    /// The id of the last message queued, a worker's envelope included.
     #[cfg(test)]
     pub(super) fn last_id(&self) -> u64 {
         self.shared.next_id.load(Ordering::Relaxed) - 1
     }
 
-    /// Closes the connection and waits for the transport's thread to end.
     #[cfg(test)]
     fn join(&mut self) {
         self.close();
@@ -283,7 +248,6 @@ impl Connection {
 }
 
 impl Drop for Connection {
-    // Waiting here could deadlock a caller whose sink is blocked on it.
     fn drop(&mut self) {
         self.close();
     }
@@ -291,7 +255,6 @@ impl Drop for Connection {
 
 impl Shared {
     fn wake(&self) {
-        // Only an overflowing counter fails, and the thread drains it in each poll.
         let _ = rustix::io::write(&self.wake, &1_u64.to_ne_bytes());
     }
 
@@ -304,8 +267,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Re-arms TCP quick acknowledgement after every read to prevent Linux's
-/// delayed ACKs, measured at 41 ms per inspector round trip.
 struct QuickAck(TcpStream);
 
 impl Read for QuickAck {
@@ -328,12 +289,11 @@ impl Write for QuickAck {
     }
 }
 
-/// A request or wrapper awaiting its reply.
 struct Pending {
     session: Session,
-    /// The final worker, including for an envelope sent on its parent.
+
     target: Session,
-    /// The caller's request this entry belongs to; its own id unless a hop.
+
     owner: u64,
 }
 
@@ -342,12 +302,10 @@ struct Transport {
     pending: BTreeMap<u64, Pending>,
     stopped: bool,
 
-    /// Whether the inspector answered the close microscope sent.
     answered: bool,
 }
 
 impl Transport {
-    /// Runs the connection until it ends and returns why.
     fn serve(
         &mut self,
         address: SocketAddr,
@@ -418,7 +376,7 @@ impl Transport {
                             None => "the inspector closed the connection".into(),
                         };
                     }
-                    // tungstenite answers pings itself.
+
                     Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
                     Err(tungstenite::Error::Io(error))
                         if error.kind() == io::ErrorKind::WouldBlock =>
@@ -443,8 +401,6 @@ impl Transport {
         socket: &mut WebSocket<impl Read + Write>,
         outgoing: &Receiver<Outgoing>,
     ) -> tungstenite::Result<bool> {
-        // Take new requests only once earlier ones are written, so the
-        // bounded queue holds back a target that stops reading.
         match socket.flush() {
             Ok(()) => {}
             Err(tungstenite::Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -493,7 +449,6 @@ impl Transport {
         }
     }
 
-    /// Delivers what one received text holds. Returns false once the sink stops.
     fn receive(&mut self, text: &str, shared: &Shared) -> bool {
         let incoming = match decode(text) {
             Decoded::Event {
@@ -556,8 +511,6 @@ impl Transport {
         }
     }
 
-    /// Matches a reply to its request by session and id. A wrapper's reply
-    /// yields nothing unless it failed, which fails the request it carried.
     fn reply(
         &mut self,
         session: Session,
@@ -602,10 +555,7 @@ impl Transport {
         })
     }
 
-    /// Answers every request still outstanding with `Closed`, then delivers
-    /// `Closed` itself.
     fn finish(&mut self, reason: Arc<str>, shared: &Shared, outgoing: &Receiver<Outgoing>) {
-        // Once this is set no request can be queued, so the drain sees them all.
         lock(&shared.ended).get_or_insert_with(|| Arc::clone(&reason));
         while let Ok(request) = outgoing.try_recv() {
             self.register(&request);
@@ -640,9 +590,6 @@ impl Transport {
     }
 }
 
-/// Sends the inspector a close and reads until it answers, for at most
-/// [`CLOSE_ANSWER`]: whether it did. What else it sends meanwhile is
-/// dropped, as the caller has closed the connection.
 fn close(socket: &mut WebSocket<QuickAck>) -> bool {
     let deadline = std::time::Instant::now() + CLOSE_ANSWER;
     match socket.close(None) {
@@ -661,8 +608,6 @@ fn close(socket: &mut WebSocket<QuickAck>) -> bool {
             Err(_) => return false,
         };
 
-        // The inspector's close frame is its answer. Reading on could fail
-        // on a frame it wrote after that close.
         loop {
             match socket.read() {
                 Ok(Message::Close(_)) | Err(tungstenite::Error::ConnectionClosed) => return true,
@@ -696,7 +641,6 @@ fn receiver_stopped() -> Arc<str> {
     "the receiver stopped".into()
 }
 
-/// Connects without blocking past a close. Returns `None` once closing.
 fn connect(address: SocketAddr, shared: &Shared) -> io::Result<Option<TcpStream>> {
     let family = if address.is_ipv4() {
         AddressFamily::INET
@@ -726,7 +670,6 @@ fn connect(address: SocketAddr, shared: &Shared) -> io::Result<Option<TcpStream>
     Ok(Some(stream))
 }
 
-/// Completes the WebSocket handshake. Returns `None` once closing.
 fn handshake(
     stream: TcpStream,
     address: SocketAddr,
@@ -746,8 +689,6 @@ fn handshake(
                 return Err(format!("the WebSocket handshake failed: {error}").into());
             }
             Err(HandshakeError::Interrupted(middle)) => {
-                // The request fits a new socket's empty send buffer, so only
-                // the response can make the handshake wait.
                 loop {
                     match wait(middle.get_ref().get_ref().0.as_fd(), PollFlags::IN, shared) {
                         Ok(true) => break,
@@ -764,10 +705,7 @@ fn handshake(
     }
 }
 
-/// Waits until `socket` is ready for `flags` or the caller wakes the thread.
-/// Returns whether the socket is ready; never ready once closing.
 fn wait(socket: BorrowedFd<'_>, flags: PollFlags, shared: &Shared) -> io::Result<bool> {
-    // An earlier wait may have drained the wake that `close` sent.
     if shared.closing() {
         return Ok(false);
     }
@@ -785,13 +723,12 @@ fn wait(socket: BorrowedFd<'_>, flags: PollFlags, shared: &Shared) -> io::Result
 
     if !fds[1].revents().is_empty() {
         let mut count = [0; 8];
-        // The eventfd is non-blocking; a racing drain leaves nothing to read.
+
         let _ = rustix::io::read(&shared.wake, &mut count);
     }
     Ok(!fds[0].revents().is_empty())
 }
 
-/// One received message, with any `NodeWorker` tunnels taken off.
 #[derive(Debug)]
 enum Decoded {
     Reply {
@@ -882,7 +819,6 @@ fn decode_in(text: &str, session: Session) -> Decoded {
     decode_in(inner, worker)
 }
 
-/// Decodes arbitrary bytes as one received message, for the fuzz harness.
 #[cfg(feature = "fuzzing")]
 pub(super) fn fuzz(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
@@ -908,7 +844,6 @@ mod tests {
 
     type Server = WebSocket<TcpStream>;
 
-    /// A fake inspector that serves one connection with `script`.
     fn serve(
         script: impl FnOnce(TcpStream) + Send + 'static,
     ) -> (SocketAddr, thread::JoinHandle<()>) {
@@ -925,7 +860,6 @@ mod tests {
         tungstenite::accept(stream).expect("server handshake")
     }
 
-    /// The next request the client sent, as JSON.
     fn request(server: &mut Server) -> Value {
         loop {
             if let Message::Text(text) = server.read().expect("a request") {
@@ -940,12 +874,10 @@ mod tests {
             .expect("send");
     }
 
-    /// Wraps `message` as the parent session receives it from worker `session`.
     fn tunnel(session: &str, message: &Value) -> Value {
         json!({"method": FROM_WORKER, "params": {"sessionId": session, "message": message.to_string()}})
     }
 
-    /// The message inside a `sendMessageToWorker` to `session`.
     fn untunnel(request: &Value, session: &str) -> Value {
         assert_eq!(request["method"], SEND_TO_WORKER);
         assert_eq!(request["params"]["sessionId"], session);
@@ -955,7 +887,6 @@ mod tests {
         serde_json::from_str(inner).expect("a JSON tunneled message")
     }
 
-    /// Reads until the client goes away, so no write races a reset.
     fn linger(mut server: Server) {
         while server.read().is_ok() {}
     }
@@ -988,7 +919,6 @@ mod tests {
             self.connection.send(session, method, params).expect("send")
         }
 
-        /// Closes the connection and checks the transport delivered nothing more.
         fn finish(mut self) {
             self.connection.join();
             assert_eq!(
@@ -1019,8 +949,6 @@ mod tests {
 
     #[test]
     fn requests_before_the_handshake_are_sent_after_it_in_order() {
-        // The server answers the handshake only once the client's sends
-        // have returned, so sends that waited for it never release it.
         let (sent, gate) = mpsc::channel::<()>();
         let (address, server) = serve(move |stream| {
             assert!(
@@ -1074,7 +1002,6 @@ mod tests {
                 [&outer, &middle, &inner].map(|message| message["id"].as_u64().expect("an id"));
             assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
 
-            // The inner id, answered on the wrong session, is no reply.
             reply(
                 &mut server,
                 &json!({"id": inner["id"], "result": {"wrong": true}}),
@@ -1191,7 +1118,7 @@ mod tests {
             let _ = untunnel(&nested, "inner");
             let answered = request(&mut server);
             let inner = untunnel(&answered, "gone");
-            // The request can complete before its envelope is acknowledged.
+
             reply(
                 &mut server,
                 &tunnel(
@@ -1284,8 +1211,6 @@ mod tests {
                 let length = u8::try_from(payload.len()).expect("a short reply");
                 assert!(length < 126);
 
-                // Two writes with Nagle on, so the payload waits for the header's
-                // ACK. With TCP_NODELAY here, no delayed ACK would ever show.
                 let stream = server.get_mut();
                 stream.write_all(&[0x81, length]).expect("write");
                 stream.write_all(payload.as_bytes()).expect("write");
@@ -1334,9 +1259,6 @@ mod tests {
             Err(RecvTimeoutError::Disconnected)
         );
 
-        // Nextest runs each test in its own process, so no other test owns a
-        // thread. A joined thread leaves the task list only once the kernel
-        // reaps it, a moment after its join returns.
         let running = || {
             std::fs::read_dir("/proc/self/task")
                 .expect("tasks")
@@ -1411,7 +1333,6 @@ mod tests {
 
     #[test]
     fn a_full_queue_fails_without_blocking() {
-        // The server never completes the handshake, so nothing leaves the queue.
         let (address, server) = serve(|mut stream| {
             let mut buffer = [0; 4096];
             while stream.read(&mut buffer).is_ok_and(|read| read > 0) {}
@@ -1590,7 +1511,7 @@ mod tests {
         let client = Client::open(address);
         assert_eq!(client.next(), Incoming::Connected);
         let worker = Session::main().worker("worker");
-        // Leave one slot for the last worker's owner, which its reply frees.
+
         for _ in 0..MAX_OUTSTANDING - 1 {
             let id = client.send(&worker, "A.pending", json!({}));
             requests
@@ -1602,7 +1523,7 @@ mod tests {
             client.connection.send(&worker, "A.excess", json!({})),
             Err(CdpError::OutstandingFull)
         );
-        // A main-isolate request uses the remaining slot, unlike a worker request.
+
         let main = client.send(&Session::main(), "A.last", json!({}));
         answer.send(()).expect("allow wrapper reply");
         assert_eq!(reply_to(&client).0, main);

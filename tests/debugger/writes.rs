@@ -1,9 +1,5 @@
-//! Changing values and memory at a stop.
-
 use super::*;
 
-/// Stops `fixture` in `function` at its first statement after `marker`'s
-/// line, as a source breakpoint there does.
 async fn stopped_at_line(fixture: &str, source: &str, marker: &str) -> Scenario {
     let mut scenario = Scenario::launch(fixture);
     let line = source_line(&format!("tests/fixtures/c/{source}"), marker);
@@ -27,7 +23,6 @@ fn signed(value: &microscope::InspectedValue) -> i128 {
     }
 }
 
-/// Evaluates `text` in a frame, assigning when `mode` allows.
 async fn evaluate(
     view: &microscope::StopView<'_>,
     text: &str,
@@ -43,7 +38,6 @@ async fn evaluate(
     }
 }
 
-/// Assigns `value` to `target`, as `set var` does.
 async fn assign(
     view: &microscope::StopView<'_>,
     target: &str,
@@ -64,7 +58,6 @@ async fn read(
     evaluate(view, text, microscope::EvaluationMode::Read).await
 }
 
-/// A view of a frame of the stopped thread.
 async fn frame_view(scenario: &mut Scenario, level: u32) -> microscope::StopContext {
     let snapshot = scenario.snapshot().await;
     let microscope::InferiorState::Stopped {
@@ -102,7 +95,6 @@ async fn assignments_change_memory_the_program_then_uses() {
         .await;
     assert_eq!(signed(&assigned), 100);
 
-    // The pointer sees the new value: the write went to memory.
     let through = scenario.operation("inspect", read(&view, "*pointer")).await;
     assert_eq!(signed(&through), 100);
     let doubled = scenario
@@ -151,7 +143,6 @@ async fn assignments_change_memory_the_program_then_uses() {
         Err("300 does not fit `unsigned char` exactly".to_owned())
     );
 
-    // A caller's variable in memory can change too; main checks it.
     let changed = scenario
         .operation("assign in caller", assign(&caller, "signed_int", "5"))
         .await;
@@ -184,7 +175,6 @@ async fn enumerations_take_their_enumerators_names() {
         .await;
     assert_eq!(signed(&assigned), 0);
 
-    // inspect_enums now sees a different value than main set.
     scenario.remove_all_breakpoints().await;
     assert_eq!(
         scenario.resume_to_stop().await,
@@ -223,7 +213,6 @@ async fn registers_hold_whole_variables_of_the_innermost_frame_only() {
         .await;
     assert_eq!(signed(&assigned), 41);
 
-    // The optimized caller's variables are constants with no storage.
     let context = frame_view(&mut scenario, 1).await;
     let caller = handle.at(context);
     let refused = scenario
@@ -234,7 +223,6 @@ async fn registers_hold_whole_variables_of_the_innermost_frame_only() {
         Err("the debug information computes it; it has no storage".to_owned())
     );
 
-    // The function computes with the register's new value.
     scenario.remove_all_breakpoints().await;
     assert_eq!(
         scenario.resume_to_stop().await,
@@ -251,7 +239,6 @@ async fn memory_writes_keep_breakpoints_installed_and_span_words() {
     let address = crate::support::breakpoint_address(&reason);
     let handle = scenario.handle().clone();
 
-    // The program's bytes at the breakpoint, written back over the trap.
     let code = scenario
         .operation("read code", handle.read_memory(address, 16))
         .await;
@@ -265,13 +252,11 @@ async fn memory_writes_keep_breakpoints_installed_and_span_words() {
         .await;
     assert_eq!(again.bytes, code.bytes, "traps stay hidden");
 
-    // The second call still stops at the breakpoint.
     assert!(matches!(
         scenario.resume_to_stop().await,
         StopReason::Breakpoint { hits, .. } if hits[0].breakpoint == breakpoint.id
     ));
 
-    // Bytes across a word boundary, starting mid-word.
     let global = scenario
         .operation("address", handle.runtime_address("microscope_value"))
         .await;
@@ -313,7 +298,6 @@ fn jump_source(marker: &str) -> BreakpointSpec {
     }
 }
 
-/// Stops `jump` at the first line of `checked`, which, run on, exits 111.
 async fn stopped_in_checked() -> (Scenario, microscope::StopId, microscope::ThreadId) {
     let mut scenario = Scenario::launch("jump");
     scenario
@@ -340,13 +324,10 @@ async fn stopped_line(scenario: &Scenario) -> Option<u64> {
     location_line(&location)
 }
 
-/// A jump moves the thread without running it, and publishes the stop
-/// again under a new stop, so that what clients read of the old one fails.
 #[tokio::test]
 async fn a_jump_moves_a_thread_within_its_function_under_a_new_stop() {
     let (mut scenario, before, thread) = stopped_in_checked().await;
 
-    // The thread has yet to arrive at a breakpoint where it lands.
     let target = scenario
         .add_source_breakpoint("jump.c", jump_line("target"))
         .await;
@@ -365,7 +346,6 @@ async fn a_jump_moves_a_thread_within_its_function_under_a_new_stop() {
     assert_eq!(reason, StopReason::Jump);
     assert_eq!(stopped_line(&scenario).await, Some(jump_line("target")));
 
-    // Nothing ran: `status = value` never did.
     assert_eq!(
         support::evaluate_value(&scenario, "status").await.signed(),
         0
@@ -390,7 +370,6 @@ async fn a_jump_moves_a_thread_within_its_function_under_a_new_stop() {
         0
     );
 
-    // Only `status += 100` runs.
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(100))
@@ -398,8 +377,6 @@ async fn a_jump_moves_a_thread_within_its_function_under_a_new_stop() {
     scenario.shutdown().await;
 }
 
-/// A jump stays in the function the thread is stopped in, at one place,
-/// and one it refuses changes nothing.
 #[tokio::test]
 async fn a_jump_is_refused_out_of_its_function_or_to_several_places() {
     let (mut scenario, before, _) = stopped_in_checked().await;
@@ -438,7 +415,6 @@ async fn a_jump_is_refused_out_of_its_function_or_to_several_places() {
     scenario.shutdown().await;
 }
 
-/// Assigning `$pc` moves the thread anywhere, as a jump does.
 #[tokio::test]
 async fn assigning_the_program_counter_moves_the_thread_under_a_new_stop() {
     let (mut scenario, before, _) = stopped_in_checked().await;
@@ -488,8 +464,6 @@ async fn assigning_the_program_counter_moves_the_thread_under_a_new_stop() {
     scenario.shutdown().await;
 }
 
-/// A register assigned in the innermost frame is what the thread computes
-/// with; a caller's registers are what unwinding recovered, and refused.
 #[tokio::test]
 async fn assigned_registers_are_what_the_thread_computes_with() {
     let mut scenario = Scenario::launch("jump");
@@ -513,7 +487,6 @@ async fn assigned_registers_are_what_the_thread_computes_with() {
         "{refused:?}"
     );
 
-    // Back in main, the call's result is in rax, which main stores next.
     scenario.remove_all_breakpoints().await;
     assert!(matches!(
         scenario.step_to_stop(StepKind::Out).await,
@@ -542,9 +515,6 @@ async fn assigned_registers_are_what_the_thread_computes_with() {
     scenario.shutdown().await;
 }
 
-/// A thread stopped in a system call that the kernel would restart, by
-/// moving it back to the call as it resumes, resumes where it was moved
-/// to instead.
 #[tokio::test]
 async fn a_thread_moved_out_of_a_system_call_resumes_where_it_was_moved() {
     let mut scenario = Scenario::launch("jump");
@@ -592,9 +562,6 @@ async fn a_thread_moved_out_of_a_system_call_resumes_where_it_was_moved() {
     scenario.shutdown().await;
 }
 
-/// The frames of a stop are unwound from the thread's registers each time
-/// they are asked for, so assigning its frame pointer changes them at the
-/// same stop.
 #[tokio::test]
 async fn assigning_the_frame_pointer_changes_the_backtrace_at_the_same_stop() {
     let mut scenario = Scenario::launch("jump");
@@ -633,8 +600,6 @@ async fn assigning_the_frame_pointer_changes_the_backtrace_at_the_same_stop() {
     assert_eq!(after.frames[0].instruction, before.frames[0].instruction);
     assert_ne!(caller(&after).as_deref(), Some("main"), "{after:#?}");
 
-    // The frame now names a caller in memory below the stack pointer, which
-    // holds no frame, so the stack ends there without being whole.
     assert_eq!(before.termination, microscope::UnwindTermination::Complete);
     assert!(
         matches!(
@@ -646,9 +611,6 @@ async fn assigning_the_frame_pointer_changes_the_backtrace_at_the_same_stop() {
     scenario.shutdown().await;
 }
 
-/// A write changes what the stop shows without leaving it, so it moves the
-/// revision on as every other change of state does; reads made after it
-/// carry the new revision.
 #[tokio::test]
 async fn writes_move_the_revision_on_at_the_same_stop() {
     let mut scenario = Scenario::launch("jump");
@@ -663,7 +625,6 @@ async fn writes_move_the_revision_on_at_the_same_stop() {
     let view = handle.at(context);
     let registers = scenario.operation("registers", view.registers()).await;
 
-    // Below the red zone, which the stopped function may use.
     let unused = VirtualAddress::new(register_u64(&registers, RegisterRole::StackPointer) - 0x100);
     scenario
         .operation(
@@ -711,10 +672,6 @@ async fn writes_move_the_revision_on_at_the_same_stop() {
     scenario.shutdown().await;
 }
 
-/// A register other than the program counter may be one unwinding starts
-/// from, so writing it can leave a selected caller gone or another
-/// function's frame at its level. The thread's selection goes back to the
-/// innermost frame, which the write leaves where it was.
 #[tokio::test]
 async fn a_register_write_selects_the_innermost_frame_again() {
     let mut scenario = Scenario::launch("jump");
@@ -740,8 +697,6 @@ async fn a_register_write_selects_the_innermost_frame_again() {
         Some("main")
     );
 
-    // `main`'s own frame pointer, saved by `elsewhere`, makes `main`'s
-    // caller the frame at level 1.
     let context = frame_view(&mut scenario, 0).await;
     let handle = scenario.handle().clone();
     let view = handle.at(context);

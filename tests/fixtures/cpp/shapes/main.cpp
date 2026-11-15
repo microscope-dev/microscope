@@ -1,6 +1,6 @@
-// A program and its library that share a header and a helper, as a
-// distribution's packages do, for debug files that share what they have in
-// common through a dwz supplementary file.
+
+
+
 #include <cstdio>
 
 #include "shapes.h"

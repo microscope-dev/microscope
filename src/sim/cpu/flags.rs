@@ -1,10 +1,5 @@
-//! Status flags as the Intel SDM defines them for each instruction family.
-//! Flags an instruction leaves undefined are computed as if defined, which
-//! the lockstep test masks.
-
 use super::{ADJUST, CARRY, OVERFLOW, PARITY, SIGN, STATUS_FLAGS, ZERO};
 
-/// The mask of a `bits`-wide value.
 pub const fn mask(bits: usize) -> u64 {
     if bits >= 64 {
         u64::MAX
@@ -17,13 +12,11 @@ const fn sign_bit(bits: usize) -> u64 {
     1 << (bits - 1)
 }
 
-/// Sign-extends the low `bits` of `value`.
 pub const fn sign_extend(value: u64, bits: usize) -> u64 {
     let shift = 64 - bits;
     (((value << shift).cast_signed()) >> shift).cast_unsigned()
 }
 
-/// SF, ZF, and PF of a result.
 pub const fn sign_zero_parity(result: u64, bits: usize) -> u64 {
     let result = result & mask(bits);
     let mut flags = 0;
@@ -42,12 +35,10 @@ pub const fn sign_zero_parity(result: u64, bits: usize) -> u64 {
     flags
 }
 
-/// Replaces the status flags in `rflags` with `status`.
 pub const fn with_status(rflags: u64, status: u64) -> u64 {
     (rflags & !STATUS_FLAGS) | status
 }
 
-/// `a + b + carry` and its flags.
 pub const fn add(a: u64, b: u64, carry: bool, bits: usize) -> (u64, u64) {
     let (a, b) = (a & mask(bits), b & mask(bits));
     let wide = a as u128 + b as u128 + carry as u128;
@@ -73,7 +64,6 @@ pub const fn add(a: u64, b: u64, carry: bool, bits: usize) -> (u64, u64) {
     (result, flags)
 }
 
-/// `a - b - borrow` and its flags.
 pub const fn sub(a: u64, b: u64, borrow: bool, bits: usize) -> (u64, u64) {
     let (a, b) = (a & mask(bits), b & mask(bits));
     let result = a.wrapping_sub(b).wrapping_sub(borrow as u64) & mask(bits);
@@ -94,12 +84,10 @@ pub const fn sub(a: u64, b: u64, borrow: bool, bits: usize) -> (u64, u64) {
     (result, flags)
 }
 
-/// The flags of a bitwise result: CF and OF clear.
 pub const fn logic(result: u64, bits: usize) -> u64 {
     sign_zero_parity(result, bits)
 }
 
-/// A left shift by `count`, already masked and nonzero, and its flags.
 pub const fn shift_left(value: u64, count: u32, bits: usize) -> (u64, u64) {
     let value = value & mask(bits);
     let result = if count as usize >= 64 {
@@ -114,7 +102,6 @@ pub const fn shift_left(value: u64, count: u32, bits: usize) -> (u64, u64) {
         flags |= CARRY;
     }
 
-    // OF is defined for one-bit shifts: whether the sign changed.
     if ((result & sign_bit(bits) != 0) != carried) && count == 1 {
         flags |= OVERFLOW;
     }
@@ -122,7 +109,6 @@ pub const fn shift_left(value: u64, count: u32, bits: usize) -> (u64, u64) {
     (result, flags)
 }
 
-/// A logical right shift by `count`, already masked and nonzero.
 pub const fn shift_right(value: u64, count: u32, bits: usize) -> (u64, u64) {
     let value = value & mask(bits);
     let result = if count >= 64 { 0 } else { value >> count };
@@ -132,7 +118,6 @@ pub const fn shift_right(value: u64, count: u32, bits: usize) -> (u64, u64) {
         flags |= CARRY;
     }
 
-    // OF is defined for one-bit shifts: the original sign.
     if count == 1 && value & sign_bit(bits) != 0 {
         flags |= OVERFLOW;
     }
@@ -140,8 +125,6 @@ pub const fn shift_right(value: u64, count: u32, bits: usize) -> (u64, u64) {
     (result, flags)
 }
 
-/// `shld`: shifts `destination` left by `count`, already masked and
-/// nonzero, filling from the top of `source`.
 pub const fn shift_left_double(
     destination: u64,
     source: u64,
@@ -163,13 +146,10 @@ pub const fn shift_left_double(
     (result, flags)
 }
 
-/// CF and OF of a multiplication: set when the full product does not fit
-/// the destination.
 pub const fn multiply_overflow(overflowed: bool) -> u64 {
     if overflowed { CARRY | OVERFLOW } else { 0 }
 }
 
-/// Whether a condition code holds.
 pub const fn condition(code: iced_x86::ConditionCode, rflags: u64) -> Option<bool> {
     use iced_x86::ConditionCode as Code;
     let carry = rflags & CARRY != 0;

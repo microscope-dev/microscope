@@ -1,13 +1,3 @@
-//! Node.js, as the V8 runtime that runs a program's JavaScript. The module
-//! that carries V8, the `node` executable or a shared `libnode`, has the
-//! layout its loader read and checked (`crate::image::v8`); this model reads
-//! V8's frames through it at a stop.
-//!
-//! V8's frames are native frames: its builtins and the code it compiles
-//! for JavaScript run on the thread's own stack, and the unwinder walks
-//! them by V8's frame-pointer convention. The model names each such frame
-//! as V8 recorded it ([`RuntimeModel::code_frame`]).
-
 mod access;
 mod awaits;
 mod call_sites;
@@ -62,9 +52,6 @@ use crate::runtime_model::{
 use crate::unwind::RegisterFile;
 use crate::{AddressRange, ImageAddress, StackSegment, ThreadId, VirtualAddress};
 
-/// The place of `js:NAME`: every function V8 names `name`, as its `name`
-/// property gives it. V8 names a method by its own name only, so a
-/// qualified one would match nothing, and is refused.
 fn function_place(name: &str) -> Result<Vec<crate::ManagedPlace>, Arc<str>> {
     if name.is_empty() {
         return Err("a JavaScript function breakpoint needs a function name".into());
@@ -79,34 +66,21 @@ fn function_place(name: &str) -> Result<Vec<crate::ManagedPlace>, Arc<str>> {
     Ok(vec![crate::ManagedPlace::Function { name: name.into() }])
 }
 
-/// What Node calls the work its event loop waits on.
 pub(super) const TASK_NOUN: (&str, &str) = ("handle", "handles");
 
-/// The extensions of the scripts Node runs, whose breakpoints its
-/// inspector arms.
 pub const SCRIPT_EXTENSIONS: &[&str] = &["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"];
 
 const GET_TARGET_IDS: &str = "_ZN4node9inspector19InspectorIoDelegate12GetTargetIdsB5cxx11Ev";
 const MESSAGE_RECEIVED: &str = "_ZN4node9inspector19InspectorIoDelegate15MessageReceivedEiRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE";
 
-/// What V8 names each of its embedded builtins' code.
 const BUILTIN_PREFIX: &str = "Builtins_";
 
-/// The bytes a live read reads at once: a page.
 const LIVE_BLOCK: usize = 4096;
 
-/// The most threads whose pages [`NodeRuntime::pages`] keeps; past that it
-/// forgets them all, as threads that exited would otherwise stay.
 const MOST_PAGED_THREADS: usize = 4096;
 
-/// Where V8 performs each collection, scavenge, minor mark-sweep, or full
-/// mark-compact, on the thread of the isolate whose heap it collects
-/// (`src/heap/heap.cc`).
 const PERFORM_GARBAGE_COLLECTION: &str = "_ZN2v88internal4Heap24PerformGarbageCollectionENS0_16GarbageCollectorENS0_23GarbageCollectionReasonEPKc";
 
-/// The builtins that build an unoptimized frame and fill its registers:
-/// the interpreter's entry, and Sparkplug code's out-of-line prologue
-/// (`src/builtins/x64/builtins-x64.cc`).
 const FRAME_BUILDERS: &[&str] = &[
     "Builtins_InterpreterEntryTrampoline",
     "Builtins_InterpreterEntryTrampolineForProfiling",
@@ -114,25 +88,11 @@ const FRAME_BUILDERS: &[&str] = &[
     "Builtins_BaselineOutOfLinePrologueDeopt",
 ];
 
-/// The builtins a loop's back edge calls to enter optimized code in place
-/// of the interpreter's or Sparkplug's frame, with the saved frame
-/// pointers between the entry's frame pointer and that frame
-/// (`src/builtins/x64/builtins-x64.cc`). The interpreter's `JumpLoop`
-/// handler calls its builtin from the handler's own frame, which
-/// `OnStackReplacement` drops (`leave`) before it enters the code;
-/// Sparkplug's code calls its builtin from the frame itself. Each entry is
-/// reached on every back edge while the replacement compiles. Entering
-/// Sparkplug's code in place of the interpreter's keeps the frame's
-/// registers where they are (`UnoptimizedJSFrame::ReadInterpreterRegister`),
-/// so its builtin, `InterpreterOnStackReplacement_ToBaseline`, is not
-/// among them.
 const ON_STACK_REPLACEMENT: &[(&str, u8)] = &[
     ("Builtins_InterpreterOnStackReplacement", 1),
     ("Builtins_BaselineOnStackReplacement", 0),
 ];
 
-/// The V8 runtime a module carries. One whose layout was refused still
-/// binds, so that its frames say why they cannot be read.
 pub fn detect(
     image: &Arc<dyn RuntimeImage + Send + Sync>,
 ) -> Option<Result<Arc<dyn RuntimeModel>, Unbound>> {
@@ -160,8 +120,6 @@ pub fn detect(
             .as_ref()
             .ok()
             .map(|layout| layout.targets.entry)
-            // An unsupported body still traps at its named entry: inspector_target
-            // returns the metadata refusal before the preload can print its URL.
             .or_else(|| image.symbol(GET_TARGET_IDS).map(|symbol| symbol.address)),
         native_entry: image.symbol(napi::INVOKE).map(|symbol| symbol.address),
         collector: image
@@ -204,8 +162,6 @@ pub fn detect(
     })))
 }
 
-/// The Node release whose output to match: the one that built the module,
-/// or else the first on its V8 line (V8 12 is Node 22, 13 is 24, 14 is 26).
 fn writer(version: V8Version, node: Result<NodeRelease, Arc<str>>) -> present::Writer {
     node.map_or_else(
         |reason| {
@@ -236,25 +192,15 @@ fn writer(version: V8Version, node: Result<NodeRelease, Arc<str>>) -> present::W
     )
 }
 
-/// What reading V8's compiled code needs of the module that carries it.
 #[derive(Debug)]
 struct Statics {
-    /// Where each thread keeps its current isolate.
     isolate: Option<Result<ThreadLocal, Arc<str>>>,
     dispatch_table: Result<Option<DispatchTable>, Arc<str>>,
 
-    /// The code of V8's bytecode handlers ([`bytecode_handlers`]).
     handlers: Vec<AddressRange<ImageAddress>>,
-    /// The numbers of the builtins an await chain is read by.
     awaits: Result<awaits::Builtins, Arc<str>>,
 }
 
-/// The numbers of the builtins an await chain is read by, in V8
-/// `version`, checked against the image's own builtins where its symbols
-/// name them: V8 numbers its builtins in the order it embeds them, and a
-/// build whose configuration adds or drops one numbers the rest apart.
-/// A module without the symbols, as Debian's, has the numbers of its V8
-/// release's official build.
 fn await_builtins(
     image: &(dyn RuntimeImage + Send + Sync),
     version: V8Version,
@@ -300,8 +246,6 @@ fn await_builtins(
     Ok(numbers)
 }
 
-/// The range of the image's code its embedded builtins span, where it
-/// names them.
 fn builtins(image: &(dyn RuntimeImage + Send + Sync)) -> Option<AddressRange<ImageAddress>> {
     let symbols = image.functions_starting(BUILTIN_PREFIX);
     let start = symbols.iter().map(|symbol| symbol.address).min()?;
@@ -316,13 +260,6 @@ fn builtins(image: &(dyn RuntimeImage + Send + Sync)) -> Option<AddressRange<Ima
     Some(AddressRange { start, end })
 }
 
-/// The code of V8's bytecode handlers, `Builtins_` followed by a bytecode's
-/// name and `Handler`, `WideHandler`, or `ExtraWideHandler`, as ranges in
-/// address order. A handler runs in the interpreter's frame: the
-/// interpreter's entry calls the first, each jumps to the next, and the
-/// last returns, none moving rbp off the frame
-/// (`Generate_InterpreterEntryTrampoline`, `src/builtins/x64/builtins-x64.cc`).
-/// A build that names no builtins names no handler.
 fn bytecode_handlers(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<AddressRange<ImageAddress>> {
     let mut ranges = image
         .functions_starting(BUILTIN_PREFIX)
@@ -357,8 +294,6 @@ fn bytecode_handlers(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<AddressRan
     merged
 }
 
-/// The address of the isolate `thread` has entered, from its copy of the
-/// variable at `place`: 0 for none.
 fn current_isolate(
     stop: &dyn RuntimeStop,
     thread: ThreadId,
@@ -376,65 +311,41 @@ fn current_isolate(
 struct NodeRuntime {
     version: V8Version,
 
-    /// The layout V8's frames and objects are read by, or why none can be.
     reading: Result<V8Layout, Arc<str>>,
     builtins: Option<AddressRange<ImageAddress>>,
 
-    /// Where the process keeps the bounds of the embedded builtins, which
-    /// bound them where no symbol does.
     blob: Option<EmbeddedBlob>,
 
-    /// The release whose `util.inspect` output values should match.
     writer: present::Writer,
     statics: Statics,
 
-    /// The scripts and functions frames name, for the life of the process.
     table: std::sync::Mutex<scripts::Table>,
 
-    /// The pages each thread's last live read used, which its next read
-    /// reads first, in one call: a thread blocked where it blocked before
-    /// is read in the same pages, which one by one cost a system call
-    /// each. Only those it used, so that the pages follow where the thread
-    /// is now and do not grow with every page it was ever read in.
     pages: std::sync::Mutex<std::collections::BTreeMap<ThreadId, Vec<u64>>>,
 
-    /// Node's `GetTargetIds`, where the inspector's address is read.
     inspector_hook: Option<ImageAddress>,
 
-    /// Where V8 enters a Node-API function's C callback.
     native_entry: Option<ImageAddress>,
 
-    /// Where V8 performs a collection, which a watch follows.
     collector: Option<ImageAddress>,
 
-    /// Where V8 replaces an unoptimized frame by optimized code.
     replacers: Vec<FrameReplacer>,
 
-    /// The code that builds an unoptimized frame ([`FRAME_BUILDERS`]).
     frame_builders: Vec<AddressRange<ImageAddress>>,
     inspector_signal_handler: Option<ImageAddress>,
     native_inspector: Result<crate::image::v8::NodeInspector, Arc<str>>,
     inspector_close_functions: Option<(ImageAddress, ImageAddress)>,
 
-    /// Node's `InspectorIoDelegate::MessageReceived`, where the I/O thread
-    /// hands each message on to the main thread.
     inspector_received: Option<ImageAddress>,
 
-    /// Where Node keeps its event loop's work, or why the module's code
-    /// does not say.
     tasks: Result<NodeTasks, Arc<str>>,
 
-    /// How far into an isolate its stack of entries is, or why the
-    /// module's code does not say.
     entry_stack: Result<u64, Arc<str>>,
 
-    /// The module's symbols, which name the classes of Node's wrappers.
     image: Arc<dyn RuntimeImage + Send + Sync>,
 }
 
 impl NodeRuntime {
-    /// Runs `read` against the process at `stop`, charging each read to
-    /// `budget`.
     fn reading<T>(
         &self,
         stop: &dyn RuntimeStop,
@@ -459,14 +370,11 @@ impl NodeRuntime {
             layout,
             version: self.version,
             charge: Some(&charge),
-            // Cache blocks for the whole stop when the debugger provides a
-            // cache, or just for this read otherwise.
             blocks: Some(stop.memory().unwrap_or(&read_now)),
         };
         read(&reader)
     }
 
-    /// Every task at `stop`, by number, and why some may be missing.
     fn all_tasks(&self, stop: &dyn RuntimeStop) -> (Vec<super::RuntimeTask>, Vec<Arc<str>>) {
         let walked = self.walk(stop, tasks::listed);
         let (mut found, mut gaps) = match walked {
@@ -492,8 +400,6 @@ impl NodeRuntime {
         (found, gaps)
     }
 
-    /// Runs `walk` over Node's event loop work at `stop`, given where each
-    /// thread keeps its isolate, or says why it cannot.
     fn walk<T>(
         &self,
         stop: &dyn RuntimeStop,
@@ -530,7 +436,6 @@ impl NodeRuntime {
         ))
     }
 
-    /// libuv's pool at `stop`, or `None` where the module does not hold it.
     fn pool(&self, stop: &dyn RuntimeStop) -> Option<Result<pool::Pool, Arc<str>>> {
         let tasks = self.tasks.as_ref().ok()?;
         let uv = tasks.pool.as_ref()?;
@@ -548,8 +453,6 @@ impl NodeRuntime {
         Some(pool::read(&reader, uv))
     }
 
-    /// [`Self::reading`] for expressions, where a failure means the value is
-    /// unavailable.
     fn expression<T>(
         &self,
         stop: &dyn RuntimeStop,
@@ -561,14 +464,10 @@ impl NodeRuntime {
         })
     }
 
-    /// The embedded builtins' code as `stop` says V8 stored its bounds:
-    /// a pointer, then a 32-bit size. `None` before V8 stored them, and
-    /// where they cannot be read.
     fn stored_builtins(&self, stop: &dyn RuntimeStop) -> Option<AddressRange<VirtualAddress>> {
         self.stored_builtins_read(stop, |address, bytes| stop.read(address, bytes))
     }
 
-    /// [`Self::stored_builtins`], read with `read`.
     fn stored_builtins_read(
         &self,
         stop: &dyn RuntimeStop,
@@ -602,8 +501,6 @@ impl RuntimeModel for NodeRuntime {
     }
 
     fn process_code(&self, stop: &dyn RuntimeStop) -> Vec<AddressRange<VirtualAddress>> {
-        // Where symbols bound the builtins, they own them in the image and
-        // in any copy V8 made of them, which the stored bounds may name.
         if self.builtins.is_some() {
             return Vec::new();
         }
@@ -636,9 +533,6 @@ impl RuntimeModel for NodeRuntime {
         )
     }
 
-    /// A thread's JavaScript frames, read from where V8 publishes them in
-    /// the thread's isolate while JavaScript calls out to native code
-    /// ([`live`]).
     fn live_frames(
         &self,
         stop: &dyn RuntimeStop,
@@ -665,11 +559,6 @@ impl RuntimeModel for NodeRuntime {
                 ));
             }
         };
-        // The thread did not run while it is read, so what is read of it
-        // once holds for the whole read.
-        // Pages, as a frame's slots and the objects a frame names lie
-        // near each other's, and a read costs about as much for a page as
-        // for a word.
         let read_now = StopMemory::with_block(LIVE_BLOCK);
         let lock_pages = || {
             self.pages
@@ -749,8 +638,6 @@ impl RuntimeModel for NodeRuntime {
         )
     }
 
-    /// Every handle, request, and timer of each JavaScript thread's event
-    /// loop, by number, then the jobs libuv's pool runs.
     fn tasks(
         &self,
         stop: &dyn RuntimeStop,
@@ -768,13 +655,10 @@ impl RuntimeModel for NodeRuntime {
                 tasks,
                 next: (end < all.len()).then_some(end as u64),
             },
-            // Every page reads the whole list; its gaps are said once.
             gaps: if start == 0 { gaps } else { Vec::new() },
         }
     }
 
-    /// A pool thread runs its job; no other thread runs a task of Node's,
-    /// whose event loop's work runs no code until it is done.
     fn thread_activity(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> ThreadActivity {
         match self.pool(stop) {
             Some(Ok(pool)) if pool.busy.contains(&thread) => ThreadActivity::Task {
@@ -786,10 +670,6 @@ impl RuntimeModel for NodeRuntime {
         }
     }
 
-    /// The address of the isolate the thread works for. Main and worker
-    /// threads hold theirs for their whole event loop; from V8 13.6 a helper
-    /// thread holds it while its `LocalHeap` works for the isolate (e.g. a
-    /// background compile). libuv's workers hold none.
     fn thread_holding(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> Option<ThreadHolding> {
         let identity = match &self.statics.isolate {
             Some(Ok(place)) => match current_isolate(stop, thread, *place) {
@@ -806,8 +686,6 @@ impl RuntimeModel for NodeRuntime {
         })
     }
 
-    /// A thread-pool job runs on its thread. A handle, request, or timer
-    /// runs no code until Node calls its callback, so it has no frames.
     fn task_context(
         &self,
         stop: &dyn RuntimeStop,
@@ -823,8 +701,6 @@ impl RuntimeModel for NodeRuntime {
             };
         }
         let stackless = || "it has no frames because it does not run until Node calls its callback";
-        // The entry this stop's listing located is read alone; without it,
-        // or where it no longer proves the task, every list is.
         if let Some(locator) = task.locator
             && self.walk(stop, |walk, isolate| {
                 tasks::located(walk, isolate, task.number, locator)
@@ -1038,7 +914,6 @@ impl RuntimeModel for NodeRuntime {
     ) -> Option<Result<Vec<crate::ManagedPlace>, Arc<str>>> {
         let (path, line) = match spec {
             crate::BreakpointSpec::Source { path, line } => (path, line),
-            // `js::run` is a native function in a `js` namespace.
             crate::BreakpointSpec::Function(name)
                 if let Some(name) = name.strip_prefix("js:")
                     && !name.starts_with(':') =>
@@ -1055,8 +930,6 @@ impl RuntimeModel for NodeRuntime {
             return None;
         }
 
-        // As a native breakpoint's path does, a relative path matches the
-        // scripts whose paths end with its components.
         let path = path
             .components()
             .filter(|component| *component != std::path::Component::CurDir)
@@ -1182,8 +1055,6 @@ impl RuntimeModel for NodeRuntime {
         let mut refusable = None;
         let reach = match &found.kind {
             Kind::Argument(_) | Kind::Named(_) | Kind::Local => BindingReach::Frame,
-            // V8 gives a value to an optimized frame's variable that a
-            // context holds, but not to one optimized code keeps.
             Kind::Optimized => {
                 refusable = Some(
                     "V8 assigns no variable optimized code keeps, only one a context holds".into(),
@@ -1217,9 +1088,6 @@ impl RuntimeModel for NodeRuntime {
         let refused = |reason: Arc<str>| {
             InterpretedFailure::Refused(crate::eval::error::ErrorKind::Unsupported, reason)
         };
-        // Without the collector's entry, no watch can follow the contexts
-        // a collection moves, nor tell its rewrites of a frame's slots
-        // from the program's stores.
         if self.collector.is_none() || self.replacers.len() != ON_STACK_REPLACEMENT.len() {
             return Err(refused(
                 "this build of Node does not name V8's collector and on-stack replacement, \
@@ -1298,8 +1166,6 @@ impl RuntimeModel for NodeRuntime {
             InterpretedStep::Attribute(name) => access::member(reader, object, name),
             InterpretedStep::Item(key) => access::item(reader, object, key),
         })?;
-        // JavaScript reads a property missing from the whole prototype chain
-        // as undefined; the debugger reports it as a missing key.
         found.ok_or_else(|| {
             InterpretedFailure::Refused(
                 crate::eval::error::ErrorKind::MissingKey,
@@ -1351,8 +1217,6 @@ impl RuntimeModel for NodeRuntime {
         }
     }
 
-    /// A Node-API handle, `napi_value`, points to the slot that holds the
-    /// value's tagged word.
     fn interpreted_handle(
         &self,
         stop: &dyn RuntimeStop,

@@ -1,5 +1,5 @@
-// Lines to move a thread between. Run plainly, the program exits with 111;
-// each test moves it to exit with a status that shows where it resumed.
+
+
 
 #include <stdio.h>
 #include <string.h>
@@ -26,8 +26,8 @@ __attribute__((noinline)) static int elsewhere(void) {
     return 7; // jump: elsewhere
 }
 
-// Waits in pause(2), made here rather than in the C library, so that a
-// thread stopped in the call is stopped in this function.
+
+
 __attribute__((noinline)) static int wait_in_pause(void) {
     puts("waiting");
     fflush(stdout);

@@ -1,8 +1,3 @@
-//! Expressions over JavaScript values: name lookup in JavaScript's order
-//! (frame variables, script top-level bindings, then global properties),
-//! members, elements, lengths, and operands. Getters and proxy traps are
-//! never called.
-
 use super::lookup::{self, Key};
 use super::objects::{Object, Problem, Reader, address_at};
 use super::own;
@@ -14,16 +9,13 @@ use crate::runtime_model::{
 };
 use crate::{TextCompletion, TextSummary};
 
-/// The most script contexts searched.
 const MAX_SCRIPTS: i64 = 1 << 16;
 
-/// What a name resolves to: a frame variable by index, or a global's value.
 pub(super) enum Bound {
     Variable(u32),
     Value(InterpretedHandle),
 }
 
-/// What `name` resolves to in the frame at `fp`, or `None` if unbound.
 pub(super) fn bind(
     reader: &Reader<'_>,
     frame: InterpretedFrameRef,
@@ -57,7 +49,6 @@ pub(super) fn bind(
     }
 }
 
-/// The handle of the frame's variable at `index`.
 pub(super) fn variable(
     reader: &Reader<'_>,
     frame: InterpretedFrameRef,
@@ -75,8 +66,6 @@ pub(super) fn variable(
     Ok(Handle::Tagged(word).handle())
 }
 
-/// The native context of `object` (a context or a map), read from the
-/// native context field of `object`'s map.
 pub(super) fn native_context(reader: &Reader<'_>, object: Object) -> Result<Object, Problem> {
     let map = reader.map(object)?;
     reader.typed_field(
@@ -94,8 +83,6 @@ pub(super) fn slot(reader: &Reader<'_>, context: Object, index: Constant) -> Res
     )?)
 }
 
-/// The script contexts in `native`'s script context table, in the order
-/// the scripts ran.
 pub(super) fn script_contexts(reader: &Reader<'_>, native: Object) -> Result<Vec<Object>, Problem> {
     let table = reader
         .object(slot(
@@ -123,7 +110,6 @@ pub(super) fn script_contexts(reader: &Reader<'_>, native: Object) -> Result<Vec
         .collect()
 }
 
-/// The object a handle names, or `None` for a double element.
 fn object_of(reader: &Reader<'_>, handle: InterpretedHandle) -> Result<Option<Object>, Problem> {
     match Handle::of(handle) {
         Handle::Double(_) => Ok(None),
@@ -135,7 +121,6 @@ fn is_string(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     Ok(reader.instance_type(object)? < reader.constant(Constant::FirstNonstringType)?)
 }
 
-/// The member `name` of the value `handle` names.
 pub(super) fn member(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -159,8 +144,6 @@ pub(super) fn member(
     if reader.is(object, Constant::JSProxyType)? {
         return Err("the object is a proxy, and microscope does not call proxy traps".into());
     }
-    // Canonical numeric names must respect typed arrays anywhere in the
-    // prototype chain. "01" and "-1.0" remain ordinary names.
     if name == "-0"
         || name
             .parse::<f64>()
@@ -180,7 +163,6 @@ pub(super) fn member(
     }
 }
 
-/// A canonical numeric property of `object` or its prototype chain.
 fn element(
     reader: &Reader<'_>,
     object: Object,
@@ -228,8 +210,6 @@ fn element(
     Err("the prototype chain is too long".into())
 }
 
-/// `.size` of a Map or Set and `.length` of a typed array, where the
-/// getter that would run is V8's own, read from the fields it reads.
 fn built_in_getter(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -266,7 +246,6 @@ fn built_in_getter(
     Err(format!("V8's `{getter_name}` would throw for this object").into())
 }
 
-/// A number as a Smi handle.
 fn number(reader: &Reader<'_>, value: i64) -> Result<InterpretedHandle, Problem> {
     reader
         .smi_word(value)?
@@ -277,8 +256,6 @@ fn number(reader: &Reader<'_>, value: i64) -> Result<InterpretedHandle, Problem>
         })
 }
 
-/// The element `index` of a typed array, or `None` past its length, as an
-/// integer-indexed object answers without looking at its prototypes.
 fn typed_element(
     reader: &Reader<'_>,
     object: Object,
@@ -295,7 +272,6 @@ fn typed_element(
         .and_then(|offset| data.checked_add(offset))
         .ok_or("the typed array element address overflows")?;
     if element == E::Float64 {
-        // A handle keeps a double's address in its upper bits.
         if !address.is_multiple_of(size) {
             return Err(format!("the Float64Array element at {address:#x} is not aligned").into());
         }
@@ -325,7 +301,6 @@ fn typed_element(
     number(reader, integer).map(Some)
 }
 
-/// The item `key` of the value `handle` names, by name or index.
 pub(super) fn item(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -341,8 +316,6 @@ pub(super) fn item(
     }
 }
 
-/// The length of a string, array, or typed array, or the size of a Map or
-/// Set.
 pub(super) fn length(reader: &Reader<'_>, handle: InterpretedHandle) -> Result<u64, Problem> {
     let object = object_of(reader, handle)?.ok_or("a number has no length")?;
     if is_string(reader, object)? {
@@ -379,7 +352,6 @@ pub(super) fn length(reader: &Reader<'_>, handle: InterpretedHandle) -> Result<u
     Err("microscope can't read a length for this value".into())
 }
 
-/// The value `handle` names, as an operator uses it.
 pub(super) fn operand(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -410,8 +382,6 @@ pub(super) fn operand(
             } else {
                 TextCompletion::Truncated { length: None }
             };
-            // UTF-8 cannot hold a lone surrogate, so comparing it would be
-            // wrong. A cut may split a pair at the end.
             let whole = match completion {
                 TextCompletion::Complete => units.as_slice(),
                 _ => units.split_last().map_or(&[][..], |(_, rest)| rest),
@@ -461,7 +431,6 @@ mod tests {
             constant(Constant::ElementsKindFloat64) << constant(Constant::MapElementsKindShift),
         );
 
-        // A Float64Array of two elements whose data pointer is odd.
         let array = 0x2000;
         heap.word(array, 0x1001);
         heap.word(array + field(Field::JSArrayBufferViewBuffer), 0x3001);

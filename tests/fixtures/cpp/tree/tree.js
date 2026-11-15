@@ -1,9 +1,9 @@
 // @ts-check
-// Draws a binary tree kept in an array: the first `count` of `nodes`, each
-// a key and the indices of its children (-1 for none), from `root`. Each
-// node sits at its depth, and as far across as its place in key order
-// (Knuth's layout), so a search tree reads left to right in order. Nodes
-// added since the stop before are outlined, and each opens its record.
+
+
+
+
+
 
 const GAP = 34;
 const LEVEL = 46;
@@ -14,8 +14,8 @@ microscope.draw(({ nodes, count, root }, { previous, paths, width }) => {
   if (count > nodes.length) throw new RangeError(`count is ${count}, past the ${nodes.length} nodes`);
   const order = [];
   const depth = new Map();
-  // An in-order walk without recursion, which also finds each node's depth
-  // and refuses a cycle.
+
+
   const stack = [];
   let at = root;
   let level = 0;
@@ -37,7 +37,7 @@ microscope.draw(({ nodes, count, root }, { previous, paths, width }) => {
   }
   const added = previous === null ? new Set() : new Set(order.filter((node) => node >= previous.count));
   const deepest = Math.max(0, ...depth.values());
-  // Nodes spread to fill the card, up to half again their least gap.
+
   const spacing = Math.min(GAP * 1.5, Math.max(GAP, width / (order.length + 1)));
   const W = (order.length + 1) * spacing;
   const place = new Map(order.map((node, k) => [node, { x: spacing * (k + 1), y: 24 + (depth.get(node) ?? 0) * LEVEL }]));

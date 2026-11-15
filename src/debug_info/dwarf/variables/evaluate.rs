@@ -1,5 +1,3 @@
-//! Evaluating DWARF location expressions against a stopped thread.
-
 use std::sync::Arc;
 
 use gimli::{EvaluationResult, Location, RunTimeEndian, Value};
@@ -29,8 +27,6 @@ pub(super) enum FrameBaseCache {
     Malformed(Arc<str>),
 }
 
-/// How an evaluation may obtain the frame base if the executed expression
-/// path actually requires one.
 pub(super) enum FrameBase<'a> {
     Unsupported,
     Lazy(FrameBaseContext<'a>),
@@ -43,8 +39,6 @@ pub(super) struct FrameBaseContext<'a> {
     pub(super) cache: &'a mut FrameBaseCache,
 }
 
-/// An evaluation failure that preserves the unavailable-versus-malformed
-/// distinction of the frame-base metadata it may consult.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum EvaluateError {
     Unavailable(VariableUnavailableReason),
@@ -122,8 +116,6 @@ fn resolve_frame_base(
                             budget,
                         ) {
                             Ok(value) => FrameBaseCache::Available(value),
-                            // Request-specific exhaustion must not poison the
-                            // frame-base cache shared by later inspections.
                             Err(EvaluateError::Unavailable(
                                 reason @ (VariableUnavailableReason::EvaluationLimit
                                 | VariableUnavailableReason::InspectionLimit(_)),
@@ -179,7 +171,6 @@ fn evaluate_frame_base(
     runtime: &mut dyn VariableRuntime,
     budget: &mut InspectionBudget,
 ) -> std::result::Result<VirtualAddress, EvaluateError> {
-    // A frame-base expression may not itself require a frame base.
     let pieces = evaluate(
         expression,
         endian,
@@ -211,8 +202,6 @@ fn evaluate_frame_base(
     }
 }
 
-/// Evaluates a location expression in the frame `runtime` reads, executing
-/// at `address` in this image when known.
 pub(super) fn evaluate<'expression>(
     expression: Expression<'expression>,
     endian: RunTimeEndian,
@@ -271,8 +260,6 @@ pub(super) fn evaluate_dynamic_aggregate_address(
     Ok(VirtualAddress::new(address))
 }
 
-/// The location an expression with no operations describes: an object the
-/// compiler did not keep (DWARF 5 section 2.6.1.1.1).
 fn empty_location<'expression>() -> Vec<gimli::Piece<Reader<'expression>>> {
     vec![gimli::Piece {
         size_in_bits: None,
@@ -292,7 +279,6 @@ pub(super) fn evaluate_with_object<'expression>(
 ) -> std::result::Result<Vec<gimli::Piece<Reader<'expression>>>, EvaluateError> {
     budget.consume_expression_work(u64::from(MAX_EVALUATION_ITERATIONS))?;
 
-    // gimli rejects an expression with no operations as a stack underflow.
     if expression.bytes().is_empty() {
         return Ok(empty_location());
     }
@@ -304,8 +290,6 @@ pub(super) fn evaluate_with_object<'expression>(
         evaluation.set_object_address(address.get());
     }
 
-    // Bound evaluation so a malformed expression with a backward branch cannot
-    // hang the controller thread.
     evaluation.set_max_iterations(MAX_EVALUATION_ITERATIONS);
     let mut result = evaluation_step(evaluation.evaluate())?;
 
@@ -405,7 +389,6 @@ fn evaluation_step<T>(
 ) -> std::result::Result<T, EvaluateError> {
     result.map_err(|error| match error {
         gimli::Error::TooManyIterations => VariableUnavailableReason::EvaluationLimit.into(),
-        // DW_OP_GNU_variable_value and DW_OP_GNU_uninit.
         gimli::Error::UnsupportedEvaluation => {
             crate::UnsupportedVariableFeature::ExpressionOperation.into()
         }
@@ -413,8 +396,6 @@ fn evaluation_step<T>(
     })
 }
 
-/// The address at `index` in the unit's address table, relocated when the
-/// expression asks.
 fn indexed_address(
     expression: Expression<'_>,
     index: gimli::DebugAddrIndex<usize>,
@@ -432,8 +413,6 @@ fn indexed_address(
     }
 }
 
-/// The value a `DW_OP_entry_value` operand had on entry, as the caller
-/// recovers it.
 fn entry_value(
     operand: gimli::Expression<Reader<'_>>,
     expression: Expression<'_>,
@@ -451,15 +430,12 @@ fn entry_value(
     evaluation_value(&bytes, value_type, endian)
 }
 
-/// The `.debug_info` offset of an entry in the expression's own unit.
 fn debug_info_offset(expression: Expression<'_>, offset: gimli::UnitOffset<usize>) -> Option<u64> {
     expression
         .unit_offset()?
         .checked_add(u64::try_from(offset.0).ok()?)
 }
 
-/// The expression a `DW_OP_call*` runs, which the procedure it names holds
-/// at `address`.
 fn called_procedure(
     expression: Expression<'_>,
     reference: gimli::DieReference<usize>,
@@ -474,7 +450,6 @@ fn called_procedure(
         .and_then(|offset| expression.procedure(offset))
         .ok_or(crate::UnsupportedVariableFeature::CrossDieEvaluation)?;
 
-    // A procedure without a location has no effect (DWARF 5 section 2.5.1.5).
     let Some(location) = procedure.locations() else {
         return Ok(&[]);
     };
@@ -489,9 +464,6 @@ fn called_procedure(
     }
 }
 
-/// What a `DW_OP_entry_value` operand asks of the caller, and the type of
-/// the value it yields: a register's value, or the value at the address it
-/// held (DWARF 5 section 2.5.1.7).
 fn entry_parameter(
     operand: gimli::Expression<Reader<'_>>,
     expression: Expression<'_>,
@@ -508,7 +480,6 @@ fn entry_parameter(
             EntryParameter::Register(register.into()),
             gimli::ValueType::Generic,
         ),
-        // DW_OP_regval_type, or DW_OP_bregN 0 used as one.
         (
             Some(gimli::Operation::RegisterOffset {
                 register,
@@ -623,9 +594,6 @@ pub(super) fn dwarf_value_bytes(
         }
     };
 
-    // GCC and Clang represent optimized source booleans with word-sized
-    // bitwise expressions (notably DW_OP_not). The source truth value is the
-    // low bit after conversion to the declared one-byte boolean type.
     if type_info.encoding == BaseTypeEncoding::Boolean {
         integer &= 1;
     }
@@ -639,9 +607,6 @@ pub(super) fn materialize_constant(
     target: TargetDescription,
 ) -> std::result::Result<Arc<[u8]>, EvaluateError> {
     match value {
-        // Producers use DW_FORM_sdata when the implicit high bits are signed.
-        // A fixed data form supplies zero high bits; the target type then
-        // interprets the materialized byte pattern.
         ConstantValue::Unsigned(value) | ConstantValue::Fixed(value) => {
             integer_bytes(narrowed_constant(*value, size), size, target)
         }
@@ -653,10 +618,6 @@ pub(super) fn materialize_constant(
     }
 }
 
-/// The pattern a wider constant stands for: Clang writes a narrow type's
-/// constant with its sign bit set as the 64-bit sign extension of its
-/// pattern, in an unsigned form. Any other value is kept, to be refused if it
-/// does not fit.
 fn narrowed_constant(value: u128, size: usize) -> u128 {
     let bits = size * 8;
     if size == 0 || bits >= 64 {

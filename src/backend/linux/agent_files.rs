@@ -1,6 +1,3 @@
-//! Private agent artifacts in the target's mount namespace. Directory file
-//! descriptors keep cleanup possible after the target exits or execs.
-
 use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
@@ -13,24 +10,12 @@ use nix::sys::stat::{FileStat, Mode, fstat, fstatat, mkdirat};
 use nix::sys::statvfs::{FsFlags, fstatvfs};
 use nix::unistd::{Pid, UnlinkatFlags, unlinkat};
 
-/// The lifecycle owner calls these only at an all-stop. Acknowledgement
-/// proves a script was consumed; exit proves no pending script can be.
-/// The simulator supplies its own implementation, without host file access.
 pub(super) trait AgentFiles: std::fmt::Debug + Send {
-    /// Used only to build a script subsequently owned by `script`.
-    /// Never publish an independent library-load request from this path.
     fn library(&self) -> Result<&str, Arc<str>>;
     fn script(&mut self, generation: u64, source: &str) -> Result<String, Arc<str>>;
-    /// Revalidates through `thread`, a stopped thread of the target that
-    /// will read the next script. The thread the owner was created for may
-    /// since have exited, taking its procfs directory with it.
     fn anchor(&mut self, thread: Pid) -> Result<(), Arc<str>>;
-    /// The caller proves this generation no longer needs its files: it
-    /// was never published, or its script was read and library loaded.
     fn acknowledge(&mut self, generation: u64) -> Result<(), Arc<str>>;
     fn close(&mut self) -> Result<(), Arc<str>>;
-    /// The caller has reaped the target or proved its old address space
-    /// gone through exec. Never use this merely because detach was requested.
     fn close_after_target_exit(&mut self) -> Result<(), Arc<str>>;
 }
 
@@ -95,14 +80,10 @@ impl Files {
     }
 
     fn new_directory(pid: Pid) -> Result<Self, Arc<str>> {
-        // All later proc lookups are relative to this descriptor, so PID
-        // reuse cannot redirect a credential check or root lookup.
         let process =
             open(format!("/proc/{pid}").as_str(), DIRECTORY, Mode::empty()).map_err(problem)?;
         credentials(&process)?;
-        // `root` is intentionally a procfs magic link into the target.
         let root = openat(&process, "root", DIRECTORY, Mode::empty()).map_err(problem)?;
-        // A symlink /tmp could resolve in the debugger's namespace.
         let parent =
             openat(&root, "tmp", DIRECTORY | OFlag::O_NOFOLLOW, Mode::empty()).map_err(problem)?;
         trusted_parent(
@@ -190,8 +171,6 @@ impl Files {
         self.write_owned(name, |file| file.write_all(bytes))
     }
 
-    /// The closure is the file-write boundary, also used to force partial
-    /// writes in tests. An open failure owns nothing and deletes nothing.
     fn write_owned(
         &mut self,
         name: &str,
@@ -205,8 +184,6 @@ impl Files {
         )
         .map_err(problem)?;
 
-        // Record creation before asking for metadata, so even a failed
-        // fstat leaves a bounded, explicitly unidentifiable artifact.
         self.owned.insert(name.to_owned(), None);
         let identity = Identity::of(&fstat(&fd).map_err(problem)?);
         self.owned.insert(name.to_owned(), Some(identity));
@@ -217,8 +194,6 @@ impl Files {
             .and_then(|()| write(&mut file))
             .and_then(|()| file.sync_all());
 
-        // A successful write is not enough on filesystems that defer an
-        // error until close. close consumes the descriptor even on error.
         let closed = nix::unistd::close(file).map_err(std::io::Error::from);
         if let Err(error) = written.and(closed) {
             let reason = problem(error);
@@ -291,9 +266,6 @@ impl Files {
             Ok(_) => {}
         }
 
-        // All target threads are stopped. Identity guards detect changes
-        // made before this operation; they do not form a security boundary
-        // against another process with our own UID racing name operations.
         match unlinkat(&self.directory, name, UnlinkatFlags::NoRemoveDir) {
             Ok(()) | Err(Errno::ENOENT) => {
                 self.owned.remove(name);
@@ -316,9 +288,6 @@ impl AgentFiles for Files {
             return Err("the previous Python agent script has not been acknowledged".into());
         }
 
-        // A failed write may have left one owned incomplete file. Retire
-        // it before preparing another; repeated failures cannot grow an
-        // unbounded collection of artifacts.
         for name in self
             .owned
             .clone()
@@ -348,8 +317,6 @@ impl AgentFiles for Files {
     }
 
     fn acknowledge(&mut self, generation: u64) -> Result<(), Arc<str>> {
-        // The generation is consumed even if its file cannot be removed.
-        // That file stays owned, bounding preparation, and close reports it.
         if let Some(name) = self.scripts.remove(&generation) {
             self.remove_owned(&name)?;
         }
@@ -408,8 +375,6 @@ fn credentials(process: &OwnedFd) -> Result<(), Arc<str>> {
     Ok(())
 }
 
-/// A writable shared parent must prevent other users from renaming our
-/// directory. Its owner is trusted only when it is us or root.
 fn trusted_parent(stat: &FileStat, own: u32) -> Result<(), Arc<str>> {
     if (stat.st_uid != 0 && stat.st_uid != own)
         || (stat.st_mode & 0o022 != 0 && stat.st_mode & 0o1000 == 0)
@@ -546,8 +511,6 @@ mod tests {
             .join("incomplete");
         let reason = files
             .write_owned("incomplete", |_file| {
-                // Replace our created file with a directory to force unlinkat's
-                // cleanup to fail independently of the injected write error.
                 std::fs::remove_file(&path)?;
                 std::fs::create_dir(&path)?;
                 Err(std::io::Error::other("injected write failure"))
@@ -573,7 +536,6 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let result = files.acknowledge(1);
         let still_pending = !files.scripts.is_empty();
-        // Leave the fixture clean even when exercising the broken draft.
         files.scripts.clear();
         drop(files);
         assert!(result.is_ok(), "already absent: {result:?}");
@@ -591,7 +553,6 @@ mod tests {
         let script = std::path::PathBuf::from(files.script(1, "source").unwrap());
         drop(files);
         let retained = (script.exists(), library.exists());
-        // Clean up explicitly after checking the state, even on regression.
         let _ = std::fs::remove_file(script);
         let _ = std::fs::remove_file(library);
         let _ = std::fs::remove_dir(&directory);
@@ -693,7 +654,6 @@ mod tests {
         let directory = library.parent().unwrap().to_owned();
         let script = std::path::PathBuf::from(files.script(1, "source").unwrap());
         let replacement = directory.join("replacement");
-        // Allocate its distinct inode while the owned script still exists.
         std::fs::write(&replacement, "foreign source").unwrap();
         std::fs::rename(replacement, &script).unwrap();
         let acknowledged = files.acknowledge(1);
@@ -750,7 +710,6 @@ mod tests {
         let mut files = Files::new(thread, b"library").expect("private files");
         drop(release);
         worker.join().unwrap();
-        // The kernel releases the thread's root after the join wakes us.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::fs::read_link(format!("/proc/{thread}/root")).is_ok() {
             assert!(
@@ -820,8 +779,6 @@ mod tests {
             .to_owned();
         let unknown = directory.join("unidentified.py");
         std::fs::write(&unknown, "source").unwrap();
-        // Model the failed metadata read immediately after a successful
-        // O_EXCL open, before any request could be handed to the caller.
         files.owned.insert("unidentified.py".into(), None);
         assert!(files.script(1, "more source").is_err());
         assert!(files.close().is_err());

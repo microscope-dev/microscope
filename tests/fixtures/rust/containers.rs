@@ -1,8 +1,8 @@
-//! Standard library containers, and deliberately corrupted ones, which the
-//! built-in views present. Each `VIEW:` marker says what its expression
-//! must show, evaluated in main() where barrier() is called: `{c*N}` stands
-//! for N of the character c, and `problem:` says the view must refuse the
-//! value, and why.
+
+
+
+
+
 
 use std::cell::{Cell, OnceCell, RefCell, UnsafeCell};
 use std::cmp::Reverse;
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-/// A sum type with a variant of named fields, which only the debugger reads.
+
 #[expect(dead_code, reason = "the debugger reads it")]
 enum Shape {
     Square { side: u32 },
@@ -35,12 +35,12 @@ struct Point {
     y: i32,
 }
 
-/// A tuple struct, which the debugger presents as Rust writes one.
+
 #[expect(dead_code, reason = "the debugger reads it")]
 struct Meters(u32);
 
-/// A monotonic clock reading's layout on Linux, to make an `Instant` the
-/// test can name.
+
+
 #[repr(C)]
 struct Reading {
     seconds: i64,
@@ -64,13 +64,13 @@ fn main() {
     let no_ints: Vec<u64> = Vec::new(); // VIEW: no_ints => len=0 []
     let words = vec![String::from("one"), String::from("two")]; // VIEW: words => len=2 ["one", "two"]
     let many: Vec<u32> = (0..300).collect(); // VIEW: many => len=300 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, …]
-    // Pushed at both ends, so its elements wrap around its buffer.
+
     let mut ring: VecDeque<i32> = VecDeque::with_capacity(4); // VIEW: ring => len=4 [1, 2, 3, 4]
     ring.push_back(3);
     ring.push_back(4);
     ring.push_front(2);
     ring.push_front(1);
-    // Zero-sized elements, for which std stores no capacity.
+
     let units: Vec<()> = vec![(); 3]; // VIEW: units => len=3 [(), (), ()]
     let mut unit_ring: VecDeque<()> = VecDeque::new(); // VIEW: unit_ring => len=2 [(), ()]
     unit_ring.push_back(());
@@ -95,12 +95,12 @@ fn main() {
     let titles = BTreeMap::from([(String::from("b"), vec![]), (String::from("a"), vec![1_u8])]); // VIEW: titles => len=2 {"a": len=1 [1], "b": len=0 []}
     let tree_set: BTreeSet<u16> = BTreeSet::from([5, 1, 3]); // VIEW: tree_set => len=3 [1, 3, 5]
     let no_tree_set: BTreeSet<u16> = BTreeSet::new(); // VIEW: no_tree_set => len=0 []
-    // A pointer to a string in no mapped memory, and one to none at all.
+
     let lost_text = 0x10 as *const String; // VIEW: lost_text => problem: inaccessible
     let no_text: *const String = std::ptr::null(); // VIEW: no_text => stored
 
-    // A vector longer than its capacity: its length is the word that holds
-    // 4 when its capacity is 8, whatever order Rust gives its fields.
+
+
     let mut four: Vec<i32> = Vec::with_capacity(8);
     four.extend([10, 11, 12, 13]);
     // SAFETY: a Vec<i32> is three words, and the result is never read or
@@ -110,8 +110,8 @@ fn main() {
     fields[length] = 9;
     // SAFETY: as above.
     let past_capacity: ManuallyDrop<Vec<i32>> = unsafe { std::mem::transmute(fields) }; // VIEW: past_capacity.value.0 => problem: check
-    // A tree map that counts more entries than its nodes hold: its length
-    // is the word that holds 3 when its root is a leaf of 3 entries.
+
+
     let three = BTreeMap::from([(1_i32, 1_i32), (2, 2), (3, 3)]);
     // SAFETY: a BTreeMap is three words, and the result is never read or
     // dropped; the debugger reads it.
@@ -120,11 +120,11 @@ fn main() {
     fields[length] = 5;
     // SAFETY: as above.
     let overcounted: ManuallyDrop<BTreeMap<i32, i32>> = unsafe { std::mem::transmute(fields) }; // VIEW: overcounted.value.0 => problem: declares 5 elements and generates 3
-    // A vector whose elements are in no mapped memory.
+
     // SAFETY: the vector is never read or dropped; the debugger reads it.
     let dangling = ManuallyDrop::new(unsafe { Vec::from_raw_parts(0x10 as *mut i32, 2, 2) }); // VIEW: dangling.value.0 => len=2 [<unavailable>, …]
 
-    // Pointers, cells, sums, and trait objects.
+
     let boxed: Box<i32> = Box::new(42); // VIEW: boxed => 42
     let rc = Rc::new(7_u64); // VIEW: rc => 7
     let rc_too = Rc::clone(&rc); // VIEW: rc_too => children: strong = 2, weak = 1, [raw]
@@ -133,8 +133,8 @@ fn main() {
     let dropped = Rc::downgrade(&Rc::new(1_u8)); // VIEW: dropped => dropped
     let arc = Arc::new(String::from("shared")); // VIEW: arc => "shared"
     let arc_weak = Arc::downgrade(&arc); // VIEW: arc_weak => children: capacity = 6, strong = 1, weak = 1, [raw]
-    // A value a view presents as another dereferences to it, as Rust's
-    // smart pointers do.
+
+
     // VIEW: *arc => "shared"
     let cell = Cell::new(5_i32); // VIEW: cell => 5
     let unsafe_cell = UnsafeCell::new(3_u16); // VIEW: unsafe_cell => 3
@@ -145,13 +145,13 @@ fn main() {
     let nothing: Option<i32> = None; // VIEW: nothing => None
     let ok: Result<u32, String> = Ok(7); // VIEW: ok => Ok(7)
     let failed: Result<u32, String> = Err(String::from("no")); // VIEW: failed => Err("no")
-    // A sum with one variant that can hold a value stores no tag.
+
     let infallible: Result<u8, Infallible> = Ok(3); // VIEW: infallible => Ok(3)
     let never_ok: Result<Infallible, ()> = Err(()); // VIEW: never_ok => Err
     let shape = Shape::Square { side: 4 }; // VIEW: shape => Square {side: 4}
     let dynamic: Box<dyn Debug> = Box::new(Point { x: 1, y: 2 }); // VIEW: dynamic => Point {x: 1, y: 2}
 
-    // Tuples and tuple structs, as Rust writes them.
+
     let pair = (1, "two", 3.5); // VIEW: pair => (1, "two", 3.5)
     // VIEW: pair => children: __0 = 1, __1 = "two", __2 = 3.5, [raw]
     let meters = Meters(7); // VIEW: meters => Meters(7)

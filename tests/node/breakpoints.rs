@@ -1,11 +1,3 @@
-//! JavaScript breakpoints through Node's inspector: lines, conditions, hit
-//! counts, and log messages over the frame's stack locals, which V8 names
-//! only at its own pauses (G5), and a file that never loads.
-//!
-//! One run carries every breakpoint, so each stop also proves the others
-//! were told apart, and the program prints what it computed, which
-//! stopping must not change.
-
 use std::sync::Arc;
 
 use microscope::{
@@ -20,7 +12,6 @@ use crate::support::node;
 
 const FIXTURE: &str = "breakpoints.js";
 
-/// The line of the fixture that carries `marker`.
 fn line_of(marker: &str) -> LineNumber {
     let text = std::fs::read_to_string(node::fixture(FIXTURE)).expect("read the fixture");
     let index = text
@@ -30,19 +21,12 @@ fn line_of(marker: &str) -> LineNumber {
     LineNumber::new(index as u64 + 1).expect("a one-based line")
 }
 
-/// The breakpoints of the run, in the order they are added.
 #[derive(Debug, Clone, Copy)]
 enum Planted {
-    /// A message on `AREA_LINE` naming both parameters.
     Log,
-    /// Every second hit of `RETURN_LINE`.
     EverySecond,
-    /// `index == 3` on `LOOP_LINE`, a block's variable in the top-level
-    /// function.
     Condition,
-    /// A line of a file the program never loads.
     Elsewhere,
-    /// A line of the fixture, with its path misspelled.
     Misspelled,
 }
 
@@ -147,7 +131,6 @@ impl Run {
         self.session.output()
     }
 
-    /// Keeps the log messages reported so far, as text.
     fn drain(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             if let DebuggerEvent::LogMessage {
@@ -166,8 +149,6 @@ impl Run {
         reason
     }
 
-    /// Checks `reason` is a stop at exactly the hit `(planted, count)`, in
-    /// the selected JavaScript frame of `function` at `marker`'s line.
     async fn assert_stop(
         &self,
         reason: &StopReason,
@@ -221,7 +202,6 @@ impl Run {
         );
     }
 
-    /// The summary of `text`'s value in the selected frame.
     async fn value(&self, text: &str) -> String {
         let expression = Expression::parse(text).expect("an expression");
         let evaluation = self
@@ -237,7 +217,6 @@ impl Run {
     }
 }
 
-/// The summary a value presents, if it is available.
 fn summary(state: &VariableState) -> Option<String> {
     match state {
         VariableState::Available {
@@ -248,7 +227,6 @@ fn summary(state: &VariableState) -> Option<String> {
     }
 }
 
-/// A log message as text.
 fn text(parts: &Arc<[LogPart]>) -> String {
     parts
         .iter()
@@ -260,15 +238,6 @@ fn text(parts: &Arc<[LogPart]>) -> String {
         .collect()
 }
 
-/// Every kind of breakpoint through one run, on one build:
-///
-/// - a log message reports each hit with the parameters' values by name,
-///   and never stops;
-/// - a hit count counts every hit and stops at every second, where the
-///   function's `const` reads by name;
-/// - a condition over a block's `let` in the top-level function stops once,
-///   where the block's and the function's locals read by name;
-/// - a file that never loads stays pending, saying why.
 pub async fn every_kind_of_breakpoint(entry: &str) {
     let (mut run, reason) = Run::launch(entry).await;
     let context = run.context.clone();
@@ -286,8 +255,6 @@ pub async fn every_kind_of_breakpoint(entry: &str) {
         )
     };
     assert_eq!(ready(Planted::EverySecond), (1, 0), "{context}");
-    // Each waits for its script, and a misspelled path is told the loaded
-    // script nearest it, by as many components as it has.
     let waiting = |planted: Planted| {
         let breakpoint = snapshot
             .breakpoints

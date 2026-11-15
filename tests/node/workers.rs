@@ -1,8 +1,3 @@
-//! Workers through Node's inspector: a breakpoint in a worker's script
-//! stops its thread, with its locals, and steps there are its isolate's;
-//! two isolates pausing at once are two stops, each on its own thread;
-//! and an exception thrown in a worker stops on the worker's thread.
-
 use microscope::{
     BreakpointOptions, BreakpointSpec, ExceptionStops, ExitStatus, LineNumber, StepKind,
     StopReason, ThreadId,
@@ -30,8 +25,6 @@ fn at_crunch() -> (BreakpointSpec, BreakpointOptions) {
     )
 }
 
-/// The stopped thread and the summary of its selected frame's local
-/// `name`.
 async fn where_stopped(session: &NodeSession, name: &str) -> (ThreadId, String) {
     let snapshot = session
         .scenario
@@ -62,7 +55,6 @@ async fn where_stopped(session: &NodeSession, name: &str) -> (ThreadId, String) 
     (thread, value)
 }
 
-/// The process's main thread, whose id is the process's.
 async fn main_thread(session: &NodeSession) -> ThreadId {
     let snapshot = session
         .scenario
@@ -74,7 +66,6 @@ async fn main_thread(session: &NodeSession) -> ThreadId {
     }
 }
 
-/// What, on the build `entry`, a worker's breakpoint and step get wrong.
 pub async fn worker_lies(entry: &str) -> Vec<String> {
     let mut lies = Vec::new();
     let (mut session, reason, _events) =
@@ -113,9 +104,6 @@ pub async fn worker_lies(entry: &str) -> Vec<String> {
     lies
 }
 
-/// On every build, a breakpoint in a worker stops the worker's thread at
-/// its line with its locals, and a step over there ends at the worker's
-/// next line, not in the main thread.
 #[tokio::test]
 async fn a_worker_stops_and_steps_on_its_own_thread() {
     let mut lies = Vec::new();
@@ -125,8 +113,6 @@ async fn a_worker_stops_and_steps_on_its_own_thread() {
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
-/// On every build, the main thread and a worker pausing at one line are
-/// two stops, each on its own thread with its own `n`.
 #[tokio::test]
 async fn two_isolates_pausing_at_once_stop_each_on_its_thread() {
     let mut lies = Vec::new();
@@ -152,7 +138,6 @@ async fn two_isolates_pausing_at_once_stop_each_on_its_thread() {
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
-/// On every build, an exception thrown in a worker stops on its thread.
 #[tokio::test]
 async fn an_exception_in_a_worker_stops_on_its_thread() {
     let mut lies = Vec::new();
@@ -171,7 +156,6 @@ async fn an_exception_in_a_worker_stops_on_its_thread() {
         let (session, reason, _events) = session.run_to_stop(Vec::new()).await;
         let context = session.context();
         let main = main_thread(&session).await;
-        // Node's own startup throws nothing a filter stops in user code.
         let pause = oracle::selected(&session.scenario).await;
         let (thread, _) = where_stopped(&session, "n").await;
         if !matches!(reason, StopReason::LanguageException(_))

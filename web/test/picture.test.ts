@@ -1,6 +1,3 @@
-// The page refuses any picture it cannot show exactly as described, and
-// names where it went wrong.
-
 import { describe, expect, it } from "vitest";
 
 import { isPathData, MOST_SHAPES, type Picture, validate } from "../src/visualize/picture";
@@ -57,7 +54,6 @@ describe("validate", () => {
     expect(checked.shapes).toHaveLength(shapes.length);
   });
 
-  // Each is refused, with where and why.
   const refused: [string, unknown, RegExp][] = [
     ["not a picture", { type: "rect" }, /did not return microscope\.picture/u],
     ["an unknown property", picture([], { onload: "x" }), /`onload` is not one of its properties/u],

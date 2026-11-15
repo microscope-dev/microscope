@@ -1,10 +1,3 @@
-//! Expressions evaluated at real stops agree with what the program itself
-//! computes. Each fixture prints `EXPECT` lines before it calls `barrier()`,
-//! and every expression is evaluated from `barrier`'s caller. Besides
-//! values, a fixture may expect `text`, the bytes a string holds; `range`,
-//! the elements of a range, joined by commas; and `error`, the kind of
-//! error the expression is.
-
 use std::process::Stdio;
 
 use microscope::{Evaluation, Expression, FloatValue, IntegerValue, StackFrameId, VariableValue};
@@ -12,7 +5,6 @@ use microscope::{Evaluation, Expression, FloatValue, IntegerValue, StackFrameId,
 use super::*;
 use crate::support::ScratchDir;
 
-/// One line a fixture printed: an expression and what it must evaluate to.
 struct Expectation {
     expression: String,
     kind: String,
@@ -33,7 +25,6 @@ fn expectations(output: &str) -> Vec<Expectation> {
         .collect()
 }
 
-/// A value as a fixture prints it, for the kind it printed.
 fn rendered(kind: &str, value: &VariableValue) -> Option<String> {
     let integer = |value: &IntegerValue| match value {
         IntegerValue::Signed(value) => value.to_string(),
@@ -65,9 +56,6 @@ fn rendered(kind: &str, value: &VariableValue) -> Option<String> {
     })
 }
 
-/// Runs a fixture to `barrier`, selects its caller, and checks every
-/// expectation. In optimized builds a row may be explicitly unavailable, or
-/// refused for want of an address; a different value always fails.
 async fn check_fixture(fixture: &str, barrier: &str, optimized: bool) {
     let scratch = ScratchDir::new("expressions");
     let output_path = scratch.path().join("stdout");
@@ -87,7 +75,6 @@ async fn check_fixture(fixture: &str, barrier: &str, optimized: bool) {
         "{fixture}: {reason:?}"
     );
 
-    // The fixture flushes its expectations before it calls barrier.
     let printed = std::fs::read_to_string(&output_path).expect("read the fixture's output");
     let expectations = expectations(&printed);
     assert!(
@@ -132,8 +119,6 @@ async fn check_fixture(fixture: &str, barrier: &str, optimized: bool) {
     }
 
     assert!(failures.is_empty(), "{fixture}:\n{}", failures.join("\n"));
-    // An optimized build may lose a value, but not most: the sparsest shows
-    // 30 of 32.
     assert!(
         exact * 4 >= expectations.len() * 3,
         "{fixture} shows only {exact} of {} exactly",
@@ -142,8 +127,6 @@ async fn check_fixture(fixture: &str, barrier: &str, optimized: bool) {
     scenario.shutdown().await;
 }
 
-/// Why an expression's result disagrees with what the program expects, if
-/// it does. In optimized builds a value may be explicitly unavailable.
 fn disagreement(
     expectation: &Expectation,
     result: Result<Evaluation, Error>,
@@ -202,7 +185,6 @@ fn disagreement(
                 VariableState::Unavailable(_) if optimized && cause.is_some() => return None,
                 state => format!("{state:?} at {cause:?}"),
             },
-            // An optimized value may be kept where it has no address.
             Err(Error::Expression(error))
                 if optimized && error.kind == microscope::ExpressionErrorKind::NotAnLvalue =>
             {
@@ -217,8 +199,6 @@ fn disagreement(
 
 #[tokio::test]
 async fn c_expressions_agree_with_the_program_across_the_compiler_matrix() {
-    // Each pair of compiler, optimization, and linking once, rather than
-    // every combination.
     for (compiler, optimization, linking) in [
         ("gcc", "o0", "pie"),
         ("gcc", "o2", "nopie"),
@@ -246,8 +226,6 @@ async fn cpp_rust_go_and_zig_expressions_agree_with_their_programs() {
     }
 }
 
-/// Maps keyed by tuples, pairs among them, are indexed by tuple keys as
-/// each program's own lookup indexes them, in each standard library.
 #[tokio::test]
 async fn tuple_keys_find_what_each_programs_maps_find() {
     for (fixture, optimized) in [

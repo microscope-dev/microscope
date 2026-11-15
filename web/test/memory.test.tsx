@@ -1,6 +1,3 @@
-// The memory view's bytes are one stop in the tab order: the arrow keys
-// walk them, and Enter writes the one chosen, saying why a write failed.
-
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -55,7 +52,6 @@ it("keeps every arrow key pressed faster than the page draws", async () => {
   await expect.element(first).toBeVisible();
   (first.element() as HTMLElement).focus();
 
-  // Held keys repeat with no frame between them.
   for (const key of ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowDown"]) {
     document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
   }
@@ -76,14 +72,13 @@ it("shows the last page of the address space without running past its end", asyn
   await expect.element(page.getByRole("button", { name: /Later/u })).toBeDisabled();
 });
 
-/** The byte at `offset` past 0x1000. */
 const byte = (offset: number) =>
   page.getByRole("button", { name: new RegExp(`at 0x${(0x1000 + offset).toString(16)}$`, "u") });
 const classes = (offset: number) => (byte(offset).element() as HTMLElement).className.split(/\s+/u);
 
 it("selects a character array's string and marks the rest of the array", async () => {
   const server = await mountPane(<Memory />, { look: { mem: "0x1000:16:7" } });
-  // "hello\n", its NUL, and what the array held before.
+
   server.answer(await server.next("readMemory"), {
     address: "0x1000",
     bytes: `68656c6c6f0a00${"ab".repeat(9)}${"00".repeat(240)}`,

@@ -1,20 +1,13 @@
-//! The rings' life cycle, which Miri runs too: `just miri`.
-
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 
 use super::*;
 
-/// The rings and the control block are the process's, so one test at a
-/// time uses them.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 static STATE: AtomicU8 = AtomicU8::new(1);
 
-/// Turns recording on, with the smallest rings, and holds the other tests
-/// off. A test starts as a forked child would, taking no ring another
-/// test made.
 fn listen() -> std::sync::MutexGuard<'static, ()> {
     let serial = SERIAL
         .lock()
@@ -29,7 +22,6 @@ fn listen() -> std::sync::MutexGuard<'static, ()> {
     serial
 }
 
-/// The ring this thread writes to.
 fn mine() -> &'static Ring {
     match RING.with(Cell::get) {
         Slot::Ring(ring) => ring,
@@ -37,7 +29,6 @@ fn mine() -> &'static Ring {
     }
 }
 
-/// Whether the registry microscope reads lists `ring`.
 fn registered(ring: &'static Ring) -> bool {
     let rings = CONTROL.rings.load(Ordering::Acquire) as usize;
     CONTROL.registry[..rings]
@@ -45,7 +36,6 @@ fn registered(ring: &'static Ring) -> bool {
         .any(|slot| ptr::eq(slot.load(Ordering::Acquire), &ring.header))
 }
 
-/// An event as microscope decodes it.
 #[derive(Debug)]
 struct Event {
     site: u32,
@@ -54,8 +44,6 @@ struct Event {
     more: Vec<u8>,
 }
 
-/// Reads `ring`'s records from `tail` to its head, as microscope does, and
-/// returns the events and the new tail.
 fn read(ring: &Ring, tail: u64) -> (Vec<Event>, u64) {
     let head = ring.header.head.load(Ordering::Acquire);
     assert!(head - tail <= ring.records.len() as u64, "the ring wrapped");
@@ -96,8 +84,6 @@ fn read(ring: &Ring, tail: u64) -> (Vec<Event>, u64) {
     (events, position)
 }
 
-/// The walk that switches every site off reads each site's state offset
-/// from its field and steps a whole site at a time, to the table's end.
 #[test]
 fn switching_off_zeroes_each_sites_state_byte() {
     const FIELD: usize = 24;
@@ -113,8 +99,6 @@ fn switching_off_zeroes_each_sites_state_byte() {
         states: [const { AtomicU8::new(1) }; 3],
     };
 
-    // The first site's state is the first byte, the second site's the
-    // third, and nothing names the second.
     let states = core::mem::offset_of!(Table, states);
     for (site, state) in [(0, states), (1, states + 2)] {
         let field = site * abi::SITE_SIZE + FIELD;
@@ -135,7 +119,6 @@ fn switching_off_zeroes_each_sites_state_byte() {
     assert_eq!(states, [0, 1, 0]);
 }
 
-/// A message's text, by its length.
 fn text(event: &Event) -> &[u8] {
     &event.more[..event.argument as usize]
 }
@@ -202,8 +185,6 @@ fn a_ring_microscope_freed_is_taken_again_but_not_after_a_fork() {
         "its events follow the last"
     );
 
-    // A forked child's rings are its own: a ring made before the fork
-    // stays free.
     again.header.state.store(abi::RING_FREE, Ordering::Release);
     FORKS.fetch_add(1, Ordering::Relaxed);
     let (after, _) = emit();
@@ -211,9 +192,6 @@ fn a_ring_microscope_freed_is_taken_again_but_not_after_a_fork() {
     assert_eq!(again.header.state.load(Ordering::Relaxed), abi::RING_FREE);
 }
 
-/// Threads come and go, writing messages, while a reader reads their rings
-/// and frees those they left; every message arrives once, whole, in its
-/// thread's order.
 #[test]
 fn concurrent_threads_reuse_the_rings_a_reader_frees() {
     const LANES: usize = 2;
@@ -225,7 +203,6 @@ fn concurrent_threads_reuse_the_rings_a_reader_frees() {
         MADE[..made].iter().filter_map(OnceLock::get).copied()
     };
 
-    // Where microscope last read each ring that other tests made.
     let mut tails = made()
         .map(|ring| {
             (
@@ -256,8 +233,6 @@ fn concurrent_threads_reuse_the_rings_a_reader_frees() {
         let reader = scope.spawn(move || {
             let mut seen = Vec::new();
             let mut sweep = || {
-                // As microscope does, it reads rings as their threads write
-                // them, and frees those their threads left.
                 for ring in made() {
                     let state = ring.header.state.load(Ordering::Acquire);
                     if state == abi::RING_ACTIVE || state == abi::RING_RETIRED {
@@ -303,7 +278,6 @@ fn concurrent_threads_reuse_the_rings_a_reader_frees() {
     sorted.sort();
     assert_eq!(sorted, expected, "every message, once and whole");
 
-    // Rings are read in any order, so only a thread's own are in order.
     for writer in expected.chunks(MESSAGES) {
         let prefix = &writer[0][..4];
         let order = seen
@@ -318,10 +292,6 @@ fn concurrent_threads_reuse_the_rings_a_reader_frees() {
     }
 }
 
-/// A run-time site is a record microscope can read where the control block
-/// says, whole before it is counted; defined again it is the same site; it
-/// writes only while on, by its key, only what its kind writes; and it
-/// switches off with every other site.
 #[test]
 fn a_run_time_site_writes_by_its_key_only_while_on() {
     let _serial = listen();
@@ -340,7 +310,6 @@ fn a_run_time_site_writes_by_its_key_only_while_on() {
     let long = "x".repeat(abi::MOST_SITE_TEXT as usize + 1);
     assert!(define(abi::SITE_ZONE, &long, "app.py", 1).is_none());
 
-    // Where microscope finds it, as the ABI lays it out.
     let sites = CONTROL.sites.load(Ordering::Acquire);
     assert!(ptr::eq(sites, &SITES));
     assert_eq!(SITES.magic, abi::SITES_MAGIC);
@@ -404,9 +373,6 @@ fn a_run_time_site_writes_by_its_key_only_while_on() {
     assert!(!zone.on() && !message.on() && !late.on());
 }
 
-/// A call the thread begins while it is keeping another's, as a signal
-/// handler or a traced allocator that interrupts it does, is dropped and
-/// counted instead of aborting the program, and an end there ends nothing.
 #[cfg(feature = "c")]
 #[test]
 fn a_call_begun_while_the_thread_keeps_one_is_dropped_and_counted() {

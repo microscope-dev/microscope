@@ -1,43 +1,24 @@
-//! The view files and kernels a module carries in its
-//! `.debug_microscope_views` section.
-//!
-//! The section holds records, each a kind byte, a format byte, a 32-bit
-//! little-endian length, and that many bytes. Zero bytes between records
-//! are padding, as compilers and linkers leave between the contributions
-//! of separate objects. A record of view text is kind 1, format 1. A
-//! kernel is kind 2, format 1: a 16-bit length and the kernel's name, a
-//! 32-bit length and its source or a link to it, and its module. A
-//! renderer is kind 3, format 1: a 16-bit length and the renderer's name,
-//! then its JavaScript.
-
 use std::sync::Arc;
 
 use super::ViewSet;
 use super::syntax::{Error, MAX_FILE_BYTES};
 
-/// The section's name.
 pub const SECTION: &str = ".debug_microscope_views";
 
-/// The kind of a record of view text, and the format this microscope reads.
 pub const VIEW_TEXT: u8 = 1;
 
 pub const VIEW_TEXT_FORMAT: u8 = 1;
 
-/// The kind of a kernel's record, and the format this microscope reads.
 pub const KERNEL: u8 = 2;
 
 pub const KERNEL_FORMAT: u8 = 1;
 
-/// The kind of a renderer's record, and the format this microscope reads.
 pub const RENDERER: u8 = 3;
 
 pub const RENDERER_FORMAT: u8 = 1;
 
-/// How many records one module may carry.
 const MAX_RECORDS: usize = 256;
 
-/// A kernel a record carries: its name, its source or a link to it, and
-/// its module.
 struct KernelRecord<'a> {
     origin: String,
     name: &'a str,
@@ -45,16 +26,12 @@ struct KernelRecord<'a> {
     module: &'a [u8],
 }
 
-/// A renderer a record carries: its name and its JavaScript.
 struct RendererRecord<'a> {
     origin: String,
     name: &'a str,
     source: &'a str,
 }
 
-/// The views of a module named `module` whose section holds `bytes`, and
-/// the kernels and renderers they may call, with why any record was left
-/// out. Each record is named `MODULE.views[N]`, counting records from 0.
 #[must_use]
 pub fn view_set(module: &str, bytes: &[u8]) -> ViewSet {
     let Records {
@@ -80,12 +57,10 @@ pub fn view_set(module: &str, bytes: &[u8]) -> ViewSet {
         set.add_renderers(&renderer.origin, [(renderer.name, renderer.source)]);
     }
 
-    // The records' own errors come first.
     set.errors.splice(0..0, errors);
     set
 }
 
-/// A kernel record's name, source, and module.
 fn kernel(payload: &[u8]) -> Result<(&str, &str, &[u8]), String> {
     let cut = || "the kernel's record is cut short".to_owned();
     let (length, rest) = payload.split_first_chunk::<2>().ok_or_else(cut)?;
@@ -102,7 +77,6 @@ fn kernel(payload: &[u8]) -> Result<(&str, &str, &[u8]), String> {
     Ok((name, source, module))
 }
 
-/// A renderer record's name and JavaScript.
 fn renderer(payload: &[u8]) -> Result<(&str, &str), String> {
     let cut = || "the renderer's record is cut short".to_owned();
     let (length, rest) = payload.split_first_chunk::<2>().ok_or_else(cut)?;
@@ -116,7 +90,6 @@ fn renderer(payload: &[u8]) -> Result<(&str, &str), String> {
     Ok((name, source))
 }
 
-/// What a section's records hold, and why any was left out.
 struct Records<'a> {
     files: Vec<(String, String)>,
     kernels: Vec<KernelRecord<'a>>,
@@ -124,8 +97,6 @@ struct Records<'a> {
     errors: Vec<Error>,
 }
 
-/// The view files, kernels, and renderers in a section's records, and why
-/// any was left out.
 fn records<'a>(module: &str, bytes: &'a [u8]) -> Records<'a> {
     let mut files = Vec::new();
     let mut kernels = Vec::new();
@@ -177,8 +148,6 @@ fn records<'a>(module: &str, bytes: &'a [u8]) -> Records<'a> {
         position = start + payload.len();
 
         match (kind, format) {
-            // A record is no larger than a view file may be, so a module
-            // cannot make the debugger copy more.
             (VIEW_TEXT, VIEW_TEXT_FORMAT) if payload.len() > MAX_FILE_BYTES => errors.push(error(
                 index,
                 format!("the record's views are larger than a view file may be, {MAX_FILE_BYTES} bytes"),
@@ -192,7 +161,6 @@ fn records<'a>(module: &str, bytes: &'a [u8]) -> Records<'a> {
                 format!("the record's views are in format {format}, and this microscope reads format {VIEW_TEXT_FORMAT}"),
             )),
             (KERNEL, KERNEL_FORMAT) => match kernel(payload) {
-                // A kernel's source is no larger than a view file may be.
                 Ok((_, source, _)) if source.len() > MAX_FILE_BYTES => errors.push(error(
                     index,
                     format!("the kernel's source is larger than a view file may be, {MAX_FILE_BYTES} bytes"),

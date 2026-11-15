@@ -14,8 +14,8 @@ enum Fieldless {
     Positive = 7,
 }
 
-// A method puts its declaration inside the enumeration's debug
-// information, as std's `Ordering` has them.
+
+
 impl Fieldless {
     #[inline(never)]
     fn sign(self) -> i32 {

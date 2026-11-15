@@ -1,6 +1,6 @@
-// Pointers to functions of every shape C declares: with and without
-// parameters, variadic, unprototyped, returning pointers to functions, in
-// arrays, records, and typedefs, and pointers to them.
+
+
+
 #include <stddef.h>
 
 typedef int (*binary_op)(int, int);

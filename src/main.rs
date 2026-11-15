@@ -1,7 +1,3 @@
-//! The `microscope` command-line debugger.
-
-// Production code returns errors instead of panicking; see dev/assertions.md.
-// Tests may unwrap.
 #![cfg_attr(
     not(test),
     deny(
@@ -27,7 +23,6 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, anyhow};
 use tokio::signal::unix::SignalKind;
 
-// Each thread counts its allocations for `--timings`.
 #[global_allocator]
 static ALLOCATOR: microscope::timings::alloc::Counting<microscope::timings::alloc::Selected> =
     microscope::timings::alloc::selected();
@@ -46,8 +41,6 @@ fn main() -> ExitCode {
         microscope::timings::alloc::return_freed_memory_promptly();
     }
 
-    // The terminal launcher must stay single-threaded, so it runs before the
-    // runtime starts its threads.
     if std::env::args_os()
         .nth(1)
         .is_some_and(|command| command == "dap-launcher")
@@ -55,7 +48,6 @@ fn main() -> ExitCode {
         return dap::launcher::run(std::env::args_os().skip(1));
     }
 
-    // So is the helper that opens browsers, which forks.
     if std::env::args_os()
         .nth(1)
         .is_some_and(|command| command == web::terminal::HELPER)
@@ -63,10 +55,6 @@ fn main() -> ExitCode {
         return web::terminal::run_helper(std::env::args_os().skip(2));
     }
 
-    // Both of microscope's own variables are removed from the environment here,
-    // before microscope starts any other thread, so every program it starts
-    // goes without them. Removing them is unsafe only while another thread
-    // may read the environment, and none exists yet.
     #[cfg(debug_assertions)]
     start_flight_recording();
 
@@ -76,9 +64,6 @@ fn main() -> ExitCode {
         cli::config::take_environment();
     }
 
-    // Tokio tasks only move messages and serve clients; heavy work runs on
-    // the controller, loader, and blocking threads. A worker per CPU would
-    // only add threads to a large host.
     let workers = std::thread::available_parallelism().map_or(1, |cpus| cpus.get().min(4));
     match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
@@ -93,14 +78,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// Streams a development build's flight recording to the file named by
-/// `MICROSCOPE_FLIGHT_RECORDING`, or to a new file under the recorder's `runs`
-/// directory. An empty variable turns recording off, as does running under
-/// nextest without the variable, so test runs do not crowd out recordings of
-/// development runs.
-///
-/// The variable is removed, so programs the debugger launches see the same
-/// environment, and so the same stack layout, as under a release build.
 #[cfg(debug_assertions)]
 #[allow(unsafe_code, reason = "the environment can only be edited unsafely")]
 fn start_flight_recording() {
@@ -143,8 +120,6 @@ async fn async_main() -> ExitCode {
                 }
             };
 
-            // Reading stdin blocks a runtime thread that would keep the
-            // runtime from shutting down after the client left.
             std::process::exit(code);
         }
         Some(Tool::Web(web_args)) => {
@@ -156,7 +131,6 @@ async fn async_main() -> ExitCode {
                 }
             };
 
-            // Tabs still connected would keep the runtime from shutting down.
             std::process::exit(code);
         }
         Some(Tool::Views(views)) => {
@@ -222,12 +196,7 @@ async fn async_main() -> ExitCode {
 
     match result {
         Ok(None) => ExitCode::SUCCESS,
-        // A read of standard input the session left would keep the runtime
-        // from shutting down. A shell reports a process a signal ended as
-        // 128 plus its number.
         Ok(Some(signal)) => std::process::exit(128 + signal.as_raw_value()),
-        // A closed stdout pipe, such as `microscope ... | head`, is a normal
-        // end.
         Err(error) if cli::is_broken_pipe(&error) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!(
@@ -239,21 +208,12 @@ async fn async_main() -> ExitCode {
     }
 }
 
-/// Ends `recording` and writes what it collected to `path`.
 fn write_timings(recording: microscope::timings::Recording, path: &std::path::Path) -> Result<()> {
     std::fs::write(path, recording.finish()?.to_json()?)?;
     Ok(())
 }
 
-/// Runs a debugging session and shuts its debugger down, which detaches
-/// an attached process, however the session ends. Returns the signal that
-/// ended it, if one did.
 async fn run(session: Session, renderers: Renderers) -> Result<Option<SignalKind>> {
-    // SIGTERM, as `kill` and service managers send it, and SIGHUP, as a
-    // closed terminal or SSH connection sends it, end the session as `quit`
-    // does. Left to their default action, they would leave an attached
-    // process with its traps. One that comes while the target opens ends
-    // the session once it has, so nothing is left half attached.
     let terminated = termination::first_of([SignalKind::terminate(), SignalKind::hangup()])
         .context("failed to listen for SIGTERM and SIGHUP")?;
     let opened = open_target(&session).await?;
@@ -270,8 +230,6 @@ async fn run(session: Session, renderers: Renderers) -> Result<Option<SignalKind
         cli = cli.with_group(group.handle(), session.source_paths.clone());
     }
 
-    // The session is a task of its own so that a panic in it comes back
-    // here as an error, and the debugger still shuts down.
     let result = tokio::spawn(async move { cli.run(&session, terminated).await })
         .await
         .unwrap_or_else(|error| Err(anyhow!("internal error: {error}")));
@@ -285,8 +243,6 @@ async fn run(session: Session, renderers: Renderers) -> Result<Option<SignalKind
     Ok(signal)
 }
 
-/// What a session debugs: one process, as a core dump is, or a group of the
-/// processes a program starts.
 enum Opened {
     Single(Debugger),
     Group(microscope::ProcessGroup),
@@ -308,8 +264,6 @@ impl Opened {
     }
 }
 
-/// Opens the session's target: a launch or an attach as a process group
-/// that follows as the settings say, and a core dump alone.
 async fn open_target(session: &Session) -> Result<Opened> {
     let policy = session.settings.config.follow.policy(&[]);
     match &session.target {
@@ -347,11 +301,8 @@ async fn open_target(session: &Session) -> Result<Opened> {
     }
 }
 
-/// The largest recording `microscope views replay` reads: far more than the
-/// largest inspection's runs record.
 const MAX_RECORDING_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Replays recorded kernel runs, saying for each whether it reproduced.
 fn replay_views(recording: &std::path::Path, kernel: Option<&std::path::Path>) -> Result<bool> {
     use std::io::Read as _;
     let mut text = String::new();
@@ -397,7 +348,6 @@ fn replay_views(recording: &std::path::Path, kernel: Option<&std::path::Path>) -
     Ok(reproduced && !runs.is_empty())
 }
 
-/// Runs `microscope views check`, `explain`, or `replay`.
 async fn run_views(args: &ViewsArgs) -> Result<bool> {
     let (program, views) = match &args.command {
         ViewsCommand::Check { program, views } | ViewsCommand::Explain { program, views, .. } => {
@@ -419,8 +369,6 @@ async fn run_views(args: &ViewsArgs) -> Result<bool> {
         LaunchSettings::default(),
     );
 
-    // A file that could not be used fails either command, as a view that
-    // binds nothing fails a check.
     let usable = console.load_views(&root, views).await;
     let handle = debugger.handle();
     let reported: Result<bool> = async {
@@ -490,8 +438,6 @@ async fn open_debugger(
     }
 }
 
-/// Prints the project root and the files a session started in `start`
-/// reads and writes.
 fn print_config_paths(start: &std::path::Path, user: Option<&std::path::Path>) {
     let exists = |path: &std::path::Path| if path.exists() { "" } else { " (missing)" };
     let root = cli::config::project_root(start);
@@ -522,7 +468,6 @@ fn print_config_paths(start: &std::path::Path, user: Option<&std::path::Path>) {
     }
 }
 
-/// Runs `microscope config` and returns whether it succeeded.
 fn run_config(args: &ConfigArgs) -> Result<bool> {
     use cli::config::{self, Files, TrustStore, UserFile};
     let start = std::env::current_dir().context("cannot read the working directory")?;

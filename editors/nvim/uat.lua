@@ -1,7 +1,7 @@
--- User acceptance test: nvim-dap drives `microscope dap` from a headless
--- Neovim, as a user would, and the adapter records each session's traffic.
---
--- nvim --headless --clean -l editors/nvim/uat.lua NVIM_DAP ROOT RECORDING_DIRECTORY
+
+
+
+
 
 local nvim_dap, root, record = arg[1], arg[2], arg[3]
 vim.opt.runtimepath:prepend(nvim_dap)
@@ -23,7 +23,6 @@ local function expect(condition, message)
   end
 end
 
--- The adapter's events since the last wait, by kind, with their sessions.
 local seen = {}
 for _, name in ipairs({ 'stopped', 'exited', 'terminated', 'process' }) do
   dap.listeners.after['event_' .. name]['uat'] = function(session, body)
@@ -31,8 +30,7 @@ for _, name in ipairs({ 'stopped', 'exited', 'terminated', 'process' }) do
   end
 end
 
---- Waits for an event the predicate accepts, consuming those before it;
---- with a session, only that session's. Returns its body and session.
+
 local function event(name, predicate, session)
   local found, from
   local ok = vim.wait(TIMEOUT, function()
@@ -55,7 +53,6 @@ local function event(name, predicate, session)
   return found, from
 end
 
---- Waits until nvim-dap has fetched the stopped thread's frames.
 local function frame()
   local current
   expect(vim.wait(TIMEOUT, function()
@@ -66,8 +63,7 @@ local function frame()
   return current
 end
 
---- Sends a request, to `session` or the current one, and waits for its
---- response.
+
 local function request(command, arguments, session)
   local done, failure, response = false, nil, nil
   (session or dap.session()):request(command, arguments, function(err, result)
@@ -101,7 +97,6 @@ local function adapter(name)
   }
 end
 
--- Breakpoints, stepping, evaluation, and the program's exit.
 adapter('nvim-launch')
 breakpoint(source('basic.c'), 'return microscope_value;')
 dap.run({ type = 'microscope', request = 'launch', name = 'nvim-launch', program = fixture('basic'), cwd = root })
@@ -122,7 +117,6 @@ dap.continue()
 expect(event('exited').exitCode == 0, 'the program exited with 0')
 event('terminated')
 
--- A program in nvim-dap's terminal, which owns its input and output.
 adapter('nvim-terminal')
 breakpoint(source('process-environment.c'), 'if (fgets(line')
 dap.run({
@@ -144,11 +138,10 @@ event('terminated')
 local lines = table.concat(vim.api.nvim_buf_get_lines(terminal, 0, -1, false), '\n')
 expect(lines:find('argument 1: one', 1, true) ~= nil, 'the terminal shows the output: ' .. lines)
 
--- With follow, nvim-dap starts a session for a forked process at the
--- adapter's request, which the adapter function relays back to the same
--- adapter with microscope dap --connect, as docs/editors.md shows. The child stops at the breakpoint after
--- its fork, having run nothing untraced, and each session ends as its process
--- does. Process stops keep the two stops independent of which comes first.
+
+
+
+
 dap.adapters.microscope = function(callback, config)
   local member = config.__microscopeMember
   if member then
@@ -178,7 +171,7 @@ for _, which in ipairs({ 'child', 'parent' }) do
   expect(trace.stackFrames[1].name == 'shared_work', which .. ' stopped in shared_work')
 end
 dap.clear_breakpoints()
--- The child runs to its end, and then its parent, which waited for it.
+
 for _, which in ipairs({ 'child', 'parent' }) do
   local session = stops[which].session
   dap.set_session(session)
@@ -187,13 +180,11 @@ for _, which in ipairs({ 'child', 'parent' }) do
   event('terminated', nil, session)
 end
 
--- Node programs that start other nodes: a breakpoint in a .js file stops
--- the node that runs it, in the session nvim-dap starts for it through the
--- adapter function above. The node and npm are the ones on PATH.
+
+
 local node, npm = vim.fn.exepath('node'), vim.fn.exepath('npm')
 expect(node ~= '' and npm ~= '', 'node and npm are on PATH')
 
---- Writes `files` into a new directory and returns it.
 local function project(files)
   local directory = vim.fn.tempname()
   vim.fn.mkdir(directory, 'p')
@@ -203,7 +194,6 @@ local function project(files)
   return directory
 end
 
--- npm start: npm's node starts a shell, which executes the app's node.
 local app = project({
   ['package.json'] = '{"name": "app", "version": "1.0.0", "scripts": {"start": "node server.js"}}',
   ['server.js'] = "const port = 8080;\nconsole.log('listening', port);\n",
@@ -221,18 +211,17 @@ local top = frame()
 local server = app .. '/server.js'
 expect(top.source and top.source.path == server, 'stopped in server.js, not ' .. vim.inspect(top.source))
 expect(top.line == line_of(server, "console.log('listening'"), 'stopped at the breakpoint, not line ' .. top.line)
--- The app's stop stops the group, npm too. Continuing at once, while the
--- group may still be pausing npm, resumes both.
+
+
 dap.clear_breakpoints()
 dap.continue()
 expect(event('exited', nil, served).exitCode == 0, 'the app exited with 0')
 expect(event('exited', nil, npm_session).exitCode == 0, 'npm exited with 0')
 event('terminated', nil, npm_session)
 
--- node --test: each file runs in a node of its own, which stops at its
--- file's breakpoint; the runner runs neither. With group stops one
--- continue resumes both files' nodes, so process stops let each be
--- inspected at its own stop.
+
+
+
 local test_body = "require('node:test')('runs', () => {\n  const answer = 42;\n  return answer;\n});\n"
 local tests = project({ ['package.json'] = '{"name": "tests", "version": "1.0.0"}', ['a.test.js'] = test_body, ['b.test.js'] = test_body })
 for _, name in ipairs({ 'a.test.js', 'b.test.js' }) do
@@ -248,10 +237,10 @@ for _ = 1, 2 do
   runner = runner or session.parent
   expect(runner and runner.config.name == 'nvim-node-test' and session.parent == runner,
     'a file\'s node stopped, not ' .. session.config.name)
-  -- Both may stop at once, and nvim-dap fetches frames only for the
-  -- session it shows, and may show the other, so ask each for its stack:
-  -- the innermost frame with a source is the JavaScript one, inside the
-  -- runtime's native frames.
+
+
+
+
   local trace = request('stackTrace', { threadId = body.threadId }, session)
   local top = vim.tbl_filter(function(each) return each.source ~= nil end, trace.stackFrames)[1] or {}
   local file = top.source and top.source.path or ''
@@ -262,13 +251,12 @@ for _ = 1, 2 do
   request('continue', { threadId = body.threadId }, session)
 end
 dap.clear_breakpoints()
--- The runner exits with 0 only once each file's node has passed.
+
 expect(event('exited', nil, runner).exitCode == 0, 'the runner exited with 0')
 event('terminated', nil, runner)
 
--- node --watch: the first app changes its own file and waits to be
--- replaced; the restarted one, which finds the marker, ends. Each stops at
--- the breakpoint in a session of its own under the watcher's.
+
+
 local watched = project({
   ['app.js'] = table.concat({
     "const fs = require('node:fs');",
@@ -287,9 +275,9 @@ local stop, first = event('stopped', function(body) return body.reason == 'break
 local watcher = first.parent
 expect(watcher and watcher.config.name == 'nvim-node-watch', 'the app\'s session is the watcher\'s member\'s')
 request('continue', { threadId = stop.threadId }, first)
--- The watcher ends the app with SIGTERM, and the app's node raises it again
--- at itself once its handler has run; each stops the group, and continuing
--- passes it. The restarted app then stops at the breakpoint.
+
+
+
 local signals, restarted = 0, nil
 while restarted == nil do
   local body, session = event('stopped')
@@ -309,7 +297,7 @@ local top = vim.tbl_filter(function(each) return each.source ~= nil end, trace.s
 expect(top.source and top.source.path == watched .. '/app.js', 'stopped in app.js, not ' .. vim.inspect(top.source))
 expect(top.line == 2, 'stopped at the breakpoint, not line ' .. tostring(top.line))
 dap.clear_breakpoints()
--- The watcher waits for changes forever, so the user ends it.
+
 request('disconnect', { terminateDebuggee = true }, watcher)
 event('terminated', nil, watcher)
 vim.fn.delete(app, 'rf')

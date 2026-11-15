@@ -1,15 +1,3 @@
-//! Keeps the flight recordings of a failing test.
-//!
-//! A development build records scenarios in this process and DAP sessions
-//! in each adapter process. When anything in a test panics, even after its
-//! sessions ended, its recordings are kept under the recorder's `tests`
-//! directory; otherwise they are discarded. Nextest runs each test in its own
-//! process, so everything this process records belongs to one test.
-//!
-//! Each run names its recordings after the test, the time it started, and
-//! its process, so no later run overwrites a failure's recordings or makes an
-//! old one look current. Only the newest few runs of a test keep theirs.
-
 #![allow(
     unused_imports,
     reason = "each test crate uses a subset of the harness"
@@ -44,18 +32,12 @@ mod recording {
     use std::sync::{Mutex, PoisonError};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// How many runs of one test keep their recordings, counting runs that
-    /// were killed before they could discard theirs.
     pub const KEPT_RUNS: usize = 5;
 
-    /// Records the scenarios this test runs in this process.
     pub fn watch_scenarios() {
         with(|recordings| recordings.scenarios = true);
     }
 
-    /// Has `command`, an adapter, stream its recording to a file named
-    /// after the test, numbered when a test starts several. Returns that
-    /// file.
     #[allow(
         clippy::unnecessary_wraps,
         reason = "release builds record nothing and return None"
@@ -77,8 +59,6 @@ mod recording {
         Some(path)
     }
 
-    /// Takes the recording of an adapter that exited out of the directory,
-    /// to be written back only if the test fails later.
     pub fn adapter_finished(path: &Path) {
         with(|recordings| {
             if recordings.kept {
@@ -100,9 +80,6 @@ mod recording {
         });
     }
 
-    /// Where a failing test keeps a recording: `""` for the scenarios it
-    /// ran here, `".adapter"` for its first adapter. The path is this run's
-    /// own.
     pub fn recording_path(suffix: &str) -> PathBuf {
         with(|recordings| recordings.path(suffix))
     }
@@ -111,22 +88,17 @@ mod recording {
         directory: PathBuf,
         test: String,
 
-        /// The path every recording of this run starts with.
         stem: PathBuf,
 
-        /// Whether a scenario ran in this process.
         scenarios: bool,
         adapters: Vec<Adapter>,
 
-        /// Whether the test failed, so recordings stay where they are.
         kept: bool,
     }
 
     struct Adapter {
         path: PathBuf,
 
-        /// The recording of an adapter that exited, held until the test
-        /// either fails or ends.
         finished: Option<Vec<u8>>,
     }
 
@@ -145,8 +117,6 @@ mod recording {
             path.into()
         }
 
-        /// Writes every recording of this test where it belongs and names
-        /// each on stderr.
         fn keep(&mut self) {
             self.kept = true;
             let mut kept = Vec::new();
@@ -174,7 +144,6 @@ mod recording {
                 eprintln!("flight recording: {}", path.display());
             }
 
-            // After writing, so this run counts as the newest.
             prune(&self.directory, &self.test, KEPT_RUNS);
         }
     }
@@ -195,8 +164,6 @@ mod recording {
         change(recordings.get_or_insert_with(start))
     }
 
-    /// Names this run's recordings after the test, as libtest names its
-    /// thread, prunes those of older runs, and keeps this run's on any panic.
     fn start() -> Recordings {
         let thread = std::thread::current();
         let test = thread.name().unwrap_or("unnamed").to_owned();
@@ -207,17 +174,13 @@ mod recording {
 
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            // The debugger's own hook records the panic before reporting it.
             previous(info);
 
-            // Another thread may hold the recordings briefly, so wait for
-            // them unless this thread holds them.
             if !HOLDING.get() {
                 with(Recordings::keep);
             }
         }));
 
-        // Fixed-width milliseconds, so name order is start order.
         let started = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_millis());
@@ -232,9 +195,6 @@ mod recording {
         }
     }
 
-    /// Removes the recordings of `test` in `directory` of all but its
-    /// newest `keep` runs, and any not named for a run, such as those from
-    /// before runs were named.
     fn prune(directory: &Path, test: &str, keep: usize) {
         let mut recordings = Vec::new();
         for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
@@ -264,7 +224,6 @@ mod recording {
 
         for (run, path) in recordings {
             if !run.is_some_and(|run| newest.contains(&run)) {
-                // Another run of the test may be pruning the same file.
                 let _ = fs::remove_file(path);
             }
         }

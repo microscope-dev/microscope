@@ -5,7 +5,7 @@ extern crate alloc;
 
 use alloc::string::String;
 
-/// Rust strings need an allocator; the C library's serves.
+
 struct Malloc;
 
 unsafe extern "C" {
@@ -62,6 +62,6 @@ fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     loop {}
 }
 
-// libcore retains this symbol even with aborting panics; it is never called.
+
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_eh_personality() {}

@@ -1,12 +1,3 @@
-//! Breakpoints on indirect functions, such as glibc's `strlen`, whose
-//! symbol names a resolver that the loader calls, as it relocates a module
-//! referring to the function, to choose an implementation for the machine.
-//!
-//! The implementation is learned as gdb learns it, without calling into the
-//! program: from a GOT slot the loader already filled with it, or else by
-//! catching the resolver's return when the loader next calls it. Until
-//! then, a breakpoint on the function waits, pending.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use nix::unistd::Pid;
@@ -18,33 +9,26 @@ use super::breakpoints::remove_breakpoint_owner_from;
 use super::native::LinuxTraceOps;
 use super::{BreakpointOwner, Controller};
 
-/// An indirect function's resolver: its module and its image address.
 type Resolver = (ModuleId, ImageAddress);
 
 #[derive(Debug, Default)]
 pub(super) struct IndirectFunctions {
-    /// The implementation each resolver chose, in the resolver's module.
     chosen: BTreeMap<Resolver, ImageAddress>,
 
-    /// The resolvers whose entries are planted, by entry.
     entries: BTreeMap<VirtualAddress, Resolver>,
 
-    /// Calls of resolvers under way, each awaiting its return.
     calls: Vec<Call>,
 
-    /// The return sites planted for `calls`.
     returns: BTreeSet<VirtualAddress>,
 }
 
 impl IndirectFunctions {
-    /// Forgets a site whose memory is gone.
     pub(super) fn forget(&mut self, address: VirtualAddress) {
         self.entries.remove(&address);
         self.returns.remove(&address);
         self.calls.retain(|call| call.returns_to != address);
     }
 
-    /// Every site planted: the resolvers' entries and their calls' returns.
     pub(super) fn planted(&self) -> BTreeSet<VirtualAddress> {
         self.entries.keys().chain(&self.returns).copied().collect()
     }
@@ -56,14 +40,10 @@ struct Call {
     resolver: Resolver,
     returns_to: VirtualAddress,
 
-    /// The stack pointer once the call returns, which tells its return
-    /// from a deeper call's return to the same place.
     stack: u64,
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// The implementation an indirect function's resolver chose, once
-    /// known.
     pub(super) fn chosen_implementation(
         &self,
         module: ModuleId,
@@ -73,8 +53,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.indirect.chosen.get(&(module, resolver)).copied()
     }
 
-    /// The resolvers of the indirect functions that enabled breakpoints,
-    /// and `adding`, name and whose implementations are unknown.
     fn wanted_resolvers(&self, adding: Option<&BreakpointSpec>) -> BTreeSet<Resolver> {
         let Some(inferior) = self.session.inferior() else {
             return BTreeSet::new();
@@ -97,8 +75,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         for (&module, runtime) in &self.modules {
             for name in &names {
-                // A function the debug information describes is broken at
-                // as it describes it.
                 if !matches!(
                     runtime.image.functions_located(name, None),
                     Err(Error::FunctionNotFound(_))
@@ -123,9 +99,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         wanted
     }
 
-    /// Learns, from the GOT slots the loader has filled, the
-    /// implementations that the indirect functions enabled breakpoints,
-    /// and `adding`, name were resolved to.
     pub(super) fn learn_from_got(&mut self, adding: Option<&BreakpointSpec>) {
         let wanted = self.wanted_resolvers(adding);
         let Some(inferior) = self.session.inferior_mut() else {
@@ -151,8 +124,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .map(crate::image::symbols::Symbol::unversioned_name)
                 .collect::<BTreeSet<_>>();
 
-            // A slot of the module's own that the resolver fills, or one
-            // of any module's that imports the function by name.
             let mut slots = Vec::new();
 
             for (&holder, runtime) in &self.modules {
@@ -173,9 +144,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                     continue;
                 };
 
-                // A slot the loader has yet to relocate, or one bound to
-                // another module's definition, holds no code of the
-                // resolver's module.
                 if let Some(implementation) =
                     implementation_in(defining, VirtualAddress::new(value), resolver)
                 {
@@ -188,9 +156,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.indirect.chosen.extend(learned);
     }
 
-    /// Plants the entries of the resolvers that enabled breakpoints wait
-    /// for, and the returns of their calls under way, and removes the
-    /// rest.
     pub(super) fn sync_resolvers(&mut self) -> Result<()> {
         let wanted = self.wanted_resolvers(None);
         let mut entries = BTreeMap::new();
@@ -225,8 +190,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .copied()
             .collect::<BTreeSet<_>>();
 
-        // The record changes with each site, so that a failed edit leaves
-        // it naming exactly the sites planted.
         for &address in planted.difference(&needed) {
             remove_breakpoint_owner_from(
                 &self.ptrace,
@@ -262,9 +225,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Notes a thread that reached a resolver's entry, or the return of
-    /// its call, if `address` is one, and stops every thread to plant the
-    /// return, or to break at the implementation the resolver chose.
     pub(super) fn note_resolver(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let indirect = &inferior.indirect;
@@ -317,9 +277,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// Where in the resolver's module an implementation is, when `address` is
-/// code of that module other than the resolver or a PLT stub: a slot the
-/// loader has yet to relocate or bind points at its own stub.
 fn implementation_in(
     defining: &super::RuntimeModule,
     address: VirtualAddress,

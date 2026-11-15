@@ -5,10 +5,10 @@
 #include <stdlib.h>
 #include <sys/prctl.h>
 
-// The main thread creates threads without pause, so an attach is likely to
-// seize it inside clone. Each thread lives until the main thread releases it,
-// LIVE_WORKERS creations later, so one that started untraced is still there
-// to be found while the main thread is stopped.
+
+
+
+
 enum { LIVE_WORKERS = 128 };
 
 struct worker {

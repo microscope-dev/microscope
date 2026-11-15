@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Writes src/syscalls/entries.gen.rs, the kernel function each x86 system
-# call enters through, from a kernel tree's syscall tables:
-#
-#   scripts/syscall-entries.sh /usr/src/kernels/VERSION
-#
-# The tables only grow, so any recent tree serves.
+
+
+
+
+
+
 set -euo pipefail
 
 tables="$1/arch/x86/entry/syscalls"

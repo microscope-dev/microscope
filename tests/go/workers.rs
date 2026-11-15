@@ -1,5 +1,3 @@
-//! A worker pool, and goroutines parked in every way a program parks one.
-
 use std::collections::BTreeSet;
 use std::process::Stdio;
 
@@ -15,15 +13,12 @@ use crate::truth::GoSession;
 
 const BUILDS: [&str; 2] = ["workers-go-o0", "workers-go-o2"];
 
-/// One stop at the parked checkpoint per build: the goroutines are listed,
-/// their frames read, and, last, one is selected.
 #[tokio::test]
 async fn goroutines_are_listed_as_the_runtime_lists_them() {
     for fixture in BUILDS {
         let mut session = GoSession::launch(fixture).await;
         let truth = session.checkpoint("parked");
 
-        // Small pages cross from one page to the next mid-list.
         let (tasks, gaps) = session.tasks(3).await;
         assert!(gaps.is_empty(), "{fixture}: {gaps:?}");
 
@@ -35,8 +30,6 @@ async fn goroutines_are_listed_as_the_runtime_lists_them() {
             "{fixture}: the runtime's own goroutines are listed too"
         );
 
-        // The check fails on the lies it exists to catch: a goroutine left
-        // out, one listed twice, and one in the wrong state.
         let program = tasks
             .iter()
             .position(|task| !task.internal && task.thread.is_none())
@@ -67,8 +60,6 @@ async fn goroutines_are_listed_as_the_runtime_lists_them() {
                 continue;
             };
 
-            // Only a goroutine on a thread has one, and a parked one says
-            // where it resumes.
             assert_eq!(
                 task.thread.is_some(),
                 task.state == TaskState::Running,
@@ -86,8 +77,6 @@ async fn goroutines_are_listed_as_the_runtime_lists_them() {
             } else {
                 assert_eq!(created_by, Some("main.main"), "{context}");
 
-                // `go worker(...)` begins in a wrapper the compiler writes
-                // to pass the arguments; a closure begins in itself.
                 let outermost = dumped.frames.last().map(|frame| frame.0.as_str());
                 let started = if outermost == Some("main.worker") {
                     "main.main.gowrap1"
@@ -109,10 +98,6 @@ async fn goroutines_are_listed_as_the_runtime_lists_them() {
     }
 }
 
-/// Every thread runs a goroutine or is idle, and a goroutine on a thread is
-/// the one that thread runs. Another thread may be running the runtime's
-/// code for its goroutine on the system stack, but the goroutine that hit
-/// the breakpoint is on its own.
 async fn check_threads(session: &mut GoSession, tasks: &[TaskSnapshot], main: u64) {
     let fixture = session.fixture.clone();
     {
@@ -152,7 +137,6 @@ async fn check_threads(session: &mut GoSession, tasks: &[TaskSnapshot], main: u6
     }
 }
 
-/// Each parked goroutine's frames are those the runtime dumps.
 async fn check_parked_frames(session: &mut GoSession, fixture: &str) {
     let truth = session.checkpoint("parked");
     let (tasks, _) = session.tasks(64).await;
@@ -205,11 +189,9 @@ async fn check_parked_frames(session: &mut GoSession, fixture: &str) {
             .check_frames(&shown)
             .unwrap_or_else(|problem| panic!("{fixture}: {problem}: {task:#?}\n{trace:#?}"));
 
-        // The check fails on a frame left out.
         assert!(dumped.check_frames(&shown[1..]).is_err(), "{fixture}");
         compared += 1;
 
-        // A parked worker's arguments are on its own stack.
         let worker = trace.frames.iter().find(|frame| {
             frame
                 .function
@@ -236,7 +218,6 @@ async fn check_parked_frames(session: &mut GoSession, fixture: &str) {
     }
 }
 
-/// A parked goroutine can be selected, and inspection follows it.
 async fn check_selection(session: &mut GoSession) {
     let truth = session.checkpoint("parked");
     let (tasks, _) = session.tasks(64).await;
@@ -264,7 +245,6 @@ async fn check_selection(session: &mut GoSession) {
     assert_eq!(snapshot.selected_frame, Some(StackFrameId::INNERMOST));
     assert_eq!(snapshot.presentation, None, "a parked task has no stop");
 
-    // Implicit inspection follows the selected task.
     let trace = session
         .scenario
         .operation("backtrace", handle.backtrace())
@@ -310,8 +290,6 @@ async fn check_selection(session: &mut GoSession) {
         "{jobs:#?}"
     );
 
-    // Registers are the selected frame's, and memory is the process's
-    // whichever context is selected.
     let registers = session
         .scenario
         .operation("registers", handle.registers())
@@ -333,7 +311,6 @@ async fn check_selection(session: &mut GoSession) {
         )
         .await;
 
-    // Each context keeps its own frame.
     session
         .scenario
         .operation("select thread", handle.select_context(thread))
@@ -357,14 +334,12 @@ async fn a_condition_on_the_task_stops_only_in_that_goroutine() {
     let (tasks, _) = session.tasks(64).await;
     let handle = session.scenario.handle().clone();
 
-    // The stopped thread runs main.
     let main = truth.main.0;
     assert_eq!(
         evaluate(&session, &format!("$task == {main}")).await,
         Some(true)
     );
 
-    // A selected task is its own, and a thread between tasks has none.
     let worker = tasks
         .iter()
         .find(|task| {
@@ -399,7 +374,6 @@ async fn a_condition_on_the_task_stops_only_in_that_goroutine() {
         .await;
     assert_eq!(evaluate(&session, "$task").await, None);
 
-    // Every worker calls Done as it finishes; only the chosen one stops.
     session
         .scenario
         .operation(
@@ -441,8 +415,6 @@ async fn a_condition_on_the_task_stops_only_in_that_goroutine() {
     session.scenario.shutdown().await;
 }
 
-/// A boolean or integer expression's value in the selected frame, or
-/// `None` where it is unavailable.
 async fn evaluate(session: &GoSession, text: &str) -> Option<bool> {
     let expression = Expression::parse(text).expect("an expression");
     let Evaluation::Value { value, .. } = session
@@ -463,8 +435,6 @@ async fn evaluate(session: &GoSession, text: &str) -> Option<bool> {
     }
 }
 
-/// A parked task has the registers its runtime saved, and none a thread
-/// would give it.
 async fn check_saved_registers(session: &GoSession, view: StopContext, trace: &Backtrace) {
     let fixture = &session.fixture;
     let registers = session
@@ -523,16 +493,12 @@ async fn check_worker_arguments(session: &GoSession, view: StopContext) {
     }
 }
 
-/// Whether the runtime leaves a function out of a goroutine dump: its own
-/// code, and the wrappers the compiler writes.
 fn runtime_hides(function: &str) -> bool {
     function.starts_with("runtime.")
         || function.starts_with("internal/runtime/")
         || function.contains(".gowrap")
 }
 
-/// A worker pool stopped at its first checkpoint, with nothing read at the
-/// stop: a checked session reads every thread as the stop arrives.
 async fn stopped_unread(fixture: &str) -> Scenario {
     let mut scenario = Scenario::launch(fixture);
     scenario.add_breakpoint("main.reached").await;
@@ -549,7 +515,6 @@ async fn stopped_unread(fixture: &str) -> Scenario {
     scenario
 }
 
-/// What the stopping thread runs, as the snapshot says.
 async fn stopping_activity(scenario: &mut Scenario) -> Option<ThreadActivity> {
     let snapshot = scenario.snapshot().await;
     let InferiorState::Stopped { thread_id, .. } = snapshot.inferior else {
@@ -563,7 +528,6 @@ async fn stopping_activity(scenario: &mut Scenario) -> Option<ThreadActivity> {
         .and_then(|thread| thread.activity.clone())
 }
 
-/// What `$task` reads in the selected frame.
 async fn task_variable(scenario: &Scenario) -> VariableState {
     let expression = Expression::parse("$task").expect("an expression");
     let Evaluation::Value { value, .. } = scenario
@@ -575,7 +539,6 @@ async fn task_variable(scenario: &Scenario) -> VariableState {
     value.state
 }
 
-/// The stopping thread's `fs_base`, below which Go keeps its g.
 async fn thread_pointer(scenario: &Scenario) -> u64 {
     let registers = scenario
         .operation("registers", scenario.handle().registers())
@@ -595,8 +558,6 @@ enum FirstRead {
     Evaluation,
 }
 
-/// A thread whose g a write zeroes runs no goroutine, whatever the stop
-/// read of it before the write. On linux/amd64 Go keeps the g at -8(FS).
 #[tokio::test]
 async fn a_memory_write_changes_what_a_thread_runs_at_the_same_stop() {
     for fixture in BUILDS {
@@ -641,8 +602,6 @@ async fn a_memory_write_changes_what_a_thread_runs_at_the_same_stop() {
     }
 }
 
-/// Moving a thread's thread pointer moves where its g is read from, though
-/// the assignment itself reads what the thread runs before it writes.
 #[tokio::test]
 async fn a_thread_pointer_write_changes_what_a_thread_runs_at_the_same_stop() {
     for fixture in BUILDS {
@@ -660,7 +619,6 @@ async fn a_thread_pointer_write_changes_what_a_thread_runs_at_the_same_stop() {
             .await;
         assert_eq!(thread_pointer(&scenario).await, 0x1000, "{fixture}");
 
-        // Nothing is mapped at 0xff8, so the g cannot be read.
         let after = stopping_activity(&mut scenario).await;
         assert!(
             matches!(&after, Some(ThreadActivity::Unknown(reason)) if reason.contains("unreadable")),

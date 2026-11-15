@@ -1,35 +1,13 @@
-//! Markers: conditions a golden program's variables satisfy whenever the
-//! line that carries them is about to run, written in the source as
-//!
-//! ```c
-//! total += square(index); // MARK: total == (index - 1) * index * (2 * index - 1) / 6
-//! ```
-//!
-//! A condition joins comparisons with `&&`; each compares two expressions
-//! of integers, the variables in scope, `+`, `-`, `*`, `/`, `%`, and
-//! parentheses. The variables oracle reads the variables from the debugger
-//! at a stop there and requires the condition to hold.
-//!
-//! A marker may also expect something only the debugger's own expressions
-//! can say, which the expressions oracle requires to evaluate true there:
-//!
-//! ```c
-//! visit(item); // MARK: index < 4 // EXPECT: item == &items[index]
-//! ```
-
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// A condition on one line of a program.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
     pub line: u64,
     pub condition: Condition,
 
-    /// The condition as written.
     pub text: String,
 
-    /// An expression in the debugger's language that is true there too.
     pub expect: Option<String>,
 }
 
@@ -60,22 +38,16 @@ enum Expression {
     Binary(Box<Self>, char, Box<Self>),
 }
 
-/// What evaluating a condition found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Holds,
 
-    /// A comparison failed, shown with the values it compared.
     Fails(String),
 
-    /// It has no value: a variable it needs has none, named here, or an
-    /// expression it computes, described here, divides by zero or
-    /// overflows.
     Unknown(String),
 }
 
 impl Condition {
-    /// Every variable the condition reads.
     #[must_use]
     pub fn variables(&self) -> Vec<&str> {
         let mut names = Vec::new();
@@ -89,7 +61,6 @@ impl Condition {
         names
     }
 
-    /// Evaluates the condition with `values`.
     #[must_use]
     pub fn evaluate(&self, values: &BTreeMap<String, i128>) -> Verdict {
         for comparison in &self.0 {
@@ -175,7 +146,6 @@ impl fmt::Display for Expression {
     }
 }
 
-/// Finds the markers in a program's source.
 pub fn parse(source: &str) -> Result<Vec<Marker>, String> {
     source
         .lines()
@@ -337,9 +307,6 @@ mod tests {
         markers[0].condition.evaluate(&values)
     }
 
-    /// A condition that divides by zero or overflows says nothing, as one
-    /// missing a variable says nothing: C gives such an expression no
-    /// value, so no answer of the debugger's contradicts it.
     #[test]
     fn a_condition_without_a_value_is_unknown() {
         let unknown = |text: &str| Verdict::Unknown(text.to_owned());

@@ -1,17 +1,17 @@
-// Compiled without debug information so that only ELF symbols describe it.
+
 #include <stdint.h>
 
 typedef void (*symbols_callback)(void);
 
-// GCC would otherwise rename the helper into an IPA clone such as
-// `lib_static_helper.constprop.0`.
+
+
 #if defined(__clang__)
 #define NO_CLONE __attribute__((noinline))
 #else
 #define NO_CLONE __attribute__((noipa))
 #endif
 
-// Present in the static symbol table only, so a stripped build cannot name it.
+
 NO_CLONE static int32_t lib_static_helper(symbols_callback callback, volatile int32_t *sink) {
     *sink += 1;
     callback();

@@ -1,6 +1,3 @@
-//! Proven host/target thread identities shared by runtime readers and
-//! live profiler metadata. Ambiguity is never resolved by list order.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -9,16 +6,11 @@ use crate::ThreadId;
 
 type Problem = Arc<str>;
 
-/// Bound the host catalog independently of the interpreter's thread list.
 const MAX_MAPPED_THREADS: usize = 1 << 14;
 
-/// Proven target-namespace identities, with ambiguity retained rather than
-/// assigning an interpreter frame to whichever host thread was seen last.
 #[derive(Debug)]
 pub struct ThreadIds(BTreeMap<TargetThreadId, Option<ThreadId>>);
 
-/// The unresolved identity itself, formatted only when a caller keeps a
-/// diagnostic. Large live catalogs need not allocate a string per failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum IdentityError {
     #[error("the target native thread id is zero")]
@@ -34,7 +26,6 @@ impl ThreadIds {
         Self::read(stop.threads(), |threads| stop.target_thread_ids(threads))
     }
 
-    /// Reads only after bounding and deduplicating the host catalog.
     pub fn read(
         mut threads: Vec<ThreadId>,
         read: impl FnOnce(&[ThreadId]) -> Vec<(ThreadId, TargetThreadId)>,
@@ -121,11 +112,6 @@ mod tests {
         assert!(!called.get());
     }
 
-    /// Every native id resolves to the one listed host that alone claims
-    /// it and claims nothing else, is ambiguous where any other listed
-    /// host or id is involved, and is missing where no listed host claims
-    /// it. Claims by hosts not listed count for nothing, and a list of
-    /// hosts none of which claims anything is no evidence at all.
     fn resolution_is_a_proven_bijection(
         hosts: &[u64],
         pairs: &[(u64, u64)],
@@ -182,7 +168,6 @@ mod tests {
         Ok(())
     }
 
-    /// Found by the property below.
     #[test]
     fn a_host_claiming_two_target_ids_resolves_neither() {
         resolution_is_a_proven_bijection(&[1, 2, 3, 4, 5, 6, 7, 8], &[(1, 1), (1, 2)]).unwrap();

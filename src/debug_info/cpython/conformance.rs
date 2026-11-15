@@ -1,6 +1,3 @@
-//! Checks generated layouts against DWARF, independently of headers and the offsets table.
-//! Covers every layout field and DWARF-described constant for matrix builds with debug output.
-
 use std::path::{Path, PathBuf};
 
 use super::layouts;
@@ -11,21 +8,12 @@ use crate::{
     RecordMember, RecordMemberLayout, TypeInfo, TypeKind, TypeReference,
 };
 
-/// The interpreters in the matrix whose builds have debug outputs:
-/// nixpkgs' 3.12, 3.13, 3.13t, 3.14, and 3.14t.
 const DESCRIBED: usize = 5;
 
-/// Where a field is in C: the type that holds it, as the headers name it,
-/// and the members that lead to it from there; no members for the type's
-/// size, and [`END`] last for where the member before it ends.
 type Member = (&'static str, &'static [&'static str]);
 
-/// The last of a member's path that stands for where the member it
-/// follows ends, as the end of an array.
 const END: &str = "<end>";
 
-/// Where each field is in the C of a minor version, or `None` for a field
-/// no build of that version has.
 #[expect(clippy::too_many_lines, reason = "one arm per field")]
 const fn member(field: Field, minor: u32) -> Option<Member> {
     let before_13 = minor < 13;
@@ -196,9 +184,6 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
         Field::OrderedDictNodeKey => ("_odictnode", &["key"]),
         Field::OrderedDictNodeHash => ("_odictnode", &["hash"]),
         Field::OrderedDictNodeNext => ("_odictnode", &["next"]),
-        // Threads before 3.15 have no base frame, and from 3.13 none
-        // keeps a C frame; 3.12 manages no extension's static types; and
-        // asyncio's task is `_asyncio`'s, which its own section checks.
         Field::DebugScriptSize
         | Field::TaskState
         | Field::TaskAwaitedBy
@@ -251,12 +236,6 @@ const fn member(field: Field, minor: u32) -> Option<Member> {
     })
 }
 
-/// Whether a field is of a type an extension module defines, whose debug
-/// information is the extension's rather than the runtime's: `datetime`'s,
-/// whose layouts come from its public header; `decimal.Decimal`'s, which
-/// tests/python/views.rs checks by the values its objects show; and
-/// `asyncio.Task`'s, which
-/// [`each_asyncio_build_agrees_with_its_debug_section`] checks.
 const fn in_extension(field: Field) -> bool {
     matches!(
         field,
@@ -296,10 +275,6 @@ const fn in_extension(field: Field) -> bool {
     )
 }
 
-/// The enumerator each constant DWARF describes is, by its C name. The
-/// frame owners are enumerators too, but a frame keeps its owner in a
-/// `char`, so no declaration uses their enumeration and DWARF leaves it
-/// out; the headers check them by name.
 const fn enumerator(constant: Constant) -> Option<&'static str> {
     match constant {
         Constant::DictKeysGeneral => Some("DICT_KEYS_GENERAL"),
@@ -309,7 +284,6 @@ const fn enumerator(constant: Constant) -> Option<&'static str> {
     }
 }
 
-/// The bitfield of a `str`'s state each shift is the place of.
 const fn state_bit(constant: Constant) -> Option<&'static str> {
     match constant {
         Constant::UnicodeKindShift => Some("kind"),
@@ -319,8 +293,6 @@ const fn state_bit(constant: Constant) -> Option<&'static str> {
     }
 }
 
-/// The module of the interpreter in `directory` that carries its runtime:
-/// the libpython it links, or the executable itself.
 pub(super) fn runtime_module(directory: &Path) -> PathBuf {
     let executable =
         std::fs::canonicalize(directory.join("python")).expect("resolve the interpreter");
@@ -345,7 +317,6 @@ pub(super) fn runtime_module(directory: &Path) -> PathBuf {
         .expect("the interpreter links a libpython")
 }
 
-/// The type a reference names, past its typedefs and qualifiers.
 fn underlying(image: &ModuleImage, mut reference: TypeReference) -> &TypeInfo {
     loop {
         let info = image.type_info(reference).expect("a described type");
@@ -360,7 +331,6 @@ fn underlying(image: &ModuleImage, mut reference: TypeReference) -> &TypeInfo {
     }
 }
 
-/// The complete structure or union the C name `name` names.
 fn aggregate<'a>(image: &'a ModuleImage, name: &str) -> &'a TypeInfo {
     image
         .types_named(name)
@@ -381,7 +351,6 @@ fn members(info: &TypeInfo) -> &[RecordMember] {
     }
 }
 
-/// The member `name` of an aggregate.
 fn member_named<'a>(info: &'a TypeInfo, name: &str) -> &'a RecordMember {
     members(info)
         .iter()
@@ -389,7 +358,6 @@ fn member_named<'a>(info: &'a TypeInfo, name: &str) -> &'a RecordMember {
         .unwrap_or_else(|| panic!("{} has no member {name}", info.name))
 }
 
-/// Where a field is, by DWARF: its offset, or its type's size.
 fn described(image: &ModuleImage, (ty, path): Member) -> u64 {
     let mut info = aggregate(image, ty);
     if path.is_empty() {
@@ -414,8 +382,6 @@ fn described(image: &ModuleImage, (ty, path): Member) -> u64 {
     offset
 }
 
-/// The value of the enumerator `name`, from whichever enumeration of the
-/// image holds it.
 fn enumerator_value(image: &ModuleImage, name: &str) -> Option<i128> {
     image
         .enumerators_named(name)
@@ -428,9 +394,6 @@ fn enumerator_value(image: &ModuleImage, name: &str) -> Option<i128> {
         })
 }
 
-/// Every interpreter in the matrix whose build has a debug output agrees
-/// with its generated layout on every field the layout holds, and on
-/// every constant DWARF describes.
 #[test]
 fn each_described_interpreter_agrees_with_its_dwarf() {
     let root = std::env::var_os("MICROSCOPE_CPYTHON")
@@ -513,10 +476,6 @@ fn each_described_interpreter_agrees_with_its_dwarf() {
     assert_eq!(checked, DESCRIBED, "the interpreters with debug outputs");
 }
 
-/// The fields `_asyncio`'s `.AsyncioDebug` section gives, in its order,
-/// each an 8-byte word: the task's size and fields, the interpreter's size
-/// and list of tasks, and the thread's size, running loop, running task,
-/// and list of tasks. `None` for a word no field is.
 const ASYNCIO_DEBUG: [Option<Field>; 13] = [
     Some(Field::TaskObjectSize),
     Some(Field::TaskName),
@@ -533,9 +492,6 @@ const ASYNCIO_DEBUG: [Option<Field>; 13] = [
     Some(Field::ThreadAsyncioTasksHead),
 ];
 
-/// The module of the interpreter in `directory` that carries `_asyncio`'s
-/// debug section: the runtime's, where `_asyncio` is built in, or the
-/// extension in its `lib-dynload`.
 fn asyncio_module(directory: &Path) -> PathBuf {
     let runtime = runtime_module(directory);
     let bytes = std::fs::read(&runtime).expect("read the runtime's module");
@@ -565,9 +521,6 @@ fn asyncio_module(directory: &Path) -> PathBuf {
         .expect("the interpreter has an _asyncio module")
 }
 
-/// Every interpreter whose layout reads asyncio's tasks agrees with the
-/// offsets its own `_asyncio` publishes for external debuggers, which the
-/// copy of `TaskObj` in scripts/cpython-layouts.c must match.
 #[test]
 fn each_asyncio_build_agrees_with_its_debug_section() {
     let root = std::env::var_os("MICROSCOPE_CPYTHON")

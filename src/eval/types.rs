@@ -1,6 +1,3 @@
-//! The types expressions compute with: the program's, seen through to their
-//! representation, and the few the language names itself.
-
 use std::sync::Arc;
 
 use super::number::{FloatFormat, IntType};
@@ -10,49 +7,32 @@ use crate::{
     NamedTypeRelationship, TypeId, TypeInfo, TypeKind, TypeReference,
 };
 
-/// A type an expression's value has.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
-    /// A type the program's debug information describes.
     Program(TypeReference),
 
-    /// An exact integer: unsuffixed literals and arithmetic results.
     Exact,
 
-    /// A built-in integer type, `iN` or `uN`.
     Int(IntType),
 
-    /// A built-in float type.
     Float(FloatFormat),
 
-    /// A C base type the program does not describe, as the target lays it
-    /// out.
     C(CBaseType),
     Bool,
 
-    /// A pointer the expression derived, by `&` or a cast.
     Pointer(Arc<Self>),
 
-    /// What `void*` points to.
     Void,
 
-    /// The type of `null`.
     Null,
 
-    /// The type of a string literal.
     Text,
 
-    /// A type only a value knows, as a Python variable's is: each
-    /// operation on the value finds it when it runs. Such values are
-    /// always places, or numbers and truth values computed from them.
     Dynamic,
 }
 
-/// What can be done with a value of a type.
 #[derive(Debug, Clone)]
 pub enum Category {
-    /// An integer: exact when `int` is `None`. Enumerations keep their
-    /// enumerators.
     Integer {
         int: Option<IntType>,
         enumerators: Option<Arc<[Enumerator]>>,
@@ -60,10 +40,8 @@ pub enum Category {
     Float(FloatFormat),
     Bool,
 
-    /// A pointer, to `void` when the pointee is `None`.
     Pointer(Option<Ty>),
 
-    /// A language reference, which stands for what it refers to.
     Reference,
     Array {
         element: TypeReference,
@@ -71,49 +49,34 @@ pub enum Category {
     },
     Slice(TypeReference),
 
-    /// An array bounded at run time, whose value finds its bounds.
     RuntimeArray,
 
-    /// A record, union, or variant, whose members are reached with `.`.
     Record,
     Void,
     Null,
     Text,
 
-    /// A type only a value knows, which each operation finds when it runs.
     Dynamic,
 
-    /// A type the debugger cannot compute with, and why.
     Opaque(Arc<str>),
 }
 
-/// The types a scope describes, by reference.
 pub trait TypeSource {
-    /// One program type, or `None` when its metadata is malformed.
     fn type_info(&self, ty: TypeReference) -> Option<&TypeInfo>;
 
-    /// The size of the target's addresses, in bytes.
     fn pointer_size(&self) -> u8;
 
-    /// The target's byte order.
     fn byte_order(&self) -> crate::ByteOrder;
 
-    /// The target's layout of a C base type, or `None` when microscope does not
-    /// know the target's C data model.
     fn c_base_type(&self, ty: CBaseType) -> Option<BaseType>;
 
-    /// Whether two types have one identity, as one type defined in several
-    /// units does.
     fn same_type(&self, left: TypeReference, right: TypeReference) -> bool {
         left == right
     }
 }
 
-/// How deep a chain of typedefs and qualifiers may go.
 const MAX_WRAPPERS: usize = 64;
 
-/// The type a chain of typedefs and qualifiers stands for, and its
-/// metadata.
 pub fn representation(
     types: &dyn TypeSource,
     mut ty: TypeReference,
@@ -141,7 +104,6 @@ pub fn representation(
     Err("the type's typedefs nest too deeply".into())
 }
 
-/// Classifies a type by what can be done with its values.
 pub fn category(types: &dyn TypeSource, ty: &Ty) -> Category {
     match ty {
         Ty::Program(reference) => program_category(types, *reference),
@@ -267,7 +229,6 @@ fn base_category(base: &BaseType) -> Category {
     }
 }
 
-/// Whether values of a type are characters, whose pointers point at text.
 pub fn is_character(types: &dyn TypeSource, ty: &Ty) -> bool {
     if let Ty::C(c) = ty {
         return types.c_base_type(*c).is_some_and(|base| {
@@ -299,7 +260,6 @@ pub fn is_character(types: &dyn TypeSource, ty: &Ty) -> bool {
     )
 }
 
-/// A type's size in bytes, which exact integers, `null`, and strings lack.
 pub fn size_of(types: &dyn TypeSource, ty: &Ty) -> Option<u64> {
     match ty {
         Ty::Program(reference) => types.type_info(*reference)?.byte_size,
@@ -312,7 +272,6 @@ pub fn size_of(types: &dyn TypeSource, ty: &Ty) -> Option<u64> {
     }
 }
 
-/// The name a type is shown by.
 pub fn type_name(types: &dyn TypeSource, ty: &Ty) -> String {
     match ty {
         Ty::Program(reference) => types
@@ -331,10 +290,6 @@ pub fn type_name(types: &dyn TypeSource, ty: &Ty) -> String {
     }
 }
 
-/// The name of a pointer to a type named `pointee`. A pointer to a
-/// pointer to a function or an array adds its `*` inside the declarator's
-/// parentheses, as `int (**)(int)` points to `int (*)(int)`, and a pointer
-/// to an array parenthesizes its `*`, as in `int (*)[2]`.
 fn pointer_name(pointee: &str) -> String {
     let hole = pointee.match_indices("(*").find(|(index, _)| {
         pointee[index + 1..]
@@ -358,27 +313,17 @@ fn int_name(int: IntType) -> String {
     format!("{}{}", if int.is_signed() { 'i' } else { 'u' }, int.width())
 }
 
-/// The image that types the language itself defines claim.
 pub const LANGUAGE_IMAGE: ModuleImageId = ModuleImageId::new(u32::MAX);
 
-/// The identity of a type without one of its own, which no language or
-/// program type has.
 pub const UNIDENTIFIED: TypeReference = TypeReference {
     image: LANGUAGE_IMAGE,
     id: TypeId::new(u32::MAX),
 };
 
-/// The image ids at and above this one belong to the language: no loaded
-/// image has one. Pointers to a program type claim those below
-/// [`LANGUAGE_IMAGE`], one per pointee image and pointer depth.
 const LANGUAGE_IMAGES: u32 = 1 << 31;
 
-/// How deep a pointer to a program type may be and keep its own identity,
-/// past the casts and `&`s an expression can nest.
 const POINTER_DEPTHS: u32 = 512;
 
-/// A stable identity within [`LANGUAGE_IMAGE`] for a type the language
-/// defines, `depth` pointers to `leaf`. Each pointer level adds `1 << 20`.
 fn language_type_id(leaf: &Ty, depth: u32) -> Option<u32> {
     let leaf = match leaf {
         Ty::Exact => 0,
@@ -400,7 +345,6 @@ fn language_type_id(leaf: &Ty, depth: u32) -> Option<u32> {
     Some((depth << 20) + leaf)
 }
 
-/// The reference a type is identified by: its own for a program type.
 pub fn type_reference(ty: &Ty) -> TypeReference {
     let mut depth = 0_u32;
     let mut leaf = ty;
@@ -435,7 +379,6 @@ pub fn type_reference(ty: &Ty) -> TypeReference {
         })
 }
 
-/// Metadata describing a type, as results carry it.
 pub fn type_info(types: &dyn TypeSource, ty: &Ty) -> TypeInfo {
     if let Ty::Program(reference) = ty
         && let Some(info) = types.type_info(*reference)
@@ -491,9 +434,6 @@ pub fn type_info(types: &dyn TypeSource, ty: &Ty) -> TypeInfo {
     }
 }
 
-/// The canonical spelling of a C base type from its words in any order,
-/// such as `unsigned long` for `long unsigned int`, or `None` when the words
-/// spell no C type.
 pub fn c_type_key(words: &[CWord]) -> Option<String> {
     let count = |word| words.iter().filter(|&&found| found == word).count();
     let (signed, unsigned) = (count(CWord::Signed), count(CWord::Unsigned));
@@ -523,14 +463,11 @@ pub fn c_type_key(words: &[CWord]) -> Option<String> {
     Some(key)
 }
 
-/// The canonical spelling of a type name written as C base-type words, as
-/// producers name base types, or `None` when it is not one.
 pub fn c_type_key_of_name(name: &str) -> Option<String> {
     let words: Option<Vec<CWord>> = name.split_whitespace().map(CWord::parse).collect();
     c_type_key(&words?)
 }
 
-/// The built-in type a name spells, given the target's address size.
 pub fn builtin(name: &str, pointer_size: u8) -> Option<Ty> {
     match name {
         "bool" => return Some(Ty::Bool),

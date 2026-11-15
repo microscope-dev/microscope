@@ -1,13 +1,3 @@
-//! A thread that unwinds the BPF engine's sampled stacks, so that the
-//! thread that drains its ring spends its time draining it
-//! (`dev/syscalls.md`).
-//!
-//! Each stack is unwound through its process's modules as they were when
-//! its record was handled ([`Unwinding`]). The thread keeps its own
-//! [`FrameRules`]. Stacks come back in the order they were sent; the reader
-//! gives each event to the sink once its stack, and every one before it,
-//! is back.
-
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
@@ -15,16 +5,12 @@ use super::bpf::SampledStack;
 use super::stacks::Unwinding;
 use crate::unwind::sample::{FrameRules, SampledFrame, SampledState, StackEnd};
 
-/// A stack to unwind, numbered by the reader.
 pub struct Job {
     pub id: u64,
     pub unwinding: Unwinding,
     pub sampled: SampledStack,
 }
 
-/// A stack unwound, with the sample and modules it was unwound from, or the
-/// panic unwinding it raised, which the reader raises again, as it would
-/// have raised it unwinding the stack itself.
 pub struct Done {
     pub id: u64,
     pub unwinding: Unwinding,
@@ -32,7 +18,6 @@ pub struct Done {
     pub unwound: std::thread::Result<(Vec<SampledFrame>, StackEnd)>,
 }
 
-/// The unwinding thread.
 pub struct Unwinder {
     jobs: Option<mpsc::Sender<Job>>,
     done: mpsc::Receiver<Done>,
@@ -58,7 +43,6 @@ impl Unwinder {
                             },
                         )
                     }));
-                    // What a panic left of the rules may be half made.
                     if unwound.is_err() {
                         rules = FrameRules::default();
                     }
@@ -81,8 +65,6 @@ impl Unwinder {
         })
     }
 
-    /// Gives `job` to the thread: whether it took it, as it does while it
-    /// runs.
     #[must_use]
     pub fn send(&self, job: Job) -> bool {
         self.jobs
@@ -90,14 +72,11 @@ impl Unwinder {
             .is_some_and(|jobs| jobs.send(job).is_ok())
     }
 
-    /// A stack unwound since last asked, if any.
     #[must_use]
     pub fn try_done(&self) -> Option<Done> {
         self.done.try_recv().ok()
     }
 
-    /// The next stack unwound, waiting for it; `None` once the thread no
-    /// longer runs.
     #[must_use]
     pub fn wait_done(&self) -> Option<Done> {
         self.done.recv().ok()

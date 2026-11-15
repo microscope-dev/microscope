@@ -1,48 +1,31 @@
-//! Bounded CPython structure reads using the module's layout.
-//! Unreadable memory and layout mismatches return errors naming the affected memory.
-
 use std::sync::Arc;
 
 use crate::VirtualAddress;
 use crate::image::python::{Constant, Field, PythonLayout};
 use crate::runtime_model::{RuntimeStop, StopMemory};
 
-/// The longest string read, in characters: names and paths are far
-/// shorter.
 pub(super) const MAX_STRING: u64 = 4096;
 
-/// The largest sequence read, in items or bytes.
 pub(super) const MAX_ITEMS: u64 = 1 << 16;
 
-/// The longest C string read, in bytes, as a type's name.
 const MAX_C_STRING: u64 = 256;
 
-/// How many bytes of an object are read at once, before any of its
-/// fields: enough for the header and fixed fields of each built-in object
-/// the debugger presents, and the text of a short string.
 const HEAD: usize = 64;
 
-/// The size of a block of memory a reader reads at once.
 pub(super) const BLOCK: usize = StopMemory::BLOCK;
 
-/// A problem reading the process, as one line.
 pub(super) type Problem = Arc<str>;
 
-/// What pays for each read a reader makes.
 pub(super) trait Charge {
-    /// Pays for one read of `bytes`, or says why it cannot be paid for.
     fn charge(&self, bytes: usize) -> Result<(), Problem>;
 }
 
-/// The memory of a stopped process, read by a layout, and what pays for
-/// the reads, if anything does.
 #[derive(Clone, Copy)]
 pub(super) struct Reader<'a> {
     pub(super) stop: &'a dyn RuntimeStop,
     pub(super) layout: &'a PythonLayout,
     pub(super) charge: Option<&'a dyn Charge>,
 
-    /// Optional block cache for reads up to one block; cache hits incur no charge.
     pub(super) blocks: Option<&'a StopMemory>,
 }
 
@@ -53,8 +36,6 @@ impl<'a> Reader<'a> {
         Ok(bytes)
     }
 
-    /// The first bytes of the object at `address`, read at once, or none
-    /// where they cannot all be read, as near the end of a mapping.
     pub(super) fn head(&self, address: VirtualAddress) -> Result<Head<'_, 'a>, Problem> {
         let mut bytes = vec![0; HEAD];
         if !self.read_some(address, &mut bytes)? {
@@ -80,16 +61,12 @@ impl<'a> Reader<'a> {
             .ok_or_else(|| unreadable(address))
     }
 
-    /// Reads `bytes` at `address`, saying whether they could all be read,
-    /// or why the read could not be paid for.
     fn read_some(&self, address: VirtualAddress, bytes: &mut [u8]) -> Result<bool, Problem> {
         let length = bytes.len() as u64;
         if let Some(blocks) = self.blocks
             && length <= BLOCK as u64
             && address.get().checked_add(length).is_some()
         {
-            // At most two blocks overlap. If either is unreadable, try the exact range:
-            // it may still be readable in memory not mapped by the page.
             let mut done = 0;
 
             while let Some(rest) = bytes.get_mut(done..)
@@ -125,8 +102,6 @@ impl<'a> Reader<'a> {
         Ok(self.stop.read(address, bytes))
     }
 
-    /// Copies from `at` to the block's end or `into`'s capacity, charging only new reads.
-    /// Returns bytes copied, or `None` if the block is unreadable.
     fn copy_block(
         &self,
         blocks: &StopMemory,
@@ -142,9 +117,6 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// The NUL-terminated string at `address`, of at most
-    /// [`MAX_C_STRING`] bytes, read a few aligned bytes at a time so that
-    /// no read reaches past a page its string ends in.
     pub(super) fn c_string(&self, address: VirtualAddress) -> Result<Arc<str>, Problem> {
         const CHUNK: u64 = 16;
         let mut text = Vec::new();
@@ -173,15 +145,12 @@ impl<'a> Reader<'a> {
         Err(format!("the C string at {address:#x} is longer than {MAX_C_STRING} bytes").into())
     }
 
-    /// The offset of `field`, which the layout must have.
     pub(super) fn offset(&self, field: Field) -> Result<u64, Problem> {
         self.layout
             .field(field)
             .ok_or_else(|| format!("CPython's layout has no {}", field.name()).into())
     }
 
-    /// The structure at `address` whose size is the layout's `size`, read
-    /// whole.
     pub(super) fn record(
         &self,
         address: VirtualAddress,
@@ -194,7 +163,6 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// The `length` bytes at `field` of the object at `object`.
     pub(super) fn field_bytes(
         &self,
         object: VirtualAddress,
@@ -208,8 +176,6 @@ impl<'a> Reader<'a> {
         self.word(object.wrapping_add(self.offset(field)?))
     }
 
-    /// The `str` at `object`, of at most [`MAX_STRING`] characters, as a
-    /// name or a path is: one that holds a lone surrogate is malformed.
     pub(super) fn string(&self, object: VirtualAddress) -> Result<Arc<str>, Problem> {
         let (points, length) = self.head(object)?.code_points(MAX_STRING)?;
         if length > MAX_STRING {
@@ -224,7 +190,6 @@ impl<'a> Reader<'a> {
             .ok_or_else(|| malformed(object, "str"))
     }
 
-    /// The contents of the `bytes` at `object`, of at most [`MAX_ITEMS`].
     pub(super) fn bytes_object(&self, object: VirtualAddress) -> Result<Vec<u8>, Problem> {
         let length = self.field_word(object, Field::BytesSize)?;
         if length > MAX_ITEMS {
@@ -234,7 +199,6 @@ impl<'a> Reader<'a> {
         self.field_bytes(object, Field::BytesData, length)
     }
 
-    /// The items of the `tuple` at `object`, of at most [`MAX_ITEMS`].
     pub(super) fn tuple(&self, object: VirtualAddress) -> Result<Vec<VirtualAddress>, Problem> {
         let length = self.field_word(object, Field::TupleSize)?;
         if length > MAX_ITEMS {
@@ -257,9 +221,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The first bytes of an object, read at once, so a small object costs
-/// one read. What lies past them, or in an object whose head could not be
-/// read whole, is read where it is.
 pub(super) struct Head<'r, 'a> {
     reader: &'r Reader<'a>,
     address: VirtualAddress,
@@ -267,12 +228,10 @@ pub(super) struct Head<'r, 'a> {
 }
 
 impl Head<'_, '_> {
-    /// The address of the object the head is of.
     pub(super) const fn address(&self) -> VirtualAddress {
         self.address
     }
 
-    /// The `length` bytes at `at`, from the head where it holds them all.
     pub(super) fn bytes(&self, at: VirtualAddress, length: u64) -> Result<Vec<u8>, Problem> {
         let held = at.get().checked_sub(self.address.get()).and_then(|start| {
             let end = start.checked_add(length)?;
@@ -282,7 +241,6 @@ impl Head<'_, '_> {
         held.map_or_else(|| self.reader.bytes(at, length), |bytes| Ok(bytes.to_vec()))
     }
 
-    /// The `length` bytes at the object's `field`.
     pub(super) fn field_bytes(&self, field: Field, length: u64) -> Result<Vec<u8>, Problem> {
         self.bytes(
             self.address.wrapping_add(self.reader.offset(field)?),
@@ -290,13 +248,11 @@ impl Head<'_, '_> {
         )
     }
 
-    /// The word at the object's `field`.
     pub(super) fn field_word(&self, field: Field) -> Result<u64, Problem> {
         let bytes = self.field_bytes(field, 8)?;
         read_le(&bytes, 0, 8).ok_or_else(|| unreadable(self.address))
     }
 
-    /// The first byte at the object's `field`.
     pub(super) fn field_byte(&self, field: Field) -> Result<u8, Problem> {
         let bytes = self.field_bytes(field, 1)?;
         bytes
@@ -305,8 +261,6 @@ impl Head<'_, '_> {
             .ok_or_else(|| unreadable(self.address))
     }
 
-    /// The first `limit` code points of the `str` the head is of, as
-    /// CPython keeps them, and how many it holds.
     pub(super) fn code_points(&self, limit: u64) -> Result<(Vec<u32>, u64), Problem> {
         let (object, reader) = (self.address, self.reader);
         let compact = reader.offset(Field::UnicodeCompactSize)?;
@@ -367,7 +321,6 @@ impl Head<'_, '_> {
             "the code points read of the str at virtual {object:#x} are not the {shown} shown",
         );
 
-        // A 4-byte kind holds no code point past Unicode's last.
         if points.iter().any(|point| *point > u32::from(char::MAX)) {
             return Err(malformed(object, "str"));
         }
@@ -376,7 +329,6 @@ impl Head<'_, '_> {
     }
 }
 
-/// A structure read whole.
 pub(super) struct Record<'a> {
     pub(super) address: VirtualAddress,
     bytes: Vec<u8>,
@@ -384,7 +336,6 @@ pub(super) struct Record<'a> {
 }
 
 impl Record<'_> {
-    /// The `width` bytes at `field`, as an unsigned number.
     pub(super) fn number(&self, field: Field, width: u64) -> Result<u64, Problem> {
         let offset = self.layout.field(field).ok_or_else(|| -> Problem {
             format!("CPython's layout has no {}", field.name()).into()
@@ -403,7 +354,6 @@ impl Record<'_> {
             .map(VirtualAddress::new))
     }
 
-    /// A C `int` at `field`.
     pub(super) fn int(&self, field: Field) -> Result<i32, Problem> {
         let number = self.number(field, 4)?;
         u32::try_from(number)
@@ -412,8 +362,6 @@ impl Record<'_> {
     }
 }
 
-/// What a stack reference at a frame's field holds, from 3.14: a pointer
-/// with a reference-counting bit, or a tagged integer.
 pub(super) fn stack_reference(bits: u64) -> Option<VirtualAddress> {
     match bits & 3 {
         0 | 1 => Some(bits & !1)
@@ -423,7 +371,6 @@ pub(super) fn stack_reference(bits: u64) -> Option<VirtualAddress> {
     }
 }
 
-/// The `width`-byte little-endian number at `offset` of `bytes`.
 pub(super) fn read_le(bytes: &[u8], offset: u64, width: u64) -> Option<u64> {
     debug_assert!(width <= 8, "a {width}-byte number is wider than a word");
     let start = usize::try_from(offset).ok()?;

@@ -1,8 +1,3 @@
-//! Process code objects, cached across stops. Each use compares the object's
-//! header with its cached proof; a mismatch after address reuse triggers decoding.
-//!
-//! Names, locals, and line tables live in vector pools, indexed by dense ids and spans.
-
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -16,7 +11,6 @@ use crate::runtime_model::SampledCode;
 crate::model::id_type!(CodeId, "A code object's row in one process's code table.");
 crate::model::id_type!(NameId, "A string in one process's code table.");
 
-/// The rows of one pool that a record owns.
 #[derive(Debug)]
 pub(super) struct Span<T> {
     first: u32,
@@ -38,7 +32,6 @@ impl<T> Span<T> {
         first..first + self.count as usize
     }
 
-    /// The span of the rows pushed onto a pool since it held `first`.
     fn since(first: usize, pool: usize) -> Option<Self> {
         Some(Self {
             first: u32::try_from(first).ok()?,
@@ -48,16 +41,13 @@ impl<T> Span<T> {
     }
 }
 
-/// A local variable's name and what kind of variable it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Local {
     pub(super) name: NameId,
 
-    /// CPython's `co_localspluskinds` byte.
     pub(super) kind: u8,
 }
 
-/// What proves a code object is the one a row was decoded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CodeProof {
     ty: u64,
@@ -68,7 +58,6 @@ struct CodeProof {
     units: u64,
 }
 
-/// One code object.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CodeRecord {
     pub(super) address: VirtualAddress,
@@ -77,29 +66,21 @@ pub(super) struct CodeRecord {
     pub(super) file: NameId,
     pub(super) first_line: i32,
 
-    /// How many code units its bytecode holds.
     pub(super) units: u64,
 
-    /// How many of its first locals its caller passes, as parameters.
     pub(super) parameters: u32,
 
-    /// Whether CPython runs it for itself, as the frame it pushes beneath
-    /// an `__init__` to check what it returned, which is at no line.
     pub(super) internal: bool,
     pub(super) locals: Span<Local>,
     lines: Span<u8>,
 
-    /// The function last seen running it, the `str` it named itself by,
-    /// and that name, as [`CodeTable::function_name`] read them.
     function: Option<(VirtualAddress, VirtualAddress, NameId)>,
 }
 
-/// The code objects a process has shown.
 #[derive(Debug, Default)]
 pub(super) struct CodeTable {
     rows: Vec<CodeRecord>,
 
-    /// The row of each code object, by its address; for lookups only.
     index: HashMap<VirtualAddress, CodeId>,
     names: Vec<Arc<str>>,
     name_index: HashMap<Arc<str>, NameId>,
@@ -107,21 +88,13 @@ pub(super) struct CodeTable {
     lines: Vec<u8>,
 }
 
-/// `CO_NO_MONITORING_EVENTS`, which from 3.13 marks the code objects
-/// CPython makes for itself, as `_Py_InitCleanup`; 3.12 has none and leaves
-/// the bit clear.
 const NO_MONITORING_EVENTS: u32 = 0x0200_0000;
 
-/// The most rows a table keeps before it begins again: a long-running
-/// program makes and frees code objects, as `exec` and lambdas do.
 const MAX_ROWS: usize = 1 << 16;
 
 const _: () = assert!(MAX_ROWS <= u32::MAX as usize, "every row's id fits its u32");
 
 impl CodeTable {
-    /// The row of the code object at `address`, proved against the
-    /// object as it is now, and decoded if it is new. `code_type` is
-    /// where `PyCode_Type` is, which every code object's type is.
     pub(super) fn code(
         &mut self,
         reader: &Reader<'_>,
@@ -151,7 +124,6 @@ impl CodeTable {
 
         let id = self.decode(reader, &header, proof)?;
         self.index.insert(address, id);
-        // Older rows were checked on decode; rechecking them would make each decode O(n).
         self.check_row(id.index());
         debug_assert!(
             self.rows
@@ -248,8 +220,6 @@ impl CodeTable {
         &self.rows[id.index()]
     }
 
-    /// Whether the row `id` is of the code object a walker in the kernel
-    /// read as `sampled`.
     pub(super) fn proves(&self, id: CodeId, sampled: SampledCode) -> bool {
         let proof = self.row(id).proof;
         proof.qualname == sampled.qualname
@@ -257,8 +227,6 @@ impl CodeTable {
             && proof.first_line == sampled.first_line
     }
 
-    /// The locals of the code object in row `id`, in the order its frames
-    /// keep them.
     #[expect(
         clippy::indexing_slicing,
         reason = "a row's span of locals was taken as it was pushed, and `locals` only grows \
@@ -268,9 +236,6 @@ impl CodeTable {
         &self.locals[self.row(id).locals.range()]
     }
 
-    /// The `__qualname__` of the function at `function`, which runs the
-    /// code of row `id` and names itself by the `str` at `qualname`: read
-    /// once while the row's code is seen run by that function by that name.
     pub(super) fn function_name(
         &mut self,
         reader: &Reader<'_>,
@@ -305,8 +270,6 @@ impl CodeTable {
         &self.names[id.index()]
     }
 
-    /// The line of the code unit at byte `offset` of a code object's
-    /// bytecode: `Ok(None)` for code at no line.
     pub(super) fn line(
         &self,
         id: CodeId,
@@ -322,8 +285,6 @@ impl CodeTable {
         linetable::line_at(lines, i64::from(row.first_line), offset)
     }
 
-    /// Panics unless row `index`'s spans lie within their pools, and each
-    /// name id it and its locals hold names a name.
     fn check_row(&self, index: usize) {
         let Some(row) = self.rows.get(index) else {
             debug_assert!(false, "no row {index}");
@@ -355,9 +316,6 @@ impl CodeTable {
     }
 }
 
-/// How many parameters a code object's header says it has: its positional
-/// and keyword-only ones, then its `*args` and `**kwargs`, which are its
-/// first locals in that order.
 fn parameters(reader: &Reader<'_>, header: &Record<'_>) -> Result<u32, Problem> {
     let count = |field| {
         u32::try_from(header.int(field)?).map_err(|_| malformed(header.address, "code object"))
@@ -370,8 +328,6 @@ fn parameters(reader: &Reader<'_>, header: &Record<'_>) -> Result<u32, Problem> 
         .saturating_add(flag(Constant::VarKeywords)))
 }
 
-/// What a code object's header says that proves it is the object a row
-/// was decoded from.
 fn proof(header: &Record<'_>) -> Result<CodeProof, Problem> {
     Ok(CodeProof {
         ty: header.word(Field::ObjectType)?,
@@ -383,12 +339,6 @@ fn proof(header: &Record<'_>) -> Result<CodeProof, Problem> {
     })
 }
 
-/// A code object's file name as the path it names: CPython makes a script
-/// named relatively absolute by joining it to the working directory, so
-/// `python ./app.py` compiles `/work/./app.py`. Dropping `.` and repeated
-/// separators names the same file; `..` is kept, since through a link it
-/// names another. Names that are no absolute path, such as `<string>`,
-/// are kept as they are.
 fn source_path(file: Arc<str>) -> Arc<str> {
     let path = std::path::Path::new(&*file);
     if !path.is_absolute() {
@@ -406,8 +356,6 @@ fn source_path(file: Arc<str>) -> Arc<str> {
 mod tests {
     use super::*;
 
-    /// A script named relatively compiles with a `.` in its path, and its
-    /// frames name the file without it, as breakpoints and listings do.
     #[test]
     fn a_code_objects_path_drops_its_current_directories() {
         for (file, path) in [

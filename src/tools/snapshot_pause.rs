@@ -1,10 +1,3 @@
-//! How long stopped Python snapshots hold a program paused.
-//!
-//! Each interpreter runs the profiler's Python workload under the snapshot
-//! engine, with its separate debug files when it has them, until the
-//! recording holds a number of snapshots. The pauses are the spans the
-//! recording marked as stopped for each snapshot.
-
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,15 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::profiler::{GapReason, PythonEngine, RecordOptions, Watch, record_watched};
 
-/// The interpreters measured: the first three with separate debug files,
-/// the others without.
 pub const INTERPRETERS: [&str; 5] = ["3.12", "3.14", "3.14t", "3.15", "standalone-3.14"];
 
-/// How often the engine asks for a snapshot. Shorter than any pause, so
-/// that snapshots follow one another as fast as they can be taken.
 const EVERY: Duration = Duration::from_millis(20);
 
-/// How long a recording may take to gather its snapshots.
 const DEADLINE: Duration = Duration::from_secs(120);
 
 pub struct Options {
@@ -31,14 +19,12 @@ pub struct Options {
     pub only: Vec<String>,
 }
 
-/// One interpreter's snapshots, each pause in microseconds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
     pub interpreter: String,
     pub pauses_us: Vec<u64>,
 }
 
-/// The pauses of one interpreter's run, summarized.
 #[derive(Debug, Clone)]
 pub struct Summary {
     pub interpreter: String,
@@ -48,7 +34,6 @@ pub struct Summary {
     pub max_us: u64,
 }
 
-/// Records each interpreter `options` names in turn.
 pub fn measure(options: &Options, mut each: impl FnMut(&Run)) -> Result<Vec<Run>> {
     let root = std::env::var_os("MICROSCOPE_CPYTHON")
         .context("MICROSCOPE_CPYTHON names the interpreters; run in the dev shell")?;
@@ -125,14 +110,12 @@ fn run(root: &std::path::Path, interpreter: &str, snapshots: u64) -> Result<Run>
     })
 }
 
-/// Each run's pauses by their median, 90th percentile, and longest.
 #[must_use]
 pub fn summarize(runs: &[Run]) -> Vec<Summary> {
     runs.iter()
         .map(|run| {
             let mut pauses = run.pauses_us.clone();
             pauses.sort_unstable();
-            // The pause `tenths` of the way from the shortest to the longest.
             let at = |tenths: usize| {
                 let index = (pauses.len().saturating_sub(1) * tenths + 5) / 10;
                 pauses.get(index).copied().unwrap_or(0)

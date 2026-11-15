@@ -1,8 +1,3 @@
-//! Two tasks deadlocked on each other's `tokio::sync::Mutex`: both are
-//! listed waiting at the same await for the semaphore under the mutex, and
-//! what each holds and what each waits for, read from their suspended
-//! frames, close the cycle: each waits for the mutex the other holds.
-
 use std::collections::BTreeMap;
 
 use microscope::{
@@ -23,7 +18,6 @@ const BUILDS: [&str; 4] = [
 ];
 const SOURCE: &str = "deadlock/src/main.rs";
 
-/// The address an expression names in frame `frame` of a task.
 async fn address(
     scenario: &Scenario,
     stop: StopId,
@@ -58,8 +52,6 @@ async fn address(
     }
 }
 
-/// Both tasks wait for the semaphore under a mutex, at the line that locks
-/// the second, and the mutex each waits for is the one the other holds.
 #[tokio::test]
 async fn each_deadlocked_task_waits_for_the_mutex_the_other_holds() {
     for fixture in BUILDS {
@@ -88,8 +80,6 @@ async fn each_deadlocked_task_waits_for_the_mutex_the_other_holds() {
             );
         }
 
-        // Each task's frames: what tokio's `lock` waits on, and the guard
-        // its own function holds.
         let mut holds = BTreeMap::new();
         let mut waits = BTreeMap::new();
         for task in [left, right] {

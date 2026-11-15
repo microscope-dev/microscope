@@ -1,7 +1,3 @@
-// The fast backend: the whole page, rendered in Vitest's Chromium against a
-// scripted debugger, with keys pressed through the browser as a person
-// presses them. A journey runs here in a few hundred milliseconds.
-
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render } from "@testing-library/react";
 import { createElement } from "react";
@@ -20,12 +16,10 @@ import { readGroups } from "./layout";
 import { type Script, ScriptedDebugger } from "./scripted";
 import { parseChord, toKeyboard, type User, type ValuePane } from "./user";
 
-/** Waits this long for what a journey expects before failing. */
 const DEADLINE = { ...POLL, timeout: 2_000 };
 
 const PANES: Record<ValuePane, string> = { Variables: "variables", Watch: "watches" };
 
-/** Renders the page at `/`, served by a debugger following `script`. */
 export async function openPage(
   script: Script,
 ): Promise<{ user: User; debugger: ScriptedDebugger }> {
@@ -33,7 +27,7 @@ export async function openPage(
   forgetting(server.session.store);
   const scripted = new ScriptedDebugger(server, script);
   const router = createAppRouter(createMemoryHistory({ initialEntries: ["/"] }));
-  // The page fills the window, as index.html has it.
+
   await page.viewport(1440, 900);
   const container = document.createElement("div");
   document.body.append(container);
@@ -49,7 +43,6 @@ export async function openPage(
   return { user: new FastUser(), debugger: scripted };
 }
 
-/** Forgets what one journey left: its page, its answers, and its tab. */
 export function closePage(): void {
   cleanup();
   for (const left of document.body.querySelectorAll(":scope > div:empty")) {
@@ -60,7 +53,6 @@ export function closePage(): void {
   resetWorkbench();
 }
 
-/** The single element `selector` finds, or why there is not one. */
 function one(selector: string, within: ParentNode = document): Element {
   const found = within.querySelectorAll(selector);
   if (found.length !== 1) {

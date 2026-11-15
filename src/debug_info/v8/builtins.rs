@@ -1,19 +1,3 @@
-//! The numbers of V8's builtins, generated from each release build's own
-//! `builtin_metadata` table for `src/image/v8/builtins.gen.rs`. A
-//! builtin's number is its index in `BUILTIN_LIST`, which a function that
-//! runs it keeps as its shared info's function data, a Smi. The list's
-//! entries depend on the build's configuration (Intl, Temporal,
-//! WebAssembly, leaptiering), so the numbers come from the binary the
-//! release ships rather than from the headers: `builtins.cc`'s
-//! `builtin_metadata`, one 24-byte `BuiltinMetadata` per builtin in that
-//! order, each beginning with a pointer to the builtin's name.
-//!
-//! A table's pointers are the file's words where the build is not
-//! position-independent, and the addends of their relative relocations
-//! where it is. A build that keeps no symbol table, as Debian's libnode,
-//! is found by the one relocated pointer to the first builtin's name that
-//! the second's follows.
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -22,13 +6,10 @@ use object::{Object, ObjectSection, ObjectSymbol};
 
 use crate::image::v8::{BUILTIN_METADATA as METADATA, Builtin};
 
-/// The size of one `BuiltinMetadata`: its name, its kind, and its data.
 const ENTRY: u64 = 24;
 
-/// The first and second builtins of every supported version.
 const FIRST: [&str; 2] = ["DeoptimizationEntry_Eager", "DeoptimizationEntry_Lazy"];
 
-/// A build's builtin names, in number order, read from its table.
 pub(super) fn names(path: &Path) -> Vec<String> {
     let data =
         std::fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
@@ -100,9 +81,6 @@ pub(super) fn names(path: &Path) -> Vec<String> {
             break;
         }
         let entry = base + index * ENTRY;
-        // Without a symbol's size, the table ends at the first entry whose
-        // name is no relocated pointer to a name. Debian's leaves an entry
-        // of a C++ builtin it does not build, DummyBuiltin, all zeros.
         let name = match count {
             Some(_) => name_at(entry)
                 .unwrap_or_else(|| panic!("{}: builtin {index} has no name", path.display())),
@@ -135,8 +113,6 @@ pub(super) fn names(path: &Path) -> Vec<String> {
     names
 }
 
-/// The generated file, from the builtins of each version's release build
-/// in `builds`.
 pub(super) fn generate(builds: &[((u32, u32), Vec<String>)], notice: &str) -> String {
     let mut text = String::from(
         "// @generated from the builtin_metadata table of each supported V8\n\

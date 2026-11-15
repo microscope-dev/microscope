@@ -1,19 +1,3 @@
-//! One waiter for every process a tracer thread traces.
-//!
-//! `waitpid(-1)` returns any traced child's status, so two waiters in one
-//! process would take each other's. The hub is the only one: it polls for
-//! every controller its tracer thread serves and routes each status to the
-//! controller that owns the thread it reports on. A thread is owned by the
-//! controller whose process is its thread group, or else, for a new process
-//! whose fork event has not been seen yet, by its parent's controller, which
-//! settles fork children. Each routed thread is remembered until its exit
-//! status, the last it reports, so a status read after `/proc` forgot the
-//! thread still reaches its owner.
-//!
-//! A panic ends the waiter for good, as it ends a controller. The tracer
-//! thread then releases every member's process, as after a controller's
-//! panic, and the controllers take the statuses they need themselves.
-
 use std::collections::{BTreeMap, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -30,28 +14,20 @@ use super::signals::WaitEvent;
 use super::{ControllerMessage, WAITER_THREAD_NAME};
 use crate::Result;
 
-/// The shortest interval between polls while statuses keep arriving.
 const MIN_POLL: Duration = Duration::from_micros(20);
 
-/// The longest poll interval while every process runs without reporting.
 const MAX_POLL: Duration = Duration::from_millis(5);
 
-/// In development builds, whether the next status a waiter routes makes it
-/// panic, to test what a waiter's panic leaves.
 #[cfg(debug_assertions)]
 static PANIC_INJECTED: AtomicBool = AtomicBool::new(false);
 
-/// Makes the next status a waiter routes panic it.
 #[cfg(debug_assertions)]
 pub(super) fn inject_panic() {
     PANIC_INJECTED.store(true, Ordering::Release);
 }
 
-/// Identifies one controller the hub routes statuses to.
 pub(super) type MemberKey = u64;
 
-/// The waiter shared by a tracer thread's controllers. Dropping it stops
-/// its thread.
 pub(super) struct WaitHub {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
@@ -61,15 +37,11 @@ struct Shared {
     routes: Mutex<Routes>,
     stop: AtomicBool,
 
-    /// Counts the waiter's loops, so a controller that stops waiting can
-    /// tell that a status taken before it stopped has been delivered.
     epoch: AtomicU64,
     waiter: Mutex<Option<Thread>>,
 
-    /// Whether the waiter panicked, and takes no statuses any more.
     failed: AtomicBool,
 
-    /// The thread that serves the members, woken when the waiter fails.
     host: Thread,
 }
 
@@ -77,7 +49,6 @@ struct Shared {
 struct Routes {
     members: BTreeMap<MemberKey, Member>,
 
-    /// The member each thread already routed belongs to.
     owners: BTreeMap<Pid, MemberKey>,
     direct: BTreeMap<Pid, std::sync::mpsc::Sender<WaitEvent>>,
     next_key: MemberKey,
@@ -86,19 +57,14 @@ struct Routes {
 struct Member {
     sender: mpsc::Sender<ControllerMessage>,
 
-    /// The thread group of the process the member traces, once it has one.
     process: Option<Pid>,
 
-    /// Whether the member waits for statuses, as it does while its process
-    /// lives.
     active: bool,
 
-    /// Statuses a full queue could not take yet, in order.
     backlog: VecDeque<WaitEvent>,
 }
 
 impl WaitHub {
-    /// Starts the waiter for the controllers the calling thread serves.
     pub(super) fn new() -> Result<Self> {
         let shared = Arc::new(Shared {
             routes: Mutex::default(),
@@ -121,8 +87,6 @@ impl WaitHub {
         })
     }
 
-    /// Registers a controller whose statuses go to `sender`, before it has
-    /// a process to wait for.
     pub(super) fn register(&self, sender: mpsc::Sender<ControllerMessage>) -> MemberKey {
         let mut routes = self.shared.lock();
         let key = routes.next_key;
@@ -139,13 +103,10 @@ impl WaitHub {
         key
     }
 
-    /// Whether the waiter panicked, so that no member hears of its
-    /// process's stops any more.
     pub(super) fn failed(&self) -> bool {
         self.shared.failed.load(Ordering::Acquire)
     }
 
-    /// The handle a controller's edge uses to wait for its process.
     pub(super) fn edge(&self, key: MemberKey) -> HubEdge {
         HubEdge {
             shared: Arc::clone(&self.shared),
@@ -164,7 +125,6 @@ impl Drop for WaitHub {
     }
 }
 
-/// One controller's view of the hub.
 #[derive(Clone)]
 pub(super) struct HubEdge {
     shared: Arc<Shared>,
@@ -187,8 +147,6 @@ impl HubEdge {
         })
     }
 
-    /// Starts waiting for the process `process`, whose statuses go to the
-    /// member's queue until [`Self::stop_and_join`].
     pub(super) fn start(&self, process: Pid) {
         let mut routes = self.shared.lock();
         let member = routes.members.get_mut(&self.key);
@@ -202,29 +160,20 @@ impl HubEdge {
         self.shared.wake();
     }
 
-    /// Forgets the member, once its controller has ended.
     pub(super) fn leave(&self, key: MemberKey) {
         let mut routes = self.shared.lock();
         routes.members.remove(&key);
         routes.owners.retain(|_, owner| *owner != key);
     }
 
-    /// Makes the waiter poll promptly for a status a request just caused.
     pub(super) fn wake(&self) {
         self.shared.wake();
     }
 
-    /// Whether the waiter panicked, so that the member must take its
-    /// statuses itself.
     pub(super) fn failed(&self) -> bool {
         self.shared.failed.load(Ordering::Acquire)
     }
 
-    /// Stops waiting for the member's process, calling `serve` until every
-    /// status the waiter took before is in the member's queue. While other
-    /// members wait, the waiter goes on, and may still route a late status
-    /// of this member's threads to its queue. A waiter that panicked
-    /// delivers nothing more, so its backlog is delivered here.
     pub(super) fn stop_and_join(&self, mut serve: impl FnMut()) {
         if let Some(member) = self.shared.lock().members.get_mut(&self.key) {
             member.active = false;
@@ -306,9 +255,6 @@ impl Shared {
         record!("exited");
     }
 
-    /// Ends the hub after the waiter panicked. The status it was routing,
-    /// if any, is one the kernel will not report again, such as a thread's
-    /// stop at a trap, so each member gets it, as any could own it.
     fn fail(&self, taken: Option<WaitEvent>) {
         record!("panicked routing {taken:?}");
         if let Some(status) = taken {
@@ -321,8 +267,6 @@ impl Shared {
         self.host.unpark();
     }
 
-    /// Takes statuses until the hub stops, noting in `taken` the one being
-    /// routed.
     fn wait(&self, taken: &mut Option<WaitEvent>) {
         let mut interval = MIN_POLL;
 
@@ -360,7 +304,6 @@ impl Shared {
                     let parked = Instant::now();
                     thread::park_timeout(interval);
 
-                    // Returning early means a controller woke the waiter.
                     interval = if parked.elapsed() < interval {
                         MIN_POLL
                     } else {
@@ -376,7 +319,6 @@ impl Shared {
 }
 
 impl Routes {
-    /// Sends `status` to the member that owns its thread.
     fn route(&mut self, status: WaitEvent) {
         let pid = status.pid();
         if let Some(sender) = self.direct.get(&pid)
@@ -409,7 +351,6 @@ impl Routes {
         }
     }
 
-    /// Sends what full queues could not take before, as they have room.
     fn flush_backlogs(&mut self) {
         for member in self.members.values_mut() {
             while let Some(status) = member.backlog.pop_front() {
@@ -421,9 +362,6 @@ impl Routes {
         }
     }
 
-    /// The member a thread belongs to: the one it was routed to before,
-    /// or the one whose process is its thread group, or its parent's, or
-    /// the only member there is.
     fn owner_of(&self, pid: Pid) -> Option<MemberKey> {
         if let Some(key) = self.owners.get(&pid) {
             return Some(*key);
@@ -459,8 +397,6 @@ impl Routes {
     }
 }
 
-/// Sends `status` to a member's queue, and returns it when the queue is
-/// full. A member whose queue closed has ended, and needs none.
 fn deliver(sender: &mpsc::Sender<ControllerMessage>, status: WaitEvent) -> Option<WaitEvent> {
     match sender.try_send(ControllerMessage::Wait(status)) {
         Err(mpsc::error::TrySendError::Full(ControllerMessage::Wait(status))) => Some(status),

@@ -1,14 +1,3 @@
-//! How a runtime's agent stands, through every event that changes it: not
-//! installed, waiting for an interpreter thread, awaiting the
-//! acknowledgement of a source request or of a command, read or unread,
-//! timed out, ready with sites or idle, and refused by the agent or before
-//! any write reached the program.
-//!
-//! Every phase is reached, and every event made, through the controller's
-//! messages, wait statuses and hook hits, as in the run-phase table, so the
-//! table holds however the controller keeps an agent's installation. A
-//! scripted agent and its files log what the controller asks of them.
-
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,17 +13,12 @@ use crate::runtime_model::{
 
 pub(super) const LEADER: Pid = Pid::from_raw(5000);
 
-/// Where the runtime's image begins to run interpreted code, which the
-/// controller traps while the agent waits for an initialized thread.
 pub(super) const ENTRY: u64 = 0x60;
 
-/// Where the agent's library loads, and where in it its report hook and
-/// command slot are.
 const LIBRARY_BIAS: u64 = 0x7300_0000;
 const REPORT: u64 = LIBRARY_BIAS + 0x100;
 const CONTROL: u64 = LIBRARY_BIAS + 0x200;
 
-/// The interpreter's slot for a thread's pending source request.
 const SLOT: u64 = 0x9000;
 
 pub(super) type Log = Arc<Mutex<Vec<String>>>;
@@ -43,31 +27,21 @@ fn log(log: &Log, entry: String) {
     log.lock().expect("the log").push(entry);
 }
 
-/// An agent that logs what it is asked, and whose interpreter thread and
-/// refusals each phase sets.
 #[derive(Debug)]
 pub(super) struct Agent {
     pub(super) log: Log,
     entries: [ImageAddress; 1],
 
-    /// The thread a source request goes to, or none while the interpreter
-    /// is not initialized.
     pub(super) thread: Mutex<Option<crate::ThreadId>>,
 
-    /// Why a request is refused before any write.
     pub(super) refusal: Mutex<Option<Arc<str>>>,
 
-    /// Whether a source request goes to the launch's bootstrap.
     bootstrap: Mutex<bool>,
 
-    /// Whether a source request sits in the slot, untaken.
     pub(super) pending: Arc<AtomicBool>,
 
-    /// The newest generation published.
     pub(super) generation: Mutex<u64>,
 
-    /// The generation of the script last written, published only once
-    /// it is injected.
     scripted: Mutex<u64>,
 }
 
@@ -186,8 +160,6 @@ impl RuntimeAgent for Agent {
     }
 }
 
-/// A source request's slot: one still pending is withdrawn, and one a
-/// thread took is unconfirmed until its agent acknowledges it.
 #[derive(Debug)]
 struct Ticket {
     log: Log,
@@ -216,8 +188,6 @@ impl AgentRequestTicket for Ticket {
     }
 }
 
-/// A run of two threads in a process whose runtime has an agent, whose
-/// library is loaded.
 pub(super) struct Session {
     pub(super) run: Run,
     pub(super) agent: Arc<Agent>,
@@ -288,7 +258,6 @@ impl Session {
         session
     }
 
-    /// Forgets what was logged, called and published so far.
     pub(super) fn forget(&mut self) {
         self.run.take_calls();
         self.run.calls.clear();
@@ -340,8 +309,6 @@ impl Session {
         Box::new(move || said.clone())
     }
 
-    /// Continues only the leader, which the source request's thread is
-    /// not.
     pub(super) fn resume_leader(&mut self) -> Reader {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let process_id = self.run.process();
@@ -360,8 +327,6 @@ impl Session {
         reader(receiver)
     }
 
-    /// The source request's thread hits the hook at `address`, which
-    /// reports `event`. A stopped program is continued first.
     pub(super) fn report(&mut self, address: u64, event: HookEvent) -> String {
         let resumed = if self.run.is_stopped() {
             format!("continue {}, ", self.resume()())
@@ -378,8 +343,6 @@ impl Session {
         format!("{resumed}-")
     }
 
-    /// The agent runs the newest request, taking a source request from
-    /// its slot, and reports how its configuration went.
     pub(super) fn agent_reports(&mut self, failure: Option<&str>, stale: bool) -> String {
         self.agent.pending.store(false, Ordering::SeqCst);
         let newest = *self.agent.generation.lock().expect("the script");
@@ -397,8 +360,6 @@ impl Session {
         self.report(REPORT, event)
     }
 
-    /// The alarm rings once the acknowledgement budget would have run out
-    /// had the program run all along.
     pub(super) fn alarm(&mut self) -> String {
         let timed_out = self
             .run
@@ -412,7 +373,6 @@ impl Session {
         }
     }
 
-    /// Ends the session, detaching from the process.
     pub(super) fn detach(&mut self) -> Reader {
         if let Some(inferior) = self.run.harness.controller.session.inferior_mut() {
             inferior.origin = InferiorOrigin::Attached;
@@ -423,7 +383,6 @@ impl Session {
         reader(receiver)
     }
 
-    /// The process exits, its threads one after the other.
     pub(super) fn exit(&mut self) {
         for pid in [OTHER, LEADER] {
             self.run
@@ -434,8 +393,6 @@ impl Session {
         }
     }
 
-    /// Where the session stands, and what it published, logged and
-    /// called since last asked.
     fn describe(&mut self) -> String {
         let run = self.run.describe();
         let snapshot = self.run.snapshot();
@@ -458,8 +415,6 @@ impl Session {
             ""
         };
 
-        // How a report hook's hit is stepped over is the run-phase table's;
-        // this one names it.
         let run = run
             .replace(
                 &format!("set_registers {OTHER} rip={REPORT:#x}, request_stop {LEADER}"),
@@ -474,7 +429,6 @@ impl Session {
     }
 }
 
-/// A pending location's reason, named by what it says.
 fn short(reason: &str) -> &str {
     [
         ("acknowledge its configuration", "unacknowledged"),
@@ -489,8 +443,6 @@ fn short(reason: &str) -> &str {
     .unwrap_or(reason)
 }
 
-/// Builds the phase `name`: a session with one breakpoint at line 1,
-/// stopped at a pause unless the name says it runs.
 fn phase(name: &str) -> Session {
     let mut session = Session::new();
     let built = |said: String, step: &str| {
@@ -608,8 +560,6 @@ const EVENTS: [&str; 13] = [
     "exit",
 ];
 
-/// One event in one phase: what it was answered, and where the session
-/// settles.
 fn outcome(name: &str, event: &str) -> Option<String> {
     let mut session = phase(name);
     let stopped = session.run.is_stopped();
@@ -621,8 +571,6 @@ fn outcome(name: &str, event: &str) -> Option<String> {
         .contains_key(&VirtualAddress::new(ENTRY));
 
     let said = match (name, event) {
-        // With no agent these are plain run control, which the run-phase
-        // table holds, or a breakpoint that is not there.
         ("uninstalled", "remove" | "continue" | "alarm") | ("idle", "remove") => return None,
         (_, "add") => session.add(3)(),
         (_, "refused add") => {
@@ -661,20 +609,12 @@ fn outcome(name: &str, event: &str) -> Option<String> {
     )
 }
 
-/// Events that vary another, each with the one it varies. A variant's row
-/// is written only in phases where it settles differently, so a phase
-/// whose variant starts to differ, or stops differing, fails the table.
 const VARIANTS: [(&str, &str); 3] = [
     ("refused add", "add"),
     ("stale ack", "ack"),
     ("failure", "ack"),
 ];
 
-/// Each request, report and alarm, in each phase of an agent's
-/// installation, is answered and ends as it always has: which stop is
-/// published, which breakpoints are pending and why, what the agent and
-/// its files are asked, which traps and writes the controller makes, and
-/// whether an acknowledgement's alarm is set.
 #[test]
 fn each_agent_event_settles_the_same_in_each_phase() {
     let mut actual = Vec::new();
@@ -683,7 +623,6 @@ fn each_agent_event_settles_the_same_in_each_phase() {
             .iter()
             .filter_map(|event| Some((*event, outcome(name, event)?)))
             .collect();
-        // What follows the event's name: how it was answered and settled.
         let settled = |event: &str| {
             rows.iter()
                 .find(|(written, _)| *written == event)
@@ -708,7 +647,6 @@ fn each_agent_event_settles_the_same_in_each_phase() {
     );
 }
 
-/// The table's rows, as [`outcome`] writes them.
 const EXPECTED: &[&str] = &[
     "uninstalled / add: ok -> stopped Pause by 5000 [breakpoints] {write_word 5000 0x9000 0x1} (b1 unacknowledged) <create files in 5001, file 1, inject /tmp/agent/agent-1.py on 5001 [0]>",
     "uninstalled / refused add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 refused) <create files in 5001, file 1, inject refused, drop file 1>",

@@ -1,6 +1,6 @@
-// Steps into a Node-API addon's C functions and back: adds() calls one
-// that calls no JavaScript, and callsBack() one that calls cb() before it
-// returns. The addon is the one build/test-programs holds.
+
+
+
 
 'use strict';
 

@@ -1,6 +1,3 @@
-// Breaking, stepping, and moving through the stack, in the source the page
-// shows, with the address bar naming every place.
-
 import type { Page } from "@playwright/test";
 
 import { expect, fixture, join, test } from "./server";
@@ -9,18 +6,12 @@ test.use({ program: [fixture("kvstore")] });
 
 const stopUrl = /\/stop\/(\d+)\/t\/\d+\/f\/(\d+)(\?|$)/u;
 
-/** The source line holding `text`. */
 const line = (page: Page, text: string) =>
   page.getByTestId("source").locator(".cm-line", { hasText: text });
 
-/** The gutter's number for line `n`. */
 const number = (page: Page, n: number) =>
   page.locator(".cm-lineNumbers .cm-gutterElement", { hasText: new RegExp(`^${n}$`, "u") });
 
-/**
- * Scrolls the source so line `n` is near the top: the editor only renders the
- * lines on screen, so an off-screen line has no element to click.
- */
 async function scrollTo(page: Page, n: number) {
   await page
     .getByTestId("source")
@@ -32,7 +23,6 @@ async function scrollTo(page: Page, n: number) {
   await expect(number(page, n)).toBeInViewport();
 }
 
-/** Clicks the breakpoint gutter beside line `n`, which is on screen. */
 async function clickGutter(page: Page, n: number) {
   const box = await number(page, n).boundingBox();
   const gutter = await page.locator(".cm-breakpoints").boundingBox();
@@ -42,7 +32,6 @@ async function clickGutter(page: Page, n: number) {
   await page.mouse.click(gutter.x + gutter.width / 2, box.y + box.height / 2);
 }
 
-/** Breaks at the start of handle_request and runs to it. */
 async function breakInHandleRequest(page: Page) {
   await scrollTo(page, 90);
   await line(page, "pthread_mutex_lock(&s->lock);").click();
@@ -51,7 +40,7 @@ async function breakInHandleRequest(page: Page) {
   await page.keyboard.press("F5");
   await expect(page).toHaveURL(stopUrl);
   await expect(page.locator(".cm-pc-line")).toContainText("pthread_mutex_lock(&s->lock);");
-  // The other worker would hit it again mid-step.
+
   await page.getByRole("button", { name: /Remove breakpoint/u }).click();
   await expect(page.getByTestId("breakpoints").locator("[data-breakpoint]")).toHaveCount(0);
 }
@@ -62,7 +51,6 @@ async function stepOut(page: Page) {
   await expect(page).not.toHaveURL(before);
 }
 
-/** Steps over and waits for the address to name the new stop. */
 async function stepOver(page: Page) {
   const before = page.url();
   await page.keyboard.press("F10");
@@ -74,7 +62,7 @@ test("a breakpoint stops the program where the page shows, and steps replace the
   microscope,
 }) => {
   await join(page, microscope.link);
-  // Before it runs, the page opens on main (D2).
+
   await expect(line(page, "int main(void) {")).toBeInViewport();
   await breakInHandleRequest(page);
   await expect(page.getByRole("tabpanel", { name: "Call Stack" })).toContainText("handle_request");
@@ -84,11 +72,10 @@ test("a breakpoint stops the program where the page shows, and steps replace the
   await expect(page.locator(".cm-pc-line")).toContainText("table_find(&s->table, req->key)");
   await page.keyboard.press("n");
   await expect(page.locator(".cm-pc-line")).toContainText("int status = 0;");
-  // Following a stop replaces the address: Back leaves the debugger.
+
   expect(await page.evaluate(() => window.history.length)).toBe(history);
   await expect(page.getByTestId("stops")).toContainText("step · kvstore.c:92");
 
-  // The caller's frame shows its line; every pane moves with it.
   await page
     .getByTestId("stack")
     .getByRole("button", { name: /worker/u })
@@ -100,7 +87,6 @@ test("a breakpoint stops the program where the page shows, and steps replace the
   await page.keyboard.press("u");
   await expect(page).toHaveURL(/\/f\/1(\?|$)/u);
 
-  // Stepping out of the innermost frame returns to its caller.
   await page.keyboard.press("d");
   await expect(page).toHaveURL(/\/f\/0(\?|$)/u);
   await stepOut(page);
@@ -117,7 +103,7 @@ test("Shift+J moves the thread to the cursor's line without running it", async (
   await stepOver(page);
   await stepOver(page);
   await expect(page.locator(".cm-pc-line")).toContainText("int status = 0;");
-  // Back to the lookup, to run it again.
+
   const before = page.url();
   await line(page, "table_find(&s->table, req->key)").click();
   await page.keyboard.press("Shift+J");
@@ -163,10 +149,9 @@ test("the gutter sets and clears breakpoints, and conditions narrow them", async
 
   await page.keyboard.press("F5");
   await expect(page).toHaveURL(stopUrl);
-  // Only every third request is a get, so at least two hits did not stop.
+
   await expect(breakpoints).toContainText(/(^|\D)([3-9]|\d\d+) hits/u);
 
-  // The stop may have scrolled the source; measure the line where it is now.
   await scrollTo(page, 90);
   await clickGutter(page, 90);
   await expect(breakpoints.locator("[data-breakpoint]")).toHaveCount(0);
@@ -188,7 +173,6 @@ test("a tab that shows the latest stop follows the program, and a pinned one sta
   await expect(other.locator(".cm-pc-line")).toContainText("table_find");
   await expect(other.getByTestId("notice")).toContainText("tester stepped over");
 
-  // Pinned, it stays at its stop and says the program moved on.
   await other.keyboard.press("p");
   await expect(other.getByTestId("pinned")).toBeVisible();
   const pinned = other.url();
@@ -199,7 +183,6 @@ test("a tab that shows the latest stop follows the program, and a pinned one sta
   await passed.getByRole("button", { name: /Go to stop/u }).click();
   await expect(other).toHaveURL(page.url());
 
-  // A link to a stop that has passed opens on a banner, not on newer values.
   const late = await context.newPage();
   await late.goto(pinned);
   await expect(late.getByTestId("passed")).toBeVisible();

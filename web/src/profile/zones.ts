@@ -1,36 +1,30 @@
-// Zones as the server sends them, in columns, and how the lanes find and
-// lay them out: under each thread's samples, a row per depth.
-
 import { assert } from "../assert";
 import type { ProfileThread, ProfileZones } from "../protocol";
 import { formatDuration, formatInstant } from "./paint";
 
 export interface ZoneBlocks {
   count: number;
-  /** Nanoseconds from the profile's start. */
+
   start: Float64Array;
   end: Float64Array;
-  /** Nanoseconds its zones cover, and of those, off their thread's CPU. */
+
   covered: Float64Array;
   blocked: Float64Array;
   preempted: Float64Array;
   thread: Uint32Array;
   depth: Uint32Array;
-  /** Indices into `names`. */
+
   name: Uint32Array;
-  /** How many zones each block draws: more than one is a fold. */
+
   zones: Uint32Array;
   flags: Uint32Array;
-  /** 1 where its zones are of the site asked for, else 0. */
+
   chosen: Uint32Array;
   names: string[];
-  /** Whether time off the CPU was traced, without which it reads zero. */
+
   offCpu: boolean;
 }
 
-/** Decodes an answer and the columns sent before it: starts, ends, and
- * times covered, blocked, and preempted as little-endian `f64`s, then
- * threads, depths, names, counts, and flags as `u32`s. */
 export function decodeZones(answer: ProfileZones, payload: Uint8Array | undefined): ZoneBlocks {
   const count = answer.blocks;
   const bytes = payload ?? new Uint8Array();
@@ -64,8 +58,6 @@ export function decodeZones(answer: ProfileZones, payload: Uint8Array | undefine
   };
 }
 
-/** Each row of zones, a thread's at one depth, as the blocks in it by
- * start, and how deep each thread's zones go. */
 export interface BlockIndex {
   rows: Map<number, Int32Array>;
   depths: Map<number, number>;
@@ -73,7 +65,6 @@ export interface BlockIndex {
 
 const rowKey = (thread: number, depth: number) => thread * 65_536 + depth;
 
-/** Indexes the blocks by row, so the one at a time is found by bisection. */
 export function indexBlocks(blocks: ZoneBlocks): BlockIndex {
   const lists = new Map<number, number[]>();
   const depths = new Map<number, number>();
@@ -100,8 +91,6 @@ export function indexBlocks(blocks: ZoneBlocks): BlockIndex {
   return { rows, depths };
 }
 
-/** The block of a row at `time`, or failing that the nearest within
- * `slack` of it, if any. */
 export function blockAt(
   blocks: ZoneBlocks,
   index: BlockIndex,
@@ -115,8 +104,7 @@ export function blockAt(
   if (!row) {
     return null;
   }
-  // The last block that starts by `time + slack`, and the one before it,
-  // which may be the one `time` is in where the slack reaches the next.
+
   let [low, high] = [0, row.length];
   while (low < high) {
     const middle = (low + high) >>> 1;
@@ -143,8 +131,6 @@ export function blockAt(
   return best;
 }
 
-/** The names of the zones around `time` above `depth` in a thread, outermost
- * first. */
 export function nesting(
   blocks: ZoneBlocks,
   index: BlockIndex,
@@ -162,8 +148,6 @@ export function nesting(
   return names;
 }
 
-/** Where each lane begins, `strip` pixels of samples and then a row per
- * depth of zones it shows, one under another; and how tall they are. */
 export function layLanes(
   shown: readonly number[],
   strip: number,
@@ -179,7 +163,6 @@ export function layLanes(
   return { tops, height: top };
 }
 
-/** The lane `y` pixels down, by bisection of their tops; -1 above them. */
 export function laneAt(tops: Float64Array, y: number): number {
   let [low, high] = [0, tops.length];
   while (low < high) {
@@ -193,8 +176,6 @@ export function laneAt(tops: Float64Array, y: number): number {
   return low - 1;
 }
 
-/** Each histogram bucket's lengths, `[low, high]`: to just short of the next
- * bucket's low, the last to the longest. */
 export function bucketSpans(histogram: readonly number[][], max: number): [number, number][] {
   return histogram.map(([low = 0], at) => {
     const next = histogram[at + 1]?.[0];
@@ -202,7 +183,6 @@ export function bucketSpans(histogram: readonly number[][], max: number): [numbe
   });
 }
 
-/** The band from bucket `from` to bucket `to`, either way round. */
 export function bandOf(
   spans: readonly [number, number][],
   from: number,
@@ -214,7 +194,6 @@ export function bandOf(
   return [first[0], last[1]];
 }
 
-/** A thread's name and id, by its row: a pool's threads share a name. */
 export function threadName(threads: readonly ProfileThread[], row: number): string {
   const thread = threads.find((each) => each.row === row);
   if (!thread) {
@@ -223,7 +202,6 @@ export function threadName(threads: readonly ProfileThread[], row: number): stri
   return `${thread.name ?? "thread"} ${thread.tid}`;
 }
 
-/** What a zone's flags say was not seen. */
 export function describeFlags(flags: number): string[] {
   const said: string[] = [];
   if (flags & 1) {
@@ -241,13 +219,6 @@ export function describeFlags(flags: number): string[] {
   return said;
 }
 
-/** An SVG path of a plot's bins, `width` by `height`, from `origin` over
- * `span` nanoseconds and from `low` to `high`: each bin a stroke from its
- * first value through its lowest and highest to its last, which holds
- * until the next bin's first. A value `held` from before the range holds
- * from its left edge, and when a value `continues` past the range, the
- * last holds to its right edge, as `held` does across a range it alone
- * covers. */
 export function plotPath(
   bins: number[][],
   origin: number,
@@ -286,9 +257,6 @@ export function plotPath(
   return points.length > 0 ? `M${points.join("L")}` : "";
 }
 
-/** `view` zoomed by `factor` about the time `at`, which stays where it is
- * unless that would show past either end of a profile `total` long; never
- * shorter than `least` nanoseconds. */
 export function zoomed(
   [start, end]: readonly [number, number],
   at: number,
@@ -304,8 +272,6 @@ export function zoomed(
   return [Math.round(kept), Math.round(kept + span)];
 }
 
-/** `view` moved later by `by` nanoseconds, stopping at either end of a
- * profile `total` long. */
 export function panned(
   [start, end]: readonly [number, number],
   by: number,
@@ -316,8 +282,6 @@ export function panned(
   return [Math.round(moved), Math.round(moved + end - start)];
 }
 
-/** Round times across `view`, drawn `width` pixels wide, about a hundred
- * pixels apart: a step of 1, 2, or 5 times a power of ten. */
 export function ticks(
   [start, end]: readonly [number, number],
   width: number,
@@ -333,9 +297,6 @@ export function ticks(
   return { step, times };
 }
 
-/** Round times to mark along a chart of `[start, end]` drawn `width`
- * pixels wide, each with its share of the way across. The end is marked
- * itself, so a round time too near it to be read beside it is left out. */
 export function timeTicks(
   [start, end]: readonly [number, number],
   width: number,
@@ -346,7 +307,7 @@ export function timeTicks(
   const span = end - start;
   const { step, times } = ticks([start, end], width);
   const last = start === 0 ? formatDuration(end) : formatInstant(end, step, end);
-  // The end, rounded to the step, can read as the round time before it.
+
   const marks = times
     .filter((time) => (time - start) / span <= 0.9)
     .map((time) => ({

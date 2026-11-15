@@ -1,19 +1,3 @@
-//! The profiler's samples, taken of running threads where a clock event's
-//! tick would find them, unwound as the recorder unwinds them, and judged
-//! by the threads' shadow call stacks.
-//!
-//! A sample is the record the simulated kernel writes (K-PERF-1 to
-//! K-PERF-3), read by the recorder's own decoder and unwinder, so what the
-//! oracle judges is what a profile would hold. Whether and how a run
-//! samples is drawn from [`Stream::Sample`] alone, so a seed that never
-//! samples chooses as it did before sampling existed.
-//!
-//! The BPF engine's records of Python frames, which a program on the
-//! sampler's events writes beside each sample, are not modeled: no
-//! simulated program runs CPython, whose frames the program walks. Their
-//! decoding and their pairing with samples are tested over synthesized
-//! records instead (`backend::bpf::sampler`, `profiler::record`).
-
 use super::choices::{Choices, Stream};
 use super::corpus::Variant;
 use super::kernel::shadow::Shadow;
@@ -25,35 +9,23 @@ use crate::unwind::UnwindModule;
 use crate::unwind::sample::{FrameRules, SampledFrame, SampledState, StackEnd, unwind_sample};
 use crate::{LoadedModule, ModuleId, ModuleImageId};
 
-/// How often a run samples, as a chance in a thousand that a burst ends
-/// in one: never, now and then, often, or after every burst.
 const RATES: [u64; 4] = [0, 50, 250, 1000];
 
-/// The bytes of stack a sample may copy: too few for one frame, a few
-/// frames, the recorder's default, and the most an event takes.
 const STACK_BYTES: [u32; 4] = [64, 512, 8192, 65528];
 
-/// The deepest stack the recorder unwinds.
 const DEPTH_LIMIT: usize = 128;
 
-/// What a run samples, and what the unwinder remembers between samples.
 pub struct Sampler {
     rate: u64,
     rules: FrameRules,
 }
 
-/// What a sample showed of its thread's stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Unwound {
-    /// Every frame, to the thread's first.
     Whole,
 
-    /// The innermost frames, ending explicitly where unwinding could not
-    /// go on.
     Truncated,
 
-    /// The innermost frames, ending at a caller read from a return address
-    /// the program overwrote.
     Corrupt,
 }
 
@@ -65,9 +37,6 @@ impl Sampler {
         }
     }
 
-    /// After `tid` ran a burst, samples it if it is still running in user
-    /// code and the run's rate says so, and judges the sample. Returns
-    /// what the trace says of it.
     pub fn after_burst(
         &mut self,
         choices: &mut Choices,
@@ -80,8 +49,6 @@ impl Sampler {
             return Ok(None);
         };
 
-        // A thread inside a system call, or on its way to take a signal it
-        // raised, is in the kernel, which the events exclude.
         if !thread.in_user_code() || self.rate == 0 {
             return Ok(None);
         }
@@ -173,16 +140,6 @@ impl Sampler {
     }
 }
 
-/// Samples: the frames of a sample are the thread's location and then,
-/// within each call it has not returned from, innermost first, the byte
-/// before the call's return address. A sample may end early only by saying
-/// why. It may show a caller read from a return address the program
-/// overwrote, which is what the stack holds, but nothing past it, and not
-/// as a whole stack. Having found every frame, it must say so where its
-/// copy, which ends at `copied_to`, holds the word above the outermost
-/// call's return address, where the thread's first frame would keep its
-/// own; short of that, nothing in the sample tells the first frame from
-/// one with a caller. `held` reads the word now at a call's slot.
 fn judge(
     shadow: &Shadow,
     rip: u64,

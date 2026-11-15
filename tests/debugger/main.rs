@@ -306,9 +306,6 @@ const fn entry_boundary_cases() -> [EntryBoundaryCase; 4] {
             call_line: 66,
             parameter: "signed_int",
             expected_value: -1_234_567,
-            // This optimized leaf has no prologue. Its first instruction is
-            // the line-22 store, so advancing to the next distinct statement
-            // would silently execute real user work.
             gcc_fallback_line: Some(20),
         },
         EntryBoundaryCase {
@@ -453,7 +450,6 @@ async fn resume_go_to_exit(scenario: &mut Scenario, fixture: &str) {
                 reason = scenario.resume_to_stop().await;
             }
 
-            // The runtime's SIGURG preemption never stops the program.
             _ => panic!("{fixture} stopped unexpectedly while exiting: {reason:?}"),
         }
     }
@@ -468,7 +464,6 @@ fn assert_variable_value(variable: &microscope::Variable, expected: impl Into<Sc
     );
 }
 
-/// The text summary of a variable, or `None` when it has none.
 fn text_of(variables: &[microscope::Variable], name: &str) -> Option<microscope::TextSummary> {
     let variable = variables
         .iter()
@@ -482,14 +477,11 @@ fn text_of(variables: &[microscope::Variable], name: &str) -> Option<microscope:
     text.as_deref().cloned()
 }
 
-/// Waits until `process`'s main thread is a zombie: it exited, and nothing
-/// has reaped it.
 fn wait_for_zombie(process: ProcessId) {
     let stat = format!("/proc/{process}/stat");
 
     support::wait_until("the main thread exits", || {
         fs::read_to_string(&stat).is_ok_and(|stat| {
-            // Fields resume after the command name's final parenthesis.
             stat.rsplit_once(')')
                 .and_then(|(_, fields)| fields.split_whitespace().next())
                 == Some("Z")

@@ -1,6 +1,3 @@
-// A Python program in the page: a breakpoint set before it runs waits for
-// its code, and the stop opens on the program's frame, at its line, in view.
-
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 
@@ -15,11 +12,9 @@ const marked = readFileSync(script, "utf8")
 test.use({ program: [python, "--", script] });
 
 test("a Python breakpoint stops on the program's line, in view", async ({ page, microscope }) => {
-  // Tall enough that the line, below the fold, is within the editor's
-  // estimate of what it shows before it measures its lines.
   await page.setViewportSize({ width: 1440, height: 900 });
   await join(page, microscope.link);
-  // A laptop's header has room for the command it debugs.
+
   const program = page.locator(".status .program");
   await expect(program).toHaveText("python3.14 page.py");
   expect(await program.evaluate((name) => name.scrollWidth <= name.clientWidth)).toBe(true);
@@ -30,21 +25,21 @@ test("a Python breakpoint stops on the program's line, in view", async ({ page, 
   await input.press("Enter");
   await expect(page.getByTestId("breakpoints")).toContainText(location);
   await page.keyboard.press("F5");
-  // The agent's frames are inside the program's, which the stop selects.
+
   await expect(page).toHaveURL(/\/f\/[1-9]\d*(\?|$)/u);
   const line = page.locator(".cm-frame-line");
   await expect(line).toContainText('shelf.add(Item("bolt"');
   await expect(line).toBeInViewport();
-  // The stop reason must leave room for the command.
+
   expect(await program.evaluate((name) => name.clientWidth >= name.scrollWidth / 2)).toBe(true);
   const variables = page.getByRole("tabpanel", { name: "Variables" });
   await expect(variables).toContainText("shelf");
-  // Preserve spaces inside string values.
+
   await expect(variables.locator(".value-text", { hasText: "north" })).toHaveJSProperty(
     "innerText",
     "'north    end'",
   );
-  // An interpreted frame has no registers, which is no failure.
+
   const registers = page.getByRole("tabpanel", { name: "Registers" }).locator(".empty");
   await expect(registers).toContainText("interpreted");
   await expect(registers).not.toHaveClass(/error/u);
@@ -67,7 +62,7 @@ test.describe("an exception chosen as the program runs", () => {
     await input.press("Enter");
     await page.keyboard.press("F5");
     await expect(page.locator(".cm-frame-line")).toContainText("result = side * side");
-    // Enable after startup to avoid stopping on the interpreter's exceptions.
+
     await breakpoints.getByTestId("exceptions").locator("summary").click();
     const raised = breakpoints.getByRole("checkbox", { name: "Every Python exception" });
     await expect(raised).not.toBeChecked();
@@ -81,9 +76,9 @@ test.describe("an exception chosen as the program runs", () => {
       'raise ValueError("the shape is wrong")',
     );
     await expect(page.getByTestId("stops")).toContainText("language exception");
-    // The source says why the program stopped, under the line it stopped at.
+
     await expect(page.getByRole("note")).toContainText("ValueError: the shape is wrong");
-    // However long what stopped it is, the command stays readable.
+
     const program = page.locator(".status .program");
     expect(await program.evaluate((name) => name.clientWidth >= name.scrollWidth / 2)).toBe(true);
   });
@@ -114,8 +109,7 @@ test.describe("a breakpoint in a script named relatively", () => {
   const area = readFileSync(uat, "utf8")
     .split("\n")
     .findIndex((line) => line.endsWith("# AREA_LINE"));
-  // As one types it, from the repository: Python records the script under
-  // the working directory with its `./`.
+
   test.use({ program: [python, "--", "./tests/fixtures/python/uat.py"] });
 
   test("waits for its code, then is marked where it stops", async ({ page, microscope }) => {
@@ -125,7 +119,6 @@ test.describe("a breakpoint in a script named relatively", () => {
     await source.locator(".cm-line", { hasText: "result = side * side" }).click();
     await page.keyboard.press("F9");
 
-    // No code is loaded at the line yet, and the page says so.
     const breakpoints = page.getByTestId("breakpoints");
     await expect(breakpoints).toContainText(`uat.py:${area + 1}`);
     await expect(breakpoints).not.toContainText(root);
@@ -136,7 +129,7 @@ test.describe("a breakpoint in a script named relatively", () => {
 
     await page.keyboard.press("F5");
     await expect(page.locator(".cm-frame-line")).toContainText("result = side * side");
-    // The stop is in the file the breakpoint was set in, which shows it set.
+
     const files = documents(page).getByRole("button", {
       name: /^Close (?!Disassembly$|Memory$|Drawings$)/u,
     });

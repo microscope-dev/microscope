@@ -49,25 +49,21 @@ import { useShownScheme } from "../../theme";
 import { NAMES, NAMES_STYLE, prepare, useWidth } from "./canvas";
 import { type ProfileFocus, token, useAnswer, useProfile } from "./context";
 
-/** A lane's samples, a row of zones, and a plot, in CSS pixels. */
 const STRIP = 18;
-/** How tall a lane's CPU is drawn: thinner over zones, which say more. */
+
 const RIBBON = 8;
 const ZONED_RIBBON = 4;
 const ROW = 16;
 const PLOT = 40;
-/** A thread's system calls, under its CPU when the profile has calls. */
+
 const KERNEL = 12;
-/** How far a press moves before it drags rather than clicks. */
+
 const DRAG = 4;
-/** Show only the tasks with the greatest weight. */
+
 const MOST_TASK_LANES = 50;
-/** How long the view rests before its answers are asked for again. */
+
 const SETTLE = 80;
 
-/** A lane: what the look selects it by, and the answer's lane id. The
- * lane of threads without zones stands for `others`, shown under it when
- * open. */
 interface Row {
   id: string;
   lane: number;
@@ -79,11 +75,8 @@ interface Row {
   others?: Row[];
 }
 
-/** The lane id of the threads without zones, which no thread has. */
 const OTHERS = -2;
 
-/** Waits always use tasks. Task-based samples add a lane for unknown tasks.
- * Threads with zones come first, and those without fold into one lane. */
 function rows(
   summary: ProfileSummary,
   src: ProfileFocus["look"]["src"],
@@ -137,8 +130,6 @@ function rows(
   return tasks;
 }
 
-/** What the pointer is over: a zone block, a mark, a lane's samples or
- * calls, and the budget's step there. */
 interface Hit {
   time: number;
   lane: number;
@@ -149,7 +140,6 @@ interface Hit {
   step: ProfileMarker | null;
 }
 
-/** `value`, once it has stayed put for `wait` milliseconds. */
 function useSettled<T>(value: T, wait: number): T {
   const [settled, setSettled] = useState(value);
   useEffect(() => {
@@ -159,14 +149,6 @@ function useSettled<T>(value: T, wait: number): T {
   return settled;
 }
 
-/**
- * Each thread's CPU over time, and under it the zones it recorded, a row
- * per depth, on one axis. Ctrl and the wheel, or a pinch, zoom about the
- * pointer, and a sideways swipe or a drag with ctrl or ⌘ held pans,
- * anywhere in the box; a drag selects a range, and a click off the zones
- * lets go of it. A click on a zone selects it, on a fold zooms to it, and
- * on a lane's name toggles its thread.
- */
 export function Lanes() {
   const { profile, summary, query, look, setLook } = useProfile();
   const [measure, width] = useWidth();
@@ -176,11 +158,9 @@ export function Lanes() {
   const plot = Math.max(width - NAMES, 0);
   const total = Math.max(summary.duration, 1);
 
-  // What is in view, which the reader zooms and pans; the range the views
-  // read is apart from it.
   const [view, setView] = useState<[number, number]>([0, total]);
   const whole = view[0] <= 0 && view[1] >= total;
-  // In whole nanoseconds, which is all the server reads.
+
   const shownView = useMemo<[number, number]>(
     () => (whole ? [0, total] : [Math.round(view[0]), Math.round(Math.min(view[1], total))]),
     [whole, view, total],
@@ -204,8 +184,7 @@ export function Lanes() {
   const timeline = useAnswer("profileTimeline", timelineParams);
 
   const zoned = !byTask && (summary.zoneSites.length > 0 || summary.probes.events > 0);
-  // The zones of the site chosen, of a length in its band, come marked,
-  // folded apart from the rest so they show at every zoom.
+
   const zonesParams = useMemo(() => {
     const band = look.zs && look.zb ? parseBand(look.zb) : null;
     return zoned && plot > 0
@@ -228,8 +207,6 @@ export function Lanes() {
   const marks = useMemo(() => zones.data?.marks ?? [], [zones.data]);
   const plots = useMemo(() => zones.data?.plots ?? [], [zones.data]);
 
-  // Read from the look's lane fields alone, so choosing a function, which
-  // changes the rest of it, does not paint the lanes again.
   const [othersOpen, setOthersOpen] = useState(false);
   const lanes = useMemo(() => {
     const all = rows(summary, look.src, look.lanes);
@@ -238,12 +215,9 @@ export function Lanes() {
   const chosen = (byTask ? look.tk : look.th)?.join(",");
   const selected = useMemo(() => (chosen ? new Set(chosen.split(",")) : null), [chosen]);
 
-  // How deep each thread's zones go: the deepest seen, so a lane keeps its
-  // height as the view moves across shallower zones.
   const [depths, setDepths] = useState<ReadonlyMap<number, number>>(() => new Map());
   const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(() => new Set());
-  // Merged as each answer arrives, while rendering, so a deeper lane is
-  // never drawn a frame too short.
+
   const [merged, setMerged] = useState(index);
   if (merged !== index) {
     setMerged(index);
@@ -262,7 +236,7 @@ export function Lanes() {
       }),
     [lanes, byTask, depths, collapsed],
   );
-  // Every lane's head holds its calls when any thread's could.
+
   const kernel = !byTask && summary.syscalls > 0;
   const head = kernel ? STRIP + KERNEL : STRIP;
   const laid = useMemo(() => layLanes(shownRows, head, ROW), [shownRows, head]);
@@ -284,9 +258,7 @@ export function Lanes() {
   const [dragging, setDragging] = useState<[number, number] | null>(null);
   const [pointer, setPointer] = useState<{ time: number; x: number; y: number } | null>(null);
   const [hit, setHit] = useState<Hit | null>(null);
-  // A press, read by each event as it comes, so a release in the frame of
-  // a drag never reads as a click. With ctrl or ⌘ held it pans, otherwise
-  // it selects a range from where it began.
+
   const pressed = useRef<{
     x: number;
     view: [number, number];
@@ -294,10 +266,9 @@ export function Lanes() {
     pan: boolean;
   } | null>(null);
   const [panning, setPanning] = useState(false);
-  // Where a drag on the ruler began.
+
   const rulerFrom = useRef<number | null>(null);
 
-  // Views asked for while zooming or panning, applied once a frame.
   const latest = useRef({ view: shownView, total, plot });
   useLayoutEffect(() => {
     latest.current = { view: shownView, total, plot };
@@ -320,8 +291,6 @@ export function Lanes() {
   }, []);
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
-  // A zone chosen elsewhere, such as the Zones pane's longest, comes into
-  // view, its thread opened, unless it is already plain to see.
   useEffect(() => {
     if (!instance) {
       return;
@@ -344,8 +313,6 @@ export function Lanes() {
     });
   }, [instance]);
 
-  // And its thread scrolls into view, once for each zone chosen, so the
-  // reader can scroll away from it again.
   const scrolledTo = useRef<string | null>(null);
   useLayoutEffect(() => {
     const element = box.current;
@@ -393,14 +360,13 @@ export function Lanes() {
     return () => element.removeEventListener("wheel", wheel);
   }, [show]);
 
-  // The site's colors, and whether each name is of the site in focus.
   const palette = useMemo(() => {
     const names = blocks?.names ?? [];
     const sites = names.map((name) => name.split("=")[0] ?? name);
     const dark = scheme === "dark";
     return {
       sites,
-      // One lightness for every hue, so labels read as well on each.
+
       fills: sites.map((site) =>
         dark ? `oklch(0.5 0.13 ${hue(site)})` : `oklch(0.8 0.13 ${hue(site)})`,
       ),
@@ -418,7 +384,6 @@ export function Lanes() {
     context.font = `11px ${token("--mono")}`;
     context.textBaseline = "middle";
 
-    // A faint line down from each of the ruler's round times.
     context.fillStyle = token("--line");
     for (const { at } of timeTicks(shownView, plot)) {
       if (at > 0 && at < 1) {
@@ -426,12 +391,10 @@ export function Lanes() {
       }
     }
 
-    // What the views read: outside it shaded, under the zones so their
-    // labels read as well there as inside it.
     const marked = dragging ?? (instance ? instance.span : range);
     if (marked) {
       const [from, to] = [x(marked[0]), x(marked[1])];
-      // The soft accent is all but the page's own color on a light one.
+
       const light = scheme === "light";
       context.fillStyle = token(light ? "--accent" : "--accent-soft");
       context.globalAlpha = light ? 0.12 : 0.6;
@@ -478,14 +441,12 @@ export function Lanes() {
         const running = onCpu(blocks, at);
         context.fillStyle = fill;
         if (many) {
-          // Too narrow to draw alone, as strong as the share they cover.
           context.globalAlpha = dim * (0.25 + (0.75 * covered) / Math.max(end - start, 1));
           context.fillRect(from, top + 1, wide, ROW - 2);
         } else if (running === null) {
           context.globalAlpha = dim;
           context.fillRect(from, top + 1, wide, ROW - 2);
         } else {
-          // Faint where its thread was off its CPU, solid where it ran.
           context.globalAlpha = dim * 0.2;
           context.fillRect(from, top + 1, wide, ROW - 2);
           paintRunning(context, {
@@ -529,7 +490,7 @@ export function Lanes() {
         }
       }
       context.globalAlpha = 1;
-      // The program's marks, as ticks on their thread's samples.
+
       for (const mark of marks) {
         const lane = laneOf.get(mark.thread);
         if (lane === undefined) {
@@ -542,7 +503,6 @@ export function Lanes() {
       }
     }
 
-    // Spans not sampled cover every lane.
     context.fillStyle = token("--line");
     context.globalAlpha = 0.7;
     for (const [from, to] of [...summary.gaps, ...summary.behind]) {
@@ -550,7 +510,6 @@ export function Lanes() {
     }
     context.globalAlpha = 1;
 
-    // The budget's steps, as marks down every lane.
     context.strokeStyle = token("--changed");
     context.lineWidth = 1;
     context.setLineDash([2, 3]);
@@ -565,7 +524,6 @@ export function Lanes() {
     }
     context.setLineDash([]);
 
-    // The range's edges, and the zone chosen outlined.
     if (marked) {
       const [from, to] = [x(marked[0]), x(marked[1])];
       const wide = Math.max(to - from, 3);
@@ -619,7 +577,6 @@ export function Lanes() {
     scheme,
   ]);
 
-  /** What is under the pointer, `x` and `y` pixels into the canvas. */
   const at = useCallback(
     (px: number, py: number): Hit | null => {
       if (px < 0 || px >= plot || py < 0 || py >= height) {
@@ -691,8 +648,7 @@ export function Lanes() {
     (event: PointerEvent<HTMLDivElement>) => {
       const body = event.currentTarget;
       const bounds = body.getBoundingClientRect();
-      // A press on the box's scrollbars scrolls it, and one on a name or the
-      // ruler is theirs.
+
       const scrollbar =
         event.clientX - bounds.left >= body.clientLeft + body.clientWidth ||
         event.clientY - bounds.top >= body.clientTop + body.clientHeight;
@@ -733,14 +689,13 @@ export function Lanes() {
       setLook((prev) => {
         const again = prev.zi === `${chosenOne.thread}:${formatRange(zone)}` && !zoom;
         const next = withInstance(prev, again ? null : chosenOne);
-        // A new site's band is not this one's.
+
         return prev.zs === site ? next : withLook(clearBand(next), "zs", site);
       }, true);
     },
     [blocks, palette, setLook, show, total],
   );
-  // A range chosen by dragging, which lets go of any zone selected, since
-  // the views would read the zone and not the range.
+
   const chooseRange = useCallback(
     (from: number, to: number) => {
       const [start, end] = [Math.min(from, to), Math.max(from, to)];
@@ -772,7 +727,6 @@ export function Lanes() {
       } else if (found?.wait) {
         chooseRange(found.wait.start, found.wait.end);
       } else {
-        // A click off the zones lets go of the range, as one on the ruler does.
         setLook((prev) => {
           const { range: _range, ...rest } = prev;
           return prev.range ? rest : prev;
@@ -839,7 +793,7 @@ export function Lanes() {
     setPanning(false);
     setDragging(null);
   }, []);
-  // Escape lets go of a drag, before it can clear anything else.
+
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && (pressed.current || rulerFrom.current !== null)) {
@@ -853,14 +807,13 @@ export function Lanes() {
     window.addEventListener("keydown", escape, { capture: true });
     return () => window.removeEventListener("keydown", escape, { capture: true });
   }, []);
-  // A ctrl-click opens the context menu on a Mac, which a pan must not.
+
   const menu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (event.ctrlKey) {
       event.preventDefault();
     }
   }, []);
 
-  // Dragging on the ruler selects a range; a click there clears it.
   const rulerTime = useCallback(
     (event: PointerEvent<HTMLElement>) => {
       const left = canvas.current?.getBoundingClientRect().left ?? 0;
@@ -942,7 +895,7 @@ export function Lanes() {
   );
   const plotStyle = useMemo(() => ({ width: plot }), [plot]);
   const canvasStyle = useMemo(() => ({ width: plot, height }), [plot, height]);
-  // Task lanes are keyed by task, which a zone's thread is not.
+
   const kernelLanes = kernel ? answered : NO_LANES;
   const tip =
     hit && !panning
@@ -1033,20 +986,16 @@ export function Lanes() {
   );
 }
 
-/** The time `x` pixels into lanes `plot` wide showing `view`, kept to it. */
 function timeAt(view: readonly [number, number], plot: number, x: number): number {
   const px = Math.min(Math.max(x, 0), plot);
   return view[0] + (px * (view[1] - view[0])) / Math.max(plot, 1);
 }
 
-/** The look without a band, or anything that reads one. */
 function clearBand(look: ProfileFocus["look"]): ProfileFocus["look"] {
   const { zb: _zb, bz: _bz, zf, ...rest } = look;
   return zf === "all" ? { ...rest, zf } : rest;
 }
 
-/** Each lane's CPU as a gray ribbon, as strong as its load; the lane of
- * threads without zones draws their mean. Dim for a lane not selected. */
 function paintCpu(
   context: CanvasRenderingContext2D,
   {
@@ -1098,9 +1047,6 @@ function paintCpu(
   context.globalAlpha = 1;
 }
 
-/** Each thread's system calls in a strip under its CPU: how many returned
- * in each slice, by log scale, failed ones in red over them, and the calls
- * it waited in as bars that name the call where there is room. */
 function paintKernel(
   context: CanvasRenderingContext2D,
   {
@@ -1165,8 +1111,6 @@ function paintKernel(
   context.globalAlpha = 1;
 }
 
-/** The share of a single zone's time its thread was on its CPU, or null
- * when that was not traced. */
 function onCpu(blocks: ZoneBlocks, at: number): number | null {
   const covered = blocks.covered[at] ?? 0;
   if (!blocks.offCpu || covered <= 0) {
@@ -1176,8 +1120,6 @@ function onCpu(blocks: ZoneBlocks, at: number): number | null {
   return Math.min(Math.max(1 - off / covered, 0), 1);
 }
 
-/** A zone solid where its thread ran, from the timeline's off-CPU time in
- * each of its buckets, or failing those, as strong as its `share`. */
 function paintRunning(
   context: CanvasRenderingContext2D,
   {
@@ -1214,7 +1156,7 @@ function paintRunning(
     const to = Math.min(range[0] + (bucket + 1) * slice, end);
     const off = (lane.blocked[bucket] ?? 0) + (lane.preempted[bucket] ?? 0);
     const ran = 1 - Math.min(off / Math.max(slice, 1), 1);
-    // Whole pixels, so neighbouring buckets meet without a seam.
+
     const [left, right] = [Math.round(x(from)), Math.round(x(to))];
     if (ran > 0 && right > left) {
       context.globalAlpha = alpha * ran;
@@ -1223,7 +1165,6 @@ function paintRunning(
   }
 }
 
-/** What a zone's label may say, longest first. */
 function zoneLabels(name: string, length: number, running: number | null): string[] {
   const took = formatDuration(length);
   if (running === null) {
@@ -1233,14 +1174,12 @@ function zoneLabels(name: string, length: number, running: number | null): strin
   return [`${name} ${took}, ${cpu} CPU`, `${took}, ${cpu} CPU`, `${cpu} CPU`, cpu];
 }
 
-/** The first of `labels` that fits in `room` pixels of `glyph`-wide text. */
 function fitting(labels: readonly string[], room: number, glyph: number): string | null {
   return labels.find((label) => label.length * glyph <= room) ?? null;
 }
 
 const NO_LANES: ReadonlyMap<number, ProfileLane> = new Map();
 
-/** A tooltip's lines for what the pointer is over. */
 function tipLines(
   hit: Hit,
   {
@@ -1323,18 +1262,13 @@ function ownLines(
   ];
 }
 
-/** About how wide, in pixels, a letter of the ruler and a round time's
- * label are. */
 const LETTER = 6.5;
 const LABEL = 56;
-/** About how wide a pill with `label` in it is: the finer the zoom, the
- * longer its times. */
+
 const pillWidth = (label: string) => label.length * LETTER + 12;
-/** The narrowest range, in pixels, with room to show its length. */
+
 const MEASURED = 72;
 
-/** Round times across the view, with the pointer's time and a range's ends
- * and length over them. Dragging across it selects a range. */
 function Ruler({
   view,
   plot,
@@ -1363,8 +1297,7 @@ function Ruler({
     const [left, right] = [pixel(marked[0]), pixel(marked[1])];
     const [start, end] = [instant(marked[0]), instant(marked[1])];
     const [before, after] = [pillWidth(start), pillWidth(end)];
-    // Each end's pill stays on the ruler, though its end is off it, and
-    // where that would pull one over the other, they sit side by side.
+
     let [from, to] = [Math.max(left, before), Math.min(right, plot - after)];
     if (to < from) {
       [from, to] = from > left ? [from, from] : [to, to];
@@ -1386,8 +1319,7 @@ function Ruler({
     const label = instant(pointer);
     const width = pillWidth(label);
     const x = Math.min(Math.max(pixel(pointer), width / 2), plot - width / 2);
-    // The pointer's time stands in for a range's end it would cover: an
-    // end's pill sits beside its end, the pointer's over it.
+
     for (let at = pills.length - 1; at >= 0; at -= 1) {
       const pill = pills[at];
       if (!pill) {
@@ -1400,13 +1332,12 @@ function Ruler({
     }
     pills.push({ id: "at", x, label, width });
     taken.push([x - width / 2, x + width / 2]);
-    // The pointer's time stands in for the length it would cover.
+
     if (measure && Math.abs(x - (measure.x + measure.width / 2)) < (width + LABEL) / 2) {
       measure = { ...measure, label: null };
     }
   }
-  // A round time's label is centered on it, but the first and last sit
-  // inside the ruler's ends.
+
   const covered = (x: number, label: string, index: number) => {
     const width = label.length * LETTER + 8;
     const left = index === 0 ? x : index === marks.length - 1 ? x - width : x - width / 2;
@@ -1441,7 +1372,6 @@ function Ruler({
   );
 }
 
-/** A range's length, drawn as a measure across its `width` pixels. */
 function Measured({ x, width, label }: { x: number; width: number; label: string | null }) {
   const style = useMemo(() => ({ left: x, width }), [x, width]);
   return (
@@ -1451,7 +1381,6 @@ function Measured({ x, width, label }: { x: number; width: number; label: string
   );
 }
 
-/** A label on the ruler, `x` pixels in. */
 const RulerMark = memo(function RulerMark({
   x,
   label,
@@ -1469,15 +1398,11 @@ const RulerMark = memo(function RulerMark({
   );
 });
 
-/** The line under the pointer, down through every lane. */
 function Cursor({ x, height }: { x: number; height: number }) {
   const style = useMemo(() => ({ left: Math.round(x), height }), [x, height]);
   return <div className="timeline-cursor" style={style} />;
 }
 
-/** A lane's name, which toggles its thread or task in the selection, and
- * under it, for a thread whose zones go deeper than one row, a chevron that
- * folds them to one. The lane of threads without zones opens to them. */
 const LaneName = memo(function LaneName({
   row,
   selected,
@@ -1514,7 +1439,7 @@ const LaneName = memo(function LaneName({
       </button>
     );
   }
-  // Beside a thread's calls, which have no name of their own.
+
   const calls = kernel ? <div className="lane-kernel" aria-hidden="true" /> : null;
   return (
     <>
@@ -1547,7 +1472,6 @@ const LaneName = memo(function LaneName({
   );
 });
 
-/** One plotted series as a line from its lowest value to its highest. */
 function PlotLane({
   series,
   origin,
@@ -1603,12 +1527,10 @@ function PlotLane({
   );
 }
 
-/** A plotted value, short. */
 function formatValue(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toPrecision(4);
 }
 
-/** What a lane's name says of its thread's time off its CPU, if any. */
 function offCpu(thread: ProfileSummary["threads"][number]): string {
   if (thread.blocked === 0 && thread.preempted === 0) {
     return "";

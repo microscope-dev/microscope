@@ -1,17 +1,3 @@
-//! Watches of objects on stacks a language runtime moves, as Go's copies a
-//! goroutine's stack elsewhere to grow or shrink it. Such a watch belongs
-//! to its task, and is placed by how far below the top of the task's stack
-//! the watched bytes are, which a move keeps.
-//!
-//! While a watched task's stack moves, the runtime's stack mover reads the
-//! old stack and writes the new one, so the task's watches are put aside
-//! from the mover's entry, where it says whose stack it moves, until its
-//! return, where they are placed on the new stack. Both are breakpoints
-//! planted only while such a watch exists, and each makes an internal stop,
-//! since every thread's debug registers change. A move the debugger cannot
-//! follow ends the watches it may have moved, rather than leave them
-//! watching memory their objects left.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use nix::unistd::Pid;
@@ -31,51 +17,37 @@ use super::native::{InspectionOps, LinuxTraceOps};
 use super::registers::x86_64_registers;
 use super::{BreakpointOwner, Controller, Edit, Inferior, WatchRecord};
 
-/// Where a watch on a task's stack is: how far below the top of the task's
-/// stack the watched bytes begin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct TaskWatch {
     pub(super) task: TaskId,
     pub(super) below_top: u64,
 }
 
-/// The stack moves the debugger follows.
 #[derive(Debug, Default)]
 pub(super) struct StackMoves {
-    /// The entry of each runtime's stack mover, planted while a task of
-    /// that runtime has a watch.
     movers: BTreeMap<VirtualAddress, RuntimeId>,
 
-    /// The moves of watched tasks' stacks under way.
     moving: Vec<Move>,
 
-    /// Where the moves under way return, each planted.
     returns: BTreeSet<VirtualAddress>,
 
-    /// Whether a stack moved that the runtime could not name the task of,
-    /// which may have been any watched task's.
     unknown: bool,
 }
 
 impl StackMoves {
-    /// Forgets every move and site, as a new image does.
     pub(super) fn clear(&mut self) {
         *self = Self::default();
     }
 
-    /// Forgets a site whose code went away.
     pub(super) fn forget(&mut self, address: VirtualAddress) {
         self.movers.remove(&address);
         self.returns.remove(&address);
     }
 
-    /// Every site planted: the movers' entries and the moves' returns.
     pub(super) fn planted(&self) -> BTreeSet<VirtualAddress> {
         self.movers.keys().chain(&self.returns).copied().collect()
     }
 
-    /// Begins a move of `task`'s stack by `thread`, as entering the mover
-    /// does.
     #[cfg(test)]
     pub(super) fn begin(&mut self, thread: Pid, task: TaskId) {
         self.moving.push(Move {
@@ -87,9 +59,6 @@ impl StackMoves {
         });
     }
 
-    /// Whether a watch on `task`'s stack, if any, is set aside: it holds
-    /// no debug registers until its stack lands, and the follow arms it
-    /// there.
     pub(super) fn sets_aside(&self, task: Option<TaskWatch>) -> bool {
         task.is_some_and(|watch| {
             self.moving
@@ -99,8 +68,6 @@ impl StackMoves {
     }
 }
 
-/// One move of a watched task's stack: the thread in the mover, where it
-/// returns, and the stack pointer it returns with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Move {
     thread: Pid,
@@ -108,14 +75,10 @@ struct Move {
     returns_to: VirtualAddress,
     stack: u64,
 
-    /// Whether the mover returned, so the task's stack is where it goes.
     returned: bool,
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Where on its task's stack a watch of the object at `address` is, for
-    /// a watch with a task's scope: how far below the stack's top, which
-    /// the runtime's moves keep.
     pub(super) fn task_watch(
         &self,
         inferior: &Inferior,
@@ -142,8 +105,6 @@ impl<P: InspectionOps> Controller<P> {
         }))
     }
 
-    /// Whether a watch of an object on a task's stack ended: its task is
-    /// gone, its activation returned, or its stack moved unfollowed.
     pub(super) fn task_watch_invalidation(
         &self,
         inferior: &Inferior,
@@ -166,8 +127,6 @@ impl<P: InspectionOps> Controller<P> {
             }
         };
 
-        // A watch not set aside for a move is where its task's stack is;
-        // anywhere else, the stack moved where the debugger did not see.
         let suspended = inferior
             .stack_moves
             .moving
@@ -204,10 +163,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok((!live).then_some(WatchpointInvalidation::ScopeExited))
     }
 
-    /// Whether the activation that declared an object still runs on a
-    /// task's stack, inside the object's scope. The task's frames are read
-    /// across the stacks its runtime runs it on, from the runtime's own
-    /// stacks onto the task's.
     fn task_activation_is_live(
         &self,
         inferior: &Inferior,
@@ -226,7 +181,6 @@ impl<P: InspectionOps> Controller<P> {
 
         let stack = self.physical_stack(inferior, root, DEFAULT_MAX_FRAMES)?;
 
-        // Each frame's caller carries the frame's canonical frame address.
         for (index, caller) in stack.frames.iter().enumerate().skip(1) {
             let Some(cfa) = caller.context.cfa else {
                 continue;
@@ -257,9 +211,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Plants the stack mover's entry in each runtime one of whose tasks
-    /// has a watch, and removes the rest, with the returns of moves no
-    /// watch waits for any more.
     pub(super) fn sync_stack_movers(&mut self) -> Result<()> {
         let Some(inferior) = self
             .session
@@ -298,8 +249,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .copied()
             .collect::<BTreeSet<_>>();
 
-        // The record changes with each site, so that a failed edit leaves
-        // it naming exactly the sites planted.
         for &address in planted.difference(&needed) {
             remove_breakpoint_owner_from(
                 &self.ptrace,
@@ -333,9 +282,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Notes a thread that reached a stack mover's entry or return, if
-    /// `address` is one, and stops every thread to set its task's watches
-    /// aside, or place them on its new stack.
     pub(super) fn note_stack_move(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let moves = &inferior.stack_moves;
@@ -363,8 +309,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                     runtime: runtime.id,
                     number,
                 },
-                // A move of a stack the runtime cannot name may be any
-                // watched task's.
                 #[cfg_attr(
                     not(debug_assertions),
                     expect(unused_variables, reason = "only recorded")
@@ -411,15 +355,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Stops every thread to follow the stack moves noted.
     fn queue_stack_follow(&mut self) -> Result<()> {
         self.queue_internal_edit(Edit::FollowStacks)
     }
 
-    /// With every thread stopped, sets the watches of tasks whose stacks are
-    /// moving aside, and places those whose moves finished on their new
-    /// stacks. Watches that could not be are ended, rather than left where
-    /// their objects may no longer be.
     pub(super) fn follow_stacks(&mut self) {
         #[cfg_attr(
             not(debug_assertions),
@@ -468,8 +407,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                     Some(address) => placed.push((id, Some(VirtualAddress::new(address)))),
                     None => lost.push(id),
                 },
-                // A task that is gone ended its activation; the next stop
-                // says so.
                 Ok(None) => {}
 
                 #[cfg_attr(
@@ -498,8 +435,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
             let access = super::watchpoints::slot_access(record.watchpoint.access);
 
-            // A disabled watch follows its stack too, so that enabling it
-            // watches where the value is, but holds no slots meanwhile.
             let placed = debug_registers::split_range(address.get(), record.watchpoint.byte_size)
                 .ok()
                 .and_then(|chunks| {
@@ -557,8 +492,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.sync_stack_movers()
     }
 
-    /// Ends the task watches `ending` names, whose stacks moved where the
-    /// debugger could not follow.
     fn end_task_watches(&mut self, ending: impl Fn(WatchpointId) -> bool) -> Result<()> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let invalidated = inferior
@@ -575,7 +508,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// The tasks with a watch on their stacks.
 fn watched_tasks(inferior: &Inferior) -> BTreeSet<TaskId> {
     inferior
         .watch

@@ -1,8 +1,8 @@
-# Real tokio programs for tests/tokio. Their crates come only from the
-# lockfiles, which flake.nix vendors; nothing is fetched at build time.
-# Cargo.lock pins tokio 1.53.2 and tokio-1.52/Cargo.lock tokio 1.52.3,
-# the two releases the model is verified against; the fixtures are built
-# with each (scripts/build-test-programs.sh).
+
+
+
+
+
 [workspace]
 resolver = "3"
 members = ["truth", "std-async", "panics", "workers", "server", "drivers", "steps", "cancel", "shapes", "values", "runtimes", "scale", "blocking", "migrate", "deadlock", "corrupt", "profile"]
@@ -26,17 +26,17 @@ debug = 2
 opt-level = 3
 debug = 2
 
-# Panics that abort rather than unwind.
+
 [profile.abort]
 inherits = "dev"
 panic = "abort"
 
-# Lines and nothing else: no types, so no tasks.
+
 [profile.lines]
 inherits = "dev"
 debug = "line-tables-only"
 
-# Symbols and nothing else.
+
 [profile.stripped]
 inherits = "dev"
 strip = "debuginfo"

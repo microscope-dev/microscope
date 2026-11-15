@@ -1,5 +1,5 @@
-// A file for gofmt to format, written as gofmt would not write it. It is
-// gofmt's input, not a program.
+
+
 package   sample
 
 import "fmt"

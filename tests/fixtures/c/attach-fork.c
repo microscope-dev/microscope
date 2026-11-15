@@ -1,6 +1,6 @@
-// Forks once released. The child runs child_work and exits with its
-// result, plus 10 if it ever received SIGCONT. Released again, the parent
-// exits with its child's exit code.
+
+
+
 
 #define _GNU_SOURCE
 #include <signal.h>

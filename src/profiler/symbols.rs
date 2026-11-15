@@ -1,9 +1,3 @@
-//! Symbols for a profile recorded without them, as on a production host
-//! that keeps its debug information elsewhere: wherever the profile is
-//! opened, each module is found by its recorded file, while that is still
-//! the bytes recorded, or else by its build id, in the debug directories or
-//! from a debuginfod server.
-
 use std::path::PathBuf;
 
 use super::Profile;
@@ -13,22 +7,16 @@ use crate::capture::records::{FrameKind, NONE};
 use crate::debug_info::{DebugFileSearch, DebugInfo};
 use crate::{ImageAddress, ModuleImageId};
 
-/// What became of one module's symbols.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleSymbols {
-    /// The module's path when it was mapped.
     pub module: String,
 
-    /// The file its symbols were read from, or why none was found.
     pub source: Result<PathBuf, String>,
 
-    /// How many of its frames gained lines.
     pub frames: u64,
 }
 
 impl Profile {
-    /// The modules some code frame of which has no lines, by row. A module
-    /// the kernel maps without a file, as `[vdso]`, has none to look for.
     fn unsymbolized_modules(&self) -> Vec<u32> {
         let capture = &self.capture;
         let mut modules = capture
@@ -56,16 +44,11 @@ impl Profile {
         modules
     }
 
-    /// Whether the recording left symbolizing for later.
     #[must_use]
     pub fn symbols_later(&self) -> bool {
         self.capture.setting("symbols") == Some("later")
     }
 
-    /// Gives every code frame without lines the lines of its module, found
-    /// where `options` say to look, and says what each such module's
-    /// search found. Frames of a module that cannot be found keep their
-    /// addresses.
     pub fn symbolize(&mut self, options: &crate::DebugFileOptions) -> Vec<ModuleSymbols> {
         let modules = self.unsymbolized_modules();
         if modules.is_empty() {
@@ -80,7 +63,6 @@ impl Profile {
         let mut found = Vec::with_capacity(modules.len());
 
         for (number, module) in modules.into_iter().enumerate() {
-            // unsymbolized_modules keeps only modules the capture has.
             let Some(row) = capture.modules.get(module as usize) else {
                 continue;
             };
@@ -105,8 +87,6 @@ impl Profile {
     }
 }
 
-/// Gives each frame of `module` in `builder` without lines its lines in
-/// `info`, returning how many gained some.
 fn symbolize_module(builder: &mut CaptureBuilder, module: u32, info: &DebugInfo) -> u64 {
     let frames: Vec<(u32, u64)> = builder
         .frames()
@@ -132,9 +112,6 @@ fn symbolize_module(builder: &mut CaptureBuilder, module: u32, info: &DebugInfo)
     symbolized
 }
 
-/// The debug information of the module recorded at `path` with `digest`:
-/// from that file while it holds the same bytes, and otherwise from the
-/// file its build id names.
 pub(super) fn locate(
     path: &str,
     build_id: Option<&str>,
@@ -168,7 +145,6 @@ pub(super) fn locate(
         .map_err(|error| error.to_string())
 }
 
-/// The bytes a hex string spells.
 fn unhex(text: &str) -> Option<Vec<u8>> {
     (text.len().is_multiple_of(2) && !text.is_empty()).then_some(())?;
     (0..text.len())
@@ -181,9 +157,6 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
-    /// A module the kernel maps without a file, as `[vdso]`, has no file
-    /// or build id to find its lines by: it keeps its addresses without a
-    /// word, where a module whose file is gone says why.
     #[test]
     fn the_kernels_own_mappings_are_not_looked_for() {
         let mut builder = CaptureBuilder::new();

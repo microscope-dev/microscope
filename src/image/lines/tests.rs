@@ -8,10 +8,8 @@ use crate::image::{Builder, Image, Limits, PathsBuilder, TableKind};
 use crate::test_strategies::u64_edges;
 use crate::{ImageAddress, LineSequenceId, SourceFileId, StatementFlags, StatementRow};
 
-/// The files every generated row may name.
 const FILES: u32 = 3;
 
-/// Line and column numbers at the edges of their fields.
 fn number() -> impl Strategy<Value = u64> {
     let wide = u64::from(u32::MAX);
     let narrow = u64::from(u16::MAX);
@@ -22,7 +20,6 @@ fn number() -> impl Strategy<Value = u64> {
     ]
 }
 
-/// A row with any address and fields; the builder decides its sequence.
 fn row() -> impl Strategy<Value = Row> {
     (
         (
@@ -50,8 +47,6 @@ fn row() -> impl Strategy<Value = Row> {
         )
 }
 
-/// Sequences of rows in address order, each ending with a row that ends
-/// it, at the bottom of the address space or near its top.
 fn sequences() -> impl Strategy<Value = Vec<Vec<Row>>> {
     let sequence = (
         prop::sample::select(vec![0x1000_u64, 0x1010, 0x1040, u64::MAX - 0x100]),
@@ -78,12 +73,8 @@ fn sequences() -> impl Strategy<Value = Vec<Vec<Row>>> {
     proptest::collection::vec(sequence, 0..4)
 }
 
-/// A line range as the model keeps it: start, end, row, and statement.
 type ModelRange = (u64, u64, u32, bool);
 
-/// Pushes `sequences` as the loader does, opening a range at each located
-/// row up to the next row's address, and returns the rows and ranges it
-/// pushed.
 fn build(tables: &mut LineTables, sequences: &[Vec<Row>]) -> (Vec<Row>, Vec<ModelRange>) {
     let mut rows = Vec::new();
     let mut ranges = Vec::new();
@@ -124,7 +115,6 @@ fn seal(tables: &LineTables) -> Image {
     builder.seal(Limits::default()).unwrap()
 }
 
-/// Each row's sequence and its ordinal in it.
 fn places(sequences: &[Vec<Row>]) -> Vec<(u32, u32)> {
     sequences
         .iter()
@@ -149,7 +139,6 @@ fn statement_row(row: &Row, (sequence, ordinal): (u32, u32)) -> StatementRow {
     }
 }
 
-/// Addresses at and around every row.
 fn probes(rows: &[Row]) -> Vec<u64> {
     let mut probes = rows
         .iter()
@@ -259,7 +248,6 @@ proptest! {
         let places = places(&sequences);
         let probes = probes(&rows);
 
-        // Each sequence covers from its first row to the row ending it.
         let covers = |at: usize, address: u64| {
             let sequence = &sequences[places[at].0 as usize];
             sequence[0].address <= address
@@ -365,8 +353,6 @@ proptest! {
     }
 }
 
-/// An address in a gap between sequences, or past the last, is code no
-/// sequence describes: it has no line, not the line of the code before.
 #[test]
 fn an_address_between_sequences_has_no_line() {
     let row = |address, line| Row {
@@ -401,15 +387,12 @@ fn an_address_between_sequences_has_no_line() {
     assert_eq!(line(0x1020), Some(7));
     assert_eq!(line(0x1030), None);
 
-    // Shrunk by the property above: one row, and the end one byte on.
     let mut tables = LineTables::default();
     build(&mut tables, &[vec![row(0x1000, 1), end(0x1001)]]);
     let rows = tables.statements_by_address();
     assert_eq!(rows.line_at(ImageAddress::new(0x1001)), None);
 }
 
-/// Ranges built for two sequences that overlap, as folded code's do: an
-/// address the later one does not cover takes the earlier one's line.
 #[test]
 fn an_address_takes_the_line_of_the_sequence_covering_it() {
     let row = |address, line| Row {

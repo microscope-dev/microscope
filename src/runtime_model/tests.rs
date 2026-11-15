@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-/// Every Rust source under `directory`, with the code compiled only for
-/// tests removed.
 fn sources(directory: &Path) -> Vec<(PathBuf, String)> {
     let mut pending = vec![directory.to_owned()];
     let mut sources = Vec::new();
@@ -31,8 +29,6 @@ fn source_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
 }
 
-/// The code of a source, without its comments and the text of its string
-/// literals, which may name what the code may not use.
 fn code(source: &str) -> String {
     let mut code = String::with_capacity(source.len());
 
@@ -60,11 +56,6 @@ fn code(source: &str) -> String {
     code
 }
 
-/// A runtime model is pure: it reaches a program only through the traits
-/// the debugger implements for it, so none of its code may reach for
-/// process control, debug-information parsing, I/O, clocks, or threads.
-/// A model may name a runtime's types and functions in its strings, but
-/// never use the runtime's crate.
 #[test]
 fn runtime_model_stays_pure() {
     const FORBIDDEN: [&str; 13] = [
@@ -94,7 +85,6 @@ fn runtime_model_stays_pure() {
             );
         }
 
-        // The tokio model's own module is named for the runtime it reads.
         assert!(
             code.match_indices("tokio::")
                 .all(|(at, _)| code[..at].ends_with("self::") || code[..at].ends_with("super::")),
@@ -105,18 +95,12 @@ fn runtime_model_stays_pure() {
 
     assert!(sources.len() >= 3, "the runtime models' sources were found");
 
-    // The check sees through neither comments nor strings.
     assert!(code("let x = tokio::spawn(f);").contains("tokio::spawn"));
     assert!(!code("let x = \"tokio::spawn\"; // tokio::spawn").contains("tokio::"));
 }
 
-/// Each runtime is named in its own model only. Run control, unwinding,
-/// the protocol, and the clients speak of tasks and code roles, and learn
-/// what a runtime is through its model, never by recognizing its names.
 #[test]
 fn languages_stay_at_their_seams() {
-    // Each row names a runtime in the way only its model, and the
-    // debug-information provider's code roles, should.
     const RUNTIMES: [(&str, &[&str]); 3] = [
         (
             "runtime_model/go",
@@ -163,7 +147,6 @@ fn languages_stay_at_their_seams() {
         };
 
         for (path, source) in found {
-            // Documentation may name a runtime as an example; code may not.
             let written = source
                 .lines()
                 .filter(|line| !line.trim_start().starts_with("//"))
@@ -177,8 +160,6 @@ fn languages_stay_at_their_seams() {
                 }
 
                 for name in names {
-                    // Go's symbols are lowercase; V8's inspector protocol has
-                    // a `Runtime` domain, which names no Go function.
                     let seen = if *name == "\"runtime." {
                         written.contains(name)
                     } else {
@@ -248,9 +229,7 @@ fn prefetched_blocks_are_read_at_once_and_a_failed_one_is_read_again_alone() {
             })
             .collect()
     });
-    // Each block once, in order, and none for a start inside a block.
     assert_eq!(asked, [0x1000, 0x1100, 0x2000]);
-    // Prefetched is not used: a read keeps only the blocks it used.
     assert_eq!(memory.used_blocks(), [] as [u64; 0]);
 
     let mut word = [0; 4];

@@ -1,6 +1,6 @@
-// A ring buffer of f32 samples, which no view describes, for drawing with
-// Draw as… on a plain slice: the newest window of samples, in order, which
-// `report` takes as a parameter.
+
+
+
 const std = @import("std");
 
 const Ring = struct {

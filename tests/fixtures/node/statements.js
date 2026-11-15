@@ -1,5 +1,5 @@
-// Debugger statements: one in a function with a local, one in a loop that
-// stops each time it runs, and one in a vendored library.
+
+
 'use strict';
 const { halt } = require('./vendor/halt');
 

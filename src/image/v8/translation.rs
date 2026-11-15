@@ -1,8 +1,3 @@
-//! Per-version deoptimization opcodes describing an optimized frame's
-//! JavaScript frames. Each opcode byte is followed by VLQ-encoded operands.
-//! `translation.gen.rs` records opcode numbers and operand counts from each
-//! version's `translation-opcode.h`.
-
 use std::sync::Arc;
 
 use super::V8Version;
@@ -11,18 +6,14 @@ use super::V8Version;
 #[path = "translation.gen.rs"]
 mod generated;
 
-/// Defines [`TranslationOpcode`], each with V8's name.
 macro_rules! opcodes {
     ($($variant:ident = $name:literal,)*) => {
-        /// A translation opcode, by V8's name; 12.4's `JAVA_SCRIPT_` is
-        /// spelled `JAVASCRIPT_`, as later versions do.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum TranslationOpcode {
             $($variant,)*
         }
 
         impl TranslationOpcode {
-            /// The opcode's name, as V8 spells it.
             #[must_use]
             pub const fn name(self) -> &'static str {
                 match self {
@@ -30,7 +21,6 @@ macro_rules! opcodes {
                 }
             }
 
-            /// Looks up an opcode by its V8 name.
             #[must_use]
             #[cfg_attr(
                 not(test),
@@ -139,9 +129,6 @@ const _: () = {
     }
 };
 
-/// One version's translation opcodes: each opcode's number is its place in
-/// `opcodes`, with its operand count. The first `js_frame_opcodes` begin a
-/// JavaScript frame, and the first `frame_opcodes` a frame of any kind.
 #[derive(Debug)]
 pub struct Translations {
     pub major: u32,
@@ -152,7 +139,6 @@ pub struct Translations {
 }
 
 impl Translations {
-    /// The opcodes of V8 `version`, or why microscope has none.
     pub fn of(version: V8Version) -> Result<&'static Self, Arc<str>> {
         generated::TRANSLATIONS
             .iter()
@@ -166,34 +152,26 @@ impl Translations {
             })
     }
 
-    /// `kNumTranslationOpcodes`: a byte of at least this many is an
-    /// implicit `MATCH_PREVIOUS_TRANSLATION`.
     #[must_use]
     pub const fn count(&self) -> usize {
         self.opcodes.len()
     }
 
-    /// The opcode numbered `number`, with its operand count, or `None` for
-    /// a number past the last.
     #[must_use]
     pub fn opcode(&self, number: usize) -> Option<(TranslationOpcode, u8)> {
         self.opcodes.get(number).copied()
     }
 
-    /// The number of `opcode`, or `None` for one the version does not have.
     #[must_use]
     pub fn number(&self, opcode: TranslationOpcode) -> Option<usize> {
         self.opcodes.iter().position(|&(own, _)| own == opcode)
     }
 
-    /// Whether the opcode numbered `number` begins a JavaScript frame:
-    /// an interpreted frame or a JavaScript builtin's continuation.
     #[must_use]
     pub fn is_js_frame(&self, number: usize) -> bool {
         number < usize::from(self.js_frame_opcodes)
     }
 
-    /// Whether the opcode numbered `number` begins a frame.
     #[must_use]
     pub fn is_frame(&self, number: usize) -> bool {
         number < usize::from(self.frame_opcodes)

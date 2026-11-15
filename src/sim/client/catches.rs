@@ -1,7 +1,3 @@
-//! The user's catchpoints: stopping at the system calls the golden runtime
-//! makes, or at every call, at either end, with conditions the kernel can
-//! judge too.
-
 use std::sync::Arc;
 
 use super::{Client, protocol};
@@ -12,7 +8,6 @@ use crate::sim::report::Failure;
 use crate::syscalls::{Abi, SyscallId};
 use crate::{CatchPhase, CatchpointId, Condition};
 
-/// The calls the golden runtime makes.
 const CALLS: [&str; 9] = [
     "write",
     "sched_yield",
@@ -26,8 +21,6 @@ const CALLS: [&str; 9] = [
 ];
 
 impl Client {
-    /// Catches up to two of the runtime's calls, or every call, at a
-    /// chosen end, with a chosen condition.
     pub(super) async fn add_catch(&self) -> Result<(), Failure> {
         let mut calls = Vec::new();
         for _ in 0..self.draw(3) {
@@ -80,7 +73,6 @@ impl Client {
         Ok(())
     }
 
-    /// Removes one of the catchpoints the debugger made.
     pub(super) async fn remove_catch(&self) -> Result<(), Failure> {
         let ids = self
             .shared
@@ -96,7 +88,6 @@ impl Client {
         let id = *self.choices.borrow_mut().pick(Stream::Client, &ids);
         self.note(format!("remove catchpoint {id}"));
 
-        // From the request on, the catchpoint may be gone.
         self.shared.catches.borrow_mut().remove(&id);
         self.handle
             .remove_catchpoint(CatchpointId::new(id))

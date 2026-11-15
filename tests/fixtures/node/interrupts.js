@@ -1,5 +1,5 @@
-// After fs.readSync, stay inside spin() so every JavaScript pause has that frame.
-// Keep the accumulator bounded during long stress runs.
+
+
 
 'use strict';
 const fs = require('fs');

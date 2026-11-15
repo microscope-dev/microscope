@@ -1,34 +1,21 @@
-//! Rewriting source paths recorded by debug information to local paths.
-
 use std::path::{Path, PathBuf};
 
 use crate::{Error, Result};
 
-/// Ordered rules that rewrite recorded source paths, such as those of a
-/// program built on another machine or in a container, to where the files
-/// are on this machine.
-///
-/// A rule applies to a recorded path that begins with all of its prefix's
-/// components, so `/work` rewrites `/work/main.c` but never
-/// `/workspace/main.c`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourcePathMap {
     rules: Vec<(PathBuf, PathBuf)>,
 }
 
 impl SourcePathMap {
-    /// Creates a map with no rules, which reads every recorded path as is.
     #[must_use]
     pub const fn new() -> Self {
         Self { rules: Vec::new() }
     }
 
-    /// Adds a rule after every existing one: recorded paths below `from` are
-    /// looked for below `to`.
     pub fn push(&mut self, from: impl Into<PathBuf>, to: impl Into<PathBuf>) -> Result<()> {
         let from = from.into();
 
-        // An empty prefix would claim every path.
         if from.components().next().is_none() {
             return Err(Error::EmptySourcePathPrefix);
         }
@@ -37,12 +24,8 @@ impl SourcePathMap {
         Ok(())
     }
 
-    /// Where a recorded source file may be, in the order to try: the rewrite
-    /// of each matching rule, then the recorded path itself.
     #[must_use]
     pub fn candidates(&self, recorded: &Path) -> Vec<PathBuf> {
-        // A path recorded relative to `.`, as `-trimpath` builds record
-        // theirs, matches a rule with or without the leading `./`.
         let bare = recorded.strip_prefix(".").unwrap_or(recorded);
         let rewrites = self.rules.iter().filter_map(|(from, to)| {
             let rest = recorded
@@ -52,7 +35,6 @@ impl SourcePathMap {
             Some(to.join(rest))
         });
 
-        // Rules that rewrite a path alike need not be next to each other.
         let mut candidates = Vec::new();
         for candidate in rewrites {
             if candidate != recorded && !candidates.contains(&candidate) {
@@ -88,8 +70,6 @@ mod tests {
         ));
     }
 
-    /// Two rules that rewrite a path alike, with another rule's rewrite
-    /// between them.
     #[test]
     fn a_rewrite_two_rules_make_is_tried_once() {
         let mut map = SourcePathMap::new();
@@ -101,7 +81,6 @@ mod tests {
             [Path::new("/x/b/f"), Path::new("/y/f"), Path::new("/a/b/f")]
         );
 
-        // Shrunk by the property below.
         let mut map = SourcePathMap::new();
         map.push("a", "").unwrap();
         map.push("a", "a").unwrap();
@@ -112,7 +91,6 @@ mod tests {
         );
     }
 
-    /// A path as its components, absolute or not.
     fn path(absolute: bool, components: &[&str]) -> PathBuf {
         let mut path = PathBuf::from(if absolute { "/" } else { "" });
         path.extend(components);
@@ -123,12 +101,8 @@ mod tests {
         proptest::collection::vec(prop::sample::select(vec!["a", "b", ".."]), 0..4)
     }
 
-    /// A rule, by whether its prefix is absolute, its components, and the
-    /// same of what it rewrites to.
     type Rule = (bool, Vec<&'static str>, bool, Vec<&'static str>);
 
-    /// A recorded path's absoluteness and components, and rules most of
-    /// which match it, so that their rewrites often repeat.
     fn recorded_and_rules() -> impl Strategy<Value = (bool, Vec<&'static str>, Vec<Rule>)> {
         (any::<bool>(), components()).prop_flat_map(|(absolute, recorded)| {
             let prefix = (0..=recorded.len()).prop_map({
@@ -175,8 +149,6 @@ mod tests {
                 }
                 map.push(&from_path, path(*to_absolute, to)).unwrap();
 
-                // `/` is a component of its own, which only an absolute
-                // path begins with.
                 if *from_absolute == absolute && recorded.starts_with(from) {
                     let mut rewrite = path(*to_absolute, to);
                     rewrite.extend(&recorded[from.len()..]);

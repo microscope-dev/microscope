@@ -1,7 +1,7 @@
-// Creates children that share the parent's memory until they exec or exit:
-// vfork, and system, which vforks through posix_spawn. The child runs
-// child_work, which the parent calls only after the child has exited, and
-// the shell the system call runs execs under the same memory.
+
+
+
+
 
 #define _GNU_SOURCE
 #include <stdlib.h>
@@ -22,7 +22,7 @@ int main(void) {
         return 1;
     }
     int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    // The parent's own call, after the child exited with a code of 7.
+
     child_work(exit_code);
 
     int spawned = system("true");

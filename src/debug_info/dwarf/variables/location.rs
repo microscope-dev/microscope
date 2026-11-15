@@ -1,5 +1,3 @@
-//! Location descriptions and DWARF expressions copied out of the debug sections.
-
 use crate::debug_info::dwarf::DwarfSet;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -13,14 +11,12 @@ use crate::{AddressRange, ImageAddress, VariableUnavailableReason};
 use super::die::{ByteSize, base_type_encoding, byte_size_attribute};
 use super::{ConstantValue, Metadata, MetadataAbsence, ValueDescription};
 
-/// How many procedures one expression may call, directly or not.
 const MAX_PROCEDURES: usize = 64;
 
 pub(super) use crate::image::locations::{
     EvaluationUnit, Expression, LocationList, LocationListId, LocationTables, LocationsBuilder,
 };
 
-/// Operation families that determine where an object's storage lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum ExpressionUse {
     ThreadLocal,
@@ -36,9 +32,6 @@ pub(super) enum LocationSelectionError {
     Malformed(Arc<str>),
 }
 
-/// The expression `list` holds at `address`: the one entry whose range
-/// holds it, which overrides a default (range-less) entry; without an
-/// address only a default can apply.
 pub(super) fn select(
     list: LocationList<'_>,
     address: Option<ImageAddress>,
@@ -156,7 +149,6 @@ fn copy_constant(
     value: gimli::AttributeValue<Reader<'_>>,
 ) -> std::result::Result<ConstantValue, Arc<str>> {
     Ok(match value {
-        // Fixed-width forms carry raw bits; signedness comes from the type.
         gimli::AttributeValue::Data1(value) => ConstantValue::Fixed(u128::from(value)),
         gimli::AttributeValue::Data2(value) => ConstantValue::Fixed(u128::from(value)),
         gimli::AttributeValue::Data4(value) => ConstantValue::Fixed(u128::from(value)),
@@ -200,7 +192,6 @@ fn copy_location_with(
     value: gimli::AttributeValue<Reader<'_>>,
     copy_expression: CopyExpression,
 ) -> std::result::Result<LocationListId, DwarfError> {
-    // DWARF 2 and 3 encode a single expression as a block.
     if let Some(expression) = value.exprloc_value() {
         let expression = copy_expression(dwarf, pool, unit_index, unit, expression)?;
         return pool.list(&[(None, expression)]).map_err(too_large);
@@ -211,9 +202,6 @@ fn copy_location_with(
         .ok_or(DwarfError::UnsupportedReferenceForm)?;
     let mut entries = Vec::new();
 
-    // Iterate raw entries so DW_LLE_default_location keeps its fallback
-    // semantics (range: None) instead of becoming a 0..u64::MAX range that
-    // conflicts with every specific entry.
     while let Some(raw) = locations.next_raw()? {
         let is_default = matches!(&raw, gimli::RawLocListEntry::DefaultLocation { .. });
         let Some(location) = locations.convert_raw(raw)? else {
@@ -246,10 +234,6 @@ fn copy_location_with(
     pool.list(&entries).map_err(too_large)
 }
 
-/// Copies an expression with the procedures it calls, which must be in its
-/// own unit. Their indexed addresses are its own too: they run on its
-/// evaluation, which resolves them from its table, and all are in one
-/// unit, whose table they share.
 pub(super) fn copy_expression(
     dwarf: &DwarfSet<'_>,
     pool: &mut LocationsBuilder,
@@ -274,7 +258,6 @@ pub(super) fn copy_expression(
             ));
         }
 
-        // A procedure elsewhere stays missing, and running it unsupported.
         let Some(entry_offset) =
             gimli::DebugInfoOffset(usize::try_from(offset).map_err(|_| DwarfError::InvalidRange)?)
                 .to_unit_offset(&unit.header)
@@ -314,7 +297,6 @@ pub(super) fn copy_expression(
     .map_err(too_large)
 }
 
-/// Copies an expression's operations without the procedures it calls.
 fn copy_operations(
     dwarf: &DwarfSet<'_>,
     pool: &mut LocationsBuilder,
@@ -334,7 +316,6 @@ fn copy_operations(
     .map_err(too_large)
 }
 
-/// The addresses `.debug_addr` gives the indexes an expression names.
 fn indexed_addresses(
     dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
@@ -357,7 +338,6 @@ fn indexed_addresses(
     Ok(addresses)
 }
 
-/// The `.debug_info` offsets of the entries an expression calls.
 fn calls(
     unit: &gimli::Unit<Reader<'_>>,
     bytes: &[u8],
@@ -386,8 +366,6 @@ fn calls(
     Ok(called)
 }
 
-/// Records each unit's base types, which typed operations name, in unit
-/// order. Each unit is read on its own in parallel, and recorded in order.
 pub(super) fn load_evaluation_units(
     units: &Units<'_>,
     pool: &mut LocationsBuilder,
@@ -397,7 +375,6 @@ pub(super) fn load_evaluation_units(
         .map(|index| evaluation_unit(units, index))
         .collect::<Vec<_>>();
 
-    // The first unit to fail fails the load, as when they were read in turn.
     for recorded in recorded {
         pool.unit(&recorded?).map_err(too_large)?;
     }
@@ -405,16 +382,12 @@ pub(super) fn load_evaluation_units(
     Ok(())
 }
 
-/// What unit `index` records for evaluation: its offset, its language,
-/// and its base types.
 fn evaluation_unit(
     units: &Units<'_>,
     index: usize,
 ) -> std::result::Result<EvaluationUnit, DwarfError> {
     let unit = super::unit_at(units, index);
     let mut recorded = EvaluationUnit {
-        // The supplementary file's units lie in another section, which
-        // the file's expressions never name.
         offset: unit
             .header
             .debug_info_offset()

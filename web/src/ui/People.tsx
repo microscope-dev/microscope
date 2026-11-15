@@ -7,7 +7,6 @@ import type { Person } from "../protocol";
 import { write } from "../storage";
 import { useConnection, useModel } from "../store";
 
-/** A steady color for a name, so each person keeps theirs. */
 export function hue(name: string): number {
   let hash = 0;
   for (const char of name) {
@@ -91,7 +90,6 @@ export function People() {
   );
 }
 
-/** One person: hovering says where they look, and clicking goes there. */
 function Avatar({ person, me }: { person: Person; me: boolean }) {
   const style = useMemo(() => ({ background: `hsl(${hue(person.name)} 55% 30%)` }), [person.name]);
   const who = `${person.name}${me ? " (you)" : ""} · can ${person.role}`;

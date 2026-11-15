@@ -1,5 +1,3 @@
-//! Renders inspected values within a fixed output budget.
-
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -14,19 +12,14 @@ use microscope::{
 use super::format::register_bytes;
 use super::terminal::{Renderer, Role, escape_length};
 
-/// The most bytes one command renders.
 pub const OUTPUT_LIMIT: usize = 64 * 1024;
 
 pub const OUTPUT_TRUNCATION_MARKER: &str = "<truncated: OutputBytes>";
 
 const ANSI_RESET: &str = "\u{1b}[0m";
 
-/// The OSC 8 sequence that ends a link.
 const LINK_END: &str = "\u{1b}]8;;\u{1b}\\";
 
-/// A string that stops growing at a byte limit, ending with a marker when
-/// truncated. Truncation keeps a prefix of the input that splits no UTF-8
-/// character or escape sequence, and closes the link and style it cuts.
 struct BoundedOutput {
     value: String,
     limit: usize,
@@ -52,7 +45,6 @@ impl BoundedOutput {
             return;
         }
 
-        // Cut the input as a whole, so that what is kept is a prefix of it.
         let room = self.limit - self.value.len();
         self.value
             .push_str(&text[..floor_char_boundary(text, room)]);
@@ -108,8 +100,6 @@ fn floor_char_boundary(text: &str, limit: usize) -> usize {
     end
 }
 
-/// Returns the longest prefix length within `limit` that does not end inside
-/// a character or an escape sequence.
 fn safe_ansi_prefix_end(text: &str, limit: usize) -> usize {
     let mut end = 0;
 
@@ -129,8 +119,6 @@ fn safe_ansi_prefix_end(text: &str, limit: usize) -> usize {
     end
 }
 
-/// Whether `text` ends inside an OSC 8 link: its last link sequence names
-/// a target.
 fn leaves_link_open(text: &str) -> bool {
     let mut open = false;
     let mut rest = text;
@@ -157,14 +145,12 @@ fn leaves_link_open(text: &str) -> bool {
     open
 }
 
-/// Truncates already rendered text to the output budget.
 pub fn bound_output(rendered: &str) -> String {
     let mut output = BoundedOutput::new(OUTPUT_LIMIT);
     output.push_str(rendered);
     output.into_string()
 }
 
-/// Describes a state that holds no value, or `None` for an available one.
 fn state_failure(state: &VariableState) -> Option<(Role, String)> {
     match state {
         VariableState::Available { .. } => None,
@@ -187,7 +173,6 @@ pub fn exhaustion(exhaustion: InspectionExhaustion) -> String {
     )
 }
 
-/// Renders `(type) name = value` within the output budget.
 fn assignment(type_name: &str, name: &str, value: &str, renderer: Renderer) -> String {
     bound_output(&format!(
         "({}) {} = {value}",
@@ -200,9 +185,6 @@ pub fn variables(snapshot: &VariableSnapshot, renderer: Renderer) -> String {
     variables_marked(snapshot, renderer, &mut |_, _| false)
 }
 
-/// Renders variables as [`variables`] does, marking each available value
-/// that `changed`, given its name and its line without escapes, says
-/// changed: drawn in the changed role, or suffixed with `*` without colour.
 pub fn variables_marked(
     snapshot: &VariableSnapshot,
     renderer: Renderer,
@@ -214,7 +196,6 @@ pub fn variables_marked(
         .variables
         .iter()
         .flat_map(|variable| {
-            // Say once, before the first of them, why values have no names.
             let note = variable
                 .unnamed
                 .as_deref()
@@ -253,7 +234,6 @@ pub fn variables_marked(
     output.into_string()
 }
 
-/// One variable on a line; a value a finished function returned says so.
 pub fn variable_summary(variable: &Variable, renderer: Renderer) -> String {
     let line = variable_line(variable, renderer);
     if variable.kind == VariableKind::Returned {
@@ -278,7 +258,6 @@ fn variable_line(variable: &Variable, renderer: Renderer) -> String {
     assignment(&type_info.name, &variable.name, &value, renderer)
 }
 
-/// Renders a value whose type could not be resolved.
 pub fn untyped(name: &str, state: &VariableState, renderer: Renderer) -> String {
     let (role, value) =
         state_failure(state).unwrap_or_else(|| (Role::Warning, "<unknown value>".to_owned()));
@@ -290,8 +269,6 @@ pub fn untyped(name: &str, state: &VariableState, renderer: Renderer) -> String 
     )
 }
 
-/// Summarizes a value on one line without expanding aggregates, as
-/// `print` shows each variable, or describes why it has none.
 pub fn summary(type_info: Option<&TypeInfo>, state: &VariableState) -> String {
     type_info.map_or_else(
         || state_failure(state).map_or_else(|| "<unknown value>".to_owned(), |(_, text)| text),
@@ -299,13 +276,10 @@ pub fn summary(type_info: Option<&TypeInfo>, state: &VariableState) -> String {
     )
 }
 
-/// Summarizes an available state's value as its view presents it, or
-/// describes why it has none.
 fn state_summary(type_info: &TypeInfo, state: &VariableState) -> String {
     rendered_summary(type_info, state, false)
 }
 
-/// The text a view gave a value, which the value as stored does not show.
 fn stored_text(state: &VariableState) -> Option<&Arc<microscope::TextSummary>> {
     let VariableState::Available {
         text, presentation, ..
@@ -321,7 +295,6 @@ fn stored_text(state: &VariableState) -> Option<&Arc<microscope::TextSummary>> {
     text.as_ref().filter(|_| !from_view)
 }
 
-/// A value's one-line summary: as its view presents it, unless `raw`.
 fn rendered_summary(type_info: &TypeInfo, state: &VariableState, raw: bool) -> String {
     match state {
         VariableState::Available {
@@ -339,7 +312,6 @@ fn rendered_summary(type_info: &TypeInfo, state: &VariableState, raw: bool) -> S
             let summary = value_summary(type_info, value, children);
             let summary = match (stored_text(state), value) {
                 (None, _) => summary,
-                // A pointer keeps its address; the text follows it.
                 (Some(text), VariableValue::Address(_)) => {
                     format!("{summary} {}", microscope::quoted_text(text))
                 }
@@ -357,7 +329,6 @@ fn rendered_summary(type_info: &TypeInfo, state: &VariableState, raw: bool) -> S
     }
 }
 
-/// Why a view showed a value as stored.
 fn view_failure(presentation: &Presentation) -> String {
     format!(
         "<view {}: {}>",
@@ -412,7 +383,6 @@ fn value_summary(type_info: &TypeInfo, value: &VariableValue, children: &ValueCh
             match matches.as_ref() {
                 [] => raw,
                 [enumerator] => format!("{} ({raw})", enumerator.name),
-                // Flags whose bitwise OR the value is.
                 flags if flags.iter().all(|flag| flag.value != *value) => {
                     format!(
                         "{} ({raw})",
@@ -459,7 +429,6 @@ fn value_summary(type_info: &TypeInfo, value: &VariableValue, children: &ValueCh
             active,
         } => {
             let active = active.as_ref().map_or("<no matching variant>", |variant| {
-                // Rust names a variant by its one member instead.
                 variant
                     .name
                     .as_deref()
@@ -484,7 +453,6 @@ fn value_summary(type_info: &TypeInfo, value: &VariableValue, children: &ValueCh
     }
 }
 
-/// Whether a value has no parts to expand.
 const fn is_leaf(value: &VariableValue) -> bool {
     matches!(
         value,
@@ -497,45 +465,30 @@ const fn is_leaf(value: &VariableValue) -> bool {
     )
 }
 
-/// How `print` lays a value out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout {
-    /// How the value breaks across lines.
     pub lines: Lines,
 
-    /// The columns a pretty value fits in.
     pub width: usize,
 
-    /// The columns each nested line is indented by.
     pub indent: usize,
 
-    /// Whether integers show in hexadecimal.
     pub hexadecimal: bool,
 
-    /// Whether values show as stored, without their views.
     pub raw: bool,
 
-    /// The most aggregate levels expanded.
     pub max_depth: u64,
 
-    /// The most children shown per aggregate.
     pub max_elements: u64,
 }
 
-/// How a printed value breaks across lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lines {
-    /// `/l`: one line. A value its runtime writes over several lines shows
-    /// its summary.
     One,
-    /// As the value's runtime writes it, else on one line.
     Runtime,
-    /// With groups that do not fit the width broken across lines.
     Pretty,
 }
 
-/// A value laid out as text, and groups of items in brackets that a
-/// printer shows on one line or one item per line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Doc {
     Text(String),
@@ -546,8 +499,6 @@ enum Doc {
     },
 }
 
-/// Builds a [`Doc`] from text, openings, separators, and closings in order,
-/// counting the bytes its compact form takes.
 #[derive(Default)]
 struct Builder {
     root: Vec<Doc>,
@@ -593,13 +544,11 @@ impl Builder {
         self.current().push(Doc::Group { open, items, close });
     }
 
-    /// Whether the value is already longer than any output shows.
     const fn full(&self) -> bool {
         self.bytes > OUTPUT_LIMIT
     }
 
     fn finish(mut self) -> Vec<Doc> {
-        // A walk the budget ended leaves groups open, past what is shown.
         while !self.frames.is_empty() {
             self.close(String::new());
         }
@@ -608,7 +557,6 @@ impl Builder {
     }
 }
 
-/// The columns `docs` take on one line.
 fn flat_width(docs: &[Doc]) -> usize {
     docs.iter()
         .map(|doc| match doc {
@@ -623,7 +571,6 @@ fn flat_width(docs: &[Doc]) -> usize {
         .sum()
 }
 
-/// Writes `docs` on one line, as `print` always did.
 fn compact(docs: &[Doc], output: &mut BoundedOutput) {
     for doc in docs {
         if output.is_truncated() {
@@ -648,9 +595,6 @@ fn compact(docs: &[Doc], output: &mut BoundedOutput) {
     }
 }
 
-/// Writes `docs` from `column` so that each group that does not fit the
-/// width, with the `trailing` columns that follow it on its line, puts each
-/// item on a line of its own, indented, and ended by a comma.
 fn pretty(
     docs: &[Doc],
     layout: Layout,
@@ -683,8 +627,6 @@ fn pretty(
                 output.push_str(open);
                 let inner = indent + layout.indent;
 
-                // A sequence of leaves fills each line rather than taking
-                // one line per element.
                 let fill = open.ends_with('[')
                     && items
                         .iter()
@@ -715,7 +657,6 @@ fn pretty(
     }
 }
 
-/// Pending output of [`expanded`], consumed from the back.
 enum Work {
     State(Box<(TypeInfo, VariableState)>, u64),
     Text(String),
@@ -723,8 +664,6 @@ enum Work {
     Close(String),
 }
 
-/// An integer leaf in hexadecimal within its type's width, as `print/x`
-/// shows it, or `None` for any other value.
 fn hexadecimal_text(type_info: &TypeInfo, state: &VariableState) -> Option<String> {
     let integer = match state {
         VariableState::Available {
@@ -742,7 +681,6 @@ fn hexadecimal_text(type_info: &TypeInfo, state: &VariableState) -> Option<Strin
         _ => return None,
     };
 
-    // An exact integer has no width: a negative one keeps its sign.
     let width = type_info
         .byte_size
         .map(|size| size.saturating_mul(8).min(128));
@@ -766,9 +704,6 @@ fn hexadecimal_text(type_info: &TypeInfo, state: &VariableState) -> Option<Strin
     }
 }
 
-/// Renders a value with its aggregates expanded, fetching child pages until
-/// the remaining inspection limits or the output budget run out, and lays
-/// it out as `layout` says.
 #[expect(
     clippy::too_many_lines,
     reason = "values as stored and as presented are expanded in one bounded walk"
@@ -821,8 +756,6 @@ pub async fn expanded(
 
         let presentation = presentation.as_deref().filter(|_| !raw);
 
-        // A view's elements show inside its summary's brackets; any other
-        // presentation is its summary.
         if let Some(presentation) = presentation
             && presentation.shape != PresentedShape::Raw
         {
@@ -836,13 +769,11 @@ pub async fn expanded(
                 presentation.count,
             )
             else {
-                // A number a view presents is written as that number is.
                 let number = presentation
                     .number
                     .as_deref()
                     .filter(|_| layout.hexadecimal)
                     .and_then(|number| hexadecimal_text(number.type_info.as_ref()?, &number.state));
-                // The value shows as its runtime writes it; each child gets one line.
                 let text = if depth == 0 && layout.lines != Lines::One {
                     presentation.text()
                 } else {
@@ -879,7 +810,6 @@ pub async fn expanded(
             work.push(Work::Text(format!(" {}", view_failure(presentation))));
         }
 
-        // Strings show as their text rather than their parts.
         if stored_text(state).is_some() || is_leaf(value) {
             let hexadecimal = layout
                 .hexadecimal
@@ -925,7 +855,6 @@ pub async fn expanded(
                 ("[".to_owned(), "]".to_owned())
             }
 
-            // A closure is its function and what it captured.
             VariableValue::Function { code, function } => (
                 format!(
                     "{} {{",
@@ -979,8 +908,6 @@ pub async fn expanded(
     ))
 }
 
-/// Fetches the first page of up to `count` children that the expansion
-/// and the remaining limits allow, charging it to `remaining`.
 async fn first_children(
     debugger: &DebuggerHandle,
     reference: &Arc<ValueChildrenReference>,
@@ -1008,9 +935,6 @@ async fn first_children(
     Ok(Some(page))
 }
 
-/// Schedules one aggregate's children, then any truncation markers, as
-/// separated items. The elements of an array of several `dimensions` are
-/// grouped in rows, a row of rows for each dimension after the first.
 fn schedule_children(
     work: &mut Vec<Work>,
     total: u64,
@@ -1064,7 +988,6 @@ fn schedule_children(
         })
         .collect::<Vec<_>>();
 
-    // Elements cut short inside a row leave it open.
     if open_rows > 0
         && let Some(last) = items.last_mut()
     {
@@ -1088,9 +1011,6 @@ fn schedule_children(
     }
 }
 
-/// How many rows an element of an array of several dimensions begins and
-/// ends: one for each dimension after the first, from the last, whose
-/// index is that dimension's first, and last.
 fn rows(dimensions: &[ArrayDimension], indices: &[i128]) -> (usize, usize) {
     if dimensions.len() < 2 || indices.len() != dimensions.len() {
         return (0, 0);
@@ -1116,7 +1036,6 @@ fn rows(dimensions: &[ArrayDimension], indices: &[i128]) -> (usize, usize) {
     (edge(false), edge(true))
 }
 
-/// How watched bytes are decoded.
 enum WatchedScalar {
     Integer { signed: bool },
     Boolean,
@@ -1124,9 +1043,6 @@ enum WatchedScalar {
     Address,
 }
 
-/// A watch hit's values before and after the access: an interpreted
-/// variable's as its runtime presented them, and others' as their bytes
-/// read as the watched type.
 pub fn hit_values(
     hit: &microscope::WatchpointHit,
     type_info: Option<&TypeInfo>,
@@ -1141,8 +1057,6 @@ pub fn hit_values(
     )
 }
 
-/// Renders watched bytes as a scalar when the type resolves to one in the
-/// main image, and as little-endian hexadecimal otherwise.
 pub fn watched_bytes(
     bytes: Option<&[u8]>,
     type_info: Option<&TypeInfo>,
@@ -1191,7 +1105,6 @@ pub fn watched_bytes(
     }
 }
 
-/// Follows typedefs and qualifiers in the main image to a decodable scalar.
 fn watched_scalar(type_info: &TypeInfo, image: Option<&ModuleImage>) -> Option<WatchedScalar> {
     const MAX_TYPE_CHAIN: usize = 16;
     let mut current = type_info;
@@ -1233,9 +1146,6 @@ fn watched_scalar(type_info: &TypeInfo, image: Option<&ModuleImage>) -> Option<W
     None
 }
 
-/// Renders a type's definition, as `ptype` does: a record's or union's
-/// members, an enumeration's enumerators, or the name of any other type,
-/// then the type's template or generic arguments.
 pub fn type_definition(
     type_info: &TypeInfo,
     images: &[std::sync::Arc<ModuleImage>],
@@ -1352,8 +1262,6 @@ mod tests {
         Renderer::with_look(true, look)
     }
 
-    /// A piece of rendered output: text, painted text, a link, or another
-    /// whole escape sequence a terminal reads.
     fn segment() -> impl Strategy<Value = String> {
         let text = prop::collection::vec(
             prop::sample::select(vec!["a", "b", " ", "é", "日本", "🦀", "\\", "\n"]),
@@ -1371,10 +1279,6 @@ mod tests {
         ]
     }
 
-    /// The text a terminal shows for `text`, or an error naming an escape
-    /// sequence or link left open: a control sequence ends at its final
-    /// byte, an operating system command at ST or BEL, and any other
-    /// escape after one character.
     fn shown(text: &str) -> Result<String, String> {
         let mut shown = String::new();
         let mut characters = text.char_indices().peekable();
@@ -1463,8 +1367,6 @@ mod tests {
         }
     }
 
-    /// A value's layout: leaves without commas or spaces, and groups in
-    /// the brackets values print with.
     fn docs() -> impl Strategy<Value = Vec<Doc>> {
         let leaf = prop::sample::select(vec!["a", "bb", "x=", "0x7f", "longer_leaf_text", "é"])
             .prop_map(|text| Doc::Text(text.to_owned()));
@@ -1538,9 +1440,6 @@ mod tests {
         }
     }
 
-    /// The property's shrunk failures: a cut in the earlier text followed
-    /// by the start of the later one, and a cut inside a link's closing
-    /// sequence that left the link open.
     #[test]
     fn bounded_output_keeps_a_prefix_and_closes_the_link_it_cuts() {
         let mut output = BoundedOutput::new(26);
@@ -1564,8 +1463,6 @@ mod tests {
         );
     }
 
-    /// An escape the text ends inside is dropped, as a terminal would wait
-    /// for the rest of it. The bounded-output property never makes one.
     #[test]
     fn plain_text_drops_an_escape_the_text_ends_inside() {
         assert_eq!(plain("a\u{1b}[3"), "a");
@@ -1626,7 +1523,6 @@ mod tests {
         assert_eq!(character(92), r"92 '\\'");
         assert_eq!(character(-1), "-1");
 
-        // A byte above ASCII is part of a character in some encoding.
         assert_eq!(character(233), "233");
         assert_eq!(
             microscope::scalar_text(&ScalarValue::Unsigned(66), Characters::Bytes),
@@ -1660,8 +1556,6 @@ mod tests {
             "3.125"
         );
 
-        // Shortest round-trip digits, with an exponent where plain digits
-        // would run to hundreds of zeros.
         let double = |value: f64| float(microscope::FloatValue::Binary64(value.to_bits()));
         assert_eq!(double(3e300), "3e300");
         assert_eq!(double(1e21), "1e21");
@@ -1677,7 +1571,6 @@ mod tests {
             "3.4028235e38"
         );
 
-        // Formats Rust has no type for take as few digits as read back.
         let quad = |text: &str| {
             use rustc_apfloat::Float as _;
             let value = rustc_apfloat::ieee::Quad::from_str_r(
@@ -1696,7 +1589,6 @@ mod tests {
         assert_eq!(quad("0.000001"), "0.000001");
         assert_eq!(float(microscope::FloatValue::Binary16(0x3e00)), "1.5");
 
-        // The largest half is 65504, but 65500 reads back as it.
         assert_eq!(float(microscope::FloatValue::Binary16(0x7bff)), "65500");
         assert_eq!(float(microscope::FloatValue::Binary16(1)), "6e-8");
         assert_eq!(float(microscope::FloatValue::Binary16(0x7c00)), "inf");

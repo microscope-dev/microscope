@@ -1,17 +1,17 @@
-"""numpy arrays, which keep their elements as the machine does: of each
-element type microscope reads, of one axis and of several, laid out next
-to each other, with strides, backwards, and transposed, an array of no
-axes, an empty one, one past a summary's bounds, a class deriving from
-numpy's, arrays of elements microscope does not read, and a list, whose
-numbers are objects.
 
-The test passes the directory numpy is in, then expressions, which CPython
-evaluates in the frame before it parks. Besides each expression's result,
-the checkpoint reports the children of each local array that has any, in
-order, as truth.canonical() gives each:
 
-    TRUTH  child  LOCAL  VALUE
-"""
+
+
+
+
+
+
+
+
+
+
+
+
 
 import os
 import sys
@@ -44,7 +44,7 @@ def values():
     transposed = grid.T
     scalar = numpy.array(5)
     empty = numpy.zeros((0, 3))
-    # No elements, and more rows than a summary shows objects.
+
     hollow = numpy.zeros((64, 64, 64, 64, 64, 0))
     long = numpy.arange(100.0)
     tagged = numpy.arange(3.0).view(Tagged)
@@ -60,8 +60,8 @@ def values():
 
 
 def children(locals_):
-    """The child records of each local array of at most 64 elements on its
-    first axis: its numbers, or its arrays of the rest."""
+
+
     records = []
     for local, value in locals_.items():
         if not isinstance(value, numpy.ndarray) or value.ndim == 0 or len(value) > 64:

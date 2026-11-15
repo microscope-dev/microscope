@@ -1,7 +1,3 @@
-//! Rows as the client's variables. What a row holds is shared with every
-//! front end ([`crate::present`]); how it is named and expanded later is the
-//! adapter's.
-
 use microscope::{RegisterValue, StopContext};
 use serde_json::{Map, Value, json};
 
@@ -9,27 +5,20 @@ use super::handles::{Exhausted, Location, References, Variables};
 use crate::cli::format::register_bytes;
 use crate::present::{Expand, Row};
 
-/// What the client accepts in a variable, and how it wants values shown.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Options {
-    /// Whether to include each value's type.
     pub types: bool,
 
-    /// Whether to include memory references.
     pub memory: bool,
 
-    /// Whether to show integers in hexadecimal.
     pub hex: bool,
 }
 
-/// How values show when a request does not say.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Display {
-    /// Whether integers show in hexadecimal.
     pub hex: bool,
 }
 
-/// Presents a row as a `Variable`, with a reference that expands it.
 pub fn variable(
     row: Row,
     context: StopContext,
@@ -94,7 +83,6 @@ pub fn variable(
             None => {}
         }
 
-        // A pointer to a function leads to the function's code.
         if let Some(address) = details.code {
             variable.insert(
                 "valueLocationReference".to_owned(),
@@ -132,10 +120,6 @@ pub fn variable(
     Ok(variable)
 }
 
-/// Presents a register, which never expands and which expressions read but
-/// cannot assign.
-/// A register's row: one the innermost frame holds can be set, as the
-/// thread's own; a caller's is what unwinding recovered.
 pub fn register(
     value: &RegisterValue,
     byte_order: microscope::ByteOrder,
@@ -176,8 +160,6 @@ pub fn register(
     variable
 }
 
-/// A row that marks where an inspection stopped short, such as at its
-/// memory limit.
 pub fn truncation(description: String) -> Map<String, Value> {
     let mut variable = Map::new();
     variable.insert("name".to_owned(), "<truncated>".into());

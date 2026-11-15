@@ -1,39 +1,20 @@
-//! What a recording gives up to stay inside its budget, one rung at a time.
-//!
-//! The rungs shed system call detail first, then samples; counting calls
-//! is never shed. Over budget, the ladder steps down one rung a period.
-//! Under it for [`HOLD`], it steps back up one rung, then holds again.
-//! A rung of call detail costs in step with the calls traced, so it comes
-//! back only once they are few enough that what the period it was shed in
-//! cost would have fit. At the last rung, samples, the sample controller
-//! decides how much is sampled, and the ladder only leaves once sampling is
-//! whole again.
-
 use std::time::Duration;
 
-/// What each rung gives up, along with every rung above it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rung {
-    /// The stacks of system calls.
     Stacks,
 
-    /// Strings and buffers past a few bytes.
     Strings,
 
-    /// All but one call in [`SAMPLED_EVERY`], which are counted instead.
     Sampled,
 
-    /// Every call but those that fail or are slow, which are counted.
     ExceptionsOnly,
 
-    /// Part of each period's samples, as the sample controller decides.
     Samples,
 }
 
-/// How long the cost stays under budget before a rung comes back.
 pub const HOLD: Duration = Duration::from_secs(5);
 
-/// One call in this many is kept at [`Rung::Sampled`].
 pub const SAMPLED_EVERY: u32 = 16;
 
 impl Rung {
@@ -49,41 +30,32 @@ impl Rung {
     }
 }
 
-/// What the ladder did after a period.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Move {
     Down(Rung),
     Up(Rung),
 }
 
-/// What a period cost, as the ladder judges it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Period {
     pub over: bool,
 
-    /// What it used, as a share of the budget.
     pub used: f64,
 
-    /// The system calls traced a second.
     pub calls: f64,
 }
 
-/// The rungs a recording can give up, in order, and how many it has.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ladder {
     rungs: Vec<Rung>,
     shed: usize,
 
-    /// For each rung given up, the most calls a second it comes back at.
     limits: Vec<f64>,
 
-    /// Since when the cost has been under budget, in nanoseconds.
     calm_since: Option<u64>,
 }
 
 impl Ladder {
-    /// A ladder of `rungs`, which [`Ladder::rungs`] orders and keeps one
-    /// of each.
     #[must_use]
     pub fn new(rungs: impl IntoIterator<Item = Rung>) -> Self {
         let mut rungs: Vec<Rung> = rungs.into_iter().collect();
@@ -97,20 +69,16 @@ impl Ladder {
         }
     }
 
-    /// The rungs given up, top first.
     #[must_use]
     pub fn shed(&self) -> &[Rung] {
         self.rungs.get(..self.shed).unwrap_or_default()
     }
 
-    /// Whether `rung` is given up.
     #[must_use]
     pub fn sheds(&self, rung: Rung) -> bool {
         self.shed().contains(&rung)
     }
 
-    /// Judges `period`, which ended at `now`. At samples, a period counts
-    /// as over while sampling is not whole.
     pub fn judge(&mut self, period: Period, now: u64) -> Option<Move> {
         if period.over {
             self.calm_since = None;
@@ -226,7 +194,6 @@ mod tests {
                     calm = None;
                 }
 
-                // Rungs are shed in order: a prefix of the sorted rungs.
                 let mut sorted = rungs.clone();
                 sorted.sort_unstable();
                 sorted.dedup();
@@ -291,9 +258,6 @@ mod tests {
         );
     }
 
-    /// Calls shed at 300% of the budget and 300k a second come back at a
-    /// third of that rate, not before; samples come back whatever the
-    /// calls.
     #[test]
     fn call_detail_comes_back_once_the_calls_would_fit() {
         let mut ladder = Ladder::new([Rung::ExceptionsOnly, Rung::Samples]);

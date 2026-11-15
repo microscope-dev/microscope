@@ -1,5 +1,5 @@
-// Forks CHILDREN children, and then every process spins without end, so a
-// group has several members running at once to stop and resume together.
+
+
 #include <unistd.h>
 
 enum { CHILDREN = 4 };

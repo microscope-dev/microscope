@@ -14,7 +14,7 @@ struct Record {
 fn crash_now(record: &Record, depth: i32) -> f64 {
     let doubled = depth * 2;
     CRASH_SINK.store(record.id + doubled, Ordering::Relaxed);
-    // An aligned, non-null address the process never maps.
+
     let target = core::ptr::without_provenance_mut::<i32>(8);
     unsafe { core::ptr::write_volatile(target, doubled) };
     record.scale * f64::from(doubled)

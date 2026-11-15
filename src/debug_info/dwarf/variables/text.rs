@@ -1,13 +1,3 @@
-//! The text string values hold: C strings, character arrays, the slices a
-//! language makes its text of, and Go's strings. The string classes of
-//! libraries are views (`views/`).
-//!
-//! Text is read for display, bounded per value and never across a page that
-//! cannot be read, so a corrupt pointer or length costs at most a few reads.
-//! Every read is charged to the inspection's budget. Text the budget cannot
-//! afford is cut short and says so, without failing the rest of the
-//! inspection.
-
 use std::sync::Arc;
 
 use crate::inspection::InspectionBudget;
@@ -27,27 +17,20 @@ use crate::debug_info::TextLocation;
 
 const PAGE_SIZE: u64 = 4096;
 
-/// How deep a string type's pointer to its bytes may be nested.
 const MAX_STRING_DEPTH: usize = 6;
 
-/// Why reading text stopped before its end.
 enum Stopped {
-    /// Memory at this address could not be read.
     Unreadable(VirtualAddress),
 
-    /// The budget could not afford the next read.
     Limited(InspectionExhaustion),
 }
 
-/// Reads target memory for text, charging the inspection's budget.
 struct TextReader<'a> {
     runtime: &'a mut dyn VariableRuntime,
     budget: &'a mut InspectionBudget,
 }
 
 impl TextReader<'_> {
-    /// Reads exactly `size` bytes, or nothing when the budget cannot afford
-    /// them all.
     fn read_exact(&mut self, address: VirtualAddress, size: usize) -> Result<Vec<u8>, Stopped> {
         if let Some(exhaustion) = self.budget.memory_shortfall(size as u64) {
             return Err(Stopped::Limited(exhaustion));
@@ -60,10 +43,6 @@ impl TextReader<'_> {
             .map_err(|_| Stopped::Unreadable(address))
     }
 
-    /// Reads up to `limit` bytes at `address`, a page at a time, stopping
-    /// at the first code unit of `width` bytes that is zero when the text
-    /// ends at a NUL. Returns the bytes before it, whether it was found,
-    /// and why reading stopped short, if it did.
     fn read_text(
         &mut self,
         address: VirtualAddress,
@@ -78,8 +57,6 @@ impl TextReader<'_> {
                 return (bytes, false, None);
             };
 
-            // The bytes left in this page, which the last page of the
-            // address space ends without overflowing.
             let size = usize::try_from(PAGE_SIZE - next % PAGE_SIZE)
                 .unwrap_or(usize::MAX)
                 .min(limit - bytes.len());
@@ -93,8 +70,6 @@ impl TextReader<'_> {
                 return (bytes, false, Some(Stopped::Unreadable(next)));
             };
 
-            // A unit may straddle the chunks, so the search begins at the
-            // unit the chunk's first byte belongs to.
             let first = bytes.len() - bytes.len() % width;
             bytes.extend_from_slice(&chunk);
 
@@ -112,7 +87,6 @@ impl TextReader<'_> {
         (bytes, false, None)
     }
 
-    /// The NUL-terminated text of `width`-byte characters at an address.
     fn c_string(
         &mut self,
         address: VirtualAddress,
@@ -122,8 +96,6 @@ impl TextReader<'_> {
         let (bytes, terminated, stopped) =
             self.read_text(address, TextSummary::MAX_BYTES * width, width, true);
 
-        // The text ends at the NUL found, so its bytes in memory are known
-        // whatever its characters become.
         let extent = (terminated && stopped.is_none()).then(|| (bytes.len() + width) as u64);
         let completion = match stopped {
             Some(stopped) => stopped.completion(None),
@@ -137,7 +109,6 @@ impl TextReader<'_> {
         }
     }
 
-    /// The `length` characters of `width` bytes at an address.
     fn counted_text(
         &mut self,
         address: VirtualAddress,
@@ -160,7 +131,6 @@ impl TextReader<'_> {
         text(bytes, width, byte_order, completion)
     }
 
-    /// Reads `size` bytes at `offset` within a value's storage.
     fn storage_bytes(
         &mut self,
         storage: &ValueStorage,
@@ -198,7 +168,6 @@ impl TextReader<'_> {
     }
 }
 
-/// Text read as bytes, of characters `width` bytes wide.
 fn text(
     bytes: Vec<u8>,
     width: usize,
@@ -224,7 +193,6 @@ impl Stopped {
         }
     }
 
-    /// Text that stopped before its first byte.
     fn summary(self, length: Option<u64>) -> TextSummary {
         TextSummary {
             extent: None,
@@ -235,9 +203,6 @@ impl Stopped {
 }
 
 impl DwarfVariableInfo {
-    /// The text a value of this type and shape holds, when it is a string.
-    /// A string bounded at run time finds its length in the frame
-    /// executing `context_address`.
     #[expect(
         clippy::too_many_arguments,
         reason = "a value's type, shape, place, and the frame reading it"
@@ -297,8 +262,6 @@ impl DwarfVariableInfo {
                     .position(|unit| unit.iter().all(|byte| *byte == 0));
                 let end = terminated.map_or(bytes.len(), |units| units * width);
 
-                // A NUL inside the array ends the C string it holds, which
-                // the array's bytes past it are not part of.
                 let extent = terminated.map(|units| ((units + 1) * width) as u64);
                 bytes.truncate(end);
                 Some(TextSummary {
@@ -325,7 +288,6 @@ impl DwarfVariableInfo {
                 },
                 _,
             ) => self.record_text(*record, members, storage, &mut reader),
-            // A pointer or reference to a string shows the string's text.
             (
                 ValueShape::Indirection {
                     target: Some(target),
@@ -363,9 +325,6 @@ impl DwarfVariableInfo {
         }
     }
 
-    /// Where the bytes of a string are, for slicing it: the first byte's
-    /// address, and how many there are when the string records it. A
-    /// pointer to characters ends at a NUL, so its length is unknown here.
     pub(super) fn text_location(
         &self,
         type_id: TypeId,
@@ -394,7 +353,6 @@ impl DwarfVariableInfo {
                 Some(Ok((address.address, None)))
             }
 
-            // Slices of text count bytes, which wider characters are not.
             (
                 ValueShape::Slice {
                     text: true, words, ..
@@ -441,7 +399,6 @@ impl DwarfVariableInfo {
         }
     }
 
-    /// The text of a record that is a string type.
     fn record_text(
         &self,
         record: TypeId,
@@ -463,8 +420,6 @@ impl DwarfVariableInfo {
         Some(reader.counted_text(address, length, 1, self.target.byte_order))
     }
 
-    /// How many bytes a text slice's characters are: D's `wstring` and
-    /// `dstring` hold UTF-16 and UTF-32.
     fn slice_width(&self, slice: &ValueShape) -> usize {
         let ValueShape::Slice { element, .. } = slice else {
             return 1;
@@ -478,7 +433,6 @@ impl DwarfVariableInfo {
             .unwrap_or(1)
     }
 
-    /// The text of the `length` characters a slice stored here points to.
     fn counted_slice_text(
         &self,
         reader: &mut TextReader<'_>,
@@ -504,8 +458,6 @@ impl DwarfVariableInfo {
         Some(self.slice_text(text, slice))
     }
 
-    /// A text slice's text. Text of C's characters, as a Rust `CStr` is,
-    /// ends with its NUL, which is not part of it.
     fn slice_text(&self, mut text: TextSummary, slice: &ValueShape) -> TextSummary {
         let ValueShape::Slice { element, .. } = slice else {
             return text;
@@ -530,15 +482,10 @@ impl DwarfVariableInfo {
         text
     }
 
-    /// Whether a type is a one-byte character, through typedefs and
-    /// qualifiers.
     fn is_character(&self, id: TypeId) -> bool {
         self.character_width(id) == Some(1)
     }
 
-    /// How many bytes wide a character type's characters are, through
-    /// typedefs and qualifiers: a character type's size, or the size of
-    /// the integer C's `wchar_t`, `char16_t`, and `char32_t` name.
     fn character_width(&self, id: TypeId) -> Option<usize> {
         let base = self.value_shape(id).ok()?.scalar()?.clone();
         let width = usize::try_from(base.byte_size).ok()?;
@@ -585,9 +532,6 @@ impl DwarfVariableInfo {
         None
     }
 
-    /// Whether a type is a NUL-terminated pointer to bytes that its
-    /// language names as text, through typedefs and qualifiers: Zig's
-    /// `[*:0]const u8` and Odin's `cstring`.
     fn is_sentinel_text(&self, id: TypeId) -> bool {
         let mut current = id;
 
@@ -626,10 +570,6 @@ impl DwarfVariableInfo {
         false
     }
 
-    /// The byte offsets of a string type's pointer to its bytes and of its
-    /// length: Go's strings, whose kind says what they are. The string
-    /// classes of libraries, whose layouts are private, are views
-    /// (`views/`).
     fn string_parts(&self, record: TypeId, members: &[RecordMember]) -> Option<(u64, u64)> {
         let go = self.type_info(record).ok()?.identity.as_ref()?.go?;
         if go.kind != GoKind::String {
@@ -646,7 +586,6 @@ impl DwarfVariableInfo {
         self.target.pointer_width.bytes() as usize
     }
 
-    /// Where a descriptor's word of this index begins.
     fn word(&self, index: u8) -> u64 {
         u64::from(index) * self.pointer_bytes() as u64
     }
@@ -697,8 +636,6 @@ mod tests {
     use crate::debug_info::{VariableRegister, VariableRuntimeError};
     use crate::{ImageAddress, VariableUnavailableReason};
 
-    /// Memory that holds these bytes from address zero, and a nonzero byte
-    /// everywhere else.
     struct Filled(&'static [u8]);
 
     impl VariableRuntime for Filled {
@@ -751,8 +688,6 @@ mod tests {
         }
     }
 
-    /// A corrupt pointer may point anywhere, up to the last byte of the
-    /// address space, where the text ends without a terminator.
     #[test]
     fn text_reaching_the_end_of_the_address_space_is_truncated() {
         let mut budget = InspectionBudget::default();
@@ -771,8 +706,6 @@ mod tests {
         assert_eq!(text.extent, None);
     }
 
-    /// A C string's extent is its bytes in memory and its NUL, in the units
-    /// it is written in rather than the UTF-8 it becomes.
     #[test]
     fn a_c_string_extends_through_its_terminator() {
         let mut budget = InspectionBudget::default();
@@ -786,7 +719,6 @@ mod tests {
         assert_eq!(wide.completion, TextCompletion::Complete);
         assert_eq!(wide.extent, Some(8));
 
-        // Read a byte at a time, the same memory ends at the first zero.
         let narrow = reader.c_string(VirtualAddress::new(0), 1, crate::ByteOrder::Little);
         assert_eq!(&*narrow.bytes, b"h");
         assert_eq!(narrow.extent, Some(2));

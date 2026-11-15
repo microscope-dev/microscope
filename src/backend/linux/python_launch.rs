@@ -1,11 +1,3 @@
-//! Agent bootstrap for CPython 3.12 and 3.13, which lack PEP 768 script requests.
-//! A private directory puts `sitecustomize.py` first on `PYTHONPATH` and holds a FIFO
-//! for script paths, opened read/write by microscope. A saved PID selects the launched process.
-//!
-//! The bootstrap restores the environment and path before running the program, unless
-//! following children. Each debugged child interpreter gets its own `wake-PID` FIFO
-//! in the launch directory; forked interpreters switch to theirs after forking.
-
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
@@ -19,37 +11,28 @@ use nix::fcntl::{OFlag, open};
 use nix::sys::stat::{Mode, fstat};
 use nix::unistd::Pid;
 
-/// The bootstrap's source.
 const SITECUSTOMIZE: &str = include_str!("../../runtime_model/python/launch.py");
 
-/// Where the bootstrap finds the FIFO, and the `PYTHONPATH` to put back.
 const WAKE: &str = "MICROSCOPE_PYTHON_WAKE";
 const ORIGINAL_PATH: &str = "MICROSCOPE_PYTHON_PATH";
 
-/// Set when the variables stay for child interpreters.
 const FOLLOW: &str = "MICROSCOPE_PYTHON_FOLLOW";
 
-/// The longest script path one request writes, which one write to a FIFO
-/// keeps whole.
 const MAX_REQUEST: usize = 4096;
 
 fn problem(error: impl std::fmt::Display) -> Arc<str> {
     format!("the Python launch bootstrap failed: {error}").into()
 }
 
-/// A launch's bootstrap directory and the FIFO microscope holds open.
 #[derive(Debug)]
 pub(super) struct PythonLaunch {
     directory: PathBuf,
     channel: std::fs::File,
 
-    /// Child FIFO: removes only this file, not the launch's directory.
     member: Option<PathBuf>,
 }
 
 impl PythonLaunch {
-    /// Prepares CPython 3.12/3.13's bootstrap and adds its variables to the launch's
-    /// `environment` overrides, preserving any existing `PYTHONPATH` override.
     pub(super) fn prepare(
         executable: &Path,
         environment: &mut Vec<(OsString, Option<OsString>)>,
@@ -92,8 +75,6 @@ impl PythonLaunch {
         Ok(Some(launch))
     }
 
-    /// Creates a CPython 3.12/3.13 child's FIFO in the inherited bootstrap directory.
-    /// Must run before the child resumes so its bootstrap finds the FIFO.
     pub(super) fn join(executable: &Path, pid: Pid) -> Result<Option<Self>, Arc<str>> {
         if !launches_bootstrapped_python(executable) {
             return Ok(None);
@@ -185,8 +166,6 @@ impl PythonLaunch {
             let wake = directory.join("wake");
             nix::unistd::mkfifo(&wake, Mode::S_IRUSR | Mode::S_IWUSR).map_err(problem)?;
 
-            // Read and write, so that opening it waits for no reader, and
-            // a request no thread took can be read back out.
             let channel: OwnedFd = open(
                 &wake,
                 OFlag::O_RDWR | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
@@ -210,15 +189,12 @@ impl PythonLaunch {
         }
     }
 
-    /// Names the process the launch made, the only one whose bootstrap
-    /// takes the requests, before it runs.
     pub(super) fn launched(&self, pid: Pid) -> Result<(), Arc<str>> {
         let staged = self.directory.join("pid.new");
         std::fs::write(&staged, pid.as_raw().to_string()).map_err(problem)?;
         std::fs::rename(&staged, self.directory.join("pid")).map_err(problem)
     }
 
-    /// Asks the bootstrap to run the script at `path`.
     pub(super) fn request(&self, path: &str) -> Result<(), Arc<str>> {
         let mut line = path.as_bytes().to_vec();
         line.push(b'\n');
@@ -238,8 +214,6 @@ impl PythonLaunch {
         }
     }
 
-    /// Reads back every request no thread has taken, and says whether the
-    /// one for `path` was among them.
     pub(super) fn withdraw(&self, path: &str) -> Result<bool, Arc<str>> {
         let mut unread = Vec::new();
         let mut buffer = [0; 4096];
@@ -265,7 +239,6 @@ impl PythonLaunch {
 
 impl Drop for PythonLaunch {
     fn drop(&mut self) {
-        // A child that inherited the path finds no bootstrap and goes on.
         let _ = match &self.member {
             Some(member) => std::fs::remove_file(member),
             None => std::fs::remove_dir_all(&self.directory),
@@ -273,15 +246,10 @@ impl Drop for PythonLaunch {
     }
 }
 
-/// Whether `executable` is CPython 3.12 or 3.13, as the libpython it needs
-/// or its own exported version says. Any other program is launched as it
-/// is. Only the headers, the dynamic section, and the dynamic symbols are
-/// read, since every launch of any program asks.
 fn launches_bootstrapped_python(executable: &Path) -> bool {
     use object::read::elf::{Dyn as _, SectionHeader as _};
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _, ReadRef as _};
 
-    // Without O_NONBLOCK, opening a FIFO would wait for a writer.
     let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NONBLOCK)
@@ -318,8 +286,6 @@ fn launches_bootstrapped_python(executable: &Path) -> bool {
         return true;
     }
 
-    // A static build exports its version as `Py_Version`: CPython links
-    // its executable to export every symbol, for its extensions.
     elf.dynamic_symbols()
         .find(|symbol| symbol.name() == Ok("Py_Version"))
         .and_then(|symbol| {

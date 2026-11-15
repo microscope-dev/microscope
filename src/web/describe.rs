@@ -1,6 +1,3 @@
-//! The debugger's state as the page receives it: where the program stopped,
-//! its breakpoints and where they landed, and the stops so far.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,17 +14,12 @@ use super::protocol::{self, Inferior, Place, State, StopEntry, Thread};
 use crate::cli::format;
 use crate::cli::terminal::Renderer;
 
-/// The most stops a state lists.
 const STOP_HISTORY: usize = 100;
 
-/// The module images a debugger has loaded, kept once fetched.
 pub struct Images {
     handle: DebuggerHandle,
     cache: Mutex<HashMap<ModuleId, Arc<ModuleImage>>>,
 
-    /// The source files a runtime recorded for frames the page was shown,
-    /// such as a Python program's, which no debug information names. The
-    /// page may read these, and debug information's files, and no others.
     recorded: Mutex<BTreeSet<PathBuf>>,
 }
 
@@ -40,9 +32,6 @@ impl Images {
         }
     }
 
-    /// Notes the file a runtime recorded for `frame`, at `place`, as one the
-    /// page was shown. A runtime's `<string>`, `node:fs`, and the like name
-    /// no file.
     pub fn note_recorded(
         &self,
         frame: &StackFrame,
@@ -61,8 +50,6 @@ impl Images {
         }
     }
 
-    /// Whether a frame the page was shown runs code from the file at the
-    /// `path` its runtime recorded.
     pub fn recorded(&self, path: &Path) -> bool {
         self.recorded
             .lock()
@@ -70,7 +57,6 @@ impl Images {
             .contains(path)
     }
 
-    /// The files frames the page was shown recorded, as `recorded` takes them.
     pub fn recorded_paths(&self) -> Vec<PathBuf> {
         self.recorded
             .lock()
@@ -80,7 +66,6 @@ impl Images {
             .collect()
     }
 
-    /// Forgets every image: a new process numbers its modules again.
     pub fn clear(&self) {
         self.cache
             .lock()
@@ -106,8 +91,6 @@ impl Images {
         Some(image)
     }
 
-    /// Each loaded module's load bias and image; before the program runs,
-    /// only the executable, at no bias.
     pub async fn loaded(&self) -> Vec<(LoadBias, Arc<ModuleImage>)> {
         let records = self
             .handle
@@ -129,8 +112,6 @@ impl Images {
         loaded
     }
 
-    /// The images that have source files: the executable's and each loaded
-    /// module's, once each.
     pub async fn with_sources(&self) -> Vec<Arc<ModuleImage>> {
         let mut images = vec![self.handle.module_image()];
         for (_, image) in self.loaded().await {
@@ -142,7 +123,6 @@ impl Images {
         images
     }
 
-    /// Where a frame's code is.
     pub async fn place_of_frame(&self, frame: &StackFrame) -> Place {
         let image = match frame.module {
             Some(module) => self.get(module).await,
@@ -163,7 +143,6 @@ impl Images {
     }
 }
 
-/// The symbol naming code no debug information describes.
 fn symbol_name(image: &ModuleImage, address: ImageAddress) -> Option<String> {
     let symbol = image.symbolize(address)?;
     Some(format::code_name(None, Some(&symbol)))
@@ -173,7 +152,6 @@ pub fn hex(address: u64) -> String {
     format!("{address:#x}")
 }
 
-/// A watchpoint as tabs show it.
 fn watchpoint(watchpoint: &microscope::Watchpoint) -> protocol::Watchpoint {
     protocol::Watchpoint {
         id: watchpoint.id.get(),
@@ -203,37 +181,27 @@ pub const fn watch_access(access: microscope::WatchAccess) -> protocol::WatchAcc
     }
 }
 
-/// Who ran the program, and how, for the stop that run ends at.
 #[derive(Debug, Clone)]
 pub struct Cause {
     pub name: String,
     pub action: String,
 }
 
-/// A run a tab started: one member's execution, or one of the whole group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Run {
     Member(MemberNumber, ExecutionId),
     Group(GroupExecutionId),
 }
 
-/// The most runs whose causes are kept, for stops not yet shown.
 const CREDITS: usize = 64;
 
-/// Who started each recent run, and who paused it. A tab's run is
-/// credited once its request succeeds, under the execution the request
-/// returned; a stop is credited from the runs its own events say it ended.
-/// A request that fails starts nothing, so it is credited with nothing.
 #[derive(Default)]
 pub struct Credits {
     runs: Mutex<VecDeque<(Run, Credit)>>,
 
-    /// Wakes the pump when a run is credited, as its stop may already be
-    /// shown.
     pub landed: Notify,
 }
 
-/// Who started a run, and who paused it.
 #[derive(Default)]
 struct Credit {
     started: Option<Cause>,
@@ -241,12 +209,10 @@ struct Credit {
 }
 
 impl Credits {
-    /// Credits `run` to `cause`, who started it.
     pub fn started(&self, run: Run, cause: Cause) {
         self.update(run, |credit| credit.started = Some(cause));
     }
 
-    /// Credits the stop a pause ended `run` at to `cause`.
     pub fn paused(&self, run: Run, cause: Cause) {
         self.update(run, |credit| credit.paused = Some(cause));
     }
@@ -266,8 +232,6 @@ impl Credits {
         self.landed.notify_one();
     }
 
-    /// Who ran `run` to a stop: whoever paused it, for a pause's stop,
-    /// and whoever started it, for any other.
     fn of(&self, run: Run, pause: bool) -> Option<Cause> {
         self.runs
             .lock()
@@ -283,7 +247,6 @@ impl Credits {
             })
     }
 
-    /// Forgets every run, for a new session, whose executions are its own.
     pub fn clear(&self) {
         self.runs
             .lock()
@@ -292,7 +255,6 @@ impl Credits {
     }
 }
 
-/// Builds each [`State`] for one debugger, remembering its stops.
 pub struct Describer {
     pub id: String,
     pub target: protocol::Target,
@@ -302,14 +264,10 @@ pub struct Describer {
     pub credits: Arc<Credits>,
     stops: Vec<StopEntry>,
 
-    /// The runs each stop ended, by the stop, as its events said.
     ran_to: BTreeMap<u64, Vec<Run>>,
 
-    /// Counts the changes tabs make to the program's values.
     pub writes: Arc<AtomicU64>,
 
-    /// Counts changes to settings that publish no event, such as signal
-    /// policies.
     pub settings: Arc<AtomicU64>,
 }
 
@@ -333,7 +291,6 @@ impl Describer {
         }
     }
 
-    /// Notes that `stop` ended `run`.
     pub fn ran_to(&mut self, stop: microscope::StopId, run: Run) {
         let runs = self.ran_to.entry(stop.get()).or_default();
         if !runs.contains(&run) {
@@ -344,9 +301,6 @@ impl Describer {
         }
     }
 
-    /// Credits each stop listed with the run it ended, once that run's
-    /// credit is known. A member's own run is the one a tab stepped it
-    /// by, and comes before the group's.
     fn credit_stops(&mut self) {
         for entry in self.stops.iter_mut().filter(|entry| entry.by.is_none()) {
             let Some(runs) = self.ran_to.get(&entry.stop) else {
@@ -380,8 +334,6 @@ impl Describer {
                 thread_id,
                 reason,
             } => {
-                // The controller selects a frame other than the innermost
-                // where a runtime's agent stopped the thread.
                 let selected = match snapshot.selected {
                     Some(ExecutionContext::Thread(selected)) if selected == *thread_id => {
                         snapshot.selected_frame.unwrap_or(StackFrameId::INNERMOST)
@@ -434,7 +386,6 @@ impl Describer {
         }
     }
 
-    /// The history's entry for a stop, made when the stop is first seen.
     async fn stop_entry(
         &mut self,
         stop: u64,
@@ -513,8 +464,6 @@ impl Describer {
         }
     }
 
-    /// Where one of a breakpoint's locations is: its address and source
-    /// line, with a line breakpoint keeping the file it names.
     async fn breakpoint_place(
         &self,
         breakpoint: &microscope::Breakpoint,
@@ -524,7 +473,6 @@ impl Describer {
             (BreakpointLocation::Image(address), _) => (
                 Some(self.handle.module_image()),
                 *address,
-                // Before the program runs, there is no virtual address yet.
                 self.main_bias()
                     .await
                     .map_or_else(|| address.get(), |bias| bias.wrapping_load(*address).get()),
@@ -542,8 +490,6 @@ impl Describer {
                 return self.place_of_address(*address).await;
             }
 
-            // A runtime's location has no address: it is where the runtime
-            // says it is.
             (BreakpointLocation::Managed(managed), _) => {
                 return match &managed.place {
                     microscope::ManagedPlace::Line { path, line } => Place {
@@ -632,8 +578,6 @@ impl Describer {
         place
     }
 
-    /// The executable's load bias, once it is loaded: modules are listed
-    /// by identifier, and the executable's comes first.
     async fn main_bias(&self) -> Option<LoadBias> {
         let snapshot = self.handle.loaded_modules().await.ok()?;
         snapshot
@@ -652,8 +596,6 @@ impl Describer {
     }
 }
 
-/// Why the program stopped, as the CLI says it but without "inferior":
-/// the page names the program.
 pub fn plain(reason: &StopReason) -> String {
     let text = format::stop(reason, Renderer::new(false));
     text.strip_prefix("inferior ")
@@ -688,8 +630,6 @@ const fn reason_kind(reason: &StopReason) -> &'static str {
     }
 }
 
-/// Partitions queried metadata without losing the arming failure or presenting
-/// an unarmed runtime location as a ready placement.
 fn breakpoint_places(
     breakpoint: &microscope::Breakpoint,
     places: Vec<(&microscope::ResolvedBreakpointLocation, Place)>,

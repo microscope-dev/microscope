@@ -1,27 +1,27 @@
-// Instrumentation that microscope records, for Node programs: zones,
-// plots, messages, labels, frames, and triggers.
-//
-//     const microscope = require('microscope');
-//
-//     const handle = microscope.wrap('handle', (request) =>
-//       microscope.label('route', request.route, () => {
-//         const rows = microscope.zone('query', () => query(request));
-//         microscope.plot('rows', rows.length);
-//         if (rows.length === 0) {
-//           microscope.message('empty', () => `no rows for ${request.id}`);
-//         }
-//         return render(rows);
-//       }));
-//
-// Sites are defined on first use by name and source location, and stay off
-// until a recording enables them by name. Enabled sites write to a thread's
-// in-process ring, which microscope reads externally; nothing is sent over
-// the network. Sites disable themselves when microscope stops reading.
-//
-// The microscope.node addon loads the probes SDK's shared library from
-// beside itself or MICROSCOPE_PROBES_LIBRARY. The addon is found beside this
-// file or at MICROSCOPE_NODE_ADDON. If either is missing, calls do nothing
-// and `problem` says why.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 'use strict';
 
@@ -45,9 +45,9 @@ function load() {
 
 const native = load();
 
-// Checks a fact the package's own code guarantees. Only microscope's tests
-// turn checks on: a program's own calls must never fail because of the
-// package.
+
+
+
 const checked = process.env.MICROSCOPE_SDK_CHECKS === '1';
 
 function assert(condition, message) {
@@ -56,11 +56,11 @@ function assert(condition, message) {
   }
 }
 
-// Why the package does nothing, or null.
+
 const problem = native.problem ?? null;
 const usable = problem === null;
 
-// Each site, by its kind, name, file, and line; 0n is no site.
+
 const sites = new Map();
 
 function site(kind, name, [file, line]) {
@@ -78,7 +78,7 @@ function site(kind, name, [file, line]) {
   return found;
 }
 
-// The file and line of the code that called the package's function.
+
 function caller() {
   const prepare = Error.prepareStackTrace;
   const limit = Error.stackTraceLimit;
@@ -93,13 +93,13 @@ function caller() {
     Error.prepareStackTrace = prepare;
     Error.stackTraceLimit = limit;
   }
-  // calls[0] is the package's function, calls[1] its caller.
+
   const call = calls[1];
   return call ? [call.getFileName() ?? '', call.getLineNumber() ?? 0] : ['', 0];
 }
 
-// Async functions and generators return before finishing; a thread-local
-// zone cannot span their suspension.
+
+
 function suspends(fn) {
   const kind = Object.prototype.toString.call(fn);
   return kind === '[object AsyncFunction]' || kind === '[object GeneratorFunction]' ||
@@ -127,13 +127,13 @@ function zoned(at, fn, self, args) {
   }
 }
 
-// Records `fn` as a thread-local span named `name` and returns its result.
+
 function zone(name, fn) {
   refuse(fn);
   return zoned(site(ZONE, name, caller()), fn, undefined, []);
 }
 
-// Wraps `fn` so each call records a thread-local span named `name`.
+
 function wrap(name, fn) {
   refuse(fn);
   const at = site(ZONE, name, caller());
@@ -145,8 +145,8 @@ function wrap(name, fn) {
   };
 }
 
-// Runs `fn` with samples and zones labelled `name=value`, truncating the
-// value to 256 bytes. Returns `fn`'s result.
+
+
 function label(name, value, fn) {
   refuse(fn);
   const at = site(LABEL, name, caller());
@@ -160,7 +160,7 @@ function label(name, value, fn) {
   }
 }
 
-// A value of the series `name`.
+
 function plot(name, value) {
   const at = site(PLOT, name, caller());
   if (at !== 0n) {
@@ -168,8 +168,8 @@ function plot(name, value) {
   }
 }
 
-// A message on the thread's timeline at the site `name`, cut to 256 bytes.
-// Pass a function to form its text only while the site is on.
+
+
 function message(name, text) {
   const at = site(MESSAGE, name, caller());
   if (at !== 0n && native.on(at)) {
@@ -177,7 +177,7 @@ function message(name, text) {
   }
 }
 
-// The end of a frame, for a program that works in frames.
+
 function frame(name = 'frame') {
   const at = site(FRAME, name, caller());
   if (at !== 0n) {
@@ -185,8 +185,8 @@ function frame(name = 'frame') {
   }
 }
 
-// Asks microscope to save the recording's window around this moment, when
-// it keeps one.
+
+
 function trigger(why) {
   const at = site(TRIGGER, why, caller());
   if (at !== 0n) {
@@ -194,13 +194,13 @@ function trigger(why) {
   }
 }
 
-// Whether microscope is recording the program's instrumentation.
+
 function listening() {
   return usable && native.listening();
 }
 
-// Whether microscope has found the program and is recording it. A program
-// a recording starts is listening before microscope finds it.
+
+
 function found() {
   return usable && native.found();
 }

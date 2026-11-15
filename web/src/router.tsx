@@ -1,7 +1,3 @@
-// The URL is the focus: each route is a place that a link can name, which
-// the one workbench opens (Routes.tsx). The path names the debugger state,
-// the query how a tab looks at it (see focus.ts).
-
 import {
   createRootRoute,
   createRoute,
@@ -45,7 +41,6 @@ const pickRoute = createRoute({
   component: Pick,
 });
 
-// Services' emails link to these.
 const confirmEmailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/confirm-email",
@@ -64,7 +59,6 @@ const resetPasswordRoute = createRoute({
   component: () => <EmailLink link="reset" />,
 });
 
-// Services sends single sign-on back here, and organizations hand out these.
 const signedInRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/signed-in",
@@ -84,14 +78,12 @@ const sessionRoute = createRoute({
   component: SessionRoute,
 });
 
-/** The session wherever it is, following it. */
 const sessionIndexRoute = createRoute({
   getParentRoute: () => sessionRoute,
   path: "/",
   component: Workspace,
 });
 
-/** The same, by a name that says so. */
 const liveRoute = createRoute({
   getParentRoute: () => sessionRoute,
   path: "/live",
@@ -104,15 +96,12 @@ const stopRoute = createRoute({
   component: Workspace,
 });
 
-/** A task's stack at a stop, which no thread may be running. */
 const taskRoute = createRoute({
   getParentRoute: () => sessionRoute,
   path: "/stop/$stop/task/$task/f/$frame",
   component: Workspace,
 });
 
-/** A profile the server serves, which belongs to no session: its id
- * names its bytes, so the link opens it wherever it is served. */
 const profileRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/profile/$profile",

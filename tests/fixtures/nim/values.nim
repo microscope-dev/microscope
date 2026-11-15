@@ -1,12 +1,12 @@
-# Nim's values, where this program says they are. Before each checkpoint
-# the program prints its own truth, one tab-separated line per value,
-#
-#	TRUTH	<checkpoint>	<path>	<kind>	<value>
-#
-# and then calls reached(checkpoint); the tests read the values in
-# reached's caller. A path names a variable and then its fields and
-# elements. Floats are their bits in hexadecimal; kind `summary` is how
-# microscope writes the value.
+
+
+
+
+
+
+
+
+
 
 import std/strutils
 
@@ -21,11 +21,11 @@ type
 
 var sink {.volatile.}: pointer
 
-# Reaches a checkpoint once every truth before it is written.
+
 proc reached(checkpoint: string) {.noinline.} =
   sink = unsafeAddr checkpoint
 
-# Keeps a value alive, and where the program put it, past the checkpoint.
+
 proc keep(value: pointer) {.noinline.} =
   sink = value
 
@@ -71,7 +71,7 @@ proc records() {.noinline.} =
   truth("records", "segment.tag", "int", $segment.tag)
   for index, number in numbers:
     truth("records", "numbers." & $index, "int", $number)
-  # Nim describes an enum as the integer it is.
+
   truth("records", "color", "int", $ord(color))
   reached("records")
   keep(addr point); keep(addr segment); keep(addr numbers); keep(addr color)

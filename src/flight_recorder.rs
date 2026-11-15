@@ -1,12 +1,3 @@
-//! A record of what the debugger did, kept by development builds only.
-//!
-//! Every client request, native control call, wait status, classification,
-//! and published event is appended to a bounded in-memory ring as one line,
-//! stamped with the time since the first record and the thread that made it.
-//! The test harness writes the ring to a file when a test fails, and the
-//! `microscope` binary streams every line to a file as it is recorded, so the
-//! recording survives a killed process. Release builds compile none of this.
-
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt::{self, Write as _};
@@ -18,17 +9,12 @@ use std::sync::{Mutex, Once, OnceLock, PoisonError};
 use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-/// How many lines the ring keeps before dropping the oldest.
 const CAPACITY: usize = 16 * 1024;
 
-/// The longest message a line keeps after its time and thread; longer ones,
-/// such as large event payloads, are cut without formatting the rest.
 const MAX_LINE: usize = 1024;
 
-/// How large a streamed recording may grow before it restarts from the ring.
 const MAX_STREAM_BYTES: u64 = 64 * 1024 * 1024;
 
-/// How many recordings of past runs [`stream_run`] keeps.
 const KEPT_RUNS: usize = 20;
 
 struct Recorder {
@@ -42,7 +28,6 @@ struct Stream {
     file: File,
     written: u64,
 
-    /// How many times the stream reached its size limit and restarted.
     restarts: u64,
 }
 
@@ -71,15 +56,12 @@ fn with_recorder<T>(change: impl FnOnce(&mut Recorder) -> T) -> T {
         }
     }
 
-    // Pushing a line cannot leave the ring inconsistent.
     let mut recorder = RECORDER.lock().unwrap_or_else(PoisonError::into_inner);
     HOLDING.set(true);
     let _holding = Holding;
     change(&mut recorder)
 }
 
-/// Appends one line. Use the crate's `record!` macro, which compiles away in
-/// release builds.
 pub(crate) fn record(message: fmt::Arguments<'_>) {
     let mut body = Bounded(String::new());
     if body.write_fmt(message).is_err() {
@@ -103,8 +85,6 @@ pub(crate) fn record(message: fmt::Arguments<'_>) {
     with_recorder(|recorder| recorder.push(thread, &body));
 }
 
-/// A message that refuses text past [`MAX_LINE`], which stops formatting
-/// there.
 struct Bounded(String);
 
 impl fmt::Write for Bounded {
@@ -126,8 +106,6 @@ impl fmt::Write for Bounded {
 }
 
 impl Recorder {
-    /// Stamps `body` while holding the recorder, so time never runs backward
-    /// from one line to the next, and appends it.
     fn push(&mut self, thread: &str, body: &str) {
         let elapsed = START.get_or_init(Instant::now).elapsed();
         let mut line = String::with_capacity(body.len() + 24);
@@ -141,8 +119,6 @@ impl Recorder {
         self.stream();
     }
 
-    /// Writes the newest line to the stream, or, once the stream reaches its
-    /// size limit, rewrites it with the ring so it ends with the newest lines.
     fn stream(&mut self) {
         let Some(mut stream) = self.stream.take() else {
             return;
@@ -150,8 +126,6 @@ impl Recorder {
 
         let line = self.lines.back().map_or("", String::as_str);
         if stream.written + line.len() as u64 <= MAX_STREAM_BYTES {
-            // One write per line, so a killed process loses nothing it
-            // recorded.
             let _ = stream.file.write_all(line.as_bytes());
             stream.written += line.len() as u64;
         } else {
@@ -164,7 +138,6 @@ impl Recorder {
                 .and_then(|_| stream.file.write_all(text.as_bytes()));
             stream.written = text.len() as u64;
             if rewritten.is_err() {
-                // Stop rather than leave a file that silently lacks lines.
                 return;
             }
         }
@@ -199,14 +172,11 @@ impl Recorder {
     }
 }
 
-/// The directory recordings are written under: `target/flight-recorder` of
-/// the source tree this build came from, which git ignores.
 #[must_use]
 pub fn directory() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("target/flight-recorder")
 }
 
-/// Writes the lines the ring holds to `path`, replacing any file there.
 pub fn dump(path: &Path) -> io::Result<()> {
     let text = with_recorder(|recorder| recorder.contents(path, 0));
     if let Some(parent) = path.parent() {
@@ -216,8 +186,6 @@ pub fn dump(path: &Path) -> io::Result<()> {
     fs::write(path, text)
 }
 
-/// Writes the lines the ring holds to `path`, then every line recorded from
-/// now on as it is recorded.
 pub fn stream_to(path: &Path) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -225,8 +193,6 @@ pub fn stream_to(path: &Path) -> io::Result<()> {
 
     let mut file = File::create(path)?;
 
-    // Holding the ring while writing it keeps any line from falling between
-    // the copy and the stream.
     with_recorder(|recorder| {
         let text = recorder.contents(path, 0);
         file.write_all(text.as_bytes())?;
@@ -240,9 +206,6 @@ pub fn stream_to(path: &Path) -> io::Result<()> {
     })
 }
 
-/// Streams this process's recording to a new file under `runs/`, points
-/// `latest.log` at it, and removes all but the newest recordings of past
-/// runs. Returns the new recording's path.
 pub fn stream_run() -> io::Result<PathBuf> {
     let runs = directory().join("runs");
     fs::create_dir_all(&runs)?;
@@ -250,7 +213,6 @@ pub fn stream_run() -> io::Result<PathBuf> {
     let path = runs.join(format!("{}-{}.log", unix_seconds(), std::process::id()));
     stream_to(&path)?;
 
-    // Replace the link atomically, since concurrent runs race for it.
     let latest = directory().join("latest.log");
     let staged = directory().join(format!(".latest-{}.log", std::process::id()));
     let _ = fs::remove_file(&staged);
@@ -260,8 +222,6 @@ pub fn stream_run() -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Removes the oldest recordings in `runs` until at most `keep` remain.
-/// Names start with a timestamp, so name order is age order.
 fn prune(runs: &Path, keep: usize) -> io::Result<()> {
     let mut recordings = fs::read_dir(runs)?
         .filter_map(|entry| Some(entry.ok()?.path()))
@@ -270,22 +230,17 @@ fn prune(runs: &Path, keep: usize) -> io::Result<()> {
     recordings.sort();
     let excess = recordings.len().saturating_sub(keep);
     for path in recordings.iter().take(excess) {
-        // Another run may be pruning the same file.
         let _ = fs::remove_file(path);
     }
 
     Ok(())
 }
 
-/// Records every panic, on any thread, before the previous hook reports it,
-/// so a recording shows where a crashed controller stopped. Installs the
-/// hook once per process.
 pub fn record_panics() {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            // A panic while this thread records cannot wait for itself.
             if !HOLDING.get() {
                 record(format_args!("panic: {info}"));
             }
@@ -295,21 +250,11 @@ pub fn record_panics() {
     });
 }
 
-/// Keeps the lines this thread records apart from the ring until dropped.
-///
-/// Captured lines carry no time or thread name, so the same actions always
-/// produce the same lines. Other threads record to the ring as before.
 pub struct Capture {
-    /// Capturing is a property of the thread that started it.
     _thread: PhantomData<*const ()>,
 }
 
 impl Capture {
-    /// Starts capturing this thread's lines.
-    ///
-    /// # Panics
-    ///
-    /// If this thread is already capturing.
     #[must_use]
     pub fn start() -> Self {
         CAPTURED.with_borrow_mut(|captured| {
@@ -321,7 +266,6 @@ impl Capture {
         }
     }
 
-    /// Removes and returns the lines captured since the last call.
     #[must_use]
     pub fn take(&self) -> Vec<String> {
         CAPTURED
@@ -345,9 +289,6 @@ fn unix_seconds() -> u64 {
 mod tests {
     use super::*;
 
-    /// A capturing thread's lines go to its capture alone, without time or
-    /// thread, while other threads keep recording to the ring; once the
-    /// capture ends, the thread records to the ring again.
     #[test]
     fn a_capture_takes_only_its_own_threads_lines() {
         let capture = Capture::start();
@@ -371,8 +312,6 @@ mod tests {
         }
     }
 
-    /// A stream that outgrows its limit restarts from the ring, so it keeps
-    /// the newest lines, and a long line stops formatting at the limit.
     #[test]
     fn a_full_stream_keeps_the_newest_lines() {
         let path = std::env::temp_dir().join(format!(

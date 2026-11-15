@@ -1,6 +1,6 @@
-// An object whose properties an interceptor gives: process.env, whose
-// variables come from the environment when read. Nothing in the object
-// itself holds them, so microscope must refuse it instead of showing {}.
+
+
+
 
 'use strict';
 

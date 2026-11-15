@@ -1,6 +1,3 @@
-// Renders a pane as the workspace would: in a session whose server is the
-// test, under a router, at a focus the test chooses.
-
 import {
   createMemoryHistory,
   createRootRoute,
@@ -17,7 +14,6 @@ import { initialTab, tab } from "../src/tab";
 import { type Focus, FocusContext } from "../src/ui/Workspace";
 import { type FakeServer, fakeServer } from "./fake-server";
 
-/** A launched program stopped at stop #1 in thread 1. */
 export function stoppedState(changes: Partial<State> = {}): State {
   return {
     session: "s1",
@@ -76,7 +72,6 @@ export async function mountPane(
   return server;
 }
 
-/** Forgets what one test left: its page, its answers, and its tab. */
 export function unmountPane(): void {
   cleanup();
   cache.clear();

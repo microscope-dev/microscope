@@ -1,8 +1,8 @@
-// A Go program that calls C, which calls back into Go. C runs on the
-// thread's system stack, to which `asmcgocall` switches; the Go it calls
-// back runs on the goroutine's own stack again, to which `cgocallback`
-// switches. A fault in C is fatal: only Go code can panic. The C's
-// thread-local storage shares the thread's block with the runtime's.
+
+
+
+
+
 package main
 
 /*
@@ -39,7 +39,7 @@ import (
 	"os"
 )
 
-// sink keeps results the compiler would otherwise drop.
+
 var sink int64
 
 func main() {

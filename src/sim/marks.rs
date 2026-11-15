@@ -1,11 +1,5 @@
-//! Coverage marks: interesting states a run reached, counted so that the
-//! gate can require its seeds to reach every one. A sweep that never
-//! reaches what it claims to test passes for nothing.
-
-/// Defines [`Mark`] and [`Mark::ALL`] from one list.
 macro_rules! marks {
     ($($(#[$doc:meta])* $mark:ident,)*) => {
-        /// One interesting state.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum Mark {
             $($(#[$doc])* $mark,)*
@@ -382,7 +376,6 @@ marks! {
     ShutdownOverlapped,
 }
 
-/// How many times a run reached each mark.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marks([u64; Mark::ALL.len()]);
 
@@ -403,9 +396,6 @@ impl Marks {
     }
 }
 
-/// How many runs reached each mark. One run that reaches a mark many times
-/// counts once: a mark few runs reach is lost to any change that redraws
-/// them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reach {
     runs: u64,
@@ -422,7 +412,6 @@ impl Default for Reach {
 }
 
 impl Reach {
-    /// Counts the marks one run reached.
     pub fn add(&mut self, marks: &Marks) {
         self.runs += 1;
         for (reached, count) in self.reached.iter_mut().zip(marks.0) {
@@ -430,7 +419,6 @@ impl Reach {
         }
     }
 
-    /// Adds the runs `other` counted.
     pub fn merge(&mut self, other: &Self) {
         self.runs += other.runs;
         for (reached, other) in self.reached.iter_mut().zip(other.reached) {
@@ -438,14 +426,11 @@ impl Reach {
         }
     }
 
-    /// How many runs reached `mark`.
     #[must_use]
     pub const fn runs(&self, mark: Mark) -> u64 {
         self.reached[mark as usize]
     }
 
-    /// The marks fewer than `floor` runs reached, with how many did, rarest
-    /// first.
     #[must_use]
     pub fn below(&self, floor: u64) -> Vec<(Mark, u64)> {
         let mut rare = Mark::ALL
@@ -460,7 +445,6 @@ impl Reach {
 }
 
 impl std::fmt::Display for Reach {
-    /// Each mark with how many runs reached it, rarest first.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "runs reaching each mark, of {}:", self.runs)?;
         for (mark, runs) in self.below(u64::MAX) {

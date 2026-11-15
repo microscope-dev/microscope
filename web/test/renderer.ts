@@ -1,6 +1,3 @@
-// Runs a renderer the way the page does: its source in the real worker,
-// which locks itself down first, and its picture through the validator.
-
 import { afterEach } from "vitest";
 
 import { type Picture, type Shape, validate } from "../src/visualize/picture";
@@ -15,7 +12,6 @@ afterEach(() => {
   }
 });
 
-/** The worker's answer to drawing `input` with `source`. */
 export async function run(
   source: string,
   input: unknown,
@@ -59,7 +55,6 @@ export async function run(
   return next();
 }
 
-/** The picture `source` draws for `input`, checked as the page checks it. */
 export async function draw(
   source: string,
   input: unknown,
@@ -72,7 +67,6 @@ export async function draw(
   return validate(answer.picture);
 }
 
-/** Every shape of a picture, groups' shapes included, in drawing order. */
 export function shapesOf(picture: Picture): Shape[] {
   const all: Shape[] = [];
   const walk = (shapes: Shape[]) => {
@@ -87,12 +81,10 @@ export function shapesOf(picture: Picture): Shape[] {
   return all;
 }
 
-/** The text of every text shape. */
 export function texts(picture: Picture): string[] {
   return shapesOf(picture).flatMap((shape) => (shape.type === "text" ? [shape.text] : []));
 }
 
-/** The title of every titled shape. */
 export function titles(picture: Picture): string[] {
   return shapesOf(picture).flatMap((shape) => (shape.title === undefined ? [] : [shape.title]));
 }

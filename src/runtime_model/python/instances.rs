@@ -1,12 +1,3 @@
-//! Classes, static types, and `object.__getattribute__` lookup without running code.
-//!
-//! Instance attributes use a dict or shared-key values: inline after the object
-//! from 3.13, or through a low-bit-tagged pointer before it in 3.12.
-//! Other attributes use `__slots__`. The interpreter holds static built-in types' dicts.
-//!
-//! Lookup checks data descriptors, instance attributes, then other type attributes.
-//! Property getters, method binding, and custom `__getattr__` are refused: they run code.
-
 use std::sync::Arc;
 
 use super::library::LibraryType;
@@ -18,30 +9,22 @@ use crate::runtime_model::interpreted_identity;
 use crate::runtime_model::{InterpretedFailure, InterpretedKey};
 use crate::{SourceLanguage, TypeIdentity, VariableUnavailableReason, VirtualAddress};
 
-/// The most attributes of one instance read.
 const MAX_ATTRIBUTES: u64 = 1 << 16;
 
-/// The most classes a class derives through to the static type its
-/// instances are laid out as.
 const MAX_BASES: usize = 256;
 
-/// A type object, as the object model reads it.
 #[derive(Debug)]
 pub(super) struct Class {
     pub(super) address: VirtualAddress,
     flags: u64,
 
-    /// The module that defines it, and its qualified name there.
     pub(super) module: Option<Arc<str>>,
     pub(super) name: Arc<str>,
 
-    /// The C-defined standard-library type, if recognized ([`super::library`]).
     pub(super) library: Option<LibraryType>,
 }
 
 impl Class {
-    /// The name Python's `repr` gives it: qualified by its module, unless
-    /// that is `builtins`.
     pub(super) fn qualified(&self) -> String {
         match self.module.as_deref() {
             Some(module) if module != "builtins" => format!("{module}.{}", self.name),
@@ -50,12 +33,9 @@ impl Class {
     }
 }
 
-/// Where an attribute was found on a type, and what its type makes it.
 struct TypeAttribute {
     value: VirtualAddress,
 
-    /// Whether its type sets as a descriptor, which makes it take
-    /// precedence over the instance's own attributes, and binds as one.
     sets: bool,
     binds: bool,
     member: bool,
@@ -65,7 +45,6 @@ fn refused(kind: ErrorKind, message: impl Into<Arc<str>>) -> InterpretedFailure 
     InterpretedFailure::Refused(kind, message.into())
 }
 
-/// Why a lookup the object model made failed, as a problem reading it.
 pub(super) fn problem(failure: InterpretedFailure) -> Problem {
     match failure {
         InterpretedFailure::Refused(_, message) => message,
@@ -74,12 +53,10 @@ pub(super) fn problem(failure: InterpretedFailure) -> Problem {
 }
 
 impl Values<'_, '_> {
-    /// Whether `flags` have the bit `bit` names.
     const fn flagged(&self, flags: u64, bit: Constant) -> bool {
         (flags >> self.reader.layout.constant(bit)) & 1 == 1
     }
 
-    /// The type object at `ty`, read once in an inspection.
     pub(super) fn class(&self, ty: VirtualAddress) -> Result<Arc<Class>, Problem> {
         if let Some(class) = self.classes.borrow().get(&ty) {
             debug_assert_eq!(
@@ -89,7 +66,6 @@ impl Values<'_, '_> {
             return Ok(Arc::clone(class));
         }
 
-        // Native pointers need not name types; require `type` or a metaclass.
         let reader = &self.reader;
         let meta = VirtualAddress::new(reader.field_word(ty, Field::ObjectType)?);
         if !self.is_class(meta)? {
@@ -111,8 +87,6 @@ impl Values<'_, '_> {
                 .and_then(|module| self.str_text(module));
             (module, name)
         } else {
-            // A static type's name is qualified by its module, where its
-            // module is not `builtins`.
             let name =
                 reader.c_string(VirtualAddress::new(reader.field_word(ty, Field::TypeName)?))?;
             match name.rsplit_once('.') {
@@ -135,12 +109,7 @@ impl Values<'_, '_> {
         Ok(class)
     }
 
-    /// The text of the `str` at `object`, where it is a whole `str` of
-    /// characters, as a name is.
     pub(super) fn str_text(&self, object: VirtualAddress) -> Option<Arc<str>> {
-        // Only a `str` is read: reading any other object to learn what it
-        // is reads what names it, which damaged memory can make the object
-        // that asked.
         let ty = self.reader.field_word(object, Field::ObjectType).ok()?;
         if VirtualAddress::new(ty) != self.types.str {
             return None;
@@ -152,14 +121,11 @@ impl Values<'_, '_> {
                 .map(char::from_u32)
                 .collect::<Option<String>>()
                 .map(Arc::from),
-            // Longer than a summary reads, as a generated class's name may be.
             Object::Str { .. } => self.reader.string(object).ok(),
             _ => None,
         }
     }
 
-    /// Whether the type object at `ty` is a class: `type`'s instances,
-    /// and its subclasses'.
     pub(super) fn is_class(&self, ty: VirtualAddress) -> Result<bool, Problem> {
         if ty == self.types.class {
             return Ok(true);
@@ -169,8 +135,6 @@ impl Values<'_, '_> {
         Ok(self.flagged(meta, Constant::TypeTypeSubclassBit))
     }
 
-    /// The dict of `class`: its own, or for a static built-in type, the
-    /// one its interpreter keeps.
     fn type_dict(&self, class: &Class) -> Result<Option<Dict>, Problem> {
         self.own_dict(class.address, class.flags)
     }
@@ -200,9 +164,6 @@ impl Values<'_, '_> {
                     .ok_or_else(bad)
             };
 
-            // A static type of an extension the interpreter manages, as
-            // `_datetime`'s from 3.13, has its state at its index among
-            // theirs, where the built-in types' state there is another's.
             let holds = |state: VirtualAddress| -> Result<bool, Problem> {
                 let at = state.wrapping_add(reader.offset(Field::StaticTypeStateType)?);
                 Ok(reader.word(at)? == ty.get())
@@ -218,7 +179,6 @@ impl Values<'_, '_> {
                 ))?;
             }
 
-            // A state that is another type's holds none of this one's.
             if !holds(kept)? {
                 return Err(bad());
             }
@@ -238,15 +198,11 @@ impl Values<'_, '_> {
         }
     }
 
-    /// Whether a type of `flags` is defined in C, as a static type is, and
-    /// a heap type whose attributes cannot be set, which no class is.
     const fn defined_in_c(&self, flags: u64) -> bool {
         !self.flagged(flags, Constant::TypeHeapBit)
             || self.flagged(flags, Constant::TypeImmutableBit)
     }
 
-    /// The first C-defined base determines instance layout, e.g. `int` or `object`.
-    /// Returns `None` when `class` is itself C-defined.
     pub(super) fn static_base(&self, class: &Class) -> Result<Option<VirtualAddress>, Problem> {
         let reader = &self.reader;
         if self.defined_in_c(class.flags) {
@@ -273,8 +229,6 @@ impl Values<'_, '_> {
         .into())
     }
 
-    /// Whether the type at `ty` is `base` or derives from it, through its
-    /// bases.
     pub(super) fn derives(
         &self,
         mut ty: VirtualAddress,
@@ -295,8 +249,6 @@ impl Values<'_, '_> {
         Err(format!("the type at {ty:#x} derives through more than {MAX_BASES} types").into())
     }
 
-    /// Uses `base` only when `name` resolves to its built-in method or one it inherits.
-    /// Refuses overrides that run code; a missing method is a type error described by `doing`.
     pub(super) fn special(
         &self,
         class: &Class,
@@ -333,8 +285,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The identities of the class at `class` and of each class it derives
-    /// from, in its method resolution order.
     pub(super) fn lineage(&self, class: VirtualAddress) -> Result<Vec<TypeIdentity>, Problem> {
         let class = self.class(class)?;
         self.mro(&class)?
@@ -350,8 +300,6 @@ impl Values<'_, '_> {
             .collect()
     }
 
-    /// The types `class` finds its attributes in, in order: its method
-    /// resolution order.
     fn mro(&self, class: &Class) -> Result<Vec<VirtualAddress>, Problem> {
         let mro = VirtualAddress::new(self.reader.field_word(class.address, Field::TypeMro)?);
         match self.object(mro)? {
@@ -360,8 +308,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// Where the instance at `object`, of `class`, keeps the attributes
-    /// its dict holds, or `None` where it keeps none.
     pub(super) fn instance_dict(
         &self,
         object: VirtualAddress,
@@ -372,8 +318,6 @@ impl Values<'_, '_> {
             let words = u64::from(layout.constant(Constant::ManagedDictWords));
             let pointer = reader.word(VirtualAddress::new(object.get().wrapping_sub(words * 8)))?;
 
-            // 3.12 keeps the address before the values, which are aligned,
-            // so that its low bit tags them.
             if layout.constant(Constant::ManagedDictTagged) == 1 && pointer & 1 == 1 {
                 return self
                     .shared_values(class, VirtualAddress::new(pointer.wrapping_add(1)))
@@ -394,7 +338,6 @@ impl Values<'_, '_> {
                     1,
                 )?;
                 if valid.first() == Some(&0) {
-                    // Values given up for a dict leave the dict's pointer.
                     return Err(malformed(object, "object"));
                 }
 
@@ -434,8 +377,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// The table of the values at `values`, whose keys `class` keeps for
-    /// its instances.
     fn shared_values(&self, class: &Class, values: VirtualAddress) -> Result<Dict, Problem> {
         let keys = VirtualAddress::new(
             self.reader
@@ -445,17 +386,11 @@ impl Values<'_, '_> {
         self.table(values, keys, size, Some(split))
     }
 
-    /// The slots of the instance at `object`, of `class`, that hold
-    /// values: each one's name and value, from its most derived class's on,
-    /// each class's in the sorted order CPython keeps them in. A slot whose
-    /// name a more derived class's slot takes is left out, whatever either
-    /// holds, as that name finds the other.
     fn slots(
         &self,
         object: VirtualAddress,
         class: &Class,
     ) -> Result<Vec<(Arc<str>, VirtualAddress)>, Problem> {
-        // Only classes have slots, and a static type derives from no class.
         let mut slots: Vec<(Arc<str>, VirtualAddress)> = Vec::new();
         let mut taken: Vec<Arc<str>> = Vec::new();
         if !self.flagged(class.flags, Constant::TypeHeapBit) {
@@ -513,9 +448,6 @@ impl Values<'_, '_> {
         Ok(slots)
     }
 
-    /// What the instance at `object` keeps in the member the descriptor at
-    /// `descriptor` defines, a null for none; `None` where the descriptor is
-    /// no member descriptor of an object, which only its code reads.
     fn member(
         &self,
         object: VirtualAddress,
@@ -543,8 +475,6 @@ impl Values<'_, '_> {
         )))
     }
 
-    /// How many attributes the instance at `object`, of `class`, has: those
-    /// its dict holds, then those its slots hold.
     pub(super) fn attribute_count(
         &self,
         object: VirtualAddress,
@@ -562,10 +492,6 @@ impl Values<'_, '_> {
         Ok(count)
     }
 
-    /// The attributes `range` of the instance at `object`, of `class`, in
-    /// the order [`Self::attribute_count`] counts them, each one's name and
-    /// value; but a dataclass's fields first, in the order it defines them,
-    /// which its `__init__` and `repr` follow, as its slots do not.
     pub(super) fn attributes(
         &self,
         object: VirtualAddress,
@@ -593,10 +519,6 @@ impl Values<'_, '_> {
             .collect())
     }
 
-    /// The names of the fields of the dataclass `class` is, in the order it
-    /// defines them, or `None` where it is none: the keys of the dict of
-    /// `__dataclass_fields__` it finds, which `dataclasses` keeps in that
-    /// order.
     fn dataclass_fields(&self, class: &Class) -> Result<Option<Vec<Arc<str>>>, Problem> {
         let found = self
             .type_attribute(class, "__dataclass_fields__")
@@ -617,7 +539,6 @@ impl Values<'_, '_> {
         Ok(Some(names))
     }
 
-    /// [`Self::attributes`] in the order the instance keeps them.
     fn stored_attributes(
         &self,
         object: VirtualAddress,
@@ -649,14 +570,10 @@ impl Values<'_, '_> {
         Ok(attributes)
     }
 
-    /// An attribute's name: the text of its key, or, for a key that is no
-    /// name, its `repr`.
     fn attribute_name(&self, key: VirtualAddress) -> Arc<str> {
         self.str_text(key).unwrap_or_else(|| self.summary(key))
     }
 
-    /// The attribute `name` of the object at `object`, as Python finds it
-    /// without running code.
     pub(super) fn attribute(
         &self,
         object: VirtualAddress,
@@ -687,9 +604,6 @@ impl Values<'_, '_> {
         }
     }
 
-    /// Whether `class` finds the attributes its instances lack with a
-    /// `__getattr__` of its own; refused where it reads attributes with
-    /// any code other than `object.__getattribute__`.
     fn getattr_hook(&self, class: &Class) -> Result<bool, InterpretedFailure> {
         let unavailable = |problem| self.unavailable(problem);
         let getattro = self
@@ -700,8 +614,6 @@ impl Values<'_, '_> {
             return Ok(false);
         }
 
-        // Any other function is a class's hook, which runs its
-        // `__getattribute__` and then its `__getattr__`, or a type's own.
         let generic = match self.type_attribute(class, "__getattribute__")? {
             Some((_, value)) => self.wraps_generic(value).map_err(unavailable)?,
             None => false,
@@ -731,9 +643,6 @@ impl Values<'_, '_> {
         Ok(true)
     }
 
-    /// Whether the object at `value` is the wrapper of
-    /// `PyObject_GenericGetAttr` that a type's dict holds as its
-    /// `__getattribute__`, as `object`'s and `int`'s are.
     fn wraps_generic(&self, value: VirtualAddress) -> Result<bool, Problem> {
         let reader = &self.reader;
         let ty = VirtualAddress::new(reader.field_word(value, Field::ObjectType)?);
@@ -742,9 +651,6 @@ impl Values<'_, '_> {
                 == self.types.generic_getattr.get())
     }
 
-    /// `object.__getattribute__`'s lookup of `name` on the instance at
-    /// `object`, of `class`, whose own attributes `dict` holds, and which
-    /// finds those it lacks with code where `getattr`.
     fn generic(
         &self,
         object: VirtualAddress,
@@ -802,8 +708,6 @@ impl Values<'_, '_> {
         ))
     }
 
-    /// What a data descriptor of `class` gives for `name` of the instance
-    /// at `object`: what its slot holds, for a slot's.
     fn data_descriptor(
         &self,
         object: VirtualAddress,
@@ -845,8 +749,6 @@ impl Values<'_, '_> {
         ))
     }
 
-    /// The attribute `name` of the class `this`, whose type is `meta`, as
-    /// `type.__getattribute__` finds it without running code.
     fn class_attribute(
         &self,
         this: &Class,
@@ -903,8 +805,6 @@ impl Values<'_, '_> {
         Ok(attribute.value)
     }
 
-    /// The first type in `class`'s method resolution order whose dict holds
-    /// `name`, and what it holds.
     pub(super) fn type_attribute(
         &self,
         class: &Class,
@@ -925,12 +825,10 @@ impl Values<'_, '_> {
         Ok(None)
     }
 
-    /// What `dict` holds for the name `name`.
     fn find(&self, dict: Dict, name: &str) -> Result<Option<VirtualAddress>, InterpretedFailure> {
         self.lookup(dict, &InterpretedKey::Text(name.as_bytes().to_vec()))
     }
 
-    /// What the type of the type attribute at `value` makes it.
     fn describe(&self, value: VirtualAddress) -> Result<TypeAttribute, InterpretedFailure> {
         let reader = &self.reader;
         let read = || -> Result<TypeAttribute, Problem> {
@@ -945,7 +843,6 @@ impl Values<'_, '_> {
         read().map_err(|problem| self.unavailable(problem))
     }
 
-    /// The qualified name of the type of the object at `object`.
     fn type_of(&self, object: VirtualAddress) -> Result<String, InterpretedFailure> {
         let unavailable = |problem| self.unavailable(problem);
         let ty = self

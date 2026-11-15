@@ -1,5 +1,3 @@
-//! Value shapes: how a type's bytes are decoded and which children it has.
-
 use std::sync::Arc;
 
 use foldhash::{HashSet, HashSetExt};
@@ -23,8 +21,6 @@ pub(super) enum ValueShape {
         enumerators: Arc<[Enumerator]>,
         byte_size: u64,
 
-        /// A language's enumeration, or constants Go gave a named type,
-        /// which make only the values they name symbolic.
         origin: EnumerationOrigin,
     },
     Array {
@@ -34,18 +30,13 @@ pub(super) enum ValueShape {
         byte_size: u64,
     },
 
-    /// An array bounded at run time, which a value resolves to an
-    /// [`ValueShape::Array`] where its elements are.
     RuntimeArray {
-        /// The canonical array type, whose expressions find its bounds.
         array: TypeId,
         element: TypeId,
         element_size: u64,
         dimensions: Arc<[RuntimeDimension]>,
         ordering: ArrayOrdering,
 
-        /// The size of the descriptor, as an Ada array's, or zero when the
-        /// producer gives none.
         byte_size: u64,
     },
     Slice {
@@ -55,20 +46,17 @@ pub(super) enum ValueShape {
         text: bool,
     },
     Record {
-        /// The canonical record DIE after aliases and qualifiers are removed.
         record: TypeId,
         members: Arc<[RecordMember]>,
         bases: Arc<[BaseClass]>,
         byte_size: u64,
     },
     Union {
-        /// The canonical union DIE after aliases and qualifiers are removed.
         union: TypeId,
         members: Arc<[RecordMember]>,
         byte_size: u64,
     },
     Variant {
-        /// The canonical aggregate DIE after aliases and qualifiers are removed.
         aggregate: TypeId,
         common_members: Arc<[RecordMember]>,
         bases: Arc<[BaseClass]>,
@@ -82,14 +70,11 @@ pub(super) enum ValueShape {
         address_class: u64,
     },
 
-    /// A function value: null, or a pointer to its closure context.
     Function {
         byte_size: u64,
     },
 }
 
-/// Strips the aliases and qualifiers around `id` that share their target's
-/// representation, returning the type beneath them.
 pub(super) fn transparent_type_from(
     types: &(impl TypeEntries + ?Sized),
     id: TypeId,
@@ -155,23 +140,15 @@ fn transparent_representation(
     Ok(())
 }
 
-/// Why a type has no value shape.
 #[derive(Debug)]
 pub(super) enum ValueShapeError {
-    /// The type graph is defective.
     Malformed(Arc<str>),
 
-    /// The type is valid but its shape is not implemented.
     Unsupported(Arc<str>),
 }
 
-/// The widest indirection representation `decode_address` can turn into a
-/// `VirtualAddress`.
 pub(super) const MAX_ADDRESS_BYTES: u64 = 8;
 
-/// Resolves the storage size of a pointer or reference value. The type
-/// builder leaves the size unset only for a non-default address class
-/// without `DW_AT_byte_size`, which is unsupported rather than malformed.
 pub(super) fn indirection_byte_size(
     byte_size: Option<u64>,
     address_class: u64,
@@ -199,10 +176,6 @@ pub(super) fn indirection_byte_size(
     }
 }
 
-/// The variant the sum `aggregate`, which stores no tag, holds: its one
-/// variant, or the one variant that can hold a value at all, since every
-/// other holds a value of a type with none, such as `Infallible`. Choosing
-/// among several would be a guess, and a sum with no values holds none.
 pub(super) fn tagless_variant(
     types: &(impl TypeEntries + ?Sized),
     aggregate: TypeId,
@@ -248,9 +221,6 @@ pub(super) fn tagless_variant(
     }
 }
 
-/// Whether no value of a type can exist: a sum that stores no tag and none
-/// of whose variants can hold a value, or a record with a member of such a
-/// type. Anything not known to be so is taken to have values.
 fn uninhabited(types: &(impl TypeEntries + ?Sized), id: TypeId, depth: usize) -> bool {
     if depth >= MAX_TYPE_RESOLUTION_DEPTH {
         return false;
@@ -292,8 +262,6 @@ pub(super) fn value_shape_from(
     nested_value_shape(types, id, 0)
 }
 
-/// Computes a value shape for a type nested `depth` arrays deep. Deeper
-/// nesting than the resolution limit is unsupported rather than recursed.
 #[expect(
     clippy::too_many_lines,
     reason = "each normalized type shape has distinct validation"
@@ -313,8 +281,6 @@ fn nested_value_shape(
     match &info.kind {
         TypeKind::Base(base) => {
             if base.byte_size == 0 {
-                // A scalar encoding cannot occupy zero bytes; treat it as
-                // defective rather than decoding empty storage.
                 return Err(ValueShapeError::Malformed(
                     "base type has a zero byte size".into(),
                 ));

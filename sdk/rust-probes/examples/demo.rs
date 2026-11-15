@@ -1,20 +1,3 @@
-//! A small instrumented service to record and explore with microscope.
-//!
-//! A producer queues requests at a rate that rises and falls; four workers
-//! take them, each request a zone labeled with its route, holding nested
-//! zones for its steps, and a cache miss now and then that goes to the
-//! "database". The queue's depth is plotted, slow requests leave a message,
-//! and a render thread marks a frame sixty times a second.
-//!
-//! From `sdk/rust-probes`, building with debug information so stacks show
-//! the functions the compiler inlined:
-//!
-//! ```sh
-//! CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release --example demo --features enabled
-//! microscope record -o demo.usprof -- target/release/examples/demo 5
-//! microscope web demo.usprof
-//! ```
-
 use std::collections::VecDeque;
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,7 +9,6 @@ use microscope_probes::{frame, label, message, plot, zone};
 const WORKERS: usize = 4;
 const ROUTES: [&str; 4] = ["/users", "/orders", "/search", "/health"];
 
-/// One request: its route, and how much work each of its steps takes.
 struct Request {
     id: u64,
     route: &'static str,
@@ -36,7 +18,6 @@ struct Request {
     render: u64,
 }
 
-/// A small, seeded random number generator, so runs are alike.
 struct Rng(u64);
 
 impl Rng {
@@ -52,7 +33,6 @@ impl Rng {
     }
 }
 
-/// Spins for about `units` microseconds.
 #[inline(never)]
 fn work(units: u64) -> u64 {
     (0..units * 3000).fold(0, |sum, value| black_box(sum ^ value))
@@ -106,7 +86,6 @@ fn handle(request: &Request) {
     }
 }
 
-/// The queue workers take requests from, and whether the run is over.
 struct Queue {
     requests: Mutex<VecDeque<Request>>,
     ready: Condvar,
@@ -144,7 +123,6 @@ fn produce(queue: &Queue, until: Instant) {
     let mut id = 0;
 
     while Instant::now() < until {
-        // The load rises and falls every two seconds.
         let phase = started.elapsed().as_millis() % 2000;
         let burst = if phase < 1000 { 1 + phase / 250 } else { 1 };
 
@@ -196,7 +174,6 @@ fn main() {
         .nth(1)
         .map_or(5, |seconds| seconds.parse().expect("a number of seconds"));
 
-    // A recording switches the sites on just after the program starts.
     let deadline = Instant::now() + Duration::from_secs(2);
     while !microscope_probes::listening() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));

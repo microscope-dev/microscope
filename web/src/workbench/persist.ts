@@ -1,8 +1,3 @@
-// Layouts this browser keeps: the one in use, saved as each change is made,
-// the session layout a page with no session set aside, and any a person
-// saved by name. Layouts are not part of a link; a link
-// shares where to look, not how the page is arranged.
-
 import type { Kinds } from "./kinds";
 import type { Layout } from "./layout";
 import { type Loaded, loadLayout, saveLayout } from "./saved";
@@ -12,15 +7,11 @@ const CURRENT = "microscope-layout";
 const ASIDE = "microscope-layout-session";
 const NAMED = "microscope-layouts";
 
-/** The layout this browser used last, or why it can't be used. Null when it
- * has none. */
 export function lastLayout(kinds: Kinds<string>): Loaded | null {
   const text = get(CURRENT);
   return text === null ? null : known(loadLayout(text), kinds);
 }
 
-/** Saves the layout as each change is made. Not later, nor as the page goes:
- * a reload can come first, and Firefox may lose a save made as a page goes. */
 export function keepSaving(): () => void {
   return workbench.subscribe((state, previous) => {
     if (state.layout !== previous.layout) {
@@ -29,20 +20,16 @@ export function keepSaving(): () => void {
   });
 }
 
-/** Keeps a session's layout, which a page with no session replaces, for
- * the next session to come back to. */
 export function setAside(layout: Layout): void {
   set(ASIDE, saveLayout(layout));
 }
 
-/** The session layout set aside last, if there is one this page can use. */
 export function setAsideLayout(kinds: Kinds<string>): Layout | null {
   const text = get(ASIDE);
   const loaded = text === null ? null : known(loadLayout(text), kinds);
   return loaded?.ok ? loaded.layout : null;
 }
 
-/** The names of the layouts saved by name, in the order saved. */
 export function layoutNames(): string[] {
   return Object.keys(named());
 }
@@ -63,8 +50,6 @@ export function deleteNamed(name: string): void {
   set(NAMED, JSON.stringify(rest));
 }
 
-/** Refuses a layout with panes this page does not have, as one from
- * another version may. */
 function known(loaded: Loaded, kinds: Kinds<string>): Loaded {
   if (!loaded.ok) {
     return loaded;
@@ -89,8 +74,6 @@ function named(): Record<string, string> {
   }
 }
 
-// Storage may be unavailable, as in some private windows; layouts are then
-// kept for as long as the page is open.
 function get(key: string): string | null {
   try {
     return localStorage.getItem(key);
@@ -102,7 +85,5 @@ function get(key: string): string | null {
 function set(key: string, value: string): void {
   try {
     localStorage.setItem(key, value);
-  } catch {
-    // Kept until the page goes.
-  }
+  } catch {}
 }

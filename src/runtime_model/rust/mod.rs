@@ -1,27 +1,3 @@
-//! Rust's standard library, as the runtime that reports a program's
-//! panics.
-//!
-//! std calls `__rustc::rust_panic(&mut dyn PanicPayload)` (an unmangled
-//! `rust_panic` before Rust 1.87) once the panic hook has run and before
-//! unwinding begins, so a panic is reported there before anything catches
-//! it. std ships no debug information for its
-//! private types, so the payload's type is named by the symbol of its
-//! `Display::fmt` in the payload's vtable, and its layout is a convention
-//! of the pinned toolchain, checked by the tests against the program's own
-//! panic hook:
-//!
-//! - `panic_handler::FormatStringPayload` holds `string: Option<String>`
-//!   first, which every hook fills with the formatted message before
-//!   `rust_panic` runs;
-//! - `panic_handler::StaticStrPayload` is a `&'static str`;
-//! - `begin_panic::Payload<A>` holds `Option<A>`, which the program's own
-//!   debug information describes, as it instantiated it;
-//! - `resume_unwind::RewrapBox` holds the `Box<dyn Any + Send>` a caught
-//!   panic left, whose type the `Any` vtable's `type_id` names.
-//!
-//! A `String` is its capacity, pointer, and length, and `None` of an
-//! `Option<String>` is the capacity no allocation can have.
-
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
 use std::sync::Arc;
@@ -37,7 +13,6 @@ use crate::{
     ExceptionFilter, ImageAddress, LanguageExceptionKind, StackSegment, ThreadId, VirtualAddress,
 };
 
-/// What Rust reports: every panic, as it begins.
 pub const EXCEPTION_FILTERS: [ExceptionFilter; 1] = [PANIC];
 
 const PANIC: ExceptionFilter = ExceptionFilter {
@@ -50,21 +25,14 @@ const PANIC: ExceptionFilter = ExceptionFilter {
     default: true,
 };
 
-/// Where a trait object's vtable keeps its size, and its first method:
-/// `Display::fmt` for a payload, `type_id` for an `Any`.
 const VTABLE_SIZE: u64 = 8;
 const VTABLE_FIRST_METHOD: u64 = 24;
 
-/// `None` of an `Option<String>`: a capacity above `isize::MAX`.
 const NO_STRING: u64 = 1 << 63;
 
-/// The longest message read; a longer one is refused rather than cut.
 const MAX_MESSAGE: u64 = 1 << 16;
 
-/// The standard library's runtime, when the module carries it.
 pub fn detect(image: &Arc<dyn RuntimeImage + Send + Sync>) -> Option<Arc<dyn RuntimeModel>> {
-    // Only Rust's code is searched for its panic function: finding it
-    // demangles every symbol of the image.
     let rust = image
         .producers()
         .iter()
@@ -73,9 +41,6 @@ pub fn detect(image: &Arc<dyn RuntimeImage + Send + Sync>) -> Option<Arc<dyn Run
         return None;
     }
 
-    // The function's name changed in Rust 1.87; a program has the one its
-    // compiler gave it, and with only the newer, no panic in a program an
-    // older Rust built would stop.
     let panic = crate::rust_names::RUST_PANIC
         .iter()
         .find_map(|name| image.function_answering(name))?;
@@ -94,7 +59,6 @@ struct RustRuntime {
     hooks: [RuntimeHook; 1],
 }
 
-/// A panic's payload, as its type says to read it.
 struct Payload<'a> {
     stop: &'a dyn RuntimeStop,
     image: &'a (dyn RuntimeImage + Send + Sync),
@@ -109,15 +73,6 @@ impl Payload<'_> {
             .ok_or_else(|| format!("the panic's memory at {address:#x} is unreadable").into())
     }
 
-    /// The type that the method a vtable holds at `slot` implements a
-    /// trait for, as `<T as Trait>::method` names it.
-    ///
-    /// A legacy-mangled symbol, the default for a program's own code
-    /// before Rust 1.97, names an impl's generic parameters rather than
-    /// their arguments: `<T as core::any::Any>::type_id`, or `Payload<A>`.
-    /// The method's debug information says what each parameter is, which
-    /// replaces it; a v0 symbol names the arguments, and nothing in it is
-    /// a parameter's bare name.
     fn implementer(&self, vtable: u64, slot: u64) -> Result<String, Arc<str>> {
         let method = self.word(past(vtable, slot)?)?;
         let address = self
@@ -130,9 +85,6 @@ impl Payload<'_> {
         })?;
         let implementer = implementer(&symbol).ok_or_else(|| format!("the panic's `{symbol}`"))?;
 
-        // Rust 1.85's debug information leaves some instances' parameters
-        // out, as `type_id`'s for `String`, but still names the function
-        // with its arguments, `type_id<alloc::string::String>`.
         let mut generics = self.image.function_generics(address);
         if generics.is_empty() {
             generics = named_generics(implementer, self.image.function_name(address).as_deref());
@@ -154,12 +106,10 @@ impl Payload<'_> {
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// The `&str` at `at`.
     fn str(&self, at: u64) -> Result<String, Arc<str>> {
         self.text(self.word(at)?, self.word(past(at, 8)?)?)
     }
 
-    /// The `Option<String>` at `at`.
     fn string(&self, at: u64) -> Result<Option<String>, Arc<str>> {
         let capacity = self.word(at)?;
         if capacity == NO_STRING {
@@ -170,7 +120,6 @@ impl Payload<'_> {
             .map(Some)
     }
 
-    /// The message a value of type `ty` at `at` is, when it is text.
     fn message(&self, ty: &str, at: u64) -> Result<Option<String>, Arc<str>> {
         match ty {
             "&str" => self.str(at).map(Some),
@@ -179,7 +128,6 @@ impl Payload<'_> {
         }
     }
 
-    /// What `rust_panic` was given, at `data` with vtable `vtable`.
     fn report(&self, data: u64, vtable: u64) -> Result<RuntimeException, Arc<str>> {
         let ty = self.implementer(vtable, VTABLE_FIRST_METHOD)?;
         let ty = ty.as_str();
@@ -198,8 +146,6 @@ impl Payload<'_> {
             Some("Payload") => {
                 let held = argument(ty).ok_or_else(|| format!("the payload is a `{ty}`"))?;
 
-                // `Option<&str>` and `Option<String>` keep their tag in a
-                // niche; any other `A` keeps one before the value.
                 Ok(self.message(held, data)?.map_or_else(
                     || RuntimeException {
                         message: format!("panicked with a value of type {held}").into(),
@@ -228,15 +174,12 @@ impl Payload<'_> {
     }
 }
 
-/// The address `offset` bytes past `address`, which the target's memory
-/// may place past the end of the address space.
 fn past(address: u64, offset: u64) -> Result<u64, Arc<str>> {
     address.checked_add(offset).ok_or_else(|| {
         format!("the panic's memory at {address:#x} + {offset} is past the address space").into()
     })
 }
 
-/// The type `<T as Trait>::method` implements a trait for.
 fn implementer(method: &str) -> Option<&str> {
     let inner = method.strip_prefix('<')?;
     let mut depth = 0_usize;
@@ -252,9 +195,6 @@ fn implementer(method: &str) -> Option<&str> {
     None
 }
 
-/// `ty` with each of its words that is the bare name of one of `generics`'
-/// parameters replaced by the parameter's argument. A word within a path,
-/// after `::`, names no parameter, which is never qualified.
 fn substituted(ty: &str, generics: &[(Arc<str>, String)]) -> String {
     let mut out = String::with_capacity(ty.len());
     let mut rest = ty;
@@ -278,12 +218,6 @@ fn substituted(ty: &str, generics: &[(Arc<str>, String)]) -> String {
     out
 }
 
-/// The one generic parameter that `ty`, a legacy symbol's implementer,
-/// names bare, with the one argument the function's debug-information
-/// `name` ends in; none unless there is exactly one of each, as which
-/// argument is which parameter's is otherwise unknown. A bare word
-/// beginning with a capital is a parameter, as a legacy symbol spells
-/// every other type by its path and Rust's primitive types in lowercase.
 fn named_generics(ty: &str, name: Option<&str>) -> Vec<(Arc<str>, String)> {
     let mut parameters = BTreeSet::new();
     let mut rest = ty;
@@ -321,16 +255,12 @@ fn named_generics(ty: &str, name: Option<&str>) -> Vec<(Arc<str>, String)> {
     }
 }
 
-/// A type's name as an expression writes it, its generic last segment in
-/// backticks: ``std::panicking::begin_panic::`Payload<i32>` ``.
 fn quoted(ty: &str) -> String {
     let generic = ty.find('<').unwrap_or(ty.len());
     let last = ty[..generic].rfind("::").map_or(0, |at| at + 2);
     format!("{}`{}`", &ty[..last], &ty[last..])
 }
 
-/// The one type argument of a generic type, such as `i32` of
-/// `Payload<i32>`.
 fn argument(ty: &str) -> Option<&str> {
     let (_, rest) = ty.split_once('<')?;
     rest.strip_suffix('>')
@@ -410,7 +340,6 @@ impl RuntimeModel for RustRuntime {
 
         let (data, vtable) = (argument(RDI)?, argument(RSI)?);
 
-        // A payload's size bounds every read of it.
         let size = payload.word(past(vtable, VTABLE_SIZE)?)?;
         if size > 1 << 12 {
             return Err(format!("the payload claims to be {size} bytes").into());
@@ -478,13 +407,6 @@ impl RuntimeModel for RustRuntime {
     }
 }
 
-/// Whether a function is the standard library's, by its name, for code
-/// with no lines to tell by: an item of `std`, `core`, or `alloc`, or a
-/// method of one of their types, as `<std::fs::File>::open`, of a
-/// standard trait, as `<&std::fs::File as std::io::Read>::read`. A
-/// program's own trait on a standard type, as `<std::fs::File as
-/// app::Settings>::load`, or a standard trait on its own type, as
-/// `<app::Config as core::fmt::Debug>::fmt`, is the program's.
 pub fn standard_library_function(name: &str) -> bool {
     let standard = |path: &str| {
         let path = path.trim_start_matches('&');
@@ -498,8 +420,6 @@ pub fn standard_library_function(name: &str) -> bool {
         return standard(name);
     };
 
-    // `<Type as Trait>::method`: the `as` and the `>` outside any generic
-    // arguments of the type's own.
     let mut depth = 0_usize;
     let mut trait_at = None;
     let mut end = inner.len();
@@ -524,10 +444,6 @@ pub fn standard_library_function(name: &str) -> bool {
     )
 }
 
-/// Whether a source file is the standard library's, wherever the toolchain
-/// put it: `/rustc/<commit>/library/<crate>/…` for its own code, and
-/// `…/rustlib/src/rust/library/<crate>/…` for generic code the program
-/// instantiated.
 pub fn standard_library(path: &Path) -> bool {
     let parts = path
         .components()
@@ -564,14 +480,12 @@ mod tests {
     use crate::runtime_model::{ImageSymbol, Member};
     use crate::test_strategies::hostile_address;
 
-    /// Where the tests' payloads lie.
     const DATA: u64 = 0x1000;
     const VTABLE: u64 = 0x2000;
     const ANY_VTABLE: u64 = 0x3000;
     const STRING: u64 = 0x4000;
     const TEXT: u64 = 0x5000;
 
-    /// The methods the vtables point to, and the symbols that name them.
     const METHODS: [(u64, &str); 3] = [
         (
             0x10_0000,
@@ -690,8 +604,6 @@ mod tests {
         }
     }
 
-    /// The panic `rust_panic` reports with `data` and `vtable` in its
-    /// argument registers.
     fn reported(memory: &Memory, data: u64, vtable: u64) -> Result<RuntimeException, Arc<str>> {
         let runtime = RustRuntime {
             image: Arc::new(Symbols),
@@ -704,9 +616,6 @@ mod tests {
         runtime.exception(memory, ImageAddress::new(0), &registers)
     }
 
-    /// The payload of `kind`, an index of [`METHODS`], laid out with
-    /// its pointers as given: the message's text, the `String` a
-    /// `RewrapBox` holds, and the `Any` vtable that names it.
     fn payload(kind: usize, text: u64, string: u64, any: u64) -> Memory {
         let mut memory = Memory::default();
         memory.word(VTABLE + VTABLE_SIZE, 24);
@@ -732,8 +641,6 @@ mod tests {
         memory
     }
 
-    /// A vtable at the top of memory is unreadable, and is no panic of
-    /// microscope's own.
     #[test]
     fn a_payload_at_the_top_of_memory_is_unreadable() {
         let memory = payload(0, TEXT, STRING, ANY_VTABLE);
@@ -796,14 +703,6 @@ mod tests {
         );
     }
 
-    /// A legacy symbol's parameters become the arguments the function's
-    /// debug information gives, wherever they stand bare, and nothing
-    /// within a path does, nor a word that only begins like a parameter.
-    /// Rust 1.85 leaves some generic instances' parameters out of their
-    /// debug information but names the function with its argument: the
-    /// one bare parameter a legacy implementer names takes the one
-    /// argument the name ends in, and nothing is guessed when either is
-    /// not exactly one.
     #[test]
     fn a_lone_parameter_takes_the_argument_its_function_is_named_with() {
         let pairs = |found: Vec<(Arc<str>, String)>| {
@@ -824,7 +723,6 @@ mod tests {
             [("A".to_owned(), "alloc::vec::Vec<(u8, u16)>".to_owned())]
         );
 
-        // Two arguments, two parameters, none at all, or a concrete path.
         assert!(named_generics("T", Some("f<u8, u16>")).is_empty());
         assert!(named_generics("Pair<A, B>", Some("f<u8>")).is_empty());
         assert!(named_generics("T", Some("type_id")).is_empty());
@@ -851,8 +749,6 @@ mod tests {
             "std::panicking::begin_panic::Payload<i32>"
         );
 
-        // A v0 symbol's concrete names are left alone, even where a part
-        // of a path or a longer word spells a parameter.
         let concrete = "alloc::boxed::Box<T::A, Tail>";
         assert_eq!(substituted(concrete, &string), concrete);
         assert_eq!(substituted("a::T", &string), "a::T");
@@ -875,8 +771,6 @@ mod tests {
         ] {
             assert!(super::standard_library_function(name), "{name}");
         }
-        // A program's own impls of standard traits, and its generics over
-        // standard types, are its own.
         for name in [
             "<app::Config as core::fmt::Debug>::fmt",
             "<std::fs::File as app::Settings>::load",

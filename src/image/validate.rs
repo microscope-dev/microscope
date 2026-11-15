@@ -1,8 +1,3 @@
-//! Checks an image completely before anything reads it: its header and
-//! checksum, the directory's tables and the zeroed padding between them,
-//! and every reference, flag, and index in the tables. Each check is one
-//! pass over a table, and no check recurses.
-
 use rayon::prelude::*;
 
 use super::format::TableKind;
@@ -13,7 +8,6 @@ use super::lines::{
 
 use super::{Image, NONE, Placed, strings};
 
-/// Why bytes are not a usable image.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ImageError {
     #[error("the image is larger than an image may be")]
@@ -41,23 +35,18 @@ pub enum ImageError {
     Malformed(String),
 }
 
-/// Checks one family of tables.
 type Validation = fn(&Image) -> Result<(), String>;
 
 fn malformed(text: impl Into<String>) -> ImageError {
     ImageError::Malformed(text.into())
 }
 
-/// The most an image may hold.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
-    /// Its length in bytes.
     pub bytes: u64,
 }
 
 impl Default for Limits {
-    /// As large as the input a load reads may be: Chrome's image with its
-    /// debug information is 7 GB.
     fn default() -> Self {
         Self {
             bytes: super::backing::MAX_INPUT,
@@ -65,8 +54,6 @@ impl Default for Limits {
     }
 }
 
-/// Checks the header, trailer, and directory, returning where each table
-/// is.
 pub(super) fn structure(
     bytes: &[u8],
     limits: Limits,
@@ -74,7 +61,6 @@ pub(super) fn structure(
     super::container::structure::<super::DebugImage, { TableKind::COUNT }>(bytes, limits)
 }
 
-/// Checks every table's contents.
 pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
     let strings = image.bytes(TableKind::Strings);
     if !strings::valid_pool(strings, true) {
@@ -106,8 +92,6 @@ pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
             parallel,
         };
 
-        // Each check reads the tables alone, and none relies on another
-        // having passed.
         let checks: [&(dyn Fn() -> Result<(), ImageError> + Sync); 6] = [
             &|| tables.rows(files.len()),
             &|| tables.extras(),
@@ -150,10 +134,6 @@ pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
         validate(image).map_err(malformed)
     };
 
-    // Each family reads only the image, so a large image's are checked in
-    // parallel; a small one's are checked in turn, which takes less than
-    // waking the pool's threads. Either way the first to fail in this
-    // order is the error.
     if !parallel {
         lines()?;
         return families.iter().try_for_each(family);
@@ -166,13 +146,8 @@ pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
     families.into_iter().collect()
 }
 
-/// The size from which an image's tables are validated in parallel.
 const PARALLEL_VALIDATION: usize = 1 << 20;
 
-/// The line tables, checked against each other and their indexes. Each
-/// index is strictly ordered, refers to records it agrees with, and has as
-/// many entries as there are records it indexes: so it indexes each
-/// exactly once.
 struct Lines<'a> {
     addresses: &'a [RowAddress],
     rows: &'a [LineRow],
@@ -180,11 +155,9 @@ struct Lines<'a> {
     sequences: &'a [LineSequence],
     ranges: &'a [LineRange],
 
-    /// Whether the tables are large enough to check in parallel.
     parallel: bool,
 }
 
-/// Whether `items`' keys strictly increase.
 fn strictly_ordered<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K) -> bool {
     items.is_sorted_by(|earlier, later| key(earlier) < key(later))
 }
@@ -221,15 +194,11 @@ impl Lines<'_> {
         Ok(())
     }
 
-    /// Each extra belongs to a row that says it has one, and holds what the
-    /// row cannot, so that each row has one encoding.
     fn extras(&self) -> Result<(), ImageError> {
         if !strictly_ordered(self.extras, |extra| extra.row.get()) {
             return Err(malformed("row extras are out of order"));
         }
 
-        // The row holds its line and column whole unless they are too
-        // wide, and its extra repeats them.
         let agrees = |narrow: u64, wide: u64, whole: u64| {
             if narrow == wide {
                 whole >= wide
@@ -265,7 +234,6 @@ impl Lines<'_> {
         Ok(())
     }
 
-    /// The sequences cover the rows in order, each ending at its last row.
     fn sequences(&self) -> Result<(), ImageError> {
         let mut next = 0_usize;
         for sequence in self.sequences {
@@ -341,8 +309,6 @@ impl Lines<'_> {
             return Err(malformed("the statement index is out of order"));
         }
 
-        // The keys name rows in no order a cache likes, so a large index's
-        // are checked in parallel.
         let agrees = |key: &StatementKey| {
             let at = key.row.get() as usize;
             self.rows.get(at).is_some_and(|row| {
@@ -382,7 +348,6 @@ impl Lines<'_> {
         }
 
         if !strictly_ordered(boundaries, |boundary| {
-            // `rows` rejects tables with too few addresses.
             let at = boundary.row.get();
             let address = self.addresses.get(at as usize);
             (address.map(|address| address.address.get()), at)

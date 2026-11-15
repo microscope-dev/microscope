@@ -1,18 +1,18 @@
 microscope-views 1
 
-# Zig's standard library. Verified against zig 0.16.0 with the LLVM
-# backend and Zig's own, by tests/fixtures/zig/containers.zig.
 
-# A slice of bytes is text when its bytes are valid UTF-8 without control
-# characters, and its bytes otherwise; its elements are its bytes either
-# way. Zig's own text, []const u8, needs no view.
+
+
+
+
+
 view zig `[]u8` {
     show sequence(len(self)) for i in range(len(self)) => self[i]
     format self as utf8
 }
 
-# std.ArrayList (array_list.Aligned) and the managed list keep the elements
-# in use in `items`, which for a list of bytes is a slice of bytes.
+
+
 view zig array_list.Aligned(u8, _) {
     check len(items) <= capacity
     show value(items)
@@ -39,15 +39,15 @@ view zig array_list.AlignedManaged(T, _) {
     field capacity = capacity
 }
 
-# The managed hash map holds an unmanaged one and its allocator.
+
 view zig hash_map.HashMap(K, V, _, _) {
     show value(unmanaged)
 }
 
-# A hash map's metadata is a byte for each slot, whose top bit is set when
-# the slot is used; its header, which holds the keys, the values, and the
-# capacity, lies just before the metadata. A map of nothing is a set of its
-# keys.
+
+
+
+
 view zig hash_map.HashMapUnmanaged(K, void, _, _) {
     type Header = typeof(self).Header
     let header = (Header*)metadata - 1
@@ -66,9 +66,9 @@ view zig hash_map.HashMapUnmanaged(K, V, _, _) {
         => header->keys[i] : header->values[i]
 }
 
-# An array hash map keeps its entries in a MultiArrayList, which holds each
-# field of an entry in an array of its own; the arrays follow one another
-# in the order Zig lays the fields out in the entry's type.
+
+
+
 view zig array_hash_map.Custom(K, V, _, _) {
     type Data = arg(typeof(entries), 0)
     let keys = (K*)(entries.bytes + entries.capacity * offsetof(Data, key))
@@ -77,7 +77,7 @@ view zig array_hash_map.Custom(K, V, _, _) {
     show map(entries.len) for i in range(entries.len) => keys[i] : values[i]
 }
 
-# A deque is a ring buffer: element i is at (head + i) modulo its length.
+
 view zig deque.Deque(T) {
     let capacity = len(buffer)
     check self.len <= capacity && (capacity == 0 || head < capacity)
@@ -85,7 +85,7 @@ view zig deque.Deque(T) {
     field capacity = capacity
 }
 
-# A priority queue is a heap, its items in the heap's order.
+
 view zig priority_queue.PriorityQueue(T, _, _) {
     check len(items) <= cap
     show sequence(len(items)) for i in range(len(items)) => items[i]
@@ -96,8 +96,8 @@ view zig buf_set.BufSet {
     show value(hash_map)
 }
 
-# A bit set is the positions of the bits it sets: in one integer, in an
-# array of words, or in as many words as its length needs, each read once.
+
+
 view zig bit_set.IntegerBitSet(N) {
     let mask = mask or bits
     show sequence(_) for i in range(N) if (mask >> i & 1) != 0 => i
@@ -122,7 +122,7 @@ view zig atomic.Value(T) {
     show value(raw)
 }
 
-# An allocating writer's text is what it has written, its buffer up to end.
+
 view zig Io.Writer.Allocating {
     check writer.end <= len(writer.buffer)
     show text(writer.buffer, writer.end)

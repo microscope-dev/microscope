@@ -1,7 +1,3 @@
-//! The user's breakpoints and watchpoints: adding, amending, and removing
-//! them, with the conditions the client knows the outcome of, and judging
-//! the hits counted at each stop.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Client, protocol};
@@ -18,21 +14,15 @@ use crate::{
     Watchpoint, WatchpointId, WatchpointOptions, WatchpointSpec,
 };
 
-/// A breakpoint the client added, with the image addresses of its traps.
 pub(super) struct Added {
     id: BreakpointId,
     pub(super) traps: Vec<u64>,
 
-    /// Whether the debugger last said it is enabled.
     enabled: bool,
     temporary: bool,
 
-    /// The marker line it was set at, if any.
     marker_line: Option<u64>,
 
-    /// What it was asked to do at its hits since the last stop, oldest
-    /// first: a change while the program runs applies from a hit the client
-    /// cannot know.
     policies: Vec<Policy>,
 }
 
@@ -43,8 +33,6 @@ impl Added {
 }
 
 impl Client {
-    /// Watches one of the program's small objects, by name or by address,
-    /// for one kind of access. The kernel's debug registers may refuse.
     pub(super) async fn add_watch(&self) -> Result<(), Failure> {
         if self.script.globals.is_empty() {
             return Ok(());
@@ -56,8 +44,6 @@ impl Client {
             .pick(Stream::Client, &self.script.globals)
             .clone();
 
-        // Watches on changes, filtered at each trap and judged again at
-        // each stop, are the most intricate.
         let accesses = [
             WatchAccess::Change,
             WatchAccess::Change,
@@ -67,8 +53,6 @@ impl Client {
         ];
         let access = *self.choices.borrow_mut().pick(Stream::Client, &accesses);
 
-        // Four slots watch at most 32 bytes; a larger object is watched in
-        // part, anywhere inside it.
         let whole = size <= 32;
         let (name, image_address, size) = if whole {
             (name, image_address, size)
@@ -104,8 +88,6 @@ impl Client {
                 .await
         };
 
-        // Where the object is, from the symbol table and the loader, not
-        // from the debugger.
         let wanted = (image_address + self.script.image.bias(), size);
 
         match result {
@@ -139,9 +121,6 @@ impl Client {
         Ok(())
     }
 
-    /// Notes a watchpoint the debugger armed, which the kernel then
-    /// follows, failing unless it watches the `wanted` address and size
-    /// and its slots cover them.
     fn armed(
         &self,
         watchpoint: &Watchpoint,
@@ -197,8 +176,6 @@ impl Client {
         Ok(())
     }
 
-    /// Chooses a new watchpoint's options: half none, the rest a hit
-    /// condition, a condition whose value the client knows, or both.
     fn choose_watch_options(&self) -> (WatchpointOptions, Policy) {
         if self.draw(2) == 0 {
             return (WatchpointOptions::default(), UNCONDITIONAL);
@@ -221,8 +198,6 @@ impl Client {
         (options, policy)
     }
 
-    /// Changes one watchpoint's hit condition or condition, which applies
-    /// from the next hit the debugger handles.
     pub(super) async fn amend_watch(&self) -> Result<(), Failure> {
         let ids = self
             .shared
@@ -251,7 +226,6 @@ impl Client {
             Err(choice.parse(&self.script.markers, None))
         };
 
-        // From the moment the client asks, the new policy may apply.
         if let Some(intent) = self.shared.watches.borrow_mut().get_mut(&id) {
             intent.policies.push(policy);
         }
@@ -278,10 +252,6 @@ impl Client {
         Ok(())
     }
 
-    /// At a stop with a watchpoint disabled, enables one, which the debug
-    /// registers may then refuse; otherwise disables one. A watch enabled
-    /// while the program ran would take bytes the oracles cannot know as
-    /// its last observed ones, so only a stop enables.
     pub(super) async fn toggle_watch(&self, running: bool) -> Result<(), Failure> {
         let disabled = self
             .disabled_watches
@@ -307,8 +277,6 @@ impl Client {
 
         let id = *self.choices.borrow_mut().pick(Stream::Control, &ids);
 
-        // From the moment the client asks, the watchpoint may report no
-        // more.
         let intent = self
             .shared
             .watches
@@ -322,7 +290,6 @@ impl Client {
         {
             Ok(watchpoint) => watchpoint,
             Err(error) => {
-                // A failed edit leaves the watchpoint as it was.
                 self.shared.watches.borrow_mut().insert(id, intent);
                 return Err(protocol(format!(
                     "disabling watchpoint {id} failed: {error}"
@@ -391,8 +358,6 @@ impl Client {
         Ok(())
     }
 
-    /// Watch accounting for disabled watchpoints, at each stop. One whose
-    /// storage ended is gone.
     fn judge_disabled_watches(&self, snapshot: &StateSnapshot) -> Result<(), Failure> {
         let mut disabled = self.disabled_watches.borrow_mut();
         disabled.retain(|id, _| {
@@ -411,7 +376,6 @@ impl Client {
             .map_err(|message| Failure::debugger("watch accounting", message))
     }
 
-    /// Removes one watchpoint, if any.
     pub(super) async fn remove_watch(&self) -> Result<(), Failure> {
         let ids = self
             .shared
@@ -426,7 +390,6 @@ impl Client {
 
         let id = *self.choices.borrow_mut().pick(Stream::Client, &ids);
 
-        // From the moment the client asks, the watchpoint may be gone.
         self.shared.watches.borrow_mut().remove(&id);
         let id = crate::WatchpointId::new(id);
         self.handle
@@ -438,9 +401,6 @@ impl Client {
         Ok(())
     }
 
-    /// Where to break before the program starts. What a program does
-    /// first it may never do again, as a thread that runs its course at
-    /// once, so three in four early breakpoints aim at markers.
     fn choose_early_spec(&self) -> BreakpointSpec {
         let markers = self.script.markers.keys().copied().collect::<Vec<_>>();
         if markers.is_empty() || self.draw(4) == 0 {
@@ -454,8 +414,6 @@ impl Client {
         }
     }
 
-    /// A location for a breakpoint or an advance: a function, or a line,
-    /// half of them a marker's.
     pub(super) fn choose_spec(&self, stream: Stream) -> BreakpointSpec {
         let draw = |bound| self.choices.borrow_mut().below(stream, bound);
         if draw(2) == 0 {
@@ -466,8 +424,6 @@ impl Client {
                 .clone();
             BreakpointSpec::Function(function)
         } else {
-            // Half the lines aim at markers, where the variables oracle
-            // judges what the debugger shows.
             let marker_lines = self.script.markers.keys().copied().collect::<Vec<_>>();
             let line = if !marker_lines.is_empty() && draw(2) == 0 {
                 *self.choices.borrow_mut().pick(stream, &marker_lines)
@@ -482,7 +438,6 @@ impl Client {
         }
     }
 
-    /// Adds a breakpoint, returning whether the debugger made one.
     pub(super) async fn add_breakpoint(
         &self,
         breakpoints: &mut Vec<Added>,
@@ -527,8 +482,6 @@ impl Client {
         self.judge_locations(&breakpoint)?;
         let traps = image_traps(&breakpoint);
 
-        // A temporary breakpoint may be gone at any stop, so only the hit
-        // oracle and the kernel's search for unseen hits follow it.
         if !breakpoint.enabled {
             self.shared
                 .disabled
@@ -553,8 +506,6 @@ impl Client {
             enabled: breakpoint.enabled,
         };
 
-        // Adding what a breakpoint already is returns it, with the hits it
-        // counted under what it was asked before.
         if let Some(existing) = breakpoints
             .iter_mut()
             .find(|added| added.id == breakpoint.id)
@@ -578,11 +529,8 @@ impl Client {
         Ok(true)
     }
 
-    /// Whether `error` refuses `spec` because it names no code in this
-    /// variant, which the client notes.
     pub(super) fn names_no_code(&self, spec: &BreakpointSpec, error: &Error) -> bool {
         match error {
-            // A line outside every function names no code.
             Error::SourceLineUnavailable { line, .. }
                 if matches!(spec, BreakpointSpec::Source { line: wanted, .. } if wanted.get() == *line)
                     && !self
@@ -595,7 +543,6 @@ impl Client {
                 true
             }
 
-            // Another variant may define a function this one inlined away.
             Error::FunctionNotFound(name) | Error::SymbolNotFound(name)
                 if matches!(spec, BreakpointSpec::Function(wanted) if wanted == name)
                     && !self.script.defined.contains(name) =>
@@ -607,8 +554,6 @@ impl Client {
         }
     }
 
-    /// Disables an enabled breakpoint or enables a disabled one, which the
-    /// debugger resolves again.
     pub(super) async fn toggle_breakpoint(
         &self,
         breakpoints: &mut [Added],
@@ -621,7 +566,6 @@ impl Client {
         let added = &mut breakpoints[index];
         let (id, enabled) = (added.id, !added.enabled);
 
-        // From the moment the client asks, either state may apply.
         if enabled {
             self.shared.disabled.borrow_mut().remove(&id.get());
         } else {
@@ -637,8 +581,6 @@ impl Client {
             Ok(breakpoint) => breakpoint,
             Err(error) if self.deleted_by_stop(added.temporary, &error) => return Ok(false),
             Err(error) => {
-                // A failed edit leaves the breakpoint as it was, as when
-                // the process ends during it.
                 policy.enabled = !enabled;
                 added.policies.push(policy);
                 if enabled {
@@ -692,7 +634,6 @@ impl Client {
         Ok(true)
     }
 
-    /// A hit condition for a new breakpoint, or none.
     fn choose_hit_condition(&self) -> Option<HitCondition> {
         if self.draw(2) == 0 {
             return None;
@@ -711,7 +652,6 @@ impl Client {
         HitCondition::new(comparison, self.draw(4) + 1).ok()
     }
 
-    /// A condition for a breakpoint, a marker's only at its line.
     fn choose_condition(&self, marker_line: Option<u64>) -> ConditionChoice {
         let choices = if marker_line.is_some() {
             &[
@@ -731,10 +671,6 @@ impl Client {
         *self.choices.borrow_mut().pick(Stream::Client, choices)
     }
 
-    /// What the client knows of `condition` at a breakpoint set at
-    /// `marker_line` with traps at `traps`: a marker's condition holds at
-    /// the start of its line in unoptimized code, where every variable has
-    /// a value, and nowhere else is known.
     fn known(&self, condition: ConditionChoice, marker_line: Option<u64>, traps: &[u64]) -> Known {
         let at_marker = marker_line.is_some_and(|line| {
             !traps.is_empty()
@@ -752,8 +688,6 @@ impl Client {
         }
     }
 
-    /// Chooses a new breakpoint's options: none, or a hit condition, a
-    /// condition, and perhaps a message to log instead of stopping.
     fn choose_options(
         &self,
         marker_line: Option<u64>,
@@ -776,8 +710,6 @@ impl Client {
 
         let options = BreakpointOptions {
             enabled: self.control(16) != 0,
-            // A temporary breakpoint from the start may be the one threads
-            // starting together all come to.
             temporary: self.control(if early { 3 } else { 4 }) == 0,
             ..options
         };
@@ -785,8 +717,6 @@ impl Client {
         (options, condition)
     }
 
-    /// Changes one breakpoint's hit condition or condition, which applies
-    /// from the next hit the debugger handles.
     pub(super) async fn amend_breakpoint(&self, breakpoints: &mut [Added]) -> Result<(), Failure> {
         if breakpoints.is_empty() {
             return Ok(());
@@ -829,9 +759,6 @@ impl Client {
         Ok(())
     }
 
-    /// Whether `error` says a temporary breakpoint is gone, which a stop
-    /// the client has yet to see may have deleted. The hit oracle judges
-    /// that stop when the client sees it.
     fn deleted_by_stop(&self, temporary: bool, error: &Error) -> bool {
         let gone = temporary && matches!(error, Error::BreakpointNotFound(_));
         if gone {
@@ -841,8 +768,6 @@ impl Client {
         gone
     }
 
-    /// Judges the hits counted since the last stop of this process, and
-    /// starts again from this one.
     pub(super) fn judge_hits(
         &self,
         process: ProcessId,
@@ -864,8 +789,6 @@ impl Client {
             })
             .collect();
 
-        // A process ending as a whole takes its threads out of their stops
-        // whatever they hit, so its hits are not judged.
         if !ending {
             let found = hits::judge(
                 self.baseline.borrow().as_ref(),
@@ -902,7 +825,6 @@ impl Client {
             self.judge_locations(breakpoint)?;
         }
 
-        // A temporary breakpoint the stop deleted is the client's no more.
         let remaining = |added: &Added| {
             snapshot
                 .breakpoints
@@ -931,7 +853,6 @@ impl Client {
         Ok(())
     }
 
-    /// Removes a breakpoint, returning whether there was one to remove.
     pub(super) async fn remove_breakpoint(
         &self,
         breakpoints: &mut Vec<Added>,
@@ -944,7 +865,6 @@ impl Client {
         let removed = breakpoints.swap_remove(index);
         let id = removed.id;
 
-        // From the moment the client asks, the breakpoint may be gone.
         self.shared.breakpoints.borrow_mut().remove(&id.get());
         self.shared.temporaries.borrow_mut().remove(&id.get());
         self.shared.disabled.borrow_mut().remove(&id.get());
@@ -963,8 +883,6 @@ impl Client {
         Ok(true)
     }
 
-    /// Resumes from a stop where a new thread could not be armed, which
-    /// the debugger must refuse: the slots others hold stay held.
     pub(super) async fn resume_unarmed(&self) -> Result<(), Failure> {
         match self.handle.resume().await {
             Err(error) if self.refused_unarmed(&error).await? => Ok(()),
@@ -974,9 +892,6 @@ impl Client {
         }
     }
 
-    /// Whether `error` refuses to run a thread that slots others hold
-    /// leave unarmed, which only contended debug registers explain. The
-    /// client then frees a watchpoint, as a user would.
     pub(super) async fn refused_unarmed(&self, error: &Error) -> Result<bool, Failure> {
         let Error::WatchpointHardwareBusy { thread } = error else {
             return Ok(false);
@@ -993,7 +908,6 @@ impl Client {
     }
 }
 
-/// What a watchpoint without a hit condition or condition does.
 const UNCONDITIONAL: Policy = Policy {
     hit_condition: None,
     condition: Known::Absent,
@@ -1001,7 +915,6 @@ const UNCONDITIONAL: Policy = Policy {
     enabled: true,
 };
 
-/// The image addresses of a breakpoint's locations in the program.
 fn image_traps(breakpoint: &crate::Breakpoint) -> Vec<u64> {
     breakpoint
         .locations
@@ -1014,8 +927,6 @@ fn image_traps(breakpoint: &crate::Breakpoint) -> Vec<u64> {
 }
 
 impl Client {
-    /// Forgets the temporary breakpoints `snapshot` shows a stop deleted,
-    /// which the kernel follows no more.
     pub(super) fn forget_deleted(&self, snapshot: &StateSnapshot) {
         self.shared.temporaries.borrow_mut().retain(|&id, _| {
             snapshot
@@ -1025,8 +936,6 @@ impl Client {
         });
     }
 
-    /// Fails unless each of `breakpoint`'s locations is one binutils say
-    /// its spec names.
     pub(super) fn judge_locations(&self, breakpoint: &crate::Breakpoint) -> Result<(), Failure> {
         misplaced(
             &breakpoint.spec,
@@ -1046,10 +955,6 @@ impl Client {
     }
 }
 
-/// What is wrong with `locations` for `spec`, judged by binutils' facts:
-/// a line's locations begin statement rows of that line or, when it has
-/// none, of the next line that has some; in unoptimized code, a
-/// function's lie within it.
 fn misplaced(
     spec: &BreakpointSpec,
     locations: &[crate::ResolvedBreakpointLocation],
@@ -1064,7 +969,6 @@ fn misplaced(
                 return Some(format!("{:#x} is in no image", address.get()));
             }
 
-            // The simulated program runs no runtime that manages any.
             BreakpointLocation::Managed(location) => {
                 return Some(format!("a managed location {location:?}"));
             }
@@ -1117,17 +1021,14 @@ fn misplaced(
     }
 }
 
-/// The condition a breakpoint or watchpoint is given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConditionChoice {
     None,
     True,
     False,
 
-    /// The condition of the marker at the breakpoint's line.
     Marker,
 
-    /// Its negation.
     NotMarker,
 }
 
@@ -1164,9 +1065,6 @@ mod tests {
         }
     }
 
-    /// A line's breakpoint stops where a statement row of the line begins,
-    /// even one a later row at the address hides, or, for a line without
-    /// code, where the next line's do; a function's stops within it.
     #[test]
     fn misplaced_breakpoints_are_named() {
         let statements = BTreeMap::from([

@@ -1,7 +1,7 @@
-// A function that realigns its stack for an over-aligned local while it
-// also takes arguments on the stack and allocates a variable-length array,
-// so GCC keeps the incoming stack pointer in a register (its "DRAP") and
-// describes the caller's frame pointer with a DW_CFA_expression rule.
+
+
+
+
 #include <stdint.h>
 
 __attribute__((noinline)) int leaf(volatile int *value, volatile int *more) {

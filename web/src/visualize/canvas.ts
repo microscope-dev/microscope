@@ -1,16 +1,8 @@
-// Draws a checked picture on a canvas, for pictures with more shapes than
-// SVG draws quickly. It paints what the SVG builder would: groups move and
-// style their shapes, lines are drawn by their stroke, and shapes with no
-// fill are in the page's ink. The page hit-tests it itself, so titles are
-// still hover text and selects still open their parts, though only for the
-// pointer: the canvas has no element per shape for the keyboard to reach.
-
 import { assert } from "../assert";
 import type { OnSelect, Tip } from "./draw";
 import { pixelIndex, pixelName } from "./draw";
 import { isLine, type Picture, type Shape } from "./picture";
 
-/** What a shape inherits from the groups around it. */
 interface Inherited {
   fill: string;
   stroke: string | undefined;
@@ -21,28 +13,25 @@ interface Inherited {
   select: string | undefined;
 }
 
-/** The page's ink and fonts. */
 interface Page {
   ink: string;
   sans: string;
   mono: string;
 }
 
-/** A shape the pointer can find: its outline where it was drawn. */
 interface Hit {
   path: Path2D;
   matrix: DOMMatrix;
   fill: boolean;
-  /** The stroke's width, or 0 when it has none. */
+
   stroke: number;
-  /** Its bounds on the canvas, in device pixels, or null when unknown. */
+
   box: [number, number, number, number] | null;
   title: string | undefined;
   select: string | undefined;
   image?: { x: number; y: number; width: number; height: number; columns: number; rows: number };
 }
 
-/** The most device pixels a picture's canvas holds. */
 const MOST_PIXELS = 16 * 1024 * 1024;
 
 type Text = Extract<Shape, { type: "text" }>;
@@ -62,7 +51,6 @@ const ALIGN: Record<NonNullable<Text["anchor"]>, CanvasTextAlign> = {
   end: "right",
 };
 
-/** The picture as a canvas, scaled to fit its container like the SVG. */
 export function buildCanvas(picture: Picture, tip: Tip, onSelect?: OnSelect): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.classList.add("picture");
@@ -114,7 +102,6 @@ export function buildCanvas(picture: Picture, tip: Tip, onSelect?: OnSelect): HT
     paint(pen, shape, root, page, hits);
   }
 
-  /** The topmost shape under a pointer event, and where on the canvas. */
   const find = (event: MouseEvent): { hit: Hit; x: number; y: number } | null => {
     const rect = canvas.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) {
@@ -178,7 +165,6 @@ export function buildCanvas(picture: Picture, tip: Tip, onSelect?: OnSelect): HT
   return canvas;
 }
 
-/** Whether a point is in or near a shape's bounds. */
 function near(hit: Hit, x: number, y: number): boolean {
   if (hit.box === null) {
     return true;
@@ -188,7 +174,6 @@ function near(hit: Hit, x: number, y: number): boolean {
   return x >= left - slack && x <= right + slack && y >= top - slack && y <= bottom + slack;
 }
 
-/** The device-pixel bounds of a local box under the pen's transform. */
 function bounds(matrix: DOMMatrix, left: number, top: number, right: number, bottom: number) {
   const corners = [
     matrix.transformPoint(new DOMPoint(left, top)),
@@ -236,7 +221,7 @@ function paint(
     return;
   }
   pen.globalAlpha = own.alpha;
-  // Before any shape strokes, text included, so none keeps the last one's.
+
   pen.setLineDash(own.dash ?? []);
   const matrix = pen.getTransform();
   const lined = isLine(shape);
@@ -398,7 +383,6 @@ function paint(
   }
 }
 
-/** What an image shape paints, and its size in pixels. */
 function imageSource(
   shape: Extract<Shape, { type: "image" }>,
 ): { image: CanvasImageSource; columns: number; rows: number } | null {

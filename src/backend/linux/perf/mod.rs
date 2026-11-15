@@ -1,11 +1,3 @@
-//! Sampling processes with perf events, from outside them: no ptrace and
-//! no code in the program. One event per CPU follows a process and every
-//! thread and child it starts, and writes its samples to that CPU's ring.
-//! A second, which samples nothing, writes what the process maps and names,
-//! its threads' lifetimes, and their context switches to the same ring: the
-//! kernel counts what each event loses, so the samples lost are counted
-//! apart from the rest.
-
 pub mod decode;
 pub mod jit;
 mod lease;
@@ -23,39 +15,28 @@ use nix::libc;
 
 use super::modules::{ModuleMapping, identify_mapped_module};
 
-/// What makes a sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    /// Every `period` of CPU time the program's threads spend in user code.
     Clock { period: Duration },
 
-    /// Counts every execution at `address`, sampling every `period` hits.
     Breakpoint { address: u64, period: u64 },
 
-    /// No samples: only what the program maps, and its threads.
     Mappings,
 }
 
-/// How events sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventOptions {
     pub source: Source,
 
-    /// Bytes of stack each sample copies, a multiple of eight.
     pub stack_bytes: u32,
 
-    /// Sample kernel CPU time as well as user CPU time.
     pub kernel: bool,
 
-    /// Data pages of each ring, a power of two.
     pub ring_pages: usize,
 
-    /// Whether the rings also say each time a thread leaves its CPU and
-    /// comes back.
     pub switches: bool,
 }
 
-/// Why events could not be opened.
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
     #[error(
@@ -94,92 +75,57 @@ pub enum OpenError {
     },
 }
 
-/// One event per online CPU, each with its ring.
 #[derive(Debug)]
 pub struct Events {
     rings: Vec<sys::Ring>,
     pages: usize,
 
-    /// Collection of sampled records stays separate from symbol loading
-    /// and unwinding.
     buffered: Option<Mutex<Queue>>,
 
-    /// Clock sampling can pause at the queue limit. Breakpoint counters
-    /// must stay on, even when their sample records cannot all be kept.
     pause_on_full: bool,
 
-    /// How much the reader holds for processing before it turns sampling
-    /// off: [`QUEUE_BYTES`] but in tests.
     queue_bytes: usize,
 
-    /// Samples the reader kept only the top of the stack copy of, while
-    /// processing was behind.
     shortened: AtomicU64,
 
-    /// How long the reader sleeps when no ring wakes it.
     reader_wait: Duration,
     reader_cpu: AtomicU64,
 
-    /// The CPU of each ring, in their order.
     cpus: Vec<u32>,
 
-    /// Sampling events that write to the rings of others on their CPUs.
     followers: Vec<OwnedFd>,
 
-    /// The events that write every record but samples, each to the ring
-    /// of its CPU; none where the events sample nothing.
     sideband: Vec<OwnedFd>,
 
-    /// Whether the sampling events are on.
     gate: Mutex<Gate>,
 
-    /// The ring memory a test build leased, let go after the rings are.
     _lease: lease::Lease,
 }
 
-/// The reader holds at most this much for processing before it
-/// turns sampling off until processing takes it.
 const QUEUE_BYTES: usize = 64 * 1024 * 1024;
 
-/// The bytes of stack the reader keeps of each sample once its queue is
-/// three quarters full: as much as recording copies where the kernel's
-/// frame-pointer chain carries a stack on.
 const SHORT_STACK_BYTES: usize = 512;
 
-/// The bytes of each block the reader fills, unless rings are so large
-/// that a block holds fewer than four of their drains.
 const BLOCK_BYTES: usize = 4 * 1024 * 1024;
 
-/// Emptied blocks the reader keeps to fill again: as many as a full queue.
 const FREE_BLOCKS: usize = QUEUE_BYTES / BLOCK_BYTES;
 
-/// Records drained from the rings, in blocks filled one after another,
-/// and emptied blocks to fill again. A drain hands its filled blocks on
-/// rather than copying them, and takes back those emptied since.
 #[derive(Debug, Default)]
 pub struct Blocks {
     pub filled: Vec<Vec<u8>>,
     pub emptied: Vec<Vec<u8>>,
 }
 
-/// What the reader holds for processing.
 #[derive(Debug, Default)]
 struct Queue {
-    /// Blocks of records in the order the reader filled them: each holds
-    /// whole records, and the last is still filling.
     blocks: Vec<Vec<u8>>,
 
-    /// The bytes they hold.
     bytes: usize,
 
-    /// Emptied blocks to fill again.
     free: Vec<Vec<u8>>,
 }
 
 impl Queue {
-    /// The block to append up to `room` bytes to without its growing, so
-    /// that no record spans two blocks and none is copied twice: the last,
-    /// if it has the room, else a fresh one of `block` bytes.
     #[expect(
         clippy::indexing_slicing,
         reason = "a block is pushed when there is none, so the last exists"
@@ -201,7 +147,6 @@ impl Queue {
         &mut self.blocks[last]
     }
 
-    /// Appends `ring`'s new records, at most `room` bytes, to the blocks.
     fn drain_ring(&mut self, ring: &sys::Ring, room: usize, block: usize) {
         let into = self.room(room, block);
         let (at, capacity) = (into.as_ptr(), into.capacity());
@@ -213,7 +158,6 @@ impl Queue {
         self.bytes += drained;
     }
 
-    /// Takes back `emptied` blocks to fill again, as many as are kept.
     fn take_back(&mut self, emptied: &mut Vec<Vec<u8>>) {
         for mut block in emptied.drain(..) {
             if self.free.len() < FREE_BLOCKS {
@@ -223,8 +167,6 @@ impl Queue {
         }
     }
 
-    /// Hands every block of records on to `filled`, keeping the empty ones
-    /// to fill again, and returns the bytes handed on.
     fn hand_on(&mut self, filled: &mut Vec<Vec<u8>>) -> usize {
         for block in self.blocks.drain(..) {
             if block.is_empty() {
@@ -237,39 +179,26 @@ impl Queue {
     }
 }
 
-/// What holds the sampling events off. Each holds and lets go on its own,
-/// and sampling is on while none holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hold {
-    /// The budget pauses sampling between the shares of its periods.
     Budget,
 
-    /// A stopped snapshot reads the program.
     Snapshot,
 
-    /// The reader is behind, its queue full.
     Behind,
 
-    /// The recording ended, for good.
     Ended,
 }
 
-/// Which [`Hold`]s are in force. The sideband stays on through all but the
-/// end, so that no mapping, thread, or context switch is missed.
 #[derive(Debug, Default)]
 struct Gate {
-    /// One bit per hold in force.
     held: u8,
 
-    /// Since when the reader has been behind, and each earlier span it
-    /// was, not yet taken.
     behind: Option<u64>,
     spans: Vec<(u64, u64)>,
 }
 
 impl Gate {
-    /// `who` holds sampling off, or lets go, at `now`: whether the sampling
-    /// events turn on or off, if either.
     fn hold(&mut self, who: Hold, held: bool, now: u64) -> Option<bool> {
         debug_assert_ne!(self.holds(who), held, "{who:?} held or let go twice");
         debug_assert!(
@@ -295,9 +224,6 @@ impl Gate {
         self.held & 1 << who as u8 != 0
     }
 
-    /// Each span the reader was behind that no earlier call took. A span
-    /// still going ends at `until` if given, and is otherwise left for
-    /// later.
     fn take_spans(&mut self, until: Option<u64>) -> Vec<(u64, u64)> {
         if let Some(until) = until
             && let Some(since) = self.behind.take()
@@ -309,23 +235,14 @@ impl Gate {
     }
 }
 
-/// What the reader does on one pass, with `queued` bytes held for
-/// processing of at most `limit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pass {
-    /// Wait for processing to take some. Breakpoints keep counting
-    /// meanwhile, and the kernel counts the samples the rings cannot hold.
     Wait,
 
-    /// Drain the rings, behind or not, keeping only the top of each
-    /// sample's stack copy when `shorten`.
     Drain { behind: bool, shorten: bool },
 }
 
 impl Pass {
-    /// A clock's sampling can pause at a full queue, whose samples
-    /// `shortens` says can be cut short as it nears full. Breakpoints
-    /// cannot pause, or they would lose counts.
     const fn of(queued: usize, limit: usize, pause_on_full: bool, shortens: bool) -> Self {
         let full = queued >= limit;
         if full && !pause_on_full {
@@ -339,38 +256,25 @@ impl Pass {
     }
 }
 
-/// What a recording's events counted and lost.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// What the sampling events counted, in their source's units.
     pub counted: u64,
 
-    /// Samples the rings had no room for.
     pub lost_samples: u64,
 
-    /// Other records the rings had no room for: mappings, names, threads,
-    /// and context switches.
     pub lost_records: u64,
 
-    /// Times a ring's head could not be trusted.
     pub untrusted: u64,
 
-    /// Samples kept with only the top of their stack copy while processing
-    /// was behind.
     pub shortened: u64,
 }
 
-/// The fields of each record a BPF program writes through an [`Output`],
-/// in the kernel's order: those of a sample's that come first, then the
-/// program's bytes.
 pub const OUTPUT_SAMPLE_TYPE: u64 = sys::sample::IDENTIFIER
     | sys::sample::TID
     | sys::sample::TIME
     | sys::sample::CPU
     | sys::sample::RAW;
 
-/// A CPU's BPF output event, which writes to that CPU's ring, and its
-/// identifier, which each of its records begins with.
 #[derive(Debug)]
 pub struct Output {
     pub cpu: u32,
@@ -378,9 +282,6 @@ pub struct Output {
     pub id: u64,
 }
 
-/// The most bytes a sample of `stack_bytes` can take: its fixed fields,
-/// the deepest chain with its context markers, every register, and the
-/// stack with its sizes.
 const fn max_sample_bytes(stack_bytes: u32) -> usize {
     const FIXED: usize = 8 * 8;
     const CHAIN: usize = 8 * (1 + 127 + 8);
@@ -388,9 +289,6 @@ const fn max_sample_bytes(stack_bytes: u32) -> usize {
     FIXED + CHAIN + REGISTERS + 16 + stack_bytes as usize
 }
 
-/// The fewest data pages, a power of two, that hold two of the largest
-/// samples: a ring that holds none would lose every sample, and one that
-/// holds a single sample loses the next before it can be drained.
 fn min_pages(stack_bytes: u32) -> usize {
     (2 * max_sample_bytes(stack_bytes))
         .div_ceil(sys::page_size())
@@ -398,16 +296,12 @@ fn min_pages(stack_bytes: u32) -> usize {
 }
 
 impl Events {
-    /// Opens disabled events for `pid`, its threads, and its children,
-    /// which enable themselves when it next executes a program.
     pub fn open(pid: u32, options: &EventOptions) -> Result<Self, OpenError> {
         let cpus = online_cpus().map_err(OpenError::Cpus)?;
         let leased = Leased::take(options, cpus.len());
         Self::open_leased(pid, options, leased)
     }
 
-    /// Opens events as [`Events::open`] does, in rings of at most the
-    /// pages `leased` holds.
     fn open_leased(pid: u32, options: &EventOptions, leased: Leased) -> Result<Self, OpenError> {
         let start = sys::flag::DISABLED | sys::flag::ENABLE_ON_EXEC;
         let pid = i32::try_from(pid).map_err(|_| OpenError::Cpus(std::io::Error::other("pid")))?;
@@ -439,25 +333,16 @@ impl Events {
         })
     }
 
-    /// Opens events for every thread of the running process `pid`, which
-    /// follow every thread and child each starts after, into one ring per
-    /// CPU. A thread needs an event on each CPU, so the events number its
-    /// threads times its CPUs; past `budget` the attach is refused, rather
-    /// than leaving threads unsampled.
     pub fn attach(pid: u32, options: &EventOptions, budget: usize) -> Result<Self, OpenError> {
         let cpus = online_cpus().map_err(OpenError::Cpus)?;
         Self::attach_on(pid, options, budget, &cpus)
     }
 
-    /// Attaches as [`Self::attach`] does, with the sampling events disabled
-    /// until [`Self::enable`]; every other record is written from the start.
     fn attach_held(pid: u32, options: &EventOptions, budget: usize) -> Result<Self, OpenError> {
         let cpus = online_cpus().map_err(OpenError::Cpus)?;
         Self::attach_starting(pid, options, budget, &cpus, sys::flag::DISABLED)
     }
 
-    /// Attaches as [`Self::attach`] does, with events only on `cpus`: a
-    /// process kept to them needs no ring on any other.
     pub fn attach_on(
         pid: u32,
         options: &EventOptions,
@@ -467,8 +352,6 @@ impl Events {
         Self::attach_starting(pid, options, budget, cpus, 0)
     }
 
-    /// Attaches as [`Self::attach_on`] does, with the sampling events
-    /// opened with `start`'s flags.
     fn attach_starting(
         pid: u32,
         options: &EventOptions,
@@ -483,8 +366,6 @@ impl Events {
         let mut opened = std::collections::BTreeSet::new();
         let mut owner = None;
 
-        // A thread may start another before its own events open, so the
-        // threads are listed again until no new one appears.
         loop {
             let threads = threads(pid).map_err(OpenError::NoProcess)?;
             let new: Vec<u32> = threads
@@ -510,7 +391,6 @@ impl Events {
                 let thread = i32::try_from(tid).unwrap_or(i32::MAX);
 
                 let Some(events) = owner.as_mut() else {
-                    // The first thread's events own the rings.
                     let leased = Leased::take(options, cpus.len());
                     match rings(attr, thread, cpus, options, leased) {
                         Ok((rings, pages, watermark, lease)) => {
@@ -560,9 +440,6 @@ impl Events {
         Ok(events)
     }
 
-    /// Opens `thread`'s events on each of `cpus`, and its `sideband`
-    /// events if any, into the rings already open there. A thread that
-    /// has exited has none.
     fn follow(
         &mut self,
         attr: &sys::Attr,
@@ -592,14 +469,10 @@ impl Events {
         Ok(())
     }
 
-    /// Data pages each ring has.
     pub const fn pages(&self) -> usize {
         self.pages
     }
 
-    /// Runs the BPF program `program` as each event, and each event a
-    /// thread inherits from one later, takes a sample, before the kernel
-    /// writes it.
     pub fn run_program(&self, program: std::os::fd::BorrowedFd<'_>) -> std::io::Result<()> {
         for fd in self.rings.iter().map(sys::Ring::fd).chain(&self.followers) {
             sys::set_bpf(fd, program)?;
@@ -608,9 +481,6 @@ impl Events {
         Ok(())
     }
 
-    /// Opens a BPF output event on each CPU that writes to that CPU's
-    /// ring, so that what a program writes through it lies beside the
-    /// samples it is written for.
     pub fn outputs(&self) -> Result<Vec<Output>, OpenError> {
         let attr = sys::Attr {
             size: sys::ATTR_SIZE,
@@ -638,9 +508,6 @@ impl Events {
             .collect()
     }
 
-    /// Appends every ring's new records to `out`, a ring's whole records
-    /// at a time, and returns how many bytes: a copy of what
-    /// [`Self::drain_blocks`] hands on.
     pub fn drain(&self, out: &mut Vec<u8>) -> usize {
         if self.buffered.is_none() {
             let before = out.len();
@@ -665,9 +532,6 @@ impl Events {
         drained
     }
 
-    /// Hands every ring's new records on in `blocks.filled`, after what the
-    /// reader holds, each block whole records, and returns how many bytes.
-    /// The blocks of `blocks.emptied` are taken back to fill again.
     pub fn drain_blocks(&self, blocks: &mut Blocks) -> usize {
         let (block, ring_bytes) = (self.block_bytes(), self.pages * sys::page_size());
         let Some(queue) = &self.buffered else {
@@ -681,8 +545,6 @@ impl Events {
             return drained;
         };
 
-        // Keep the queue locked through this drain so a worker cannot put
-        // older records behind the records collected here, including at exit.
         let mut queue = queue
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -693,23 +555,10 @@ impl Events {
         queue.hand_on(&mut blocks.filled)
     }
 
-    /// The bytes of each block the reader fills: room for four of the
-    /// largest drains of a ring, and at least [`BLOCK_BYTES`].
     fn block_bytes(&self) -> usize {
         (4 * self.pages * sys::page_size()).max(BLOCK_BYTES)
     }
 
-    /// Drains sampled records while `work` processes previous records.
-    /// Once the queue is three quarters full, so that sampling would soon
-    /// stop, each clock sample keeps only the
-    /// top [`SHORT_STACK_BYTES`] of its stack copy, and the kernel's
-    /// frame-pointer chain carries its stack on from there. Once the queue
-    /// holds [`QUEUE_BYTES`] even so, clock sampling is off until
-    /// processing takes it, so that the kernel need not drop samples for
-    /// want of room. The rings are still drained meanwhile, of the samples
-    /// in flight and the sideband's records. [`Self::behind`] says when.
-    /// Breakpoints keep counting instead: collection waits for room in the
-    /// queue, and the kernel counts any samples the rings cannot hold.
     pub fn read_while<R>(&self, work: impl FnOnce() -> R) -> R {
         let Some(queue) = &self.buffered else {
             return work();
@@ -720,9 +569,6 @@ impl Events {
         std::thread::scope(|scope| {
             let reader = scope.spawn(|| {
                 let began = sys::thread_cpu();
-                // The sampling events, whose samples a busy queue keeps only
-                // the top of the stack of. Breakpoint samples omit their
-                // period, and are kept whole.
                 let sampling: Vec<u64> = if self.pause_on_full {
                     self.rings
                         .iter()
@@ -750,19 +596,14 @@ impl Events {
                     } = pass
                     else {
                         drop(queue);
-                        // A full ring is readable at once, so polling it
-                        // here would spin until processing takes the queue.
                         std::thread::sleep(self.reader_wait);
                         continue;
                     };
                     self.fall_behind(now_behind);
                     if shorten {
-                        // Processing is behind, so a sample keeps only the
-                        // top of its stack, rather than sampling stop.
                         for ring in &self.rings {
                             drained.clear();
                             ring.drain(&mut drained);
-                            // Shortening never lengthens a record.
                             let into = queue.room(drained.len(), block);
                             let before = into.len();
                             let shortened = decode::shorten_stacks(
@@ -799,7 +640,6 @@ impl Events {
         })
     }
 
-    /// Holds sampling off while the reader is `behind`.
     fn fall_behind(&self, behind: bool) {
         let mut gate = self
             .gate
@@ -819,10 +659,6 @@ impl Events {
         }
     }
 
-    /// Each span sampling was off because the reader was behind, in
-    /// `CLOCK_MONOTONIC` nanoseconds, that no earlier call took. A span
-    /// still going ends at `until` if given, and is otherwise left for
-    /// later.
     pub fn behind(&self, until: Option<u64>) -> Vec<(u64, u64)> {
         self.gate
             .lock()
@@ -830,28 +666,20 @@ impl Events {
             .take_spans(until)
     }
 
-    /// Makes the queue full at `bytes`, so that a test fills it in a few
-    /// drains rather than racing the program for over a hundred.
     #[cfg(test)]
     pub(crate) const fn set_queue_bytes(&mut self, bytes: usize) {
         debug_assert!(bytes <= QUEUE_BYTES);
         self.queue_bytes = bytes;
     }
 
-    /// CPU time spent collecting on the reader.
     pub fn reader_cpu(&self) -> Duration {
         Duration::from_nanos(self.reader_cpu.load(Ordering::Relaxed))
     }
 
-    /// How many times a ring's head could not be trusted, so that the ring
-    /// skipped what it would have read.
     pub fn untrusted(&self) -> u64 {
         self.rings.iter().map(sys::Ring::untrusted).sum()
     }
 
-    /// Waits until a ring is a quarter full, or `timeout`. While a reader
-    /// takes the rings ([`Self::read_while`]), only it waits on them, and
-    /// this sleeps until what it took is due for processing.
     pub fn wait(&self, timeout: Duration) {
         if self.buffered.is_some() {
             std::thread::sleep(timeout);
@@ -860,10 +688,6 @@ impl Events {
         }
     }
 
-    /// What the events have counted and lost so far, exactly. An event
-    /// counts each record it had no room for, whatever its kind, so the
-    /// samples lost are the sampling events' losses, and the rest the
-    /// sideband's. Events that sample nothing lose only other records.
     pub fn counts(&self) -> Counts {
         let sum = |fds: &mut dyn Iterator<Item = &OwnedFd>| {
             fds.filter_map(|fd| sys::counts(fd).ok())
@@ -888,9 +712,6 @@ impl Events {
         }
     }
 
-    /// Starts every event of an attached process, and every event a thread
-    /// inherited from one, counting, and sampling unless something holds
-    /// it off. Events start once, before they stop.
     pub fn start(&self) {
         let gate = self
             .gate
@@ -907,10 +728,6 @@ impl Events {
         }
     }
 
-    /// Stops every event for good, the sideband with sampling, as the
-    /// recording ends. A pause holds only sampling off ([`Self::hold`]):
-    /// the program runs on through it, and a mapping it makes meanwhile
-    /// must still be recorded, or its module is never found.
     pub fn stop(&self) {
         let mut gate = self
             .gate
@@ -925,9 +742,6 @@ impl Events {
         }
     }
 
-    /// Holds sampling off for `who`, the budget or a stopped snapshot, or
-    /// lets go, leaving the sideband on so that no mapping or thread is
-    /// missed meanwhile. Sampling comes back on once nothing holds it.
     pub fn hold(&self, who: Hold, held: bool) {
         debug_assert!(
             matches!(who, Hold::Budget | Hold::Snapshot),
@@ -942,7 +756,6 @@ impl Events {
         }
     }
 
-    /// Starts or stops the sampling events alone.
     fn enable_sampling(&self, on: bool) {
         for fd in self.rings.iter().map(sys::Ring::fd).chain(&self.followers) {
             let _ = sys::enable(fd, on);
@@ -961,18 +774,10 @@ impl Drop for StopReader<'_> {
     }
 }
 
-/// Samples are read apart from processing at every rate: a low
-/// rate fills a ring slowly, but processing that loads a program's debug
-/// information or its code can be busy for longer than a ring lasts.
 fn collection_buffer(options: &EventOptions) -> Option<Mutex<Queue>> {
     (!matches!(options.source, Source::Mappings)).then(Mutex::default)
 }
 
-/// How long the reader sleeps unless a ring a quarter full wakes it first,
-/// so only how late records are read. Below 500 Hz the reader wakes ten
-/// times a second: waking every 2 ms at `prod`'s 49 Hz cost 0.2 to 0.3% of
-/// a CPU, and every 10 ms, with a ring for each of 32 CPUs, still a third
-/// of `prod`'s 1% budget.
 fn reader_wait(options: &EventOptions) -> Duration {
     match options.source {
         Source::Clock { period } if period > Duration::from_millis(2) => Duration::from_millis(100),
@@ -980,9 +785,6 @@ fn reader_wait(options: &EventOptions) -> Duration {
     }
 }
 
-/// The flags of the records beside the samples: what each process maps and
-/// names, its threads' lifetimes, and with `switches` their context
-/// switches.
 const fn sideband_flags(switches: bool) -> u64 {
     use sys::flag;
     flag::MMAP
@@ -993,9 +795,6 @@ const fn sideband_flags(switches: bool) -> u64 {
         | if switches { flag::CONTEXT_SWITCH } else { 0 }
 }
 
-/// The attributes of the events that own the rings: `options`' samples,
-/// and `start`'s flags. Events that sample nothing write the records
-/// beside samples themselves; otherwise [`sideband_attr`]'s do.
 fn attr(options: &EventOptions, start: u64) -> sys::Attr {
     use sys::flag;
     let mut attr = sys::Attr {
@@ -1033,7 +832,6 @@ fn attr(options: &EventOptions, start: u64) -> sys::Attr {
         }
         Source::Breakpoint { address, period } => {
             attr.kind = sys::TYPE_BREAKPOINT;
-            // PERIOD makes software-counted breakpoints sample every hit.
             if period > 1 {
                 attr.sample_type &= !sys::sample::PERIOD;
             }
@@ -1051,10 +849,6 @@ fn attr(options: &EventOptions, start: u64) -> sys::Attr {
     attr
 }
 
-/// The attributes of the events that write every record but samples into
-/// the rings, with `start`'s flags, where the rings' own events sample:
-/// a dummy event, which counts what it loses as the sampling events count
-/// theirs.
 fn sideband_attr(options: &EventOptions, start: u64) -> Option<sys::Attr> {
     use sys::flag;
     (options.source != Source::Mappings).then(|| sys::Attr {
@@ -1074,8 +868,6 @@ fn sideband_attr(options: &EventOptions, start: u64) -> Option<sys::Attr> {
     })
 }
 
-/// One event of `attr` for `pid` on each of `cpus`, each writing into the
-/// ring of its CPU among `rings`.
 fn into_rings(
     attr: &sys::Attr,
     pid: i32,
@@ -1090,21 +882,12 @@ fn into_rings(
     Ok(events)
 }
 
-/// The ring memory a test build leases before its events open
-/// ([`lease`]): the most pages each CPU's ring may have, and the lease of
-/// them. A launch leases before it forks, as its child waits at its gate
-/// until the events are open: a lease taken after could wait for another
-/// recording that waits, in turn, for that child to execute.
 struct Leased {
     pages: usize,
     lease: lease::Lease,
 }
 
 impl Leased {
-    /// The most pages `options` asks for that a lease of rings on `cpus`
-    /// CPUs is free for, halved while it is not, and at the fewest pages
-    /// that hold two samples, waited for. Rings of mappings alone open
-    /// beside a recording's leased sample rings, so they do not wait.
     fn take(options: &EventOptions, cpus: usize) -> Self {
         let fewest = min_pages(options.stack_bytes);
         let mut pages = options.ring_pages.next_power_of_two().max(fewest);
@@ -1124,15 +907,6 @@ impl Leased {
     }
 }
 
-/// One event of `attr` for `pid` on each of `cpus` with its ring, the rings'
-/// data pages, the watermark the events wake their reader at, and the
-/// lease of their memory.
-///
-/// The kernel lets a user lock only so much memory for rings, which other
-/// recordings may be using: rings that do not fit are halved, from the
-/// pages `leased` holds down to the fewest that hold two samples. Each size
-/// opens its events afresh, as they wake their reader a quarter of the way
-/// in.
 fn rings(
     mut attr: sys::Attr,
     pid: i32,
@@ -1164,7 +938,6 @@ fn rings(
     }
 }
 
-/// The threads of process `pid`.
 fn threads(pid: u32) -> std::io::Result<Vec<u32>> {
     let mut threads = Vec::new();
     for entry in std::fs::read_dir(format!("/proc/{pid}/task"))? {
@@ -1181,8 +954,6 @@ fn threads(pid: u32) -> std::io::Result<Vec<u32>> {
     Ok(threads)
 }
 
-/// Raises this process's limit on open descriptors as far as it may go,
-/// as an attach holds one per thread per CPU.
 fn raise_descriptor_limit() {
     use nix::sys::resource::{Resource, getrlimit, setrlimit};
     if let Ok((_, hard)) = getrlimit(Resource::RLIMIT_NOFILE) {
@@ -1190,7 +961,6 @@ fn raise_descriptor_limit() {
     }
 }
 
-/// One event of `attr` for `pid` on each of `cpus`.
 fn open_each(attr: &sys::Attr, pid: i32, cpus: &[u32]) -> Result<Vec<OwnedFd>, OpenError> {
     cpus.iter()
         .map(|&cpu| {
@@ -1208,7 +978,6 @@ fn open_each(attr: &sys::Attr, pid: i32, cpus: &[u32]) -> Result<Vec<OwnedFd>, O
         .collect()
 }
 
-/// The CPUs `/sys` lists online, as `0-3,8` lists them.
 fn online_cpus() -> std::io::Result<Vec<u32>> {
     let text = std::fs::read_to_string("/sys/devices/system/cpu/online")?;
     let mut cpus = Vec::new();
@@ -1226,36 +995,27 @@ fn online_cpus() -> std::io::Result<Vec<u32>> {
     Ok(cpus)
 }
 
-/// A running process sampled from outside, without stopping it.
 #[derive(Debug)]
 pub struct Attached {
     pub events: Events,
     pub process: ProcessWatch,
 }
 
-/// Says when one process exits: its identifier may name another after.
 #[derive(Debug)]
 pub struct ProcessWatch(OwnedFd);
 
 impl ProcessWatch {
-    /// Waits up to `timeout` for the process to exit, and says whether it
-    /// has.
     pub fn exited(&self, timeout: Duration) -> bool {
         sys::readable(&self.0, timeout)
     }
 }
 
-/// Samples the running process `pid` and everything it starts, within the
-/// `budget` of events [`Events::attach`] takes. When `held`, sampling waits
-/// for [`Events::enable`], as a BPF engine must be loaded onto the events
-/// first; the process's mappings and threads are followed from the start.
 pub fn attach(
     pid: u32,
     options: &EventOptions,
     budget: usize,
     held: bool,
 ) -> Result<Attached, OpenError> {
-    // Held first, so that the process the events name is the one watched.
     let process = super::native::pidfd_open(nix::unistd::Pid::from_raw(
         i32::try_from(pid).unwrap_or(i32::MAX),
     ))
@@ -1272,8 +1032,6 @@ pub fn attach(
     })
 }
 
-/// The load bias of the program process `pid` runs, from its mapping of
-/// the start of its file.
 pub fn program_bias(pid: u32) -> Option<crate::LoadBias> {
     use std::os::unix::fs::MetadataExt;
     let inode = std::fs::metadata(format!("/proc/{pid}/exe")).ok()?.ino();
@@ -1295,64 +1053,38 @@ pub fn program_bias(pid: u32) -> Option<crate::LoadBias> {
     .map(|(_, bias)| bias)
 }
 
-/// A program started for sampling.
 #[derive(Debug)]
 pub struct Launched {
     pub pid: u32,
     pub events: Events,
 
-    /// Ends with the program's exit status, once it exits.
     pub exit: JoinHandle<std::io::Result<ExitStatus>>,
 
-    /// Kills the program it was opened for and no later process given its
-    /// identifier.
     pub killer: Killer,
 
-    /// Says the program executed; it closes without a word when it failed
-    /// to, and `exit` holds why.
     pub executed: std::sync::mpsc::Receiver<()>,
 }
 
-/// Kills one launched program, and says when it has ended.
 #[derive(Debug)]
 pub struct Killer(OwnedFd);
 
 impl Killer {
-    /// Kills the program, unless it has ended already.
     pub fn kill(&self) {
-        // A program that has ended already is no failure.
         let _ = super::native::pidfd_send_signal(&self.0, super::signals::Signal::SIGKILL);
     }
 
-    /// Waits up to `timeout` for the program to exit, and says whether it
-    /// has.
     pub fn exited(&self, timeout: Duration) -> bool {
         sys::readable(&self.0, timeout)
     }
 }
 
-/// How to start the program.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaunchOptions {
-    /// Runs it at the addresses its image names, as breakpoint sources
-    /// need to know where code is before it runs.
     pub no_address_randomization: bool,
 
-    /// A seccomp filter it installs once its gate opens, which stops the
-    /// calls the ptrace engine traces.
     pub filter: Option<Vec<super::syscalls::seccomp::Instruction>>,
 }
 
-/// Starts `command` with its events open before it executes, so the first
-/// instruction of the program is sampled and nothing before it is.
-///
-/// The child waits between fork and exec until its events are open. A
-/// thread of its own spawns it, because spawning returns only after the
-/// exec, and stays to wait for its exit: the child dies with that thread.
-/// `held` runs while it waits, given its pid and its events, so that what
-/// `held` starts or attaches to the events sees it from its first
-/// instruction too; an error from `held` ends the child before it
-/// executes.
 pub fn launch(
     mut command: Command,
     options: &EventOptions,
@@ -1368,17 +1100,12 @@ pub fn launch(
     let spawner = std::thread::Builder::new()
         .name("microscope-record-child".into())
         .spawn(move || {
-            // Spawning returns once the program executes, or has failed to.
             let spawned = command.spawn();
 
-            // The child holds its own copies until it executes.
             drop((pid_write, go_read));
             let child = spawned?;
             let _ = executing.send(());
 
-            // A task snapshot traces the child from this process, which any
-            // wait for it here would take the stops of: wait for its exit
-            // alone, then reap it once no snapshot holds it (see `reaped`).
             let exit = super::native::pidfd_open(nix::unistd::Pid::from_raw(
                 i32::try_from(child.id()).unwrap_or(i32::MAX),
             ));
@@ -1393,7 +1120,6 @@ pub fn launch(
 
     let mut pid = [0_u8; 4];
     if read_exact(&pid_read, &mut pid).is_err() {
-        // The fork failed, or the child failed before it reached the gate.
         let error = match spawner.join() {
             Ok(Err(error)) => error,
             _ => std::io::Error::other("the program did not start"),
@@ -1405,11 +1131,8 @@ pub fn launch(
     let pid = u32::from_le_bytes(pid);
     record!("perf launch: {pid} waits at its gate");
 
-    // Until the gate opens the child cannot exit.
     super::reaped::REAPED.watch(pid);
 
-    // Until the gate opens the child can neither execute nor exit, so the
-    // descriptor names it and no other process.
     let killer = match super::native::pidfd_open(nix::unistd::Pid::from_raw(
         i32::try_from(pid).unwrap_or(i32::MAX),
     )) {
@@ -1426,7 +1149,6 @@ pub fn launch(
         Err(error) => {
             record!("perf launch: closing {pid}'s gate unopened: {error}");
 
-            // Closing the gate unopened ends the child before it executes.
             drop(go_write);
             let _ = spawner.join();
             return Err(LaunchError::Events(error));
@@ -1452,12 +1174,8 @@ pub fn launch(
     })
 }
 
-/// How long after finding its child reaped a launch waits for the thread
-/// that reaped it to leave its status.
 const REAPED_PATIENCE: Duration = Duration::from_secs(5);
 
-/// Reaps `child`, or takes its status from the thread of this process that
-/// reaped it first.
 fn reap(mut child: std::process::Child) -> std::io::Result<std::process::ExitStatus> {
     use std::os::unix::process::ExitStatusExt as _;
     let pid = child.id();
@@ -1508,7 +1226,6 @@ fn gate(
     [pid_write, go_read, go_write]: [&OwnedFd; 3],
     launch: &LaunchOptions,
 ) {
-    // Built before the fork: the child may not allocate.
     let filter = launch
         .filter
         .as_ref()
@@ -1529,9 +1246,6 @@ fn gate(
     );
 }
 
-/// The vDSO's image, read from this process's own memory, and the address
-/// it is linked at. The kernel maps the one image it holds into every
-/// 64-bit process, so this is every recorded program's vDSO too.
 pub fn own_vdso() -> Option<(Vec<u8>, u64)> {
     let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
     let range = super::vdso::vdso_mapping(&maps)?;
@@ -1547,18 +1261,10 @@ pub fn own_vdso() -> Option<(Vec<u8>, u64)> {
     Some((image.data, link.get()))
 }
 
-/// Whether an executable mapping is the vDSO's.
 pub fn is_vdso(mmap: &decode::Mmap<'_>) -> bool {
     mmap.executable && mmap.path == super::vdso::VDSO_NAME.as_bytes()
 }
 
-/// A file to read an executable mapping's image from, and the image's load
-/// bias, if one is still the file mapped.
-///
-/// The file is the mapped path, or the same path in the process's own root
-/// where the process sees other mounts, as in a container. A file deleted
-/// since is still the process's: its mapping's link in `map_files`, which
-/// needs privileges, or for the program itself, its `exe`.
 pub fn identify(mmap: &decode::Mmap<'_>) -> Option<(PathBuf, crate::LoadBias)> {
     use std::os::unix::ffi::OsStrExt;
     if !mmap.executable || !mmap.path.starts_with(b"/") || jit::is_anonymous_code(mmap) {
@@ -1595,7 +1301,6 @@ pub fn identify(mmap: &decode::Mmap<'_>) -> Option<(PathBuf, crate::LoadBias)> {
     })
 }
 
-/// One line of a process's memory map.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mapped {
     pub start: u64,
@@ -1604,14 +1309,10 @@ pub struct Mapped {
     pub inode: u64,
     pub executable: bool,
 
-    /// Whether the process may write it, as a JIT compiler's code.
     pub writable: bool,
     pub path: Vec<u8>,
 }
 
-/// The executable mappings of process `pid` now, which the records of an
-/// attach began after. Anonymous ones are named `//anon`, as perf's
-/// records name them.
 pub fn mappings(pid: u32) -> std::io::Result<Vec<Mapped>> {
     let maps = std::fs::read(format!("/proc/{pid}/maps"))?;
     let mut mappings = Vec::new();
@@ -1644,7 +1345,6 @@ pub fn mappings(pid: u32) -> std::io::Result<Vec<Mapped>> {
             .ok()
             .and_then(|inode| inode.parse().ok());
 
-        // Anonymous code, as perf's records name it.
         let path = if path.is_empty() { b"//anon" } else { path };
         if executable {
             mappings.push(Mapped {
@@ -1662,11 +1362,6 @@ pub fn mappings(pid: u32) -> std::io::Result<Vec<Mapped>> {
     Ok(mappings)
 }
 
-/// The executable mapping of process `pid` that holds `address`, as
-/// [`mappings`] lists it. The kernel is asked about that one address where
-/// it can be: a JIT compiler's process maps tens of thousands of regions,
-/// and writing out its whole map took up to 60 ms each time V8 mapped
-/// new code.
 pub fn mapping_at(pid: u32, address: u64) -> std::io::Result<Option<Mapped>> {
     let maps = std::fs::File::open(format!("/proc/{pid}/maps"))?;
     match sys::executable_vma(&maps, address) {
@@ -1690,15 +1385,10 @@ pub fn mapping_at(pid: u32, address: u64) -> std::io::Result<Option<Mapped>> {
     }
 }
 
-/// Whether `mapping` is anonymous code, which no file backs: a JIT
-/// compiler's, or a copy a runtime made of a module's code.
 pub fn is_anonymous(mapping: &Mapped) -> bool {
     mapping.inode == 0 && (mapping.path == b"//anon" || mapping.path.starts_with(b"[anon:"))
 }
 
-/// The range of one of `sources`' code that process `pid`'s anonymous
-/// code at `range` begins with a copy of, if any, read from the running
-/// process (see [`crate::unwind::code_copies`]).
 pub fn copy_of<K: Copy>(
     pid: u32,
     range: &std::ops::Range<u64>,
@@ -1706,7 +1396,6 @@ pub fn copy_of<K: Copy>(
 ) -> Option<crate::unwind::code_copies::Proven<K, ()>> {
     use crate::unwind::code_copies::{PROBE, compare_bytes, prove};
 
-    /// How much of a copy is compared at once.
     const CHUNK: usize = 256 * 1024;
 
     let mut read = |address: u64, length: usize| {
@@ -1724,10 +1413,6 @@ pub fn copy_of<K: Copy>(
     prove(range, sources, &mut probe, &mut compare)
 }
 
-/// The ranges of the image `info` describes, loaded as `loaded` over
-/// `mapped`, that a runtime it carries says process `pid` keeps its own
-/// code in, where no symbol bounds it, as V8's builtins in a stripped
-/// libnode, where a copy of them may begin.
 pub fn stored_code(
     pid: u32,
     info: &crate::debug_info::DebugInfo,
@@ -1737,10 +1422,6 @@ pub fn stored_code(
     stored_code_of(&code_keepers(info), pid, loaded, mapped)
 }
 
-/// The runtimes the image `info` describes carries that may keep code of
-/// their own in a process, for [`stored_code_of`]. Detecting them reads
-/// the image's symbols, so a caller that asks of one image often keeps
-/// them.
 pub fn code_keepers(
     info: &crate::debug_info::DebugInfo,
 ) -> Vec<std::sync::Arc<dyn crate::runtime_model::RuntimeModel>> {
@@ -1757,7 +1438,6 @@ pub fn code_keepers(
         .collect()
 }
 
-/// [`stored_code`], with the runtimes [`code_keepers`] found in the image.
 pub fn stored_code_of(
     keepers: &[std::sync::Arc<dyn crate::runtime_model::RuntimeModel>],
     pid: u32,
@@ -1781,8 +1461,6 @@ pub fn stored_code_of(
         .collect()
 }
 
-/// Reads process `pid`'s memory at `address` into `buffer`, from outside
-/// it: how many bytes it read, which a mapping's end may cut short.
 pub fn read_memory(pid: u32, address: u64, buffer: &mut [u8]) -> std::io::Result<usize> {
     let remote = [nix::sys::uio::RemoteIoVec {
         base: usize::try_from(address).map_err(std::io::Error::other)?,
@@ -1797,17 +1475,7 @@ pub fn read_memory(pid: u32, address: u64, buffer: &mut [u8]) -> std::io::Result
     .map_err(std::io::Error::from)
 }
 
-/// Fills each of `reads`' buffers from process `pid`'s memory at its
-/// address, from outside it, in as few system calls as it can: whether
-/// each was filled whole.
-///
-/// The kernel reads the buffers in order and stops at the first it cannot
-/// fill whole, filling none of it (`process_vm_readv(2)`: it never splits
-/// one), so each call fills a run of them; the one that ended the run is
-/// not filled, and the rest are read on from the one after it. A failure
-/// other than a fault, as of a process that is gone, fills none.
 pub fn read_memory_each(pid: u32, reads: &mut [(crate::VirtualAddress, &mut [u8])]) -> Vec<bool> {
-    // The most buffers one call takes (`UIO_MAXIOV`).
     const MOST: usize = 1024;
     let mut filled = vec![false; reads.len()];
     let mut next = 0;
@@ -1853,8 +1521,6 @@ pub fn read_memory_each(pid: u32, reads: &mut [(crate::VirtualAddress, &mut [u8]
             *slot = true;
         }
         next += whole;
-        // The buffer that ended the run, unless the call took all it was
-        // given.
         if next < end {
             next += 1;
         }
@@ -1862,7 +1528,6 @@ pub fn read_memory_each(pid: u32, reads: &mut [(crate::VirtualAddress, &mut [u8]
     filled
 }
 
-/// Writes `bytes` to process `pid`'s memory at `address`, from outside it.
 pub fn write_memory(pid: u32, address: u64, bytes: &[u8]) -> std::io::Result<()> {
     let remote = [nix::sys::uio::RemoteIoVec {
         base: usize::try_from(address).map_err(std::io::Error::other)?,
@@ -1880,16 +1545,11 @@ pub fn write_memory(pid: u32, address: u64, bytes: &[u8]) -> std::io::Result<()>
     }
 }
 
-/// Whether the kernel keeps time by the time-stamp counter, which it does
-/// only where the counter is invariant and synchronized across CPUs, so
-/// that every thread's counter is one clock.
 pub fn tsc_is_the_clock() -> bool {
     std::fs::read_to_string("/sys/devices/system/clocksource/clocksource0/current_clocksource")
         .is_ok_and(|source| source.trim() == "tsc")
 }
 
-/// The time-stamp counter and `CLOCK_MONOTONIC` at one moment: the
-/// closest of a few readings of the counter between two of the clock.
 pub fn tsc_anchor() -> (u64, u64) {
     let monotonic = || {
         nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC).map_or(0, |time| {
@@ -1917,9 +1577,6 @@ pub fn tsc_anchor() -> (u64, u64) {
 mod tests {
     use super::*;
 
-    /// A full queue makes the reader wait for a breakpoint, which must keep
-    /// counting, and fall behind for a clock, whose sampling turns off. A
-    /// clock's samples are cut short from three quarters full on.
     #[test]
     fn a_full_queue_pauses_a_clocks_sampling_but_never_a_breakpoints() {
         const LIMIT: usize = 64;
@@ -1937,10 +1594,8 @@ mod tests {
         assert_eq!(clock(LIMIT - 1), drain(false, true));
         assert_eq!(clock(LIMIT), drain(true, true));
 
-        // Samples whose events cannot be told apart are kept whole.
         assert_eq!(Pass::of(LIMIT, LIMIT, true, false), drain(true, false));
 
-        // Every source that samples is read apart from processing.
         let queued = |source| {
             let options = EventOptions {
                 source,
@@ -1960,11 +1615,6 @@ mod tests {
         assert!(!queued(Source::Mappings));
     }
 
-    /// Sampling is on while nothing holds it off. A stopped snapshot inside
-    /// a budget pause leaves it off, a reader behind outlasts a budget
-    /// pause and is outlasted by one, and nothing turns it back on once the
-    /// recording ended. Each span the reader was behind is taken once, and
-    /// one still going when the recording ends ends there.
     #[test]
     fn sampling_is_on_while_nothing_holds_it_off() {
         use Hold::{Behind, Budget, Ended, Snapshot};
@@ -2022,8 +1672,6 @@ mod tests {
         );
         assert_eq!(gate.take_spans(None), [(70, 90), (120, 140), (150, 170)]);
 
-        // A span still going when the recording takes them ends there, and
-        // the reader catching up after adds none.
         let mut gate = Gate::default();
         assert_eq!(gate.hold(Behind, true, 10), Some(false));
         assert_eq!(gate.take_spans(None), []);
@@ -2033,8 +1681,6 @@ mod tests {
         assert_eq!(gate.take_spans(Some(50)), []);
     }
 
-    /// The end of a readable mapping of this process with nothing mapped
-    /// just past it.
     fn mapping_end() -> u64 {
         let maps = std::fs::read_to_string("/proc/self/maps").expect("read maps");
         let ranges: Vec<(u64, u64, bool)> = maps
@@ -2056,10 +1702,6 @@ mod tests {
             .expect("a readable mapping with a gap after it")
     }
 
-    /// The kernel's answer for one address is the line of the whole map
-    /// that holds it, and memory that is not code has none. The vsyscall
-    /// page is listed but is no region of the process, so the kernel does
-    /// not find it, and no program's own code is there.
     #[test]
     fn the_mapping_at_an_address_is_its_line_of_the_map() {
         let pid = std::process::id();
@@ -2082,8 +1724,6 @@ mod tests {
         );
     }
 
-    /// Errors print with their chain of causes, so one whose message names
-    /// its cause must not also report it as its source.
     #[test]
     fn open_errors_name_their_cause_once() {
         let cause = || std::io::Error::from_raw_os_error(libc::EINVAL);
@@ -2105,11 +1745,6 @@ mod tests {
         }
     }
 
-    /// A ring never drained fills at once and loses the rest. A program
-    /// that switches threads far more often than its CPU time makes
-    /// samples loses many more records than it could samples, and the
-    /// samples counted lost are only those its CPU time allowed: about the
-    /// 50 ms it spins in its own code once its threads stop switching.
     #[test]
     fn a_full_ring_counts_the_samples_it_lost_apart_from_other_records() {
         const PERIOD_NS: u64 = 1_000_000;
@@ -2139,27 +1774,17 @@ mod tests {
         assert!(status.success(), "{status}");
 
         let counts = launched.events.counts();
-        // Each event's count is sampled once a whole period of it passes,
-        // so each CPU's event may hold one period's part over.
         let possible = counts.counted / PERIOD_NS + launched.events.cpus.len() as u64;
         assert!(
             (1..=possible).contains(&counts.lost_samples),
             "lost {counts:?}, but {possible} samples were possible"
         );
-        // Each of 20,000 rounds switches each thread out and in.
         assert!(
             counts.lost_records > 10 * possible,
             "lost {counts:?}, though the ring was never read"
         );
     }
 
-    /// A reader whose processing never takes what it reads keeps sampling
-    /// on, and once its queue is three quarters full keeps only the top of each
-    /// sample's stack copy, where the chain the kernel walked begins: so a
-    /// recorder busy loading a large program's debug information misses
-    /// none of what it runs meanwhile. Eight threads spinning for 750 ms
-    /// at 1 kHz, each sample copying 64 KiB of stack, would fill the 64 MiB
-    /// queue in about 125 ms of their CPU time.
     #[test]
     fn a_reader_that_falls_behind_shortens_stacks_instead_of_pausing_sampling() {
         let (events, exit) = spin_with_deep_copies();
@@ -2169,20 +1794,10 @@ mod tests {
             .expect("the program exits");
         assert!(status.success(), "{status}");
 
-        // What a reader loses when every CPU is busy beside it depends on
-        // the machine; the pass it makes is tested in
-        // `a_full_queue_pauses_a_clocks_sampling_but_never_a_breakpoints`.
         let counts = events.counts();
         assert_eq!(events.behind(Some(sys::monotonic())), []);
-        // About 750 deep samples fill the queue to three quarters, and
-        // every one after them is cut short. A machine every test shares
-        // gave the program a quarter of its 6 s of CPU, for 1600 samples,
-        // so how many were cut short is the machine's to say: only that
-        // some were.
         assert!(counts.shortened > 0, "{counts:?}");
 
-        // The queue is handed on in blocks, each of whole records, whether
-        // the reader kept them whole or shortened them.
         let mut blocks = Blocks::default();
         events.drain_blocks(&mut blocks);
         assert!(blocks.filled.len() > 1, "{} blocks", blocks.filled.len());
@@ -2192,9 +1807,6 @@ mod tests {
             while let Some(Ok((record, length))) = decode::next(rest) {
                 rest = &rest[length..];
                 if let decode::Record::Sample(sample) = record {
-                    // The kernel copies less than asked where the record
-                    // would outgrow its size field, but never as little as
-                    // is kept.
                     if sample.stack_asked > SHORT_STACK_BYTES as u64 {
                         long += 1;
                     } else {
@@ -2216,9 +1828,6 @@ mod tests {
         );
     }
 
-    /// A reader still behind once even shortened samples fill its queue
-    /// turns sampling off, rather than leaving the rings to fill and the
-    /// kernel to drop samples.
     #[test]
     fn a_reader_far_behind_pauses_sampling_instead_of_losing_samples() {
         let (mut events, exit) = spin_with_deep_copies();
@@ -2229,9 +1838,6 @@ mod tests {
             .expect("the program exits");
         assert!(status.success(), "{status}");
 
-        // Nothing took the queue, so sampling went off once and stayed off.
-        // That the reader drains on while behind is tested in
-        // `a_full_queue_pauses_a_clocks_sampling_but_never_a_breakpoints`.
         let end = sys::monotonic();
         assert_eq!(events.behind(None), []);
         let spans = events.behind(Some(end));
@@ -2242,8 +1848,6 @@ mod tests {
         assert_eq!(events.behind(Some(end)), []);
     }
 
-    /// Eight threads spinning for 750 ms, sampled at 1 kHz with 64 KiB of
-    /// stack.
     fn spin_with_deep_copies() -> (Events, JoinHandle<std::io::Result<ExitStatus>>) {
         let options = EventOptions {
             source: Source::Clock {
@@ -2264,8 +1868,6 @@ mod tests {
         (events, exit)
     }
 
-    /// The rings of a program that has exited stay ready for good: the
-    /// reader stops waiting on them, rather than spin until it is stopped.
     #[test]
     fn the_reader_does_not_spin_on_the_rings_of_an_exited_program() {
         let options = EventOptions {
@@ -2294,8 +1896,6 @@ mod tests {
         assert!(cpu < Duration::from_millis(20), "the reader took {cpu:?}");
     }
 
-    /// A budget pauses sampling alone: what the program starts meanwhile is
-    /// still recorded, so a later sample in it has its process.
     #[test]
     fn a_program_paused_from_sampling_still_records_the_processes_it_starts() {
         let options = EventOptions {
@@ -2319,7 +1919,6 @@ mod tests {
                 .expect("launch the program");
 
         let status = events.read_while(|| {
-            // Once the shell runs, so that executing it turns nothing on.
             let mut ready = [0_u8; 6];
             std::io::Read::read_exact(&mut said, &mut ready).expect("the shell starts");
             events.hold(Hold::Budget, true);
@@ -2355,13 +1954,9 @@ mod tests {
         let source: Vec<[u8; 8]> = (0..1500u64).map(u64::to_le_bytes).collect();
         let at = |index: usize| crate::VirtualAddress::new(source[index].as_ptr() as u64);
 
-        // Index: what it reads, and whether it can be read whole.
         let mut plan: Vec<(crate::VirtualAddress, usize, bool)> = (0..source.len())
             .map(|index| (at(index), 8, true))
             .collect();
-        // Cut short by the mapping's end, then nothing mapped, each
-        // followed by readable ones; and the last of the first call's
-        // buffers, and the first of the second's.
         plan[1] = (crate::VirtualAddress::new(end - 8), 16, false);
         plan[3] = (crate::VirtualAddress::new(end + 8), 8, false);
         plan[4] = (crate::VirtualAddress::new(end - 8), 16, false);

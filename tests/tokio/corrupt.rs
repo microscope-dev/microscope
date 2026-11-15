@@ -1,8 +1,3 @@
-//! A task list the program damaged itself: every damaged shard is
-//! reported with the reason it could not be read past where it broke, no
-//! task is listed twice or invented, every task of an undamaged shard is
-//! listed, and an undamaged task's stack still reads.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::process::Stdio;
@@ -15,7 +10,6 @@ use crate::workers::tasks;
 
 const FIXTURE: &str = "tokio-corrupt-o0";
 
-/// What the program reported: each task's shard, and each damage done.
 #[derive(Debug, Default)]
 struct Truth {
     shards: BTreeMap<u64, u64>,
@@ -45,15 +39,11 @@ impl Truth {
     }
 }
 
-/// Intact, every task is listed, with no gap. Damaged, each damage is a
-/// gap that says what is wrong; a task whose header is not a task's own
-/// is not listed, and every task of a shard left alone is.
 #[tokio::test]
 async fn a_damaged_list_is_reported_and_the_rest_listed() {
     let scratch = ScratchDir::new("corrupt");
     let output = scratch.path().join("stdout");
 
-    // The invariants hold no list with gaps of damage.
     let mut scenario = Scenario::launch(FIXTURE);
     scenario.add_breakpoint("truth_reached").await;
 
@@ -125,8 +115,6 @@ async fn a_damaged_list_is_reported_and_the_rest_listed() {
             "{kind}: {gaps:?}"
         );
 
-        // A task whose header is not its list's, or not a task's, is not
-        // listed as one; one whose link alone is broken is.
         let refused = matches!(kind.as_str(), "owner" | "vtable");
         assert_eq!(unique.contains(id), !refused, "{kind} {id}: {numbers:?}");
     }

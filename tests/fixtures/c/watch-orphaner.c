@@ -7,10 +7,10 @@
 #include <sys/user.h>
 #include <sys/wait.h>
 
-// Plays a tracer that crashes with a watchpoint armed: it seizes PID, arms an
-// 8-byte write watchpoint at ADDRESS in DR0, and exits without detaching. The
-// kernel keeps the debug registers armed, so the target's next write to the
-// address raises an untraced SIGTRAP.
+
+
+
+
 int main(int argc, char **argv) {
     if (argc != 3) {
         return 2;

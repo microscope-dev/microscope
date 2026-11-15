@@ -1,35 +1,18 @@
-//! JavaScript property lookups through the prototype chain, without calling
-//! getters. Program getters are refused. V8 native accessors
-//! (`AccessorInfo`) and builtin getters are evaluated only where this
-//! module knows what they compute.
-//!
-//! A builtin function is identified exactly: it has no script, its shared
-//! info holds the builtin's number as a Smi where a program function holds
-//! bytecode, and V8 gave it its name, as in `[Symbol.hasInstance]`. No
-//! program can create such a function.
-
 use super::objects::{Object, Problem, Reader};
 use super::own::{self, Held};
 use crate::image::v8::{Constant, Field};
 
-/// Prototype chains are a few objects long; stop after this many.
 const MAX_PROTOTYPES: usize = 64;
 
-/// A property key for a lookup.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Key<'k> {
-    /// A string key.
     Name(&'k str),
 
-    /// A well-known symbol by its description, such as
-    /// `Symbol.toStringTag`.
     WellKnown(&'k str),
 }
 
-/// What a lookup found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Found {
-    /// A data property's tagged value.
     Data(u64),
 
     /// An `AccessorPair` or `AccessorInfo`, and the object that holds it.
@@ -40,7 +23,6 @@ pub(super) enum Found {
     Absent,
 }
 
-/// Whether the named property `property` has the key `key`.
 pub(super) fn matches(
     reader: &Reader<'_>,
     property: &own::Named,
@@ -60,7 +42,6 @@ pub(super) fn matches(
     }
 }
 
-/// The own property `key` of `holder`, and whether it is enumerable.
 pub(super) fn own(
     reader: &Reader<'_>,
     holder: Object,
@@ -74,8 +55,6 @@ pub(super) fn own(
     Ok(None)
 }
 
-/// The prototype of `object`, `None` for `null`. Refuses proxies, whose
-/// handler may compute it.
 pub(super) fn prototype(reader: &Reader<'_>, object: Object) -> Result<Option<Object>, Problem> {
     if reader.is(object, Constant::JSProxyType)? {
         return Err(
@@ -90,8 +69,6 @@ pub(super) fn prototype(reader: &Reader<'_>, object: Object) -> Result<Option<Ob
     }
 }
 
-/// The property `key` on `object` or its prototypes, as `[[Get]]` finds it
-/// before calling any getter.
 pub(super) fn find(reader: &Reader<'_>, object: Object, key: Key<'_>) -> Result<Found, Problem> {
     let mut holder = object;
     for _ in 0..MAX_PROTOTYPES {
@@ -111,9 +88,6 @@ pub(super) fn find(reader: &Reader<'_>, object: Object, key: Key<'_>) -> Result<
     Err(format!("{:#x} has too many prototypes", object.0).into())
 }
 
-/// The value of `object[key]` when no program getter computes it: a data
-/// property, or a native accessor this module can evaluate. `None` if the
-/// property is absent. Program getters are refused.
 pub(super) fn get(
     reader: &Reader<'_>,
     object: Object,
@@ -126,16 +100,13 @@ pub(super) fn get(
     }
 }
 
-/// A lookup result: a tagged word, or a string V8 computes instead of
-/// storing, such as a bound function's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Value {
     Word(u64),
-    /// UTF-16 units, such as `"bound " + name`.
+
     Text(Vec<u16>),
 }
 
-/// What the native accessor `accessor` returns for `receiver`.
 fn native(reader: &Reader<'_>, receiver: Object, accessor: Object) -> Result<Value, Problem> {
     if !reader.is(accessor, Constant::AccessorInfoType)? {
         return Err("the property is a getter, and microscope does not call getters".into());
@@ -151,7 +122,6 @@ fn native(reader: &Reader<'_>, receiver: Object, accessor: Object) -> Result<Val
     } else if super::properties::is_named(reader, name, "length")?
         && ty == reader.constant(Constant::JSArrayType)?
     {
-        // `ArrayLengthGetter` returns the array's length field.
         return Ok(Value::Word(reader.field(receiver, Field::JSArrayLength)?));
     } else if super::properties::is_named(reader, name, "prototype")? && functions.contains(&ty) {
         return function_prototype(reader, receiver)?
@@ -167,9 +137,6 @@ fn native(reader: &Reader<'_>, receiver: Object, accessor: Object) -> Result<Val
     .into())
 }
 
-/// `function.name` as V8's native accessor computes it:
-/// `JSFunction::GetName` (the shared name), or `JSBoundFunction::GetName`
-/// (`bound ` once per binding, then the target's name).
 pub(super) fn function_name(reader: &Reader<'_>, function: Object) -> Result<Vec<u16>, Problem> {
     let mut prefix = Vec::new();
     let mut target = function;
@@ -186,7 +153,6 @@ pub(super) fn function_name(reader: &Reader<'_>, function: Object) -> Result<Vec
     let functions = reader.constant(Constant::FirstJSFunctionType)?
         ..=reader.constant(Constant::LastJSFunctionType)?;
     if !functions.contains(&reader.instance_type(target)?) {
-        // V8 leaves out the name of a bound proxy or wrapped function.
         return Ok(prefix);
     }
     let shared = reader.typed_field(
@@ -205,9 +171,6 @@ pub(super) fn function_name(reader: &Reader<'_>, function: Object) -> Result<Vec
     Ok(prefix)
 }
 
-/// `function.prototype` as V8's native accessor computes it: the object in
-/// its prototype-or-initial-map slot, or the initial map's prototype.
-/// `None` for a function without one.
 fn function_prototype(reader: &Reader<'_>, function: Object) -> Result<Option<Object>, Problem> {
     let word = reader.field(function, Field::JSFunctionPrototypeOrInitialMap)?;
     let Some(held) = reader.object(word)? else {
@@ -217,7 +180,7 @@ fn function_prototype(reader: &Reader<'_>, function: Object) -> Result<Option<Ob
         return Ok(None);
     }
     let map = reader.map(held)?;
-    // A map's map is the meta map, whose own map is itself.
+
     if reader.map(map)? == map {
         let prototype = reader.field(held, Field::MapPrototype)?;
         return reader.object(prototype);
@@ -225,7 +188,6 @@ fn function_prototype(reader: &Reader<'_>, function: Object) -> Result<Option<Ob
     Ok(Some(held))
 }
 
-/// Whether `function` is V8's builtin function named `name`.
 pub(super) fn is_builtin(
     reader: &Reader<'_>,
     function: Object,
@@ -247,7 +209,7 @@ pub(super) fn is_builtin(
     {
         return Ok(false);
     }
-    // From 13.0 a builtin's number is in the untrusted function data.
+
     let data = if reader
         .layout
         .has(Field::SharedFunctionInfoUntrustedFunctionData)
@@ -265,7 +227,6 @@ pub(super) fn is_builtin(
     }
 }
 
-/// Whether `typeof object` is `"function"`: its map is callable.
 pub(super) fn is_callable(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     let map = reader.map(object)?;
     let bits = i64::from(reader.byte_field(map, Field::MapBitField)?);
@@ -277,8 +238,6 @@ pub(super) fn is_callable(reader: &Reader<'_>, object: Object) -> Result<bool, P
     )? != 0)
 }
 
-/// Whether `object instanceof constructor`, by `OrdinaryHasInstance`. Only
-/// V8's own `Symbol.hasInstance` is accepted; any other is refused.
 pub(super) fn instance_of(
     reader: &Reader<'_>,
     object: Object,

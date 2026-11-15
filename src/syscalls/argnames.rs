@@ -1,7 +1,3 @@
-//! The names the kernel's prototypes give each call's arguments, which
-//! `-N` prints. First generated from Linux 7.2's `include/linux/syscalls.h`;
-//! unnamed arguments are named for their position.
-
 pub const ARG_NAMES: &[(&str, &[&str])] = &[
     ("read", &["fd", "buf", "count"]),
     ("write", &["fd", "buf", "count"]),

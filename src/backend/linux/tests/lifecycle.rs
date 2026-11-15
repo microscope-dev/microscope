@@ -1,15 +1,7 @@
-//! What each lifecycle request does in each phase of a session: idle,
-//! starting, stopped, running, killing, ending, and releasing the children
-//! of a program that exited. Every phase is reached and every request made
-//! through the controller's messages and wait statuses, so the table holds
-//! however the controller keeps its phase.
-
 use tokio::sync::oneshot;
 
 use super::*;
 
-/// What a reply said when it was read: `pending` while unanswered,
-/// `dropped` if the controller dropped it, `ok`, or the error.
 fn answer<T>(receiver: &mut oneshot::Receiver<Result<T>>) -> String {
     match receiver.try_recv() {
         Ok(Ok(_)) => "ok".to_owned(),
@@ -19,7 +11,6 @@ fn answer<T>(receiver: &mut oneshot::Receiver<Result<T>>) -> String {
     }
 }
 
-/// A reply, whatever it answers with, which says the same once answered.
 pub(super) type Reader = Box<dyn FnMut() -> String>;
 
 pub(super) fn reader<T: 'static>(mut receiver: oneshot::Receiver<Result<T>>) -> Reader {
@@ -37,8 +28,6 @@ pub(super) fn reader<T: 'static>(mut receiver: oneshot::Receiver<Result<T>>) -> 
     })
 }
 
-/// Sends `request` and returns whether the controller keeps running, with
-/// the request's reply.
 pub(super) fn send(harness: &mut WatchHarness, request: Request) -> bool {
     harness
         .controller
@@ -83,24 +72,18 @@ pub(super) fn shutdown(harness: &mut WatchHarness) -> (bool, Reader) {
     (running, reader(receiver))
 }
 
-/// The process an attach takes: the harness's own threads are 5000 on.
 pub(super) const ATTACHED: Pid = Pid::from_raw(4000);
 
-/// The process a launch spawns, as the fake spawns it.
 pub(super) const LAUNCHED: Pid = Pid::from_raw(7000);
 
-/// A fork child the program leaves behind.
 pub(super) const CHILD: Pid = Pid::from_raw(6000);
 
-/// A harness in one phase, with the replies the phase is waiting to give
-/// and the wait status that ends it.
 struct Phase {
     harness: WatchHarness,
     waiting: Vec<(&'static str, Reader)>,
     end: Option<WaitEvent>,
 }
 
-/// A launched program stopped at a published stop, killed and gone.
 pub(super) fn idle() -> WatchHarness {
     let mut harness = watch_harness(1);
     let pid = harness.threads[0];
@@ -114,7 +97,6 @@ pub(super) fn idle() -> WatchHarness {
     harness
 }
 
-/// Builds the phase `name`.
 fn phase(name: &str) -> Phase {
     let mut waiting = Vec::new();
     let (harness, end) = match name {
@@ -168,7 +150,6 @@ fn phase(name: &str) -> Phase {
             )
         }
         "detaching" => {
-            // An attached program that runs is detached once it stops.
             let mut harness = watch_harness(1);
             harness.attached();
             harness.start_continue();
@@ -181,8 +162,6 @@ fn phase(name: &str) -> Phase {
             )
         }
         "releasing" | "releasing, launch held" => {
-            // The program exited, leaving a fork child on its way to its
-            // first stop, which releases it.
             let mut harness = hit_harness(1, ">=1");
             let parent = harness.threads[0];
             harness.trace().clone.replace(Some((CHILD, CHILD)));
@@ -226,9 +205,6 @@ const PHASES: [&str; 10] = [
     "releasing, launch held",
 ];
 
-/// One request in one phase: whether the controller kept running after
-/// it, what the request was answered, and what each reply the phase was
-/// waiting to give says then.
 fn outcome(name: &str, request: &str) -> String {
     let mut phase = phase(name);
     let harness = &mut phase.harness;
@@ -266,8 +242,6 @@ fn outcome(name: &str, request: &str) -> String {
         state(&mut asked, running, &mut phase.waiting)
     );
 
-    // The phase ends as it would have, and the replies its end answers
-    // are answered then.
     if let (true, Some(status)) = (running, phase.end.take()) {
         let running = harness.controller.handle_wait(status);
         line = format!(
@@ -279,9 +253,6 @@ fn outcome(name: &str, request: &str) -> String {
     line
 }
 
-/// Every lifecycle request in every phase answers as it always has. A
-/// reply is never dropped while the controller runs, and the controller
-/// ends only once a shutdown leaves nothing to release.
 #[test]
 fn each_lifecycle_request_is_answered_in_each_phase() {
     let actual: Vec<String> = PHASES
@@ -348,8 +319,6 @@ fn each_lifecycle_request_is_answered_in_each_phase() {
     assert_eq!(actual, expected, "\n{}", actual.join("\n"));
 }
 
-/// A session attached to `pid`, which is the test's own process when the
-/// test needs `/proc` to name its program, stopped at the attach.
 fn attached_to(pid: Pid) -> WatchHarness {
     let mut harness = idle();
     harness.trace().listed_threads.replace(vec![pid]);
@@ -374,9 +343,6 @@ fn attached_to(pid: Pid) -> WatchHarness {
     harness
 }
 
-/// A group member that executes a program the group only watches leaves
-/// the session at that exec. A kill sent before it is answered then, as
-/// the session ends, rather than left waiting with nothing to answer it.
 #[test]
 fn a_kill_waiting_when_a_member_is_handed_off_at_an_exec_is_answered() {
     let me = Pid::from_raw(i32::try_from(std::process::id()).expect("pid fits"));
@@ -399,7 +365,6 @@ fn a_kill_waiting_when_a_member_is_handed_off_at_an_exec_is_answered() {
     let (_, mut killed) = kill(&mut harness);
     assert_eq!(killed(), "pending");
 
-    // The exec's event names the thread that executed it.
     harness.trace().clone.replace(Some((me, me)));
     assert!(harness.controller.handle_wait(WaitEvent::PtraceEvent(
         me,
@@ -416,14 +381,11 @@ fn a_kill_waiting_when_a_member_is_handed_off_at_an_exec_is_answered() {
     );
     assert_eq!(killed(), "ok");
 
-    // The session is over, so another can start.
     let (running, mut launched) = launch(&mut harness);
     assert!(running);
     assert_eq!(launched(), "pending");
 }
 
-/// A waiter that cannot be joined at the process's exit does not cost the
-/// exit its event or the kill its answer, and leaves the session idle.
 #[test]
 fn a_waiter_that_fails_at_the_exit_still_publishes_it_and_answers_the_kill() {
     let mut harness = watch_harness(1);
@@ -431,7 +393,6 @@ fn a_waiter_that_fails_at_the_exit_still_publishes_it_and_answers_the_kill() {
     harness.inferior().waiter = Some(Waiter {
         thread: Some(WaiterThread {
             stop: Arc::new(AtomicBool::new(false)),
-            // Unwinds without the panic hook, so the test prints nothing.
             handle: thread::spawn(|| std::panic::resume_unwind(Box::new(()))),
         }),
         hub: None,
@@ -458,8 +419,6 @@ fn a_waiter_that_fails_at_the_exit_still_publishes_it_and_answers_the_kill() {
     assert_eq!(launched(), "pending");
 }
 
-/// What an attach is answered when each time its threads stop, the process
-/// has made another it has not traced, `new_threads` times in all.
 fn attach_with_threads_appearing(new_threads: i32) -> String {
     let mut harness = idle();
     let mut listed = vec![ATTACHED];
@@ -490,8 +449,6 @@ fn attach_with_threads_appearing(new_threads: i32) -> String {
     attached()
 }
 
-/// An attach seizes threads that appear while it stops the others, up to
-/// a limit, past which it gives up on a thread list that never settles.
 #[test]
 fn an_attach_gives_up_on_threads_that_keep_appearing_past_its_limit() {
     assert_eq!(attach_with_threads_appearing(0), "ok");
@@ -502,8 +459,6 @@ fn an_attach_gives_up_on_threads_that_keep_appearing_past_its_limit() {
     );
 }
 
-/// A launch held while an exited program's fork children are released
-/// starts once every child is, not once the first is.
 #[test]
 fn a_held_launch_waits_for_every_fork_child_to_be_released() {
     const SECOND: Pid = Pid::from_raw(6001);
@@ -552,8 +507,6 @@ fn a_held_launch_waits_for_every_fork_child_to_be_released() {
     assert_eq!(launched(), "pending", "the launch waits for its first stop");
 }
 
-/// A shutdown detaches an attached program once every thread has stopped,
-/// and passes on a signal a thread stopped for before the interrupt took it.
 #[test]
 fn a_shutdown_detaches_once_every_thread_stops_and_passes_on_their_signals() {
     let mut harness = watch_harness(2);
@@ -589,12 +542,6 @@ fn a_shutdown_detaches_once_every_thread_stops_and_passes_on_their_signals() {
     assert_eq!(ended(), "ok");
 }
 
-/// A kill sent with a launch takes the new process out of its exec stop
-/// while the controller handles it, so setting its options fails with
-/// ESRCH. That the process left its stop explains the failure, as it does
-/// any SIGKILL: the launch fails as one whose process exited, the kill
-/// succeeds, and the debugger does not give up on the program and kill it
-/// again.
 #[test]
 fn a_kill_that_overtakes_a_launchs_first_stop_ends_it_in_its_exit() {
     let mut harness = idle();

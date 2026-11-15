@@ -1,7 +1,3 @@
-// Coming back from single sign-on to `/signed-in#…`: what the fragment
-// carried reaches the Account pane, even when it is followed twice, as
-// React's development build runs every effect twice.
-
 import { afterEach, expect, it, vi } from "vitest";
 
 import { account, followSignIn } from "../src/account";

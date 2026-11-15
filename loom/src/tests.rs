@@ -1,13 +1,3 @@
-//! Models of the unit-order walk. Each runs a [`Case`]: units in groups,
-//! a window, two or three workers, and perhaps a unit at which the walk
-//! stops holding or a group whose walk panics. Every schedule must add
-//! exactly what [`check`] says, and every walk must begin inside the
-//! window.
-//!
-//! The model's own bookkeeping, how many units are added, uses std's
-//! atomics, which loom does not see. Loom runs one thread at a time, so
-//! they read as plain memory would.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use loom::sync::Arc;
@@ -17,15 +7,12 @@ use crate::in_order::{Add, InOrder};
 
 #[derive(Clone, Copy, Debug)]
 struct Case {
-    /// Each unit's group, named by its first unit.
     group_of: &'static [usize],
     ahead: usize,
     workers: usize,
 
-    /// The unit whose adding stops the walk holding.
     fails_at: Option<usize>,
 
-    /// The group whose walk panics.
     panics_at: Option<usize>,
 }
 
@@ -44,7 +31,6 @@ impl Case {
         self.group_of.len()
     }
 
-    /// The groups in the order claimed, and each group's units.
     fn groups(self) -> (Vec<usize>, Vec<Vec<usize>>) {
         let mut members = vec![Vec::new(); self.units()];
         for (unit, &group) in self.group_of.iter().enumerate() {
@@ -58,12 +44,10 @@ impl Case {
     }
 }
 
-/// Adds walks to a list.
 struct Log {
     added: Vec<Option<usize>>,
     fails_at: Option<usize>,
 
-    /// How many units are added, for walks to check their window against.
     count: Arc<AtomicUsize>,
 }
 
@@ -75,8 +59,6 @@ impl Add<usize> for Log {
     }
 }
 
-/// A walk's own panic, which ends only the worker it panics on, as a
-/// worker's thread ends when a walk panics in microscope.
 struct WalkPanicked;
 
 struct Run {
@@ -100,7 +82,6 @@ impl Run {
         units.iter().map(|&unit| (unit, Some(unit))).collect()
     }
 
-    /// One worker's share, ended early by a walk that panics.
     fn work(&self) {
         let worked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.in_order.work(|group, units| self.walk(group, units));
@@ -113,8 +94,6 @@ impl Run {
     }
 }
 
-/// How many preemptions a schedule may have: `LOOM_MAX_PREEMPTIONS`, which
-/// `just loom` sets, or 3.
 fn bound() -> usize {
     std::env::var("LOOM_MAX_PREEMPTIONS")
         .ok()
@@ -122,7 +101,6 @@ fn bound() -> usize {
         .unwrap_or(3)
 }
 
-/// Runs `case` under every schedule with at most `bound` preemptions.
 fn model(case: Case, bound: usize) {
     quiet_walk_panics();
     let (order, members) = case.groups();
@@ -164,7 +142,6 @@ fn model(case: Case, bound: usize) {
     });
 }
 
-/// What every schedule of `case` adds.
 fn check(case: Case, added: usize, log: &[Option<usize>]) {
     assert_eq!(added, log.len(), "{case:?}");
     for (unit, walk) in log.iter().enumerate() {
@@ -187,8 +164,6 @@ fn check(case: Case, added: usize, log: &[Option<usize>]) {
                 "{case:?}: {log:?}"
             );
 
-            // A group that can begin only once the failed unit is added
-            // finds the walk abandoned.
             for (unit, &group) in case.group_of.iter().enumerate() {
                 if group >= failed + case.ahead {
                     assert_eq!(log[unit], None, "{case:?}: {log:?}");
@@ -205,7 +180,6 @@ fn check(case: Case, added: usize, log: &[Option<usize>]) {
     }
 }
 
-/// Keeps walks' own panics, which are expected, out of the output.
 fn quiet_walk_panics() {
     static QUIET: std::sync::Once = std::sync::Once::new();
     QUIET.call_once(|| {
@@ -218,7 +192,6 @@ fn quiet_walk_panics() {
     });
 }
 
-/// Every way to put `units` units in groups, each named by its first unit.
 fn groupings(units: usize) -> Vec<&'static [usize]> {
     let mut all = vec![Vec::new()];
     for unit in 0..units {
@@ -242,28 +215,21 @@ fn groupings(units: usize) -> Vec<&'static [usize]> {
         .collect()
 }
 
-/// Units walked one to a group, so each worker's adding hands off to the
-/// other's. A unit stranded in the finished map fails the count; a worker
-/// left waiting for the window fails as a deadlock.
 #[test]
 fn single_unit_groups_are_added_in_order() {
     model(Case::new(&[0, 1, 2], 1), bound());
 }
 
-/// A group whose units are apart: unit 2 is walked with unit 0, before
-/// unit 1, and waits for it.
 #[test]
 fn a_group_split_by_another_waits_for_it() {
     model(Case::new(&[0, 1, 0], 1), bound());
 }
 
-/// A wider window lets both workers walk ahead of the units added.
 #[test]
 fn a_wider_window_still_adds_in_order() {
     model(Case::new(&[0, 1, 2], 2), bound());
 }
 
-/// Once the walk stops holding, the units left are added unwalked.
 #[test]
 fn units_after_the_walk_stops_holding_are_added_unwalked() {
     model(
@@ -275,9 +241,6 @@ fn units_after_the_walk_stops_holding_are_added_unwalked() {
     );
 }
 
-/// A worker whose walk of unit 0 panics abandons the walk as it unwinds,
-/// and unit 0 is never added. The worker waiting to walk unit 2, which
-/// waits for unit 1 to be added, must be woken all the same.
 #[test]
 fn a_panicking_walk_wakes_the_waiting_worker() {
     model(
@@ -288,9 +251,6 @@ fn a_panicking_walk_wakes_the_waiting_worker() {
         bound(),
     );
 }
-
-// The sweeps run each case with one preemption fewer, so that they cover
-// every shape for about what the cases above cost.
 
 #[test]
 fn every_grouping_of_four_units_in_a_window_of_one() {
@@ -340,12 +300,6 @@ fn every_grouping_of_three_units_panicking_in_every_group() {
     }
 }
 
-// Three workers: two can wait for the window at once, so one notified
-// alone would strand the other. Waking one with `notify_one` instead
-// deadlocks this model at two preemptions, not at one, and not with three
-// units. Three preemptions take two minutes, so it never runs with more
-// than two.
-
 #[test]
 fn three_workers_add_in_order() {
     model(
@@ -357,8 +311,6 @@ fn three_workers_add_in_order() {
     );
 }
 
-/// With a panic as well, a third worker costs about what two more
-/// preemptions do, so this runs with two fewer.
 #[test]
 fn three_workers_finish_when_a_walk_panics() {
     model(

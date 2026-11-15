@@ -1,7 +1,3 @@
-// A profile's views against a server the test plays: what each says while
-// its answer is on its way or after it failed, how its rows answer the
-// keyboard, and what stays on screen while the connection is down.
-
 import { act, cleanup, render } from "@testing-library/react";
 import { type ReactNode, useMemo, useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -39,8 +35,6 @@ interface Asked {
   params?: unknown;
 }
 
-/** A server the test answers, which can also drop the connection and take
- * it back. */
 class Server {
   readonly requests: Asked[] = [];
   readonly #answered = new Set<number>();
@@ -62,7 +56,6 @@ class Server {
     });
   }
 
-  /** Connects, or after a drop, takes the page's next attempt. */
   async open(): Promise<void> {
     if (!this.#started) {
       this.#started = true;
@@ -108,7 +101,6 @@ class Server {
     }, POLL);
   }
 
-  /** Answers, with the columns sent first as a binary frame. */
   answer(request: Asked, result: unknown, columns?: Uint8Array): void {
     if (columns) {
       const frame = new Uint8Array(8 + columns.byteLength);
@@ -126,8 +118,6 @@ class Server {
 
 let profiles = 0;
 
-/** A profile no other test has asked about, since answers are cached by
- * what asked for them. */
 function summaryOf(change: Partial<ProfileSummary> = {}): ProfileSummary {
   profiles += 1;
   return {
@@ -167,18 +157,16 @@ function summaryOf(change: Partial<ProfileSummary> = {}): ProfileSummary {
   };
 }
 
-// Sized as a dock pane is, so long lists scroll as they do in the page.
 const HARNESS_SIZE = { width: 900, height: 800, display: "grid" };
 const WIDE = { width: 5000 };
-/** 180 pixels of lane names leave 1000 for the lanes. */
+
 const SECOND_WIDE = { width: 1180 };
-/** The lanes fill their pane, scrolling past its height. */
+
 const SECOND_WIDE_SHORT = { width: 1180, height: 400, display: "flex" };
-// Narrower than the lanes' names, leaving no room to draw.
+
 const NAMES_WIDE = { width: 150 };
 const NO_LOOK: ProfileLook = {};
 
-/** Changes the look from outside, as the address bar would. */
 let changeLook: (change: (look: ProfileLook) => ProfileLook) => void = () => {};
 
 function Harness({
@@ -239,7 +227,6 @@ const key = (name: string, module: string | null = null): ProfileKey => ({
   line: null,
 });
 
-/** A call tree's answer and columns, each node [name, own, total, depth]. */
 function treeOf(nodes: [string, number, number, number][]): [unknown, Uint8Array] {
   const names = [...new Set(nodes.map(([name]) => name))];
   const count = nodes.length;
@@ -267,7 +254,6 @@ const TREE = treeOf([
   ["leaf", 2, 2, 1],
 ]);
 
-/** The name of the row a tree or listbox's keyboard is on. */
 function activeName(container: Element): string | undefined {
   const id = container.getAttribute("aria-activedescendant");
   const row = id ? document.querySelector(`#${CSS.escape(id)}`) : null;
@@ -293,16 +279,16 @@ it("walks a call tree with the arrow keys and selects with Enter", async () => {
   expect(activeName(element)).toBe("work");
   const work = () => tree.getByRole("treeitem").nth(1);
   await expect.element(work()).toHaveAttribute("aria-expanded", "true");
-  // Left closes an open node, then moves to its caller.
+
   await userEvent.keyboard("{ArrowLeft}");
   await expect.element(work()).toHaveAttribute("aria-expanded", "false");
   await expect.element(tree.getByRole("treeitem")).toHaveLength(5);
   await userEvent.keyboard("{ArrowRight}");
   await expect.element(work()).toHaveAttribute("aria-expanded", "true");
-  // Right on an open node moves to its first callee.
+
   await userEvent.keyboard("{ArrowRight}");
   expect(activeName(element)).toBe("leaf");
-  // Left on a leaf moves to its caller, which it then closes.
+
   await userEvent.keyboard("{ArrowLeft}");
   expect(activeName(element)).toBe("work");
   await userEvent.keyboard("{ArrowLeft}");
@@ -326,34 +312,28 @@ it("names each row's shares for those who cannot see the columns", async () => {
     .toBeVisible();
 });
 
-/** A call tree's row by its accessible name. */
 const treeRow = (name: RegExp) => page.getByRole("treeitem", { name });
 
-/** A row's share cells, own then total. */
 function shares(name: RegExp): HTMLElement[] {
   return [...treeRow(name).element().querySelectorAll<HTMLElement>(".share")];
 }
 
-/** A share cell's bar. */
 function fillOf(cell: Element | null | undefined): HTMLElement {
   const fill = cell?.querySelector<HTMLElement>(".share-fill");
   assert(fill, "a share cell has a bar");
   return fill;
 }
 
-/** How wide a share cell's bar is drawn, in percent of the cell. */
 function barWidth(cell: Element | undefined): number {
   return (
     (fillOf(cell).getBoundingClientRect().width / (cell?.getBoundingClientRect().width ?? 1)) * 100
   );
 }
 
-/** A bar's drawn color as red, green, blue, and alpha. */
 function barColor(cell: Element | undefined): number[] {
   return (getComputedStyle(fillOf(cell)).backgroundColor.match(/[\d.]+/gu) ?? []).map(Number);
 }
 
-/** The names a search marks. */
 function markedNames(): (string | null)[] {
   return [...document.querySelectorAll(".tree-row .name.matched")].map((name) => name.textContent);
 }
@@ -363,27 +343,24 @@ it("draws each share as a bar, bolds large own time, and searches as the flame g
   server.answer(await server.next("profileTree"), ...TREE);
   await expect.element(treeRow(/^main,/u)).toBeVisible();
 
-  // main is 10 of 12 total and spends none of it itself.
   const [mainOwn, mainTotal] = shares(/^main,/u);
   expect(barWidth(mainTotal)).toBeCloseTo(83.33, 1);
   expect(barWidth(mainOwn)).toBe(0);
   expect(mainOwn?.classList.contains("strong")).toBe(false);
-  // The larger share is drawn redder: as much red, less green.
+
   const [hotRed, hotGreen] = barColor(mainTotal);
   const [coolRed, coolGreen, , coolAlpha] = barColor(shares(/^idle,/u)[1]);
   expect(coolAlpha).toBeGreaterThan(0);
   expect(hotRed).toBeGreaterThanOrEqual(coolRed ?? 0);
   expect(hotGreen).toBeLessThan(coolGreen ?? 0);
-  // work spends 2 of 12 itself, over the 5% that marks own time hot.
+
   expect(shares(/^work,/u)[0]?.classList.contains("strong")).toBe(true);
 
-  // The search marks each leaf, and counts their samples once: 4 + 2 of 12.
   const search = page.getByRole("searchbox", { name: "Search frames" });
   await userEvent.fill(search, "lea");
   await expect.element(page.getByTestId("matched")).toHaveTextContent("matched 50.0% of samples");
   expect(markedNames()).toEqual(["leaf", "leaf"]);
 
-  // A click selects into the search, and Clear lets go of it.
   await treeRow(/^idle,/u).click();
   await expect.element(search).toHaveValue("idle");
   await page.getByRole("button", { name: "Clear" }).click();
@@ -392,8 +369,6 @@ it("draws each share as a bar, bolds large own time, and searches as the flame g
   expect(markedNames()).toEqual([]);
 });
 
-/** A tree whose one deep match its opening leaves closed: main opens down
- * to a, whose child b holds too little of it to open. */
 const HIDDEN = treeOf([
   ["main", 0, 10, 0],
   ["a", 4, 6, 1],
@@ -415,22 +390,17 @@ it("opens the callers of what a search matches, and leaves them as they are afte
   await expect.element(deep).toBeVisible();
   expect(markedNames()).toEqual(["deep"]);
 
-  // Closing a caller the search opened keeps it closed while the search
-  // stands, and a new search opens it again.
   treeRow(/^b,/u).element().querySelector<HTMLElement>(".twist")?.click();
   await expect.element(deep).not.toBeInTheDocument();
   await userEvent.fill(search, "deep");
   await expect.element(deep).toBeVisible();
 
-  // What a search opened stays open once it is cleared.
   await page.getByRole("button", { name: "Clear" }).click();
   await expect.element(search).toHaveValue("");
   await expect.element(deep).toBeVisible();
   expect(markedNames()).toEqual([]);
 });
 
-/** A tall tree whose only match is far below, under callers its opening
- * leaves closed: main's 200 callees come first, then a, b, and target. */
 const TALL = treeOf([
   ["main", 0, 201, 0],
   ...Array.from({ length: 200 }, (_, at): [string, number, number, number] => [`f${at}`, 1, 1, 1]),
@@ -440,7 +410,6 @@ const TALL = treeOf([
 ]);
 const SHORT = { display: "flex", flexDirection: "column", height: 300 } as const;
 
-/** Whether a row lies wholly inside what its scrolled container shows. */
 function scrolledInto(container: Element, row: Element): boolean {
   const outer = container.getBoundingClientRect();
   const inner = row.getBoundingClientRect();
@@ -464,10 +433,9 @@ it("scrolls to the first match of each search, but not as rows open and close af
   const target = treeRow(/^target,/u);
   await vi.waitFor(() => expect(scrolledInto(body, target.element())).toBe(true), POLL);
   expect(body.getAttribute("aria-activedescendant")).toBe(target.element().id);
-  // The search keeps the focus as the tree moves.
+
   await expect.element(search).toHaveFocus();
 
-  // Scrolled back up, closing a row does not bring the match back.
   body.scrollTop = 0;
   await expect.element(treeRow(/^main,/u)).toBeVisible();
   treeRow(/^main,/u)
@@ -482,7 +450,6 @@ it("scrolls to the first match of each search, but not as rows open and close af
   await expect.element(treeRow(/^f0,/u)).toBeVisible();
   expect(body.scrollTop).toBe(0);
 
-  // A new search moves again.
   await userEvent.fill(search, "targe");
   await vi.waitFor(() => expect(scrolledInto(body, target.element())).toBe(true), POLL);
 });
@@ -529,7 +496,7 @@ it("finds functions by name, and bolds the ones whose own time is hot", async ()
       { key: 0, own: 5, total: 10, baseOwn: 0, baseTotal: 0 },
       { key: 1, own: 3, total: 3, baseOwn: 0, baseTotal: 0 },
       { key: 2, own: 1, total: 1, baseOwn: 0, baseTotal: 0 },
-      // Just at the 5% that makes own time hot, and just under it.
+
       { key: 3, own: 0.5, total: 0.5, baseOwn: 0, baseTotal: 0 },
       { key: 4, own: 0.49, total: 0.49, baseOwn: 0, baseTotal: 0 },
     ],
@@ -544,13 +511,12 @@ it("finds functions by name, and bolds the ones whose own time is hot", async ()
       .filter((row) => row.querySelector(".share")?.classList.contains("strong"))
       .map((row) => row.querySelector(".name")?.textContent);
   expect(hot()).toEqual(["main", "leaf", "leaf", "edge"]);
-  // The own bar is half main's cell, as main's own is half the samples.
+
   expect(barWidth(list.element().querySelector(".tree-row .share") ?? undefined)).toBeCloseTo(
     50,
     1,
   );
 
-  // A search keeps only the functions whose names hold it, in any case.
   const search = page.getByRole("searchbox", { name: "Search frames" });
   await userEvent.fill(search, "LEA");
   await expect.element(options).toHaveLength(2);
@@ -558,7 +524,6 @@ it("finds functions by name, and bolds the ones whose own time is hot", async ()
   await userEvent.fill(search, "zzz");
   await expect.element(page.getByText("No function matches.")).toBeVisible();
 
-  // Selecting one shows its name in the search, and every function again.
   await userEvent.fill(search, "ma");
   await options.first().click();
   await expect.element(search).toHaveValue("main");
@@ -630,13 +595,11 @@ it("brings each function's own hottest line into view once its lines arrive", as
   }, POLL);
 });
 
-/** The share cells of the row that shows `text`, own then total. */
 function annotatedShares(text: string): HTMLElement[] {
   const row = page.getByText(text, { exact: true }).element().closest(".annotated-row, .code-row");
   return [...(row?.querySelectorAll<HTMLElement>(".share") ?? [])];
 }
 
-/** The text of the profile source spans colored as `token`. */
 const colored = (token: string) =>
   [...document.querySelectorAll(`[data-testid="source-lines"] .${token}`)].map(
     (span) => span.textContent,
@@ -674,14 +637,14 @@ it("draws a line's and an instruction's shares as bars, bold where own time is h
     ],
   });
   await expect.element(page.getByText("three", { exact: true })).toBeVisible();
-  // Line 3 spends 1 of 10 itself, and 4 of 10 under it.
+
   const [threeOwn, threeTotal] = annotatedShares("three");
   expect(threeOwn).toHaveTextContent("10.0%");
   expect(barWidth(threeOwn)).toBeCloseTo(10, 1);
   expect(barWidth(threeTotal)).toBeCloseTo(40, 1);
   expect(threeOwn?.classList.contains("strong")).toBe(true);
   expect(annotatedShares("five")[0]?.classList.contains("strong")).toBe(false);
-  // A line nothing ran on has no number and no bar.
+
   const [oneOwn] = annotatedShares("one");
   expect(oneOwn).toHaveTextContent("");
   expect(barWidth(oneOwn)).toBe(0);
@@ -722,15 +685,13 @@ it("draws a line's and an instruction's shares as bars, bold where own time is h
     inlined_into: null,
   });
   await expect.element(page.getByText("cmp", { exact: true })).toBeVisible();
-  // A call's own time is none of it, so it has a total bar alone.
+
   const [cmpOwn, cmpTotal] = annotatedShares("cmp");
   expect(cmpOwn).toHaveTextContent("");
   expect(barWidth(cmpTotal)).toBeCloseTo(90, 1);
   expect(barWidth(annotatedShares("nop")[1])).toBe(0);
 });
 
-/** scan, whose loop runs step inlined at line 3, which runs get from
- * h.h inlined at its line 4. */
 const SPLIT = {
   weight: 20,
   module: "app",
@@ -827,15 +788,14 @@ const SPLIT = {
   inlined_into: null,
 } as const;
 
-/** The rows of the listing the chosen line holds, by index. */
 const chosenRows = () =>
   [...document.querySelectorAll<HTMLElement>('[aria-label="Assembly"] [aria-selected="true"]')].map(
     (row) => Number(row.dataset.row),
   );
-/** The chosen source line's number. */
+
 const chosenLine = () =>
   document.querySelector('[aria-label="Source"] [aria-selected="true"] .line-number')?.textContent;
-/** The source row of the line numbered `number` that holds code. */
+
 const lineRow = (number: number) =>
   [...document.querySelectorAll<HTMLElement>('[aria-label="Source"] [data-line]')].find(
     (row) => row.querySelector(".line-number")?.textContent === String(number),
@@ -843,14 +803,12 @@ const lineRow = (number: number) =>
 const background = (selector: string) =>
   getComputedStyle(document.querySelector(selector) as Element).backgroundColor;
 const tintOf = (selector: string) => document.querySelector<HTMLElement>(selector)?.dataset.tint;
-/** An instruction's bracket: its name and part, and whether it holds a
- * chosen instruction. */
+
 const bracketOf = (row: number) => {
   const bracket = document.querySelector<HTMLElement>(`[data-row="${row}"] .inlined-from`);
   return [bracket?.textContent, bracket?.dataset.bracket, bracket?.classList.contains("holds")];
 };
 
-/** An instruction row's pieces, each as its class and text. */
 const pieces = (row: number) =>
   [...document.querySelectorAll(`[data-row="${row}"] .text > *`)].map(
     (piece) => `${piece.className}:${piece.textContent}`,
@@ -859,13 +817,12 @@ const pieces = (row: number) =>
 it("nests inlined code under the line it was inlined at, brackets it, and steps a line's runs", async () => {
   const server = await mount(<FunctionsView />, { look: { fn: "scan", ann: "code" } });
   server.answer(await server.next("profileCode"), SPLIT);
-  // It opens on the hottest line of the program's own code, get's line 9,
-  // opening scan's line 3 and step's line 4 above it.
+
   await expect.element(page.getByText("return table[i];")).toBeVisible();
   expect(chosenLine()).toBe("9");
   expect(chosenRows()).toEqual([1]);
   await expect.element(page.getByTestId("run")).toHaveTextContent("run 1 of 1");
-  // No file to choose: every file's code is in the tree.
+
   expect(document.querySelector('[aria-label="Source file"]')).toBeNull();
   await expect
     .element(page.getByRole("button", { name: "Hide the code inlined at line 3" }))
@@ -874,10 +831,8 @@ it("nests inlined code under the line it was inlined at, brackets it, and steps 
     .element(page.getByRole("button", { name: "Hide the code inlined at line 4" }))
     .toBeVisible();
 
-  // The source is colored as the debugger colors it.
   expect(lineRow(3)?.querySelector(".tk-k")).toHaveTextContent("for");
-  // So are the instructions, by what the decoder says each piece is; a
-  // jump's address gives way to a button to its offset.
+
   expect(pieces(0)).toEqual([
     "tk-mnemonic:mov",
     "tk-text: ",
@@ -891,21 +846,16 @@ it("nests inlined code under the line it was inlined at, brackets it, and steps 
     getComputedStyle(document.querySelector(".tk-mnemonic") as Element).color,
   );
 
-  // Code inlined from another function is bracketed with its innermost
-  // name of the program's own; scan's own code is not.
   expect(bracketOf(1)).toEqual(["get", "one", true]);
   expect(bracketOf(3)).toEqual(["step", "one", false]);
   expect(bracketOf(0)).toEqual(["", undefined, false]);
 
-  // Lines and their instructions share a tint; a line nothing ran on has none.
   expect(tintOf('[data-row="1"]')).toBe(lineRow(9)?.dataset.tint);
   expect(tintOf('[data-row="0"]')).toBe(lineRow(3)?.dataset.tint);
   expect(tintOf('[data-row="4"]')).toBeUndefined();
   expect(lineRow(5)?.dataset.tint).toBeUndefined();
   expect(background('[data-row="1"]')).not.toBe(background('[data-row="0"]'));
 
-  // A line chooses every instruction under it, inlined or not, in runs
-  // the arrows step through and wrap around.
   await userEvent.click(lineRow(4) as HTMLElement);
   expect(chosenLine()).toBe("4");
   expect(chosenRows()).toEqual([1, 3]);
@@ -916,11 +866,9 @@ it("nests inlined code under the line it was inlined at, brackets it, and steps 
   await userEvent.click(page.getByRole("button", { name: "Next run" }));
   await expect.element(page.getByTestId("run")).toHaveTextContent("run 1 of 2");
 
-  // A line with no code chooses nothing.
   await userEvent.click(page.getByText("int sink;"));
   expect(chosenLine()).toBe("4");
 
-  // Keys move between lines that have code, in the order they are shown.
   await userEvent.keyboard("{ArrowDown}");
   expect(chosenLine()).toBe("9");
   await userEvent.keyboard("{ArrowDown}");
@@ -932,7 +880,6 @@ it("nests inlined code under the line it was inlined at, brackets it, and steps 
   await userEvent.keyboard("]");
   await expect.element(page.getByTestId("run")).toHaveTextContent("run 2 of 2");
 
-  // Enter closes the chosen line, and the code inlined there goes.
   await userEvent.keyboard("{ArrowUp}{Enter}");
   expect(chosenLine()).toBe("3");
   await expect.element(page.getByText("return table[i];")).not.toBeInTheDocument();
@@ -940,14 +887,11 @@ it("nests inlined code under the line it was inlined at, brackets it, and steps 
     .element(page.getByRole("button", { name: "Show the code inlined at line 3" }))
     .toHaveAttribute("aria-expanded", "false");
 
-  // An instruction chooses its line, opening the lines above it, and says
-  // what it was inlined through.
   await userEvent.click(page.getByText("add", { exact: true }));
   expect(chosenLine()).toBe("9");
   await expect.element(page.getByText("return table[i];")).toBeVisible();
   await expect.element(page.getByText("+4 get h.h:9 ← step app.c:4 ← scan app.c:3")).toBeVisible();
 
-  // A jump goes to the instruction it targets.
   await userEvent.click(page.getByRole("button", { name: "+0", exact: true }));
   expect(chosenLine()).toBe("3");
   await expect.element(page.getByText("+0 scan app.c:3")).toBeVisible();
@@ -976,14 +920,13 @@ it("marks code with no associated source line as not code, in both panes, and gi
     "no associated source line · 1 instruction",
   );
   expect(marker.classList.contains("unsourced")).toBe(true);
-  // The hottest code, yet no hue: its stripes are its mark.
+
   expect(marker.dataset.tint).toBeUndefined();
   expect(marker.querySelector(".line-number")).toHaveTextContent("");
   expect(document.querySelector('[data-row="0"]')?.classList.contains("unsourced")).toBe(true);
   expect(tintOf('[data-row="0"]')).toBeUndefined();
   expect(document.querySelector('[data-row="1"]')?.classList.contains("unsourced")).toBe(false);
 
-  // It chooses its instructions like any line.
   await userEvent.click(marker);
   expect(chosenRows()).toEqual([0]);
   await expect.element(page.getByText("no line · 1 instruction in 1 run")).toBeVisible();
@@ -1004,7 +947,7 @@ it("draws only the rows near view of a long file and listing, opening on the far
           target: null,
           own: at === count - 1 ? 9 : 0,
           total: at === count - 1 ? 9 : 0,
-          // Line 6, far above the line it opens on, has none.
+
           lines: [[0, 0, at === 5 ? 7 : at + 1]],
         })),
       },
@@ -1014,7 +957,7 @@ it("draws only the rows near view of a long file and listing, opening on the far
       {
         path: "/src/big.c",
         first: 1,
-        // Line 6 is the widest.
+
         text: Array.from({ length: count }, (_, at) =>
           at === 5 ? `int wide = ${"x".repeat(400)};` : `line ${at + 1}`,
         ),
@@ -1031,12 +974,10 @@ it("draws only the rows near view of a long file and listing, opening on the far
   const listing = document.querySelector<HTMLElement>('[aria-label="Assembly"]');
   expect(source?.querySelectorAll(".code-row").length).toBeLessThan(200);
   expect(listing?.querySelectorAll("[data-row]").length).toBeLessThan(200);
-  // The widest line is not drawn, yet the pane scrolls sideways to it.
+
   expect(source?.textContent).not.toContain("int wide");
   expect((source?.scrollWidth ?? 0) - (source?.clientWidth ?? 0)).toBeGreaterThan(1000);
 
-  // The first instruction, once scrolled to, chooses its far line, which
-  // the source draws and brings into view.
   expect(lineRow(1)).toBeUndefined();
   listing?.scrollTo({ top: 0 });
   const first = await vi.waitFor(() => {
@@ -1059,7 +1000,7 @@ it("shows an inlined function's code where it was inlined, opening on its own li
       ),
     )
     .toBeVisible();
-  // Not get's line 9, though it is hotter: step's own.
+
   expect(chosenLine()).toBe("4");
   expect(chosenRows()).toEqual([1, 3]);
 });
@@ -1095,7 +1036,6 @@ it("says it is reading a flame graph, and reads a function's cost from the serve
     .toBeVisible();
 });
 
-/** A mouse event at `x`, `y` within `target`'s box. */
 function mouseAt(target: Element, type: string, x: number, y: number): void {
   const bounds = target.getBoundingClientRect();
   act(() => {
@@ -1142,7 +1082,6 @@ it("puts a clicked frame in the search, and Clear or typing lets it go", async (
   expect(lookShown().z).toBeUndefined();
   expect(lookShown().fn).toBeUndefined();
 
-  // Typing over a selected frame searches instead, keeping the zoom.
   mouseAt(canvas.element(), "click", 10, 23);
   await expect.element(search).toHaveValue("work");
   await userEvent.fill(search, "lea");
@@ -1151,7 +1090,6 @@ it("puts a clicked frame in the search, and Clear or typing lets it go", async (
   expect(lookShown().fn).toBeUndefined();
   expect(lookShown().z).toBeDefined();
 
-  // Emptying the search, as after selecting all and deleting, clears.
   mouseAt(canvas.element(), "click", 10, 23);
   await expect.element(search).toHaveValue("work");
   await userEvent.clear(search);
@@ -1159,7 +1097,6 @@ it("puts a clicked frame in the search, and Clear or typing lets it go", async (
   expect(lookShown().fn).toBeUndefined();
   expect(lookShown().z).toBeUndefined();
 
-  // A search typed with nothing zoomed or selected has a Clear of its own.
   await userEvent.fill(search, "lea");
   await page.getByRole("button", { name: "Clear" }).click();
   await expect.element(search).toHaveValue("");
@@ -1180,7 +1117,6 @@ it("lets go of the selection once Focus, Merge, or Drop reshapes the graph", asy
   }
 });
 
-/** Resolves a frame after now, once the effects of a change have run. */
 function settled(): Promise<void> {
   return new Promise((done) => {
     requestAnimationFrame(() => {
@@ -1199,8 +1135,7 @@ it("paints the lanes again when they change, not when a function is chosen", asy
   const asked = await server.next("profileTimeline");
   server.answer(asked, { range: [0, 1e9], lanes: [] });
   const painted = vi.spyOn(HTMLCanvasElement.prototype, "getContext");
-  // Once its answer and its width have arrived, the lanes are painted and
-  // stay so for a frame.
+
   await vi.waitFor(async () => {
     expect(painted).toHaveBeenCalled();
     painted.mockClear();
@@ -1250,8 +1185,7 @@ it("draws a lane per thread for hundreds of threads", async () => {
     })),
   });
   const canvas = page.getByRole("img", { name: /^CPU over/u });
-  // The first lane and the last are painted: a renderer that stopped
-  // after a few lanes leaves the bottom blank.
+
   await vi.waitFor(() => {
     const element = canvas.element() as HTMLCanvasElement;
     const context = element.getContext("2d");
@@ -1261,7 +1195,6 @@ it("draws a lane per thread for hundreds of threads", async () => {
   }, POLL);
 });
 
-/** The ruler's labels: round times, [pills], and a range's <length>. */
 const ruler = () =>
   [...document.querySelectorAll("[data-testid=ruler] .ruler-marks > *")].map((mark) =>
     mark.classList.contains("marker")
@@ -1303,7 +1236,6 @@ it("marks round times, the pointer's time, and a range's ends and length", async
   ];
   await vi.waitFor(() => expect(ruler()).toEqual(all), POLL);
 
-  // The pointer's time hides the round times either side of it.
   const canvas = page.getByRole("img", { name: /^CPU over/u }).element();
   pointerAt(canvas, "pointermove", 250);
   expect(ruler()).toEqual([
@@ -1315,8 +1247,6 @@ it("marks round times, the pointer's time, and a range's ends and length", async
   expect(ruler()).toEqual(all);
   expect(document.querySelector(".timeline-cursor")).toBeNull();
 
-  // A range's ends sit outside it, with its length measured between them,
-  // and no round times inside it.
   changeLook((look) => ({ ...look, range: "200000000-700000000" }));
   expect(ruler()).toEqual([
     "0",
@@ -1329,7 +1259,6 @@ it("marks round times, the pointer's time, and a range's ends and length", async
     "[0.700 s]",
   ]);
 
-  // The pointer's time stands in for the length it would cover.
   pointerAt(canvas, "pointermove", 450);
   expect(ruler()).toEqual([
     "0",
@@ -1344,7 +1273,6 @@ it("marks round times, the pointer's time, and a range's ends and length", async
   ]);
   pointerAt(canvas, "pointerout", 450);
 
-  // A range too narrow to hold its length still names its ends.
   changeLook((look) => ({ ...look, range: "200000000-250000000" }));
   expect(ruler()).toEqual([
     "0",
@@ -1360,8 +1288,6 @@ it("marks round times, the pointer's time, and a range's ends and length", async
     "[0.250 s]",
   ]);
 
-  // The pointer at an end, as after a drag across the lanes, stands in for
-  // that end's pill, which it would cover.
   pointerAt(canvas, "pointermove", 252);
   expect(ruler().filter((mark) => mark.startsWith("["))).toEqual(["[0.200 s]", "[0.252 s]"]);
 });
@@ -1398,15 +1324,12 @@ it("sets how frames are drawn from Options, and puts it away on Escape or a pres
   const options = page.getByRole("dialog", { name: "Options" });
   await expect.element(options).toBeVisible();
 
-  // Each view is a pane of its own, chosen by its tab, not here.
   expect(options.getByRole("combobox", { name: "View" }).query()).toBeNull();
 
   await options.getByRole("combobox", { name: "Frames" }).selectOptions("lines");
   await options.getByRole("checkbox", { name: "Async stacks" }).click();
   expect(lookShown()).toMatchObject({ by: "line", native: "1" });
 
-  // Collapsing recursion is a checkbox. Unchecking it takes out only that
-  // transform, keeping one added after it.
   const collapse = options.getByRole("checkbox", { name: "Collapse recursion" });
   await collapse.click();
   expect(lookShown().tf).toEqual(["focus:main", "collapseCycles"]);
@@ -1415,12 +1338,10 @@ it("sets how frames are drawn from Options, and puts it away on Escape or a pres
   await collapse.click();
   expect(lookShown().tf).toEqual(["focus:main", "drop:noise"]);
 
-  // Escape puts it away and gives focus back to its button.
   await userEvent.keyboard("{Escape}");
   await expect.element(options).not.toBeInTheDocument();
   expect(document.activeElement).toBe(button.element());
 
-  // So does a press anywhere else.
   await button.click();
   await expect.element(options).toBeVisible();
   act(() => {
@@ -1441,9 +1362,6 @@ it("says why the timeline could not be read", async () => {
   await expect.element(page.getByText("the timeline is cut short")).toBeVisible();
 });
 
-/** A zones answer and its columns, each block [start, end, thread, depth,
- * name, zones, flags, blocked, preempted, chosen], covering all of its
- * span. */
 function zonesOf(names: string[], blocks: number[][], offCpu = false): [unknown, Uint8Array] {
   const count = blocks.length;
   const bytes = new Uint8Array(count * 64);
@@ -1492,11 +1410,6 @@ const ZONED_THREADS: ProfileThread[] = [
 
 const DRAIN = { name: "drain", label: false, count: 2, total: 220e6, longest: 200e6, flagged: 0 };
 
-/** Lanes of two threads, the worker's zones a drain holding a parse and a
- * short drain after; 1000 pixels for a second, so a pixel is a millisecond.
- * The worker comes first, open to both its rows, at 18 and 34 pixels, and
- * main is folded into a lane of threads without zones under it. With
- * `offCpu`, the drain was blocked for 120 ms and preempted for 20. */
 async function zonedLanes(look: ProfileLook = NO_LOOK, offCpu = false): Promise<Server> {
   const summary = summaryOf({
     threads: ZONED_THREADS,
@@ -1569,7 +1482,7 @@ it("asks for no zones in a recording without any, nor of task lanes", async () =
 it("shows a thread's zones to every depth, and folds them to one from its chevron", async () => {
   await zonedLanes();
   const canvas = lanesCanvas();
-  // The worker's lane and both its rows of zones, and the folded lane.
+
   await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 2 + 16 * 2), POLL);
   const chevron = page.getByRole("button", { name: "Hide worker 11's nested zones" });
   await expect.element(chevron).toHaveTextContent("▾");
@@ -1587,7 +1500,7 @@ const laneNames = () =>
 it("puts threads with zones first, and folds the rest into a lane that opens to them", async () => {
   await zonedLanes();
   const canvas = lanesCanvas();
-  // The worker has less weight than main, and still comes first.
+
   await vi.waitFor(() => expect(laneNames()).toEqual(["worker 11", "▸ 1 without zones"]), POLL);
   const others = page.getByRole("button", { name: "1 without zones" });
   await expect.element(others).toHaveAttribute("aria-expanded", "false");
@@ -1598,7 +1511,7 @@ it("puts threads with zones first, and folds the rest into a lane that opens to 
     POLL,
   );
   await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 3 + 16 * 2), POLL);
-  // Opening the lane selects no thread; a thread in it selects as any does.
+
   expect(lookShown().th).toBeUndefined();
   await page.getByRole("button", { name: "main 10" }).click();
   expect(lookShown().th).toEqual(["0"]);
@@ -1606,7 +1519,7 @@ it("puts threads with zones first, and folds the rest into a lane that opens to 
   await others.click();
   await vi.waitFor(() => expect(laneNames()).toEqual(["worker 11", "▸ 1 without zones"]), POLL);
   await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 2 + 16 * 2), POLL);
-  // The thread it hides stays selected.
+
   expect(lookShown().th).toEqual(["0"]);
 });
 
@@ -1639,13 +1552,12 @@ it("says how much of a zone ran on its CPU, in a label that fits it", async () =
     fillText.call(this, text, ...rest);
   });
   await zonedLanes(NO_LOOK, true);
-  // The drain ran for 60 of its 200 ms.
+
   await vi.waitFor(
     () => expect(drawn.map(({ text }) => text)).toContain("drain 200 ms, 30% CPU"),
     POLL,
   );
-  // A pixel is a millisecond: the parse has 44 pixels for its label, the
-  // short drain too few for any.
+
   const parse = drawn.filter(({ text }) => text.endsWith("%") || text.includes("CPU"));
   expect(parse.every(({ text }) => !text.startsWith("parse"))).toBe(true);
   expect(drawn.find(({ text }) => text.includes("100%"))?.width).toBeLessThanOrEqual(44);
@@ -1689,7 +1601,7 @@ it("selects a zone and its site from a click, leaving the threads alone, and let
   await zonedLanes({ th: ["0"] });
   const canvas = lanesCanvas();
   await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(68), POLL);
-  // The drain, 200 ms in, on the worker's first row of zones.
+
   await userEvent.click(canvas, { position: { x: 200, y: 26 } });
   await vi.waitFor(
     () => expect(lookShown()).toEqual({ th: ["0"], zi: "1:100000000-300000000", zs: "drain" }),
@@ -1698,14 +1610,13 @@ it("selects a zone and its site from a click, leaving the threads alone, and let
   await userEvent.click(canvas, { position: { x: 200, y: 26 } });
   await vi.waitFor(() => expect(lookShown()).toEqual({ th: ["0"], zs: "drain" }), POLL);
 
-  // Another site's zone takes its site, and the old site's band goes.
   changeLook((look) => ({ ...look, zb: "1-2", zf: "band" }));
   await userEvent.click(canvas, { position: { x: 175, y: 42 } });
   await vi.waitFor(
     () => expect(lookShown()).toEqual({ th: ["0"], zi: "1:150000000-200000000", zs: "parse" }),
     POLL,
   );
-  // Nothing under the pointer selects nothing.
+
   await userEvent.click(canvas, { position: { x: 900, y: 26 } });
   expect(lookShown().zi).toBe("1:150000000-200000000");
 });
@@ -1733,8 +1644,7 @@ it("outlines the chosen site's zones even where they fold, and asks for them by 
   server.answer(await server.next("profileTimeline"), { range: [0, 1e9], lanes: [] });
   const asked = await server.next("profileZones");
   expect(asked.params).toMatchObject({ site: "drain", band: [1000, 2000] });
-  // Two folds of seven zones each: the first of the drains chosen, the
-  // second of zones that are not.
+
   const [answer, columns] = zonesOf(
     ["drain"],
     [
@@ -1750,10 +1660,9 @@ it("outlines the chosen site's zones even where they fold, and asks for them by 
 
 it("brings a zone chosen elsewhere into view, asking for it in whole nanoseconds", async () => {
   const server = await zonedLanes();
-  // Under a pixel wide, so the lanes zoom to it, a third of its length
-  // either side: not a whole number of nanoseconds.
+
   changeLook((look) => ({ ...look, zs: "drain", zi: "1:500000000-500300001" }));
-  // Choosing the site asks for the zones again; the last ask is the zoom.
+
   const range = await vi.waitFor(() => {
     const ranges = server.requests
       .filter((request) => request.method === "profileZones")
@@ -1770,12 +1679,11 @@ it("brings a zone chosen elsewhere into view, asking for it in whole nanoseconds
   expect(
     (timeline.params as { range: number[] }).range.every((time) => Number.isInteger(time)),
   ).toBe(true);
-  // The views read the zone's span, and the threads stay as they were.
+
   expect(lookShown().th).toBeUndefined();
 });
 
 it("scrolls a zone chosen elsewhere into view, once, so the lanes scroll away from it again", async () => {
-  // Forty threads with zones, the last of them the one the zone is on.
   const threads: ProfileThread[] = Array.from({ length: 40 }, (_, row) => ({
     row,
     pid: 1,
@@ -1812,7 +1720,6 @@ it("scrolls a zone chosen elsewhere into view, once, so the lanes scroll away fr
   changeLook((look) => ({ ...look, zs: "drain", zi: "39:100000000-300000000" }));
   await vi.waitFor(() => expect(shown()).toBe(true), POLL);
 
-  // Scrolled back, it stays where the reader put it.
   box.scrollTop = 0;
   changeLook((look) => ({ ...look, range: "0-500000000" }));
   await settled();
@@ -1853,12 +1760,10 @@ it("zooms with ctrl and the wheel anywhere in the lanes, the names included", as
     );
   });
   await vi.waitFor(() => expect(ruler().at(-1)).not.toBe("1.00 s"), POLL);
-  // Zooming shows less, so it asks for that time's zones, but the range
-  // the views read stays as it was.
+
   expect(lookShown().range).toBeUndefined();
 });
 
-/** The ruler's labels that a pill covers, which it should hide. */
 function covered(): string[] {
   const marks = [...document.querySelectorAll("[data-testid=ruler] .ruler-marks > span")];
   const pills = marks.filter((mark) => mark.classList.contains("marker"));
@@ -1874,11 +1779,8 @@ function covered(): string[] {
     .map((mark) => mark.textContent ?? "");
 }
 
-/** The ruler's last round time, the end of what the lanes show. */
 const lastMark = () => ruler().findLast((mark) => !/^[[<]/u.test(mark));
 
-/** Presses the lanes `from` pixels in and lets go `to` pixels in, `y`
- * pixels down, with ctrl held or not. */
 function dragLanes(
   from: number,
   to: number,
@@ -1920,19 +1822,18 @@ it("selects a range from a drag across the lanes, letting go of the zone, and a 
     () => expect(lookShown()).toEqual({ zs: "drain", zi: "1:100000000-300000000" }),
     POLL,
   );
-  // Right to left, starting over a zone: a pixel is a millisecond.
+
   dragLanes(250, 120, false, 26);
   await vi.waitFor(
     () => expect(lookShown()).toEqual({ zs: "drain", range: "120000000-250000000" }),
     POLL,
   );
   expect(ruler()).toContain("[0.120 s]");
-  // The view stayed put. A press that hardly moves is a click, which off
-  // the zones lets go of the range.
+
   expect(lastMark()).toBe("1.00 s");
   dragLanes(500, 503);
   await vi.waitFor(() => expect(lookShown()).toEqual({ zs: "drain" }), POLL);
-  // A drag past the lanes' ends stops at them.
+
   dragLanes(900, 5000);
   await vi.waitFor(() => expect(lookShown().range).toBe("900000000-1000000000"), POLL);
   act(() => {
@@ -1941,7 +1842,7 @@ it("selects a range from a drag across the lanes, letting go of the zone, and a 
       .dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
   });
   expect(covered()).toEqual([]);
-  // Escape lets go of a drag under way, and of nothing else.
+
   dragLanes(100, 300, false, 60, () => {
     act(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -1958,8 +1859,7 @@ it("keeps a range's ends on the ruler however long their times grow", async () =
   await zonedLanes();
   const canvas = lanesCanvas().element();
   const bounds = canvas.getBoundingClientRect();
-  // Zoomed in about two thirds of the way, to a few microseconds, whose
-  // times take many digits.
+
   for (let step = 0; step < 6; step += 1) {
     act(() => {
       canvas.dispatchEvent(
@@ -1975,7 +1875,7 @@ it("keeps a range's ends on the ruler however long their times grow", async () =
     });
     await settled();
   }
-  // Across the whole of the lanes and past both ends.
+
   dragLanes(-50, 1100);
   await vi.waitFor(() => expect(lookShown().range).toBeDefined(), POLL);
   act(() => {
@@ -2001,7 +1901,7 @@ it("pans with ctrl held while dragging, selecting nothing, and keeps the menu aw
   vi.spyOn(Element.prototype, "setPointerCapture").mockImplementation(() => {});
   await zonedLanes();
   await vi.waitFor(() => expect(lastMark()).toBe("1.00 s"), POLL);
-  // The whole profile shows, so there is nowhere to pan to.
+
   dragLanes(600, 300, true);
   await settled();
   expect(lastMark()).toBe("1.00 s");
@@ -2035,7 +1935,6 @@ it("pans with ctrl held while dragging, selecting nothing, and keeps the menu aw
   vi.restoreAllMocks();
 });
 
-/** A site's stats: 8 zones in four buckets of lengths, the longest one. */
 const STATS = {
   count: 8,
   total: 2000,
@@ -2061,14 +1960,11 @@ const DRAIN_SITE = { ...DRAIN, count: 8, total: 2000, longest: 900 };
 
 const NOTHING = () => {};
 
-/** The sites the Zones pane lists, in order. */
 const listedSites = () =>
   [...document.querySelectorAll(".zone-sites tbody td:first-child button")].map(
     (button) => button.textContent,
   );
 
-/** Presses at `from` across the histogram and lets go at `to`, each a
- * share of its width. */
 function dragHistogram(from: number, to: number): void {
   const bars = page.getByRole("img", { name: /^Lengths of drain/u }).element();
   const bounds = bars.getBoundingClientRect();
@@ -2120,13 +2016,12 @@ it("picks a band from the histogram, scopes the views to it, compares it, and le
     () => expect(page.getByTestId("zone-stats").element().textContent).toContain("count8total"),
     POLL,
   );
-  // Nothing to scope to until there is a band.
+
   await expect.element(page.getByRole("button", { name: "Inside the band" })).toBeDisabled();
   await expect
     .element(page.getByRole("button", { name: "Compare the band with the rest" }))
     .toBeDisabled();
 
-  // From the second bucket to the last: 200 ns to the longest, 900.
   dragHistogram(0.3, 0.95);
   expect(lookShown()).toEqual({ zs: "drain", th: ["0"], zb: "200-900" });
   const banded = await server.next("profileZoneStats");
@@ -2143,8 +2038,6 @@ it("picks a band from the histogram, scopes the views to it, compares it, and le
   await page.getByRole("button", { name: "Compare the band with the rest" }).click();
   expect(lookShown().bz).toBe("rest");
 
-  // A click on one bucket picks it alone; on the band again, lets it go,
-  // and what read the band with it.
   dragHistogram(0.1, 0.1);
   expect(lookShown().zb).toBe("100-199");
   dragHistogram(0.1, 0.1);
@@ -2174,7 +2067,6 @@ it("selects one of the longest, ranks it, and never touches the threads", async 
   await longest.click();
   expect(lookShown()).toEqual({ zs: "drain", th: ["0"] });
 
-  // Another site lets go of the zone, which is not one of its own.
   await longest.click();
   expect(lookShown().zi).toBe("1:1000-1900");
   await page.getByRole("button", { name: "parse", exact: true }).click();
@@ -2201,7 +2093,6 @@ it("says why a site could not be measured, and when none of its zones are in the
   });
   await expect.element(page.getByText("None of its zones are in the range.")).toBeVisible();
 
-  // Threads chosen may leave them out too, wherever they are.
   const empty = { ...STATS, count: 0, total: 0, histogram: [], longest: [], banded: [0, 0] };
   changeLook((look) => ({ ...look, th: ["1"] }));
   server.answer(await server.next("profileZoneStats"), empty);
@@ -2272,7 +2163,7 @@ it("selects a call from its name's button, and sorts by a column it names", asyn
   await page.getByRole("button", { name: "name", exact: true }).click();
   await vi.waitFor(() => expect(sorting("name")).toBe("ascending"), POLL);
   expect(sorting("total")).toBeNull();
-  // Counts are grouped, and a rounded time holds its exact nanoseconds.
+
   await expect.element(page.getByRole("cell", { name: "1,200" }).first()).toBeVisible();
   await expect.element(page.getByTitle("1,234,567 ns")).toHaveTextContent("1.23 ms");
 });
@@ -2292,7 +2183,7 @@ it("says it is reading a call's detail, and why it could not", async () => {
 it("reads a click on a heat map's top edge as its highest row, in the slice clicked", async () => {
   const server = await mount(<KernelPane />, { summary: traced(), look: { sc: "read" } });
   server.answer(await server.next("syscallSummary"), SUMMARY);
-  // Two slices of three rows: the first's calls are slow, the second's fast.
+
   server.answer(await server.next("syscallHeatmap"), {
     start: 1000,
     width: 500,
@@ -2304,8 +2195,7 @@ it("reads a click on a heat map's top edge as its highest row, in the slice clic
   const map = page.getByRole("img", { name: "Latency heat map" });
   await expect.element(page.getByText(/0 to/u)).toBeVisible();
   const bounds = map.element().getBoundingClientRect();
-  // A mouse event's coordinates are whole pixels, so on a canvas whose top
-  // falls between two, a click on its top row reads as just above it.
+
   expect(bounds.top % 1, "the heat map's top is a whole pixel").not.toBe(0);
   mouseAt(map.element(), "click", bounds.width / 4, 0);
   await vi.waitFor(() => expect(lookShown().sl).toBeDefined(), POLL);
@@ -2316,8 +2206,7 @@ it("reads a click on a heat map's top edge as its highest row, in the slice clic
 it("draws a heat map's cells of failed calls in the error color, however few failed", async () => {
   const server = await mount(<KernelPane />, { summary: traced(), look: { sc: "read" } });
   server.answer(await server.next("syscallSummary"), SUMMARY);
-  // Two slices of three rows: the first's slow calls all returned, one of
-  // the second's 40 fast calls failed.
+
   server.answer(await server.next("syscallHeatmap"), {
     start: 1000,
     width: 500,
@@ -2371,7 +2260,6 @@ it("says why the log could not be read", async () => {
   await expect.element(page.getByText("the log is cut short")).toBeVisible();
 });
 
-// The processes tab is read end to end in e2e/syscalls.spec.ts.
 for (const [tab, method, reading, empty] of [
   ["files", "syscallFiles", "Reading files…", "No file was opened or used."],
   ["network", "syscallNetwork", "Reading sockets…", "No socket was used."],
@@ -2411,13 +2299,12 @@ it("keeps its tabs at every level, and says what a level left out and the flag t
   for (const tab of ["Summary", "Log", "Files", "Network", "Processes"]) {
     await expect.element(page.getByRole("button", { name: tab, exact: true })).toBeVisible();
   }
-  // There is nothing to ask the server for.
+
   await page.getByRole("button", { name: "Log", exact: true }).click();
   await expect.element(said).toBeVisible();
   expect(server.requests.filter((asked) => asked.method.startsWith("syscall"))).toEqual([]);
   cleanup();
 
-  // At counts, the kept exceptions show under the sentence.
   const counts = summaryOf({ syscalls: 4, settings: [{ name: "syscalls", value: "counts" }] });
   const counted = await mount(<KernelPane />, { summary: counts });
   counted.answer(await counted.next("syscallSummary"), SUMMARY);
@@ -2429,14 +2316,12 @@ it("keeps its tabs at every level, and says what a level left out and the flag t
   await expect.element(page.getByRole("button", { name: "read", exact: true })).toBeVisible();
   cleanup();
 
-  // At calls, there is nothing to say.
   const kept = await mount(<KernelPane />, { summary: traced() });
   kept.answer(await kept.next("syscallSummary"), SUMMARY);
   await expect.element(page.getByRole("button", { name: "read", exact: true })).toBeVisible();
   await expect.element(page.getByTestId("syscalls-unkept")).not.toBeInTheDocument();
 });
 
-/** Mounts a profile's pane of `view`, or its overview. */
 async function mountPage(
   summary: ProfileSummary,
   known: boolean,
@@ -2484,7 +2369,7 @@ it("says nothing the tab says, and shows a bar only for a recording", async () =
   const summary = summaryOf({ program: "/work/searcher" });
   const server = await mountPage(summary, true);
   server.answer(await server.next("profile"), summary);
-  // Its tab names it, and File details says what it holds, so the head says neither.
+
   const details = page.getByRole("button", { name: "File details" });
   await expect.element(details).toBeVisible();
   const head = document.querySelector(".profile-head") as HTMLElement;
@@ -2501,8 +2386,6 @@ it("says nothing the tab says, and shows a bar only for a recording", async () =
     .toBeVisible();
 });
 
-/** What File details reads of a recording of a program with an argument a
- * shell would split. */
 function inspectionOf(change: Partial<ProfileInspection> = {}): ProfileInspection {
   return {
     processes: [{ pid: 7, name: "rg", command: null }],
@@ -2510,7 +2393,7 @@ function inspectionOf(change: Partial<ProfileInspection> = {}): ProfileInspectio
       { path: "/bin/rg", size: 2048, buildId: null, frames: 9 },
       { path: "/lib/libc.so.6", size: 1024, buildId: "5a70", frames: 2 },
     ],
-    // Ten samples: 2 at depth 1, 5 at depth 3, 3 at depth 4.
+
     depths: [0, 2, 0, 5, 3],
     overTime: [4, 0, 6],
     distinctStacks: 4,
@@ -2530,7 +2413,6 @@ function inspectionOf(change: Partial<ProfileInspection> = {}): ProfileInspectio
   };
 }
 
-/** A recording of a program with an argument a shell would split. */
 const RG = { arguments: ["/bin/rg", "-c", "a b", "it's"], text: "/bin/rg -c a b it's" };
 
 it("shows the file's details in a pane: its whole command, then its samples", async () => {
@@ -2554,8 +2436,6 @@ it("shows the file's details in a pane: its whole command, then its samples", as
   await expect.element(details.getByText("Reading the profile…")).toBeVisible();
   server.answer(asked, inspectionOf());
 
-  // Metadata comes first: every argument whole, on its own line, quoted
-  // as a shell needs, and Copy copies the line a shell runs.
   await expect
     .element(page.getByRole("tab", { name: "Metadata" }))
     .toHaveAttribute("aria-selected", "true");
@@ -2571,7 +2451,6 @@ it("shows the file's details in a pane: its whole command, then its samples", as
   await expect.element(details.getByRole("button", { name: "Copied" })).toBeVisible();
   written.mockRestore();
 
-  // Settings shown elsewhere are left out of Recording.
   await expect
     .element(details.getByRole("row", { name: "Source CPU time at 999 Hz" }))
     .toBeVisible();
@@ -2584,7 +2463,6 @@ it("shows the file's details in a pane: its whole command, then its samples", as
     .toBeVisible();
   await expect.element(details.getByRole("row", { name: "samples 300 B 75.0%" })).toBeVisible();
 
-  // The arrow keys move to Samples.
   await userEvent.click(page.getByRole("tab", { name: "Metadata" }));
   await userEvent.keyboard("{ArrowRight}");
   const samples = page.getByRole("tab", { name: "Samples" });
@@ -2597,7 +2475,6 @@ it("shows the file's details in a pane: its whole command, then its samples", as
     .element(details.getByRole("row", { name: "Reached the outermost frame 7 70.0%" }))
     .toBeVisible();
 
-  // Depth starts at one frame, as no sample has none; the median is 3.
   const bars = details.getByRole("button", { name: /frames?: /u });
   expect(bars.elements().map((bar) => bar.getAttribute("aria-label"))).toEqual([
     "1 frame: 2 samples",
@@ -2613,7 +2490,6 @@ it("shows the file's details in a pane: its whole command, then its samples", as
     .element(depthRegion.getByRole("status"))
     .toHaveTextContent("4 frames: 3 samples, 30.0%");
 
-  // Each slice of time reads out its span and count too, under round ticks.
   const time = details.getByRole("region", { name: /over time/u });
   const slices = time.getByRole("button");
   expect(slices.elements()).toHaveLength(3);
@@ -2642,15 +2518,13 @@ it("says when a recording kept only the joined command, with no Samples for a tr
   server.answer(await server.next("profile"), summary);
   server.answer(await server.next("profileInspect"), inspectionOf({ file: null }));
   const details = page.getByRole("region", { name: "test.usprof" });
-  // A trace with no samples has nothing for a Samples tab.
+
   await expect.element(details.getByText(/kept the command as one line/u)).toBeVisible();
   expect(details.getByRole("tab").elements()).toHaveLength(0);
   expect(page.getByTestId("command").element().textContent).toBe("/bin/sh -c 'a b'");
   await expect.element(details.getByRole("row", { name: "Source a live recording" })).toBeVisible();
 });
 
-/** Takes the clipboard API away, as from a page served over plain HTTP to
- * another machine, and copies through a selection, as such a page must. */
 function withoutClipboard() {
   Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
   const selected: string[] = [];
@@ -2665,7 +2539,7 @@ function withoutClipboard() {
     selected,
     restore() {
       copy.mockRestore();
-      // The page's own value goes, and Navigator's getter answers again.
+
       delete (navigator as unknown as Record<string, unknown>).clipboard;
     },
   };
@@ -2687,7 +2561,6 @@ it("copies the command from File details where the page has no clipboard API", a
   }
 });
 
-/** The accounting's facts, each its label and value. */
 const stats = () =>
   [...document.querySelectorAll("[data-testid=accounting] .stat")].map(
     (stat) =>
@@ -2728,8 +2601,7 @@ it("leads with what was recorded, and shows only the losses there were", async (
   server.answer(await server.next("profile"), summary);
   const program = page.getByRole("button", { name: "rg", exact: true });
   await expect.element(program).toBeVisible();
-  // Two threads at most keep two CPUs busy; 3 s of CPU in 2 s is 1.5. Lost
-  // samples stay in File details.
+
   expect(stats()).toEqual([
     "Program: rg",
     "Sampling: 999 Hz + kernel",
@@ -2746,8 +2618,6 @@ it("leads with what was recorded, and shows only the losses there were", async (
     ),
   ).toEqual(["7"]);
 
-  // The program shows its whole command, which copies where the page has
-  // no clipboard API, and Escape puts it away.
   await userEvent.click(program);
   const dialog = page.getByRole("dialog", { name: "Command" });
   await expect
@@ -2775,8 +2645,6 @@ it("says why File details failed", async () => {
     .element(page.getByText("Could not read its details: the file went away"))
     .toBeVisible();
 
-  // Download ends the head. This test's page serves no profiles, so the
-  // download fails, and says why.
   const details = page.getByRole("region", { name: "test.usprof" });
   const buttons = [...details.element().querySelectorAll(".details-head > button")];
   expect(buttons.map((button) => button.textContent)).toEqual(["Download"]);

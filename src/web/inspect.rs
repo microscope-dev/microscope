@@ -1,5 +1,3 @@
-//! Requests that read the program: stacks at a stop and source files.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -19,7 +17,6 @@ use crate::cli::format;
 use crate::cli::terminal::Renderer;
 use crate::present::python_files::Project;
 
-/// A thread or task as a message names it.
 pub fn executes(execution: ExecutionContext) -> String {
     match execution {
         ExecutionContext::Thread(thread) => format!("thread {thread}"),
@@ -27,7 +24,6 @@ pub fn executes(execution: ExecutionContext) -> String {
     }
 }
 
-/// The context of a thread's or task's innermost frame at a stop.
 pub const fn innermost(stop: u64, execution: ExecutionContext) -> StopContext {
     StopContext {
         stop: microscope::StopId::new(stop),
@@ -36,8 +32,6 @@ pub const fn innermost(stop: u64, execution: ExecutionContext) -> StopContext {
     }
 }
 
-/// The context of a thread's or task's frame numbered `frame`, counting
-/// from the innermost, at a stop.
 pub async fn context(
     handle: &DebuggerHandle,
     stop: u64,
@@ -68,7 +62,6 @@ pub async fn context(
     Ok(context)
 }
 
-/// A thread's or task's frames, folded around frame `selected`.
 pub async fn backtrace(
     handle: &DebuggerHandle,
     images: &Images,
@@ -102,7 +95,6 @@ pub async fn backtrace(
     })
 }
 
-/// One frame of a stack, as the page shows it.
 async fn frame_of(
     images: &Images,
     trace: &microscope::Backtrace,
@@ -169,8 +161,6 @@ async fn frame_of(
     }
 }
 
-/// The files the page can show: those debug information names, a Python
-/// program's own, and those its frames recorded.
 pub async fn sources(images: &Images, python: Option<Project>) -> SourceFiles {
     let recorded = images.recorded_paths();
     let images = images.with_sources().await;
@@ -188,7 +178,6 @@ pub async fn sources(images: &Images, python: Option<Project>) -> SourceFiles {
     if let Some(project) = python {
         script = project.script.clone();
         let directories = project.directories.clone();
-        // A program run from a large directory has many files to read.
         let listing = tokio::task::spawn_blocking(move || project.files()).await;
         match listing {
             Ok(listing) => {
@@ -219,8 +208,6 @@ pub async fn sources(images: &Images, python: Option<Project>) -> SourceFiles {
         }
     }
 
-    // The executable's image comes first; Go names its main function
-    // main.main. A Python program begins at its script.
     let script = script.map(|script| SourceLine {
         path: script.display().to_string(),
         line: 1,
@@ -249,9 +236,6 @@ pub async fn sources(images: &Images, python: Option<Project>) -> SourceFiles {
     }
 }
 
-/// Functions whose names hold `query`, ASCII case aside: whole names first,
-/// then those it begins, holds, or holds the letters of in order, and
-/// shorter names before longer ones.
 #[expect(
     clippy::indexing_slicing,
     reason = "keep is at most candidates.len(), and each candidate's module numbers one of images"
@@ -268,8 +252,6 @@ pub async fn functions(images: &Images, query: &FunctionQuery) -> Result<Functio
 
     let images = images.with_sources().await;
 
-    // A short query matches most of a large program, so candidates are
-    // ranked before any of them is described.
     let mut candidates = Vec::new();
     let mut lower = String::new();
     for (module, image) in images.iter().enumerate() {
@@ -293,8 +275,6 @@ pub async fn functions(images: &Images, query: &FunctionQuery) -> Result<Functio
         }
     }
 
-    // Only the best few are sorted: the rest only when repeated declarations
-    // of the same functions took all of their places.
     let keep = limit.saturating_mul(8).max(1).min(candidates.len());
     if keep < candidates.len() {
         candidates.select_nth_unstable(keep);
@@ -328,7 +308,6 @@ pub async fn functions(images: &Images, query: &FunctionQuery) -> Result<Functio
             line: declared.as_ref().map(|declared| declared.line.get()),
         };
 
-        // Declarations repeat a function in each unit that names it.
         if found.contains(&described) {
             continue;
         }
@@ -347,7 +326,6 @@ pub async fn functions(images: &Images, query: &FunctionQuery) -> Result<Functio
     })
 }
 
-/// How well `name` matches `query`, both lowercase, best first, or none.
 fn rank(name: &str, query: &str) -> Option<u8> {
     match name.find(query) {
         Some(0) if name.len() == query.len() => Some(0),
@@ -363,8 +341,6 @@ fn rank(name: &str, query: &str) -> Option<u8> {
     }
 }
 
-/// Reads a file the debug information names, with the lines any module
-/// can break at, or one a runtime recorded for a frame the page was shown.
 pub async fn source(
     handle: &DebuggerHandle,
     images: &Images,
@@ -391,7 +367,6 @@ pub async fn source(
 
     let (read, text) = match found {
         Some(file) => handle.read_source_file(&file).await?,
-        // Its runtime knows which lines run code only as it loads them.
         None if images.recorded(recorded)
             || python.is_some_and(|project| project.holds(recorded)) =>
         {
@@ -413,14 +388,11 @@ pub async fn source(
     })
 }
 
-/// The most tasks a list holds, each of which costs a backtrace.
 const TASK_LIMIT: usize = 512;
 
 const FIRST_LINE: LineNumber = LineNumber::new(1).expect("line one is nonzero");
 const LAST_LINE: LineNumber = LineNumber::new(u64::MAX).expect("u64::MAX is nonzero");
 
-/// The program's tasks at a stop, each where the code the program wrote
-/// has it, as the CLI's `tasks` says.
 pub async fn tasks(
     handle: &DebuggerHandle,
     images: &Images,
@@ -431,7 +403,6 @@ pub async fn tasks(
     let mut tasks = Vec::with_capacity(page.tasks.len());
 
     for task in page.tasks.iter() {
-        // Work that runs no code has no stack to read.
         let trace = if task.stackless {
             Err(microscope::Error::TaskUnavailable {
                 task: task.id,

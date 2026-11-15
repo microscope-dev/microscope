@@ -1,11 +1,3 @@
-//! Watches of a JavaScript frame's variables. V8 keeps a variable no
-//! closure captures in a slot of its frame, an interpreter register or an
-//! argument, and a captured one in a slot of a context that the frame's
-//! chain of contexts reaches. A collection moves contexts, young or old,
-//! and rewrites each slot that names a moved object, so a watch is placed
-//! by how its frame reaches its word: the frame's own slot, or how many
-//! contexts out along the chain, and how far into that context.
-
 use std::sync::Arc;
 
 use super::objects::{Object, Problem, Reader, address_at};
@@ -14,8 +6,6 @@ use crate::VirtualAddress;
 use crate::image::v8::{Constant, Field};
 use crate::runtime_model::{InterpretedFrameRef, InterpretedPlace, InterpretedWatch};
 
-/// Where the variable at `slot` of the frame `frame` keeps its word, to
-/// watch, and the function the frame runs; or why it is not watched.
 pub(super) fn watch(
     reader: &Reader<'_>,
     frame: InterpretedFrameRef,
@@ -32,8 +22,6 @@ pub(super) fn watch(
         Kind::Optimized => {
             return refused("is kept by optimized code where microscope cannot watch it");
         }
-        // Optimized code keeps a parameter it changes in a register, not
-        // in the slot the call passed it in.
         Kind::Argument(_) if !frame.live_registers => {
             return refused(
                 "is a parameter that optimized code keeps where microscope cannot watch it",
@@ -45,12 +33,6 @@ pub(super) fn watch(
                  scopes, which microscope does not watch",
             );
         }
-        // V8 gives a block's variable a register of its own, but each
-        // entry of the block, as a loop's next iteration, binds the variable
-        // anew in that register, which no bytecode marks; the stores that
-        // begin a new binding cannot be told from the variable's own. The
-        // register's name binds the innermost declaration
-        // (`variables::bind`), so a block's declaration of it is the one.
         Kind::Named(_)
             if reader
                 .stop
@@ -81,8 +63,6 @@ pub(super) fn watch(
     let fp = frame.address.get();
     let function = super::frames::javascript_function(reader, fp)?
         .ok_or("the frame runs no JavaScript function")?;
-    // A generator's or async function's frame leaves the stack at each
-    // `yield` or `await`, its slots kept in its object until it resumes.
     if matches!(
         variable.kind,
         Kind::Argument(_) | Kind::Named(_) | Kind::Register { .. }
@@ -93,8 +73,6 @@ pub(super) fn watch(
              frame, which are not watched",
         );
     }
-    // A collection finds the word again by its place, so a word whose
-    // place cannot be found is not watched.
     let Some(found) = place(reader, fp, at)? else {
         return refused("is in a context its frame's chain no longer reaches");
     };
@@ -114,10 +92,6 @@ pub(super) fn watch(
     }))
 }
 
-/// Whether the frame at `fp` still runs `function` and reaches the
-/// watched word at `watched`. That the frame has not returned, nor been
-/// replaced by a new one, the debugger proves from the thread's stack
-/// ([`crate::runtime_model::RuntimeModel::stack_frame_builders`]).
 pub(super) fn runs(
     reader: &Reader<'_>,
     fp: u64,
@@ -130,10 +104,6 @@ pub(super) fn runs(
     Ok(place(reader, fp, watched)?.is_some())
 }
 
-/// How the frame at `fp` reaches the word at `watched`: through a context
-/// of its chain, or as one of its own slots that its code keeps current.
-/// `None` when it reaches it no more, as when the word's block ended and
-/// popped its context, or optimized code replaced the frame's.
 pub(super) fn place(
     reader: &Reader<'_>,
     fp: u64,
@@ -154,8 +124,6 @@ pub(super) fn place(
         .then(|| InterpretedPlace::Frame(VirtualAddress::new(watched))))
 }
 
-/// Where the frame at `fp` keeps the word it reaches by `place`, with the
-/// function it runs, after a collection.
 pub(super) fn placed(
     reader: &Reader<'_>,
     fp: u64,
@@ -183,7 +151,6 @@ pub(super) fn placed(
     })
 }
 
-/// The context `depth` links out along the chain of the frame at `fp`.
 fn context_at(reader: &Reader<'_>, fp: u64, depth: u32) -> Result<Object, Problem> {
     let mut context = current_context(reader, fp)?;
     for _ in 0..depth {
@@ -195,13 +162,7 @@ fn context_at(reader: &Reader<'_>, fp: u64, depth: u32) -> Result<Object, Proble
     context.ok_or_else(|| "the frame's chain of contexts is shorter".into())
 }
 
-/// Whether the slot of `context` holding `word` keeps its value in a
-/// context cell (V8 14.6), or will once initialized: a cell holds a number
-/// in one field or another as the number's type changes, and a slot holds
-/// the cell until a value of another type replaces it
-/// (`Context::Set`, `src/objects/contexts.cc`).
 fn in_cell(reader: &Reader<'_>, context: Object, word: u64) -> Result<bool, Problem> {
-    // A version without cells names no cell type.
     let Ok(cell) = reader.constant(Constant::ContextCellType) else {
         return Ok(false);
     };
@@ -221,7 +182,6 @@ fn in_cell(reader: &Reader<'_>, context: Object, word: u64) -> Result<bool, Prob
     Ok(flags & reader.constant(Constant::ScopeHasContextCellsMask)? != 0)
 }
 
-/// The context the frame at `fp` runs in, which begins its chain.
 fn current_context(reader: &Reader<'_>, fp: u64) -> Result<Option<Object>, Problem> {
     let slot = fp.wrapping_add_signed(reader.constant(Constant::OffFpContext)?);
     let context = reader
@@ -230,8 +190,6 @@ fn current_context(reader: &Reader<'_>, fp: u64) -> Result<Option<Object>, Probl
     Ok(is_scope(reader, context)?.then_some(context))
 }
 
-/// The context outside `context`, `None` past the last a function's
-/// variables are in.
 fn outer(reader: &Reader<'_>, context: Object) -> Result<Option<Object>, Problem> {
     let previous = variables::slot(reader, context, Constant::ContextPreviousIndex)?;
     let previous = reader
@@ -240,8 +198,6 @@ fn outer(reader: &Reader<'_>, context: Object) -> Result<Option<Object>, Problem
     Ok(is_scope(reader, previous)?.then_some(previous))
 }
 
-/// Whether `object` is a context that holds variables: any but the
-/// native context, which ends a chain.
 fn is_scope(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     let ty = reader.instance_type(object)?;
     if ty == reader.constant(Constant::NativeContextType)? {
@@ -255,7 +211,6 @@ fn is_scope(reader: &Reader<'_>, object: Object) -> Result<bool, Problem> {
     Ok(true)
 }
 
-/// How far into `context` its slot at `address` is, if it has one there.
 fn offset_in(reader: &Reader<'_>, context: Object, address: u64) -> Result<Option<u64>, Problem> {
     let elements = reader.field_address(context, Field::ContextElements)?;
     let length = reader.smi_field(context, Field::ContextLength)?;
@@ -273,14 +228,10 @@ fn offset_in(reader: &Reader<'_>, context: Object, address: u64) -> Result<Optio
     Ok(Some(address - untagged(reader, context)?))
 }
 
-/// Where `object` begins.
 fn untagged(reader: &Reader<'_>, object: Object) -> Result<u64, Problem> {
     Ok(object.0 - reader.constant(Constant::HeapObjectTag)?.cast_unsigned())
 }
 
-/// Whether `address` is an argument slot of the frame at `fp`, or one of
-/// its interpreter registers while its code keeps them, as the
-/// interpreter's and Sparkplug's do, and optimized code does not.
 fn frame_slot(reader: &Reader<'_>, fp: u64, address: u64) -> Result<bool, Problem> {
     let at = |constant| -> Result<u64, Problem> {
         Ok(fp.wrapping_add_signed(reader.constant(constant)?))
@@ -295,8 +246,6 @@ fn frame_slot(reader: &Reader<'_>, fp: u64, address: u64) -> Result<bool, Proble
         if count > 0 && (lowest..=file).contains(&address) && (file - address).is_multiple_of(8) {
             return Ok(true);
         }
-        // The arguments: as many as the call passed, or as the function
-        // declares, whose slots V8 fills with undefined.
         let word = reader.word(at(Constant::StandardFrameArgCOffset)?)?;
         let argc = word
             .cast_signed()
@@ -349,8 +298,6 @@ mod tests {
             heap.word(map, map + 1);
             heap.word(map + field(Field::MapInstanceType), ty);
         }
-        // A function whose shared information runs a bytecode array of one
-        // register and declares no parameters.
         heap.word(0x2000, 0x1001);
         heap.word(0x2000 + field(Field::JSFunctionSharedFunctionInfo), 0x3001);
         heap.word(0x3000, 0x1101);

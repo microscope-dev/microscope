@@ -1,8 +1,8 @@
-// Watches of a frame's registers. A block's variable has a register of
-// its own, which each iteration of a loop binds anew; such a variable is
-// refused. A function's own variable is watched until its call returns,
-// after which C++ called from the script reuses its slot. The program
-// prints what it stores.
+
+
+
+
+
 
 'use strict';
 
@@ -20,9 +20,9 @@ function g() {
   return total;
 }
 
-// g's frame is below those of the calls that reach it, so that once they
-// return, a call from the script into V8's and ICU's C++ builds its
-// transition frames above g's and its C++ frames over it.
+
+
+
 function deep(n) {
   return n === 0 ? g() : deep(n - 1);
 }

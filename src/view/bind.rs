@@ -1,9 +1,3 @@
-//! Binding a view against one concrete type, before anything runs: every
-//! member path resolves, every type resolves through the type index, and
-//! every expression type-checks. An `or` alternative that does not bind is
-//! skipped; a view any part of which does not bind is rejected with its
-//! reason, and the next candidate is tried.
-
 use std::sync::Arc;
 
 use crate::eval::bind::{Mode, bind as bind_expression, bind_condition, bind_value};
@@ -25,32 +19,21 @@ use super::syntax::{
     Pattern, Piece, Shape, Statement, TypeExpr, View, Visualize,
 };
 
-/// Something a view's expression names, which its machine reaches at a
-/// stop.
 #[derive(Debug, Clone)]
 pub enum ViewObject<St> {
-    /// `self`, the value presented.
     This,
 
-    /// A member of `self`, by its planned step.
     Member(St),
 
-    /// A `let`, by position.
     Let(usize),
 
-    /// A generator's variable, by nesting depth.
     Variable(usize),
 
-    /// A global of the value's module, by a step that reaches it from
-    /// anywhere.
     Global(St),
 }
 
-/// A program bound in a view's scope.
 pub type ViewProgram<St> = Program<ViewObject<St>, St>;
 
-/// A `check`, with its sides when it is a comparison, for saying why it
-/// failed.
 #[derive(Debug, Clone)]
 pub struct BoundCheck<St> {
     pub text: String,
@@ -58,14 +41,12 @@ pub struct BoundCheck<St> {
     pub sides: Option<[(String, ViewProgram<St>); 2]>,
 }
 
-/// A `field`.
 #[derive(Debug, Clone)]
 pub struct BoundField<St> {
     pub name: Arc<str>,
     pub program: ViewProgram<St>,
 }
 
-/// How a `format` writes a value, with the enumeration it names resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundFormat {
     Hex,
@@ -79,29 +60,23 @@ pub enum BoundFormat {
     Time(super::syntax::TimeUnit),
 }
 
-/// A piece of a `summary`.
 #[derive(Debug, Clone)]
 pub enum BoundPiece<St> {
     Literal(String),
 
-    /// A value's summary, or the value written in `format`.
     Hole {
         program: ViewProgram<St>,
         format: Option<BoundFormat>,
     },
 }
 
-/// Where a `text` shape's characters are, and how many bytes wide each
-/// is: one, or two or four for UTF-16 and UTF-32.
 #[derive(Debug, Clone)]
 pub enum TextSource<St> {
-    /// A pointer to characters.
     Pointer {
         program: ViewProgram<St>,
         width: usize,
     },
 
-    /// An array or slice of characters, with the step to its first.
     Elements {
         program: ViewProgram<St>,
         first: St,
@@ -110,7 +85,6 @@ pub enum TextSource<St> {
 }
 
 impl<St> TextSource<St> {
-    /// How many bytes wide each character is.
     pub const fn width(&self) -> usize {
         match self {
             Self::Pointer { width, .. } | Self::Elements { width, .. } => *width,
@@ -118,9 +92,6 @@ impl<St> TextSource<St> {
     }
 }
 
-/// A generator, bound: its programs see the variables of the clauses
-/// around it, and a link's program also its node, at the clause's own
-/// position.
 #[derive(Debug, Clone)]
 pub enum BoundGenerator<St> {
     Range(ViewProgram<St>),
@@ -134,7 +105,6 @@ pub enum BoundGenerator<St> {
         right: ViewProgram<St>,
     },
 
-    /// A kernel's items, each as many words as the clause has variables.
     Kernel {
         kernel: Arc<super::kernel::Kernel>,
         arguments: Vec<ViewProgram<St>>,
@@ -142,18 +112,13 @@ pub enum BoundGenerator<St> {
     },
 }
 
-/// What follows a clause's generator, bound.
 #[derive(Debug, Clone)]
 pub enum BoundItem<St> {
     Filter(ViewProgram<St>),
 
-    /// A value computed once for each of the clause's values, at the next
-    /// position.
     Let(ViewProgram<St>),
 }
 
-/// A clause, bound. Its variable is at one position, and its `let`s at the
-/// positions after it.
 #[derive(Debug, Clone)]
 pub struct BoundClause<St> {
     pub generator: BoundGenerator<St>,
@@ -161,7 +126,6 @@ pub struct BoundClause<St> {
 }
 
 impl<St> BoundClause<St> {
-    /// How many positions the clause's variables and `let`s take.
     pub fn width(&self) -> usize {
         let variables = match &self.generator {
             BoundGenerator::Kernel { words, .. } => *words,
@@ -177,16 +141,13 @@ impl<St> BoundClause<St> {
     }
 }
 
-/// The generators of a sequence or map, and its declared count.
 #[derive(Debug, Clone)]
 pub struct BoundScan<St> {
-    /// `None` when the view leaves the count to the generators.
     pub count: Option<ViewProgram<St>>,
     pub clauses: Vec<BoundClause<St>>,
 }
 
 impl<St> BoundScan<St> {
-    /// Whether element `k` is reached directly: one `range` and no filter.
     pub fn random_access(&self) -> bool {
         matches!(
             self.clauses.as_slice(),
@@ -198,7 +159,6 @@ impl<St> BoundScan<St> {
     }
 }
 
-/// A shape, bound.
 #[derive(Debug, Clone)]
 pub enum BoundShape<St> {
     Text {
@@ -222,53 +182,37 @@ pub enum BoundShape<St> {
         otherwise: Box<Self>,
     },
 
-    /// A record whose members are its children, before the view's fields;
-    /// a `tuple` when its members are a tuple's elements, in order: named
-    /// by their positions, or by a `tuple` shape.
     Record {
         members: Vec<BoundField<St>>,
         tuple: bool,
     },
 
-    /// An interpreter's object as the debugger presents it without a view,
-    /// lending its children, as a view of one that does not `show` presents
-    /// it.
     Stored,
 
-    /// What a pointer points to, as a type that may be chosen at run time.
     Dynamic {
         pointer: ViewProgram<St>,
         ty: BoundDynamic<St>,
     },
 
-    /// A `match` whose arms name no value it has: a problem saying the
-    /// value.
     Unmatched {
         text: String,
         program: ViewProgram<St>,
     },
 }
 
-/// The type a `dynamic` shape presents its pointer's target as.
 #[derive(Debug, Clone)]
 pub enum BoundDynamic<St> {
     Fixed(TypeReference),
 
-    /// A type's arguments, of which `index` chooses one; a value argument
-    /// is `None`.
     Argument {
         types: Arc<[Option<TypeReference>]>,
         index: ViewProgram<St>,
     },
 
-    /// The one type among `candidates` that `pattern` names when its
-    /// captures `known` does not name are the type arguments of the
-    /// function whose code `code` addresses.
     Function {
         code: ViewProgram<St>,
         name: Arc<str>,
 
-        /// Whether `name` is a parameter's, which names its argument.
         argument: bool,
         pattern: Arc<Pattern>,
         known: Captures,
@@ -286,20 +230,15 @@ impl<St> BoundShape<St> {
         }
     }
 
-    /// Whether any branch presents text.
     pub fn has_text(&self) -> bool {
         self.any_branch(|shape| matches!(shape, Self::Text { .. }))
     }
 
-    /// Whether any branch presents a sequence or map, whose elements or
-    /// entries are children.
     pub fn has_elements(&self) -> bool {
         self.any_branch(|shape| matches!(shape, Self::Sequence { .. } | Self::Map { .. }))
     }
 }
 
-/// A `visualize`, bound: the renderer it calls and its inputs, or why it
-/// does not bind, which leaves the rest of its view as it is.
 #[derive(Debug, Clone)]
 pub struct BoundVisualizer<St> {
     pub name: Arc<str>,
@@ -307,74 +246,54 @@ pub struct BoundVisualizer<St> {
     pub bound: Result<BoundDrawing<St>, Rejection>,
 }
 
-/// What a `visualize` that binds draws with.
 #[derive(Debug, Clone)]
 pub struct BoundDrawing<St> {
     pub renderer: Arc<crate::Renderer>,
     pub inputs: Vec<BoundInput<St>>,
 }
 
-/// An input of a `visualize`, bound.
 #[derive(Debug, Clone)]
 pub struct BoundInput<St> {
     pub name: Arc<str>,
     pub value: BoundInputValue<St>,
 
-    /// The part of the presented value the input is, as a drawing's
-    /// `select` names one: `""` for `self`, else members and indices.
     pub path: Option<Arc<str>>,
 }
 
-/// What an input hands the renderer, bound.
 #[derive(Debug, Clone)]
 pub enum BoundInputValue<St> {
     Value(ViewProgram<St>),
 
-    /// `bytes(PTR, LEN)`: an address and a count of bytes.
     Bytes {
         pointer: ViewProgram<St>,
         length: ViewProgram<St>,
     },
 
-    /// A string, as written.
     Text(Arc<str>),
 }
 
-/// A view bound against one concrete type.
 #[derive(Debug, Clone)]
 pub struct BoundView<St> {
     pub view: Arc<View>,
 
-    /// Each `let`, computed at most once per presentation.
     pub lets: Vec<ViewProgram<St>>,
     pub checks: Vec<BoundCheck<St>>,
     pub fields: Vec<BoundField<St>>,
     pub summary: Option<Vec<BoundPiece<St>>>,
     pub shape: BoundShape<St>,
 
-    /// The names of members and fields left out of the children, with
-    /// the lines that hide them.
     pub hidden: Vec<(Arc<str>, u32)>,
 
-    /// How members and fields are written, by name, with the lines that
-    /// say so; a later one wins.
     pub formats: Vec<(Arc<str>, BoundFormat, u32)>,
 
-    /// The bytes of `self`, which `format self as utf8` writes as the
-    /// summary of a shape that does not present another value.
     pub self_text: Option<TextSource<St>>,
 
-    /// The `extend`s that add to this view, each bound in a scope of its
-    /// own, in the order they are tried.
     pub extensions: Vec<Arc<Self>>,
 
-    /// Its `visualize` statements, in order, each bound or not.
     pub visualizers: Vec<BoundVisualizer<St>>,
 }
 
 impl<St> BoundView<St> {
-    /// Every named child the view may show, by name: each record member of
-    /// any branch of its shape, then its fields.
     pub fn named_programs(&self) -> Vec<(Arc<str>, &ViewProgram<St>)> {
         fn record_members<'b, St>(
             shape: &'b BoundShape<St>,
@@ -407,12 +326,10 @@ impl<St> BoundView<St> {
     }
 }
 
-/// Why a view does not bind: the part that failed, and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rejection {
     pub line: u32,
 
-    /// The part of the view that failed, as written.
     pub part: String,
     pub reason: String,
 }
@@ -427,20 +344,14 @@ impl std::fmt::Display for Rejection {
     }
 }
 
-/// What a view presents: values of one of the program's types, or an
-/// interpreter's objects, whose types only their values know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelfType {
     Program(TypeReference),
 
-    /// An object of an interpreted language, as a Python view presents:
-    /// `self` is a value of a dynamic type, and its attributes are written
-    /// `self.name`, as the language writes them.
     Dynamic,
 }
 
 impl SelfType {
-    /// The program type, for a view of one.
     #[must_use]
     pub const fn program(self) -> Option<TypeReference> {
         match self {
@@ -457,23 +368,15 @@ impl SelfType {
     }
 }
 
-/// The scope a view's expressions bind in: its generators' variables, its
-/// `let`s, the values its pattern captured, `self`, and `self`'s members.
-/// Types are its captures and `type`s, then the program's. Nothing the
-/// frame names is visible, so a view means the same at every stop.
 pub struct ViewScope<'a, S: Scope> {
     base: &'a S,
     self_type: SelfType,
     captures: &'a Captures,
 
-    /// The set the view came from, whose kernels it calls before the
-    /// built-in ones.
     set: &'a super::ViewSet,
     types: Vec<(String, TypeReference)>,
     lets: Vec<(String, Ty, bool)>,
 
-    /// The generators' variables and clauses' `let`s in scope, by
-    /// position, with their types and whether each is a place.
     variables: Vec<(String, Ty, bool)>,
 }
 
@@ -569,8 +472,6 @@ impl<S: Scope> Scope for ViewScope<'_, S> {
         let self_type = match self.self_type {
             SelfType::Program(reference) => reference,
             SelfType::Dynamic if name == "self" => return Ok(Lookup::Dynamic(ViewObject::This)),
-            // An object's attributes are named through `self`, so that
-            // what an object happens to hold never shadows a name.
             SelfType::Dynamic => return Ok(Lookup::NotFound),
         };
 
@@ -653,8 +554,6 @@ impl<S: Scope> Scope for ViewScope<'_, S> {
     }
 }
 
-/// Binds `view`, from `set`, against what it presents, `self_type`, whose
-/// identity its pattern matched, capturing `captures`.
 #[expect(
     clippy::too_many_lines,
     reason = "each statement binds in its own arm, in the order the view writes them"
@@ -669,7 +568,6 @@ pub fn bind<S: Scope>(
     let mut scope = ViewScope::new(base, self_type, captures, set);
     let mut lets = Vec::new();
 
-    // `let`s and `type`s, in order: each sees those before it.
     for statement in &view.statements {
         match statement {
             Statement::Let {
@@ -759,8 +657,6 @@ pub fn bind<S: Scope>(
         }
     }
 
-    // A view that does not `show` presents the value's members, and its
-    // bases as members named by their types.
     let shape = match shape {
         Some(shape) => shape,
         None if view.extend => BoundShape::Record {
@@ -805,8 +701,6 @@ pub fn bind<S: Scope>(
     Ok(bound)
 }
 
-/// Binds a `visualize`: its renderer, from the view's own set or else the
-/// built-in ones, and each input, as a field binds.
 fn bind_visualizer<S: Scope>(
     visualize: &Visualize,
     set: &super::ViewSet,
@@ -878,9 +772,6 @@ fn bind_visualizer<S: Scope>(
     }
 }
 
-/// The part of the presented value an input's expression names, when it
-/// is one: written as members and literal indices of `self`, and held in
-/// its storage rather than reached through a pointer.
 fn input_path<St>(expr: &Expr, program: &ViewProgram<St>) -> Option<Arc<str>> {
     if !matches!(
         program.root_object(),
@@ -899,7 +790,6 @@ fn input_path<St>(expr: &Expr, program: &ViewProgram<St>) -> Option<Arc<str>> {
     is_part_path(path).then(|| path.into())
 }
 
-/// Whether `path` is member names and literal indices, as `a.b[2].c`.
 fn is_part_path(path: &str) -> bool {
     let mut rest = path;
     let mut first = true;
@@ -939,7 +829,6 @@ fn is_part_path(path: &str) -> bool {
     true
 }
 
-/// The first alternative that binds, or every alternative's reason.
 fn first_alternative<A, T>(
     alternatives: &[A],
     mut bind: impl FnMut(&A) -> Result<T, String>,
@@ -956,8 +845,6 @@ fn first_alternative<A, T>(
     Err(reasons.join("; or "))
 }
 
-/// What a view that does not `show` presents: a record's members, and its
-/// bases as members named by their types, or any other value as itself.
 fn members<S: Scope>(
     scope: &mut ViewScope<'_, S>,
     line: u32,
@@ -1021,7 +908,6 @@ fn members<S: Scope>(
     })
 }
 
-/// An expression the binder writes for a view.
 fn synthetic(text: &str, line: u32) -> Result<Expr, Rejection> {
     Expression::parse_view(text)
         .map(|expression| Expr { expression, line })
@@ -1032,7 +918,6 @@ fn synthetic(text: &str, line: u32) -> Result<Expr, Rejection> {
         })
 }
 
-/// A `format`, with the enumeration it names resolved.
 fn bind_format<S: Scope>(
     format: &Format,
     line: u32,
@@ -1067,9 +952,6 @@ fn bind_format<S: Scope>(
     })
 }
 
-/// Every name an `extend` hides or formats is one of the members or
-/// fields of the view it extends, or one of its own fields, or `self`, and
-/// every format suits what it writes.
 pub fn check_extension<St>(
     base: &BoundView<St>,
     extension: &BoundView<St>,
@@ -1082,8 +964,6 @@ pub fn check_extension<St>(
     check_against(extension, &named, &presented(&base.shape, self_type), types)
 }
 
-/// What a view's `self` format writes: the value a `value` shape presents,
-/// or else the value itself.
 fn presented<St>(shape: &BoundShape<St>, self_type: SelfType) -> Ty {
     match shape {
         BoundShape::Value(program) => program.result().clone(),
@@ -1091,8 +971,6 @@ fn presented<St>(shape: &BoundShape<St>, self_type: SelfType) -> Ty {
     }
 }
 
-/// Every name `bound` hides or formats is in `named`, or is `self`, and
-/// every format suits what it writes.
 fn check_against<St>(
     bound: &BoundView<St>,
     named: &[(Arc<str>, &ViewProgram<St>)],
@@ -1141,7 +1019,6 @@ fn check_against<St>(
     Ok(())
 }
 
-/// Whether a format can write a value of `ty`.
 fn suits(format: BoundFormat, ty: &Ty, types: &dyn TypeSource) -> Result<(), String> {
     let category = category(types, ty);
     let ok = match format {
@@ -1152,7 +1029,6 @@ fn suits(format: BoundFormat, ty: &Ty, types: &dyn TypeSource) -> Result<(), Str
         | BoundFormat::Duration(_)
         | BoundFormat::Time(_) => matches!(category, Category::Integer { .. }),
         BoundFormat::Bytes => matches!(ty, Ty::Program(_)),
-        // An element may be named, as C's `uint8_t` names `unsigned char`.
         BoundFormat::Utf8 => match category {
             Category::Array { element, .. } | Category::Slice(element) => {
                 representation(types, element).is_ok_and(|(_, info)| {
@@ -1183,7 +1059,6 @@ fn suits(format: BoundFormat, ty: &Ty, types: &dyn TypeSource) -> Result<(), Str
     Err(format!("the format writes {what}"))
 }
 
-/// An error binding `expr`, said in terms of the view.
 fn explain<S: Scope>(
     scope: &ViewScope<'_, S>,
     expr: &Expr,
@@ -1238,7 +1113,6 @@ fn bind_condition_part<S: Scope>(
     bind_condition(&expr.expression, scope).map_err(|error| rejection(scope, expr, &error))
 }
 
-/// Binds an expression whose value's category `accepts`, or says `reason`.
 fn bind_category<S: Scope>(
     expr: &Expr,
     scope: &ViewScope<'_, S>,
@@ -1275,8 +1149,6 @@ const fn is_pointer(category: &Category) -> bool {
 
 const NODES_ARE_POINTERS: &str = "a linked structure's nodes are pointers";
 
-/// A check's conjuncts, each its own check, so a failure names the one
-/// that does not hold.
 fn conjuncts(expr: &Expr) -> Vec<Expr> {
     fn split(
         tree: &crate::eval::syntax::Tree,
@@ -1326,7 +1198,6 @@ fn bind_check<S: Scope>(
 ) -> Result<BoundCheck<S::Step>, Rejection> {
     let program = bind_condition_part(expr, scope)?;
 
-    // A comparison's sides say why it failed.
     let sides = expr.expression.tree().and_then(|tree| {
         let NodeKind::Binary { op, left, right } = tree.kind(tree.root()) else {
             return None;
@@ -1435,8 +1306,6 @@ fn bind_shape<S: Scope>(
     })
 }
 
-/// The type of a `dynamic` shape: one type, or the arguments of a type
-/// for its index to choose among.
 fn bind_dynamic_type<S: Scope>(
     ty: &DynamicType,
     line: u32,
@@ -1486,7 +1355,6 @@ fn bind_dynamic_type<S: Scope>(
             let pattern = super::syntax::type_pattern(name)
                 .map_err(|reason| rejected(format!("`{name}`: {reason}")))?;
 
-            // A parameter's name alone is the argument itself.
             let argument = is_capture_name(name);
             let candidates = if argument {
                 Vec::new()
@@ -1515,9 +1383,6 @@ fn bind_dynamic_type<S: Scope>(
     }
 }
 
-/// Binds a count and its clauses, leaving the clauses' variables in scope
-/// for the element, or the key and value, that follows; the caller clears
-/// them.
 fn bind_scan<S: Scope>(
     count: &Count,
     clauses: &[Clause],
@@ -1546,7 +1411,6 @@ fn bind_scan<S: Scope>(
     })
 }
 
-/// Binds one clause, then puts its variable in scope.
 fn bind_clause<S: Scope>(
     clause: &Clause,
     scope: &mut ViewScope<'_, S>,
@@ -1584,7 +1448,6 @@ fn bind_clause<S: Scope>(
                     reason: "no kernel has that name".to_owned(),
                 })?;
 
-            // Each is a 64-bit word to the kernel.
             let arguments = arguments
                 .iter()
                 .map(|argument| {
@@ -1633,7 +1496,6 @@ fn bind_clause<S: Scope>(
 
     let clause = BoundClause { generator, items };
 
-    // The scanner steps between clauses' values by this width.
     debug_assert_eq!(
         scope.variables.len() - before,
         clause.width(),
@@ -1642,7 +1504,6 @@ fn bind_clause<S: Scope>(
     Ok(clause)
 }
 
-/// A linked structure's first node: a pointer, whose type every node has.
 fn bind_node<S: Scope>(
     expr: &Expr,
     scope: &ViewScope<'_, S>,
@@ -1652,7 +1513,6 @@ fn bind_node<S: Scope>(
     Ok((program, ty))
 }
 
-/// `P => EXPR`, with `P` a node of type `ty`; the next node is a pointer.
 fn bind_link<S: Scope>(
     link: &super::syntax::Link,
     ty: &Ty,
@@ -1666,9 +1526,6 @@ fn bind_link<S: Scope>(
     program
 }
 
-/// How many bytes wide a type's values are as text: one for a character
-/// or a byte, and two or four for a character type that wide, whose
-/// values are UTF-16 or UTF-32 units.
 fn text_unit_width<S: Scope>(scope: &ViewScope<'_, S>, ty: &Ty) -> Option<usize> {
     match ty {
         Ty::Int(int) => (int.width() == 8).then_some(1),
@@ -1743,7 +1600,6 @@ fn bind_text_source<S: Scope>(
     }
 }
 
-/// The type a `type` statement's alternative names.
 fn resolve_type<S: Scope>(
     expr: &TypeExpr,
     scope: &ViewScope<'_, S>,
@@ -1821,11 +1677,6 @@ fn resolve_type<S: Scope>(
     }
 }
 
-/// The one type whose identity a name with arguments spells, the
-/// arguments being types the program defines, arguments the view's
-/// pattern captured, or types the view names: `std::_Rb_tree_node<Value>`.
-/// It is found through the type index by comparing identities, never by
-/// spelling the type's name.
 fn construct<S: Scope>(name: &str, scope: &ViewScope<'_, S>) -> Result<TypeReference, String> {
     let pattern =
         super::syntax::type_pattern(name).map_err(|reason| format!("`{name}`: {reason}"))?;
@@ -1868,8 +1719,6 @@ fn construct<S: Scope>(name: &str, scope: &ViewScope<'_, S>) -> Result<TypeRefer
     }
 }
 
-/// The types a view knows by name: the arguments its pattern captured and
-/// the types its `type` statements name, which shadow them.
 fn known_types<S: Scope>(scope: &ViewScope<'_, S>) -> Captures {
     let mut known = scope.captures.clone();
     for (type_name, reference) in &scope.types {
@@ -1880,8 +1729,6 @@ fn known_types<S: Scope>(scope: &ViewScope<'_, S>) -> Captures {
     known
 }
 
-/// The program's types a pattern may name: those of its base name, in the
-/// language of the type the view presents.
 fn candidates<S: Scope>(pattern: &Pattern, scope: &ViewScope<'_, S>) -> Vec<TypeReference> {
     let language = scope
         .self_type
@@ -1902,7 +1749,6 @@ fn candidates<S: Scope>(pattern: &Pattern, scope: &ViewScope<'_, S>) -> Vec<Type
         .collect()
 }
 
-/// A summary's text and holes, bound.
 fn bind_pieces<S: Scope>(
     pieces: &[Piece],
     scope: &ViewScope<'_, S>,
@@ -1924,7 +1770,6 @@ fn bind_pieces<S: Scope>(
         .collect()
 }
 
-/// Whether a type's name is a capture's: one capitalized word.
 fn is_capture_name(name: &str) -> bool {
     name.chars().next().is_some_and(char::is_uppercase)
         && name
@@ -1932,7 +1777,6 @@ fn is_capture_name(name: &str) -> bool {
             .all(|character| character.is_alphanumeric() || character == '_')
 }
 
-/// A capitalized name in a pattern that nothing the view knows names.
 fn unknown_capture(pattern: &Pattern, known: &Captures) -> Option<String> {
     pattern
         .arguments

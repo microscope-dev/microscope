@@ -1,6 +1,6 @@
-// Forks eight children and exits without waiting for them. Each child runs
-// shared_work, which may hold a trap it inherited, and then creates the
-// file argv[1]/<n>: a child killed by a trap it kept never does.
+
+
+
 
 #include <fcntl.h>
 #include <stdio.h>

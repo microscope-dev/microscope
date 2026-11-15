@@ -1,9 +1,9 @@
-"""A Python variable watched from a checkpoint in its frame: each store
-that changes it stops, with its values before and after, and the watch
-ends with the frame, where the next call of its function puts a frame in
-its place: `total` changes, and `spare` is assigned only in the next
-call's frame.
-"""
+
+
+
+
+
+
 
 import os
 import sys

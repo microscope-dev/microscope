@@ -1,7 +1,7 @@
-// Values of Node's library types and of the program's own classes, which
-// views present by the classes their prototypes name, at the checkpoint
-// "views" in the frame of views(), each with its canonical text
-// (truth.js).
+
+
+
+
 
 'use strict';
 
@@ -46,8 +46,8 @@ function views() {
     Object.entries(values).map(([name, value]) => [`values.${name}`, value]));
   locals['values.emitter._events'] = emitter._events;
   locals['values.derived._events'] = derived._events;
-  // A closure that captures values keeps it in the frame's context, where
-  // its scope names it at any stop.
+
+
   const captured = () => values;
   truth.checkpoint('views', {locals});
   return captured;

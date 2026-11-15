@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Prints the debianNodeDebs list for flake.nix: Debian's nodejs, libnode137,
-# and libnode-dev with every package they depend on, recursively, as one
-# snapshot of a suite names them. Each .deb is fetched from that snapshot,
-# which keeps every version, with Debian's own pool as a second URL, and is
-# pinned by the SHA256 the index records, so nothing is downloaded but the
-# index.
-#
-#   scripts/debian-node-debs.sh 20261022T203737Z [sid] > /tmp/debs.nix
-#
-# Snapshots' timestamps are listed at https://snapshot.debian.org/archive/debian/.
-# It runs on the host, as the dev shell has no curl: it needs curl, xz, gawk,
-# and coreutils. PACKAGES=FILE reads a Packages index already decompressed
-# instead of downloading one.
-#
-# Depends and Pre-Depends are followed; Recommends and Suggests are not. Of
-# alternatives, the first the index has wins, through a package that provides
-# it if none is real. Versions are not compared: one snapshot of one suite is
-# consistent with itself.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 set -euo pipefail
 
@@ -33,7 +33,7 @@ if [[ -z "$index" ]]; then
     curl -fsSL "$snapshot/dists/$suite/main/binary-amd64/Packages.xz" | xz -dc >"$index"
 fi
 
-# One line for each package of the closure: its Filename and its SHA256.
+
 closure="$(gawk -v RS= -v FS='\n' -v roots="$roots" '
     {
         name = ""; depends = ""; provides = ""; file = ""; sha = ""; arch = ""

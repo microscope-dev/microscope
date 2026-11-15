@@ -1,16 +1,9 @@
-//! microscope's reading of each coroutine's debug information, compared with
-//! readelf's: the build reduces readelf's dump of each fixture to one line
-//! per coroutine state, beside the fixture as `<fixture>.coroutines`.
-
 use std::collections::BTreeSet;
 
 use microscope::{CoroutineStateKind, ModuleImage, RecordMemberLayout, TypeNode};
 
 use crate::support::Scenario;
 
-/// One state as readelf's record writes it: the coroutine's path and name,
-/// where its state number is, the state's number and record's name, its
-/// line, and the type of the future it awaits.
 type StateLine = (String, u64, u64, String, u64, String);
 
 fn readelf_record(fixture: &str) -> BTreeSet<StateLine> {
@@ -44,7 +37,6 @@ fn readelf_record(fixture: &str) -> BTreeSet<StateLine> {
         .collect()
 }
 
-/// The same lines from microscope's normalization of every coroutine type.
 fn normalized(image: &ModuleImage) -> BTreeSet<StateLine> {
     let mut lines = BTreeSet::new();
     for node in image.types() {
@@ -93,7 +85,6 @@ fn normalized(image: &ModuleImage) -> BTreeSet<StateLine> {
             ));
         }
 
-        // Every state's members are laid out within the coroutine.
         for member in coroutine.states.iter().flat_map(|state| state.saved.iter()) {
             assert!(
                 matches!(member.layout, RecordMemberLayout::ByteOffset(at)

@@ -1,6 +1,3 @@
-//! Arrays bounded at run time: what one value of such an array finds its
-//! bounds, strides, and elements to be.
-
 use std::sync::Arc;
 
 use gimli::Location;
@@ -23,15 +20,9 @@ use super::storage;
 use super::types::TypeResolution;
 use super::{DwarfVariableInfo, Metadata, MetadataAbsence};
 
-/// A dimension's lower bound and its count, unknown for a C flexible array
-/// member.
 pub(super) type Bound = (i128, Option<u64>);
 
-/// What one value of an array bounded at run time is.
 pub(super) enum Resolved {
-    /// Elements, at `data`, each dimension's lower bound and count, the
-    /// count unknown for a C flexible array member, and each dimension's
-    /// stride in bytes.
     Elements {
         data: ValueStorage,
         dimensions: Vec<Bound>,
@@ -42,7 +33,6 @@ pub(super) enum Resolved {
 }
 
 impl Resolved {
-    /// Where the elements of an array whose every count is known are.
     pub(super) fn placement(dimensions: &[Bound], strides: &[i64]) -> Option<ArrayPlacement> {
         Some(ArrayPlacement {
             dimensions: dimensions
@@ -59,9 +49,6 @@ impl Resolved {
     }
 }
 
-/// The byte offset of the element at source `indices`, checked against
-/// every count that is known. An index outside them is unavailable, as a
-/// slice's is.
 pub(super) fn element_offset(
     dimensions: &[Bound],
     strides: &[i64],
@@ -92,8 +79,6 @@ pub(super) fn element_offset(
 }
 
 impl DwarfVariableInfo {
-    /// The text of the array bounded at run time `shape` in `storage`, when
-    /// it is a string.
     pub(super) fn runtime_array_text(
         &self,
         type_id: TypeId,
@@ -116,8 +101,6 @@ impl DwarfVariableInfo {
         self.resolved_text(type_id, shape, &data, &placement, runtime, budget)
     }
 
-    /// The text of an array bounded at run time whose elements, at `data`,
-    /// `placement` found, when they are adjacent characters.
     pub(super) fn resolved_text(
         &self,
         type_id: TypeId,
@@ -145,7 +128,6 @@ impl DwarfVariableInfo {
             return None;
         }
 
-        // Its characters are adjacent, as a static array's.
         let contiguous = ValueShape::Array {
             element: *element,
             dimensions: Arc::clone(&placement.dimensions),
@@ -160,8 +142,6 @@ impl DwarfVariableInfo {
         self.text_summary(type_id, &contiguous, &value, data, None, runtime, budget)
     }
 
-    /// Finds what the value of the array bounded at run time `shape` in
-    /// `storage` is, in the frame executing `address`.
     pub(super) fn resolve_runtime_array(
         &self,
         shape: &ValueShape,
@@ -183,8 +163,6 @@ impl DwarfVariableInfo {
             ));
         };
 
-        // Expressions find the array's parts from where it is, and from
-        // the frame, whose base is its function's.
         let object = match storage {
             ValueStorage::Memory(address) => Some(*address),
             _ => None,
@@ -244,8 +222,6 @@ impl DwarfVariableInfo {
     }
 }
 
-/// The expressions of one array bounded at run time, evaluated for one
-/// value of it.
 struct Parts<'info, 'frame, 'base> {
     info: &'info DwarfVariableInfo,
     array: TypeId,
@@ -255,8 +231,6 @@ struct Parts<'info, 'frame, 'base> {
 }
 
 impl Parts<'_, '_, '_> {
-    /// One dimension's lower bound and count, and its stride when it has
-    /// its own.
     fn dimension(
         &mut self,
         index: usize,
@@ -287,8 +261,6 @@ impl Parts<'_, '_, '_> {
                 ArrayExtent::Upper(upper) => {
                     let upper = self.bound(upper, bound(BoundPart::Extent), runtime, budget)?;
 
-                    // A dimension ending before it begins is empty, as
-                    // Fortran's may be.
                     Some(
                         upper
                             .checked_sub(lower)
@@ -319,8 +291,6 @@ impl Parts<'_, '_, '_> {
         Ok(((lower, count), stride))
     }
 
-    /// The value the expression for `child` computes, or `None` when the
-    /// array has no such expression.
     fn value(
         &mut self,
         child: LayoutChild,
@@ -362,7 +332,6 @@ impl Parts<'_, '_, '_> {
         Ok(Some(value))
     }
 
-    /// The value of one bound, count, or stride.
     fn bound(
         &mut self,
         bound: ArrayBound,
@@ -464,9 +433,6 @@ impl Parts<'_, '_, '_> {
     }
 }
 
-/// Each dimension's stride: its own, or else the one that makes the
-/// elements adjacent in the array's order. Only the outermost dimension
-/// may go on without end.
 pub(super) fn adjacent_strides(
     bounds: &[Bound],
     strides: &[Option<i64>],
@@ -498,7 +464,6 @@ pub(super) fn adjacent_strides(
     Ok(adjacent)
 }
 
-/// The integer of `byte_size` bytes at the start of `bytes`.
 fn integer(bytes: &[u8], byte_size: u8, signed: bool, byte_order: crate::ByteOrder) -> i128 {
     let size = usize::from(byte_size).min(bytes.len()).min(16);
     let bytes = match byte_order {

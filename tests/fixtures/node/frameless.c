@@ -1,17 +1,17 @@
-/* A Node-API addon whose functions run with rbp holding no frame pointer,
- * as code built without frame pointers may use it, so that a walk of the
- * frame-pointer chain from them reads nothing; their call-frame
- * information still unwinds them. Built with -fomit-frame-pointer and
- * -mno-red-zone, so that the call-frame information is by the stack
- * pointer and the pushes below clobber nothing.
- *
- * open(path): opens path read-only with the openat system call, made while
- * rbp holds 8, and returns its descriptor or -errno.
- * spin(rounds): counts rounds down to 0 while rbp holds 8. */
+
+
+
+
+
+
+
+
+
+
 
 #include <node_api.h>
 
-/* Opens path while rbp holds 8. */
+
 static long frameless_open(const char *path) {
     long result;
     __asm__ volatile("push %%rbp\n\t"
@@ -28,7 +28,7 @@ static long frameless_open(const char *path) {
     return result;
 }
 
-/* Counts rounds down to 0 while rbp holds 8. */
+
 static void frameless_spin(unsigned long rounds) {
     __asm__ volatile("push %%rbp\n\t"
                      ".cfi_adjust_cfa_offset 8\n\t"

@@ -1,9 +1,3 @@
-//! Running a bound program at one stop.
-//!
-//! Places stay unread until a value is needed, `&&`, `||`, and `?:` run only
-//! the side they need, and a value the program state cannot provide
-//! poisons what depends on it, remembering the operand that caused it.
-
 use std::cmp::Ordering;
 
 use super::dynamic;
@@ -23,19 +17,13 @@ use crate::{
     VariableState, VariableUnavailableReason, VariableValue, VariableValueSource, VirtualAddress,
 };
 
-/// What running a program produced.
 #[derive(Debug)]
 pub enum Outcome<P> {
-    /// A value, or the state that stood in for one, with the operand whose
-    /// state the program could not provide.
     Value {
         value: InspectedValue,
         cause: Option<Span>,
     },
 
-    /// A value to store: the target's place, the bytes of the value in the
-    /// target's type, and whether the place is a whole variable rather
-    /// than part of one.
     Assign {
         target: P,
         bytes: Vec<u8>,
@@ -43,18 +31,15 @@ pub enum Outcome<P> {
         span: Span,
     },
 
-    /// A value to give a variable of a dynamic type, which its runtime
     /// stores.
     AssignDynamic { value: Assigned<P>, span: Span },
 
-    /// A value to store in a register: its bytes, as wide as the register.
     AssignRegister {
         register: Register,
         bytes: Vec<u8>,
         span: Span,
     },
 
-    /// `base[start..end]`: the array or slice, and the range to page through.
     Range {
         base: InspectedValue,
         start: i128,
@@ -62,8 +47,6 @@ pub enum Outcome<P> {
     },
 }
 
-/// A value a variable of a dynamic type is given: one the evaluator
-/// computed, or an object its runtime keeps, as another variable holds it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Assigned<P> {
     Integer(Exact),
@@ -71,32 +54,24 @@ pub enum Assigned<P> {
     Bool(bool),
     Text(String),
 
-    /// The language's value for no value: Python's `None`, JavaScript's
-    /// `null`.
     Nothing,
 
-    /// JavaScript's `undefined`.
     Undefined,
 
-    /// A JavaScript `BigInt`, as `1n` writes one.
     BigInt(Exact),
     Object(P),
 }
 
-/// Why running produced nothing.
 #[derive(Debug)]
 pub enum Failure {
     Expression(ExpressionError),
     Debugger(crate::Error),
 }
 
-/// What a node evaluates to before it is presented.
 #[derive(Debug, Clone)]
 pub enum Value<P> {
-    /// Storage of a program type, read only when a value is needed.
     Place(P),
 
-    /// A language-typed value in memory.
     Raw(u64),
     Int(Integer),
     Float(Float),
@@ -104,7 +79,6 @@ pub enum Value<P> {
     Pointer(u64),
     Text(Vec<u8>),
 
-    /// A value of a dynamic type, loaded for an operation.
     Loaded(Loaded),
 }
 
@@ -117,7 +91,6 @@ enum Halt {
     Failed(crate::Error),
 }
 
-/// Runs `program` on `machine`.
 pub fn run<M: Machine>(
     program: &Program<M::Object, M::Step>,
     machine: &mut M,
@@ -148,9 +121,6 @@ pub fn run<M: Machine>(
     }
 }
 
-/// Evaluates `program` to its value without presenting it: a place stays
-/// a place, and a scalar is read. A machine computes the values it binds
-/// for a scope this way.
 pub fn value<M: Machine>(
     program: &Program<M::Object, M::Step>,
     machine: &mut M,
@@ -173,8 +143,6 @@ const fn unavailable(reason: VariableUnavailableReason) -> VariableState {
     VariableState::Unavailable(reason)
 }
 
-/// A number or truth value an operation on dynamic values computed, as a
-/// scalar; any other value as it is.
 pub fn scalar<P>(value: Value<P>) -> Value<P> {
     match value {
         Value::Loaded(Loaded {
@@ -201,7 +169,6 @@ fn malformed(description: &str) -> VariableState {
 }
 
 impl<M: Machine> Interpreter<'_, M> {
-    /// Attributes a machine's stop to the node that asked for it.
     fn at<T>(span: Span, result: Result<T, Stop>) -> Result<T, Halt> {
         result.map_err(|stop| match stop {
             Stop::Missing(state) => Halt::Missing { state, cause: span },
@@ -220,7 +187,6 @@ impl<M: Machine> Interpreter<'_, M> {
         Self::error(span, ErrorKind::Arithmetic, error.to_string())
     }
 
-    /// A broken invariant of the binder, which no expression can cause.
     fn invariant<T>(fact: &'static str) -> Result<T, Halt> {
         Err(Halt::Failed(crate::Error::internal(fact)))
     }
@@ -253,8 +219,6 @@ impl<M: Machine> Interpreter<'_, M> {
         }
     }
 
-    /// An operand of an operation on a value of a dynamic type, as it
-    /// runs: that value loaded, or a number, truth value, or string.
     fn dynamic(&mut self, node: &Node<M::Object, M::Step>) -> Result<Loaded, Halt> {
         let value = match self.eval(node)? {
             Value::Loaded(loaded) => return Ok(loaded),
@@ -289,7 +253,6 @@ impl<M: Machine> Interpreter<'_, M> {
         }
     }
 
-    /// The address a pointer points at, unavailable when it is null.
     fn pointee_address(
         &mut self,
         node: &Node<M::Object, M::Step>,
@@ -306,8 +269,6 @@ impl<M: Machine> Interpreter<'_, M> {
         }
     }
 
-    /// An index value as `i128`, which every index the debugger can reach
-    /// fits.
     fn index(&mut self, node: &Node<M::Object, M::Step>) -> Result<i128, Halt> {
         let value = self.integer(node)?.value();
         value.to_i128().ok_or_else(|| {
@@ -478,9 +439,6 @@ impl<M: Machine> Interpreter<'_, M> {
                 let left_value = self.integer(left)?;
                 let right_value = self.integer(right)?;
                 let combined = left_value.bitwise(*op, right_value).map_err(|error| {
-                    // Point at the exact operand that does not fit a typed
-                    // one, or at the operation when both are exact and only
-                    // the result is out of range.
                     let culprit = match (left_value, right_value) {
                         (Integer::Exact(_), Integer::Exact(_)) => span,
                         (Integer::Exact(_), Integer::Typed(_)) => left.span,
@@ -640,7 +598,6 @@ impl<M: Machine> Interpreter<'_, M> {
         })
     }
 
-    /// An integer result of a bit operation, in the node's type.
     fn retype(&self, ty: &Ty, integer: Integer) -> Integer {
         match (category(self.machine, ty), integer) {
             (Category::Integer { int: Some(int), .. }, Integer::Typed(bits))
@@ -652,7 +609,6 @@ impl<M: Machine> Interpreter<'_, M> {
         }
     }
 
-    /// An address as a pointer value, which must fit the target's width.
     fn address_value(&self, address: Exact, span: Span) -> Result<u64, Halt> {
         let width = self.address_width();
         address
@@ -668,7 +624,6 @@ impl<M: Machine> Interpreter<'_, M> {
             })
     }
 
-    /// A value decoded from a place of type `ty`.
     fn loaded(&self, ty: &Ty, value: VariableValue) -> Result<Value<M::Place>, Stop> {
         let integer = Exact::from;
         Ok(match (category(self.machine, ty), value) {
@@ -716,7 +671,6 @@ impl<M: Machine> Interpreter<'_, M> {
         Self::at(span, self.decode(ty, &bytes))
     }
 
-    /// Decodes a language type's bytes.
     fn decode(&self, ty: &Ty, bytes: &[u8]) -> Result<Value<M::Place>, Stop> {
         let mut ordered = bytes.to_vec();
         if self.machine.byte_order() == ByteOrder::Big {
@@ -816,7 +770,6 @@ impl<M: Machine> Interpreter<'_, M> {
             Conversion::PointerToPointer => Value::Pointer(self.pointer(operand)?),
         })
         .map(|value| {
-            // A cast to an enumeration or typedef keeps its own type.
             if let Value::Int(integer) = value {
                 Value::Int(self.retype(ty, integer))
             } else {
@@ -905,7 +858,6 @@ impl<M: Machine> Interpreter<'_, M> {
         })
     }
 
-    /// A pointer, or an integer the binder allowed only as zero.
     fn pointer_or_zero(&mut self, node: &Node<M::Object, M::Step>) -> Result<u64, Halt> {
         match self.eval(node)? {
             Value::Pointer(address) => Ok(address),
@@ -926,7 +878,7 @@ impl<M: Machine> Interpreter<'_, M> {
         let read = text.bytes.as_ref();
         match text.completion {
             TextCompletion::Complete => Ok(read == literal),
-            // Text known to differ before what could not be read differs.
+
             _ if !literal.starts_with(read) => Ok(false),
             completion => Err(Halt::Missing {
                 state: Box::new(unavailable(incomplete(completion))),
@@ -1005,9 +957,6 @@ impl<M: Machine> Interpreter<'_, M> {
         })
     }
 
-    /// What a variable of a dynamic type is given for `value`: a number
-    /// exactly as computed, text that is whole UTF-8, or an object as
-    /// another variable holds it.
     fn assigned(value: Value<M::Place>, span: Span) -> Result<Assigned<M::Place>, Halt> {
         let refuse = |what: &str| {
             Self::error(
@@ -1065,7 +1014,6 @@ impl<M: Machine> Interpreter<'_, M> {
         }
     }
 
-    /// A value converted to `ty` only if `ty` holds it exactly.
     fn fit(&mut self, ty: &Ty, operand: &Node<M::Object, M::Step>) -> Evaluated<M::Place> {
         let span = operand.span;
         let value = scalar(self.eval(operand)?);
@@ -1139,9 +1087,6 @@ impl<M: Machine> Interpreter<'_, M> {
         })
     }
 
-    /// The elements `start..end` of an array or slice, checked against
-    /// its bounds when its value says what they are; a bound left out is
-    /// the first element, or the end.
     fn range(
         &mut self,
         base: &Node<M::Object, M::Step>,
@@ -1182,8 +1127,6 @@ impl<M: Machine> Interpreter<'_, M> {
                 (start, end)
             }
 
-            // A value that could not be read, or is not one dimension, is
-            // the page's to report.
             None => (start.unwrap_or(0), end.unwrap_or(0)),
         };
 
@@ -1194,8 +1137,6 @@ impl<M: Machine> Interpreter<'_, M> {
         })
     }
 
-    /// The bytes of text between two bounds, as a string; a bound left out
-    /// is the start, or the end.
     fn text_slice(
         &mut self,
         base: &Node<M::Object, M::Step>,
@@ -1206,8 +1147,6 @@ impl<M: Machine> Interpreter<'_, M> {
         let start = start.map(|start| self.index(start)).transpose()?;
         let end = end.map(|end| self.index(end)).transpose()?;
 
-        // A string the expression computed is sliced as it is; the
-        // program's text is read where it is.
         let (computed, stored) = match self.eval(base)? {
             Value::Text(bytes) => (Some(bytes), None),
             Value::Place(place) => {
@@ -1260,9 +1199,6 @@ impl<M: Machine> Interpreter<'_, M> {
         }))
     }
 
-    /// A map's key: a tuple of keys, or one key's value. A place holds
-    /// text, or is a tuple of the program's, or, of a dynamic type, is the
-    /// object it holds, which its runtime compares.
     fn key(&mut self, key: &KeyNode<M::Object, M::Step>) -> Result<Key, Halt> {
         let node = match key {
             KeyNode::Value(node) => node,
@@ -1291,10 +1227,6 @@ impl<M: Machine> Interpreter<'_, M> {
         })
     }
 
-    /// The key a place of the program's holds: its text, or a tuple of
-    /// the keys its elements hold. An element may also hold a number,
-    /// truth value, or pointer; the binder loads those where it can see
-    /// them, so a key itself holds text or is a tuple.
     fn held_key(&mut self, place: &M::Place, span: Span, depth: usize) -> Result<Key, Halt> {
         if let Some(text) = Self::at(span, self.machine.text(place))? {
             if text.completion != TextCompletion::Complete {
@@ -1362,7 +1294,6 @@ impl<M: Machine> Interpreter<'_, M> {
         })
     }
 
-    /// Presents a result as inspection presents values.
     fn present(
         &mut self,
         node: &Node<M::Object, M::Step>,
@@ -1383,8 +1314,6 @@ impl<M: Machine> Interpreter<'_, M> {
             value => scalar(value),
         };
 
-        // A number computed from values of a dynamic type has the type it
-        // has as it runs.
         let ty = match (ty, &value) {
             (Ty::Dynamic, Value::Int(_)) => &Ty::Exact,
             (Ty::Dynamic, Value::Float(value)) => &Ty::Float(value.format()),
@@ -1395,9 +1324,6 @@ impl<M: Machine> Interpreter<'_, M> {
         self.present_computed(ty, &value, None, span)
     }
 
-    /// A number or truth value an operation on dynamic values computed,
-    /// written and named as its language writes it, as a variable of the
-    /// language is presented.
     fn present_loaded(
         &mut self,
         ty: &Ty,
@@ -1514,7 +1440,6 @@ impl<M: Machine> Interpreter<'_, M> {
             .finish(Some(type_info(self.machine, ty)), state))
     }
 
-    /// A string the expression computed, as text.
     fn present_text(&self, ty: &Ty, bytes: Vec<u8>) -> InspectedValue {
         let text = crate::TextSummary {
             extent: None,
@@ -1539,7 +1464,6 @@ impl<M: Machine> Interpreter<'_, M> {
             .finish(Some(type_info(self.machine, ty)), state)
     }
 
-    /// A value's bytes in target order, `size` long.
     fn encode(&self, value: &Value<M::Place>, size: usize) -> Vec<u8> {
         let raw = match value {
             Value::Int(integer) => match integer {
@@ -1583,7 +1507,6 @@ impl<M: Machine> Interpreter<'_, M> {
     }
 }
 
-/// A float's bit pattern, zero-extended.
 fn float_bits(value: crate::FloatValue) -> u128 {
     match value {
         crate::FloatValue::Binary16(bits) | crate::FloatValue::BFloat16(bits) => u128::from(bits),
@@ -1597,7 +1520,6 @@ fn float_bits(value: crate::FloatValue) -> u128 {
     }
 }
 
-/// Why text read in part has no value an operation can use.
 pub(super) const fn incomplete(completion: TextCompletion) -> VariableUnavailableReason {
     match completion {
         TextCompletion::Unreadable { address } => VariableUnavailableReason::MemoryInaccessible {

@@ -1,9 +1,3 @@
-// Values beside the lines the program just ran: each name and member chain
-// those lines use, evaluated at the frame, once, on the last line that uses
-// it. Values that do not evaluate, such as types and functions, are left
-// out, and so are aggregates and values that are unavailable, such as a
-// variable not yet assigned, which the value tree shows better.
-
 import { useEffect, useMemo, useState } from "react";
 
 import { assert } from "../../assert";
@@ -15,16 +9,10 @@ import { useConnection, useModel } from "../../store";
 import { recall } from "../../tree";
 import type { InlineValue } from "./SourceView";
 
-/** How many lines before the frame's line show values. */
 const BEFORE = 3;
-/** The most values shown. */
+
 const MOST = 12;
 
-/**
- * The expressions each line near `line` shows, closest lines winning, and
- * none before `first`, where the frame's function begins, when it is known,
- * of the source at `path`.
- */
 export function inlineExpressions(
   text: string,
   line: number,
@@ -54,17 +42,10 @@ export function inlineExpressions(
   return shown;
 }
 
-/**
- * Whether a value is short and sure enough for the end of a line. An
- * aggregate says too much, and why a value is unavailable is long and, for
- * a variable a line is about to assign, no news; the tree has both.
- */
 export function shownInline(row: Row): boolean {
   return !row.truncated && !row.text.startsWith("{") && !row.text.startsWith("<unavailable");
 }
 
-/** The inline values at `at`'s frame, by line, once they arrive, in the
- * source at `path`. */
 export function useInlineValues(
   at: At | null,
   path: string,
@@ -73,14 +54,14 @@ export function useInlineValues(
   first: number | null,
 ): Map<number, InlineValue[]> {
   const connection = useConnection();
-  // A change to a value asks again.
+
   const writes = useModel((model) => model.state?.writes);
   const wanted = useMemo(
     () =>
       at && text && line ? inlineExpressions(text, line, first, path) : new Map<number, string[]>(),
     [at, path, text, line, first],
   );
-  // The values shown belong to one stop and one count of writes.
+
   const [values, setValues] = useState<{
     at: At | null;
     writes: number | undefined;
@@ -88,7 +69,6 @@ export function useInlineValues(
   }>({ at: null, writes: undefined, rows: new Map() });
 
   useEffect(() => {
-    // A stop always comes with a state, which counts the writes.
     if (!at || writes === undefined) {
       return;
     }

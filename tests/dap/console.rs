@@ -1,5 +1,3 @@
-//! The debug console runs the command language of the terminal debugger.
-
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Profile, fixture, line_of, source};
@@ -31,7 +29,6 @@ fn console_commands_see_the_focused_frame_and_cannot_run_the_program() {
     let trace = dap.request("stackTrace", json!({"threadId": stop.thread}));
     let frames = trace["stackFrames"].as_array().expect("frames").clone();
 
-    // Commands run in the frame the client focuses.
     assert_eq!(
         repl(&mut dap, &frames[0]["id"], "print parameter"),
         "(int) parameter = 40"
@@ -50,7 +47,6 @@ fn console_commands_see_the_focused_frame_and_cannot_run_the_program() {
         "{source}"
     );
 
-    // Lines that are no command are expressions.
     assert_eq!(dap.request("evaluate", json!({"expression": "*pointer_parameter", "frameId": frames[0]["id"], "context": "repl"}))["result"], "42");
     for command in [
         "continue",
@@ -119,7 +115,6 @@ fn breakpoints_made_in_the_console_are_announced_and_reported() {
     let stop = dap.stopped(resumed.mark);
     assert_eq!(stop.body["hitBreakpointIds"], json!([id]));
 
-    // A disabled breakpoint stays listed, unverified, saying why.
     let mark = dap.mark();
     dap.request(
         "evaluate",
@@ -218,7 +213,6 @@ fn console_commands_print_what_the_cli_prints_at_the_same_stop() {
     dap.finish();
 
     for (command, console) in commands.iter().zip(console) {
-        // The console may always show Unicode, so the CLI is told to.
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_microscope"))
             .env(
                 "MICROSCOPE_CONFIG",
@@ -248,8 +242,6 @@ fn console_commands_print_what_the_cli_prints_at_the_same_stop() {
     }
 }
 
-/// Stops `command-names` where every local is set, and returns the stop
-/// and its innermost frame.
 fn stopped_in_names(dap: &mut Dap, profile: Profile) -> (crate::dap::Stopped, Value) {
     let path = source("c/command-names.c");
     let started = dap.launch(
@@ -275,8 +267,6 @@ fn variables_named_like_commands_evaluate_in_the_console() {
     let (_, frame) = stopped_in_names(&mut dap, Profile::VsCode);
     let id = &frame["id"];
 
-    // A name the frame knows is the variable, even where a command or its
-    // alias has the same name.
     for (line, value) in [
         ("x", "20"),
         ("n", "10"),
@@ -296,15 +286,12 @@ fn variables_named_like_commands_evaluate_in_the_console() {
     );
     assert_ne!(pointer["variablesReference"], 0, "{pointer}");
 
-    // A command the frame has no variable for is still the command, and a
-    // line that is no expression is always one.
     assert!(repl(&mut dap, id, "bt").starts_with("#0 "));
     assert!(repl(&mut dap, id, "frame").contains("names"));
     assert_eq!(repl(&mut dap, id, "p/x list"), "(int) list = 0x5");
     assert_eq!(repl(&mut dap, id, "print/x x"), "(int) x = 0x14");
     assert_eq!(repl(&mut dap, id, "print x"), "(int) x = 20");
 
-    // An expression's mistake points at the text it is about.
     let message = dap.request_error(
         "evaluate",
         json!({"expression": "x + missing", "frameId": id, "context": "repl"}),
@@ -362,7 +349,6 @@ fn assignments_in_the_console_change_what_the_variables_view_shows() {
     );
     assert_eq!(hover["result"], "16");
 
-    // Reading changes nothing, so it invalidates nothing.
     let mark = dap.mark();
     assert_eq!(repl(&mut dap, &id, "x"), "7");
     assert_eq!(repl(&mut dap, &id, "print list"), "(int) list = 9");

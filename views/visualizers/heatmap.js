@@ -1,20 +1,4 @@
 // @ts-check
-// The built-in heatmap: a grid of numbers as colors.
-//
-//   values         numbers row by row, with
-//   columns        how many make a row; or values may be an array of rows
-//   row_labels     optional, one per row
-//   column_labels  optional, one per column
-//   scale          optional: "sequential" or "diverging"; by default,
-//                  diverging when the values cross zero
-//   log            optional; true colors positive values by their logarithm
-//
-// A sequential scale is one blue, light to dark; a diverging one is blue
-// below zero and red above, through gray at zero. A legend gives the ends
-// and zero. NaN cells are hatched. Up to 10,000 cells, each is titled with
-// its row, column, and value, and outlined when it changed since the stop
-// before; past that, the grid is one image, where each pixel shows the
-// largest of the cells it covers, and an overlay marks changed cells.
 
 const MOST_CELLS = 10_000;
 
@@ -103,7 +87,6 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
   const imaged = rows * columns > MOST_CELLS;
 
   if (imaged) {
-    // One pixel a cell, or each pixel the largest of the cells it covers.
     const across = Math.min(columns, Math.max(1, Math.floor(gridWidth)));
     const down = Math.min(rows, Math.max(1, Math.floor(gridHeight)));
     const pixels = new Uint8ClampedArray(across * down * 4);
@@ -118,7 +101,7 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
         const p = pr * across + pc;
         const i = r * columns + c;
         const v = values[i];
-        // The largest magnitude keeps its sign, so hot spots of either kind survive.
+
         if (!Number.isNaN(v) && Math.abs(v) > strongest[p]) {
           strongest[p] = Math.abs(v);
           largest[p] = v;
@@ -133,7 +116,6 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
     for (let p = 0; p < largest.length; p++) {
       const v = largest[p];
       if (Number.isNaN(v)) {
-        // Hatched: every other diagonal.
         const x = p % across;
         const y = Math.floor(p / across);
         const shade = (x + y) % 4 < 2 ? 255 : 200;
@@ -236,7 +218,6 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
     }
   }
 
-  // Row and column labels, as many as fit.
   const everyRow = roundStep(13 / cell);
   for (let r = 0; r < rows; r += everyRow) {
     shapes.push(
@@ -272,7 +253,6 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
     );
   }
 
-  // The legend: the ramp as a smooth image, with its ends and zero.
   const ly = top + gridHeight + 24;
   const lw = Math.min(200, Math.max(100, gridWidth / 2));
   const steps = 64;
@@ -370,7 +350,6 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
   });
 });
 
-/** The grid's numbers row by row, its size, and its exact values. */
 function gridOf(input) {
   const { values } = input;
   if (values === undefined || values === null) {
@@ -472,8 +451,6 @@ function rgb(color) {
   return [0, 2, 4].map((at) => Number.parseInt(hex.slice(at, at + 2), 16));
 }
 
-/** The smallest step of 1, 2, or 5 times a power of ten that is at least
- * `least`, so labelled rows and columns fall on round indices. */
 function roundStep(least) {
   for (let power = 1; ; power *= 10) {
     for (const step of [1, 2, 5]) if (step * power >= least) return step * power;

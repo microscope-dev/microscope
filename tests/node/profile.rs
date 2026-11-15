@@ -1,7 +1,3 @@
-//! Profiles of Node programs: each thread's JavaScript frames, by line,
-//! from the engines that read them beside the samples, held to the frames
-//! V8's own call sites reported (`tests/fixtures/node/truth.js`).
-
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -17,17 +13,12 @@ use crate::support::truth::Report;
 use crate::support::{ScratchDir, node};
 use crate::truth::{Thread, threads};
 
-/// The entry the profiler tests run on: the reader is shared, and these
-/// test its use.
 pub const ENTRY: &str = "26";
 
 use crate::support::released::READY_DEADLINE;
 
-/// How often each engine reads the program.
 const EVERY: Duration = Duration::from_millis(100);
 
-/// Each path of `source`'s call tree in `look` that weight ends at,
-/// outermost first, by line, with the weight that ends there.
 pub fn paths(profile: &Profile, source: Source, look: Look) -> BTreeMap<Vec<String>, u64> {
     paths_of(
         profile,
@@ -39,8 +30,6 @@ pub fn paths(profile: &Profile, source: Source, look: Look) -> BTreeMap<Vec<Stri
     )
 }
 
-/// Each path of the call tree `query` selects that weight ends at, by
-/// line, as [`paths`] gives them.
 pub fn paths_of(profile: &Profile, query: &Query) -> BTreeMap<Vec<String>, u64> {
     let keys = profile.keys(Granularity::Line);
     let tree = keys.aggregate(query);
@@ -61,8 +50,6 @@ pub fn paths_of(profile: &Profile, query: &Query) -> BTreeMap<Vec<String>, u64> 
         .collect()
 }
 
-/// A key's name as a fixture's report can give it: an anonymous function's
-/// without where it is declared, which V8's call sites do not say.
 pub fn reported_name(name: String) -> String {
     match name
         .strip_prefix("<anonymous ")
@@ -73,8 +60,6 @@ pub fn reported_name(name: String) -> String {
     }
 }
 
-/// A frame V8 reported, as a profile names a line: its function, its
-/// file's last component, and its line.
 pub fn line_key(function: &str, file: &str, line: Option<u32>) -> String {
     let function = if function == "-" {
         "<anonymous>"
@@ -85,8 +70,6 @@ pub fn line_key(function: &str, file: &str, line: Option<u32>) -> String {
     format!("{function} {file}:{}", line.unwrap_or(0))
 }
 
-/// The frames of each thread V8 reported, outermost first, as the paths of
-/// a profile's interpreted look begin.
 pub fn expected(reported: &[Thread]) -> Vec<(String, Vec<String>)> {
     reported
         .iter()
@@ -102,8 +85,6 @@ pub fn expected(reported: &[Thread]) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// Each thread whose frames begin no path of `paths`, with its frames and
-/// the paths.
 pub fn missing(
     expected: &[(String, Vec<String>)],
     paths: &BTreeMap<Vec<String>, u64>,
@@ -115,9 +96,6 @@ pub fn missing(
         .collect()
 }
 
-/// Records `fixture` on the entry with `options`, holding it at its
-/// checkpoint until its profile so far is `ready` for what it reported, or
-/// the deadline, then releasing it: the profile, and what it reported.
 pub fn record_parked(
     fixture: &str,
     checkpoint: &str,
@@ -135,11 +113,6 @@ pub fn record_parked(
     (profile, reported.unwrap_or_default())
 }
 
-/// Records `command`, a Node fixture, with `options`, holding it until its
-/// profile so far is `ready` for what its output reported, as `report`
-/// reads it once it is whole, or until the deadline; then releases it with
-/// a line on its standard input. The profile, what it reported, and its
-/// whole output once it exited.
 pub fn record_released<T>(
     mut command: Command,
     options: &RecordOptions,
@@ -156,8 +129,6 @@ pub fn record_released<T>(
 
     let mut reported = None;
     let read = || report(&std::fs::read_to_string(&output).unwrap_or_default());
-    // Once released, the program is past what it reported, which `when`
-    // asks no more.
     let recording = crate::support::released::record_released(
         command,
         options,
@@ -181,8 +152,6 @@ pub fn record_released<T>(
     (recording.profile, reported.or_else(|| report(&text)), text)
 }
 
-/// The threads a fixture whose output is `text` reported at `checkpoint`,
-/// once it has.
 fn parked(text: &str, checkpoint: &str) -> Vec<Thread> {
     if !text.contains("\nREADY\n") {
         return Vec::new();
@@ -193,9 +162,6 @@ fn parked(text: &str, checkpoint: &str) -> Vec<Thread> {
         .unwrap_or_default()
 }
 
-/// Snapshots that stop the program find each thread where it parks, its
-/// JavaScript frames by line in the interpreted look among that thread's
-/// own waits, as V8 reported them.
 #[test]
 fn stopped_snapshots_find_each_threads_javascript_lines() {
     let options = RecordOptions {
@@ -215,8 +181,6 @@ fn stopped_snapshots_find_each_threads_javascript_lines() {
     let (taken, paused, _) = profile.task_snapshots();
     assert!(taken > 0 && paused > 0, "{taken} {paused}");
 
-    // Each thread's own waits hold its frames: frames credited to another
-    // thread fail.
     for (thread, frames) in reported.iter().zip(expected(&reported)) {
         let rows: Vec<u32> = profile
             .tasks()
@@ -237,8 +201,6 @@ fn stopped_snapshots_find_each_threads_javascript_lines() {
         assert!(missing.is_empty(), "{}\n{paths:#?}", missing.join("\n"));
     }
 
-    // No file holds a JavaScript function's instructions; the Assembly
-    // panel says so and points at its lines.
     let waits = Query {
         source: Source::Waits,
         look: Look::Python,
@@ -253,9 +215,6 @@ fn stopped_snapshots_find_each_threads_javascript_lines() {
     );
 }
 
-/// What a flight recording shows of a write to the program, or of a turn
-/// to its inspector: a planted trap, a stored word or register, a signal
-/// that opens the inspector, and a CDP command.
 #[cfg(debug_assertions)]
 const WRITES: [&str; 6] = [
     "install breakpoint",
@@ -266,7 +225,6 @@ const WRITES: [&str; 6] = [
     " to Session",
 ];
 
-/// Each line of a flight recording that shows a write.
 #[cfg(debug_assertions)]
 fn writes(recording: &str) -> Vec<&str> {
     recording
@@ -275,9 +233,6 @@ fn writes(recording: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Profiling a Node program with stopped snapshots, and tracing its system
-/// calls with their stacks, only read it: the flight recordings of both
-/// show snapshots taken and calls traced, and no write to the program.
 #[cfg(debug_assertions)]
 #[test]
 fn profiling_and_tracing_write_nothing() {
@@ -300,7 +255,6 @@ fn profiling_and_tracing_write_nothing() {
         .spawn()
         .expect("run microscope record");
 
-    // Three snapshots, each a session that ended.
     let mut text = String::new();
     crate::support::wait_until("three snapshots end", || {
         text = std::fs::read_to_string(&recording).unwrap_or_default();
@@ -333,13 +287,10 @@ fn profiling_and_tracing_write_nothing() {
     );
 }
 
-/// Runs the fixture `busy.js` on the entry for `seconds`, with `arguments`
-/// before it: the command, and where its output goes.
 pub fn busy(scratch: &ScratchDir, seconds: u32) -> (Command, std::path::PathBuf) {
     busy_on(ENTRY, scratch, seconds)
 }
 
-/// Runs `busy.js` as [`busy`] does, on `entry`.
 pub fn busy_on(entry: &str, scratch: &ScratchDir, seconds: u32) -> (Command, std::path::PathBuf) {
     let output = scratch.path().join("output");
     let mut command = Command::new(node::node(entry));
@@ -354,13 +305,8 @@ pub fn busy_on(entry: &str, scratch: &ScratchDir, seconds: u32) -> (Command, std
     (command, output)
 }
 
-/// The functions a thread's stack begins with: glibc's entry for the main
-/// thread, and the system call that starts each other thread.
 const ROOTS: [&str; 3] = ["_start", "clone3", "__GI___clone3"];
 
-/// Whether `path` is a sample in one of V8's builtins that no unwind table
-/// describes, which the stack ends at, as it must: a builtin may run
-/// without a frame of its own, so its caller is not known.
 fn at_builtin(path: &[String]) -> bool {
     matches!(
         path,
@@ -368,10 +314,6 @@ fn at_builtin(path: &[String]) -> bool {
     )
 }
 
-/// Each path of `paths` that begins with no thread's root, and does not end
-/// at a builtin, with its weight. A path may begin with a marker of where
-/// unwinding ended past the root, in brackets, as one past `clone3` does,
-/// whose caller is no function.
 pub fn rootless(paths: &BTreeMap<Vec<String>, u64>) -> Vec<(String, u64)> {
     paths
         .iter()
@@ -388,8 +330,6 @@ pub fn rootless(paths: &BTreeMap<Vec<String>, u64>) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// How much of `paths`' sampled time entered JavaScript, through V8's
-/// entry, and how much ended at a builtin no unwind table describes.
 fn entered(paths: &BTreeMap<Vec<String>, u64>) -> (u64, u64) {
     let weight = |keep: &dyn Fn(&[String]) -> bool| -> u64 {
         paths
@@ -407,16 +347,8 @@ fn entered(paths: &BTreeMap<Vec<String>, u64>) -> (u64, u64) {
     )
 }
 
-/// CPU samples of a Node program spinning in JavaScript unwind through
-/// the code V8 generated and the builtins it copied, which name
-/// themselves, to the root of their thread, or else end visibly at a
-/// builtin they were sampled in.
 #[test]
 fn cpu_samples_unwind_through_v8s_code_to_each_threads_root() {
-    // A second of samples in JavaScript, which a loaded machine, or one
-    // reading node's debug information as the kernel drops samples, takes
-    // longer to give: the recording ends once it has them, or the program
-    // at its own deadline.
     const ENOUGH: u64 = 1_000_000_000;
     let scratch = ScratchDir::new("node-busy");
     let (command, _) = busy(&scratch, 60);
@@ -455,8 +387,6 @@ fn cpu_samples_unwind_through_v8s_code_to_each_threads_root() {
         entered >= ENOUGH,
         "{entered} of {total} ns entered JavaScript; the heaviest stacks:\n{heaviest:#?}"
     );
-    // A sample may land where no unwinder can step, as in a signal
-    // trampoline or a prologue: at most one in a hundred.
     assert!(
         short * 100 <= total,
         "{short} of {total} ns begin with no thread's root:\n{rootless:#?}"
@@ -467,18 +397,11 @@ fn cpu_samples_unwind_through_v8s_code_to_each_threads_root() {
     );
 }
 
-/// A V8 built without postmortem support, as Chrome's is, exports none of
-/// the debugger constants that give its heap's layout, yet still keeps
-/// V8's frame pointers in the code it generates: samples of a Node whose
-/// constants are renamed away still unwind through that code to each
-/// thread's root.
 #[test]
 fn v8_without_its_debugger_constants_unwinds_through_its_code() {
     const ENOUGH: usize = 1000;
     let scratch = ScratchDir::new("node-busy-without-postmortem");
     let (command, _) = busy_on("26-without-postmortem", &scratch, 60);
-    // The recording ends once it holds enough samples, not after a time,
-    // which a loaded machine spends loading what unwinds them.
     let stop = AtomicBool::new(false);
     let started = Instant::now();
     let recording = record_watched(
@@ -510,8 +433,6 @@ fn v8_without_its_debugger_constants_unwinds_through_its_code() {
         short * 100 <= total,
         "{short} of {total} ns begin with no thread's root:\n{rootless:#?}"
     );
-    // Rooted stacks alone would pass with no JavaScript at all: most of
-    // the time must run in it, as for a build with its constants.
     let (entered, at_builtins) = entered(&paths);
     assert!(
         (entered + at_builtins) * 2 >= total,
@@ -519,10 +440,6 @@ fn v8_without_its_debugger_constants_unwinds_through_its_code() {
     );
 }
 
-/// Under `--perf-basic-prof`, Node's perf map names the code V8
-/// generated, and samples there keep both: each frame the map names
-/// has its name, and the stack still unwinds by V8's frame pointers
-/// through that code to the thread's root.
 #[test]
 fn perf_map_names_v8s_code_that_samples_unwind_through() {
     const ENOUGH: usize = 20;
@@ -541,7 +458,6 @@ fn perf_map_names_v8s_code_that_samples_unwind_through() {
         ])
         .arg(node::fixture("busy.js"))
         .args(["--seconds", "60"])
-        // Its V8 log goes where it runs.
         .current_dir(scratch.path())
         .env_clear()
         .stdin(Stdio::null())
@@ -564,7 +480,6 @@ fn perf_map_names_v8s_code_that_samples_unwind_through() {
             save: None,
         },
     );
-    // The program leaves its map behind: its main thread's id is its pid.
     let text = std::fs::read_to_string(&output).unwrap_or_default();
     let mut map = String::new();
     for (name, pid) in spinners(&text) {
@@ -575,8 +490,6 @@ fn perf_map_names_v8s_code_that_samples_unwind_through() {
         }
     }
     let profile = recording.expect("record").profile;
-    // A frame of V8's code stands for the JavaScript functions placed at
-    // it, which the JavaScript look shows in its place.
     let keys = profile.keys(Granularity::Function);
     let ordinary: Vec<String> = (0..u32::try_from(keys.count()).expect("keys"))
         .filter(|&key| {
@@ -587,7 +500,6 @@ fn perf_map_names_v8s_code_that_samples_unwind_through() {
     assert!(ordinary.is_empty(), "{ordinary:?}");
     let stacks = profile.stacks();
     assert!(!map.is_empty(), "node wrote no perf map");
-    // A sample the map was read too late for may have one, but no more.
     let lost = known_by_address(&map, &stacks);
     assert!(
         lost.len() * 20 <= stacks.len(),
@@ -613,8 +525,6 @@ fn perf_map_names_v8s_code_that_samples_unwind_through() {
     );
 }
 
-/// Each of `stacks` with a frame that a function the perf map `map` names
-/// holds, known by its address only.
 fn known_by_address<'a>(map: &str, stacks: &'a [SampledStack]) -> Vec<&'a SampledStack> {
     let functions: Vec<(u64, u64)> = map
         .lines()
@@ -641,7 +551,6 @@ fn known_by_address<'a>(map: &str, stacks: &'a [SampledStack]) -> Vec<&'a Sample
         .collect()
 }
 
-/// The root check fails on a stack that ends short.
 #[test]
 fn the_root_check_fails_on_a_short_stack() {
     let path = |frames: &[&str]| frames.iter().map(|frame| (*frame).to_owned()).collect();
@@ -675,11 +584,6 @@ fn the_root_check_fails_on_a_short_stack() {
     );
 }
 
-/// The frames each thread of `busy.js` reported, outermost first, as a
-/// profile's interpreted look by the BPF engine keys them: by line, but
-/// for a frame of compiled code, whose line the walker does not prove, and
-/// the innermost frame, whose line the interpreter keeps only in a
-/// register, which are keyed by their function alone.
 pub fn spinning(output: &str) -> Vec<(String, Vec<String>)> {
     let mut threads: Vec<(String, String, Vec<String>)> = Vec::new();
     for fields in Report::parse(output).lines() {
@@ -716,18 +620,6 @@ pub fn spinning(output: &str) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// Each frame of `paths` of a function the threads in `truth` run that
-/// lies, one line each, of the paths sampled as `busy.js` spins, under its
-/// `spinFor`, which is when V8's report holds: before then, and as the
-/// program exits, Node's own functions that call it run other lines. The
-/// frames inside its `report` are not checked: V8's report is taken at
-/// its start, so what it calls after, as its callback to `forEach`, is
-/// in no report. A frame lies where its key is neither one V8's report gives it, nor
-/// its function alone, nor a line of `lines`, which the fixture's
-/// interpreted functions call from; or it has a line but called nothing,
-/// which its frame alone does not prove: the interpreter writes a frame's
-/// offset only before a call, so a frame with a proven line has a callee,
-/// never a bytecode handler, inside it.
 pub fn misplaced(
     truth: &[(String, Vec<String>)],
     lines: &[String],
@@ -775,8 +667,6 @@ pub fn misplaced(
     misplaced
 }
 
-/// Each spinning thread `busy.js` reported in `output`, by its name and
-/// native id.
 pub fn spinners(output: &str) -> Vec<(String, u32)> {
     Report::parse(output)
         .lines()
@@ -787,13 +677,6 @@ pub fn spinners(output: &str) -> Vec<(String, u32)> {
         .collect()
 }
 
-/// Each lie the `isolate` labels of `zones` tell of `spinners`, each
-/// thread's name and native id, and of the threads `outside`, whose sampled
-/// time `weights` holds by native id. Each spinner runs in one isolate of
-/// its own, so its labels have one value, no other spinner's, and cover at
-/// least half of the time it was sampled, as the walker reads its isolate
-/// at every sample once the process's layout is known. A thread outside
-/// every isolate, as libuv's pool threads are, has no label.
 pub fn isolate_lies(
     (spinners, outside): (&[(String, u32)], &[u32]),
     weights: &BTreeMap<u32, u64>,
@@ -845,7 +728,6 @@ pub fn isolate_lies(
     lies
 }
 
-/// The isolate check fails on each lie.
 #[test]
 fn the_isolate_check_fails_on_each_lie() {
     let spinners = [("main".to_owned(), 10), ("worker".to_owned(), 11)];
@@ -875,10 +757,6 @@ fn the_isolate_check_fails_on_each_lie() {
     }
 }
 
-/// The keys of the lines `busy.js`'s interpreted frames call from, which
-/// `output` reported: each such frame's own, and the line its function
-/// loops on, the line after its own in the fixture's source, from which
-/// the loop may call into the runtime.
 pub fn called_lines(output: &str) -> Vec<String> {
     let source = std::fs::read_to_string(node::fixture("busy.js")).expect("read busy.js");
     let source: Vec<&str> = source.lines().collect();
@@ -904,8 +782,6 @@ pub fn called_lines(output: &str) -> Vec<String> {
     lines
 }
 
-/// The share of `paths`' weight whose JavaScript frames include one the
-/// engine could not name, among those that hold any.
 pub fn unknown_share(paths: &BTreeMap<Vec<String>, u64>) -> (u64, u64) {
     let holding = |path: &Vec<String>| path.iter().any(|frame| frame.contains(".js:"));
     let total = paths
@@ -923,9 +799,6 @@ pub fn unknown_share(paths: &BTreeMap<Vec<String>, u64>) -> (u64, u64) {
     (unknown, total)
 }
 
-/// The spin comparisons fail on each lie they exist to catch: a line
-/// given to a compiled frame, one given to the innermost frame, a dropped
-/// frame, and a wrong line, on the path V8 reported or any other.
 #[test]
 fn the_spin_comparison_fails_on_each_lie() {
     let output = "TRUTH\tspin\t7\tmain\n\
@@ -966,9 +839,7 @@ fn the_spin_comparison_fails_on_each_lie() {
         path(&["spinFor a.js:9", "fast", "inner"]),
         called(&["spinFor a.js:9", "fast", "inner a.js:2"]),
         called(&["spinFor a.js:9", "fast", "inner a.js:3"]),
-        // Before the spin, as it warms up, and after.
         called(&["fast a.js:7", "inner a.js:8"]),
-        // What the fixture's report calls is in no report.
         called(&[
             "spinFor a.js:9",
             "fast",
@@ -997,11 +868,6 @@ fn the_spin_comparison_fails_on_each_lie() {
     }
 }
 
-/// How the samples of `frameless.js --spin`, `stacks`, hide that
-/// JavaScript frames are missing. The addon's `spin` runs only under
-/// `framelessSpins`, holding no frame pointer, so each sample in it either
-/// names that function or ends saying its JavaScript frames are
-/// incomplete; and the program spins long enough for many such samples.
 pub fn frameless_lies(stacks: &[SampledStack]) -> Vec<String> {
     let spinning: Vec<&SampledStack> = stacks
         .iter()
@@ -1035,9 +901,6 @@ pub fn frameless_lies(stacks: &[SampledStack]) -> Vec<String> {
         .collect()
 }
 
-/// The frameless check fails on a sample in `spin` that shows neither
-/// the function that called it nor that its JavaScript frames are
-/// incomplete, and on a recording with too few samples in `spin`.
 #[test]
 fn the_frameless_check_fails_on_a_silent_sample() {
     let sample = |functions: &[&str], ending: StackEnding| SampledStack {
@@ -1066,9 +929,6 @@ fn the_frameless_check_fails_on_a_silent_sample() {
     assert_eq!(frameless_lies(&stacks[..99]).len(), 1);
 }
 
-/// The BPF engine, whose program walks each sample's JavaScript frames,
-/// held to the frames V8 reported of each spinning thread. It needs
-/// `CAP_BPF` and `CAP_PERFMON`, so it runs only through `just test-bpf`.
 mod bpf {
     use super::*;
 
@@ -1117,13 +977,6 @@ mod bpf {
         );
     }
 
-    /// Each sample carries the isolate its thread ran in, as the label
-    /// `isolate`, numbered by when the recording first saw it: the main
-    /// thread and its worker each run in an isolate of their own, which
-    /// `busy.js` names them by their native ids, and the thread of libuv's
-    /// pool that derives its key in none: the thread whose samples are in OpenSSL's key derivation.
-    /// Node 26 keeps the isolate at a fixed offset from the thread
-    /// pointer, and 22 at the offset a slot of its image holds.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn samples_carry_each_threads_own_isolate() {
@@ -1137,9 +990,6 @@ mod bpf {
             .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
         let scratch = ScratchDir::new("node-busy-isolates");
         let profile = scratch.path().join("busy.usprof");
-        // The recording reads node's debug information as it starts, and
-        // the kernel drops samples until it has; a first recording caches
-        // it, so that the one the test reads loses only its first moments.
         let warmed = Command::new(&launcher)
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .args(["record", "--node", "bpf", "--output"])
@@ -1184,9 +1034,6 @@ mod bpf {
             .iter()
             .map(|thread| (thread.tid, thread.weight))
             .collect();
-        // The threads sampled for a tenth of a second at least in OpenSSL's
-        // key derivation, which only libuv's pool runs: by their code, as
-        // a thread's name comes in a record the kernel may drop.
         let pool: Vec<u32> = threads
             .iter()
             .filter(|thread| {
@@ -1217,10 +1064,6 @@ mod bpf {
         assert!(lies.is_empty(), "{entry}: {lies:#?}\n{weights:?}");
     }
 
-    /// CPU samples of code that holds no frame pointer, under JavaScript
-    /// frames, leave the walk nothing to follow; each sample, unwound
-    /// through V8's code by call-frame information, says its JavaScript
-    /// frames ended early, and never stands complete without them.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn samples_the_walk_cannot_follow_say_their_javascript_frames_are_missing() {
@@ -1228,8 +1071,6 @@ mod bpf {
             .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
         let scratch = ScratchDir::new("node-frameless-bpf");
         let profile = scratch.path().join("frameless.usprof");
-        // Samples before microscope reads node's debug information are
-        // unknown; a first recording loads it into the cache.
         let record = |output: &Path, arguments: &[&std::ffi::OsStr]| {
             let finished = Command::new(&launcher)
                 .arg(env!("CARGO_BIN_EXE_microscope"))
@@ -1268,11 +1109,6 @@ mod bpf {
         assert!(lies.is_empty(), "{}", lies.join("\n"));
     }
 
-    /// The walker knows a launched node's layout before node runs, so its
-    /// first samples hold their JavaScript frames however long node's
-    /// debug information takes to read. Without the image cache it takes
-    /// most of a second, which once left that long with every JavaScript
-    /// frame unknown.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn a_launched_nodes_first_samples_hold_their_javascript_frames() {
@@ -1325,11 +1161,6 @@ mod bpf {
         );
     }
 
-    /// The walker knows an attached node's layout before its first sample:
-    /// sampling waits until microscope has read the images node mapped, so
-    /// no sample comes before the layout however long that takes. Without
-    /// the image cache it took long enough to leave a few percent of the
-    /// samples with every JavaScript frame unknown.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn an_attached_nodes_first_samples_hold_their_javascript_frames() {
@@ -1369,10 +1200,6 @@ mod bpf {
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .args(["record", "--node", "bpf", "--pid"])
             .arg(spinning.0.id().to_string())
-            // Node spins until the test ends, so the recording, not node,
-            // decides how long it runs: reading node's images without the
-            // cache took up to 3 s here, and a node that stopped on its own
-            // left too few samples after it.
             .args(["--duration", "5"])
             .arg("--output")
             .arg(&profile)
@@ -1409,9 +1236,6 @@ mod bpf {
         );
     }
 
-    /// Two Node processes a shell starts, each with its own V8 and its own
-    /// layout for the walker: each process's samples hold its own threads'
-    /// JavaScript frames, as each reported them.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn each_process_of_a_group_holds_its_own_javascript_frames() {
@@ -1463,8 +1287,6 @@ mod bpf {
             let paths = process_paths(&profile, rows, Look::Python);
             let truth = spinning(&text);
             assert_eq!(truth.len(), 2, "{pid}: {truth:#?}");
-            // The fixture's module wrapper is anonymous, and named for where
-            // it is declared: its script's first line.
             let functions = profile.keys(Granularity::Function);
             assert_eq!(
                 functions.named("<anonymous busy.js:1>").len(),
@@ -1482,8 +1304,6 @@ mod bpf {
         }
     }
 
-    /// The paths of the samples of the threads `rows`, in the interpreted
-    /// look, as [`paths`] gives them.
     fn process_paths(profile: &Profile, rows: Vec<u32>, look: Look) -> BTreeMap<Vec<String>, u64> {
         let keys = profile.keys(Granularity::Line);
         let tree = keys.aggregate(&Query {
@@ -1508,11 +1328,6 @@ mod bpf {
     }
 }
 
-/// A program instrumented with the Node package is recorded as one
-/// instrumented with the Rust SDK is: its zones nest as its calls did, on
-/// the main thread and a worker, its labels, plots, and messages land on
-/// its thread, and the sites past the library's table record nothing,
-/// which the profile says.
 #[test]
 fn the_node_package_records_what_the_program_marks() {
     let mut command = Command::new(node::node(ENTRY));
@@ -1602,9 +1417,6 @@ fn the_node_package_records_what_the_program_marks() {
     );
 }
 
-/// Without its addon, or with an addon but no library, the package still
-/// loads, and every mark does nothing, as with no recording; `problem`
-/// says why.
 #[test]
 fn the_node_package_without_its_native_parts_does_nothing_and_says_why() {
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/node");

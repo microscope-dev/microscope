@@ -1,7 +1,7 @@
-// Nests every layout case of a library that only ELF symbols describe on one
-// stack and faults inside the library at the innermost frame. Each link calls
-// the next case and then touches the sink, so no call becomes a tail call that
-// would remove a frame.
+
+
+
+
 #include <stdint.h>
 
 typedef void (*symbols_callback_fn)(void);
@@ -43,8 +43,8 @@ __attribute__((noinline)) static void chain_alias(void) {
     symbols_sink += 1;
 }
 
-// asm_nested_outer calls its callback before, within, and after its nested
-// symbol; the chain continues from the last call.
+
+
 static int32_t nested_calls;
 
 __attribute__((noinline)) static void chain_nested_site(void) {

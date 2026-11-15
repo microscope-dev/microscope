@@ -35,13 +35,13 @@
     "typescript/no-explicit-any": "error",
     "typescript/no-non-null-assertion": "error",
     "typescript/no-namespace": "error",
-    // Stylesheets and fonts are imported for their effect.
+
     "import/no-unassigned-import": ["error", { "allow": ["**/*.css", "@fontsource/**"] }],
-    // A component's own autoFocus prop is not the HTML attribute.
+
     "jsx-a11y/no-autofocus": ["error", { "ignoreNonDOM": true }],
-    // The automatic JSX runtime needs no React in scope.
+
     "react/react-in-jsx-scope": "off",
-    // Sizes are judged in review, not by a count.
+
     "max-lines": "off",
     "max-lines-per-function": "off",
     "import/max-dependencies": "off"
@@ -55,12 +55,12 @@
     {
       "files": ["web/test/**", "web/e2e/**", "editors/vscode/test/**"],
       "rules": {
-        // A test's steps run one after another on purpose.
+
         "no-await-in-loop": "off"
       }
     },
     {
-      // Command-line scripts report on the console.
+
       "files": [
         "web/e2e/bench.ts",
         "web/e2e/probe.ts",
@@ -73,8 +73,8 @@
       "files": ["web/test/**"],
       "plugins": ["vitest"],
       "rules": {
-        // It flags every `||` and ternary, not only a skipped assertion,
-        // which no-conditional-expect still catches.
+
+
         "vitest/no-conditional-in-test": "off"
       }
     },

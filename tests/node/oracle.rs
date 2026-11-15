@@ -1,9 +1,3 @@
-//! Compares microscope stops with V8's `Debugger.paused` reports from
-//! `cdp_oracle.js`, an independent CDP client. Checks every JavaScript frame's
-//! function, plus source position, parameter and local names, and primitive
-//! values in the program's frames. Node frames are compared by function only:
-//! the oracle's `--inspect-brk` takes a different module-loader branch.
-
 use std::collections::BTreeMap;
 use std::process::{Command as Process, Stdio};
 
@@ -11,15 +5,12 @@ use microscope::{SourceLanguage, StepKind, VariableKind, VariableState};
 
 use crate::support::{Scenario, node};
 
-/// A breakpoint both sides set: a line, and a condition V8 evaluates in
-/// the oracle and microscope at its own stops.
 #[derive(Debug, Clone, Copy)]
 pub struct Planted<'a> {
     pub line: u64,
     pub condition: Option<&'a str>,
 }
 
-/// What to do at a pause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Into,
@@ -45,51 +36,36 @@ impl Command {
     }
 }
 
-/// Where a pause was: the innermost JavaScript function, and its one-based
-/// line and column.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pause {
     pub function: String,
     pub line: u32,
     pub column: u32,
 
-    /// For a pause at an exception, whether nothing catches it.
     pub uncaught: Option<bool>,
 
-    /// Every JavaScript frame, innermost first.
     pub stack: Vec<Frame>,
 }
 
-/// A JavaScript frame of a pause.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct Frame {
     pub function: String,
     pub line: u32,
     pub column: u32,
 
-    /// Whether the frame runs the program's own code, not Node's.
     pub own: bool,
 
-    /// In the program's own frames, each parameter and local by name,
-    /// with a primitive's value as util.inspect writes it; `None` for an
-    /// object, whose text is not compared.
     pub locals: BTreeMap<String, Option<String>>,
 
-    /// The parameters and locals microscope could not read, with why.
     #[serde(default)]
     pub missing: BTreeMap<String, String>,
 }
 
-/// Why microscope shows a variable V8 does not list: a `let` or `const`
-/// not yet initialized, which V8's scope iterator skips, whether V8 marks
-/// its binding so or its slot still holds the hole.
 const UNINITIALIZED: [&str; 2] = [
     "the variable is not initialized yet",
     "the variable is unbound: not yet assigned, or deleted",
 ];
 
-/// Why microscope cannot read an arrow function's `this`, which V8's
-/// debugger reports as undefined.
 const UNKEPT_THIS: &str = "V8 did not keep `this` because the arrow function does not use it";
 
 impl std::fmt::Display for Pause {
@@ -103,19 +79,13 @@ impl std::fmt::Display for Pause {
     }
 }
 
-/// How steps treat code that is not the program's own.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Skipping<'a> {
-    /// Directories whose scripts steps pass through, as `/vendor/`.
     pub directories: &'a [&'a str],
 
-    /// Whether steps stop in Node's own scripts.
     pub enter: bool,
 }
 
-/// Runs `fixture` under `entry` with the given breakpoints and exception filter
-/// (`none`, `caught`, or `uncaught`). Applies `commands` at successive pauses,
-/// then resumes; steps continue through scripts selected by `skipping`.
 pub fn pauses(
     entry: &str,
     fixture: &str,
@@ -176,7 +146,6 @@ pub fn pauses(
     found
 }
 
-/// Reads the selected JavaScript frame and its JavaScript callers.
 pub async fn selected(scenario: &Scenario) -> Pause {
     let snapshot = scenario
         .operation("snapshot", scenario.handle().snapshot())
@@ -211,9 +180,6 @@ pub async fn selected(scenario: &Scenario) -> Pause {
         }) else {
             continue;
         };
-        // V8 reports the script's own place, which a source map moves. A
-        // builtin such as Array.prototype.map has no script, and CDP no
-        // frame for it.
         let Some(place) = recorded.generated.as_ref().or(recorded.place.as_ref()) else {
             continue;
         };
@@ -253,7 +219,6 @@ fn name(function: &str) -> String {
     }
 }
 
-/// Reads formatted parameters and locals, retaining unreadable-value reasons.
 async fn locals(
     scenario: &Scenario,
     frame: microscope::StackFrameId,
@@ -289,8 +254,6 @@ async fn locals(
     (read, missing)
 }
 
-/// How microscope's pauses `seen` differ from V8's `expected`, pause by
-/// pause and frame by frame, or nothing when they agree.
 pub fn differences(seen: &[Pause], expected: &[Pause]) -> Vec<String> {
     let mut found = Vec::new();
     if seen.len() != expected.len() {
@@ -346,10 +309,6 @@ pub fn differences(seen: &[Pause], expected: &[Pause]) -> Vec<String> {
     found
 }
 
-/// How the variables microscope read in a frame differ from V8's. Every
-/// name V8 lists must be read, with a primitive's value V8's own. Beyond
-/// V8's, microscope may show only extra arguments and uninitialized
-/// bindings, and may leave unread only an arrow's unkept `this`.
 fn local_differences(mine: &Frame, theirs: &Frame) -> Vec<String> {
     let mut found = Vec::new();
     for (name, value) in &theirs.locals {
@@ -383,7 +342,6 @@ fn local_differences(mine: &Frame, theirs: &Frame) -> Vec<String> {
     found
 }
 
-/// A named change to a pause, for the differential's self-test.
 #[cfg(test)]
 type Change<'a> = (&'a str, &'a dyn Fn(&mut Pause));
 

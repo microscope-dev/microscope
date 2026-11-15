@@ -1,5 +1,5 @@
-// Reports how it was started: its arguments, two environment variables, its
-// working directory, and one line of standard input, then exits with argc.
+
+
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>

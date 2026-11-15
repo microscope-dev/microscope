@@ -1,12 +1,12 @@
-// Deferred calls, which steps follow as the program runs them: the
-// compiler calls a function's few defers itself as it returns, the runtime
-// calls those registered in a loop, and a panic calls them all as it
-// unwinds, until one recovers. Unoptimized, the compiler calls none
-// itself, and the runtime calls them from deferreturn at a function's
-// closing brace.
+
+
+
+
+
+
 package main
 
-// sink keeps calls the compiler would otherwise drop.
+
 var sink int
 
 //go:noinline
@@ -14,8 +14,8 @@ func cleanup(note int) { // DEFER: cleanup
 	sink += note // DEFER: cleanup body
 } // DEFER: cleanup end
 
-// direct's defer is open-coded: it returns by calling cleanup itself.
-//
+
+
 //go:noinline
 func direct() int {
 	defer cleanup(1)
@@ -23,8 +23,8 @@ func direct() int {
 	return sink // DEFER: direct return
 } // DEFER: direct end
 
-// looped's defers are records the runtime calls from deferreturn.
-//
+
+
 //go:noinline
 func looped(count int) int {
 	for note := range count {

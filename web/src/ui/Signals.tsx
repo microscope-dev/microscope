@@ -1,6 +1,3 @@
-// How the debugger handles each signal, and the modules the program has
-// loaded.
-
 import { type ChangeEvent, useCallback, useState } from "react";
 
 import { useRequest } from "../data";
@@ -10,7 +7,6 @@ import { useConnection, useModel } from "../store";
 
 type Field = "stop" | "print" | "pass";
 
-/** Whether a signal stops the program, is said, and reaches the program. */
 export function Signals() {
   const session = useModel((model) => model.state?.session);
   const signals = useRequest("signals", session ? undefined : null);
@@ -126,8 +122,6 @@ export function Modules() {
   );
 }
 
-/** Where a module starts or ends, which is unknown when microscope could
- * not read the module's file. */
 function Bound({ value }: { value: string | null }) {
   return value === null ? (
     <td className="dim" title="microscope could not read this module's file">
@@ -158,7 +152,7 @@ function PolicyBox({
       type="checkbox"
       aria-label={`${field[0]?.toUpperCase()}${field.slice(1)} on ${policy.name}`}
       checked={policy[field]}
-      // A signal that stops is always said.
+
       disabled={!control || (field === "print" && policy.stop)}
       onChange={change}
     />

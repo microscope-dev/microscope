@@ -1,6 +1,3 @@
-//! The exceptions JavaScript reports through Node's inspector, which
-//! `Debugger.setPauseOnExceptions` chooses.
-
 use crate::protocol::{ExceptionFilter, ExceptionStops, LanguageExceptionKind};
 
 pub const EXCEPTION_FILTERS: [ExceptionFilter; 2] = [THROWN, UNCAUGHT];
@@ -33,7 +30,6 @@ const UNCAUGHT: ExceptionFilter = ExceptionFilter {
     default: false,
 };
 
-/// The state `Debugger.setPauseOnExceptions` takes for `stops`.
 pub fn pause_state(stops: ExceptionStops) -> &'static str {
     if stops.stops(THROWN.id) {
         "all"
@@ -44,8 +40,6 @@ pub fn pause_state(stops: ExceptionStops) -> &'static str {
     }
 }
 
-/// The filter a pause on an exception stops for: `uncaught` says whether
-/// V8 found nothing that catches it.
 pub fn filter(stops: ExceptionStops, uncaught: bool) -> Option<&'static ExceptionFilter> {
     [&EXCEPTION_FILTERS[1], &EXCEPTION_FILTERS[0]]
         .into_iter()

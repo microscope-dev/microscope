@@ -1,13 +1,7 @@
-// What the Syscalls tab draws, apart from React: the heat map's ramp,
-// histogram buckets' names, and what a trace says of how it was made.
-
 import { assert } from "../assert";
 import type { SyscallLosses } from "../protocol.gen";
 import { formatCount, formatDuration } from "./paint";
 
-/** The heat map's color for a cell of `count` calls when the fullest holds
- * `most`: none when empty, then from faint to the accent, by log scale, so
- * that rare calls still show. */
 export function heatAlpha(count: number, most: number): number {
   if (count <= 0 || most <= 0) {
     return 0;
@@ -15,20 +9,15 @@ export function heatAlpha(count: number, most: number): number {
   return 0.15 + (0.85 * Math.log1p(count)) / Math.log1p(most);
 }
 
-/** The shortest duration a log2 bucket holds, as the server buckets: 0,
- * then `[2^(i-1), 2^i)` nanoseconds. */
 export function bucketFloor(bucket: number): number {
   assert(Number.isInteger(bucket) && bucket >= 0, `latency bucket ${bucket} is not an index`);
   return bucket === 0 ? 0 : 2 ** (bucket - 1);
 }
 
-/** A bucket's name, by the shortest duration it holds. */
 export function bucketLabel(bucket: number): string {
   return bucket === 0 ? "0" : `≥ ${formatDuration(bucketFloor(bucket))}`;
 }
 
-/** The histogram's buckets worth showing: from the first that holds a
- * call to the last, so a chart is not mostly empty. */
 export function shownBuckets(...histograms: readonly (readonly number[])[]): [number, number] {
   let first = Number.POSITIVE_INFINITY;
   let last = -1;
@@ -43,31 +32,24 @@ export function shownBuckets(...histograms: readonly (readonly number[])[]): [nu
   return last < 0 ? [0, -1] : [first, last];
 }
 
-/** A capture's setting, as the server lists them. */
 interface Setting {
   name: string;
   value: string;
 }
 
-/** A part of a trace's footer, with more on hover. */
 interface TraceNote {
   text: string;
   title?: string;
   warn?: boolean;
 }
 
-/** What ptrace does to the times it shows. */
 export const PTRACE_DISTORTS =
   "ptrace stops the program at each traced call: it ran slower than it would, and each call's time includes the stop.";
 
-/** Whether the samples counted kernel CPU time: without it, no sample
- * falls inside a system call. */
 export function sampledKernel(settings: readonly Setting[]): boolean {
   return settings.some((each) => each.name === "kernel stacks" && each.value === "on");
 }
 
-/** How the calls were traced: the engine and, for BPF, how it attached.
- * ptrace warns, as it distorts what it measures. */
 export function tracedBy(settings: readonly Setting[]): TraceNote {
   const setting = (name: string) => settings.find((each) => each.name === name)?.value;
   const engine = setting("syscall engine");
@@ -85,9 +67,6 @@ export function tracedBy(settings: readonly Setting[]): TraceNote {
   };
 }
 
-/** What the trace is missing, by why: records the kernel dropped and
- * returns it never saw may leave counts short; calls over the cap or past
- * a full ring were counted. */
 export function lossNotes(lost: SyscallLosses): TraceNote[] {
   const notes: TraceNote[] = [];
   if (lost.dropped > 0) {
@@ -120,8 +99,6 @@ export function lossNotes(lost: SyscallLosses): TraceNote[] {
   return notes;
 }
 
-/** What the recording did not keep of its system calls, and the flag that
- * would have kept each call; null when it kept them. */
 export function unkept(settings: readonly Setting[]): { text: string; flag: string } | null {
   const setting = (name: string) => settings.find((each) => each.name === name)?.value;
   const level = setting("syscalls") ?? "off";
@@ -140,7 +117,6 @@ export function unkept(settings: readonly Setting[]): { text: string; flag: stri
     : { text: "System calls were not recorded.", flag: "--syscalls calls" };
 }
 
-/** What else shaped the trace: its cgroup, and what saved a window. */
 export function traceNotes(settings: readonly Setting[]): TraceNote[] {
   const notes: TraceNote[] = [];
   const cgroup = settings.find((each) => each.name === "cgroup")?.value;

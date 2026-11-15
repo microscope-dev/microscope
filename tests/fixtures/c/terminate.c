@@ -1,6 +1,6 @@
-// Runs until asked to end with SIGTERM, which it handles by exiting with
-// status 7. `terminate reraise` instead cleans up and raises SIGTERM again
-// with its default action, as Go's runtime does, and dies of it.
+
+
+
 #define _POSIX_C_SOURCE 200809L
 
 #include <signal.h>

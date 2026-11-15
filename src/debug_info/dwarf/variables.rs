@@ -1,19 +1,3 @@
-//! DWARF variable inspection.
-//!
-//! Loading builds an immutable catalog of data objects, their scopes, and a
-//! normalized type graph; inspection then evaluates locations against a
-//! stopped thread through [`VariableRuntime`](crate::debug_info::VariableRuntime).
-//!
-//! - [`types`]: normalizing type DIEs; [`variant`]: discriminated variants.
-//! - [`globals`]: the global catalog; [`die`] and [`location`]: reading DIE
-//!   attributes and location descriptions.
-//! - [`shape`]: how a type's bytes decode; [`codec`]: the byte-level decoding.
-//! - [`evaluate`]: DWARF expression evaluation; [`inspect`]: value paths and
-//!   materializing values, children, and dereferences.
-//! - [`pieces`]: the storage location pieces describe; [`storage`]: reading
-//!   and selecting storage of every form.
-//! - [`call_sites`]: the calls that recover parameters' entry values.
-
 use crate::debug_info::dwarf::DwarfSet;
 use crate::image::lines::Files;
 use std::collections::BTreeMap;
@@ -101,18 +85,14 @@ const MAX_RECORD_CHILDREN: usize = 4_096;
 const MAX_VARIANT_METADATA: usize = 4_096;
 const MAX_AGGREGATE_DEPTH: usize = 64;
 
-/// Types past this many are the work limit's type, so that every type,
-/// with the few made once each, has a `u32` id.
 const MAX_BUILT_TYPES: usize = u32::MAX as usize - 4;
 
-/// The row `index` numbers, in a table no larger than a module's entries.
 fn row(index: usize) -> u32 {
     let row = u32::try_from(index);
     debug_assert!(row.is_ok(), "row {index} is past a module's entries");
     row.unwrap_or(u32::MAX)
 }
 
-/// The unit at `index` of `units`.
 #[expect(
     clippy::indexing_slicing,
     reason = "unit indices come from enumerating `units` or from `DieKey`s that `Units` resolved, \
@@ -129,18 +109,13 @@ const fn malformed_reason(
     VariableMalformedReason { kind, description }
 }
 
-/// What kind of Rust scope a scope is.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RustScope {
-    /// The outermost scope of the body of an `async fn`, where rustc
-    /// declares the fields of its future that captured its arguments, which
-    /// the body moves into variables of its own.
     AsyncCaptures,
     Other,
 }
 
 impl RustScope {
-    /// The scope of a subprogram or inline instance of a Rust unit.
     fn routine<'data>(
         dwarf: &DwarfSet<'data>,
         units: &Units<'data>,
@@ -162,44 +137,26 @@ struct Scope {
     lexical_depth: u32,
     frame_base: Metadata<LocationListId>,
 
-    /// True within subprograms and inlined subroutines, whose formal
-    /// parameters some producers, such as Zig, nest in lexical blocks.
     routine: bool,
     function: usize,
 
-    /// The innermost containing inline instance, or `None` when the scope
-    /// belongs directly to the physical frame.
     instance: Option<CodeInstanceId>,
 
-    /// The code instance whose code the scope is in: `instance`, or the
-    /// physical frame's.
     code_instance: Option<CodeInstanceId>,
 
-    /// The file declaring a Go function, and so its variables, whose
-    /// declarations give only their line.
     go_file: Option<SourceFileId>,
 
-    /// For a Rust scope, whose compiler names variables of its own, what
-    /// kind it is.
     rust: Option<RustScope>,
 
-    /// The line of the await whose future this scope, or one enclosing it,
-    /// declares as `__awaitee`: rustc binds the value it gives as `result`
-    /// in a block within.
     awaitee: Option<crate::LineNumber>,
     malformed: Option<Arc<str>>,
 
-    /// Whether the scope is in a subprogram's definition, abstract or
-    /// concrete, rather than in a declaration inside a type.
     defined: bool,
 }
 
-/// Go's `DW_AT_go_closure_offset`: where in a closure's context a captured
-/// variable is.
 const DW_AT_GO_CLOSURE_OFFSET: gimli::DwAt = gimli::DwAt(0x2907);
 
 pub(super) struct DwarfVariableInfo {
-    /// The image's types, whose tables hold everything else it reads.
     types: Arc<crate::image::types::TypeTable>,
     target: TargetDescription,
     endian: RunTimeEndian,
@@ -208,37 +165,23 @@ pub(super) struct DwarfVariableInfo {
 pub(super) struct LoadedVariables {
     pub types: Arc<[crate::TypeNode]>,
 
-    /// The data objects and the functions whose frames show them.
     pub variables: crate::image::variables::Variables,
 
-    /// The calls the functions make.
     pub calls: crate::image::calls::Calls,
 
-    /// What reading values of some types takes beyond their layout.
     pub type_facts: crate::image::type_facts::TypeFacts,
 
-    /// Every location the variables and types name.
     pub locations: LocationsBuilder,
 
-    /// Integer constants the units declare at their top level, by name,
-    /// and Rust trait objects' vtables, by address, with the concrete type
-    /// each is for.
     pub declarations: crate::image::declarations::Declarations,
 
-    /// The coroutine each code instance that runs one is passed, as the
-    /// body of an `async fn` is passed its future.
     pub coroutine_bodies: BTreeMap<CodeInstanceId, TypeId>,
 
-    /// Every type named as a coroutine, with what it is or why its layout
-    /// cannot be read as one.
     pub coroutines: BTreeMap<TypeId, std::result::Result<crate::CoroutineInfo, Arc<str>>>,
 
-    /// The generic type arguments of each code instance of a generic
-    /// function, by their parameters' names.
     pub function_generics: BTreeMap<CodeInstanceId, crate::FunctionGenerics>,
 }
 
-/// The producer a unit names.
 fn unit_producer(
     dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
@@ -251,8 +194,6 @@ fn unit_producer(
     super::string_attribute(dwarf, unit, root, gimli::DW_AT_producer)
 }
 
-/// What a function returns by the System V convention: one value of its
-/// type, named for it, unless it returns nothing.
 fn system_v_returns<'data>(
     dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
@@ -270,7 +211,6 @@ fn system_v_returns<'data>(
         .flatten()
         .unwrap_or_else(|| Arc::from("returned"));
 
-    // Named for the function, as C's are.
     let name = super::own_name(language, &name).map_or(name, Arc::from);
     let rewritten = std::iter::once(entry)
         .chain(chain.iter().map(|(_, origin)| origin))
@@ -290,7 +230,6 @@ fn system_v_returns<'data>(
     )))
 }
 
-/// The file declaring a function or inlined call's function, if known.
 fn declared_file<'data>(
     dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
@@ -312,9 +251,6 @@ fn declared_file<'data>(
     .map(|declaration| declaration.file)
 }
 
-/// Each Go lexical block's code fused with its nested blocks' and inlined
-/// calls', as Delve reads them: Go may place a nested block's code
-/// outside its parent's ranges. Only blocks the fusion changes are listed.
 fn fused_block_ranges(
     dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
@@ -325,7 +261,6 @@ fn fused_block_ranges(
         offset: usize,
         block: bool,
 
-        /// Its own ranges, fused; a block with none takes its parent's.
         own: Vec<AddressRange<ImageAddress>>,
         ranges: Vec<AddressRange<ImageAddress>>,
     }
@@ -378,17 +313,12 @@ fn fused_block_ranges(
     Ok(fused)
 }
 
-/// Whether a load reads the locals and parameters of functions, or leaves
-/// them out, and the types only they name, so that the rest fits its
-/// budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Locals {
     Read,
     LeftOut,
 }
 
-/// What the image knows of its code: the instance each function DIE
-/// becomes.
 #[derive(Clone, Copy)]
 pub(super) struct CodeMetadata<'a> {
     pub(super) instance_ids: &'a super::DieMap<CodeInstanceId>,
@@ -415,7 +345,6 @@ pub(super) fn load_variable_info<'data>(
     let mut walked = Walked::default();
     let phase = crate::span!("variables.evaluation_units");
 
-    // Every location is pooled once, in the tables the image will hold.
     let pool = std::sync::Mutex::new(LocationsBuilder::default());
     load_evaluation_units(
         units,
@@ -459,8 +388,6 @@ pub(super) fn load_variable_info<'data>(
     types.freeze();
     let phase = crate::span!("variables.main_walk");
 
-    // The file of each declaration, which the walk would otherwise spell
-    // again for each variable.
     let mut declared_files = die::DeclaredFiles::default();
     let cx = WalkContext {
         dwarf,
@@ -519,8 +446,6 @@ pub(super) fn load_variable_info<'data>(
     types.finalize_type_graph();
     drop(phase);
 
-    // Types and symbolic names past the budget stand in for what could not
-    // be built, which fails the load once nothing more is built.
     types.budget.check()?;
     crate::count!("budget_spent", types.budget.spent());
     let mut types = types.finish();
@@ -585,7 +510,6 @@ pub(super) fn load_variable_info<'data>(
         {
             coroutine_bodies.insert(instance, coroutine);
 
-            // The body's future is what the parameter points to.
             if let Some(object) = object {
                 #[expect(
                     clippy::indexing_slicing,
@@ -650,8 +574,6 @@ pub(super) fn load_variable_info<'data>(
     })
 }
 
-/// A child whose place an expression computes, as the image names it;
-/// `None` for one whose index no image row can hold.
 fn layout_child(child: DynamicAggregateChild) -> Option<crate::image::type_facts::LayoutChild> {
     use crate::image::type_facts::LayoutChild;
     let index = |index: usize| u32::try_from(index).ok();
@@ -673,7 +595,6 @@ fn layout_child(child: DynamicAggregateChild) -> Option<crate::image::type_facts
     })
 }
 
-/// What the main walk reads every unit with.
 struct WalkContext<'w, 'data> {
     dwarf: &'w DwarfSet<'data>,
     catalog: &'w UnitCatalog<'data>,
@@ -683,7 +604,6 @@ struct WalkContext<'w, 'data> {
     locals: Locals,
 }
 
-/// What the main walk records, in the order it reads the DIEs.
 #[derive(Default)]
 struct Walked {
     objects: Vec<DataObject>,
@@ -693,9 +613,6 @@ struct Walked {
     vtables: Vec<(u64, TypeId)>,
     go_function_entries: Vec<(ImageAddress, u32)>,
 
-    /// The instances passed an unnamed parameter, as an `async fn`'s body
-    /// is passed its future, its type, and its data object, when locals
-    /// are read.
     unnamed_parameters: Vec<(CodeInstanceId, TypeId, Option<usize>)>,
     abstract_bodies: Vec<(CodeInstanceId, TypeId)>,
     function_generics: BTreeMap<CodeInstanceId, crate::FunctionGenerics>,
@@ -703,8 +620,6 @@ struct Walked {
     names: Names,
 }
 
-/// Data objects' names, each held once: a large program names a few
-/// hundred thousand variables millions of times.
 #[derive(Default)]
 struct Names(foldhash::HashSet<Arc<str>>);
 
@@ -719,8 +634,6 @@ impl Names {
     }
 }
 
-/// Records what one unit's DIEs describe: its functions, scopes, call
-/// sites, and data objects, and the types they reach.
 #[expect(
     clippy::too_many_lines,
     reason = "one depth-first DIE walk must keep scope, variable, and parameter state synchronized"
@@ -771,8 +684,6 @@ fn walk_unit<'data>(
     let ada = source_language(unit_language, None) == SourceLanguage::Ada;
     let rust = unit_language == Some(gimli::DW_LANG_Rust);
 
-    // Go names the register ABI its x86-64 code calls with among the
-    // flags of each unit's producer, as `go1.27.1; -N -l regabi`.
     let go_registers = go
         && target.architecture == crate::Architecture::X86_64
         && unit_producer(dwarf, unit)?.is_some_and(|producer| {
@@ -781,9 +692,6 @@ fn walk_unit<'data>(
                 .is_some_and(|(_, flags)| flags.split_whitespace().any(|flag| flag == "regabi"))
         });
 
-    // Other languages' x86-64 code returns as the System V convention
-    // says, or, for the languages that leave theirs unspecified, as it
-    // for scalars.
     let language = source_language(unit_language, types.produced_language(unit_index));
     let system_v = target.architecture == crate::Architecture::X86_64
         && matches!(
@@ -807,8 +715,6 @@ fn walk_unit<'data>(
     let mut walk = DieWalk::new(unit)?;
     let mut scopes = Vec::<Option<Scope>>::new();
 
-    // The concrete instances of abstract functions open at this point
-    // of the walk, innermost last.
     let mut concrete = Vec::<ConcreteRoutine>::new();
 
     while let Some(die) = walk.next()? {
@@ -833,10 +739,6 @@ fn walk_unit<'data>(
         }
 
         if !main_walk_reads(die.tag, depth) {
-            // Nothing here reads such a DIE's attributes; all it has is
-            // its scope for the DIEs within it: its parent's, or none
-            // within a type. Most DIEs are types' members, parameters,
-            // and arguments, which are not decoded.
             let scope = if is_type_scope(die.tag) {
                 None
             } else {
@@ -850,7 +752,6 @@ fn walk_unit<'data>(
         let entry = walk.decode()?;
         let parent = scopes.last().and_then(Clone::clone);
 
-        // A concrete DIE standing for an abstract one covers it.
         if let Some(routine) = concrete.last_mut()
             && matches!(
                 entry.tag(),
@@ -869,9 +770,6 @@ fn walk_unit<'data>(
             gimli::DW_TAG_subprogram => {
                 let defined = strict_flag(entry, gimli::DW_AT_declaration) == Ok(false);
 
-                // The types a function's code uses are the program's
-                // types too, though no data holds them: a view may name
-                // the type only an inlined function returns.
                 if defined {
                     types.reach(unit_index, entry.attr_value(gimli::DW_AT_type));
                 }
@@ -897,7 +795,6 @@ fn walk_unit<'data>(
                 let function = functions.len();
 
                 if go && defined {
-                    // A func value holds the address its code begins at.
                     let entry_address = entry
                         .attr_value(gimli::DW_AT_low_pc)
                         .map(|value| unit_dwarf(dwarf, unit).attr_address(unit, value))
@@ -913,8 +810,6 @@ fn walk_unit<'data>(
                 functions.push(Function {
                     ranges: Arc::clone(&ranges),
                     objects: Vec::new(),
-                    // An optimized closure's out-of-line code names
-                    // its abstract origin.
                     name: if go {
                         origin_chain(units, unit_index, entry)
                             .ok()
@@ -977,7 +872,6 @@ fn walk_unit<'data>(
                 })
             }
             gimli::DW_TAG_lexical_block => parent.as_ref().map(|parent| {
-                // A Go block's code includes its nested blocks'.
                 let own = fused_blocks.get(&entry.offset().0).map_or_else(
                     || die_code_ranges(dwarf, unit, entry, &catalog.code),
                     |fused| Ok(fused.clone()),
@@ -1007,9 +901,6 @@ fn walk_unit<'data>(
                     defined: parent.defined,
                 }
             }),
-            // An inline instance keeps the caller's frame base and function
-            // but only its own code ranges; one without usable ranges gets
-            // none, unlike a lexical block, so its locals never match.
             gimli::DW_TAG_inlined_subroutine => parent.as_ref().map(|parent| {
                 let instance = instance_ids
                     .get(&DieKey {
@@ -1024,9 +915,6 @@ fn walk_unit<'data>(
                         Vec::new().into(),
                         Some(Arc::from("inlined subroutine has no address ranges")),
                     ),
-                    // A ranged instance must be identified so lookups can
-                    // scope to it; without an identity its contents could
-                    // only be misattributed.
                     Ok(_) if instance.is_none() => (
                         Vec::new().into(),
                         Some(Arc::from("inlined subroutine has no code instance")),
@@ -1060,9 +948,6 @@ fn walk_unit<'data>(
             _ => parent.clone(),
         };
 
-        // An empty extent is deliberate containment (a rangeless inline
-        // instance) and must stay empty through every descendant scope;
-        // only a nested subprogram starts an independent extent.
         let scope = if entry.tag() != gimli::DW_TAG_subprogram
             && parent
                 .as_ref()
@@ -1143,8 +1028,6 @@ fn walk_unit<'data>(
             vtables.push((address, ty));
         }
 
-        // A Go interface may hold a value of any type the runtime
-        // describes, which no data need mention.
         if depth == 1
             && types::is_type_die_tag(entry.tag())
             && identity::go_runtime_type(entry).is_some()
@@ -1175,8 +1058,6 @@ fn walk_unit<'data>(
                 _ => Err(Arc::from("a closure's captured variable is malformed")),
             };
 
-            // One capture it cannot describe leaves them all unknown,
-            // rather than the closure seeming to capture less.
             #[expect(
                 clippy::indexing_slicing,
                 reason = "a scope's function is the index the walk pushed it at"
@@ -1200,8 +1081,6 @@ fn walk_unit<'data>(
         });
 
         if kind.is_some() && locals == Locals::LeftOut {
-            // rustc passes the body of an `async fn` its future as an
-            // unnamed parameter, which says what coroutine the body runs.
             if kind == Some(VariableKind::Parameter)
                 && let Some(instance) = owning_scope.and_then(|scope| scope.code_instance)
             {
@@ -1218,22 +1097,16 @@ fn walk_unit<'data>(
                 }
             }
         } else if let Some(kind) = kind {
-            // A variable of code with no address of its own, such as an
-            // abstract inline instance, names no value, but its type is
-            // the program's.
             if owning_scope.is_none() && parent.as_ref().is_some_and(|scope| scope.defined) {
                 types.reach(unit_index, entry.attr_value(gimli::DW_AT_type));
             }
 
             if let Some(scope) = owning_scope {
-                // Concrete inline-instance entries reference their
-                // abstract origin for descriptive metadata.
                 let (chain, chain_error) = match origin_chain(units, unit_index, entry) {
                     Ok(chain) => (chain, None),
                     Err(error) => (Vec::new(), Some(Arc::from(error.to_string()))),
                 };
 
-                // Go marks its results as variable parameters.
                 let kind = if kind == VariableKind::Parameter
                     && go
                     && entry
@@ -1294,8 +1167,6 @@ fn walk_unit<'data>(
                     declared_files,
                 )
                 .map(|declaration| {
-                    // Go gives a variable's line alone: its file is
-                    // its function's.
                     declaration.or_else(|| {
                         let line = entry
                             .attr(gimli::DW_AT_decl_line)
@@ -1310,7 +1181,6 @@ fn walk_unit<'data>(
                 });
                 let (ranges, scope_error) = data_object_scope_ranges(scope, entry);
 
-                // A Go local exists from the line after its declaration.
                 let go_declaration = match (go, kind, &declaration) {
                     (true, VariableKind::Local, Ok(Some(declared))) => {
                         Some(Box::new(visibility::GoDeclaration {
@@ -1324,8 +1194,6 @@ fn walk_unit<'data>(
                 let (type_unit, type_value) = type_with_origins(unit_index, entry, &chain);
                 let type_info = types.variable_type(type_unit, type_value);
 
-                // Go names a variable it moved to the heap `&name`, and
-                // describes the pointer to it.
                 let (name, type_info, escaped) = match (go, name.strip_prefix('&')) {
                     (true, Some(variable)) => {
                         let variable = Arc::from(variable);
@@ -1353,19 +1221,6 @@ fn walk_unit<'data>(
                     _ => (name, type_info, None),
                 };
 
-                // A variable with no name that says it is the
-                // compiler's own, as gfortran's temporaries do, is no
-                // defect. Go and gfortran start the names of their own
-                // variables with characters no identifier of their
-                // languages can begin with, D with the `__` it reserves
-                // for them, Nim with a trailing or doubled `_` no Nim
-                // identifier has, and GNAT, which writes every Ada
-                // identifier in lower case, with a capital letter, as
-                // `C173b`. rustc's own are an async body's temporaries and unnamed parameters, the
-                // `result` an await binds, and, in an `async fn`'s
-                // body, the fields of its future that captured its
-                // arguments, which the body moves into variables of
-                // its own.
                 let rust_unnamed =
                     scope.rust.is_some() && kind == VariableKind::Parameter && name_error.is_some();
                 let declared_line = declaration
@@ -1400,8 +1255,6 @@ fn walk_unit<'data>(
                     enclosing.awaitee = declared_line;
                 }
 
-                // rustc passes the body of an `async fn` its future
-                // as an unnamed parameter.
                 if kind == VariableKind::Parameter
                     && name_error.is_some()
                     && let (Some(instance), TypeResolution::Resolved(ty)) =
@@ -1477,7 +1330,6 @@ fn walk_unit<'data>(
     Ok(())
 }
 
-/// Points the catalog's types where deduplication moved them.
 fn remap_catalog(remap: &dedup::Remap, objects: &mut [DataObject], functions: &mut [Function]) {
     for object in objects {
         remap.resolution(&mut object.type_info);
@@ -1502,8 +1354,6 @@ fn remap_catalog(remap: &dedup::Remap, objects: &mut [DataObject], functions: &m
     }
 }
 
-/// A concrete instance of an abstract function, inlined or out of line,
-/// and the abstract variables its own DIEs stand for.
 struct ConcreteRoutine {
     depth: usize,
     origin: DieKey,
@@ -1511,7 +1361,6 @@ struct ConcreteRoutine {
     covered: std::collections::HashSet<DieKey>,
 }
 
-/// Where the variables an instance leaves out are added.
 struct AbstractTargets<'a, 'data, 'units> {
     objects: &'a mut Vec<DataObject>,
     functions: &'a mut Vec<Function>,
@@ -1520,18 +1369,10 @@ struct AbstractTargets<'a, 'data, 'units> {
     types: &'a mut TypeArenaBuilder<'units, 'data>,
     files: &'a mut Files,
 
-    /// The instances whose abstract function takes an unnamed parameter,
-    /// as an `async fn`'s body takes its future, and its type.
     bodies: &'a mut Vec<(CodeInstanceId, TypeId)>,
     locals: Locals,
 }
 
-/// Adds the named variables and parameters of a concrete instance's
-/// abstract function, or of a concrete block's abstract block, that it has
-/// no DIE for: the compiler kept no trace of them there, so they exist in
-/// its code without a location, as gdb shows them, rather than not at all.
-/// A nested abstract block is its own concrete block's to add; one with
-/// none has no code, so its variables are nowhere in scope.
 fn add_abstract_only_variables<'data>(
     dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
@@ -1564,8 +1405,6 @@ fn add_abstract_only_variables<'data>(
         }
 
         let Some(name) = string_attribute_of(dwarf, unit, entry)? else {
-            // An inlined `async fn` body may keep no DIE for the future
-            // its abstract function takes, which still says what it runs.
             if kind == VariableKind::Parameter
                 && routine.scope.rust.is_some()
                 && let Some(instance) = routine.scope.code_instance
@@ -1637,8 +1476,6 @@ fn add_abstract_only_variables<'data>(
     Ok(())
 }
 
-/// The line of the await whose future an abstract block's origin declares
-/// as `__awaitee`, which a concrete copy of the block may leave out.
 fn origin_awaitee<'data>(
     dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
@@ -1675,8 +1512,6 @@ fn origin_awaitee<'data>(
     None
 }
 
-/// Whether a subprogram or inline instance is the body of a Rust `async
-/// fn`, by its name or its abstract origin's.
 fn async_fn_body<'data>(
     dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
@@ -1684,8 +1519,6 @@ fn async_fn_body<'data>(
     unit: &gimli::Unit<Reader<'data>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
 ) -> bool {
-    // Most routines name themselves, and their origins are read only for
-    // those that do not; the name is only inspected, never kept.
     if let Ok(Some(name)) = super::str_attribute(dwarf, unit, entry, gimli::DW_AT_name) {
         return crate::debug_info::coroutines::is_async_fn_body(&name);
     }
@@ -1700,10 +1533,6 @@ fn async_fn_body<'data>(
         .is_some_and(|name| crate::debug_info::coroutines::is_async_fn_body(&name))
 }
 
-/// Whether the main walk reads anything of a DIE at `depth` with `tag`
-/// but its place: what builds scopes, call sites, procedures, and data
-/// objects, and the types a module declares at its top level, which a
-/// vtable or a Go interface may name though no data does.
 const fn main_walk_reads(tag: gimli::DwTag, depth: usize) -> bool {
     matches!(
         tag,
@@ -1720,12 +1549,6 @@ const fn main_walk_reads(tag: gimli::DwTag, depth: usize) -> bool {
     ) || (depth == 1 && types::is_type_die_tag(tag))
 }
 
-/// The name a Nim programmer wrote for a variable Nim 2 named in C: a
-/// local's name numbered within its procedure, as `small_1`, or a
-/// parameter's numbered by its position, as `value_p0`. Nim drops an
-/// underscore before a digit from the names it writes, and Nim reads `x_1`
-/// and `x1` as one name, so what precedes the number is the name exactly.
-/// A name Nim had to encode ends in an underscore, and stays as it is.
 fn nim_name(name: &str, kind: VariableKind) -> Option<&str> {
     let (base, number) = name.rsplit_once('_')?;
     let number = match kind {
@@ -1746,9 +1569,6 @@ fn nim_name(name: &str, kind: VariableKind) -> Option<&str> {
         .then_some(base)
 }
 
-/// Whether rustc made a variable for its own use: an async body's
-/// `_task_context`, an await's `__awaitee`, numbered temporaries, and
-/// the parameters it leaves unnamed.
 fn rust_temporary(name: &str, unnamed_parameter: bool) -> bool {
     unnamed_parameter
         || name == "_task_context"
@@ -1771,8 +1591,6 @@ fn string_attribute_of<'data>(
         .map(|value| value.map(|value| Arc::<str>::from(value.to_string_lossy().as_ref())))
 }
 
-/// A Rust trait object's vtable, `<C as Trait>::{vtable}`: a variable at a
-/// fixed address, whose type names `C` as its containing type.
 fn rust_vtable<'data>(
     dwarf: &DwarfSet<'data>,
     unit_index: usize,
@@ -1929,7 +1747,6 @@ impl VariableInfo for DwarfVariableInfo {
             }
         };
 
-        // A generic value has its type argument, laid out as its shape.
         let ty = match self.generic_type(ty, variable.instance(), address, runtime, budget)? {
             generic::Generic::Resolved(argument) => argument,
             generic::Generic::Unresolved(shape, _) => shape,
@@ -1938,8 +1755,6 @@ impl VariableInfo for DwarfVariableInfo {
 
         match self.located_data_object(variable, address, runtime, &mut frame_base, budget) {
             Ok(storage) => {
-                // A running async body's variable that the await it
-                // resumed from did not keep holds what another poll left.
                 let resumption = address.and_then(|address| {
                     self.resumption(
                         self.function_at(address)?,
@@ -1998,7 +1813,6 @@ impl VariableInfo for DwarfVariableInfo {
                     ))));
                 };
 
-                // A place a composite's piece holds is that piece's.
                 let storage = match self.value_shape(ty) {
                     Ok(shape) => storage::narrow(storage, shape.byte_size()),
                     Err(_) => storage,
@@ -2160,8 +1974,6 @@ impl VariableInfo for DwarfVariableInfo {
 }
 
 impl DwarfVariableInfo {
-    /// The variables of `image`, answered from the type table loading sealed
-    /// for it.
     pub(super) fn new(image: &crate::ModuleImage) -> Self {
         let target = image.target();
         Self {
@@ -2174,25 +1986,20 @@ impl DwarfVariableInfo {
         }
     }
 
-    /// Fails when the image's locals and parameters were left out, so
-    /// that no frame seems to have none.
     fn locals_read(&self) -> Result<()> {
         crate::image::facts::FactsView::new(self.types.tables())
             .locals_left_out()
             .map_or(Ok(()), |reason| Err(Error::LocalsLeftOut(reason)))
     }
 
-    /// The image's locations.
     fn locations(&self) -> LocationTables<'_> {
         LocationTables::new(self.types.tables())
     }
 
-    /// What reading values of some types takes.
     fn type_facts(&self) -> crate::image::type_facts::TypeFactsView<'_> {
         crate::image::type_facts::TypeFactsView::new(self.types.tables())
     }
 
-    /// The image's resume points and held ranges.
     fn resumes(&self) -> crate::image::resumes::ResumeView<'_> {
         crate::image::resumes::ResumeView::new(self.types.tables())
     }
@@ -2205,8 +2012,6 @@ impl DwarfVariableInfo {
         self.catalog().object(ObjectId(key.0))
     }
 
-    /// Whether `object` is visible at `address`: in its scope's code and,
-    /// for a Go local, past its declaration.
     fn visible_at(&self, object: Object<'_>, address: ImageAddress) -> bool {
         object.in_scope(address)
             && object.go_declaration().is_none_or(|declared| {
@@ -2214,7 +2019,6 @@ impl DwarfVariableInfo {
             })
     }
 
-    /// The code where `object` is visible.
     fn visible_ranges(&self, object: Object<'_>) -> Arc<[AddressRange<ImageAddress>]> {
         let ranges = object.ranges().collect::<Vec<_>>();
         match object.go_declaration() {
@@ -2329,10 +2133,6 @@ impl crate::debug_info::VariableRuntime for FuzzRuntime<'_> {
     }
 }
 
-/// Evaluates a DWARF expression from the input's first byte's count of
-/// bytes, with the rest as memory at `FUZZ_MEMORY`, where each general
-/// register, the CFA and thread-local storage also point. Registers past
-/// 32 are unavailable, so expressions reach both values and refusals.
 #[cfg(feature = "fuzzing")]
 pub(super) fn fuzz_expression(data: &[u8]) {
     use evaluate::{FrameBase, evaluate};
@@ -2373,8 +2173,6 @@ pub(super) fn fuzz_expression(data: &[u8]) {
     }
 }
 
-/// Makes fuzzed pieces the storage of a 16-byte object, and reads it whole,
-/// by bits, and in part.
 #[cfg(feature = "fuzzing")]
 fn fuzz_storage(
     pieces: &[gimli::Piece<Reader<'_>>],

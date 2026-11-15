@@ -1,6 +1,3 @@
-//! Target memory access that hides installed breakpoint traps, and the
-//! word patches that install and lift them.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use nix::unistd::Pid;
@@ -71,7 +68,6 @@ pub(super) struct LogicalMemoryRead {
 pub(super) enum MemoryAccessError {
     Inaccessible,
 
-    /// Only the first `readable` bytes of the word are accessible, such as
     /// where a core dump's file-backed memory ends inside a word.
     Partial {
         word: u64,
@@ -92,9 +88,6 @@ pub(super) fn read_logical_memory(
     })
 }
 
-/// Reads `size` bytes at once, as stored, with every installed breakpoint's
-/// trap hidden: in one read where the target allows it, or a word at a
-/// time, so a read that cannot be made in one says how far it got.
 pub(super) fn read_logical_block(
     ptrace: &impl InspectionOps,
     pid: Pid,
@@ -150,7 +143,6 @@ pub(super) fn read_logical_block(
     })
 }
 
-/// A byte offset inside a word or read that the caller has bounded.
 fn offset_within(offset: u64) -> Result<usize> {
     usize::try_from(offset).map_err(|_| Error::internal("a byte offset within a read fits usize"))
 }
@@ -247,8 +239,6 @@ pub(super) fn read_logical_memory_with(
     })
 }
 
-/// Panics in development builds if `bytes`, read at `address`, show the
-/// trap of an installed breakpoint rather than the byte it replaced.
 fn check_traps_hidden(
     address: VirtualAddress,
     bytes: &[u8],
@@ -272,10 +262,6 @@ fn check_traps_hidden(
     }
 }
 
-/// Writes `bytes` at `address` a word at a time and returns how many were
-/// written: all of them, or those before the first word that cannot be
-/// read or written. Installed traps stay in place; the bytes they hide
-/// become the bytes written there.
 pub(super) fn write_logical_memory_with(
     sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
     address: VirtualAddress,
@@ -315,8 +301,6 @@ pub(super) fn write_logical_memory_with(
                 .ok_or_else(|| Error::internal("a write covers the bytes it stores"))?;
             count += 1;
 
-            // A site keeps the byte its trap covers, which a lifted trap
-            // leaves in memory too.
             match sites.get(&VirtualAddress::new(target)) {
                 Some(site) => {
                     saved.push((target, user));
@@ -352,8 +336,6 @@ pub(super) fn write_logical_memory_with(
     Ok(written)
 }
 
-/// Adds `owner` to the site at `address`, writing a trap there if no site
-/// exists yet.
 pub(super) fn install_site(
     sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
     address: VirtualAddress,
@@ -379,8 +361,6 @@ pub(super) fn install_site(
     Ok(())
 }
 
-/// Restores the original byte of an installed site for `lift`, keeping
-/// the site.
 pub(super) fn lift_site(
     sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
     address: VirtualAddress,
@@ -400,7 +380,6 @@ pub(super) fn lift_site(
     Ok(())
 }
 
-/// Writes the trap of a site [`lift_site`] lifted back in place.
 pub(super) fn reinstall_site(
     sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
     address: VirtualAddress,
@@ -419,8 +398,6 @@ pub(super) fn reinstall_site(
     Ok(())
 }
 
-/// Restores the original byte of the site at `address`, unless its trap
-/// is lifted, and forgets the site, which is returned.
 pub(super) fn remove_site(
     sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
     address: VirtualAddress,
@@ -439,8 +416,6 @@ pub(super) fn remove_site(
         .ok_or_else(|| Error::internal("a breakpoint site is known"))
 }
 
-/// Takes `owner` off the site at `address`. The last owner's removal
-/// forgets the site through `remove`, and returns it.
 pub(super) fn remove_site_owner(
     sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
     address: VirtualAddress,
@@ -466,14 +441,10 @@ pub(super) fn remove_site_owner(
     remove(sites).map(Some)
 }
 
-/// The aligned word that holds the byte at `address`, and the byte's
-/// offset in it. A word at the address itself can reach into the next
-/// page, which may be unmapped; an aligned one never leaves its page.
 pub(super) const fn holding_word(address: u64) -> (u64, WordByte) {
     (address & !7, WordByte((address & 7) as usize))
 }
 
-/// A byte's offset in the aligned word that holds it, below eight.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct WordByte(usize);
 
@@ -482,7 +453,6 @@ impl WordByte {
         self.0
     }
 
-    /// The byte in a word's native-order bytes.
     #[expect(
         clippy::indexing_slicing,
         reason = "holding_word masks offsets below eight"
@@ -493,8 +463,6 @@ impl WordByte {
     }
 }
 
-/// Replaces the byte at `address` with `byte`, through the word that holds
-/// it, and returns the byte it replaced.
 pub(super) fn patch_byte(
     address: VirtualAddress,
     byte: u8,

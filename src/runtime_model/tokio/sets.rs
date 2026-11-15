@@ -1,17 +1,3 @@
-//! The `LocalSet`s the futures a thread drives hold, wherever they hold
-//! them: as the future itself, through the `RunUntil` that runs one, or in
-//! a member of a combinator, as `join!` keeps each branch in a tuple of
-//! `MaybeDone`s that its `async` block saves across its await.
-//!
-//! A set runs only while its future is polled, so while another branch of
-//! a `join!` runs, or the thread waits, no thread's context names it, and
-//! only the futures it drives lead to it. The walk reads values as their
-//! types lay them out: a record's members, an enum's active variant, a
-//! coroutine's members in its state, the future a `Box` or `Pin` points
-//! to, and the future a `dyn Future`'s vtable names. It goes only where a
-//! type may lead to a set, as [`may_hold_set`](super::may_hold_set) says,
-//! and says where it cannot go on.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -23,36 +9,22 @@ use crate::{
     VariantDiscriminant, VirtualAddress,
 };
 
-/// The most values the futures one thread drives are read through, so that
-/// a large future, or corrupt memory, cannot make the walk run on.
 const MAX_VALUES: usize = 4_096;
 
-/// The most names and qualifiers passed to reach a type's layout.
 const MAX_WRAPPERS: usize = 16;
 
-/// One value the walk has yet to read: where, of which type, and whether a
-/// `Box` or `Pin` holds it, whose pointer then leads to what they hold.
 type Pending = (VirtualAddress, TypeReference, bool);
 
-/// Which state a coroutine the walk meets is read in.
 #[derive(Debug, Clone, Copy)]
 enum State {
-    /// The one its driven future's chain reads it in.
     Chosen(u64),
 
-    /// None: a frame runs it, and it stores the state it last suspended
-    /// in.
     Running,
 
-    /// The one it stores, as it is suspended.
     Stored,
 }
 
 impl TokioRuntime {
-    /// The sets a future a thread drives holds, by where each set's shared
-    /// state is, and why a set it may hold cannot be found. A coroutine of
-    /// its chain is read in the state the chain gives it; one that runs
-    /// beside the chain, in no state; any other, in the state it stores.
     pub(super) fn held_sets(
         &self,
         stop: &dyn RuntimeStop,
@@ -122,8 +94,6 @@ impl TokioRuntime {
         found
     }
 
-    /// Whether a value of `ty`, held by a box or pin when `boxed`, may lead
-    /// to a set, remembered for each type.
     pub(super) fn may_hold(&self, ty: TypeReference, boxed: bool) -> bool {
         *self
             .holds_sets
@@ -133,9 +103,6 @@ impl TokioRuntime {
             .or_insert_with(|| super::may_hold_set(self.image.as_ref(), ty, boxed))
     }
 
-    /// Reads the value of `ty` at `object`: the set it is or refers to, or
-    /// else what it holds, added to `pending`. A coroutine of the chains is
-    /// read in `state`.
     fn read_held(
         &self,
         stop: &dyn RuntimeStop,
@@ -213,8 +180,6 @@ impl TokioRuntime {
                     }
                 }
 
-                // An enum with one variant that can hold a value, such as
-                // `Result<T, Infallible>`, stores no tag.
                 TypeKind::Variant {
                     discriminant,
                     variants,
@@ -263,8 +228,6 @@ impl TokioRuntime {
         Ok(None)
     }
 
-    /// Reads the coroutine of `ty` at `object` in `state`, adding what that
-    /// state holds to `pending`.
     fn read_coroutine(
         &self,
         stop: &dyn RuntimeStop,
@@ -310,8 +273,6 @@ impl TokioRuntime {
             return Ok(());
         }
 
-        // An async function's arguments move into its body as it
-        // starts; an async block's captures stay its own.
         let own = state.kind == CoroutineStateKind::Unresumed
             || coroutine.kind != CoroutineKind::AsyncFunction;
         let captures = coroutine.captures.iter().filter(|_| own);
@@ -324,8 +285,6 @@ impl TokioRuntime {
         Ok(())
     }
 
-    /// Where a record's data pointer and vtable lie, if it is a pointer to
-    /// a `dyn Future`: a `Box` or reference to one.
     fn trait_object(&self, members: &[crate::RecordMember]) -> Option<(u64, u64)> {
         let member = |name: &str| {
             members
@@ -361,9 +320,6 @@ impl TokioRuntime {
     }
 }
 
-/// The future the trait object at `object` points to, with its data
-/// pointer and vtable at those offsets, and its type, which the vtable
-/// says.
 fn held_object(
     stop: &dyn RuntimeStop,
     image: &dyn crate::runtime_model::RuntimeImage,

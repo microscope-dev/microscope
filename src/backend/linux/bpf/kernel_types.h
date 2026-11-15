@@ -1,7 +1,7 @@
-// The kernel fields the programs read, and only those. Each structure is
-// relocated against the running kernel's BTF (CO-RE), so neither the
-// order nor the padding here need match the kernel's; a field the running
-// kernel lacks is checked with bpf_core_field_exists before it is read.
+
+
+
+
 #pragma once
 
 #include "records.h"
@@ -95,7 +95,7 @@ struct upid {
 	struct pid_namespace *ns;
 } __kernel_preserve;
 
-// A pid's number in each namespace from the host's down, `level` deep.
+
 struct pid {
 	unsigned int level;
 	struct upid numbers[1];

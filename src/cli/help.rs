@@ -1,5 +1,3 @@
-//! Shared presentation for command-line help and parsing errors.
-
 use std::ffi::{OsStr, OsString};
 
 use clap::builder::styling::{AnsiColor, Color, Style, Styles};
@@ -24,7 +22,6 @@ const fn foreground(color: AnsiColor) -> Style {
     Style::new().fg_color(Some(Color::Ansi(color)))
 }
 
-/// Applies the shared presentation to a command and every nested command.
 pub fn configure(command: Command, color: ColorChoice) -> Command {
     command
         .color(color)
@@ -33,7 +30,6 @@ pub fn configure(command: Command, color: ColorChoice) -> Command {
         .disable_help_subcommand(true)
 }
 
-/// Reads the help/error color choice before clap needs to produce output.
 pub fn color_choice(arguments: &[OsString]) -> ColorChoice {
     let mut arguments = arguments.iter().skip(1);
     while let Some(argument) = arguments.next() {

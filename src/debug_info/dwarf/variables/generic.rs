@@ -1,11 +1,3 @@
-//! The types Go's generic values really have. Go compiles a generic
-//! function once per shape, such as `go.shape.int` for every type whose
-//! underlying type is `int`, and describes its values by a typedef of the
-//! shape. The typedef names an entry of the dictionary the function takes
-//! as `.dict`, which points to the runtime's descriptor of the type
-//! argument; the descriptor's offset among the runtime's types is the
-//! `DW_AT_go_runtime_type` of the type the debug information describes.
-
 use crate::inspection::InspectionBudget;
 use crate::model::ValueStorage;
 use crate::{
@@ -20,10 +12,8 @@ use super::storage;
 use super::types::TypeResolution;
 use super::{DwarfVariableInfo, VariableRuntime};
 
-/// The global locating the runtime's type descriptors.
 const MODULE_DATA: &str = "runtime.firstmoduledata";
 
-/// Why a type argument is unknown, or the failure that ends inspection.
 enum Failure {
     Unresolved(ShapeUnresolvedReason),
     Fatal(std::sync::Arc<str>),
@@ -35,21 +25,15 @@ impl From<ShapeUnresolvedReason> for Failure {
     }
 }
 
-/// What a generic value's type turned out to be.
 pub(super) enum Generic {
-    /// Not a type parameter's.
     Plain,
 
-    /// The type argument.
     Resolved(TypeId),
 
-    /// The shape, and why the type argument is unknown.
     Unresolved(TypeId, ShapeUnresolvedReason),
 }
 
 impl DwarfVariableInfo {
-    /// The type a value of type `type_id` really has, in the frame of
-    /// `instance` at `address`, when `type_id` is a type parameter.
     pub(super) fn generic_type(
         &self,
         type_id: TypeId,
@@ -108,9 +92,6 @@ impl DwarfVariableInfo {
             .go_runtime_type(descriptor.get() - types)
             .ok_or(ShapeUnresolvedReason::UndescribedType)?;
 
-        // A dictionary read where the function has not stored it yet holds
-        // whatever was there; a type laid out unlike the shape is not the
-        // argument.
         if !self.same_layout(argument, shape) {
             return Err(ShapeUnresolvedReason::MismatchedShape.into());
         }
@@ -118,7 +99,6 @@ impl DwarfVariableInfo {
         Ok(argument)
     }
 
-    /// The address of the frame's dictionary, its `.dict` parameter.
     fn dictionary(
         &self,
         instance: Option<CodeInstanceId>,
@@ -139,11 +119,6 @@ impl DwarfVariableInfo {
             })
             .ok_or(ShapeUnresolvedReason::NoDictionary)?;
 
-        // Optimized Go places its dictionary, for the whole function, in
-        // the register argument's spill slot at the frame's CFA, though the
-        // function may never spill it there, and the slot may hold another
-        // call's. Unoptimized Go says where it is before and after it
-        // spills it.
         if let Some(location) = dictionary.location()
             && self
                 .locations()
@@ -171,8 +146,6 @@ impl DwarfVariableInfo {
             .map_err(|error| unavailable(error, ShapeUnresolvedReason::DictionaryUnavailable))
     }
 
-    /// Where the runtime's type descriptors begin and end, as
-    /// `runtime.firstmoduledata` records them.
     fn type_descriptors(
         &self,
         runtime: &mut dyn VariableRuntime,
@@ -236,7 +209,6 @@ impl DwarfVariableInfo {
         Ok((field(types)?, field(end)?))
     }
 
-    /// The pointer-sized word stored at `storage`.
     fn pointer_at(
         &self,
         storage: &ValueStorage,
@@ -255,14 +227,11 @@ impl DwarfVariableInfo {
         Ok(address)
     }
 
-    /// Whether values of two types are stored alike: the same scalar
-    /// encoding, or the same kind of value of the same size.
     fn same_layout(&self, left: TypeId, right: TypeId) -> bool {
         let (Ok(left), Ok(right)) = (self.value_shape(left), self.value_shape(right)) else {
             return false;
         };
 
-        // An integer and a Go type with constants are both integers.
         let integral = |shape: &ValueShape| match shape {
             ValueShape::Scalar(base)
             | ValueShape::Enumeration {
@@ -282,7 +251,6 @@ impl DwarfVariableInfo {
     }
 }
 
-/// An evaluation failure as the reason a type argument is unknown.
 fn unavailable(
     error: EvaluateError,
     reason: fn(VariableUnavailableReason) -> ShapeUnresolvedReason,

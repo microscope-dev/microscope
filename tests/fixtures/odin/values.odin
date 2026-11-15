@@ -1,12 +1,12 @@
-// Odin's values, where this program says they are. Before each checkpoint
-// the program prints its own truth, one tab-separated line per value,
-//
-//	TRUTH	<checkpoint>	<path>	<kind>	<value>
-//
-// and then calls reached(checkpoint); the tests read the values in
-// reached's caller. A path names a variable and then its members and
-// elements. Floats are their bits in hexadecimal; kind `summary` is how
-// microscope writes the value.
+
+
+
+
+
+
+
+
+
 package values
 
 import "base:intrinsics"
@@ -38,7 +38,7 @@ Shape :: union {
 
 sink: rawptr
 
-// Reaches a checkpoint; fmt.printf has written each truth before it returns.
+
 reached :: #force_no_inline proc(checkpoint: string) {
 	intrinsics.volatile_store(&sink, raw_data(checkpoint))
 }
@@ -59,7 +59,7 @@ f64_truth :: proc(checkpoint, path: string, value: f64) {
 	fmt.printf("TRUTH\t%s\t%s\tf64\t%#x\n", checkpoint, path, transmute(u64)value)
 }
 
-// Keeps a value alive, and where the program put it, past the checkpoint.
+
 keep :: #force_no_inline proc(value: rawptr) {
 	intrinsics.volatile_store(&sink, value)
 }
@@ -149,8 +149,8 @@ unions :: #force_no_inline proc() {
 	keep(&whole); keep(&real); keep(&named); keep(&none); keep(&some); keep(&missing)
 }
 
-// What procedures return: a checkpoint named `returned-` is about what the
-// procedure that reached it returns, which is named for the procedure.
+
+
 returns_int :: #force_no_inline proc(n: int) -> int {
 	value := n * -11
 	truth("returned-int", "returns_int", "int", value)
@@ -173,7 +173,7 @@ returns_bool :: #force_no_inline proc(n: int) -> bool {
 }
 
 main :: proc() {
-	// Arguments the compiler cannot know.
+
 	n := len(os.args) + 2
 	scalars()
 	records()

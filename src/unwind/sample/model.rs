@@ -1,12 +1,3 @@
-//! A sampled stack is never a wrong stack: a property over synthetic
-//! stacks. Each frame runs a function whose frame is found from rbp, which
-//! keeps the frame-pointer chain, or from rsp, which may leave rbp alone
-//! or use it for something else. The kernel's chain is the kernel's walk
-//! of the true stack, and the copy is the true stack cut at any word. The
-//! unwound frames must be the true frames from the innermost, as many as
-//! the unwinder can prove, and all of them when it says the stack is
-//! complete.
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -25,39 +16,25 @@ use crate::{
     UnwindTermination, VirtualAddress,
 };
 
-/// Where the first function's code begins, and how much each one has.
 const CODE: u64 = 0x1000;
 const FUNCTION: u64 = 0x100;
 
-/// How far a signal's `ucontext` reaches, through its registers, and the
-/// red zone the kernel leaves below the interrupted stack pointer.
 const SIGNAL_FRAME: u64 = UCONTEXT_MCONTEXT + 8 * 17 + 128;
 
-/// Where the stack the sample's stack pointer is on begins, and where the
-/// stack a switch left lies.
 const STACK: u64 = 0x7000_0000;
 const OTHER_STACK: u64 = 0x5000_0000;
 
-/// How a function's frame is found in its body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Rule {
-    /// CFA = rbp + 16, the caller's rbp at rbp, which keeps the chain.
     FramePointer,
 
-    /// CFA = rsp + 8 * (locals + 1), or + 2 when the caller's rbp is
-    /// saved below the return address, and rbp holds something else.
     StackPointer { locals: u64, saves_rbp: bool },
 
-    /// A thread's start: the frame has no caller.
     Outermost,
 
-    /// The trampoline a signal handler returns to, whose frame is the
-    /// `ucontext` of the code the signal interrupted.
     Signal,
 }
 
-/// Where in its function the innermost frame is: in a frame-pointer
-/// function's prologue, before or after it pushed rbp, or in its body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Place {
     Entry,
@@ -71,22 +48,17 @@ struct Function {
     role: CodeRole,
 }
 
-/// One frame of the true stack.
 #[derive(Debug, Clone)]
 struct Frame {
     function: usize,
 
-    /// Where in the function's body the frame is, or calls from.
     offset: u64,
 
-    /// Words of locals below a frame-pointer frame's saved rbp.
     locals: u64,
 
-    /// What a function that does not keep rbp holds in it.
     garbage: u64,
 }
 
-/// A true stack and the sample a profiler took of it.
 #[derive(Debug, Clone)]
 struct Stack {
     functions: Vec<Function>,
@@ -96,8 +68,6 @@ struct Stack {
     limit: usize,
 }
 
-/// What the true stack is: each frame's address, rbp, and CFA, and the
-/// memory that holds it.
 #[derive(Debug)]
 struct Truth {
     frames: Vec<(u64, u64, u64)>,
@@ -111,14 +81,10 @@ impl Stack {
         CODE + FUNCTION * function as u64
     }
 
-    /// Where a function's symbol begins: a trampoline's after a `nop`, as
-    /// glibc's `__restore_rt`, whose call-frame information covers the
-    /// `nop` for unwinders that look up the byte before a return address.
     fn start(&self, function: usize) -> u64 {
         Self::base(function) + u64::from(self.functions[function].rule == Rule::Signal)
     }
 
-    /// The address a frame runs or calls from.
     fn address(&self, frame: usize) -> u64 {
         let Frame {
             function, offset, ..
@@ -146,8 +112,6 @@ impl Stack {
         self.functions[self.frames[frame].function].role
     }
 
-    /// Lays the stack out from the innermost frame, the frames after a
-    /// switch on the other stack.
     #[expect(clippy::too_many_lines, reason = "one pass per part of the layout")]
     fn truth(&self) -> Truth {
         let count = self.frames.len();
@@ -184,7 +148,6 @@ impl Stack {
             stack_pointer = cfa;
         }
 
-        // Each frame's rbp, from the outermost, whose caller's is zero.
         let mut caller = 0;
         for index in (0..count).rev() {
             let own = match (self.rule(index), index == 0) {
@@ -204,7 +167,6 @@ impl Stack {
 
         let mut memory = BTreeMap::new();
         for index in 0..count {
-            // Locals hold words that name nothing.
             let mut at = stack_pointers[index];
             while at + 8 <= cfas[index] {
                 memory.insert(at, 0xdead_0000 + at);
@@ -213,7 +175,6 @@ impl Stack {
 
             let caller_frame_pointer = frame_pointers.get(index + 1).copied().unwrap_or(0);
             let return_address = match self.frames.get(index + 1) {
-                // A handler returns to the trampoline's first instruction.
                 Some(_) if self.rule(index + 1) == Rule::Signal => self.address(index + 1),
                 Some(_) => self.address(index + 1) + 1,
                 None => 0,
@@ -223,7 +184,6 @@ impl Stack {
             match (self.rule(index), place) {
                 (Rule::Outermost, _) => {}
 
-                // The kernel saved the interrupted frame's registers.
                 (Rule::Signal, _) => {
                     let context = stack_pointers[index] + UCONTEXT_MCONTEXT;
                     for (slot, register) in (0..).zip(SIGCONTEXT_REGISTERS) {
@@ -265,7 +225,6 @@ impl Stack {
     }
 }
 
-/// The functions' rules, as call-frame information gives them.
 struct Rules<'a> {
     stack: &'a Stack,
 }
@@ -311,7 +270,6 @@ impl UnwindInfo for Rules<'_> {
             address: VirtualAddress::new(address),
         };
 
-        // Where the frame is, and where the caller's rbp is saved, if it is.
         let (cfa, saved_frame_pointer) = match self.stack.functions[function].rule {
             Rule::Outermost => {
                 let cfa = register(RSP)? + 8;
@@ -321,8 +279,6 @@ impl UnwindInfo for Rules<'_> {
                     signal_frame: false,
                 });
             }
-            // musl's trampoline, unlike glibc's, has no call-frame
-            // information: it is known by its role alone.
             Rule::Signal => {
                 return Err(UnwindTermination::NoUnwindInfo {
                     address: VirtualAddress::new(address.get()),
@@ -348,7 +304,6 @@ impl UnwindInfo for Rules<'_> {
             Self::read(memory, return_address).ok_or_else(|| unreadable(return_address))?;
         let mut caller_registers = RegisterFile::new([(RSP, cfa), (RETURN_ADDRESS, caller)]);
 
-        // A saved register the memory cannot give is unknown in the caller.
         let frame_pointer = saved_frame_pointer
             .map_or_else(|| registers.get(RBP), |saved| Self::read(memory, saved));
         if let Some(frame_pointer) = frame_pointer {
@@ -363,7 +318,6 @@ impl UnwindInfo for Rules<'_> {
     }
 }
 
-/// The module holding every function, each a symbol with its role.
 fn image(stack: &Stack) -> ModuleImage {
     let symbols = stack
         .functions
@@ -409,9 +363,6 @@ fn image(stack: &Stack) -> ModuleImage {
     )
 }
 
-/// The kernel's walk of the frame-pointer chain over the true stack: from
-/// rbp, each link holds the next and the word above it a return address,
-/// until a word cannot be read or the chain is as long as perf records.
 fn kernel_chain(truth: &Truth) -> Vec<u64> {
     let mut chain = vec![truth.frames[0].0];
     let mut link = truth.frames[0].1;
@@ -429,7 +380,6 @@ fn kernel_chain(truth: &Truth) -> Vec<u64> {
     chain
 }
 
-/// The copy of the stack from the stack pointer, `words` long.
 fn copy(truth: &Truth, words: usize) -> Vec<u8> {
     (0..words as u64)
         .flat_map(|word| {
@@ -462,12 +412,9 @@ fn stack() -> impl Strategy<Value = Stack> {
         1_usize..9,
         proptest::option::of(any::<prop::sample::Index>()),
         proptest::option::of(any::<prop::sample::Index>()),
-        // Whether the last frame returns to nowhere, rather than being a
-        // thread's start.
         any::<bool>(),
     )
         .prop_flat_map(|(mut functions, depth, switch, signal, returns_to_zero)| {
-            // A thread's start and a stack switch, after the ordinary ones.
             let ordinary = functions.len();
             functions.push(Function {
                 rule: Rule::Outermost,
@@ -481,8 +428,6 @@ fn stack() -> impl Strategy<Value = Stack> {
                 rule: Rule::Signal,
                 role: CodeRole::SignalTrampoline,
             });
-            // What rbp holds where it is not a frame pointer: anything, or a
-            // word of the stack, which the kernel's walk then reads.
             let garbage = prop_oneof![any::<u64>(), (0_u64..32).prop_map(|word| STACK + 8 * word)];
             let frame = (0..ordinary, 0x10_u64..0xf0, 0_u64..3, garbage).prop_map(
                 |(function, offset, locals, garbage)| Frame {
@@ -498,9 +443,6 @@ fn stack() -> impl Strategy<Value = Stack> {
                     frames[at].function = ordinary + 1;
                 }
 
-                // A signal interrupts a frame, whose handler then runs
-                // above the trampoline, or has returned to it, which is then
-                // the innermost.
                 if let Some(signal) = signal.filter(|_| frames.len() > 1) {
                     let at = signal.index(frames.len());
                     frames.insert(
@@ -539,7 +481,6 @@ fn stack() -> impl Strategy<Value = Stack> {
             limit,
         })
         .prop_map(|mut stack| {
-            // Only a frame-pointer function has a prologue to be in.
             if stack.rule(0) != Rule::FramePointer || stack.role(0) == CodeRole::StackSwitch {
                 stack.place = Place::Body;
             }
@@ -547,10 +488,6 @@ fn stack() -> impl Strategy<Value = Stack> {
         })
 }
 
-/// What the unwinder found, checked against the truth: the frames are the
-/// true ones from the innermost, with the true rbp and CFA wherever it
-/// gives one, never more than the limit, and all of them when it says the
-/// stack is complete.
 fn check(stack: &Stack, frames: &[SampledFrame], end: StackEnd) -> Result<(), TestCaseError> {
     let truth = stack.truth();
     prop_assert!(
@@ -589,14 +526,12 @@ fn check(stack: &Stack, frames: &[SampledFrame], end: StackEnd) -> Result<(), Te
     Ok(())
 }
 
-/// Unwinds a sample of the stack and checks it against the truth.
 fn unwinds_to_a_prefix(stack: &Stack) -> Result<(), TestCaseError> {
     let truth = stack.truth();
     let (frames, end) = sample(stack, &truth);
     check(stack, &frames, end)
 }
 
-/// Unwinds the sample a profiler takes of the stack.
 fn sample(stack: &Stack, truth: &Truth) -> (Vec<SampledFrame>, StackEnd) {
     let words = stack
         .copied_words
@@ -618,7 +553,6 @@ fn sample(stack: &Stack, truth: &Truth) -> (Vec<SampledFrame>, StackEnd) {
     )
 }
 
-/// Unwinds `sample` through the functions of `stack`.
 fn unwind(stack: &Stack, sample: SampledState<'_>) -> (Vec<SampledFrame>, StackEnd) {
     let rules = Rules { stack };
     let image = image(stack);
@@ -647,9 +581,6 @@ proptest! {
     }
 }
 
-/// Shrunk by the property above: a handler whose stack the copy lacks,
-/// whose caller the kernel's chain names. That caller is the trampoline,
-/// at the address it is entered at, not the byte before.
 #[test]
 fn the_chain_names_a_signal_trampoline_at_its_entry() {
     let function = |rule, role| Function { rule, role };
@@ -674,9 +605,6 @@ fn the_chain_names_a_signal_trampoline_at_its_entry() {
     unwinds_to_a_prefix(&stack).unwrap();
 }
 
-/// A sample in the trampoline, after the handler returned to it: its stack
-/// pointer is at the `ucontext`, which names the interrupted frame and its
-/// callers, though no call-frame information describes the trampoline.
 #[test]
 fn a_sample_in_a_signal_trampoline_continues_to_what_it_interrupted() {
     let function = |rule, role| Function { rule, role };
@@ -712,10 +640,6 @@ fn a_sample_in_a_signal_trampoline_continues_to_what_it_interrupted() {
     );
 }
 
-/// A frame-pointer frame called from one with two words of zeroed locals,
-/// sampled in the callee, with the kernel's chain no further than the
-/// sample: the caller's rbp is `frame_pointer`, and the stack copy holds
-/// the locals, the return address, and two zero words above them.
 fn zero_return_address(frame_pointer: u64) -> (Vec<u64>, StackEnd) {
     let function = |rule| Function {
         rule,
@@ -754,8 +678,6 @@ fn zero_return_address(frame_pointer: u64) -> (Vec<u64>, StackEnd) {
     (addresses, end)
 }
 
-/// The caller's frame, at its rbp, is the zero words above it: the zero
-/// return address there is where its thread's stack began.
 #[test]
 fn a_zero_return_address_above_the_frame_ends_the_stack() {
     let (frames, end) = zero_return_address(STACK + 24);
@@ -763,10 +685,6 @@ fn a_zero_return_address_above_the_frame_ends_the_stack() {
     assert_eq!(end, StackEnd::Complete);
 }
 
-/// The caller's rbp was moved into unused stack, below its own stack
-/// pointer, where its rules find its return address among its callee's
-/// zeroed locals. No call wrote that zero, so the stack does not end
-/// there.
 #[test]
 fn a_zero_return_address_below_the_frame_is_no_stack_end() {
     let (frames, end) = zero_return_address(STACK - 8);

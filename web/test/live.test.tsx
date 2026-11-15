@@ -1,13 +1,7 @@
-// Live renderers keep a worker of their own, draw the frames the page asks
-// for into their own canvas, and hand each back as only its pixels. These
-// run the real frame and worker scripts in Chromium.
-
 import { describe, expect, it } from "vitest";
 
 import { context, pixel, renderer, sandbox, Watched } from "./sandboxes";
 
-// Fills its canvas with the input's color and says, after each frame, what
-// it has heard since the last.
 const reporting = `
 microscope.live((canvas, input, context) => {
   const draw = canvas.getContext("2d");
@@ -59,7 +53,7 @@ describe("a live renderer", () => {
   it("is drawn by a session of its own, which the page drives", async () => {
     const box = sandbox();
     const code = renderer("reporting", reporting);
-    // Drawing it says it is live, and then costs no worker at all.
+
     expect(await box.draw("card", code, {}, { ...context, width: 40 })).toEqual({ kind: "live" });
     expect(await box.draw("card", code, {}, { ...context, width: 40 })).toEqual({ kind: "live" });
 
@@ -72,7 +66,6 @@ describe("a live renderer", () => {
     expect([first.bitmap?.width, first.bitmap?.height]).toEqual([80, 40]);
     expect(pixel(first.bitmap as ImageBitmap, 40, 20)).toBe("#ff0000");
 
-    // A new stop, a new size, the pointer, and keys arrive in order.
     live.session.update({ color: "#0000ff" }, { ...context, previous: { color: "#ff0000" } });
     live.session.resize(60, 30);
     live.session.pointer({
@@ -115,7 +108,7 @@ describe("a live renderer", () => {
     const again = new Watched(box, "card", "microscope.live(() => ({ frame() {} }));", {}, "calm");
     await again.expect("started");
     again.session.frame(0);
-    // A canvas no context drew on sends no pixels.
+
     expect(await again.next()).toEqual({ type: "frame", bitmap: null });
   });
 
@@ -125,7 +118,7 @@ describe("a live renderer", () => {
     const live = new Watched(box, "card", pending);
     await live.expect("started");
     live.session.frame(0);
-    // The worker itself still runs; the renderer will never draw again.
+
     expect(await live.next()).toEqual({ type: "failed", failure: { kind: "unresponsive" } });
   });
 
@@ -238,7 +231,6 @@ describe("a live renderer", () => {
   });
 
   it("is ended when its worker floods the page", async () => {
-    // A worker that skips worker.js's own limits, as a broken one might.
     const hostile = `onmessage = (event) => {
   if (event.data.type === "live-start") {
     for (let i = 0; i < 20000; i++) postMessage({ type: "caption", text: "flood " + i });

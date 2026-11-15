@@ -1,21 +1,21 @@
-//! A runtime's task list, damaged by the program itself. Thirty-two
-//! tasks park on a two-worker runtime, whose list has eight shards, a
-//! task's id choosing its shard. The program stops at the checkpoint
-//! `intact`, then damages the newest task of four shards and stops at the
-//! checkpoint `corrupt`:
-//!
-//! - `owner`: its list's id is another list's;
-//! - `vtable`: its vtable is data, which polls nothing;
-//! - `broken`: its next task is an address nothing maps;
-//! - `cycle`: its next task is itself.
-//!
-//! It prints `TRUTH damaged KIND ID SHARD` for each, and `TRUTH shard ID
-//! SHARD` for every task. Then it exits, as tokio could not go on.
-//!
-//! A header is `repr(C)`: its state, the inject queue's link, the vtable,
-//! and the list's id. Where the list's links are in a task's cell is
-//! found from the tasks themselves: the newest task of a shard links to
-//! the one bound before it.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 use std::collections::BTreeMap;
 use std::future::pending;
@@ -23,15 +23,15 @@ use std::future::pending;
 use tokio::task::JoinHandle;
 
 const TASKS: usize = 32;
-/// tokio's shards for two workers: four for each, rounded to a power of
-/// two.
+
+
 const SHARDS: u64 = 8;
 const VTABLE: usize = 16;
 const OWNER: usize = 24;
-/// How far into a task's cell its links are looked for.
+
 const CELL: usize = 1024;
 
-/// A vtable's worth of data, which polls nothing.
+
 static NOT_A_VTABLE: [u64; 16] = [0; 16];
 
 async fn parked() {
@@ -40,14 +40,14 @@ async fn parked() {
     pending::<()>().await; // AWAIT: parked
 }
 
-/// The address of a task's header, which its handle holds.
+
 fn header(handle: &JoinHandle<()>) -> usize {
     assert_eq!(size_of::<JoinHandle<()>>(), size_of::<usize>());
     // SAFETY: a join handle is the pointer to its task's header.
     unsafe { std::mem::transmute_copy(handle) }
 }
 
-/// Where, in the cell at `from`, a word holds `target`.
+
 fn offset_of_link(from: usize, target: usize) -> usize {
     (OWNER + 8..CELL)
         .step_by(8)
@@ -59,7 +59,7 @@ fn offset_of_link(from: usize, target: usize) -> usize {
         .expect("a task links to its neighbor")
 }
 
-/// Writes one word into a task's cell.
+
 fn damage(header: usize, offset: usize, value: usize) {
     // SAFETY: the task is parked for good, and no thread reads the word
     // until the program exits.
@@ -77,7 +77,7 @@ fn main() {
     while !(truth::all_parked(TASKS) && truth::workers_parked(runtime.handle())) {
         std::thread::yield_now();
     }
-    // Each shard's tasks, newest first, as each was bound to the front.
+
     let mut shards = BTreeMap::<u64, Vec<(u64, usize)>>::new();
     for handle in &handles {
         let id = handle.id().to_string().parse::<u64>().expect("a number");

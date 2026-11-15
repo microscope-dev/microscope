@@ -1,14 +1,3 @@
-//! One tab's WebSocket.
-//!
-//! A connection sends `hello`, the current state, recent output, then
-//! everything as it happens. Each request runs in a task of its own, so a
-//! slow one, such as loading a large program, never holds up the state,
-//! output, or other answers the tab is waiting for.
-//!
-//! Every message is JSON text but one: a drawing's numbers and bytes, and a
-//! profile's call tree, go in a binary frame just before its answer, the request's id as 8 bytes,
-//! little-endian, then the bytes.
-
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -22,8 +11,6 @@ use super::protocol::{
 
 use super::session::Session;
 
-/// Answers waiting to be sent; a tab that stops reading slows only its own
-/// requests.
 const PENDING_ANSWERS: usize = 64;
 
 pub async fn serve(
@@ -57,8 +44,6 @@ pub async fn serve(
     let (answers, mut pending) = mpsc::channel::<Message>(PENDING_ANSWERS);
 
     loop {
-        // Biased, in this order: requests are read even during a flood of
-        // output, and a request's state change goes out before its answer.
         let outgoing = tokio::select! {
             biased;
             incoming = socket.recv() => match incoming {
@@ -89,7 +74,6 @@ pub async fn serve(
             Some(answer) = pending.recv() => answer,
             message = joined.messages.recv() => match message {
                 Ok(text) => Message::Text(Utf8Bytes::from(&*text)),
-                // Output was dropped; the state, which matters, is sent whole.
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => break,
             },
@@ -114,7 +98,6 @@ fn dispatch(
     let envelope = match serde_json::from_str::<Envelope>(text) {
         Ok(envelope) => envelope,
         Err(problem) => {
-            // Answer with the id when the request names one.
             let id = serde_json::from_str::<serde_json::Value>(text)
                 .ok()
                 .and_then(|value| value.get("id")?.as_u64())

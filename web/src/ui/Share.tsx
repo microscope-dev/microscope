@@ -8,11 +8,10 @@ import { useDialogFocus, useDismiss } from "./dialog";
 
 export function Share() {
   const open = useModel((model) => model.link === "open");
-  // The File menu opens it too.
+
   const shown = useTab((current) => current.share);
   const anchor = useRef<HTMLDivElement>(null);
 
-  // Escape or a click elsewhere puts it away.
   const away = useCallback(() => tab.setState({ share: false }), []);
   useDismiss(anchor, shown, away);
 
@@ -33,7 +32,6 @@ export function Share() {
 
 const FLUSH = { marginLeft: 0 };
 
-/** The link for the access chosen, made when it opens and on each change. */
 function Popover() {
   const role = useModel((model) => model.hello?.role);
   const connection = useConnection();
@@ -45,12 +43,11 @@ function Popover() {
   const field = useRef<HTMLInputElement>(null);
   const dialog = useRef<HTMLDivElement>(null);
   useDialogFocus(dialog);
-  // The whole look travels: the path and its query, never the hash.
+
   const to = location.pathname + location.searchStr;
   const port = window.location.port || "80";
 
   useEffect(() => {
-    // Only the link for the access chosen last is shown.
     let live = true;
     // oxlint-disable-next-line react/set-state-in-effect -- the last link goes at once, before the new one is asked for
     setUrl(null);

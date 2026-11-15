@@ -1,29 +1,15 @@
-//! What each process's descriptors refer to, which `-y` prints beside
-//! each descriptor.
-//!
-//! A table starts from what the engine reads in `/proc`
-//! and follows the calls that open, duplicate, and close descriptors.
-//! A descriptor whose origin the trace did not see is unknown, never a
-//! guess, and a gap in the trace marks the process's table stale until it
-//! is read again.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::model::{Outcome, Pid, SyscallEvent, TraceEvent};
 use super::sockaddr::{self, SocketAddress};
 
-/// What one descriptor refers to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Description {
-    /// The text `-y` prints between `<` and `>`: a path, `pipe:[88213]`,
-    /// or `TCP:[10.0.3.4:51022->10.0.3.9:5432]`.
     pub text: Arc<str>,
 
-    /// What kind it is, for the files and network views.
     pub kind: Kind,
 
-    /// Closed by a successful `execve`.
     pub cloexec: bool,
 }
 
@@ -33,24 +19,20 @@ pub enum Kind {
     Socket(Socket),
     Pipe,
 
-    /// A character or block device, which `-yy` numbers.
     Device(super::model::Device),
     Other,
 }
 
-/// What the trace has seen of a socket.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Socket {
     pub family: u16,
 
-    /// `SOCK_STREAM` or the like, without its flags.
     pub kind: u32,
     pub local: Option<String>,
     pub remote: Option<String>,
 }
 
 impl Socket {
-    /// strace's name for the protocol, as in `TCP:[...]`.
     const fn protocol(&self) -> &'static str {
         const STREAM: u32 = 1;
         const DGRAM: u32 = 2;
@@ -83,27 +65,18 @@ impl Socket {
 struct Process {
     fds: BTreeMap<i64, Description>,
 
-    /// Descriptors the engine read just before the call that made them,
-    /// whose reading the call's own arguments must not replace, with what
-    /// each replaced.
     fresh: BTreeMap<i64, (Description, Option<Description>)>,
 
-    /// A gap may have hidden calls that changed the table.
     stale: bool,
 
-    /// Whether every descriptor was read from the system, or inherited
-    /// from a process whose were.
     read: bool,
 }
 
-/// Every traced process's descriptors.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FdTable {
     processes: BTreeMap<Pid, Process>,
 }
 
-/// The calls the table follows, which an engine stops at whenever `-y`
-/// needs the table, whether or not the selection shows them.
 pub const FOLLOWED: &[&str] = &[
     "open",
     "creat",
@@ -152,7 +125,6 @@ pub const FOLLOWED: &[&str] = &[
     "execveat",
 ];
 
-/// [`FOLLOWED`] under every ABI that has them.
 #[must_use]
 pub fn followed() -> std::collections::BTreeSet<super::model::SyscallId> {
     super::model::Abi::ALL
@@ -175,9 +147,6 @@ const CLOSE_RANGE_CLOEXEC: u64 = 4;
 const EINPROGRESS: u16 = 115;
 const AT_FDCWD: i64 = -100;
 
-/// A path a call named, made absolute against the directory it is
-/// relative to when the table knows it. `.` components go; `..` stay,
-/// since a symbolic link may stand before one.
 fn resolve(process: &Process, dirfd: i64, path: &str) -> String {
     if path.starts_with('/') {
         return path.to_owned();
@@ -210,7 +179,6 @@ fn resolve(process: &Process, dirfd: i64, path: &str) -> String {
 }
 
 impl FdTable {
-    /// Records what the engine read from `/proc` for a process.
     pub fn seed(&mut self, process: Pid, fds: impl IntoIterator<Item = (i64, Description)>) {
         self.processes.insert(
             process,
@@ -222,8 +190,6 @@ impl FdTable {
         );
     }
 
-    /// Records one descriptor, as an engine that read `/proc/PID/fd/N`
-    /// right after the call made it does.
     pub fn set(&mut self, process: Pid, fd: i64, description: Description) {
         self.processes
             .entry(process)
@@ -232,8 +198,6 @@ impl FdTable {
             .insert(fd, description);
     }
 
-    /// A path a call of `process` named, made absolute against `dirfd`
-    /// (`AT_FDCWD` for the working directory) when the table knows it.
     #[must_use]
     pub fn resolve(&self, process: Pid, dirfd: i64, path: &str) -> String {
         self.processes
@@ -241,15 +205,11 @@ impl FdTable {
             .map_or_else(|| path.to_owned(), |known| resolve(known, dirfd, path))
     }
 
-    /// What a descriptor refers to, when the trace knows.
     #[must_use]
     pub fn describe(&self, process: Pid, fd: i64) -> Option<&Description> {
         self.processes.get(&process)?.fds.get(&fd)
     }
 
-    /// Whether the table holds every descriptor of a process, so that one
-    /// it lacks is not open: true once the process was read from the
-    /// system or inherited such a table, until a gap.
     #[must_use]
     pub fn knows(&self, process: Pid) -> bool {
         self.processes
@@ -257,8 +217,6 @@ impl FdTable {
             .is_some_and(|process| process.read && !process.stale)
     }
 
-    /// What a descriptor referred to before the call about to be applied,
-    /// which the engine already read the descriptors it made for.
     #[must_use]
     pub fn describe_before(&self, process: Pid, fd: i64) -> Option<&Description> {
         let process = self.processes.get(&process)?;
@@ -268,7 +226,6 @@ impl FdTable {
         }
     }
 
-    /// Processes whose tables a gap made stale, to read again.
     pub fn stale(&self) -> impl Iterator<Item = Pid> + '_ {
         self.processes
             .iter()
@@ -276,7 +233,6 @@ impl FdTable {
             .map(|(&pid, _)| pid)
     }
 
-    /// Every descriptor of a process, in order.
     pub fn of(&self, process: Pid) -> impl Iterator<Item = (i64, &Description)> {
         self.processes
             .get(&process)
@@ -289,7 +245,6 @@ impl FdTable {
             })
     }
 
-    /// Follows what a call did to its process's descriptors.
     pub fn apply_call(&mut self, call: &SyscallEvent) {
         let fresh = self
             .processes
@@ -304,14 +259,11 @@ impl FdTable {
                     continue;
                 };
 
-                // A socket's call knows its family and endpoints,
-                // which its link does not.
                 if matches!(made.kind, Kind::Socket(_)) {
                     continue;
                 }
 
                 if read.text.is_empty() {
-                    // The engine read what it is, not its path.
                     made.cloexec = read.cloexec;
                     if let Kind::Device(device) = read.kind {
                         made.kind = Kind::Device(device);
@@ -364,7 +316,6 @@ impl FdTable {
         }
     }
 
-    /// Records what the engine read of one descriptor.
     fn descriptor(
         &mut self,
         process: Pid,
@@ -376,8 +327,6 @@ impl FdTable {
     ) {
         let table = self.processes.entry(process).or_default();
 
-        // A socket's link names only its inode; what the trace saw
-        // of its endpoints says more.
         let known_socket = matches!(
             table.fds.get(&fd),
             Some(Description {
@@ -417,7 +366,6 @@ impl FdTable {
         if made {
             table.fresh.insert(fd, (description, replaced));
         } else {
-            // The engine reads a process's descriptors together.
             table.read = true;
         }
     }
@@ -431,7 +379,6 @@ impl FdTable {
             return;
         };
 
-        // A non-blocking connect that is still in progress has its peer.
         let in_progress =
             name == "connect" && event.outcome == Outcome::Failed(super::model::Errno(EINPROGRESS));
         let result = match event.outcome {
@@ -688,8 +635,6 @@ impl FdTable {
                     .insert(result, anonymous("anon_inode:[io_uring]", false));
             }
 
-            // What these made, the engine reads from the system when it can;
-            // otherwise it is unknown, never mistaken for closed.
             "userfaultfd"
             | "perf_event_open"
             | "fanotify_init"
@@ -800,8 +745,6 @@ mod tests {
         ));
         assert_eq!(text(&table, 9), None);
 
-        // What the engine read from /proc just before the call says more
-        // than the call's relative path.
         table.apply(&TraceEvent::Descriptor {
             process: Pid::new(7),
             fd: 4,

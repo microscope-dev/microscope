@@ -68,7 +68,6 @@ fn array_indices_honor_lower_bounds_ordering_and_reject_overflow() {
     let bounded = step(&[(-2, 3), (10, 2)], 4);
     assert_eq!(array_byte_offset(&bounded, &[0, 11]).ok(), Some(Some(20)));
 
-    // Column by column, the first index's elements are adjacent.
     let columns = ordered(ArrayOrdering::ColumnMajor, &[(-2, 3), (10, 2)], 4);
     assert_eq!(array_byte_offset(&columns, &[0, 11]).ok(), Some(Some(20)));
     assert_eq!(array_byte_offset(&columns, &[-1, 10]).ok(), Some(Some(4)));
@@ -95,9 +94,6 @@ fn array_indices_honor_lower_bounds_ordering_and_reject_overflow() {
     ));
 }
 
-/// The type of the one variable in a unit of `language` whose type is an
-/// array of `int` with one subrange, its upper bound 3 and its lower bound
-/// as given.
 fn array_type_in(language: gimli::DwLang, lower_bound: Option<WriteAttributeValue>) -> TypeEntry {
     let encoding = Encoding {
         format: Format::Dwarf32,
@@ -182,10 +178,6 @@ fn array_type_in(language: gimli::DwLang, lower_bound: Option<WriteAttributeValu
     arena.entries[id.index()].clone()
 }
 
-/// An array that does not say where its indices begin begins where its
-/// language's do: at 0 in C, at 1 in Fortran and Ada. A language whose
-/// default DWARF does not give, and a bound known only at run time, are
-/// not guessed at.
 #[test]
 fn an_arrays_default_lower_bound_is_its_languages() {
     let dimensions = |entry: &TypeEntry| match entry {
@@ -222,7 +214,6 @@ fn an_arrays_default_lower_bound_is_its_languages() {
         Some(vec![(-1, 5)])
     );
 
-    // A vendor's language says nothing of where its arrays begin.
     assert_eq!(
         dimensions(&array_type_in(gimli::DwLang(0x8001), None)),
         None
@@ -396,8 +387,6 @@ fn zig_synthetic_variant_names_require_canonical_type_syntax() {
 
 #[test]
 fn reference_chains_stop_at_their_cycles_however_long() {
-    // Walks the chain 0 -> 1 -> ... -> length - 1 -> back_to, or to its end
-    // when there is no cycle, as origin chains walk references.
     let walk = |length: usize, back_to: Option<usize>| {
         let mut seen = Seen::default();
         let mut current = Some(0);
@@ -419,8 +408,6 @@ fn reference_chains_stop_at_their_cycles_however_long() {
         Ok(links)
     };
 
-    // The first links are compared in place and the rest kept in a set; a
-    // cycle closes wherever it closes, on either side of that boundary.
     for length in [1, 2, 8, 9, 40] {
         assert_eq!(walk(length, None), Ok(length));
 
@@ -463,7 +450,6 @@ struct Runtime {
     memory: Option<Arc<[u8]>>,
     memory_reads: u32,
 
-    /// What the frame's caller passed, by what an entry value asks for.
     entry_values: Vec<(EntryParameter, u64)>,
 }
 
@@ -547,11 +533,9 @@ impl Runtime {
     }
 }
 
-/// Expressions pooled as loading pools them, in one unit at offset 0x100.
 pub(super) struct Pool(pub(super) LocationsBuilder);
 
 impl Pool {
-    /// A pool whose unit has `base_types`, by unit offset.
     pub(super) fn new(base_types: impl IntoIterator<Item = (u64, gimli::ValueType)>) -> Self {
         let mut pool = LocationsBuilder::default();
         pool.unit(&EvaluationUnit {
@@ -563,7 +547,6 @@ impl Pool {
         Self(pool)
     }
 
-    /// Pools `bytes` with indexed `addresses` and called `procedures`.
     pub(super) fn with(
         &mut self,
         bytes: &[u8],
@@ -589,7 +572,6 @@ impl Pool {
         self.0.tables().expression(id)
     }
 
-    /// Evaluates `id` with no frame base and an unlimited budget.
     fn run(
         &self,
         id: ExpressionId,
@@ -623,7 +605,6 @@ fn node(id: u32, name: &str, byte_size: Option<u64>, kind: TypeKind) -> TypeEntr
     })
 }
 
-/// Two wrapper types that wrap each other.
 fn wrapper_cycle() -> [TypeEntry; 2] {
     [
         node(
@@ -670,7 +651,6 @@ fn malformed_backward_branch_expression_fails_instead_of_hanging() {
     let mut pool = Pool::new([]);
     let mut runtime = Runtime::new([]);
 
-    // DW_OP_skip with a -3 offset branches back onto itself forever.
     let looping = pool.add(&[gimli::DW_OP_skip.0, 0xfd, 0xff]);
     let mut budget = InspectionBudget::default();
     let result = evaluate(
@@ -695,7 +675,6 @@ fn typed_register_values_are_evaluated_with_the_referenced_base_type() {
     let mut pool = Pool::new([(0x10, gimli::ValueType::U64)]);
     let mut runtime = Runtime::new([(6, 0x2000)]);
 
-    // DW_OP_regval_type register 6, base type DIE offset 0x10.
     let typed = pool.add(&[
         gimli::DW_OP_regval_type.0,
         6,
@@ -738,8 +717,6 @@ fn implicit_and_computed_values_materialize_with_source_provenance() {
     assert_eq!(materialized.0, VariableValueSource::Constant);
     assert_eq!(materialized.1.as_ref(), &[0xd6, 0xff, 0xff, 0xff]);
 
-    // An implicit value need only cover its piece, whether that piece is
-    // the whole object or one of several.
     let wider = Location::Bytes {
         value: gimli::EndianSlice::new(&[1, 2, 3, 4, 5, 6, 7, 8], RunTimeEndian::Little),
     };
@@ -761,7 +738,6 @@ fn implicit_and_computed_values_materialize_with_source_provenance() {
     assert_eq!(computed.as_ref(), &[0]);
 }
 
-/// One piece of `size` bits at `location`.
 fn piece(location: Location<Reader<'static>>, size: u64) -> gimli::Piece<Reader<'static>> {
     gimli::Piece {
         size_in_bits: Some(size),
@@ -770,7 +746,6 @@ fn piece(location: Location<Reader<'static>>, size: u64) -> gimli::Piece<Reader<
     }
 }
 
-/// The storage `pieces` describe for an object of `size` bytes.
 fn composite(
     pieces: &[gimli::Piece<Reader<'_>>],
     size: u64,
@@ -786,7 +761,6 @@ fn composite(
     )
 }
 
-/// Reads `size` bytes at `offset` within `storage`.
 fn read_at(
     storage: &ValueStorage,
     offset: i64,
@@ -820,9 +794,6 @@ fn an_empty_location_expression_describes_an_optimized_out_value() {
 fn register_and_value_pieces_take_their_low_order_bits() {
     let mut runtime = Runtime::new([(0, 0x1122_3344_5566_7788), (1, 0xaabb)]);
 
-    // The upper half of r0 by bit offset, then r1's low byte, then the low
-    // twelve bits of a computed value and four bits beyond it: a
-    // generic value with its sign bit clear extends with zeros.
     let pieces = [
         gimli::Piece {
             size_in_bits: Some(32),
@@ -850,8 +821,6 @@ fn register_and_value_pieces_take_their_low_order_bits() {
         Ok(vec![0x44, 0x33, 0x22, 0x11, 0xbb, 0xff, 0x0f])
     );
 
-    // Part of a register above its least significant bit is not the
-    // register's value, though it is all one piece's.
     let upper = storage::narrow(storage::offset(storage.clone(), 0).expect("offset"), 4);
     assert_eq!(storage::source(&upper), VariableValueSource::Composite);
     let low = storage::narrow(storage::offset(storage, 4).expect("offset"), 1);
@@ -860,8 +829,6 @@ fn register_and_value_pieces_take_their_low_order_bits() {
         VariableValueSource::Register(_)
     ));
 
-    // A typed value extends by its signedness; a generic one with its sign
-    // bit set cannot be told from a narrower negative value.
     let signed = [piece(
         Location::Value {
             value: Value::I8(-2),
@@ -933,8 +900,6 @@ fn malformed_pieces_are_refused() {
         );
     }
 
-    // Big-endian pieces are numbered differently; microscope does not model
-    // them.
     let halves = [
         piece(
             Location::Register {
@@ -988,7 +953,6 @@ fn consecutive_memory_pieces_are_one_place_in_memory() {
 fn a_bit_field_reads_only_its_own_bits() {
     let mut runtime = Runtime::new([]);
 
-    // Bits 0..4 are undefined; a field in bits 4..12 is not.
     let pieces = [
         piece(Location::Empty, 4),
         gimli::Piece {
@@ -1031,7 +995,6 @@ fn entry_value_operands_ask_the_caller_for_what_they_name() {
         pieces => panic!("{pieces:?}"),
     };
 
-    // DW_OP_entry_value(DW_OP_reg5) DW_OP_plus_uconst 1 DW_OP_stack_value.
     let register = pool.add(&[
         gimli::DW_OP_entry_value.0,
         1,
@@ -1045,7 +1008,6 @@ fn entry_value_operands_ask_the_caller_for_what_they_name() {
         Ok(Value::Generic(42))
     );
 
-    // A typed register keeps its type.
     let typed = pool.add(&[
         gimli::DW_OP_entry_value.0,
         3,
@@ -1056,7 +1018,6 @@ fn entry_value_operands_ask_the_caller_for_what_they_name() {
     ]);
     assert_eq!(pool.run(typed, &mut runtime).map(value), Ok(Value::I32(41)));
 
-    // DW_OP_bregN 0; DW_OP_deref asks for what the register pointed at.
     let referent = pool.add(&[
         gimli::DW_OP_entry_value.0,
         3,
@@ -1070,7 +1031,6 @@ fn entry_value_operands_ask_the_caller_for_what_they_name() {
         Ok(Value::Generic(0x20))
     );
 
-    // A parameter reference names its entry by its unit's offset.
     let parameter = pool.add(&[
         gimli::DW_OP_GNU_parameter_ref.0,
         0x2a,
@@ -1084,7 +1044,6 @@ fn entry_value_operands_ask_the_caller_for_what_they_name() {
         Ok(Value::Generic(7))
     );
 
-    // What the caller cannot say, the value cannot be.
     let missing = pool.add(&[
         gimli::DW_OP_entry_value.0,
         1,
@@ -1099,7 +1058,6 @@ fn entry_value_operands_ask_the_caller_for_what_they_name() {
         )
     );
 
-    // Any other operand is a valid expression microscope does not evaluate.
     let other = pool.add(&[
         gimli::DW_OP_entry_value.0,
         2,
@@ -1121,8 +1079,6 @@ fn called_procedures_run_on_the_same_stack() {
         Some(pool.0.list(&[(None, expression)]).expect("a list fits"))
     };
 
-    // A procedure resolves an indexed address from its unit's table,
-    // which loading gives the expressions calling it.
     let indexed = pool.with(
         &[gimli::DW_OP_addrx.0, 0, gimli::DW_OP_plus.0],
         &[(0, 0x1000)],
@@ -1147,8 +1103,6 @@ fn called_procedures_run_on_the_same_stack() {
         gimli::DW_OP_stack_value.0,
     ];
 
-    // The unit begins at 0x100, so the calls name 0x120, 0x130, and 0x140.
-    // An entry without a location has no effect.
     let caller = pool.with(
         &bytes,
         &[(0, 0x1000)],
@@ -1164,7 +1118,6 @@ fn called_procedures_run_on_the_same_stack() {
         }])
     ));
 
-    // A procedure the expression did not bring is elsewhere.
     let alone = pool.add(&bytes);
     assert_eq!(
         pool.run(alone, &mut runtime),
@@ -1269,8 +1222,6 @@ fn unexecuted_fbreg_branches_do_not_require_a_frame_base() {
     let mut pool = Pool::new([]);
     let mut runtime = Runtime::new([]);
 
-    // DW_OP_lit1 then DW_OP_bra +2 skips the DW_OP_fbreg on the executed
-    // path; the frame base must not be resolved eagerly.
     let branching = pool.add(&[
         gimli::DW_OP_lit1.0,
         gimli::DW_OP_bra.0,
@@ -1311,8 +1262,6 @@ fn unexecuted_fbreg_branches_do_not_require_a_frame_base() {
         "frame base must not be resolved for an unexecuted branch"
     );
 
-    // The same expression taking the fbreg path surfaces the metadata
-    // failure lazily.
     let taken = pool.add(&[gimli::DW_OP_fbreg.0, 0x00, gimli::DW_OP_stack_value.0]);
     let result = evaluate(
         pool.get(taken),
@@ -1354,14 +1303,10 @@ fn specific_location_entries_override_default_entries() {
             .map(|expression| expression.map(Expression::id))
     };
 
-    // A specific entry wins inside its range; the default applies outside
-    // every range and without an instruction context.
     assert_eq!(at(description, Some(0x150)), Ok(Some(reg1)));
     assert_eq!(at(description, Some(0x300)), Ok(Some(reg0)));
     assert_eq!(at(description, None), Ok(Some(reg0)));
 
-    // A location with only range-gated entries refuses to guess when no
-    // instruction context is available rather than silently resolving.
     assert!(at(ranged_only, None).is_err());
     assert!(at(overlapping, Some(0x190)).is_err());
 }
@@ -1572,7 +1517,6 @@ fn value_shapes_separate_malformed_from_unsupported_types() {
         );
     }
 
-    // A pointer may point to itself.
     assert!(matches!(
         value_shape_from(&[pointer(Some(8), 0)][..], TypeId::new(0)),
         Ok(ValueShape::Indirection {
@@ -1624,8 +1568,6 @@ fn graph_finalization_propagates_wrapper_sizes_to_a_fixpoint() {
     );
 }
 
-/// One generated type: its kind, the types it names, and a choice that
-/// some kinds make among their parts.
 #[derive(Debug, Clone)]
 struct CycleShape {
     kind: u8,
@@ -1656,8 +1598,6 @@ fn base_class(target: u32) -> crate::BaseClass {
     }
 }
 
-/// A variant's discriminant, by `choice`: stored in a member of the first
-/// target, the first target's tag type, or none.
 fn variant_discriminant(shape: &CycleShape) -> (Option<u32>, &[u32]) {
     match (shape.choice % 3, shape.targets.split_first()) {
         (0 | 1, Some((first, rest))) => (Some(*first), rest),
@@ -1665,7 +1605,6 @@ fn variant_discriminant(shape: &CycleShape) -> (Option<u32>, &[u32]) {
     }
 }
 
-/// How many of a record's targets are members; the rest are bases.
 fn record_members(shape: &CycleShape) -> usize {
     usize::from(shape.choice) % (shape.targets.len() + 1)
 }
@@ -1771,10 +1710,6 @@ fn cycle_type(id: u32, shape: &CycleShape) -> TypeEntry {
     node(id, "type", Some(8), kind)
 }
 
-/// The types a generated type holds in place, by what each kind means: an
-/// array its elements, a wrapper or enumeration what it wraps, and a
-/// record, union, variant, or signature every part it names, but never a
-/// variant's tag type, nor anything a pointer, reference, or slice names.
 fn cycle_holds(shape: &CycleShape) -> Vec<u32> {
     match shape.kind {
         0..=4 | 12 => Vec::new(),
@@ -1895,8 +1830,6 @@ fn boolean_and_float_decoding_preserve_exact_representations() {
         })
     );
 
-    // IEEE binary128 shares the size but not the representation, and a
-    // size two formats share is not a format without a name that says.
     for name in ["__float128", "_Float128", "f128"] {
         assert_eq!(
             decode_scalar(&sixteen_bytes(name), &extended, little).expect("binary128"),
@@ -1950,8 +1883,6 @@ fn bit_field_extraction_is_endian_aware_and_bounded() {
     assert!(extract_bit_field(&[0], 0, 0, ByteOrder::Little).is_err());
 }
 
-/// A global whose type has no usable shape is a malformed type graph, as a
-/// local, a member, or a pointee of that type is.
 #[test]
 fn a_global_of_a_malformed_type_reports_a_malformed_type_graph() {
     let encoding = Encoding {
@@ -2023,8 +1954,6 @@ fn a_global_of_a_malformed_type_reports_a_malformed_type_graph() {
     );
 }
 
-/// Loads written DWARF as an object of 0x20 bytes of data and of code,
-/// both at address zero.
 fn load_test_object(written: &mut WriteDwarf) -> crate::debug_info::DebugInfo {
     use object::write::Object;
 
@@ -2063,8 +1992,6 @@ fn load_test_object(written: &mut WriteDwarf) -> crate::debug_info::DebugInfo {
     .expect("load the test object")
 }
 
-/// A variable the compiler made, with no name, is not listed, and not
-/// malformed; one with no name that is not the compiler's is malformed.
 #[test]
 fn a_nameless_artificial_variable_is_the_compilers_own() {
     let encoding = Encoding {
@@ -2168,10 +2095,6 @@ fn a_nameless_artificial_variable_is_the_compilers_own() {
     );
 }
 
-/// A Rust typedef is the type it names, as Rust has no distinct typedef:
-/// a Rust newer than 1.97 describes `usize` and `isize` as typedefs of
-/// `u64` and `i64`, which must stay integers for expressions and views
-/// that compare a length. Go's typedefs, in contrast, are distinct types.
 #[test]
 fn a_rust_typedef_is_a_synonym_of_its_target() {
     let relationship = |language| {

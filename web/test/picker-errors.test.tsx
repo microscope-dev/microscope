@@ -1,5 +1,3 @@
-// A failed start shows its error until its form is edited.
-
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
@@ -14,7 +12,7 @@ afterEach(cleanup);
 
 async function failedLaunch() {
   const server = await fakeServer();
-  // Nothing is being debugged.
+
   server.send({
     type: "state",
     ...stoppedState({

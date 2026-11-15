@@ -1,6 +1,3 @@
-//! The system call trace a capture holds, read back into the events the
-//! engines produced.
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -15,34 +12,23 @@ use crate::syscalls::{
     SyscallId, Tid, TraceEvent,
 };
 
-/// One event of a recorded trace, with the stack it was recorded with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedEvent {
-    /// The event, without its stack's addresses: the stack is named by
-    /// [`Profile::syscall_stack`] instead.
     pub event: TraceEvent,
 
-    /// The stack's row, if it had one.
     pub stack: Option<u32>,
 }
 
-/// A recorded system call trace.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecordedSyscalls {
-    /// Every event, in the order the engine reported it.
     pub events: Vec<RecordedEvent>,
 
-    /// Statistics the kernel counted, for a trace that kept no calls.
     pub counted: Folded,
 
-    /// Events the engine lost: counts are lower bounds once any record was
-    /// dropped or return unseen.
     pub lost: Losses,
 }
 
 impl RecordedSyscalls {
-    /// Statistics per process and call: the kernel's count, or the calls'.
-    /// The kernel's count already holds the calls it kept.
     #[must_use]
     pub fn stats(&self) -> Folded {
         let mut folded = self.counted.clone();
@@ -59,7 +45,6 @@ impl RecordedSyscalls {
     }
 }
 
-/// An end that `wait(2)` encoded.
 #[expect(clippy::cast_possible_truncation, reason = "a status fits 16 bits")]
 const fn end(status: i64) -> ProcessEnd {
     let status = status as i32;
@@ -79,7 +64,6 @@ impl Profile {
         Self { capture }
     }
 
-    /// Whether the capture holds a system call trace.
     #[must_use]
     pub const fn has_syscalls(&self) -> bool {
         let capture = &self.capture;
@@ -88,7 +72,6 @@ impl Profile {
             || !capture.syscall_stats.is_empty()
     }
 
-    /// Events of the system call trace the engine lost.
     #[must_use]
     pub fn syscalls_lost(&self) -> Losses {
         let account = |kind: AccountKind| self.capture.account(kind as u32);
@@ -100,7 +83,6 @@ impl Profile {
         }
     }
 
-    /// How many system calls the capture holds, as calls or counted.
     #[must_use]
     pub fn syscall_count(&self) -> u64 {
         let capture = &self.capture;
@@ -117,7 +99,6 @@ impl Profile {
                 .sum::<u64>()
     }
 
-    /// The system call trace the capture holds.
     #[must_use]
     pub fn syscalls(&self) -> RecordedSyscalls {
         let capture = &self.capture;
@@ -193,7 +174,6 @@ impl Profile {
         }
     }
 
-    /// The name of the call in row `row`.
     #[must_use]
     pub fn syscall_name(&self, row: u32) -> String {
         self.capture.syscalls.get(row as usize).map_or_else(
@@ -209,9 +189,6 @@ impl Profile {
         )
     }
 
-    /// The site calls of stack `row` are grouped under: its
-    /// [`syscall_site`](Self::syscall_site), or else its innermost frame's
-    /// function, or `?` when it has no frame.
     #[must_use]
     pub fn syscall_site_name(&self, row: u32) -> String {
         self.syscall_site(row).unwrap_or_else(|| {
@@ -223,10 +200,6 @@ impl Profile {
         })
     }
 
-    /// The statistics of `syscalls`' calls by site, as
-    /// [`syscall_site_name`](Self::syscall_site_name) names it, and of
-    /// calls without a stack as `no stack`. Calls the kernel only counted
-    /// have no site and are not among them.
     #[must_use]
     pub fn syscall_sites(&self, syscalls: &RecordedSyscalls) -> BTreeMap<String, SyscallStats> {
         let mut names: HashMap<u32, String> = HashMap::new();
@@ -256,7 +229,6 @@ impl Profile {
         sites
     }
 
-    /// The statistics the kernel counted, per process and call.
     fn kernel_counted(&self, pid: &impl Fn(u32) -> Pid) -> Folded {
         let capture = &self.capture;
         let mut counted = Folded::default();
@@ -274,7 +246,6 @@ impl Profile {
                 total_ns: row.total_ns.get(),
                 min_ns: row.min_ns.get(),
                 max_ns: row.max_ns.get(),
-                // Statistics with nothing timed have no histogram yet.
                 log2_ns: if row.timed.get() == 0 {
                     Vec::new()
                 } else {
@@ -399,16 +370,11 @@ impl Profile {
         }
     }
 
-    /// The functions of a recorded call's or signal's stack, innermost
-    /// first, as a sample's are named.
     #[must_use]
     pub fn syscall_stack(&self, row: u32) -> (Vec<String>, StackEnding) {
         self.names(row)
     }
 
-    /// The functions of a recorded call's or signal's stack, innermost
-    /// first as [`Self::syscall_stack`] names them, each with its line where
-    /// the capture has one.
     #[must_use]
     pub fn syscall_frames(&self, row: u32) -> Vec<SyscallFrame> {
         let capture = &self.capture;
@@ -443,18 +409,6 @@ impl Profile {
         frames
     }
 
-    /// Where a recorded stack's call came from: its innermost frame with a
-    /// source line, as `recv · db.rs:212`. A C library without debug
-    /// information has none, so this is the program's own code that made
-    /// the call. In a stack that holds an interpreter's frames, it is the
-    /// innermost of those, the program's own, not the interpreter's.
-    ///
-    /// With no line in the stack, as in a release build, it is the
-    /// function of the innermost frame outside the C library and the
-    /// loader, as `recv`: their system call wrappers are shared by every
-    /// call of a kind, so they would put all of those in one site. Rust's
-    /// standard library is passed over the same way, by its lines' files
-    /// or by its names: its file and socket wrappers are shared too.
     #[must_use]
     pub fn syscall_site(&self, row: u32) -> Option<String> {
         let Some(place) = self.syscall_place(row) else {
@@ -464,8 +418,6 @@ impl Profile {
         Some(format!("{} · {file}:{}", place.function, place.line))
     }
 
-    /// The innermost function of stack `row` outside the C library and the
-    /// loader, and outside Rust's standard library where any is.
     fn caller_of_c_library(&self, row: u32) -> Option<String> {
         let capture = &self.capture;
         let names: Vec<String> = capture
@@ -496,8 +448,6 @@ impl Profile {
         names.iter().find(own).or_else(|| names.first()).cloned()
     }
 
-    /// The innermost frame of stack `row` with a source line, of its
-    /// interpreted frames if any has one.
     #[must_use]
     pub fn syscall_place(&self, row: u32) -> Option<SyscallPlace<'_>> {
         let capture = &self.capture;
@@ -507,8 +457,6 @@ impl Profile {
                 .get(*frame as usize)
                 .is_some_and(|frame| frame.kind == FrameKind::Interpreted as u8)
         };
-        // Rust's standard library's lines are passed over, as the C
-        // library's would be: every call of a kind runs through them.
         let place = |frame: u32| {
             let line = capture.frame_lines(frame).iter().find(|line| {
                 line.file.get() != NONE
@@ -531,8 +479,6 @@ impl Profile {
     }
 }
 
-/// The file names, by prefix, of glibc's and musl's C libraries and
-/// loaders, whose system call wrappers a call site looks past.
 const C_LIBRARY: [&str; 5] = [
     "libc.so",
     "libpthread.so",
@@ -541,8 +487,6 @@ const C_LIBRARY: [&str; 5] = [
     "libc.musl",
 ];
 
-/// One function of a recorded stack: its file and line where known, and
-/// whether an interpreter ran it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyscallFrame {
     pub function: String,
@@ -550,7 +494,6 @@ pub struct SyscallFrame {
     pub interpreted: bool,
 }
 
-/// Where a call was made: a function, and a line of a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyscallPlace<'a> {
     pub function: &'a str,
@@ -595,8 +538,6 @@ mod tests {
         })
     }
 
-    /// Every kind of event, as an engine reports them: a descriptor is
-    /// stamped after the call that made it, but reported before it.
     fn trace() -> Vec<TraceEvent> {
         vec![
             TraceEvent::Exec {
@@ -703,8 +644,6 @@ mod tests {
         };
         assert_eq!((syscalls.lost, &syscalls.counted), (lost, &counted));
 
-        // A window keeps each note among the calls it came between, and
-        // only the bytes its rows still name.
         let mut builder = crate::capture::builder::CaptureBuilder::new();
         builder.absorb(&read.capture);
         builder.forget_before(215);
@@ -715,8 +654,6 @@ mod tests {
             .collect();
         assert_eq!(events(&windowed), kept);
 
-        // Three calls' two captures, a 12-byte head each and 8 bytes of
-        // path, and the signal's information.
         assert_eq!(windowed.capture.syscall_blobs.len(), 3 * (24 + 8) + 128);
     }
 

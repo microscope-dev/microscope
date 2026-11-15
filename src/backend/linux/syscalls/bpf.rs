@@ -1,18 +1,3 @@
-//! The BPF engine for a recording's system calls, which never stops the
-//! traced program.
-//!
-//! Programs in the kernel filter by process, time each chosen call, copy
-//! the bytes behind its arguments, and send one record per call through a
-//! ring buffer.
-//!
-//! The program (`src/backend/linux/bpf/syscalls.bpf.c`) is built by
-//! `build.rs` and embedded. Records and map values cross the boundary as
-//! the plain structures of `bpf/records.h`, which this module mirrors
-//! field for field; a test
-//! compares both layouts through the object's BTF. Decoding a record is
-//! pure. Everything else, from naming a call to printing it, is shared
-//! with the ptrace engine.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd as _;
 use std::sync::Arc;
@@ -46,16 +31,13 @@ use crate::capture::records::Truncation;
 use crate::unwind::DwarfRegister;
 use crate::unwind::sample::SampledState;
 
-/// The programs, as `build.rs` compiled them.
 #[cfg(not(feature = "bpf-faults"))]
 static OBJECT: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/syscalls.bpf.o"));
 
-/// The programs with the faults tests set off (the `bpf-faults` feature).
 #[cfg(feature = "bpf-faults")]
 static OBJECT: &[u8] =
     aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/syscalls-faults.bpf.o"));
 
-/// The tracepoints the programs attach to, by program name.
 const PROGRAMS: [(&str, &str); 5] = [
     ("sys_enter", "sys_enter"),
     ("sys_exit", "sys_exit"),
@@ -100,7 +82,6 @@ const CALL_PROCESS_EXITED: u8 = 8;
 const CALL_STACK_LOST: u8 = 32;
 const SIGNAL_INFO_LOST: u32 = 1;
 
-/// The stack of a call or signal whose own did not fit in the ring.
 fn lost_stack() -> CallStack {
     CallStack {
         addresses: Arc::from([]),
@@ -109,54 +90,32 @@ fn lost_stack() -> CallStack {
     }
 }
 
-/// The flags a call record shares with [`EventFlags`].
 const CALL_EVENT_FLAGS: u8 = EventFlags::ENTRY_UNSEEN.0
     | EventFlags::ABI_UNCERTAIN.0
     | EventFlags::KEPT_FAILED.0
     | EventFlags::KEPT_SLOW.0;
 
-/// A call's slot in the CALLS map: its ABI and number.
 const SLOTS: u32 = 3072;
 
-// Each chosen call's statistics row is a `u16` in its CALLS entry.
 const _: () = assert!(SLOTS <= 1 << 16, "statistics rows outgrow their u16");
 
-/// Each CPU's ring's default size, which a thread making 3 M calls a
-/// second fills in no less than a few milliseconds.
 pub const DEFAULT_RING: u32 = 2 << 20;
 
-/// Each CPU's ring's default size when each call copies its stack.
-///
-/// A call's records then take about 8.6 KiB, 20 times what they take with
-/// the kernel's walk alone, so that a 2 MiB ring holds some 240 calls and
-/// an 8 MiB one some 970: a burst of that many on one CPU loses none, nor
-/// does a thread making 10,000 calls a second while the reader is held up
-/// for a tenth of a second. A memory cgroup that cannot hold the rings
-/// gets smaller ones, down to [`SMALLEST_RING`].
 pub const STACK_COPY_RING: u32 = 8 << 20;
 
-/// The smallest ring a memory cgroup short of room for the default gets.
 const SMALLEST_RING: u32 = 256 << 10;
 
-/// The most bytes of a string or buffer kept once strings are shed.
 pub const CAPPED_BYTES: u32 = 16;
 
-/// The most elements of an array kept once strings are shed.
 pub const CAPPED_ELEMENTS: u32 = 4;
 
-/// One call in this many is sent once calls are sampled.
 pub const SAMPLED_EVERY: u32 = 16;
 
-/// What the programs cost a call, as `microscope-tools syscall-overhead`
-/// and the 8-thread streaming loop measured them on a Ryzen 9 9950X:
-/// counted, sent, sent with the kernel's walk of its stack, and with a
-/// copy of its stack.
 const COUNTED_NS: u64 = 150;
 const STREAMED_NS: u64 = 220;
 const STACK_NS: u64 = 560;
 const COPIED_STACK_NS: u64 = 1_100;
 
-/// What a call costs the programs loaded with `flags` that shed `shed`.
 const fn per_call(flags: u32, shed: Shed) -> u64 {
     if flags & CONFIG_STREAM == 0 || shed.has(Shed::STREAM) {
         COUNTED_NS
@@ -171,20 +130,16 @@ const fn per_call(flags: u32, shed: Shed) -> u64 {
     }
 }
 
-/// What a trace gives up to stay inside its recording's budget.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Shed(pub u8);
 
 impl Shed {
     pub const STACKS: Self = Self(1);
 
-    /// Strings and buffers past [`CAPPED_BYTES`].
     pub const STRINGS: Self = Self(2);
 
-    /// Every call but one in [`SAMPLED_EVERY`], which are counted.
     pub const SAMPLED: Self = Self(4);
 
-    /// Every call but those that fail or are slow, which are counted.
     pub const STREAM: Self = Self(8);
 
     #[must_use]
@@ -193,7 +148,6 @@ impl Shed {
     }
 }
 
-/// How one argument is copied (`struct arg_copy`).
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -209,7 +163,6 @@ pub struct RawArgCopy {
     pub limit: u32,
 }
 
-/// One call's slot in the CALLS map (`struct call_spec`).
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -228,7 +181,6 @@ pub struct RawCallSpec {
     pub args: [RawArgCopy; 6],
 }
 
-/// `struct config`.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -243,7 +195,6 @@ pub struct RawConfig {
     pub burst: u32,
 }
 
-/// A thread's call in progress (`struct entry`).
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -260,7 +211,6 @@ pub struct RawEntry {
     pub known: u8,
 }
 
-/// `struct in_flight_record`.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -271,7 +221,6 @@ pub struct RawInFlightRecord {
     pub entry: RawEntry,
 }
 
-/// Every record's start (`struct record`).
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -283,7 +232,6 @@ pub struct RawRecord {
     pub tgid: u32,
 }
 
-/// `struct call_record`, which its captures follow.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -300,7 +248,6 @@ pub struct RawCallRecord {
     pub captures: u16,
 }
 
-/// `struct capture_header`, which its bytes follow, padded to eight.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -315,7 +262,6 @@ pub struct RawCaptureHeader {
     pub pad2: u32,
 }
 
-/// `struct spawn_record`.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -327,7 +273,6 @@ pub struct RawSpawnRecord {
     pub child_tgid: u32,
 }
 
-/// `struct exec_record`, which the new image's path follows.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -339,7 +284,6 @@ pub struct RawExecRecord {
     pub len: u32,
 }
 
-/// `struct handoff_record`.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -351,7 +295,6 @@ pub struct RawHandoffRecord {
     pub pad: u32,
 }
 
-/// `struct exit_record`.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -363,7 +306,6 @@ pub struct RawExitRecord {
     pub last: u32,
 }
 
-/// `struct signal_record`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RawSignalRecord {
@@ -374,7 +316,6 @@ pub struct RawSignalRecord {
     pub info: [u8; 48],
 }
 
-/// `struct file_record`, which the dentry's name follows.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -391,8 +332,6 @@ pub struct RawFileRecord {
     pub pad: u32,
 }
 
-/// `struct stack_record`, which the kernel's walk and the stack's copy
-/// follow.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RawStackRecord {
@@ -405,7 +344,6 @@ pub struct RawStackRecord {
     pub regs: [u64; 17],
 }
 
-/// `struct stat_value`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RawStatValue {
@@ -419,7 +357,6 @@ pub struct RawStatValue {
     pub log2_ns: [u64; BUCKETS],
 }
 
-/// `struct stat_key`.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -431,7 +368,6 @@ pub struct RawStatKey {
     pub reserved: u32,
 }
 
-/// `struct errno_key`.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
@@ -443,7 +379,6 @@ pub struct RawErrnoKey {
     pub err: u32,
 }
 
-/// Map values cross as bytes, which aya can hold without unsafe code.
 type Bytes<const N: usize> = [u8; N];
 const SPEC_BYTES: usize = size_of::<RawCallSpec>();
 const STAT_BYTES: usize = size_of::<RawStatValue>();
@@ -460,9 +395,6 @@ const fn abi_of(code: u8) -> Option<Abi> {
     }
 }
 
-/// A call's slot, as the programs key it: its ABI above ten bits of
-/// number. A larger number, which no table names, folds into those bits
-/// as it does in the programs.
 #[must_use]
 pub const fn errno_slot(call: SyscallId) -> u32 {
     let abi = match call.abi {
@@ -474,11 +406,6 @@ pub const fn errno_slot(call: SyscallId) -> u32 {
     abi << 10 | (call.number & 1023)
 }
 
-/// The record the stream program writes for a call it read nothing of.
-///
-/// The call returned `returned`, or ended its process first, and was made
-/// at the first time and returned at the second. A model of the stream
-/// feeds such records to the decoder.
 #[must_use]
 pub fn encode_call(
     thread: u32,
@@ -512,14 +439,11 @@ pub fn encode_call(
     record.as_bytes().to_vec()
 }
 
-/// The call a CALLS slot holds: its ABI above ten bits of number.
 fn call_of(slot: u32) -> Option<SyscallId> {
     let abi = abi_of(u8::try_from(slot >> 10).ok()?)?;
     Some(SyscallId::new(abi, slot & 1023))
 }
 
-/// A call's CALLS slot value: whether it is chosen, and how to copy each
-/// argument, from the rules the ptrace engine follows.
 #[must_use]
 pub fn call_spec(call: SyscallId, options: &TraceOptions) -> RawCallSpec {
     let mut spec = RawCallSpec {
@@ -580,8 +504,6 @@ pub fn call_spec(call: SyscallId, options: &TraceOptions) -> RawCallSpec {
                 CopyKind::Struct => 8,
                 CopyKind::FdSet => 9,
             },
-            // A tracepoint cannot fault pages in, so what a call reads
-            // is copied once the call has, at its exit.
             when: u8::from(copy.when == ReadAt::Exit || !reads_at_entry(call)),
             writes: u8::from(copy.writes),
             count,
@@ -595,18 +517,10 @@ pub fn call_spec(call: SyscallId, options: &TraceOptions) -> RawCallSpec {
     spec
 }
 
-/// Whether a call's input must be read at its entry: `execve` leaves
-/// nothing of the old image to read at its exit, and `rseq` registers an
-/// area the kernel writes before the call returns.
 fn reads_at_entry(call: SyscallId) -> bool {
     matches!(call.name(), Some("execve" | "execveat" | "rseq"))
 }
 
-/// Whether a call waits for another thread, a device, or a clock, as
-/// `enum waits` says: such a call's stack is taken as it begins, while
-/// the thread waits, rather than at its exit, once it is woken.
-///
-/// `futex` waits as its operation says, which the kernel reads.
 fn waits(call: SyscallId) -> u8 {
     const WAITS: u8 = 1;
     const WAITS_BY_FUTEX_OP: u8 = 2;
@@ -663,8 +577,6 @@ fn waits(call: SyscallId) -> u8 {
     }
 }
 
-/// Whether a program is one that every call's entry or exit runs: the
-/// tracepoints' or a function slot's.
 fn call_program(name: &str) -> bool {
     matches!(name, "sys_enter" | "sys_exit")
         || name
@@ -673,17 +585,13 @@ fn call_program(name: &str) -> bool {
             .is_some_and(|slot| slot.parse::<u8>().is_ok())
 }
 
-/// One record from the ring, decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Record {
-    /// A call, at its exit, or as its thread ended inside it.
     Call(SyscallEvent),
 
-    /// The arguments a call read at its entry; its exit follows.
     Entry(SyscallEvent),
     Event(TraceEvent),
 
-    /// A captured exec entry whose thread took the leader's id.
     Handoff {
         former: Tid,
         thread: Tid,
@@ -691,12 +599,8 @@ pub enum Record {
         entered: u64,
     },
 
-    /// The stack of the thread whose call or signal follows, or of a
-    /// waiting call that began then.
     Stack(SampledStack),
 
-    /// The Python frames of the thread whose stack follows, as the
-    /// walker wrote them, to read when the stack is unwound.
     Python {
         thread: Tid,
         record: Vec<u8>,
@@ -704,8 +608,6 @@ pub enum Record {
 }
 
 impl Record {
-    /// When it happened, by which the rings are merged; none for a record
-    /// that goes with the next one its program sent.
     fn time(&self) -> Option<u64> {
         match self {
             Self::Call(call) | Self::Entry(call) => Some(call.time()),
@@ -718,30 +620,22 @@ impl Record {
     }
 }
 
-/// A thread's stack as the kernel saw it, to unwind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SampledStack {
     pub thread: Tid,
     pub process: Pid,
 
-    /// When the waiting call it was taken at began; none for a stack
-    /// taken at the call or signal its record goes before.
     pub entered: Option<u64>,
 
-    /// Whether the thread's interpreted frames went just before it.
     pub interpreted: bool,
 
-    /// The user registers by DWARF number.
     pub registers: [(DwarfRegister, u64); 17],
 
-    /// The kernel's walk of the frame pointers, the instruction first.
     pub chain: Vec<u64>,
 
-    /// The stack's bytes from its pointer up, if copied.
     pub copy: Vec<u8>,
 }
 
-/// Why a record could not be decoded.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DecodeError {
     #[error("a record of {0} bytes is shorter than its header says")]
@@ -763,7 +657,6 @@ fn read<T: FromBytes + KnownLayout + Immutable>(bytes: &[u8]) -> Result<T, Decod
         .map_err(|_| DecodeError::Short(bytes.len()))
 }
 
-/// How a process ended, from the exit code `wait(2)` encodes.
 #[must_use]
 pub const fn process_end(code: i32) -> ProcessEnd {
     let signal = code & 0x7f;
@@ -777,12 +670,6 @@ pub const fn process_end(code: i32) -> ProcessEnd {
     }
 }
 
-/// Decodes one record as the programs wrote it.
-///
-/// # Errors
-///
-/// A record that is shorter than its header says, of an unknown kind, or
-/// whose captures overrun it.
 pub fn decode(bytes: &[u8]) -> Result<Record, DecodeError> {
     let header: RawRecord = read(bytes)?;
     let size = usize::try_from(header.size).unwrap_or(usize::MAX);
@@ -848,13 +735,11 @@ pub fn decode(bytes: &[u8]) -> Result<Record, DecodeError> {
             };
             let code = (raw.flags & SIGNAL_INFO_LOST == 0).then(|| word(8));
 
-            // Processes send with SI_USER, SI_QUEUE, SI_TKILL, and the like.
             let sender = code
                 .is_some_and(|code| code <= 0 && code != -2)
                 .then(|| u32::try_from(word(16)).ok().map(Pid::new))
                 .flatten();
 
-            // The rest of a siginfo holds no field of any kind of signal.
             let info = code.map(|_| {
                 let mut info = [0_u8; 128];
                 for (to, from) in info.iter_mut().zip(raw.info) {
@@ -890,7 +775,6 @@ pub fn decode(bytes: &[u8]) -> Result<Record, DecodeError> {
     }
 }
 
-/// A stack record and the walk and copy that follow it.
 fn stack_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> {
     let raw: RawStackRecord = read(bytes)?;
     let start = size_of::<RawStackRecord>();
@@ -923,7 +807,6 @@ fn stack_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> 
     }))
 }
 
-/// A call record and the captures that follow it.
 fn call_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> {
     let raw: RawCallRecord = read(bytes)?;
     let abi = abi_of(raw.abi).ok_or(DecodeError::Abi(raw.abi))?;
@@ -960,8 +843,6 @@ fn call_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> {
     let unseen = raw.flags & EventFlags::ENTRY_UNSEEN.0 != 0;
     let call = SyscallId::new(abi, raw.nr);
 
-    // Only these end a thread inside them. Any other call returned first,
-    // unseen, as one whose exit program the kernel skipped.
     let ends = call
         .name()
         .is_some_and(|name| matches!(name, "exit" | "exit_group" | "execve" | "execveat"));
@@ -996,9 +877,6 @@ fn call_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> {
     })
 }
 
-/// What a descriptor a call made refers to, as `/proc/PID/fd/N` would
-/// name it. The kernel gives no path, so a file's text is left empty and
-/// the descriptor table keeps the path the call named.
 fn descriptor(process: Pid, raw: &RawFileRecord, name: &[u8]) -> TraceEvent {
     let name = String::from_utf8_lossy(name);
     let text = match raw.magic {
@@ -1025,9 +903,6 @@ fn descriptor(process: Pid, raw: &RawFileRecord, name: &[u8]) -> TraceEvent {
     }
 }
 
-/// Folds the kernel's statistics, each a thread's by its tgid and tid,
-/// and with both zero, a CPU's of the threads it had no room for, which
-/// `Folded` names by `process`.
 #[must_use]
 pub fn fold(
     process: Pid,
@@ -1080,7 +955,6 @@ pub fn fold(
     folded
 }
 
-/// Why the BPF engine cannot trace here, each with what to do about it.
 #[derive(Debug, thiserror::Error)]
 pub enum BpfError {
     #[error("{0}")]
@@ -1099,7 +973,6 @@ pub enum BpfError {
     Mappings(super::super::perf::OpenError),
 }
 
-/// What to do if the engine is missing a privilege.
 const REMEDY: &str =
     "  microscope uses eBPF so it never stops or slows the traced program, and it will
   not fall back to ptrace on its own. To continue, one of:
@@ -1109,14 +982,11 @@ const REMEDY: &str =
     - record a program you launch with --syscall-engine ptrace, which stops the
       program at each chosen call";
 
-/// The one thing the engine lacks to run here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Missing {
-    /// A kernel older than 5.15, by its release.
     Kernel(String),
     Btf,
 
-    /// `CAP_BPF`, `CAP_PERFMON`, or both, as the end of a sentence.
     Privileges(&'static str),
     UserNamespace,
     Lockdown,
@@ -1140,13 +1010,9 @@ impl std::fmt::Display for Missing {
     }
 }
 
-/// Where a BPF filesystem mounted with `delegate_cmds` is, as a container
-/// manager mounts one to hand out tokens.
 fn delegating_bpffs() -> Option<std::path::PathBuf> {
     let mounts = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
     mounts.lines().find_map(|line| {
-        // The mount point is the fifth field; after " - " come the
-        // filesystem type, the source, and the superblock's options.
         let (mount, rest) = line.split_once(" - ")?;
         let mut kind = rest.split(' ');
         let delegates = kind.next() == Some("bpf")
@@ -1162,32 +1028,23 @@ const CAP_SYS_ADMIN: u32 = 21;
 const CAP_PERFMON: u32 = 38;
 const CAP_BPF: u32 = 39;
 
-/// What the running kernel and this process offer the engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Probe {
-    /// The kernel's release, as `uname -r` prints it.
     pub release: String,
 
-    /// Its major and minor version.
     pub version: Option<(u32, u32)>,
     pub btf: bool,
 
-    /// The effective capability set.
     pub capabilities: u64,
 
-    /// The lockdown mode in force, when the kernel has one.
     pub lockdown: Option<String>,
 
-    /// A BPF filesystem that delegates commands, which offers a token.
     pub token: Option<std::path::PathBuf>,
 
-    /// Whether the process runs in a user namespace other than the
-    /// host's, where its capabilities do not reach the kernel's BPF.
     pub user_namespace: bool,
 }
 
 impl Probe {
-    /// Reads what the system offers.
     #[must_use]
     pub fn read() -> Self {
         let release = nix::sys::utsname::uname()
@@ -1222,9 +1079,6 @@ impl Probe {
         self.capabilities & (1 << capability) != 0
     }
 
-    /// Which of `CAP_BPF` and `CAP_PERFMON`, which every BPF engine needs,
-    /// this process lacks, as the end of a sentence about it: `None` when
-    /// it has both.
     #[must_use]
     pub const fn lacks_privileges(&self) -> Option<&'static str> {
         let bpf = self.has(CAP_BPF) || self.has(CAP_SYS_ADMIN);
@@ -1237,8 +1091,6 @@ impl Probe {
         }
     }
 
-    /// The first thing the engine lacks, in the order a reader fixes
-    /// them, if any.
     #[must_use]
     pub fn missing(&self) -> Option<Missing> {
         if self.version.is_none_or(|version| version < (5, 15)) {
@@ -1260,12 +1112,6 @@ impl Probe {
         (self.lockdown.as_deref() == Some("confidentiality")).then_some(Missing::Lockdown)
     }
 
-    /// Whether the engine can run, or the one specific reason it cannot,
-    /// with the fix.
-    ///
-    /// # Errors
-    ///
-    /// The first missing piece, in the order a reader fixes them.
     pub fn check(&self) -> Result<(), BpfError> {
         let Some(missing) = self.missing() else {
             return Ok(());
@@ -1307,22 +1153,15 @@ fn version(release: &str) -> Option<(u32, u32)> {
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
-/// How the BPF engine runs, beyond what to trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BpfOptions {
-    /// Count in the kernel and report no calls, only their statistics.
     pub count_only: bool,
 
-    /// With stacks, copy each stack's top to unwind by call-frame
-    /// information, rather than trust the kernel's walk alone.
     pub stack_copy: bool,
 
-    /// While counting, the failed and slow calls to send whole.
     pub exceptions: Option<Exceptions>,
 }
 
-/// The calls counting sends whole: each that fails or takes `slow`, up to
-/// `per_second` a second over every CPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Exceptions {
     pub slow: std::time::Duration,
@@ -1330,11 +1169,7 @@ pub struct Exceptions {
 }
 
 impl RawConfig {
-    /// The programs' settings for a trace of `options` run as `engine`
-    /// says, of `rows` calls' statistics.
     fn new(options: &TraceOptions, engine: BpfOptions, launch: bool, rows: u32) -> Self {
-        // Counting is always on: a call a full ring has no room for is
-        // counted instead.
         let mut flags = if engine.count_only {
             CONFIG_COUNT
         } else {
@@ -1379,19 +1214,15 @@ impl RawConfig {
     }
 }
 
-/// The most kernel functions the programs attach to: their slots.
 const FUNCTION_SLOTS: usize = 32;
 
-/// Where the programs attached, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attachment {
-    /// The chosen calls' kernel functions; none for the tracepoints.
     pub functions: Vec<String>,
     pub reason: String,
 }
 
 impl Attachment {
-    /// The program type, as the kernel names it.
     #[must_use]
     pub const fn name(&self) -> &'static str {
         if self.functions.is_empty() {
@@ -1402,16 +1233,10 @@ impl Attachment {
     }
 }
 
-/// The kernel function a call enters through, when `has` finds it.
 fn function_of(call: SyscallId, has: &impl Fn(&str) -> bool) -> Option<String> {
     call.kernel_function().filter(|function| has(function))
 }
 
-/// Where the programs attach to see `chosen`, every call when `all`: the
-/// calls' functions when they can, else the tracepoints every call on the
-/// host passes. `has` says which kernel functions BTF describes. Without
-/// `x32` in the kernel, its calls fail before any function is entered;
-/// it is asked only when that matters.
 fn attachment(
     all: bool,
     chosen: &[SyscallId],
@@ -1464,9 +1289,6 @@ fn attachment(
     tracepoints(why)
 }
 
-/// Whether the kernel runs x32 calls, by the dispatcher it then has: a
-/// function since 6.9, which BTF names, or a table before, which only
-/// `/proc/kallsyms` does, and which takes over 100 ms to read.
 fn has_x32(has: &impl Fn(&str) -> bool) -> bool {
     if has("x64_sys_call") {
         return has("x32_sys_call");
@@ -1483,30 +1305,23 @@ fn load_error(error: impl std::fmt::Display) -> BpfError {
     BpfError::Load(error.to_string())
 }
 
-/// Loads the programs, with `rows` rows of statistics.
 fn load_object(btf: &Btf, rows: u32) -> Result<Ebpf, BpfError> {
     let cpus = u32::try_from(aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?)
         .unwrap_or(u32::MAX);
     EbpfLoader::new()
         .btf(Some(btf))
         .map_max_entries("EVENTS", cpus)
-        // Two halves, one counted into while the other is read.
         .map_max_entries("STATS", rows * 2)
         .override_global(
             "loop_helper",
             &crate::backend::linux::bpf::loop_helper(),
             true,
         )
-        // aya cannot open task storage itself, which only the
-        // programs use.
         .allow_unsupported_maps()
         .load(OBJECT)
         .map_err(load_error)
 }
 
-/// A ring for each CPU, set in EVENTS for the programs: [`DEFAULT_RING`]
-/// bytes each, or [`STACK_COPY_RING`] with stack copies, halved while
-/// microscope's memory cgroup has no room for them.
 fn rings(ebpf: &mut Ebpf, engine: BpfOptions) -> Result<Vec<RingBuf<MapData>>, BpfError> {
     let mut events: ArrayOfMaps<&mut MapData, MapData> =
         ArrayOfMaps::try_from(ebpf.map_mut("EVENTS").ok_or_else(|| missing("EVENTS"))?)
@@ -1549,35 +1364,26 @@ fn rings(ebpf: &mut Ebpf, engine: BpfOptions) -> Result<Vec<RingBuf<MapData>>, B
     }
 }
 
-/// The loaded and attached programs, and their maps.
 struct Loaded {
     ebpf: Ebpf,
     targets: HashMap<MapData, u32, u8>,
 
-    /// Each CPU's ring of records, by the CPU's number.
     rings: Vec<RingBuf<MapData>>,
 
-    /// The call each row of statistics counts.
     rows: Vec<SyscallId>,
 
-    /// What waits out the programs running, and what it is set to.
     fence: (
         ArrayOfMaps<MapData, Array<MapData, u32>>,
         Array<MapData, u32>,
     ),
 
-    /// The half of the statistics being counted into.
     generation: u32,
     attachment: Attachment,
 
-    /// The programs' settings and the chosen calls' specs as loaded, and
-    /// what has been shed of them since.
     base: RawConfig,
     specs: Vec<(u32, RawCallSpec)>,
     shedding: Shed,
 
-    /// The calls seen return as last counted, and what they and those
-    /// before them cost.
     runs: u64,
     estimated: u64,
 }
@@ -1585,8 +1391,6 @@ struct Loaded {
 impl Loaded {
     fn load(options: &TraceOptions, engine: BpfOptions, launch: bool) -> Result<Self, BpfError> {
         let _span = crate::span!("syscalls bpf load");
-        // Every slot when every call is chosen, numbers no table names
-        // among them. Each chosen call has a row of statistics.
         let all = options.calls.is_all();
         let chosen: Vec<(u32, SyscallId)> = (0..SLOTS)
             .filter_map(|slot| Some((slot, call_of(slot)?)))
@@ -1679,7 +1483,6 @@ impl Loaded {
         })
     }
 
-    /// Reads the programs' settings, changes them, and writes them back.
     fn configure(&mut self, change: impl FnOnce(&mut RawConfig)) -> Result<(), BpfError> {
         let mut config: Array<_, Bytes<CONFIG_BYTES>> = Array::try_from(
             self.ebpf
@@ -1695,8 +1498,6 @@ impl Loaded {
         config.set(0, value, 0).map_err(load_error)
     }
 
-    /// Gives up what `shed` names, and takes back what it does not, from
-    /// the next call on.
     fn shed(&mut self, shed: Shed) -> Result<(), BpfError> {
         record!("syscalls bpf: shed {shed:?}");
         let base = self.base;
@@ -1733,9 +1534,6 @@ impl Loaded {
             for &(slot, base) in &self.specs {
                 let mut spec = base;
                 if shed.has(Shed::STRINGS) {
-                    // Paths stay whole for the descriptors they name, and
-                    // structures for their fields: only String, Strings,
-                    // Bytes, and Iovec, as `call_spec` numbers them.
                     for arg in &mut spec.args {
                         if matches!(arg.kind, 2 | 3 | 5 | 6) {
                             arg.limit = arg.limit.min(CAPPED_BYTES);
@@ -1753,7 +1551,6 @@ impl Loaded {
         Ok(())
     }
 
-    /// The calls the programs have seen return, over every CPU.
     fn runs(&self) -> u64 {
         self.ebpf
             .map("RUNS")
@@ -1762,9 +1559,6 @@ impl Loaded {
             .map_or(0, |values| values.iter().sum())
     }
 
-    /// Nanoseconds the programs have cost the traced threads: as the
-    /// kernel times them, or else the calls they saw return since the last
-    /// estimate, `runs` in all, each at what one costs as they now run.
     fn kernel_cost(&mut self, runs: u64) -> u64 {
         if let Some(time) = self.run_time() {
             return time;
@@ -1775,8 +1569,6 @@ impl Loaded {
         self.estimated
     }
 
-    /// Nanoseconds the kernel has spent running the programs, when it
-    /// times them (`kernel.bpf_stats_enabled`).
     fn run_time(&self) -> Option<u64> {
         let enabled = std::fs::read_to_string("/proc/sys/kernel/bpf_stats_enabled")
             .is_ok_and(|text| text.trim() == "1");
@@ -1788,13 +1580,9 @@ impl Loaded {
         self.targets.insert(process, 1, 0).map_err(load_error)
     }
 
-    /// Calls threads have been in for at least `after` nanoseconds, which
-    /// the `in_flight` iterator lists from each thread's own storage.
     fn in_flight(&mut self, after: u64) -> Vec<InFlight> {
         let listed = match self.list_in_flight() {
             Ok(listed) => listed,
-            // Only the flight recorder, which release builds leave out,
-            // reads the error.
             #[cfg_attr(not(debug_assertions), expect(unused_variables))]
             Err(error) => {
                 record!("syscalls bpf: the in-flight scan failed: {error}");
@@ -1824,7 +1612,6 @@ impl Loaded {
         calls
     }
 
-    /// Runs the `in_flight` iterator once: the records it wrote.
     fn list_in_flight(&mut self) -> Result<Vec<u8>, BpfError> {
         use std::io::Read as _;
         let program: &mut Iter = self
@@ -1842,8 +1629,6 @@ impl Loaded {
         Ok(listed)
     }
 
-    /// Calls in progress as the trace ends, which never returned while it
-    /// ran.
     fn unfinished(&mut self) -> Vec<SyscallEvent> {
         self.in_flight(0)
             .into_iter()
@@ -1862,11 +1647,6 @@ impl Loaded {
             .collect()
     }
 
-    /// Records the programs dropped, and the times the kernel skipped a
-    /// program because it was already running on that CPU, as [`skipped`]
-    /// counts them.
-    ///
-    /// [`skipped`]: Self::skipped
     fn lost(&self) -> [u64; 4] {
         let mut lost = [0; 4];
         if let Some(map) = self.ebpf.map("LOST")
@@ -1883,21 +1663,10 @@ impl Loaded {
         lost
     }
 
-    /// The kernel's count of skipped runs of each loaded program but the
-    /// call programs, which it prints among a program descriptor's
-    /// details: a bound on what the trace is missing, since a skip may
-    /// have been of a process it does not trace.
-    ///
-    /// A call program's skips of every process on the host are not this
-    /// trace's: those of a traced thread show in the thread's own calls.
-    /// A skipped entry leaves the call to show at its exit, unseen, and a
-    /// skipped exit leaves an entry the thread's next call counts unseen.
     fn skipped(&self) -> u64 {
         self.fdinfo_sum("recursion_misses:", |name| !call_program(name))
     }
 
-    /// The sum over the loaded programs that `chosen` accepts by name of
-    /// a count the kernel prints among each descriptor's details.
     fn fdinfo_sum(&self, field: &str, chosen: impl Fn(&str) -> bool) -> u64 {
         use std::os::fd::{AsFd as _, AsRawFd as _};
         self.ebpf
@@ -1917,14 +1686,10 @@ impl Loaded {
             .sum()
     }
 
-    /// The statistics counted so far into the half being counted into.
     fn counted(&self, process: Pid) -> Folded {
         self.half(self.generation, process)
     }
 
-    /// The statistics counted since the last call, or since tracing began:
-    /// the kernel switches halves, every program that might still count
-    /// into the old one finishes, and the old one is read and cleared.
     fn take_counted(&mut self, process: Pid) -> Result<Folded, BpfError> {
         let old = self.generation;
         self.configure(|config| config.flags ^= CONFIG_GENERATION)?;
@@ -1977,8 +1742,6 @@ impl Loaded {
         Ok(folded)
     }
 
-    /// The statistics in half `half` of the maps: each thread's, then
-    /// those of threads they had no room for.
     fn half(&self, half: u32, process: Pid) -> Folded {
         let rows = u32::try_from(self.rows.len().max(1)).unwrap_or(u32::MAX);
         let mut stats = Vec::new();
@@ -2042,8 +1805,6 @@ impl Loaded {
     }
 }
 
-/// Loads and attaches the programs where `attachment` says, and loads
-/// the in-flight iterator, which runs only when asked.
 fn attach(
     ebpf: &mut Ebpf,
     btf: &Btf,
@@ -2128,7 +1889,6 @@ fn missing(name: &str) -> BpfError {
     BpfError::Load(format!("the BPF object has no {name}"))
 }
 
-/// A zombie leader can still have running workers.
 fn ended(process: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{process}/stat")).map_or(true, |stat| {
         stat.rsplit_once(") ").is_some_and(|(_, rest)| {
@@ -2138,13 +1898,6 @@ fn ended(process: u32) -> bool {
     })
 }
 
-/// Traces running process `pid` until it ends or `stop` is set, which
-/// leaves it running untraced. Each event goes to `sink` as it arrives.
-///
-/// # Errors
-///
-/// What the probe found missing, a failure to load or attach the
-/// programs, or a process that has ended.
 pub fn trace_running(
     pid: u32,
     options: &TraceOptions,
@@ -2155,14 +1908,6 @@ pub fn trace_running(
     run(Start::Attach(pid), options, engine, stop, sink)
 }
 
-/// Traces process `pid`, held at another launcher's gate, from its first
-/// call.
-///
-/// The sink hears [`Sink::attached`] once the gate may open.
-///
-/// # Errors
-///
-/// As [`trace_running`]'s.
 pub fn trace_held(
     pid: u32,
     options: &TraceOptions,
@@ -2173,7 +1918,6 @@ pub fn trace_held(
     run(Start::Held(pid), options, engine, stop, sink)
 }
 
-/// How a trace finds its first process.
 #[derive(Clone, Copy)]
 enum Start {
     Attach(u32),
@@ -2230,14 +1974,12 @@ fn run(
     Ok(Finished { end })
 }
 
-/// The traced processes as tracing begins.
 struct Begun {
     first: Pid,
     live: BTreeSet<Pid>,
     mappings: Vec<perf::Events>,
 }
 
-/// Takes the target on, once the programs are attached.
 fn begin(
     start: Start,
     loaded: &mut Loaded,
@@ -2272,11 +2014,8 @@ fn begin(
             }
 
             live.insert(Pid::new(pid));
-            // The recording samples from here: reading the modules can take
-            // seconds, and no stack unwinds before the reader starts.
             sink.attached(pid);
             if let Some(stacks) = &options.stacks {
-                // What it mapped before, while it is there to read.
                 stacks
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2294,7 +2033,6 @@ fn begin(
     })
 }
 
-/// Events that sample nothing and say what the traced processes map.
 const MAPPINGS: perf::EventOptions = perf::EventOptions {
     source: perf::Source::Mappings,
     kernel: false,
@@ -2303,109 +2041,71 @@ const MAPPINGS: perf::EventOptions = perf::EventOptions {
     switches: false,
 };
 
-/// The most such events an attach opens: one per thread and CPU.
 const MAPPING_EVENTS: usize = 65_536;
 
-/// Reads the ring and turns records into events.
 struct Reader<'a> {
     sink: &'a mut dyn Sink,
     follow: bool,
 
-    /// The traced processes still running.
     live: BTreeSet<Pid>,
     first: Pid,
     end: Option<ProcessEnd>,
 
-    /// Arguments read at a call's entry, by thread, until its exit.
     entries: BTreeMap<Tid, SyscallEvent>,
 
-    /// Unwinds each stack, when stacks were asked for.
     stacks: Option<super::stacks::SharedStacks>,
 
-    /// Each stack and its interpreted frames, until the call or signal
-    /// it belongs to.
     pairs: Pairs,
 
-    /// The walker's layouts, when stacks were asked for and the kernel's
-    /// process ids are microscope's, and the processes given one or found
-    /// to have none.
     layouts: Option<PythonLayouts>,
     v8_layouts: Option<V8Layouts>,
     laid_out: BTreeSet<Pid>,
 
-    /// What the traced processes map, as they map it, for their stacks.
     mappings: Vec<perf::Events>,
     batch: Vec<Record>,
     perf: Vec<u8>,
     lost: [u64; 4],
 
-    /// The mapping rings' heads that could not be trusted, as last counted.
     untrusted: u64,
 
-    /// The thread that unwinds the stacks, when stacks were asked for.
     unwinder: Option<super::unwinder::Unwinder>,
 
-    /// The events not yet given to the sink, in the order of their
-    /// records, each waiting for its stack, if it has one, or for those
-    /// before it.
     pending: std::collections::VecDeque<Pending>,
 
-    /// Records read from the rings that may yet have earlier ones behind
-    /// them in another.
     merge: Merge<Record>,
 
-    /// The stacks unwound that the events at the front have not reached,
-    /// in the order the events wait for them.
     arrived: std::collections::VecDeque<super::unwinder::Done>,
     next_job: u64,
 }
 
-/// An event waiting to be given to the sink.
 struct Pending {
     event: TraceEvent,
 
-    /// The number of the stack it waits for, and the walker's record of
-    /// the thread's interpreted frames, read as the stack is finished.
     waiting: Option<(u64, Option<Vec<u8>>)>,
 }
 
-/// How long [`Reader::release`] waits.
 #[derive(Clone, Copy)]
 enum Until {
-    /// For nothing: it gives the sink the events whose stacks are here.
     Waiting,
 
-    /// Until fewer than so many events wait.
     Fewer(usize),
 
-    /// Until none waits.
     None,
 }
 
-/// The stack of a call or signal, or the number of the job unwinding it.
 enum Unwound {
     Now(Option<CallStack>),
     Later(u64, Option<Vec<u8>>),
 }
 
-/// How long the reader waits for the ring before it looks at the world.
 const TICK_MS: u16 = 100;
 
-/// How long the reader waits for the ring while events wait for their
-/// stacks, which it then gives the sink.
 const WAITING_TICK_MS: u16 = 10;
 
-/// The most records a read takes from each ring, so that a reader behind
-/// its rings still ticks: reports losses, sheds what the budget says, and
-/// ends segments.
 const MOST_DRAINED: usize = 4096;
 
-/// How long after its time a record is surely in its ring: a program
-/// stamps its record before it writes it.
 const SETTLED_NS: u64 = 5_000_000;
 
-/// The most events that wait for their stacks before the reader waits for
-/// them rather than drain more: with `-k=dwarf`, each holds 8 KiB of stack.
 const MOST_PENDING: usize = 2048;
 
 impl Reader<'_> {
@@ -2413,9 +2113,6 @@ impl Reader<'_> {
         let mut rings = std::mem::take(&mut loaded.rings);
         self.merge = Merge::new(rings.len());
 
-        // The walker finds a process's layout by the kernel's process id,
-        // which is the one microscope sees only in the initial namespace;
-        // elsewhere, Python frames stay unknown, and the stacks say so.
         if self.stacks.is_some() && sampler::check_namespace().is_ok() {
             self.layouts = Some(PythonLayouts::take(&mut loaded.ebpf).map_err(load_error)?);
             self.v8_layouts = Some(V8Layouts::take(&mut loaded.ebpf).map_err(load_error)?);
@@ -2426,12 +2123,9 @@ impl Reader<'_> {
             if stop.load(Ordering::Relaxed) && !stopping {
                 stopping = true;
                 record!("syscalls bpf: stop requested");
-                // The traced processes run on untraced.
                 self.live.clear();
             }
 
-            // Target removal follows the final record, even if the ring was full.
-            // A zombie can appear before that notification has run.
             let gone: Vec<Pid> = self
                 .live
                 .iter()
@@ -2452,7 +2146,6 @@ impl Reader<'_> {
                 self.drain(&mut rings, true);
                 self.release(Until::None);
 
-                // Whatever was lost since the last tick.
                 self.report_lost(loaded, monotonic());
                 break;
             }
@@ -2460,8 +2153,6 @@ impl Reader<'_> {
             let now = monotonic();
             if now - last_tick >= u64::from(TICK_MS) * 1_000_000 {
                 last_tick = now;
-                // What the sink is told at a tick follows every event
-                // before it.
                 self.release(Until::None);
                 self.report_lost(loaded, now);
                 self.follow_budget(loaded)?;
@@ -2496,7 +2187,6 @@ impl Reader<'_> {
         self.release(Until::None);
         self.report_lost(loaded, monotonic());
         for call in loaded.unfinished() {
-            // A waiting call took its stack as it began.
             let taken = self.pairs.waiting(call.thread, call.entered);
             let unwound = self.unwind(taken, None);
             self.emit_unwound(TraceEvent::Call(call), unwound);
@@ -2510,9 +2200,6 @@ impl Reader<'_> {
         Ok(())
     }
 
-    /// Gives up what the sink says to shed, and tells it what tracing
-    /// has cost the traced threads beyond counting their calls, which no
-    /// budget sheds.
     fn follow_budget(&mut self, loaded: &mut Loaded) -> Result<(), BpfError> {
         let shed = self.sink.shed();
         if shed != loaded.shedding {
@@ -2541,8 +2228,6 @@ impl Reader<'_> {
         self.lost = lost;
     }
 
-    /// Reads every ring, and handles the records old enough that no ring
-    /// can still be writing one before them, or with `every`, all of them.
     fn drain(&mut self, rings: &mut [RingBuf<MapData>], every: bool) {
         let cut = (!every).then(|| monotonic().saturating_sub(SETTLED_NS));
         for (index, ring) in rings.iter_mut().enumerate() {
@@ -2553,8 +2238,6 @@ impl Reader<'_> {
                 taken += 1;
                 match decode(&item) {
                     Ok(record) => self.merge.push(index, record),
-                    // Only the flight recorder, which release builds leave
-                    // out, reads the error.
                     #[cfg_attr(not(debug_assertions), expect(unused_variables))]
                     Err(error) => {
                         record!("syscalls bpf: undecodable record: {error}");
@@ -2568,8 +2251,6 @@ impl Reader<'_> {
             }
         }
 
-        // A stack's code was mapped before the stack was sent, so the
-        // mappings read after the records name all it needs.
         let mut batch = std::mem::take(&mut self.batch);
         self.merge.release(cut, Record::time, &mut batch);
         self.map();
@@ -2584,8 +2265,6 @@ impl Reader<'_> {
         self.batch = batch;
     }
 
-    /// Takes in what the traced processes mapped since last asked, in the
-    /// order they mapped it.
     fn map(&mut self) {
         let Some(stacks) = self.stacks.clone() else {
             return;
@@ -2596,8 +2275,6 @@ impl Reader<'_> {
             events.drain(&mut self.perf);
         }
 
-        // A ring that skipped a span whose head it could not trust lost
-        // the mappings in it.
         let untrusted = self.mappings.iter().map(perf::Events::untrusted).sum();
         if untrusted > self.untrusted {
             self.emit(TraceEvent::Lost {
@@ -2608,7 +2285,6 @@ impl Reader<'_> {
             self.untrusted = untrusted;
         }
 
-        // The records that change a process's modules.
         let mut records = Vec::new();
         let mut offset = 0;
         while let Some(Ok((record, length))) = self.perf.get(offset..).and_then(perf::decode::next)
@@ -2626,16 +2302,12 @@ impl Reader<'_> {
         }
 
         records.sort_unstable();
-        // A stack is finished through its process's modules as they were
-        // before these changed them.
         if !records.is_empty() {
             self.release(Until::None);
         }
         let mut stacks = stacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Processes that began or replaced their images, whose layouts are
-        // read again.
         let mut fresh = Vec::new();
         for (_, offset) in records {
             match self.perf.get(offset..).and_then(perf::decode::next) {
@@ -2667,9 +2339,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Gives the walkers the layout of each process that runs Python or V8
-    /// and has none yet: it maps its runtime before any of its threads
-    /// runs code of the runtime's.
     fn lay_out(&mut self) {
         let Some(stacks) = &self.stacks else {
             return;
@@ -2706,8 +2375,6 @@ impl Reader<'_> {
             self.laid_out.insert(process);
             match set {
                 Ok(()) => {}
-                // Only the flight recorder, which release builds leave
-                // out, reads why.
                 #[cfg_attr(not(debug_assertions), expect(unused_variables))]
                 Err(why) => record!("syscalls bpf: runtime of {process}: {why}"),
             }
@@ -2716,7 +2383,6 @@ impl Reader<'_> {
         drop(stacks);
     }
 
-    /// Forgets the layout of `process`, which exited or replaced its image.
     fn forget_layout(&mut self, process: Pid) {
         if self.laid_out.contains(&process) {
             if let Some(layouts) = &mut self.layouts {
@@ -2728,13 +2394,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Unwinds the stack paired with a call or signal, unless the record
-    /// says its stack did not fit in the ring, and that whatever stack it
-    /// was paired with is another record's.
-    ///
-    /// A stack is unwound on the thread of [`Self::unwinder`], through its
-    /// process's modules as they are now, and finished, with its
-    /// interpreted frames, as its event is given to the sink.
     fn unwind(&mut self, taken: Option<Taken>, lost: Option<CallStack>) -> Unwound {
         if lost.is_some() {
             return Unwound::Now(lost);
@@ -2777,13 +2436,11 @@ impl Reader<'_> {
         if unwinder.send(job) {
             Unwound::Later(id, python)
         } else {
-            // The thread no longer runs.
             self.unwinder = None;
             Unwound::Now(Some(lost_stack()))
         }
     }
 
-    /// Gives `event`, whose stack is set, to the sink after those before it.
     fn emit(&mut self, event: TraceEvent) {
         if self.pending.is_empty() {
             self.sink.event(event);
@@ -2795,7 +2452,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Gives `event` to the sink once its stack is unwound, or now.
     fn emit_unwound(&mut self, mut event: TraceEvent, unwound: Unwound) {
         match unwound {
             Unwound::Now(stack) => {
@@ -2809,8 +2465,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Gives the sink each waiting event whose stack, and those before it,
-    /// are unwound, waiting for them as `until` says.
     fn release(&mut self, until: Until) {
         loop {
             if let Some(unwinder) = &self.unwinder {
@@ -2822,7 +2476,6 @@ impl Reader<'_> {
             let Some(front) = self.pending.front() else {
                 return;
             };
-            // The stacks come back in the order the events wait for them.
             if front.waiting.is_some() && self.arrived.is_empty() {
                 let wait = match until {
                     Until::Waiting => false,
@@ -2839,8 +2492,6 @@ impl Reader<'_> {
                 {
                     self.arrived.push_back(done);
                 } else {
-                    // The thread no longer runs: the stacks it had not
-                    // unwound are lost.
                     self.unwinder = None;
                     for pending in &mut self.pending {
                         if pending.waiting.take().is_some() {
@@ -2918,7 +2569,6 @@ impl Reader<'_> {
                         captured.sort_by_key(|capture| capture.arg);
                         call.captured = captured;
                     } else {
-                        // The entry's exit was never seen.
                         self.emit(TraceEvent::Call(entry));
                     }
                 }
@@ -2926,7 +2576,6 @@ impl Reader<'_> {
                 self.emit_unwound(TraceEvent::Call(call), unwound);
             }
             Record::Event(mut event) => {
-                // A file record precedes its call, whose exit it shares.
                 if let TraceEvent::Descriptor { time, .. } = &mut event {
                     *time = monotonic();
                 }
@@ -2956,7 +2605,6 @@ impl Reader<'_> {
                 }
 
                 match unwound {
-                    // An event other than a signal has no stack to set.
                     Unwound::Now(None) => self.emit(event),
                     unwound => self.emit_unwound(event, unwound),
                 }
@@ -2965,7 +2613,6 @@ impl Reader<'_> {
     }
 }
 
-/// Sets the stack of `event`, a call or a signal.
 fn set_stack(event: &mut TraceEvent, unwound: Option<CallStack>) {
     match event {
         TraceEvent::Call(call) => call.stack = unwound,
@@ -2978,8 +2625,6 @@ fn set_stack(event: &mut TraceEvent, unwound: Option<CallStack>) {
 mod tests {
     use super::*;
 
-    /// A short list attaches to its calls' functions, each once; anything
-    /// that cannot falls back to the tracepoints and says why.
     #[test]
     fn short_lists_attach_to_their_functions_and_the_rest_say_why_not() {
         let has = |name: &str| !name.contains("getppid");
@@ -3015,8 +2660,6 @@ mod tests {
         let wide = attachment(false, &many, || true, &|_: &str| true);
         assert_eq!(wide.name(), "tp_btf", "{wide:?}");
 
-        // A kernel without x32 has none of its compat functions, and no x32
-        // call ever reaches one.
         let no_x32 = |name: &str| !name.starts_with("__x64_compat_");
         let sigaction = [
             named(Abi::X86_64, "rt_sigaction"),
@@ -3177,8 +2820,6 @@ mod tests {
         );
     }
 
-    /// A record of Python frames decodes whole, its bytes kept to read when
-    /// its thread's stack is unwound, and one cut short is refused.
     #[test]
     fn a_record_of_python_frames_decodes_whole() {
         let header = RawRecord {
@@ -3200,9 +2841,6 @@ mod tests {
         assert_eq!(decode(&bytes[..20]), Err(DecodeError::Short(20)));
     }
 
-    /// A stack taken as a waiting call began is merged by that time, since
-    /// its call can return on another CPU; one taken at its call's exit or
-    /// signal goes with that record.
     #[test]
     fn a_stack_taken_as_its_call_began_is_merged_by_that_time() {
         for (entered, interpreted, time) in [(0, 1, None), (5_000, 0, Some(5_000))] {
@@ -3257,7 +2895,6 @@ mod tests {
             CaptureState::Truncated { wanted: u32::MAX }
         );
 
-        // A thread that ended inside exit_group, whose entry was not seen.
         let mut bytes = call_bytes(RECORD_CALL, 2 | CALL_PROCESS_EXITED, &[]);
         bytes[std::mem::offset_of!(RawCallRecord, nr)..][..4]
             .copy_from_slice(&231_u32.to_ne_bytes());
@@ -3271,9 +2908,6 @@ mod tests {
         );
         assert!(call.flags.contains(EventFlags::ENTRY_UNSEEN));
 
-        // Every other call returns before its thread ends, so one held
-        // then returned unseen, as one whose thread entered another call
-        // first did.
         for flags in [CALL_PROCESS_EXITED, CALL_EXIT_SKIPPED] {
             let Ok(Record::Call(call)) = decode(&call_bytes(RECORD_CALL, flags, &[])) else {
                 panic!("a call");
@@ -3290,8 +2924,6 @@ mod tests {
             );
         }
 
-        // A call whose stack did not fit in the ring says so, rather than
-        // take the thread's last stack.
         let Ok(Record::Call(call)) = decode(&call_bytes(RECORD_CALL, CALL_STACK_LOST, &[])) else {
             panic!("a call");
         };
@@ -3321,7 +2953,6 @@ mod tests {
         let execve = SyscallId::named(Abi::X86_64, "execve").expect("execve");
         let spec = call_spec(execve, &options);
 
-        // The path and argv at entry; the environment only counted.
         assert_eq!(
             spec.args[..3]
                 .iter()
@@ -3356,7 +2987,6 @@ mod tests {
         one.log2_ns[7] = 3;
         let mut two = one;
         two.min_ns = 20;
-        // x86-64 calls fill the first slots.
         let errno = |tgid, tid| RawErrnoKey {
             tid,
             tgid,
@@ -3373,7 +3003,6 @@ mod tests {
             [(errno(0, 0), 2), (errno(9, 10), 1)],
         );
 
-        // Threads the kernel had no room for are the trace's process's.
         let spilled = &folded.by_call[&(Pid::new(7), Tid::new(0), openat)];
         assert_eq!(
             (
@@ -3390,8 +3019,6 @@ mod tests {
         assert_eq!((thread.calls, thread.errors_by_errno[&2]), (3, 1));
     }
 
-    /// Where the kernel does not time the programs, a call costs what its
-    /// cheapest remaining work does: shedding never estimates it dearer.
     #[test]
     fn a_call_costs_what_the_programs_still_do_with_it() {
         let copied = CONFIG_STREAM | CONFIG_STACKS | CONFIG_STACK_COPY;
@@ -3414,7 +3041,6 @@ mod tests {
             COUNTED_NS
         );
 
-        // Each rung costs less than the one above it.
         let mut shedding = Shed::default();
         let mut cost = per_call(copied, shedding);
         for rung in [Shed::STACKS, Shed::STRINGS, Shed::SAMPLED, Shed::STREAM] {
@@ -3441,7 +3067,6 @@ mod tests {
         assert!(message.contains("has neither"), "{message}");
         assert!(message.contains("--syscall-engine ptrace"), "{message}");
 
-        // A token a container offers is named, and why it goes unused.
         let offered = Probe {
             token: Some("/sys/fs/bpf".into()),
             ..probe.clone()

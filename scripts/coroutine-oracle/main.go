@@ -1,15 +1,15 @@
-// Reduces `readelf --debug-dump=info` output to the coroutines rustc
-// describes, an oracle microscope's own reading of them is compared with. It
-// reads the dump twice: the first pass names each entry by offset, the
-// second writes one tab-separated line per state:
-//
-//	<path::name>  <state member offset>  <state number>  <state record>
-//	<declared line>  <awaited future's type, or ->
-//
-// A coroutine is a structure named `{async_fn_env#N}`, `{async_block_env#N}`,
-// or `{async_closure_env#N}`; its path is the namespaces enclosing it.
-//
-// Usage: coroutine-oracle DUMP
+
+
+
+
+
+
+
+
+
+
+
+
 package main
 
 import (
@@ -33,7 +33,7 @@ func main() {
 	}
 }
 
-// One entry of the dump and the attributes read from it.
+
 type entry struct {
 	depth                                         int
 	offset, tag, name, typ, location, line, discr string
@@ -41,14 +41,14 @@ type entry struct {
 
 type reducer struct {
 	out *bufio.Writer
-	// The first pass's findings: each named entry's name by offset, and
-	// the type of each structure's `__awaitee` member by the structure's
-	// offset.
+
+
+
 	named   map[string]string
 	awaitee map[string]string
-	// The latest entry at each depth.
+
 	parents, tags, names []string
-	// The coroutine being read, its depth, and its states so far.
+
 	coroutine          string
 	coroutineDepth     int
 	stateOffset, state string
@@ -80,7 +80,7 @@ func (r *reducer) read(path string, pass int) error {
 	var current *entry
 	for scanner.Scan() {
 		line := scanner.Text()
-		// Most lines describe attributes nothing here reads.
+
 		if strings.HasPrefix(line, "    ") && !readAttribute(secondField(line)) {
 			continue
 		}
@@ -134,7 +134,7 @@ func readAttribute(field string) bool {
 	return false
 }
 
-// The line from its second whitespace-separated field on.
+
 func secondField(line string) string {
 	rest := strings.TrimLeft(line, " \t")
 	end := strings.IndexAny(rest, " \t")
@@ -144,7 +144,7 @@ func secondField(line string) string {
 	return strings.TrimLeft(rest[end:], " \t")
 }
 
-// An entry's header: ` <DEPTH><OFFSET>: Abbrev Number: N (DW_TAG_...)`.
+
 func header(line string) (entry, bool) {
 	if !strings.HasPrefix(line, " <") {
 		return entry{}, false
@@ -181,7 +181,7 @@ func header(line string) (entry, bool) {
 	return entry{depth: depth, offset: offset, tag: tag}, true
 }
 
-// What follows an attribute line's ` <OFFSET> ` prefix.
+
 func attribute(line string) (string, bool) {
 	rest := strings.TrimLeft(line, " ")
 	if len(rest) == len(line) || !strings.HasPrefix(rest, "<") {
@@ -205,8 +205,8 @@ var (
 	referenced    = regexp.MustCompile(`<0x([0-9a-f]+)>`)
 )
 
-// An attribute's value, without the form or string offset readelf may
-// write before it.
+
+
 func value(line string) string {
 	if colon := strings.IndexByte(line, ':'); colon >= 0 && strings.HasPrefix(line[colon+1:], " ") {
 		line = line[colon+2:]
@@ -228,7 +228,7 @@ func reference(line string) string {
 	return ""
 }
 
-// Takes in an entry whose attributes were all read.
+
 func (r *reducer) finish(e *entry, pass int) {
 	r.tags = setAt(r.tags, e.depth, e.tag)
 	r.names = setAt(r.names, e.depth, e.name)
@@ -269,8 +269,8 @@ func (r *reducer) finish(e *entry, pass int) {
 					awaited = name
 				}
 			}
-			// Reading an unnamed offset names it the empty string, as
-			// awk's arrays do, which a later lookup finds.
+
+
 			record, ok := r.named[e.typ]
 			if !ok {
 				r.named[e.typ] = ""
@@ -281,8 +281,8 @@ func (r *reducer) finish(e *entry, pass int) {
 	}
 }
 
-// Whether a structure's name begins `{async_fn_env#N}`,
-// `{async_block_env#N}`, or `{async_closure_env#N}`.
+
+
 func isCoroutineName(name string) bool {
 	for _, kind := range []string{"{async_fn_env#", "{async_block_env#", "{async_closure_env#"} {
 		if rest, ok := strings.CutPrefix(name, kind); ok {

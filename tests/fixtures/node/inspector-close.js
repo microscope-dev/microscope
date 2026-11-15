@@ -1,5 +1,5 @@
-// Closes Node's inspector once it reads a line, then runs a function a
-// breakpoint waits in, and stays up to be paused.
+
+
 'use strict';
 const inspector = require('inspector');
 

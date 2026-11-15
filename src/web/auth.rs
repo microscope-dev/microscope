@@ -1,29 +1,15 @@
-//! Who may use the server: tokens, the cookie that carries one, and the
-//! `Host` and `Origin` checks that keep other web pages out.
-//!
-//! The socket can do anything a debugger can, so every request needs a
-//! token minted for this run. A join link carries one in its fragment,
-//! which browsers never send; the page posts it to `/api/login`, which sets
-//! an `HttpOnly` cookie, so ordinary links carry no secret. `Host` must name
-//! this server, which defeats DNS rebinding, and `Origin` must be its own,
-//! so no other page can use the cookie. A page served on its own presents
-//! the token with each request instead, which any page may, since only a
-//! join link could have given it the token.
-
 use std::fmt::Write as _;
 use std::io::Read as _;
 use std::net::SocketAddr;
 
 use super::protocol::Role;
 
-/// The tokens minted for one run of the server.
 pub struct Tokens {
     control: String,
     view: String,
 }
 
 impl Tokens {
-    /// Mints a control token and a view token.
     pub fn mint() -> std::io::Result<Self> {
         Ok(Self {
             control: format!("c-{}", random_hex(16)?),
@@ -46,8 +32,6 @@ impl Tokens {
         }
     }
 
-    /// The role a token grants, comparing in time independent of where a
-    /// wrong guess first differs.
     pub fn role(&self, token: &str) -> Option<Role> {
         if same(token, &self.control) {
             Some(Role::Control)
@@ -67,7 +51,6 @@ fn same(a: &str, b: &str) -> bool {
             == 0
 }
 
-/// Random bytes from the kernel, as lowercase hexadecimal.
 pub fn random_hex(bytes: usize) -> std::io::Result<String> {
     let mut buffer = vec![0; bytes];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut buffer)?;
@@ -77,14 +60,10 @@ pub fn random_hex(bytes: usize) -> std::io::Result<String> {
     }))
 }
 
-/// The cookie that carries a token. Browsers share cookies between the
-/// ports of one host, so the name includes this server's port.
 pub fn cookie_name(port: u16) -> String {
     format!("microscope-{port}")
 }
 
-/// The `Set-Cookie` value that stores a token for this server, sent only
-/// to its own paths, and only over HTTPS when its pages are served so.
 pub fn set_cookie(port: u16, token: &str, public: Option<&PublicUrl>) -> String {
     let (path, secure) = public.map_or(("/", ""), |public| {
         (
@@ -99,16 +78,12 @@ pub fn set_cookie(port: u16, token: &str, public: Option<&PublicUrl>) -> String 
     )
 }
 
-/// The address a reverse proxy serves the pages at, such as
-/// `https://proxy.example/debug/7/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicUrl {
     pub https: bool,
 
-    /// The `Host` the proxy sends, as `proxy.example` or `proxy.example:8080`.
     pub host: String,
 
-    /// The path every route lies under, beginning and ending with `/`.
     pub base: String,
 }
 
@@ -121,7 +96,6 @@ impl PublicUrl {
         )
     }
 
-    /// The URL itself, with the slash that ends its path.
     pub fn url(&self) -> String {
         format!("{}{}", self.origin(), self.base)
     }
@@ -150,7 +124,6 @@ impl std::str::FromStr for PublicUrl {
             return Err(format!("{text:?} has no host this server could check"));
         }
 
-        // The path goes into the page's HTML and the cookie as it is.
         let plain = path
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte));
@@ -175,7 +148,6 @@ impl std::str::FromStr for PublicUrl {
     }
 }
 
-/// Finds this server's cookie in a `Cookie` header.
 pub fn cookie(header: &str, port: u16) -> Option<&str> {
     let name = cookie_name(port);
     header.split(';').find_map(|pair| {
@@ -184,24 +156,15 @@ pub fn cookie(header: &str, port: u16) -> Option<&str> {
     })
 }
 
-/// Which `Host` and `Origin` values belong to this server.
 pub struct Origins {
     hosts: Vec<String>,
 
-    /// The port of a server listening on every address, where any IP
-    /// address names it too.
     every_address: Option<u16>,
 
-    /// The proxy the pages are served through, whose host and origin are
-    /// this server's as well.
     public: Option<PublicUrl>,
 }
 
 impl Origins {
-    /// The server listening at `address`. A loopback server is also
-    /// `localhost`. A server listening on every address is also any IP
-    /// address on its port, which a rebound name cannot pass for, and
-    /// `hostname`, which links then use.
     pub fn new(address: SocketAddr, hostname: Option<&str>, public: Option<PublicUrl>) -> Self {
         let port = address.port();
         let literal = match address {
@@ -227,7 +190,6 @@ impl Origins {
         }
     }
 
-    /// Whether `host` names this server, directly or through its proxy.
     pub fn knows(&self, host: &str) -> bool {
         self.names_directly(host)
             || self
@@ -236,7 +198,6 @@ impl Origins {
                 .is_some_and(|public| public.host == host)
     }
 
-    /// Whether `host` names this server itself rather than its proxy.
     fn names_directly(&self, host: &str) -> bool {
         self.hosts.iter().any(|known| known == host)
             || self.every_address.is_some_and(|port| {
@@ -245,9 +206,6 @@ impl Origins {
             })
     }
 
-    /// Whether a request with these headers came from this server's own
-    /// pages. A request with no `Origin` is refused: browsers send one on
-    /// every WebSocket and every POST.
     pub fn allows(&self, host: Option<&str>, origin: Option<&str>) -> bool {
         let Some(host) = host.filter(|host| self.knows(host)) else {
             return false;
@@ -268,7 +226,6 @@ impl Origins {
                 .is_some_and(|rest| rest == host && self.names_directly(rest))
     }
 
-    /// The address links use.
     #[expect(
         clippy::indexing_slicing,
         reason = "new always adds the address itself to hosts"
@@ -318,7 +275,6 @@ mod tests {
             Some("http://localhost:7341")
         ));
 
-        // Another page, a rebound name, a mismatch, or no browser at all.
         assert!(!allows(Some("127.0.0.1:7341"), Some("http://evil.example")));
         assert!(!allows(
             Some("127.0.0.1:7341"),
@@ -360,7 +316,6 @@ mod tests {
                 assert!(allows(host), "{listen} {host}");
             }
 
-            // Another port, a rebound name, or the hostname without its port.
             for host in [
                 "100.74.16.70:7342",
                 "evil.example:7341",
@@ -398,7 +353,6 @@ mod tests {
         assert!(allows("proxy.example", "https://proxy.example"));
         assert!(allows("127.0.0.1:7341", "http://127.0.0.1:7341"));
 
-        // The proxy's host with another scheme, or with the server's origin.
         assert!(!allows("proxy.example", "http://proxy.example"));
         assert!(!allows("proxy.example", "http://127.0.0.1:7341"));
         assert!(!allows("127.0.0.1:7341", "https://proxy.example"));

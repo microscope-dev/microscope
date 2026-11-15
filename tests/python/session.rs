@@ -1,6 +1,3 @@
-//! A Python fixture under the debugger: launched with its output in a file
-//! and its input a pipe, and stopped wherever it parks at a checkpoint.
-
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -17,7 +14,6 @@ use tokio::task::JoinHandle;
 use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir, python};
 
-/// Every interpreter in the matrix, as the flake names it.
 pub const MATRIX: [&str; 10] = [
     "3.12",
     "3.13",
@@ -31,36 +27,25 @@ pub const MATRIX: [&str; 10] = [
     "standalone-3.14",
 ];
 
-/// nixpkgs' interpreters, one of each version and GIL mode. Values are laid
-/// out by those alone: a distribution's build of a version finds its runtime
-/// differently, which `stacks` and `locals` hold, but lays out its objects
-/// the same.
 pub const VERSIONS: [&str; 7] = ["3.12", "3.13", "3.13t", "3.14", "3.14t", "3.15", "3.15t"];
 
-/// The interpreters whose fixtures' cores the build saves.
 pub const CORES: [&str; 4] = ["3.13", "3.14t", "3.15", "debian-3.13"];
 
-/// How long a fixture may take to reach a checkpoint.
 const CHECKPOINT_DEADLINE: Duration = Duration::from_secs(30);
 
-/// One fixture, run by one interpreter.
 pub struct PythonSession {
     pub scenario: Scenario,
 
-    /// The interpreter's name in the matrix, as `3.13`.
     pub interpreter: String,
     pub fixture: String,
     output: PathBuf,
     input: std::io::PipeWriter,
     running: Option<JoinHandle<microscope::Result<StopReason>>>,
 
-    /// A fixture the debugger attached to, which the session ends.
     attached: Option<Ended>,
     _scratch: ScratchDir,
 }
 
-/// A process the session started and ends: killed and reaped when it is
-/// dropped, whatever else failed.
 struct Ended(std::process::Child);
 
 impl Drop for Ended {
@@ -70,8 +55,6 @@ impl Drop for Ended {
     }
 }
 
-/// Where a fixture writes, and how it is fed: its output in a file, which
-/// its errors share, and its input a pipe.
 struct Streams {
     scratch: ScratchDir,
     output: PathBuf,
@@ -99,22 +82,15 @@ impl Streams {
     }
 }
 
-/// The interpreter's arguments that run `fixture` with `arguments`,
-/// isolated from the user's site and the script's directory, and from
-/// `PYTHON*` variables unless it is `configured` by them.
 fn command(
     interpreter: &str,
     fixture: &str,
     arguments: &[&str],
     configured: bool,
 ) -> Vec<std::ffi::OsString> {
-    // 3.12 and 3.13 take the agent through the launch bootstrap, which
-    // PYTHONPATH leads them to and `-I` would ignore.
     let bootstrapped = ["3.12", "3.13"]
         .iter()
         .any(|version| interpreter.trim_end_matches('t').ends_with(version));
-    // Fixtures write no bytecode beside their sources, which would make
-    // the fixtures' build think they changed.
     let isolation: &[&str] = if configured || bootstrapped {
         &["-P", "-s"]
     } else {
@@ -127,8 +103,6 @@ fn command(
     command
 }
 
-/// Waits for the fixture writing `output` to park at the checkpoint
-/// `name`, and returns what it reported there.
 async fn reported(
     output: &std::path::Path,
     name: &str,
@@ -137,8 +111,6 @@ async fn reported(
 ) -> Vec<Vec<String>> {
     let began = Instant::now();
     loop {
-        // Asked before the output is read, so that a fixture that ended
-        // after printing the checkpoint is not taken for one that never did.
         let gone = ended();
         let text = std::fs::read_to_string(output).unwrap_or_default();
         let ready = text
@@ -161,13 +133,10 @@ async fn reported(
 }
 
 impl PythonSession {
-    /// Launches `fixture` with `arguments` under `interpreter`, running.
     pub async fn launch(interpreter: &str, fixture: &str, arguments: &[&str]) -> Self {
         Self::launch_with(interpreter, fixture, arguments, &[]).await
     }
 
-    /// Launches `fixture` with `arguments` under `interpreter`, running,
-    /// with each variable of `environment` set.
     pub async fn launch_with(
         interpreter: &str,
         fixture: &str,
@@ -211,10 +180,6 @@ impl PythonSession {
         }
     }
 
-    /// Launches `fixture` with `arguments` under `interpreter` with
-    /// `breakpoints` set, each pending until a module has its code, and
-    /// runs it to its first stop; returns its reason, and the debugger's
-    /// events from before the launch on.
     pub async fn launch_to_stop(
         interpreter: &str,
         fixture: &str,
@@ -265,9 +230,6 @@ impl PythonSession {
         (session, reason, events)
     }
 
-    /// Runs `fixture` under `interpreter` outside the debugger until it
-    /// parks at the checkpoint `name`, then attaches to it, which stops
-    /// it; and returns what it reported there.
     pub async fn attach_at(
         interpreter: &str,
         fixture: &str,
@@ -276,8 +238,6 @@ impl PythonSession {
         Self::attach_at_in(interpreter, fixture, name, false, &[]).await
     }
 
-    /// Attaches to `fixture`, run with `arguments`, at the checkpoint
-    /// `name`.
     pub async fn attach_with_at(
         interpreter: &str,
         fixture: &str,
@@ -287,8 +247,6 @@ impl PythonSession {
         Self::attach_at_in(interpreter, fixture, name, false, arguments).await
     }
 
-    /// A real nested PID namespace, retaining the outer proc mount so the
-    /// fixture can report its debugger-visible PID separately from `getpid()`.
     pub async fn attach_in_pid_namespace_at(
         interpreter: &str,
         fixture: &str,
@@ -382,8 +340,6 @@ impl PythonSession {
         (session, truth)
     }
 
-    /// Waits for the fixture to park at the checkpoint `name`, then stops
-    /// it, and returns what it reported there.
     pub async fn stop_at(&mut self, name: &str) -> Vec<Vec<String>> {
         let running = self.running.as_ref();
         let lines = reported(&self.output, name, &self.context(), || {
@@ -395,7 +351,6 @@ impl PythonSession {
         lines
     }
 
-    /// Stops the running fixture wherever it is.
     pub async fn pause(&mut self) {
         let running = self.running.take().expect("the fixture runs");
 
@@ -412,7 +367,6 @@ impl PythonSession {
         assert_eq!(ended, StopReason::Pause, "{}", self.context());
     }
 
-    /// Waits for the fixture's output to contain `text`.
     pub async fn wait_for_output(&self, text: &str) {
         let began = Instant::now();
         loop {
@@ -437,12 +391,10 @@ impl PythonSession {
         }
     }
 
-    /// Starts the stopped fixture without releasing any application checkpoint.
     pub async fn resume(&mut self) {
         self.running = Some(self.scenario.start_resuming().await);
     }
 
-    /// Lets the fixture go on past the checkpoint it parked at.
     #[allow(
         dead_code,
         reason = "fixtures with several checkpoints come with values"
@@ -452,13 +404,10 @@ impl PythonSession {
         self.running = Some(self.scenario.start_resuming().await);
     }
 
-    /// Gives the fixture, which stays stopped, what lets it go on past the
-    /// checkpoint it is parked at once it runs.
     pub fn release(&mut self) {
         self.input.write_all(b"\n").expect("release the fixture");
     }
 
-    /// Waits for the current execution to reach an observable public stop.
     pub async fn finish_run(&mut self) -> StopReason {
         let running = self.running.take().expect("running fixture");
         tokio::time::timeout(CHECKPOINT_DEADLINE, running)
@@ -468,7 +417,6 @@ impl PythonSession {
             .expect("run result")
     }
 
-    /// The stop the fixture is held at.
     pub async fn stop(&mut self) -> StopId {
         let snapshot = self.scenario.snapshot().await;
         let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {
@@ -477,8 +425,6 @@ impl PythonSession {
         stop_id
     }
 
-    /// Selects the frame of the stop's thread that runs the Python
-    /// function `function`.
     pub async fn select_python_frame(&self, function: &str) {
         let trace = self
             .scenario
@@ -502,7 +448,6 @@ impl PythonSession {
             .await;
     }
 
-    /// A thread's backtrace at the stop it is held at.
     pub async fn backtrace(&mut self, thread: ThreadId) -> Backtrace {
         let stop = self.stop().await;
 
@@ -520,22 +465,18 @@ impl PythonSession {
             .await
     }
 
-    /// Everything the fixture has reported so far.
     pub fn report(&self) -> Report {
         Report::read(&self.output)
     }
 
-    /// The fixture's complete output so far, including stderr.
     pub fn output(&self) -> String {
         std::fs::read_to_string(&self.output).expect("read fixture output")
     }
 
-    /// The interpreter and fixture, for messages.
     pub fn context(&self) -> String {
         format!("{} {}", self.interpreter, self.fixture)
     }
 
-    /// How an expression's value presents in the selected frame, in brief.
     pub async fn summary(&self, text: &str) -> String {
         let context = self.context();
         let expression = Expression::parse(text).expect("an expression");
@@ -556,7 +497,6 @@ impl PythonSession {
         }
     }
 
-    /// The integer an expression has in the selected frame.
     pub async fn integer(&self, text: &str) -> i128 {
         let context = self.context();
         let expression = Expression::parse(text).expect("an expression");
@@ -578,8 +518,6 @@ impl PythonSession {
         }
     }
 
-    /// Detaches, releases the checkpoint, and waits for a fixture whose
-    /// contract is to exit after that checkpoint. The owned child is reaped.
     pub async fn detach_and_finish(mut self) {
         self.input
             .write_all(b"\n")
@@ -600,8 +538,6 @@ impl PythonSession {
         assert!(status.success(), "detached fixture failed: {status}");
     }
 
-    /// Detaches at a breakpoint, waits for an application checkpoint and
-    /// attaches a new debugger while retaining the external process owner.
     pub async fn reattach_at(mut self, name: &str) -> Self {
         let InferiorState::Stopped {
             process_id: process,
@@ -626,7 +562,6 @@ impl PythonSession {
         assert!(running.is_none());
         scenario.shutdown().await;
 
-        // The detached fixture is no child of this test's to ask.
         reported(&output, name, &context, || false).await;
 
         let debug_files = DebugFileOptions {
@@ -654,7 +589,6 @@ impl PythonSession {
         }
     }
 
-    /// Ends the fixture and the debugger.
     pub async fn shutdown(self) {
         drop(self.input);
         self.scenario.shutdown().await;
@@ -662,7 +596,6 @@ impl PythonSession {
     }
 }
 
-/// The integer a scalar holds, if it holds one.
 pub fn as_integer(scalar: &ScalarValue) -> Option<i128> {
     match *scalar {
         ScalarValue::Signed(value) => Some(value),
@@ -671,8 +604,6 @@ pub fn as_integer(scalar: &ScalarValue) -> Option<i128> {
     }
 }
 
-/// The matrix is every interpreter the dev shell provides, so that one the
-/// flake adds is tested, or this says it is not.
 #[test]
 fn the_matrix_is_every_interpreter_the_dev_shell_provides() {
     let root = std::env::var_os("MICROSCOPE_CPYTHON")

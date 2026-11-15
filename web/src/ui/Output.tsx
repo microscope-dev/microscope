@@ -1,5 +1,3 @@
-// The program's output, what logpoints wrote, and the program's input.
-
 import { type ChangeEvent, type FormEvent, type KeyboardEvent, useCallback, useState } from "react";
 
 import { controls } from "../model";
@@ -11,7 +9,6 @@ export function OutputBadge() {
   return bytes > 0 ? <span className="count"> {bytes.toLocaleString()} bytes</span> : null;
 }
 
-/** What the program wrote, and the line it reads next. */
 export function Output() {
   return (
     <div className="output-pane">
@@ -42,7 +39,6 @@ function Written() {
   );
 }
 
-/** A line typed here is the program's next line of input. */
 function Input() {
   const control = useModel(controls);
   const running = useModel(

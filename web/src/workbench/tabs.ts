@@ -1,6 +1,3 @@
-// Choosing, closing, and reopening a tab, the same from a click, a key, or a
-// menu.
-
 import { assert } from "../assert";
 import { tabId } from "./context";
 import type { Kinds } from "./kinds";
@@ -59,8 +56,6 @@ export function closeTab(kinds: Kinds<string>, pane: PaneId): void {
   });
 }
 
-/** Opens the most recently closed tab that is not open again, where it was
- * if its group is still there, and says whether there was one. */
 export function reopenTab(kinds: Kinds<string>): boolean {
   const { layout, closed } = workbench.getState();
   const index = closed.findLastIndex((entry) => !paneOf(layout, entry.pane.kind, entry.pane.key));
@@ -74,7 +69,7 @@ export function reopenTab(kinds: Kinds<string>): boolean {
       ? entry.group
       : before.focused;
     const opened = open(restoreLinks(before, entry.links), entry.pane, into);
-    // A tab index counts the moving tab where it is now.
+
     const at = groupOf(opened.layout, opened.pane)?.tabs.indexOf(opened.pane) ?? 0;
     const slot = at < entry.index ? entry.index + 1 : entry.index;
     return move(opened.layout, opened.pane, { type: "tab", group: into, index: slot });

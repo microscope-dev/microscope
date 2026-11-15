@@ -1,8 +1,3 @@
-//! tokio's tasks, found in the runtime's own memory: eight tasks parked at
-//! different awaits, on a multi-thread runtime and a current-thread one,
-//! with a blocking closure running and one queued, compared with what the
-//! fixture reports at its checkpoint.
-
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::PathBuf;
@@ -27,32 +22,18 @@ const BUILDS: [&str; 4] = [
     "tokio-workers-1.52-o3",
 ];
 
-/// A build whose symbols are mangled as rustc did before v0, naming no
-/// generic arguments, where tokio's functions are told apart by their
-/// debug information.
 const LEGACY: &str = "tokio-workers-legacy";
 
-/// A build with `tokio_unstable`, which records where each task was
-/// spawned, and gives each task's vtable one more offset.
 const UNSTABLE: &str = "tokio-workers-unstable";
 
-/// A build with `tokio_unstable` and tokio's `tracing` feature, which
-/// wraps each task's future in tracing's `Instrumented`.
 const TRACED: &str = "tokio-workers-traced";
 
-/// A build whose tokio locks with the `parking_lot` crate, whose mutex is
-/// laid out as std's is not.
 const PARKING_LOT: &str = "tokio-workers-parking-lot";
 
-/// A build that spawns some tasks' futures wrapped as programs wrap what
-/// they spawn, which the walk passes through to the futures within.
 const WRAPPED: &str = "tokio-workers-wrapped";
 
-/// Builds that describe no types: lines only, and symbols only.
 const UNTYPED: [&str; 2] = ["tokio-workers-lines", "tokio-workers-stripped"];
 
-/// The tokio release a build of the fixtures links: Cargo.lock's, or the
-/// older one a build named for it links.
 fn release(fixture: &str) -> &'static str {
     if fixture.contains("-1.52-") {
         "1.52.3"
@@ -61,8 +42,6 @@ fn release(fixture: &str) -> &'static str {
     }
 }
 
-/// One build of the fixture, stopped at its first stop, with what it
-/// printed going to a file.
 struct Workers {
     scenario: Scenario,
     output: PathBuf,
@@ -70,13 +49,10 @@ struct Workers {
 }
 
 impl Workers {
-    /// The fixture on one runtime flavor, stopped at `spec`.
     async fn stopped_at(fixture: &str, current: bool, spec: BreakpointSpec) -> Self {
         let scratch = ScratchDir::new("workers");
         let output = scratch.path().join("stdout");
 
-        // A build without types cannot say what its threads do, which is
-        // what its own test checks.
         let mut scenario = if UNTYPED.contains(&fixture) {
             Scenario::launch(fixture)
         } else {
@@ -104,7 +80,6 @@ impl Workers {
         }
     }
 
-    /// The fixture stopped at its checkpoint.
     async fn parked(fixture: &str, current: bool) -> Self {
         Self::stopped_at(
             fixture,
@@ -114,7 +89,6 @@ impl Workers {
         .await
     }
 
-    /// What the fixture reported at its checkpoint.
     fn truth(&self) -> Truth {
         let text = std::fs::read_to_string(&self.output).expect("the fixture's output");
         Truth::parse(&text)
@@ -129,7 +103,6 @@ impl Workers {
     }
 }
 
-/// Every task, read `page` at a time, and why the list may be incomplete.
 pub async fn tasks(scenario: &Scenario, page: usize) -> (Vec<TaskSnapshot>, Vec<String>) {
     let mut tasks = Vec::new();
     let mut gaps = Vec::new();
@@ -154,7 +127,6 @@ pub async fn tasks(scenario: &Scenario, page: usize) -> (Vec<TaskSnapshot>, Vec<
     }
 }
 
-/// What each thread does for the runtime.
 pub async fn activities(scenario: &mut Scenario) -> BTreeMap<ThreadId, ThreadActivity> {
     let snapshot = scenario.snapshot().await;
     snapshot
@@ -170,29 +142,21 @@ pub async fn activities(scenario: &mut Scenario) -> BTreeMap<ThreadId, ThreadAct
         .collect()
 }
 
-/// What the fixture reports at its checkpoint.
 #[derive(Debug, Default)]
 struct Truth {
-    /// Each async task's awaits, innermost first.
     tasks: BTreeMap<u64, Vec<String>>,
 
-    /// The values each task recorded, by name.
     values: BTreeMap<u64, BTreeMap<String, String>>,
 
-    /// The blocking closure running, and its thread.
     running: Option<(u64, ThreadId)>,
     queued: Option<u64>,
 
-    /// Tasks the current-thread runtime has not polled since they were
-    /// woken or spawned.
     woken: Option<u64>,
     spawned: Option<u64>,
 
-    /// The thread that reached the checkpoint.
     main: Option<ThreadId>,
 }
 
-/// How a suspended task is described when it says what it waits for.
 const WAITS_FOR: &str = "what it waits for";
 
 impl Truth {
@@ -227,9 +191,6 @@ impl Truth {
         truth
     }
 
-    /// Each suspended task's async functions, innermost first, each with
-    /// the line it waits at: its await's, or for a task spawned but never
-    /// polled, its function's header.
     fn awaits(&self) -> BTreeMap<u64, Vec<(String, u64)>> {
         const SOURCE: &str = "workers/src/main.rs";
         let function = |tag: &str| match tag {
@@ -256,11 +217,6 @@ impl Truth {
         awaits
     }
 
-    /// Whether `described` is what task `id` waits for, as the future it
-    /// awaits is presented: the channel, the sleep's deadline an hour on by
-    /// the runtime's clock, the lock's or semaphore's permit, the task it
-    /// joins, or its notification, which the barrier's channel waits for
-    /// too.
     fn waits_for(&self, id: u64, described: Option<&str>) -> bool {
         let tag = self.tasks.get(&id).and_then(|tags| tags.first());
         let joined = self
@@ -288,10 +244,6 @@ impl Truth {
         }
     }
 
-    /// The line that spawned each task, as the fixture marks it with the
-    /// task's tag: an async task's innermost await's. A running blocking
-    /// closure's task is known only by its number, from its thread, so
-    /// where it was spawned is not known.
     fn spawns(&self) -> BTreeMap<u64, Option<u64>> {
         const SOURCE: &str = "workers/src/main.rs";
         let tagged = self
@@ -306,9 +258,6 @@ impl Truth {
             .collect()
     }
 
-    /// Each task the program has, with the state, description, and thread
-    /// the debugger must list it with. A suspended task is described by
-    /// what it waits for, which [`Self::waits_for`] says.
     fn expected(&self) -> BTreeMap<u64, (TaskState, String, Option<ThreadId>)> {
         let mut expected = BTreeMap::new();
         for &id in self.tasks.keys() {
@@ -332,8 +281,6 @@ impl Truth {
         expected
     }
 
-    /// Fails unless the list holds exactly the program's tasks, each once,
-    /// as `expected` says.
     fn check_tasks(&self, tasks: &[TaskSnapshot]) -> Result<(), String> {
         let mut listed = BTreeMap::new();
         for task in tasks {
@@ -365,10 +312,6 @@ impl Truth {
     }
 }
 
-/// Every task of either runtime flavor is listed once, in its state, with
-/// nothing missing, across pages of any size. A build that records where
-/// each task was spawned says so; no other says anything. Each task began
-/// in the function it spawned, and a suspended one shows its awaits.
 async fn tasks_are_listed_exactly(current: bool) {
     for fixture in BUILDS
         .into_iter()
@@ -378,7 +321,6 @@ async fn tasks_are_listed_exactly(current: bool) {
         let truth = workers.truth();
         assert_eq!(truth.tasks.len(), 8, "{fixture}: {truth:?}");
 
-        // Small pages cross from one page to the next mid-shard.
         let (tasks, gaps) = workers.tasks(3).await;
         assert!(gaps.is_empty(), "{fixture}: {gaps:?}");
         truth
@@ -387,7 +329,6 @@ async fn tasks_are_listed_exactly(current: bool) {
         let (whole, _) = workers.tasks(4096).await;
         assert_eq!(whole, tasks, "{fixture}");
 
-        // The check fails on a task left out, or in another state.
         let mut sabotaged = tasks.clone();
         sabotaged.pop();
         assert!(truth.check_tasks(&sabotaged).is_err(), "{fixture}");
@@ -422,7 +363,6 @@ async fn tasks_are_listed_exactly(current: bool) {
     }
 }
 
-/// The line of the fixture each task was created at, if the list says.
 fn spawn_lines(
     tasks: &[TaskSnapshot],
     image: &microscope::ModuleImage,
@@ -449,10 +389,6 @@ fn spawn_lines(
         .collect()
 }
 
-/// A thread runs a task only when the list says the task is on it: the
-/// blocking pool's thread runs its closure's task. The workers are the
-/// runtime's idle threads, and the thread at the checkpoint, which blocks
-/// on the runtime, is the program's own, as is every other.
 async fn check_threads(
     scenario: &mut Scenario,
     current: bool,
@@ -494,9 +430,6 @@ async fn a_current_thread_runtimes_tasks_are_listed_exactly() {
     tasks_are_listed_exactly(true).await;
 }
 
-/// A task stopped at a breakpoint runs on the thread that hit it, whose
-/// own id, `me`, is the task's number, and the thread runs that task.
-/// Its backtrace marks tokio's machinery.
 async fn a_task_at_a_breakpoint_runs_on_its_thread(current: bool) {
     let at = BreakpointSpec::Function("task_reached".into());
     for fixture in BUILDS {
@@ -512,9 +445,6 @@ async fn a_task_at_a_breakpoint_runs_on_its_thread(current: bool) {
             panic!("{fixture}: not stopped");
         };
 
-        // The program spawns tasks and blocking closures while its tasks
-        // run, so a list or the pool may be changing at the stop, which
-        // the list says, and nothing else.
         let (tasks, gaps) = workers.tasks(4096).await;
         assert!(
             gaps.iter()
@@ -547,9 +477,6 @@ async fn a_task_at_a_breakpoint_runs_on_the_current_thread() {
     a_task_at_a_breakpoint_runs_on_its_thread(true).await;
 }
 
-/// tokio's runtime is its machinery in a backtrace, and a task's frames
-/// begin where its scheduler polls it; the program's own frames are
-/// ordinary.
 async fn check_machinery(workers: &Workers, fixture: &str) {
     let trace = backtrace(&workers.scenario).await;
     let image = workers.scenario.handle().module_image();
@@ -580,8 +507,6 @@ async fn check_machinery(workers: &Workers, fixture: &str) {
         }
     }
 
-    // The innermost poll of a task is this task's: its own functions
-    // lie within it. A worker is itself a blocking task, polled below.
     let dispatch = dispatch.unwrap_or_else(|| panic!("{fixture}: no dispatch: {trace:#?}"));
 
     for name in ["leaf", "middle", "top"] {
@@ -598,8 +523,6 @@ async fn check_machinery(workers: &Workers, fixture: &str) {
     }
 }
 
-/// Before `main` builds a runtime, no thread has entered one, and there
-/// are no tasks and nothing missing.
 #[tokio::test]
 async fn before_any_runtime_there_are_no_tasks() {
     for fixture in BUILDS {
@@ -614,8 +537,6 @@ async fn before_any_runtime_there_are_no_tasks() {
     }
 }
 
-/// Each of the program's async tasks began in the async function it
-/// spawned, `top`, at the line that declares it.
 fn check_entries(truth: &Truth, tasks: &[TaskSnapshot], context: &str) {
     let header = line("workers/src/main.rs", "async fn top(");
     for id in truth.tasks.keys() {
@@ -637,10 +558,6 @@ fn check_entries(truth: &Truth, tasks: &[TaskSnapshot], context: &str) {
     }
 }
 
-/// Each suspended task's backtrace is its async functions, as the
-/// program reported them, past tokio's own; it ends at the future the
-/// task awaits, unless the task was never polled, and its frames have no
-/// registers. Each function's frame keeps the local its task recorded.
 async fn check_awaits(
     scenario: &mut Scenario,
     truth: &Truth,
@@ -693,8 +610,6 @@ async fn check_awaits(
             "{context}: {first:#?}"
         );
 
-        // The future it awaits says what for, as does the list of tasks of
-        // one waiting.
         if let FrameKind::Awaited { .. } = first.kind {
             let described = first.awaiting.as_deref();
             assert!(truth.waits_for(*id, described), "{context}: {described:?}");
@@ -703,7 +618,6 @@ async fn check_awaits(
             }
         }
 
-        // A suspended frame runs no code, and has no registers.
         let refused = handle.at(view(first.id)).registers().await;
         assert!(
             matches!(refused, Err(microscope::Error::FrameSuspended)),
@@ -718,8 +632,6 @@ async fn check_awaits(
     }
 }
 
-/// An async function's frame lists the local its task recorded, with the
-/// value recorded, and an expression reads the same value from it.
 pub async fn check_saved_local(
     scenario: &Scenario,
     view: StopContext,
@@ -774,11 +686,6 @@ pub async fn check_saved_local(
     );
 }
 
-/// A build that describes no types, with lines only or symbols only, has
-/// no tasks to list: they are refused naming the type they need, never
-/// read from an offset the debugger guessed, and no thread is said to run
-/// a task or wait for one. Its breakpoints and frames still work, by its
-/// lines or its symbols.
 #[tokio::test]
 async fn a_build_without_types_refuses_tasks_and_says_why() {
     let context =
@@ -793,8 +700,6 @@ async fn a_build_without_types_refuses_tasks_and_says_why() {
             "{fixture}: {error}"
         );
 
-        // A stripped build keeps no source paths to read tokio's version
-        // from either.
         assert_eq!(
             error.contains("tokio's version is unknown"),
             !lines,
@@ -828,9 +733,6 @@ async fn a_build_without_types_refuses_tasks_and_says_why() {
     }
 }
 
-/// tokio's sources moved out of the path its version is read from: the
-/// tasks are listed as the newest verified tokio lays them out, each page
-/// saying that the version is unknown rather than taking it for granted.
 #[tokio::test]
 async fn an_unknown_version_is_read_as_the_supported_one_and_says_so() {
     let fixture = "tokio-workers-remapped";
@@ -851,9 +753,6 @@ async fn an_unknown_version_is_read_as_the_supported_one_and_says_so() {
     workers.scenario.shutdown().await;
 }
 
-/// A core gdb dumped at the checkpoint lists the tasks the program
-/// reported there, each thread does what it did, and each task awaits
-/// what it did, as live.
 #[tokio::test]
 async fn a_cores_tasks_are_those_the_program_reported() {
     for fixture in BUILDS {
@@ -883,10 +782,6 @@ async fn a_cores_tasks_are_those_the_program_reported() {
     }
 }
 
-/// rustc describes each type once in every unit that uses it, so a large
-/// program has more types than a small one by far, and a type defined in
-/// many units is still one type. tokio 1.53's scheduler also keeps when it
-/// started, for its schedule latency metrics.
 #[tokio::test]
 async fn every_type_of_a_large_program_is_read_and_named_once() {
     for fixture in BUILDS {
@@ -916,9 +811,6 @@ async fn every_type_of_a_large_program_is_read_and_named_once() {
     }
 }
 
-/// `next` over a line that spawns a task goes over it in the async code
-/// that spawns it, whichever thread then runs the new task, and never
-/// enters it.
 #[tokio::test]
 async fn next_over_a_spawn_does_not_enter_the_new_task() {
     const SOURCE: &str = "workers/src/main.rs";

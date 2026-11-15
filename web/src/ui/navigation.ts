@@ -1,6 +1,3 @@
-// Moving the tab's focus. Every move is a navigation, so the address bar is
-// always a working link to what the tab shows.
-
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 
@@ -19,8 +16,6 @@ import { useModel } from "../store";
 import { asked } from "../tab";
 import { useFocus } from "./Workspace";
 
-/** `replace` replaces browser history; `ask` reopens the displayed source file.
- * Frame navigation always reopens its source. */
 export interface Moving {
   replace?: boolean;
   ask?: boolean;
@@ -30,7 +25,6 @@ export type Go = (at: At | null, look?: Look, options?: Moving) => void;
 
 type Navigate = ReturnType<typeof useNavigate>;
 
-/** Navigate within `session`, preserving `current` view settings unless overridden. */
 export function go(
   navigate: Navigate,
   session: string,
@@ -39,7 +33,6 @@ export function go(
   look?: Look,
   options?: Moving,
 ): void {
-  // A new frame shows its own code unless the caller says what to show.
   const search = look ?? followedLook(current);
   const replace = options?.replace ?? false;
   const going =
@@ -68,13 +61,12 @@ export function go(
             search,
             replace,
           });
-  // Reopen the source only after navigation completes.
+
   if (!look || options?.ask) {
     void going.then(asked);
   }
 }
 
-/** Goes to a stop, thread or task, and frame, or to the session itself. */
 export function useGo(): Go {
   const navigate = useNavigate();
   const { session, look: current } = useFocus();
@@ -84,7 +76,6 @@ export function useGo(): Go {
   );
 }
 
-/** Changes how the tab looks at its focus, keeping the focus. */
 export function useLook(): (change: (look: Look) => Look, options?: Moving) => void {
   const goTo = useGo();
   const { at, look } = useFocus();
@@ -94,7 +85,6 @@ export function useLook(): (change: (look: Look) => Look, options?: Moving) => v
   );
 }
 
-/** Shows a recorded source path's lines, opening its file even if closed. */
 export function useShowSource(): (path: string, line: number, end?: number) => void {
   const look = useLook();
   const paths = useLinkPaths();
@@ -110,10 +100,6 @@ export function useShowSource(): (path: string, line: number, end?: number) => v
   );
 }
 
-/**
- * Turns recorded source paths into the short ones links carry, and back,
- * against the files the debug information records.
- */
 export function useLinkPaths() {
   const cwd = useModel((model) => model.hello?.cwd);
   const session = useModel((model) => model.state?.session);

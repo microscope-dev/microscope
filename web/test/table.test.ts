@@ -1,6 +1,3 @@
-// A card's Table and Copy CSV list every input value exactly as the
-// renderer received it, one row per number, however many there are.
-
 import { describe, expect, it } from "vitest";
 
 import { csv, inputRows } from "../src/visualize/table";

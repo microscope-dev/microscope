@@ -1,15 +1,9 @@
-//! The Debug Adapter Protocol's framing: a header block with a
-//! `Content-Length` field, a blank line, then that many bytes of UTF-8 JSON.
-
 use tokio::io::{AsyncBufRead, AsyncBufReadExt as _, AsyncReadExt as _, AsyncWrite, AsyncWriteExt};
 
-/// The largest message body accepted; a larger one ends the session.
 pub const MAX_FRAME: usize = 64 * 1024 * 1024;
 
-/// The largest header block accepted.
 const MAX_HEADER: usize = 8 * 1024;
 
-/// Why a message could not be read.
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
     #[error("the connection closed in the middle of a message")]
@@ -34,18 +28,13 @@ pub enum TransportError {
     Io(#[from] std::io::Error),
 }
 
-/// One message body and what its header said.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Frame {
     pub body: Vec<u8>,
 
-    /// Whether the header carried `Origin`, which only a web browser sends.
     pub origin: bool,
 }
 
-/// Reads one message, or `None` when the stream ends cleanly between
-/// messages. Header names are matched without regard to case, and unknown
-/// headers are ignored.
 pub async fn read_frame<R: AsyncBufRead + Unpin>(
     reader: &mut R,
 ) -> Result<Option<Frame>, TransportError> {
@@ -80,7 +69,6 @@ pub async fn read_frame<R: AsyncBufRead + Unpin>(
         let text = String::from_utf8_lossy(&line);
         let text = text.trim_end_matches(['\r', '\n']);
         if text.is_empty() {
-            // Blank lines before any header are tolerated as separators.
             if header_bytes == read {
                 header_bytes = 0;
                 continue;
@@ -123,7 +111,6 @@ pub async fn read_frame<R: AsyncBufRead + Unpin>(
     }
 }
 
-/// Writes one message whose body is `body`.
 pub async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     body: &[u8],
@@ -157,8 +144,6 @@ mod tests {
         }
     }
 
-    /// Feeds `bytes` through a reader that returns them in two parts split
-    /// at every position.
     #[tokio::test]
     async fn every_split_of_a_stream_decodes_the_same_messages() {
         let bytes = [frame("{\"a\":1}"), frame("{}"), frame("[\"é\"]")].concat();

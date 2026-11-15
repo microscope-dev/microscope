@@ -1,7 +1,3 @@
-// Every pane kind by id, and how the debugger's documents group follows the
-// address: a Source pane for each file the tab has open, and the pane of the
-// view the address names shown.
-
 import type { View } from "./focus";
 import {
   activate,
@@ -58,10 +54,8 @@ export const KIND = {
   keys: kind("keys"),
 } as const;
 
-/** A pane of a kind there is one of. */
 export const single = (id: KindId): Pane => ({ kind: id, key: "", params: null });
 
-/** A file's source. The one with no path stands in while no file is open. */
 export const sourcePane = (path: string): Pane => ({ kind: KIND.source, key: path, params: path });
 
 const VIEWS: Record<View, KindId> = {
@@ -73,9 +67,6 @@ const VIEWS: Record<View, KindId> = {
 
 export const DOCUMENT_KINDS: ReadonlySet<KindId> = new Set(Object.values(VIEWS));
 
-/** The group documents open in: the first open file's, or else the one
- * holding a Source pane or any document, or else the focused one. Not by
- * where groups sit, which raising a floating window changes. */
 export function documentsGroup(layout: Layout, files: readonly string[] = []): GroupId {
   for (const file of files) {
     const pane = paneOf(layout, KIND.source, file);
@@ -93,12 +84,6 @@ export function documentsGroup(layout: Layout, files: readonly string[] = []): G
   return found?.id ?? layout.focused;
 }
 
-/**
- * Brings the layout in step with the address: a Source pane for each of
- * `files` in their order, the stand-in while there are none, and the pane of
- * `view` shown, which for source is `shown`'s file. Focus stays where it was,
- * and a layout already in step comes back as it is.
- */
 export function arrange(
   layout: Layout,
   files: readonly string[],
@@ -135,7 +120,6 @@ export function arrange(
     }
   }
 
-  // Files keep the order they were opened in, ahead of the other documents.
   const into = documentsGroup(next, files);
   const sources = (files.length > 0 ? files : [""])
     .map((file) => paneOf(next, KIND.source, file))

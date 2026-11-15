@@ -1,14 +1,3 @@
-//! Signals and the exceptions language runtimes report, as exception
-//! breakpoint filters.
-//!
-//! Each signal filter stops on one group of signals, and each exception
-//! filter on one kind of exception. Their defaults reproduce the
-//! debugger's defaults, so a client that never changes them sees the same
-//! stops as the console. A signal filter's `condition`, when the client
-//! supports filter options, replaces its group with a comma-separated list
-//! of signals. The system-call filter stops at the calls its condition
-//! names, or at every call.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -23,7 +12,6 @@ struct Filter {
     description: &'static str,
     default: bool,
 
-    /// The signals the filter covers; `None` covers every other signal.
     signals: Option<&'static [&'static str]>,
 }
 
@@ -73,7 +61,6 @@ const FILTERS: [Filter; 4] = [
     },
 ];
 
-/// The filters `initialize` advertises.
 pub fn filters() -> Value {
     let signals = FILTERS.iter().map(|filter| {
         json!({
@@ -105,17 +92,13 @@ pub fn filters() -> Value {
     signals.chain(exceptions).chain([syscalls]).collect()
 }
 
-/// The filter that stops at system calls.
 const SYSCALLS: &str = "syscalls";
 
-/// Which signals and exceptions stop, as the exception filters select them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selection {
     stopping: BTreeSet<u64>,
     exceptions: ExceptionStops,
 
-    /// The system calls that stop, every call when empty, when the filter
-    /// is on.
     syscalls: Option<Arc<[microscope::syscalls::SyscallId]>>,
 }
 
@@ -133,7 +116,6 @@ impl Default for Selection {
     }
 }
 
-/// Every call of every ABI the comma-separated `text` names.
 fn syscall_list(text: &str) -> Result<Arc<[microscope::syscalls::SyscallId]>, String> {
     let mut calls = Vec::new();
 
@@ -157,24 +139,18 @@ fn syscall_list(text: &str) -> Result<Arc<[microscope::syscalls::SyscallId]>, St
 }
 
 impl Selection {
-    /// Whether the signal with this code stops.
     pub fn stops(&self, code: u64) -> bool {
         self.stopping.contains(&code)
     }
 
-    /// Which exceptions that runtimes report stop.
     pub const fn exceptions(&self) -> ExceptionStops {
         self.exceptions
     }
 
-    /// The system calls that stop, every one when empty, or none when the
-    /// filter is off.
     pub const fn syscalls(&self) -> Option<&Arc<[microscope::syscalls::SyscallId]>> {
         self.syscalls.as_ref()
     }
 
-    /// Reads a `setExceptionBreakpoints` request, returning the selection
-    /// and one breakpoint per filter and filter option, in request order.
     pub fn parse(arguments: &SetExceptionBreakpointsArguments) -> (Self, Vec<Value>) {
         let mut enabled = BTreeMap::new();
         let mut exceptions = ExceptionStops::NONE;

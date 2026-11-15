@@ -1,5 +1,3 @@
-//! One Pratt parser over one precedence table.
-
 use super::ast::{
     BinaryOp, Builtin, CWord, CastForm, Field, Node, NodeId, NodeKind, Path, Segment, Separator,
     SizeOf, Tag, Tree, TypeBase, TypeName, UnaryOp,
@@ -9,45 +7,32 @@ use super::lexer::{Punct, Token, TokenKind, lex};
 use super::{Ambiguity, Dialect, MAX_AMBIGUITIES, Span};
 use crate::eval::error::{ErrorKind, ExpressionError};
 
-/// The deepest nesting accepted. Binding, running, and printing recurse
-/// along the tree, so its height is bounded.
 pub const MAX_DEPTH: usize = 64;
 
-/// The most nodes one reading may hold.
 pub const MAX_NODES: usize = 1024;
 
-// A node's identifier is a `u32`.
 const _: () = assert!(MAX_NODES < u32::MAX as usize);
 
-// The casts a reading chooses are a bitmask over its ambiguities.
 const _: () = assert!(MAX_AMBIGUITIES < usize::BITS as usize);
 
-/// Words that are never names unless quoted.
 pub const RESERVED: [&str; 8] = [
     "true", "false", "null", "as", "sizeof", "nil", "nullptr", "NULL",
 ];
 
-/// Words that begin or qualify a type, and so are no bare name.
 pub const QUALIFIERS: [&str; 3] = ["const", "volatile", "mut"];
 
-/// Whether an unquoted word reads as a name wherever it stands, so that
-/// printing it needs no backticks.
 pub fn is_name_word(word: &str) -> bool {
     !RESERVED.contains(&word) && !is_type_word(word)
 }
 
-/// Whether an unquoted word names something where no type can stand: C's
-/// type words are names there, as Go, Rust, and Zig programs may use them.
 fn is_operand_word(word: &str) -> bool {
     !RESERVED.contains(&word)
 }
 
-/// Whether a word begins or qualifies a type.
 pub fn is_type_word(word: &str) -> bool {
     CWord::parse(word).is_some() || Tag::parse(word).is_some() || QUALIFIERS.contains(&word)
 }
 
-// Binding strengths, loosest first.
 pub const ASSIGN: u8 = 1;
 
 pub const CONDITIONAL: u8 = 2;
@@ -68,7 +53,6 @@ pub const PREFIX: u8 = 13;
 
 pub const POSTFIX: u8 = 14;
 
-/// A binary operator's precedence.
 pub const fn binary_precedence(op: BinaryOp) -> u8 {
     match op {
         BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => MULTIPLICATIVE,
@@ -136,7 +120,6 @@ const fn binary_op(punct: Punct) -> Option<BinaryOp> {
     })
 }
 
-/// A compound assignment's operator.
 const fn compound(punct: Punct) -> Option<BinaryOp> {
     Some(match punct {
         Punct::PlusEq => BinaryOp::Add,
@@ -153,8 +136,6 @@ const fn compound(punct: Punct) -> Option<BinaryOp> {
     })
 }
 
-/// The text of an assignment's operator, `None` for an operator that does
-/// not assign.
 pub const fn assignment_text(op: Option<BinaryOp>) -> Option<&'static str> {
     Some(match op {
         None => "=",
@@ -172,10 +153,8 @@ pub const fn assignment_text(op: Option<BinaryOp>) -> Option<&'static str> {
     })
 }
 
-/// One reading per combination of an expression's ambiguities.
 pub type Readings = Vec<Result<Tree, ExpressionError>>;
 
-/// Every reading of `text`, with the ambiguities that tell them apart.
 pub fn parse(text: &str, dialect: Dialect) -> Result<(Vec<Ambiguity>, Readings), ExpressionError> {
     let tokens = lex(text)?;
     let starts = ambiguities(&tokens);
@@ -220,7 +199,6 @@ pub fn parse(text: &str, dialect: Dialect) -> Result<(Vec<Ambiguity>, Readings),
     Ok((ambiguity_list, readings))
 }
 
-/// The tokens that begin a parenthesized name before `-`, `*`, or `&`.
 fn ambiguities(tokens: &[Token]) -> Vec<usize> {
     let ident = |index: usize| match tokens.get(index).map(|token| &token.kind) {
         Some(TokenKind::Ident(word)) => Some(word.as_str()),
@@ -286,10 +264,8 @@ struct Parser<'tokens> {
     nodes: Vec<Node>,
     depth: usize,
 
-    /// The tokens that begin ambiguities, in order.
     ambiguities: &'tokens [usize],
 
-    /// Bit `i` set reads ambiguity `i` as a cast.
     casts: usize,
     dialect: Dialect,
 }
@@ -325,7 +301,6 @@ impl<'tokens> Parser<'tokens> {
             root,
         };
 
-        // A range only ever is the whole expression.
         for (index, node) in tree.nodes.iter().enumerate() {
             if matches!(node.kind, NodeKind::Range { .. }) && index != tree.root.0 as usize {
                 return Err(ExpressionError::syntax(
@@ -338,7 +313,6 @@ impl<'tokens> Parser<'tokens> {
         Ok(tree)
     }
 
-    /// The token at `index`, or the end token for any index past it.
     #[expect(
         clippy::indexing_slicing,
         reason = "`lex` ends the tokens with an end token, so they are never empty"
@@ -462,8 +436,6 @@ impl<'tokens> Parser<'tokens> {
         self.depth -= 1;
     }
 
-    /// An expression whose operators bind at least as tightly as
-    /// `minimum`.
     fn expression(&mut self, minimum: u8) -> Result<NodeId, ExpressionError> {
         self.enter()?;
         let result = self.expression_inner(minimum);
@@ -560,7 +532,6 @@ impl<'tokens> Parser<'tokens> {
         Ok(left)
     }
 
-    /// A prefix operator's operand, or a postfix expression.
     fn prefix(&mut self) -> Result<NodeId, ExpressionError> {
         self.enter()?;
         let result = self.prefix_inner();
@@ -613,7 +584,6 @@ impl<'tokens> Parser<'tokens> {
         self.push(NodeKind::SizeOf(SizeOf::Operand(operand)), start.to(close))
     }
 
-    /// `offsetof(TYPE, member)`, which only views write.
     fn offset_of(&mut self) -> Result<NodeId, ExpressionError> {
         let start = self.advance();
         self.expect(Punct::OpenParen, "after `offsetof`")?;
@@ -624,7 +594,6 @@ impl<'tokens> Parser<'tokens> {
         self.push(NodeKind::OffsetOf { ty, member }, start.to(close))
     }
 
-    /// `global(NAME)`, which only views write.
     fn global(&mut self) -> Result<NodeId, ExpressionError> {
         let start = self.advance();
         self.expect(Punct::OpenParen, "after `global`")?;
@@ -633,7 +602,6 @@ impl<'tokens> Parser<'tokens> {
         self.push(NodeKind::Global(name), start.to(close))
     }
 
-    /// `container_of(PTR, TYPE, member)`, which only views write.
     fn container_of(&mut self) -> Result<NodeId, ExpressionError> {
         let start = self.advance();
         self.expect(Punct::OpenParen, "after `container_of`")?;
@@ -653,7 +621,6 @@ impl<'tokens> Parser<'tokens> {
         )
     }
 
-    /// A plain or backticked name a view's built-in takes as an argument.
     fn word_argument(&mut self, expected: &str) -> Result<String, ExpressionError> {
         let (TokenKind::Ident(word) | TokenKind::Quoted(word)) = self.peek().clone() else {
             return Err(self.unexpected(expected));
@@ -663,7 +630,6 @@ impl<'tokens> Parser<'tokens> {
         Ok(word)
     }
 
-    /// `(` begins a cast or a parenthesized expression.
     fn parenthesized(&mut self) -> Result<NodeId, ExpressionError> {
         let open = self.position;
         let start = self.peek_span();
@@ -713,10 +679,6 @@ impl<'tokens> Parser<'tokens> {
         )
     }
 
-    /// `( expression )`; the expression's span takes in the parentheses, so
-    /// whatever contains it points at balanced text. A comma after the
-    /// expression makes a tuple, as `(a, b)` and `(a,)` are, and `()` is
-    /// the empty one.
     fn grouped(&mut self) -> Result<NodeId, ExpressionError> {
         let open = self.expect(Punct::OpenParen, "")?;
         if self.peek_punct() == Some(Punct::CloseParen) {
@@ -741,8 +703,6 @@ impl<'tokens> Parser<'tokens> {
         Ok(inner)
     }
 
-    /// The items of a tuple, from the comma after its first: each comma
-    /// is followed by another item, or ends the tuple before `close`.
     fn items(&mut self, first: NodeId, close: Punct) -> Result<Vec<NodeId>, ExpressionError> {
         let mut items = vec![first];
         while self.eat(Punct::Comma) && self.peek_punct() != Some(close) {
@@ -774,7 +734,6 @@ impl<'tokens> Parser<'tokens> {
                     NodeKind::Bool(word == "true")
                 }
 
-                // `nil` is Go's spelling of `null`, and means the same.
                 "null" | "nil" => {
                     self.advance();
                     NodeKind::Null
@@ -858,9 +817,6 @@ impl<'tokens> Parser<'tokens> {
         self.push(kind, span)
     }
 
-    /// A name and the names `::` joins to it, and in a type name `.` too,
-    /// as in Go's `main.point`. In an expression a `.` selects a member,
-    /// which binding may find is part of a global's dotted name.
     fn path(&mut self, dots: bool) -> Result<Path, ExpressionError> {
         let global = self.eat(Punct::ColonColon);
         let mut segments = vec![self.segment(Separator::Colons)?];
@@ -882,8 +838,6 @@ impl<'tokens> Parser<'tokens> {
         Ok(Path { global, segments })
     }
 
-    /// Whether the `.`-joined names ahead continue into `::`, as a
-    /// file-qualified name such as `one.c::duplicate` does.
     fn dots_then_colons(&self) -> bool {
         let mut offset = 0;
         while self.peek_at(offset) == &TokenKind::Punct(Punct::Dot)
@@ -918,8 +872,6 @@ impl<'tokens> Parser<'tokens> {
                     self.advance();
                     let field_span = self.peek_span();
                     let field = match self.peek().clone() {
-                        // No literal can follow `.` or `->`, so a reserved word
-                        // there is a member name, as in JavaScript's `values.null`.
                         TokenKind::Ident(word) | TokenKind::Quoted(word) => Field::Named(word),
                         TokenKind::Integer {
                             value,
@@ -943,7 +895,6 @@ impl<'tokens> Parser<'tokens> {
                 Some(Punct::OpenBracket) => {
                     self.advance();
 
-                    // `[:end]` and `[:]` slice from the start.
                     if self.peek_punct() == Some(Punct::Colon) {
                         base = self.slice(base, None)?;
                         continue;
@@ -951,7 +902,6 @@ impl<'tokens> Parser<'tokens> {
 
                     let index = self.expression(ASSIGN)?;
 
-                    // `x[a, b]` indexes by the tuple `(a, b)`.
                     if self.peek_punct() == Some(Punct::Comma) {
                         let items = self.items(index, Punct::CloseBracket)?;
                         let span = self.span(index).to(self.previous_span());
@@ -987,7 +937,6 @@ impl<'tokens> Parser<'tokens> {
         }
     }
 
-    /// The rest of `base[start:end]`, from its `:`: the end may be left out.
     fn slice(&mut self, base: NodeId, start: Option<NodeId>) -> Result<NodeId, ExpressionError> {
         self.expect(Punct::Colon, "to separate a slice's bounds")?;
         let end = if self.peek_punct() == Some(Punct::CloseBracket) {
@@ -1001,10 +950,6 @@ impl<'tokens> Parser<'tokens> {
         self.push(NodeKind::Slice { base, start, end }, span)
     }
 
-    /// A type name, and whether it can only be a type: a bare path could
-    /// also name a value. A pointer is `T*` inside a cast's parentheses,
-    /// where `(*p)` dereferences, and `*T` after `as`, where a trailing `*`
-    /// multiplies.
     fn type_name(&mut self, parenthesized: bool) -> Result<(TypeName, bool), ExpressionError> {
         let start = self.peek_span();
         let mut pointers = 0_u8;
@@ -1076,7 +1021,6 @@ impl<'tokens> Parser<'tokens> {
     }
 }
 
-/// Whether a type is a bare path, which could also be a value's name.
 pub const fn is_bare(ty: &TypeName) -> bool {
     ty.pointers == 0 && matches!(ty.base, TypeBase::Named(_))
 }
@@ -1089,7 +1033,6 @@ fn is_segment(token: &TokenKind) -> bool {
     }
 }
 
-/// Whether a token can begin an operand.
 fn begins_operand(token: &TokenKind) -> bool {
     begins_operand_only(token)
         || matches!(
@@ -1098,7 +1041,6 @@ fn begins_operand(token: &TokenKind) -> bool {
         )
 }
 
-/// Whether a token can begin an operand but cannot continue an expression.
 fn begins_operand_only(token: &TokenKind) -> bool {
     match token {
         TokenKind::Ident(word) => word != "as",

@@ -1,8 +1,3 @@
-//! The generated layouts checked against their two sources: V8's Torque
-//! output for each supported version, which `layouts.gen.rs` is generated
-//! from here, and each build in the dev shell's Node matrix, whose own
-//! `v8dbg_` constants every layout must agree with.
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -17,8 +12,6 @@ const GENERATED_FILE: &str = concat!(
     "/src/debug_info/v8/layouts.gen.rs"
 );
 
-/// The names older versions' Torque gives a field the enum names by its
-/// newest.
 const RENAMED: [(Field, &str); 4] = [
     (Field::ByteArrayValues, "ByteArray::Bytes"),
     (Field::TrustedByteArrayValues, "TrustedByteArray::Bytes"),
@@ -26,9 +19,6 @@ const RENAMED: [(Field, &str); 4] = [
     (Field::FixedDoubleArrayValues, "FixedDoubleArray::Floats"),
 ];
 
-/// The class each bit-field constant names, and the macro of
-/// `bit-fields.h` that defines its bit fields. A context local's
-/// `VARIABLE_PROPERTIES` are `ScopeInfo`'s, which `scope-info.h` defines.
 const BIT_FIELDS: [(&str, &str); 15] = [
     ("SharedFunctionInfo", "SHARED_FUNCTION_INFO_FLAGS"),
     ("ScopeInfo", "SCOPE_FLAGS"),
@@ -47,8 +37,6 @@ const BIT_FIELDS: [(&str, &str); 15] = [
     ("ScopeInfo", "VARIABLE_PROPERTIES"),
 ];
 
-/// V8's license, which the generated layouts carry because they derive
-/// from its Torque output.
 const V8_NOTICE: &str = "\
 Copyright 2014, the V8 project authors. All rights reserved.
 Redistribution and use in source and binary forms, with or without
@@ -78,8 +66,6 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ";
 
-/// Each V8 version's Torque output the flake provides, by major.minor, in
-/// order.
 fn torque_versions() -> Vec<((u32, u32), PathBuf)> {
     let root = std::env::var_os("MICROSCOPE_V8_TORQUE")
         .expect("MICROSCOPE_V8_TORQUE names V8's Torque output; run tests in the dev shell");
@@ -109,10 +95,6 @@ fn read(directory: &Path, file: &str) -> String {
         .unwrap_or_else(|error| panic!("read {}: {error}", directory.join(file).display()))
 }
 
-/// Every field `class-debug-readers.cc` reads, as `Class::Field`, at its
-/// offset: each reader is `uintptr_t TqClass::GetFieldAddress() const`
-/// returning `address_ - i::kHeapObjectTag + offset`. Any other shape of
-/// reader fails.
 fn torque_fields(readers: &str) -> BTreeMap<String, u32> {
     let mut fields = BTreeMap::new();
     let mut lines = readers.lines();
@@ -142,10 +124,6 @@ fn torque_fields(readers: &str) -> BTreeMap<String, u32> {
     fields
 }
 
-/// Whether `class-debug-readers.cc` reads `class`'s `field` as a raw
-/// `double`, not as a tagged word: its reader is
-/// `Value<double ...> TqClass::GetFieldValue(...)` or
-/// `Value<uintptr_t> TqClass::GetFieldValue(...)`. Any other type fails.
 fn torque_reads_double(readers: &str, class: &str, field: &str) -> bool {
     let getter = format!("> Tq{class}::Get{field}Value(d::MemoryAccessor accessor) const {{");
     let line = readers
@@ -162,8 +140,6 @@ fn torque_reads_double(readers: &str, class: &str, field: &str) -> bool {
     false
 }
 
-/// Every instance type `instance-types.h`'s `TORQUE_ASSIGNED_INSTANCE_TYPES`
-/// lists, as `V(NAME, number)`, in its order.
 fn torque_instance_types(header: &str) -> Vec<(String, u16)> {
     let list = header
         .split_once("#define TORQUE_ASSIGNED_INSTANCE_TYPES(V) \\\n")
@@ -190,11 +166,6 @@ fn torque_instance_types(header: &str) -> Vec<(String, u16)> {
     types
 }
 
-/// Each bit field of the class [`BIT_FIELDS`] names, as `Class::NameBits`,
-/// with where it begins and its width: `bit-fields.h` defines each as
-/// `using Name = base::BitField<Type, shift, size, Storage>;`. Where every
-/// field is one bit, an `enum Flag` follows that must name each field's
-/// bit as `kName`.
 fn torque_bit_fields(header: &str) -> BTreeMap<String, (u32, u32)> {
     let mut fields = BTreeMap::new();
     for (class, flags) in BIT_FIELDS {
@@ -235,10 +206,6 @@ fn torque_bit_fields(header: &str) -> BTreeMap<String, (u32, u32)> {
     fields
 }
 
-/// Checks the `enum Flag` of `storage` that follows the one-bit fields
-/// `fields` of `flags`: `kNone = 0`, then each field `NameBit` as `kName =
-/// storage{1} << shift`, in order, then `Flags` and `kFlagCount`, the
-/// number of fields.
 fn check_flag_enum<'a>(
     flags: &str,
     fields: &[(&str, u32, u32)],
@@ -265,9 +232,6 @@ fn check_flag_enum<'a>(
     assert_eq!(lines, expected, "{flags}'s Flag enum");
 }
 
-/// The value a Torque constant has in the version whose Torque output
-/// gave `types` and `bits`: an instance type's number, or a bit field's
-/// `kShift` or `kMask`.
 fn torque_constant(
     constant: Constant,
     types: &[(String, u16)],
@@ -290,8 +254,6 @@ fn torque_constant(
         .map(|&(_, value)| i64::from(value))
 }
 
-/// The constants V8's headers give, by the name [`Constant`] gives each,
-/// for a version with or without leaptiering.
 fn header_constants(headers: &Headers, leaptiering: bool) -> BTreeMap<String, i64> {
     let mut constants: BTreeMap<String, i64> = headers
         .code_kinds()
@@ -302,7 +264,6 @@ fn header_constants(headers: &Headers, leaptiering: bool) -> BTreeMap<String, i6
         "internal::kCodeAlignment".to_owned(),
         headers.constant("src/common/globals.h", "kCodeAlignment"),
     );
-    // Optimized code's kind is TURBOFAN through 12.4, then TURBOFAN_JS.
     if let Some(&turbofan) = constants.get("CodeKind::TURBOFAN") {
         let previous = constants.insert("CodeKind::TURBOFAN_JS".to_owned(), turbofan);
         assert!(previous.is_none(), "both TURBOFAN and TURBOFAN_JS");
@@ -330,7 +291,6 @@ fn header_constants(headers: &Headers, leaptiering: bool) -> BTreeMap<String, i6
             ((1i64 << size) - 1) << shift,
         );
     }
-    // The field holds the inlining id plus one, so that 0 is kNotInlined.
     assert!(
         headers.contains(positions, "return InliningIdField::decode(value_) - 1;"),
         "SourcePosition's inlining id is no longer the field less one"
@@ -373,12 +333,6 @@ fn header_constants(headers: &Headers, leaptiering: bool) -> BTreeMap<String, i6
     constants
 }
 
-/// The constants an await chain is read by: a running generator's
-/// continuation, and the context slots of the promise closures it passes
-/// through. The slot a capability's resolve function keeps its promise in
-/// is `kPromiseSlot` through 13.6 and `kPromiseIfNotResolvedSlot` from
-/// 14.6, which clears it once the promise resolves; both are read as the
-/// latter's name.
 fn add_await_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>) {
     let executing = headers
         .class_constant(
@@ -412,9 +366,6 @@ fn add_await_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>)
     );
 }
 
-/// The constants of JavaScript's values the headers give: their kinds and
-/// states, the bits of a `BigInt`'s and a property's details, and the
-/// layouts of ordered hash tables and contexts.
 fn add_value_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>) {
     let mut add = |name: String, value: i64| {
         let previous = constants.insert(name.clone(), value);
@@ -447,14 +398,12 @@ fn add_value_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>)
             "enum InitializationFlag",
             true,
         ),
-        // From 14.6.
         (
             "PrivateSymbolKind",
             "src/objects/name.h",
             "enum class PrivateSymbolKind",
             true,
         ),
-        // From 14.6, the slots of a raw frame of an error's stack data.
         (
             "CallSiteInfo",
             "src/objects/call-site-info.h",
@@ -523,8 +472,6 @@ fn add_value_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>)
     }
 }
 
-/// Where JavaScript frames keep their slots, from `frame-constants.h`,
-/// and the receiver's place in their argument count, from `globals.h`.
 fn add_frame_constants(headers: &Headers, add: &mut impl FnMut(String, i64)) {
     for (name, value) in headers.frame_constants(&[
         ("StandardFrameConstants", "kArgCOffset"),
@@ -554,8 +501,6 @@ fn add_frame_constants(headers: &Headers, add: &mut impl FnMut(String, i64)) {
     );
 }
 
-/// The JS dispatch table's constants, from the 64-bit branches of
-/// `globals.h` and `js-dispatch-table.h`.
 fn add_dispatch_constants(headers: &Headers, constants: &mut BTreeMap<String, i64>) {
     let globals = "src/common/globals.h";
     let table = "src/sandbox/js-dispatch-table.h";
@@ -581,8 +526,6 @@ fn add_dispatch_constants(headers: &Headers, constants: &mut BTreeMap<String, i6
     }
 }
 
-/// The slots of `DeoptimizationData` the headers may give, as
-/// `k{Name}Index`; the binary exports some as `DeoptimizationData{Name}Index`.
 const DEOPTIMIZATION_INDICES: [&str; 12] = [
     "FrameTranslation",
     "InlinedFunctionCount",
@@ -598,11 +541,6 @@ const DEOPTIMIZATION_INDICES: [&str; 12] = [
     "FirstDeoptEntry",
 ];
 
-/// The constants for writing an error's call sites: a script's compilation
-/// types, and the bits of a name's hash field (its type in the lowest two,
-/// 0b10 for a hash, and the hash above them). The headers write the type in
-/// binary, which the header evaluator cannot parse, so this checks their
-/// text instead.
 fn add_call_site_constants(headers: &Headers, add: &mut impl FnMut(String, i64)) {
     let script = "src/objects/script.h";
     for (name, value) in headers.enumerators(script, "enum class CompilationType") {
@@ -622,9 +560,6 @@ fn add_call_site_constants(headers: &Headers, add: &mut impl FnMut(String, i64))
     add("Name::HashBits::kShift".to_owned(), 2);
 }
 
-/// Class constants the generated layouts take from the headers: the name
-/// [`Constant`] gives the class, the classes searched for each, in order
-/// from the class to those it derives from, its header, and the names.
 const HEADER_CLASS_CONSTANTS: [(&str, &[&str], &str, &[&str]); 10] = [
     (
         "Oddball",
@@ -693,8 +628,6 @@ const HEADER_CLASS_CONSTANTS: [(&str, &[&str], &str, &[&str]); 10] = [
     ),
 ];
 
-/// The value V8's headers and Torque output give each `v8dbg_` constant
-/// they name too, by the constant's name without `v8dbg_`.
 fn checked_constants(
     headers: &Headers,
     constants: &BTreeMap<String, i64>,
@@ -796,11 +729,6 @@ fn checked_constants(
     checked
 }
 
-/// The `v8dbg_` constants of JavaScript's values the headers and Torque
-/// output give too: the bits of a map's elements kind and of a detached
-/// array buffer, the oddballs' kinds, three elements kinds, a context's
-/// first slots, and where an unoptimized frame keeps its arguments, its
-/// bytecode array, and its bytecode offset.
 fn add_value_checks(
     constants: &BTreeMap<String, i64>,
     bits: &BTreeMap<String, (u32, u32)>,
@@ -852,8 +780,6 @@ fn add_value_checks(
     }
 }
 
-/// The `prop_` constants `property-details.h` gives: the kinds, locations,
-/// and representations, and where each field of a property's details is.
 fn add_property_details(headers: &Headers, check: &mut impl FnMut(&str, i64)) {
     let file = "src/objects/property-details.h";
     let kinds = headers.enumerators(file, "enum class PropertyKind");
@@ -893,8 +819,6 @@ fn add_property_details(headers: &Headers, check: &mut impl FnMut(&str, i64)) {
     }
 }
 
-/// One version's entry of `layouts.gen.rs`, and where its accessor pair
-/// keeps its getter and setter.
 fn generate_version(text: &mut String, (major, minor): (u32, u32), torque: &Path) -> [u32; 2] {
     let readers = read(torque, "class-debug-readers.cc");
     let mut fields = torque_fields(&readers);
@@ -1022,8 +946,6 @@ fn generate() -> String {
          use crate::image::v8::{Constant, Field};\n\n\
          pub(super) const GENERATED: &[Generated] = &[\n",
     );
-    // Every version's accessor pair offsets agree: Torque's before 14.6,
-    // struct.h's from 14.6.
     let mut accessor_pairs = Vec::new();
     for (version, torque) in torque_versions() {
         accessor_pairs.push((version, generate_version(&mut text, version, &torque)));
@@ -1039,9 +961,6 @@ fn generate() -> String {
     text
 }
 
-/// Fails when `layouts.gen.rs` no longer matches the Torque output in
-/// `MICROSCOPE_V8_TORQUE`, or when that output lacks a field or constant a
-/// version must have. Set `MICROSCOPE_UPDATE_V8=1` to rewrite it.
 #[test]
 fn layouts_match_torque() {
     let expected = generate();
@@ -1059,10 +978,6 @@ fn layouts_match_torque() {
 
 const SLICES_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/image/v8/slices.gen.rs");
 
-/// Fails when `src/image/v8/slices.gen.rs` no longer matches the
-/// translation of `debug-macros.cc` and the headers in
-/// `MICROSCOPE_V8_TORQUE`, or when the translator meets a construct or a
-/// name it does not know. Set `MICROSCOPE_UPDATE_V8=1` to rewrite it.
 #[test]
 fn slices_match_torque() {
     let expected = super::translate::generate(&torque_versions(), V8_NOTICE);
@@ -1083,10 +998,6 @@ const TRANSLATIONS_FILE: &str = concat!(
     "/src/image/v8/translation.gen.rs"
 );
 
-/// Fails when `src/image/v8/translation.gen.rs` no longer matches the
-/// translation opcodes of the headers in `MICROSCOPE_V8_TORQUE`, or when a
-/// header no longer encodes a translation or a safepoint table as the
-/// runtime model decodes it. Set `MICROSCOPE_UPDATE_V8=1` to rewrite it.
 #[test]
 fn translations_match_torque() {
     let expected = super::deoptimization::generate(&torque_versions(), V8_NOTICE);
@@ -1104,9 +1015,6 @@ fn translations_match_torque() {
 
 const BYTECODES_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/image/v8/bytecodes.gen.rs");
 
-/// Fails when `src/image/v8/bytecodes.gen.rs` no longer matches the
-/// bytecodes of the headers in `MICROSCOPE_V8_TORQUE`. Set
-/// `MICROSCOPE_UPDATE_V8=1` to rewrite it.
 #[test]
 fn bytecode_sizes_match_torque() {
     let expected = super::bytecodes::generate(&torque_versions(), V8_NOTICE);
@@ -1124,9 +1032,6 @@ fn bytecode_sizes_match_torque() {
 
 const BUILTINS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/image/v8/builtins.gen.rs");
 
-/// Fails when `src/image/v8/builtins.gen.rs` no longer matches the
-/// builtins of the official build of each version in `MICROSCOPE_NODE`.
-/// Set `MICROSCOPE_UPDATE_V8=1` to rewrite it.
 #[test]
 fn builtin_ids_match_release() {
     let builds: Vec<_> = matrix()
@@ -1147,12 +1052,8 @@ fn builtin_ids_match_release() {
     );
 }
 
-/// V8's own table of its bytecodes' sizes, which only a symbol table names.
 const BYTECODE_SIZES: &str = "_ZN2v88internal11interpreter9Bytecodes14kBytecodeSizesE";
 
-/// A build's generated bytecode sizes match its own table byte for byte
-/// where a symbol names the table. Debian's libnode names none, so its
-/// read-only data must hold the generated sizes exactly once.
 fn check_bytecode_sizes(
     entry: &str,
     object: &object::File<'_>,
@@ -1193,9 +1094,6 @@ fn check_bytecode_sizes(
     assert_eq!(found, 1, "{entry}: copies of the generated sizes");
 }
 
-/// Each build of the dev shell's Node matrix, the file that holds its V8,
-/// and V8's major.minor version: Node 26 has 14.6, 24 has 13.6, and 22
-/// has 12.4.
 pub(super) fn matrix() -> Vec<(&'static str, PathBuf, (u32, u32))> {
     let root = PathBuf::from(
         std::env::var_os("MICROSCOPE_NODE")
@@ -1222,11 +1120,6 @@ pub(super) fn matrix() -> Vec<(&'static str, PathBuf, (u32, u32))> {
     .collect()
 }
 
-/// Every build in the matrix, Debian's libnode among them, binds to the
-/// layout generated for its V8 version, which agrees with every field and
-/// instance type the build's own constants give, and proves what else its
-/// runtime describes: accessors, bytecode sizes, builtins, the native
-/// inspector, and where Node keeps its tasks. Each build is read once.
 #[test]
 fn every_build_in_the_matrix_binds_to_its_layout() {
     for (entry, path, (major, minor)) in matrix() {
@@ -1254,8 +1147,6 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
             .find(|generated| (generated.major, generated.minor) == (major, minor))
             .expect("a generated layout");
 
-        // The fields the build's own constants give, which binding has
-        // checked, are where they were found on every line.
         assert_eq!(layout.field(Field::JSFunctionSharedFunctionInfo), Some(32));
         assert_eq!(layout.field(Field::HeapObjectMap), Some(0));
         assert_eq!(layout.field(Field::StringLength), Some(12));
@@ -1270,14 +1161,11 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
             .filter_map(|name| name.strip_prefix("v8dbg_type_")?.rsplit_once("__"))
             .filter(|(_, name)| generated.instance_type(name).is_some())
             .count();
-        // Every type Torque assigns that the build exports agrees, as F21
-        // found for the release configuration.
         let exported_types = match minor {
             4 => 204,
             6 if major == 13 => 215,
             _ => 217,
         };
-        // Every constant the headers give that the build exports too.
         let constants = generated
             .checked
             .iter()
@@ -1288,8 +1176,6 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
             types >= exported_types,
             "{entry}: {types} instance types checked"
         );
-        // The binary exports each one but a few of deoptimization data's
-        // slots.
         let unexported: Vec<_> = generated
             .checked
             .iter()
@@ -1304,8 +1190,6 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
 
         check_code_fields(entry, &object, &layout, (major, minor));
 
-        // The binary also holds `napi_get_node_version`'s release as the
-        // text of `process.version`: `v` followed by the release.
         let node = runtime
             .node
             .as_ref()
@@ -1326,7 +1210,6 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
         );
 
         assert_eq!(layout.constant(Constant::TaggedSize), Some(8), "{entry}");
-        // v8dbg_SmiTag is in .bss, which keeps no bytes in the file.
         assert_eq!(layout.constant(Constant::SmiTag), Some(0), "{entry}");
         assert!(
             layout
@@ -1347,8 +1230,6 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
     }
 }
 
-/// Each build numbers its builtins as the generated table does: as many,
-/// and each that an await chain is read by under its name.
 fn check_builtins(entry: &str, path: &Path, version: crate::image::v8::V8Version) {
     let (count, numbers) =
         crate::image::v8::builtins(version).unwrap_or_else(|problem| panic!("{entry}: {problem}"));
@@ -1363,11 +1244,6 @@ fn check_builtins(entry: &str, path: &Path, version: crate::image::v8::V8Version
     }
 }
 
-/// Each build's native inspector is proven: its registry, its watchdog's
-/// startup, and the functions that close a session, which are the named
-/// ones where the build names them. Debian's libnode keeps no symbol
-/// table, so its activation and close are proven from its code alone, at
-/// the addresses its debug package names.
 fn check_inspector(
     entry: &str,
     object: &object::File<'_>,
@@ -1414,11 +1290,6 @@ fn check_inspector(
     );
 }
 
-/// Where each build keeps its event loop's work, with the offsets gdb read
-/// from each build's running process when the walk was designed
-/// (`Environment::principal_realm_` and the realm's timers handle per
-/// build; the rest per V8 line), and libuv's pool where the build links
-/// libuv statically.
 fn check_tasks(
     entry: &str,
     tasks: &Result<crate::image::v8::NodeTasks, std::sync::Arc<str>>,
@@ -1470,7 +1341,6 @@ fn check_tasks(
     );
 }
 
-/// Whether `object` defines a symbol named `name`.
 fn defines(object: &object::File<'_>, name: &str) -> bool {
     use object::{Object, ObjectSymbol};
 
@@ -1480,8 +1350,6 @@ fn defines(object: &object::File<'_>, name: &str) -> bool {
         .any(|symbol| symbol.is_definition() && symbol.name() == Ok(name))
 }
 
-/// The address of the local variable whose symbol's name has `part`, as
-/// `_ZN2v88internal12_GLOBAL__N_1{L,}27current_embedded_blob_code_E{.0,}`.
 fn variable(object: &object::File<'_>, part: &str) -> Option<ImageAddress> {
     use object::{Object, ObjectSymbol};
 
@@ -1495,9 +1363,6 @@ fn variable(object: &object::File<'_>, part: &str) -> Option<ImageAddress> {
         .map(|symbol| ImageAddress::new(symbol.address()))
 }
 
-/// Each build's dispatch table and embedded blob are where its code says:
-/// as found by reading each build's instructions, and, where the build
-/// names the blob's variables, at those variables.
 fn check_accessors(
     entry: &str,
     object: &object::File<'_>,
@@ -1530,7 +1395,6 @@ fn check_accessors(
                 &Ok(Some(DispatchTable::Group { group, offset })),
                 "{entry}"
             );
-            // Where the symbol is named, the exported code says the same.
             assert_eq!(
                 super::accessors::exported_dispatch_table(object).map(Some),
                 *dispatch,
@@ -1538,8 +1402,6 @@ fn check_accessors(
             );
         }
         _ => {
-            // No symbol names js_dispatch_table_address, so the table comes
-            // from exported code; the unnamed accessor at 0xdb5140 agrees.
             let what = "Debian's js_dispatch_table_address";
             let accessor = super::accessors::instructions(object, 0xdb_5140)
                 .and_then(|code| super::accessors::decode_dispatch_table(&code, what))
@@ -1567,7 +1429,6 @@ fn check_accessors(
         ("32current_embedded_blob_data_size_E", blob.data_size),
     ];
     if entry == "debian-24" {
-        // Its symbols are gone; the accessors its code calls read these.
         let addresses = names.map(|(_, at)| at.get());
         assert_eq!(addresses, [0x465_c518, 0x465_c510, 0x465_c508, 0x465_c500]);
         return;
@@ -1577,9 +1438,6 @@ fn check_accessors(
     }
 }
 
-/// The code fields the build's constants give and those only the headers
-/// do, which the cores of tests/fixtures/node/tiers.js confirm: a builtin's
-/// id, an optimized code's parameter count.
 fn check_code_fields(
     entry: &str,
     object: &object::File<'_>,
@@ -1600,8 +1458,6 @@ fn check_code_fields(
         "{entry}"
     );
     if (major, minor) == (14, 6) {
-        // V8_JUMP_TABLE_INFO_BOOL is ENABLE_DISASSEMBLER, which every
-        // 14.6 build has, as its Code::Disassemble says.
         assert!(
             defines(
                 object,

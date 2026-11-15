@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Copies the advisory database the flake pins to where deny.toml reads it and
-# prints that path, for cargo-deny and cargo-audit to read offline. Both read
-# the database through git, so the copy is a repository of one commit, dated
-# as the pinned commit was. The store's copy is read-only and another user's,
-# which git refuses. A copy of the same snapshot is kept.
+
+
+
+
+
 set -euo pipefail
 
 db="target/advisory-dbs/advisory-db-3157b0e258782691"

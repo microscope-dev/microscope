@@ -1,10 +1,3 @@
-//! The controller's inspector logic against a fake inspector whose messages
-//! each test orders exactly beside ptrace events.
-//!
-//! The fake serves one WebSocket on loopback. Each message it sends waits in
-//! the controller's queue until the test hands it on, so the test decides
-//! where it falls among the native stops it reports through `FakeTrace`.
-
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
@@ -25,16 +18,12 @@ use crate::protocol::{BreakpointSpec, DebuggerEvent, StopReason};
 use crate::runtime_model::inspector_protocol as cdp;
 use crate::{Breakpoint, ImageAddress, RuntimeId};
 
-/// How long any wait of a test lasts before it fails.
 const DEADLINE: Duration = Duration::from_secs(5);
 
-/// The address of the scripted runtime's `GetTargetIds`, never hit here.
 const HOOK: u64 = 0x50;
 
-/// A request the controller sent, with its worker tunnels taken off.
 #[derive(Debug, Clone)]
 struct Request {
-    /// The worker sessions it went through, outermost first.
     session: Vec<String>,
     id: u64,
     method: String,
@@ -42,7 +31,6 @@ struct Request {
 }
 
 impl Request {
-    /// The method, after the worker session it went to, if any.
     fn named(&self) -> String {
         match self.session.as_slice() {
             [] => self.method.clone(),
@@ -56,12 +44,10 @@ enum Command {
     Close,
 }
 
-/// A fake Node inspector, scripted by the test that owns it.
 pub(super) struct FakeInspector {
     pub(super) address: SocketAddr,
     requests: mpsc::Receiver<Request>,
 
-    /// The id of the last message read, its outermost envelope's.
     read: Arc<AtomicU64>,
     commands: mpsc::Sender<Command>,
     gone: mpsc::Receiver<()>,
@@ -72,8 +58,6 @@ impl FakeInspector {
         Self::lagging(Duration::ZERO)
     }
 
-    /// A fake that takes `lag` to finish the handshake, and again to read
-    /// its first request, as a loaded machine may.
     pub(super) fn lagging(lag: Duration) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("local address");
@@ -98,19 +82,16 @@ impl FakeInspector {
         }
     }
 
-    /// The id of the last message the controller sent that the fake read.
     pub(super) fn last_read(&self) -> u64 {
         self.read.load(Ordering::Acquire)
     }
 
-    /// The next request the controller sent.
     fn request(&self) -> Request {
         self.requests
             .recv_timeout(DEADLINE)
             .expect("a request from the controller")
     }
 
-    /// The methods of the requests the controller sent since last asked.
     pub(super) fn methods(&self) -> Vec<String> {
         self.requests
             .try_iter()
@@ -118,7 +99,6 @@ impl FakeInspector {
             .collect()
     }
 
-    /// Sends `message` as the isolate at `session` does.
     fn send(&self, session: &[String], mut message: Value) {
         for worker in session.iter().rev() {
             message = json!({
@@ -144,14 +124,12 @@ impl FakeInspector {
         self.send(&session, message);
     }
 
-    /// Closes the WebSocket, as a node that ends its inspector does.
     pub(super) fn close(&self) {
         self.commands
             .send(Command::Close)
             .expect("the fake inspector runs");
     }
 
-    /// Waits for the controller's side of the connection to go away.
     fn wait_gone(&self) {
         self.gone
             .recv_timeout(DEADLINE)
@@ -159,7 +137,6 @@ impl FakeInspector {
     }
 }
 
-/// The one connection the fake serves, once the controller makes it.
 fn accept(listener: &TcpListener, lag: Duration) -> Option<WebSocket<TcpStream>> {
     listener.set_nonblocking(true).ok()?;
     let started = Instant::now();
@@ -185,8 +162,6 @@ fn accept(listener: &TcpListener, lag: Duration) -> Option<WebSocket<TcpStream>>
     Some(socket)
 }
 
-/// Passes what the controller sends to the test, and sends what the test
-/// scripts, until either side closes.
 fn serve(
     mut socket: WebSocket<TcpStream>,
     requests: &mpsc::Sender<Request>,
@@ -227,7 +202,6 @@ fn serve(
     }
 }
 
-/// The request inside every `NodeWorker.sendMessageToWorker` around it.
 fn untunnel(mut message: Value) -> Request {
     let mut session = Vec::new();
     while message["method"] == "NodeWorker.sendMessageToWorker" {
@@ -244,7 +218,6 @@ fn untunnel(mut message: Value) -> Request {
     }
 }
 
-/// A controller whose one runtime's inspector the fake serves.
 struct Scripted {
     harness: WatchHarness,
     inspector: FakeInspector,
@@ -253,16 +226,12 @@ struct Scripted {
 }
 
 impl Scripted {
-    /// A stopped process of `threads` threads, the first the main isolate's,
-    /// whose inspector has just connected.
     fn connected(threads: i32) -> Self {
         let mut scripted = Self::connecting(threads);
         assert_eq!(scripted.pump(), Incoming::Connected);
         scripted
     }
 
-    /// As [`Scripted::connected`], with the controller yet to hear that
-    /// the handshake is done.
     fn connecting(threads: i32) -> Self {
         let mut harness = watch_harness(threads);
         harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
@@ -282,7 +251,6 @@ impl Scripted {
         scripted
     }
 
-    /// Connects to the fake as the controller does once it found the target.
     fn open(&mut self) {
         let server = super::Server {
             target: "0f2b5c1e-uuid".into(),
@@ -306,7 +274,6 @@ impl Scripted {
             .or_default()
     }
 
-    /// The next message the connection delivered to the controller.
     fn message(&self) -> InspectorMessage {
         let started = Instant::now();
         loop {
@@ -322,7 +289,6 @@ impl Scripted {
         }
     }
 
-    /// Hands the controller the next message, and returns it.
     fn pump(&mut self) -> Incoming {
         let message = self.message();
         let incoming = message.incoming.clone();
@@ -335,7 +301,6 @@ impl Scripted {
         incoming
     }
 
-    /// Hands the controller the next message, which is the event `method`.
     fn pump_event(&mut self, method: &str) {
         let incoming = self.pump();
         assert!(
@@ -344,7 +309,6 @@ impl Scripted {
         );
     }
 
-    /// Hands the controller the next message, which is a reply.
     fn pump_reply(&mut self) {
         let incoming = self.pump();
         assert!(
@@ -353,9 +317,6 @@ impl Scripted {
         );
     }
 
-    /// Hands the controller messages until the connection's last, which
-    /// follows replies to the requests still outstanding, as `sent`'s
-    /// markers are.
     fn pump_closed(&mut self) -> Incoming {
         loop {
             let incoming = self.pump();
@@ -365,8 +326,6 @@ impl Scripted {
         }
     }
 
-    /// Every request the controller has sent since the last call: a marker
-    /// sent after them arrives once they all have.
     fn sent(&mut self) -> Vec<Request> {
         let link = self.record().status.link().expect("a connection");
         link.connection
@@ -381,7 +340,6 @@ impl Scripted {
         self.sent().iter().map(Request::named).collect()
     }
 
-    /// Adds a breakpoint on `line` of `path`, the runtime's.
     fn add_line(&mut self, path: &str, line: u64, options: crate::BreakpointOptions) -> Breakpoint {
         let spec = BreakpointSpec::Source {
             path: path.into(),
@@ -398,8 +356,6 @@ impl Scripted {
             .expect("added")
     }
 
-    /// Adds a breakpoint on `line` of `path` and answers its arming, the
-    /// sentinel's first if it is set, V8 placing it as `id`.
     fn arm_line(&mut self, path: &str, line: u64, id: &str) -> Breakpoint {
         self.arm_line_with(path, line, id, crate::BreakpointOptions::default())
     }
@@ -428,7 +384,6 @@ impl Scripted {
         breakpoint
     }
 
-    /// The reason the first breakpoint's one location waits, if it does.
     fn pending(&self) -> Option<Arc<str>> {
         let snapshot = self.harness.controller.snapshot();
         snapshot.breakpoints[0]
@@ -437,7 +392,6 @@ impl Scripted {
             .map(|pending| Arc::clone(&pending.reason))
     }
 
-    /// Takes the native actions recorded since the last look.
     fn actions(&self) -> Vec<String> {
         self.harness.trace().take_actions()
     }
@@ -446,12 +400,10 @@ impl Scripted {
         self.harness.threads[0]
     }
 
-    /// Resumes the published stop for a continue.
     fn resume(&mut self) {
         self.harness.resume().expect("continue");
     }
 
-    /// The stops published since the last look.
     fn stops(&mut self) -> Vec<(crate::ThreadId, StopReason)> {
         self.harness
             .published()
@@ -466,8 +418,6 @@ impl Scripted {
     }
 }
 
-/// V8's report of a pause at `hits` in a stack of `depth` frames, which
-/// lists no scopes.
 fn paused(reason: &str, hits: &[&str], depth: u64) -> Value {
     let frames = (0..depth)
         .map(|index| {
@@ -481,9 +431,6 @@ fn paused(reason: &str, hits: &[&str], depth: u64) -> Value {
     json!({"reason": reason, "hitBreakpoints": hits, "callFrames": frames})
 }
 
-/// A connection readies the main isolate, arms it as the runtime is armed,
-/// and lets the node run only once Node reports that it waits: a release
-/// sent before Node's `waitForDebugger` begins is lost.
 #[test]
 fn connecting_readies_the_main_isolate_and_releases_it_once_node_waits() {
     let mut scripted = Scripted::connected(1);
@@ -570,7 +517,6 @@ fn removing_a_breakpoint_before_v8_answers_removes_its_late_placements() {
     }
 }
 
-/// The managed breakpoint `breakpoint`'s hit, counted `count` times.
 fn managed_hit(breakpoint: &Breakpoint, count: u64) -> StopReason {
     StopReason::Breakpoint {
         address: None,
@@ -581,13 +527,8 @@ fn managed_hit(breakpoint: &Breakpoint, count: u64) -> StopReason {
     }
 }
 
-/// The native breakpoint at [`TRAP`] that the second thread hits.
 const TRAP: u64 = 0x40;
 
-/// A breakpoint V8 pauses at, and a native one that another thread hits
-/// while the same all-stop forms, in the order `v8_first` names: one stop
-/// is published, the native hit's, as the first of equal priority. V8's
-/// stays held through that stop's resume and is published at its own.
 fn pause_beside_a_native_trap(v8_first: bool) {
     let mut scripted = Scripted::connected(2);
     scripted.sent();
@@ -640,7 +581,6 @@ fn pause_beside_a_native_trap(v8_first: bool) {
     );
     assert_eq!(scripted.sent_names(), Vec::<String>::new());
 
-    // The native hit's thread steps over its trap, then every thread runs.
     scripted.resume();
     scripted
         .harness
@@ -681,9 +621,6 @@ fn a_native_trap_then_a_v8_pause_in_one_all_stop_publish_one_each() {
     pause_beside_a_native_trap(false);
 }
 
-/// A client's pause asked while V8's pause at a breakpoint is still being
-/// listed is answered by that breakpoint's stop: its deadline ends with
-/// the stop rather than stopping every thread after the next continue.
 #[test]
 fn an_interrupt_answered_by_a_breakpoint_stop_ends_with_it() {
     let mut scripted = Scripted::connected(2);
@@ -731,8 +668,6 @@ fn an_interrupt_answered_by_a_breakpoint_stop_ends_with_it() {
     );
 }
 
-/// A pause at a breakpoint id no location of microscope's has is no
-/// `debugger` statement: it stops nothing, and V8 is told to resume.
 #[test]
 fn a_pause_at_an_unknown_breakpoint_resumes_unseen() {
     let mut scripted = Scripted::connected(2);
@@ -764,9 +699,6 @@ fn a_pause_at_an_unknown_breakpoint_resumes_unseen() {
     }
 }
 
-/// Begins a client's pause while every thread runs, which asks V8 to pause
-/// the main isolate, then lets its deadline pass with no pause from V8:
-/// every thread stops natively for the pause.
 fn interrupt_unanswered(scripted: &mut Scripted) {
     scripted.harness.start_continue();
     scripted.actions();
@@ -806,7 +738,6 @@ fn interrupt_unanswered(scripted: &mut Scripted) {
             StopReason::Pause
         )]
     );
-    // The stop's module refresh plants the inspector's hook.
     scripted.actions();
 }
 
@@ -847,9 +778,6 @@ fn an_interrupt_during_an_internal_stop_still_waits_for_v8() {
     );
 }
 
-/// An interrupt V8 never answers, as in an idle event loop, stops every
-/// thread natively. The pause V8 takes after the resume answers nothing:
-/// it is judged, absorbed, and resumed.
 #[test]
 fn an_unanswered_interrupt_stops_natively_and_absorbs_its_late_pause() {
     let mut scripted = Scripted::connected(2);
@@ -868,8 +796,6 @@ fn an_unanswered_interrupt_stops_natively_and_absorbs_its_late_pause() {
     assert_eq!(scripted.sent_names(), [cdp::RESUME]);
 }
 
-/// The interrupt's pause V8 reports while the native stop it gave up on
-/// is published is held there, and judged once that stop resumes.
 #[test]
 fn an_interrupt_pause_reported_at_the_native_stop_is_judged_at_the_resume() {
     let mut scripted = Scripted::connected(2);
@@ -897,9 +823,6 @@ fn an_interrupt_pause_reported_at_the_native_stop_is_judged_at_the_resume() {
     assert_eq!(scripted.sent_names(), [cdp::RESUME]);
 }
 
-/// A pause whose scope listing V8 answers only after another thread's stop
-/// was published, and that stop resumed, is judged then: its breakpoint
-/// stops at a stop of its own.
 #[test]
 fn a_pause_listed_after_another_stop_resumed_stops_at_its_own() {
     let mut scripted = Scripted::connected(2);
@@ -968,9 +891,6 @@ fn a_pause_listed_after_another_stop_resumed_stops_at_its_own() {
     );
 }
 
-/// A connection that closes with a breakpoint's request outstanding leaves
-/// the breakpoint pending, saying why. A message the ended connection sent
-/// is ignored once a new one is made.
 #[test]
 fn a_disconnect_mid_request_leaves_the_breakpoint_pending() {
     let mut scripted = Scripted::connected(1);
@@ -1044,9 +964,6 @@ fn a_disconnect_mid_request_leaves_the_breakpoint_pending() {
     assert!(record.status.isolates()[&Session::main()].paused.is_none());
 }
 
-/// A worker that starts while the process is stopped is readied, armed,
-/// and released, and its pause at its first statement is let go, with no
-/// stop of its own.
 #[test]
 fn a_worker_attached_while_stopped_is_armed_and_released_unseen() {
     let mut scripted = Scripted::connected(2);
@@ -1062,8 +979,6 @@ fn a_worker_attached_while_stopped_is_armed_and_released_unseen() {
     assert_eq!(scripted.actions(), Vec::<String>::new());
 }
 
-/// Attaches the worker at session `id`, answering its arming, and lets its
-/// pause at its first statement go.
 fn attach_worker(scripted: &mut Scripted, id: &str) {
     let params = json!({"sessionId": id, "waitingForDebugger": true, "workerInfo": {}});
     scripted.inspector.event(&[], cdp::WORKER_ATTACHED, params);
@@ -1101,9 +1016,6 @@ fn attach_worker(scripted: &mut Scripted, id: &str) {
     assert_eq!(scripted.sent_names(), [named(cdp::RESUME)]);
 }
 
-/// The process exiting while V8 has not answered its arming ends the
-/// connection: every request outstanding is answered, and the replies,
-/// for a process that is gone, change nothing.
 #[test]
 fn a_process_exiting_while_armed_closes_the_connection() {
     let mut scripted = Scripted::connected(2);
@@ -1142,10 +1054,6 @@ fn a_process_exiting_while_armed_closes_the_connection() {
     assert_eq!(replies, requests, "every request, markers too, is answered");
 }
 
-/// The main isolate and a worker pause at once. The main isolate's pause
-/// runs on the main thread and stops; no thread is found running the
-/// worker's, whose script frames the fake cannot unwind, so its failure
-/// is reported separately without attributing its breakpoint to a thread.
 #[test]
 fn an_unidentified_worker_pause_does_not_replace_a_concurrent_breakpoint() {
     let mut scripted = Scripted::connected(2);
@@ -1186,9 +1094,6 @@ fn an_unidentified_worker_pause_does_not_replace_a_concurrent_breakpoint() {
     assert_eq!(scripted.stops(), []);
 }
 
-/// A step over from a V8 pause runs as V8's `stepOver`. A pause deeper in,
-/// at a breakpoint whose hit condition fails, does not end it: it goes on
-/// out of that call. The next pause no deeper than the step began ends it.
 #[test]
 fn a_v8_step_over_ends_only_at_a_pause_no_deeper_than_it_began() {
     let mut scripted = Scripted::connected(1);
@@ -1259,11 +1164,6 @@ fn a_v8_step_over_ends_only_at_a_pause_no_deeper_than_it_began() {
     );
 }
 
-/// An assignment at a stop V8's pause published sends V8 nothing while the
-/// stop stands. The execution's resume asks V8 to set the variable in each
-/// scope that may hold it, innermost first, and lets V8 keep its pause: it
-/// is told to resume only after the assignment's own stop is published and
-/// resumed in turn.
 #[test]
 fn an_assignment_holds_v8_s_pause_until_its_own_stop_resumes() {
     let mut scripted = Scripted::connected(2);
@@ -1342,7 +1242,6 @@ fn an_assignment_holds_v8_s_pause_until_its_own_stop_resumes() {
     assert_eq!(sent[0].params["callFrameId"], "0");
     assert_eq!(sent[0].params["newValue"], json!({"value": 5}));
 
-    // V8 holds no x in the block.
     scripted.inspector.send(
         &[],
         json!({"id": sent[0].id, "error": {"code": -32603, "message": "Internal error"}}),
@@ -1371,9 +1270,6 @@ fn an_assignment_holds_v8_s_pause_until_its_own_stop_resumes() {
     assert_eq!(scripted.sent_names(), [cdp::RESUME]);
 }
 
-/// A thread exits while an attached session's shutdown releases a borrowed
-/// inspector, so its exit status is the last the cleanup's all-stop
-/// awaits. That status completes the all-stop, and the detach follows.
 #[test]
 fn a_thread_exiting_in_the_cleanup_stop_of_a_shutdown_lets_it_detach() {
     use super::super::{Signal, WaitEvent};
@@ -1400,7 +1296,6 @@ fn a_thread_exiting_in_the_cleanup_stop_of_a_shutdown_lets_it_detach() {
         .find(|request| request.method == "Runtime.getIsolateId")
         .expect("the cleanup asks the borrowed inspector to acknowledge");
 
-    // The worker begins exiting while the cleanup runs every thread.
     scripted
         .harness
         .controller
@@ -1440,13 +1335,6 @@ fn a_thread_exiting_in_the_cleanup_stop_of_a_shutdown_lets_it_detach() {
     );
 }
 
-/// Detaching from a program whose own inspector microscope borrowed leaves
-/// the server open but ends microscope's session first, while the program
-/// still runs: once the inspector acknowledges the release, the controller
-/// closes its WebSocket, and stops the threads to detach only once the
-/// inspector has answered the close. A node that exits with a session open
-/// waits for its debugger, and a session dropped then crashed its
-/// inspector's thread.
 #[test]
 fn a_borrowed_inspector_answers_the_close_of_its_session_before_the_detach() {
     use super::super::{Signal, WaitEvent};
@@ -1504,10 +1392,6 @@ fn a_borrowed_inspector_answers_the_close_of_its_session_before_the_detach() {
     );
 }
 
-/// A detach that begins while the inspector's handshake is still under
-/// way sends nothing until the controller hears the connection is made,
-/// then readies the isolate, closes the borrowed inspector's session as
-/// any detach does, and finishes.
 #[test]
 fn a_detach_during_the_handshake_waits_for_the_connection_then_closes_it() {
     use super::super::{Signal, WaitEvent};
@@ -1548,8 +1432,6 @@ fn a_detach_during_the_handshake_waits_for_the_connection_then_closes_it() {
         "the cleanup waits for the inspector to answer: {readied:?}"
     );
 
-    // The detach let the program run while it waited; the reply stops it
-    // again, and at that stop the cleanup begins.
     scripted.inspector.reply(&readied[0], json!({}));
     scripted.pump_reply();
     let main = scripted.main();
@@ -1596,10 +1478,6 @@ fn a_detach_during_the_handshake_waits_for_the_connection_then_closes_it() {
     );
 }
 
-/// A step from a native stop asks V8 to pause, which the main thread takes
-/// only once the inspector's I/O thread has handed the request on. Until
-/// the I/O thread returns from taking it, the main thread stays stopped,
-/// since running it sooner lets it run on past the next statement.
 #[test]
 fn a_step_from_a_native_stop_holds_the_main_thread_until_its_pause_is_handed_on() {
     let mut scripted = Scripted::connected(2);
@@ -1644,7 +1522,6 @@ fn a_step_from_a_native_stop_holds_the_main_thread_until_its_pause_is_handed_on(
         "the main thread waits for the pause to be handed on: {actions:?}"
     );
 
-    // The I/O thread takes the request, to return to 0x8000.
     let trace = scripted.harness.trace();
     trace.set_pc(io, entry + 1);
     trace.stack_pointers.borrow_mut().insert(io, 0x9000);
@@ -1663,7 +1540,6 @@ fn a_step_from_a_native_stop_holds_the_main_thread_until_its_pause_is_handed_on(
         "the main thread waits while the request is handed on: {actions:?}"
     );
 
-    // It returns, the request handed on.
     let trace = scripted.harness.trace();
     trace.set_pc(io, 0x8001);
     trace.stack_pointers.borrow_mut().insert(io, 0x9008);
@@ -1687,8 +1563,6 @@ fn a_step_from_a_native_stop_holds_the_main_thread_until_its_pause_is_handed_on(
     panic!("the main thread never runs");
 }
 
-/// Begins a step over from the published native stop of `scripted`'s main
-/// thread, and returns where the I/O thread takes messages.
 fn begin_native_step(scripted: &mut Scripted) -> crate::VirtualAddress {
     let main = scripted.main();
     let entry = {
@@ -1717,10 +1591,6 @@ fn begin_native_step(scripted: &mut Scripted) -> crate::VirtualAddress {
     entry
 }
 
-/// The native stop came after `Debugger.resume` was sent and before the
-/// main thread took it, so the step's pause waits for `Debugger.resumed`,
-/// which the main thread must run to bring. The gate does not hold it
-/// before the pause is sent.
 #[test]
 fn a_step_whose_pause_waits_for_a_resume_lets_the_main_thread_take_it() {
     let mut scripted = Scripted::connected(2);
@@ -1742,8 +1612,6 @@ fn a_step_whose_pause_waits_for_a_resume_lets_the_main_thread_take_it() {
     );
 }
 
-/// A gate's trap that a user breakpoint shares stays when the gate ends,
-/// and a thread stopped at it still steps over it as it resumes.
 #[test]
 fn a_gate_ending_keeps_the_repair_of_a_trap_it_shares() {
     let mut scripted = Scripted::connected(2);
@@ -1790,11 +1658,6 @@ fn a_gate_ending_keeps_the_repair_of_a_trap_it_shares() {
     );
 }
 
-/// A pause V8 reports in answer to an interrupt answers it, but must not
-/// cancel the interrupt's deadline while its scope listing is unanswered:
-/// a worker's listing passes through the main thread, which may block
-/// outside JavaScript and never pass it on. Every thread stops natively at
-/// the deadline, and the listing that comes later stops nothing again.
 #[test]
 fn a_pause_still_listing_leaves_the_interrupt_its_deadline() {
     let mut scripted = Scripted::connected(2);

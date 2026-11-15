@@ -1,13 +1,6 @@
-//! Debug Adapter Protocol message types.
-//!
-//! Only the messages and fields microscope uses are modeled. Unknown fields are
-//! ignored, absent or `null` arguments read as empty, and a client's `seq`
-//! is echoed exactly as sent, since some clients send strings.
-
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// A message received from the client.
 #[derive(Debug)]
 pub enum Incoming {
     Request {
@@ -16,16 +9,13 @@ pub enum Incoming {
         arguments: Value,
     },
 
-    /// The client's answer to a reverse request.
     Response {
         request_seq: Option<u64>,
 
-        /// The response's body, or its error message.
         result: Result<Value, String>,
     },
 }
 
-/// Why a message could not be understood.
 #[derive(Debug, thiserror::Error)]
 pub enum MessageError {
     #[error("the message is not valid JSON: {0}")]
@@ -45,8 +35,6 @@ pub enum MessageError {
 }
 
 impl MessageError {
-    /// The `seq` of a request that could not be parsed, so its error can
-    /// still be answered.
     pub fn request_seq(body: &[u8]) -> Option<(Value, String)> {
         let value = serde_json::from_slice::<Value>(body).ok()?;
         let seq = value.get("seq")?.clone();
@@ -59,7 +47,6 @@ impl MessageError {
     }
 }
 
-/// Parses one message body.
 pub fn parse(body: &[u8]) -> Result<Incoming, MessageError> {
     let value = serde_json::from_slice::<Value>(body)?;
     let Value::Object(mut object) = value else {
@@ -99,7 +86,6 @@ pub fn parse(body: &[u8]) -> Result<Incoming, MessageError> {
     }
 }
 
-/// A message to send to the client; the writer numbers it.
 #[derive(Debug)]
 pub enum Outgoing {
     Response {
@@ -112,7 +98,6 @@ pub enum Outgoing {
         body: Value,
     },
 
-    /// A reverse request, whose response settles `ticket`.
     Request {
         command: &'static str,
         arguments: Value,
@@ -121,8 +106,6 @@ pub enum Outgoing {
 }
 
 impl Outgoing {
-    /// Serializes the message with the writer's `seq`. Every response and
-    /// event carries a body object, which strict clients require.
     pub fn to_json(&self, seq: u64) -> Value {
         match self {
             Self::Response {
@@ -180,20 +163,15 @@ fn object_or_empty(body: &Value) -> Value {
     }
 }
 
-/// A failed request's explanation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorBody {
-    /// The raw error in short form: `notStopped`, `cancelled`, or the
-    /// message itself.
     pub short: String,
 
-    /// The message shown to the user.
     pub format: String,
     pub show_user: bool,
 }
 
 impl ErrorBody {
-    /// An error whose message the client may show.
     pub fn new(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
@@ -203,7 +181,6 @@ impl ErrorBody {
         }
     }
 
-    /// An error the user must see, such as an invalid launch configuration.
     pub fn shown(message: impl Into<String>) -> Self {
         Self {
             show_user: true,
@@ -211,7 +188,6 @@ impl ErrorBody {
         }
     }
 
-    /// The well-known error for a request that needs a stopped inferior.
     pub fn not_stopped() -> Self {
         Self {
             short: "notStopped".to_owned(),
@@ -219,7 +195,6 @@ impl ErrorBody {
         }
     }
 
-    /// The well-known error for a request that was cancelled.
     pub fn cancelled() -> Self {
         Self {
             short: "cancelled".to_owned(),
@@ -228,12 +203,10 @@ impl ErrorBody {
     }
 }
 
-/// Escapes braces, which a `Message.format` string uses for variables.
 fn escape_format(message: &str) -> String {
     message.replace('{', "{{").replace('}', "}}")
 }
 
-/// `initialize` arguments: the client's capabilities.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct InitializeArguments {
@@ -251,14 +224,12 @@ pub struct InitializeArguments {
     pub supports_ansi_styling: Option<bool>,
 }
 
-/// A source file as the client names it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Source {
     pub path: Option<String>,
 }
 
-/// One requested source breakpoint.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SourceBreakpoint {
@@ -274,11 +245,9 @@ pub struct SetBreakpointsArguments {
     pub source: Source,
     pub breakpoints: Option<Vec<SourceBreakpoint>>,
 
-    /// The deprecated form of `breakpoints`: lines only.
     pub lines: Option<Vec<i64>>,
 }
 
-/// One requested function breakpoint.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct FunctionBreakpoint {
@@ -293,7 +262,6 @@ pub struct SetFunctionBreakpointsArguments {
     pub breakpoints: Vec<FunctionBreakpoint>,
 }
 
-/// One requested instruction breakpoint.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct InstructionBreakpoint {
@@ -347,7 +315,6 @@ pub struct DataBreakpoint {
     pub data_id: String,
     pub access_type: Option<String>,
 
-    /// One of the adapter's `breakpointModes`.
     pub mode: Option<String>,
     pub condition: Option<String>,
     pub hit_condition: Option<String>,
@@ -444,7 +411,6 @@ pub struct SetExceptionBreakpointsArguments {
     pub filter_options: Option<Vec<ExceptionFilterOptions>>,
 }
 
-/// Arguments naming one thread, as run control requests do.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ThreadArguments {
@@ -452,7 +418,6 @@ pub struct ThreadArguments {
     pub single_thread: Option<bool>,
     pub granularity: Option<String>,
 
-    /// For `stepIn`, the `stepInTargets` target to go into.
     pub target_id: Option<i64>,
 }
 
@@ -503,8 +468,6 @@ pub struct DisconnectArguments {
     pub terminate_debuggee: Option<bool>,
 }
 
-/// `microscope/setValueFormat` arguments: how values are shown when a request
-/// does not say.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct SetValueFormatArguments {
@@ -523,8 +486,6 @@ pub struct ExceptionInfoArguments {
     pub thread_id: i64,
 }
 
-/// Reads a memory reference: an address in hexadecimal with `0x`, or in
-/// decimal, as some clients send.
 pub fn address(reference: &str) -> Option<u64> {
     let reference = reference.trim();
     reference
@@ -536,7 +497,6 @@ pub fn address(reference: &str) -> Option<u64> {
         )
 }
 
-/// Offsets an address by a signed byte count, if the result is one.
 pub fn offset(address: u64, offset: Option<i64>) -> Option<u64> {
     address.checked_add_signed(offset.unwrap_or(0))
 }

@@ -1,7 +1,3 @@
-//! The event auditor: reads every event the debugger publishes, from a copy
-//! of the stream that never falls behind, and checks the stream's promises
-//! against the kernel.
-
 use tokio::sync::mpsc;
 
 use std::cell::RefCell;
@@ -17,31 +13,21 @@ use crate::{ConditionOwner, DebuggerEvent};
 pub struct Auditor {
     events: mpsc::UnboundedReceiver<DebuggerEvent>,
 
-    /// The hit events counted for the client's checks.
     published: Rc<RefCell<Published>>,
 
-    /// The newest revision of any event.
     revision: u64,
 
-    /// The newest revision a `StateChanged` announced.
     change: u64,
 
-    /// The newest stop published.
     stop: u64,
 
-    /// The newest execution each debugged process began.
     executions: BTreeMap<Tgid, u64>,
 
-    /// The process whose launch has not yet resumed it past its exec stop,
-    /// which continues the launch's execution instead of beginning one.
     launching: Option<Tgid>,
 
-    /// The processes the session launched or attached to, and those it
-    /// said it detached from.
     debugged: BTreeSet<Tgid>,
     detached: BTreeSet<Tgid>,
 
-    /// The threads and processes whose exits were published.
     exited_threads: BTreeSet<Tid>,
     exited_processes: BTreeSet<Tgid>,
 }
@@ -70,14 +56,6 @@ impl Auditor {
         }
     }
 
-    /// Reads the events published since the last action: each state change
-    /// announces a new revision, which the events it produced share, so
-    /// revisions never decrease; stop identifiers only increase, as do a
-    /// process's execution identifiers, which a launch begins; and every
-    /// exit the client hears of, of a thread or of the process, is the one
-    /// the kernel reported, or, for a leader, the code it passed to `exit`,
-    /// and is heard once. It counts the messages hits logged and the
-    /// conditions that failed to evaluate, for the client's checks.
     pub fn check(&mut self, kernel: &Kernel, marks: &mut Marks) -> Result<(), Failure> {
         while let Ok(event) = self.events.try_recv() {
             let revision = event.revision();
@@ -132,11 +110,6 @@ impl Auditor {
                         )));
                     }
 
-                    // A leader that exits while the debugger knows other
-                    // threads live is reported at its exit event, with the
-                    // code it passed to `exit`: Linux reports its exit only
-                    // once every other thread has exited, with the process's
-                    // status. Those threads may have begun to exit already.
                     if let Some(&code) = kernel.leader_exits.get(&tid) {
                         if !same_exit(ExitStatus::Code(code), status) {
                             return Err(failure(format!(
@@ -198,18 +171,6 @@ impl Auditor {
         Ok(())
     }
 
-    /// Once the session ended, after the last [`Self::check`]: a process
-    /// the session launched or attached to whose leader its tracer reaped
-    /// was published as exited, and so was each other thread of it the
-    /// tracer reaped that exited by itself. `ThreadExited` promises to tell
-    /// of a thread that exits while its process runs on; one that its
-    /// process's `exit_group` or fatal signal took may go unpublished, as
-    /// one that began as its process was killed does from start to end.
-    ///
-    /// A process the session detached from is not judged: one killed from
-    /// outside as an attached session shuts down can die as it detaches,
-    /// and the debugger then publishes the detach, though it reaped the
-    /// exit.
     pub fn finish(&self, kernel: &Kernel) -> Result<(), Failure> {
         for (&tid, reaped) in &kernel.reaped {
             if self.detached.contains(&reaped.tgid) {
@@ -240,9 +201,6 @@ impl Auditor {
         Ok(())
     }
 
-    /// Checks that `event` begins an execution with a new identifier. A
-    /// launch's execution goes on past its exec stop, which publishes it
-    /// again; any other repeat is an operation given another's identifier.
     fn check_execution(&mut self, event: &DebuggerEvent) -> Result<(), Failure> {
         match *event {
             DebuggerEvent::InferiorLaunched {
@@ -281,7 +239,6 @@ impl Auditor {
         Ok(())
     }
 
-    /// Counts a message a hit logged or a condition that failed to evaluate.
     fn count_hit_event(&self, event: &DebuggerEvent) -> Result<(), Failure> {
         let mut published = self.published.borrow_mut();
 
@@ -300,7 +257,6 @@ impl Auditor {
                     .or_default() += 1;
             }
 
-            // The client's watch conditions are constants.
             DebuggerEvent::ConditionFailed {
                 owner: ConditionOwner::Watchpoint(watchpoint),
                 error,
@@ -317,7 +273,6 @@ impl Auditor {
     }
 }
 
-/// The simulated process a process identifier names.
 fn tgid_of(process: u64) -> Tgid {
     Tgid::new(Tid::try_from(process).expect("a simulated pid fits"))
 }
@@ -396,15 +351,10 @@ mod tests {
         }
     }
 
-    /// Audits a session that launched process 1000, whose thread 1001
-    /// started, and both threads exited 0 and were reaped, publishing
-    /// `events` after the start.
     fn audit(events: Vec<DebuggerEvent>) -> Result<(), Failure> {
         audit_exits(false, events)
     }
 
-    /// Like [`audit`], with the threads' exits taken by `exit_group` when
-    /// `group_exit` says so.
     fn audit_exits(group_exit: bool, events: Vec<DebuggerEvent>) -> Result<(), Failure> {
         let mut kernel = Kernel::new(1);
         let tgid = Tgid::led_by(LEADER);
@@ -453,8 +403,6 @@ mod tests {
         auditor.finish(&kernel)
     }
 
-    /// Each reaped thread that exited by itself, and its process, is heard
-    /// to exit exactly once.
     #[test]
     fn every_exit_is_published_once() {
         audit(vec![thread_exited(3), inferior_exited(4)]).expect("each exit once");
@@ -483,13 +431,11 @@ mod tests {
         .expect_err("a process's exit published twice");
         assert!(failure.message.contains("published again"), "{failure}");
 
-        // A thread its process's exit took may go unpublished.
         audit_exits(true, vec![inferior_exited(3)]).expect("a group exit");
         let failure = audit_exits(true, vec![thread_exited(3)])
             .expect_err("a process's exit unpublished after its group exit");
         assert!(failure.message.contains("process 1000"), "{failure}");
 
-        // A process detached from, as it died, is not judged.
         audit(vec![DebuggerEvent::InferiorDetached {
             revision: 3,
             process_id: PROCESS,
@@ -497,8 +443,6 @@ mod tests {
         .expect("detached");
     }
 
-    /// Each execution has its own identifier, except that the launch's goes
-    /// on past the exec stop, which publishes it again.
     #[test]
     fn each_execution_is_new() {
         let exits = || [thread_exited(10), inferior_exited(11)];
@@ -517,8 +461,6 @@ mod tests {
             "{failure}"
         );
 
-        // An entry stop ends the launch's execution before its exec stop
-        // could resume it.
         audit_executions(vec![stopped(3, 1), continued(4, 1)])
             .expect_err("a continue from the entry stop reused the launch's execution");
 

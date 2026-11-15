@@ -1,6 +1,3 @@
-//! The generic unwind loop: it iterates the caller contexts a
-//! [`CallerProvider`] reconstructs.
-
 use std::collections::HashSet;
 
 use crate::debug_info::UnwindInfo;
@@ -11,7 +8,6 @@ pub mod sample;
 
 pub const DEFAULT_MAX_FRAMES: usize = 256;
 
-/// One loaded module's address mapping, metadata, and call-frame information.
 #[derive(Clone, Copy)]
 pub struct UnwindModule<'a> {
     pub loaded: LoadedModule,
@@ -19,10 +15,6 @@ pub struct UnwindModule<'a> {
     pub unwind: &'a dyn UnwindInfo,
 }
 
-/// Finds the module whose image describes `address`.
-///
-/// A process address space cannot map two images at one address, so the
-/// first describing module is the only one.
 pub fn unwind_module_for<'a>(
     modules: &[UnwindModule<'a>],
     address: VirtualAddress,
@@ -31,13 +23,9 @@ pub fn unwind_module_for<'a>(
         .and_then(|(index, image_address)| Some((*modules.get(index)?, image_address)))
 }
 
-/// The modules a stack unwinds through, each known by its index.
 pub trait Modules {
-    /// The module numbered `index`, which [`Modules::module_at`] gave.
     fn module(&self, index: usize) -> UnwindModule<'_>;
 
-    /// The module whose image describes `address`, and the image address
-    /// that is, as [`unwind_module_at`] finds it in a slice.
     fn module_at(&self, address: VirtualAddress) -> Option<(usize, ImageAddress)>;
 }
 
@@ -56,13 +44,10 @@ impl Modules for [UnwindModule<'_>] {
     }
 }
 
-/// The index in `modules` of the module [`unwind_module_for`] finds.
 pub fn unwind_module_at(
     modules: &[UnwindModule<'_>],
     address: VirtualAddress,
 ) -> Option<(usize, ImageAddress)> {
-    // Every frame of every sample asks this of each module before its
-    // own, so it builds no error for the modules that do not hold it.
     modules.iter().enumerate().find_map(|(index, module)| {
         module
             .loaded
@@ -76,33 +61,20 @@ pub fn unwind_module_at(
     })
 }
 
-/// Whether a frame keeps the frame-pointer chain at an instruction: its
-/// rbp holds the address of the word where it saved its caller's, with its
-/// return address in the word above, as a walk of the chain assumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FramePointerRule {
     Kept,
 
-    /// The function's rules find its frame some other way.
     NotKept,
 
-    /// The frame has no caller.
     Outermost,
     NoUnwindInfo,
 }
 
-/// Decides a [`FramePointerRule`] by unwinding with registers and memory
-/// made up for the test: rbp and rsp are far apart, and every word of
-/// memory holds a value its address names. The frame keeps the chain
-/// exactly when its rules find the frame from rbp, its caller's rbp in the
-/// word rbp points to, and its return address in the next. A frame found
-/// from rsp does not keep it, and one whose rules leave no return address,
-/// as at the start of a thread glibc's `clone3` made, has no caller.
 pub fn frame_pointer_rule<U: UnwindInfo + ?Sized>(
     unwind: &U,
     address: ImageAddress,
 ) -> FramePointerRule {
-    /// A frame pointer and a stack pointer no real frame has.
     const FRAME: u64 = 0x4000_0000_0000_0000;
     const STACK: u64 = 0x2000_0000_0000_0000;
 
@@ -133,18 +105,11 @@ pub fn frame_pointer_rule<U: UnwindInfo + ?Sized>(
     }
 }
 
-/// Where Linux's x86-64 `ucontext` keeps the interrupted registers: its
-/// `uc_mcontext`, after `uc_flags`, `uc_link`, and `uc_stack`.
 pub const UCONTEXT_MCONTEXT: u64 = 40;
 
-/// The DWARF numbers of the general registers in the order the kernel's
-/// `sigcontext` saves them, from r8 to rip.
 pub const SIGCONTEXT_REGISTERS: [DwarfRegister; 17] =
     DwarfRegister::each([8, 9, 10, 11, 12, 13, 14, 15, 5, 4, 6, 3, 1, 0, 2, 7, 16]);
 
-/// The registers a signal interrupted, from the `ucontext` the kernel
-/// placed at `context`, the stack pointer of the trampoline its handler
-/// returns to; `None` if `memory` lacks any of them.
 pub fn interrupted_registers(context: u64, memory: &mut dyn MemoryReader) -> Option<RegisterFile> {
     let mut registers = RegisterFile::new([]);
     for (slot, register) in SIGCONTEXT_REGISTERS.iter().enumerate() {
@@ -155,8 +120,6 @@ pub fn interrupted_registers(context: u64, memory: &mut dyn MemoryReader) -> Opt
     Some(registers)
 }
 
-/// A register by its x86-64 psABI DWARF number, which is not its place in
-/// any register table: DWARF register 1 is rdx, not rbx.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DwarfRegister(u16);
 
@@ -171,7 +134,6 @@ impl DwarfRegister {
         self.0
     }
 
-    /// The registers `numbers` name, in order.
     #[must_use]
     #[expect(
         clippy::indexing_slicing,
@@ -215,16 +177,12 @@ pub const RSP: DwarfRegister = DwarfRegister(7);
 
 pub const R12: DwarfRegister = DwarfRegister(12);
 
-/// The return address column, which in a frame's own registers holds its
-/// instruction pointer.
 pub const RETURN_ADDRESS: DwarfRegister = DwarfRegister(16);
 
-/// The bases of FS and GS.
 pub const FS_BASE: DwarfRegister = DwarfRegister(58);
 
 pub const GS_BASE: DwarfRegister = DwarfRegister(59);
 
-/// What the unwinder knows about one frame.
 #[derive(Debug, Clone)]
 pub struct FrameContext {
     pub instruction: VirtualAddress,
@@ -232,26 +190,14 @@ pub struct FrameContext {
     pub signal_frame: bool,
 }
 
-/// Registers numbered below this live in [`RegisterFile`]'s array, which
-/// covers x86-64's general registers, flags, and segment bases. Call-frame
-/// information may name any number, so the rest are kept in a list.
 const DENSE_REGISTERS: usize = 64;
 
-/// Register values by DWARF number. An absent register is unknown.
-///
-/// A sampler unwinds every frame of every sample through one of these, so
-/// it holds no allocation for the registers x86-64 has: copying it is one
-/// copy of its array.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RegisterFile {
-    /// Bit `n` says whether register `n` is known.
     known: u64,
 
-    /// Each register's value, 0 while unknown, so that equal files are
-    /// equal arrays.
     values: [u64; DENSE_REGISTERS],
 
-    /// Registers numbered from [`DENSE_REGISTERS`] up, sorted by number.
     others: Vec<(DwarfRegister, u64)>,
 }
 
@@ -314,7 +260,6 @@ impl RegisterFile {
         self.others.retain(|(other, _)| *other != register);
     }
 
-    /// Forgets every register `keep` says not to keep.
     pub fn retain(&mut self, mut keep: impl FnMut(DwarfRegister) -> bool) {
         let mut known = self.known;
         while known != 0 {
@@ -329,7 +274,6 @@ impl RegisterFile {
         self.others.retain(|(register, _)| keep(*register));
     }
 
-    /// Every known register and its value, by number.
     pub fn iter(&self) -> impl Iterator<Item = (DwarfRegister, u64)> + '_ {
         self.values
             .iter()
@@ -349,9 +293,7 @@ impl std::fmt::Debug for RegisterFile {
     }
 }
 
-/// Reads target memory for unwind rules.
 pub trait MemoryReader {
-    /// Reads one native word, or `None` when the address is unreadable.
     fn read_u64(&mut self, address: VirtualAddress) -> Option<u64>;
 }
 
@@ -370,9 +312,6 @@ pub trait CallerProvider {
     fn caller(&mut self, current: &FrameContext) -> CallerResult;
 }
 
-/// Unwinds from `initial` until the provider finishes, a frame repeats, or
-/// `max_frames` frames are collected. `make_frame` sees each frame with the
-/// provider that reconstructed it, so it can capture the frame's registers.
 pub fn collect_frames<P: CallerProvider, F>(
     initial: FrameContext,
     provider: &mut P,
@@ -385,12 +324,10 @@ pub fn collect_frames<P: CallerProvider, F>(
     let mut current = initial;
 
     let termination = loop {
-        // A repeated frame state would repeat every frame after it.
         if !visited.insert((current.cfa, current.instruction)) {
             break UnwindTermination::CycleDetected;
         }
 
-        // Levels are numbered in 32 bits, so a stack deeper than that stops here.
         let Ok(level) = u32::try_from(frames.len()) else {
             break UnwindTermination::DepthLimit;
         };
@@ -406,7 +343,6 @@ pub fn collect_frames<P: CallerProvider, F>(
         }
     };
 
-    // No frame state repeats in a stack.
     debug_assert_eq!(
         visited.len(),
         frames.len(),
@@ -423,7 +359,6 @@ mod tests {
 
     use super::*;
 
-    /// Returns its callers last first, then finishes.
     struct SequenceProvider {
         callers: Vec<FrameContext>,
     }
@@ -450,11 +385,9 @@ mod tests {
         Set(u16, u64),
         Remove(u16),
 
-        /// Keep the registers whose numbers leave this remainder by 3.
         Retain(u16),
     }
 
-    /// Register numbers at the edges of the array and past it.
     fn number() -> impl Strategy<Value = u16> {
         prop_oneof![
             prop::sample::select(vec![0, 1, 6, 16, 62, 63, 64, 65, 700, u16::MAX]),

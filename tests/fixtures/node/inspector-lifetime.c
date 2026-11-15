@@ -11,7 +11,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-// Interpose the actual C++ payload allocations, not V8's managed heap.
+
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static void* tracked[16384];
 static size_t outstanding;
@@ -92,8 +92,8 @@ static void* collect_listing(void* argument) {
     return NULL;
 }
 
-// Queue the hostile listing before Start's GetTargetIds can initiate the
-// debugger's connection. Both requests then run on the real inspector loop.
+
+
 int listen(int socket, int backlog) {
     int result = (int)syscall(SYS_listen, socket, backlog);
     const char* report = getenv("MICROSCOPE_LISTING_REPORT");

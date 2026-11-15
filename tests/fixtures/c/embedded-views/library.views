@@ -1,7 +1,7 @@
 microscope-views 1
 
-# The library's point, whose x it writes in hexadecimal. The program's own
-# point, though it has the same name, is not the library's to present.
+
+
 view c point {
     format x as hex
 }

@@ -1,13 +1,8 @@
-//! A Python program debugged from the page: its breakpoints wait for its
-//! code, each stop the agent makes opens on the program's frame, not the
-//! agent's, and the page can read the source that frame runs.
-
 use serde_json::{Value, json};
 
 use crate::support::python;
 use crate::web::{Client, Web};
 
-/// The one-based line of `uat.py` that ends with `marker`.
 fn line(marker: &str) -> usize {
     let text = std::fs::read_to_string(python::fixture("uat.py")).expect("read the fixture");
     text.lines()
@@ -16,8 +11,6 @@ fn line(marker: &str) -> usize {
         + 1
 }
 
-/// Checks that a stop selects the program's frame `function` at `line`,
-/// says so in its place and history, and folds every frame inside it.
 async fn opens_on(tab: &mut Client, state: &Value, function: &str, line: usize) -> Value {
     let inferior = &state["inferior"];
     let frame = inferior["frame"].as_u64().expect("the stop's frame");
@@ -43,7 +36,6 @@ async fn opens_on(tab: &mut Client, state: &Value, function: &str, line: usize) 
     assert_eq!(selected["name"], function, "{trace}");
     assert_eq!(selected["kind"], "interpreted", "{trace}");
 
-    // Interpreted frames have no native register state; this is unsupported, not a read failure.
     let (kind, message) = tab
         .request(
             "registers",
@@ -78,8 +70,6 @@ async fn a_python_breakpoint_waits_for_its_code_and_stops_open_on_the_program() 
     let mut tab = web.control("tab").await;
     tab.state("the program loaded", |state| state["session"].is_string())
         .await;
-    // A bare name is a native function's, and none is `area`, so the
-    // refusal says how to name Python's.
     let (kind, message) = tab
         .request("addBreakpoint", json!({"location": "area"}))
         .await
@@ -99,8 +89,6 @@ async fn a_python_breakpoint_waits_for_its_code_and_stops_open_on_the_program() 
     assert_eq!(hit["inferior"]["reason"]["kind"], "breakpoint", "{hit}");
     let stop = opens_on(&mut tab, &hit, "area", area).await;
 
-    // The page shows the source the program's frame runs, which no debug
-    // information names, but reads nothing else.
     let path = hit["inferior"]["place"]["path"].clone();
     let source = tab.ok("source", json!({"path": path})).await;
     assert!(
@@ -130,8 +118,6 @@ async fn a_python_breakpoint_waits_for_its_code_and_stops_open_on_the_program() 
 
     let stop = opens_on(&mut tab, &stepped, "area", area + 1).await;
 
-    // Python's exceptions stop only once chosen, which the console's
-    // `catch` sees too, and the stop opens on the frame that raised.
     let filters = tab.ok("exceptions", json!(null)).await;
     let raised = filters["filters"]
         .as_array()
@@ -181,8 +167,6 @@ async fn a_python_breakpoint_waits_for_its_code_and_stops_open_on_the_program() 
     opens_on(&mut tab, &raising, "fail", line("# RAISE_LINE")).await;
 }
 
-/// Each Python frame says where its function begins, and the page can read
-/// the source of every frame it was shown, a caller's in another file too.
 #[tokio::test]
 async fn python_frames_give_their_functions_first_lines_and_sources() {
     let script = python::fixture("page.py");
@@ -192,7 +176,6 @@ async fn python_frames_give_their_functions_first_lines_and_sources() {
         .position(|line| line.ends_with("# STOCK_LINE"))
         .expect("a marked line")
         + 1;
-    // A decorated function begins at its first decorator.
     let first = text
         .lines()
         .position(|line| line.starts_with("@contextmanager"))
@@ -251,9 +234,6 @@ async fn python_frames_give_their_functions_first_lines_and_sources() {
     );
 }
 
-/// A coroutine an asyncio task runs is stepped by the interpreter's
-/// machinery, `_asyncio`'s included, which folds between it and the event
-/// loop's Python frames as it does between any two Python frames.
 #[tokio::test]
 async fn a_tasks_frames_fold_the_machinery_that_steps_it() {
     let script = python::fixture("stepping.py");
@@ -314,9 +294,6 @@ async fn a_tasks_frames_fold_the_machinery_that_steps_it() {
     assert!(shown.is_empty(), "machinery shown: {shown:?} in {trace}");
 }
 
-/// Before a Python program runs, the page lists and reads the Python files
-/// of the directory Python imports the script's modules from, opens on the
-/// script, and still reads nothing else.
 #[tokio::test]
 async fn a_python_programs_own_files_are_listed_and_read_before_it_runs() {
     let script = python::fixture("uat.py");
@@ -377,9 +354,6 @@ async fn a_python_programs_own_files_are_listed_and_read_before_it_runs() {
     }
 }
 
-/// A breakpoint set in the file the page opens before a Python program runs,
-/// at the path it opened, is in that file once the program stops there: the
-/// stop, the breakpoint, and the file the page opened name one path.
 #[tokio::test]
 async fn a_breakpoint_set_in_the_opened_script_is_in_it_at_the_stop() {
     let interpreter = python::interpreter("3.14");

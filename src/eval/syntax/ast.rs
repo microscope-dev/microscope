@@ -1,13 +1,9 @@
-//! The syntax tree of one reading of an expression.
-
 use super::Span;
 use crate::eval::number::Float;
 
-/// An index into a [`Tree`]'s nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub(super) u32);
 
-/// One complete reading of an expression's text.
 #[derive(Debug, Clone)]
 pub struct Tree {
     pub(super) nodes: Vec<Node>,
@@ -35,8 +31,6 @@ impl Tree {
         self.node(id).span
     }
 
-    /// Checks that every span lies in `text`, inside its parent's, and
-    /// holds balanced brackets.
     #[cfg(any(test, feature = "fuzzing"))]
     pub fn check_spans(&self, text: &str) -> Result<(), String> {
         for (index, node) in self.nodes.iter().enumerate() {
@@ -63,8 +57,6 @@ impl Tree {
         Ok(())
     }
 
-    /// Whether two trees have the same shape and contents, whatever their
-    /// spans.
     pub fn same_shape(&self, other: &Self) -> bool {
         self.same_node(self.root, other, other.root)
     }
@@ -80,26 +72,20 @@ impl Tree {
     }
 }
 
-/// A node and the text it was read from.
 #[derive(Debug, Clone)]
 pub struct Node {
     pub kind: NodeKind,
     pub span: Span,
 }
 
-/// A name, possibly qualified with `::` or dotted with `.`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Path {
-    /// Whether the path begins with `::`, naming the outermost scope.
     pub global: bool,
     pub segments: Vec<Segment>,
 }
 
-/// One name of a [`Path`].
 #[derive(Debug, Clone)]
 pub struct Segment {
-    /// The separator before this segment; the first segment's is `::`
-    /// when the path is global, and otherwise ignored.
     pub separator: Separator,
     pub name: String,
     pub span: Span,
@@ -113,38 +99,29 @@ impl PartialEq for Segment {
 
 impl Eq for Segment {}
 
-/// What joins two segments of a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Separator {
     Colons,
     Dot,
 }
 
-/// A type named in a cast or `sizeof`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeName {
     pub base: TypeBase,
 
-    /// How many pointers lead to the base, outermost first.
     pub pointers: u8,
     pub span: Span,
 }
 
-/// The type a [`TypeName`]'s pointers lead to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeBase {
-    /// A built-in or program type, by name.
     Named(Path),
 
-    /// A C base type of several words, in canonical order, such as
-    /// `["unsigned", "long", "long"]`.
     CWords(Vec<CWord>),
 
-    /// A `struct`, `union`, `enum`, or `class` tag.
     Tagged(Tag, Path),
 }
 
-/// A word of a C base type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CWord {
     Signed,
@@ -186,7 +163,6 @@ impl CWord {
     }
 }
 
-/// The keyword of a tagged type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tag {
     Struct,
@@ -216,10 +192,8 @@ impl Tag {
     }
 }
 
-/// A built-in type a literal's suffix names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Suffix {
-    /// `iN` or `uN`, for N from 1 to 128.
     Int {
         width: u8,
         signed: bool,
@@ -232,24 +206,18 @@ pub enum Suffix {
     F32,
     F64,
 
-    /// `n`, a JavaScript `BigInt`.
     BigInt,
 }
 
-/// What a postfix `.` or `->` selects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Field {
     Named(String),
 
-    /// A tuple field, `.0`.
     Index(u32),
 }
 
-/// A function only a view's expressions may call (`docs/views.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
-    /// `inner(x)`: steps through wrapper records, while the value is a
-    /// record with exactly one member of non-zero size.
     Inner,
 }
 
@@ -268,31 +236,23 @@ impl Builtin {
     }
 }
 
-/// What `sizeof` measures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SizeOf {
     Type(TypeName),
 
-    /// An operand, which is measured as a type instead when it is a bare
-    /// path naming no value.
     Operand(NodeId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
-    /// `-`
     Neg,
 
-    /// `!`
     Not,
 
-    /// `~`
     BitNot,
 
-    /// `*`
     Deref,
 
-    /// `&`
     AddressOf,
 }
 
@@ -318,13 +278,10 @@ pub enum BinaryOp {
     Or,
 }
 
-/// How a cast was written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastForm {
-    /// `(T)x`
     Prefix,
 
-    /// `x as T`
     As,
 }
 
@@ -332,7 +289,6 @@ pub enum CastForm {
 pub enum NodeKind {
     Name(Path),
 
-    /// `$name`, without the `$`.
     Register(String),
     Integer {
         value: u128,
@@ -340,10 +296,8 @@ pub enum NodeKind {
     },
     Float(Float),
 
-    /// A character literal's code point.
     Char(u32),
 
-    /// A string literal's bytes.
     Text(Vec<u8>),
     Bool(bool),
     Null,
@@ -362,7 +316,6 @@ pub enum NodeKind {
         otherwise: NodeId,
     },
 
-    /// `=`, or a compound assignment with its operator.
     Assign {
         op: Option<BinaryOp>,
         target: NodeId,
@@ -374,7 +327,6 @@ pub enum NodeKind {
         form: CastForm,
     },
 
-    /// `.field`, or `->field` when `arrow`.
     Member {
         base: NodeId,
         field: Field,
@@ -386,14 +338,12 @@ pub enum NodeKind {
         index: NodeId,
     },
 
-    /// `base[start..end]`, only ever the whole expression.
     Range {
         base: NodeId,
         start: NodeId,
         end: NodeId,
     },
 
-    /// `base[start:end]`, either bound of which may be left out.
     Slice {
         base: NodeId,
         start: Option<NodeId>,
@@ -401,39 +351,30 @@ pub enum NodeKind {
     },
     SizeOf(SizeOf),
 
-    /// `offsetof(TYPE, member)`, a view's: where a member is in its record.
     OffsetOf {
         ty: TypeName,
         member: String,
     },
 
-    /// `container_of(PTR, TYPE, member)`, a view's: a pointer to the
-    /// record of `TYPE` whose `member` PTR points to.
     ContainerOf {
         pointer: NodeId,
         ty: TypeName,
         member: String,
     },
 
-    /// `global(NAME)`, a view's: a global of the module whose value it
-    /// presents.
     Global(String),
     Len(NodeId),
     Cap(NodeId),
 
-    /// A call of a view's built-in function on one operand.
     Call {
         function: Builtin,
         operand: NodeId,
     },
 
-    /// `(a, b)`, `(a,)`, or `()`, or `a, b` in brackets: a map's key of
-    /// several values.
     Tuple(Vec<NodeId>),
 }
 
 impl NodeKind {
-    /// The node's children, in source order.
     pub fn children(&self) -> Vec<NodeId> {
         match self {
             Self::Name(_)
@@ -473,7 +414,6 @@ impl NodeKind {
         }
     }
 
-    /// Whether two nodes agree apart from their children and spans.
     fn same_leaf(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Name(left), Self::Name(right)) => left == right,
@@ -555,12 +495,10 @@ impl NodeKind {
     }
 }
 
-/// Whether two type names name the same type, whatever their spans.
 fn same_type(left: &TypeName, right: &TypeName) -> bool {
     left.base == right.base && left.pointers == right.pointers
 }
 
-/// Whether every bracket outside literals closes in order.
 #[cfg(any(test, feature = "fuzzing"))]
 fn balanced(text: &str) -> bool {
     let mut open = Vec::new();

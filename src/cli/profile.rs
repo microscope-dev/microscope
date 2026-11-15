@@ -1,6 +1,3 @@
-//! `microscope record`, `microscope report`, and `microscope symbolize`: the
-//! sampling profiler from the command line.
-
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
@@ -293,13 +290,9 @@ pub struct ReportArgs {
     reshapes: Reshapes,
 }
 
-/// How a report reshapes each stack before it adds them up, in the order
-/// the flags were given.
 #[derive(Debug, Default)]
 pub struct Reshapes(Vec<report::Reshape>);
 
-/// The reshaping flags: each one's name, help, and whether it takes a
-/// function.
 const RESHAPES: [(&str, &str, bool); 4] = [
     (
         "merge",
@@ -445,13 +438,9 @@ impl LookArgs {
     }
 }
 
-/// How often each Python engine that reads the program reads it, unless
-/// told: a stopped snapshot holds the program for tens of milliseconds
-/// as its debugger attaches, and a live one costs it nothing.
 const SNAPSHOT_EVERY: Duration = Duration::from_millis(100);
 const LIVE_EVERY: Duration = Duration::from_millis(10);
 
-/// The bytes `--stack-bytes` asks for, which perf must be able to copy.
 fn stack_bytes(text: &str) -> Result<u32, String> {
     let bytes: u64 = text.parse().map_err(|error| format!("{error}"))?;
     u32::try_from(bytes)
@@ -464,7 +453,6 @@ fn stack_bytes(text: &str) -> Result<u32, String> {
         })
 }
 
-/// The engine `--python ENGINE` names.
 fn python_engine(engine: &str) -> Result<PythonEngine> {
     let (name, given) = engine
         .split_once('=')
@@ -489,7 +477,6 @@ fn python_engine(engine: &str) -> Result<PythonEngine> {
     }
 }
 
-/// Runs `microscope symbolize`.
 pub fn run_symbolize(args: &SymbolizeArgs) -> std::process::ExitCode {
     match symbolize(args) {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -539,9 +526,6 @@ fn symbolize(args: &SymbolizeArgs) -> Result<()> {
         .with_context(|| format!("writing {}", output.display()))
 }
 
-/// Gives a profile recorded without symbols the lines this host's own
-/// files and debug directories hold, writing a note for each module they
-/// do not.
 pub fn symbolize_here(profile: &mut Profile, out: &mut impl std::io::Write) -> Result<()> {
     let _span = microscope::span!("report symbolize");
     for module in profile.symbolize(&microscope::DebugFileOptions::default()) {
@@ -557,7 +541,6 @@ pub fn symbolize_here(profile: &mut Profile, out: &mut impl std::io::Write) -> R
     Ok(())
 }
 
-/// Runs `microscope record`, exiting as the program did.
 pub fn run_record(args: &RecordArgs) -> std::process::ExitCode {
     match record(args) {
         Ok(code) => std::process::ExitCode::from(u8::try_from(code).unwrap_or(1)),
@@ -568,7 +551,6 @@ pub fn run_record(args: &RecordArgs) -> std::process::ExitCode {
     }
 }
 
-/// Runs `microscope report` to standard output.
 pub fn run_report(args: &ReportArgs) -> std::process::ExitCode {
     match report(args, &mut std::io::stdout().lock()) {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -580,7 +562,6 @@ pub fn run_report(args: &ReportArgs) -> std::process::ExitCode {
     }
 }
 
-/// The recording options `args` choose.
 fn options(args: &RecordArgs) -> Result<RecordOptions> {
     let mut options = RecordOptions::preset(match args.preset {
         PresetArg::Prod => Preset::Production,
@@ -663,7 +644,6 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
     Ok(options)
 }
 
-/// The system call options `args` choose.
 fn syscall_options(args: &RecordArgs, syscalls: &mut SyscallOptions) -> Result<()> {
     if let Some(level) = args.syscalls {
         syscalls.level = level;
@@ -723,8 +703,6 @@ fn record(args: &RecordArgs) -> Result<i32> {
     let stop = Arc::new(AtomicBool::new(false));
     let trigger = Arc::new(AtomicBool::new(false));
 
-    // Ctrl-C reaches a started program too, which ends as it chooses; an
-    // attached one goes on, and the recording stops.
     handle_signals(
         args.pid.is_some().then(|| Arc::clone(&stop)),
         Arc::clone(&trigger),
@@ -757,9 +735,6 @@ fn record(args: &RecordArgs) -> Result<i32> {
         );
     }
 
-    // An attached process goes on once the recording ends, so the user is
-    // told when it begins. The duration counts from then too: opening the
-    // events can take seconds.
     let mut announce = args.pid;
     let mut duration = args.duration;
     let mut watch = Watch {
@@ -823,9 +798,6 @@ fn record(args: &RecordArgs) -> Result<i32> {
     Ok(code)
 }
 
-/// Writes a cut the recording saved as it went on: a segment into the
-/// continuous recording's directory, or the next numbered window beside
-/// `output`, saying why when a call asked for it.
 fn save_cut(
     profile: &Profile,
     continuous: Option<(&std::path::Path, Duration)>,
@@ -888,8 +860,6 @@ fn report_losses(profile: &Profile) {
     }
 }
 
-/// How long sampling was off while microscope caught up on the samples it
-/// had read, if it ever was.
 #[expect(
     clippy::cast_precision_loss,
     reason = "seconds and percentages need no more precision than f64's"
@@ -931,8 +901,6 @@ fn behind(profile: &Profile) -> Option<String> {
     })
 }
 
-/// A duration as the flags take it: a number with a unit of ns, us, ms,
-/// s, m, h, or d, or a bare number of seconds.
 pub(super) fn duration(text: &str) -> Result<Duration, String> {
     let split = text
         .find(|c: char| c.is_ascii_alphabetic())
@@ -959,7 +927,6 @@ pub(super) fn duration(text: &str) -> Result<Duration, String> {
     Duration::try_from_secs_f64(number * scale).map_err(|error| format!("{text}: {error}"))
 }
 
-/// A duration longer than none.
 fn positive_duration(text: &str) -> Result<Duration, String> {
     let duration = duration(text)?;
     if duration.is_zero() {
@@ -969,7 +936,6 @@ fn positive_duration(text: &str) -> Result<Duration, String> {
     Ok(duration)
 }
 
-/// `path` with `-number` before its extension.
 fn numbered(path: &std::path::Path, number: u32) -> PathBuf {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     let name = path.extension().map_or_else(
@@ -979,8 +945,6 @@ fn numbered(path: &std::path::Path, number: u32) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// Keeps Ctrl-C from ending microscope, setting `stop` if there is one, and
-/// sets `trigger` at each SIGUSR2.
 pub(super) fn handle_signals(
     stop: Option<Arc<AtomicBool>>,
     trigger: Arc<AtomicBool>,
@@ -1026,7 +990,6 @@ pub(super) fn handle_signals(
         });
     });
 
-    // The handler is installed before the recording begins.
     ready
         .recv()
         .context("starting a signal handler")?
@@ -1060,7 +1023,6 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
     ordinary_report(&profile, args, out)
 }
 
-/// `report --syscalls`: the calls' log, or with `--summary` their table.
 fn calls_report(
     profile: &Profile,
     args: &ReportArgs,
@@ -1160,7 +1122,6 @@ fn ordinary_report(
             })
             .collect();
 
-        // Each node with its children after it, depth first.
         let mut children: Vec<Vec<usize>> = vec![Vec::new(); tree.len()];
         let mut roots = Vec::new();
         for (index, node) in tree.iter().enumerate() {
@@ -1196,8 +1157,6 @@ fn ordinary_report(
                 continue;
             }
 
-            // A caller tree's own cost is that of the outermost frames, which
-            // says nothing about the function.
             if args.invert {
                 write!(out, "{:6.2}%", percent(node.total))?;
             } else {
@@ -1230,7 +1189,6 @@ fn ordinary_report(
     truncations(profile, out)
 }
 
-/// The analysis's look of a stack view.
 const fn look(view: StackView) -> microscope::profiler::Look {
     match view {
         StackView::Logical => microscope::profiler::Look::Logical,
@@ -1239,8 +1197,6 @@ const fn look(view: StackView) -> microscope::profiler::Look {
     }
 }
 
-/// Why stacks ended short of their outermost frame, and how to record
-/// more of those that ran out of copied stack.
 fn truncations(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     let truncations = profile.truncations();
     let mut limited = 0;
@@ -1290,9 +1246,6 @@ fn truncations(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     Ok(())
 }
 
-/// The rows of the threads `args` selects by process, thread, and command
-/// line, or `None` when it selects every thread. With `base`, only the
-/// command line selects, since process ids differ between recordings.
 fn selected_threads(profile: &Profile, args: &ReportArgs, base: bool) -> Result<Option<Vec<u32>>> {
     let by_id = !base && (!args.pid.is_empty() || !args.tid.is_empty());
     if !by_id && args.command.is_none() {
@@ -1330,8 +1283,6 @@ fn selected_threads(profile: &Profile, args: &ReportArgs, base: bool) -> Result<
     Ok(Some(rows))
 }
 
-/// The weight `query` selects when it selects threads, which it says, and
-/// otherwise `total`.
 fn selected_total(
     profile: &Profile,
     keys: &microscope::profiler::Keys<'_>,
@@ -1354,7 +1305,6 @@ fn selected_total(
     Ok(selected)
 }
 
-/// A weight in the profile's unit: seconds, or a count of executions.
 #[expect(
     clippy::cast_precision_loss,
     reason = "seconds need no more precision than f64's"
@@ -1366,9 +1316,6 @@ fn weight_text(profile: &Profile, value: u64) -> String {
     }
 }
 
-/// The processes a profile of more than one sampled, most cost first,
-/// each with its threads and command line: Chromium's are told apart by
-/// their roles, as `--type=renderer`.
 #[expect(
     clippy::cast_precision_loss,
     reason = "percentages need no more precision than f64's"
@@ -1426,9 +1373,6 @@ fn processes(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> 
     Ok(())
 }
 
-/// A command line cut to `widest` characters. The arguments are what tell
-/// processes apart, so a long one loses its program's directory first, as
-/// a Nix store path's, and only then its end.
 fn shortened(command: String, widest: usize) -> String {
     if command.chars().count() <= widest {
         return command;
@@ -1445,7 +1389,6 @@ fn shortened(command: String, widest: usize) -> String {
     }
 }
 
-/// Resolves the optional base and adapts CLI selections to the report query.
 fn selected_report(
     profile: &Profile,
     args: &ReportArgs,
@@ -1504,13 +1447,9 @@ fn selected_report(
     )
 }
 
-/// Fewer samples than this, or less of the program's CPU time, say too
-/// little to judge coverage, and the recorder's cost over so short a run is
-/// mostly noise.
 const FEWEST_JUDGED_SAMPLES: usize = 20;
 const LEAST_JUDGED_CPU: u64 = 50_000_000;
 
-/// Coverage and sampling limitations, without inferring concurrent overhead.
 #[expect(
     clippy::cast_precision_loss,
     reason = "seconds and percentages need no more precision than f64's"
@@ -1573,7 +1512,6 @@ fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Wr
     Ok(())
 }
 
-/// Total recorder work includes processing after the target's interval.
 #[expect(
     clippy::cast_precision_loss,
     reason = "seconds and percentages need no more precision than f64's"
@@ -1649,9 +1587,6 @@ fn cost(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     Ok(())
 }
 
-/// Each module whose debug information left out what the profile names
-/// frames by, as split DWARF whose `.dwo` files were not found does; and
-/// the modules whose images the image cache could not keep, by why.
 fn debug_information_notes(profile: &Profile) -> Vec<String> {
     let settings = profile.settings();
     let mut notes = settings
@@ -1703,7 +1638,6 @@ fn debug_information_notes(profile: &Profile) -> Vec<String> {
     notes
 }
 
-/// What task snapshots cost the program, and what they found.
 #[expect(
     clippy::cast_precision_loss,
     reason = "milliseconds need no more precision than f64's"
@@ -1713,7 +1647,6 @@ fn snapshots(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     let (snapshots, held, failures) = profile.task_snapshots();
     let (live, read, changed) = profile.live_snapshots();
 
-    // A profile recorded before reads were counted has none.
     let left_out = if read >= changed && read > 0 {
         format!(
             "{changed} of the {read} tasks and threads they read ({:.1}%)",
@@ -1743,8 +1676,6 @@ fn snapshots(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
         )?;
     }
 
-    // Thread snapshots read threads as tasks of their own, which no sample
-    // runs as a task.
     let tasks = profile
         .tasks()
         .iter()
@@ -1773,7 +1704,6 @@ fn snapshots(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     Ok(())
 }
 
-/// What a report's profile holds, and how much of the program it covers.
 #[expect(
     clippy::cast_precision_loss,
     reason = "seconds and percentages need no more precision than f64's"
@@ -1848,7 +1778,6 @@ fn summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Re
     instrumentation(profile, limit, out)
 }
 
-/// How long threads were off their CPUs, when the recording looked.
 #[expect(
     clippy::cast_precision_loss,
     reason = "seconds need no more precision than f64's"
@@ -1858,10 +1787,6 @@ fn off_cpu(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
         return Ok(());
     }
 
-    // A sum over threads, which can be many times the recording's
-    // length: say how many it sums and which was off longest. The thread
-    // microscope's Python SDK starts waits on microscope, not on what the
-    // program does.
     let (sdk, threads): (Vec<_>, Vec<_>) = profile
         .threads()
         .into_iter()
@@ -1920,18 +1845,13 @@ fn off_cpu(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     Ok(())
 }
 
-/// The name microscope's Python SDK gives the thread `trace_calls` starts.
 const SDK_THREAD: &str = "microscope-sdk";
 
-/// What the program's instrumentation recorded, and the labels the
-/// recorder gave its threads from their runtimes.
 fn instrumentation(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Result<()> {
     for (_, problem) in profile.probe_problems() {
         writeln!(out, "{problem}.")?;
     }
 
-    // The labels the recorder gave threads from their runtimes are not the
-    // program's, and go apart from its zones.
     let (labels, zones): (Vec<_>, Vec<_>) =
         profile.zones().into_iter().partition(|zone| zone.runtime);
     let names = ThreadNames::of(profile);
@@ -1944,9 +1864,6 @@ fn instrumentation(profile: &Profile, limit: usize, out: &mut impl std::io::Writ
     runtime_labels(&names, &labels, limit, out)
 }
 
-/// What the program's own instrumentation recorded: `zones`, by site, and
-/// what of `counts` was lost; then the first `limit` of what it said, and
-/// of the threads that ran zones.
 #[expect(
     clippy::cast_precision_loss,
     reason = "times need no more precision than f64's"
@@ -1959,8 +1876,6 @@ fn program_instrumentation(
     limit: usize,
     out: &mut impl std::io::Write,
 ) -> Result<()> {
-    // Each site's zones: how many, their total and longest time, and how
-    // many are flagged.
     let mut sites: std::collections::BTreeMap<&str, (u64, u64, u64, u64)> =
         std::collections::BTreeMap::new();
 
@@ -2026,9 +1941,6 @@ fn program_instrumentation(
     thread_zones(names, zones, limit, out)
 }
 
-/// The labels the recorder gave each thread from what its runtime said,
-/// as whether it held the GIL: for each thread, label, and value, the
-/// time in its spans and how many, most time first, the first `limit`.
 #[expect(
     clippy::cast_precision_loss,
     reason = "times need no more precision than f64's"
@@ -2081,8 +1993,6 @@ fn runtime_labels(
     Ok(())
 }
 
-/// Each thread's name and id, as the report shows it, and seconds since a
-/// profile began.
 struct ThreadNames {
     names: std::collections::HashMap<(u32, u32), String>,
     start: i64,
@@ -2120,8 +2030,6 @@ impl ThreadNames {
     }
 }
 
-/// The first `limit` messages, frames, and triggers the program marked, in
-/// time order.
 fn messages(
     profile: &Profile,
     names: &ThreadNames,
@@ -2168,8 +2076,6 @@ fn messages(
     Ok(())
 }
 
-/// The first `limit` threads that ran zones, by when their first outermost
-/// zone began.
 #[expect(
     clippy::cast_precision_loss,
     reason = "times need no more precision than f64's"
@@ -2180,10 +2086,6 @@ fn thread_zones(
     limit: usize,
     out: &mut impl std::io::Write,
 ) -> Result<()> {
-    // Each thread's outermost zones, which hold its others' time: when the
-    // first began, when the last ended, how long they took, and how many.
-    // A zone's depth counts the runtime's labels around it too, so the
-    // outermost are found among these zones alone.
     let mut sorted: Vec<_> = zones.iter().collect();
     sorted.sort_by_key(|zone| (zone.pid, zone.tid, zone.start, std::cmp::Reverse(zone.end)));
     let mut reached: Option<((u32, u32), i64)> = None;
@@ -2240,8 +2142,6 @@ fn thread_zones(
     Ok(())
 }
 
-/// A debugging session's profile of its program: recording on a thread of
-/// its own, or recorded.
 #[derive(Default)]
 pub struct Profiling {
     recording: Option<SessionRecording>,
@@ -2256,8 +2156,6 @@ struct SessionRecording {
 }
 
 impl SessionRecording {
-    /// The profile so far: the window as it is, or all of it once the
-    /// recording has ended.
     fn so_far(&self) -> Option<Profile> {
         self.trigger.store(true, Ordering::Relaxed);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -2273,7 +2171,6 @@ impl SessionRecording {
 }
 
 impl Profiling {
-    /// Takes the recording's profile once it has ended.
     fn settle(&mut self) -> Result<()> {
         if self
             .recording
@@ -2286,7 +2183,6 @@ impl Profiling {
         Ok(())
     }
 
-    /// Ends the recording, keeping its profile.
     fn end(&mut self) -> Result<()> {
         if let Some(recording) = self.recording.take() {
             recording.stop.store(true, Ordering::Relaxed);
@@ -2303,8 +2199,6 @@ impl Profiling {
 }
 
 impl super::Cli {
-    /// `profile start|stop|save`: samples the session's program from
-    /// outside, as `microscope record --pid` does, while it runs.
     pub(super) async fn profile(&self, arguments: &[&str]) -> Result<String> {
         let live = if arguments.first() == Some(&"start") {
             self.live_process().await
@@ -2320,7 +2214,6 @@ impl super::Cli {
 }
 
 impl Profiling {
-    /// Runs one `profile` command; `live` is the process to start on.
     fn command(
         &mut self,
         arguments: &[&str],
@@ -2394,9 +2287,6 @@ impl Profiling {
     }
 }
 
-/// Records `pid` on a thread of its own until it exits or is stopped, and
-/// returns once the recording has begun, so that nothing the program does
-/// after goes unrecorded.
 fn start_recording(pid: u32, options: RecordOptions) -> Result<SessionRecording> {
     let stop = Arc::new(AtomicBool::new(false));
     let trigger = Arc::new(AtomicBool::new(false));

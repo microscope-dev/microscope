@@ -1,8 +1,3 @@
-//! A function's samples on its source lines and on its instructions. Code
-//! is decoded only from the module's file when it is the very file the
-//! recording read, and only forward from a function symbol's start. Each
-//! instruction's source lines come from that file's debug information.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -17,7 +12,6 @@ use crate::disassembly::{
 };
 use crate::{ImageAddress, MAX_FUNCTION_INSTRUCTIONS, ModuleImageId, TargetDescription};
 
-/// What a function's samples weigh on one of its source lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineCost {
     pub file: Option<String>,
@@ -26,16 +20,12 @@ pub struct LineCost {
     pub total: u64,
 }
 
-/// What a function's samples weigh on its source lines, of what every
-/// sample selected weighs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineCosts {
     pub weight: u64,
     pub lines: Vec<LineCost>,
 }
 
-/// A source line an instruction was compiled from: line 0 when the
-/// debug information names none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeLine {
     pub function: String,
@@ -43,23 +33,16 @@ pub struct CodeLine {
     pub line: u32,
 }
 
-/// What a function's samples weigh on one of its instructions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstructionCost {
-    /// Its address in its module's file.
     pub address: u64,
 
-    /// Its text in the decoder's pieces, which say what each one is.
     pub tokens: Vec<InstructionToken>,
 
-    /// The function a direct jump or call goes to, with the offset into it
-    /// when that is not its start.
     pub target: Option<String>,
     pub own: u64,
     pub total: u64,
 
-    /// The lines it was compiled from, innermost inlined function first,
-    /// ending with the function it belongs to; empty when unknown.
     pub lines: Vec<CodeLine>,
 }
 
@@ -70,41 +53,28 @@ impl InstructionCost {
     }
 }
 
-/// One symbol's code that a function's samples ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeBlock {
     pub symbol: String,
     pub instructions: Vec<InstructionCost>,
 
-    /// Why decoding ended before the symbol did, if it did.
     pub stopped: Option<String>,
 }
 
-/// A function's code where its samples ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Disassembly {
-    /// What every sample selected weighs.
     pub weight: u64,
     pub module: String,
     pub blocks: Vec<CodeBlock>,
 
-    /// Sampled addresses no decoded instruction holds: own, then total.
     pub unplaced: Vec<(u64, u64, u64)>,
 
-    /// Why the instructions have no source lines, when they have none.
     pub unlined: Option<String>,
 
-    /// The functions shown, when the function asked for has no code of
-    /// its own: every sample ran it inlined into them.
     pub inlined_into: Option<String>,
 }
 
 impl Disassembly {
-    /// What the instructions weigh on each source line they were compiled
-    /// from, by file and line. In each file, an instruction's own weight
-    /// is its innermost line's there, and its total weight is every line's
-    /// of that file it was inlined through, as a line's total is the cost
-    /// of everything it runs.
     #[must_use]
     pub fn line_costs(&self) -> Vec<LineCost> {
         let mut costs: BTreeMap<(&str, u32), (u64, u64)> = BTreeMap::new();
@@ -144,8 +114,6 @@ impl Disassembly {
     }
 }
 
-/// The query's selection, without its transforms, which name keys of
-/// the granularity views show rather than lines or addresses.
 fn selection(query: &Query) -> Query {
     Query {
         transforms: Vec::new(),
@@ -154,9 +122,6 @@ fn selection(query: &Query) -> Query {
 }
 
 impl Profile {
-    /// What the samples `query` selects weigh on each source line of the
-    /// function `name`, by file and line. The query's transforms are not
-    /// applied.
     #[must_use]
     pub fn line_costs(&self, query: &Query, name: &str) -> LineCosts {
         let keys = self.keys(Granularity::Line);
@@ -188,9 +153,6 @@ impl Profile {
         }
     }
 
-    /// The code of the function `name` where the samples `query` selects
-    /// ran, each instruction with their weight on it, or why it cannot be
-    /// shown. The query's transforms are not applied.
     pub fn disassemble(&self, query: &Query, name: &str) -> Result<Disassembly, String> {
         let keys = self.keys(Granularity::Address);
         let capture = &self.capture;
@@ -206,8 +168,6 @@ impl Profile {
             })
             .collect();
 
-        // The functions whose code is shown: `name` itself, or, when every
-        // sample ran it inlined, the functions it was inlined into.
         let physical = |frame: u32| {
             capture
                 .frame_lines(frame)
@@ -239,15 +199,12 @@ impl Profile {
             shown.push(name);
         }
 
-        // Each module's sampled addresses in those functions, with their
-        // weights.
         let mut sampled: BTreeMap<u32, BTreeMap<u64, (u64, u64)>> = BTreeMap::new();
         for (frame, own, total) in frames {
             if !physical(frame).is_some_and(|outer| shown.contains(&outer)) {
                 continue;
             }
 
-            // Address keys come from the capture's frames.
             let Some(frame) = capture.frames.get(frame as usize) else {
                 continue;
             };
@@ -293,9 +250,6 @@ impl Profile {
         Ok(code)
     }
 
-    /// Why no instruction of the function `name` can be shown: a runtime
-    /// interprets it or compiles it as it runs, or it ran in memory no file
-    /// holds, or no selected sample ran it.
     fn no_code(&self, name: &str) -> String {
         let capture = &self.capture;
         let mut interpreted = false;
@@ -331,8 +285,6 @@ impl Profile {
     }
 }
 
-/// Decodes each function symbol that holds sampled addresses, weighing
-/// each instruction with the addresses it holds.
 fn decode(
     file: &object::File<'_>,
     module: String,
@@ -443,9 +395,6 @@ fn decode(
     })
 }
 
-/// Gives each instruction of `code` the source lines the debug
-/// information of the module at `path`, holding `bytes`, has for it, or
-/// says why it has none.
 fn place_lines(
     path: &str,
     bytes: &[u8],
@@ -483,17 +432,10 @@ fn place_lines(
     }
 }
 
-/// How many modules' debug information stays loaded.
 const KEPT_MODULES: usize = 2;
 
-/// The debug information of the modules whose code was shown last, by the
-/// digest of the file each was recorded from, latest last. A large
-/// program's takes far longer to load than to show a function's code, and
-/// one is usually shown many times.
 static LOADED: Mutex<Vec<([u8; 16], Arc<DebugInfo>)>> = Mutex::new(Vec::new());
 
-/// The debug information of `bytes`, whose digest is `digest`, loaded once
-/// while it stays among the modules shown last.
 fn loaded(path: &str, bytes: &[u8], digest: [u8; 16]) -> Result<Arc<DebugInfo>, String> {
     let kept = |loaded: &mut Vec<([u8; 16], Arc<DebugInfo>)>| {
         let at = loaded.iter().position(|(key, _)| *key == digest)?;
@@ -507,8 +449,6 @@ fn loaded(path: &str, bytes: &[u8], digest: [u8; 16]) -> Result<Arc<DebugInfo>, 
         return Ok(info);
     }
 
-    // Loaded without the lock, which another module's code would otherwise
-    // wait on.
     let info = Arc::new(
         crate::debug_info::load_module_bytes(
             std::path::Path::new(path),
@@ -555,8 +495,6 @@ mod tests {
         }
     }
 
-    /// A module's debug information loads once while it is among the last
-    /// few shown, by the digest of the file it was recorded from.
     #[test]
     fn debug_information_is_kept_for_the_modules_shown_last() {
         let path = concat!(
@@ -571,8 +509,6 @@ mod tests {
         let second = load(2);
         assert!(!Arc::ptr_eq(&first, &second), "two digests share one entry");
 
-        // A third module puts out the one shown longest ago, which is the
-        // second once the first is shown again.
         assert!(Arc::ptr_eq(&first, &load(1)));
         load(3);
         assert!(Arc::ptr_eq(&first, &load(1)), "the first was put out");
@@ -591,9 +527,6 @@ mod tests {
         }
     }
 
-    /// Own weight goes to an instruction's innermost line in each file,
-    /// not to its innermost line overall nor to every line it passes
-    /// through; total weight goes once to each line of the chain.
     #[test]
     fn instructions_weigh_their_innermost_line_in_each_file_and_every_line_they_pass() {
         let code = Disassembly {
@@ -602,27 +535,22 @@ mod tests {
             blocks: vec![CodeBlock {
                 symbol: "scan".to_owned(),
                 instructions: vec![
-                    // step, inlined into scan at line 14.
                     instruction(
                         5,
                         5,
                         vec![line("step", Some("f.c"), 8), line("scan", Some("f.c"), 14)],
                     ),
-                    // A helper from a header, inlined at the same line.
                     instruction(
                         2,
                         2,
                         vec![line("get", Some("h.h"), 3), line("scan", Some("f.c"), 14)],
                     ),
-                    // A call: its callee's time is total alone.
                     instruction(0, 7, vec![line("scan", Some("f.c"), 15)]),
-                    // A function inlined into itself on one line counts once.
                     instruction(
                         1,
                         1,
                         vec![line("walk", Some("f.c"), 20), line("walk", Some("f.c"), 20)],
                     ),
-                    // Code no line names, and lines with no file, weigh nothing.
                     instruction(4, 4, vec![line("scan", Some("f.c"), 0)]),
                     instruction(3, 3, vec![line("scan", None, 9)]),
                 ],

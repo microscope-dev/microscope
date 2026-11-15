@@ -1,8 +1,8 @@
-// Programs that fail, one for each argument, each the way Go programs fail:
-// panics the runtime raises or the program does, recovered or not, chained
-// or repeated, and fatal errors the runtime reports and ends the program
-// with. A few do not fail: they recover, plant their own breakpoint, or
-// exit with deferred calls pending.
+
+
+
+
+
 package main
 
 import (
@@ -14,7 +14,7 @@ import (
 	"sync"
 )
 
-// sink keeps values the compiler would otherwise drop.
+
 var sink int
 
 type celsius float64
@@ -83,8 +83,8 @@ func main() {
 	case "custom-float":
 		raise(celsius(-40))
 	case "goroutine":
-		// Main waits for good: the panic ends the program, after the
-		// goroutine's deferred calls, which must not let main return first.
+
+
 		go func() {
 			raise("from a goroutine")
 		}()

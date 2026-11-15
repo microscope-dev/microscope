@@ -1,8 +1,3 @@
-//! Interrupts of a Node program: one that runs JavaScript pauses in V8's
-//! inspector, at a statement with its locals, and one that runs none
-//! stops natively instead. A pause V8 takes after that native stop, at
-//! the next statement the program runs, never stops it.
-
 use microscope::{StepKind, StopReason, VariableState};
 
 use crate::oracle;
@@ -11,12 +6,8 @@ use crate::support::node;
 
 const FIXTURE: &str = "interrupts.js";
 
-/// The lines of `spin()`'s loop, its header included, in the fixture.
 const SPIN: std::ops::RangeInclusive<u32> = 8..=11;
 
-/// What the selected frame shows for the variable `name`: its summary,
-/// `unavailable` for one V8 keeps where microscope cannot read it, or
-/// `absent`.
 fn shown(variables: &[microscope::Variable], name: &str) -> String {
     let Some(variable) = variables.iter().find(|variable| &*variable.name == name) else {
         return "absent".to_owned();
@@ -31,8 +22,6 @@ fn shown(variables: &[microscope::Variable], name: &str) -> String {
     }
 }
 
-/// Native waits pause natively; JavaScript pauses expose V8's locals,
-/// including explicit unavailability when optimization removes their slots.
 #[tokio::test]
 async fn interrupts_pause_running_javascript_where_it_runs() {
     let mut lies = Vec::new();
@@ -41,7 +30,6 @@ async fn interrupts_pause_running_javascript_where_it_runs() {
         let context = session.context();
         session.wrote("IDLE").await;
         session.reading_input().await;
-        // V8 cannot pause in `fs.readSync`, so this stop is native.
         session.pause().await;
 
         let breakpoint = session
@@ -59,8 +47,6 @@ async fn interrupts_pause_running_javascript_where_it_runs() {
         session.scenario.remove_breakpoint(breakpoint.id).await;
         session.resume().await;
 
-        // The second interrupt follows a resume at once, while V8 may not
-        // yet have left its pause.
         for round in 0..2 {
             session.pause().await;
             let pause = oracle::selected(&session.scenario).await;
@@ -89,15 +75,10 @@ async fn interrupts_pause_running_javascript_where_it_runs() {
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
-/// How long a step from the read may take once the read returns.
 const STEP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The line after the fixture's read, where a step from it ends.
 const AFTER_READ: u32 = 16;
 
-/// On every build, a step from a native stop runs to the program's next
-/// JavaScript statement, through Node's own scripts: from the read's
-/// libc frame, which has no lines, and from the script's frame selected.
 #[tokio::test]
 async fn a_step_from_a_native_stop_runs_to_the_next_statement() {
     let mut lies = Vec::new();
@@ -139,7 +120,6 @@ async fn a_step_from_a_native_stop_runs_to_the_next_statement() {
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
-/// Selects the innermost frame of the fixture's own script.
 async fn select_script_frame(session: &NodeSession) {
     let handle = session.scenario.handle();
     let trace = session

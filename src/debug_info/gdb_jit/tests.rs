@@ -4,7 +4,6 @@ use super::*;
 
 use super::test_image as image;
 
-/// A process's memory: each region by where it starts.
 #[derive(Default)]
 struct Memory(BTreeMap<u64, Vec<u8>>);
 
@@ -46,10 +45,6 @@ impl Memory {
     }
 }
 
-/// Each object a sound list holds is read, in its order, named for where
-/// it lies and what it holds, with its code where its sections say. An
-/// object that cannot be read is left out and said; a list that cannot be
-/// followed on is read as far as it goes, and said.
 #[test]
 fn registered_objects_are_read_as_far_as_the_list_is_sound() {
     let (first, second) = (image(0x7000_1000, 64), image(0x7000_2000, 32));
@@ -68,14 +63,12 @@ fn registered_objects_are_read_as_far_as_the_list_is_sound() {
     assert_eq!(read.objects[1].code(), Some(0x7000_2000..0x7000_2020));
     assert_ne!(read.objects[0].name(), read.objects[1].name());
 
-    // The same place with other contents is another object.
     let other = JitObject {
         address: 0x3000,
         bytes: image(0x7000_1000, 48),
     };
     assert_ne!(other.name(), read.objects[0].name());
 
-    // The second object no longer fits what is left to read.
     let budget = first.len() as u64 + 1;
     let read = memory.registered(0x1000, budget);
     assert_eq!(read.objects.len(), 1);
@@ -85,13 +78,11 @@ fn registered_objects_are_read_as_far_as_the_list_is_sound() {
         read.problems
     );
 
-    // A list that comes back on itself.
     memory.entry(0x2100, 0x2000, 0x4000, second.len());
     let read = memory.registered(0x1000, u64::MAX);
     assert_eq!(read.objects.len(), 2);
     assert!(read.problems[0].contains("loops"), "{:?}", read.problems);
 
-    // An object that is no image, and an entry that cannot be read.
     memory.entry(0x2000, 0x2100, 0x3000, first.len());
     memory.entry(0x2100, 0x2200, 0x4000, second.len());
     memory.put(0x4000, vec![0; second.len()]);
@@ -101,7 +92,6 @@ fn registered_objects_are_read_as_far_as_the_list_is_sound() {
     assert!(read.problems[0].contains("no ELF image"));
     assert!(read.problems[1].contains("entry at 0x2200 is unreadable"));
 
-    // An object of no size, or of more than is ever read.
     memory.entry(0x2000, 0x2100, 0x3000, 0);
     memory.entry(
         0x2100,
@@ -115,8 +105,6 @@ fn registered_objects_are_read_as_far_as_the_list_is_sound() {
     assert_eq!(read.problems.len(), 2, "{:?}", read.problems);
 }
 
-/// A descriptor of another version, or unreadable, gives nothing and says
-/// why; one a compiler never used gives nothing and has nothing to say.
 #[test]
 fn only_a_descriptor_of_the_known_version_is_read() {
     let mut memory = Memory::default();

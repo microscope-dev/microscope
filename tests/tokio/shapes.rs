@@ -1,6 +1,3 @@
-//! Steps into awaits of each shape a future takes, from an async function
-//! tokio runs as a task.
-
 use std::process::Stdio;
 
 use microscope::{BreakpointSpec, CodeRole, LaunchOptions, LineNumber, StepKind, StopReason};
@@ -18,8 +15,6 @@ const BUILDS: [&str; 4] = [
 ];
 const SOURCE: &str = "shapes/src/main.rs";
 
-/// The fixture, launched with a breakpoint on each of `markers`' lines, and
-/// why it first stopped.
 async fn stopped_at(scenario: &mut Scenario, markers: &[&str]) -> StopReason {
     for marker in markers {
         scenario
@@ -38,7 +33,6 @@ async fn stopped_at(scenario: &mut Scenario, markers: &[&str]) -> StopReason {
         .await
 }
 
-/// A `step` that completes.
 async fn step_in(scenario: &mut Scenario, context: &str) {
     let kind = StepKind::IntoSource;
     assert_eq!(
@@ -48,12 +42,6 @@ async fn step_in(scenario: &mut Scenario, context: &str) {
     );
 }
 
-/// `step` into an await stops at the first line of the future's own code
-/// in one step, passing the code that builds the future and the library's
-/// code that hands it on: for an async function, an async block, a boxed
-/// trait object, a generic async function, and a trait's and a type's
-/// async methods.
-/// Into tokio's own future, it steps over tokio to the await's next line.
 #[tokio::test]
 async fn step_into_an_await_stops_at_the_futures_first_line() {
     for fixture in BUILDS {
@@ -107,9 +95,6 @@ async fn step_into_an_await_stops_at_the_futures_first_line() {
     }
 }
 
-/// With steps entering the runtime, `step` into an await of tokio's own
-/// future stops in tokio's code; turned off again, the next such step goes
-/// over tokio as before.
 #[tokio::test]
 async fn step_into_the_runtime_is_a_choice() {
     let fixture = "tokio-shapes-o0";

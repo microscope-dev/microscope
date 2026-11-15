@@ -1,14 +1,6 @@
-// A hostile renderer: it tries every way out of the sandbox we know of and
-// draws what each attempt did, one text per probe, titled by its name. The
-// test writes its listeners' ports over HTTP_PORT and UDP_PORT, and "live"
-// over MODE to run the probes in a live renderer with WebGL in use, which
-// says what each did in its caption.
-
 const http = "http://127.0.0.1:HTTP_PORT";
 const udp = Number("UDP_PORT");
 
-/** What an attempt did: "absent" when the means is gone, "blocked" when it
- * threw or failed, and "sent" when nothing stopped it. */
 async function attempt(present, run) {
   if (!present) {
     return "absent";
@@ -107,7 +99,6 @@ async function outcomes() {
 const mode = String("MODE");
 if (mode === "live") {
   microscope.live(async (canvas) => {
-    // A context drawing with the GPU while the probes run.
     const gl = canvas.getContext("webgl2");
     const kind = gl === null ? "2d" : "webgl2";
     if (gl === null) {

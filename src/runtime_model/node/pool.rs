@@ -1,31 +1,15 @@
-//! libuv's thread pool (`deps/uv/src/threadpool.c`), which runs Node's
-//! blocking work, as file system calls, `zlib`, and `crypto`'s hashing, on
-//! threads of its own. A pool thread with no work waits on the pool's
-//! condition variable; one blocked on the pool's mutex is between jobs.
-//! Any other runs a job, whose frames are the thread's own. The job keeps
-//! no JavaScript callback: Node calls it on the event loop's thread once
-//! the job is done, through a request the walk lists apart.
-
 use super::objects::{Problem, Reader};
 use super::tasks::{pool_job, pool_thread};
 use crate::image::v8::UvPool;
 use crate::runtime_model::RuntimeTask;
 use crate::{TaskState, ThreadId};
 
-/// The most threads libuv's pool runs (`MAX_THREADPOOL_SIZE`).
 const MOST_THREADS: u32 = 1024;
 
-/// How far into glibc's `pthread_cond_t` its waiters' futex words lie:
-/// `__g_signals`, the two words a waiter blocks on, after `__wseq`,
-/// `__g1_start`, and `__g_refs` (`pthreadtypes.h`'s `__pthread_cond_s`).
 const COND_WORDS: std::ops::Range<u64> = 0..48;
 
-/// glibc's `pthread_mutex_t` (`__pthread_mutex_s`): its futex word is its
-/// first, `__lock`.
 const MUTEX_WORDS: std::ops::Range<u64> = 0..40;
 
-/// The pool's threads at a stop, each by its thread, and whether it runs a
-/// job.
 pub(super) struct Pool {
     pub(super) busy: Vec<ThreadId>,
 }
@@ -36,8 +20,6 @@ fn u32_at(reader: &Reader<'_>, address: u64) -> Result<u32, Problem> {
     Ok(u32::from_le_bytes(bytes))
 }
 
-/// The pool's busy threads at this stop, or why they are unknown. A pool
-/// libuv has not started has none.
 pub(super) fn read(reader: &Reader<'_>, pool: &UvPool) -> Result<Pool, Problem> {
     let stop = reader.stop;
     let bias = stop.load_bias();
@@ -58,7 +40,6 @@ pub(super) fn read(reader: &Reader<'_>, pool: &UvPool) -> Result<Pool, Problem> 
     let cond = load(pool.cond)?;
     let mutex = load(pool.mutex)?;
 
-    // A pthread_t is the thread's thread pointer.
     let mut members = Vec::new();
     for index in 0..u64::from(count) {
         members.push(reader.word(threads.wrapping_add(8 * index))?);
@@ -86,8 +67,6 @@ pub(super) fn read(reader: &Reader<'_>, pool: &UvPool) -> Result<Pool, Problem> 
         )
         .into());
     }
-    // A thread counts itself idle before it waits and until it has taken
-    // the mutex back, so no more wait than are idle.
     if waiting > idle {
         return Err(format!(
             "{waiting} of libuv's pool threads wait for work, but the pool counts {idle} idle"
@@ -103,7 +82,6 @@ pub(super) fn read(reader: &Reader<'_>, pool: &UvPool) -> Result<Pool, Problem> 
     Ok(Pool { busy })
 }
 
-/// The task of the job the pool thread `thread` runs.
 pub(super) fn job(thread: ThreadId) -> RuntimeTask {
     let number = pool_job(thread);
     debug_assert_eq!(
@@ -138,8 +116,6 @@ mod tests {
     use crate::runtime_model::RuntimeStop;
     use crate::{ImageAddress, LoadBias, ThreadId, VirtualAddress};
 
-    /// Memory the tests write, by address; what no test wrote is
-    /// unreadable.
     #[derive(Default)]
     struct Memory(HashMap<u64, u8>);
 
@@ -180,8 +156,6 @@ mod tests {
         }
     }
 
-    /// The pool's array of threads is the target's pointer: one near the
-    /// top of the address space is unreadable, never an overflow.
     #[test]
     fn a_thread_array_near_the_top_of_the_address_space_is_unreadable() {
         let pool = UvPool {

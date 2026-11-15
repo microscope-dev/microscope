@@ -1,50 +1,29 @@
-//! Reading V8's heap at a stop, with the offsets the image's layout gives.
-//!
-//! Every value is a tagged word: a Smi, whose low bit is clear and whose
-//! integer is its upper half, or a pointer to a heap object, whose low bit
-//! is set. An object is what its map's instance type says it is, and the
-//! reader follows a pointer only as the type it was proven to be. Memory
-//! that cannot be read, or holds the wrong type, is a problem that names
-//! it, never a guess.
-
 use std::sync::Arc;
 
 use crate::VirtualAddress;
 use crate::image::v8::{Constant, Field, V8Layout, V8Version};
 use crate::runtime_model::{RuntimeStop, StopMemory};
 
-/// A problem reading the process, as one line.
 pub(super) type Problem = Arc<str>;
 
-/// The most characters of a string read: names and paths are far shorter.
 pub(super) const MAX_STRING: u64 = 4096;
 
-/// How deep a string's representation may nest, as a cons string of cons
-/// strings does.
 const MAX_STRING_DEPTH: usize = 32;
 
-/// The memory of a stopped process, read by a layout.
 #[derive(Clone, Copy)]
 pub(super) struct Reader<'a> {
     pub(super) stop: &'a dyn RuntimeStop,
     pub(super) layout: &'a V8Layout,
     pub(super) version: V8Version,
 
-    /// Charges the size of each read to an inspection's budget, if there is
-    /// one. Fails the read once the budget is spent.
     pub(super) charge: Option<&'a dyn Fn(usize) -> Result<(), Problem>>,
 
-    /// The block cache, if any. Reads of up to one block go through it,
-    /// and only blocks not already cached are charged.
     pub(super) blocks: Option<&'a StopMemory>,
 }
 
-/// A tagged word that points to a heap object: its address with the tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct Object(pub(super) u64);
 
-/// The address `bytes` past `address`, or the problem that it lies past
-/// the end of the address space.
 pub(super) fn address_at(address: u64, bytes: u64) -> Result<u64, Problem> {
     address.checked_add(bytes).ok_or_else(|| {
         format!("{bytes:#x} bytes past {address:#x} lies past the address space").into()
@@ -58,9 +37,6 @@ impl Reader<'_> {
             && bytes.len() <= blocks.block()
             && address.checked_add(bytes.len() as u64).is_some()
         {
-            // The bytes span at most two blocks. If a block can't be read,
-            // the bytes alone may still be (a mapping can end inside a
-            // block), so fall back to a direct read.
             let mut done = 0;
             while let Some(rest) = bytes.get_mut(done..)
                 && !rest.is_empty()
@@ -112,19 +88,15 @@ impl Reader<'_> {
             .ok_or_else(|| format!("the layout has no {}", field.name()).into())
     }
 
-    /// The integer a Smi holds, or `None` for a word that is no Smi.
     pub(super) fn smi(&self, word: u64) -> Result<Option<i64>, Problem> {
         let mask = self.constant(Constant::SmiTagMask)?.cast_unsigned();
         let tag = self.constant(Constant::SmiTag)?.cast_unsigned();
-        // The value is above the tag and the shift; v8dbg_SmiValueShift
-        // reads 0 from the file, so it is no source of the shift.
         let shift = u32::try_from(self.constant(Constant::SmiShiftSize)?)
             .map_err(|_| "the Smi shift is out of range")?
             + mask.count_ones();
         Ok((word & mask == tag).then(|| word.cast_signed().checked_shr(shift).unwrap_or(0)))
     }
 
-    /// The Smi word that holds `value`, or `None` if a Smi can't hold it.
     pub(super) fn smi_word(&self, value: i64) -> Result<Option<u64>, Problem> {
         let mask = self.constant(Constant::SmiTagMask)?.cast_unsigned();
         let tag = self.constant(Constant::SmiTag)?.cast_unsigned();
@@ -137,14 +109,12 @@ impl Reader<'_> {
         Ok(word.filter(|word| self.smi(*word).ok().flatten() == Some(value)))
     }
 
-    /// The object a word points to, or `None` for a word that is no pointer.
     pub(super) fn object(&self, word: u64) -> Result<Option<Object>, Problem> {
         let mask = self.constant(Constant::HeapObjectTagMask)?.cast_unsigned();
         let tag = self.constant(Constant::HeapObjectTag)?.cast_unsigned();
         Ok((word & mask == tag && word > tag).then_some(Object(word)))
     }
 
-    /// Where `field` of `object` is.
     pub(super) fn field_address(&self, object: Object, field: Field) -> Result<u64, Problem> {
         let tag = self.constant(Constant::HeapObjectTag)?.cast_unsigned();
         let offset = self.offset(field)?;
@@ -162,26 +132,22 @@ impl Reader<'_> {
             })
     }
 
-    /// The tagged word `field` of `object` holds.
     pub(super) fn field(&self, object: Object, field: Field) -> Result<u64, Problem> {
         self.word(self.field_address(object, field)?)
     }
 
-    /// The Smi `field` of `object` holds.
     pub(super) fn smi_field(&self, object: Object, field: Field) -> Result<i64, Problem> {
         let word = self.field(object, field)?;
         self.smi(word)?
             .ok_or_else(|| format!("{} of {:#x} is no Smi", field.name(), object.0).into())
     }
 
-    /// The 32-bit integer `field` of `object` holds, untagged.
     pub(super) fn int32_field(&self, object: Object, field: Field) -> Result<i32, Problem> {
         let mut bytes = [0; 4];
         self.bytes_into(self.field_address(object, field)?, &mut bytes)?;
         Ok(i32::from_le_bytes(bytes))
     }
 
-    /// The object `field` of `object` points to, proven of type `ty`.
     pub(super) fn typed_field(
         &self,
         object: Object,
@@ -202,7 +168,6 @@ impl Reader<'_> {
             })
     }
 
-    /// The word at `index` of a fixed array of any of V8's kinds.
     pub(super) fn element(&self, array: Object, index: i64) -> Result<u64, Problem> {
         let kinds = [
             (
@@ -220,7 +185,6 @@ impl Reader<'_> {
                 Field::ProtectedFixedArrayLength,
                 Field::ProtectedFixedArrayObjects,
             ),
-            // A hash table is a fixed array of its own type.
             (
                 Constant::NameDictionaryType,
                 Field::FixedArrayBaseLength,
@@ -281,21 +245,18 @@ impl Reader<'_> {
         self.word(address)
     }
 
-    /// The map of `object`.
     pub(super) fn map(&self, object: Object) -> Result<Object, Problem> {
         let map = self.field(object, Field::HeapObjectMap)?;
         self.object(map)?
             .ok_or_else(|| format!("the map of {:#x} is no object", object.0).into())
     }
 
-    /// The byte `field` of `object` holds.
     pub(super) fn byte_field(&self, object: Object, field: Field) -> Result<u8, Problem> {
         let mut byte = [0; 1];
         self.bytes_into(self.field_address(object, field)?, &mut byte)?;
         Ok(byte[0])
     }
 
-    /// The instance type of `object`, from its map.
     pub(super) fn instance_type(&self, object: Object) -> Result<i64, Problem> {
         let map = self.map(object)?;
         let mut bytes = [0; 2];
@@ -303,13 +264,10 @@ impl Reader<'_> {
         Ok(i64::from(u16::from_le_bytes(bytes)))
     }
 
-    /// Whether `object` is of type `ty`.
     pub(super) fn is(&self, object: Object, ty: Constant) -> Result<bool, Problem> {
         Ok(self.instance_type(object)? == self.constant(ty)?)
     }
 
-    /// The text of the string `object`, of at most [`MAX_STRING`]
-    /// characters, or the problem that it is no string or cannot be read.
     pub(super) fn string(&self, object: Object) -> Result<String, Problem> {
         let length = u64::try_from(self.int32_field(object, Field::StringLength)?)
             .map_err(|_| "a string has a negative length")?;
@@ -330,8 +288,6 @@ impl Reader<'_> {
         Ok(String::from_utf16_lossy(&text))
     }
 
-    /// Appends to `text` the UTF-16 units `start` to `start + limit` of the
-    /// string `object`, whose representation is `depth` deep.
     pub(super) fn string_into(
         &self,
         object: Object,
@@ -412,7 +368,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Appends the units `start..end` of characters at `address`.
     fn units(
         &self,
         address: u64,
@@ -461,7 +416,6 @@ pub(super) mod tests {
     use crate::runtime_model::RuntimeStop;
     use crate::{LoadBias, ThreadId, VirtualAddress};
 
-    /// Memory the tests write, by address.
     #[derive(Default)]
     pub(in super::super) struct Heap(HashMap<u64, u8>);
 
@@ -505,7 +459,6 @@ pub(super) mod tests {
         }
     }
 
-    /// 14.6's generated layout, with the tags each build exports.
     pub(in super::super) fn layout() -> V8Layout {
         let mut layout = crate::debug_info::v8::generated_layout(14, 6).expect("a layout");
         for (constant, value) in [
@@ -534,7 +487,6 @@ pub(super) mod tests {
         }
     }
 
-    /// A string as a model: its representation, and the text it is.
     #[derive(Debug, Clone)]
     enum Text {
         Seq {
@@ -582,8 +534,6 @@ pub(super) mod tests {
         ]
     }
 
-    /// Strings of every representation V8 reads in place: sequential,
-    /// cons, thin, and sliced, whose parent is sequential.
     fn text() -> impl Strategy<Value = Text> {
         let sliced = (
             sequential(),
@@ -609,16 +559,12 @@ pub(super) mod tests {
         })
     }
 
-    /// Lays out strings in a heap, recording each word it writes so a
-    /// test may change any of them.
     struct Strings<'a> {
         heap: Heap,
         layout: &'a V8Layout,
         next: u64,
         maps: HashMap<i64, u64>,
 
-        /// Each word written of the strings, not of their maps: where it
-        /// is, how wide, and what it holds.
         words: Vec<(u64, usize, u64)>,
     }
 
@@ -640,7 +586,6 @@ pub(super) mod tests {
             self.words.push((at, width, value));
         }
 
-        /// The tagged map of strings of `ty`.
         fn map(&mut self, ty: i64) -> u64 {
             if let Some(map) = self.maps.get(&ty) {
                 return *map;
@@ -656,7 +601,6 @@ pub(super) mod tests {
             map + 1
         }
 
-        /// Writes `text`, returning its tagged address.
         fn string(&mut self, text: &Text) -> u64 {
             let at = self.next;
             self.next += 0x100;
@@ -735,8 +679,6 @@ pub(super) mod tests {
                 ],
             )),
         ) {
-            // The string tags each build exports, as V8's headers define
-            // them.
             let mut layout = layout();
             for (constant, value) in [
                 (Constant::StringRepresentationMask, 7),
@@ -790,7 +732,6 @@ pub(super) mod tests {
             .expect_err("a string's length lies past the address space");
         assert!(problem.contains("address space"), "{problem}");
 
-        // A fixed array at the top of memory whose element lies past it.
         let map = 0x1000;
         let fixed = layout.constant(Constant::FixedArrayType).unwrap();
         heap.word(map, map + 1);

@@ -1,28 +1,17 @@
-//! Counts allocations for profiles and tests.
-//!
-//! A binary that wants its allocations reported installs [`Counting`]
-//! around the allocator it uses. Each thread counts its own blocks where
-//! every thread can sum them, and while a recording or a test measures
-//! totals, the most the heap grew.
-
 #![allow(unsafe_code, reason = "a global allocator is an unsafe trait")]
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
-/// What has been allocated: by one thread, or by every thread.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Allocated {
-    /// Blocks allocated, each growth of a block counting as one.
     pub blocks: u64,
 
-    /// Bytes allocated, a block's growth counting only what it added.
     pub bytes: u64,
 }
 
 impl Allocated {
-    /// What was allocated after `earlier`.
     #[must_use]
     pub const fn since(&self, earlier: &Self) -> Self {
         Self {
@@ -32,25 +21,18 @@ impl Allocated {
     }
 }
 
-/// Every thread's allocations.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Totals {
     pub allocated: Allocated,
 
-    /// How much the heap grew, net of blocks freed, since the process
-    /// began.
     pub live_bytes: i64,
 
-    /// The most the heap had grown, while a measurement tracked it, to
-    /// within [`PEAK_GRANULARITY`] for each thread.
     pub peak_bytes: i64,
 
-    /// Threads that found every slot taken, and so contend on a shared one.
     pub sharing_threads: u64,
 }
 
 impl Totals {
-    /// What was allocated after `earlier`, with the peak growth over it.
     #[must_use]
     pub const fn since(&self, earlier: &Self) -> Self {
         Self {
@@ -62,39 +44,26 @@ impl Totals {
     }
 }
 
-/// What one thread has counted, in its own cell. Counts wrap past their
-/// range: a panic in the allocator would abort the process, and a wrong
-/// statistic is the lesser harm.
 #[derive(Clone, Copy)]
 struct ThreadCounts {
     allocated: Allocated,
 
-    /// Bytes this thread allocated less those it freed; negative when it
-    /// freed others' blocks.
     live: i64,
 
-    /// Growth not yet added to the process's peak counter.
     pending: i64,
 
     slot: SlotUse,
 }
 
-/// Where a thread stores its counts for [`totals`].
 #[derive(Clone, Copy)]
 enum SlotUse {
-    /// Not yet decided: the thread has not counted.
     Unassigned,
 
-    /// `COUNTS[index]`, which earlier owners left holding their counts. The
-    /// thread stores `base` plus its own counts, so theirs stay summed.
     Own { index: usize, base: Stored },
 
-    /// [`SHARED`], when every slot was taken, while the thread claims one,
-    /// or once it gave its own back as it exited.
     Shared,
 }
 
-/// A slot's counts, as one thread stores them or a new owner finds them.
 #[derive(Clone, Copy)]
 struct Stored {
     blocks: u64,
@@ -125,20 +94,15 @@ impl Drop for Release {
         let _ = THREAD.try_with(|cell| {
             let mut counts = cell.get();
             if let SlotUse::Own { index, .. } = counts.slot {
-                // Blocks the thread frees from here on, as its other
-                // thread-locals are destroyed, count in the shared slot.
                 counts.slot = SlotUse::Shared;
                 cell.set(counts);
 
-                // Publishes the slot's counts to its next owner.
                 slot_at(index).1.store(false, Ordering::Release);
             }
         });
     }
 }
 
-/// One thread's counts where every thread can read them, alone on its
-/// cache line so that no other thread's writes contend with its own.
 #[repr(align(64))]
 struct Slot {
     blocks: AtomicU64,
@@ -164,19 +128,13 @@ impl Slot {
     }
 }
 
-/// How many threads at once count in slots of their own. Fewer under Miri,
-/// where running past them takes a test seconds per hundred threads.
 #[doc(hidden)]
 pub const SLOTS: usize = if cfg!(miri) { 16 } else { 256 };
 
-/// A slot for each thread that counts, while it runs, which it stores its
-/// own totals in. Threads give their slots back as they exit; while every
-/// one is taken, a new thread adds to the shared one instead.
 static COUNTS: [Slot; SLOTS] = [const { Slot::new() }; SLOTS];
 static CLAIMED: [AtomicBool; SLOTS] = [const { AtomicBool::new(false) }; SLOTS];
 static SHARED: Slot = Slot::new();
 
-/// The counts and claim flag of slot `index`.
 #[expect(
     clippy::indexing_slicing,
     reason = "every index is a position in CLAIMED, which is as long as COUNTS"
@@ -186,27 +144,17 @@ fn slot_at(index: usize) -> (&'static Slot, &'static AtomicBool) {
     (&COUNTS[index], &CLAIMED[index])
 }
 
-/// How many threads have found every slot taken.
 static SHARING: AtomicU64 = AtomicU64::new(0);
 
-/// How far a thread's heap may grow or shrink before it adds the change to
-/// the process's peak counter. The peak is exact to within this much for
-/// each thread, and threads rarely contend on the counter.
 pub const PEAK_GRANULARITY: i64 = 64 << 10;
 
-/// Whether some binary counts its allocations with [`Counting`].
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// How many measurements want the peak; tracking it costs threads a shared
-/// counter, so it is tracked only while wanted.
 static TOTALS_WANTED: AtomicU64 = AtomicU64::new(0);
 
-/// The heap's growth as threads have reported it, and its most.
 static REPORTED: AtomicI64 = AtomicI64::new(0);
 static PEAK: AtomicI64 = AtomicI64::new(0);
 
-/// What this thread has allocated since it began, or zero when no
-/// [`Counting`] allocator is installed.
 #[must_use]
 pub fn thread_allocated() -> Allocated {
     THREAD
@@ -214,28 +162,23 @@ pub fn thread_allocated() -> Allocated {
         .unwrap_or_default()
 }
 
-/// Whether allocations are counted at all.
 #[must_use]
 pub fn installed() -> bool {
     INSTALLED.load(Ordering::Relaxed)
 }
 
-/// Starts tracking the heap's peak, until a matching [`stop_totals`].
-/// Measurements may nest.
 pub fn start_totals() {
     if TOTALS_WANTED.fetch_add(1, Ordering::AcqRel) == 0 {
         reset_peak();
     }
 }
 
-/// Stops one measurement's tracking of the peak.
 pub fn stop_totals() {
     let _ = TOTALS_WANTED.try_update(Ordering::AcqRel, Ordering::Relaxed, |wanted| {
         wanted.checked_sub(1)
     });
 }
 
-/// Every thread's allocations so far, and the heap's peak while tracked.
 #[must_use]
 pub fn totals() -> Totals {
     let mut totals = Totals::default();
@@ -252,9 +195,6 @@ pub fn totals() -> Totals {
     totals
 }
 
-/// What this thread has allocated, and its net growth of the heap, as its
-/// slot holds them for [`totals`]: zero before its first count, and `None`
-/// while it counts in the shared slot.
 #[doc(hidden)]
 #[must_use]
 pub fn thread_counts() -> Option<(Allocated, i64)> {
@@ -275,8 +215,6 @@ pub fn thread_counts() -> Option<(Allocated, i64)> {
     }
 }
 
-/// Resets the peak to the heap's current growth, so that a measurement
-/// sees only its own peak.
 pub fn reset_peak() {
     let live = COUNTS.iter().chain([&SHARED]).fold(0_i64, |live, slot| {
         live.wrapping_add(slot.live.load(Ordering::Relaxed))
@@ -286,8 +224,6 @@ pub fn reset_peak() {
     PEAK.store(live, Ordering::Relaxed);
 }
 
-/// Counts `bytes` allocated, in a new block when `new_block`, or `bytes`
-/// freed when negative.
 #[inline]
 fn count(bytes: i64, new_block: bool) {
     let _ = THREAD.try_with(|cell| {
@@ -305,7 +241,6 @@ fn count(bytes: i64, new_block: bool) {
 
         match counts.slot {
             SlotUse::Own { index, base } => {
-                // Only this thread writes its slot.
                 let slot = slot_at(index).0;
                 slot.blocks.store(
                     base.blocks.wrapping_add(counts.allocated.blocks),
@@ -348,17 +283,12 @@ fn count(bytes: i64, new_block: bool) {
     });
 }
 
-/// Gives the thread a slot of its own, or the shared one when every slot is
-/// taken. Any allocation made meanwhile counts in the shared slot and
-/// cannot claim again.
 #[cold]
 fn claim(cell: &Cell<ThreadCounts>) {
     let mut counts = cell.get();
     counts.slot = SlotUse::Shared;
     cell.set(counts);
 
-    // A thread already past its thread-locals' destruction could not give a
-    // slot back.
     if RELEASE.try_with(|_| ()).is_err() {
         return;
     }
@@ -375,8 +305,6 @@ fn claim(cell: &Cell<ThreadCounts>) {
         return;
     };
 
-    // What the thread counted so far is already in the shared slot, so the
-    // base leaves it out of this one.
     let mut counts = cell.get();
     let found = slot_at(index).0.load();
     let base = Stored {
@@ -389,21 +317,16 @@ fn claim(cell: &Cell<ThreadCounts>) {
     cell.set(counts);
 }
 
-/// Counts a new block of `bytes`.
 #[inline]
 fn grew(bytes: usize, new_block: bool) {
     count(i64::try_from(bytes).unwrap_or(i64::MAX), new_block);
 }
 
-/// Counts `bytes` freed.
 #[inline]
 fn shrank(bytes: usize) {
     count(-i64::try_from(bytes).unwrap_or(i64::MAX), false);
 }
 
-/// Notes that a [`Counting`] allocator serves the process. Only the first
-/// allocation stores, since a store to the shared flag on every one would
-/// contend between threads.
 #[inline]
 fn installing() {
     if !INSTALLED.load(Ordering::Relaxed) {
@@ -411,8 +334,6 @@ fn installing() {
     }
 }
 
-/// Wraps an allocator to count what each thread, and while wanted the
-/// whole process, allocates. Counting allocates nothing itself.
 pub struct Counting<A> {
     inner: A,
 }
@@ -423,11 +344,6 @@ impl<A> Counting<A> {
     }
 }
 
-/// The allocator microscope's programs count.
-///
-/// mimalloc serves the many small blocks reading debug information takes far
-/// faster than the C library's; `system-alloc` selects the C library's
-/// instead, for heap profilers that cannot see mimalloc.
 #[cfg(not(feature = "system-alloc"))]
 pub type Selected = mimalloc::MiMalloc;
 
@@ -454,8 +370,6 @@ pub type Selected = std::alloc::System;
 pub unsafe fn return_freed_memory_promptly() {
     #[cfg(not(feature = "system-alloc"))]
     {
-        // mimalloc's `mi_option_purge_delay`, in its second and third
-        // versions alike.
         const PURGE_DELAY: std::ffi::c_int = 15;
 
         #[allow(
@@ -477,8 +391,6 @@ pub unsafe fn return_freed_memory_promptly() {
     }
 }
 
-/// The allocator a program installs, counted: `#[global_allocator] static
-/// ALLOCATOR: Counting<Selected> = alloc::selected();`.
 #[must_use]
 pub const fn selected() -> Counting<Selected> {
     Counting::new(Selected {})
@@ -524,7 +436,6 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
         // a valid new size.
         let moved = unsafe { self.inner.realloc(block, layout, new_size) };
 
-        // A failed reallocation leaves the old block as it was.
         if !moved.is_null() {
             match new_size.checked_sub(layout.size()) {
                 Some(added) => grew(added, added > 0),

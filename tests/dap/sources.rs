@@ -1,6 +1,3 @@
-//! Modules, source files, breakpoint lines, completions, frame formats,
-//! and line numbering.
-
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Profile, fixture, line_of, source};
@@ -15,7 +12,6 @@ fn modules_and_sources_describe_the_loaded_program() {
         &Configuration::default(),
     );
 
-    // Loading reports progress to a client that shows it.
     dap.event(started.mark, "progressStart", |body| {
         body["title"]
             .as_str()
@@ -24,7 +20,6 @@ fn modules_and_sources_describe_the_loaded_program() {
     dap.event(started.mark, "progressEnd", |_| true);
     dap.stopped(started.mark);
 
-    // The program itself is announced, though no load event reports it.
     let program = dap.event(started.mark, "module", |body| {
         body["module"]["name"] == "basic"
     });
@@ -66,9 +61,6 @@ fn modules_and_sources_describe_the_loaded_program() {
     dap.finish();
 }
 
-/// A module stripped of its debug information names the separate file it
-/// came from, found in the configuration's debug directories, and one whose
-/// debug file cannot be used says why.
 #[test]
 fn modules_name_their_separate_debug_files() {
     let module = |dap: &mut Dap, name: &str| {
@@ -125,8 +117,6 @@ fn modules_name_their_separate_debug_files() {
     dap.finish();
 }
 
-/// A program whose debug information cannot be read says why as the
-/// session starts, and its module says why beside its status.
 #[test]
 fn a_module_says_why_its_debug_information_cannot_be_read() {
     let scratch = crate::support::ScratchDir::new("dap-malformed-dwarf");
@@ -240,10 +230,6 @@ fn stack_frames_show_the_parameters_line_and_module_a_client_asks_for() {
     dap.finish();
 }
 
-/// What a client numbering from `base` sees of one stop: the breakpoint's
-/// line, the frame's line and column, the disassembly's location of the
-/// stopped instruction, and the lines breakpoints can use there. A
-/// breakpoint on the line before the client's first is refused.
 fn positions(base: u64) -> Vec<u64> {
     let path = source("c/basic.c");
     let line = line_of(&path, "return microscope_value;") - 1 + base;
@@ -350,8 +336,6 @@ fn completions_offer_commands_members_registers_and_names() {
             .collect::<Vec<_>>()
     };
 
-    // Members, through a pointer or not, after the operator that selects
-    // them, replacing only the member's part.
     for text in ["origin.", "where->", "where.", "1 + origin.", "(*where)."] {
         let targets = complete(&mut dap, text);
         assert_eq!(labels(&targets), ["x", "y"], "{text}");
@@ -367,14 +351,11 @@ fn completions_offer_commands_members_registers_and_names() {
     assert_eq!(complete(&mut dap, "where->z"), []);
     assert_eq!(labels(&complete(&mut dap, "origin.y + where->x")), ["x"]);
 
-    // A comparison is no member access.
     assert_eq!(complete(&mut dap, "x >"), []);
 
-    // Values without members offer none.
     assert_eq!(complete(&mut dap, "x."), []);
     assert_eq!(complete(&mut dap, "missing."), []);
 
-    // Registers after `$`.
     let registers = labels(&complete(&mut dap, "$r"));
     for register in ["rax", "rip", "rsp"] {
         assert!(registers.contains(&register.to_owned()), "{registers:?}");
@@ -382,7 +363,6 @@ fn completions_offer_commands_members_registers_and_names() {
 
     assert!(registers.iter().all(|register| register.starts_with('r')));
 
-    // Commands as a line's first word, and their subcommands.
     let commands = complete(&mut dap, "wat");
     for command in ["watch", "watchpoints"] {
         assert!(
@@ -400,7 +380,6 @@ fn completions_offer_commands_members_registers_and_names() {
         [("view".to_owned(), "value".to_owned(), 6, 2)]
     );
 
-    // Names: the frame's variables and the program's globals.
     let names = complete(&mut dap, "x + cou");
     assert_eq!(names, [("counter".to_owned(), "variable".to_owned(), 5, 3)]);
     let names = labels(&complete(&mut dap, "print sh"));
@@ -425,7 +404,6 @@ fn library_sources_come_and_go_with_their_library() {
         },
     );
 
-    // The library is not loaded yet, so its line waits for it.
     assert_eq!(started.source_breakpoints[0][0]["reason"], "pending");
     let is_library = |body: &Value| {
         body["source"]["path"]
@@ -433,7 +411,6 @@ fn library_sources_come_and_go_with_their_library() {
             .is_some_and(|path| path.ends_with("shared/library.c"))
     };
 
-    // Asking for the loaded sources has the client told as they change.
     let entry = dap.stopped(started.mark);
     let sources = dap.request("loadedSources", Value::Null);
     let listed = sources["sources"].as_array().expect("sources");
@@ -514,9 +491,6 @@ fn library_sources_come_and_go_with_their_library() {
     dap.finish();
 }
 
-/// The vDSO is a module like any library, named as the kernel names it.
-/// Its frames are named by its symbols, or else by address and module, and
-/// the walk continues out of them into the program's source.
 #[test]
 fn vdso_frames_belong_to_a_module_named_as_the_kernel_names_it() {
     for (mode, caller) in [("clock", "vdso_clock"), ("time", "vdso_time")] {

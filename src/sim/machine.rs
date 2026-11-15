@@ -1,10 +1,3 @@
-//! The simulated machine the controllers' calls reach: the kernel, each
-//! session's waiter, and the faults that may strike between any two calls.
-//!
-//! The world performs its actions through the machine, and each
-//! controller's edge holds it for preemption: before each call into the
-//! kernel takes effect, threads may run and waiters may reap, as on Linux.
-
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -23,39 +16,29 @@ use super::world::Sabotage;
 use super::world::TRACER;
 use crate::backend::sim_edge::{Preemption, SimWaiter};
 
-/// The most instructions a thread runs at one preemption point.
 const PREEMPT_BURST: u64 = 8;
 
 pub struct Machine {
     pub kernel: Rc<RefCell<Kernel>>,
 
-    /// Each session's waiter, by session.
     pub waiters: RefCell<Vec<Rc<RefCell<SimWaiter>>>>,
     pub choices: Rc<RefCell<Choices>>,
     pub scheduler: RefCell<Scheduler>,
     pub faults: RefCell<Faults>,
     pub marks: Rc<RefCell<Marks>>,
 
-    /// Processes something outside the session killed.
     pub killed: Rc<RefCell<BTreeSet<Tgid>>>,
 
-    /// Processes that began to end as a whole.
     pub ending: Rc<RefCell<BTreeSet<Tgid>>>,
 
-    /// Threads the debugger released with code not the program's: the
-    /// address, the byte there, and the program's.
     pub unclean: RefCell<Vec<(Tid, Planted)>>,
 
-    /// Threads that received a SIGCONT, which only a debugger sends.
     pub leaked: RefCell<Vec<Tid>>,
 
-    /// The action in progress.
     pub step: Cell<u64>,
 
-    /// How many instructions threads executed so far.
     pub ran: Cell<u64>,
 
-    /// How often, in a thousand, a call is preempted.
     pub preempt: u64,
 
     #[cfg(test)]
@@ -63,12 +46,7 @@ pub struct Machine {
 }
 
 impl Machine {
-    /// Counts what the kernel did since the last look, and fires a fault
-    /// planned for a new thread. Returns lines for the trace.
     pub fn absorb(&self) -> Vec<String> {
-        // The client may see any request about a process ending as a whole
-        // fail, or about one already gone: an untraced process can end
-        // within one action.
         let kernel = self.kernel.borrow();
         let exiting = kernel
             .processes
@@ -155,8 +133,6 @@ impl Machine {
                     ));
                 }
                 Happening::Delivered { tid, signal } => {
-                    // Only a debugger sends SIGCONT, which the program must
-                    // never receive.
                     if signal == libc::SIGCONT {
                         self.leaked.borrow_mut().push(tid);
                     }
@@ -169,8 +145,6 @@ impl Machine {
         lines
     }
 
-    /// Counts a fork, and fires a fault planned for one. Returns lines for
-    /// the trace.
     fn note_forked(&self, parent: Tid, child: Tid) -> Vec<String> {
         let mut marks = self.marks.borrow_mut();
         marks.hit(Mark::Forked);
@@ -193,8 +167,6 @@ impl Machine {
         lines
     }
 
-    /// Counts a thread `tracer` released, and notes code it left that is not
-    /// the program's. Only the first session's releases are counted.
     fn note_released(&self, tid: Tid, tracer: i32, planted: Option<Planted>) {
         let kernel = self.kernel.borrow();
         let mut marks = self.marks.borrow_mut();
@@ -216,8 +188,6 @@ impl Machine {
         }
     }
 
-    /// Marks a new thread or process that starts in an interrupt's stop,
-    /// its creator seized.
     fn note_seized_child(&self, child: Tid) {
         if self
             .kernel
@@ -230,8 +200,6 @@ impl Machine {
         }
     }
 
-    /// Kills the running program from outside, as the planned fault.
-    /// Returns a line for the trace, or nothing when no program runs.
     pub fn kill(&self, mark: Mark) -> Option<String> {
         let mut kernel = self.kernel.borrow_mut();
         let tgid = *kernel
@@ -256,8 +224,6 @@ impl Machine {
         Some(format!("fault: SIGKILL from outside to {tgid}"))
     }
 
-    /// Reaps one status for `session`, if its waiter can, choosing among
-    /// the ready ones.
     pub fn collect(&self, session: SessionId) -> String {
         let mut kernel = self.kernel.borrow_mut();
         let waiter = Rc::clone(&self.waiters.borrow()[session]);
@@ -285,7 +251,6 @@ impl Machine {
         line
     }
 
-    /// Whether `session`'s waiter can collect now.
     pub fn can_collect(&self, session: SessionId) -> bool {
         #[cfg(test)]
         if self.sabotage == Some(Sabotage::DeafWaiter) {
@@ -297,13 +262,10 @@ impl Machine {
             .can_collect(&self.kernel.borrow())
     }
 
-    /// The sessions whose waiters can collect now.
     pub fn collectable(&self) -> impl Iterator<Item = SessionId> + '_ {
         (0..self.waiters.borrow().len()).filter(|&session| self.can_collect(session))
     }
 
-    /// Runs `tid` for up to `budget` instructions. Returns a line for the
-    /// trace.
     pub fn run_thread(&self, tid: Tid, budget: u64) -> String {
         let mut kernel = self.kernel.borrow_mut();
         let ran = kernel.run(tid, budget);
@@ -378,9 +340,6 @@ impl Preemption for Machine {
     }
 }
 
-/// Records what happened inside one of the controller's calls among the
-/// controller's own lines, in the order it happened. Only development builds
-/// record.
 #[cfg_attr(
     not(debug_assertions),
     expect(clippy::missing_const_for_fn, reason = "development builds record")

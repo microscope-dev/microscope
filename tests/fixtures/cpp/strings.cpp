@@ -1,6 +1,6 @@
-// libstdc++ strings: one short enough to live inside the object, one long
-// enough to be truncated, an empty one, and one holding a NUL; and the
-// characters wider than a byte, and pointers to text of them.
+
+
+
 #include <string>
 
 __attribute__((noinline)) int strings_target(const std::string &short_text,

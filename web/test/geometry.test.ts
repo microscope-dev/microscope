@@ -1,6 +1,3 @@
-// Where drags land and settle: dropping a tab, and snapping splitters and
-// floating windows.
-
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
@@ -19,7 +16,6 @@ const A = "g1" as GroupId;
 const B = "g2" as GroupId;
 const W = "g3" as GroupId;
 
-/** Two docked groups side by side, and a window floating over the right. */
 const measured: Measured = {
   dock: { x: 0, y: 0, width: 1000, height: 600 },
   docked: [
@@ -111,13 +107,12 @@ describe("dropping a window by its title bar", () => {
     expect(dropAt({ x: 5, y: 300 })).toEqual({ type: "edge", side: "left" });
     expect(dropAt({ x: 150, y: 300 })).toBeNull();
     expect(dropAt({ x: 60, y: 300 })).toBeNull();
-    // Over another window's body, though a docked body lies beneath.
+
     expect(dropAt({ x: 600, y: 300 })).toBeNull();
   });
 });
 
 describe("the group beside another", () => {
-  // Left and two stacked on the right, the lower one wider.
   const rects = new Map<GroupId, Rect>([
     [A, { x: 0, y: 0, width: 300, height: 600 }],
     [B, { x: 300, y: 0, width: 700, height: 200 }],

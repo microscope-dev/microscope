@@ -1,21 +1,21 @@
-// Async functions resumed after an await, each with a chain of callers
-// suspended in await that V8 reports as the async frames of its stack
-// trace, one checkpoint for each way a chain goes on:
-//
-// chain:       inner < middle < Promise.all (index 1) < outer < run
-// resumed:     middle < Promise.all (index 1) < outer < run
-// allSettled:  settledLeaf < Promise.allSettled (index 0) < viaAllSettled < run
-// any:         anyLeaf < Promise.any (index 0) < viaAny < run
-// then:        thenLeaf < (a then's promise) < viaThen < run
-// resolver:    resolverLeaf < (a new Promise's resolve) < viaResolver < run
-// generator:   produce, an async generator < consume, by for await < run
-// shared:      sharedLeaf, whose promise two functions await, which ends
-//              V8's chain
-//
-// The worker parks in workerLeaf, resumed after an await, which
-// workerOuter awaits, for every checkpoint. middle keeps `captured` in
-// its context, and `plain`, which no closure uses, in a register: the
-// one its generator saved at chain, and its frame holds at resumed.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 'use strict';
 

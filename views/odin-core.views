@@ -1,15 +1,15 @@
 microscope-views 1
 
-# Odin's maps and core library. Verified against Odin dev-2026-05 by
-# tests/fixtures/odin/containers.odin. Odin's slices, strings, dynamic
-# arrays, and unions need no view.
 
-# Every map is `map`. A map's `data` is the address of its storage, whose
-# low six bits are the log2 of its capacity, and points to a record whose
-# `key` and `value` are the map's. The storage holds a key for each slot, then a value for each,
-# then a hash for each, which is 0 for an empty slot and has its top bit set
-# for a deleted entry's. Keys and values are packed into cells of 64 bytes,
-# as many to a cell as fit, and hashes are 8 to a cell.
+
+
+
+
+
+
+
+
+
 view odin map {
     type Key = typeof(data->key)
     type Value = typeof(data->value)
@@ -32,8 +32,8 @@ view odin map {
     field capacity = capacity
 }
 
-# A queue is a ring over its dynamic array's elements: element i is at
-# (offset + i) modulo their count.
+
+
 view odin container_queue::Queue {
     let capacity = len(data)
     check self.len <= capacity && (capacity == 0 || offset < capacity)
@@ -46,7 +46,7 @@ view odin container_small_array::Small_Array {
     show sequence(self.len) for i in range(self.len) => data[i]
 }
 
-# A builder's text is its buffer's bytes.
+
 view odin strings::Builder {
     show value(buf)
     format self as utf8

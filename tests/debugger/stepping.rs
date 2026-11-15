@@ -1,5 +1,3 @@
-//! Instruction and source stepping, inline frames, and finish.
-
 use super::*;
 
 #[tokio::test]
@@ -481,9 +479,6 @@ async fn finish_distinguishes_rust_inline_and_physical_frames() {
     }
 }
 
-/// Steps from a return line whose epilogue the compiler marked complete in
-/// the caller, never at the marker; stepping out ends at the return
-/// address, which a step over runs past to the caller's next line.
 #[tokio::test]
 async fn steps_from_marked_epilogues_complete_in_the_caller() {
     for kind in [StepKind::OverSource, StepKind::IntoSource, StepKind::Out] {
@@ -561,9 +556,6 @@ async fn steps_from_marked_epilogues_complete_in_the_caller() {
     }
 }
 
-/// Stepping over a function's last line stops in its caller, even when the
-/// caller's line calls the function again at the same stack depth before
-/// reaching a statement: the second call is a new frame.
 #[tokio::test]
 async fn stepping_over_a_return_stops_in_the_caller_before_a_second_call() {
     let line_of = |marker| source_line("tests/fixtures/c/repeated-calls.c", marker);
@@ -590,8 +582,6 @@ async fn stepping_over_a_return_stops_in_the_caller_before_a_second_call() {
             )
             .await;
 
-        // A compiler may give the closing brace a line of its own, which
-        // the first step stops on.
         let mut location = None;
 
         for _ in 0..2 {
@@ -631,10 +621,6 @@ async fn stepping_over_a_return_stops_in_the_caller_before_a_second_call() {
     }
 }
 
-/// A source step from a function's last line returns through a caller with
-/// no statement left into that caller's caller, rather than running to the
-/// program's exit; a step over never stops in the next call of the same
-/// function, a new frame where the old one was.
 #[tokio::test]
 async fn source_steps_return_through_a_caller_with_nothing_left_to_run() {
     let line_of = |marker| source_line("tests/fixtures/c/repeated-calls.c", marker);
@@ -654,7 +640,6 @@ async fn source_steps_return_through_a_caller_with_nothing_left_to_run() {
                 StopReason::Breakpoint { .. }
             ));
 
-            // The first call, relay(3), reaches load's last line.
             scenario
                 .add_source_breakpoint("repeated-calls.c", line_of("LOAD_RETURN"))
                 .await;
@@ -713,8 +698,6 @@ async fn source_steps_return_through_a_caller_with_nothing_left_to_run() {
                 }
             }
 
-            // Returning into the middle of the call's line, a step may stop
-            // there if the compiler marks it a statement, or at the next.
             let location = location.expect("a step was taken");
             let line = location_line(&location);
             assert!(
@@ -735,11 +718,6 @@ async fn source_steps_return_through_a_caller_with_nothing_left_to_run() {
     }
 }
 
-/// A step over that returns through the frame it returned to goes on from
-/// that frame's caller. The golden runtime's `rt_start` calls `rt_exit_group`
-/// at the depth `main` was, with no statement between, so stepping over
-/// `main`'s last call must not stop in `rt_exit_group` as though it were
-/// `main`.
 #[tokio::test]
 async fn a_step_over_does_not_stop_in_a_new_frame_where_a_returned_one_was() {
     let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -785,8 +763,6 @@ async fn a_step_over_does_not_stop_in_a_new_frame_where_a_returned_one_was() {
         "the golden binary changed"
     );
 
-    // The rest of main and rt_start has no statement before the program
-    // exits its group.
     let reason = scenario.step_to_stop(StepKind::OverSource).await;
     if reason != StopReason::Exited(ExitStatus::Code(60)) {
         let location = scenario
@@ -802,8 +778,6 @@ async fn a_step_over_does_not_stop_in_a_new_frame_where_a_returned_one_was() {
     scenario.shutdown().await;
 }
 
-/// A step out to code without debug information runs on until a stop the
-/// user sees, which a hit its hit condition declines is not.
 #[tokio::test]
 async fn a_step_out_to_undescribed_code_does_not_end_at_a_declined_hit() {
     let mut scenario = Scenario::launch("undescribed-caller");
@@ -813,8 +787,6 @@ async fn a_step_out_to_undescribed_code_does_not_end_at_a_declined_hit() {
         StopReason::Breakpoint { .. }
     ));
 
-    // The first hit came through the assembly; the second, from main, is
-    // declined.
     scenario
         .operation(
             "decline later hits",
@@ -836,10 +808,6 @@ async fn a_step_out_to_undescribed_code_does_not_end_at_a_declined_hit() {
     scenario.shutdown().await;
 }
 
-/// Stepping out to a return address no line describes goes on, by single
-/// steps, to the caller's first instruction a line describes. Clang marks
-/// the code after `main`'s call of `orphan_spawn` in the golden `frames`
-/// program as line 0.
 #[tokio::test]
 async fn a_step_out_to_undescribed_code_in_the_caller_stops_in_the_caller() {
     let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1021,10 +989,6 @@ async fn recursive_tail_call_completion_ignores_inner_frames_at_the_shared_retur
             Scenario::fixture(fixture),
         );
 
-        // The first descend_tail activation (value == 2) tail-calls
-        // mutual_tail(1), whose inner recursion returns through the same
-        // code address as this step's own return site. Only the outer
-        // return, distinguished by the stack pointer, may complete the step.
         scenario.add_breakpoint("descend_tail").await;
         assert!(matches!(
             scenario.run_to_stop().await,
@@ -1345,7 +1309,6 @@ async fn virtual_steps_reveal_inline_frames_without_running_the_inferior() {
 
         assert_inline_backtrace(fixture, &trace);
 
-        // Finishing the inline instances leaves the physical frame.
         assert_eq!(
             scenario.step_to_stop(StepKind::Out).await,
             StopReason::Step {
@@ -1403,8 +1366,6 @@ async fn inline_next_is_owned_by_the_selected_thread() {
         scenario.add_breakpoint("thread_caller").await;
         scenario.run_to_stop().await;
 
-        // The other worker runs during the step; without the breakpoint it
-        // runs the same code, reaching the step's internal breakpoints.
         scenario.remove_all_breakpoints().await;
         let before = scenario.snapshot().await;
         let selected = before
@@ -1556,8 +1517,6 @@ async fn instruction_step_executes_the_instruction_hidden_by_a_breakpoint() {
         }
     );
 
-    // The original instruction ran, not the trap: execution continues
-    // after it rather than one byte past the breakpoint.
     let registers = scenario
         .operation("registers after step", scenario.handle().registers())
         .await;
@@ -1669,8 +1628,6 @@ async fn source_next_steps_over_calls_but_preserves_user_breakpoints() {
 
 #[tokio::test]
 async fn source_steps_skip_non_statement_line_rows() {
-    // GCC at -O2 marks the trailing rows of middle (line 13) and deepest
-    // (line 8) as non-statement rows, where source steps must not stop.
     let mut next = Scenario::new("next unwind-o2", Scenario::fixture("unwind-o2"));
     next.add_breakpoint("middle").await;
     next.run_to_stop().await;
@@ -1753,9 +1710,6 @@ async fn source_steps_skip_non_statement_line_rows() {
         "step stopped on a non-statement row instead of returning to middle"
     );
 
-    // The return address in middle sits on a non-statement row for the
-    // already-executed call line (11); the step must continue to the next
-    // statement row even though the activation changed at the return.
     assert_eq!(
         location_line(&location),
         Some(12),
@@ -1767,8 +1721,6 @@ async fn source_steps_skip_non_statement_line_rows() {
 
 #[tokio::test]
 async fn step_into_crosses_library_calls_without_line_info() {
-    // Line 6 calls getpid() through the PLT, which has no line rows and whose
-    // call-frame information is a DWARF expression.
     let mut scenario = Scenario::new("step over libc", Scenario::fixture("step-over-libc"));
     scenario.add_breakpoint("call_libc").await;
     scenario.run_to_stop().await;
@@ -1798,8 +1750,6 @@ async fn step_into_crosses_library_calls_without_line_info() {
     scenario.shutdown().await;
 }
 
-/// Stops at the `syscall` instruction of the C library's `getpid`, found by
-/// disassembling the function its ELF symbol names.
 async fn stop_at_getpid_system_call(scenario: &mut Scenario) -> VirtualAddress {
     scenario.add_breakpoint("call_libc").await;
     scenario.run_to_stop().await;
@@ -1873,8 +1823,6 @@ async fn stop_at_getpid_system_call(scenario: &mut Scenario) -> VirtualAddress {
 
 #[tokio::test]
 async fn instruction_steps_and_breakpoint_repairs_cross_system_calls() {
-    // Linux reports a single step across `syscall` from the system call's
-    // exit path, with a different trap code than other steps.
     let mut scenario = Scenario::new("step syscall", Scenario::fixture("step-over-libc"));
     let syscall = stop_at_getpid_system_call(&mut scenario).await;
     assert_eq!(
@@ -1918,8 +1866,6 @@ async fn instruction_steps_and_breakpoint_repairs_cross_system_calls() {
 
     scenario.shutdown().await;
 
-    // Resuming from a breakpoint on the system call steps over it the same
-    // way before running on.
     let mut scenario = Scenario::new("repair syscall", Scenario::fixture("step-over-libc"));
     stop_at_getpid_system_call(&mut scenario).await;
     assert_eq!(
@@ -1949,7 +1895,6 @@ async fn next_instruction_runs_a_recursive_call_until_this_activation_returns() 
         register_u64(registers, RegisterRole::ProgramCounter)
     };
 
-    // An ordinary instruction is one step, like stepi.
     let before = pc(&scenario
         .operation("registers", scenario.handle().registers())
         .await);
@@ -1970,7 +1915,6 @@ async fn next_instruction_runs_a_recursive_call_until_this_activation_returns() 
         "{before:#x} -> {after:#x}"
     );
 
-    // Reach the recursive call itself.
     let mut call = None;
 
     for _ in 0..16 {
@@ -2002,8 +1946,6 @@ async fn next_instruction_runs_a_recursive_call_until_this_activation_returns() 
         .frames
         .len();
 
-    // Deeper activations return to the same address first; only this
-    // activation's return completes the step.
     assert_eq!(
         scenario.step_to_stop(StepKind::OverInstruction).await,
         StopReason::Step {
@@ -2035,7 +1977,6 @@ async fn next_instruction_runs_a_recursive_call_until_this_activation_returns() 
     scenario.shutdown().await;
 }
 
-/// The line of `orphan-frames.c` that `marker` labels.
 fn orphan_line(marker: &str) -> u64 {
     source_line("tests/fixtures/c/orphan-frames.c", marker)
 }
@@ -2049,14 +1990,11 @@ async fn current_line(scenario: &Scenario) -> Option<u64> {
         .map(|source| source.line.get())
 }
 
-/// Steps `kind` and checks that it stops on the line `marker` labels.
 async fn step_to_orphan_line(scenario: &mut Scenario, kind: StepKind, marker: &str) {
     assert_eq!(scenario.step_to_stop(kind).await, StopReason::Step { kind });
     assert_eq!(current_line(scenario).await, Some(orphan_line(marker)));
 }
 
-/// Stepping out of a frame whose caller cannot be unwound is refused, and
-/// leaves the program stopped where it was.
 async fn assert_finish_refused(scenario: &Scenario, marker: &str) {
     let refused = scenario
         .attempt("finish", scenario.handle().step(StepKind::Out))
@@ -2071,10 +2009,6 @@ async fn assert_finish_refused(scenario: &Scenario, marker: &str) {
     assert_eq!(current_line(scenario).await, Some(orphan_line(marker)));
 }
 
-/// A frame whose caller cannot be unwound still steps by source line, and
-/// its program runs on unharmed. A fiber started on a fresh stack has no
-/// readable return address; a frame whose return address a stack overflow
-/// overwrote points into program data, where no trap may be planted.
 #[tokio::test]
 async fn frames_without_a_trustworthy_caller_step_and_leave_their_program_intact() {
     let mut scenario = Scenario::launch("orphan-frames");
@@ -2122,8 +2056,6 @@ async fn frames_without_a_trustworthy_caller_step_and_leave_their_program_intact
     assert_finish_refused(&scenario, "READ_CANARY").await;
     step_to_orphan_line(&mut scenario, StepKind::OverSource, "CHECK_CANARY").await;
 
-    // The program exits with 0 only if the data its smashed return address
-    // points to still holds what it stored.
     assert_eq!(
         scenario.resume_to_stop().await,
         StopReason::Exited(ExitStatus::Code(0))
@@ -2132,9 +2064,6 @@ async fn frames_without_a_trustworthy_caller_step_and_leave_their_program_intact
     scenario.shutdown().await;
 }
 
-/// Stepping over from an instruction no debug information describes, such
-/// as a program's entry point, runs to the first source statement it
-/// reaches, as stepping in does, with or without call-frame information.
 #[tokio::test]
 async fn stepping_over_from_undescribed_code_stops_at_the_first_source_statement() {
     for fixture in ["freestanding-entry", "freestanding-entry-bare"] {
@@ -2176,11 +2105,6 @@ async fn stepping_over_from_undescribed_code_stops_at_the_first_source_statement
     }
 }
 
-/// Breakpoints on two nested inlined functions that begin at one
-/// instruction, `rt_exit_group` and the `rt_syscall3` inlined into it in the
-/// golden runtime, hit together. One chain of calls holds both, so the stop
-/// presents the innermost, as gdb does, and backtraces and source steps
-/// work there.
 #[tokio::test]
 async fn nested_inline_breakpoints_hit_together_present_the_innermost() {
     let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2362,8 +2286,6 @@ async fn finish_boundary_physical_call(
     );
 }
 
-/// Steps into a fixture function until the selected frame is the named
-/// inline instance stopped at the requested source line.
 async fn enter_inline_frame(scenario: &mut Scenario, fixture: &str, function: &str, line: u64) {
     for _ in 0..8 {
         let location = scenario
@@ -2502,7 +2424,6 @@ fn assert_inline_backtrace(fixture: &str, trace: &microscope::Backtrace) {
     );
 }
 
-/// Odin's procedures are named by package, and step and unwind as C's do.
 #[tokio::test]
 async fn odin_steps_into_a_procedure_and_back_to_its_caller() {
     for fixture in ["values-odin-o0", "values-odin-o2"] {
@@ -2572,9 +2493,6 @@ async fn odin_steps_into_a_procedure_and_back_to_its_caller() {
     }
 }
 
-/// gfortran's procedures step and unwind as C's do; its main program is
-/// `MAIN__`, whatever the program calls it, and `main` names it rather than
-/// the C wrapper gfortran calls it from.
 #[tokio::test]
 async fn fortran_steps_into_a_procedure_and_back_to_its_caller() {
     for fixture in ["values-fortran-o0", "values-fortran-o2"] {
@@ -2645,8 +2563,6 @@ async fn fortran_steps_into_a_procedure_and_back_to_its_caller() {
     }
 }
 
-/// D's functions step and unwind as C's do; its main function is `D main`,
-/// and druntime's frames are named by their symbols.
 #[tokio::test]
 async fn d_steps_into_a_function_and_back_to_its_caller() {
     for fixture in ["values-d-o0", "values-d-o2"] {
@@ -2685,7 +2601,6 @@ async fn d_steps_into_a_function_and_back_to_its_caller() {
             "{fixture}: {trace:?}"
         );
 
-        // druntime, which has no debug information, by its symbols' names.
         assert!(
             trace.frames.iter().any(|frame| frame
                 .symbol
@@ -2717,8 +2632,6 @@ async fn d_steps_into_a_function_and_back_to_its_caller() {
     }
 }
 
-/// Nim's procedures step and unwind as the C they compile to does, named
-/// as Nim names them.
 #[tokio::test]
 async fn nim_steps_into_a_procedure_and_back_to_its_caller() {
     for fixture in ["values-nim-gcc-o0", "values-nim-clang-o2"] {
@@ -2772,7 +2685,6 @@ async fn nim_steps_into_a_procedure_and_back_to_its_caller() {
     }
 }
 
-/// GNAT's subprograms step and unwind as C's do, named as Ada names them.
 #[tokio::test]
 async fn ada_steps_into_a_subprogram_and_back_to_its_caller() {
     for fixture in ["values-ada-o0", "values-ada-o2"] {

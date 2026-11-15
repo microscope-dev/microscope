@@ -1,14 +1,3 @@
-//! Code a just-in-time compiler wrote to anonymous memory, as the perf map
-//! it keeps describes it: `/tmp/perf-PID.map`, a line for each function,
-//! `START SIZE NAME`, the first two in hexadecimal. CPython writes one
-//! under `-X perf`, and Node and the JVM can.
-//!
-//! The map is all a function has: no file holds its code, no build ID
-//! proves which code a name belongs to, and no call-frame information
-//! describes its frames. Its frames are proved from its instructions
-//! instead, read from the process when the map is (see
-//! [`super::x86_64::frames`]).
-
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -21,7 +10,6 @@ use crate::{
     SymbolExtentProvenance, SymbolId, SymbolInfo, SymbolKind, UnwindTermination, VirtualAddress,
 };
 
-/// One function a perf map names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub start: u64,
@@ -29,9 +17,6 @@ pub struct Entry {
     pub name: Arc<str>,
 }
 
-/// The functions the complete lines of `text` name, and how many bytes
-/// those lines take: a map is written as it is read, so its last line may
-/// be cut short. A line that names no code is skipped.
 pub fn parse(text: &[u8]) -> (Vec<Entry>, usize) {
     let lines = text
         .iter()
@@ -70,18 +55,12 @@ fn entry(line: &[u8]) -> Option<Entry> {
     })
 }
 
-/// One function of a map, with its code as far as it could be read.
 #[derive(Debug, Clone)]
 pub struct Jitted {
     pub entry: Entry,
     pub code: Option<Arc<[u8]>>,
 }
 
-/// The debug information of the anonymous executable memory `range`
-/// covers, at the addresses the process runs it, which `jitted` describe
-/// in the order the map named them. A later function replaces each earlier
-/// one it overlaps, as a compiler that frees code reuses its memory.
-/// Functions outside the range are left out.
 pub fn load(
     path: &Path,
     id: ModuleImageId,
@@ -132,12 +111,6 @@ pub fn load(
     })
 }
 
-/// The debug information of code a runtime generated in `range`, as
-/// [`super::runtime_code::load`] gives it, with the functions `jitted`
-/// names there, as [`load`] chooses them, for its symbols: the map names
-/// the functions, and the runtime's convention unwinds their frames. Each
-/// plays the interpreter's role, as the runtime's frames stand for the
-/// interpreted functions placed at them.
 pub fn load_runtime_code(
     path: &Path,
     id: ModuleImageId,
@@ -154,8 +127,6 @@ pub fn load_runtime_code(
     super::runtime_code::load_named(path, id, range, symbols)
 }
 
-/// The functions of `jitted` that `range` holds, by start, each replacing
-/// every earlier one it overlaps.
 fn within(range: AddressRange<ImageAddress>, jitted: &[Jitted]) -> BTreeMap<u64, &Jitted> {
     let mut functions: BTreeMap<u64, &Jitted> = BTreeMap::new();
     for function in jitted {
@@ -180,7 +151,6 @@ fn within(range: AddressRange<ImageAddress>, jitted: &[Jitted]) -> BTreeMap<u64,
     functions
 }
 
-/// The symbol of each of `functions`.
 fn symbols(functions: &BTreeMap<u64, &Jitted>) -> Vec<SymbolInfo> {
     functions
         .values()
@@ -208,9 +178,6 @@ fn symbols(functions: &BTreeMap<u64, &Jitted>) -> Vec<SymbolInfo> {
         .collect()
 }
 
-/// Unwinds the frames of a map's functions by what their instructions
-/// prove. Image addresses are the process's: a map names the addresses
-/// code runs at.
 struct PerfMapUnwind {
     functions: BTreeMap<u64, Function>,
 }
@@ -219,7 +186,6 @@ struct Function {
     end: u64,
     code: Option<Arc<[u8]>>,
 
-    /// What its code proves, worked out on the first unwind through it.
     frames: OnceLock<CodeFrames>,
 }
 
@@ -307,7 +273,6 @@ mod tests {
         assert_eq!(parse(b"cut"), (Vec::new(), 0));
     }
 
-    /// Memory where each word holds the value `words` gives its address.
     struct Words(BTreeMap<u64, u64>);
 
     impl MemoryReader for Words {
@@ -358,8 +323,6 @@ mod tests {
         assert_eq!(name(0x101f).as_deref(), Some("py::with"));
         assert_eq!(name(0x1030), None);
 
-        // Inside the call of each: the frame without a frame pointer
-        // pushed 8 bytes, and the other saved rbp and points rbp at it.
         let mut memory = Words(BTreeMap::from([
             (0x5010, 0xaaaa),
             (0x6000, 0x7000),

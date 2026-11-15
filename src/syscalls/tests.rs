@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-/// Every Rust source under `directory`, with the code compiled only for
-/// tests removed.
 fn sources(directory: &Path) -> Vec<(PathBuf, String)> {
     let mut sources = Vec::new();
 
@@ -21,9 +19,6 @@ fn sources(directory: &Path) -> Vec<(PathBuf, String)> {
     sources
 }
 
-/// The model is pure: engines translate what they see into it at the edge,
-/// so none of it may reach for process control, I/O, clocks, or threads,
-/// and both engines and every client share it.
 #[test]
 fn the_model_stays_pure() {
     const FORBIDDEN: [&str; 12] = [
@@ -55,8 +50,6 @@ fn the_model_stays_pure() {
     assert!(sources.len() >= 8, "the model's sources were found");
 }
 
-/// A stack's interpreted frames show before the native frame each names,
-/// in order, and those past its last native frame after it.
 #[test]
 fn interpreted_frames_interleave_with_native_ones_where_they_go() {
     use std::sync::Arc;

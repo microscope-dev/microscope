@@ -1,8 +1,8 @@
-// Makes each system call its arguments number, with every argument -1, in
-// a child of its own, so that a tracer's classes can be read from which
-// calls it reports. Arguments of -1 are invalid for almost every call,
-// which then fails before doing anything; calls that ignore their
-// arguments are named by the test so that it leaves them out.
+
+
+
+
+
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <sys/syscall.h>

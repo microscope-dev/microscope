@@ -1,42 +1,16 @@
-//! A code object's location table, `co_linetable`, as CPython 3.11 and
-//! later encode it (`InternalDocs/code_objects.md`): one entry for each
-//! run of code units, each giving the run's line as a change from the line
-//! before it, which begins at the code object's first line.
-//!
-//! An entry's first byte has its high bit set, its kind in the next four
-//! bits, and the run's length less one, in code units, in the low three.
-//! The kind says what follows:
-//!
-//! - 0 to 9, the short form: the same line, and a byte of columns;
-//! - 10 to 12, the one-line form: the line plus 0, 1, or 2, and a
-//!   byte each for the start and end columns;
-//! - 13: a line change as a signed varint, and no columns;
-//! - 14, the long form: a line change as a signed varint, then the end
-//!   line's change, the start column, and the end column, as varints;
-//! - 15: no location.
-//!
-//! A varint is 6-bit groups, least significant first, each but the last
-//! with bit 6 set. A signed one keeps its sign in its lowest bit.
-
-/// The bytes of one code unit.
 pub(super) const CODE_UNIT: u64 = 2;
 
-/// Why a location table cannot be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Malformed;
 
-/// A run of code units and its line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Run {
-    /// The run's bytes in the bytecode.
     pub(super) start: u64,
     pub(super) end: u64,
 
-    /// Its line; `None` for code at no line, as a function's preamble may be.
     pub(super) line: Option<i64>,
 }
 
-/// Each run of a table, in order, beginning at line `first_line`.
 pub(super) const fn runs(table: &[u8], first_line: i64) -> Runs<'_> {
     Runs {
         table,
@@ -67,7 +41,6 @@ impl Runs<'_> {
         while byte & 64 != 0 {
             byte = self.byte()?;
             shift += 6;
-            // A group whose bits reach past the 64th names no value.
             let bits = u64::from(byte & 63);
             if shift > 60 || (bits << shift) >> shift != bits {
                 return Err(Malformed);
@@ -146,7 +119,6 @@ impl Iterator for Runs<'_> {
 
         let run = self.next_run();
         if run.is_err() {
-            // Nothing after a malformed entry can be trusted.
             self.at = self.table.len();
         }
 
@@ -154,9 +126,6 @@ impl Iterator for Runs<'_> {
     }
 }
 
-/// The line of the code unit at byte `offset` of the bytecode, which
-/// begins at `first_line`: `Ok(None)` for a unit at no line, and an error
-/// for one no run covers or a table that cannot be read.
 pub(super) fn line_at(
     table: &[u8],
     first_line: i64,
@@ -178,8 +147,6 @@ mod tests {
 
     use super::*;
 
-    /// One entry as a model: its kind, its length in code units, its line
-    /// change, which only kinds 13 and 14 write, and its columns.
     #[derive(Debug, Clone, Copy)]
     struct Entry {
         kind: u8,
@@ -201,7 +168,6 @@ mod tests {
         write_varint(magnitude | u64::from(value < 0), out);
     }
 
-    /// The table `entries` write, and the runs CPython reads from it.
     fn written(entries: &[Entry], first_line: i64) -> (Vec<u8>, Vec<Run>) {
         let (mut table, mut runs) = (Vec::new(), Vec::new());
         let (mut line, mut start) = (first_line, 0);
@@ -277,9 +243,6 @@ mod tests {
         }
     }
 
-    /// A table of each form, from line 10: a short entry, a one-line entry
-    /// two lines on, a long entry four lines back, an entry with no columns
-    /// three lines on, and one with no location.
     const TABLE: &[u8] = &[
         0x80 | (3 << 3) | 1,
         0x12,
@@ -287,17 +250,15 @@ mod tests {
         4,
         9,
         0x80 | (14 << 3) | 2,
-        9, // -4
+        9,
         0,
         5,
         7,
         0x80 | (13 << 3),
-        6, // +3
+        6,
         0x80 | (15 << 3) | 7,
     ];
 
-    /// Prints, for each code object of some of the standard library, its
-    /// table, first line, length in bytes, and `co_lines()`'s runs.
     const ORACLE: &str = r#"
 import json, sys
 from importlib.machinery import PathFinder
@@ -319,11 +280,8 @@ for name in ["json.decoder", "threading", "dataclasses", "asyncio.base_events", 
                           len(code.co_code), list(code.co_lines())]))
 "#;
 
-    /// A code object's table in hex, first line, length, and runs.
     type Oracle = (String, i64, u64, Vec<(u64, u64, Option<i64>)>);
 
-    /// Every code unit of thousands of code objects has the line CPython
-    /// gives it, on every interpreter in the matrix.
     #[test]
     fn each_interpreter_in_the_matrix_agrees_on_every_line() {
         let root = std::env::var_os("MICROSCOPE_CPYTHON")
@@ -351,8 +309,6 @@ for name in ["json.decoder", "threading", "dataclasses", "asyncio.base_events", 
                     .step_by(2)
                     .map(|at| u8::from_str_radix(&table[at..at + 2], 16).expect("hex"))
                     .collect();
-                // Walk every unit once; the property above checks line_at's
-                // lookup at every byte without quadratic stdlib scans.
                 let decoded = super::runs(&table, first).flat_map(|run| {
                     let run = run.expect("the interpreter's table is valid");
                     (run.start..run.end)
@@ -400,7 +356,6 @@ for name in ["json.decoder", "threading", "dataclasses", "asyncio.base_events", 
         ];
         assert_eq!(line_at(&endless, 10, 0), Err(Malformed));
 
-        // Eleven groups, the last of whose bits past the 64th would be lost.
         let mut wide = vec![0x80 | (13 << 3)];
         wide.extend([0x40; 10]);
         wide.push(0x10);

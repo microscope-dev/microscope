@@ -1,35 +1,19 @@
-//! The thread ids a client sees, for the debugger's threads and tasks.
-//!
-//! DAP names threads with 32-bit ids, while a task's number, such as a
-//! goroutine id, is 64-bit. A thread keeps its system id, so a client shows
-//! what `ps` does, and a task its number, so it shows what the runtime's
-//! own dumps do. A context whose id is taken, or too wide, gets the next id
-//! above every system thread id. Each id is given once for the session, so
-//! a client keeps its view of a task across stops and never sees an id
-//! reused for another.
-
 use std::collections::HashMap;
 
 use microscope::{ExecutionContext, ThreadId};
 
 use super::protocol::ErrorBody;
 
-/// The first id given to a context that is not named by its own number.
-/// Every Linux thread id is below it (`PID_MAX_LIMIT` is 2^22).
 const ALLOCATED: i64 = 1 << 30;
 
-/// The largest id DAP clients accept: thread ids are 32-bit signed.
 const MAX_ID: i64 = i32::MAX as i64;
 
-/// Client thread ids for execution contexts, valid for one session.
 #[derive(Debug)]
 pub struct ThreadHandles {
     next: i64,
     ids: HashMap<ExecutionContext, i64>,
     contexts: HashMap<i64, ExecutionContext>,
 
-    /// The entry that says how many tasks a list leaves out, which names
-    /// no context.
     placeholder: Option<i64>,
 }
 
@@ -45,7 +29,6 @@ impl Default for ThreadHandles {
 }
 
 impl ThreadHandles {
-    /// The client's id for `context`, given it on first use.
     pub fn id(&mut self, context: ExecutionContext) -> Result<i64, ErrorBody> {
         if let Some(&id) = self.ids.get(&context) {
             return Ok(id);
@@ -73,7 +56,6 @@ impl ThreadHandles {
         Ok(id)
     }
 
-    /// The id of the entry that says how many tasks a list leaves out.
     pub fn placeholder(&mut self) -> Result<i64, ErrorBody> {
         if let Some(id) = self.placeholder {
             return Ok(id);
@@ -94,9 +76,6 @@ impl ThreadHandles {
         })
     }
 
-    /// The context a client's thread id names. An id never given out but in
-    /// a thread's range names that thread, so a client may name a thread
-    /// it learned of elsewhere.
     pub fn context(&self, id: i64) -> Result<ExecutionContext, ErrorBody> {
         if let Some(&context) = self.contexts.get(&id) {
             return Ok(context);
@@ -137,11 +116,8 @@ mod tests {
         assert_eq!(handles.id(task(0, 7)), Ok(7));
         assert_eq!(handles.context(7), Ok(task(0, 7)));
 
-        // An unannounced thread is named by its id until something takes it.
         assert_eq!(handles.context(99), Ok(thread(99)));
 
-        // A number another context took, or one wider than DAP's ids, gets
-        // an id no thread could have, the same each time.
         let taken = handles.id(task(0, 4321)).expect("an id");
         assert!(taken >= ALLOCATED);
         assert_eq!(handles.id(task(0, 4321)), Ok(taken));

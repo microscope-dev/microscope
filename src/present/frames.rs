@@ -1,7 +1,3 @@
-//! A stack frame's name and place in its program's source, as every front
-//! end shows them. A frame whose code is in no image, as an interpreted
-//! frame's, has the function and place its runtime recorded instead.
-
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -11,18 +7,14 @@ use microscope::{
 
 use crate::cli::format;
 
-/// Where a frame is in its program's source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FramePlace {
     pub path: PathBuf,
 
-    /// The one-based line and column; a column only where it is known.
     pub line: u64,
     pub column: Option<u64>,
 }
 
-/// Where `frame` is: the place its runtime recorded, or else its source
-/// location in `image`, its module's image.
 pub fn place(frame: &StackFrame, image: Option<&ModuleImage>) -> Option<FramePlace> {
     if let Some(recorded) = &frame.recorded {
         return recorded.place.as_ref().map(|place| FramePlace {
@@ -41,9 +33,6 @@ pub fn place(frame: &StackFrame, image: Option<&ModuleImage>) -> Option<FramePla
     })
 }
 
-/// What `frame` runs: the function its runtime recorded, its function, or
-/// its symbol, or `<unknown>`. A function its runtime recorded with no
-/// name, such as a module's top level, is `<anonymous>`.
 pub fn code(frame: &StackFrame) -> String {
     frame.recorded.as_ref().map_or_else(
         || format::code_name(frame.function.as_ref(), frame.symbol.as_ref()),
@@ -57,13 +46,10 @@ pub fn code(frame: &StackFrame) -> String {
     )
 }
 
-/// Whether anything names what `frame` runs.
 pub const fn is_named(frame: &StackFrame) -> bool {
     frame.recorded.is_some() || frame.function.is_some() || frame.symbol.is_some()
 }
 
-/// A frame's name: the future it awaits, what it runs, or else its address
-/// and module, from `image`, its module's image.
 pub fn name(frame: &StackFrame, image: Option<&ModuleImage>) -> String {
     if let Some(awaited) = format::awaited_frame(image, frame) {
         return awaited;
@@ -85,8 +71,6 @@ pub fn name(frame: &StackFrame, image: Option<&ModuleImage>) -> String {
     }
 }
 
-/// The note that frames a frame drives are not shown in full, naming the
-/// frame `driver`, as `#3` or `the next frame`.
 pub fn unfollowed(note: &microscope::Unfollowed, driver: &str) -> String {
     match note.driven {
         microscope::DrivenFrames::Future => format!(
@@ -104,8 +88,6 @@ pub fn unfollowed(note: &microscope::Unfollowed, driver: &str) -> String {
     }
 }
 
-/// The language of the code a frame runs, as a short mark and its name,
-/// where its function or the interpreter that runs it says.
 pub fn language(frame: &StackFrame) -> Option<(&'static str, &'static str)> {
     let language = frame
         .recorded
@@ -130,8 +112,6 @@ pub fn language(frame: &StackFrame) -> Option<(&'static str, &'static str)> {
     })
 }
 
-/// Which of a backtrace's frames its folds hide, by index, with the
-/// `selected` frame shown.
 #[expect(
     clippy::indexing_slicing,
     reason = "folds returns ranges within the frames it is given"
@@ -145,14 +125,6 @@ pub fn folded_frames(trace: &Backtrace, selected: u32) -> Vec<bool> {
     folded
 }
 
-/// The runs of a runtime's frames a backtrace folds into a line each, by
-/// index, of its first `shown` frames: two or more frames in a row on one
-/// stack of its machinery, an interpreter's included, its dispatch, and
-/// the wrappers between them, at least one the runtime's own; and every
-/// frame past the innermost dispatch, which runs the runtime's code for
-/// the thread rather than the task's. Where the stack stopped, unless an
-/// interpreter's machinery beyond which another frame is selected, and the
-/// `selected` frame, are always shown.
 #[expect(
     clippy::indexing_slicing,
     reason = "dispatch was found in frames, and the loop holds start and end within it"
@@ -160,8 +132,6 @@ pub fn folded_frames(trace: &Backtrace, selected: u32) -> Vec<bool> {
 pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Range<usize>> {
     let frames = trace.frames.get(..shown).unwrap_or(&trace.frames);
 
-    // A frame that drives a future is shown with it, or with why it is not,
-    // and so is every async caller suspended in await.
     let mut kept = trace
         .frames
         .windows(2)
@@ -196,8 +166,6 @@ pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Ra
 
     let mut runs = machinery_runs(&frames[..=dispatch], &kept);
 
-    // Past it, a kept frame is shown between the runs on either side, and
-    // a run ends where the stack changes.
     let is_kept = |at: usize| kept.contains(&frames[at].level);
     let mut start = dispatch + 1;
     while start < frames.len() {
@@ -205,8 +173,6 @@ pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Ra
         let end = (start..frames.len())
             .find(|at| is_kept(*at) || frames[*at].segment != segment)
             .unwrap_or(frames.len());
-        // The dispatch frame's run takes in what follows it on its stack,
-        // however few; a run of its own needs two frames.
         match runs.last_mut() {
             Some(run) if run.end == start && frames[run.start].segment == segment => {
                 run.end = end;
@@ -227,7 +193,6 @@ pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Ra
     runs
 }
 
-/// The runs [`folds`] folds by role alone.
 #[expect(
     clippy::indexing_slicing,
     reason = "start stays below frames.len(), and end at most it"
@@ -239,9 +204,6 @@ fn machinery_runs(frames: &[StackFrame], kept: &BTreeSet<u32>) -> Vec<std::ops::
             CodeRole::RuntimeInternal | CodeRole::Dispatch | CodeRole::Interpreter
         )
     };
-    // Where the stack stopped shows, unless it is an interpreter's
-    // machinery, such as the debugger's hook in a runtime's agent, beyond
-    // which the stop selected the frame it is about.
     let folds = |frame: &StackFrame| {
         (frame.level != 0 || frame.role == CodeRole::Interpreter)
             && !kept.contains(&frame.level)
@@ -306,10 +268,6 @@ mod tests {
         }
     }
 
-    /// A stack stopped in an interpreter's machinery, such as the hook of
-    /// the debugger's agent, folds it when the stop selects the program's
-    /// frame beyond it, and shows it when it is selected; a stack stopped in
-    /// a runtime's own code always shows where.
     #[test]
     fn where_a_stack_stopped_folds_only_as_machinery_beyond_the_selection() {
         let frame = |level, role| StackFrame {
@@ -347,9 +305,6 @@ mod tests {
         assert_eq!(folds(&runtime, 4, 3), vec![1..3]);
     }
 
-    /// The frames past the innermost dispatch fold, but a frame that
-    /// drives a future there, as a `block_on` inside a task makes, is
-    /// shown between the runs on either side of it.
     #[test]
     fn a_future_driver_below_the_dispatch_is_shown() {
         let frame = |level, role, segment| StackFrame {
@@ -383,7 +338,6 @@ mod tests {
         ]);
         assert_eq!(folds(&driven, 7, 0), vec![5..7]);
 
-        // A run is on one stack: it ends where the future's frames begin.
         let longer = trace(&[
             (ordinary, thread),
             (CodeRole::Dispatch, thread),
@@ -397,7 +351,6 @@ mod tests {
         ]);
         assert_eq!(folds(&longer, 9, 0), vec![2..4, 4..6, 7..9]);
 
-        // Nor does the dispatch frame's run take in a frame on another.
         let after_run = trace(&[
             (ordinary, thread),
             (runtime, thread),
@@ -408,8 +361,6 @@ mod tests {
         assert_eq!(folds(&after_run, 5, 0), vec![1..3]);
     }
 
-    /// A single frame past the dispatch joins the run that ends at the
-    /// dispatch, as two do; on its own, after a shown frame, it is shown.
     #[test]
     fn a_lone_frame_past_the_dispatch_joins_its_run() {
         let frame = |level, role| StackFrame {
@@ -438,7 +389,6 @@ mod tests {
         let two = trace(&[ordinary, runtime, dispatch, runtime, runtime]);
         assert_eq!(folds(&two, 5, 0), vec![1..5]);
 
-        // The dispatch alone folds into no run for the frame to join.
         let alone = trace(&[ordinary, dispatch, runtime]);
         assert_eq!(folds(&alone, 3, 0), Vec::<std::ops::Range<usize>>::new());
     }

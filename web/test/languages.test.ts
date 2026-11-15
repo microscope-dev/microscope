@@ -1,6 +1,3 @@
-// The languages without a CodeMirror package of their own are tokenized by
-// small stream languages: each with its own comments, strings, and case.
-
 import {
   javascriptLanguage,
   jsxLanguage,
@@ -14,7 +11,6 @@ import { describe, expect, it } from "vitest";
 
 import { language, paintLines, tokenStyle } from "../src/ui/source/languages";
 
-/** The highlighted tokens of `text`, as [text, class] pairs. */
 function tokens(path: string, text: string): [string, string][] {
   const syntax = language(path);
   if (!(syntax instanceof Language)) {
@@ -27,7 +23,6 @@ function tokens(path: string, text: string): [string, string][] {
   return found;
 }
 
-/** The text of the tokens of `kind`. */
 function of(found: [string, string][], kind: string): string[] {
   return found.filter(([, classes]) => classes.includes(`tok-${kind}`)).map(([text]) => text);
 }
@@ -151,7 +146,6 @@ describe("stream languages", () => {
   });
 });
 
-/** The text of each `tk-` theme role in `text`, as the source view colors it. */
 function roles(path: string, text: string): Record<string, string[]> {
   const syntax = language(path);
   if (!(syntax instanceof Language)) {
@@ -215,7 +209,7 @@ describe("painting a profile's source lines", () => {
   const PATHS = ["a.c", "a.cpp", "a.rs", "a.go", "a.zig", "a.odin", "a.f90", "a.d", "a.nim"].concat(
     ["a.adb", "a.py", "a.js", "a.jsx", "a.ts", "a.tsx", "a.txt"],
   );
-  // Fragments that open comments and strings a line may not close.
+
   const PIECES = ["/*", "*/", "/+", "+/", "#[", "]#", "//", "#", "--", "!", '"', '"""', "'", "`"]
     .concat(['r"', "{", "}", "(", ")", "if", "fn", "def", "0x1f", "3.5e2", "x", "\\", "\t", " "])
     .concat(["\u{E9}", "\u{1F600}"]);

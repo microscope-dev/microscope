@@ -1,6 +1,4 @@
 // @ts-check
-// VS Code integration: DAP sessions, launch/attach pickers, expression hovers,
-// and inline values for in-scope variables.
 
 "use strict";
 
@@ -23,7 +21,6 @@ const LANGUAGES = [
   "typescriptreact",
 ];
 
-/** The microscope sessions running now. */
 const sessions = new Set();
 
 /** @param {vscode.ExtensionContext} context */
@@ -65,7 +62,6 @@ function activate(context) {
 
 /** @param {vscode.DebugSession} session */
 function createDebugAdapterDescriptor(session) {
-  // Child sessions reuse the parent's adapter.
   // oxlint-disable-next-line no-underscore-dangle -- the name microscope gives a child session's configuration
   const member = session.configuration.__microscopeMember;
   if (member !== undefined) {
@@ -153,7 +149,6 @@ function resolveDebugConfiguration(folder, configuration) {
   return null;
 }
 
-/** Directories no program to debug is built into. */
 const SKIPPED_DIRECTORIES = new Set([
   "node_modules",
   "deps",
@@ -161,7 +156,7 @@ const SKIPPED_DIRECTORIES = new Set([
   "incremental",
   ".fingerprint",
 ]);
-/** How deep, and through how many entries, the workspace is searched. */
+
 const PROGRAM_SEARCH = { depth: 4, entries: 5000, programs: 50 };
 
 /**
@@ -252,7 +247,7 @@ function isProgram(file) {
   try {
     descriptor = fs.openSync(file, "r");
     const header = Buffer.alloc(64);
-    // \x7fELF, 64-bit, little-endian, and x86-64.
+
     if (
       fs.readSync(descriptor, header, 0, 64, 0) < 64 ||
       header.readUInt32BE(0) !== 0x7f454c46 ||
@@ -264,11 +259,9 @@ function isProgram(file) {
     }
     const type = header.readUInt16LE(16);
     if (type === 2) {
-      // ET_EXEC
       return true;
     }
     if (type !== 3) {
-      // ET_DYN
       return false;
     }
     const offset = Number(header.readBigUInt64LE(32));
@@ -283,7 +276,6 @@ function isProgram(file) {
     }
     for (let index = 0; index < count; index++) {
       if (headers.readUInt32LE(index * size) === 3) {
-        // PT_INTERP
         return true;
       }
     }
@@ -306,7 +298,6 @@ function isProgram(file) {
  * @param {vscode.DebugConfiguration | undefined} configuration
  */
 async function pickProcess(configuration) {
-  // VS Code has substituted the configuration's other variables already.
   const program =
     typeof configuration?.program === "string" ? realPath(configuration.program) : undefined;
   const items = processes()
@@ -354,12 +345,10 @@ function processes() {
       if (fs.statSync(directory).uid !== uid) {
         continue;
       }
-      // The fields follow the parenthesized name, which may itself contain
-      // spaces and parentheses. fields[0] is the state, field 3 of stat,
-      // so field 22, the start time, is fields[19].
+
       const stat = fs.readFileSync(`${directory}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-      // A zombie has exited and cannot be traced.
+
       if (fields[0] === "Z") {
         continue;
       }
@@ -372,9 +361,7 @@ function processes() {
       let executable;
       try {
         executable = fs.readlinkSync(`${directory}/exe`);
-      } catch {
-        // The process has no executable to read, or it just exited.
-      }
+      } catch {}
       found.push({
         pid,
         name,
@@ -382,9 +369,7 @@ function processes() {
         executable,
         started: Number(fields[19]),
       });
-    } catch {
-      // The process exited while it was being read.
-    }
+    } catch {}
   }
   return found.toSorted(
     (first, second) => second.started - first.started || second.pid - first.pid,
@@ -393,14 +378,12 @@ function processes() {
 
 const hexadecimal = () => vscode.workspace.getConfiguration("microscope").get("hexadecimal", false);
 
-/** Flips the microscope.hexadecimal setting, which every microscope session follows. */
 async function toggleHexadecimal() {
   await vscode.workspace
     .getConfiguration("microscope")
     .update("hexadecimal", !hexadecimal(), vscode.ConfigurationTarget.Global);
 }
 
-/** Shows the setting's state to menus and tells running sessions. */
 function updateHexadecimal() {
   vscode.commands.executeCommand("setContext", "microscope.hexadecimal", hexadecimal());
   for (const session of sessions) {
@@ -411,10 +394,9 @@ function updateHexadecimal() {
 
 /** @param {vscode.DebugSession} session */
 function sendValueFormat(session) {
-  session.customRequest("microscope/setValueFormat", { hex: hexadecimal() }).then(undefined, () => {
-    // The session ended, or has not started a program yet; a new one is
-    // told when it starts.
-  });
+  session
+    .customRequest("microscope/setValueFormat", { hex: hexadecimal() })
+    .then(undefined, () => {});
 }
 
 /**
@@ -459,7 +441,7 @@ function expressionAt(text, column) {
   if (start === end || /[0-9]/u.test(text[start])) {
     return;
   }
-  // Walk back over what joins the name to the operands before it.
+
   for (;;) {
     assert.ok(start >= 0, `expression starts at ${start}`);
     assert.ok(start <= column, `expression starts at ${start}, after column ${column}`);
@@ -477,7 +459,7 @@ function expressionAt(text, column) {
     } else {
       break;
     }
-    // Indices of the operand, then its name.
+
     while (text[at - 1] === "]") {
       const open = opening(text, at - 1);
       if (open === undefined) {
@@ -490,8 +472,7 @@ function expressionAt(text, column) {
       if (open === undefined) {
         break;
       }
-      // A call's result, which the debugger refuses rather than
-      // guessing, or a length or size, is one operand with its name.
+
       at = open;
       while (at > 0 && NAME.test(text[at - 1])) {
         at--;
@@ -564,7 +545,6 @@ async function provideInlineValues(document, viewPort, context) {
     if (error instanceof assert.AssertionError) {
       throw error;
     }
-    // The program ran on, and the stop's references are gone.
   }
 }
 
@@ -588,7 +568,6 @@ async function inlineValues(session, document, viewPort, context) {
       variablesReference: scope.variablesReference,
     });
     for (const variable of variables) {
-      // A variable without a name to evaluate is one another hides.
       if (!variable.declarationLocationReference || !variable.evaluateName) {
         continue;
       }
@@ -634,7 +613,7 @@ function uses(lines, name, first, last) {
     return [];
   }
   const found = [];
-  // Each line's block depth where it starts, and its first use.
+
   const depths = [];
   let depth = 0;
   let comment = false;
@@ -676,8 +655,7 @@ function uses(lines, name, first, last) {
       }
     }
   }
-  // A line is in a block that closes before the stop when the depth after
-  // it falls below the depth it starts at.
+
   let lowest = depth;
   for (let index = depths.length - 1; index >= 0; index--) {
     const entry = depths[index];

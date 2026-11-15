@@ -21,7 +21,6 @@ import { SearchRow, useFrameSearch, useTreeSearch } from "./Search";
 
 const ROW = 20;
 
-/** The call tree of the query, with the selected function's details. */
 export function TreeView() {
   const { query } = useProfile();
   const tree = useTree(query);
@@ -41,8 +40,6 @@ export function TreeView() {
   );
 }
 
-/** The nodes a tree opens with: down the heaviest path while each child
- * holds at least half its caller's weight. */
 function opening(tree: CallTree): Set<number> {
   const open = new Set<number>();
   for (let root = 0; root < tree.count; root = tree.end[root] ?? tree.count) {
@@ -62,15 +59,12 @@ function opening(tree: CallTree): Set<number> {
 interface Opened {
   tree: CallTree | null;
   open: Set<number>;
-  /** The matches whose callers `open` has opened. */
+
   matched: Set<number> | null;
 }
 
 const NOTHING_OPEN: Opened = { tree: null, open: new Set(), matched: null };
 
-/** A tree's rows, each node under its caller, opened and closed by its
- * twist or by Left and Right; choosing a row, or Enter, selects its
- * function. A search's matches open their callers, which stay open. */
 export function TreeRows({
   tree: fetched,
   label,
@@ -80,12 +74,12 @@ export function TreeRows({
   tree: Fetched;
   label: string;
   reading: string;
-  /** The nodes a search matches, marked in their rows. */
+
   matched?: Set<number> | null;
 }) {
   const tree = fetched.tree;
   const body = useRef<HTMLDivElement>(null);
-  // Opened nodes belong to one tree; another answer opens its own.
+
   const [opened, setOpened] = useState<Opened>(NOTHING_OPEN);
   if (tree && (opened.tree !== tree || opened.matched !== matched)) {
     const kept = opened.tree === tree ? opened.open : opening(tree);
@@ -362,9 +356,6 @@ function TreeRow({
   );
 }
 
-/** Moves to the first row a search matches, in the order the rows read,
- * once for each search, so opening and closing rows after it leaves the
- * view where it is. Its callers are already open, so its row is there. */
 function useFirstMatch(rows: number[], matched: Set<number> | null, keys: ActiveRow) {
   const moved = useRef<Set<number> | null>(null);
   const { move } = keys;
@@ -386,8 +377,6 @@ export const COLUMN_HELP: Record<string, string> = {
   change: "Change from the base profile",
 };
 
-/** What each column of the rows below holds, over them. Each row names
- * its own columns for screen readers. */
 export function ColumnHead({ columns, end }: { columns: string[]; end?: string }) {
   return (
     <div className="row column-head" aria-hidden="true">
@@ -406,7 +395,6 @@ export function ColumnHead({ columns, end }: { columns: string[]; end?: string }
   );
 }
 
-/** A change from a diff's base, colored as the flame graph is. */
 export function Change({ change }: { change: Changed }) {
   return (
     <span className={`percent change ${change.way}`} title="Change from the base">

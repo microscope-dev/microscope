@@ -1,5 +1,3 @@
-//! A small image with every kind of row, which tests and the fuzz harness
-//! change to see what validation makes of it.
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,
@@ -70,8 +68,6 @@ pub(super) const fn range(start: u64, end: u64) -> AddressRange<ImageAddress> {
     }
 }
 
-/// Two sequences with every kind of row: wide lines and columns, extras,
-/// rows without files, boundaries, and equal addresses.
 pub(super) fn sample_rows() -> Vec<Vec<Row>> {
     vec![
         vec![
@@ -146,8 +142,6 @@ pub(super) fn sample() -> (LineTables, lines::Files) {
     (tables, files)
 }
 
-/// Symbols of every shape: code that overlaps, declared and inferred,
-/// sized and unsized data, and a symbol that names neither.
 pub(super) fn sample_symbols() -> Vec<SymbolInfo> {
     let symbol = |id, name: &str, address, kind| SymbolInfo {
         id: SymbolId::new(id),
@@ -215,8 +209,6 @@ pub(super) fn sample_got() -> Vec<GotSlot> {
     ]
 }
 
-/// Functions of every shape: generic, enclosed, coroutine-running, of
-/// another language, without code, and inlined.
 pub(super) fn sample_functions() -> Vec<FunctionInfo> {
     let function = |id, name: &str| FunctionInfo {
         id: FunctionId::new(id),
@@ -258,8 +250,6 @@ pub(super) fn sample_functions() -> Vec<FunctionInfo> {
     ]
 }
 
-/// Instances of every shape: physical with two ranges, the same range
-/// twice, and an inline expansion with a call site and without.
 pub(super) fn sample_instances() -> Vec<CodeInstanceInfo> {
     let entry = |address, provenance| {
         Some(BreakpointEntry {
@@ -317,8 +307,6 @@ pub(super) fn sample_starts() -> Vec<(ImageAddress, BoundaryEvidence)> {
     ]
 }
 
-/// Call-frame sections of arbitrary bytes with overlapping entries and a
-/// malformed one, and Go's table.
 pub(super) fn sample_unwind() -> unwind::Unwind {
     let index = |entries: &[(u64, u64, u32)], first_error: Option<(u64, &str)>| unwind::FdeIndex {
         entries: super::index::intervals(
@@ -408,15 +396,12 @@ pub(super) fn sample_thread_locals()
     .collect()
 }
 
-/// Packages, one named twice, whose last name counts.
 pub(super) const SAMPLE_PACKAGES: [(&str, &str); 3] = [
     ("main", "first"),
     ("example.com/m/stack", "stack"),
     ("main", "main"),
 ];
 
-/// Two of the sample functions' packages and local names, which are the
-/// same.
 pub(super) fn sample_packaged() -> Vec<Option<(&'static str, String)>> {
     vec![
         None,
@@ -426,8 +411,6 @@ pub(super) fn sample_packaged() -> Vec<Option<(&'static str, String)>> {
     ]
 }
 
-/// Types of every kind and shape, each at its identifier's index, and
-/// their identity classes: the last type is the same as the second.
 #[expect(clippy::too_many_lines, reason = "one type of each kind and shape")]
 pub(super) fn sample_types() -> (Vec<crate::TypeNode>, Vec<u32>) {
     use crate::{
@@ -825,8 +808,6 @@ pub(super) const ENCODING: gimli::Encoding = gimli::Encoding {
     address_size: 8,
 };
 
-/// Two units' expressions, one calling procedures with addresses of its
-/// own, and lists with ranged and default entries, one of them shared.
 pub(super) fn sample_locations() -> LocationsBuilder {
     let mut pool = LocationsBuilder::default();
     let first = pool
@@ -864,8 +845,6 @@ pub(super) fn sample_locations() -> LocationsBuilder {
     pool
 }
 
-/// Data objects of every kind of value, sharing scopes and code, and
-/// functions with nested code, captures, and each return convention.
 #[expect(clippy::too_many_lines, reason = "one object or function of each kind")]
 pub(super) fn sample_variables() -> Variables {
     let code: std::sync::Arc<[_]> = [range(0x1000, 0x1010)].into();
@@ -1041,8 +1020,6 @@ pub(super) fn sample_variables() -> Variables {
     }
 }
 
-/// Functions that describe their tail calls and some that do not, and a
-/// call site of every kind of target, two of which return to one place.
 pub(super) fn sample_calls() -> Calls {
     let site = |function, return_address: Option<u64>, target| CallSite {
         function,
@@ -1121,7 +1098,6 @@ pub(super) fn sample_calls() -> Calls {
     }
 }
 
-/// Facts of several types, given out of order.
 pub(super) fn sample_type_facts() -> type_facts::TypeFacts {
     use type_facts::LayoutChild;
     let ty = TypeId::new;
@@ -1157,8 +1133,6 @@ pub(super) fn sample_type_facts() -> type_facts::TypeFacts {
     }
 }
 
-/// Constants and vtables out of order, one of each named twice, and
-/// producers, one named twice.
 pub(super) fn sample_declarations() -> declarations::Declarations {
     use crate::IntegerValue::{Signed, Unsigned};
     declarations::Declarations {
@@ -1177,8 +1151,6 @@ pub(super) fn sample_declarations() -> declarations::Declarations {
     }
 }
 
-/// Resume points of two instances, one undecodable, given out of order,
-/// and held ranges, one key twice.
 pub(super) fn sample_resumes() -> resumes::Resumes {
     let point = |state, address, resumption: &[AddressRange<ImageAddress>]| crate::ResumePoint {
         state,
@@ -1215,7 +1187,6 @@ pub(super) fn sample_resumes() -> resumes::Resumes {
 }
 
 pub(super) fn seal(tables: &LineTables, files: &lines::Files) -> Result<Image, ImageError> {
-    // The builder borrows these until it seals.
     let unwind = sample_unwind();
     let locations = sample_locations();
     let mut builder = Builder::new(TARGET);
@@ -1294,8 +1265,6 @@ pub(super) fn seal(tables: &LineTables, files: &lines::Files) -> Result<Image, I
     builder.seal(Limits::default())
 }
 
-/// Reads everything a valid image's views can read, so that a test can
-/// show none of it panics.
 pub(super) fn read_everything(image: &Image) -> u64 {
     let addresses = image.table::<RowAddress>();
     let rows = image.table::<LineRow>();
@@ -1405,7 +1374,6 @@ pub(super) fn read_everything(image: &Image) -> u64 {
     read + read_families(image)
 }
 
-/// Reads what the families after lines, functions, and types hold.
 fn read_families(image: &Image) -> u64 {
     read_locations(
         LocationTables::new(image),
@@ -1420,10 +1388,6 @@ fn read_families(image: &Image) -> u64 {
 
 pub(super) use super::container::reseal;
 
-/// Validates `data` as an image and reads everything a valid one holds.
-/// Odd-first-byte inputs are changes to the sample: (offset, byte) pairs
-/// `XORed` into it. Every input is resealed with a correct checksum, so that
-/// the fuzzer reaches the checks past it.
 #[cfg(feature = "fuzzing")]
 pub fn fuzz(data: &[u8]) {
     let Some((&mode, data)) = data.split_first() else {
@@ -1468,9 +1432,6 @@ pub fn fuzz(data: &[u8]) {
     }
 }
 
-/// Reads the first `expressions` expressions and `lists` lists of
-/// `tables`, so that a test can show none of it panics and compare two
-/// copies of it.
 pub(super) fn read_locations(tables: LocationTables<'_>, expressions: usize, lists: usize) -> u64 {
     let mut read = 0_u64;
     let summarize = |expression: locations::Expression<'_>| {
@@ -1508,7 +1469,6 @@ pub(super) fn read_locations(tables: LocationTables<'_>, expressions: usize, lis
     read
 }
 
-/// Reads every data object and function an image holds through its views.
 pub(super) fn read_variables(image: &Image) -> u64 {
     let view = VariableView::new(image);
     let mut read = 0_u64;
@@ -1559,7 +1519,6 @@ pub(super) fn read_variables(image: &Image) -> u64 {
     read
 }
 
-/// Reads every call site and calling function an image holds.
 pub(super) fn read_calls(image: &Image) -> u64 {
     let view = CallView::new(image);
     let mut read = 0_u64;
@@ -1592,8 +1551,6 @@ pub(super) fn read_calls(image: &Image) -> u64 {
     read
 }
 
-/// Asks an image's declarations of every name and address they hold, and
-/// of some they do not.
 pub(super) fn read_declarations(image: &Image) -> u64 {
     let view = DeclarationView::new(image);
     let mut read = view.producers().map(|producer| producer.len() as u64).sum();
@@ -1610,8 +1567,6 @@ pub(super) fn read_declarations(image: &Image) -> u64 {
     read
 }
 
-/// Asks an image's resume points and held ranges of the first instances,
-/// entries, and states.
 pub(super) fn read_resumes(image: &Image) -> u64 {
     let view = ResumeView::new(image);
     let mut read = view.resume_code().count() as u64;
@@ -1636,7 +1591,6 @@ pub(super) fn read_resumes(image: &Image) -> u64 {
     read
 }
 
-/// Asks an image's facts and its type facts of the first types.
 pub(super) fn read_type_facts(image: &Image) -> u64 {
     let mut read = 0_u64;
     let view = FactsView::new(image);

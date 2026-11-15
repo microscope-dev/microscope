@@ -1,7 +1,7 @@
 // @ts-check
-// A skeleton's bones, live in 2-D: each bone a line from its parent's
-// joint to its own. Hover names the nearest joint, a click opens its bone,
-// and the wheel zooms.
+
+
+
 
 microscope.live((canvas, input) => {
   const context = canvas.getContext("2d");
@@ -14,7 +14,7 @@ microscope.live((canvas, input) => {
   /** @type {number | null} */
   let hovered = null;
 
-  /** Where joint `bone` is on the canvas. */
+
   function place(bone) {
     const unit = (Math.min(canvas.width, canvas.height) / 5) * zoom;
     return [canvas.width / 2 + bone.x * unit, canvas.height / 2 - bone.y * unit];

@@ -1,9 +1,9 @@
-// A program that corrupts the runtime's record of one of its own parked
-// goroutines: its saved instruction pointer and its stack's bounds. The
-// layout of that record is read from the program's own debug information,
-// so nothing here depends on one Go release. The garbage is never used:
-// the goroutine waits for good, and with the collector off nothing scans
-// its stack before the program exits.
+
+
+
+
+
+
 package main
 
 import (
@@ -20,7 +20,7 @@ import (
 	"unsafe"
 )
 
-// layout is where the runtime keeps what the program corrupts.
+
 type layout struct {
 	allgs            uintptr
 	goid, status     uintptr
@@ -58,8 +58,8 @@ func offset(record *dwarf.StructType, path ...string) uintptr {
 	return total
 }
 
-// readLayout reads the layout of runtime.g, the address of runtime.allgs,
-// and the value of _Gwaiting from the executable's DWARF.
+
+
 func readLayout() layout {
 	path, err := os.Executable()
 	if err != nil {
@@ -99,7 +99,7 @@ func readLayout() layout {
 			found.schedSP = offset(g, "sched", "sp")
 		case entry.Tag == dwarf.TagVariable && name == "runtime.allgs":
 			location := entry.Val(dwarf.AttrLocation).([]byte)
-			// DW_OP_addr and the address.
+
 			found.allgs = uintptr(binary.LittleEndian.Uint64(location[1:]))
 		case entry.Tag == dwarf.TagConstant && name == "runtime._Gwaiting":
 			found.waiting = uint32(entry.Val(dwarf.AttrConstValue).(int64))
@@ -108,7 +108,7 @@ func readLayout() layout {
 	return found
 }
 
-// goid is the calling goroutine's id, from its own traceback's header.
+
 func goid() uint64 {
 	buffer := make([]byte, 64)
 	header := strings.Fields(string(buffer[:runtime.Stack(buffer, false)]))
@@ -144,7 +144,7 @@ func main() {
 	<-ids
 	<-ids
 
-	// The slice of every g, and the victim's among them.
+
 	allgs := *(*[]uintptr)(unsafe.Pointer(where.allgs))
 	var g uintptr
 	for _, candidate := range allgs {

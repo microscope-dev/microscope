@@ -1,10 +1,3 @@
-//! JavaScript values for the debugger: summaries as `util.inspect` prints
-//! them, with children read on demand.
-//!
-//! A handle ([`InterpretedHandle`]) is a tagged word (a Smi or heap object
-//! pointer), or for a double array element, its address with low bits
-//! `0b10`, which no tagged word has.
-
 use std::sync::Arc;
 
 use super::inspect::{self, Kind as Shape, Layout, Value};
@@ -18,24 +11,18 @@ use crate::runtime_model::{
 };
 use crate::{FloatValue, NumberKind, ScalarValue, VirtualAddress};
 
-/// The Node release whose `util.inspect` output to match. If the module
-/// doesn't name it, this is its V8 line's first release and `assumed` says so.
 #[derive(Debug, Clone)]
 pub(super) struct Writer {
     pub release: NodeRelease,
     pub assumed: Option<Arc<str>>,
 }
 
-/// The low bits of a handle that names a double array's element.
 const DOUBLE_TAG: u64 = 0b10;
 const TAG_MASK: u64 = 0b11;
 
-/// What a handle names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Handle {
-    /// A tagged word.
     Tagged(u64),
-    /// A double array's element, by its address.
     Double(u64),
 }
 
@@ -57,7 +44,6 @@ impl Handle {
     }
 }
 
-/// The address of a heap object or double element, or `None` for a Smi.
 pub(super) fn address(reader: &Reader<'_>, handle: InterpretedHandle) -> Option<VirtualAddress> {
     match Handle::of(handle) {
         Handle::Double(address) => Some(VirtualAddress::new(address)),
@@ -71,7 +57,6 @@ pub(super) fn address(reader: &Reader<'_>, handle: InterpretedHandle) -> Option<
     }
 }
 
-/// The value `handle` names, formatted for `writer`.
 pub(super) fn value(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -84,8 +69,6 @@ pub(super) fn value(
     }
 }
 
-/// The value `handle` names, or `None` for the hole (an uninitialized
-/// variable).
 fn presented(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -110,7 +93,6 @@ fn presented(
         Value::Undefined => ("undefined".into(), InterpretedKind::Undefined, 0),
         Value::Null => ("null".into(), InterpretedKind::Nothing, 0),
         Value::Boolean(value) => ("boolean".into(), InterpretedKind::Bool(*value), 0),
-        // Every Number is a double, a small integer included.
         Value::Number(number) => ("number".into(), InterpretedKind::Float(*number), 0),
         Value::BigInt(_) => (
             "bigint".into(),
@@ -175,8 +157,6 @@ fn presented(
     }))
 }
 
-/// The summary of `root`, its full text if longer, and any reason the
-/// text may not match Node's.
 fn texts(
     graph: &inspect::ValueGraph,
     root: &Value,
@@ -194,9 +174,6 @@ fn texts(
     (summary, detail, problem)
 }
 
-/// The summary line. For an error, the first line of its stack in `text`
-/// (name and message); otherwise the single-line `line`, cut with `…`
-/// before any error stack it holds.
 fn summary_line(graph: &inspect::ValueGraph, root: &Value, line: &str, text: &str) -> String {
     let Some((first, _)) = line.split_once('\n') else {
         return line.to_owned();
@@ -214,7 +191,6 @@ fn summary_line(graph: &inspect::ValueGraph, root: &Value, line: &str, text: &st
     }
 }
 
-/// The value of a number stored in a double array element.
 fn number_value(
     handle: InterpretedHandle,
     address: Option<u64>,
@@ -245,12 +221,10 @@ fn number_value(
     }
 }
 
-/// A `BigInt`'s value where it fits in 128 bits, from its decimal text.
 fn bigint_value(summary: &str) -> Option<i128> {
     summary.strip_suffix('n')?.parse().ok()
 }
 
-/// The type name for `constructor`.
 fn constructor_text(constructor: &inspect::Constructor) -> String {
     match constructor {
         inspect::Constructor::Named(name) => String::from_utf16_lossy(name.units()),
@@ -259,8 +233,6 @@ fn constructor_text(constructor: &inspect::Constructor) -> String {
     }
 }
 
-/// The prototype of the object `word` points to, used to pick its view.
-/// `None` for a primitive.
 fn class(reader: &Reader<'_>, word: u64) -> Option<u64> {
     let object = reader.object(word).ok()??;
     super::lookup::prototype(reader, object)
@@ -268,7 +240,6 @@ fn class(reader: &Reader<'_>, word: u64) -> Option<u64> {
         .map(|prototype| prototype.0)
 }
 
-/// The numeric elements of a typed array.
 fn typed_array(reader: &Reader<'_>, word: u64) -> Result<Option<Arc<InterpretedArray>>, Problem> {
     let Some(object) = reader.object(word)? else {
         return Ok(None);
@@ -290,8 +261,6 @@ fn typed_array(reader: &Reader<'_>, word: u64) -> Result<Option<Arc<InterpretedA
     })))
 }
 
-/// The number kind of a typed array's element, or `None` for 16-bit floats,
-/// which `NumberKind` lacks.
 const fn number_kind(element: inspect::ElementType) -> Option<NumberKind> {
     use inspect::ElementType as E;
     Some(match element {
@@ -309,8 +278,6 @@ const fn number_kind(element: inspect::ElementType) -> Option<NumberKind> {
     })
 }
 
-/// The children in `range`: array or typed array elements, Set members, or
-/// Map entries, then own enumerable named properties.
 pub(super) fn children(
     reader: &Reader<'_>,
     handle: InterpretedHandle,
@@ -379,7 +346,6 @@ pub(super) fn children(
     Ok(found)
 }
 
-/// The elements or entries of `object` in `range`.
 fn element_children(
     reader: &Reader<'_>,
     object: Object,
@@ -449,7 +415,6 @@ fn element_children(
         .collect())
 }
 
-/// One number of a typed array, at `at`.
 fn typed_number(
     reader: &Reader<'_>,
     at: u64,
@@ -507,7 +472,6 @@ fn typed_number(
     })
 }
 
-/// A number as JavaScript writes it.
 fn number_text(number: f64, writer: &Writer) -> String {
     inspect::inspect(
         &inspect::ValueGraph::new(),
@@ -518,7 +482,6 @@ fn number_text(number: f64, writer: &Writer) -> String {
     .text
 }
 
-/// The slot shown for a property or element holding `held`.
 fn held_slot(reader: &Reader<'_>, held: Held, writer: &Writer) -> InterpretedSlot {
     match held {
         Held::Data(word) => word_slot(reader, word, writer),
@@ -533,7 +496,6 @@ fn word_slot(reader: &Reader<'_>, word: u64, writer: &Writer) -> InterpretedSlot
     value(reader, Handle::Tagged(word).handle(), writer)
 }
 
-/// A property's key as text: a string, or a symbol as `[Symbol(tag)]`.
 fn key_text(reader: &Reader<'_>, key: Object, symbol: bool) -> Result<String, Problem> {
     if !symbol {
         return reader.string(key);

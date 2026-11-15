@@ -1,5 +1,3 @@
-// What the strip says a command did lasts only until the next one runs.
-
 import { useCallback } from "react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";

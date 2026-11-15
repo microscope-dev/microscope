@@ -1,8 +1,3 @@
-//! The values a function returned when a step out finished it. They are
-//! read the instant its call returns, where the step stops, as the
-//! function's calling convention left them, and kept with the stop, which
-//! lists them among the variables of the frame they returned to.
-
 use std::sync::Arc;
 
 use nix::unistd::Pid;
@@ -22,21 +17,15 @@ use super::inspection::{LinuxVariableRuntime, variable_context};
 use super::native::InspectionOps;
 use super::{ActiveKind, Controller, Inferior, RuntimeModule};
 
-/// A function a step out is finishing: where its activation is, where its
-/// call returns, and an address of its code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Returning {
     pub(super) activation: Activation,
     pub(super) return_address: VirtualAddress,
 
-    /// The loaded module holding the function, and an address of its code
-    /// in that module's image.
     pub(super) module: ModuleId,
     pub(super) function: ImageAddress,
 }
 
-/// What a finished function returned, read in the module that describes
-/// it.
 #[derive(Debug, Clone)]
 pub(super) struct Returned {
     module: ModuleId,
@@ -45,10 +34,6 @@ pub(super) struct Returned {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// What the function a step out finished returned, which the step read
-    /// as `pid` returned from its call, or reads now. A step that stopped
-    /// without its call returning, as where a loop's body finished or a
-    /// panic unwound, returned nothing to show.
     pub(super) fn capture_returned(&self, pid: Pid, reason: &StopReason) -> Option<Returned> {
         if !matches!(
             reason,
@@ -73,9 +58,6 @@ impl<P: InspectionOps> Controller<P> {
             .or_else(|| self.read_returned(pid, start.returning?))
     }
 
-    /// Reads what a step out's function returned when its call has just
-    /// returned to `pid`, which the step may then go on from, through code
-    /// no line describes, to where it stops.
     pub(super) fn note_returned_values(&mut self, pid: Pid) {
         let Some(returning) = self
             .session
@@ -106,9 +88,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// What a function returned, when `pid` is the instant its call
-    /// returned: at its return address, with its activation's stack just
-    /// popped.
     fn read_returned(&self, pid: Pid, returning: Returning) -> Option<Returned> {
         let inferior = self.session.inferior()?;
         let registers = self.ptrace.registers(pid).ok()?;
@@ -130,8 +109,6 @@ impl<P: InspectionOps> Controller<P> {
             .returned(returning.function, &mut runtime, &mut budget)
         {
             Ok(Some(mut values)) => {
-                // An async body's result is named for the function its
-                // programmer wrote, as the body is.
                 if let Some(function) = module
                     .image
                     .locate(returning.function)
@@ -164,9 +141,6 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    /// The values a step out's function returned, as variables of the
-    /// innermost frame of the thread the step stopped, presented at the
-    /// stop `stop_id`.
     pub(super) fn returned_variables(
         &self,
         returned: &Returned,
@@ -175,8 +149,6 @@ impl<P: InspectionOps> Controller<P> {
         frame: StackFrameId,
         budget: &mut InspectionBudget,
     ) -> Result<Vec<Variable>> {
-        // The thread, or the task it runs, whose innermost frame the
-        // function returned to.
         if frame != StackFrameId::INNERMOST || root.thread() != Some(returned.thread) {
             return Ok(Vec::new());
         }
@@ -229,9 +201,6 @@ impl<P: InspectionOps> Controller<P> {
         Ok(variables)
     }
 
-    /// Reads a module's values with a stopped thread's own registers. No
-    /// returned value needs a call-frame address: its function's frame is
-    /// gone.
     fn thread_runtime<'a>(
         &'a self,
         inferior: &'a Inferior,

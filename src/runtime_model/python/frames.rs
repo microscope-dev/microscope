@@ -1,11 +1,3 @@
-//! Follows a thread's interpreter frames from innermost through `previous`.
-//! Thread- and generator-owned frames run code; an evaluation-loop activation's
-//! entry frame sits beneath its frames and ends their segment.
-//!
-//! Each frame costs one read and its code object is checked against the process's code table.
-//! Lines refer to the current instruction, or a caller's call; out-of-bytecode instructions
-//! have no line, never the nearest one.
-
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -16,24 +8,17 @@ use crate::image::python::{Constant, Field};
 use crate::runtime_model::{InterpretedFrame, SampledFrame};
 use crate::{RecordedPlace, SourceLanguage, VirtualAddress};
 
-/// The most frames of one thread read.
 pub(super) const MAX_FRAMES: usize = 1 << 13;
 
-/// The file CPython gives code `exec` compiles from a string.
 const EXECUTED: &str = "<string>";
 
-/// What owns a frame, as this version of CPython numbers its owners.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Owner {
-    /// The thread, a generator, or a frame object: the frame runs code.
     Code,
 
-    /// The evaluation loop's entry frame, beneath the frames it runs.
     Entry,
 }
 
-/// Where a thread's frames are read from: the layout's reader, the code
-/// table, and where `PyCode_Type` is.
 pub(super) struct Walk<'a, 'b> {
     pub(super) reader: Reader<'a>,
     pub(super) code: &'b mut CodeTable,
@@ -52,8 +37,6 @@ impl Walk<'_, '_> {
         })
     }
 
-    /// What CPython's owner number `owner` says owns a frame, if it names
-    /// an owner of one.
     fn owner_of(&self, owner: u64) -> Option<Owner> {
         let layout = self.reader.layout;
         let is = |constant| owner == u64::from(layout.constant(constant));
@@ -69,8 +52,6 @@ impl Walk<'_, '_> {
         }
     }
 
-    /// The frames of the thread whose state is `state`, innermost first,
-    /// and why they end before the thread's outermost, if they do.
     pub(super) fn thread(
         &mut self,
         state: &ThreadState,
@@ -79,13 +60,11 @@ impl Walk<'_, '_> {
         let mut seen = HashSet::new();
         let mut next = state.frame;
         let end = loop {
-            // From 3.15, ending before the base frame indicates a concurrent change.
             let Some(address) = next else {
                 break (state.base.is_some() && !seen.is_empty())
                     .then(|| "the thread's frames end before its base frame".into());
             };
 
-            // From 3.15, the thread's base frame ends its chain.
             if Some(address) == state.base {
                 break None;
             }
@@ -119,8 +98,6 @@ impl Walk<'_, '_> {
             };
         };
 
-        // Each activation of the loop pushes an entry frame beneath what it
-        // runs, so frames with none beneath them belong to no activation.
         let end = match frames.last_mut() {
             Some(outermost) if !outermost.outermost => {
                 outermost.outermost = true;
@@ -139,10 +116,6 @@ impl Walk<'_, '_> {
         (frames, end)
     }
 
-    /// One frame that runs code, a thread's or a coroutine's; none for
-    /// code CPython runs for itself, as the frame it pushes beneath an
-    /// `__init__` to check what it returned, which says nothing of the
-    /// program.
     pub(super) fn frame(&mut self, frame: &Record<'_>) -> Option<InterpretedFrame> {
         let mut built = InterpretedFrame {
             frame: frame.address,
@@ -185,11 +158,6 @@ impl Walk<'_, '_> {
         Some(built)
     }
 
-    /// The name a frame that runs the code `id`, at `code`, is shown by:
-    /// for code `exec` compiled from a string, as `dataclasses` compiles
-    /// each method it makes, the `__qualname__` of the frame's function,
-    /// the frame's `function` word, where that is a function whose code
-    /// it is; else the code's own `co_qualname`.
     fn function_name(
         &mut self,
         id: CodeId,
@@ -220,8 +188,6 @@ impl Walk<'_, '_> {
         }
     }
 
-    /// The object a frame's word that holds one, as its code, names; or
-    /// `None` for none.
     fn reference(&self, bits: u64) -> Option<VirtualAddress> {
         if self.reader.layout.constant(Constant::StackRefs) == 0 {
             Some(bits)
@@ -232,7 +198,6 @@ impl Walk<'_, '_> {
         }
     }
 
-    /// The code object the frame runs, and its row in the code table.
     pub(super) fn code_of(
         &mut self,
         frame: &Record<'_>,
@@ -245,7 +210,6 @@ impl Walk<'_, '_> {
         Ok((code, self.code.code(&self.reader, self.code_type, code)?))
     }
 
-    /// The line of the frame's instruction in its code `id`, at `code`.
     fn line(&self, frame: &Record<'_>, code: VirtualAddress, id: CodeId) -> Result<u32, Problem> {
         let instruction = frame.word(Field::FrameInstruction)?;
         let bytecode = self.bytecode(frame, code)?;
@@ -254,17 +218,12 @@ impl Walk<'_, '_> {
             .map_err(|problem| format!("the frame at {:#x} {problem}", frame.address).into())
     }
 
-    /// The line of the instruction at byte `offset` of the bytecode of the
-    /// code `id`, at `code`; or why it has none, to follow the frame it is
-    /// a frame's.
     fn line_at(&self, id: CodeId, code: VirtualAddress, offset: i64) -> Result<u32, Problem> {
         let row = self.code.row(id);
         let length = row.units.saturating_mul(super::linetable::CODE_UNIT);
         let outside =
             || -> Problem { format!("is at byte {offset}, outside its code's bytecode").into() };
 
-        // 3.12 points at the instruction before the one to run, which for
-        // a frame that has run none is before the first.
         let line = if offset < 0 {
             if offset < -i64::try_from(super::linetable::CODE_UNIT).unwrap_or(0) {
                 return Err(outside());
@@ -287,10 +246,6 @@ impl Walk<'_, '_> {
             .ok_or_else(|| "is at no line".into())
     }
 
-    /// The frames a walker in the kernel read of one thread, innermost
-    /// first, as [`Self::thread`] reads a thread's own, and why they end
-    /// before the thread's outermost, if they do. A frame's code object
-    /// is read now, and proved to be the one the walker read.
     pub(super) fn sampled(
         &mut self,
         sampled: &[SampledFrame],
@@ -336,8 +291,6 @@ impl Walk<'_, '_> {
         (frames, end)
     }
 
-    /// One frame a walker in the kernel read; none for CPython's own code,
-    /// as [`Self::frame`].
     fn sampled_frame(&mut self, frame: &SampledFrame) -> Option<InterpretedFrame> {
         let mut built = InterpretedFrame {
             frame: VirtualAddress::new(0),
@@ -401,8 +354,6 @@ impl Walk<'_, '_> {
         Some(built)
     }
 
-    /// Where the bytecode the frame runs begins: the code object's own,
-    /// or on a free-threaded build the thread's copy of it.
     fn bytecode(
         &self,
         frame: &Record<'_>,
@@ -444,8 +395,6 @@ impl Walk<'_, '_> {
     }
 }
 
-/// The part code compiled under `path` plays: only the agent's code and a
-/// launch bootstrap's are the debugger's machinery.
 fn role(path: &str) -> crate::CodeRole {
     if super::agent::is_agent_filename(path)
         || super::agent::is_bootstrap_filename(path)

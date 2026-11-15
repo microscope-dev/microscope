@@ -1,9 +1,3 @@
-//! A program that corrupts the runtime's record of one of its parked
-//! goroutines: its saved registers and its stack's bounds. The goroutine
-//! is still listed, and its frames are refused with the reason, never
-//! read from the garbage; every other goroutine reads as before, and the
-//! program runs on to its end.
-
 use std::process::Stdio;
 
 use microscope::{

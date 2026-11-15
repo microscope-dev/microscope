@@ -1,8 +1,8 @@
-"""Locals of every built-in type the debugger presents, each frame parked
-on a thread of its own: scalars at their edges, containers of each layout,
-and the locals that hold no value of their own at the checkpoint, unbound
-ones and those a closure shares. With --abort, the main thread aborts at
-the checkpoint for a core dump."""
+
+
+
+
+
 
 import os
 import sys
@@ -64,7 +64,7 @@ def containers(gate):
     by_name = {"a": 1, "b": "two", "c": None}
     mixed = {1: "one", "two": 2, (3,): [3], None: b"n"}
     empty_dict = {}
-    # Deleted entries leave holes the dict's entries keep, in order.
+
     thinned = {}
     for index in range(20):
         thinned["k%d" % index] = index

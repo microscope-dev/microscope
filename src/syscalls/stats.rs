@@ -1,6 +1,3 @@
-//! Statistics per call, folded the same way from either engine: in the
-//! kernel by the BPF engine's count mode, from events otherwise.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -8,18 +5,13 @@ use serde::{Deserialize, Serialize};
 use super::model::{Errno, Outcome, Pid, SyscallEvent, SyscallId, Tid};
 use super::specs::{self, Arg, Count, Direction, MemKind};
 
-/// Buckets in a latency histogram. Bucket 0 holds 0 ns; bucket `i` holds
-/// `[2^(i-1), 2^i)` ns; the last holds everything longer, from about nine
-/// minutes.
 pub const BUCKETS: usize = 40;
 
-/// The bucket a duration falls in. The BPF programs compute the same.
 #[must_use]
 pub fn bucket(nanoseconds: u64) -> usize {
     (64 - nanoseconds.leading_zeros() as usize).min(BUCKETS - 1)
 }
 
-/// The smallest duration a bucket holds, and the smallest the next holds.
 #[must_use]
 pub const fn bucket_range(bucket: usize) -> (u64, u64) {
     if bucket == 0 {
@@ -31,28 +23,23 @@ pub const fn bucket_range(bucket: usize) -> (u64, u64) {
     }
 }
 
-/// What one call cost, over one process or a whole trace.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SyscallStats {
     pub calls: u64,
     pub errors: u64,
     pub errors_by_errno: BTreeMap<u16, u64>,
 
-    /// Calls with a duration, which `total_ns` and the histogram cover.
     pub timed: u64,
     pub total_ns: u64,
 
-    /// The shortest timed call, or 0 before any.
     pub min_ns: u64,
     pub max_ns: u64,
     pub log2_ns: Vec<u64>,
 
-    /// Bytes read or written, for calls that move them.
     pub bytes: u64,
 }
 
 impl SyscallStats {
-    /// Adds one call.
     pub fn add(&mut self, outcome: Outcome, duration: Option<u64>, bytes: u64) {
         self.calls += 1;
         if let Outcome::Failed(Errno(errno)) = outcome {
@@ -85,7 +72,6 @@ impl SyscallStats {
         self.bytes = self.bytes.saturating_add(bytes);
     }
 
-    /// Adds another's counts, as merging processes or CPUs does.
     pub fn merge(&mut self, other: &Self) {
         self.calls += other.calls;
         self.errors += other.errors;
@@ -115,16 +101,11 @@ impl SyscallStats {
         self.bytes = self.bytes.saturating_add(other.bytes);
     }
 
-    /// Mean nanoseconds per timed call.
     #[must_use]
     pub const fn mean_ns(&self) -> Option<u64> {
         self.total_ns.checked_div(self.timed)
     }
 
-    /// An estimate of the `q` quantile (0 to 1) of the timed calls'
-    /// durations, interpolated linearly within its log2 bucket and between
-    /// the shortest and largest seen. The bucket bounds it within a factor
-    /// of two.
     #[must_use]
     pub fn quantile_ns(&self, q: f64) -> Option<u64> {
         if self.timed == 0 {
@@ -146,7 +127,6 @@ impl SyscallStats {
             }
 
             if seen + count >= rank {
-                // The extremes narrow the first and last buckets.
                 let (low, high) = bucket_range(index);
                 let low = low.max(self.min_ns);
                 let high = high
@@ -171,8 +151,6 @@ impl SyscallStats {
     }
 }
 
-/// The bytes a call moved, for calls whose result counts them: reads,
-/// writes, sends, and receives.
 #[must_use]
 pub fn bytes_moved(event: &SyscallEvent) -> u64 {
     match event.outcome {
@@ -181,11 +159,6 @@ pub fn bytes_moved(event: &SyscallEvent) -> u64 {
     }
 }
 
-/// Whether a call's result counts the bytes it moved.
-///
-/// It read or wrote them through a descriptor, as `read` and `sendmsg` do,
-/// or copied them between two processes' memory or two descriptors, as
-/// `process_vm_readv` and `sendfile` do.
 #[must_use]
 pub fn moves(call: SyscallId) -> bool {
     let Some(spec) = specs::spec(call) else {
@@ -209,8 +182,6 @@ pub fn moves(call: SyscallId) -> bool {
     through_descriptor || call.name().is_some_and(|name| COPIES.contains(&name))
 }
 
-/// The calls that copy bytes without passing them through the caller's
-/// memory, and return how many: their specs name no buffer to count by.
 const COPIES: [&str; 6] = [
     "process_vm_readv",
     "process_vm_writev",
@@ -220,15 +191,12 @@ const COPIES: [&str; 6] = [
     "copy_file_range",
 ];
 
-/// Statistics folded per process, thread, and call. Thread 0 holds calls
-/// whose thread is unknown.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Folded {
     pub by_call: BTreeMap<(Pid, Tid, SyscallId), SyscallStats>,
 }
 
 impl Folded {
-    /// Adds every call `other` counted.
     pub fn merge(&mut self, other: &Self) {
         for (key, stats) in &other.by_call {
             self.by_call.entry(*key).or_default().merge(stats);
@@ -242,7 +210,6 @@ impl Folded {
             .add(event.outcome, event.duration(), bytes_moved(event));
     }
 
-    /// Totals per call, over every process.
     #[must_use]
     pub fn per_call(&self) -> BTreeMap<SyscallId, SyscallStats> {
         let mut calls: BTreeMap<SyscallId, SyscallStats> = BTreeMap::new();
@@ -279,9 +246,6 @@ mod tests {
         }
     }
 
-    /// The calls whose result is a count of the bytes they moved, and
-    /// so add to the bytes column: through a descriptor and memory, between
-    /// two processes' memory, and between two descriptors.
     #[test]
     fn calls_that_return_the_bytes_they_moved_count_them() {
         let call = |name| SyscallId::named(crate::syscalls::Abi::X86_64, name).expect(name);
@@ -298,7 +262,6 @@ mod tests {
         ] {
             assert!(moves(call(name)), "{name} moves bytes");
         }
-        // Their results are addresses, offsets, and descriptors.
         for name in ["mmap", "lseek", "openat", "dup", "getpid"] {
             assert!(!moves(call(name)), "{name} moves none");
         }
@@ -317,8 +280,6 @@ mod tests {
         assert_eq!(stats.mean_ns(), Some(1092));
     }
 
-    /// Found by `quantiles_lie_between_the_extremes_in_the_true_bucket`:
-    /// the estimate went below the shortest call.
     #[test]
     fn equal_durations_give_that_duration_at_every_quantile() {
         let mut stats = SyscallStats::default();

@@ -1,7 +1,7 @@
 microscope-views 1
 
-# A server's counters, drawn by the built-in renderers. Go's own map view
-# presents each map's entries.
+
+
 extend go main.Hits {
     visualize "bar-chart" {
         entries = self

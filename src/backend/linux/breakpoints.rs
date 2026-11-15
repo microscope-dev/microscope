@@ -1,5 +1,3 @@
-//! Logical breakpoints and the software trap sites that implement them.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -22,9 +20,6 @@ use super::native::{InspectionOps, LinuxTraceOps, is_vanished_tracee};
 use super::trap::{Lift, Trap, TrapEvent};
 use super::{BREAKPOINT_OPCODE, BreakpointOwner, Controller, Inferior, LinuxError, backend_error};
 
-/// The logical breakpoints clients requested, in creation order, counted by
-/// spec so that adding one need not compare it with every other. A spec
-/// never changes once added; everything else is edited in place.
 #[derive(Debug, Default)]
 pub(super) struct UserBreakpoints {
     list: Vec<Breakpoint>,
@@ -54,8 +49,6 @@ impl UserBreakpoints {
         std::mem::take(&mut self.list)
     }
 
-    /// Panics if the spec counts disagree with the list. The message names
-    /// no spec, which holds the user's text.
     #[expect(
         clippy::disallowed_methods,
         reason = "a sum does not depend on the order of its terms"
@@ -77,8 +70,6 @@ impl UserBreakpoints {
         }
     }
 
-    /// The breakpoint that a request with this spec and these options would
-    /// duplicate.
     fn identical(
         &self,
         spec: &BreakpointSpec,
@@ -132,8 +123,6 @@ impl<'a> IntoIterator for &'a mut UserBreakpoints {
 }
 
 impl<P: InspectionOps> Controller<P> {
-    /// Public snapshots retain resolution intent while reporting why a
-    /// runtime could not accept it. No target read is needed here.
     pub(super) fn describe_breakpoint(&self, breakpoint: &Breakpoint) -> Breakpoint {
         let mut shown = breakpoint.clone();
         let pending = self
@@ -148,8 +137,7 @@ impl<P: InspectionOps> Controller<P> {
                         let BreakpointLocation::Managed(location) = &resolved.location else {
                             return None;
                         };
-                        // A site the runtime's agent acknowledged stays
-                        // armed while it confirms a change that keeps it.
+
                         let confirmed = inferior.managed.number(location).is_some_and(|number| {
                             inferior
                                 .agents
@@ -159,7 +147,7 @@ impl<P: InspectionOps> Controller<P> {
                         if confirmed {
                             return None;
                         }
-                        // An inspector says of each location whether V8 set it.
+
                         if let Some(readiness) = inferior
                             .managed
                             .number(location)
@@ -172,8 +160,7 @@ impl<P: InspectionOps> Controller<P> {
                                 }
                             });
                         }
-                        // A change not yet armed, as after an edit that
-                        // failed between claiming and arming, is unconfirmed.
+
                         let reason = match inferior.managed.unarmed.get(&location.runtime) {
                             Some(reason) => Arc::clone(reason),
                             None if inferior.managed.is_stale(location.runtime) => {
@@ -204,9 +191,6 @@ impl<P: InspectionOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Adds a logical breakpoint. Its traps are installed at once when the
-    /// inferior's sites are live, which requires every thread to be stopped;
-    /// a launching or attaching inferior installs them at its first stop.
     pub(super) fn add_breakpoint(
         &mut self,
         spec: BreakpointSpec,
@@ -217,8 +201,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(self.describe_breakpoint(existing));
         }
 
-        // Only a function breakpoint can wait on an indirect function's
-        // resolver.
         let follows_resolvers = self.follows_resolvers(&spec);
         if follows_resolvers {
             self.learn_from_got(Some(&spec));
@@ -258,11 +240,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(self.describe_breakpoint(&breakpoint))
     }
 
-    /// Reads a function location at a stop as the source of the selected
-    /// frame's package reads it: qualified by that package, when the
-    /// package has a function of the name and nothing else in its image has
-    /// the whole name or a qualified one it spells. The breakpoint keeps
-    /// the qualified name, so it resolves the same way whatever stops later.
     fn in_stopped_scope(&self, spec: BreakpointSpec) -> BreakpointSpec {
         match spec {
             BreakpointSpec::Function(name) => {
@@ -325,10 +302,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    /// Resolves a function or source spec by every resolver: in the
-    /// program and every loaded library, and by each runtime that runs code
-    /// it names itself. A spec that resolves nowhere is pending when
-    /// `pending` asks, as is one naming a function the program imports.
     fn resolve_by_location(
         &self,
         spec: &BreakpointSpec,
@@ -338,7 +311,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         match self.resolve_in_modules(spec) {
             Ok(locations) => Ok(locations.iter().cloned().chain(managed).collect()),
 
-            // Code a runtime runs itself has no native location.
             Err(_) if !managed.is_empty() => Ok(managed.into()),
             Err(Error::FunctionNotFound(_) | Error::SourceFileNotFound(_)) if pending => {
                 Ok(Arc::from([]))
@@ -349,15 +321,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                 Err(Error::RuntimeBreakpoint(reason))
             }
 
-            // A function the program imports is in a library yet to load.
             Err(Error::FunctionNotFound(name)) if self.imports_function(&name) => Ok(Arc::from([])),
             Err(error) => Err(error),
         }
     }
 
-    /// Resolves a function or source spec in the program and every loaded
-    /// shared library. The spec fails only when no module has code for it;
-    /// a module that does not know the name or file contributes nothing.
     pub(super) fn resolve_in_modules(
         &self,
         spec: &BreakpointSpec,
@@ -365,8 +333,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut locations = Vec::new();
         let mut failure = None;
 
-        // Whether a module knows the spec but has no code for it yet, as
-        // one whose indirect function's resolver has yet to choose.
         let mut known = false;
         let main = (self.main.id, &*self.main.image, None);
         let libraries = self
@@ -382,8 +348,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     for (address, code_instances) in addresses {
                         let location = match loaded {
                             None => BreakpointLocation::Image(address),
-                            // A copy of part of an image holds only the
-                            // locations in what it copied.
+
                             Some(loaded) => match loaded.virtual_address(address) {
                                 Ok(address) => BreakpointLocation::Virtual(address),
                                 Err(Error::AddressOutsideModule) => continue,
@@ -398,9 +363,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                     }
                 }
 
-                // A module without the name or file is not a failure, but
-                // one with the file and no code at the line is, unless
-                // another module has code for it.
                 Err(error @ (Error::FunctionNotFound(_) | Error::SourceFileNotFound(_))) => {
                     failure.get_or_insert(error);
                 }
@@ -426,9 +388,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(locations.into())
     }
 
-    /// The locations that each loaded runtime that runs code `spec` names
-    /// manages, and why a runtime that cannot stop there cannot, if one
-    /// cannot.
     fn resolve_managed(
         &self,
         spec: &BreakpointSpec,
@@ -468,15 +427,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         (locations, refusal)
     }
 
-    /// Whether a breakpoint's spec can name an indirect function, whose
-    /// resolver's entries and returns follow the breakpoint once sites are
-    /// live.
     fn follows_resolvers(&self, spec: &BreakpointSpec) -> bool {
         self.sites_live() && matches!(spec, BreakpointSpec::Function(_))
     }
 
-    /// Whether the program or a loaded module imports a function of the
-    /// name.
     fn imports_function(&self, name: &str) -> bool {
         self.main.image.imports_function(name)
             || self
@@ -485,12 +439,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .any(|module| module.image.imports_function(name))
     }
 
-    /// A thread that reported a trap at a site steps over the trap there
-    /// when it moves on, whichever breakpoint owns the site by then: its
-    /// arrival there was counted. Removing the breakpoint it hit forgets the
-    /// step, so one added there again before the thread moves restores it.
-    /// Any other thread standing at the new breakpoint arrives there when it
-    /// resumes, as one does after a step that ends at a breakpoint.
     fn step_over_where_threads_trapped(&mut self, breakpoint: &Breakpoint) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let sites = trap_addresses(inferior, breakpoint)?
@@ -529,18 +477,12 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let _ = self.sync_runtime_arming();
         self.publish_breakpoints_changed();
-        // This definition is retired, rather than waiting for arming.
+
         let mut breakpoint = breakpoint;
         breakpoint.pending_locations = Arc::from([]);
         Ok(breakpoint)
     }
 
-    /// Enables or disables a breakpoint. Disabling releases its sites as
-    /// removing it does, keeping the locations it last resolved to.
-    /// Enabling resolves its spec again, as adding does: code moved or
-    /// unloaded while it owned no sites never updated those locations, and
-    /// a trap written there could land in memory that now holds something
-    /// else.
     pub(super) fn set_breakpoint_enabled(
         &mut self,
         id: BreakpointId,
@@ -563,8 +505,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.learn_from_got(Some(&breakpoint.spec));
             }
 
-            // A spec that resolves nowhere now is kept pending, as one
-            // whose library unloaded is.
             breakpoint.locations = self
                 .resolve_breakpoint(id, breakpoint.spec.clone(), true)?
                 .locations;
@@ -597,9 +537,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(self.describe_breakpoint(&breakpoint))
     }
 
-    /// Deletes the temporary breakpoints a stop's hits name, as part of
-    /// publishing that stop, and returns whether any was. The hits stay in
-    /// the threads' stop reasons.
     pub(super) fn remove_stopped_temporaries(&mut self) -> Result<bool> {
         let Some(inferior) = self.session.inferior_mut() else {
             return Ok(false);
@@ -618,8 +555,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let stopped =
             |breakpoint: &Breakpoint| breakpoint.temporary && hit.contains(&breakpoint.id);
 
-        // Every trap is lifted before any breakpoint is forgotten, so one
-        // that fails to lift leaves them all.
         for breakpoint in self
             .breakpoints
             .iter()
@@ -663,8 +598,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .filter(|breakpoint| breakpoint.enabled)
             {
                 if let Err(cause) = remove_logical_breakpoint(&self.ptrace, inferior, breakpoint) {
-                    // As in `remove_logical_breakpoint`: a dying process
-                    // gets nothing back.
                     if is_vanished_tracee(&cause) {
                         return Err(cause);
                     }
@@ -672,9 +605,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                         if let Err(recovery) =
                             install_logical_breakpoint(&self.ptrace, inferior, prior)
                         {
-                            // SIGKILL took the thread as the rollback ran:
-                            // the death is what happened, and its exit
-                            // status reports it.
                             if is_vanished_tracee(&recovery) {
                                 return Err(recovery);
                             }
@@ -713,7 +643,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(removed)
     }
 
-    /// Replaces a breakpoint's hit condition, keeping the hits it counted.
     pub(super) fn set_breakpoint_hit_condition(
         &mut self,
         id: BreakpointId,
@@ -738,7 +667,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.edit_breakpoint(id, |breakpoint| breakpoint.log_message = log_message)
     }
 
-    /// Changes controller state only, so no stop is required.
     fn edit_breakpoint(
         &mut self,
         id: BreakpointId,
@@ -755,11 +683,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(self.describe_breakpoint(&breakpoint))
     }
 
-    /// Counts one hit for every logical breakpoint owning the site at
-    /// `address` that thread `pid` reached, and returns those the hit stops
-    /// at: its hit condition and condition are met, and it logs no message
-    /// instead. A condition that cannot be evaluated stops, as gdb does,
-    /// since skipping the hit could hide what the user asked to see.
     pub(super) fn record_breakpoint_hits(
         &mut self,
         pid: Pid,
@@ -790,11 +713,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.judge_hits(pid, &owners, Some(address))
     }
 
-    /// Counts a hit of each enabled breakpoint among `owners` by thread
-    /// `pid` at the location at `address`, or at a managed location when
-    /// `None`, and returns those whose hit condition and condition this
-    /// hit meets, in identifier order. A breakpoint that logs publishes its
-    /// message instead.
     pub(super) fn judge_hits(
         &mut self,
         pid: Pid,
@@ -835,7 +753,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 match self.judge_condition(pid, &condition, &reason, owner) {
                     Some(true) => {}
                     Some(false) => continue,
-                    // A breakpoint that logs stops too.
+
                     None => {
                         stopping.push(hit);
                         continue;
@@ -864,12 +782,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         stopping.into()
     }
 
-    /// Whether `condition` holds in the innermost frame of thread `pid`, as
-    /// a hit's stop `reason` presents it, or `None` when it cannot be
-    /// evaluated, which is published. Such a hit stops, as gdb does, since
-    /// skipping it could hide what the user asked to see. A thread SIGKILL
-    /// took out of its stop meanwhile stops too, and its exit, not the
-    /// condition, is what clients hear of.
     pub(super) fn judge_condition(
         &mut self,
         pid: Pid,
@@ -895,9 +807,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Evaluates a condition in the innermost frame of a thread stopped at a
-    /// hit: its truth, or why it has none, or `Err(None)` when the thread
-    /// left its stop.
     fn condition_met(
         &self,
         pid: Pid,
@@ -928,7 +837,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Reads the values a log message shows, as the hitting thread sees them.
     fn log_parts(
         &self,
         pid: Pid,
@@ -982,7 +890,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         ));
     }
 
-    /// Starts every breakpoint's count again for a new process.
     pub(super) fn reset_breakpoint_hit_counts(&mut self) {
         for breakpoint in &mut self.breakpoints {
             breakpoint.hit_count = 0;
@@ -1086,9 +993,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Reinstalls a trap lifted for a repair. The thread that was to step
-    /// over it has yet to, and still stands at the trap: it stopped before
-    /// its step, or SIGKILL took it on the way to its exit.
     pub(super) fn restore_active_breakpoints(&mut self) -> Result<()> {
         let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
@@ -1112,14 +1016,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Forgets every site whose memory no longer holds its trap, after the
-    /// process may have changed its mappings. Code that moved, as the vDSO
-    /// does under mremap(2), carries its traps along, so each is taken out
-    /// where it went; a function breakpoint is installed there again when
-    /// it is resolved. A site whose memory went away, or now holds
-    /// something else, is never written. Each owner loses the site: a
-    /// breakpoint its location, a plan its site, and the loader its hook.
-    /// Returns whether any breakpoint lost a location.
     pub(super) fn reconcile_sites(&mut self, moved: &[MovedCode]) -> Result<bool> {
         let Some(inferior) = self.session.inferior_mut() else {
             return Ok(false);
@@ -1128,8 +1024,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let pid = inferior.memory_thread();
         let mut lost = Vec::new();
 
-        // Traps come out of moved code first, since one may have landed on
-        // another site's address.
         for (&address, site) in &inferior.breakpoints {
             let Some(destination) = moved
                 .iter()
@@ -1161,8 +1055,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map(|(&address, site)| (address, site.original_byte))
             .collect::<Vec<_>>();
 
-        // A process may have thousands of sites, most sharing a page with
-        // others, which one read covers.
         let page = |address: VirtualAddress| address.get() / PAGE_BYTES;
 
         let pages = installed.chunk_by(|(one, _), (other, _)| page(*one) == page(*other));
@@ -1183,7 +1075,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                     None => memory_byte(&self.ptrace, pid, address.get())?,
                 };
 
-                // A trap over a trap cannot tell whether the memory changed.
                 if byte != Some(BREAKPOINT_OPCODE)
                     && (byte.is_none() || original_byte != BREAKPOINT_OPCODE)
                 {
@@ -1195,7 +1086,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut lost_locations = Vec::new();
 
         for address in lost {
-            // Each address is lost once, so a site that is gone has nothing left to forget.
             let Some(site) = inferior.breakpoints.remove(&address) else {
                 continue;
             };
@@ -1245,8 +1135,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// Module code that moved since the last stop: the bytes at `from` are now
-/// at `to` onwards, the debugger's traps among them.
 #[derive(Debug)]
 pub(super) struct MovedCode {
     pub(super) from: std::ops::Range<VirtualAddress>,
@@ -1254,14 +1142,12 @@ pub(super) struct MovedCode {
 }
 
 impl MovedCode {
-    /// Where the byte now at `address` came from, if this code holds it.
     pub(super) fn source(&self, address: VirtualAddress) -> Option<VirtualAddress> {
         let offset = address.get().checked_sub(self.to.get())?;
         let source = VirtualAddress::new(self.from.start.get().checked_add(offset)?);
         self.from.contains(&source).then_some(source)
     }
 
-    /// Where the byte at `address` went, if this code held it.
     fn destination(&self, address: VirtualAddress) -> Option<VirtualAddress> {
         if !self.from.contains(&address) {
             return None;
@@ -1274,21 +1160,16 @@ impl MovedCode {
     }
 }
 
-/// The size of the pages [`Controller::reconcile_sites`] reads at once.
 const PAGE_BYTES: u64 = 4096;
 
-/// An installed site's address and the byte its trap replaced.
 type InstalledSite = (VirtualAddress, u8);
 
-/// A run of sites in address order, with the first address and the one
-/// after the last.
 fn site_span(sites: &[InstalledSite]) -> Option<(&[InstalledSite], u64, u64)> {
     let (first, _) = sites.first()?;
     let (last, _) = sites.last()?;
     Some((sites, first.get(), last.get() + 1))
 }
 
-/// The byte at `address`, or `None` where no memory is mapped.
 pub(super) fn memory_byte(
     ptrace: &impl LinuxTraceOps,
     pid: Pid,
@@ -1305,8 +1186,6 @@ pub(super) fn memory_byte(
     }
 }
 
-/// Resolves a function or source spec in one module image to image
-/// addresses and the code instances at each.
 fn resolve_in_image(
     image: &crate::ModuleImage,
     spec: &BreakpointSpec,
@@ -1314,15 +1193,13 @@ fn resolve_in_image(
 ) -> Result<Vec<(crate::ImageAddress, Arc<[crate::CodeInstanceId]>)>> {
     match spec {
         BreakpointSpec::Address(_) => Ok(Vec::new()),
-        // Searching every symbol for a runtime's function would find none.
+
         BreakpointSpec::Function(name) if crate::names_runtime_function(name) => {
             Err(Error::FunctionNotFound(name.clone()))
         }
         BreakpointSpec::Function(name) => {
             // Like gdb, break at every function with the name that has
-            // code: overloads and same-named static functions alike.
-            // A function the image only declares, such as one another
-            // module defines, has no code here.
+
             match image.functions_located(name, None) {
                 Ok(functions) => function_locations(image, functions),
                 Err(Error::FunctionNotFound(_)) => symbol_locations(image, name, chosen),
@@ -1363,11 +1240,6 @@ fn resolve_in_image(
                 return Err(unavailable());
             }
 
-            // A coroutine's dispatch and the code leading from it into a
-            // state run as it resumes, not as execution arrives at the
-            // line; code a compiler generated, such as the glue dropping a
-            // future, never shows as the program's line, though the
-            // program's code may be inlined into a wrapper's.
             let arrivals = addresses
                 .iter()
                 .copied()
@@ -1385,9 +1257,6 @@ fn resolve_in_image(
 
             addresses.sort_unstable();
 
-            // Like gdb, stop where the line begins in each instance of its
-            // code, not again at its later statements, such as the use of
-            // a call's result or a loop's condition.
             let mut seen = BTreeSet::new();
             let mut locations = Vec::new();
             for address in addresses {
@@ -1403,8 +1272,6 @@ fn resolve_in_image(
                     })
                     .map(|instance| instance.id());
 
-                // The line is the innermost instance's code, so a stop there
-                // presents that instance's frame.
                 if innermost.is_none_or(|instance| seen.insert(instance)) {
                     locations.push((address, innermost.into_iter().collect()));
                 }
@@ -1415,11 +1282,6 @@ fn resolve_in_image(
     }
 }
 
-/// The entries of the code symbols with a name, for an image whose debug
-/// information does not describe the function, such as a system library's.
-/// An indirect function's symbol names its resolver, not the function: it
-/// enters the implementation its resolver `chosen`, and nowhere until the
-/// resolver has chosen one.
 fn symbol_locations(
     image: &crate::ModuleImage,
     name: &str,
@@ -1455,8 +1317,6 @@ fn symbol_locations(
         .collect())
 }
 
-/// The locations of every instance of some functions: one per address
-/// where an instance's code begins after its prologue.
 fn function_locations<'a>(
     image: &crate::ModuleImage,
     functions: impl IntoIterator<Item = crate::Function<'a>>,
@@ -1494,8 +1354,6 @@ fn function_locations<'a>(
         .collect())
 }
 
-/// Where a location's trap is in the process; `None` for a location a
-/// runtime manages, which has no trap.
 pub(super) fn runtime_breakpoint_address(
     inferior: &Inferior,
     location: &BreakpointLocation,
@@ -1509,7 +1367,6 @@ pub(super) fn runtime_breakpoint_address(
     }
 }
 
-/// Whether the location's trap is at `address`.
 fn traps_at(
     inferior: &Inferior,
     location: &ResolvedBreakpointLocation,
@@ -1518,8 +1375,6 @@ fn traps_at(
     runtime_breakpoint_address(inferior, &location.location).is_ok_and(|trap| trap == Some(address))
 }
 
-/// Where the traps of a breakpoint's locations are, leaving out the
-/// locations runtimes manage.
 pub(super) fn trap_addresses(
     inferior: &Inferior,
     breakpoint: &Breakpoint,
@@ -1531,7 +1386,6 @@ pub(super) fn trap_addresses(
         .collect()
 }
 
-/// The managed locations among a breakpoint's.
 pub(super) fn managed_locations(breakpoint: &Breakpoint) -> impl Iterator<Item = &ManagedLocation> {
     breakpoint
         .locations
@@ -1542,9 +1396,6 @@ pub(super) fn managed_locations(breakpoint: &Breakpoint) -> impl Iterator<Item =
         })
 }
 
-/// Installs a site that `execution`'s plan owns, and records it for the
-/// plan's cleanup. The record comes first, so even a failed install is
-/// visited.
 pub(super) fn install_plan_breakpoint(
     ptrace: &dyn LinuxTraceOps,
     inferior: &mut Inferior,
@@ -1589,9 +1440,6 @@ pub(super) fn install_logical_breakpoint(
         if let Err(cause) =
             ptrace.install_breakpoint(pid, &mut inferior.breakpoints, address, owner)
         {
-            // As in `remove_logical_breakpoint`: a dying process gets
-            // nothing taken back. Each site record still matches memory:
-            // the traps written stay, recorded, until the process exits.
             if is_vanished_tracee(&cause) {
                 return Err(cause);
             }
@@ -1599,7 +1447,6 @@ pub(super) fn install_logical_breakpoint(
                 if let Err(recovery) =
                     remove_breakpoint_owner_from(ptrace, inferior, installed_address, owner)
                 {
-                    // SIGKILL took the thread as the rollback ran.
                     if is_vanished_tracee(&recovery) {
                         return Err(recovery);
                     }
@@ -1644,10 +1491,6 @@ pub(super) fn remove_logical_breakpoint(
     let mut removed = Vec::new();
     for address in addresses {
         if let Err(cause) = remove_breakpoint_owner_from(ptrace, inferior, address, owner) {
-            // SIGKILL took the thread: the address space is dying, so
-            // nothing is put back, and the caller learns of the death
-            // itself, which the process's exit status then confirms. Each
-            // site record still matches memory: the traps lifted are gone.
             if is_vanished_tracee(&cause) {
                 return Err(cause);
             }
@@ -1658,7 +1501,6 @@ pub(super) fn remove_logical_breakpoint(
                     prior,
                     owner,
                 ) {
-                    // SIGKILL took the thread as the rollback ran.
                     if is_vanished_tracee(&recovery) {
                         return Err(recovery);
                     }
@@ -1682,10 +1524,6 @@ pub(super) fn remove_logical_breakpoint(
     Ok(())
 }
 
-/// Restores the original byte of every installed trap, keeping each site and
-/// its owners. A vfork child shares this memory and must not run a trap
-/// while it execs, so the traps stay lifted until [`reinstall_all_traps`].
-/// A trap lifted for a repair must be reinstalled first.
 pub(super) fn lift_all_traps(ptrace: &dyn LinuxTraceOps, inferior: &mut Inferior) -> Result<()> {
     let pid = inferior.memory_thread();
     let installed: Vec<_> = inferior
@@ -1707,7 +1545,6 @@ pub(super) fn lift_all_traps(ptrace: &dyn LinuxTraceOps, inferior: &mut Inferior
     Ok(())
 }
 
-/// Writes back the trap of every site [`lift_all_traps`] lifted.
 pub(super) fn reinstall_all_traps(
     ptrace: &dyn LinuxTraceOps,
     inferior: &mut Inferior,
@@ -1732,8 +1569,6 @@ pub(super) fn reinstall_all_traps(
     Ok(())
 }
 
-/// Remembers a removed site for processes forked while it was installed.
-/// With the original instruction restored, no thread steps over its trap.
 pub(super) fn forget_removed_site(
     inferior: &mut Inferior,
     address: VirtualAddress,

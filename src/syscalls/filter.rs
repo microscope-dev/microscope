@@ -1,9 +1,3 @@
-//! strace's selection language: which calls to trace and which of their
-//! results to show.
-//!
-//! The set of calls is applied where the engine sees
-//! calls, in the kernel when it can; the rest applies to finished events.
-
 use std::collections::BTreeSet;
 
 use regex::Regex;
@@ -12,13 +6,10 @@ use super::model::{Abi, Outcome, SyscallEvent, SyscallId};
 use super::specs::{self, Class};
 use super::table;
 
-/// A set of system calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallSet {
     calls: BTreeSet<SyscallId>,
 
-    /// The same calls as a bitmap per ABI, by number, which a tracer asks
-    /// about every call it sees.
     bits: [Vec<u64>; 3],
 }
 
@@ -91,7 +82,6 @@ impl CallSet {
         self.calls.iter().copied()
     }
 
-    /// The numbers it holds under one ABI.
     pub fn numbers(&self, abi: Abi) -> impl Iterator<Item = u32> + '_ {
         self.calls
             .iter()
@@ -115,7 +105,6 @@ impl CallSet {
     }
 }
 
-/// Which outcomes to show, as `-e status=`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(clippy::struct_excessive_bools, reason = "strace's four statuses")]
 pub struct StatusSet {
@@ -144,7 +133,6 @@ impl StatusSet {
     }
 }
 
-/// Why an expression did not parse, worded for the command line.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct FilterError(pub String);
@@ -153,37 +141,25 @@ fn error<T>(message: impl Into<String>) -> Result<T, FilterError> {
     Err(FilterError(message.into()))
 }
 
-/// Everything the selection flags say.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Filter {
-    /// Calls to trace.
     pub calls: CallSet,
 
-    /// Outcomes to show.
     pub status: StatusSet,
 
-    /// Show only calls that name one of these paths, by argument or
-    /// descriptor (`-P`).
     pub paths: Vec<String>,
 
-    /// Show only calls on these descriptors (`--trace-fds`).
     pub fds: Option<BTreeSet<i64>>,
 
-    /// Signals to show (`-e signal=`), by number.
     pub signals: BTreeSet<i32>,
 
-    /// Descriptors whose reads and writes are dumped in hex.
     pub read_dumps: BTreeSet<i64>,
     pub write_dumps: BTreeSet<i64>,
 
-    /// Show only calls that took at least this long.
     pub slower_than: Option<u64>,
 
-    /// Calls whose arguments are left raw (`-e raw=`).
     pub raw: CallSet,
 
-    /// Calls whose structures are printed in full (`-e verbose=`), or
-    /// abbreviated when not (`-e abbrev=`).
     pub verbose: CallSet,
 }
 
@@ -204,9 +180,6 @@ impl Default for Filter {
     }
 }
 
-/// The calls one element names: a name, `/regex`, `%class`, `all`, or
-/// `none`, each optionally `@64`, `@32`, or `@x32`; `?` before it ignores a
-/// name that matches nothing.
 fn element(text: &str) -> Result<BTreeSet<SyscallId>, FilterError> {
     let (optional, text) = text
         .strip_prefix('?')
@@ -241,13 +214,10 @@ fn element(text: &str) -> Result<BTreeSet<SyscallId>, FilterError> {
                 })?;
                 calls(&|_, name| regex.is_match(name))
             } else if let Some(name) = body.strip_prefix('%').or_else(|| {
-                // strace still accepts the classes' old names without `%`,
-                // where no call has the name.
                 Class::named(body)
                     .filter(|_| table::number(Abi::X86_64, body).is_none())
                     .map(|_| body)
             }) {
-                // `%%stat` and `%%statfs` take every variant.
                 let classes = match name {
                     "%stat" => vec![Class::Stat, Class::Lstat, Class::Fstat],
                     "%statfs" => vec![Class::Statfs, Class::Fstatfs],
@@ -257,7 +227,6 @@ fn element(text: &str) -> Result<BTreeSet<SyscallId>, FilterError> {
                     },
                 };
 
-                // strace's `%%statfs` takes ustat too, which no class does.
                 let ustat = name == "%statfs";
 
                 calls(&|id, call| {
@@ -281,8 +250,6 @@ fn element(text: &str) -> Result<BTreeSet<SyscallId>, FilterError> {
     Ok(found)
 }
 
-/// A set expression: elements separated by commas, all negated by a
-/// leading `!`.
 fn set(text: &str) -> Result<(bool, BTreeSet<SyscallId>), FilterError> {
     let (negated, text) = text
         .strip_prefix('!')
@@ -312,7 +279,6 @@ fn numbers(text: &str, what: &str) -> Result<BTreeSet<i64>, FilterError> {
         .collect()
 }
 
-/// Signals by name (`SIGINT` or `INT`), number, or `all`.
 fn signal_set(
     text: &str,
     named: &dyn Fn(&str) -> Option<i32>,
@@ -352,9 +318,6 @@ fn signal_set(
 }
 
 impl Filter {
-    /// Applies `-e` expressions in order. `trace=` sets accumulate: the
-    /// first plain set replaces "all", later ones add, and negated ones
-    /// remove.
     pub fn parse(
         expressions: &[String],
         signal_named: &dyn Fn(&str) -> Option<i32>,
@@ -457,9 +420,6 @@ impl Filter {
         })
     }
 
-    /// Whether a finished call is shown. `path_of` names what a descriptor
-    /// of the call's process refers to, when the trace knows; `paths`
-    /// gives the call's own path arguments.
     #[must_use]
     pub fn shows(
         &self,
@@ -511,7 +471,6 @@ fn complement(calls: &BTreeSet<SyscallId>) -> CallSet {
     all
 }
 
-/// The descriptors a call names, by argument or result.
 pub fn descriptors(event: &SyscallEvent) -> impl Iterator<Item = i64> + '_ {
     let spec = specs::spec(event.call);
     let arguments = spec
@@ -528,7 +487,6 @@ pub fn descriptors(event: &SyscallEvent) -> impl Iterator<Item = i64> + '_ {
     arguments.chain(result)
 }
 
-/// The paths a call names by argument, as captured.
 #[must_use]
 pub fn paths(event: &SyscallEvent) -> Vec<String> {
     let Some(spec) = specs::spec(event.call) else {
@@ -547,7 +505,6 @@ pub fn paths(event: &SyscallEvent) -> Vec<String> {
         .collect()
 }
 
-/// A descriptor argument as the kernel reads it: an `int`.
 #[must_use]
 pub fn fd_value(word: u64) -> i64 {
     #[expect(clippy::cast_possible_truncation, reason = "the kernel reads an int")]
@@ -628,7 +585,6 @@ mod tests {
         assert!(by_path.shows(&event, &["/etc/hosts"], &|_| None));
     }
 
-    /// What one element of a `trace=` set names.
     #[derive(Debug, Clone)]
     enum Element {
         Name(&'static str),
@@ -639,10 +595,8 @@ mod tests {
         Missing,
     }
 
-    /// An element, its personality, and whether `?` marks it optional.
     type Part = (Element, Option<Abi>, bool);
 
-    /// The calls a part names, or `None` when it must fail to parse.
     fn model(&(ref element, abi, optional): &Part) -> Option<BTreeSet<SyscallId>> {
         let abis: Vec<Abi> = abi.map_or_else(|| Abi::ALL.to_vec(), |abi| vec![abi]);
         let named = |wanted: &dyn Fn(&str) -> bool| -> BTreeSet<SyscallId> {
@@ -656,8 +610,6 @@ mod tests {
                 .collect()
         };
 
-        // strace reads a class's old name, without `%`, where no 64-bit
-        // call has the name, as `signal` and `ipc`.
         let element = match element {
             Element::Name(name)
                 if Class::named(name).is_some() && table::number(Abi::X86_64, name).is_none() =>
@@ -669,7 +621,6 @@ mod tests {
 
         let calls = match element {
             Element::Name(wanted) | Element::Regex(wanted) => named(&|name| name == *wanted),
-            // A class holds a call by its name, in every ABI.
             Element::Class(class) => {
                 let classes = match *class {
                     "%stat" => vec![Class::Stat, Class::Lstat, Class::Fstat],

@@ -1,6 +1,6 @@
-"""Threads parked at several depths, one of them through a call into C
-that calls back into Python, and the main thread at the checkpoint, which
-with --abort aborts there for a core dump."""
+
+
+
 
 import contextvars
 import os
@@ -16,7 +16,7 @@ def leaf(gate):
 
 
 def through_c(gate):
-    # Context.run is C, which calls leaf: a second evaluation loop.
+
     contextvars.copy_context().run(leaf, gate)
 
 

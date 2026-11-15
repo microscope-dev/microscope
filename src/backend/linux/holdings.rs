@@ -1,16 +1,9 @@
-//! The numbers the thread list gives what threads run in, such as V8's
-//! isolates: `isolate 1` for the first one seen. A runtime names each by an
-//! identity, such as an address, that another may take once it is gone, so
-//! a number lasts only while a thread last seen holding its identity lives.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::RuntimeId;
 use crate::runtime_model::HeldIdentity;
 use nix::unistd::Pid;
 
-/// What one thread was seen to run in at a stop, of one runtime's things:
-/// `None` when the runtime read that it runs in none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Sighting {
     pub thread: Pid,
@@ -18,10 +11,8 @@ pub(super) struct Sighting {
     pub holding: Option<(&'static str, HeldIdentity)>,
 }
 
-/// The numbers of one process's lifetime, which a new process starts over.
 #[derive(Debug, Default)]
 pub(super) struct HoldingNumbers {
-    /// The last number given to each runtime's kind.
     last: BTreeMap<(RuntimeId, &'static str), u64>,
     held: BTreeMap<(RuntimeId, &'static str, HeldIdentity), Held>,
 }
@@ -30,19 +21,10 @@ pub(super) struct HoldingNumbers {
 struct Held {
     number: u64,
 
-    /// The threads last seen holding it.
     holders: BTreeSet<Pid>,
 }
 
 impl HoldingNumbers {
-    /// The number of what each of `seen`, one stop's sightings, holds, in
-    /// their order, given the threads that live at the stop. A thread whose
-    /// runtime could not be read is not seen, and holds what it last did.
-    ///
-    /// An identity no living thread was last seen holding is forgotten
-    /// first, so a new one at its address gets a new number. New ones are
-    /// then numbered in the order of their threads' ids. `None` only once
-    /// a kind's numbers are exhausted.
     pub(super) fn number(&mut self, live: &BTreeSet<Pid>, seen: &[Sighting]) -> Vec<Option<u64>> {
         let now: BTreeMap<(Pid, RuntimeId), Option<(&'static str, HeldIdentity)>> = seen
             .iter()
@@ -96,8 +78,6 @@ mod tests {
 
     const ISOLATE: &str = "isolate";
 
-    /// A stop: the threads that live at it, and its sightings in the
-    /// order the stop made them and in another.
     #[derive(Debug, Clone)]
     struct Stop {
         live: BTreeSet<Pid>,
@@ -154,13 +134,8 @@ mod tests {
 
     type Key = (RuntimeId, &'static str, HeldIdentity);
 
-    /// The numbering rules, stop by stop: an identity keeps its number while
-    /// a living thread whose last sighting held it is not seen now holding
-    /// anything else, and an identity without one takes the next of its
-    /// kind, in the order of the threads that hold it.
     #[derive(Default)]
     struct Reference {
-        /// What each thread was last seen holding, of each runtime.
         last: BTreeMap<(Pid, RuntimeId), Option<(&'static str, HeldIdentity)>>,
         numbers: BTreeMap<Key, u64>,
         given: BTreeMap<(RuntimeId, &'static str), u64>,

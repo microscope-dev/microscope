@@ -1,7 +1,3 @@
-// The command palette: Ctrl+K searches commands, functions, files, threads,
-// breakpoints, and stops; Ctrl+P starts at files, and Ctrl+G at a line of
-// the file shown. Groups come in the order of their best match.
-
 import {
   type ChangeEvent,
   type KeyboardEvent,
@@ -33,15 +29,14 @@ import { applyLayout, debugLayout, KINDS } from "./panes";
 import { fileName } from "./paths";
 import { useFocus } from "./Workspace";
 
-/** How many results each group shows. */
 const EACH = 8;
 
 interface Item {
   id: string;
   label: string;
-  /** Text after the label, such as where a function is. */
+
   detail?: string | undefined;
-  /** The key that does the same. */
+
   hint?: string | null;
   run(): void;
 }
@@ -49,7 +44,7 @@ interface Item {
 interface Group {
   name: string;
   items: Item[];
-  /** Its best match's rank, which orders the groups. */
+
   rank: number;
 }
 
@@ -60,7 +55,7 @@ export function Palette() {
   if (!mode) {
     return null;
   }
-  // A new mode starts over with nothing typed.
+
   return <Open key={mode} mode={mode} />;
 }
 
@@ -92,7 +87,7 @@ function Open({ mode }: { mode: Mode }) {
   const field = useRef<HTMLInputElement>(null);
   useDialogFocus(dialog, field);
   const { groups, why } = useGroups(mode, query.trim());
-  // Why the files listed are not all of them, when they are not.
+
   const note = useRequest("sources", mode === "files" ? undefined : null).data?.note;
   const items = groups.flatMap((group) => group.items);
   const chosen = Math.min(selected, Math.max(items.length - 1, 0));
@@ -186,7 +181,6 @@ function Open({ mode }: { mode: Mode }) {
 }
 
 function Result({ id, item, on, query }: { id: string; item: Item; on: boolean; query: string }) {
-  // Before the input's blur closes the palette.
   const choose = useCallback(
     (event: MouseEvent) => {
       event.preventDefault();
@@ -211,11 +205,9 @@ function Result({ id, item, on, query }: { id: string; item: Item; on: boolean; 
   );
 }
 
-/** The label, with the characters the query matched marked. */
 function Marked({ text, query }: { text: string; query: string }) {
   const chars = [...text];
-  // Score marks code units of the lowercased text; each belongs to the
-  // character it was lowercased from.
+
   const owners = chars.flatMap((char, index) =>
     Array.from({ length: char.toLowerCase().length }, () => index),
   );
@@ -233,7 +225,6 @@ function Marked({ text, query }: { text: string; query: string }) {
   );
 }
 
-/** Ranks `items` by their labels, keeping those that match. */
 function ranked(name: string, items: Item[], query: string, limit = EACH): Group | null {
   const kept = best(items, query, (item) => item.label, limit);
   if (kept.length === 0) {
@@ -248,8 +239,6 @@ function ranked(name: string, items: Item[], query: string, limit = EACH): Group
   return { name, items: kept, rank };
 }
 
-/** The groups to show, and why there are none when that is not because
- * nothing matches the query. */
 interface Found {
   groups: Group[];
   why?: string;
@@ -442,7 +431,6 @@ function useGroups(mode: Mode, query: string): Found {
     return { groups: [{ name: "Commands", items: commands, rank: 0 }] };
   }
 
-  // Only the functions that match this query, not a slower earlier one's.
   const matches = (functions?.functions ?? []).filter((found) => score(found.name, query));
   const functionItems: Item[] = matches.map((found) => ({
     id: `function:${found.name}:${found.path}:${found.line}`,
@@ -456,7 +444,7 @@ function useGroups(mode: Mode, query: string): Found {
       }
     },
   }));
-  // Each function offers a breakpoint, as a command.
+
   const breakAt: Item[] = matches.slice(0, 3).map((found) => ({
     id: `break:${found.name}`,
     label: `Break at ${found.name}`,
@@ -509,7 +497,6 @@ function useGroups(mode: Mode, query: string): Found {
     run: () => go({ stop: entry.stop, thread: entry.thread, frame: entry.frame }),
   }));
 
-  // Functions come before the commands made from them, at equal rank.
   const groups = [
     ranked("Functions", functionItems, query),
     commandGroup && breakGroup

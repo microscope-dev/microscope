@@ -1,5 +1,3 @@
-//! The x86-64 register file in the forms unwinding and inspection consume.
-
 use std::sync::Arc;
 
 use nix::libc;
@@ -12,8 +10,6 @@ use crate::{
     RegisterValue, UnsupportedVariableFeature, VariableUnavailableReason,
 };
 
-/// The general registers: DWARF number, name, and role, indexed by
-/// [`RegisterId`] in the order snapshots present them.
 const GENERAL_REGISTERS: [(DwarfRegister, &str, Option<RegisterRole>); 18] = [
     (DwarfRegister::new(0), "rax", None),
     (DwarfRegister::new(3), "rbx", None),
@@ -47,8 +43,6 @@ const GENERAL_REGISTERS: [(DwarfRegister, &str, Option<RegisterRole>); 18] = [
     (DwarfRegister::new(49), "rflags", None),
 ];
 
-/// The id of the register at `index` in one of this module's tables, which
-/// have a few dozen entries at most.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "register tables are far shorter than u32::MAX"
@@ -59,7 +53,6 @@ const fn table_id(index: usize) -> u32 {
 
 type GeneralRegister = (DwarfRegister, &'static str, Option<RegisterRole>);
 
-/// The descriptor of `register`, the `index`th of [`GENERAL_REGISTERS`].
 fn general_descriptor(index: usize, &(_, name, role): &GeneralRegister) -> RegisterDescriptor {
     RegisterDescriptor {
         id: RegisterId::new(table_id(index)),
@@ -77,8 +70,6 @@ fn general_descriptor_of(dwarf: DwarfRegister) -> Option<RegisterDescriptor> {
         .map(|(index, register)| general_descriptor(index, register))
 }
 
-/// The segment, thread-pointer, and system-call registers, after the
-/// general ones: each name, width, and whether every frame shares it.
 const SPECIAL_REGISTERS: [(&str, u16, bool); 9] = [
     ("cs", 16, true),
     ("ss", 16, true),
@@ -105,7 +96,6 @@ const fn special_values(native: &libc::user_regs_struct) -> [u64; 9] {
     ]
 }
 
-/// Every general register's value, indexed as [`GENERAL_REGISTERS`].
 const fn general_values(registers: &libc::user_regs_struct) -> [u64; 18] {
     [
         registers.rax,
@@ -129,9 +119,6 @@ const fn general_values(registers: &libc::user_regs_struct) -> [u64; 18] {
     ]
 }
 
-/// Whether a stopped thread is inside an interrupted system call that the
-/// kernel restarts, executing `syscall` again, when the thread next runs
-/// with no signal to handle.
 pub(super) const fn restarts_call(registers: &libc::user_regs_struct) -> bool {
     const ERESTARTSYS: i64 = 512;
     const ERESTARTNOINTR: i64 = 513;
@@ -168,8 +155,6 @@ pub(super) fn x86_64_general_variable_register(
     })
 }
 
-/// Reads a register of a caller's activation from the registers the
-/// unwinder reconstructed for it.
 pub(super) fn x86_64_caller_variable_register(
     registers: &RegisterFile,
     dwarf: DwarfRegister,
@@ -186,7 +171,6 @@ pub(super) fn x86_64_caller_variable_register(
 
     let number = dwarf.number();
     if (17..=32).contains(&number) {
-        // Callees may overwrite every SSE register without saving it.
         return Err(VariableUnavailableReason::RegisterNotSaved(
             format!("xmm{}", number - 17).into(),
         )
@@ -196,15 +180,12 @@ pub(super) fn x86_64_caller_variable_register(
     Err(VariableUnavailableReason::Unsupported(UnsupportedVariableFeature::RegisterClass).into())
 }
 
-/// The id of the program counter's descriptor.
 pub(super) const PROGRAM_COUNTER: u32 = 16;
 
 pub(super) const fn is_program_counter(register: RegisterId) -> bool {
     register.get() == PROGRAM_COUNTER
 }
 
-/// The field of any register a snapshot presents, by its descriptor's id:
-/// a general register, or one of [`SPECIAL_REGISTERS`] after them.
 pub(super) const fn x86_64_register_slot(
     registers: &mut libc::user_regs_struct,
     register: RegisterId,
@@ -223,7 +204,6 @@ pub(super) const fn x86_64_register_slot(
     })
 }
 
-/// The field of a general register, by its descriptor's id.
 pub(super) const fn x86_64_general_register_slot(
     registers: &mut libc::user_regs_struct,
     register: RegisterId,
@@ -251,7 +231,6 @@ pub(super) const fn x86_64_general_register_slot(
     })
 }
 
-/// The 512-byte x86-64 FXSAVE image saved by ptrace and by `NT_FPREGSET`.
 pub(super) type Fxsave = Arc<[u8; core_dump::FXSAVE_SIZE]>;
 
 const FXSAVE_X87_OFFSET: usize = 32;
@@ -283,9 +262,6 @@ pub(super) fn x86_64_xmm_variable_register(
     }
 }
 
-/// One of the x87 registers st0 through st7, DWARF's 33 through 40, which
-/// FXSAVE stores from the stack's top, each in the low ten bytes of
-/// sixteen.
 pub(super) fn x86_64_x87_variable_register(
     registers: &Fxsave,
     dwarf: DwarfRegister,
@@ -312,8 +288,6 @@ pub(super) fn x86_64_x87_variable_register(
     }
 }
 
-/// The low `bits` of `value`, little-endian, for a register of the tables
-/// above, whose widths are whole bytes of at most 64 bits.
 #[expect(
     clippy::indexing_slicing,
     reason = "register tables hold widths of 16 or 64 bits"
@@ -326,13 +300,6 @@ fn low_bytes(value: u64, bits: u16) -> Arc<[u8]> {
     Arc::from(&value.to_le_bytes()[..usize::from(bits / 8)])
 }
 
-/// Describes a frame's general registers: the thread's own for the
-/// innermost activation, or the registers the unwinder reconstructed for a
-/// caller's. A caller's register that a callee may have overwritten without
-/// saving it has no value; the segment and thread-pointer registers are the
-/// same in every frame, and the system-call register belongs to the thread.
-/// A parked task has no thread, so only the registers its runtime saved,
-/// given as `caller`, have values.
 pub(super) fn x86_64_register_snapshot(
     revision: u64,
     context: ExecutionContext,

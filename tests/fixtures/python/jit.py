@@ -1,7 +1,7 @@
-"""A hot loop that calls the extension's C function on every pass.
-The first argument is the extension's directory. With --cold-stop, wait
-for input and make an interpreted call before the loop warms up.
-"""
+
+
+
+
 
 import sys
 

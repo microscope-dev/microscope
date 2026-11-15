@@ -1,5 +1,3 @@
-//! Inspecting data objects: following value paths and materializing values.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -54,8 +52,6 @@ use super::{
 
 use crate::image::variables::{Capture, Object, VariableFunction};
 
-/// One transition between storages, planned from types alone. Index steps
-/// take their index values when they are applied.
 #[derive(Clone)]
 pub(in crate::debug_info) enum PathStep {
     Dereference {
@@ -69,8 +65,6 @@ pub(in crate::debug_info) enum PathStep {
         element_size: u64,
     },
 
-    /// An index into the array bounded at run time `array`, whose value
-    /// finds its bounds.
     RuntimeArrayIndex {
         array: TypeId,
     },
@@ -91,37 +85,23 @@ pub(in crate::debug_info) struct PlannedMemberStep {
     pub(super) required_variant: Option<(usize, VariantDiscriminant, Arc<[Variant]>)>,
 }
 
-/// One step from an aggregate into a member or base on the way to a member
-/// found through anonymous members and base classes.
 #[derive(Clone)]
 struct MemberHop {
     aggregate: TypeId,
     child: DynamicAggregateChild,
 
-    /// The member, or a base class as the member it amounts to.
     member: RecordMember,
 
-    /// Whether the hop enters a virtual base, which every path through it
-    /// shares.
     virtual_base: bool,
 
-    /// The dereference that follows the member, when it is an embedded
-    /// pointer whose members Go promotes.
     then: Option<PathStep>,
 }
 
-/// How many aggregates one member lookup may examine.
 const MAX_MEMBER_SEARCH: usize = 4_096;
 
-/// The most words a slice descriptor may hold: Odin's dynamic arrays, the
-/// largest, hold five.
 const MAX_SLICE_WORDS: u64 = 8;
 
-/// The one path when every path found reaches the same subobject: paths
-/// through one virtual base reach one object, since the derived object
-/// holds a virtual base once however many classes derive from it.
 fn one_subobject(paths: &[Vec<MemberHop>]) -> Option<&[MemberHop]> {
-    // A path's subobject: from its last virtual base onward, or all of it.
     let key = |path: &[MemberHop]| {
         let start = path.iter().rposition(|hop| hop.virtual_base);
         let tail = path.get(start.unwrap_or(0)..).unwrap_or_default();
@@ -159,8 +139,6 @@ pub(super) enum ScalarDecodeError {
     Malformed(Arc<str>),
 }
 
-/// Maps an evaluation failure to its variable state; only fatal failures
-/// escape as errors.
 pub(super) fn evaluate_error_state(
     error: EvaluateError,
     kind: VariableMalformedKind,
@@ -175,7 +153,6 @@ pub(super) fn evaluate_error_state(
     }
 }
 
-/// The state of a value whose type has no usable shape.
 fn shape_error_state(error: ValueShapeError) -> VariableState {
     match error {
         ValueShapeError::Malformed(description) => VariableState::Malformed(malformed_reason(
@@ -188,16 +165,12 @@ fn shape_error_state(error: ValueShapeError) -> VariableState {
     }
 }
 
-/// A shape failure for a type its parent already shaped, which only
-/// inconsistent metadata can cause.
 fn shape_error(error: ValueShapeError) -> Error {
     let (ValueShapeError::Malformed(description) | ValueShapeError::Unsupported(description)) =
         error;
     Error::debug_info(DwarfError::MalformedVariable(description))
 }
 
-/// Splits a shape failure into malformed metadata, an error, and an
-/// unsupported representation, `None`.
 fn supported_shape<T>(result: std::result::Result<T, ValueShapeError>) -> Result<Option<T>> {
     match result {
         Ok(value) => Ok(Some(value)),
@@ -208,7 +181,6 @@ fn supported_shape<T>(result: std::result::Result<T, ValueShapeError>) -> Result
     }
 }
 
-/// The hop from `aggregate` into its base class subobject `index`.
 fn base_hop(aggregate: TypeId, index: usize, base: &crate::BaseClass) -> MemberHop {
     MemberHop {
         aggregate,
@@ -244,8 +216,6 @@ const fn dereference_reference(
     }
 }
 
-/// The byte offset an array index step reaches with `indices`, checked
-/// against the array's static bounds; `None` for any other step.
 pub(in crate::debug_info) fn array_byte_offset(
     step: &PathStep,
     indices: &[i128],
@@ -262,8 +232,6 @@ pub(in crate::debug_info) fn array_byte_offset(
     element_byte_offset(dimensions, *ordering, indices, *element_size).map(Some)
 }
 
-/// The byte offset of the element at source `indices` of an array laid
-/// out in `ordering`, checked against its bounds.
 pub(super) fn element_byte_offset(
     dimensions: &[ArrayDimension],
     ordering: ArrayOrdering,
@@ -293,7 +261,6 @@ pub(super) fn element_byte_offset(
         position.push((relative, dimension.count));
     }
 
-    // The dimension whose elements are adjacent comes last.
     if ordering == ArrayOrdering::ColumnMajor {
         position.reverse();
     }
@@ -315,7 +282,6 @@ pub(super) fn element_byte_offset(
         .ok_or_else(|| Error::InvalidValueExpression("array element offset overflows".to_owned()))
 }
 
-/// The source indices of the row-major element `index` of an array.
 pub(super) fn array_source_indices(dimensions: &[ArrayDimension], index: u64) -> Result<Vec<i128>> {
     let mut indices = vec![0_i128; dimensions.len()];
     let mut remaining = index;
@@ -375,12 +341,6 @@ pub(super) fn static_member_layout_is_valid(
     }
 }
 
-/// An integer of an enumeration-like type: symbolic when it is one of the
-/// type's constants, or else the bitwise OR of some of its single-bit
-/// constants: for constants Go gave a named type, as Delve reads them, and
-/// for a language's enumeration of flags. A language's enumeration
-/// otherwise stays symbolic with no name, and anything else is its number,
-/// so `time.Duration(1500000000)` names no constant.
 fn symbolic(
     value: IntegerValue,
     enumerators: &[crate::Enumerator],
@@ -400,8 +360,6 @@ fn symbolic(
         };
     }
 
-    // Bit patterns in the type's width, where a signed type's lowest
-    // value is one bit.
     let mask = u32::try_from(byte_size.saturating_mul(8))
         .ok()
         .and_then(|bits| 1_u128.checked_shl(bits))
@@ -442,9 +400,6 @@ fn symbolic(
     })
 }
 
-/// Whether a language's enumeration is one of flags, as `enum { READ = 1,
-/// WRITE = 2 }` is: every constant is zero or a single bit, at least two
-/// are bits, and they do not count 0, 1, 2 as a sequence of three does.
 fn are_flags(enumerators: &[crate::Enumerator]) -> bool {
     let value = |enumerator: &crate::Enumerator| match enumerator.value {
         IntegerValue::Signed(value) => u128::try_from(value).ok(),
@@ -466,9 +421,6 @@ fn are_flags(enumerators: &[crate::Enumerator]) -> bool {
 }
 
 impl DwarfVariableInfo {
-    /// Classifies an object's storage from the operations of its location
-    /// expressions. Thread-local and indirect forms dominate frame-relative
-    /// ones, which dominate static addresses.
     pub(super) fn object_storage(&self, object: Object<'_>) -> ObjectStorage {
         let ranges = self.visible_ranges(object);
         let Some(location) = object.location() else {
@@ -577,7 +529,6 @@ impl DwarfVariableInfo {
         transparent_type_from(&*self.types, id)
     }
 
-    /// Whether a type is a function's, whose values are code.
     fn is_code(&self, id: TypeId) -> bool {
         self.transparent_type(id)
             .is_ok_and(|(_, info)| matches!(info.kind, TypeKind::Signature { .. }))
@@ -598,13 +549,6 @@ impl DwarfVariableInfo {
         Ok(())
     }
 
-    /// Every path to a member named `name` of the record or union
-    /// `aggregate`, found as C and C++ find names: among its own members,
-    /// counting the members of its anonymous members as its own, and only
-    /// then in its base classes, whose names it hides. Go's embedded fields
-    /// promote their members as Go does: the shallowest win, and an
-    /// embedded pointer is followed. `enclosing` holds the records the
-    /// search is inside, which an embedded pointer may lead back to.
     fn member_paths(
         &self,
         aggregate: TypeId,
@@ -687,9 +631,6 @@ impl DwarfVariableInfo {
         Ok(found)
     }
 
-    /// The shallowest paths to a member named `name` through the embedded
-    /// fields among `members`, which Go promotes: each embedded field's
-    /// own search finds its shallowest, and the shallowest of those win.
     fn promoted_paths(
         &self,
         aggregate: TypeId,
@@ -763,8 +704,6 @@ impl DwarfVariableInfo {
         Ok(found)
     }
 
-    /// Every path from the record `aggregate` to a base class subobject
-    /// whose type `is_target` accepts, through its bases' bases.
     fn base_paths(
         &self,
         aggregate: TypeId,
@@ -808,18 +747,12 @@ impl DwarfVariableInfo {
         Ok(found)
     }
 
-    /// Plans one structural step from `from`, which reads no program
-    /// state. A member step follows pointers to the record that holds the
-    /// member; an index step takes one index for a slice and one per
-    /// dimension for an array, of the `available` the caller holds.
     #[expect(
         clippy::too_many_lines,
         reason = "each step keeps the typed failure of every type shape it meets"
     )]
     pub(super) fn plan_step(&self, from: TypeId, step: Step<'_>) -> Result<PlannedStep> {
         enum AggregateMembers<'a> {
-            /// A record's or union's, which are searched through anonymous
-            /// members and bases.
             Direct,
             Variant {
                 common_members: &'a [RecordMember],
@@ -840,8 +773,6 @@ impl DwarfVariableInfo {
         let mut steps = Vec::new();
 
         match step {
-            // A generic pointer's shape, Go's `go.shape.*uint8`, points to
-            // whatever its type argument does, which only running finds.
             Step::Deref if self.type_facts().dictionary_index(from).is_some() => {
                 let reason = VariableUnavailableReason::ValueAccess(
                     crate::ValueAccessUnavailableReason::UnspecifiedPointee,
@@ -1168,8 +1099,6 @@ impl DwarfVariableInfo {
         }
     }
 
-    /// Plans the member steps along one lookup path, returning the type it
-    /// reaches.
     fn plan_hops(&self, path: &[MemberHop], steps: &mut Vec<PathStep>) -> Result<Option<TypeId>> {
         for hop in path {
             self.validate_static_member_layout(hop.aggregate, &hop.member)?;
@@ -1185,8 +1114,6 @@ impl DwarfVariableInfo {
         Ok(path.last().map(|hop| hop.member.type_ref.id))
     }
 
-    /// A lookup path as the selections that write it: each member's name,
-    /// and each base class's type name.
     fn path_text(&self, path: &[MemberHop]) -> String {
         path.iter()
             .filter_map(|hop| match (&hop.member.name, hop.child) {
@@ -1201,8 +1128,6 @@ impl DwarfVariableInfo {
             .join(".")
     }
 
-    /// The index of the data object `name` names in the selected logical
-    /// frame, whose innermost declaration hides the others.
     pub(super) fn visible_object(
         &self,
         address: ImageAddress,
@@ -1247,7 +1172,6 @@ impl DwarfVariableInfo {
             return Ok(storage);
         };
 
-        // A variable moved to the heap is where its slot points.
         let byte_size = self
             .value_shape(pointer)
             .map_err(EvaluateError::from)?
@@ -1266,8 +1190,6 @@ impl DwarfVariableInfo {
         Ok(ValueStorage::Memory(address))
     }
 
-    /// Where a data object's location says it is: for a variable moved to
-    /// the heap, the pointer to it.
     fn located_slot(
         &self,
         variable: Object<'_>,
@@ -1310,9 +1232,6 @@ impl DwarfVariableInfo {
         if let ValueDescription::Constant(constant) = &description {
             let constant = &**constant;
 
-            // An integer form holds at most 64 bits. Clang writes a wider
-            // complex constant's real part alone that way, and the imaginary
-            // part it leaves out is not zero.
             if matches!(&shape, ValueShape::Scalar(base)
                 if base.encoding == BaseTypeEncoding::ComplexFloating && base.byte_size > 8)
                 && !matches!(constant, ConstantValue::Bytes(_))
@@ -1381,11 +1300,6 @@ impl DwarfVariableInfo {
         )
     }
 
-    /// Reads a scalar's bytes, of which only the significant ones must be
-    /// readable: an x87 long double's value is its first ten bytes, and a
-    /// location may describe them without the padding after them. Says
-    /// whether the padding was unreadable, in which case its bytes read as
-    /// zero and are no part of the value.
     fn read_scalar(
         &self,
         storage: &ValueStorage,
@@ -1428,8 +1342,6 @@ impl DwarfVariableInfo {
     ) -> std::result::Result<DecodedSlice, EvaluateError> {
         let pointer_bytes = self.pointer_bytes();
 
-        // Validate the metadata's size before reading, so a bogus size cannot
-        // spend the request's memory budget: a descriptor is a few words.
         let word_count = byte_size / pointer_bytes as u64;
         if !byte_size.is_multiple_of(pointer_bytes as u64)
             || !(words.span()..=MAX_SLICE_WORDS).contains(&word_count)
@@ -1488,8 +1400,6 @@ impl DwarfVariableInfo {
         })
     }
 
-    /// A function value from its stored pointer: nil, or the code its
-    /// closure context begins with, and what the closure captured.
     fn function_value(
         &self,
         raw: &[u8],
@@ -1540,7 +1450,6 @@ impl DwarfVariableInfo {
         Ok((value, children))
     }
 
-    /// What the closure a function value's context belongs to captured.
     fn closure_captures(
         &self,
         closure: &ValueStorage,
@@ -1569,9 +1478,6 @@ impl DwarfVariableInfo {
         }
     }
 
-    /// A captured variable as a member of its closure, and whether the
-    /// closure holds a pointer to it, as Go writes `&name`, rather than a
-    /// copy. A captured pointer's member is the variable it points to.
     fn capture_member(
         &self,
         capture: &Capture,
@@ -1620,7 +1526,6 @@ impl DwarfVariableInfo {
         Ok((member, by_reference))
     }
 
-    /// The float type of a complex type's parts, if it is complex.
     fn complex_part_type(&self, base: &BaseType) -> Option<TypeId> {
         if base.encoding != BaseTypeEncoding::ComplexFloating {
             return None;
@@ -1785,8 +1690,6 @@ impl DwarfVariableInfo {
         budget: &mut InspectionBudget,
     ) -> std::result::Result<(Option<IntegerValue>, Option<usize>), EvaluateError> {
         let VariantDiscriminant::Stored(member) = discriminant else {
-            // Without stored discriminator bytes, only a variant known to be
-            // the only one that can hold a value is active.
             return tagless_variant(&*self.types, aggregate)
                 .map(|index| (None, Some(index)))
                 .ok_or_else(|| {
@@ -1880,9 +1783,6 @@ impl DwarfVariableInfo {
         storage::offset(referenced, byte_offset)
     }
 
-    /// The bytes an implicit pointer points at in a `DW_TAG_dwarf_procedure`,
-    /// such as a string literal GCC keeps as an implicit value, which bounds
-    /// it.
     fn procedure_referent(
         &self,
         debug_info_offset: u64,
@@ -1919,7 +1819,6 @@ impl DwarfVariableInfo {
                 VariableUnavailableReason::UnavailableAtInstruction,
             ))?;
 
-        // A procedure belongs to no function, so it has no frame base.
         let pieces = evaluate(
             expression,
             self.endian,
@@ -1944,8 +1843,6 @@ impl DwarfVariableInfo {
         let (start, _) = implicit_pointer_range(byte_offset, target_size, raw.len() as u64)
             .map_err(EvaluateError::Unavailable)?;
 
-        // What follows the referent, such as the rest of a string, is the
-        // procedure's too.
         let end = raw.len();
         Ok(ValueStorage::Bytes {
             source: VariableValueSource::Constant,
@@ -1957,10 +1854,6 @@ impl DwarfVariableInfo {
         })
     }
 
-    /// Applies planned steps to storage, with `indices` as the values of
-    /// their index step. An index outside an array's static bounds is an
-    /// error; anything the program state cannot provide is an
-    /// [`EvaluateError`].
     #[expect(
         clippy::too_many_arguments,
         reason = "steps run against one frame's runtime, frame base, and budget"
@@ -2197,7 +2090,6 @@ impl DwarfVariableInfo {
         Ok(inspected_value(Some(type_info), state, budget))
     }
 
-    /// Decodes a value without its text.
     pub(super) fn decode_state(
         &self,
         type_id: TypeId,
@@ -2214,8 +2106,6 @@ impl DwarfVariableInfo {
         }
     }
 
-    /// Materializes a value, with its text when it is a string, and checks
-    /// that a pointer can be dereferenced.
     fn materialize_value_state(
         &self,
         type_id: TypeId,
@@ -2228,7 +2118,6 @@ impl DwarfVariableInfo {
         let mut state =
             self.materialize_shape_state(type_id, shape, storage, context, runtime, budget)?;
 
-        // An array bounded at run time found its text where its elements are.
         if let VariableState::Available { value, text, .. } = &mut state
             && !matches!(shape, ValueShape::RuntimeArray { .. })
         {
@@ -2298,8 +2187,6 @@ impl DwarfVariableInfo {
         Ok(match shape {
             ValueShape::Scalar(base) => match self.read_scalar(storage, base, runtime, budget) {
                 Ok((source, raw, padding)) => match decode_scalar(base, &raw, self.target) {
-                    // Bytes the program does not hold are no part of the
-                    // value it shows.
                     Ok(value) if padding => {
                         let Some(significant) =
                             usize::try_from(significant_bytes(base, self.target))
@@ -2319,7 +2206,6 @@ impl DwarfVariableInfo {
                         )
                     }
 
-                    // A complex number's parts are its children.
                     Ok(value @ ScalarValue::Complex { .. })
                         if self.complex_part_type(base).is_some() =>
                     {
@@ -2442,7 +2328,6 @@ impl DwarfVariableInfo {
                                 }
                             };
 
-                            // A pointer to code names the function it enters.
                             let function = target
                                 .filter(|target| self.is_code(*target) && address.get() != 0)
                                 .and_then(|_| runtime.function_at(address));
@@ -2782,7 +2667,6 @@ impl DwarfVariableInfo {
             .value_shape(reference.target_type)
             .map_err(shape_error)?;
 
-        // An array bounded at run time is the array its value found.
         let shape = match (shape, &reference.placement) {
             (
                 ValueShape::RuntimeArray {
@@ -2803,7 +2687,6 @@ impl DwarfVariableInfo {
             (shape, _) => shape,
         };
 
-        // A closure's children are what it captured.
         let captures = match &shape {
             ValueShape::Function { byte_size } => Some(
                 self.closure_captures(&storage, *byte_size, runtime, budget)?
@@ -2888,20 +2771,11 @@ impl DwarfVariableInfo {
             .map_err(|_| Error::internal("child page length exceeds usize"))?;
         let mut children = Vec::with_capacity(page_len);
 
-        // Linear pages are the common high-volume path. Capture one bounded
-        // contiguous interval so scalar children do not turn a 256-element
-        // page into 256 ptrace reads. If the coalesced read crosses an
-        // inaccessible boundary, fall back to per-child reads so accessible
-        // siblings are still reported accurately.
         let linear_storage = if storage_failure.is_some() {
             None
         } else {
             match &shape {
-                // Strides place each element of an array bounded at run
-                // time.
                 ValueShape::Array { .. } if reference.placement.is_some() => None,
-                // An array laid out column by column keeps a page's rows
-                // apart.
                 ValueShape::Array {
                     dimensions,
                     ordering: ArrayOrdering::ColumnMajor,
@@ -2964,7 +2838,6 @@ impl DwarfVariableInfo {
             }
         };
 
-        // A complex number's children are its real and imaginary parts.
         let complex_parts = match &shape {
             ValueShape::Scalar(base) => self.complex_part_type(base).map(|part| {
                 let half = base.byte_size / 2;
@@ -2985,8 +2858,6 @@ impl DwarfVariableInfo {
             _ => None,
         };
 
-        // An aggregate's children are its bases, then its members, then the
-        // members of its active variant.
         let aggregate = match &shape {
             ValueShape::Record {
                 record,
@@ -3142,7 +3013,6 @@ impl DwarfVariableInfo {
                     } => {
                         let indices = array_source_indices(dimensions, index)?;
 
-                        // Elements are listed row by row wherever they are.
                         if let Some(placement) = &reference.placement {
                             let bounds = placement
                                 .dimensions
@@ -3222,7 +3092,6 @@ impl DwarfVariableInfo {
             (None, TypeResolution::Resolved(id)) => id,
         };
 
-        // A generic value has its type argument, or else its shape.
         let (type_id, unresolved_shape) =
             match self.generic_type(type_id, variable.instance(), address, runtime, budget)? {
                 Generic::Plain => (type_id, None),
@@ -3251,8 +3120,6 @@ impl DwarfVariableInfo {
 
         let mut state = state;
 
-        // A shape's pointer points to whatever its unknown type argument
-        // does, not to the shape's pointee.
         if unresolved_shape.is_some()
             && let VariableState::Available { dereference, .. } = &mut state
             && matches!(dereference, DereferenceState::Available(_))
@@ -3282,9 +3149,6 @@ impl DwarfVariableInfo {
             return;
         };
 
-        // The pointee type describes the dereferenced expression, so it is
-        // rendered against `*expr`. Resolve it once for both the downgrade of an
-        // available dereference and the backfill of an already-unavailable one.
         let pointee = self.type_info(*target).ok().cloned().map(Box::new);
 
         match dereference {
@@ -3316,9 +3180,6 @@ impl DwarfVariableInfo {
                 }
             }
             DereferenceState::Unavailable { pointee: slot, .. } => {
-                // Backfill the pointee metadata for reasons produced upstream
-                // (a null pointer or an unsupported address class) that knew the
-                // target type but did not resolve it.
                 if slot.is_none() {
                     *slot = pointee;
                 }

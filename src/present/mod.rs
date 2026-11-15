@@ -1,13 +1,3 @@
-//! Values as rows any front end shows: the debug adapter's variables and the
-//! web page's value tree are one presentation.
-//!
-//! A row's text is the same summary the console's `print` shows. Values
-//! without one, such as optimized-out variables, are still rows whose text
-//! explains why. Aggregates expand to their children, and pointers expand
-//! to what they point to. Front ends decide how a row is named on their
-//! wire and how its expansion is referred to later; nothing here keeps
-//! state between requests.
-
 pub mod breakpoints;
 pub mod complete;
 mod completing;
@@ -30,57 +20,42 @@ use microscope::{
 
 use crate::cli::value::summary;
 
-/// The most children one debugger request reads.
 pub const PAGE: u32 = 256;
 
-/// One value to present.
 pub struct Item<'a> {
     pub name: &'a str,
 
-    /// How to evaluate the value again, when it can be.
     pub path: Option<Expression>,
 
-    /// Whether the value is `[raw]`, the value as stored, which its path
-    /// would evaluate as its view presents it: its own children are reached
-    /// through the path, but it is not named by it.
     pub raw: bool,
     pub type_info: Option<&'a TypeInfo>,
     pub state: &'a VariableState,
 
-    /// Where the value's variable is declared, in a module's sources.
     pub declaration: Option<(ModuleId, SourceLocation)>,
 }
 
-/// A presented value.
 #[derive(Debug, Clone)]
 pub struct Row {
     pub name: String,
 
-    /// The value's summary, or why there is none.
     pub text: String,
 
-    /// The type's name, when the type is known.
     pub type_name: Option<Arc<str>>,
     pub declaration: Option<(ModuleId, SourceLocation)>,
 
-    /// How to evaluate the value again, which its children extend.
     pub path: Option<Expression>,
 
-    /// Whether the row is `[raw]`, which its path does not name.
     pub raw: bool,
 
-    /// What an available value offers; none for a value that has none.
     pub details: Option<Details>,
 }
 
 impl Row {
-    /// The path that names the row itself, when one does.
     pub fn evaluate_name(&self) -> Option<&Expression> {
         self.path.as_ref().filter(|_| !self.raw)
     }
 }
 
-/// What an available value offers beyond its text.
 #[derive(Debug, Clone)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -89,80 +64,52 @@ impl Row {
 pub struct Details {
     pub expand: Option<Expand>,
 
-    /// The function a pointer enters, by address.
     pub code: Option<u64>,
 
-    /// The value's natural memory: what a pointer points to, or where the
-    /// value is stored.
     pub memory: Option<u64>,
 
-    /// How many bytes at `memory` belong to the value: its size when it
-    /// is stored there, or the C string a pointer leads to, NUL included,
-    /// when reading found its end. Other pointees have none.
     pub memory_bytes: Option<u64>,
 
-    /// Whether the value itself is stored at `memory`, `memory_bytes` long,
-    /// rather than pointing there.
     pub stored: bool,
 
-    /// How many of a stored character array's bytes hold its C string, NUL
-    /// included, when the string ends before the array does.
     pub text_bytes: Option<u64>,
 
-    /// Whether assigning to the row's path can change it: numbers,
-    /// enumerations, and pointers in memory, or whole variables in the
-    /// innermost frame's registers.
     pub editable: bool,
     pub constant: bool,
 
-    /// Whether a view presents the value as text.
     pub text_view: bool,
 
-    /// Whether the value is a record, union, or variant.
     pub aggregate: bool,
 
-    /// The renderers of the drawings its view offers, each once, which only
-    /// the web page draws.
     pub drawings: Vec<Arc<str>>,
 
-    /// The value's multiline text as its runtime writes it, when the row's
-    /// one line shows less.
     pub detail: Option<Arc<str>>,
 }
 
-/// How a row expands.
 #[derive(Debug, Clone)]
 pub enum Expand {
     Children {
         reference: Arc<ValueChildrenReference>,
         counts: Counts,
 
-        /// Whether the children are all elements (`Some(true)`), all named
-        /// (`Some(false)`), or a view's elements followed by its named
-        /// fields and `[raw]` (`None`).
         indexed: Option<bool>,
     },
 
-    /// What a pointer points to.
     Pointee(Box<DereferenceReference>),
 }
 
-/// How many of a row's children are elements and how many are named.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
     pub indexed: Option<u64>,
     pub named: Option<u64>,
 }
 
-/// One entry of a listing: a value, or where the listing stopped short,
-/// such as at its memory limit.
 #[derive(Debug, Clone)]
 pub enum Listed {
     Value(Box<Row>),
     Truncated(String),
 }
 
-/// The renderers of the drawings a presentation offers, each once.
 #[must_use]
 pub fn drawings(presentation: &microscope::Presentation) -> Vec<Arc<str>> {
     let mut names = Vec::<Arc<str>>::new();
@@ -175,13 +122,11 @@ pub fn drawings(presentation: &microscope::Presentation) -> Vec<Arc<str>> {
     names
 }
 
-/// The part of a listing a request asks for.
 #[derive(Debug, Clone, Copy)]
 pub struct Window {
     pub start: u64,
     pub count: u64,
 
-    /// Which children to list: a view's elements or its named children.
     pub filter: Option<Filter>,
 }
 
@@ -192,7 +137,6 @@ pub enum Filter {
 }
 
 impl Window {
-    /// Every row.
     pub const ALL: Self = Self {
         start: 0,
         count: u64::MAX,
@@ -206,12 +150,10 @@ impl Window {
     }
 }
 
-/// Why a listing failed.
 #[derive(Debug)]
 pub enum ListError {
     Debugger(microscope::Error),
 
-    /// The program changed so the listing no longer applies.
     Changed(&'static str),
 }
 
@@ -221,10 +163,8 @@ impl From<microscope::Error> for ListError {
     }
 }
 
-/// The loaded modules' code, to tell which addresses enter a function.
 #[derive(Debug, Default)]
 pub struct Code {
-    /// Each module's load bias and image.
     modules: Vec<(LoadBias, Arc<ModuleImage>)>,
 }
 
@@ -233,13 +173,10 @@ impl Code {
         Self { modules }
     }
 
-    /// Each module's load bias and image.
     pub fn modules(&self) -> &[(LoadBias, Arc<ModuleImage>)] {
         &self.modules
     }
 
-    /// The image and image address of the function an address enters, when
-    /// it is a function's first instruction rather than any other address.
     pub fn function_entry(
         &self,
         address: VirtualAddress,
@@ -261,17 +198,14 @@ impl Code {
     }
 }
 
-/// Presents values at one debugger, in one style.
 pub struct Presenter<'a> {
     pub handle: &'a DebuggerHandle,
     pub code: &'a Code,
 
-    /// Whether integers show in hexadecimal.
     pub hex: bool,
 }
 
 impl Presenter<'_> {
-    /// Presents one value.
     pub fn row(&self, item: Item<'_>, context: StopContext) -> Row {
         let details = match item.state {
             VariableState::Available {
@@ -283,8 +217,6 @@ impl Presenter<'_> {
                 presentation,
                 ..
             } => {
-                // A value a view presents expands to its elements, its
-                // fields, and `[raw]`, the value as stored.
                 let presented = presentation
                     .as_deref()
                     .filter(|presentation| presentation.shape != PresentedShape::Raw);
@@ -302,13 +234,10 @@ impl Presenter<'_> {
                     None
                 };
 
-                // A pointer to a function, or a function value, leads to
-                // the function's code.
                 let code = called(value)
                     .filter(|address| self.code.function_entry(*address).is_some())
                     .map(VirtualAddress::get);
 
-                // A pointer's natural memory is what it points to.
                 let memory = match (value, source) {
                     (VariableValue::Address(address), _) => Some(address.address.get()),
                     (_, VariableValueSource::Memory(address)) => Some(address.get()),
@@ -374,7 +303,6 @@ impl Presenter<'_> {
         Listed::Value(Box::new(self.row(item, context)))
     }
 
-    /// Presents a frame's parameters or locals, from its variables.
     pub async fn scope(
         &self,
         context: StopContext,
@@ -393,8 +321,6 @@ impl Presenter<'_> {
                 .enumerate()
                 .filter(|(_, variable)| in_scope(kind, variable.kind)),
         ) {
-            // A value a finished function returned is no variable of this
-            // frame, and no name reaches it.
             let returned = variable.kind == VariableKind::Returned;
             let path = if unnamed.contains(&index) || returned {
                 None
@@ -433,10 +359,6 @@ impl Presenter<'_> {
         rows
     }
 
-    /// The frame's variables their names do not reach, because another of
-    /// the frame's variables has the same name, such as one an inner block
-    /// hides: all but the one the name binds, told apart by their storage,
-    /// or all of them when their storage cannot tell.
     async fn unnamed_variables(
         &self,
         context: StopContext,
@@ -492,8 +414,6 @@ impl Presenter<'_> {
         unnamed
     }
 
-    /// Presents the static variables declared in a source file of `image`,
-    /// loaded as `module`, as the frame's thread sees them.
     pub async fn statics(
         &self,
         context: StopContext,
@@ -544,8 +464,6 @@ impl Presenter<'_> {
         Ok(rows)
     }
 
-    /// Presents what a pointer named `name` points to: an aggregate's
-    /// members directly, or else the one value.
     pub async fn pointee(
         &self,
         context: StopContext,
@@ -590,7 +508,6 @@ impl Presenter<'_> {
         )])
     }
 
-    /// Presents a window of an evaluated range's elements.
     pub async fn range(
         &self,
         context: StopContext,
@@ -628,7 +545,6 @@ impl Presenter<'_> {
         Ok(rows)
     }
 
-    /// Presents a window of an aggregate's children, reading them in pages.
     pub async fn children(
         &self,
         context: StopContext,
@@ -636,8 +552,6 @@ impl Presenter<'_> {
         path: Option<&Expression>,
         window: Window,
     ) -> Result<Vec<Listed>, ListError> {
-        // A view's elements come first and its named children after them;
-        // anything else's children are all of one kind.
         let (start, end) = match (window.filter, reference.elements()) {
             (Some(Filter::Indexed), Some(elements)) => (window.start, elements),
             (Some(Filter::Named), Some(elements)) => {
@@ -686,8 +600,6 @@ impl Presenter<'_> {
         Ok(rows)
     }
 
-    /// The names of the members of the value an expression names, or of
-    /// what it points to. None when it names no aggregate.
     pub async fn member_names(&self, context: StopContext, base: &str) -> Vec<String> {
         let Ok(expression) = Expression::parse(base) else {
             return Vec::new();
@@ -751,11 +663,6 @@ impl Presenter<'_> {
     }
 }
 
-/// How many children a value has, and whether they are all elements
-/// (`Some(true)`), all named (`Some(false)`), or a view's elements, which
-/// are indexed, followed by its fields and `[raw]`, which are named
-/// (`None`). An array's or slice's children are elements, and anything
-/// else's named.
 const fn counts(
     children: &ValueChildrenReference,
     value: &VariableValue,
@@ -793,12 +700,6 @@ const fn counts(
     }
 }
 
-/// Whether a scope of variables of one kind lists a variable: the
-/// arguments scope lists results too, as part of the signature, and the
-/// locals scope what a finished function returned.
-/// A frame's scopes in display order, by variable kind and name. Every frame
-/// has arguments and locals; the others come from a runtime such as
-/// JavaScript's and show only when the frame has variables of that kind.
 pub const SCOPES: [(VariableKind, &str); 6] = [
     (VariableKind::Parameter, "Arguments"),
     (VariableKind::Local, "Locals"),
@@ -808,7 +709,6 @@ pub const SCOPES: [(VariableKind, &str); 6] = [
     (VariableKind::Unnamed, "Unnamed locals"),
 ];
 
-/// Why the frame's variables of `kind` have no names, if a variable says.
 pub fn unnamed_reason(snapshot: &VariableSnapshot, kind: VariableKind) -> Option<&str> {
     snapshot
         .variables
@@ -823,7 +723,6 @@ pub fn in_scope(scope: VariableKind, kind: VariableKind) -> bool {
         || (scope == VariableKind::Local && kind == VariableKind::Returned)
 }
 
-/// The address a pointer or function value would call, if it is one.
 const fn called(value: &VariableValue) -> Option<VirtualAddress> {
     match value {
         VariableValue::Address(address) => Some(address.address),
@@ -834,9 +733,6 @@ const fn called(value: &VariableValue) -> Option<VirtualAddress> {
     }
 }
 
-/// Whether assigning can change a value: numbers, enumerations, and
-/// pointers in memory, or whole variables in the innermost frame's
-/// registers, when a path names them.
 fn editable(
     source: &VariableValueSource,
     value: &VariableValue,
@@ -859,7 +755,6 @@ fn editable(
     leaf && storage && named
 }
 
-/// The name a child is shown with.
 pub fn child_name(child: &ValueChild) -> String {
     match &child.relationship {
         ValueChildRelationship::ArrayElement { indices, .. } => {
@@ -874,7 +769,6 @@ pub fn child_name(child: &ValueChild) -> String {
             format!("[{index}]")
         }
 
-        // A map's entry is named by its key.
         ValueChildRelationship::Entry { key, .. } => summary(Some(&key.type_info), &key.state),
         ValueChildRelationship::Member(member) => {
             member.name.as_deref().unwrap_or("<anonymous>").to_owned()
@@ -886,14 +780,10 @@ pub fn child_name(child: &ValueChild) -> String {
     }
 }
 
-/// Whether a child is shown: compiler-generated members are hidden, as the
-/// console hides them.
 pub const fn shown(child: &ValueChild) -> bool {
     !matches!(&child.relationship, ValueChildRelationship::Member(member) if member.artificial)
 }
 
-/// How to evaluate a child again, when its parent can be and the child has
-/// a name.
 pub fn child_path(parent: Option<&Expression>, child: &ValueChild) -> Option<Expression> {
     let parent = parent?;
     match &child.relationship {
@@ -901,10 +791,7 @@ pub fn child_path(parent: Option<&Expression>, child: &ValueChild) -> Option<Exp
         ValueChildRelationship::SliceElement { index }
         | ValueChildRelationship::Element { index } => parent.indexed(&[i128::from(*index)]),
         ValueChildRelationship::Member(member) => parent.member(member.name.as_deref()?),
-        // The value as stored is the parent's value.
         ValueChildRelationship::Raw => Some(parent.clone()),
-        // Maps are not indexed by key yet, so an entry's value is named by
-        // where it is.
         ValueChildRelationship::Entry { .. } => match &child.state {
             VariableState::Available {
                 source: VariableValueSource::Memory(address),
@@ -916,16 +803,12 @@ pub fn child_path(parent: Option<&Expression>, child: &ValueChild) -> Option<Exp
     }
 }
 
-/// A value's text: its summary, with integers in hexadecimal when asked.
-/// A value a view presents is shown as the view presents it, and one it
-/// presents as a number as that number.
 pub fn text(type_info: Option<&TypeInfo>, state: &VariableState, hexadecimal: bool) -> String {
     let presented = match state {
         VariableState::Available {
             presentation: Some(presentation),
             ..
         } => {
-            // A number a view presents is written as that number is.
             if hexadecimal && let Some(number) = &presentation.number {
                 return text(number.type_info.as_ref(), &number.state, true);
             }
@@ -941,7 +824,6 @@ pub fn text(type_info: Option<&TypeInfo>, state: &VariableState, hexadecimal: bo
         .unwrap_or_else(|| summary(type_info, state))
 }
 
-/// An integer value in hexadecimal, in the width of its type's size.
 fn hex(byte_size: Option<u64>, state: &VariableState) -> Option<String> {
     let VariableState::Available { value, .. } = state else {
         return None;
@@ -973,9 +855,6 @@ fn hex(byte_size: Option<u64>, state: &VariableState) -> Option<String> {
     Some(format!("{number:#x}"))
 }
 
-/// A name that reaches a global from any frame, which the frame's own
-/// locals cannot shadow: its qualified name, or, when other files declare
-/// the same, that name qualified by its file's name or path.
 fn global_expression(
     image: &ModuleImage,
     global: &microscope::GlobalVariableInfo,
@@ -1011,8 +890,6 @@ fn global_expression(
         .and_then(|selector| Expression::outermost(&selector))
 }
 
-/// Whether an evaluation failed only because the frame does not know the
-/// name that starts the text, `name`.
 pub fn names_only(failure: &microscope::ExpressionError, name: &str) -> bool {
     failure.kind == microscope::ExpressionErrorKind::UnknownName
         && failure.span.start == 0
@@ -1051,8 +928,6 @@ mod tests {
         assert_eq!(hex(Some(1), &boolean), None);
     }
 
-    /// An integer a view presents shows as the view presents it, even in
-    /// hexadecimal: the stored number is one step away, as `[raw]`.
     #[test]
     fn hexadecimal_never_hides_what_a_view_presents() {
         let presentation = microscope::Presentation {

@@ -24,7 +24,6 @@ fn ints(values: impl IntoIterator<Item = i32>) -> Vec<u8> {
     values.into_iter().flat_map(i32::to_le_bytes).collect()
 }
 
-/// The world `docs/views.md` describes, which most tests here share.
 fn world() -> World {
     let mut world = World::new();
     add_containers(&mut world);
@@ -34,10 +33,6 @@ fn world() -> World {
     world
 }
 
-/// Python objects, whose types only their values know: `point`, an
-/// `app.Point` whose attributes `x` and `y` hold 3 and 4; `red`, a member of
-/// the enum `app.Color`, named `RED` and holding 1; `gone`, an `app.Point`
-/// with no attributes; and `number`, the int 7.
 fn add_python(world: &mut World) {
     use crate::eval::fake::Dynamic;
 
@@ -72,7 +67,6 @@ fn add_python(world: &mut World) {
     }
 }
 
-/// Hand-rolled C vectors and text.
 fn add_containers(world: &mut World) {
     let int = world.base("int", E::Signed, 4);
     let size = world.base("unsigned long", E::Unsigned, 8);
@@ -96,13 +90,11 @@ fn add_containers(world: &mut World) {
     world.variable("big", intvec, &bytes(&[many, 300, 300]));
     world.variable("dangling", intvec, &bytes(&[0xdead_0000, 2, 2]));
 
-    // Text without a length is read a page at a time.
     let mut page = b"hello\0".to_vec();
     page.resize(4096, b'?');
     world.map(0x9_0000, &page);
     world.variable("s", text, &bytes(&[0x9_0000, 5]));
 
-    // Text that runs to the end of the last mapped page.
     world.map(0x7_fffd, b"abc");
     world.variable("cut", text, &bytes(&[0x7_fffd, 300]));
 }
@@ -118,8 +110,6 @@ view c str_t {
 }
 ";
 
-/// A built-in view that does not parse is left out, and so escapes the
-/// fixtures' check that every built-in view binds.
 #[test]
 fn every_built_in_view_parses() {
     let set = ViewSet::built_in();
@@ -139,7 +129,6 @@ fn place(world: &World, name: &str) -> Place {
     }
 }
 
-/// The view `views` chooses for the variable `name`.
 fn bound(world: &World, views: &ViewSet, name: &str) -> Arc<BoundView<Step>> {
     choose(views, world.type_of(name), world)
         .bound
@@ -167,7 +156,6 @@ fn summary(world: &mut World, views: &ViewSet, name: &str) -> String {
     presented(world, views, name).map_or_else(|problem| problem, |presented| presented.summary)
 }
 
-/// A child as the reference's examples write it.
 fn rendered(child: &Child) -> String {
     let value = |value: &crate::InspectedValue| {
         super::summary::value(value.type_info.as_ref(), &value.state)
@@ -181,7 +169,6 @@ fn rendered(child: &Child) -> String {
     }
 }
 
-/// Child `k` costs one evaluation of the element, wherever it is.
 #[test]
 fn random_access_children_cost_the_same_at_any_index() {
     let mut world = world();
@@ -207,13 +194,9 @@ fn random_access_children_cost_the_same_at_any_index() {
 
     assert!(costs.windows(2).all(|pair| pair[0] == pair[1]), "{costs:?}");
 
-    // The check's two reads, the count's and the range's, and the element's
-    // pointer and value.
     assert_eq!(costs[0], 6, "{costs:?}");
 }
 
-/// A count as large as a word holds, as garbage often is, pages without
-/// overflowing: its last children are still its fields and `[raw]`.
 #[test]
 fn the_largest_counts_page_without_overflowing() {
     let mut world = world();
@@ -304,7 +287,6 @@ fn patterns_capture_arguments_and_anchor_at_the_root() {
     );
     world.variable("p", pair, &ints([1, 2, 3, 4]));
     let shown = |world: &mut World, header: &str| {
-        // A pattern that names the count gives the body none to use.
         let count = if header.contains("N>") { "N" } else { "3" };
         let views = ViewSet::new([(
             "test.views",
@@ -334,8 +316,6 @@ fn patterns_capture_arguments_and_anchor_at_the_root() {
         );
     }
 
-    // A pattern that reaches a parameter pack spells all of it, so `Pair<T>`
-    // does not name a pair whose pack holds two arguments.
     world.pack(pair, 0);
     assert_eq!(
         shown(&mut world, "c++ app::detail::Pair<T, N>"),
@@ -347,7 +327,6 @@ fn patterns_capture_arguments_and_anchor_at_the_root() {
     )]);
     assert_eq!(summary(&mut world, &views, "p"), "any");
 
-    // Segments rustc writes in braces, as it names closures, are quoted.
     let closure = world.record("{closure_env#0}", 4, &[("x", int, 0)]);
     world.identify(
         closure,
@@ -456,7 +435,6 @@ view kotlin seventh {
     );
 }
 
-/// Recovering from an error never splits a character, wherever it is.
 #[test]
 fn recovery_from_an_error_steps_over_whole_characters() {
     let file = syntax::parse(
@@ -537,7 +515,6 @@ view c++ app::Thing<T, _> {   # a comment
 fn bound_views_reject_what_does_not_type_check() {
     let world = world();
 
-    // `None` means the view binds; `Some` names why it is rejected.
     for (body, reason) in [
         (
             "show sequence(n) for i in range(n) => data[i].x",
@@ -576,9 +553,6 @@ fn bound_views_reject_what_does_not_type_check() {
     }
 }
 
-/// Views are pure, as the evaluator is: they reach a program only through
-/// the evaluator's traits, so none of their code may reach for process
-/// control, debug information, I/O, clocks, or threads. Tests are exempt.
 #[test]
 fn views_stay_pure() {
     const FORBIDDEN: [&str; 11] = [
@@ -622,8 +596,6 @@ fn views_stay_pure() {
     assert!(checked >= 6, "the views' sources were found");
 }
 
-/// The hostile harness's containers are each presented by the built-in
-/// view meant for them, so the fuzz target exercises every library's views.
 #[test]
 fn the_hostile_harness_exercises_every_library() {
     let choices = super::fuzz::built_in_choices();
@@ -634,7 +606,6 @@ fn the_hostile_harness_exercises_every_library() {
     assert!(unbound.is_empty(), "{unbound:?}");
 }
 
-/// What a model container holds, to be laid out as a library lays it out.
 #[derive(Debug, Clone)]
 struct Contents {
     elements: Vec<i32>,
@@ -642,12 +613,9 @@ struct Contents {
     bytes: Vec<u8>,
     text: String,
 
-    /// Room past the elements or bytes, as a container's capacity leaves.
     spare: u64,
 }
 
-/// The types of libstdc++'s `vector<int>`, `string`, and `map<int, int>`,
-/// and Rust's `Vec<i32>` and `String`, as `fuzz.rs` lays them out.
 struct Library {
     vector: TypeReference,
     string: TypeReference,
@@ -802,8 +770,6 @@ fn library(world: &mut World) -> Library {
     }
 }
 
-/// Nodes of a balanced binary search tree over sorted entries, each a
-/// `_Rb_tree_node`; its root.
 fn tree(world: &mut World, entries: &[(i32, i32)]) -> u64 {
     if entries.is_empty() {
         return 0;
@@ -817,14 +783,12 @@ fn tree(world: &mut World, entries: &[(i32, i32)]) -> u64 {
     world.allocate(&node)
 }
 
-/// A world of every container laid out from `contents`.
 fn laid_out(contents: &Contents) -> World {
     let mut world = World::new();
     let library = library(&mut world);
     let count = |items: usize| u64::try_from(items).expect("small");
     let spare = contents.spare;
 
-    // libstdc++'s vector: three pointers, all null when it never allocated.
     let n = count(contents.elements.len());
     let start = if n + spare == 0 {
         0
@@ -843,7 +807,6 @@ fn laid_out(contents: &Contents) -> World {
         &bytes(&[start, end(n), end(n + spare)]),
     );
 
-    // Rust's Vec: its pointer is dangling but aligned when empty.
     let data = if n + spare == 0 { 4 } else { start };
     world.variable(
         "rust_vector",
@@ -851,7 +814,6 @@ fn laid_out(contents: &Contents) -> World {
         &bytes(&[data, n + spare, n]),
     );
 
-    // libstdc++'s string, in its own buffer when short enough.
     let length = count(contents.bytes.len());
     let address = world.variable("string", library.string, &[0; 32]);
     let mut object = if length < 16 && spare.is_multiple_of(2) {
@@ -878,7 +840,6 @@ fn laid_out(contents: &Contents) -> World {
         &bytes(&[pointer, text, text]),
     );
 
-    // libstdc++'s map: the header's parent is the root.
     let entries: Vec<(i32, i32)> = contents.entries.iter().map(|(&k, &v)| (k, v)).collect();
     let root = tree(&mut world, &entries);
     let header = bytes(&[0, root, 0, 0, count(entries.len())]);
@@ -946,8 +907,6 @@ proptest::proptest! {
     }
 }
 
-/// A tagged union, a Rust box, C++ template instances, and the values
-/// `formatted_and_linked` adds.
 fn add_others(world: &mut World) {
     let int = world.base("int", E::Signed, 4);
     let tagged = world.record("tagged", 8, &[("kind", int, 0), ("value", int, 4)]);
@@ -988,7 +947,6 @@ fn add_others(world: &mut World) {
     );
     world.variable("p", pair, &ints([1, 2, 3, 4]));
 
-    // `app::Handle<int>` holds a `void *` to an `app::Cell<int>`.
     let cell = world.record("Cell<int>", 4, &[("value", int, 0)]);
     world.identify(
         cell,
@@ -1009,8 +967,6 @@ fn add_others(world: &mut World) {
     let stored = world.allocate(&ints([5]));
     world.variable("handle", handle, &bytes(&[stored]));
 
-    // `app::Either<int, char*>` holds one of its arguments, which `index`
-    // chooses, in `storage`.
     let char = world.base("char", E::SignedCharacter, 1);
     let characters = world.pointer(Some(char));
     let either = world.record(
@@ -1026,8 +982,6 @@ fn add_others(world: &mut World) {
         vec![TypeArgument::Type(int), TypeArgument::Type(characters)],
     );
 
-    // `app::Erased` holds an object only the function at `manage` knows
-    // the type of.
     let erased = world.record("Erased", 16, &[("object", void, 0), ("manage", void, 8)]);
     world.identify(erased, SourceLanguage::Cpp, &["app"], "Erased", Vec::new());
     world.function(0x4_0000, &[("T", int)]);
@@ -1040,8 +994,6 @@ fn add_others(world: &mut World) {
     formatted_and_linked(world, int, tagged);
 }
 
-/// The examples' `entry`, whose members formats write, a tagged value of a
-/// kind nothing names, an intrusive run queue, and an arena of handles.
 fn formatted_and_linked(world: &mut World, int: TypeReference, tagged: TypeReference) {
     world.variable("strange", tagged, &ints([5, 0]));
 
@@ -1072,9 +1024,6 @@ fn formatted_and_linked(world: &mut World, int: TypeReference, tagged: TypeRefer
     item.extend(ints([65, 0]));
     world.variable("item", entry, &item);
 
-    // Bytes, as text and otherwise: a `message {uint8_t text[8]; uint8_t
-    // raw[4]}`, and `octets`, a `uint8_t[4]`. `uint8_t` names `unsigned
-    // char`, as C's does.
     let unsigned_char = world.base("unsigned char", E::UnsignedCharacter, 1);
     let byte = world.typedef("uint8_t", unsigned_char);
     let text = world.array(byte, &[8]);
@@ -1089,8 +1038,6 @@ fn formatted_and_linked(world: &mut World, int: TypeReference, tagged: TypeRefer
     world.variable("word", octets, b"ok!?");
     world.variable("blob", octets, &[0xff, 0, 1, 2]);
 
-    // A run queue whose tasks link through the `node` each embeds, in a
-    // ring through the queue's own `tasks`.
     let size = world.base("unsigned long", E::Unsigned, 8);
     let link = world.record("list_head", 16, &[]);
     let link_pointer = world.pointer(Some(link));
@@ -1122,7 +1069,6 @@ fn formatted_and_linked(world: &mut World, int: TypeReference, tagged: TypeRefer
         &bytes(&[first + 8, second + 8, 2]),
     );
 
-    // A handle is an index into the global `arena`.
     let arena = world.array(int, &[4]);
     world.variable("arena", arena, &ints([5, 6, 7, 8]));
     let handle = world.record("handle_t", 4, &[("index", int, 0)]);
@@ -1130,7 +1076,6 @@ fn formatted_and_linked(world: &mut World, int: TypeReference, tagged: TypeRefer
     world.variable("slot", handle, &ints([2]));
 }
 
-/// The identities of the classes of the world's object at `index`.
 fn lineage(world: &World, index: usize) -> Vec<crate::TypeIdentity> {
     world
         .lineage(index)
@@ -1142,7 +1087,6 @@ fn lineage(world: &World, index: usize) -> Vec<crate::TypeIdentity> {
         .collect()
 }
 
-/// What a value shows as an example writes it.
 fn example_outcome(views: &ViewSet, name: &str, outcome: &str) -> String {
     let mut world = world();
     let (choice, this) = world.dynamic_index(name).map_or_else(
@@ -1224,8 +1168,6 @@ fn example_outcome(views: &ViewSet, name: &str, outcome: &str) -> String {
     }
 }
 
-/// Every example in the views reference, `docs/views.md`, holds, so the
-/// reference and the implementation cannot drift apart.
 #[test]
 fn every_example_in_the_views_reference_holds() {
     const REFERENCE: &str = include_str!("../../docs/views.md");
@@ -1299,8 +1241,6 @@ fn every_example_in_the_views_reference_holds() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// Lays out list nodes holding `values`, each linked to the node `links`
-/// names (`None` for null), and returns their addresses.
 fn nodes(world: &mut World, values: &[i32], links: &[Option<usize>]) -> Vec<u64> {
     let base = world.allocate(&vec![0; values.len() * 16]);
     let address = |index: usize| base + 16 * index as u64;
@@ -1314,7 +1254,6 @@ fn nodes(world: &mut World, values: &[i32], links: &[Option<usize>]) -> Vec<u64>
     (0..values.len()).map(address).collect()
 }
 
-/// A chain of nodes holding `values`, the last linked to null.
 fn chain(world: &mut World, values: &[i32]) -> Vec<u64> {
     let links = (1..=values.len())
         .map(|next| (next < values.len()).then_some(next))
@@ -1323,7 +1262,6 @@ fn chain(world: &mut World, values: &[i32]) -> Vec<u64> {
     nodes(world, values, &links)
 }
 
-/// Tree nodes `(key, value, left, right)`, children by index.
 fn tree_nodes(world: &mut World, nodes: &[(i32, i32, Option<usize>, Option<usize>)]) -> Vec<u64> {
     let base = world.allocate(&vec![0; nodes.len() * 24]);
     let address = |index: usize| base + 24 * index as u64;
@@ -1338,9 +1276,6 @@ fn tree_nodes(world: &mut World, nodes: &[(i32, i32, Option<usize>, Option<usize
     (0..nodes.len()).map(address).collect()
 }
 
-/// Hand-rolled C linked structures: lists of `node {int value; node
-/// *next}`, binary trees of `tnode {int key; int value; tnode *left; tnode
-/// *right}`, an open-addressed table, and chained buckets.
 fn add_linked(world: &mut World) {
     let int = world.base("int", E::Signed, 4);
     let size = world.base("unsigned long", E::Unsigned, 8);
@@ -1394,27 +1329,20 @@ fn add_linked(world: &mut World) {
     );
     world.identify(chained, SourceLanguage::C, &[], "chained", Vec::new());
 
-    // 1 -> 2 -> 3 -> null
     let counted = chain(world, &[1, 2, 3]);
     world.variable("three", list, &bytes(&[counted[0], 3]));
     world.variable("empty_list", list, &bytes(&[0, 0]));
 
-    // A circular list, whose last node leads back to its first.
     let circle = nodes(world, &[4, 5, 6], &[Some(1), Some(2), Some(0)]);
     world.variable("circle", list, &bytes(&[circle[0], 3]));
 
-    // 7 -> 8 -> 9 -> 8 -> …: a cycle that does not pass the head.
     let looped = nodes(world, &[7, 8, 9], &[Some(1), Some(2), Some(1)]);
     world.variable("looped", list, &bytes(&[looped[0], 5]));
 
-    // A list shorter than its count.
     world.variable("short", list, &bytes(&[counted[0], 5]));
     let long = chain(world, &(0..1000).collect::<Vec<_>>());
     world.variable("long", list, &bytes(&[long[0], 1000]));
 
-    //     2
-    //    / \
-    //   1   3
     let balanced = tree_nodes(
         world,
         &[
@@ -1425,7 +1353,6 @@ fn add_linked(world: &mut World) {
     );
     world.variable("balanced", tree, &bytes(&[balanced[0], 3]));
 
-    // A tree whose rightmost node leads back to the root.
     let tangled = tree_nodes(
         world,
         &[
@@ -1436,7 +1363,6 @@ fn add_linked(world: &mut World) {
     );
     world.variable("tangled", tree, &bytes(&[tangled[0], 5]));
 
-    // A chain of left children deeper than any tree a library builds.
     let deep = (0..200_usize)
         .map(|index| {
             let key = i32::try_from(index).expect("small");
@@ -1446,7 +1372,6 @@ fn add_linked(world: &mut World) {
     let deep = tree_nodes(world, &deep);
     world.variable("deep", tree, &bytes(&[deep[0], 200]));
 
-    // Slots 1 and 3 of 4 are used.
     let mut slots = Vec::new();
     for slot in [[0, 0, 0], [1, 5, 50], [0, 9, 90], [1, 6, 60]] {
         slots.extend_from_slice(&ints(slot));
@@ -1455,7 +1380,6 @@ fn add_linked(world: &mut World) {
     let slots = world.allocate(&slots);
     world.variable("sparse", table, &bytes(&[slots, 4, 2]));
 
-    // Bucket 0 holds 1 -> 2, bucket 1 nothing, bucket 2 holds 3.
     let first = chain(world, &[1, 2]);
     let second = chain(world, &[3]);
     let array = world.allocate(&bytes(&[first[0], 0, second[0]]));
@@ -1477,7 +1401,6 @@ view c chained {
 }
 ";
 
-/// Every element or entry of a presented value, in pages of `size`.
 fn paged(world: &mut World, views: &ViewSet, name: &str, size: u64) -> Vec<String> {
     let bound = bound(world, views, name);
     let this = place(world, name);
@@ -1535,8 +1458,6 @@ view c list {
     );
 }
 
-/// A later page resumes from the nearest checkpoint rather than walking
-/// from the start again, and pages of any size read the same elements.
 #[test]
 fn scans_resume_from_checkpoints_and_page_alike_in_any_size() {
     let mut world = world();
@@ -1573,8 +1494,6 @@ fn scans_resume_from_checkpoints_and_page_alike_in_any_size() {
     }
 }
 
-/// However little budget there is, a presentation is the whole one or a
-/// problem, never a different one.
 #[test]
 fn too_little_work_never_makes_a_presentation_wrong() {
     let views = ViewSet::new([("test.views", VIEWS), ("linked.views", LINKED_VIEWS)]);
@@ -1627,9 +1546,6 @@ fn an_element_a_scan_reaches_is_a_place() {
     );
 }
 
-/// A `type` with arguments is the one type whose identity it spells, found
-/// by identity whatever its name; `offsetof` and `TYPE.Name` reach a
-/// record's layout and the types declared inside it.
 #[test]
 fn types_are_constructed_from_arguments_and_layouts_named() {
     let mut world = World::new();
@@ -1650,7 +1566,6 @@ fn types_are_constructed_from_arguments_and_layouts_named() {
     let int_node = node(&mut world, int, "node_of<int>", 12);
     let _long_node = node(&mut world, long, "node_of<long int>", 16);
 
-    // A copy of `node_of<int>` from another unit, as DWARF has one per unit.
     let copy = node(&mut world, int, "node_of<int>", 12);
     let holder = world.record("holder<int>", 8, &[("first", int, 0), ("second", int, 4)]);
     world.identify(
@@ -1692,8 +1607,6 @@ fn types_are_constructed_from_arguments_and_layouts_named() {
         "4"
     );
 
-    // Same-named instances of one identity are one type, but different
-    // identities are not.
     world.base("char", E::SignedCharacter, 1);
 
     for (body, reason) in [
@@ -1732,8 +1645,6 @@ fn types_are_constructed_from_arguments_and_layouts_named() {
     }
 }
 
-/// A type a function's arguments complete is found as the program runs,
-/// the function's parameters' names coming before the view's own.
 #[test]
 fn types_are_constructed_from_the_arguments_of_a_function_at_run_time() {
     let mut world = World::new();
@@ -1864,9 +1775,6 @@ view c a {
     }
 }
 
-/// A page whose budget runs out while the scan looks for its next element
-/// keeps the elements it found: a sparse table's page is never emptied by
-/// the empty slots after its last element.
 #[test]
 fn a_page_keeps_its_elements_when_the_budget_ends_between_them() {
     let mut world = world();
@@ -1900,7 +1808,6 @@ fn a_page_keeps_its_elements_when_the_budget_ends_between_them() {
         "{page:?}"
     );
 
-    // So is a summary's preview.
     world.work = Some(150);
     assert_eq!(
         summary(&mut world, &views, "wide"),
@@ -1908,9 +1815,6 @@ fn a_page_keeps_its_elements_when_the_budget_ends_between_them() {
     );
 }
 
-/// A cycle that leads back past the checkpoint a page resumes from, where
-/// the nodes visited before it are not remembered, is still found, by
-/// Brent's algorithm, before the declared count is reached.
 #[test]
 fn a_cycle_behind_a_checkpoint_is_still_found() {
     let mut world = world();

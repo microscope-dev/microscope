@@ -6,8 +6,8 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
   ignoreDeadLinks: false,
-  // Vite clears the terminal when a build starts, erasing the output of the
-  // `just` recipes that ran before this one.
+
+
   vite: { clearScreen: false },
   head: [
     ["meta", { name: "theme-color", content: "#3157c8" }],

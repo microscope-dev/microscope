@@ -1,10 +1,3 @@
-//! What Go's runtime reports as a program panics or fails, read as the
-//! runtime prints it: `printpanics`' chain of panics, the messages `throw`
-//! and `fatal` are given, and the names `fatalsignal` prints for signals.
-//!
-//! Each report is read where the runtime is entered to make it, from the
-//! arguments the register ABI passes: the first in rax, the second in rbx.
-
 use std::sync::Arc;
 
 use super::layout::{Missing, constant, member, offset, symbol};
@@ -14,8 +7,6 @@ use crate::runtime_model::{RuntimeException, RuntimeHook, RuntimeImage, RuntimeS
 use crate::unwind::{DwarfRegister, RAX, RBX, RegisterFile};
 use crate::{ExceptionFilter, ImageAddress, LanguageExceptionKind, VirtualAddress};
 
-/// What Go's runtime reports: a panic nothing recovered and a fatal error
-/// stop unless chosen otherwise, and every panic as it begins does not.
 pub const EXCEPTION_FILTERS: [ExceptionFilter; 3] = [UNHANDLED, FATAL, PANIC];
 
 const UNHANDLED: ExceptionFilter = ExceptionFilter {
@@ -48,41 +39,24 @@ const PANIC: ExceptionFilter = ExceptionFilter {
     default: false,
 };
 
-/// The most panics one chain is read through.
 const MAX_PANICS: usize = 64;
 
-/// The longest message read; the runtime prints longer ones in full, so
-/// one longer is refused rather than cut.
 const MAX_MESSAGE: u64 = 1 << 16;
 
-/// The runtime functions that report exceptions as they are entered.
 #[derive(Debug, Clone, Default)]
 pub struct Hooks {
-    /// `gopanic(e any)`, as any panic begins.
     panic: Option<ImageAddress>,
 
-    /// `fatalpanic(msgs *_panic)`, as a panic nothing recovered ends the
-    /// program.
     fatal_panic: Option<ImageAddress>,
 
-    /// `throw(s string)` and `fatal(s string)`, the runtime's fatal errors.
     throws: Vec<ImageAddress>,
 
-    /// `fatalsignal(sig uint32, ...)`, a signal the runtime cannot turn
-    /// into a panic.
     fatal_signal: Option<ImageAddress>,
 
-    /// Every one of them, with what it reports.
     all: Vec<RuntimeHook>,
 }
 
 impl Hooks {
-    /// `gopanic` begins with the stack check by which the runtime grows and
-    /// preempts a goroutine's stack, which calls `morestack` to run it
-    /// again from its first instruction, so a panic is reported past the
-    /// check, in its body, where its argument is still in its registers.
-    /// Each of the rest is entered once: it checks no stack, or runs on the
-    /// runtime's own.
     pub fn bind(image: &dyn RuntimeImage) -> Self {
         let entry = |name: &str| symbol(image, name).ok();
         let panic = image.function_body("runtime.gopanic");
@@ -114,37 +88,29 @@ impl Hooks {
     }
 }
 
-/// How the runtime lays out what its reports read.
 #[derive(Debug, Clone)]
 pub struct Layout {
-    /// `_panic.arg`, an `any`, and the rest of a panic's state.
     arg: u64,
     link: u64,
     recovered: u64,
     repanicked: u64,
     goexit: u64,
 
-    /// `abi.Type`'s kind, flags, and the offset of its name.
     kind: u64,
     flags: u64,
     name: u64,
     extra_star: u64,
     kinds: Kinds,
 
-    /// The tables of each module's types, which a type's name is in.
     tables: TypeTables,
 
-    /// `runtime.sigtable`, and where each entry's name is.
     signals: ImageAddress,
     signal_stride: u64,
     signal_name: u64,
 
-    /// `errorAddressString.msg`, the text of the runtime's error for a
-    /// fault at an address, which a program that never faults may lack.
     address_error_text: Option<u64>,
 }
 
-/// The kinds `printpanicval` prints by value.
 #[derive(Debug, Clone, Copy)]
 struct Kinds {
     boolean: u64,
@@ -209,7 +175,6 @@ impl Layout {
     }
 }
 
-/// The exception a thread reports as it enters the hook at `hook`.
 pub fn exception(
     hooks: &Hooks,
     layout: &Result<Layout, Missing>,
@@ -278,8 +243,6 @@ impl Reader<'_> {
             .ok_or_else(|| format!("{what} is unreadable").into())
     }
 
-    /// What `printpanics` prints for the panic at `panic` and the panics
-    /// before it.
     fn panics(&self, panic: u64, depth: usize) -> Result<String, Arc<str>> {
         if depth == MAX_PANICS {
             return Err(format!("more than {MAX_PANICS} panics are chained").into());
@@ -331,11 +294,6 @@ impl Reader<'_> {
         Ok(printed)
     }
 
-    /// A panic as it is raised. The runtime turns an error or a stringer
-    /// into its text only as a panic ends the program, by calling the
-    /// program's own method, so a value of a type that may have methods is
-    /// named only by its type; a predeclared type has none, and the
-    /// runtime's own errors carry their text as their methods return it.
     fn raised(&self, ty: u64, data: u64) -> Result<String, Arc<str>> {
         if ty == 0 {
             return Ok("panic: nil".to_owned());
@@ -361,8 +319,6 @@ impl Reader<'_> {
         })
     }
 
-    /// What `printpanicval` prints for the value an `any` holds, given its
-    /// type and data words.
     fn panic_value(&self, ty: u64, data: u64) -> Result<String, Arc<str>> {
         if ty == 0 {
             return Ok("nil".to_owned());
@@ -371,7 +327,6 @@ impl Reader<'_> {
         let kind = self.byte(ty.wrapping_add(self.layout.kind), "a type's kind")?;
         let name = self.type_name(ty)?;
         let Some(value) = self.scalar(kind, data)? else {
-            // `printanycustomtype` prints any other value by its address.
             return Ok(format!("({name}) {data:#x}"));
         };
 
@@ -384,14 +339,11 @@ impl Reader<'_> {
 
         Ok(match value {
             Scalar::Text(text) => format!("{name}(\"{}\")", indented(&text)),
-            // A complex number prints with its own parentheses.
             Scalar::Number(number) if number.starts_with('(') => format!("{name}{number}"),
             Scalar::Number(number) => format!("{name}({number})"),
         })
     }
 
-    /// A value of a kind the runtime prints by value, read where `data`
-    /// points, or `None` for any other kind.
     fn scalar(&self, kind: u64, data: u64) -> Result<Option<Scalar>, Arc<str>> {
         let kinds = self.layout.kinds;
         let read = |size: usize| {
@@ -462,7 +414,6 @@ impl Reader<'_> {
         })
     }
 
-    /// The text of a Go string with this data pointer and length.
     fn text(&self, data: u64, length: u64) -> Result<String, Arc<str>> {
         if length > MAX_MESSAGE {
             return Err(
@@ -478,8 +429,6 @@ impl Reader<'_> {
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// The name the runtime prints for a type: `toRType(t).string()`, its
-    /// name resolved in the module whose types hold it.
     fn type_name(&self, ty: u64) -> Result<String, Arc<str>> {
         let layout = self.layout;
         let offset = read_unsigned(
@@ -490,7 +439,6 @@ impl Reader<'_> {
         .ok_or("a type's name is unreadable")?;
         let name = layout.tables.base(self.stop, ty)?.wrapping_add(offset);
 
-        // A name is a flags byte, its length as a varint, then its bytes.
         let mut length = 0_u64;
         let mut at = name.wrapping_add(1);
         for shift in (0..35).step_by(7) {
@@ -511,7 +459,6 @@ impl Reader<'_> {
         Ok(text)
     }
 
-    /// The name `fatalsignal` prints for a signal.
     fn signal(&self, signal: u64) -> Result<Arc<str>, Arc<str>> {
         let layout = self.layout;
         let entry = self
@@ -529,7 +476,6 @@ impl Reader<'_> {
     }
 }
 
-/// The runtime's predeclared types that `printpanicval` prints bare.
 const PREDECLARED: [&str; 17] = [
     "bool",
     "int",
@@ -555,16 +501,11 @@ enum Scalar {
     Number(String),
 }
 
-/// `printindented`: each newline is followed by a tab.
 fn indented(text: &str) -> String {
     text.replace('\n', "\n\t")
 }
 
-/// A float as the runtime prints it, as `strconv.FormatFloat(v, 'g', -1,
-/// bits)` does: the shortest decimal that reads back as the same value,
-/// in exponent form when its decimal exponent is below -4 or at least 6.
 fn go_float(value: f64, single: bool) -> String {
-    // Rust's `{:e}` always has an exponent; the value is shown as it is if not.
     go_digits(value, single).unwrap_or_else(|| format!("{value:e}"))
 }
 
@@ -579,7 +520,6 @@ fn go_digits(value: f64, single: bool) -> Option<String> {
 
     let negative = value.is_sign_negative();
 
-    // Rust's `{:e}` prints the same shortest digits.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "a float32's value was widened from one"
@@ -609,7 +549,6 @@ fn go_digits(value: f64, single: bool) -> Option<String> {
         ));
     }
 
-    // The decimal point falls after `exponent + 1` digits.
     let point = exponent + 1;
     let mut text = sign.to_owned();
     if point <= 0 {
@@ -629,8 +568,6 @@ fn go_digits(value: f64, single: bool) -> Option<String> {
     Some(text)
 }
 
-/// A complex number as the runtime prints it: `strconv.FormatComplex`, its
-/// imaginary part always signed.
 fn go_complex(real: f64, imaginary: f64, single: bool) -> String {
     let imaginary = go_float(imaginary, single);
     let sign = if imaginary.starts_with(['+', '-']) {
@@ -654,11 +591,9 @@ mod tests {
     use crate::test_strategies::hostile_address;
     use crate::{ThreadId, VirtualAddress};
 
-    /// Where the tests' values and panics lie.
     const DATA: u64 = 0x1000;
     const PANICS: u64 = 0x1_0000;
 
-    /// The layout of the Go runtime the Go model's tests read.
     fn layout() -> &'static Layout {
         static LAYOUT: OnceLock<Layout> = OnceLock::new();
         LAYOUT.get_or_init(|| {
@@ -723,8 +658,6 @@ mod tests {
         }
     }
 
-    /// Each kind `printpanicval` prints by value, with what it prints for
-    /// these 16 bytes, read as Rust reads its own types.
     fn printed(bytes: [u8; 16]) -> Vec<(u64, Option<String>)> {
         let kinds = layout().kinds;
         let at = |range: std::ops::Range<usize>| &bytes[range];
@@ -773,14 +706,10 @@ mod tests {
                     false,
                 )),
             ),
-            // A string's words are a pointer and a length, which these
-            // bytes rarely make readable.
             (kinds.string, None),
         ]
     }
 
-    /// A complex128 at the top of memory is unreadable, and is no panic
-    /// of microscope's own.
     #[test]
     fn a_value_at_the_top_of_memory_is_unreadable() {
         let memory = Memory::default();
@@ -858,7 +787,6 @@ mod tests {
         }
     }
 
-    /// Each case is what Go 1.27's `print` writes for the value.
     #[test]
     fn floats_print_as_the_runtime_prints_them() {
         for (value, single, printed) in [

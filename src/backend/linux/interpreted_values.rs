@@ -1,8 +1,3 @@
-//! Expressions over an interpreter's objects: the names an interpreted
-//! frame binds, and the places, steps, and values of the objects they
-//! reach. Each is a value of a dynamic type to the evaluator, which the
-//! runtime model reads as the expression runs.
-
 use std::sync::Arc;
 
 use super::evaluation::{Frame, Place, StopMachine, StopObject};
@@ -20,7 +15,6 @@ use crate::runtime_model::{
 };
 use crate::{Error, InspectedValue, Presentation, RuntimeId, VariableState, VirtualAddress};
 
-/// A failure of the runtime model as the evaluator's stop.
 fn stop(failure: InterpretedFailure) -> Stop {
     match failure {
         InterpretedFailure::Refused(kind, message) => {
@@ -33,8 +27,6 @@ fn stop(failure: InterpretedFailure) -> Stop {
 }
 
 impl<P: InspectionOps> Frame<'_, P> {
-    /// What `name` means in an interpreted frame, as its interpreter finds
-    /// it; `None` in any other frame, or for a name it finds nothing by.
     pub(super) fn lookup_interpreted(
         &self,
         name: &str,
@@ -47,7 +39,6 @@ impl<P: InspectionOps> Frame<'_, P> {
             .bound(runtime)
             .map_err(|error| Refusal::new(ErrorKind::Unsupported, error.to_string()))?;
 
-        // Binding reads the frame's names, which its own budget pays for.
         let mut budget = InspectionBudget::new(InspectionLimits::default());
         let found = self.with_stop(&bound, |stop| {
             bound.model.interpreted_name(stop, frame, name, &mut budget)
@@ -71,8 +62,6 @@ impl<P: InspectionOps> Frame<'_, P> {
         }
     }
 
-    /// The runtime of the process whose objects a cast to the dynamic type
-    /// `name` reaches, if one is.
     pub(super) fn interpreter_cast(&self, name: &str) -> Option<RuntimeId> {
         self.controller
             .runtimes(self.inferior())
@@ -86,13 +75,10 @@ impl<P: InspectionOps> Frame<'_, P> {
             .map(|bound| bound.id)
     }
 
-    /// The runtime numbered `runtime`, bound to the frame's process.
     pub(super) fn bound(&self, runtime: RuntimeId) -> crate::Result<BoundRuntime> {
         self.controller.bound_runtime(self.inferior(), runtime)
     }
 
-    /// What `read` gives of the stop, as the code of `runtime`'s module
-    /// sees it.
     pub(super) fn with_stop<T>(
         &self,
         runtime: &BoundRuntime,
@@ -104,8 +90,6 @@ impl<P: InspectionOps> Frame<'_, P> {
 }
 
 impl<P: InspectionOps> StopMachine<'_, '_, P> {
-    /// What `read` gives of the stop, from the runtime numbered `runtime`
-    /// and on this machine's budget.
     fn interpreted<T>(
         &mut self,
         runtime: RuntimeId,
@@ -119,7 +103,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
             .with_stop(&bound, |stop| read(&bound, stop, budget)))
     }
 
-    /// The place of the object a name the frame bound holds.
     pub(super) fn interpreted_name(
         &mut self,
         runtime: RuntimeId,
@@ -138,7 +121,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         Ok(Place::Interpreted { runtime, object })
     }
 
-    /// The place a step from an interpreter's object reaches.
     pub(super) fn interpreted_step(
         &mut self,
         from: &Place,
@@ -161,8 +143,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         })
     }
 
-    /// The address of an interpreter's object, refused when its value is not
-    /// in memory.
     pub(super) fn interpreted_address(
         &self,
         runtime: RuntimeId,
@@ -181,8 +161,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
             })
     }
 
-    /// The place of the `runtime` object that a native pointer with value
-    /// `address` points to.
     pub(super) fn interpreted_cast(
         &mut self,
         runtime: RuntimeId,
@@ -196,7 +174,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         Ok(Place::Interpreted { runtime, object })
     }
 
-    /// The length of an interpreter's object.
     pub(super) fn interpreted_length(
         &mut self,
         runtime: RuntimeId,
@@ -208,7 +185,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         .map_err(stop)
     }
 
-    /// An interpreter's object, loaded for an operation.
     pub(super) fn interpreted_operand(
         &mut self,
         runtime: RuntimeId,
@@ -267,10 +243,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         })
     }
 
-    /// The presentation of the interpreter's object at `object`, which a
-    /// native pointer to a type named one of `names` points to, where an
-    /// interpreter of the process names its objects so and one is there;
-    /// `None` otherwise, as for an address that holds no object.
     pub(super) fn interpreted_object(
         &mut self,
         names: &[Arc<str>],
@@ -291,8 +263,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
             return Ok(None);
         };
 
-        // A pointer to none of the runtime's objects is presented as a plain
-        // pointer.
         let budget = &mut *self.budget;
         let slot = frame.with_stop(&bound, |stop| {
             match bound.model.interpreted_handle(stop, object, budget) {
@@ -311,8 +281,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         })
     }
 
-    /// An interpreter's object, as inspection presents it: through the view
-    /// its class has.
     pub(super) fn interpreted_present(
         &mut self,
         runtime: RuntimeId,
@@ -327,7 +295,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
         Ok(crate::eval::target::Machine::finish(self, type_info, state))
     }
 
-    /// An interpreter's object as the debugger presents it without a view.
     pub(super) fn interpreted_present_stored(
         &mut self,
         runtime: RuntimeId,
@@ -346,7 +313,6 @@ impl<P: InspectionOps> StopMachine<'_, '_, P> {
     }
 }
 
-/// A key an expression wrote, as an interpreter's object is indexed by.
 pub(super) fn interpreted_key(key: &Key) -> Result<InterpretedKey, Stop> {
     let refused = |message: String| Stop::Refused(Refusal::new(ErrorKind::Type, message));
     Ok(match key {
@@ -356,7 +322,6 @@ pub(super) fn interpreted_key(key: &Key) -> Result<InterpretedKey, Stop> {
             ))
         })?),
         Key::Float(value) => {
-            // A value no binary64 holds equals none of the interpreter's.
             let converted = value
                 .convert_exactly(FloatFormat::Binary64)
                 .ok_or_else(|| {
@@ -396,8 +361,6 @@ pub(super) fn interpreted_key(key: &Key) -> Result<InterpretedKey, Stop> {
 mod tests {
     use super::*;
 
-    /// A float key is the interpreter's own float only where it is one
-    /// exactly: a wider value that rounds to one is no key it holds.
     #[test]
     fn a_float_key_is_an_interpreters_float_only_where_it_is_one_exactly() {
         let key = |value: Float| interpreted_key(&Key::Float(value));
@@ -406,7 +369,6 @@ mod tests {
             Ok(InterpretedKey::Float(value)) if value.to_bits() == 1.5_f64.to_bits()
         ));
 
-        // 1.5 + 2**-59 holds in an x87 value's 64 bits, not in binary64's 53.
         let wider = Float::from_value(crate::FloatValue::X87Extended {
             significand: 0xc000_0000_0000_0010,
             sign_exponent: 0x3fff,

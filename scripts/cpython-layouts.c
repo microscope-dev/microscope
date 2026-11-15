@@ -1,7 +1,7 @@
-/*
- * Prints a Generated literal of offsets, sizes, and frame/code/Unicode constants from CPython headers.
- * scripts/cpython-layouts.sh passes the interpreter directory name as argv[1].
- */
+
+
+
+
 #include <Python.h>
 
 #include <stddef.h>
@@ -30,18 +30,18 @@
 #endif
 #include "internal/pycore_frame.h"
 
-/* The standard library's types that only their own C defines, copied as
- * 3.12 to 3.15 define them: collections.deque and defaultdict, from
- * Modules/_collectionsmodule.c; OrderedDict, from Objects/odictobject.c;
- * datetime.timezone, from Modules/_datetimemodule.c; and decimal.Decimal,
- * from Modules/_decimal/_decimal.c, with libmpdec's number as its 64-bit
- * builds define it in mpdecimal.h. conformance.rs checks the first three
- * against the runtime's DWARF; the others are in extension modules. */
+
+
+
+
+
+
+
 #if PY_VERSION_HEX >= 0x030e0000
-/* asyncio.Task, as Modules/_asynciomodule.c defines it in 3.14 and 3.15:
- * FutureObj_HEAD(task), then the task's own fields. conformance.rs checks
- * it against each build's .AsyncioDebug section, which gives the offsets
- * external debuggers read. */
+
+
+
+
 typedef enum {
     MICROSCOPE_STATE_PENDING,
     MICROSCOPE_STATE_CANCELLED,
@@ -153,7 +153,7 @@ static void fail(const char *what, unsigned long long value) {
     exit(1);
 }
 
-/* A layout stores offsets and sizes as u32s. */
+
 static void emit_field(const char *name, size_t value) {
     if (value >= UINT32_MAX) {
         fail(name, value);
@@ -171,8 +171,8 @@ static void emit_constant(const char *name, unsigned long long value) {
 #define FIELD(name, expr) emit_field(#name, (size_t)(expr))
 #define CONSTANT(name, expr) emit_constant(#name, (unsigned long long)(expr))
 
-/* Index of the lowest set bit in the 32-bit `state` word, after checking that
- * exactly one bit is set. The caller sets a single bitfield to 1 first. */
+
+
 static unsigned lone_bit_index(const PyASCIIObject *obj) {
     uint32_t word;
     memcpy(&word, &obj->state, sizeof word);
@@ -496,18 +496,18 @@ int main(int argc, char **argv) {
     CONSTANT(ManagedDictWords, -MANAGED_DICT_OFFSET / (Py_ssize_t)sizeof(PyObject *));
     CONSTANT(ManagedDictTagged, 0);
 #else
-    /* 3.12 keeps a dict or, tagged by its low bit, values, in the word
-     * _PyObject_DictOrValuesPointer gives. */
+
+
     CONSTANT(ManagedDictWords, 3);
     CONSTANT(ManagedDictTagged, 1);
 #endif
     CONSTANT(MemberObjectEx, Py_T_OBJECT_EX);
     CONSTANT(TypeImmutableBit, __builtin_ctzl(Py_TPFLAGS_IMMUTABLETYPE));
     CONSTANT(DequeBlockLength, MICROSCOPE_BLOCKLEN);
-    /* A generator's state is an int8_t, negative before 3.15. 3.12 has no
-     * state for a generator suspended in a yield from, so its are its
-     * suspended state; the model reads what a generator awaits only from
-     * 3.14, whose frames have a stack pointer. */
+
+
+
+
     CONSTANT(GeneratorCreated, (uint8_t)(int8_t)FRAME_CREATED);
     CONSTANT(GeneratorSuspended, (uint8_t)(int8_t)FRAME_SUSPENDED);
 #if PY_VERSION_HEX < 0x030d0000
@@ -523,7 +523,7 @@ int main(int argc, char **argv) {
     CONSTANT(GeneratorYieldFromLocked, (uint8_t)(int8_t)FRAME_SUSPENDED);
 #endif
     CONSTANT(GeneratorExecuting, (uint8_t)(int8_t)FRAME_EXECUTING);
-    /* 3.15 has no completed state: a generator that returns is cleared. */
+
 #if PY_VERSION_HEX >= 0x030f0000
     CONSTANT(GeneratorCompleted, (uint8_t)(int8_t)FRAME_CLEARED);
 #else
@@ -531,16 +531,16 @@ int main(int argc, char **argv) {
 #endif
     CONSTANT(GeneratorCleared, (uint8_t)(int8_t)FRAME_CLEARED);
 #if PY_VERSION_HEX >= 0x030e0000
-    /* The model reads coroutines' states from 3.14, and tells them apart
-     * only while these differ. */
+
+
     _Static_assert(FRAME_CREATED != FRAME_SUSPENDED
                        && FRAME_SUSPENDED != FRAME_SUSPENDED_YIELD_FROM
                        && FRAME_SUSPENDED_YIELD_FROM != FRAME_EXECUTING
                        && FRAME_EXECUTING != FRAME_CLEARED,
                    "a coroutine's states differ");
 #endif
-    /* _PyGen_yf peeks at the top of the stack; from 3.15, GET_ITER pushes
-     * the iterator's index above it, and gen_getyieldfrom peeks at 2. */
+
+
 #if PY_VERSION_HEX >= 0x030f0000
     CONSTANT(GeneratorAwaitedDepth, 2);
 #else

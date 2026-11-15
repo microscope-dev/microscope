@@ -12,11 +12,7 @@ mod complete;
 
 fuzz_target!(|data: &[u8]| {
     match protocol::parse(data) {
-        Ok(protocol::Incoming::Request {
-            seq,
-            command,
-            ..
-        }) => {
+        Ok(protocol::Incoming::Request { seq, command, .. }) => {
             let response = protocol::Outgoing::Response {
                 request_seq: seq,
                 command,
@@ -34,7 +30,6 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(text) = std::str::from_utf8(data) {
         let _ = protocol::address(text);
 
-        // What a completion completes is always the end of the text.
         let (_, partial, start) = complete::completing(text);
         assert_eq!(&text[start..], partial);
     }

@@ -1,7 +1,3 @@
-//! A Node fixture under the debugger: launched with its output in a file,
-//! its input a pipe, and no environment, and stopped wherever it parks at a
-//! checkpoint.
-
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -16,28 +12,16 @@ use tokio::task::JoinHandle;
 use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir, node};
 
-/// Every Node build in the matrix, as the flake names it.
 pub const MATRIX: [&str; 6] = ["26", "24", "22", "nixpkgs-26", "nixpkgs-24", "nixpkgs-22"];
 
-/// The builds the flake provides that the matrix's tests do not run:
-/// Debian's shared libnode runs only inside its own mount namespace, so its
-/// tests (`debian.rs`) run themselves there. Node 26 without its debugger
-/// constants stands for a V8 built without postmortem support, which only
-/// the profiler's tests run.
 pub const SEPARATE: [&str; 2] = ["debian-24", "26-without-postmortem"];
 
-/// One build of each V8 line. Tests of what V8 does itself over CDP, such
-/// as steps, pauses, and assignments, run on these alone: a nixpkgs build
-/// pauses and steps as the official build of its line does.
 pub const LINES: [&str; 3] = ["26", "24", "22"];
 
-/// The builds whose fixtures' cores the build saves, one per V8 line.
 pub const CORES: [&str; 3] = ["26", "24", "22"];
 
-/// How long a fixture may take to reach a checkpoint.
 const CHECKPOINT_DEADLINE: Duration = Duration::from_secs(30);
 
-/// The major Node version of the build `entry`, as 24 for `nixpkgs-24`.
 pub fn major(entry: &str) -> u32 {
     entry
         .rsplit('-')
@@ -46,11 +30,9 @@ pub fn major(entry: &str) -> u32 {
         .unwrap_or_else(|| panic!("no Node version in the build name {entry}"))
 }
 
-/// One fixture, run by one Node build.
 pub struct NodeSession {
     pub scenario: Scenario,
 
-    /// The build's name in the matrix, as `26`.
     pub entry: String,
     pub fixture: String,
     output: PathBuf,
@@ -59,8 +41,6 @@ pub struct NodeSession {
     _scratch: ScratchDir,
 }
 
-/// Waits for the fixture writing `output` to park at the checkpoint
-/// `name`, and returns what it reported there.
 async fn reported(
     output: &Path,
     name: &str,
@@ -69,16 +49,11 @@ async fn reported(
 ) -> Vec<Vec<String>> {
     let began = Instant::now();
     loop {
-        // Asked before the output is read, so that a fixture that ended
-        // after printing the checkpoint is not taken for one that never did.
         let gone = ended();
         let text = std::fs::read_to_string(output).unwrap_or_default();
         let ready = text
             .rsplit_once("TRUTH\tcheckpoint\t")
             .is_some_and(|(_, last)| last.contains("\nREADY\n"));
-        // READY is printed before the printer reaches its read, so a pause
-        // at once may find it still running JavaScript, whose frames are
-        // no checkpoint's.
         if ready
             && let Some(lines) = Report::parse(&text).checkpoint(name)
             && printer_reads_input(&text)
@@ -98,8 +73,6 @@ async fn reported(
     }
 }
 
-/// Whether the printer, the process `TRUTH process` names in `text`, is
-/// blocked in a system call that reads its standard input, where it parks.
 fn printer_reads_input(text: &str) -> bool {
     let Some(pid) = text
         .lines()
@@ -110,13 +83,10 @@ fn printer_reads_input(text: &str) -> bool {
     };
     let call = std::fs::read_to_string(format!("/proc/{pid}/syscall")).unwrap_or_default();
     let mut fields = call.split_whitespace();
-    // read, pread64, readv, and preadv, each on file descriptor 0.
     matches!(fields.next(), Some("0" | "17" | "19" | "295")) && fields.next() == Some("0x0")
 }
 
 impl NodeSession {
-    /// Launches `fixture` with `fixture_arguments` under the Node build
-    /// `entry`, given `node_arguments`, running, with an empty environment.
     pub async fn launch(
         entry: &str,
         fixture: &str,
@@ -129,9 +99,6 @@ impl NodeSession {
         session
     }
 
-    /// Launches `fixture` under the Node build `entry` with `breakpoints`
-    /// added first, and runs it to its first stop: the session, the stop,
-    /// and the events published since the breakpoints were added.
     pub async fn launch_to_stop(
         entry: &str,
         fixture: &str,
@@ -142,28 +109,20 @@ impl NodeSession {
             .await
     }
 
-    /// A session for `fixture` under `entry`, not yet launched, whose
-    /// debugger can be set up before [`Self::run_to_stop`].
     pub fn unlaunched(entry: &str, fixture: &str) -> Pending {
         Self::unlaunched_with(entry, fixture, &[])
     }
 
-    /// A session for `fixture` under `entry` given `fixture_arguments`,
-    /// not yet launched.
     pub fn unlaunched_with(entry: &str, fixture: &str, fixture_arguments: &[&str]) -> Pending {
         let (session, options) = Self::prepare(entry, fixture, &[], fixture_arguments);
         Pending { session, options }
     }
 
-    /// A session for the script `script`, a fixture's name or an absolute
-    /// path, under `entry` given `node_arguments`, not yet launched.
     pub fn unlaunched_with_node(entry: &str, script: &str, node_arguments: &[&str]) -> Pending {
         let (session, options) = Self::prepare(entry, script, node_arguments, &[]);
         Pending { session, options }
     }
 
-    /// The session for `fixture` under `entry`, not yet launched, and the
-    /// options that launch it.
     fn prepare(
         entry: &str,
         fixture: &str,
@@ -181,7 +140,6 @@ impl NodeSession {
         arguments.push(node::fixture(fixture).into_os_string());
         arguments.extend(fixture_arguments.iter().map(Into::into));
 
-        // No NODE_OPTIONS, or any other variable, reaches the fixture.
         let environment = std::env::vars_os().map(|(name, _)| (name, None)).collect();
         let options = LaunchOptions {
             arguments,
@@ -203,13 +161,10 @@ impl NodeSession {
         (session, options)
     }
 
-    /// Everything the fixture wrote so far, standard output and error.
     pub fn output(&self) -> String {
         std::fs::read_to_string(&self.output).unwrap_or_default()
     }
 
-    /// Waits for the fixture to park at the checkpoint `name`, then stops
-    /// it, and returns what it reported there.
     pub async fn stop_at(&mut self, name: &str) -> Vec<Vec<String>> {
         let running = self.running.as_ref();
         let lines = reported(&self.output, name, &self.context(), || {
@@ -221,8 +176,6 @@ impl NodeSession {
         lines
     }
 
-    /// Waits for the running fixture to write `line`, and fails if it
-    /// stops first.
     pub async fn wrote(&self, line: &str) {
         let started = Instant::now();
         let running = self.running.as_ref().expect("the fixture runs");
@@ -242,9 +195,6 @@ impl NodeSession {
         }
     }
 
-    /// Waits until the fixture's main thread is blocked reading its
-    /// standard input. Its output can arrive while its JavaScript has yet
-    /// to begin the read, where an interrupt would pause in V8.
     pub async fn reading_input(&self) {
         let started = Instant::now();
         loop {
@@ -254,7 +204,6 @@ impl NodeSession {
                 .await;
             if let microscope::InferiorState::Running { process_id, .. } = snapshot.inferior {
                 let path = format!("/proc/{}/syscall", process_id.get());
-                // read(2) is system call 0 on x86-64; its first argument is the fd.
                 let call = std::fs::read_to_string(path).unwrap_or_default();
                 if call.split(' ').take(2).eq(["0", "0x0"]) {
                     return;
@@ -269,7 +218,6 @@ impl NodeSession {
         }
     }
 
-    /// Stops the running fixture wherever it is.
     pub async fn pause(&mut self) {
         let running = self.running.take().expect("the fixture runs");
 
@@ -286,7 +234,6 @@ impl NodeSession {
         assert_eq!(ended, StopReason::Pause, "{}", self.context());
     }
 
-    /// Lets the stopped fixture run on, to be paused again.
     pub async fn resume(&mut self) {
         assert!(
             self.running.is_none(),
@@ -296,14 +243,11 @@ impl NodeSession {
         self.running = Some(self.scenario.start_resuming().await);
     }
 
-    /// Writes the line the parked fixture waits for and runs it to its next
-    /// checkpoint.
     pub async fn proceed(&mut self) {
         self.feed();
         self.resume().await;
     }
 
-    /// Writes the line the parked fixture waits for.
     pub fn feed(&mut self) {
         use std::io::Write;
 
@@ -314,7 +258,6 @@ impl NodeSession {
             .expect("write the fixture's input");
     }
 
-    /// The stop the fixture is held at, with every thread it lists.
     pub async fn stopped(&mut self) -> StateSnapshot {
         let snapshot = self.scenario.snapshot().await;
         assert!(
@@ -326,24 +269,20 @@ impl NodeSession {
         snapshot
     }
 
-    /// Everything the fixture has reported so far.
     pub fn report(&self) -> Report {
         Report::read(&self.output)
     }
 
-    /// The build and fixture, for messages.
     pub fn context(&self) -> String {
         format!("node {} {}", self.entry, self.fixture)
     }
 
-    /// Ends the fixture and the debugger.
     pub async fn shutdown(mut self) {
         drop(self.input.take());
         self.scenario.shutdown().await;
     }
 }
 
-/// A session not yet launched.
 pub struct Pending {
     session: NodeSession,
     options: LaunchOptions,
@@ -358,7 +297,6 @@ impl std::ops::Deref for Pending {
 }
 
 impl Pending {
-    /// Adds `breakpoints` and runs the fixture to its first stop.
     pub async fn run_to_stop(
         self,
         breakpoints: Vec<(BreakpointSpec, BreakpointOptions)>,
@@ -382,8 +320,6 @@ impl Pending {
     }
 }
 
-/// The matrix is every build the dev shell provides, so that one the flake
-/// adds is tested, or this says it is not.
 #[test]
 fn the_matrix_is_every_build_the_dev_shell_provides() {
     let root = std::env::var_os("MICROSCOPE_NODE")

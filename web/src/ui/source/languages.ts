@@ -1,5 +1,3 @@
-// Syntax for the languages microscope debugs, chosen by file extension.
-
 import { cpp } from "@codemirror/lang-cpp";
 import { go } from "@codemirror/lang-go";
 import {
@@ -34,7 +32,6 @@ const ZIG_KEYWORDS = new Set(
 const ZIG_TYPES =
   /^(?:[iu]\d+|f16|f32|f64|f80|f128|usize|isize|bool|void|noreturn|type|anyerror|comptime_int|comptime_float|c_\w+)$/u;
 
-/** A small Zig tokenizer: keywords, types, strings, numbers, comments. */
 const zig = StreamLanguage.define<{ inString: false }>({
   name: "zig",
   startState: () => ({ inString: false }),
@@ -95,35 +92,31 @@ const zig = StreamLanguage.define<{ inString: false }>({
   },
 });
 
-/** How a language writes its comments and strings, for {@link simple}. */
 interface Syntax {
   name: string;
   keywords: string;
-  /** Whether keywords are keywords in any case. */
+
   ignoreCase?: boolean;
   lineComment: string;
-  /** What opens and closes each block comment, and whether it nests. */
+
   blockComments?: [string, string, boolean][];
-  /** Whether a quote within a string is written twice, not escaped. */
+
   doubledQuotes?: boolean;
-  /** Whether single quotes also quote strings, as Fortran's do. */
+
   singleQuoted?: boolean;
-  /** Raw strings that may span lines, by their opening and closing. */
+
   rawStrings?: [string, string][];
-  /** Whether a quote after a name begins an attribute, as Ada's does. */
+
   attributes?: boolean;
 }
 
 interface SimpleState {
-  /** The block comment open, and how deeply it nests. */
   comment: [string, string, boolean] | null;
   depth: number;
-  /** What closes the raw string open, if one is. */
+
   closing: string | null;
 }
 
-/** A small tokenizer for a language that names its keywords, comments,
- * and strings. */
 function simple(syntax: Syntax) {
   const keywords = new Set(syntax.keywords.split(" "));
   const blocks = syntax.blockComments ?? [];
@@ -138,8 +131,6 @@ function simple(syntax: Syntax) {
     `${syntax.name} has an empty raw string delimiter`,
   );
 
-  /** Reads on through the block comment open until it closes or the line
-   * ends. */
   const inComment = (stream: StringStream, state: SimpleState) => {
     assert(state.comment !== null, "reading a block comment with none open");
     assert(state.depth >= 1, "reading a block comment at depth below 1");
@@ -162,8 +153,6 @@ function simple(syntax: Syntax) {
     return "comment";
   };
 
-  /** Reads on through the raw string open until it closes or the line
-   * ends. A string closed by quotes ends at the last of them. */
   const inRaw = (stream: StringStream, state: SimpleState) => {
     const closing = state.closing;
     assert(closing !== null, "reading a raw string with no closing");
@@ -226,7 +215,6 @@ function simple(syntax: Syntax) {
       }
       if (quote === "'") {
         if (syntax.attributes) {
-          // A quote after a name begins an attribute, as in `Items'Last`.
           // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
           if (/[\w)]/u.test(before) || !stream.match(/^'.'/u)) {
             stream.next();
@@ -341,20 +329,13 @@ const ada = simple({
   attributes: true,
 });
 
-/** Python's string prefixes, in any case, before the quote that opens a string. */
 const PYTHON_STRING_START = /^(?:rb|br|fr|rf|tr|rt|[rubft])?(?=['"])/iu;
 
-/** Hexadecimal, octal, binary, or decimal with an exponent and an imaginary suffix. */
 const PYTHON_NUMBER =
   /^0[xX][\da-fA-F_]+|^0[oO][0-7_]+|^0[bB][01_]+|^\d[\d_]*(\.\d[\d_]*)?(?:[eE][-+]?\d[\d_]*)?[jJ]?/u;
 
-/** What each brace or bracket open in an f-string's field holds: the field's
- * expression, its format spec after a `:`, or a bracket in the expression. */
 type PythonOpen = "field" | "spec" | "bracket";
 
-/** The state of a string: the delimiter that closes it, if it runs on; for
- * an f-string or t-string, whether it is raw, what its fields hold open, and
- * the delimiter of a string within a field, if one runs on. */
 interface PythonState {
   closing: string | null;
   formatted: boolean;
@@ -363,9 +344,6 @@ interface PythonState {
   inner: string | null;
 }
 
-/** Reads on through a string closed by `closing`, to that delimiter or the
- * line's end. A backslash escapes the next character, even a line's end,
- * which continues the string onto the next line. */
 function readPythonString(stream: StringStream, state: PythonState, closing: string) {
   assert(closing.length === 1 || closing.length === 3, "python string closing of a bad length");
   const triple = closing.length === 3;
@@ -384,10 +362,6 @@ function readPythonString(stream: StringStream, state: PythonState, closing: str
   state.closing = triple || continued ? closing : null;
 }
 
-/** Reads on through an f-string or t-string closed by `state.closing`. From
- * 3.12 a field, between braces, holds an expression, which may hold strings
- * in the string's own quotes and span lines, then after a `:` its format
- * spec, which is text but for fields of its own; `{{` is a brace. */
 function readFormattedString(stream: StringStream, state: PythonState) {
   assert(state.formatted, "reading a plain string as formatted");
   const closing = state.closing;
@@ -431,7 +405,7 @@ function readFormattedString(stream: StringStream, state: PythonState) {
       }
       continue;
     }
-    // An expression, whose strings end none of this one.
+
     const before = stream.string.charAt(stream.pos - 1);
     // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
     if (!/\w/u.test(before) && stream.match(PYTHON_STRING_START)) {
@@ -452,15 +426,12 @@ function readFormattedString(stream: StringStream, state: PythonState) {
       state.open[state.open.length - 1] = "spec";
     }
   }
-  // A field's expression runs on to the next line; the text around it ends
-  // with its line unless it is triple-quoted or a backslash continues it.
+
   if (state.open.length === 0 && state.inner === null && !triple && !continued) {
     state.closing = null;
   }
 }
 
-/** A small Python tokenizer: keywords, strings with their prefixes and
- * triple quotes, numbers, and `#` comments. */
 const python = StreamLanguage.define<PythonState>({
   name: "python",
   startState: () => ({ closing: null, formatted: false, raw: false, open: [], inner: null }),
@@ -569,8 +540,7 @@ export function language(path: string): Extension {
     case "py":
     case "pyi":
       return python;
-    // The bare languages, not `javascript()`, whose completions and tag
-    // closing a read-only view has no use for.
+
     case "js":
     case "mjs":
     case "cjs":
@@ -588,7 +558,6 @@ export function language(path: string): Extension {
   }
 }
 
-/** Token colors, as the page's tokens define them in both themes. */
 export const tokenStyle = HighlightStyle.define([
   {
     tag: [tags.keyword, tags.controlKeyword, tags.modifier, tags.operatorKeyword],
@@ -610,14 +579,8 @@ export const tokenStyle = HighlightStyle.define([
 
 export const highlighting = syntaxHighlighting(tokenStyle);
 
-/** One line's text in runs, each with the token class that colors it, or
- * "" for none; an empty line has no runs. */
 export type Painted = [text: string, token: string][];
 
-/** `lines` of a file at `path`, colored as the source view colors them:
- * one entry per line, the whole line plain for a language it does not
- * know. The lines are parsed together, so a comment or string that spans
- * them is read as one. */
 export function paintLines(path: string, lines: readonly string[]): Painted[] {
   const found = language(path);
   const grammar =
@@ -628,7 +591,7 @@ export function paintLines(path: string, lines: readonly string[]): Painted[] {
 
   const text = lines.join("\n");
   const painted: Painted[] = lines.map(() => []);
-  // The line `row`, which begins at `start`, is painted up to `at`.
+
   let row = 0;
   let start = 0;
   let at = 0;

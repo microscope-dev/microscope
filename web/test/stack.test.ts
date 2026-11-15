@@ -1,6 +1,3 @@
-// A call stack folds its runtime's machinery into a row per run, and shows
-// a run that holds the frame chosen.
-
 import { describe, expect, it } from "vitest";
 
 import type { Backtrace, Frame } from "../src/protocol";
@@ -26,8 +23,6 @@ const trace: Backtrace = {
   incomplete: null,
 };
 
-/** Each row as a word: a frame's index, or a run's first frame and
- * whether it is open. */
 const shown = (rows: StackRow[]) =>
   rows.map((row) =>
     row.kind === "frame"

@@ -1,9 +1,3 @@
-// The page served on its own, as `just web` serves it, and the services
-// backend behind its `/api/`: a stand-in, or the real server from the
-// services repository with a fake Postmark that keeps every email it is
-// asked to send, a fake Cloud KMS that encrypts its TOTP secrets, and
-// services' own mock of Google, GitHub, and a SAML identity provider.
-
 import { type ChildProcess, spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -25,12 +19,10 @@ import { root } from "./server";
 export type Handler = (request: IncomingMessage, response: ServerResponse) => void;
 
 export interface Served {
-  /** The page's origin, such as `http://127.0.0.1:41234`. */
   origin: string;
   server: Server;
 }
 
-/** Listens on 127.0.0.1, named in the origin as `host`. */
 async function listen(handler: Handler, host = "127.0.0.1"): Promise<Served> {
   const server = createServer(handler);
   await new Promise<void>((done) => {
@@ -40,8 +32,6 @@ async function listen(handler: Handler, host = "127.0.0.1"): Promise<Served> {
   return { origin: `http://${host}:${port}`, server };
 }
 
-/** Serves the built page, and hands every request under `/api/` to `api`.
- * The page's origin names `host`. */
 export function standalonePage(api: Handler, host?: string): Promise<Served> {
   const dir = path.join(root, "build", "web");
   return listen(async (request, response) => {
@@ -50,7 +40,7 @@ export function standalonePage(api: Handler, host?: string): Promise<Served> {
       api(request, response);
       return;
     }
-    // Assets by name, and the page for every other address.
+
     const file = url.pathname.startsWith("/assets/") ? url.pathname : "/index.html";
     try {
       const body = await readFile(path.join(dir, path.normalize(file)));
@@ -69,38 +59,33 @@ export function standalonePage(api: Handler, host?: string): Promise<Served> {
   }, host);
 }
 
-/** Where the services binary is, built from its own repository. */
 export const servicesBinary =
   process.env.MICROSCOPE_SERVICES_BINARY ??
   path.join(root, "..", "services", "target", "debug", "microscope-services");
 
 export const haveServices = existsSync(servicesBinary);
 
-/** Services' mock identity provider, built beside it. */
 const mockIdpBinary = path.join(path.dirname(servicesBinary), "mock-idp");
 
-/** An email services asked Postmark to send. */
 export interface Mail {
   to: string;
   subject: string;
-  /** The text body's paragraphs. */
+
   paragraphs: string[];
-  /** The link in it, which leads to the page. */
+
   link: string;
-  /** The login code in it, if it has one. */
+
   code: string | null;
 }
 
 export interface Services extends Served {
-  /** The next email to `to` that this test has not taken yet. */
   mail(to: string): Promise<Mail>;
-  /** The mock identity provider's base URL, such as `http://127.0.0.1:41235`. */
+
   idp: string;
   log: string[];
   stop(): Promise<void>;
 }
 
-/** Postmark's single-message API, keeping each message and sending none. */
 function fakePostmark(received: (mail: Mail) => void): Promise<Served> {
   let sent = 0;
   return listen((request, response) => {
@@ -130,13 +115,8 @@ function json(response: ServerResponse, status: number, body: unknown) {
   response.end(JSON.stringify(body));
 }
 
-/** The key services is told to encrypt TOTP secrets with. */
 const KMS_KEY = "projects/e2e/locations/local/keyRings/services/cryptoKeys/totp";
 
-/** Cloud KMS's encrypt and decrypt, and the metadata server's access token,
- * which services' real KMS client asks for. Ciphertexts are AES-256-GCM
- * under a key of its own, bound to the authenticated data as KMS binds them,
- * so a secret only opens for the account it was sealed for. */
 function fakeKms(): Promise<Served> {
   const key = randomBytes(32);
   return listen((request, response) => {
@@ -192,8 +172,6 @@ function fakeKms(): Promise<Served> {
   });
 }
 
-/** Passes a request on to services as `just web`'s proxy does, with its
- * cookies renamed for plain HTTP (dev-cookies.ts). */
 function proxy(target: () => string): Handler {
   return (request, response) => {
     const headers = { ...request.headers };
@@ -220,8 +198,6 @@ function proxy(target: () => string): Handler {
   };
 }
 
-/** Runs services' mock identity provider until `stop`, and the flags that
- * point services at it. */
 async function mockIdp(log: string[]): Promise<{ base: string; stop: () => Promise<void> }> {
   const child = spawn(mockIdpBinary, ["--listen", "127.0.0.1:0"], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -250,12 +226,6 @@ async function mockIdp(log: string[]): Promise<{ base: string; stop: () => Promi
   return { base, stop };
 }
 
-/** Starts the page, a fake Postmark, and services with email turned on,
- * whose links lead to the page. With `sso`, services signs in through the
- * mock identity provider too. With `localhost`, the page is served from
- * localhost rather than 127.0.0.1, which passkeys need: they belong to a
- * domain, never an IP address. Services needs its database: `just up` in
- * the services repository starts one. */
 export async function startServices(
   options: { sso?: boolean; localhost?: boolean } = {},
 ): Promise<Services> {
@@ -398,7 +368,7 @@ function stopChild(child: ChildProcess): Promise<void> {
   }
   return new Promise((resolve) => {
     child.on("exit", () => resolve());
-    // Its graceful shutdown takes over a second, and nothing here needs it.
+
     child.kill("SIGKILL");
   });
 }

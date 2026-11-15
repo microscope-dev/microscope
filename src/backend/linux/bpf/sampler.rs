@@ -1,15 +1,3 @@
-//! The profiler's BPF engine (`sampler.bpf.c`): a program on the sampler's
-//! own perf events that writes each sampled thread's Python frames to the
-//! CPU's ring before the kernel writes the sample. This module loads it,
-//! points each CPU's output event at that CPU's ring, keeps its maps (each
-//! Python process's layout and each of its threads' states), and decodes
-//! what it writes. Pairing the frames with their samples, and naming them,
-//! is the recorder's.
-//!
-//! Records and map values cross the boundary as the structures of
-//! `records.h`, which this module mirrors field for field; a test compares
-//! both layouts through the object's BTF.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd as _;
 use std::os::unix::fs::MetadataExt as _;
@@ -23,29 +11,21 @@ use super::super::perf;
 use crate::image::python::{Constant, Field, PythonLayout};
 use crate::image::v8::{Constant as V8Constant, Field as V8Field, V8Layout};
 
-/// The program, as `build.rs` compiled it.
 #[cfg(not(feature = "bpf-walk-timing"))]
 static OBJECT: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/sampler.bpf.o"));
 
-/// The program that also times each walk of JavaScript frames, for
-/// measuring the walk alone.
 #[cfg(feature = "bpf-walk-timing")]
 static OBJECT: &[u8] =
     aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/sampler-timed.bpf.o"));
 
-/// `RECORD_PY_STACK`.
 const RECORD_PY_STACK: u32 = 9;
 
-/// `RECORD_V8_STACK`.
 const RECORD_V8_STACK: u32 = 10;
 
-/// `PY_ABSENT`: a field the version does not have.
 const ABSENT: u32 = u32::MAX;
 
-/// `PY_NO_OFFSET`: an instruction offset that could not be read.
 pub const NO_OFFSET: i32 = i32::MIN;
 
-/// `struct record`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct RawRecord {
@@ -55,7 +35,6 @@ struct RawRecord {
     tgid: u32,
 }
 
-/// `struct kernel_sample_record`, after an interpreter record's bytes.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct RawKernelSample {
@@ -64,7 +43,6 @@ struct RawKernelSample {
     reserved: u32,
 }
 
-/// The syscall captured at this sample, never inferred from the live task.
 pub fn kernel_syscall(bytes: &[u8]) -> Option<crate::syscalls::SyscallId> {
     use crate::syscalls::{Abi, SyscallId};
     let (header, _) = RawRecord::ref_from_prefix(bytes).ok()?;
@@ -92,7 +70,6 @@ pub fn kernel_syscall(bytes: &[u8]) -> Option<crate::syscalls::SyscallId> {
     (record.reserved == 0).then_some(SyscallId::new(abi, number))
 }
 
-/// `struct py_layout`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RawPyLayout {
@@ -134,12 +111,6 @@ pub struct RawPyLayout {
 }
 
 impl RawPyLayout {
-    /// The layout of process `pid`, whose `_PyRuntime` is at `runtime`:
-    /// its offsets, and the pid namespace that numbers its threads.
-    ///
-    /// # Errors
-    ///
-    /// When the process's pid namespace cannot be read, as when it exited.
     pub fn of_process(self, pid: u32, runtime: u64) -> Result<Self, String> {
         use std::os::unix::fs::MetadataExt;
         let namespace = std::fs::metadata(format!("/proc/{pid}/ns/pid"))
@@ -153,7 +124,6 @@ impl RawPyLayout {
     }
 }
 
-/// `struct py_thread`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct RawPyThread {
@@ -161,30 +131,22 @@ struct RawPyThread {
     native: u64,
 }
 
-/// `struct py_frame`: one interpreter frame as the walker read it.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RawPyFrame {
-    /// The code object it runs, which `qualname`, `linetable`, and
-    /// `first_line` prove.
     pub code: u64,
     pub qualname: u64,
     pub linetable: u64,
 
-    /// Its function object as the frame holds it, or 0.
     pub function: u64,
 
-    /// Its instruction's byte offset from its bytecode's start, or
-    /// [`NO_OFFSET`].
     pub offset: i32,
     pub first_line: i32,
 
-    /// Its owner, as this version of CPython numbers owners.
     pub owner: u32,
     pad: u32,
 }
 
-/// `struct py_stack_record`, which its frames follow.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct RawPyStackRecord {
@@ -197,7 +159,6 @@ struct RawPyStackRecord {
     pad: u16,
 }
 
-/// `struct v8_layout`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RawV8Layout {
@@ -225,17 +186,11 @@ pub struct RawV8Layout {
     isolate_slot: u64,
 }
 
-/// `enum v8_isolate_place`.
 const V8_ISOLATE_UNPLACED: u32 = 0;
 const V8_ISOLATE_OFFSET: u32 = 1;
 const V8_ISOLATE_SLOT: u32 = 2;
 
 impl RawV8Layout {
-    /// Tells the walker where each thread of a process whose V8 module
-    /// `bias` loaded keeps its current isolate, which the module's image
-    /// places at `place`; or why it cannot read it there, as from a
-    /// library's dynamic block of thread-local storage, which only the
-    /// loader's tables find.
     pub const fn place_isolate(
         &mut self,
         place: crate::ThreadLocal,
@@ -261,7 +216,6 @@ impl RawV8Layout {
     }
 }
 
-/// `struct v8_frame`: one JavaScript frame as the walker read it.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct RawV8Frame {
@@ -275,12 +229,9 @@ pub struct RawV8Frame {
     pub bytecode_offset: u64,
     pub literal_id: i32,
 
-    /// 1 where `pc` is the frame's instruction, 0 where it is the return
-    /// address of a call.
     pub at_instruction: u32,
 }
 
-/// `struct v8_stack_record`, which its frames follow.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct RawV8StackRecord {
@@ -292,51 +243,38 @@ struct RawV8StackRecord {
     isolate: u64,
 }
 
-/// What a record says of its thread's current isolate: `enum v8_isolate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum V8Isolate {
-    /// Not read, as its process's layout does not place it.
     NotRead,
 
-    /// The isolate's address, 0 where the thread has none.
     Read(u64),
 
-    /// Placed, but its thread pointer or the word there was unreadable.
     Unreadable,
 }
 
-/// Why a thread's JavaScript frames end: `enum v8_end`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum V8End {
-    /// At the end of the frame-pointer chain.
     Complete,
 
-    /// At the most frames a record holds, or steps a walk takes.
     Bounded,
 
-    /// At a frame that could not be read, or a chain that does not climb.
     Unreadable,
 
-    /// Before the walk: the process's layout was not yet known.
     NoLayout,
 }
 
-/// A thread's JavaScript frames, as the walker wrote them.
 #[derive(Debug, Clone, Copy)]
 pub struct V8Stack<'a> {
     pub end: V8End,
     pub isolate: V8Isolate,
 
-    /// Innermost first.
     pub frames: &'a [RawV8Frame],
 }
 
-/// Whether `bytes` is a record of JavaScript frames, as opposed to Python's.
 pub fn is_v8(bytes: &[u8]) -> bool {
     RawRecord::ref_from_prefix(bytes).is_ok_and(|(record, _)| record.kind == RECORD_V8_STACK)
 }
 
-/// The record of JavaScript frames `bytes` holds.
 pub fn decode_v8(bytes: &[u8]) -> Result<V8Stack<'_>, Malformed> {
     let (record, rest) = RawV8StackRecord::ref_from_prefix(bytes).map_err(|_| Malformed)?;
     let size = usize::try_from(record.header.size).map_err(|_| Malformed)?;
@@ -370,8 +308,6 @@ pub fn decode_v8(bytes: &[u8]) -> Result<V8Stack<'_>, Malformed> {
     })
 }
 
-/// The layout the walker reads a V8 of `layout` by, or the field or
-/// constant it needs that the layout lacks.
 pub fn v8_layout(layout: &V8Layout) -> Result<RawV8Layout, &'static str> {
     let constant = |constant: V8Constant| {
         layout
@@ -417,38 +353,28 @@ pub fn v8_layout(layout: &V8Layout) -> Result<RawV8Layout, &'static str> {
     })
 }
 
-/// Map values cross as bytes, which aya can hold without unsafe code.
 type Bytes<const N: usize> = [u8; N];
 const LAYOUT_BYTES: usize = size_of::<RawPyLayout>();
 const V8_LAYOUT_BYTES: usize = size_of::<RawV8Layout>();
 const THREAD_BYTES: usize = size_of::<RawPyThread>();
 
-/// Why a thread's frames end: `enum py_end`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StackEnd {
-    /// At the end of its chain.
     Complete,
 
-    /// At the most frames a record holds.
     Bounded,
 
-    /// At a frame or field that could not be read.
     Unreadable,
 
-    /// Before the walk: the process's layout was not yet known.
     NoLayout,
 
-    /// Before the walk: no state was known for the thread.
     NoThread,
 
-    /// Before the walk: the state known for the thread was another's.
     Stale,
 
-    /// From 3.15, at no previous frame, before its base frame.
     BeforeBase,
 }
 
-/// What the thread did with its interpreter's GIL: `enum py_gil`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gil {
     Unknown,
@@ -456,28 +382,22 @@ pub enum Gil {
     Waiting,
     Released,
 
-    /// A free-threaded build's GIL is off.
     Off,
 }
 
-/// A thread's Python frames, as the program wrote them for one sample.
 #[derive(Debug, Clone, Copy)]
 pub struct PyStack<'a> {
-    /// From 3.14, the asyncio task the thread ran, if any.
     pub running_task: Option<u64>,
     pub end: StackEnd,
     pub gil: Gil,
 
-    /// Innermost first.
     pub frames: &'a [RawPyFrame],
 }
 
-/// A record whose bytes contradict its header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the BPF engine wrote a malformed record of Python frames")]
 pub struct Malformed;
 
-/// The record of Python frames `bytes` holds.
 pub fn decode(bytes: &[u8]) -> Result<PyStack<'_>, Malformed> {
     let (record, rest) = RawPyStackRecord::ref_from_prefix(bytes).map_err(|_| Malformed)?;
     let size = usize::try_from(record.header.size).map_err(|_| Malformed)?;
@@ -521,15 +441,6 @@ pub fn decode(bytes: &[u8]) -> Result<PyStack<'_>, Malformed> {
     })
 }
 
-/// The layout the walker reads process `pid`'s CPython by, whose `layout`
-/// its image gives and whose runtime state is at `runtime`, or why it
-/// cannot.
-///
-/// # Errors
-///
-/// When the image gives no layout, the version lacks a field the walker
-/// needs, the runtime lies outside the process, or the process's pid
-/// namespace cannot be read.
 pub fn process_layout(
     layout: Result<&PythonLayout, &str>,
     runtime: Option<crate::VirtualAddress>,
@@ -541,8 +452,6 @@ pub fn process_layout(
     layout.of_process(pid, runtime.get())
 }
 
-/// The layout the walker reads a CPython of `layout` by, or the field it
-/// needs that the version lacks.
 pub fn layout(layout: &PythonLayout) -> Result<RawPyLayout, &'static str> {
     let optional = |field: Field| {
         layout
@@ -556,8 +465,6 @@ pub fn layout(layout: &PythonLayout) -> Result<RawPyLayout, &'static str> {
         offset => Ok(offset),
     };
 
-    // The GIL's `locked` and `last_holder` lie where the interpreter's own
-    // copy of the GIL holds them, less where that copy begins.
     let within_gil = |field: Field| {
         let (Some(offset), Some(gil)) = (layout.field(field), layout.field(Field::InterpreterGil))
         else {
@@ -609,7 +516,6 @@ pub fn layout(layout: &PythonLayout) -> Result<RawPyLayout, &'static str> {
     })
 }
 
-/// Why the engine cannot run, or failed.
 #[derive(Debug, thiserror::Error)]
 pub enum SamplerError {
     #[error("{0}")]
@@ -629,7 +535,6 @@ fn load_error(error: impl std::fmt::Display) -> SamplerError {
     SamplerError::Load(error.to_string())
 }
 
-/// What to do if the engine lacks a privilege.
 const REMEDY: &str =
     "  The BPF engine reads each thread's Python frames in the kernel as each sample is
   taken, which needs both. To continue, one of:
@@ -638,9 +543,6 @@ const REMEDY: &str =
       /run/wrappers/bin/microscope-bpf (docs/profiling.md#give-microscope-the-bpf-privileges)
     - record with --python snapshot or --python live, which need no privilege";
 
-/// The kernel's initial PID namespace inode (linux/nsfs.h). BPF's
-/// `bpf_get_current_pid_tgid` uses it, while perf uses the event creator's
-/// namespace. An nsfs descriptor proves which ID space the recorder uses.
 const INITIAL_PID_NAMESPACE: u64 = 0xefff_fffc;
 
 fn initial_pid_namespace(namespace: &std::fs::File) -> std::io::Result<bool> {
@@ -649,12 +551,6 @@ fn initial_pid_namespace(namespace: &std::fs::File) -> std::io::Result<bool> {
         && namespace.metadata()?.ino() == INITIAL_PID_NAMESPACE)
 }
 
-/// The sampler's kernel keys must agree with perf's sample IDs. Targets
-/// may occupy nested namespaces; the recorder currently must use the initial one.
-///
-/// # Errors
-///
-/// Why the recorder's namespace cannot be proved to match the kernel keys.
 pub fn check_namespace() -> Result<(), SamplerError> {
     let observed = std::fs::File::open("/proc/self/ns/pid")
         .and_then(|namespace| initial_pid_namespace(&namespace));
@@ -665,17 +561,9 @@ pub fn check_namespace() -> Result<(), SamplerError> {
     }
 }
 
-/// A program's `LAYOUTS`: the layout the walker reads each Python
-/// process by, by its process id as the kernel's initial pid namespace
-/// numbers it.
 pub struct PythonLayouts(HashMap<MapData, u32, Bytes<LAYOUT_BYTES>>);
 
 impl PythonLayouts {
-    /// The map `LAYOUTS` of a program, which it gives up.
-    ///
-    /// # Errors
-    ///
-    /// When the program has no such map, or it is another kind.
     pub fn take(ebpf: &mut Ebpf) -> Result<Self, SamplerError> {
         let map = ebpf
             .take_map("LAYOUTS")
@@ -683,35 +571,20 @@ impl PythonLayouts {
         Ok(Self(HashMap::try_from(map).map_err(load_error)?))
     }
 
-    /// Sets the layout the walker reads process `tgid`'s frames by.
-    ///
-    /// # Errors
-    ///
-    /// When the kernel refuses the update, as when the map is full.
     pub fn set(&mut self, tgid: u32, layout: &RawPyLayout) -> Result<(), SamplerError> {
         let mut value = [0; LAYOUT_BYTES];
         value.copy_from_slice(layout.as_bytes());
         self.0.insert(tgid, value, 0).map_err(load_error)
     }
 
-    /// Forgets process `tgid`'s layout, as after it exited.
     pub fn forget(&mut self, tgid: u32) {
-        // A process that is gone may be gone from the map already.
         let _ = self.0.remove(&tgid);
     }
 }
 
-/// A program's `V8_LAYOUTS`: the layout the walker reads each Node
-/// process by, by its process id as the kernel's initial pid namespace
-/// numbers it.
 pub struct V8Layouts(HashMap<MapData, u32, Bytes<V8_LAYOUT_BYTES>>);
 
 impl V8Layouts {
-    /// The map `V8_LAYOUTS` of a program, which it gives up.
-    ///
-    /// # Errors
-    ///
-    /// When the program has no such map, or it is another kind.
     pub fn take(ebpf: &mut Ebpf) -> Result<Self, SamplerError> {
         let map = ebpf
             .take_map("V8_LAYOUTS")
@@ -719,43 +592,29 @@ impl V8Layouts {
         Ok(Self(HashMap::try_from(map).map_err(load_error)?))
     }
 
-    /// Sets the layout the walker reads process `tgid`'s frames by.
-    ///
-    /// # Errors
-    ///
-    /// When the kernel refuses the update, as when the map is full.
     pub fn set(&mut self, tgid: u32, layout: &RawV8Layout) -> Result<(), SamplerError> {
         let mut value = [0; V8_LAYOUT_BYTES];
         value.copy_from_slice(layout.as_bytes());
         self.0.insert(tgid, value, 0).map_err(load_error)
     }
 
-    /// Forgets process `tgid`'s layout, as after it exited.
     pub fn forget(&mut self, tgid: u32) {
-        // A process that is gone may be gone from the map already.
         let _ = self.0.remove(&tgid);
     }
 }
 
-/// The loaded program, attached to a recording's events, and its maps.
 pub struct Sampler {
-    /// Holds the program, which the events run, and the maps.
     _ebpf: Ebpf,
     layouts: PythonLayouts,
     v8_layouts: V8Layouts,
     threads: HashMap<MapData, u32, Bytes<THREAD_BYTES>>,
     lost: PerCpuArray<MapData, u64>,
 
-    /// Each CPU's walks of JavaScript frames, their nanoseconds, their
-    /// frames, the most nanoseconds one took, and the walks that filled
-    /// their record and their nanoseconds: `struct v8_walk_times`.
     #[cfg(feature = "bpf-walk-timing")]
     walk_times: PerCpuArray<MapData, [u64; 6]>,
 
-    /// Each CPU's output event, which `OUTPUT` holds as well.
     _outputs: Vec<perf::Output>,
 
-    /// The threads put in `threads`, by their process.
     known: BTreeMap<u32, BTreeSet<u32>>,
 }
 
@@ -769,14 +628,6 @@ impl std::fmt::Debug for Sampler {
 }
 
 impl Sampler {
-    /// Loads the program and attaches it to `events`, which must not have
-    /// begun to sample, with an output event on each CPU; and the output
-    /// events' identifiers, which the records they write begin with.
-    ///
-    /// # Errors
-    ///
-    /// When this process lacks the privileges, or the kernel refuses the
-    /// program or the events.
     pub fn load(events: &perf::Events, kernel: bool) -> Result<(Self, Vec<u64>), SamplerError> {
         check_namespace()?;
         let probe = super::super::syscalls::bpf::Probe::read();
@@ -855,33 +706,14 @@ impl Sampler {
         ))
     }
 
-    /// Sets the layout the walker reads process `tgid`'s frames by.
-    ///
-    /// # Errors
-    ///
-    /// When the kernel refuses the update, as when the map is full.
     pub fn set_layout(&mut self, tgid: u32, layout: &RawPyLayout) -> Result<(), SamplerError> {
         self.layouts.set(tgid, layout)
     }
 
-    /// Sets the layout the walker reads process `tgid`'s JavaScript frames
-    /// by.
-    ///
-    /// # Errors
-    ///
-    /// When the kernel refuses the update, as when the map is full.
     pub fn set_v8_layout(&mut self, tgid: u32, layout: &RawV8Layout) -> Result<(), SamplerError> {
         self.v8_layouts.set(tgid, layout)
     }
 
-    /// Sets the states of process `tgid`'s threads to `threads`, each
-    /// thread's id as this process sees it, its state's address, and the
-    /// id its state names it by, forgetting those of its threads not among
-    /// them.
-    ///
-    /// # Errors
-    ///
-    /// When the kernel refuses an update, as when the map is full.
     pub fn set_threads(
         &mut self,
         tgid: u32,
@@ -890,7 +722,6 @@ impl Sampler {
         let now: BTreeSet<u32> = threads.iter().map(|&(tid, _, _)| tid).collect();
         let before = self.known.insert(tgid, now.clone()).unwrap_or_default();
         for gone in before.difference(&now) {
-            // A thread that is gone may be gone from the map already.
             let _ = self.threads.remove(gone);
         }
 
@@ -903,7 +734,6 @@ impl Sampler {
         Ok(())
     }
 
-    /// Forgets process `tgid`, which exited.
     pub fn forget(&mut self, tgid: u32) {
         for tid in self.known.remove(&tgid).unwrap_or_default() {
             let _ = self.threads.remove(&tid);
@@ -913,13 +743,6 @@ impl Sampler {
         self.v8_layouts.forget(tgid);
     }
 
-    /// What every CPU's walks of JavaScript frames took: the walks, their
-    /// nanoseconds, their frames, the most nanoseconds one took, and the
-    /// walks that filled their record and their nanoseconds.
-    ///
-    /// # Errors
-    ///
-    /// When the kernel refuses the read.
     #[cfg(feature = "bpf-walk-timing")]
     pub fn walk_times(&self) -> Result<[u64; 6], SamplerError> {
         let cpus = self.walk_times.get(&0, 0).map_err(load_error)?;
@@ -937,7 +760,6 @@ impl Sampler {
             }))
     }
 
-    /// How many records found no room in their rings.
     pub fn lost(&self) -> Result<u64, SamplerError> {
         self.lost
             .get(&0, 0)
@@ -1151,8 +973,6 @@ mod tests {
         header.as_bytes().to_vec()
     }
 
-    /// A record of JavaScript frames says whether it read its thread's
-    /// isolate, and the isolate it read; any other state is malformed.
     #[test]
     fn a_v8_record_says_what_it_read_of_its_threads_isolate() {
         let isolate =
@@ -1164,9 +984,6 @@ mod tests {
         assert_eq!(isolate(3, 0), Err(Malformed));
     }
 
-    /// The walker reads an isolate at a fixed offset from the thread
-    /// pointer, or at the offset a slot of the loaded image holds, and
-    /// refuses one in a library's dynamic block, which it does not find.
     #[test]
     fn the_isolate_is_placed_by_its_offset_or_its_slot() {
         use zerocopy::FromZeros as _;
@@ -1224,13 +1041,10 @@ mod tests {
         let mut bytes = header.as_bytes().to_vec();
         bytes.extend_from_slice(frames.as_bytes());
 
-        // The kernel pads a sample's raw bytes.
         bytes.extend_from_slice(&[0; 4]);
         bytes
     }
 
-    /// A record decodes with its frames, innermost first; one whose sizes
-    /// disagree, or whose numbers name nothing, is malformed.
     #[test]
     fn records_decode_with_their_frames_and_reject_what_disagrees() {
         let frame = |code| RawPyFrame {
@@ -1266,10 +1080,6 @@ mod tests {
         assert_eq!(decode(&other).err(), Some(Malformed));
     }
 
-    /// Each version's layout gives the walker what it needs: 3.12 reaches
-    /// its frames through its `_PyCFrame`, 3.14t reads each frame's copy of
-    /// its bytecode, and 3.15 ends each chain at its base frame and says
-    /// who waits for the GIL.
     #[test]
     fn each_versions_layout_gives_the_walker_its_fields() {
         let of = |name: &str| {

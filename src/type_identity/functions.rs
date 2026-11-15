@@ -1,23 +1,5 @@
-//! How a language spells a function within the package defining it, so
-//! that a location written as its programmers write it finds the function
-//! the compiler named.
-//!
-//! Go names a function by its package's import path, then any receiver
-//! type, the function, and any closures within it, joined by dots:
-//! `net/http.(*Server).Serve`, `main.Sum[go.shape.int]`, `main.main.func1`.
-//! Within its package the function is *local*: its parts with no pointer
-//! marks or type arguments, such as `Server.Serve`, `Sum`, or `main.func1`.
-//! Each instantiation of a generic function shares its local name, and a
-//! type never has two methods of one name, so a package and a local name
-//! identify one function.
-
 use super::{NameSyntax, split_arguments, split_top_level};
 
-/// Splits a function's name into the import path of the package that
-/// defines it and its local name. `is_package` says whether a path is one
-/// of the image's packages; the longest such prefix is the package, since
-/// a path may contain dots. A name in no known package is split where its
-/// path must end, after the last slash. Only Go names have packages.
 pub fn packaged_name(
     name: &str,
     syntax: NameSyntax,
@@ -27,8 +9,6 @@ pub fn packaged_name(
         return None;
     }
 
-    // The package's path precedes any receiver or type argument, which may
-    // themselves name packages.
     let qualified = &name[..name.find(['(', '[']).unwrap_or(name.len())];
     let package = qualified
         .rmatch_indices('.')
@@ -44,17 +24,11 @@ pub fn packaged_name(
     Some((package, local))
 }
 
-/// Splits an Ada subprogram's name into the library unit that holds it,
-/// as its package, and its name within the unit: `values.add` is `add`
-/// within `values`. A library-level subprogram is a unit of its own.
 pub fn ada_packaged_name(name: &str) -> Option<(&str, String)> {
     let (unit, local) = name.split_once('.')?;
     Some((unit, local.to_owned()))
 }
 
-/// A location's text with every receiver's pointer mark and parentheses
-/// removed, to compare with qualified local names. A location that spells
-/// type arguments names only the function named exactly so.
 pub fn plain_location(location: &str) -> Option<String> {
     if location.contains('[') {
         return None;
@@ -63,8 +37,6 @@ pub fn plain_location(location: &str) -> Option<String> {
     plain_parts(location, false)
 }
 
-/// Joins a name's dot-separated parts with each receiver written plainly
-/// and, when `instances` is set, each part's type arguments removed.
 fn plain_parts(name: &str, instances: bool) -> Option<String> {
     let parts = split_top_level(name, ".", NameSyntax::Go)?;
     let mut plain = Vec::with_capacity(parts.len());
@@ -89,8 +61,6 @@ fn plain_parts(name: &str, instances: bool) -> Option<String> {
     Some(plain.join("."))
 }
 
-/// Whether a path is spelled as a Go import path can be: compiler-made
-/// names such as `type:.eq.main.T` have no package.
 fn is_import_path(path: &str) -> bool {
     !path.is_empty()
         && path
@@ -128,7 +98,6 @@ mod tests {
                 "sync",
                 "OnceValue.func1",
             ),
-            // A package the image has no unit for ends after its last slash.
             ("math/rand/v2.IntN", "math/rand/v2", "IntN"),
             ("main.main-range1", "main", "main-range1"),
         ] {

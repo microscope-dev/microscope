@@ -32,8 +32,8 @@ func main() {
 	for range goroutines {
 		group.Add(1)
 		go func() {
-			// Each goroutine owns an OS thread, so threads created after the
-			// watchpoint was armed perform the writes.
+
+
 			runtime.LockOSThread()
 			for range increments {
 				atomic.AddInt64(&watchedCounter, 1)

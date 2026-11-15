@@ -1,16 +1,7 @@
-// Logs that grow at the bottom, such as the console and the program's
-// output, follow what is added unless the reader scrolled up to read.
-
 import { type RefObject, type UIEvent, useEffect, useRef } from "react";
 
-/** How near the bottom, in pixels, still counts as at it. */
 const NEAR = 24;
 
-/**
- * Scrolls the element given `ref` to its bottom when `content` changes,
- * while the reader is at the bottom. A change of `start`, such as a line
- * the reader just ran, follows even when they had scrolled up.
- */
 export function useFollowBottom<T extends HTMLElement>(
   content: unknown,
   start?: unknown,
@@ -18,7 +9,6 @@ export function useFollowBottom<T extends HTMLElement>(
   const ref = useRef<T>(null);
   const following = useRef(true);
 
-  // Declared first, so it runs before the scroll when both change at once.
   useEffect(() => {
     following.current = true;
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- a new start is what follows again

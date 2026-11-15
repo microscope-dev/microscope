@@ -1,6 +1,3 @@
-// Jumping and stepping into a call ask the same questions as the toolbar's
-// actions, checked against a stop a real server reported.
-
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { action } from "../src/actions";

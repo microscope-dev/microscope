@@ -1,10 +1,3 @@
-//! Linux signals and wait statuses, including the real-time signals that
-//! `nix` cannot represent.
-//!
-//! A tracee can receive any signal from 1 through `SIGRTMAX`. glibc itself
-//! uses real-time signals, such as the one behind `pthread_cancel`, so every
-//! wait status and every signal delivery is handled by number.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -15,7 +8,6 @@ use nix::unistd::Pid;
 
 use crate::protocol::SignalPolicy;
 
-/// One Linux signal number.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Signal(i32);
 
@@ -38,10 +30,8 @@ impl Signal {
 
     pub const SIGTTOU: Self = Self(libc::SIGTTOU);
 
-    /// The highest signal number Linux delivers.
     pub const MAX: i32 = 64;
 
-    /// Returns the signal with `number`, if Linux defines one.
     pub const fn new(number: i32) -> Option<Self> {
         if number >= 1 && number <= Self::MAX {
             Some(Self(number))
@@ -54,23 +44,18 @@ impl Signal {
         self.0
     }
 
-    /// The signal number as a platform-neutral exception code.
     pub const fn code(self) -> u64 {
         self.0.unsigned_abs() as u64
     }
 
-    /// Returns the signal an exception code names, if it is one.
     pub fn from_code(code: u64) -> Option<Self> {
         i32::try_from(code).ok().and_then(Self::new)
     }
 
-    /// Every signal Linux can deliver, in numeric order.
     pub fn all() -> impl Iterator<Item = Self> {
         (1..=Self::MAX).map(Self)
     }
 
-    /// Finds a signal by name, with or without its `SIG` prefix and in any
-    /// case, or by number.
     pub fn named(name: &str) -> Option<Self> {
         if let Ok(number) = name.parse::<i32>() {
             return Self::new(number);
@@ -83,7 +68,6 @@ impl Signal {
             format!("SIG{upper}")
         };
 
-        // Linux defines these names as aliases of others.
         let alias = match full.as_str() {
             "SIGPOLL" => Some(libc::SIGPOLL),
             "SIGIOT" => Some(libc::SIGIOT),
@@ -96,8 +80,6 @@ impl Signal {
             .or_else(|| Self::all().find(|signal| signal.name() == full))
     }
 
-    /// The signal's conventional name. Real-time signals, which C libraries
-    /// number differently, are named by their number as gdb does: `SIG34`.
     pub fn name(self) -> String {
         NixSignal::try_from(self.0).map_or_else(
             |_| format!("SIG{}", self.0),
@@ -113,13 +95,10 @@ impl Signal {
     pub const SIGURG: Self = Self(libc::SIGURG);
 }
 
-/// How every signal is handled: as the user chose, or else as the loaded
-/// language runtimes use it, or else by gdb's defaults.
 #[derive(Debug, Default)]
 pub struct SignalPolicies {
     changed: BTreeMap<Signal, SignalPolicy>,
 
-    /// Signals a loaded runtime handles as part of the program's own work.
     handled: BTreeSet<i32>,
 }
 
@@ -131,7 +110,6 @@ impl SignalPolicies {
             .unwrap_or_else(|| self.default_policy(signal))
     }
 
-    /// Changes how `signal` is handled and returns the previous policy.
     pub fn set(&mut self, signal: Signal, policy: SignalPolicy) -> SignalPolicy {
         let previous = self.get(signal);
         if policy == self.default_policy(signal) {
@@ -143,8 +121,6 @@ impl SignalPolicies {
         previous
     }
 
-    /// Replaces the signals the loaded runtimes handle themselves, which
-    /// pass silently unless the user chose otherwise.
     pub fn set_runtime_handled(&mut self, handled: impl IntoIterator<Item = i32>) {
         self.handled = handled.into_iter().collect();
     }
@@ -158,17 +134,12 @@ impl SignalPolicies {
     }
 }
 
-/// A signal that neither stops nor prints, and is delivered.
 const QUIET_POLICY: SignalPolicy = SignalPolicy {
     stop: false,
     print: false,
     pass: true,
 };
 
-/// gdb's default handling: signals that programs use for routine work
-/// neither stop nor print and are delivered, an interrupt from the
-/// terminal stops without being delivered, and everything else stops and
-/// is delivered.
 fn default_policy(signal: Signal) -> SignalPolicy {
     const QUIET: [i32; 8] = [
         libc::SIGALRM,
@@ -191,8 +162,6 @@ fn default_policy(signal: Signal) -> SignalPolicy {
     }
 }
 
-/// Describes a delivered signal from its siginfo: its name, the code
-/// naming its cause, and the faulting address or the process that sent it.
 pub fn describe(
     name: &str,
     number: i32,
@@ -283,25 +252,18 @@ impl From<NixSignal> for Signal {
     }
 }
 
-/// A decoded `waitpid` status for one tracee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitEvent {
-    /// The thread exited with this status code.
     Exited(Pid, i32),
 
-    /// The thread was killed by a signal, possibly dumping core.
     Signaled(Pid, Signal, bool),
 
-    /// The thread stopped for a signal.
     Stopped(Pid, Signal),
 
-    /// The thread stopped for a ptrace event, reported with this signal.
     PtraceEvent(Pid, Signal, i32),
 
-    /// The thread stopped at a system call while tracing system calls.
     PtraceSyscall(Pid),
 
-    /// A stopped thread was resumed by `SIGCONT`.
     Continued(Pid),
 }
 
@@ -317,7 +279,6 @@ impl WaitEvent {
         }
     }
 
-    /// Decodes a raw status `waitpid` returned for `pid`.
     pub fn decode(pid: Pid, status: i32) -> Result<Self, Errno> {
         let signal = |number| Signal::new(number).ok_or(Errno::EINVAL);
         if libc::WIFEXITED(status) {
@@ -331,7 +292,6 @@ impl WaitEvent {
         } else if libc::WIFSTOPPED(status) {
             let stop = libc::WSTOPSIG(status);
 
-            // PTRACE_O_TRACESYSGOOD marks system-call stops with bit 7.
             if stop == libc::SIGTRAP | 0x80 {
                 return Ok(Self::PtraceSyscall(pid));
             }

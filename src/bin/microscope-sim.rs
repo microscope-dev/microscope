@@ -1,10 +1,3 @@
-//! Sweeps and replays deterministic simulations of debugging sessions.
-//!
-//! `microscope-sim sweep` runs random seeds on every core for a while and
-//! reports each kind of failure once, with its shortest run. `microscope-sim
-//! replay SEED` reruns one seed and prints its whole trace. `microscope-sim
-//! shrink SEED` finds a smaller run that fails as the seed's does.
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::panic::AssertUnwindSafe;
@@ -79,7 +72,6 @@ fn parse_seed(text: &str) -> Result<u64, String> {
         .map_err(|error| format!("not a seed: {error}"))
 }
 
-/// How many things per second, for people to read.
 #[expect(clippy::cast_precision_loss, reason = "a rate for people to read")]
 fn rate(count: u64, elapsed: Duration, threads: usize) -> f64 {
     count as f64 / elapsed.as_secs_f64() / threads as f64
@@ -104,7 +96,6 @@ fn main() -> Result<ExitCode> {
     }
 }
 
-/// Where a seed's replays and shrunk runs are written.
 fn directory(seed: u64) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target/sim")
@@ -149,20 +140,14 @@ fn shrink(corpus: &Corpus, seed: u64, runs: u64) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// One kind of failure: how often it happened, and the report of its
-/// shortest run, the easiest to read.
 struct Group {
     count: u64,
 
-    /// The shortest run's length in actions, then its seed, which breaks
-    /// ties so that a sweep's choice does not depend on its threads.
     shortest: (u64, u64),
     fingerprint: u64,
     report: String,
 }
 
-/// Counts a failed run in its failure's group, which keeps the shortest
-/// run's report.
 fn record_failure(groups: &Mutex<BTreeMap<String, Group>>, outcome: &Outcome) {
     let Some(failure) = &outcome.failure else {
         return;
@@ -213,8 +198,6 @@ fn sweep(
     let groups = Mutex::new(BTreeMap::<String, Group>::new());
     let escaped = Mutex::new(Vec::<u64>::new());
 
-    // How many sessions planned each kind of fault, and how many of those
-    // fired.
     let faults = Mutex::new(BTreeMap::<&'static str, (u64, u64)>::new());
     let reach = Mutex::new(Reach::default());
     let began = Instant::now();
@@ -228,9 +211,6 @@ fn sweep(
                 while !done.load(Ordering::Relaxed) {
                     let seed = start.wrapping_add(next.fetch_add(1, Ordering::Relaxed));
 
-                    // A run catches the panics of its actions, but not of
-                    // what sets it up and tears it down; one there must not
-                    // end the sweep without naming its seed.
                     let Ok(outcome) =
                         std::panic::catch_unwind(AssertUnwindSafe(|| run(seed, corpus, &settings)))
                     else {
@@ -287,7 +267,6 @@ fn sweep(
         println!("{kind}: fired in {fired} of {planned} sessions that planned it");
     }
 
-    // A mark no session reached says what this sweep never tested.
     let unreached = reach
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner)
@@ -303,8 +282,6 @@ fn sweep(
     report_failures(corpus, &settings, &groups, escaped)
 }
 
-/// Prints each group of failures, and the seeds whose runs panicked outside
-/// their actions. Succeeds when there were none.
 fn report_failures(
     corpus: &Corpus,
     settings: &Settings,
@@ -329,7 +306,6 @@ fn report_failures(
             group.count, group.report
         );
 
-        // A seed is worth replaying only if it names the run that failed.
         let again = run(seed, corpus, settings).fingerprint;
         if again != group.fingerprint {
             println!(

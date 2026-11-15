@@ -1,6 +1,3 @@
-//! A program's processes, debugged together from the page: the members a
-//! state lists, the one it describes, and selecting and detaching them.
-
 use serde_json::{Value, json};
 
 use crate::support::Scenario;
@@ -10,7 +7,6 @@ fn tree() -> String {
     Scenario::fixture("process-tree").display().to_string()
 }
 
-/// The member numbered `number` in a state's group.
 fn member(state: &Value, number: u64) -> Value {
     state["group"]["members"]
         .as_array()
@@ -19,7 +15,6 @@ fn member(state: &Value, number: u64) -> Value {
         .unwrap_or_else(|| panic!("no member [{number}] in {state}"))
 }
 
-/// Waits until the group stops in member `number`.
 async fn stopped_in(tab: &mut Client, number: u64) -> Value {
     tab.state(&format!("the group stopped in [{number}]"), |state| {
         state["inferior"]["state"] == "stopped"
@@ -37,7 +32,6 @@ async fn fork_children_join_the_page_and_each_stops_where_it_hits() {
         .state("the program loaded", |state| state["session"].is_string())
         .await;
 
-    // One process before the program runs.
     let members = loaded["group"]["members"].as_array().expect("members");
     assert_eq!(members.len(), 1, "{loaded}");
     assert_eq!(members[0]["joined"], "launched");
@@ -50,7 +44,6 @@ async fn fork_children_join_the_page_and_each_stops_where_it_hits() {
         .clone();
     tab.ok("continue", json!({})).await;
 
-    // The first child stops at the group's breakpoint, under its id.
     let first = stopped_in(&mut tab, 2).await;
     let child = member(&first, 2);
     assert_eq!(child["joined"], "forked", "{first}");
@@ -71,7 +64,6 @@ async fn fork_children_join_the_page_and_each_stops_where_it_hits() {
     assert!(log.contains("[2] process "), "{log}");
     assert!(log.contains("joined, started by [1]"), "{log}");
 
-    // The stack is the child's.
     let (stop, thread) = (
         first["inferior"]["stop"].clone(),
         first["inferior"]["thread"].clone(),
@@ -81,7 +73,6 @@ async fn fork_children_join_the_page_and_each_stops_where_it_hits() {
         .await;
     assert_eq!(trace["frames"][0]["name"], "child_work", "{trace}");
 
-    // Selecting the program's own process shows it, waiting for its child.
     tab.ok("selectMember", json!({"member": 1})).await;
     let root = tab
         .state("the root selected", |state| {
@@ -96,7 +87,6 @@ async fn fork_children_join_the_page_and_each_stops_where_it_hits() {
         .expect_err("no member 9");
     assert_eq!(kind, "invalid");
 
-    // Continuing runs the whole group, until the second child stops.
     let stop = root["inferior"]["stop"].clone();
     tab.ok("continue", json!({"stop": stop})).await;
     let second = stopped_in(&mut tab, 3).await;
@@ -145,7 +135,6 @@ async fn a_detached_member_runs_on_alone() {
     })
     .await;
 
-    // The child exits 0 on its own, so the program does too.
     let stop = detached["inferior"]["stop"].clone();
     tab.ok("continue", json!({"stop": stop})).await;
     let exited = tab.inferior("exited").await;
@@ -157,11 +146,8 @@ async fn a_detached_member_runs_on_alone() {
     );
 }
 
-/// The members `group-spin` makes: its own process and the four it forks.
 const SPINNING: usize = 5;
 
-/// A group of spinning members, stopped by a pause, with member `selected`
-/// shown, and a second tab on it.
 async fn spinning(name: &str, selected: impl Fn(&Value) -> u64) -> (Web, Client, Client, u64) {
     let web = Web::start(
         name,
@@ -187,7 +173,6 @@ async fn spinning(name: &str, selected: impl Fn(&Value) -> u64) -> (Web, Client,
     (web, a, b, number)
 }
 
-/// The answer to request `id`, which `tab` sent without waiting for it.
 async fn answer(tab: &mut Client, id: u64) -> Result<Value, String> {
     let answer = tab
         .expect("an answer", |message| {
@@ -204,10 +189,6 @@ async fn answer(tab: &mut Client, id: u64) -> Result<Value, String> {
     }
 }
 
-/// Two tabs act on the stop both show, one continuing the group and one
-/// stepping the member shown. Only the first to reach that member may
-/// resume it: a continue that lost must not resume the step's stop, nor
-/// the rest of the group without it.
 async fn continue_races_a_step(name: &str, selected: impl Fn(&Value) -> u64) {
     let (_web, mut a, mut b, number) = spinning(name, selected).await;
 
@@ -240,8 +221,6 @@ async fn continue_races_a_step(name: &str, selected: impl Fn(&Value) -> u64) {
         );
 
         if step_answer.is_ok() {
-            // The group stays stopped at the step's stop, which is still
-            // there to continue from.
             let landed = a
                 .state("the step's stop", |state| {
                     state["inferior"]["state"] == "stopped" && state["inferior"]["stop"] != stop

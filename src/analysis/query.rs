@@ -1,18 +1,3 @@
-//! Aggregating a selection of samples into a call tree, function costs,
-//! and densities over time.
-//!
-//! A query selects samples, or the waits task snapshots found, by time,
-//! thread, task, and label, turns each one's stack into a path of keys,
-//! outermost first or, inverted, innermost first, and reshapes the path by
-//! its transforms in order. A logical query first shows each async task's
-//! frames as a stack of their own, and a query by task or label roots each
-//! path at its task or its label's value. A sample's labels are those
-//! open on its thread at its time, joined in one pass over each thread's
-//! samples and label spans, and its task's. A zone scope keeps the samples
-//! taken inside its zones, nested ones included, joined the same way. Samples are counted per
-//! distinct stack first, and group, so the work is linear in the samples
-//! selected and the stacks they use.
-
 use std::collections::BTreeMap;
 
 use foldhash::HashMap;
@@ -22,77 +7,48 @@ use crate::CodeRole;
 use crate::capture::Capture;
 use crate::capture::records::{NONE, UNSEEN};
 
-/// What a query aggregates.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Source {
-    /// CPU samples, or a breakpoint's.
     #[default]
     Samples,
 
-    /// Where task snapshots found tasks waiting, each weighted by the time
-    /// it stands for.
     Waits,
 }
 
-/// Which samples, seen how.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Query {
     pub source: Source,
 
-    /// Samples taken in `[start, end)`, or all.
     pub range: Option<(i64, i64)>,
 
-    /// Samples of these threads, by their rows in the capture, or of all.
-    /// Waits are of no thread, so this selects samples only.
     pub threads: Option<Vec<u32>>,
 
-    /// Samples or waits of these tasks, by their rows, or of any: [`NONE`]
-    /// is a sample no task snapshot named.
     pub tasks: Option<Vec<u32>>,
 
-    /// Samples or waits that carry every one of these labels, each a key
-    /// and value.
     pub labels: Vec<(String, String)>,
     pub transforms: Vec<Transform>,
 
-    /// Paths from the innermost frame out, so that the tree is of callers.
     pub invert: bool,
 
-    /// How each path's frames are seen, before any transform.
     pub look: Look,
 
-    /// Roots each path, after its transforms, at the task it ran or waited
-    /// in.
     pub by_task: bool,
 
-    /// Roots each path, after its transforms and outside any task, at its
-    /// label of this key, or at the key's absence.
     pub by_label: Option<String>,
 
-    /// Samples taken inside these zones, on their own thread. Zones are a
-    /// thread's, so a scope selects no waits.
     pub zones: Option<ZoneScope>,
 
-    /// Samples taken while their thread was inside one of these system
-    /// calls, by row in order, and of the calls, these alone. Calls are a
-    /// thread's, so this selects no waits.
     pub during: Option<Vec<u32>>,
 
-    /// Each call the query keeps as a leaf under the stack that made it,
-    /// weighted by its time that no sample of its thread stands for.
     pub calls: bool,
 }
 
-/// Which zones a query's samples must be inside.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ZoneScope {
-    /// The sites, by row: the zones of every site of one name.
     pub sites: Vec<u32>,
 
-    /// Zones of lengths in `[shortest, longest]`, in nanoseconds, or of any.
     pub band: Option<(u64, u64)>,
 
-    /// Zones of lengths outside the band instead: the rest of the sites'.
     pub outside: bool,
 }
 
@@ -106,8 +62,6 @@ impl ZoneScope {
         (shortest..=longest).contains(&length) != self.outside
     }
 
-    /// A thread's spans inside the scope's zones, sorted and disjoint: a
-    /// zone nested in another of the scope adds nothing.
     fn spans(&self, capture: &Capture, thread: u32) -> Vec<(i64, i64)> {
         let mut spans: Vec<(i64, i64)> = Vec::new();
         for zones in capture
@@ -127,7 +81,6 @@ impl ZoneScope {
     }
 }
 
-/// `spans` sorted and joined where they overlap.
 fn merged(mut spans: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
     spans.sort_unstable();
     let mut merged: Vec<(i64, i64)> = Vec::with_capacity(spans.len());
@@ -147,8 +100,6 @@ fn merged(mut spans: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
     merged
 }
 
-/// Each thread's spans inside the calls `rows` names, by thread row. A
-/// call whose exit went unseen runs on to the end.
 fn call_spans(capture: &Capture, rows: &[u32]) -> HashMap<u32, Vec<(i64, i64)>> {
     let mut spans: HashMap<u32, Vec<(i64, i64)>> = HashMap::default();
     for call in rows
@@ -172,8 +123,6 @@ fn call_spans(capture: &Capture, rows: &[u32]) -> HashMap<u32, Vec<(i64, i64)>> 
         .collect()
 }
 
-/// A thread's spans inside a scope's zones, asked of its samples in time
-/// order, and the first that had not ended at the last time asked.
 struct Inside {
     spans: Vec<(i64, i64)>,
     next: usize,
@@ -188,7 +137,6 @@ impl Inside {
         self.spans.is_empty()
     }
 
-    /// Whether `time`, no earlier than the last asked, is in a span.
     fn holds(&mut self, time: i64) -> bool {
         while self
             .spans
@@ -204,68 +152,42 @@ impl Inside {
     }
 }
 
-/// How a path's frames are seen.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Look {
-    /// The frames its thread ran, which an interpreter's frames are not:
-    /// its own frames that run them stand for them.
     #[default]
     Native,
 
-    /// Each async task's frames as a stack of their own (see [`logical`]),
-    /// an interpreter's frames among the frames that run them.
     Logical,
 
-    /// As [`Look::Logical`], and as its interpreted code sees it (see
-    /// [`python`]).
     Python,
 }
 
-/// One step of reshaping each sample's path, applied in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transform {
-    /// Keeps samples whose path has the key, from its first occurrence on:
-    /// the key becomes the root, and its calls from everywhere merge.
     Focus(u32),
 
-    /// Removes the key from every path, giving its cost to its caller.
     Merge(u32),
 
-    /// Removes every sample whose path has the key.
     Drop(u32),
 
-    /// Merges each run of the key calling itself into its first call.
     CollapseRecursion(u32),
 
-    /// Cuts every cycle out of each path, direct or through other
-    /// functions: walked from the outermost frame, a key already on the
-    /// path cuts it back to that earlier call, so `a b a c` is `a c`.
-    /// Every sample still counts once, and its own cost moves to the
-    /// outermost call of what it ran.
     CollapseCycles,
 }
 
-/// The call tree of a query, its nodes in depth-first order with each
-/// node's children by total, largest first; a node's subtree is the
-/// nodes from it to its `end`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CallTree {
     pub key: Vec<u32>,
 
-    /// The caller's node, or [`NONE`] for a root.
     pub parent: Vec<u32>,
     pub depth: Vec<u32>,
 
-    /// The weight of samples whose path ends at the node.
     pub own: Vec<u64>,
 
-    /// The weight of samples whose path passes through the node.
     pub total: Vec<u64>,
 
-    /// One past the node's last descendant.
     pub end: Vec<u32>,
 
-    /// The weight of every sample selected and kept.
     pub weight: u64,
     pub samples: u64,
 }
@@ -281,9 +203,6 @@ impl CallTree {
         self.key.is_empty()
     }
 
-    /// Panics if the tree is not laid out depth first, each node's subtree
-    /// ending inside its caller's, with each total its own weight and its
-    /// children's.
     #[expect(
         clippy::indexing_slicing,
         reason = "`aggregate` gives every column an entry per node, and a node's caller precedes it"
@@ -335,35 +254,27 @@ impl CallTree {
     }
 }
 
-/// What one key costs under a query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cost {
     pub key: u32,
 
-    /// Weight of samples whose path ends with it.
     pub own: u64,
 
-    /// Weight of samples whose path has it, counted once per sample.
     pub total: u64,
 }
 
-/// One sample or wait a query selects.
 #[derive(Debug, Clone, Copy)]
 struct Selected {
     time: i64,
 
-    /// Its thread's row, or [`NONE`] for a wait.
     thread: u32,
     task: u32,
 
-    /// The key of its label a query by label roots it at, or [`NONE`].
     label: u32,
     stack: u32,
     weight: u64,
 }
 
-/// A thread's label spans, `(start, end, label)` by start, walked in time
-/// order: those that began by the last time asked and had not ended.
 struct OpenLabels<'s> {
     spans: &'s [(i64, i64, u32)],
     next: usize,
@@ -379,7 +290,6 @@ impl<'s> OpenLabels<'s> {
         }
     }
 
-    /// The labels open at `time`, no earlier than the last asked.
     fn at(&mut self, time: i64) -> impl Iterator<Item = u32> + '_ {
         while let Some(&(start, end, label)) = self.spans.get(self.next)
             && start <= time
@@ -393,18 +303,14 @@ impl<'s> OpenLabels<'s> {
     }
 }
 
-/// What a query asks of labels: the rows a sample must carry, and the key
-/// it is grouped by.
 struct LabelQuery<'a> {
     required: Vec<u32>,
     by: Option<&'a str>,
 
-    /// The labels a sample carries.
     carried: Vec<u32>,
 }
 
 impl<'a> LabelQuery<'a> {
-    /// `None` when a required label is nowhere, so nothing is selected.
     fn new(keys: &Keys<'_>, query: &'a Query) -> Option<Self> {
         let required = query
             .labels
@@ -422,9 +328,6 @@ impl<'a> LabelQuery<'a> {
         !self.required.is_empty() || self.by.is_some()
     }
 
-    /// Whether a sample that carries `self.carried`, its task's labels
-    /// and then its thread's spans by start, is kept, and the key of the
-    /// label it is grouped by: of several of one key, the innermost span's.
     fn judge(&self, keys: &Keys<'_>) -> Option<u32> {
         if !self
             .required
@@ -446,8 +349,6 @@ impl<'a> LabelQuery<'a> {
     }
 }
 
-/// Each sample or wait `query` selects, in time order per thread, but for
-/// its transforms.
 fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(Selected)) {
     let Some(mut labels) = LabelQuery::new(keys, query) else {
         return;
@@ -563,11 +464,6 @@ fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(
     }
 }
 
-/// Which of the capture's system calls `query` keeps, by row: those of its
-/// threads and range, by when each returned, inside its zones, carrying
-/// its labels, whose paths, with the call as their leaf, its transforms
-/// keep. A call without a stack has its leaf alone, so a focus on a
-/// function keeps none of them. Calls are of no task.
 pub fn syscalls(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<bool> {
     let _span = crate::span!("analysis syscalls");
     let mut kept = vec![false; capture.syscalls.len()];
@@ -579,8 +475,6 @@ pub fn syscalls(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<bool> 
     kept
 }
 
-/// Passes each call `query` keeps, as [`syscalls`] does, by row, with the
-/// label key a query by label roots it at, or [`NONE`].
 fn kept_calls(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(usize, u32)) {
     let Some(mut labels) = LabelQuery::new(keys, query) else {
         return;
@@ -593,8 +487,6 @@ fn kept_calls(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl 
     };
     let mut paths = Paths::new(capture, keys, &paths_of);
 
-    // Each thread's calls in time order, as its label spans and zones are
-    // walked.
     let mut threads: BTreeMap<u32, Vec<(i64, usize)>> = BTreeMap::new();
     for (row, call) in capture.syscalls.iter().enumerate() {
         let time = if call.exited.get() == UNSEEN {
@@ -652,10 +544,6 @@ fn kept_calls(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl 
     }
 }
 
-/// The groups of calls `query` keeps as leaves: each call's stack, leaf,
-/// and label key, weighted by the nanoseconds of it that no sample of its
-/// thread stands for. A call whose entry or return went unseen has no
-/// length to weigh.
 fn call_groups(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Group> {
     let by_thread: HashMap<u32, &[crate::capture::records::Sample]> = capture
         .sample_ranges
@@ -697,23 +585,17 @@ fn call_groups(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Group> 
     groups
 }
 
-/// One stack's selection: its stack, and the task and label key a query
-/// by task or label roots it at, or [`NONE`], with its weight and count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Group {
     stack: u32,
     task: u32,
     label: u32,
 
-    /// The call a call's group ends in, or [`NONE`] for samples.
     leaf: u32,
     weight: u64,
     count: u32,
 }
 
-/// The weight and count of what `query` selects on each stack and, by
-/// task or label, of each task and label on it; then, when it asks for
-/// them, of its calls.
 fn select(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Group> {
     let mut selected = select_samples(capture, keys, query);
     if query.calls && query.source == Source::Samples {
@@ -776,7 +658,6 @@ fn select_samples(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Grou
         .collect()
 }
 
-/// A time-ordered run's rows in `range`.
 #[expect(
     clippy::indexing_slicing,
     reason = "`partition_point` returns at most the length"
@@ -791,20 +672,15 @@ fn in_range<T>(rows: &[T], time: impl Fn(&T) -> i64, range: Option<(i64, i64)>) 
     &rows[first..last.max(first)]
 }
 
-/// Turns stacks into transformed paths.
 struct Paths<'a> {
     capture: &'a Capture,
     keys: &'a Keys<'a>,
     query: &'a Query,
     path: Vec<u32>,
 
-    /// Where each key is on the path while cycles are cut, or [`NONE`].
     on_path: Vec<u32>,
 }
 
-/// Cuts each cycle out of `path`, from its first element: a key already
-/// kept cuts the kept path back to it. `on_path` is scratch of `keys`
-/// entries, each [`NONE`] before and after.
 #[expect(
     clippy::indexing_slicing,
     reason = "every key on the path is below `keys`, which `on_path` covers, and a \
@@ -850,9 +726,6 @@ impl<'a> Paths<'a> {
         }
     }
 
-    /// The path of `stack`, run or waited on in `task` under the label key
-    /// `label`, with the key `leaf` innermost unless it is [`NONE`], under
-    /// the query, or `None` when a transform removes it.
     fn of(&mut self, stack: u32, task: u32, label: u32, leaf: u32) -> Option<&[u32]> {
         let path = &mut self.path;
         path.clear();
@@ -874,8 +747,6 @@ impl<'a> Paths<'a> {
             path.insert(0, leaf);
         }
 
-        // Innermost first, as stacks are; a tree from the roots starts
-        // with the outermost.
         if !self.query.invert {
             path.reverse();
         }
@@ -901,7 +772,6 @@ impl<'a> Paths<'a> {
                     });
                 }
                 Transform::CollapseCycles => {
-                    // An inverted path is innermost first: cut from its end.
                     if self.query.invert {
                         path.reverse();
                     }
@@ -918,7 +788,6 @@ impl<'a> Paths<'a> {
             (label != NONE).then_some(label),
         ];
 
-        // The label outermost, then the task.
         for group in groups.into_iter().flatten() {
             if self.query.invert {
                 path.push(group);
@@ -931,14 +800,6 @@ impl<'a> Paths<'a> {
     }
 }
 
-/// Makes an innermost-first path logical. The runtime gives the thread to
-/// a task at the innermost `Dispatch` frame, so the frames inside it are
-/// the task's and the scheduler's outside it are dropped. The task's own
-/// code begins at its outermost frame that is neither runtime machinery
-/// nor a wrapper, which is rooted under a key for the task; the machinery
-/// between the dispatch and it goes. Wrappers only forward, so they fold
-/// away everywhere. A path with no dispatch, such as a goroutine's, which
-/// runs on a stack of its own, keeps its frames.
 fn logical(keys: &Keys<'_>, path: &mut Vec<u32>) {
     if let Some(dispatch) = path
         .iter()
@@ -966,11 +827,6 @@ fn logical(keys: &Keys<'_>, path: &mut Vec<u32>) {
     path.retain(|key| keys.role(*key) != CodeRole::Wrapper);
 }
 
-/// Makes an innermost-first path the one its interpreted code sees: from
-/// its outermost interpreted frame in, without the interpreter's machinery
-/// that runs them, so that the interpreted frames each activation of the
-/// interpreter runs join, and native code they call stays where it was
-/// called. A path with no interpreted frame keeps its frames.
 fn python(keys: &Keys<'_>, path: &mut Vec<u32>) {
     let Some(outermost) = path.iter().rposition(|key| keys.interpreted(*key)) else {
         return;
@@ -980,7 +836,6 @@ fn python(keys: &Keys<'_>, path: &mut Vec<u32>) {
     path.retain(|key| keys.role(*key) != CodeRole::Interpreter);
 }
 
-/// The call tree of the samples `query` selects.
 #[expect(
     clippy::indexing_slicing,
     reason = "nodes index the columns built beside them, and a node's parent precedes it"
@@ -990,7 +845,6 @@ pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree 
     let selected = select(capture, keys, query);
     let mut paths = Paths::new(capture, keys, query);
 
-    // The tree in the order nodes are first reached.
     let mut key = Vec::new();
     let mut parent = Vec::new();
     let mut own = Vec::new();
@@ -1020,7 +874,6 @@ pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree 
         }
     }
 
-    // A node is reached after its parent, so a reverse pass totals it.
     let mut total = own.clone();
 
     for node in (0..key.len()).rev() {
@@ -1029,7 +882,6 @@ pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree 
         }
     }
 
-    // Lay the tree out depth first, largest child first.
     let mut kids: Vec<Vec<u32>> = vec![Vec::new(); key.len()];
     let mut roots = Vec::new();
 
@@ -1076,7 +928,6 @@ pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree 
         );
     }
 
-    // Each subtree ends where the next node of its depth or less begins.
     for position in (0..tree.len()).rev() {
         let caller = tree.parent[position];
         if caller != NONE {
@@ -1093,16 +944,13 @@ pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree 
     tree
 }
 
-/// What each key costs under a query, most own weight first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Costs {
     pub rows: Vec<Cost>,
 
-    /// The weight of every sample selected and kept.
     pub weight: u64,
 }
 
-/// What each key costs under `query`.
 #[expect(
     clippy::indexing_slicing,
     reason = "a path holds only keys of `keys`, which the columns have an entry for each of"
@@ -1114,7 +962,6 @@ pub fn functions(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Costs {
     let mut own = vec![0_u64; keys.count()];
     let mut total = vec![0_u64; keys.count()];
 
-    // The entry that last counted a key, so recursion counts once.
     let mut counted = vec![u32::MAX; keys.count()];
     let mut kept = 0;
     for (entry, group) in selected.iter().enumerate() {
@@ -1165,7 +1012,6 @@ pub fn functions(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Costs {
     }
 }
 
-/// One thread's nanoseconds off its CPU in each slice of a range.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OffCpuLane {
     pub thread: u32,
@@ -1173,9 +1019,6 @@ pub struct OffCpuLane {
     pub preempted: Vec<u64>,
 }
 
-/// How long each selected thread was off its CPU, blocked and preempted,
-/// in each of `buckets` equal slices of the query's range, per thread
-/// with any. Intervals have no stacks, so transforms do not apply.
 pub fn off_cpu(capture: &Capture, query: &Query, buckets: usize) -> Vec<OffCpuLane> {
     let Some((start, end)) = query
         .range
@@ -1187,7 +1030,6 @@ pub fn off_cpu(capture: &Capture, query: &Query, buckets: usize) -> Vec<OffCpuLa
     let span = u128::try_from(end - start).unwrap_or(1);
     let count = buckets as u128;
 
-    // Slice `i` is [edge(i), edge(i + 1)).
     let edge = |slice: usize| {
         start + i64::try_from(slice as u128 * span / count).unwrap_or(i64::MAX - start)
     };
@@ -1248,21 +1090,14 @@ pub fn off_cpu(capture: &Capture, query: &Query, buckets: usize) -> Vec<OffCpuLa
     lanes
 }
 
-/// What a timeline's lanes are of.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Lanes {
-    /// A lane per thread, by its row.
     #[default]
     Threads,
 
-    /// A lane per task, by its row, and one, [`NONE`], for what no task
-    /// snapshot named.
     Tasks,
 }
 
-/// The weight of what `query` keeps in each of `buckets` equal slices of
-/// its range, per lane with any. Waits are of no thread, so their lanes
-/// are always by task.
 pub fn density(
     capture: &Capture,
     keys: &Keys<'_>,
@@ -1282,8 +1117,6 @@ pub fn density(
     let span = u128::try_from(end - start).unwrap_or(1);
     let mut paths = Paths::new(capture, keys, query);
 
-    // Whether each stack's samples are kept, decided once per stack and
-    // task, and each lane, the last for no task.
     let mut kept: HashMap<(u32, u32, u32), bool> = HashMap::default();
     let count = if by_task {
         capture.tasks.len() + 1

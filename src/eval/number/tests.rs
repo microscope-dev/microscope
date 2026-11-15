@@ -1,6 +1,3 @@
-//! The numbers checked against native Rust arithmetic wherever it is exact:
-//! exhaustively over small domains, at boundaries, and by property.
-
 #![allow(
     clippy::cast_lossless,
     clippy::cast_possible_truncation,
@@ -24,12 +21,8 @@ fn int(width: u8, signed: bool) -> IntType {
     IntType::new(width, signed).expect("valid width")
 }
 
-/// Every operator on exact integers agrees with `i128` wherever `i128`
-/// holds the operands and the result.
 #[test]
 fn exact_arithmetic_matches_i128_around_zero_and_the_byte_edges() {
-    // The wider-model property owns the rest of the range; these values
-    // anchor it to native arithmetic on both sides of each byte boundary.
     let values = [-256, -255, -128, -3, -2, -1, 0, 1, 2, 3, 128, 255, 256_i128];
     for left in values {
         for right in values {
@@ -78,7 +71,6 @@ fn exact_arithmetic_matches_i128_around_zero_and_the_byte_edges() {
     }
 }
 
-/// The edges of [−2^127, 2^128 − 1], which `i128` alone cannot check.
 #[test]
 fn exact_results_cover_both_signednesses_and_nothing_more() {
     let max = Exact::from(u128::MAX);
@@ -123,8 +115,6 @@ fn exact_results_cover_both_signednesses_and_nothing_more() {
     assert!(!exact(0).neg().unwrap().negative, "zero is never negative");
 }
 
-/// Typed bit operations over every pair of 8-bit patterns agree with
-/// native `u8` and `i8` operations after conversion to the common type.
 #[test]
 fn typed_bit_operations_match_native_8_bit_operations() {
     let types = [int(8, true), int(8, false)];
@@ -207,8 +197,6 @@ fn an_exact_operand_must_fit_the_typed_width_either_way() {
                 assert_eq!(result, Err(NumberError::DoesNotFit(typed)));
             }
 
-            // The exact operand on the left, or-ed with all ones, is all
-            // ones of the typed width when it fits.
             let flipped = Integer::Exact(exact(value)).bitwise(BitOperator::Or, ones);
             if (-128..=255).contains(&value) {
                 assert_eq!(flipped, Ok(Integer::Typed(Bits::from_raw(typed, 0xff))));
@@ -224,8 +212,6 @@ fn an_exact_operand_must_fit_the_typed_width_either_way() {
     );
 }
 
-/// Every 16-bit-range value truncated to every width, against `rem_euclid`,
-/// and against Rust's own casts at the native widths.
 #[test]
 fn truncation_to_every_width_matches_modular_arithmetic() {
     for value in -32_768..=65_535_i128 {
@@ -298,7 +284,6 @@ fn type_bounds_hold_at_every_width() {
     }
 }
 
-/// The values every float-to-integer conversion must get right.
 fn special_f64s() -> Vec<f64> {
     let mut values = vec![
         0.0,
@@ -330,8 +315,6 @@ fn special_f64s() -> Vec<f64> {
     values
 }
 
-/// Converting to each native integer type agrees with Rust's saturating
-/// `as`, for every special value in both binary formats.
 #[test]
 fn floats_convert_to_integers_like_saturating_native_casts() {
     macro_rules! check_native {
@@ -402,8 +385,6 @@ fn floats_compare_with_integers_exactly() {
         .collect();
     for value in special_f64s().into_iter().chain([0.25, 70.5, -70.5]) {
         for &integer in &samples {
-            // The comparison a reference computes without rounding: the
-            // integer converted only when f64 holds it exactly.
             let converted = integer as f64;
             #[allow(
                 clippy::cast_possible_truncation,
@@ -441,7 +422,6 @@ fn floats_compare_with_integers_exactly() {
     );
 }
 
-/// Binary32 and binary64 arithmetic is IEEE arithmetic, as the host's is.
 #[test]
 fn float_arithmetic_matches_host_ieee_arithmetic() {
     let values: Vec<f64> = special_f64s()
@@ -517,7 +497,6 @@ fn mixed_float_formats_compute_in_the_widest() {
     );
     assert_eq!(product.to_string(), "2.5");
 
-    // 2^64 + 1 needs 65 significant bits: x87 rounds it, f64 more so.
     let big = Exact::from((1_u128 << 64) + 1);
     let rounded = Float::from_exact(big, FloatFormat::X87Extended);
     assert_eq!(rounded.compare_exact(big), Some(Ordering::Less));
@@ -528,9 +507,6 @@ fn mixed_float_formats_compute_in_the_widest() {
     );
 }
 
-/// Exact integers weighted toward the cases the laws and range checks
-/// turn on: small values, the ends of the range, and powers of two and
-/// their neighbors, of either sign.
 fn any_exact() -> impl Strategy<Value = Exact> {
     let power = (0_u32..128, -1_i128..=1, any::<bool>()).prop_map(|(shift, offset, negative)| {
         let magnitude = (1_u128 << shift).saturating_add_signed(offset);
@@ -560,8 +536,6 @@ fn any_exact() -> impl Strategy<Value = Exact> {
     ]
 }
 
-/// A 256-bit two's complement integer, high limb first, wide enough to hold
-/// any sum, difference, or bitwise result of two exact integers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Wide(i128, u128);
 
@@ -586,7 +560,6 @@ impl Wide {
         Self(self.0 + other.0 + i128::from(carry), low)
     }
 
-    /// The exact integer this is, or `OutOfRange` beyond `-2^127..2^128`.
     fn exact(self) -> Result<Exact, NumberError> {
         match self {
             Self(0, low) => Ok(Exact::from(low)),
@@ -596,8 +569,6 @@ impl Wide {
     }
 }
 
-/// `magnitude · factor` as a sign and a 256-bit magnitude, high limb first,
-/// converted back when it is in range.
 fn signed_wide(negative: bool, high: u128, low: u128) -> Result<Exact, NumberError> {
     match (negative, high) {
         (_, 0) if low == 0 => Ok(Exact::ZERO),
@@ -607,7 +578,6 @@ fn signed_wide(negative: bool, high: u128, low: u128) -> Result<Exact, NumberErr
     }
 }
 
-/// The full 256-bit product of two magnitudes, high limb first.
 fn wide_product(left: u128, right: u128) -> (u128, u128) {
     let half = |value: u128| (value >> 64, value & u128::from(u64::MAX));
     let ((left_high, left_low), (right_high, right_low)) = (half(left), half(right));
@@ -622,7 +592,6 @@ fn wide_product(left: u128, right: u128) -> (u128, u128) {
     (high, low)
 }
 
-/// What each operator gives, from the wide model.
 fn modeled(operator: &str, a: Exact, b: Exact) -> Result<Exact, NumberError> {
     let (left, right) = (Wide::of(a), Wide::of(b));
     let negative = a.is_negative() != b.is_negative();
@@ -661,7 +630,6 @@ fn modeled(operator: &str, a: Exact, b: Exact) -> Result<Exact, NumberError> {
                 _ => Err(NumberError::OutOfRange),
             }
         }
-        // floor(a / 2^amount): a negative value rounds away from zero.
         "shr" => {
             let amount = amount()?;
             let magnitude = a.magnitude();
@@ -721,8 +689,6 @@ proptest! {
     }
 }
 
-/// A bit pattern of any width and signedness reads back through its value,
-/// its complement, and casts to the other signedness and to 128 bits.
 fn patterns_round_trip(raw: u128, width: u8, signed: bool) -> Result<(), TestCaseError> {
     let ty = int(width, signed);
     let bits = Bits::from_raw(ty, raw);
@@ -736,7 +702,6 @@ fn patterns_round_trip(raw: u128, width: u8, signed: bool) -> Result<(), TestCas
     Ok(())
 }
 
-/// Found by the property: a signed one-bit integer.
 #[test]
 fn a_signed_one_bit_zero_round_trips() {
     patterns_round_trip(0, 1, true).unwrap();

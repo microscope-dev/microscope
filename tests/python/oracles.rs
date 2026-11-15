@@ -1,5 +1,3 @@
-//! Mutation checks for frame/local comparisons, plus attach/launch parity against CPython.
-
 use microscope::{
     Backtrace, CoreDumpOptions, ExecutionContext, FrameKind, InferiorState, StackFrameId,
     StopContext, StopId, ThreadId,
@@ -11,11 +9,8 @@ use crate::stacks::{CodeLines, check_frames, reported_threads};
 use crate::support::Scenario;
 use crate::support::truth::Report;
 
-/// Primary GIL and free-threaded builds for client and path scenarios.
 const PRIMARY: [&str; 2] = ["3.14", "3.14t"];
 
-/// The comparisons fail on a dropped frame, a wrong line, a swapped
-/// thread, a wrong value, and a missing local.
 #[tokio::test]
 async fn the_truth_fails_on_the_lies_it_looks_for() {
     let (scenario, stop, report) = saved("stacks").await;
@@ -32,7 +27,6 @@ async fn the_truth_fails_on_the_lies_it_looks_for() {
     check_frames(&trace, reported, 0).expect("the truth holds");
     lines.check(&trace).expect("each line is its code's");
 
-    // A frame of the fixture's own code, which its code table covers.
     let python = trace
         .frames
         .iter()
@@ -106,8 +100,6 @@ async fn the_truth_fails_on_the_lies_it_looks_for() {
     scenario.shutdown().await;
 }
 
-/// The core of `fixture` the build saved for 3.15, opened, with its stop
-/// and the report CPython wrote just before it aborted.
 async fn saved(fixture: &str) -> (Scenario, StopId, Report) {
     let name = format!("python-{fixture}-3.15.core");
     let core = Scenario::fixture(&name);
@@ -120,7 +112,6 @@ async fn saved(fixture: &str) -> (Scenario, StopId, Report) {
     (scenario, stop_id, Report::parse(&log))
 }
 
-/// The backtrace of `thread` at `stop`.
 async fn backtrace(scenario: &Scenario, stop: StopId, thread: u64) -> Backtrace {
     let context = StopContext {
         stop,
@@ -135,8 +126,6 @@ async fn backtrace(scenario: &Scenario, stop: StopId, thread: u64) -> Backtrace 
         .await
 }
 
-/// A process the debugger attaches to, parked at its checkpoint, shows
-/// the frames and locals CPython reports, as a launched one does.
 #[tokio::test]
 async fn an_attached_process_shows_what_cpython_reports() {
     for interpreter in PRIMARY {
@@ -147,8 +136,6 @@ async fn an_attached_process_shows_what_cpython_reports() {
             let trace = session.backtrace(ThreadId::new(thread)).await;
             let context = format!("{} thread {thread}: {trace:#?}", session.context());
 
-            // The printer reported its frames from its checkpoint's
-            // caller, and parks in two frames beneath it.
             let beneath = if printer { 2 } else { 0 };
             check_frames(&trace, &reported, beneath)
                 .unwrap_or_else(|lie| panic!("{context}\n{lie}"));

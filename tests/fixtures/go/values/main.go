@@ -1,19 +1,19 @@
-// A gallery of values as Go shows them. Before each checkpoint the program
-// prints its own truth, one tab-separated line per value,
-//
-//	TRUTH	<checkpoint>	<path>	<kind>	<value>
-//
-// and then calls reached(checkpoint); the tests inspect reached's caller.
-// A path names a variable, or a child of one after a dot. Floats are their
-// bits in hexadecimal; complex numbers are their parts' bits, real first.
-// Kind `summary` is how microscope writes the value, `absent` says the
-// variable must not be listed, `addressable` that it is in memory, and
-// `result` that it is listed as one of the function's results, and
-// `hidden` that it is not listed but its name reaches it. Kind `symbol`
-// is the constants an integer's value names, and `number` an integer
-// that names none. A checkpoint named `returned-` is about the values a
-// function returns: the tests finish the function that reached it and
-// inspect what it returned.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 package main
 
 import (
@@ -70,9 +70,9 @@ type adder struct{ base int }
 
 func (a adder) add(value int) int { return a.base + value }
 
-// funcs holds a nil func, a named function, a closure, which captures
-// offset by value and total by reference, and a method value.
-//
+
+
+
 //go:noinline
 func funcs(n int) int {
 	var none func(int) int
@@ -96,9 +96,9 @@ func funcs(n int) int {
 	return named(1) + closure(2) + method(3) + total
 }
 
-// escapes moves counter to the heap, where Go's debug information
-// describes it by a pointer named &counter.
-//
+
+
+
 //go:noinline
 func escapes(start int) *int {
 	counter := start
@@ -131,9 +131,9 @@ func unnamedResults(value int) (int, string) {
 	return value + 1, "go"
 }
 
-// visibility declares later after its first checkpoint, where it does
-// not exist yet.
-//
+
+
+
 //go:noinline
 func visibility(n int) int {
 	truth("visibility-before", "later", "absent", "")
@@ -154,9 +154,9 @@ func each(values []int) iter.Seq[int] {
 	}
 }
 
-// temporaries ranges over a function, for which Go makes variables of
-// its own, such as #yield1 and .closureptr, that listings leave out.
-//
+
+
+
 //go:noinline
 func temporaries(values []int) int {
 	total := 0
@@ -172,7 +172,7 @@ func temporaries(values []int) int {
 	return total
 }
 
-// Permission's constants are flags, which a value may combine.
+
 type Permission uint32
 
 const (
@@ -181,10 +181,10 @@ const (
 	Execute
 )
 
-// constants holds values of types Go gives constants: one is a
-// constant, one combines flags, and the others are numbers no constant
-// names.
-//
+
+
+
+
 //go:noinline
 func constants() {
 	timeout := 1500 * time.Millisecond
@@ -202,19 +202,19 @@ func constants() {
 	runtime.KeepAlive(stray)
 }
 
-// Point is passed in two registers.
+
 type Point struct{ X, Y int }
 
-// Celsius shares its shape, go.shape.float64, with float64.
+
 type Celsius float64
 
 type Other struct{ Name string }
 
 type number interface{ ~int | ~float64 }
 
-// scale is compiled once per shape: Go describes value and product by
-// the shape, and the dictionary says what type each really has.
-//
+
+
+
 //go:noinline
 func scale[T number](checkpoint string, value T, factor T) T {
 	product := value * factor
@@ -232,8 +232,8 @@ func scale[T number](checkpoint string, value T, factor T) T {
 	return product
 }
 
-// identity's pointers share one shape whatever they point to.
-//
+
+
 //go:noinline
 func identity[T any](checkpoint string, value T) T {
 	truth(checkpoint, "value", "type", fmt.Sprintf("%T", value))
@@ -241,18 +241,18 @@ func identity[T any](checkpoint string, value T) T {
 	return value
 }
 
-// pieces takes values Go passes in registers, which its code describes in
-// pieces; the tests stop at its entry rather than in reached's caller.
-//
+
+
+
 //go:noinline
 func pieces(text string, numbers []int, boxed any, pair Point, ratio complex128) int {
 	return len(text) + len(numbers) + pair.X + len(fmt.Sprint(boxed)) + int(real(ratio))
 }
 
-// returning returns a value in each kind of place Go's register ABI
-// gives one: integer and floating-point registers, both of a complex
-// number's, the words of a string, an interface, and a struct.
-//
+
+
+
+
 //go:noinline
 func returning(n int) (count int, ok bool, ratio float64, wave complex128, text string, failure error, pair Point) {
 	count, ok, ratio, wave, text, pair = n*2, true, 1.5, complex(0.5, -2), "go", Point{X: n, Y: -n}
@@ -269,10 +269,10 @@ func returning(n int) (count int, ok bool, ratio float64, wave complex128, text 
 	return
 }
 
-// returningOnStack returns an array of more than one element, which the
-// ABI puts on the stack, between results in registers, and more integers
-// than it has registers for, the last of which goes on the stack too.
-//
+
+
+
+
 //go:noinline
 func returningOnStack(n int) (grid [3]int, label string, a, b, c, d, e, f, g, last int) {
 	grid, label = [3]int{n, n + 1, n + 2}, "stack"
@@ -287,9 +287,9 @@ func returningOnStack(n int) (grid [3]int, label string, a, b, c, d, e, f, g, la
 	return
 }
 
-// returningDeferred's deferred call changes its result after the return
-// statement sets it.
-//
+
+
+
 //go:noinline
 func returningDeferred(n int) (total int) {
 	defer func() { total *= 10 }()
@@ -298,9 +298,9 @@ func returningDeferred(n int) (total int) {
 	return n
 }
 
-// returningGeneric returns an unnamed result of the shape its code was
-// compiled for.
-//
+
+
+
 //go:noinline
 func returningGeneric[T any](value T) T {
 	truth("returned-generic", "~r0", "int", value)

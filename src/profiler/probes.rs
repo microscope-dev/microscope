@@ -1,13 +1,3 @@
-//! Instrumentation: the sites a program compiled in with microscope's probes
-//! SDK, and the records its threads write to rings in its own memory.
-//!
-//! The ABI is the SDK's `abi` module. This module is pure: it parses a
-//! module's sites from its file, validates what the collector reads of a
-//! program's memory, and turns records into zones, labels, plots, and
-//! markers. A program can make its own instrumentation wrong, and every
-//! record that breaks the ABI is counted, but nothing it writes can crash
-//! or stall microscope.
-
 use std::collections::BTreeMap;
 use std::ops::Range;
 
@@ -21,35 +11,25 @@ use crate::capture::records::{
 
 use crate::model::Tid;
 
-/// A module's instrumentation: where its control block links, and its
-/// sites.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Table {
     pub control: u64,
 
-    /// Its ABI version, from 2 of which the program may define sites as it
-    /// runs.
     pub abi: u16,
     pub sites: Vec<SiteRecord>,
 }
 
-/// One site, as its module's file describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SiteRecord {
-    /// What records call it: a static site's state byte's offset from the
-    /// control block, or a run-time site's key.
     pub key: u32,
     pub kind: u8,
     pub line: u32,
     pub name: String,
     pub file: String,
 
-    /// Where its state byte links.
     pub state: u64,
 }
 
-/// The `N` bytes at `offset` of `bytes`. Every caller checks the length
-/// first, so the zeros past the end are never read.
 fn field<const N: usize>(bytes: &[u8], offset: usize) -> [u8; N] {
     bytes
         .get(offset..)
@@ -58,13 +38,10 @@ fn field<const N: usize>(bytes: &[u8], offset: usize) -> [u8; N] {
         .unwrap_or([0; N])
 }
 
-/// The longest name or file a site may have.
 const MOST_NAME: u32 = abi::MOST_SITE_TEXT;
 
-/// The most records one event takes: a longest text and its record.
 pub const MOST_EVENT_RECORDS: u64 = 1 + abi::MOST_TEXT.div_ceil(15) as u64;
 
-/// A module's instrumentation, if its file has any.
 pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
     let Some(control) = file.section_by_name("microscope_probe_control") else {
         return Ok(None);
@@ -87,7 +64,6 @@ pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
         return Err("its site table is cut short".into());
     }
 
-    // The bytes a site names, from whichever section holds them.
     let bytes = |address: u64, length: u32| {
         file.sections().find_map(|section| {
             section
@@ -153,8 +129,6 @@ pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
     Ok(Some(table))
 }
 
-/// The ABI version of the control block `block`: 1, without run-time
-/// sites, or 2.
 fn version(block: &[u8]) -> Result<u16, String> {
     if block.len() < abi::CONTROL_SIZE || block.first_chunk() != Some(&abi::MAGIC) {
         return Err("its control block is not one".into());
@@ -170,8 +144,6 @@ fn version(block: &[u8]) -> Result<u16, String> {
     Ok(version)
 }
 
-/// The key of a static site of ABI `version` whose state byte is `offset`
-/// from its control block. From ABI 2 it leaves run-time sites theirs.
 fn static_key(version: u16, offset: i64) -> Option<u32> {
     let near = version < 2 || (-abi::MOST_STATIC_OFFSET..abi::MOST_STATIC_OFFSET).contains(&offset);
     i32::try_from(offset)
@@ -180,7 +152,6 @@ fn static_key(version: u16, offset: i64) -> Option<u32> {
         .map(i32::cast_unsigned)
 }
 
-/// How many run-time sites the table whose header is `bytes` counts.
 pub fn runtime_sites(bytes: &[u8]) -> Result<u32, &'static str> {
     if bytes.len() < abi::SITES_HEADER
         || bytes.first_chunk() != Some(&abi::SITES_MAGIC.to_le_bytes())
@@ -194,13 +165,10 @@ pub fn runtime_sites(bytes: &[u8]) -> Result<u32, &'static str> {
     Ok(word(12).min(word(8)).min(most))
 }
 
-/// Where the run-time site `index` of the table at `table` lies.
 pub const fn runtime_site_address(table: u64, index: u32) -> u64 {
     table + (abi::SITES_HEADER + index as usize * abi::RUNTIME_SITE_SIZE) as u64
 }
 
-/// The run-time site `index` of the table at `table`, from its `record`;
-/// `text` reads the bytes of its name and file from the program.
 pub fn runtime_site(
     table: u64,
     index: u32,
@@ -238,28 +206,19 @@ pub fn runtime_site(
     })
 }
 
-/// What a control block says, past its magic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Control {
-    /// How many of the registry's slots threads took.
     pub rings: u32,
 
-    /// Where its run-time sites are, or zero.
     pub sites: u64,
     pub dropped: u64,
     pub exiting: bool,
 
-    /// What microscope last set its sites to, unless the program switched
-    /// them off: zero is off.
     pub enable: u32,
 
-    /// Whether the program switched itself on before microscope found it,
-    /// as a program a recording starts does: it is on, and its timeout is
-    /// zero, which microscope never writes (`abi::RECORDER`).
     pub armed: bool,
 }
 
-/// Reads a control block's first [`abi::CONTROL_SIZE`] bytes.
 pub fn control(bytes: &[u8]) -> Result<Control, &'static str> {
     if bytes.len() < abi::CONTROL_SIZE || bytes.first_chunk() != Some(&abi::MAGIC) {
         return Err("the control block is not one");
@@ -280,14 +239,11 @@ pub fn control(bytes: &[u8]) -> Result<Control, &'static str> {
     })
 }
 
-/// A ring's header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RingHeader {
-    /// Its size, as a power of two of records.
     pub size: u8,
     pub clock: u16,
 
-    /// The thread that took it.
     pub thread: Tid,
     pub state: u32,
     pub interrupted: u64,
@@ -300,7 +256,6 @@ impl RingHeader {
     }
 }
 
-/// Reads a ring's header.
 pub fn ring_header(bytes: &[u8]) -> Result<RingHeader, &'static str> {
     if bytes.len() < abi::RING_HEADER {
         return Err("a ring's header is cut short");
@@ -324,8 +279,6 @@ pub fn ring_header(bytes: &[u8]) -> Result<RingHeader, &'static str> {
         return Err("a ring has an unknown state");
     }
 
-    // A thread sets its ring's clock as it takes the ring, so only a ring
-    // whose records are read has one.
     let [clock] = field(bytes, 6);
     let clock = u16::from(clock);
     if matches!(state, abi::RING_ACTIVE | abi::RING_RETIRED)
@@ -345,8 +298,6 @@ pub fn ring_header(bytes: &[u8]) -> Result<RingHeader, &'static str> {
     })
 }
 
-/// The positions of a ring to copy, from `tail` to the head, and how many
-/// before them the ring no longer holds.
 pub const fn copy_span(tail: u64, header: RingHeader) -> (Range<u64>, u64) {
     let start = if header.head.saturating_sub(tail) > header.capacity() {
         header.head - header.capacity()
@@ -354,7 +305,6 @@ pub const fn copy_span(tail: u64, header: RingHeader) -> (Range<u64>, u64) {
         tail
     };
 
-    // A head that went back is not the ring's: nothing is copied.
     let end = if header.head < start {
         start
     } else {
@@ -364,15 +314,10 @@ pub const fn copy_span(tail: u64, header: RingHeader) -> (Range<u64>, u64) {
     (start..end, start.saturating_sub(tail))
 }
 
-/// The first position still whole once the head has moved to `head`
-/// while the ring was copied: the thread may be writing over every slot
-/// below it.
 pub const fn first_whole(head: u64, size: u8) -> u64 {
     (head + MOST_EVENT_RECORDS).saturating_sub(1 << size)
 }
 
-/// Where positions `span` lie in a ring's records, in bytes from the
-/// first record: one run, or two when it wraps.
 pub fn slots(span: &Range<u64>, size: u8) -> [Range<usize>; 2] {
     let capacity = 1_u64 << size;
     let count = (span.end - span.start).min(capacity);
@@ -390,38 +335,30 @@ pub fn slots(span: &Range<u64>, size: u8) -> [Range<usize>; 2] {
     }
 }
 
-/// The bytes of `records` records, as a ring holds no more than fit.
 pub fn record_bytes(records: u64) -> usize {
     usize::try_from(records)
         .unwrap_or(usize::MAX)
         .saturating_mul(abi::RECORD)
 }
 
-/// One event a ring held.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decoded {
-    /// In the ring's clock.
     pub time: u64,
     pub key: u32,
     pub kind: u8,
 
-    /// A plot's value.
     pub value: f64,
 
-    /// A message's or label's text, in [`Decoder::text`].
     pub text: Range<usize>,
 }
 
-/// Decodes rings' records into events, counting what breaks the ABI.
 #[derive(Debug, Default)]
 pub struct Decoder {
     pub events: Vec<Decoded>,
     pub text: Vec<u8>,
 
-    /// Records that broke the ABI.
     pub malformed: u64,
 
-    /// Records that continued an event whose first record was overwritten.
     pub orphaned: u64,
 }
 
@@ -431,8 +368,6 @@ impl Decoder {
         self.text.clear();
     }
 
-    /// Decodes `records`, in position order: the first may continue an
-    /// event whose start the ring no longer holds.
     pub fn decode(&mut self, records: &[u8]) {
         let (records, _) = records.as_chunks::<{ abi::RECORD }>();
         let kind = |record: &[u8; abi::RECORD]| record[12];
@@ -453,7 +388,6 @@ impl Decoder {
                 text: 0..0,
             };
 
-            // The records that continue it.
             let more = match event.kind {
                 abi::ZONE_BEGIN | abi::ZONE_END | abi::FRAME | abi::LABEL_END | abi::TRIGGER => 0,
                 abi::PLOT => 1,
@@ -474,14 +408,12 @@ impl Decoder {
                 .take_while(|record| kind(record) == abi::CONTINUED)
                 .count();
             if continued < more {
-                // Its continuation is not there; what follows is another.
                 self.malformed += 1 + continued as u64;
                 index += continued;
                 continue;
             }
 
             let start = self.text.len();
-            // continued == more, so these records are there.
             for record in records.get(index..index + more).unwrap_or_default() {
                 self.text.extend_from_slice(&record[..12]);
                 self.text.extend_from_slice(&record[13..]);
@@ -510,7 +442,6 @@ impl Decoder {
         }
     }
 
-    /// An event's text.
     pub fn text(&self, event: &Decoded) -> &str {
         self.text
             .get(event.text.clone())
@@ -519,17 +450,12 @@ impl Decoder {
     }
 }
 
-/// Pairs of the time-stamp counter and `CLOCK_MONOTONIC`, which turn the
-/// one into the other between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Anchors {
     previous: (u64, u64),
     latest: (u64, u64),
 }
 
-/// How far apart anchors are kept: far enough that their readings' noise
-/// is a small part of the rate, near enough that the clock's adjustment
-/// is not.
 const ANCHOR_SPACING: u64 = 50_000_000;
 
 impl Anchors {
@@ -549,7 +475,6 @@ impl Anchors {
         }
     }
 
-    /// The monotonic time of a counter's reading.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -567,7 +492,6 @@ impl Anchors {
     }
 }
 
-/// One event, as a capture's rows name it.
 #[derive(Debug, Clone, Copy)]
 pub struct Event<'a> {
     pub time: i64,
@@ -577,53 +501,39 @@ pub struct Event<'a> {
     pub text: &'a str,
 }
 
-/// A zone that began and has not ended.
 #[derive(Debug, Clone, Copy)]
 struct Open {
     site: u32,
     start: i64,
     value: u32,
 
-    /// When the thread's records were first lost while it was open: its
-    /// end may be among them, or still to come.
     lost_at: Option<i64>,
 }
 
-/// One thread's open zones, and what is known of its records.
 #[derive(Debug, Clone, Default)]
 struct Thread {
     open: Vec<Open>,
 
-    /// Whether records were lost before its next event.
     lost: bool,
 
-    /// When its records were last lost: a zone that ends with no begin
-    /// began before then.
     unknown_since: Option<i64>,
     latest: i64,
 }
 
-/// Every thread's open zones and labels: what turns begins and ends into
-/// spans. It never repairs what does not nest; it flags it.
 #[derive(Debug, Clone, Default)]
 pub struct Stacks {
     threads: BTreeMap<u32, Thread>,
 }
 
 impl Stacks {
-    /// Says that the thread's records were lost before the next it writes:
-    /// overwritten, or written before microscope began reading them.
     pub fn lost(&mut self, thread: u32) {
         self.threads.entry(thread).or_default().lost = true;
     }
 
-    /// Applies one of a thread's events, in its order.
     pub fn apply(&mut self, builder: &mut CaptureBuilder, thread: u32, event: &Event<'_>) {
         let state = self.threads.entry(thread).or_default();
         let time = event.time.max(state.latest);
         state.latest = time;
-        // A zone open across a loss stays open: its end, when read,
-        // closes it whole but flagged, rather than as a second zone.
         if std::mem::take(&mut state.lost) {
             for open in &mut state.open {
                 open.lost_at.get_or_insert(time);
@@ -657,8 +567,6 @@ impl Stacks {
         }
     }
 
-    /// Ends a thread's zones where its records end: it exited, or its ring
-    /// went to another.
     pub fn ended(&mut self, builder: &mut CaptureBuilder, thread: u32) {
         if let Some(state) = self.threads.remove(&thread) {
             for open in state.open {
@@ -667,8 +575,6 @@ impl Stacks {
         }
     }
 
-    /// Ends every open zone at `time` in `builder`, which the recording
-    /// ends at, leaving them open here.
     pub fn close(&self, builder: &mut CaptureBuilder, time: i64) {
         for (&thread, state) in &self.threads {
             for &open in &state.open {
@@ -678,13 +584,8 @@ impl Stacks {
     }
 }
 
-/// Ends the zone of `site` at `time`. Zones it holds that are still open
-/// end with it, flagged; an end with no begin is a zone that began before
-/// the thread's records were lost, or, if none were, a flagged instant.
 fn end(builder: &mut CaptureBuilder, thread: u32, state: &mut Thread, site: u32, time: i64) {
     if let Some(position) = state.open.iter().rposition(|open| open.site == site) {
-        // Zones open since before a loss ended in it, unseen; others
-        // began inside this one and failed to end before it.
         for open in state.open.drain(position + 1..).rev() {
             let flags = if open.lost_at.is_some() {
                 0
@@ -715,8 +616,6 @@ fn end(builder: &mut CaptureBuilder, thread: u32, state: &mut Thread, site: u32,
 
     match state.unknown_since {
         Some(since) => {
-            // Its begin was lost, after every zone still open from before
-            // the loss began, so only those begun since fail to nest.
             while let Some(open) = state.open.pop_if(|open| open.lost_at.is_none()) {
                 builder.zone(thread, unended(open, time, ZONE_MISMATCHED));
             }
@@ -735,8 +634,6 @@ fn end(builder: &mut CaptureBuilder, thread: u32, state: &mut Thread, site: u32,
     }
 }
 
-/// A zone whose end was not seen, ending at `end`, or where the thread's
-/// records were lost, if they were while it was open.
 fn unended(open: Open, end: i64, flags: u32) -> Zone {
     let end = open.lost_at.map_or(end, |lost| lost.min(end));
     zone(open, end, flags | ZONE_ENDED_UNSEEN)
@@ -766,8 +663,6 @@ mod tests {
     use super::*;
     use crate::capture::records::ZONE_FLAGS;
 
-    /// One event a reference writer of the ABI writes: its kind and key,
-    /// and a plot's value or a message's or label's text.
     #[derive(Debug, Clone)]
     struct Written {
         kind: u8,
@@ -776,8 +671,6 @@ mod tests {
         text: Vec<u8>,
     }
 
-    /// The records of event `index`, as the ABI lays them out, its time
-    /// its index.
     fn records(index: usize, event: &Written) -> Vec<[u8; abi::RECORD]> {
         let (argument, more) = match event.kind {
             abi::PLOT => (0, event.value.to_le_bytes().to_vec()),
@@ -802,8 +695,6 @@ mod tests {
         all
     }
 
-    /// Text of any length a record holds, some of it of characters of
-    /// more than a byte.
     fn text() -> impl Strategy<Value = Vec<u8>> {
         let text = prop_oneof![
             3 => "[a-z]{0,20}",
@@ -861,8 +752,6 @@ mod tests {
         ]
     }
 
-    /// A writer that publishes each event's records by moving the head
-    /// past them, one record a step, and so may be caught between.
     struct Writer {
         slots: Vec<[u8; abi::RECORD]>,
         pending: std::collections::VecDeque<[u8; abi::RECORD]>,
@@ -930,9 +819,6 @@ mod tests {
                     writer.step();
                 }
 
-                // Copied as the collector copies it, a slot at a time, the
-                // thread writing on between; and whether each position's
-                // slot still held it when copied.
                 let header = RingHeader { size, clock: 0, thread: Tid::new(0), state: abi::RING_ACTIVE, interrupted: 0, head: writer.head };
                 let (span, mut lost) = copy_span(tail, header);
                 let mut copied = Vec::new();
@@ -976,8 +862,6 @@ mod tests {
                     }
                 }
 
-                // A pending event holds at most so many records: the thread
-                // has reached no slot of a position this far below the head.
                 let reach = (writer.head + MOST_EVENT_RECORDS).saturating_sub(capacity);
                 let yielded: Vec<usize> = decoder.events.iter().map(|event| event.time as usize).collect();
                 let expected: Vec<usize> = (0..events.len())
@@ -986,7 +870,6 @@ mod tests {
                 prop_assert!(expected.iter().all(|index| yielded.contains(index)), "{:?} of {:?}", yielded, expected);
                 prop_assert!(yielded.windows(2).all(|pair| pair[0] < pair[1]));
 
-                // Every position from the last read is yielded or lost.
                 let read: u64 = yielded.iter().map(|&index| encoded[index].len() as u64).sum();
                 lost += decoder.orphaned - orphaned;
                 prop_assert_eq!(read + lost, span.end - tail);
@@ -997,7 +880,6 @@ mod tests {
         }
     }
 
-    /// One thread's trace: a tree of zones, written as begins and ends.
     fn trace() -> impl Strategy<Value = Vec<(bool, u32)>> {
         let leaf = (0..4_u32).prop_map(|site| vec![(true, site), (false, site)]);
         leaf.prop_recursive(4, 64, 4, |inner| {
@@ -1045,8 +927,6 @@ mod tests {
             let mut stacks = Stacks::default();
             let mut read = 0;
 
-            // The true zones whose begin and end were both read with no loss
-            // between them, by site, start, and end.
             let mut whole = std::collections::BTreeSet::new();
             let mut open: Vec<(u32, i64, bool)> = Vec::new();
 
@@ -1108,10 +988,6 @@ mod tests {
         }
     }
 
-    /// A call whose thread loses records while it runs, as a busy
-    /// traced program's does, is one zone, from its begin to its end,
-    /// flagged for what it lost; a call inside it whose end was lost
-    /// ends where the records were.
     #[test]
     fn a_zone_open_across_a_loss_is_one_zone() {
         let mut builder = CaptureBuilder::new();
@@ -1135,7 +1011,6 @@ mod tests {
 
         apply(&mut stacks, &mut builder, 10, outer, abi::ZONE_BEGIN);
         apply(&mut stacks, &mut builder, 20, inner, abi::ZONE_BEGIN);
-        // The inner call's end, and whatever came after it, are lost.
         stacks.lost(thread);
         apply(&mut stacks, &mut builder, 50, inner, abi::ZONE_BEGIN);
         apply(&mut stacks, &mut builder, 60, inner, abi::ZONE_END);
@@ -1165,7 +1040,6 @@ mod tests {
         assert_eq!(zones, expected);
     }
 
-    /// Times between two anchors are the line between them.
     #[test]
     fn counter_readings_become_the_clock_between_anchors() {
         let mut anchors = Anchors::new((1_000, 5_000_000_000));
@@ -1180,9 +1054,6 @@ mod tests {
         );
     }
 
-    /// A ring whose records are on a clock the ABI does not name breaks it,
-    /// as a ring of an unknown size or state does: its times are not read
-    /// as some other clock's. A ring no thread has taken has no clock yet.
     #[test]
     fn a_ring_on_an_unknown_clock_breaks_the_abi() {
         let header = |state: u32, clock: u8| {
@@ -1210,9 +1081,6 @@ mod tests {
         }
     }
 
-    /// A run-time site reads as the ABI lays it out, by its key, its state
-    /// byte inside its record; what breaks the ABI is refused, never read
-    /// past or guessed at.
     #[test]
     fn run_time_sites_read_as_the_abi_lays_them_out_or_are_refused() {
         let mut header = [0; abi::SITES_HEADER];
@@ -1274,8 +1142,6 @@ mod tests {
         assert!(runtime_site(0x1000, last, &record, texts).is_err());
     }
 
-    /// A control block of ABI 1, which programs built before run-time sites
-    /// carry, reads as one of ABI 2 does; no other version does.
     #[test]
     fn control_blocks_of_abi_1_and_2_are_read() {
         let block = |version: u16| {
@@ -1291,9 +1157,6 @@ mod tests {
         assert!(version(&block(2)[..32]).is_err());
     }
 
-    /// From ABI 2 a static site's state byte lies within 2^30 of its control
-    /// block, so its key never meets a run-time site's; ABI 1 keeps the
-    /// whole `i32`.
     #[test]
     fn static_keys_leave_run_time_sites_their_keys_from_abi_2() {
         let far = abi::MOST_STATIC_OFFSET;

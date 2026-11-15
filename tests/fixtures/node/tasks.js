@@ -1,25 +1,25 @@
-// Work a Node process's event loops wait on, and what Node itself says of
-// it: a TCP server, timeouts, an interval, an unref'd timeout, a pending
-// file read, a child process, a message port, a worker's own timer, and two
-// thread-pool jobs, an open of the FIFO its first argument names, which
-// blocks, and a long hash.
-//
-// Before its checkpoint the main thread prints, from async_hooks, which
-// sees each resource Node creates as Node numbers it, one line for each
-// live resource of a type Node keeps in an Environment's lists or its
-// timer lists:
-//
-//     TRUTH  task  ASYNC-ID  TYPE  TRIGGER-ID  REFED  CALLBACK  LINE
-//
-// REFED is 1 or 0 where the fixture can ask (hasRef()), else -. CALLBACK
-// is the name of the fixture's function Node will call for it, and LINE
-// the line its source begins on in this file, or - for a resource whose
-// callback is Node's own. For each libuv pool thread that is not waiting
-// in a futex, as /proc says, it prints
-//
-//     TRUTH  pool  NATIVE-ID
-//
-// The worker reports its timer's async id as the value `timer` at park().
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 'use strict';
 
@@ -31,14 +31,14 @@ const net = require('node:net');
 const threads = require('node:worker_threads');
 const truth = require('./truth.js');
 
-// The types an Environment keeps in its handle, request, or timer lists.
+
 const LISTED = new Set(['TCPSERVERWRAP', 'PIPEWRAP', 'PROCESSWRAP', 'MESSAGEPORT',
   'FSREQCALLBACK', 'Timeout']);
 
-// The futex system call, which an idle pool thread waits in.
+
 const FUTEX = 202;
 
-// How long the fixture waits for its pool jobs to start.
+
 const POOL_DEADLINE_MS = 30000;
 
 if (!threads.isMainThread) {
@@ -78,8 +78,8 @@ if (!threads.isMainThread) {
   const timeout = named('sessionTimeout', () => setTimeout(function sessionTimeout() {}, 30000));
   const interval = named('poll', () => setInterval(function poll() {}, 5000));
   const idle = named('idleTimer', () => setTimeout(function idleTimer() {}, 60000).unref());
-  // Opening a FIFO for reading blocks until a writer opens it, which none
-  // does.
+
+
   named('configOpened', () => fs.open(fifo, 'r', function configOpened() {}));
   const child = named(null, () => childProcess.spawn(process.execPath,
     ['-e', 'process.stdin.resume()'], {stdio: ['pipe', 'ignore', 'ignore'], env: {}}));
@@ -92,8 +92,8 @@ if (!threads.isMainThread) {
   const refs = new Map([[+timeout, timeout.hasRef()], [+interval, interval.hasRef()],
     [+idle, idle.hasRef()]]);
 
-  // Busy pool threads: libuv names its threads, and one blocked anywhere
-  // but a futex, or running, has a job.
+
+
   const busyPool = () => fs.readdirSync('/proc/self/task').filter((id) => {
     const name = fs.readFileSync(`/proc/self/task/${id}/comm`, 'utf8').trim();
     const call = fs.readFileSync(`/proc/self/task/${id}/syscall`, 'utf8');

@@ -1,11 +1,3 @@
-//! Prints every answer a program's debug information gives.
-//!
-//! The answers are in one canonical text form, so that two loaders'
-//! answers can be compared with `diff`. Identifiers are an implementation's own numbering, so the dump
-//! names every function, instance, symbol, file, and type by what it is,
-//! never by its number, and prints a list in its own order only where the
-//! order is itself an answer.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::Write;
@@ -54,13 +46,10 @@ impl Section {
     ];
 }
 
-/// What to dump.
 #[derive(Debug, Clone)]
 pub struct Options {
     pub sections: BTreeSet<Section>,
 
-    /// How many addresses within each code instance to inspect variables
-    /// at, besides its entry and its last instruction.
     pub variable_addresses: usize,
 }
 
@@ -73,7 +62,6 @@ impl Default for Options {
     }
 }
 
-/// Loads `path` as the debugger loads a module and dumps its answers.
 pub fn dump(path: &Path, options: &Options, out: &mut dyn Write) -> anyhow::Result<()> {
     let info = crate::debug_info::load_module(
         path,
@@ -83,7 +71,6 @@ pub fn dump(path: &Path, options: &Options, out: &mut dyn Write) -> anyhow::Resu
     dump_info(&info, options, out)
 }
 
-/// Dumps the answers of debug information already loaded.
 pub(crate) fn dump_info(
     info: &crate::debug_info::DebugInfo,
     options: &Options,
@@ -116,7 +103,6 @@ pub(crate) fn dump_info(
     Ok(())
 }
 
-/// Stable names for an image's numbered entities.
 struct Names {
     types: Vec<String>,
     functions: Vec<String>,
@@ -126,7 +112,6 @@ struct Names {
     globals: Vec<String>,
     sections: Vec<String>,
 
-    /// Line sequences, numbered by their first row.
     sequences: BTreeMap<u64, usize>,
     pattern: Regex,
 }
@@ -255,7 +240,6 @@ impl Names {
         })
     }
 
-    /// Text with every identifier replaced by what it names.
     fn canon(&self, text: &str) -> String {
         let name = |table: &[String], index: &str| {
             index
@@ -272,7 +256,6 @@ impl Names {
                 }
 
                 if captures.get(4).is_some() {
-                    // An entity's own number, which its name replaces.
                     return String::new();
                 }
 
@@ -310,7 +293,6 @@ impl Names {
     }
 }
 
-/// The variant of a type's kind, without its fields.
 const fn kind_tag(kind: &TypeKind) -> &'static str {
     match kind {
         TypeKind::Base(_) => "base",
@@ -333,7 +315,6 @@ const fn kind_tag(kind: &TypeKind) -> &'static str {
 }
 
 struct Dumper<'a> {
-    /// The loaded module, which the variables and unwind sections read.
     info: Option<&'a DebugInfo>,
     image: &'a ModuleImage,
     names: &'a Names,
@@ -360,7 +341,6 @@ impl<'a> Dumper<'a> {
         writeln!(self.out, "{text}")
     }
 
-    /// Prints lines whose order is no answer, sorted.
     fn sorted(&mut self, mut lines: Vec<String>) -> std::io::Result<()> {
         lines.sort_unstable();
         for line in lines {
@@ -631,8 +611,6 @@ impl<'a> Dumper<'a> {
         Ok(())
     }
 
-    /// Every address an answer may change at, and points inside each
-    /// range: row and range boundaries, their last bytes, and midpoints.
     fn addresses_of_interest(&self) -> BTreeSet<u64> {
         let image = self.image;
         let mut addresses = BTreeSet::new();
@@ -699,7 +677,6 @@ impl<'a> Dumper<'a> {
         for address in self.addresses_of_interest() {
             let at = ImageAddress::new(address);
 
-            // A synthetic image, which only tests dump, has no call sites.
             let call_site = self.info.map_or_else(
                 || "-".to_owned(),
                 |info| {
@@ -736,9 +713,6 @@ impl<'a> Dumper<'a> {
                     .join(" > ")
             };
 
-            // Offsets follow from the address and what contains it, so the
-            // answer stays the same from one address to the next until what
-            // contains it changes.
             let text = format!(
                 "fn {} | physical {} | inline {} | source {} | symbol {} | section {} | data {} | role {:?} | resume {} | boundaries {} | call {}",
                 location
@@ -1153,16 +1127,11 @@ fn runtime_error(error: &VariableRuntimeError) -> String {
     }
 }
 
-/// A stopped thread no process backs: registers, memory, and addresses
-/// that are fixed functions of their names, so that every load sees the
-/// same program state.
 struct Synthetic;
 
-/// Where the synthetic process maps its image.
 const BIAS: u64 = 0x5555_0000_0000;
 
 const fn pattern(address: u64) -> u8 {
-    // Small byte values keep lengths and counts read from memory small.
     ((address.wrapping_mul(0x9e37_79b9) >> 13) & 0x1f).to_le_bytes()[0]
 }
 
@@ -1184,7 +1153,6 @@ impl VariableRuntime for Synthetic {
     ) -> Result<crate::debug_info::VariableRegister, VariableRuntimeError> {
         let register = register.number();
 
-        // General registers are words; the rest, vector registers.
         let bits: u16 = if register < 17 { 64 } else { 128 };
         let value = 0x7fff_0000_u64 + u64::from(register) * 0x100;
         let mut contents = value.to_le_bytes().to_vec();
@@ -1245,8 +1213,6 @@ mod tests {
     use crate::model::ModuleMetadata;
     use crate::{AddressRange, ImageAddress, ModuleImage, SourceFileId};
 
-    /// The line sections' dump of an image with these rows, each line's
-    /// range running to the next row.
     fn dumped(rows: &[Row]) -> String {
         let mut files = Files::default();
         files.intern(PathBuf::from("/src/a.c"));
@@ -1298,9 +1264,6 @@ mod tests {
 
     type Change = (&'static str, fn(&mut Row));
 
-    /// Dumps are compared to find what changed, so a part of a row the
-    /// dump left out could change unseen: changing any part of any row
-    /// changes it.
     #[test]
     fn the_dump_shows_every_part_of_every_row() {
         let row = |address, line| Row {

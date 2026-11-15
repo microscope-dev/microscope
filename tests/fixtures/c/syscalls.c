@@ -1,5 +1,5 @@
-// System calls for the syscall tracer's tests, one workload per mode. Paths
-// are relative to the working directory the test chooses.
+
+
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -48,8 +48,8 @@ static void *thread_main(void *argument) {
 }
 
 static void family(void) {
-    // SIGCHLD stays pending: delivered, it lands before or after wait4
-    // returns as the child's exit races it, and two traces would differ.
+
+
     sigset_t blocked;
     sigemptyset(&blocked);
     sigaddset(&blocked, SIGCHLD);
@@ -66,8 +66,8 @@ static void family(void) {
     pthread_join(thread, NULL);
 }
 
-// Threads, then children, one after another, each gone at once: each one's
-// first stop races the event of the call that made it.
+
+
 static void churn(int count) {
     sigset_t blocked;
     sigemptyset(&blocked);
@@ -182,22 +182,22 @@ static int group_exits(const char *mode, int workers, int rounds) {
 }
 
 static void block(void) {
-    // The test sees this line, then the read blocked in flight, then
-    // closes standard input.
+
+
     syscall(SYS_write, 1, "ready\n", 6);
     char byte;
     while (read(0, &byte, 1) > 0) {
     }
 }
 
-// The sleeper's pipe, its thread id, and how many reads of the pipe it has
-// begun.
+
+
 static int wake[2];
 static int sleeper_tid;
 static int begun;
 static int first_cpu, second_cpu;
 
-// Waits for a byte, in the read the test finds by this function.
+
 static __attribute__((noinline)) void wait_here(void) {
     char byte;
     if (read(wake[0], &byte, 1) != 1) {
@@ -225,8 +225,8 @@ static void *sleeper(void *unused) {
     return NULL;
 }
 
-// Waits until the sleeper has begun its `count`th read and sleeps in it,
-// as its state in /proc says.
+
+
 static void wait_asleep(int count) {
     while (__atomic_load_n(&begun, __ATOMIC_SEQ_CST) < count) {
         sched_yield();
@@ -245,7 +245,7 @@ static void wait_asleep(int count) {
             _exit(43);
         }
         stat[got] = 0;
-        // The state follows the name, which may hold spaces and parentheses.
+
         char *name_end = strrchr(stat, ')');
         if (name_end && name_end[1] == ' ' && name_end[2] == 'S') {
             break;
@@ -255,10 +255,10 @@ static void wait_asleep(int count) {
     close(fd);
 }
 
-// Once released, a sleeper thread reads a pipe `rounds` times, each read
-// begun on one CPU and returning on another, as the main thread moves it
-// while it sleeps. Then it begins a read that never returns; the main
-// thread says "blocked" and pauses until killed.
+
+
+
+
 static void migrate(int rounds) {
     dprintf(1, "READY\n");
     char byte;
@@ -301,13 +301,13 @@ static void migrate(int rounds) {
     }
 }
 
-// The second argument, which the kernel ignores, of a getpgid whose entry,
-// or exit, the bpf-faults build of the BPF engine skips, as the kernel
-// skips a program it finds already running on a CPU.
+
+
+
 #define SKIP_ENTRY 0x5ca1ab1eL
 #define SKIP_EXIT 0x5ca1ab1fL
-// And of one during whose record's making the build has another program on
-// the CPU make a record of its own.
+
+
 #define INTERLEAVE 0x5ca1ab20L
 
 static void *skipped_thread(void *unused) {
@@ -317,9 +317,9 @@ static void *skipped_thread(void *unused) {
     return NULL;
 }
 
-// On the first thread, then on a new one, a getpgid whose entry is
-// skipped, each its thread's first, and one whose exit is, the new
-// thread's last; then one whose entry and exit are both seen.
+
+
+
 static void skipped(void) {
     syscall(SYS_getpgid, 0L, SKIP_ENTRY);
     syscall(SYS_getpgid, 0L, SKIP_EXIT);
@@ -331,15 +331,15 @@ static void skipped(void) {
     syscall(SYS_getpgid, 0L, 0L);
 }
 
-// A getpgid whose record another program interleaves with, then one whose
-// record nothing does.
+
+
 static void interleaved(void) {
     syscall(SYS_getpgid, 0L, INTERLEAVE);
     syscall(SYS_getpgid, 0L, 0L);
 }
 
-// Asks for its parent's pid until a byte arrives on its input, then prints
-// how many times it asked.
+
+
 static void spin(void) {
     if (fcntl(0, F_SETFL, O_NONBLOCK) != 0) {
         _exit(30);
@@ -370,8 +370,8 @@ static void signals(void) {
 }
 
 static void compat(void) {
-    // getpid through the i386 ABI, then through x32's numbering, which
-    // kernels without x32 support fail with ENOSYS.
+
+
     long result;
     __asm__ volatile("int $0x80" : "=a"(result) : "a"(20) : "memory");
     if (result != getpid()) {
@@ -381,8 +381,8 @@ static void compat(void) {
 }
 
 static void dumps(void) {
-    // Data through a pipe, written whole and in parts, read whole and in
-    // parts, for -e read= and -e write= to dump.
+
+
     int pipes[2];
     if (pipe(pipes) != 0) {
         _exit(15);
@@ -411,7 +411,7 @@ static long since(const struct timespec *start) {
     return (now.tv_sec - start->tv_sec) * 1000000000L + now.tv_nsec - start->tv_nsec;
 }
 
-// Runs on its CPU for 2 ms; clock_gettime is the vDSO's, no system call.
+
 static __attribute__((noinline)) void burn(void) {
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
@@ -423,7 +423,7 @@ static __attribute__((noinline)) void burn(void) {
     }
 }
 
-// Has the kernel run its CPU on a call: 4 MiB of random bytes.
+
 static unsigned char pool[4 << 20];
 static __attribute__((noinline)) void draw(void) {
     if (syscall(SYS_getrandom, pool, sizeof pool, 0) != (long)sizeof pool) {
@@ -431,14 +431,14 @@ static __attribute__((noinline)) void draw(void) {
     }
 }
 
-// Blocks in a call for 2 ms.
+
 static __attribute__((noinline)) void rest(void) {
     struct timespec two = {0, 2000000};
     nanosleep(&two, NULL);
 }
 
-// Samples and calls on one thread: time on its CPU, in a call on its CPU,
-// and blocked in a call.
+
+
 static void work(void) {
     for (int round = 0; round < 25; round++) {
         burn();
@@ -498,7 +498,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (strcmp(mode, "pause") == 0) {
-        // Blocked until killed, for a live trace to show in flight.
+
         pause();
         return 0;
     }

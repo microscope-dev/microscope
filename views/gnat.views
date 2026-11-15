@@ -1,12 +1,12 @@
 microscope-views 1
 
-# GNAT's Ada library. Verified against GNAT 15 by
-# tests/fixtures/ada/values.adb.
 
-# An unbounded string's text is its shared string's. GNAT sizes a shared
-# string at run time, which microscope does not read, so the view reads it as
-# GNAT 15 lays it out: its capacity, a reference count, and its length,
-# each 32 bits, then its characters.
+
+
+
+
+
+
 view ada ada__strings__unbounded__unbounded_string {
     let shared = (i32*)reference
     check shared[2] >= 0 && shared[2] <= shared[0]

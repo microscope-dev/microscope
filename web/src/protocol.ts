@@ -1,6 +1,3 @@
-// Typed access to the generated protocol: which methods exist, what each
-// takes, and what each answers.
-
 import type * as P from "./protocol.gen";
 
 export type * from "./protocol.gen";
@@ -8,11 +5,9 @@ export { PROTOCOL_VERSION } from "./protocol.gen";
 
 export type Method = P.Request["method"];
 
-/** The parameters a method takes, or `undefined` for none. */
 export type ParamsOf<M extends Method> =
   Extract<P.Request, { method: M }> extends { params: infer T } ? T : undefined;
 
-/** What each method answers. */
 export interface Results {
   setName: null;
   share: P.ShareLink;
@@ -61,18 +56,18 @@ export interface Results {
   functions: P.Functions;
   resolve: P.Resolved;
   tasks: P.TaskList;
-  /** With the bytes its inputs' numbers and bytes lie in, when any. */
+
   draw: P.Drawing & { payload?: Uint8Array };
   renderer: P.RendererSource;
   renderers: P.RendererList;
   reloadViews: null;
   profile: P.ProfileSummary;
   profileInspect: P.ProfileInspection;
-  /** With the call tree's columns. */
+
   profileTree: P.ProfileTree & { payload?: Uint8Array };
   profileFunctions: P.ProfileFunctions;
   profileTimeline: P.ProfileTimeline;
-  /** With the zone blocks' columns. */
+
   profileZones: P.ProfileZones & { payload?: Uint8Array };
   profileZoneStats: P.ProfileZoneStats;
   profileLines: P.ProfileLines;
@@ -90,16 +85,12 @@ export interface Results {
   syscallInFlight: P.SyscallInFlight;
 }
 
-// Fails to compile when a method has no entry in Results, or Results names
-// one the server does not have.
 type Exactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const resultsCoverEveryMethod: Exactly<keyof Results, Method> = true;
 void resultsCoverEveryMethod;
 
-/** Kinds of failure the page handles, plus the connection's own. */
 export type FailureKind = P.ErrorKind | "disconnected";
 
-/** A request that failed, with the server's explanation. */
 export class RequestError extends Error {
   readonly kind: FailureKind;
 

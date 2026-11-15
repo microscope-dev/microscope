@@ -1,57 +1,32 @@
-//! Reading view files (`docs/views.md`), which needs no program.
-//!
-//! A file is statements in views. Each expression inside is an ordinary
-//! expression in the view dialect, so the parser here finds where each one
-//! ends and hands its text to the expression parser. An expression ends at
-//! the end of its statement, at a `,` or `)` that closes what holds it, at
-//! a `{` or `}`, or before one of the words `or`, `for`, `if`, `else`,
-//! `let`, and the arrow `=>`. A statement ends at a line that begins another statement
-//! or closes the view, so a long expression may continue on the next line.
-//!
-//! An error in one view skips that view; the views after it are still read.
-
 use std::sync::Arc;
 
 use crate::IntegerValue;
 use crate::eval::syntax::Expression;
 
-/// The view language's version, which a file names in its first line.
 pub const VERSION: u32 = 1;
 
-/// The largest view file read, in bytes.
 pub const MAX_FILE_BYTES: usize = 256 * 1024;
 
-/// The most views one file may hold.
 pub const MAX_VIEWS: usize = 1024;
 
-/// The most statements one view may hold.
 const MAX_STATEMENTS: usize = 256;
 
-/// How deeply shapes may nest in `if` branches.
 const MAX_SHAPE_DEPTH: usize = 16;
 
-/// How many members a `record` may have.
 pub const MAX_RECORD_MEMBERS: usize = 64;
 
-/// How many arms a `match` may have.
 const MAX_ARMS: usize = 64;
 
-/// How deeply type patterns may nest in arguments.
 const MAX_PATTERN_DEPTH: usize = 16;
 
-/// The most generators one sequence or map may nest.
 pub const MAX_CLAUSES: usize = 4;
 
-/// What a kernel's name may be, which is also the name of its file.
 pub const KERNEL_NAME: &str = "a kernel's name is 1 to 64 letters, digits, `_`, and `-`";
 
-/// What a renderer's name may be, which is also the name of its file.
 pub const RENDERER_NAME: &str = "a renderer's name is 1 to 64 letters, digits, `_`, and `-`";
 
-/// How many inputs one `visualize` may name.
 pub const MAX_INPUTS: usize = 64;
 
-/// Whether `name` may name a kernel: see [`KERNEL_NAME`].
 #[must_use]
 pub fn is_kernel_name(name: &str) -> bool {
     !name.is_empty()
@@ -61,17 +36,13 @@ pub fn is_kernel_name(name: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || "_-".contains(character))
 }
 
-/// Whether `name` may name a renderer: see [`RENDERER_NAME`].
 #[must_use]
 pub fn is_renderer_name(name: &str) -> bool {
     is_kernel_name(name)
 }
 
-/// Words that end an expression, so a member with one of these names must
-/// be written in backticks.
 const STOP_WORDS: [&str; 5] = ["or", "for", "if", "else", "let"];
 
-/// Words that begin a statement.
 const STATEMENTS: [&str; 13] = [
     "let",
     "type",
@@ -88,7 +59,6 @@ const STATEMENTS: [&str; 13] = [
     "extend",
 ];
 
-/// The languages a view applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
     C,
@@ -101,14 +71,10 @@ pub enum Language {
     Nim,
     Ada,
 
-    /// Python, whose objects' types only their values know.
     Python,
 
-    /// JavaScript, whose objects' classes only their values know, as
-    /// TypeScript's are too.
     JavaScript,
 
-    /// Every compiled language.
     Any,
 }
 
@@ -132,7 +98,6 @@ impl Language {
     }
 }
 
-/// A problem in a view file, at its line and column, counted from one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     pub source: Arc<str>,
@@ -151,36 +116,27 @@ impl std::fmt::Display for Error {
     }
 }
 
-/// A parsed view file: the views it holds, and the problems that kept
-/// others out.
 #[derive(Debug, Clone)]
 pub struct File {
     pub views: Vec<Arc<View>>,
     pub errors: Vec<Error>,
 }
 
-/// One view: which types it matches and how it presents them.
 #[derive(Debug, Clone)]
 pub struct View {
-    /// The file it came from.
     pub source: Arc<str>,
 
-    /// The line of its `view` keyword.
     pub line: u32,
     pub language: Language,
     pub pattern: Pattern,
 
-    /// The language and pattern as written, to name the view by.
     pub header: Arc<str>,
 
-    /// Whether it is an `extend`, which adds to the view that presents
-    /// the type rather than presenting it.
     pub extend: bool,
     pub statements: Vec<Statement>,
 }
 
 impl View {
-    /// The names of the kernels the view calls.
     #[must_use]
     pub fn kernel_names(&self) -> Vec<&str> {
         fn walk<'v>(shape: &'v Shape, names: &mut Vec<&'v str>) {
@@ -212,7 +168,6 @@ impl View {
         names
     }
 
-    /// The names of the renderers the view's `visualize` statements call.
     #[must_use]
     pub fn renderer_names(&self) -> Vec<&str> {
         self.statements
@@ -225,7 +180,6 @@ impl View {
     }
 }
 
-/// An expression and the line it was written on.
 #[derive(Debug, Clone)]
 pub struct Expr {
     pub expression: Expression,
@@ -233,31 +187,23 @@ pub struct Expr {
 }
 
 impl Expr {
-    /// The expression as written.
     #[must_use]
     pub fn text(&self) -> &str {
         self.expression.text().trim()
     }
 }
 
-/// A type a `type` statement names.
 #[derive(Debug, Clone)]
 pub enum TypeExpr {
-    /// A type by name: a captured argument, a `type` statement's name, or
-    /// a program type, with pointers.
     Named { name: String, pointers: u8 },
 
-    /// The type of an expression's value.
     TypeOf(Expr),
 
-    /// One argument of a type, by position.
     Arg { of: Box<Self>, index: u32 },
 
-    /// A type declared inside another, as Zig's `Self.Header`.
     Nested { of: Box<Self>, name: String },
 }
 
-/// One `{expression}` or literal piece of a `summary`.
 #[derive(Debug, Clone)]
 pub enum Piece {
     Literal(String),
@@ -269,17 +215,14 @@ pub enum Piece {
     },
 }
 
-/// A statement of a view's body.
 #[derive(Debug, Clone)]
 pub enum Statement {
-    /// `let NAME = EXPR or EXPR…`: the first alternative that binds.
     Let {
         name: String,
         alternatives: Vec<Expr>,
         line: u32,
     },
 
-    /// `type NAME = TYPE or TYPE…`: the first alternative that resolves.
     Type {
         name: String,
         alternatives: Vec<TypeExpr>,
@@ -301,20 +244,16 @@ pub enum Statement {
     /// `hide NAME, …`: members and fields left out of the children.
     Hide { names: Vec<String>, line: u32 },
 
-    /// `format NAME, … as FORMAT`: members and fields written another way.
     Format {
         names: Vec<String>,
         format: Format,
         line: u32,
     },
 
-    /// `visualize "NAME" { INPUT = EXPR, … }`: a drawing the web page
     /// makes of the value with the renderer `NAME`.
     Visualize(Visualize),
 }
 
-/// A `visualize` statement: the renderer it calls and the inputs it hands
-/// it.
 #[derive(Debug, Clone)]
 pub struct Visualize {
     pub name: String,
@@ -322,8 +261,6 @@ pub struct Visualize {
     pub inputs: Vec<Input>,
 }
 
-/// One input of a `visualize`: the name the renderer reads it by, and
-/// what it is.
 #[derive(Debug, Clone)]
 pub struct Input {
     pub name: String,
@@ -331,53 +268,36 @@ pub struct Input {
     pub value: InputValue,
 }
 
-/// What an input hands the renderer.
 #[derive(Debug, Clone)]
 pub enum InputValue {
-    /// A value, by the first alternative that binds.
     Value(Vec<Expr>),
 
-    /// `bytes(PTR, LEN)`: `LEN` bytes of memory at `PTR`, read at once.
     Bytes { pointer: Expr, length: Expr },
 
-    /// A string in double quotes, which the renderer gets as it is.
     Text(String),
 }
 
-/// How `format` writes a value.
 #[derive(Debug, Clone)]
 pub enum Format {
-    /// An integer in hexadecimal, in its type's width.
     Hex,
 
-    /// An integer as the character it codes.
     Char,
 
-    /// A value's bytes in memory, in hexadecimal.
     Bytes,
 
-    /// An array or slice of bytes as text, when they are valid UTF-8
-    /// without control characters.
     Utf8,
 
-    /// An array or slice of 16-bit units as UTF-16 text.
     Utf16,
 
-    /// An integer as the enumerators of `TYPE` whose bits it sets.
     Flags(TypeExpr),
 
-    /// An integer as the enumerator of `TYPE` it equals.
     Enum(TypeExpr),
 
-    /// An integer count of a unit of time, as a duration.
     Duration(TimeUnit),
 
-    /// An integer count of a unit of time since the Unix epoch, as the UTC
-    /// date and time it is.
     Time(TimeUnit),
 }
 
-/// The unit a `duration` or `time` format counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeUnit {
     Nanoseconds,
@@ -397,7 +317,6 @@ impl TimeUnit {
         })
     }
 
-    /// How many nanoseconds one unit is.
     #[must_use]
     pub const fn nanoseconds(self) -> u128 {
         match self {
@@ -409,39 +328,30 @@ impl TimeUnit {
     }
 }
 
-/// How many elements a sequence or map declares.
 #[derive(Debug, Clone)]
 pub enum Count {
     Known(Expr),
 
-    /// `_`: the generators decide.
     Unknown,
 }
 
-/// `P => EXPR`: how a generator reaches the node after `P`.
 #[derive(Debug, Clone)]
 pub struct Link {
     pub parameter: String,
     pub expression: Expr,
 }
 
-/// The values a clause's variable takes, in order.
 #[derive(Debug, Clone)]
 pub enum Generator {
     /// `range(N)`: 0, 1, …, N - 1.
     Range(Expr),
 
     /// `list(HEAD, P => NEXT)`: HEAD, then each node's next, until a null
-    /// pointer or HEAD again.
     List { head: Expr, next: Link },
 
-    /// `inorder(ROOT, P => LEFT, P => RIGHT)`: a binary tree's nodes, each
-    /// after its left subtree and before its right; a null pointer is an
     /// empty tree.
     Inorder { root: Expr, left: Link, right: Link },
 
-    /// `kernel("NAME", ARG, …)`: the items a kernel yields, each a word
-    /// for each of the clause's variables.
     Kernel {
         name: String,
         line: u32,
@@ -449,16 +359,12 @@ pub enum Generator {
     },
 }
 
-/// What follows a clause's generator, in order: a condition each value
-/// must meet, or a name computed once for each value.
 #[derive(Debug, Clone)]
 pub enum Item {
     Filter(Expr),
     Let { name: String, value: Expr },
 }
 
-/// `for VAR[, VAR…] in GENERATOR [if FILTER | let NAME = EXPR]…`. Only a
-/// kernel's items have several variables.
 #[derive(Debug, Clone)]
 pub struct Clause {
     pub variables: Vec<String>,
@@ -466,7 +372,6 @@ pub struct Clause {
     pub items: Vec<Item>,
 }
 
-/// What a view presents a value as.
 #[derive(Debug, Clone)]
 pub enum Shape {
     /// `text(PTR [, LEN])`.
@@ -475,19 +380,15 @@ pub enum Shape {
     /// `value(EXPR)`: present the value as another.
     Value(Expr),
 
-    /// `empty("TEXT")`.
     /// `empty("TEXT {EXPR} TEXT")`: a value that holds nothing, summarized
-    /// as its text, with each hole's value's summary in its place.
     Empty(Vec<Piece>),
 
-    /// `sequence(COUNT) CLAUSES => ELEMENT`.
     Sequence {
         count: Count,
         clauses: Vec<Clause>,
         element: Expr,
     },
 
-    /// `map(COUNT) CLAUSES => KEY : VALUE`.
     Map {
         count: Count,
         clauses: Vec<Clause>,
@@ -495,82 +396,59 @@ pub enum Shape {
         value: Expr,
     },
 
-    /// `if COND { SHAPE } else { SHAPE }`.
     If {
         condition: Expr,
         then: Box<Self>,
         otherwise: Box<Self>,
     },
 
-    /// `record { NAME = EXPR, … }`: a record of the members it names, each
-    /// a name or a position; or `tuple { … }`, whose members are a tuple's
-    /// elements, in order, whatever their names.
     Record {
         members: Vec<(String, Expr)>,
         tuple: bool,
     },
 
-    /// `dynamic(PTR, TYPE)`: what a pointer points to, as a type that may
     /// be chosen as the program runs.
     Dynamic { pointer: Expr, ty: DynamicType },
 
     /// What a `match` with no `_` arm shows when no arm names its value:
-    /// a problem that says the value.
     Unmatched(Expr),
 }
 
-/// The type a `dynamic` shape presents its pointer's target as.
 #[derive(Debug, Clone)]
 pub enum DynamicType {
-    /// One type, as a `type` statement names it.
     Fixed(TypeExpr),
 
-    /// `arg(TYPE, EXPR)`: the argument of a type at a position the
-    /// program's data holds, as a `std::variant`'s index does.
     Argument { of: TypeExpr, index: Expr },
 
-    /// `TYPE of CODE`: a type that names the type arguments of the
-    /// function whose code `CODE` addresses by its parameters' names.
     Function { ty: TypeExpr, code: Expr },
 }
 
-/// A path segment of a pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Segment {
     Name(String),
 
-    /// `**`: any run of segments, including none.
     AnyRun,
 }
 
-/// A pattern of type identities: `path::base<arguments>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
     pub path: Vec<Segment>,
     pub base: String,
 
-    /// The arguments' patterns, when the pattern has an argument list. A
-    /// type may have more arguments than its pattern lists.
     pub arguments: Option<Vec<ArgumentPattern>>,
 }
 
-/// A pattern of one argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArgumentPattern {
-    /// `_`: anything.
     Wildcard,
 
-    /// A capital name, which captures the argument for the body.
     Capture(String),
 
-    /// An integer argument's value.
     Value(IntegerValue),
 
-    /// A type's pattern.
     Type(Pattern),
 }
 
-/// Parses one view file, named `source`.
 #[must_use]
 pub fn parse(source: &str, text: &str) -> File {
     let source: Arc<str> = source.into();
@@ -621,7 +499,6 @@ pub fn parse(source: &str, text: &str) -> File {
             Err(error) => {
                 errors.push(error);
 
-                // Resume at the next view.
                 parser.position = start;
                 let resumed = parser.skip_to_next_view();
                 debug_assert!(
@@ -643,11 +520,8 @@ struct Parser<'a> {
     text: &'a str,
     position: usize,
 
-    /// The offset of each line's first byte.
     lines: Vec<usize>,
 
-    /// Whether the expressions read are members of braces, which end at a
-    /// line that begins the next member.
     members: bool,
 }
 
@@ -661,7 +535,6 @@ const fn is_word_continue(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-/// Whether the byte before `index` continues a word.
 fn follows_word(bytes: &[u8], index: usize) -> bool {
     index
         .checked_sub(1)
@@ -690,10 +563,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// The line and column of a byte offset, from one.
     fn location(&self, offset: usize) -> (u32, u32) {
         let line = self.lines.partition_point(|&start| start <= offset);
-        // The first line starts at 0, so `line` is at least one.
+
         let start = line
             .checked_sub(1)
             .and_then(|index| self.lines.get(index))
@@ -735,7 +607,6 @@ impl<'a> Parser<'a> {
         self.text.as_bytes().get(self.position).copied()
     }
 
-    /// Skips spaces and comments on this line.
     fn skip_inline(&mut self) {
         while let Some(byte) = self.peek() {
             match byte {
@@ -746,7 +617,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Skips spaces, comments, and line ends.
     fn skip_blank(&mut self) {
         while let Some(byte) = self.peek() {
             match byte {
@@ -764,7 +634,6 @@ impl<'a> Parser<'a> {
             .map_or(self.text.len(), |end| self.position + end);
     }
 
-    /// The word at the cursor, without taking it.
     fn peek_word(&self) -> Option<&'a str> {
         let rest = self.rest();
         let bytes = rest.as_bytes();
@@ -833,14 +702,12 @@ impl<'a> Parser<'a> {
         self.error(format!("expected {expected}, found {found}"))
     }
 
-    /// A name a statement declares.
     fn name(&mut self, what: &str) -> Parsed<String> {
         self.skip_inline();
         let word = self.word();
         word.map(str::to_owned).ok_or_else(|| self.unexpected(what))
     }
 
-    /// `microscope-views 1`.
     fn header(&mut self) -> Parsed<()> {
         self.skip_blank();
         let start = self.position;
@@ -865,10 +732,7 @@ impl<'a> Parser<'a> {
         self.end_of_statement()
     }
 
-    /// Moves past the view the cursor is in, to the next line that begins
-    /// with `view` or `extend`, and returns whether there is one.
     fn skip_to_next_view(&mut self) -> bool {
-        // The view the cursor is at, or in, is skipped first.
         self.position += self.rest().chars().next().map_or(1, char::len_utf8);
         while !self.at_end() {
             let line_start = self
@@ -925,7 +789,6 @@ impl<'a> Parser<'a> {
         self.skip_inline();
         let pattern_start = self.position;
 
-        // A pattern's segments in backticks may hold braces.
         let pattern_end = outside_backticks(self.rest())
             .find(|(_, character)| *character == '{')
             .map(|(end, _)| self.position + end);
@@ -1064,7 +927,7 @@ impl<'a> Parser<'a> {
                 Ok(Statement::Show(self.shape(0)?))
             }
 
-            // A statement-level `if` or `match` chooses between shapes.
+
             "if" | "match" => Ok(Statement::Show(self.shape(0)?)),
             "hide" => {
                 self.position += keyword.len();
@@ -1095,9 +958,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// What follows `visualize`: the renderer's name, then its inputs in
-    /// braces, separated by line ends or commas. Without braces, the one
-    /// input is `values = self`.
     fn visualize(&mut self, line: u32) -> Parsed<Visualize> {
         self.skip_inline();
         let start = self.position;
@@ -1173,8 +1033,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `self`, as the expression of the input a `visualize` without
-    /// braces hands its renderer.
     fn synthetic_self(&self, at: usize) -> Parsed<Expr> {
         Expression::parse_view("self")
             .map(|expression| Expr {
@@ -1184,8 +1042,6 @@ impl<'a> Parser<'a> {
             .map_err(|error| self.error_at(at, error.to_string()))
     }
 
-    /// An expression that is one member of braces, which also ends at a line
-    /// that begins the next member, `NAME =`.
     fn member_expression(&mut self) -> Parsed<Expr> {
         let members = std::mem::replace(&mut self.members, true);
         let expression = self.expression();
@@ -1193,7 +1049,6 @@ impl<'a> Parser<'a> {
         expression
     }
 
-    /// `NAME, …`: one or more names.
     fn names(&mut self, what: &str) -> Parsed<Vec<String>> {
         let mut names = vec![self.name(what)?];
         loop {
@@ -1206,9 +1061,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Where the expression of the hole between `start` and `end` ends,
-    /// and the format it is written in when it ends `as FORMAT`; a cast to
-    /// a type, as `{x as u64}`, is the expression's own.
     fn hole_format(&mut self, start: usize, end: usize) -> (usize, Option<Format>) {
         let hole = &self.text[start..end];
         let Some(at) = hole.rfind(" as ") else {
@@ -1225,9 +1077,6 @@ impl<'a> Parser<'a> {
         format.map_or((end, None), |format| (start + at, Some(format)))
     }
 
-    /// What follows `format NAME as`: `hex`, `char`, `bytes`, `utf8`,
-    /// `utf16`, `flags(TYPE)`, `enum(TYPE)`, `duration(UNIT)`, or
-    /// `time(UNIT)`.
     fn format(&mut self) -> Parsed<Format> {
         let Some(word) = self.word().map(str::to_owned) else {
             return Err(self.unexpected("a format"));
@@ -1271,7 +1120,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Takes `word` when it is the next word, on this line or a later one.
     fn eat_word_after_blank(&mut self, word: &str) -> bool {
         let start = self.position;
         self.skip_blank();
@@ -1421,9 +1269,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `EXPR { VALUE => SHAPE, … _ => SHAPE }`, after `match`, as the
-    /// chain of `if`s it means: each arm whose value equals the matched
-    /// expression's, in order, then `_`, or a problem naming the value.
     fn match_shape(&mut self, depth: usize) -> Parsed<Shape> {
         let scrutinee = self.expression()?;
         self.skip_blank();
@@ -1489,8 +1334,6 @@ impl<'a> Parser<'a> {
         Ok(shape)
     }
 
-    /// `{ NAME = EXPR, … }`, after `record`: names, or positions from 0,
-    /// each once.
     fn record(&mut self, tuple: bool) -> Parsed<Shape> {
         self.skip_blank();
         self.expect("{", "to open the record")?;
@@ -1529,8 +1372,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `for VAR in GENERATOR [if FILTER | let NAME = EXPR]…`, one or more,
-    /// nested.
     fn clauses(&mut self) -> Parsed<Vec<Clause>> {
         let mut clauses = Vec::new();
 
@@ -1604,8 +1445,6 @@ impl<'a> Parser<'a> {
         Ok(clauses)
     }
 
-    /// `range(N)`, `list(HEAD, P => NEXT)`, `inorder(ROOT, P => LEFT,
-    /// P => RIGHT)`, or `kernel("NAME", ARG, …)`.
     fn generator(&mut self) -> Parsed<Generator> {
         let Some(word @ ("range" | "list" | "inorder" | "kernel")) = self.peek_word() else {
             return Err(self.unexpected("a generator: `range`, `list`, `inorder`, or `kernel`"));
@@ -1635,7 +1474,6 @@ impl<'a> Parser<'a> {
         Ok(generator)
     }
 
-    /// A kernel's name and arguments, after `kernel(`.
     fn kernel(&mut self) -> Parsed<Generator> {
         self.skip_blank();
         let start = self.position;
@@ -1671,7 +1509,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `, P => EXPR`.
     fn link(&mut self) -> Parsed<Link> {
         self.skip_blank();
         self.expect(",", "before the next argument")?;
@@ -1686,7 +1523,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// An entry's key, which ends at a `:` of its own.
     fn key(&mut self) -> Parsed<Expr> {
         self.skip_inline();
         let start = self.position;
@@ -1696,7 +1532,6 @@ impl<'a> Parser<'a> {
         Ok(expression)
     }
 
-    /// `{ [show] SHAPE }`.
     fn branch(&mut self, depth: usize) -> Parsed<Shape> {
         self.skip_blank();
         self.expect("{", "to open the branch")?;
@@ -1708,7 +1543,6 @@ impl<'a> Parser<'a> {
         Ok(shape)
     }
 
-    /// Takes `name(` when it is next, as a call rather than a name.
     fn eat_call(&mut self, name: &str) -> Parsed<bool> {
         let call = self.peek_word() == Some(name)
             && self.rest()[name.len()..].trim_start().starts_with('(');
@@ -1730,7 +1564,6 @@ impl<'a> Parser<'a> {
         self.expect(")", &format!("to close `{name}(`"))
     }
 
-    /// A string literal: `"text"`, with the expression language's escapes.
     fn string(&mut self) -> Parsed<String> {
         let start = self.position;
         if !self.eat("\"") {
@@ -1775,7 +1608,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// A summary's template: literal text and `{expression}` holes.
     fn template(&mut self) -> Parsed<Vec<Piece>> {
         let start = self.position;
         if !self.eat("\"") {
@@ -1835,7 +1667,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A type for a `type` statement.
     fn type_expr(&mut self, depth: usize) -> Parsed<TypeExpr> {
         if depth > MAX_PATTERN_DEPTH {
             return Err(self.error("the type nests too deeply"));
@@ -1844,8 +1675,6 @@ impl<'a> Parser<'a> {
         self.skip_inline();
         let mut ty = self.type_operand(depth)?;
 
-        // `.NAME` or `::NAME` after `typeof(…)` or `arg(…)` names a type
-        // declared inside it.
         while matches!(
             ty,
             TypeExpr::TypeOf(_) | TypeExpr::Arg { .. } | TypeExpr::Nested { .. }
@@ -1872,7 +1701,6 @@ impl<'a> Parser<'a> {
         Ok(ty)
     }
 
-    /// A type for a `type` statement, without the types declared inside it.
     fn type_operand(&mut self, depth: usize) -> Parsed<TypeExpr> {
         if self.eat_call("typeof")? {
             let expression = self.expression()?;
@@ -1914,8 +1742,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// The end of a type's name: before `or`, `,`, or `)` outside its
-    /// brackets, or the end of the line.
     fn scan_type_name(&self) -> usize {
         let bytes = self.text.as_bytes();
         let mut depth = 0_usize;
@@ -1948,7 +1774,6 @@ impl<'a> Parser<'a> {
         index.min(self.text.len())
     }
 
-    /// The expression from the cursor to where it ends.
     fn expression(&mut self) -> Parsed<Expr> {
         self.skip_inline();
         let start = self.position;
@@ -1958,8 +1783,6 @@ impl<'a> Parser<'a> {
         Ok(expression)
     }
 
-    /// Parses the text between two offsets, with comments blanked out, as
-    /// a view's expression.
     fn expression_text(&self, start: usize, end: usize) -> Parsed<Expr> {
         let raw = &self.text[start..end];
         if raw.trim().is_empty() {
@@ -1978,9 +1801,6 @@ impl<'a> Parser<'a> {
             })
     }
 
-    /// Where the expression at the cursor ends; with `colon`, also at a `:`
-    /// that no `?` before it in the expression takes and that does not
-    /// begin `::`.
     fn scan_expression_until(&self, colon: bool) -> usize {
         let bytes = self.text.as_bytes();
         let mut depth = 0_usize;
@@ -2048,8 +1868,6 @@ impl<'a> Parser<'a> {
         end
     }
 
-    /// Whether the line at `offset`, or the next line that is not blank,
-    /// begins a statement or closes a view, which ends an expression.
     fn statement_ends_before(&self, offset: usize) -> bool {
         let mut rest = &self.text[offset.min(self.text.len())..];
 
@@ -2079,8 +1897,6 @@ impl<'a> Parser<'a> {
                 .take_while(|byte| is_word_continue(*byte))
                 .count();
 
-            // In braces of members, a line that begins `NAME =` begins the
-            // next member.
             if self.members && length > 0 {
                 let after = trimmed[length..].trim_start_matches([' ', '\t']);
                 if after.starts_with('=') && !after.starts_with("==") && !after.starts_with("=>") {
@@ -2093,7 +1909,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// The offset after a string or character literal that begins at `start`.
 fn skip_literal(text: &str, start: usize, quote: u8) -> usize {
     let bytes = text.as_bytes();
     let mut index = start + 1;
@@ -2109,7 +1924,6 @@ fn skip_literal(text: &str, start: usize, quote: u8) -> usize {
     text.len()
 }
 
-/// The text with every comment replaced by spaces, so its offsets stay.
 fn blank_comments(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
@@ -2147,12 +1961,10 @@ fn blank_comments(text: &str) -> Option<String> {
     Some(out)
 }
 
-/// Parses a type with arguments, written as a pattern is.
 pub fn type_pattern(text: &str) -> Result<Pattern, String> {
     parse_pattern(text, 0)
 }
 
-/// Parses a type pattern.
 fn parse_pattern(text: &str, depth: usize) -> Result<Pattern, String> {
     if depth > MAX_PATTERN_DEPTH {
         return Err("the pattern nests too deeply".to_owned());
@@ -2206,8 +2018,6 @@ fn parse_argument(text: &str, depth: usize) -> Result<ArgumentPattern, String> {
     parse_pattern(text, depth + 1).map(ArgumentPattern::Type)
 }
 
-/// Splits `a::b<x, y>` into `a::b` and its arguments, in `<>`, `()`, or
-/// `[]`.
 fn split_arguments(text: &str) -> Result<(&str, Option<Vec<&str>>), String> {
     let Some((open, opening)) =
         outside_backticks(text).find(|(_, character)| matches!(character, '<' | '(' | '['))
@@ -2259,7 +2069,6 @@ fn split_arguments(text: &str) -> Result<(&str, Option<Vec<&str>>), String> {
     Ok((&text[..open], Some(arguments)))
 }
 
-/// The characters of `text` outside backticks, with their offsets.
 fn outside_backticks(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
     let mut quoted = false;
     text.char_indices().filter(move |(_, character)| {
@@ -2271,7 +2080,6 @@ fn outside_backticks(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
     })
 }
 
-/// Splits a path at `::` or `.` outside backticks.
 fn split_path(text: &str) -> Result<Vec<Segment>, String> {
     let text = text.strip_prefix("::").unwrap_or(text);
     let mut parts = Vec::new();

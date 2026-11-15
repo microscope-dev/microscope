@@ -1,6 +1,6 @@
-// Maps keyed by pairs and tuples, which an expression indexes by a tuple
-// key. Prints `EXPECT\t<expression>\t<kind>\t<value>` for each, as the
-// map's own lookup finds it, then calls barrier().
+
+
+
 
 #include <cstdio>
 #include <map>

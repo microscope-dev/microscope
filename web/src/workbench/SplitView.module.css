@@ -1,5 +1,3 @@
-/* The dock's splits, and the separators that resize them. */
-
 .split {
   display: flex;
   min-width: 0;
@@ -21,7 +19,6 @@
   flex: 1;
 }
 
-/* A hairline with a wider grab area, which turns accent when it is held. */
 .separator-bar {
   position: relative;
   z-index: 2;
@@ -56,7 +53,6 @@
   outline: 0;
 }
 
-/* A 1px line is too thin to find by keyboard, so focus widens it to 3px. */
 .separator-bar:focus-visible {
   box-shadow: 0 0 0 1px var(--accent);
 }

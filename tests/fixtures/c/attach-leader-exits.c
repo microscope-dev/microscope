@@ -19,8 +19,8 @@ static void *worker(void *unused) {
     exit(7);
 }
 
-// Once attached, the main thread exits alone on the first byte of input;
-// the worker then exits the process with status 7 on the second.
+
+
 int main(void) {
     pthread_t thread;
     char byte;

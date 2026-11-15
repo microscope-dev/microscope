@@ -1,9 +1,9 @@
-"""Released, the main thread only runs Python: its loop calls a Python
-function directly, so no C code enters the interpreter again, and a pause
-almost always finds the thread among the loop's instructions.
 
-With --release, a second line on standard input ends the loop, and the
-program says which monitoring tools are registered before parking."""
+
+
+
+
+
 import os
 import sys
 import threading

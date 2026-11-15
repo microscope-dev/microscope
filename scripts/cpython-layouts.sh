@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Compiles scripts/cpython-layouts.c against each CPython interpreter's headers
-# in $MICROSCOPE_CPYTHON and writes the Rust layout table. Usage:
-#   scripts/cpython-layouts.sh [OUTPUT]
+
+
+
 
 set -euo pipefail
 

@@ -1,7 +1,3 @@
-// How the documents group follows the address, whatever a person has done to
-// the layout: a Source pane for each open file in order, the stand-in when
-// none is open, the shown document active, and nothing else disturbed.
-
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
@@ -42,7 +38,7 @@ describe("arranging the documents", () => {
 
         const into = documentsGroup(after, open);
         const group = groups(after).find((candidate) => candidate.id === into);
-        // Files lead the documents group, in the order they were opened.
+
         const tabs = (group?.tabs ?? []).map((tab) => after.panes[tab] as Pane);
         const order = tabs.filter((pane) => pane.kind === KIND.source).map((pane) => pane.key);
         expect(tabs.slice(0, order.length).every((pane) => pane.kind === KIND.source)).toBe(true);
@@ -57,7 +53,6 @@ describe("arranging the documents", () => {
         expect(wanted).not.toBeNull();
         expect(groupOf(after, wanted as PaneId)?.active).toBe(wanted);
 
-        // What the person was working in stays theirs.
         const stays = (id: GroupId | null) =>
           groups(after).some((candidate) => candidate.id === id);
         const focusStays = stays(before.focused);

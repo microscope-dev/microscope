@@ -1,5 +1,5 @@
-//! Zig types the debugger normalizes: generic instances, slices, text, and
-//! sentinel-terminated pointers.
+
+
 const std = @import("std");
 
 fn Pair(comptime K: type, comptime V: type) type {

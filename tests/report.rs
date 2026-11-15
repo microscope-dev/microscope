@@ -19,8 +19,6 @@ const fn options() -> report::Options<'static> {
     }
 }
 
-/// A profile of `paths`, each outermost frame first as `name@file` or
-/// `name` in fixture.c, and its line.
 fn fixture(unit: &str, paths: &[(&[(&str, u32)], u64)]) -> Profile {
     let paths: Vec<(Vec<SourceFrame<'_>>, u64)> = paths
         .iter()
@@ -80,7 +78,6 @@ fn report_diff_uses_absolute_own_costs_and_keeps_added_and_removed_functions() {
     ] {
         assert!(rows.contains(&expected), "{text}");
     }
-    // main has no own cost on either side.
     assert!(
         !rows.iter().any(|row| row.last() == Some(&"main")),
         "{text}"
@@ -347,10 +344,6 @@ fn report_focus_refuses_an_ambiguous_base_before_writing_output() {
     assert!(out.is_empty());
 }
 
-/// Reshapes apply to both profiles of a comparison, each resolved in its
-/// own: a function the base lacks changes nothing there, and one the
-/// current lacks is an error. Merging `helper` gives its cost to `main` on
-/// both sides; collapsing cycles cuts `walk visit walk` back to `walk`.
 #[test]
 fn report_diff_reshapes_both_profiles() {
     let base = fixture(
@@ -421,8 +414,6 @@ fn report_diff_reshapes_both_profiles() {
     );
 }
 
-/// Collapsing merges only a function calling itself directly: without the
-/// reshape the same tree nests `walk` in itself.
 #[test]
 fn report_collapse_merges_direct_recursion_into_its_first_call() {
     let recursive = fixture(

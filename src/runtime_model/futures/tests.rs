@@ -1,8 +1,3 @@
-//! The walk over futures the tests lay out by hand and from a model:
-//! coroutines awaiting one another directly, through a pinned box, and
-//! through a trait object, every way a chain can end, and chains whose
-//! pointers lead anywhere.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -44,10 +39,8 @@ const SOME: u32 = 20;
 const NONE: u32 = 21;
 const TAG: u32 = 22;
 
-/// Where the awaited future lies in each coroutine.
 const AWAITEE: u64 = 8;
 
-/// The vtable whose trait object holds an `INNER`.
 const VTABLE: u64 = 0x5000;
 
 const fn reference(id: u32) -> TypeReference {
@@ -105,7 +98,6 @@ fn pointer(id: u32, name: &str, target: Option<u32>) -> TypeInfo {
     }
 }
 
-/// A Rust record named `base` within `path`.
 fn named(id: u32, path: &[&str], base: &str, members: Vec<RecordMember>) -> TypeInfo {
     TypeInfo {
         identity: Some(Arc::new(TypeIdentity {
@@ -122,7 +114,6 @@ fn named(id: u32, path: &[&str], base: &str, members: Vec<RecordMember>) -> Type
     }
 }
 
-/// Rust's `Pin` around a pointer of type `target`.
 fn pin(id: u32, target: u32) -> TypeInfo {
     named(
         id,
@@ -153,8 +144,6 @@ fn coroutine(states: Vec<CoroutineState>) -> CoroutineInfo {
     }
 }
 
-/// An `Option` of the future of type `held`, its one-byte tag first:
-/// `None` at 0 and `Some` at 1, with the future after the tag.
 fn option(held: u32) -> Vec<TypeInfo> {
     let variant = |tag: u64, name: &str, ty: u32| Variant {
         name: None,
@@ -192,7 +181,6 @@ const fn suspended(index: u32) -> CoroutineStateKind {
     CoroutineStateKind::Suspended { index }
 }
 
-/// The types and coroutines of the tests' futures.
 #[derive(Debug)]
 struct Types {
     types: Vec<TypeInfo>,
@@ -211,7 +199,6 @@ impl Types {
             ),
             pointer(BOX, "Box<inner>", Some(INNER)),
             pin(PIN, BOX),
-            // rustc names a trait object of several traits in parentheses.
             record(DYN, "(dyn Future<Output = ()> + Send)", Vec::new()),
             pointer(
                 DYN_POINTER,
@@ -231,9 +218,6 @@ impl Types {
             pointer(OUTER_BOX, "Box<outer>", Some(OUTER)),
             pin(PIN_OUTER, OUTER_BOX),
             record(WRAPPER, "Coop<inner>", vec![member("fut", INNER, 0)]),
-            // tracing's `Instrumented`, its future in a `ManuallyDrop`
-            // beside its span, as recent releases of Rust lay it out, and a
-            // record of the same shape that is not it.
             named(
                 INSTRUMENTED,
                 &["tracing", "instrument"],
@@ -353,7 +337,6 @@ impl RuntimeImage for Types {
     }
 }
 
-/// Memory the tests write.
 #[derive(Default)]
 struct Memory(BTreeMap<u64, u8>);
 
@@ -437,8 +420,6 @@ fn walk_from(memory: &Memory, object: u64, ty: u32) -> AwaitChain {
     )
 }
 
-/// A trait object whose vtable no type names ends the chain, saying so.
-/// The model property draws only vtables it knows.
 #[test]
 fn a_trait_object_of_an_unknown_vtable_ends_the_chain() {
     let outer = 0x1000;
@@ -455,8 +436,6 @@ fn a_trait_object_of_an_unknown_vtable_ends_the_chain() {
     );
 }
 
-/// A chain ends where its state or its memory cannot be read, saying so.
-/// The model property owns the ends of readable states.
 #[test]
 fn every_end_of_a_chain_is_said() {
     let outer = 0x1000;
@@ -476,17 +455,11 @@ fn every_end_of_a_chain_is_said() {
     );
 }
 
-/// A running coroutine stores the state it last suspended in, not the
-/// await it has gone on to: a caller that knows each coroutine's state,
-/// outermost first, has the walk read it in that one, reads the rest as
-/// stored, and ends the chain where it cannot say.
 #[test]
 fn a_chain_reads_each_coroutine_in_the_state_its_caller_chooses() {
     let outer = 0x1000;
     let mut memory = Memory::default();
 
-    // The outer future has never suspended, so it stores `Unresumed`,
-    // though it now runs in its first await.
     memory.byte(outer, 0);
     memory.byte(outer + AWAITEE, 3);
     assert_eq!(walk_from(&memory, outer, OUTER).end, ChainEnd::Unresumed);
@@ -519,7 +492,6 @@ fn a_chain_reads_each_coroutine_in_the_state_its_caller_chooses() {
     );
     assert_eq!(asked, [0, 1]);
 
-    // A coroutine whose state is unknown ends the chain before it.
     let chain = super::walk_choosing(
         &Types::new(),
         &memory,
@@ -534,8 +506,6 @@ fn a_chain_reads_each_coroutine_in_the_state_its_caller_chooses() {
     );
 }
 
-/// A chain that comes back to a future it passed ends there, as does one
-/// that goes on past the most futures followed.
 #[test]
 fn a_chain_ends_at_a_cycle_and_at_its_depth() {
     let outer = 0x1000;
@@ -559,16 +529,11 @@ fn a_chain_ends_at_a_cycle_and_at_its_depth() {
     assert!(deep.frames.len() < MAX_DEPTH);
 }
 
-/// A future that lies at the top of memory holds nothing past it: the
-/// walk never wraps to the bottom of memory and reads what lies there as
-/// the future held.
 #[test]
 fn a_held_future_never_wraps_past_the_top_of_memory() {
     let outer = u64::MAX - 15;
     let mut memory = Memory::default();
 
-    // A task-local scope at the last word, whose `Some` holds its future
-    // past it, and an unrelated coroutine at 0.
     memory.byte(outer, 12);
     memory.byte(outer + AWAITEE, 1);
     memory.byte(0, 0);
@@ -576,7 +541,6 @@ fn a_held_future_never_wraps_past_the_top_of_memory() {
     assert_eq!(chain.frames.len(), 1, "{chain:?}");
     assert!(matches!(chain.end, ChainEnd::Broken(_)), "{chain:?}");
 
-    // A boxed trait object whose vtable would lie past the top.
     memory.byte(outer, 5);
     memory.word(outer + AWAITEE, 0x2000);
     memory.word(0, VTABLE);
@@ -586,27 +550,18 @@ fn a_held_future_never_wraps_past_the_top_of_memory() {
     assert!(matches!(chain.end, ChainEnd::Broken(_)), "{chain:?}");
 }
 
-/// Where the model's futures may lie: far enough apart that none
-/// overlaps another.
 const SLOTS: usize = 64;
 
 fn slot(index: usize) -> u64 {
     0x1_0000 + 0x40 * index as u64
 }
 
-/// Where a chain ends, past the outer coroutines it passes through.
 #[derive(Debug, Clone, Copy)]
 enum Innermost {
-    /// An outer coroutine in a state that awaits nothing to follow:
-    /// unresumed, returned, panicked, an await its debug information does
-    /// not name, or one of a record that only looks like tracing's.
     Outer(u8),
 
-    /// An outer coroutine in a state that reaches an inner one, in this
-    /// state, by the way that state awaits it.
     Inner { via: u8, state: u8 },
 
-    /// tokio's task-local scope after it dropped its future.
     Dropped,
 }
 
@@ -622,9 +577,6 @@ fn innermost() -> impl Strategy<Value = Innermost> {
     ]
 }
 
-/// A chain of outer coroutines, each awaiting the next through a pinned
-/// box, and its innermost future; or a cycle, whose last box points back
-/// at an earlier coroutine.
 #[derive(Debug, Clone)]
 struct Model {
     hops: usize,
@@ -632,8 +584,6 @@ struct Model {
     innermost: Innermost,
     slots: Vec<usize>,
 
-    /// What each pointer written holds in place of the model's, if
-    /// anything.
     damage: Vec<Option<u64>>,
 }
 
@@ -656,8 +606,6 @@ fn model(damaged: bool) -> impl Strategy<Value = Model> {
         })
 }
 
-/// The memory a model lays out, the chain the walk must read from it,
-/// and whether any pointer it wrote differs from the model's.
 fn laid_out(model: &Model) -> (Memory, AwaitChain, bool) {
     let mut memory = Memory::default();
     let mut damage = model.damage.iter();
@@ -674,7 +622,6 @@ fn laid_out(model: &Model) -> (Memory, AwaitChain, bool) {
         .collect();
     let boxed = slot(model.slots[model.hops + 1]);
 
-    // Outermost first, reversed at the end.
     let mut frames = Vec::new();
     for (hop, &at) in outers[..model.hops].iter().enumerate() {
         memory.byte(at, 7);
@@ -762,9 +709,6 @@ fn laid_out(model: &Model) -> (Memory, AwaitChain, bool) {
     (memory, AwaitChain { frames, end }, damaged)
 }
 
-/// What holds of any chain the walk reads, whatever memory holds: it is
-/// within its depth, passes no future twice, and each future it passed
-/// awaits the one inside it; its innermost future says why it ends.
 fn check_shape(chain: &AwaitChain) -> Result<(), TestCaseError> {
     prop_assert!(chain.frames.len() <= MAX_DEPTH);
 

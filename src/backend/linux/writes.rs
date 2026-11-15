@@ -1,5 +1,3 @@
-//! Changing memory, variables, and registers at a stop.
-
 use std::sync::Arc;
 
 use nix::unistd::Pid;
@@ -16,14 +14,9 @@ use super::{
     validate_public_stop, validate_resumable, validate_stopped_thread,
 };
 
-/// The most bytes one request writes.
 pub(super) const MAX_PUBLIC_MEMORY_WRITE: u64 = 64 * 1024;
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Writes bytes into the stopped process and returns how many were
-    /// written: all of them, or those before memory that cannot be written.
-    /// Installed breakpoint traps stay in place; the bytes they hide become
-    /// the bytes written there.
     pub(super) fn write_memory(
         &mut self,
         requested_process: ProcessId,
@@ -38,9 +31,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.write_memory_as(pid, address, bytes)
     }
 
-    /// Checks all expected bytes before making a runtime's writes, while
-    /// every thread is stopped. A kernel write failure can leave earlier
-    /// bytes changed; the error reports that partial progress.
     pub(super) fn write_for_runtime(
         &mut self,
         writes: &[RuntimeWrite],
@@ -114,7 +104,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Writes memory through a stopped thread; see [`Self::write_memory`].
     pub(super) fn write_memory_as(
         &mut self,
         pid: Pid,
@@ -123,8 +112,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Result<u64> {
         let length = bytes.len() as u64;
 
-        // Scans resumed after a write could follow links it changed, and
-        // a task may no longer be where its runtime kept it.
         self.views.forget_scans();
 
         if length > MAX_PUBLIC_MEMORY_WRITE {
@@ -151,8 +138,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             |word, value| self.ptrace.write_word(pid, word, value),
         );
 
-        // Even a failed write may have changed the words before it, and a
-        // client reads the stop again only once its revision moves on.
         if published {
             self.bump_revision();
         }
@@ -160,10 +145,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         written
     }
 
-    /// Writes the low bytes of a register of the innermost frame. A thread
-    /// whose program counter is written is no longer where a system call
-    /// it was in would restart, which the kernel would otherwise do by
-    /// moving it back.
     pub(super) fn write_register(
         &mut self,
         pid: Pid,
@@ -195,10 +176,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.ptrace.set_registers(pid, registers)?;
 
-        // A moved thread is published under a new stop, which moves the
-        // revision on itself. Any other register may be one unwinding
-        // starts from, so a selected frame may now be gone or another
-        // function's; the innermost is selected again, as after a jump.
         if !moves {
             if let Some(stop) = self
                 .session
@@ -213,9 +190,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Moves a stopped thread, without running it, to resume at the one
-    /// location `spec` resolves to in the function it is stopped in, and
-    /// publishes the stop again there.
     pub(super) fn jump(
         &mut self,
         process_id: ProcessId,
@@ -234,7 +208,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
 
         match moved {
-            // Acknowledge the jump before publishing the stop it made.
             Ok((execution, stopped)) => {
                 let _ = reply.send(Ok(execution));
                 let _ = self.events.send(stopped);
@@ -245,10 +218,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Where a jump moves a thread: the one address `spec` resolves to in
-    /// the code of the function the thread is stopped in. Leaving the
-    /// function would leave its frame for another's, so only an
-    /// assignment of the program counter does that.
     fn jump_target(
         &self,
         process_id: ProcessId,
@@ -279,7 +248,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// The module and out-of-line code instance holding an address.
     fn physical_function_at(&self, address: VirtualAddress) -> Option<(ModuleId, CodeInstanceId)> {
         let inferior = self.session.inferior()?;
         let main = (self.main.id, &self.main.image, &inferior.loaded_module);
@@ -297,12 +265,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
     }
 
-    /// Publishes the stop again after a thread was moved to resume
-    /// elsewhere: under a new stop, as everything a client read from the
-    /// old one, from frames to values, may now differ. A thread that
-    /// reported a breakpoint's trap and stands there still steps over it as
-    /// it resumes; one moved anywhere else has not arrived at a breakpoint
-    /// where it lands, which reports it as it resumes, as gdb does.
     pub(super) fn publish_moved_thread(
         &mut self,
         pid: Pid,
@@ -317,8 +279,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.trap_event(pid, TrapEvent::Moved(pc))?;
         let thread = inferior.thread_mut(pid)?;
 
-        // A signal's handler returns where the thread now stands, not to
-        // the trap it would have executed again.
         thread.retrap = thread.retrap.filter(|trap| *trap == pc);
         thread.reason = Some(reason.clone());
         let stop = inferior.run.stop_mut().ok_or(Error::NotStopped)?;
@@ -331,7 +291,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         stop.returned = None;
         stop.presentations.insert(pid, presentation);
 
-        // The new stop reads everything again, as one the program ran to does.
         stop.caches = super::StopCaches::default();
         let process_id = process_id(inferior.tgid);
         self.bump_revision();

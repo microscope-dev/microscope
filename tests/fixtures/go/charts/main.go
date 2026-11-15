@@ -1,6 +1,6 @@
-// A web server's counters, drawn by the built-in renderers through
-// charts.views beside this file: requests by path and bytes by content
-// type, both maps whose order Go randomizes, and requests by hour.
+
+
+
 package main
 
 import (
@@ -8,13 +8,13 @@ import (
 	"os"
 )
 
-// Hits counts requests by path.
+
 type Hits map[string]int
 
-// Bytes totals the bytes served by content type.
+
 type Bytes map[string]int64
 
-// Hours counts requests by hour of the day.
+
 type Hours [24]int
 
 func record(hits Hits, bytes Bytes, hours *Hours, tick int) {
@@ -35,7 +35,7 @@ func main() {
 	hits := Hits{}
 	bytes := Bytes{}
 	var hours Hours
-	// Fifty paths more than a chart shows, each requested once.
+
 	for i := range 50 {
 		hits[fmt.Sprintf("/static/asset-%02d.png", i)] = 1
 	}

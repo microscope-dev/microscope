@@ -1,8 +1,3 @@
-//! JavaScript's rules, as ECMAScript defines them. A Number loads as a
-//! `Float`, a `BigInt` as an `Int`, `null` as `Nothing`, and `undefined` as
-//! `Undefined`. An operation that would run the program's code, such as an
-//! object's `valueOf`, or read a number from a string, is refused.
-
 use std::cmp::Ordering;
 
 use super::{arithmetic, holds, refused, texts};
@@ -12,7 +7,6 @@ use crate::eval::syntax::ast::{BinaryOp, UnaryOp};
 use crate::eval::target::{Key, Loaded, LoadedValue, Stop};
 use crate::{TextCompletion, TextSummary};
 
-/// A value as JavaScript's operators see it.
 #[derive(Debug, Clone, Copy)]
 enum Primitive<'a> {
     Undefined,
@@ -22,7 +16,6 @@ enum Primitive<'a> {
     BigInt(Exact),
     String(&'a TextSummary),
 
-    /// An object, or any other value microscope does not tell apart.
     Object,
 }
 
@@ -40,7 +33,6 @@ fn primitive(value: &LoadedValue) -> Primitive<'_> {
     }
 }
 
-/// A number JavaScript computes with.
 #[derive(Debug, Clone, Copy)]
 enum Numeric {
     Number(f64),
@@ -66,7 +58,6 @@ fn string_number() -> Stop {
     )
 }
 
-/// `ToNumeric` of a primitive that is no object or string.
 const fn numeric(value: Primitive<'_>) -> Option<Numeric> {
     Some(match value {
         Primitive::Undefined => Numeric::Number(f64::NAN),
@@ -78,7 +69,6 @@ const fn numeric(value: Primitive<'_>) -> Option<Numeric> {
     })
 }
 
-/// `ToNumeric` of an operand of arithmetic. `+` would join a string.
 fn operand(value: &Loaded, joins: bool) -> Result<Numeric, Stop> {
     match primitive(&value.value) {
         Primitive::Object => Err(object_code(value)),
@@ -98,13 +88,11 @@ fn mixed() -> Stop {
     )
 }
 
-/// `ToInt32`: the integer part, wrapped to 32 bits.
 fn to_int32(value: f64) -> i32 {
     if !value.is_finite() {
         return 0;
     }
 
-    // Both steps are exact for an integer-valued double.
     let wrapped = value.trunc().rem_euclid(4_294_967_296.0);
 
     #[allow(
@@ -123,7 +111,6 @@ pub(super) fn truth(value: &Loaded) -> Result<bool, Stop> {
         LoadedValue::Int(value) => !value.is_zero(),
         LoadedValue::Float(value) => !(value.is_zero() || value.is_nan()),
         LoadedValue::Text(text) => super::text_truth(text)?,
-        // Every object is true, an empty array or Map too.
         LoadedValue::Bytes(_) | LoadedValue::Collection { .. } | LoadedValue::Object => true,
     })
 }
@@ -154,8 +141,6 @@ pub(super) fn compare(op: BinaryOp, left: &Loaded, right: &Loaded) -> Result<boo
     Ok(holds(op, order))
 }
 
-/// The order of two strings' UTF-16 code units, which is not their
-/// characters' order: U+FFFF follows U+1F600's first unit.
 fn utf16_order(left: &[u8], right: &[u8]) -> Result<Ordering, Stop> {
     let (Ok(left), Ok(right)) = (std::str::from_utf8(left), std::str::from_utf8(right)) else {
         return Err(refused(
@@ -167,7 +152,6 @@ fn utf16_order(left: &[u8], right: &[u8]) -> Result<Ordering, Stop> {
     Ok(left.encode_utf16().cmp(right.encode_utf16()))
 }
 
-/// The exact order of two numbers; `None` when either is NaN.
 fn order(left: Numeric, right: Numeric) -> Option<Ordering> {
     match (left, right) {
         (Numeric::Number(left), Numeric::Number(right)) => left.partial_cmp(&right),
@@ -181,7 +165,6 @@ fn order(left: Numeric, right: Numeric) -> Option<Ordering> {
     }
 }
 
-/// `IsLooselyEqual`, `==`, where it runs none of the program's code.
 fn loosely_equal(
     left: Primitive<'_>,
     right: Primitive<'_>,
@@ -234,15 +217,12 @@ pub(super) fn binary(op: BinaryOp, left: &Loaded, right: &Loaded) -> Result<Load
     }
 }
 
-/// Number arithmetic in doubles. Bit operations and shifts take `ToInt32` of
-/// their operands, and a shift count's low five bits.
 fn numbers(op: BinaryOp, left: f64, right: f64) -> f64 {
     match op {
         BinaryOp::Add => left + right,
         BinaryOp::Sub => left - right,
         BinaryOp::Mul => left * right,
         BinaryOp::Div => left / right,
-        // C's `fmod`, with the dividend's sign.
         BinaryOp::Rem => left % right,
         BinaryOp::BitAnd => f64::from(to_int32(left) & to_int32(right)),
         BinaryOp::BitOr => f64::from(to_int32(left) | to_int32(right)),
@@ -252,7 +232,6 @@ fn numbers(op: BinaryOp, left: f64, right: f64) -> f64 {
     }
 }
 
-/// `BigInt` arithmetic, exact, with division truncated toward zero.
 fn bigints(op: BinaryOp, left: Exact, right: Exact) -> Result<Exact, Stop> {
     match op {
         BinaryOp::Add => left.add(right),
@@ -269,7 +248,6 @@ fn bigints(op: BinaryOp, left: Exact, right: Exact) -> Result<Exact, Stop> {
         BinaryOp::BitAnd => left.bitwise(BitOperator::And, right),
         BinaryOp::BitOr => left.bitwise(BitOperator::Or, right),
         BinaryOp::BitXor => left.bitwise(BitOperator::Xor, right),
-        // A negative count shifts the other way.
         BinaryOp::Shl if right.is_negative() => right.neg().and_then(|count| left.shr(count)),
         BinaryOp::Shl => left.shl(right),
         _ if right.is_negative() => right.neg().and_then(|count| left.shl(count)),
@@ -291,8 +269,6 @@ pub(super) fn unary(op: UnaryOp, operand: &Loaded) -> Result<LoadedValue, Stop> 
     })
 }
 
-/// A value as a property key: a string, or a `BigInt` or an integer Number
-/// below 2^53, whose name JavaScript writes as microscope does.
 pub(super) fn key(value: &Loaded) -> Result<Key, Stop> {
     let refuse = || {
         refused(

@@ -1,11 +1,11 @@
-"""The agent's steps, driven as the controller drives them.
 
-A fake hook stands in for the debugger: at each stop the agent reports, it
-notes where the program is, then queues the next configuration through the
-command slot, as the controller replaces an unread command at a stop. Each
-step names its frame by its thread, its callers, and its code, as the
-controller does.
-"""
+
+
+
+
+
+
+
 import _thread
 import asyncio
 import json
@@ -13,8 +13,8 @@ import sys
 import threading
 import types
 
-# As the launch bootstrap records on 3.12, which cannot say which thread
-# is the main one.
+
+
 sys.modules.setdefault('_microscope_bootstrap', types.SimpleNamespace(main=threading.get_ident()))
 agent = types.ModuleType('_microscope_agent')
 agent._bootstrap_lock = threading.RLock()
@@ -27,14 +27,14 @@ SOURCE = open(__file__).read().splitlines()
 
 
 def line(marker):
-    """The line that carries `# marker`."""
+
     return next(number for number, text in enumerate(SOURCE, 1)
                 if text.endswith('# ' + marker))
 
 
 def program_frame():
-    """The program's frame the agent stopped in: below the fake hook's
-    frames and the agent's own."""
+
+
     frame = sys._getframe(1)
     while id(frame.f_code) not in agent.INTERNAL:
         frame = frame.f_back
@@ -52,8 +52,8 @@ def depth(frame):
 
 
 class Debugger:
-    """The controller's side: reports, where each stopped, and what to do
-    at each stop."""
+
+
 
     def __init__(self, probes, plan, thread=None):
         self.probes = probes
@@ -172,7 +172,7 @@ def straight():
 
 
 class Key:
-    """Two keys with one hash, which a dict compares as it builds."""
+
 
     def __hash__(self):
         return 1  # KEY_HASH
@@ -189,8 +189,8 @@ def table():
 here = __file__
 
 if mode == 'over':
-    # Over a line, over a call, then off the end of the frame into its
-    # caller at the call, not at its next line.
+
+
     debugger = Debugger([breakpoint_at('CALLER_START')], [(OVER, 0)] * 4)
     debugger.start()
     assert outer() == 4
@@ -203,8 +203,8 @@ if mode == 'over':
     ], debugger.places()
     assert debugger.kinds()[1:] == [(2, number, 0) for number in range(1, 5)]
 elif mode == 'into':
-    # Into a call's first line, through it, and back to the caller at the
-    # call; a line with no call steps to the next line.
+
+
     debugger = Debugger([breakpoint_at('CALLER_START')], [(INTO, 0)] * 5)
     debugger.start()
     assert outer() == 4
@@ -217,8 +217,8 @@ elif mode == 'into':
         ('caller', line('CALLER_AFTER')),
     ], debugger.places()
 elif mode == 'out':
-    # Out of a callee to its caller at the call, then out of an outer
-    # frame selected above the stop.
+
+
     debugger = Debugger([breakpoint_at('CALLEE_FIRST')], [(OUT, 0), (OUT, 0)])
     debugger.start()
     assert outer() == 4
@@ -235,8 +235,8 @@ elif mode == 'out':
         ('outer', line('OUTER_CALL')),
     ], debugger.places()
 elif mode == 'recursion':
-    # Over a recursive call stays in the stepping frame, though deeper
-    # frames run the same code and its lines.
+
+
     debugger = Debugger([breakpoint_at('RECURSE_CALL')], [(OVER, 0)])
     counts = []
     original = debugger.report
@@ -255,7 +255,7 @@ elif mode == 'recursion':
     ], debugger.places()
     assert counts == [2, 2], counts
 elif mode == 'generator':
-    # Over a yield leaves the generator for the code that resumed it.
+
     debugger = Debugger([breakpoint_at('GEN_FIRST')], [(OVER, 0)])
     debugger.start()
     assert consume() == 3
@@ -264,8 +264,8 @@ elif mode == 'generator':
         ('consume', line('CONSUME_FIRST')),
     ], debugger.places()
 elif mode == 'coroutine':
-    # Over an await stays with the task across its suspension, rather than
-    # stopping in the loop that runs it; into it enters the coroutine.
+
+
     debugger = Debugger([breakpoint_at('TASK_AWAIT')], [(OVER, 0)])
     debugger.start()
     assert asyncio.run(task()) == 2
@@ -281,15 +281,15 @@ elif mode == 'coroutine':
         ('leaf', line('LEAF_SLEEP')),
         ('leaf', line('LEAF_RETURN')),
     ], debugger.places()
-    # Into a suspension follows the task, not the event loop.
+
     debugger = Debugger([breakpoint_at('LEAF_SLEEP')], [(INTO, 0)])
     debugger.start()
     assert asyncio.run(task()) == 2
     stop = debugger.places()[1]
     assert stop[0] in ('sleep', 'leaf'), debugger.places()
 elif mode == 'exception':
-    # Over a call that raises stops where its handler matches it; out of a
-    # frame that unwinds stops in its caller's handler.
+
+
     debugger = Debugger([breakpoint_at('HANDLES_CALL')], [(OVER, 0), (OVER, 0)])
     debugger.start()
     assert handles() is True
@@ -301,16 +301,16 @@ elif mode == 'exception':
     debugger = Debugger([breakpoint_at('RAISES')], [(OUT, 0)])
     debugger.start()
     assert handles() is True
-    # Its handler's first instruction has no line: the step goes on to the
-    # first that has one, where the handler matches the exception.
+
+
     assert debugger.places() == [
         ('raises', line('RAISES')),
         ('handles', line('HANDLES_EXCEPT')),
     ], debugger.places()
 elif mode == 'outermost':
-    # Off the end of a thread's outermost Python frame, which no Python
-    # frame called, the step ends at the next line the thread runs, or
-    # never if it runs none.
+
+
+
     results = []
 
     def body():
@@ -326,8 +326,8 @@ elif mode == 'outermost':
         ('body', line('BODY_CALL')),
     ], debugger.places()
 elif mode == 'mismatch':
-    # A frame that is not where the debugger found it is reported, and the
-    # program runs on unstopped.
+
+
     debugger = Debugger([breakpoint_at('STRAIGHT_FIRST')], [])
     reports = []
 
@@ -345,7 +345,7 @@ elif mode == 'mismatch':
     debugger.probes = []
     assert straight() == 3
     assert reports == [(1, 900, 0), (2, 1, 1)], reports
-    # Nor does a frame deeper than the thread's stack bind.
+
     reports.clear()
 
     def too_deep(event, number, argument):
@@ -364,8 +364,8 @@ elif mode == 'mismatch':
     assert straight() == 3
     assert reports == [(1, 900, 0), (2, 2, 1)], reports
 
-    # Nor is a variable assigned in a frame not where it was found, though
-    # the frame that is there has one of its name.
+
+
     def assigned(code, at):
         reports.clear()
 
@@ -384,7 +384,7 @@ elif mode == 'mismatch':
         debugger.start()
         debugger.probes = []
         return straight()
-    # The frame found takes it where a function's variables can be written.
+
     given, status = (42, 0) if sys.version_info >= (3, 13) else (3, 3)
     assert assigned(None, None) == given
     assert reports == [(1, 900, 0), (6, agent.assigned, status)], reports
@@ -393,19 +393,19 @@ elif mode == 'mismatch':
     assert assigned(None, 10_000) == 3
     assert reports == [(1, 900, 0), (6, agent.assigned, 1)], reports
 elif mode == 'late':
-    # A step another thread configured binds only in a callback its own
-    # thread was in at the time; later, its thread has run on, and the
-    # step reports so rather than begin where the thread got to.
+
+
+
     reports = []
     agent.hook = lambda *report: reports.append(report) if report[0] != 0 else None
     probes = [breakpoint_at('STRAIGHT_SECOND')]
     agent.apply(library, agent.generation + 1, probes)
     target_thread = threading.get_native_id()
     frame_depth = depth(sys._getframe())
-    # This thread must be in no callback while the configuration lands, or
-    # the step binds there. threading's waits are Python, and every line of
-    # this file takes LINE events for the probe, so it starts the other
-    # thread and waits from code of another file, which takes none.
+
+
+
+
     done = _thread.allocate_lock()
     done.acquire()
 
@@ -425,8 +425,8 @@ elif mode == 'late':
     assert (1, 900, 0) in reports and (2, 7, 2) in reports, reports
     assert not any(report[0] == 2 and report[2] == 0 for report in reports), reports
 elif mode == 'threads':
-    # Another thread running the stepping frame's code takes no part in
-    # the step: over follows the frame, into its thread.
+
+
     gate, release = threading.Event(), threading.Event()
 
     def spin():
@@ -439,7 +439,7 @@ elif mode == 'threads':
     try:
         for kind in (OVER, INTO):
             debugger = Debugger([breakpoint_at('CALLER_START')], [(kind, 0)])
-            # The breakpoint hits only this thread: the other runs `straight`.
+
             debugger.start()
             assert caller() == 4
             assert debugger.places() == [
@@ -450,10 +450,10 @@ elif mode == 'threads':
         release.set()
         other.join(10)
 elif mode == 'reconfigured':
-    # A configuration republished with the same step during it, as an
-    # internal stop does, leaves the step where it is. Here its frame has
-    # returned, and the dict being built calls `__eq__` before the caller
-    # resumes: binding again would bind there, or find no frame.
+
+
+
+
     compared = ('LINE', 1, 901, here, line('KEY_EQ'), '')
     debugger = Debugger([breakpoint_at('KEY_HASH')], [(OUT, 0)])
     phases = []
@@ -483,7 +483,7 @@ elif mode == 'reconfigured':
     ], debugger.places()
     assert debugger.kinds()[2] == (2, 1, 0), debugger.kinds()
 elif mode == 'malformed':
-    # A malformed step is refused whole, and the agent keeps nothing of it.
+
     good = [1, OVER, 1, 0, 1]
     for bad in ([0, OVER, 1, 0, 1], [1, 4, 1, 0, 1], [1, OVER, 0, 0, 1],
                 [1, OVER, 1, -1, 1], [1, OVER, 1, 0, 0], [1, OVER, 1, 0],

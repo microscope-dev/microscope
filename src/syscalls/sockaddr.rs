@@ -1,5 +1,3 @@
-//! Socket addresses, parsed from the bytes behind a `sockaddr` pointer.
-
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -13,7 +11,6 @@ pub const AF_INET6: u16 = 10;
 
 pub const AF_NETLINK: u16 = 16;
 
-/// A parsed socket address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SocketAddress {
     Inet {
@@ -27,14 +24,12 @@ pub enum SocketAddress {
         scope: u32,
     },
 
-    /// A path, an abstract name (starting with NUL), or unnamed.
     Unix(Vec<u8>),
     Netlink {
         pid: u32,
         groups: u32,
     },
 
-    /// A family the parser does not know, with its bytes after the family.
     Other {
         family: u16,
         data: Vec<u8>,
@@ -43,7 +38,6 @@ pub enum SocketAddress {
 }
 
 impl SocketAddress {
-    /// Parses `bytes`, which hold `length` bytes the call named.
     #[must_use]
     pub fn parse(bytes: &[u8]) -> Option<Self> {
         let (family, rest) = bytes.split_first_chunk::<2>()?;
@@ -63,8 +57,6 @@ impl SocketAddress {
                 scope: word(rest.get(22..26)).unwrap_or(0),
             },
             AF_UNIX => {
-                // A path ends at its first NUL; an abstract name keeps its
-                // bytes.
                 let path = if rest.first() == Some(&0) {
                     rest.to_vec()
                 } else {
@@ -88,8 +80,6 @@ impl SocketAddress {
         })
     }
 
-    /// The address as `-yy` prints an endpoint: `10.0.3.9:5432`,
-    /// `[::1]:80`, or a Unix path.
     #[must_use]
     pub fn endpoint(&self) -> String {
         match self {
@@ -110,7 +100,6 @@ impl SocketAddress {
 }
 
 impl fmt::Display for SocketAddress {
-    /// As strace prints the structure.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Inet { address, port } => write!(

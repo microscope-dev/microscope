@@ -1,7 +1,3 @@
-// The frame's registers: the innermost frame's as the thread stopped, an
-// outer frame's as its callees saved them. A value that changed since the
-// stop before is marked, as variables are.
-
 import { assert } from "../assert";
 import { useRequest } from "../data";
 import type { At } from "../focus";
@@ -10,7 +6,6 @@ import { errorClass, hidden } from "./hidden";
 import { LinkedExpansion, ValueRow } from "./ValueTree";
 import { useFocus } from "./Workspace";
 
-/** A register's row: the innermost frame's are the thread's, and change. */
 function row(register: Register, innermost: boolean): Row {
   return {
     name: register.name,
@@ -49,7 +44,7 @@ export function Registers() {
           <ValueRow
             key={register.name}
             row={row(register, at.frame === 0)}
-            // Each frame's registers are compared with that frame's.
+
             parent={`registers@${at.frame}`}
             depth={0}
             missing={register.value === null ? "absent" : undefined}
@@ -67,7 +62,6 @@ export function Registers() {
   );
 }
 
-/** Whose registers they are: the frame's. */
 export function RegistersBadge() {
   const at = useFocus().at;
   return at ? <span className="count">frame {at.frame}</span> : null;

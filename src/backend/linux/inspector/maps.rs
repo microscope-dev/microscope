@@ -1,17 +1,3 @@
-//! Source maps of the scripts V8 runs: TypeScript compiled by tsx, or a
-//! bundle esbuild wrote. A script's map is found when V8 parses it and
-//! decoded once something needs it: a breakpoint in one of its sources,
-//! or a frame in it. Frames in the script then show their original place,
-//! and a breakpoint in an original source is set at each place in the
-//! script that maps to its line.
-//!
-//! V8 runs a `CommonJS` module as soon as it compiles it, before microscope
-//! hears of the script, so while there are line breakpoints every
-//! isolate holds one more: a sentinel at the start of each script of the
-//! program, whose pause lets the mapped breakpoints be set before the
-//! script's first statement runs (V8's `beforeScriptWithSourceMapExecution`
-//! pauses only for ES modules).
-
 use std::cell::OnceCell;
 use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
@@ -23,13 +9,10 @@ use crate::debug_info::js_source_map::{
     Column, ColumnChoice, Line, Location, MAX_MAP_BYTES, MapReference, Position, SourceMap,
 };
 
-/// The source map a script names, decoded on first use.
 #[derive(Debug)]
 pub(super) struct ScriptMap {
-    /// The script's own path.
     script: Arc<str>,
 
-    /// The map's URL, as the script's `sourceMappingURL` comment gives it.
     url: Arc<str>,
     decoded: OnceCell<std::result::Result<Arc<SourceMap>, Arc<str>>>,
 }
@@ -43,12 +26,10 @@ impl ScriptMap {
         }
     }
 
-    /// Whether the map is the one `url` names.
     pub(super) fn is(&self, url: &str) -> bool {
         *self.url == *url
     }
 
-    /// The decoded map, or why it cannot be read.
     pub(super) fn map(&self) -> std::result::Result<&SourceMap, Arc<str>> {
         self.decoded
             .get_or_init(|| decode(&self.script, &self.url))
@@ -56,9 +37,6 @@ impl ScriptMap {
             .map_err(Arc::clone)
     }
 
-    /// Where the map leads the place `generated` in the script, as a
-    /// frame shows it: in an original source, or `None` with the reason
-    /// when the map has no place for it.
     pub(super) fn original(
         &self,
         generated: &RecordedPlace,
@@ -91,9 +69,6 @@ impl ScriptMap {
         })
     }
 
-    /// The zero-based positions in the script a breakpoint on one-based
-    /// `line` of the source at `path` is set at; none when the map does
-    /// not name the source or maps nothing to the line.
     pub(super) fn positions(&self, path: &Path, line: u32) -> Vec<Position> {
         let (Ok(map), Some(line)) = (self.map(), Line::from_one_based(line)) else {
             return Vec::new();
@@ -107,8 +82,6 @@ impl ScriptMap {
     }
 }
 
-/// Whether the breakpoint path `path` names the source file at `source`:
-/// an absolute path the same file, and a relative one the file it ends.
 pub(super) fn names(source: &Path, path: &Path) -> bool {
     if path.is_absolute() {
         source == path
@@ -117,7 +90,6 @@ pub(super) fn names(source: &Path, path: &Path) -> bool {
     }
 }
 
-/// Decodes the map `url` names for the script at `script`.
 fn decode(script: &str, url: &str) -> std::result::Result<Arc<SourceMap>, Arc<str>> {
     let location = Location::Path(PathBuf::from(script));
     let error = |error: &dyn std::fmt::Display| Arc::<str>::from(format!("{error}"));
@@ -141,7 +113,6 @@ fn decode(script: &str, url: &str) -> std::result::Result<Arc<SourceMap>, Arc<st
     Ok(Arc::new(map))
 }
 
-/// The JSON of the map file at `path`, read whole if it is not too large.
 fn read_map(path: &Path) -> std::result::Result<Vec<u8>, Arc<str>> {
     let cannot = |error: std::io::Error| {
         Arc::<str>::from(format!(
@@ -178,13 +149,8 @@ fn read_map(path: &Path) -> std::result::Result<Vec<u8>, Arc<str>> {
     Ok(bytes)
 }
 
-/// The URL pattern of a sentinel for function breakpoints: every script
-/// with a path.
 pub(super) const EVERY_SCRIPT: &str = "^(?:file://)?/";
 
-/// The URL pattern of the sentinel breakpoints: every script of the
-/// program, which leaves out `node_modules` unless `breakpoints`, the
-/// paths of the line breakpoints, name a file there.
 pub(super) fn sentinel_pattern<'a>(mut breakpoints: impl Iterator<Item = &'a Path>) -> String {
     let modules = breakpoints.any(|path| {
         path.components()
@@ -201,10 +167,6 @@ pub(super) fn sentinel_pattern<'a>(mut breakpoints: impl Iterator<Item = &'a Pat
 mod tests {
     use super::*;
 
-    /// A map that leads generated line 0, at columns 0, 4, and 10, to
-    /// zero-based lines 2, 2, and 3 of `app.ts`, and leaves column 30 on
-    /// unmapped. "AAEA" is (0, 0, +2, 0), "IAAI" (+4, 0, 0, +4), "MACJ"
-    /// (+6, 0, +1, -4), and "U" (+20) a segment of one field.
     fn script_map() -> ScriptMap {
         let json = r#"{"version":3,"sources":["app.ts"],"names":[],"mappings":"AAEA,IAAI,MACJ,U"}"#;
         let url = format!("data:application/json;base64,{}", base64(json.as_bytes()));
@@ -239,7 +201,6 @@ mod tests {
     #[test]
     fn a_frame_shows_the_original_place_its_segment_leads_to() {
         let map = script_map();
-        // One-based column 7 is zero-based 6, inside the segment at 4.
         assert_eq!(
             map.original(&place("/srv/dist/app.js", 1, 7)),
             Ok(place("/srv/dist/app.ts", 3, 5))

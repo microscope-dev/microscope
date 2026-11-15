@@ -1,4 +1,4 @@
-# Settings for a CLI run compared with the debug console, which may always
-# show Unicode.
+
+
 [ui]
 unicode = "always"

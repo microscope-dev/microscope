@@ -1,7 +1,7 @@
-// A program without a C library. Its entry point, like crt1's, has no line
-// information, so stepping begins in code no debug information describes.
-// It has call-frame information marking it outermost, unless built with
-// BARE_ENTRY, as hand-written startup code may lack any.
+
+
+
+
 #ifdef BARE_ENTRY
 #define ENTRY_CFI(directive) ""
 #else

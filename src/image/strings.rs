@@ -1,27 +1,16 @@
-//! Pools of NUL-terminated strings, named by offset.
-//!
-//! [`StrId`]s name display strings, which are UTF-8; [`PathId`]s name
-//! filesystem paths, whose bytes need not be. Each pool is validated once
-//! as a whole, so a reference is valid when it starts a string or lies on
-//! a character boundary within one: a suffix of a valid string is valid.
-
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
-/// A display string, by its offset in the string pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StrId(pub u32);
 
-/// Display strings being pooled, each once, where it is first pushed.
 #[derive(Debug, Default, Clone)]
 pub struct StringsBuilder {
     bytes: Vec<u8>,
     pooled: Pooled,
 }
 
-/// Rows pooled by their contents' hash. The first row with a hash is found
-/// by it; a later row whose hash collides is found by contents.
 #[derive(Debug, Default, Clone)]
 pub(super) struct Pooled {
     first: foldhash::HashMap<u64, u32>,
@@ -29,7 +18,6 @@ pub(super) struct Pooled {
 }
 
 impl Pooled {
-    /// The row hashed `hash` whose contents `same` accepts.
     pub(super) fn find(&self, hash: u64, same: impl Fn(u32) -> bool) -> Option<u32> {
         let first = *self.first.get(&hash)?;
         if same(first) {
@@ -39,7 +27,6 @@ impl Pooled {
         self.collided.iter().copied().find(|row| same(*row))
     }
 
-    /// Records row `row`, hashed `hash`, which [`Pooled::find`] did not find.
     pub(super) fn insert(&mut self, hash: u64, row: u32) {
         match self.first.entry(hash) {
             std::collections::hash_map::Entry::Occupied(_) => self.collided.push(row),
@@ -51,8 +38,6 @@ impl Pooled {
 }
 
 impl StringsBuilder {
-    /// The pool's name for `text`, or `None` when it holds a NUL or the
-    /// pool is full.
     pub fn push(&mut self, text: &str) -> Option<StrId> {
         self.push_hashed(
             text,
@@ -60,8 +45,6 @@ impl StringsBuilder {
         )
     }
 
-    /// [`Self::push`] with `text`'s hash, which only proposes a string it
-    /// might equal.
     pub(super) fn push_hashed(&mut self, text: &str, hash: u64) -> Option<StrId> {
         if let Some(id) = self.pooled.find(hash, |id| {
             Strings(&self.bytes).bytes(StrId(id)) == text.as_bytes()
@@ -86,35 +69,28 @@ impl StringsBuilder {
     }
 }
 
-/// The string pool of a validated image, or of a builder.
 #[derive(Debug, Clone, Copy)]
 pub struct Strings<'a>(pub &'a [u8]);
 
 impl<'a> Strings<'a> {
-    /// The string `id` names. Validation checked that it is terminated
-    /// UTF-8.
     pub fn get(self, id: StrId) -> &'a str {
         let text = std::str::from_utf8(self.bytes(id));
         debug_assert!(text.is_ok(), "validation checked string {} is UTF-8", id.0);
         text.unwrap_or("\u{fffd}")
     }
 
-    /// The bytes of the string `id` names, without its NUL.
     pub fn bytes(self, id: StrId) -> &'a [u8] {
         terminated(self.0, id.0)
     }
 
-    /// Whether `id` names a string of the pool.
     pub fn contains(self, id: StrId) -> bool {
         valid_reference(self.0, id.0, true)
     }
 }
 
-/// A filesystem path, by its offset in the path pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PathId(pub u32);
 
-/// Paths being interned, each once.
 #[derive(Debug, Default)]
 pub struct PathsBuilder {
     bytes: Vec<u8>,
@@ -122,8 +98,6 @@ pub struct PathsBuilder {
 }
 
 impl PathsBuilder {
-    /// The pool's name for `path`, which must not contain a NUL, as no
-    /// Unix path does.
     pub fn intern(&mut self, path: &Path) -> Option<PathId> {
         let bytes = path.as_os_str().as_bytes();
         if bytes.contains(&0) {
@@ -147,19 +121,15 @@ impl PathsBuilder {
     }
 }
 
-/// The path pool of a validated image.
 #[derive(Debug, Clone, Copy)]
 pub struct Paths<'a>(pub &'a [u8]);
 
 impl<'a> Paths<'a> {
-    /// The path `id` names. Validation checked that it is terminated.
     pub fn get(self, id: PathId) -> &'a Path {
         Path::new(OsStr::from_bytes(terminated(self.0, id.0)))
     }
 }
 
-/// The bytes from `start` in `pool` to the NUL that ends them, which
-/// validation checked is there.
 fn terminated(pool: &[u8], start: u32) -> &[u8] {
     let rest = pool.get(start as usize..).unwrap_or_default();
     let end = memchr::memchr(0, rest);
@@ -170,13 +140,6 @@ fn terminated(pool: &[u8], start: u32) -> &[u8] {
     rest.get(..end.unwrap_or(0)).unwrap_or_default()
 }
 
-/// Whether `pool` is NUL-terminated strings, each valid UTF-8 when `utf8`.
-///
-/// NUL is a character of its own in UTF-8, and no other character's bytes
-/// contain a zero byte, so the strings are each valid exactly when the
-/// pool is valid as a whole: one pass, where checking each string found
-/// its end and started again, a third of what reading a cached image
-/// took.
 pub fn valid_pool(pool: &[u8], utf8: bool) -> bool {
     if pool.last().is_some_and(|last| *last != 0) {
         return false;
@@ -184,13 +147,10 @@ pub fn valid_pool(pool: &[u8], utf8: bool) -> bool {
     !utf8 || std::str::from_utf8(pool).is_ok()
 }
 
-/// Whether `offset` names a string in a valid pool: inside it, and, for a
-/// UTF-8 pool, at a character boundary.
 pub fn valid_reference(pool: &[u8], offset: u32, utf8: bool) -> bool {
     let Some(&byte) = pool.get(offset as usize) else {
         return false;
     };
 
-    // Continuation bytes are 0b10xx_xxxx.
     !utf8 || byte & 0xc0 != 0x80
 }

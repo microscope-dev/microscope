@@ -1,7 +1,3 @@
-//! Python objects in a C extension's native frame: each `PyObject *` local
-//! is shown as the Python value it points to, and `(py)` casts a pointer to
-//! the object, so that expressions reach into it as in a Python frame.
-
 use microscope::{
     ExecutionContext, ExpressionErrorKind, FrameKind, StackFrameId, StopContext, ThreadId,
     ValueChildren, VariableState, VariableValue,
@@ -12,18 +8,14 @@ use crate::locals::{Stop, presented};
 use crate::session::PythonSession;
 use crate::support::Scenario;
 
-/// The interpreters the extension is built for, against each one's
-/// headers.
 pub const INTERPRETERS: [&str; 4] = ["3.12", "3.14", "3.14t", "3.15"];
 
-/// The directory of the extension built for `interpreter`.
 pub fn extension_directory(interpreter: &str) -> String {
     Scenario::fixture(&format!("python-extension-{interpreter}"))
         .to_string_lossy()
         .into_owned()
 }
 
-/// The native frame of `thread` that runs the C function `function`.
 async fn native_frame(stop: &Stop<'_>, thread: u64, function: &str) -> StopContext {
     let at = |frame| StopContext {
         stop: stop.id,
@@ -60,7 +52,6 @@ async fn native_frame(stop: &Stop<'_>, thread: u64, function: &str) -> StopConte
     at(frame.id)
 }
 
-/// Each object CPython reported, by name, with its text: at least one.
 fn reported_objects<'a>(truth: &'a [Vec<String>], context: &str) -> Vec<(&'a str, &'a str)> {
     let objects: Vec<_> = truth
         .iter()
@@ -74,10 +65,6 @@ fn reported_objects<'a>(truth: &'a [Vec<String>], context: &str) -> Vec<(&'a str
     objects
 }
 
-/// Each `PyObject *` the extension's frame holds is the Python value
-/// CPython reported for it, a null one is a null pointer, and expressions
-/// reach into an object through `(py)`, on each interpreter the extension
-/// is built for.
 #[tokio::test]
 async fn a_native_frames_python_objects_are_the_values_cpython_reported() {
     for interpreter in INTERPRETERS {
@@ -120,7 +107,6 @@ async fn a_native_frames_python_objects_are_the_values_cpython_reported() {
             );
         }
 
-        // The list expands into its elements.
         let VariableState::Available {
             presentation: Some(presentation),
             ..
@@ -139,7 +125,6 @@ async fn a_native_frames_python_objects_are_the_values_cpython_reported() {
             .collect();
         assert_eq!(elements, ["1", "2", "3"], "{}", stop.context);
 
-        // A null object is the null pointer it is.
         assert!(
             matches!(
                 &variable("missing").state,

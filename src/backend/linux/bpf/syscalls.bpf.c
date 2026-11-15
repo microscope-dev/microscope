@@ -1,13 +1,13 @@
-// The BPF engine's kernel side (dev/syscalls.md). It filters by
-// process, timestamps each chosen call's entry, and at its exit counts it,
-// copies the bytes behind its arguments as its spec says, and sends one
-// record. microscope decodes and interprets everything in Rust. With
-// stacks, a thread of a Python process microscope told it of sends its
-// Python frames before its stack, read by the sampler's walker.
-//
-// The verifier proves these programs terminate and touch only what they
-// may; they keep to bounded loops, no tail calls, and per-CPU scratch for
-// anything larger than the stack.
+
+
+
+
+
+
+
+
+
+
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
@@ -21,31 +21,31 @@
 #define SIGNAL_GROUP_EXIT 0x00000004
 #define X32_SYSCALL_BIT 0x40000000
 #define SLOTS 3072
-// A per-CPU array's value holds at most 32 KiB.
+
 #define SCRATCH 32768
-// Captures start in the first half of the scratch record, so that one of
-// at most CHUNK bytes always fits after its header. Four of the largest
-// fit, and no call has more.
+
+
+
 #define CAPTURES_END 16384
-// The most bytes one capture holds; captures::MOST_BYTES.
+
 #define CHUNK 4096
 #define MOST_ELEMENTS 64
 #define MOST_IOVECS 16
 #define MOST_COUNTED 4096
 #define MAX_ERRNO 4095
-// The most frames of the kernel's walk, as perf's default.
+
 #define STACK_FRAMES 127
-// A stack copy, in chunks that each read or fail whole.
+
 #define STACK_CHUNK 512
 #define STACK_CHUNKS 16
 
 #ifdef MICROSCOPE_FAULTS
-// The second argument of a getpgid whose entry the bpf-faults build skips,
-// as tests/fixtures/c/syscalls.c's `skipped` mode makes it.
+
+
 #define FAULT_SKIP_ENTRY 0x5ca1ab1e
-// And of one whose exit it skips.
+
 #define FAULT_SKIP_EXIT 0x5ca1ab1f
-// And of one whose record's making it interleaves with another's.
+
 #define FAULT_INTERLEAVE 0x5ca1ab20
 #endif
 
@@ -70,9 +70,9 @@ struct {
 	__type(value, struct config);
 } CONFIG SEC(".maps");
 
-// Each thread's call in progress, held in the thread itself: cheaper than
-// any map keyed by its id, and gone with it. The in_flight iterator reads
-// them all.
+
+
+
 struct {
 	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
@@ -80,9 +80,9 @@ struct {
 	__type(value, struct entry);
 } ENTRIES SEC(".maps");
 
-// The Python thread state the walker last found each thread's frames from,
-// which it tries first: searching every interpreter's threads costs a read
-// for each, at every call.
+
+
+
 struct {
 	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
@@ -90,8 +90,8 @@ struct {
 	__type(value, u64);
 } PY_STATES SEC(".maps");
 
-// Each thread's statistics of each chosen call. A thread counts on one CPU
-// at a time, so its values need no atomics.
+
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 8192);
@@ -99,9 +99,9 @@ struct {
 	__type(value, struct stat_value);
 } THREAD_STATS SEC(".maps");
 
-// Each chosen call's statistics, by its call_spec.stat, of threads
-// THREAD_STATS has no room for; microscope sizes it to the calls it
-// chooses.
+
+
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -109,7 +109,7 @@ struct {
 	__type(value, struct stat_value);
 } STATS SEC(".maps");
 
-// Zeroes, to start a thread's statistics from: too large for the stack.
+
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
@@ -138,9 +138,9 @@ struct {
 	__type(value, struct bucket);
 } BUCKETS SEC(".maps");
 
-// A map of maps whose only use is that setting its element waits until
-// every program running has finished: after a generation's switch, none
-// still counts into the old one.
+
+
+
 struct fence_token {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
@@ -155,8 +155,8 @@ struct {
 	__array(values, struct fence_token);
 } FENCE SEC(".maps");
 
-// Each CPU's count of the chosen calls it saw return: what tracing cost,
-// as microscope estimates it where the kernel does not time programs.
+
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -164,7 +164,7 @@ struct {
 	__type(value, u64);
 } RUNS SEC(".maps");
 
-// Each CPU's count of calls, for sampling one in config.sample.
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -172,7 +172,7 @@ struct {
 	__type(value, u64);
 } SAMPLED SEC(".maps");
 
-// Whether this call is the one in `every` that is sent.
+
 static __always_inline int sampled_in(u32 every)
 {
 	if (every <= 1)
@@ -185,21 +185,21 @@ static __always_inline int sampled_in(u32 every)
 	return *count % every == 0;
 }
 
-// Whether a call is sent to the stream; the kernel counts those it is not,
-// when it counts.
+
+
 static __always_inline int sent(struct config *settings, u8 flags)
 {
 	return (settings->flags & CONFIG_STREAM) && !(flags & CALL_SAMPLED_OUT);
 }
 
-// How many records each CPU can be making at once. The call programs run
-// preemptible: a thread preempted inside one, its record half made, can
-// leave the CPU to threads running others, and each makes its record in a
-// scratch slot of its own (claim).
+
+
+
+
 #define SCRATCHES 4
 
-// Where each CPU makes a record. Naming every record here also puts its
-// layout in the object's BTF, which a test compares with the decoders.
+
+
 struct scratch {
 	union {
 		u8 data[SCRATCH];
@@ -223,7 +223,7 @@ struct {
 	__type(value, struct scratch);
 } BUFFER SEC(".maps");
 
-// Which of each CPU's scratch slots a program is making a record in.
+
 struct claims {
 	u32 busy[SCRATCHES];
 };
@@ -235,15 +235,15 @@ struct {
 	__type(value, struct claims);
 } CLAIMS SEC(".maps");
 
-// A CPU's ring of records; microscope sizes each.
+
 struct ring {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 4096);
 };
 
-// Each CPU's ring, by its number: CPUs writing one ring between them
-// contend for its lock, which slows each call eightfold over eight
-// threads. Microscope merges the rings by the records' times.
+
+
+
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
 	__uint(max_entries, 1);
@@ -251,8 +251,8 @@ struct {
 	__array(values, struct ring);
 } EVENTS SEC(".maps");
 
-// Each Python process's layout, by its process id as the kernel's initial
-// pid namespace numbers it.
+
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
@@ -260,7 +260,7 @@ struct {
 	__type(value, struct py_layout);
 } LAYOUTS SEC(".maps");
 
-// Where each CPU builds a record of Python frames.
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, SCRATCHES);
@@ -268,8 +268,8 @@ struct {
 	__type(value, struct py_stack);
 } PY_SCRATCH SEC(".maps");
 
-// Each Node process's V8 layout, by its process id as the kernel's initial
-// pid namespace numbers it.
+
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
@@ -277,7 +277,7 @@ struct {
 	__type(value, struct v8_layout);
 } V8_LAYOUTS SEC(".maps");
 
-// Where each CPU builds a record of JavaScript frames.
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, SCRATCHES);
@@ -286,10 +286,10 @@ struct {
 } V8_SCRATCH SEC(".maps");
 
 
-// A scratch slot of this CPU's that no other program is making a record
-// in, which `release` gives back; SCRATCHES when every one is taken. The
-// programs that take them run with migration off, so only this CPU's
-// threads contend, and an exchange settles which one gets a slot.
+
+
+
+
 static __always_inline u32 claim(void)
 {
 	u32 zero = 0;
@@ -310,31 +310,31 @@ static __always_inline void release(u32 which)
 		*(volatile u32 *)&claims->busy[which] = 0;
 }
 
-// A claimed slot's scratch record, or none for SCRATCHES.
+
 static __always_inline struct scratch *scratch(u32 which)
 {
 	return bpf_map_lookup_elem(&BUFFER, &which);
 }
 
-// A global function's place in a scratch record: the slot, above sixteen
-// bits of offset, since a BPF call takes five arguments.
+
+
 #define PLACE(which, offset) (((which) << 16) | (offset))
 
-// `value & mask`, computed where the verifier sees it: the barrier keeps
-// the compiler from dropping a mask it can prove redundant.
+
+
 static __always_inline u32 bounded(u32 value, u32 mask)
 {
 	asm volatile("" : "+r"(value));
 	return value & mask;
 }
 
-// The last word of the scratch record, which no record reaches.
+
 #define SPARE (SCRATCH - 8)
 
-// `value & mask`, read back from map memory, where the verifier sees it
-// with no history. A loop whose iterations fork on how a length was
-// found then reaches the same state on every path, which the verifier
-// prunes, instead of one state per path per iteration.
+
+
+
+
 static __always_inline u32 forget(struct scratch *buffer, u32 value, u32 mask)
 {
 	volatile u32 *spare = (volatile u32 *)(buffer->data + SPARE);
@@ -348,7 +348,7 @@ static __always_inline struct config *config(void)
 	return bpf_map_lookup_elem(&CONFIG, &zero);
 }
 
-// Whether the current task's process is a target.
+
 static __always_inline int traced(u32 tgid)
 {
 	return bpf_map_lookup_elem(&TARGETS, &tgid) != 0;
@@ -378,7 +378,7 @@ static __always_inline void *reserve(u64 size)
 	return events ? bpf_ringbuf_reserve(events, size, 0) : 0;
 }
 
-// Sends `size` bytes from `data`, or counts them lost; nonzero when lost.
+
 static __always_inline int output(void *data, u64 size)
 {
 	void *events = ring();
@@ -388,16 +388,16 @@ static __always_inline int output(void *data, u64 size)
 	return -1;
 }
 
-// Sends `size` bytes from `data`; nonzero when the ring had no room.
+
 static __always_inline int emit(void *data, u64 size)
 {
 	void *events = ring();
 	return events ? bpf_ringbuf_output(events, data, size, 0) : -1;
 }
 
-// Whether this CPU's bucket lets one more failed or slow call through at
-// `now`. It fills at config.cap calls a second up to config.burst, and
-// starts full.
+
+
+
 static __always_inline int admitted(struct config *settings, u64 now)
 {
 	if (!settings->cap)
@@ -426,7 +426,7 @@ static __always_inline int failed(s64 ret)
 	return ret < 0 && ret >= -MAX_ERRNO;
 }
 
-// Why counting keeps a call whole: CALL_KEPT_FAILED, CALL_KEPT_SLOW, or 0.
+
 static __always_inline u8 exception(struct config *settings, u64 entered, u64 exited, s64 ret,
 				    int returned)
 {
@@ -439,9 +439,9 @@ static __always_inline u8 exception(struct config *settings, u64 entered, u64 ex
 	return 0;
 }
 
-// The ABI of the current call: compat when the thread entered through
-// int 0x80 or a 32-bit process's entry, x32 by its number's bit. A kernel
-// whose BTF lacks the status field leaves the ABI uncertain, not guessed.
+
+
+
 static __always_inline u8 abi_of(u64 id, u8 *flags)
 {
 	struct task_struct *task = bpf_get_current_task_btf();
@@ -478,7 +478,7 @@ static __always_inline u32 slot_of(u8 abi, u32 nr)
 	return ((u32)abi << 10) | (nr & 1023);
 }
 
-// The count an argument's bytes are measured by.
+
 static __always_inline u64 count_of(struct arg_copy *copy, u64 *args, s64 ret)
 {
 	u32 at = copy->count_arg < 6 ? copy->count_arg : 0;
@@ -497,8 +497,8 @@ static __always_inline u64 count_of(struct arg_copy *copy, u64 *args, s64 ret)
 	}
 }
 
-// Copies `wanted` bytes, at most `limit` of them, to `out`, as the ptrace
-// engine's reader does: what it took, and whether it took all.
+
+
 static __always_inline u32 copy_bytes(u8 *out, u64 address, u64 wanted, u32 limit, u8 *state)
 {
 	u64 take = wanted < limit ? wanted : limit;
@@ -515,13 +515,13 @@ static __always_inline u32 copy_bytes(u8 *out, u64 address, u64 wanted, u32 limi
 #define STRINGS_UNENDED 0xffffffff
 #define STRINGS_UNREADABLE 0xfffffffe
 
-// Where a count of a string array's elements stands.
+
 struct counting {
 	u64 address;
 	u32 abi, most, result;
 };
 
-// Element `i` of a count: 1 once `result` holds the answer, 0 to go on.
+
 static __always_inline long count_step(u32 i, struct counting *counting)
 {
 	u32 step = counting->abi == ABI_32 ? 4 : 8;
@@ -546,10 +546,10 @@ static long count_callback(u32 i, void *context)
 	return count_step(i, context);
 }
 
-// The elements of the string array at `address` before its NULL, counted
-// to `most`: their number, STRINGS_UNENDED when its end was not found, or
-// STRINGS_UNREADABLE when not even its first pointer could be read. Global
-// functions are verified on their own, which keeps a long loop cheap.
+
+
+
+
 __noinline u32 count_strings(u64 address, u32 abi, u32 most)
 {
 	struct counting counting = {
@@ -568,10 +568,10 @@ __noinline u32 count_strings(u64 address, u32 abi, u32 most)
 	return counting.result;
 }
 
-// Copies the first `count` elements of the string array at `address` into
-// the scratch record from `place`, after the four bytes of its count, each
-// cut at `limit` bytes and NUL-terminated: the bytes used, count included.
-// Elements that no longer fit in a capture are left out.
+
+
+
+
 __noinline u32 copy_strings(u32 place, u64 address, u32 abi, u32 limit, u32 count)
 {
 	u32 start = place & 0xffff;
@@ -607,12 +607,12 @@ __noinline u32 copy_strings(u32 place, u64 address, u32 abi, u32 limit, u32 coun
 
 #define IOVECS_UNREADABLE 0xffffffff
 
-// Copies the first elements of the iovec array at `address` into the
-// scratch record from `place`, as blobs::push_iovec lays them out: each
-// base and length, then up to `limit` of its bytes, while `left` bytes
-// remain. `shape` holds the ABI above eight bits of the element count,
-// since a BPF call takes five arguments. The bytes used, or
-// IOVECS_UNREADABLE when not even the first element could be read.
+
+
+
+
+
+
 __noinline u32 copy_iovecs(u32 place, u64 address, u32 shape, u64 left, u32 limit)
 {
 	u32 abi = shape >> 8;
@@ -649,8 +649,8 @@ __noinline u32 copy_iovecs(u32 place, u64 address, u32 shape, u64 left, u32 limi
 	return pos;
 }
 
-// One argument's capture, at `place` in the scratch record: the offset
-// after it. A global function, so the verifier checks it once.
+
+
 __noinline int copy_arg(u32 slot, u32 index, u32 place, u32 phase, s64 ret)
 {
 	u32 which = place >> 16;
@@ -670,7 +670,7 @@ __noinline int copy_arg(u32 slot, u32 index, u32 place, u32 phase, s64 ret)
 	u8 abi = record->abi;
 	if (!address)
 		return off;
-	// What a call writes is there only once it succeeded.
+
 	if (phase == READ_EXIT && copy.writes && failed(ret))
 		return off;
 	if (off >= CAPTURES_END)
@@ -684,7 +684,7 @@ __noinline int copy_arg(u32 slot, u32 index, u32 place, u32 phase, s64 ret)
 	switch (copy.kind) {
 	case COPY_PATH:
 	case COPY_STRING: {
-		// One byte past the limit, and its NUL, show a longer string.
+
 		u32 size = copy.limit + 2;
 		if (size > CHUNK)
 			size = CHUNK;
@@ -702,8 +702,8 @@ __noinline int copy_arg(u32 slot, u32 index, u32 place, u32 phase, s64 ret)
 	}
 	case COPY_STRINGS:
 	case COPY_STRINGS_COUNTED: {
-		// The element count, when the array's end was found, then each
-		// element read, NUL-terminated.
+
+
 		u32 most = MOST_COUNTED;
 		if (copy.kind == COPY_STRINGS)
 			most = settings->elements < MOST_ELEMENTS ? settings->elements : MOST_ELEMENTS;
@@ -741,7 +741,7 @@ __noinline int copy_arg(u32 slot, u32 index, u32 place, u32 phase, s64 ret)
 		break;
 	case COPY_IOVEC: {
 		u64 count = count_of(&copy, args, 0);
-		// What a reading call filled is its result; a write sends all.
+
 		u64 left = copy.writes ? (failed(ret) || ret < 0 ? 0 : (u64)ret) : ~0ULL;
 		u32 shown = count < MOST_IOVECS ? count : MOST_IOVECS;
 		len = copy_iovecs(PLACE(which, at + sizeof(struct capture_header)), address,
@@ -773,12 +773,12 @@ __noinline int copy_arg(u32 slot, u32 index, u32 place, u32 phase, s64 ret)
 	return off + sizeof(struct capture_header) + ((len + 7) & ~7);
 }
 
-// Builds a call record for `entry` in the scratch buffer and sends it;
-// nonzero when it was not sent, which the caller counts.
+
+
 static __always_inline int send_call(u32 tid, u32 tgid, struct entry *entry, u32 kind, u32 phase,
 				      s64 ret, u64 exited)
 {
-	// Exec can change a worker's id even when loading the new image fails.
+
 	if (kind == RECORD_CALL && entry->exec_tid && entry->exec_tid != tid) {
 		struct handoff_record *handoff = reserve(sizeof(*handoff));
 		if (handoff) {
@@ -819,8 +819,8 @@ static __always_inline int send_call(u32 tid, u32 tgid, struct entry *entry, u32
 	if (off > SCRATCH)
 		off = SCRATCH;
 #ifdef MICROSCOPE_FAULTS
-	// Test builds only: another program on this CPU makes a getpid's
-	// record while this one, preempted, has its own half made.
+
+
 	if (kind == RECORD_CALL && entry->nr == 121 && entry->args[1] == FAULT_INTERLEAVE) {
 		u32 another = claim();
 		struct scratch *other = scratch(another);
@@ -835,8 +835,8 @@ static __always_inline int send_call(u32 tid, u32 tgid, struct entry *entry, u32
 	return unsent;
 }
 
-// The statistics thread `tid` counts into: its own, or once THREAD_STATS
-// is full, every such thread's, with `tid` and `tgid` cleared.
+
+
 static __always_inline struct stat_value *stats_of(u32 *tid, u32 *tgid, u32 row)
 {
 	struct stat_key key = { .tid = *tid, .tgid = *tgid, .row = row };
@@ -855,7 +855,7 @@ static __always_inline struct stat_value *stats_of(u32 *tid, u32 *tgid, u32 row)
 	return bpf_map_lookup_elem(&STATS, &row);
 }
 
-// Folds one call into its thread's statistics.
+
 static __always_inline void count(struct config *settings, struct call_spec *spec, u32 slot,
 				  u32 tid, u32 tgid, u64 entered, u64 exited, s64 ret,
 				  int returned)
@@ -898,7 +898,7 @@ static __always_inline void count(struct config *settings, struct call_spec *spe
 		value->bytes += ret;
 }
 
-// Counts a call whose record was not sent, when the kernel counts calls.
+
 static __always_inline void unsent(struct config *settings, struct call_spec *spec, u32 slot,
 				   u32 tid, u32 tgid, u64 entered, u64 exited, s64 ret,
 				   int returned)
@@ -911,12 +911,12 @@ static __always_inline void unsent(struct config *settings, struct call_spec *sp
 	lost_as(LOSS_OVERFLOWED);
 }
 
-// The longest dentry name a file record carries.
+
 #define NAME_MAX 255
 
-// Describes what descriptor `fd` of the current task refers to, before
-// the call record that made it, so that microscope names it as the kernel
-// does without reading /proc after the fact.
+
+
+
 static __always_inline void send_file(u32 tid, u32 tgid, s32 fd)
 {
 	struct task_struct *task = bpf_get_current_task_btf();
@@ -962,8 +962,8 @@ static __always_inline void send_file(u32 tid, u32 tgid, s32 fd)
 	release(which);
 }
 
-// Sends the current thread's Python frames, when microscope told the walker
-// its process's layout, before its stack: whether it did.
+
+
 static __always_inline int send_python(u32 which, u32 tid, u32 tgid)
 {
 	u32 host = bpf_get_current_pid_tgid() >> 32;
@@ -993,9 +993,9 @@ static __always_inline int send_python(u32 which, u32 tid, u32 tgid)
 	return !output(stack, size);
 }
 
-// Sends the current thread's JavaScript frames, from the frame pointer and
-// instruction `regs` holds, when microscope told the walker its process's
-// V8 layout, before its stack: whether it did.
+
+
+
 static __always_inline int send_v8(u32 which, u32 tid, u32 tgid, struct pt_regs *regs)
 {
 	u32 host = bpf_get_current_pid_tgid() >> 32;
@@ -1023,23 +1023,23 @@ static __always_inline int send_v8(u32 which, u32 tid, u32 tgid, struct pt_regs 
 	return !output(stack, size);
 }
 
-// Sends the stack of the current thread, whose user registers `regs`
-// holds, before the call or signal record that follows: the kernel's
-// walk of its frame pointers, and with CONFIG_STACK_COPY, a copy of its
-// top, as far as it reads. Fails, having counted the loss, when the ring
-// has no room for it; the record it precedes then says so, so that the
-// reader shows it without a stack rather than with the thread's last one.
-//
-// The thread's interpreted frames go before it, and it says whether they
-// did: when they did not fit, the reader drops any it holds of the thread's,
-// which are of a stack that did not fit.
-//
-// A stack taken as a waiting call begins, at `entered`, carries that time:
-// the call can return on another CPU, whose ring this stack is not in.
+
+
+
+
+
+
+
+
+
+
+
+
+
 static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_regs *regs,
 				      u32 flags, u64 entered)
 {
-	// One slot holds the interpreted frames and the stack after them.
+
 	u32 which = claim();
 	u32 interpreted = send_python(which, tid, tgid) | send_v8(which, tid, tgid, regs);
 	struct scratch *buffer = scratch(which);
@@ -1096,19 +1096,19 @@ static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_re
 	return unsent;
 }
 
-// Whether a call waits, as its spec says, from its arguments.
+
 static __always_inline int waits(struct call_spec *spec, u64 *args)
 {
 	if (spec->waits != WAITS_BY_FUTEX_OP)
 		return spec->waits;
-	// Less FUTEX_PRIVATE_FLAG and FUTEX_CLOCK_REALTIME: FUTEX_WAIT,
-	// FUTEX_LOCK_PI, FUTEX_WAIT_BITSET, FUTEX_WAIT_REQUEUE_PI, and
-	// FUTEX_LOCK_PI2.
+
+
+
 	u32 op = args[1] & ~(u32)(128 | 256);
 	return op == 0 || op == 6 || op == 9 || op == 11 || op == 13;
 }
 
-// Describes the descriptors a call made, as its spec says.
+
 static __always_inline void send_files(u32 tid, u32 tgid, struct call_spec *spec,
 				       struct entry *entry, s64 ret)
 {
@@ -1124,7 +1124,7 @@ static __always_inline void send_files(u32 tid, u32 tgid, struct call_spec *spec
 	}
 }
 
-// Marks `task` known to the trace (struct entry's `known`).
+
 static __always_inline void know(struct task_struct *task)
 {
 	struct entry *held = bpf_task_storage_get(&ENTRIES, task, 0,
@@ -1133,9 +1133,9 @@ static __always_inline void know(struct task_struct *task)
 		held->known = 1;
 }
 
-// Sends, or counts, a call the thread entered whose return no exit
-// program saw, with `entry->flags` saying why. Its stack, when it took one
-// as it began, went then; one taken now would be another call's.
+
+
+
 static __always_inline void send_unreturned(struct config *settings, u32 tid, u32 tgid,
 					    struct entry *entry)
 {
@@ -1151,14 +1151,14 @@ static __always_inline void send_unreturned(struct config *settings, u32 tid, u3
 	}
 }
 
-// A call's entry, with the program's context for its stack, the registers
-// it entered with, and its number.
+
+
 static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int ending)
 {
 #ifdef MICROSCOPE_FAULTS
-	// Test builds only: the kernel skips this program for a getppid whose
-	// second argument is FAULT_SKIP_ENTRY, as it does when it finds the
-	// program already running on this CPU.
+
+
+
 	if (id == 121 && BPF_CORE_READ(regs, si) == FAULT_SKIP_ENTRY)
 		return 0;
 #endif
@@ -1176,8 +1176,8 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 	struct config *settings = config();
 	if (!settings)
 		return 0;
-	// Counting needs only when the call began, unless it keeps the
-	// calls that fail or are slow.
+
+
 	if (settings->flags & (CONFIG_STREAM | CONFIG_EXCEPTIONS))
 		read_args(regs, entry.abi, entry.args);
 	entry.tgid = tgid;
@@ -1192,10 +1192,10 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 		lost();
 		return 0;
 	}
-	// The thread's last call returned unseen: the kernel skipped its exit
-	// program, finding it already running on this CPU, or skipped a
-	// function's exit programs for calls in progress as another tracer
-	// attached to it.
+
+
+
+
 	if (held->entered) {
 		held->flags |= CALL_EXIT_SKIPPED;
 		send_unreturned(settings, tid, tgid, held);
@@ -1203,15 +1203,15 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 	*held = entry;
 	if (!sent(settings, entry.flags))
 		return 0;
-	// Taken now, a waiting call's stack costs the thread while it waits,
-	// not once it is woken, as one taken at its exit would. The calls
-	// that end their thread never wait, and their program leaves this out.
+
+
+
 	if (!ending && (settings->flags & CONFIG_STACKS) && waits(spec, entry.args)) {
 		held->stacked = 1;
 		if (send_stack(ctx, tid, tgid, regs, settings->flags, entry.entered))
 			held->flags |= CALL_STACK_LOST;
 	}
-	// Arguments the old image holds, as execve's, are read now.
+
 	for (u32 index = 0; index < 6; index++) {
 		if (spec->args[index].kind != COPY_NONE && spec->args[index].when == READ_ENTRY) {
 			if (send_call(tid, tgid, &entry, RECORD_ENTRY, READ_ENTRY, 0, 0))
@@ -1222,11 +1222,11 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 	return 0;
 }
 
-// A call's exit, with the program's context for its stack.
+
 static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 {
 #ifdef MICROSCOPE_FAULTS
-	// Test builds only, as on_enter's.
+
 	if (BPF_CORE_READ(regs, orig_ax) == 121 && BPF_CORE_READ(regs, si) == FAULT_SKIP_EXIT)
 		return 0;
 #endif
@@ -1240,10 +1240,10 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 		return 0;
 	struct entry entry = {};
 	struct call_spec *spec;
-	// A held entry whose time is zero has already ended. Asked to create
-	// one, the kernel fails only when it cannot take its per-CPU task
-	// storage lock, as when another program holds it on this CPU: the
-	// entry is there but unread, so the call is lost, not unseen.
+
+
+
+
 	struct entry *found = bpf_task_storage_get(&ENTRIES, bpf_get_current_task_btf(), 0,
 						   BPF_LOCAL_STORAGE_GET_F_CREATE);
 	if (!found) {
@@ -1252,11 +1252,11 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	}
 	u8 known = found->known;
 	u64 id = BPF_CORE_READ(regs, orig_ax);
-	// An entry held from another call returned unseen, as on_enter finds,
-	// and this call's own entry was not held: it is not chosen, or its
-	// entry was skipped too. The first is shown without its return, never
-	// with this one's. An exec returns with another number, and a
-	// sigreturn with -1, from the registers they load.
+
+
+
+
+
 	if (found->entered && !found->exec_tid && id != (u64)-1 &&
 	    found->nr != (u32)(id & ~(u64)X32_SYSCALL_BIT)) {
 		found->flags |= CALL_EXIT_SKIPPED;
@@ -1271,11 +1271,11 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 		u32 slot = slot_of(entry.abi, entry.nr);
 		spec = bpf_map_lookup_elem(&CALLS, &slot);
 	} else {
-		// A call that is not chosen, or one that began before tracing
-		// did, which a launched program's never do but microscope's own.
-		// A thread the trace knows began this call while traced: the
-		// kernel skipped its entry, finding the entry program already
-		// running on its CPU, and the call is shown without it.
+
+
+
+
+
 		if ((settings->flags & CONFIG_SKIP_UNSEEN) && !known)
 			return 0;
 		entry.flags = CALL_ENTRY_UNSEEN;
@@ -1285,7 +1285,7 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 		spec = bpf_map_lookup_elem(&CALLS, &slot);
 		if (!spec || !spec->selected)
 			return 0;
-		// A new thread's or child's return from the call that made it.
+
 		if (spec->forks && ret == 0)
 			return 0;
 		read_args(regs, entry.abi, entry.args);
@@ -1325,7 +1325,7 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	return 0;
 }
 
-// Every call, on every thread of the host: the default.
+
 SEC("tp_btf/sys_enter")
 int sys_enter(u64 *ctx)
 {
@@ -1345,10 +1345,10 @@ int terminal_enter(void *ctx)
 	return on_enter(ctx, regs, BPF_CORE_READ(regs, orig_ax), 1);
 }
 
-// Or only the chosen calls' kernel functions, each `__x64_sys_NAME(regs)`
-// or its compat twin, which costs calls not chosen nothing. Userspace
-// binds each slot to one function as it loads it; the call's number is
-// in the registers.
+
+
+
+
 #define FUNCTION_SLOT(n)                                                           \
 	SEC("fentry")                                                              \
 	int enter_##n(u64 *ctx)                                                    \
@@ -1387,10 +1387,10 @@ int process_fork(u64 *ctx)
 		u8 one = 1;
 		bpf_map_update_elem(&TARGETS, &child_tgid, &one, BPF_ANY);
 	}
-	// Traced from its first instruction, the child is known to the trace.
+
 	if (child_tgid == parent_tgid || (settings->flags & CONFIG_FOLLOW))
 		know(child);
-	// Sent in count mode too: microscope follows which processes live by them.
+
 	struct spawn_record *record = reserve(sizeof(*record));
 	if (!record) {
 		lost();
@@ -1417,8 +1417,8 @@ int process_exec(u64 *ctx)
 	u32 tgid = BPF_CORE_READ(task, tgid);
 	if (!traced(tgid))
 		return 0;
-	// A launched program's first thread is known to the trace from its
-	// exec on; the call it was in before, at microscope's gate, is not.
+
+
 	know(task);
 	struct config *settings = config();
 	if (!settings || !(settings->flags & CONFIG_STREAM))
@@ -1468,7 +1468,7 @@ static __always_inline void send_exit(u32 tid, u32 tgid, u64 now, s32 code, u32 
 	bpf_ringbuf_submit(record, 0);
 }
 
-// Kprobes disable preemption before entering BPF's per-CPU recursion guard.
+
 SEC("kprobe/exit_notify")
 int process_exit(void *ctx)
 {
@@ -1481,7 +1481,7 @@ int process_exit(void *ctx)
 	struct config *settings = config();
 	if (!settings)
 		return 0;
-	// A call the thread never returned from, as exit_group.
+
 	struct entry *found = bpf_task_storage_get(&ENTRIES, task, 0, 0);
 	if (found && found->entered) {
 		found->flags |= CALL_PROCESS_EXITED;
@@ -1489,7 +1489,7 @@ int process_exit(void *ctx)
 		found->entered = 0;
 	}
 	s32 code = BPF_CORE_READ(task, exit_code);
-	// Workers keep their own status; the leader identifies the final process exit.
+
 	if (tid != tgid && (settings->flags & CONFIG_STREAM))
 		send_exit(tid, tgid, now, code, 0);
 	return 0;
@@ -1522,8 +1522,8 @@ int signal_deliver(u64 *ctx)
 		return 0;
 	s32 signal = (s32)ctx[0];
 	void *info = (void *)ctx[1];
-	// get_signal reports group-exit wakeups as SIGKILL with SEND_SIG_NOINFO.
-	// The exit record, not this synthetic signal, carries the fatal reason.
+
+
 	if (signal == 9 && !info)
 		return 0;
 	struct config *settings = config();
@@ -1555,15 +1555,15 @@ int signal_deliver(u64 *ctx)
 	return 0;
 }
 
-// Lists every traced thread's call in progress, for microscope's in-flight
-// scan: one in_flight_record each.
+
+
 SEC("iter/task")
 int in_flight(struct bpf_iter__task *ctx)
 {
 	struct task_struct *task = ctx->task;
 	if (!task)
 		return 0;
-	// Only a traced thread holds an entry.
+
 	struct config *settings = config();
 	if (!settings)
 		return 0;

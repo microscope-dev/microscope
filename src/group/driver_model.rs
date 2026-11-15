@@ -1,28 +1,3 @@
-//! A model of the group's driver over fake members. Each fake answers the
-//! driver's requests from what its member really does: running, stopped
-//! and at which stop, exited, detached, or lost. The test picks the order
-//! in which the members' events, the driver's pauses and a client's
-//! commands reach the real driver, and checks what the group reports and
-//! does against what the members really did, not against a copy of the
-//! driver's logic.
-//!
-//! The rules, in both stop scopes:
-//!
-//! 1. A group stop names a member at that stop, or one that went from
-//!    it. The one exception is a member its own client moved on, when the
-//!    group has yet to read that it did.
-//! 2. The driver resumes a member only at a stop the group read, or one a
-//!    client named. A continue from a stop that is no longer current fails,
-//!    and one that succeeds resumed that stop, unless it reported a stop
-//!    that waited instead. A continue that resumed any member succeeds.
-//! 3. Each stop is reported once, and before the driver resumes it, unless
-//!    a client showed it, or the member moved on or went.
-//! 4. Every command is answered, and once the inputs stop, the group is
-//!    not left stopping.
-//! 5. Once the group has read every event, each member's state is what
-//!    the member really is.
-//! 6. A run replays: the same inputs give the same group events.
-
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -42,22 +17,16 @@ use crate::{
     StopReason, StopScope, ThreadId,
 };
 
-/// Fake processes take ids above any the kernel hands out, so that the
-/// driver's reads of their command lines find nothing.
 const FIRST_PROCESS: u64 = 1 << 23;
 
 const MAX_MEMBERS: u32 = 4;
 
-/// What made a stop, which says whether the group must report it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// The member's own stop, as at a breakpoint or the end of a step.
     Own,
 
-    /// The member stopped for a pause.
     Pause,
 
-    /// The stop a member joins in, which is not one of its own.
     Join,
 }
 
@@ -76,8 +45,6 @@ impl Kind {
         }
     }
 
-    /// Whether the group reports a stop of this kind. Where the group
-    /// stops as a whole, a pause is part of the group's stop.
     fn reported(self, scope: StopScope) -> bool {
         match self {
             Self::Own => true,
@@ -87,7 +54,6 @@ impl Kind {
     }
 }
 
-/// What a member really does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Truth {
     Running {
@@ -106,29 +72,21 @@ enum Truth {
 struct Fake {
     process: ProcessId,
 
-    /// The member's session, once the group has adopted it.
     handle: Option<DebuggerHandle>,
     events: EventSender,
     truth: Truth,
     revision: u64,
     next_id: u64,
 
-    /// Stops the group read, from their events or from a catch-up.
     seen: BTreeSet<StopId>,
 
-    /// Stops a client named in a command.
     named: BTreeSet<StopId>,
     reported: BTreeSet<StopId>,
 
-    /// Stops the member left, oldest first.
     left: Vec<StopId>,
 
-    /// Stops the member's own client moved it on from, by the revision of
-    /// the event that says so, while the group has yet to read it.
     unannounced: BTreeMap<u64, StopId>,
 
-    /// Whether the member publishes its join stop once the group asks
-    /// for anything, rather than before the group subscribed.
     late_join_event: bool,
     released: bool,
     lose: Option<oneshot::Sender<()>>,
@@ -188,8 +146,6 @@ impl Fake {
         }
     }
 
-    /// Stops the running member, for its pause unless `own` says it got
-    /// to a stop of its own first.
     fn stop(&mut self, own: bool) {
         let Truth::Running { execution, pausing } = self.truth else {
             return;
@@ -226,8 +182,6 @@ impl Fake {
         });
     }
 
-    /// Resumes the member from `stop`, for the group or for its own
-    /// client.
     fn leave(&mut self, stop: StopId, client: bool) -> ExecutionId {
         let execution = ExecutionId::new(self.next_id());
         self.left.push(stop);
@@ -248,7 +202,6 @@ impl Fake {
         execution
     }
 
-    /// The member's state as the group should show it.
     fn state(&self) -> MemberState {
         match self.truth {
             Truth::Running { .. } => MemberState::Running,
@@ -260,31 +213,21 @@ impl Fake {
     }
 }
 
-/// The members as they really are, and what the group did to them.
 struct World {
     scope: StopScope,
     members: BTreeMap<MemberNumber, Fake>,
     group: broadcast::Receiver<GroupEvent>,
 
-    /// Whether the request being made is a client's own, through the
-    /// member's session, rather than the driver's.
     client: bool,
 
-    /// Whether the driver is handling a member's event, rather than a
-    /// client's command.
     internal: bool,
 
-    /// The resumes of the whole group not yet answered, whose client
-    /// shows every member's stop itself.
     resumes: usize,
     trace: Vec<String>,
     failures: Vec<String>,
 }
 
 impl World {
-    /// Reads the group's events so far. A member changes only after this
-    /// runs, so each event is checked against the members as they were
-    /// when the group sent it.
     fn observe(&mut self) {
         loop {
             match self.group.try_recv() {
@@ -317,8 +260,6 @@ impl World {
             ));
         }
 
-        // A member that went since is fair to name: the stop happened,
-        // and that it went is reported too.
         let at = match fake.truth {
             Truth::Stopped { stop: now, .. } => now == stop,
             Truth::Exited | Truth::Lost | Truth::Detached => true,
@@ -333,8 +274,6 @@ impl World {
         }
     }
 
-    /// Answers a request member `number`'s session got, and says whether
-    /// the session goes on.
     fn answer(&mut self, number: MemberNumber, request: Request) -> bool {
         self.observe();
         let (scope, by_client, resumes) = (self.scope, self.client, self.resumes);
@@ -433,8 +372,6 @@ fn lock(world: &Mutex<World>) -> std::sync::MutexGuard<'_, World> {
     world.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Serves member `number`'s session from the world, until it is shut
-/// down or lost.
 async fn serve(
     world: Arc<Mutex<World>>,
     number: MemberNumber,
@@ -476,29 +413,21 @@ fn image() -> watch::Receiver<Arc<crate::ModuleImage>> {
     watch::channel(Arc::new(image)).1
 }
 
-/// A stop a client names in a continue.
 #[derive(Debug, Clone, Copy)]
 enum Named {
-    /// The last group stop, as the CLI shows it.
     GroupStop,
 
-    /// The member's stop now, as a client of its own session shows it.
     Current(usize),
 
-    /// A stop the member has left, from a client behind.
     Previous(usize),
 }
 
 #[derive(Debug, Clone)]
 enum Op {
-    /// The driver reads the next message from one of its sources.
     Deliver(usize),
 
-    /// The driver falls behind a member's events, which loses the oldest.
     Lag(usize, usize),
 
-    /// A running member stops: for its pause, if it has one under way,
-    /// unless `own` says it reached a stop of its own first.
     Stop {
         member: usize,
         own: bool,
@@ -506,14 +435,10 @@ enum Op {
     Exit(usize),
 
     /// A client moves a stopped member on through its own session, as a
-    /// step does.
     Step(usize),
 
-    /// The member's session fails.
     Lose(usize),
 
-    /// A new member joins, stopped. Its join stop's event comes late when
-    /// `late` says so.
     Join {
         late: bool,
     },
@@ -553,26 +478,19 @@ enum Answer {
     Paused(oneshot::Receiver<crate::Result<Option<GroupExecutionId>>>),
 }
 
-/// A command waiting for its answer.
 struct Asked {
     op: Op,
 
-    /// Whether it names a stop already left when it was asked.
     stale: bool,
 
-    /// The stop it continues from, and how many group events came
-    /// before it was asked.
     named: Option<(MemberNumber, StopId)>,
     events: usize,
     resume: bool,
 
-    /// Whether the driver resumed a member while serving it.
     resumed: bool,
     answer: Answer,
 }
 
-/// The driver's sources: each member's events, in order, and the pauses
-/// of each member, which the driver gets in any order with them.
 type Source = (MemberNumber, bool);
 
 struct Harness {
@@ -645,7 +563,6 @@ impl Harness {
         });
         let driver = Driver::new(Arc::clone(&shared), events, root, scope);
 
-        // The root launched once the group subscribed to it.
         fake.publish(|revision| DebuggerEvent::InferiorLaunched {
             revision,
             process_id: process,
@@ -663,8 +580,6 @@ impl Harness {
         }
     }
 
-    /// Lets every task run until each waits on the harness, then takes
-    /// what they sent the driver.
     async fn settle(&mut self) {
         for _ in 0..64 {
             tokio::task::yield_now().await;
@@ -693,8 +608,6 @@ impl Harness {
         numbers[index % numbers.len()]
     }
 
-    /// Hands the driver the next message from source `pick`, and says
-    /// whether there was one.
     async fn deliver(&mut self, pick: usize) -> bool {
         let sources = self.pool.keys().copied().collect::<Vec<_>>();
         if sources.is_empty() {
@@ -718,8 +631,7 @@ impl Harness {
                     fake.unannounced
                         .retain(|revision, _| *revision > event.revision());
                 }
-                // The catch-up reads the member as it is now, unless it is
-                // gone, which leaves the member to its newest events.
+
                 Internal::Lagged(number) => {
                     let fake = world.members.get_mut(number).expect("a member's lag");
                     match fake.truth {
@@ -742,8 +654,6 @@ impl Harness {
         true
     }
 
-    /// Drops up to `count` of member `index`'s oldest events not yet read,
-    /// as a lag does. A lag keeps the newest.
     fn lag(&mut self, index: usize, count: usize) {
         let number = self.number(index);
         let Some(messages) = self.pool.get_mut(&(number, false)) else {
@@ -830,7 +740,6 @@ impl Harness {
         self.settle().await;
     }
 
-    /// The stop `named` names, if any, and whether it is already left.
     fn name(&self, named: Named) -> Option<(MemberNumber, StopId, bool)> {
         let (number, stop) = match named {
             Named::GroupStop => {
@@ -940,7 +849,6 @@ impl Harness {
         self.settle().await;
     }
 
-    /// Takes the answers that came, and checks each.
     fn check_answers(&mut self) {
         let mut world = lock(&self.world);
         self.asked.retain_mut(|asked| {
@@ -979,8 +887,6 @@ impl Harness {
                 ));
             }
 
-            // A continue from a stop the client showed resumes that stop,
-            // unless it reports a stop that waited instead.
             if let (Some((member, stop)), Ok(())) = (asked.named, &result) {
                 let resumed = world.members[&member].left.contains(&stop);
                 let reported = world.trace[asked.events..]
@@ -1066,8 +972,6 @@ impl Harness {
         }
     }
 
-    /// Rule 5: with every event read, the group shows each member as it
-    /// is.
     fn check_states(&self) {
         let members = self
             .shared
@@ -1091,8 +995,6 @@ impl Harness {
         world.failures.extend(failures);
     }
 
-    /// Reads everything the members sent, and lands the pauses under way,
-    /// until nothing is left.
     async fn drain(&mut self) {
         for _ in 0..64 {
             let mut moved = false;
@@ -1120,9 +1022,6 @@ impl Harness {
         }
     }
 
-    /// Rules 3 and 4 once the inputs stop: every command is answered, the
-    /// group is not left stopping, and continuing it reports every stop
-    /// still waiting before it resumes anything.
     async fn finish(&mut self) {
         self.drain().await;
         self.check_states();
@@ -1158,8 +1057,6 @@ impl Harness {
     }
 }
 
-/// Runs `ops` against a fresh group, and returns the group's events and
-/// every rule they broke.
 fn run(scope: StopScope, ops: &[Op]) -> (Vec<String>, Vec<String>) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1203,11 +1100,6 @@ proptest! {
     }
 }
 
-/// A pause's group stop names the execution the pause returned. Found by
-/// the model: when every member the pause waited for went without
-/// stopping, the pause ended with no stop, and a member that joined later
-/// stopped the group under the pause's execution, so a client credited the
-/// pause with a stop it never made.
 #[test]
 fn a_pause_that_ended_with_no_stop_names_no_later_stop() {
     let ops = [
@@ -1235,11 +1127,6 @@ fn a_pause_that_ended_with_no_stop_names_no_later_stop() {
     assert!(stopped.contains("execution: None"), "{trace:#?}");
 }
 
-/// A continue from a stop a client showed resumes the member from it, even
-/// with another stop waiting to be reported. Found by the model: the
-/// waiting stop was the member's own older one, which the continue
-/// dropped, and the member stayed at the stop the client continued from,
-/// whose event the group had not read.
 #[test]
 fn a_continue_from_a_shown_stop_resumes_it_past_a_dropped_waiting_stop() {
     let ops = [
@@ -1267,8 +1154,6 @@ fn a_continue_from_a_shown_stop_resumes_it_past_a_dropped_waiting_stop() {
     assert!(failures.is_empty(), "{failures:#?}\n{trace:#?}");
 }
 
-/// As above, where the group has read the step that moved the member on,
-/// but not the stop the step ended at, so it thinks the member runs.
 #[test]
 fn a_continue_from_a_shown_stop_resumes_a_member_the_group_thinks_runs() {
     let ops = [
@@ -1298,9 +1183,6 @@ fn a_continue_from_a_shown_stop_resumes_a_member_the_group_thinks_runs() {
     assert!(failures.is_empty(), "{failures:#?}\n{trace:#?}");
 }
 
-/// A continue that fails leaves the execution under way to the stop that
-/// ends it. Before, it cleared it, so a client could not tell the stop
-/// ended its own continue, and credited it to nobody.
 #[test]
 fn a_failed_continue_leaves_the_execution_under_way() {
     let ops = [
@@ -1334,10 +1216,6 @@ fn a_failed_continue_leaves_the_execution_under_way() {
     );
 }
 
-/// A continue that resumed one member succeeds though another could not
-/// be asked. Found by the model: the last member tried decided the
-/// answer, so a lost member the group had not yet heard of made the
-/// continue fail while the first member ran.
 #[test]
 fn a_continue_that_resumed_a_member_succeeds_past_a_lost_one() {
     let ops = [
@@ -1355,8 +1233,6 @@ fn a_continue_that_resumed_a_member_succeeds_past_a_lost_one() {
     assert!(failures.is_empty(), "{failures:#?}\n{trace:#?}");
 }
 
-/// As above, where the continue resumed the stop a client showed before
-/// it tried the lost member.
 #[test]
 fn a_continue_from_a_shown_stop_succeeds_past_a_lost_member() {
     let ops = [

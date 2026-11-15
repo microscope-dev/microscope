@@ -1,18 +1,11 @@
-//! Source-level spellings of mangled linker names.
-
 mod dlang;
 
-/// Bounds the C++ demangler's recursion so adversarial names cannot exhaust
-/// the stack.
 const CPP_RECURSION_LIMIT: u32 = 96;
 
-/// Demangles a Rust (legacy or v0), Itanium C++, or D linker name. A D
-/// name is what the symbol names, without its type (see [`dlang`]).
 pub fn demangle(name: &str) -> Option<String> {
     demangle_with_scheme(name).map(|(demangled, _)| demangled)
 }
 
-/// The scheme a linker name was mangled by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scheme {
     Rust,
@@ -20,8 +13,6 @@ enum Scheme {
     D,
 }
 
-/// Rust is tried first because its legacy scheme is a subset of the Itanium
-/// grammar; the alternate rendering omits Rust's per-crate hash suffix.
 fn demangle_with_scheme(name: &str) -> Option<(String, Scheme)> {
     if let Ok(demangled) = rustc_demangle::try_demangle(name) {
         return Some((format!("{demangled:#}"), Scheme::Rust));
@@ -49,16 +40,7 @@ fn demangle_with_scheme(name: &str) -> Option<(String, Scheme)> {
         .map(|demangled| (demangled, Scheme::Cpp))
 }
 
-/// Whether a mangled linker name demangles to a name a person writes. As
-/// with gdb, the name may leave out the scopes that qualify it, a C++
-/// function's parameters, and a function template's arguments:
-/// `scale`, `shapes::scale`, and `shapes::scale(double)` all spell
-/// `_ZN6shapes5scaleEd`, and `max` spells `int max<int>(int, int)`. A Rust
-/// inherent method's type is written without its brackets: `Foo::bar`
-/// spells `<krate::Foo>::bar`.
 pub fn spells(mangled: &str, name: &str) -> bool {
-    // Demangling every symbol of a module takes most of a second for a
-    // large C++ program.
     if !Clue::of(name).is_in(mangled) {
         return false;
     }
@@ -69,7 +51,6 @@ pub fn spells(mangled: &str, name: &str) -> bool {
 
     let (head, parameters) = split_parameters(&demangled);
 
-    // A clone, such as `[clone .constprop.0]`, is other code.
     if parameters.contains("[clone") {
         return false;
     }
@@ -103,10 +84,6 @@ pub fn spells(mangled: &str, name: &str) -> bool {
                 .is_some_and(|qualifiers| qualifiers.starts_with(' ')))
 }
 
-/// What a linker name must hold to spell a written name, as [`spells`]
-/// reads it: the identifier the name's last part is, or the codes Itanium
-/// mangles its operator to, or the abbreviation of one of `std`'s
-/// classes. Checking for it first spares demangling every symbol.
 #[derive(Debug, Clone, Copy)]
 pub struct Clue<'a> {
     word: &'a str,
@@ -125,7 +102,6 @@ impl<'a> Clue<'a> {
                 .find(|(spelled, _)| *spelled == symbol.trim_start_matches(' '))
                 .map_or(&[][..], |(_, codes)| *codes)
         } else if last.starts_with("operator ") {
-            // A conversion operator is named by its type.
             &["cv"][..]
         } else {
             let class = last.strip_prefix('~').unwrap_or(last);
@@ -135,8 +111,6 @@ impl<'a> Clue<'a> {
                 .map_or(&[][..], |(_, codes)| *codes)
         };
 
-        // An identifier is in the linker name as written; a destructor's is
-        // its class's.
         let word = last.strip_prefix('~').unwrap_or(last);
         Self {
             word: if word.is_empty() { last } else { word },
@@ -144,7 +118,6 @@ impl<'a> Clue<'a> {
         }
     }
 
-    /// Whether `mangled` holds the clue, so that it may spell the name.
     #[must_use]
     pub fn is_in(self, mangled: &str) -> bool {
         !self.word.is_empty()
@@ -152,8 +125,6 @@ impl<'a> Clue<'a> {
     }
 }
 
-/// Itanium's operator names, as C++ spells each after `operator`, and the
-/// codes it mangles them to: `-` is binary `mi` or unary `ng`.
 const OPERATORS: &[(&str, &[&str])] = &[
     ("new", &["nw"]),
     ("new[]", &["na"]),
@@ -201,8 +172,6 @@ const OPERATORS: &[(&str, &[&str])] = &[
     ("[]", &["ix"]),
 ];
 
-/// The classes of `std` Itanium abbreviates, by the name their
-/// constructors and destructors have.
 const STD_ABBREVIATIONS: &[(&str, &[&str])] = &[
     ("allocator", &["Sa"]),
     ("basic_string", &["Sb"]),
@@ -212,8 +181,6 @@ const STD_ABBREVIATIONS: &[(&str, &[&str])] = &[
     ("basic_iostream", &["Sd"]),
 ];
 
-/// How long the symbol of an operator is that begins `text`, which follows
-/// the word `operator`, with the spaces before it.
 fn operator_symbol(text: &str) -> Option<usize> {
     let symbol = text.trim_start_matches(' ');
     let spaces = text.len() - symbol.len();
@@ -235,9 +202,6 @@ fn identifier_character(character: char) -> bool {
     character.is_alphanumeric() || character == '_' || character == '$'
 }
 
-/// The offsets in `name` of the characters outside brackets, operator
-/// symbols, a conversion operator's type, and `(anonymous namespace)`,
-/// with the characters, until `stop` says to stop at one.
 fn find_outside(name: &str, mut stop: impl FnMut(usize, char) -> bool) -> Option<usize> {
     const ANONYMOUS: &str = "(anonymous namespace)";
 
@@ -273,7 +237,6 @@ fn find_outside(name: &str, mut stop: impl FnMut(usize, char) -> bool) -> Option
         }
 
         match character {
-            // A function type's arrow closes nothing.
             '>' if name[..at].ends_with('-') => {}
             '<' | '(' | '[' | '{' => depth += 1,
             '>' | ')' | ']' | '}' => depth = depth.saturating_sub(1),
@@ -288,7 +251,6 @@ fn find_outside(name: &str, mut stop: impl FnMut(usize, char) -> bool) -> Option
     None
 }
 
-/// The components of a qualified name, outermost first.
 fn components(name: &str) -> Vec<&str> {
     let mut components = Vec::new();
     let mut start = 0;
@@ -311,8 +273,6 @@ fn components(name: &str) -> Vec<&str> {
     components
 }
 
-/// A C++ function's name without the return type a function template's
-/// name begins with: `max<int>` for `int max<int>`.
 fn without_return_type(name: &str) -> &str {
     let mut last_space = None;
     find_outside(name, |at, character| {
@@ -324,18 +284,12 @@ fn without_return_type(name: &str) -> &str {
     last_space.map_or(name, |at| &name[at + 1..])
 }
 
-/// A name without the template arguments that end it: `max` for
-/// `max<int>`, and `operator<` for itself.
 fn without_template_arguments(name: &str) -> &str {
     find_outside(name, |_, character| character == '<')
         .filter(|_| name.ends_with('>'))
         .map_or(name, |at| &name[..at])
 }
 
-/// A demangled Rust name as a person writes it: an inherent method's type
-/// without its brackets, and generic arguments without the `::` before
-/// them, as `krate::Foo::bar<T>` for `<krate::Foo>::bar::<T>`. A trait
-/// implementation's method keeps its brackets.
 fn rust_spelling(name: &str) -> String {
     let unwrapped = name.strip_prefix('<').and_then(|inner| {
         let close = closing(inner)?;
@@ -345,28 +299,17 @@ fn rust_spelling(name: &str) -> String {
     unwrapped.as_deref().unwrap_or(name).replace("::<", "<")
 }
 
-/// The part of a written or demangled name after its last scope, without
-/// its parameters, which a name `spells` must share with its symbol's.
 pub fn last_part(name: &str) -> &str {
     let (written, _) = split_parameters(name);
     components(written).last().copied().unwrap_or(written)
 }
 
-/// What a mangled name names, without its parameters: Nim mangles its
-/// procedures as C++'s are, `_ZN6values7reachedE6string` naming
-/// `values::reached`.
 pub fn qualified_name(mangled: &str) -> Option<String> {
     let demangled = demangle(mangled)?;
     let (qualified, _) = split_parameters(&demangled);
     Some(qualified.to_owned())
 }
 
-/// The name an Ada programmer writes for an entity GNAT named, when its
-/// encoding decodes exactly: scopes joined by `__`, which no Ada identifier
-/// holds, become dots, and an overload's number (`__2`) and a body's mark
-/// (`X`, `Xb`, `Xn`) are dropped. GNAT writes names in lower case and its
-/// other encodings in upper case or with `___`, so any other spelling is
-/// not decoded at all.
 pub fn ada_name(encoded: &str) -> Option<String> {
     let name = ["Xb", "Xn", "X"]
         .into_iter()
@@ -392,13 +335,6 @@ pub fn ada_name(encoded: &str) -> Option<String> {
         .then(|| name.replace("__", "."))
 }
 
-/// A demangled Rust function's path, with no generic arguments and an
-/// inherent method's type unwrapped: v0's
-/// `<tokio::runtime::park::CachedParkThread>::block_on::<F>` and legacy's
-/// `tokio::runtime::park::CachedParkThread::block_on` are both the path
-/// `tokio::runtime::park::CachedParkThread::block_on`. `None` for a trait
-/// implementation's method, which a path does not name, or unbalanced
-/// brackets.
 pub fn rust_path(demangled: &str) -> Option<String> {
     let unwrapped;
     let mut name = demangled;
@@ -417,7 +353,6 @@ pub fn rust_path(demangled: &str) -> Option<String> {
 
     for (at, character) in name.char_indices() {
         match character {
-            // A function type's arrow closes nothing.
             '>' if name[..at].ends_with('-') => {}
             '<' => depth += 1,
             '>' => depth = depth.checked_sub(1)?,
@@ -429,7 +364,6 @@ pub fn rust_path(demangled: &str) -> Option<String> {
     (depth == 0).then(|| path.replace("::::", "::").trim_end_matches("::").to_owned())
 }
 
-/// Where the `>` closing a `<` just before `text` is in it.
 fn closing(text: &str) -> Option<usize> {
     let mut depth = 1_usize;
     for (at, character) in text.char_indices() {
@@ -449,20 +383,12 @@ fn closing(text: &str) -> Option<usize> {
     None
 }
 
-/// A function's name and its parameter list, which begins at the first
-/// parenthesis outside template arguments and operator symbols.
 fn split_parameters(name: &str) -> (&str, &str) {
     find_outside(name, |_, character| character == '(').map_or((name, ""), |at| name.split_at(at))
 }
 
-/// What compilers append to a function's name to name a part of it they
-/// moved out of line, as GCC's `f.cold` and `f.part.0`, LLVM's `f.cold.1`,
-/// and BOLT's `f.warm`, or a copy of it they specialized, as GCC's
-/// `f.isra.0`, `f.constprop.0`, and `f.lto_priv.0`. Each may be numbered.
 const SPLIT_SUFFIXES: [&str; 6] = ["cold", "warm", "part", "isra", "constprop", "lto_priv"];
 
-/// The function a symbol names a split-off part or a specialized copy of,
-/// through any number of such suffixes, or the name itself.
 pub fn split_from(name: &str) -> &str {
     let mut name = name;
     loop {
@@ -493,11 +419,6 @@ mod tests {
 
     use super::{ada_name, demangle, rust_path, spells};
 
-    /// C++20's manglings, as Chromium's build has them: constrained
-    /// template parameters (`Tk`, `Tp`), whose constraint's name later
-    /// substitutions count; requires clauses (`Q`); template parameters of
-    /// an enclosing level (`TL`); and generic lambdas (`UlTy`). Each part
-    /// expected is `llvm-cxxfilt`'s.
     #[test]
     fn cpp20_constraints_requires_clauses_and_generic_lambdas_demangle() {
         for (mangled, parts) in [
@@ -593,9 +514,6 @@ mod tests {
         assert_eq!(rust_path("a::b<c"), None);
     }
 
-    /// Names that only resemble a symbol's, at edges the properties do not
-    /// generate: one cut inside a part, a clone's function, a name that
-    /// begins with a colon, and a symbol that is not mangled.
     #[test]
     fn names_that_only_resemble_a_symbols_do_not_spell_it() {
         for (mangled, name) in [
@@ -612,18 +530,15 @@ mod tests {
     #[test]
     fn rust_and_cpp_names_demangle_and_other_names_do_not() {
         for (mangled, expected) in [
-            // Rust v0, as current toolchains emit it, without crate hashes.
             (
                 "_RNvCsdHzz05DFzbQ_5crash9crash_now",
                 Some("crash::crash_now"),
             ),
-            // Rust legacy, without the trailing hash.
             (
                 "_ZN4core3fmt5write17h0123456789abcdefE",
                 Some("core::fmt::write"),
             ),
             ("_ZNSt6thread6detachEv", Some("std::thread::detach()")),
-            // GCC clones keep their suffix.
             ("_Z3bazi.constprop.0", Some("baz(int) [clone .constprop.0]")),
             ("main", None),
             ("_start", None),
@@ -634,12 +549,9 @@ mod tests {
         }
     }
 
-    /// Checked against libiberty's D demangler, less parameters and with
-    /// template arguments left out.
     #[test]
     fn d_names_demangle_to_what_they_name_or_not_at_all() {
         for (mangled, expected) in [
-            // A function nested in another, which is followed by its type.
             (
                 "_D2rt6dmain212_d_run_main2UAAamPUQgZiZ6runAllMFZv",
                 Some("rt.dmain2._d_run_main2.runAll"),
@@ -648,8 +560,6 @@ mod tests {
                 "_D3std6socket9TcpSocket6__vtblZ",
                 Some("std.socket.TcpSocket.__vtbl"),
             ),
-            // Template instances, with values, back references to their
-            // names, and symbols as arguments.
             (
                 "_D3std10functional__T6safeOpVAyaa1_3cZ__TQuTmTiZQBbFNaNbNiNfKmKiZb",
                 Some("std.functional.safeOp!(…).safeOp!(…).safeOp"),
@@ -658,13 +568,11 @@ mod tests {
                 "_D3std11concurrency__T8initOnceS_DQBg8datetime8timezone9LocalTime9singletonFNeZ5guardObZQCoFNcLObZOb",
                 Some("std.concurrency.initOnce!(…).initOnce"),
             ),
-            // A type that refers back to a function type.
             (
                 "_D3std11concurrency14FiberScheduler6createMFNbDFZvZ4wrapMQk",
                 Some("std.concurrency.FiberScheduler.create.wrap"),
             ),
             ("_Dmain", Some("D main")),
-            // A thunk, names cut short, and what only begins as D's do.
             (
                 "_DThn16_4core8internal2gc4impl6manualQp8ManualGC6enableMFZv",
                 None,
@@ -689,7 +597,6 @@ mod tests {
                 "ada__characters__handling__to_upper",
                 Some("ada.characters.handling.to_upper"),
             ),
-            // An overload's number and a body's mark are not the name's.
             (
                 "ada__characters__handling__to_upper__2",
                 Some("ada.characters.handling.to_upper"),
@@ -703,8 +610,6 @@ mod tests {
                 Some("ada.exceptions.exception_data.append_info_exception_name"),
             ),
             ("values", Some("values")),
-            // Other encodings, and what no Ada name is, stay as GNAT wrote
-            // them.
             ("ada__containers__Tcount_typeB", None),
             ("ada__containers___elabs", None),
             ("ada__characters__handling__to_string__L_6__T144b___L", None),
@@ -741,7 +646,6 @@ mod tests {
             ("_Z3maxIiET_S0_S0_", "max<int>"),
             ("_Z3maxIiET_S0_S0_", "max<int>(int, int)"),
             ("_ZNSaIcED1Ev", "std::allocator<char>::~allocator"),
-            // Shrunk by the properties below.
             ("_Z1aIiEiv", "a<int>"),
             ("_RNvMCsdHzz05DFzbQ_1aNtCsdHzz05DFzbQ_1a1a1a", "a::a::a"),
             (
@@ -764,7 +668,6 @@ mod tests {
         }
     }
 
-    /// A builtin type's Itanium code and its spelling.
     const BUILTINS: [(&str, &str); 6] = [
         ("i", "int"),
         ("c", "char"),
@@ -774,7 +677,6 @@ mod tests {
         ("m", "unsigned long"),
     ];
 
-    /// Operators as C++ spells them after `operator` and their codes.
     const OPERATOR_CODES: [(&str, &str); 10] = [
         ("()", "cl"),
         ("<", "lt"),
@@ -796,17 +698,13 @@ mod tests {
         Destructor(&'static str),
     }
 
-    /// A C++ function as a person writes it, which mangles and demangles
-    /// to known text.
     #[derive(Debug, Clone)]
     struct Cpp {
         scopes: Vec<String>,
 
-        /// The last scope's template arguments, by builtin.
         class_arguments: Vec<usize>,
         last: Last,
 
-        /// A function template's arguments and return type.
         template: Option<(Vec<usize>, usize)>,
         parameters: Vec<usize>,
         constant: bool,
@@ -865,8 +763,6 @@ mod tests {
             format!("_Z{name}{returns}{parameters}")
         }
 
-        /// Each component as a person writes it, the last with and without
-        /// a function template's arguments.
         fn components(&self) -> (Vec<String>, String, String) {
             let mut scopes = self.scopes.clone();
             if let Some(last) = scopes.last_mut()
@@ -909,9 +805,6 @@ mod tests {
             )
         }
 
-        /// What gdb accepts: each scope suffix, the last part with or
-        /// without its template arguments, and with no parameters or
-        /// the exact ones.
         fn spellings(&self) -> Vec<String> {
             let (scopes, last, with_arguments) = self.components();
             let mut lasts = vec![with_arguments.clone()];
@@ -936,8 +829,6 @@ mod tests {
             spellings
         }
 
-        /// Spellings of other functions: another scope, a scope cut short,
-        /// other template arguments, and other parameters.
         fn others(&self) -> Vec<String> {
             let (scopes, _, with_arguments) = self.components();
             let full = |scopes: &[String], last: &str, parameters: &str| {
@@ -1036,9 +927,6 @@ mod tests {
             )
     }
 
-    /// A Rust function's path and how each scheme mangles it: legacy, and
-    /// v0 as a free function or an inherent method of a type, whose
-    /// demangling wraps the type in brackets.
     fn rust() -> impl Strategy<Value = (String, Vec<String>)> {
         (
             proptest::collection::vec(identifier(), 0..3),
@@ -1047,7 +935,6 @@ mod tests {
             0..3_u8,
         )
             .prop_map(|(modules, krate, function, scheme)| {
-                // An inherent method's type is the last of its modules.
                 let scheme = if modules.is_empty() {
                     scheme.min(1)
                 } else {
@@ -1075,7 +962,6 @@ mod tests {
                         source_name(&function)
                     ),
                     _ => {
-                        // The last module is the type the method is of.
                         let impl_path = crate_root.clone();
                         let type_path = modules_path(crate_root, &modules);
                         format!("_RNvM{impl_path}{type_path}{}", source_name(&function))

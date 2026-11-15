@@ -1,12 +1,3 @@
-//! The semantic oracles: the debugger's answers about where a program is,
-//! how a step moved it, and what its variables hold, against what the
-//! program really did.
-//!
-//! Each judges by the kernel's shadow state (calls made and not returned
-//! from, instructions retired, positions a stepping thread passed) and by
-//! what binutils say about the binary (`facts`), never by microscope's own
-//! reading of the debug information.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use iced_x86::{Decoder, DecoderOptions, Mnemonic};
@@ -25,18 +16,12 @@ use crate::{
     VirtualAddress,
 };
 
-/// What a backtrace showed of its thread's stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unwound {
-    /// Every frame, to the thread's first.
     Whole,
 
-    /// The innermost frames, ending explicitly where unwinding could not
-    /// go on, as at a frame without call-frame information.
     Truncated,
 
-    /// The innermost frames, ending at a caller read from a return address
-    /// the program overwrote.
     Corrupt,
 }
 
@@ -44,8 +29,6 @@ fn tid_of(thread: crate::ThreadId) -> Tid {
     Tid::try_from(thread.get()).expect("a simulated tid fits")
 }
 
-/// The stopped thread `thread` names, if it still has registers and its
-/// shadow still describes its stack.
 fn stopped(kernel: &Kernel, thread: crate::ThreadId) -> Option<&Thread> {
     kernel
         .threads
@@ -53,12 +36,6 @@ fn stopped(kernel: &Kernel, thread: crate::ThreadId) -> Option<&Thread> {
         .filter(|thread| matches!(thread.state, State::Stopped { .. }) && !thread.shadow.lost)
 }
 
-/// Backtrace: the debugger's physical frames are the thread's location and
-/// then the return addresses of the calls it has not returned from,
-/// innermost first. The debugger may stop early only by saying why. It may
-/// show a caller read from a return address the program overwrote, since
-/// that is what the stack holds, but nothing past it, and not as a whole
-/// stack.
 pub fn backtrace(kernel: &Kernel, backtrace: &Backtrace) -> Result<Option<Unwound>, String> {
     let Some(thread) = backtrace
         .context
@@ -156,13 +133,6 @@ pub fn backtrace(kernel: &Kernel, backtrace: &Backtrace) -> Result<Option<Unwoun
     }
 }
 
-/// Tail calls: between a frame and its caller, a backtrace may show the
-/// functions that left by tail calls on the way from the call that began
-/// the frame's activation to the frame's function, the last first. Each
-/// must be at a jump the activation took with its stack as the call left
-/// it: the outermost in the function the call entered, each to the next
-/// one's function, and the last to the frame's. Functions are as binutils
-/// bound them. Returns how many the backtrace showed.
 pub fn tail_frames(
     kernel: &Kernel,
     facts: &Facts,
@@ -222,7 +192,6 @@ pub fn tail_frames(
         let call = calls[index];
         let jumps = thread.shadow.jumps(index);
 
-        // A caller's code is just before its return address.
         let code = instruction.get() - u64::from(level != 0);
         let mut inner = function(code);
         shown += tails.len();
@@ -265,7 +234,6 @@ pub fn tail_frames(
     Ok(shown)
 }
 
-/// Where a step began.
 #[derive(Debug, Clone)]
 pub struct Begun {
     pub tid: Tid,
@@ -273,36 +241,23 @@ pub struct Begun {
     pub rip: u64,
     pub shadow: Shadow,
 
-    /// How many instructions the thread had completed.
     pub retired: u64,
 
-    /// How many times the kernel had rewound the thread to make a call
-    /// again.
     pub restarts: u64,
 
-    /// Whether the thread stood inside a system call, which returns before
-    /// it executes anything else but, if the kernel makes it again, its
-    /// `syscall`.
     pub inside_call: bool,
 
-    /// The frame the debugger presented, and how many inline frames it
-    /// hid below it.
     pub frame: Option<PresentedFrame>,
     pub hidden_inline_frames: u32,
 
-    /// For an advance, the addresses it runs to.
     pub targets: BTreeSet<u64>,
 
-    /// For a step into one call of a line, where that call returns.
     pub into_return: Option<u64>,
 
-    /// For a step out of a caller's frame, how many frames below it the
-    /// step also returns from.
     pub outer: usize,
 }
 
 impl Begun {
-    /// The step `kind` of `thread`, about to be requested.
     #[must_use]
     pub fn new(
         thread: &Thread,
@@ -316,8 +271,6 @@ impl Begun {
             shadow: thread.shadow.clone(),
             retired: thread.retired,
             restarts: thread.restarts,
-            // At a call's entry, the call is still to be made; one that
-            // failed to be made again is made again first.
             inside_call: thread.call != CallPhase::Outside,
             frame: presentation.map(|presentation| presentation.frame.clone()),
             hidden_inline_frames: presentation
@@ -329,39 +282,15 @@ impl Begun {
     }
 }
 
-/// How a completed step was judged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Judged {
-    /// By rules that need no knowledge of lines.
     Instructions,
 
-    /// A source step in optimized code, which inlines, splits functions,
-    /// and turns calls into jumps: by where it stopped and how deep.
     Loosely,
 
-    /// A source step in unoptimized code: also by every position it passed,
-    /// none of which may be a place it had to stop.
     Exactly,
 }
 
-/// Stepping: a completed step left its thread where its kind says.
-///
-/// - An instruction step executes one instruction, or, from inside a
-///   system call, finishes the call (K-TRAP-1). A `syscall` the kernel
-///   makes again executes again (K-SYS-7).
-/// - Stepping over an instruction steps one, or runs a call until it
-///   returns to the same frame.
-/// - Stepping out of a physical frame returns to its caller's return
-///   address, or, where no line describes that, goes on to the first
-///   instruction one does, in the caller or, if the caller returns first,
-///   further out; out of an inline frame, it stays in the physical frame
-///   or returns from it.
-/// - A source step stops in a statement row of another line, or in a
-///   caller's statement row, or, stepping in, wherever a new function
-///   begins its source. Stepping over never stops in a callee. In
-///   unoptimized code, no position the thread passed was the start of a
-///   statement row of another line in the same frame or of a line in a
-///   caller other than the one it called from.
 pub fn step(
     kernel: &Kernel,
     begun: &Begun,
@@ -388,7 +317,6 @@ pub fn step(
     let start = begun.rip;
     let after = &thread.shadow.calls;
     let before = &begun.shadow.calls;
-    // A call the kernel made again executed its `syscall` again.
     let again = thread.restarts - begun.restarts;
 
     let one_instruction = || {
@@ -426,13 +354,6 @@ pub fn step(
             let lines = Lines::of(variant);
             let described = |address| lines.line(address).is_some();
 
-            // A source step stops only where a line describes the code, so
-            // a return to undescribed code goes on to the first instruction
-            // of the caller that a line describes.
-            // A caller that returns before reaching described code takes the
-            // step on to its own caller.
-            // Out of a caller's frame, the call that began it is the one
-            // returned from, with every call below it.
             let stepped = before.len().checked_sub(begun.outer + 1);
             let returned = stepped.is_some_and(|index| {
                 let (call, callers) = (&before[index], &before[..index]);
@@ -472,14 +393,6 @@ pub fn step(
     }
 }
 
-/// Advancing: the advancing thread executes no instruction at its
-/// location, except the one it stood at, which it steps over first, once.
-/// One that reached its location stopped there; one whose frame returned
-/// first ended as stepping out of the frame does. `stopped` is whether the
-/// stop that ended it is still published.
-///
-/// The path is judged whatever ended the advance, since every instruction
-/// the thread completed was one it ran under the advance.
 pub fn advance(
     kernel: &Kernel,
     begun: &Begun,
@@ -550,8 +463,6 @@ pub fn advance(
     }
 }
 
-/// The instruction the program has at `address`, whatever traps the
-/// debugger planted over it.
 pub(super) fn original_instruction(
     image: &Image,
     address: u64,
@@ -570,8 +481,6 @@ pub(super) fn original_instruction(
     }
 }
 
-/// The activation at `depth` among the calls of a thread whose shadow was
-/// `shadow`.
 fn activation_at(shadow: &Shadow, depth: usize) -> Option<u64> {
     match depth {
         0 => Some(shadow.base),
@@ -579,7 +488,6 @@ fn activation_at(shadow: &Shadow, depth: usize) -> Option<u64> {
     }
 }
 
-/// The facts about a variant's lines, at the addresses where it loaded.
 struct Lines<'a> {
     facts: &'a Facts,
     bias: u64,
@@ -593,7 +501,6 @@ impl<'a> Lines<'a> {
         }
     }
 
-    /// The row describing the instruction at a loaded address.
     fn row(&self, address: u64) -> Option<&'a facts::Range> {
         address
             .checked_sub(self.bias)
@@ -604,13 +511,11 @@ impl<'a> Lines<'a> {
         self.row(address).and_then(|range| range.line)
     }
 
-    /// The row a statement begins at `address`, if one does.
     fn statement_at(&self, address: u64) -> Option<&'a facts::Range> {
         self.row(address)
             .filter(|range| range.start + self.bias == address && range.statement)
     }
 
-    /// Whether the compiler marks an epilogue at `address`.
     fn epilogue(&self, address: u64) -> bool {
         address
             .checked_sub(self.bias)
@@ -640,18 +545,12 @@ fn source_step(
     let describe = |line| lines.describe(line);
     let entered = after.len() > before.len() && after[..before.len()] == before[..];
 
-    // Begun in code no line describes, stepping over has no line to step
-    // over, and steps as stepping in does.
-    // A process without a language runtime starts no task, so stepping
-    // into one steps over the line.
     let kind = match begun.kind {
         _ if lines.row(start).is_none() => StepKind::IntoSource,
         StepKind::IntoNewTask => StepKind::OverSource,
         kind => kind,
     };
 
-    // A step into one call of a line goes into no other: a frame it stops
-    // in below its own was made by that call.
     if let Some(into_return) = begun.into_return
         && entered
         && after[before.len()].return_address != into_return
@@ -663,7 +562,6 @@ fn source_step(
         ));
     }
 
-    // Stepping into an inline frame hidden at the stop moves nothing.
     if kind == StepKind::IntoSource && retired == 0 && end == start {
         if begun.hidden_inline_frames > 0 {
             return Ok(Judged::Loosely);
@@ -686,8 +584,6 @@ fn source_step(
         ));
     }
 
-    // A compiler's epilogue marker is where a source step crosses to the
-    // caller, never a place it stops.
     if lines.epilogue(end) {
         return Err(format!(
             "a {kind:?} step from {start:#x} ({}) stopped at {end:#x}, where the compiler \
@@ -704,8 +600,6 @@ fn source_step(
         ));
     };
 
-    // Stepping in may stop where a function's source begins, which
-    // optimized code need not mark as a statement.
     if !(stop.statement || kind == StepKind::IntoSource && entered && lines.facts.optimized) {
         return Err(format!(
             "a {kind:?} step from {start:#x} ({}) stopped at {end:#x} ({}), which is not a \
@@ -741,11 +635,6 @@ fn source_step(
     Ok(Judged::Exactly)
 }
 
-/// The first place a source step's thread passed where the step had to
-/// stop: the start of a statement of another line in the frame it began
-/// in, or in a caller, of a line other than the one the caller called
-/// from. Once the step crossed a frame's epilogue marker, it was bound for
-/// that frame's caller, and the rest of the frame was no place to stop.
 fn missed_stop(
     begun: &Begun,
     positions: &[Position],
@@ -777,20 +666,13 @@ fn missed_stop(
     })
 }
 
-/// What the variables oracle found at a stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inspected {
-    /// A marker's condition held with the debugger's values.
     Held,
 
-    /// A marker applied, but optimized code left a variable it needs
-    /// without a value.
     Unavailable,
 }
 
-/// The variable a name reaches among those a frame shows: the innermost
-/// one of that name. What a finished function returned is listed among
-/// them, but no name reaches it.
 fn named<'a>(variables: &'a [crate::Variable], name: &str) -> Option<&'a crate::Variable> {
     variables
         .iter()
@@ -798,10 +680,6 @@ fn named<'a>(variables: &'a [crate::Variable], name: &str) -> Option<&'a crate::
         .find(|variable| &*variable.name == name && variable.kind != crate::VariableKind::Returned)
 }
 
-/// Variables: where a thread stands at the start of a line that carries a
-/// marker, and the debugger presents that line in its innermost frame,
-/// the variables it shows there satisfy the marker's condition. Variables
-/// in unoptimized code always have values.
 pub fn variables(
     kernel: &Kernel,
     snapshot: &VariableSnapshot,
@@ -842,14 +720,6 @@ pub fn variables(
     }
 }
 
-/// Expressions, evaluated in the frame whose variables the client read at
-/// the same stop: where the variables oracle applies, a marker's condition
-/// evaluates true and its negation false; a variable's name, or its
-/// address dereferenced, evaluates to what the variables view shows, from
-/// bytes the simulated memory holds where the debugger says it read them;
-/// `&x` is where the view says `x` lives; and sums, differences, and
-/// products of integer variables are exact, never wrapped to a machine
-/// width. Returns the marks the evaluations reached.
 pub fn evaluations(
     kernel: &Kernel,
     snapshot: &VariableSnapshot,
@@ -861,8 +731,6 @@ pub fn evaluations(
 ) -> Result<Vec<Mark>, String> {
     let marker = marker_at(kernel, snapshot, backtrace, variant, source, markers);
 
-    // Registers hold the values of the innermost frame only; a caller's
-    // were saved somewhere or lost.
     let innermost = backtrace
         .frames
         .iter()
@@ -951,8 +819,6 @@ pub fn evaluations(
     Ok(marks)
 }
 
-/// Judges an expression computed from integer variables against the
-/// values the variables view shows them holding.
 fn computed<'v>(
     evaluated: &Evaluated,
     state: &Result<&VariableState, String>,
@@ -1020,9 +886,6 @@ fn computed<'v>(
     }
 }
 
-/// Storage truth: bytes the debugger says it read from memory, or from a
-/// register of the innermost frame, are what the simulated machine holds
-/// there.
 fn stored(
     kernel: &Kernel,
     snapshot: &VariableSnapshot,
@@ -1084,15 +947,6 @@ fn stored(
     Ok(Some(mark))
 }
 
-/// Entry values: where binutils say a variable of a physical frame is
-/// exactly what a register held when its function was entered, the value
-/// the debugger shows for it is what the call that began the activation
-/// left in that register. A caller's frame is found among the calls by its
-/// depth, and must be where the call below it returns to; its variables
-/// are judged at the call it made. An activation a jump entered is not
-/// judged: no call says what it began with. Nor is an inline frame, whose
-/// variables may share names with its function's: the facts describe only
-/// variables outside inlined code.
 pub fn entry_values(
     kernel: &Kernel,
     snapshot: &VariableSnapshot,
@@ -1116,7 +970,6 @@ pub fn entry_values(
         return Ok(Vec::new());
     };
 
-    // The calls below the frame, each of a physical frame nearer the stop.
     let below = backtrace
         .frames
         .iter()
@@ -1165,8 +1018,6 @@ pub fn entry_values(
     judge_entry_values(&variant.facts, address, &call.entry, &shown)
 }
 
-/// Judges the bytes `shown` for each variable in view at image `address`
-/// against the general registers its function was `entered` with.
 fn judge_entry_values(
     facts: &Facts,
     address: u64,
@@ -1176,7 +1027,6 @@ fn judge_entry_values(
     let mut marks = Vec::new();
 
     for &(name, raw) in shown {
-        // Bytes beyond a register's say nothing of what it held.
         let Some(raw) = raw.filter(|raw| raw.len() <= 8) else {
             continue;
         };
@@ -1189,7 +1039,6 @@ fn judge_entry_values(
             continue;
         };
 
-        // Variables of one name in nested scopes may be different things.
         if shown.iter().filter(|(other, _)| *other == name).count() > 1 {
             continue;
         }
@@ -1208,9 +1057,6 @@ fn judge_entry_values(
     Ok(marks)
 }
 
-/// In unoptimized code, which inlines nothing, each frame's line and
-/// function are what binutils give for its instruction or, in a caller,
-/// for the call before its return address.
 pub fn frame_lines(
     facts: &Facts,
     bias: u64,
@@ -1249,8 +1095,6 @@ pub fn frame_lines(
             ));
         }
 
-        // Code the source's line table describes is in a function its
-        // debug information describes.
         let named = frame.function.as_ref().map(|function| &*function.name);
         if let Some(function) = facts.function(image)
             && named.map_or_else(|| line.is_some(), |named| named != function.name)
@@ -1265,12 +1109,6 @@ pub fn frame_lines(
     Ok(())
 }
 
-/// Registers: in the frame a thread stopped in, each general register, and
-/// `rip`, is what the thread holds. In a caller's physical frame, with no
-/// inline frame below it, `rip` is where the call it made returns, `rsp`
-/// is just above where that call pushed it, and each register a callee
-/// must preserve that the debugger shows a value for holds what it held
-/// when the caller made the call. Returns the marks the registers reached.
 pub fn registers(
     kernel: &Kernel,
     snapshot: &crate::RegisterSnapshot,
@@ -1313,7 +1151,6 @@ pub fn registers(
         return Ok(vec![Mark::StoppedRegistersTrue]);
     }
 
-    // The call the frame made, which every frame below it is a call under.
     let physical = backtrace
         .frames
         .iter()
@@ -1342,15 +1179,11 @@ pub fn registers(
     Ok(vec![Mark::CallerRegistersTrue])
 }
 
-/// The simulated CPU's general registers, in its order.
 const GENERAL_REGISTERS: [&str; 16] = [
     "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
     "r14", "r15",
 ];
 
-/// The marker whose condition must hold where the variables were read:
-/// the thread stands at the start of a row of the marker's line, and the
-/// debugger presents that line in its innermost frame.
 fn marker_at<'m>(
     kernel: &Kernel,
     snapshot: &VariableSnapshot,
@@ -1382,7 +1215,6 @@ fn marker_at<'m>(
         .then_some(marker)
 }
 
-/// An available integer value.
 fn integer(state: &VariableState) -> Option<i128> {
     let VariableState::Available { value, .. } = state else {
         return None;
@@ -1408,8 +1240,6 @@ mod tests {
     use crate::sim::kernel::shadow::Call;
     use crate::{StackFrame, ThreadId, VirtualAddress};
 
-    /// An advance stops where it first reaches its location: running the
-    /// location's instruction, except once where it stood, passes it.
     #[test]
     fn advances_stop_where_they_first_reach_their_location() {
         let corpus = Corpus::load().expect("load the golden corpus");
@@ -1446,8 +1276,6 @@ mod tests {
         assert!(judge(&elsewhere, &[], Some(&advanced)).is_err());
     }
 
-    /// An instruction step executes one instruction, and once more each
-    /// `syscall` the kernel rewound to make a call again.
     #[test]
     fn a_restarted_call_executes_its_syscall_again() {
         let corpus = Corpus::load().expect("load the golden corpus");
@@ -1466,8 +1294,6 @@ mod tests {
         assert!(ran(2, 0).is_err());
         assert!(ran(1, 1).is_err());
 
-        // A thread stopped after its call failed, to be made again, stands
-        // where the made-again call returns.
         kernel.threads.get_mut(&tid).expect("the thread").call = CallPhase::Restarting;
         let begun = Begun::new(&kernel.threads[&tid], StepKind::Instruction, None);
         let thread = kernel.threads.get_mut(&tid).expect("the thread");
@@ -1480,8 +1306,6 @@ mod tests {
         );
     }
 
-    /// A stopped thread of `variant` at its entry, `calls` deep, with each
-    /// call's return address on its stack.
     fn kernel_with_calls(variant: &Variant, calls: &[u64]) -> (Kernel, Tid) {
         let mut kernel = Kernel::new(100);
         let tid = kernel.spawn(Arc::clone(&variant.image), &variant.path, &[], [0; 16]);
@@ -1525,9 +1349,6 @@ mod tests {
         }
     }
 
-    /// In unoptimized code a frame shows the line binutils give for its
-    /// instruction, or a caller's for its call, in a function the debug
-    /// information names.
     #[test]
     fn frames_show_binutils_lines() {
         let row = |start, end, line| facts::Range {
@@ -1557,7 +1378,6 @@ mod tests {
             backtrace
         };
 
-        // The caller returns to 0x19, after a call at line 4.
         assert_eq!(
             frame_lines(&facts, 0x1000, "a.c", &backtrace([Some(4), Some(4)])),
             Ok(())
@@ -1565,7 +1385,6 @@ mod tests {
         assert!(frame_lines(&facts, 0x1000, "a.c", &backtrace([Some(3), Some(4)])).is_err());
         assert!(frame_lines(&facts, 0x1000, "a.c", &backtrace([Some(4), None])).is_err());
 
-        // Code with lines is in a function, which a frame must name.
         facts.functions = vec![facts::Function {
             name: "f".into(),
             start: 0x10,
@@ -1574,9 +1393,6 @@ mod tests {
         assert!(frame_lines(&facts, 0x1000, "a.c", &backtrace([Some(4), Some(4)])).is_err());
     }
 
-    /// A function a backtrace shows as having left by a tail call must be
-    /// one the frame's activation left by a jump, in the order the jumps
-    /// ran from the function its call entered.
     #[test]
     fn tail_frames_are_jumps_the_activation_took() {
         use crate::sim::kernel::shadow::Jump;
@@ -1585,7 +1401,6 @@ mod tests {
         let variant = &corpus.programs[0].variants[0];
         let (mut kernel, tid) = kernel_with_calls(variant, &[0x9000]);
 
-        // The call entered `a`, which jumped to `b`, which jumped to `c`.
         let function = |name: &str, start| facts::Function {
             name: name.into(),
             start,
@@ -1644,26 +1459,19 @@ mod tests {
             )
         };
 
-        // At each jump, or the instruction after it.
         assert_eq!(judge(&[0x1150, 0x1050]), Ok(2));
         assert_eq!(judge(&[0x1152, 0x1055]), Ok(2));
         assert_eq!(judge(&[]), Ok(0));
 
-        // Where no jump left.
         assert!(judge(&[0x1150, 0x1060]).is_err());
 
-        // Out of order.
         assert!(judge(&[0x1050, 0x1150]).is_err());
 
-        // Missing the function the call entered.
         assert!(judge(&[0x1150]).is_err());
 
-        // Missing a function between.
         assert!(judge(&[0x1050]).is_err());
     }
 
-    /// A name reaches the innermost variable it names, never a value a
-    /// finished function returned, which may share it.
     #[test]
     fn names_reach_variables_but_not_returned_values() {
         let variable = |kind| crate::Variable {
@@ -1687,9 +1495,6 @@ mod tests {
         assert_eq!(named(&[local], "other"), None);
     }
 
-    /// A backtrace shows the thread's calls innermost first. It may stop
-    /// early only by saying why, and it may show a caller read from an
-    /// overwritten return address only as its last frame.
     #[test]
     fn backtraces_show_every_call_or_say_why_not() {
         let corpus = Corpus::load().expect("load the golden corpus");
@@ -1725,7 +1530,6 @@ mod tests {
         );
         assert!(judge(&kernel, &[rip, 0x40_2222, 0x40_1111], stopped.clone()).is_err());
 
-        // The program overwrites the outer call's return address.
         let slot = kernel.threads[&tid].shadow.calls[0].slot;
         kernel.poke(tid, slot, 1).expect("write the stack");
         assert_eq!(
@@ -1737,10 +1541,6 @@ mod tests {
         assert!(judge(&kernel, &[rip, 0x40_2222, 1, 0x40_4444], stopped).is_err());
     }
 
-    /// Where binutils say a variable is a register's entry value, the bytes
-    /// shown for it are that register's as the call entered the function.
-    /// A name two variables in view share, or bytes beyond the register,
-    /// say nothing of what it held.
     #[test]
     fn entry_values_are_what_the_call_entered_with() {
         let mut corpus = Corpus::load().expect("load the golden corpus");
@@ -1773,8 +1573,6 @@ mod tests {
         );
     }
 
-    /// In unoptimized code, a source step stops at the first start of a
-    /// statement of another line it reaches in its frame, not later.
     #[test]
     fn source_steps_stop_at_the_first_line_they_reach() {
         let corpus = Corpus::load().expect("load the golden corpus");
@@ -1795,7 +1593,6 @@ mod tests {
             .find(|function| function.name == "main")
             .expect("main");
 
-        // Three statement rows of distinct lines in main, in address order.
         let mut lines = Vec::new();
 
         for range in facts

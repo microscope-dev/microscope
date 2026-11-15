@@ -1,10 +1,3 @@
-//! A model of a session's life over random sequences of a client's
-//! lifecycle requests and the kernel's statuses for one traced process at
-//! a time and one fork child. The reference says what every reply should
-//! say after each step, and whether the controller should still run. The
-//! test drives the real controller through its messages and checks both,
-//! then ends the session and checks that nothing is left unanswered.
-
 use proptest::prelude::*;
 use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
 
@@ -26,94 +19,67 @@ enum Step {
     Kill,
     Shutdown,
 
-    /// Continues an attached process stopped at its attach.
     Continue,
 
-    /// An attach to a process none of whose threads can be seized.
     AttachRefused,
 
-    /// A kill whose signal the kernel refuses.
     KillRefused,
 
-    /// A shutdown that kills a launched process, and whose signal the
-    /// kernel refuses.
     ShutdownKillRefused,
 
-    /// The process's first stop: a launch's exec, or an attach's
-    /// interrupt.
     FirstStop,
 
-    /// The stop a shutdown's interrupt makes of an attached process that
-    /// runs.
     InterruptStop,
 
-    /// The process exits on its own.
     Exit,
 
-    /// SIGKILL ends the process.
     Death,
 
-    /// The process forks the child.
     Fork,
 
-    /// The fork child's first stop.
     ChildStop,
 
-    /// Nothing, once the controller has ended.
     Nothing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Run {
-    /// Before its first stop.
     Starting,
     Running,
     Stopped,
 }
 
-/// The traced process, as the client and the kernel have left it.
 #[derive(Debug, Clone)]
 struct Process {
     kind: Kind,
     run: Run,
 
-    /// Whether SIGKILL was sent, so that its death is the next status.
     killed: bool,
 
-    /// Whether a shutdown interrupted it to detach.
     interrupted: bool,
 
-    /// The launch or attach waiting for the first stop, by reply number.
     startup: Option<usize>,
     kill: Option<usize>,
 }
 
-/// The session as the rules say it should be.
 #[derive(Debug, Clone)]
 struct Model {
     process: Option<Process>,
 
-    /// Whether the fork child is due its first stop, whether or not its
-    /// parent still lives.
     child: bool,
 
-    /// A launch or attach held until the child is released.
     held: Option<(Kind, usize)>,
     shutdown: bool,
     shutdown_reply: Option<usize>,
     ended: bool,
 
-    /// How the last process ended, as a snapshot should say until the
-    /// next is traced.
     last: &'static str,
 
-    /// What each reply should say now, in the order they were asked.
     replies: Vec<String>,
 }
 
 const PENDING: &str = "pending";
 
-/// The error the kernel refuses a signal with.
 const REFUSED: Errno = Errno::EPERM;
 
 fn refused() -> String {
@@ -125,7 +91,6 @@ fn exited_before_stop(status: ExitStatus) -> String {
 }
 
 impl Model {
-    /// The steps that can happen next.
     fn steps(&self) -> Vec<Step> {
         if self.ended {
             return vec![Step::Nothing];
@@ -178,7 +143,6 @@ impl Model {
         }
     }
 
-    /// What a snapshot should say of the program.
     fn inferior(&self) -> &'static str {
         if self.process.is_some() {
             "traced"
@@ -198,8 +162,6 @@ impl Model {
         });
     }
 
-    /// Detaches an attached process under shutdown once it is stopped and
-    /// its child released, which ends the controller.
     fn detach_if_ready(&mut self) {
         let Some(process) = &self.process else {
             return;
@@ -221,7 +183,6 @@ impl Model {
         self.ended = true;
     }
 
-    /// The process ended with `status`.
     fn ended_with(&mut self, status: ExitStatus) {
         let Some(process) = self.process.take() else {
             return;
@@ -241,8 +202,6 @@ impl Model {
         }
     }
 
-    /// A launch or attach waits for its first stop, or for the child to
-    /// be released, unless something holds its place.
     fn ask_start(&mut self, kind: Kind) {
         if self.process.is_some() {
             self.ask("AlreadyRunning");
@@ -295,8 +254,6 @@ impl Model {
 
         let startup = process.startup.take();
         match process.kind {
-            // A refused kill fails the shutdown, which leaves the process
-            // to be killed at its next stop.
             Kind::Launched if kill_refused => {
                 self.answer(startup, "RequestCancelled");
                 self.shutdown_reply = None;
@@ -325,8 +282,6 @@ impl Model {
                     let reply = self.ask(PENDING);
                     self.begin_shutdown(reply, false);
                 } else if self.shutdown_reply.is_none() {
-                    // The client's first shutdown was answered as the
-                    // process ended; this one waits for the child.
                     let reply = self.ask(PENDING);
                     self.shutdown_reply = Some(reply);
                 } else {
@@ -354,7 +309,6 @@ impl Model {
                     return;
                 };
 
-                // A shutdown kills a launched process at each of its stops.
                 if self.shutdown && process.kind == Kind::Launched {
                     process.killed = true;
                     return;
@@ -409,15 +363,12 @@ impl ReferenceStateMachine for Model {
             shutdown_reply: None,
             ended: false,
 
-            // The idle harness killed the process it began with.
             last: "killed",
             replies: Vec::new(),
         })
         .boxed()
     }
 
-    /// Favors the kernel moving the session on over the client ending
-    /// it, so that sequences reach forks, held starts, and detaches.
     fn transitions(state: &Self) -> BoxedStrategy<Step> {
         let weight = |step: Step| match step {
             Step::Kill
@@ -450,8 +401,6 @@ impl ReferenceStateMachine for Model {
     }
 }
 
-/// The controller, the replies it was asked for, and the model as it was
-/// before the step under way, which says which process a status is for.
 struct Session {
     harness: WatchHarness,
     replies: Vec<Reader>,
@@ -565,7 +514,6 @@ impl Session {
         };
     }
 
-    /// Checks the controller against the model after `step`.
     fn check(&mut self, model: &Model, step: Step) {
         let said: Vec<String> = self.replies.iter_mut().map(|read| read()).collect();
         assert_eq!(said, model.replies, "the replies after {step:?}");
@@ -611,8 +559,6 @@ impl StateMachineTest for Session {
         session
     }
 
-    /// Shuts the session down and lets the kernel finish what it owes,
-    /// after which the controller has ended and answered every reply.
     fn teardown(mut session: Self, model: Model) {
         let mut model = model;
         for _ in 0..16 {
@@ -647,8 +593,6 @@ impl StateMachineTest for Session {
     }
 }
 
-/// Runs `steps` against the model and the controller, then ends the
-/// session, checking both after each step.
 fn replay(steps: &[Step]) {
     let mut model = <Model as ReferenceStateMachine>::init_state()
         .new_tree(&mut proptest::test_runner::TestRunner::deterministic())
@@ -666,10 +610,6 @@ fn replay(steps: &[Step]) {
     <Session as StateMachineTest>::teardown(session, model);
 }
 
-/// A process that exits while its fork child is due, under a shutdown,
-/// still says how it ended once the child is released. Found by the
-/// model: the drain's end dropped it, so the snapshot said nothing ever
-/// started.
 #[test]
 fn a_drained_session_says_how_its_program_ended() {
     replay(&[

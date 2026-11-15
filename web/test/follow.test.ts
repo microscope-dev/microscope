@@ -1,6 +1,3 @@
-// Tabs follow the program unless pinned or opened on an earlier stop (D3),
-// checked against the stops real servers reported.
-
 import { describe, expect, it } from "vitest";
 
 import { follow, latestStop, stopNote } from "../src/follow";
@@ -10,7 +7,7 @@ import { received } from "./transcripts";
 const states = received("steps").flatMap((message) =>
   message.type === "state" ? [message as State] : [],
 );
-// Each stop's first state: a server may publish a stop's state again.
+
 const stopped = states.filter(
   (state, index) =>
     state.inferior.state === "stopped" &&

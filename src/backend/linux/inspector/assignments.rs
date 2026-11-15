@@ -1,13 +1,3 @@
-//! Assignments through `Debugger.setVariableValue` in a paused frame.
-//! No request is sent at a published stop, so assignment is an execution.
-//! All threads resume so V8's inspector and paused thread can answer; the
-//! paused thread stays in V8's message loop without running JavaScript.
-//! After V8 answers, all threads stop before publishing
-//! [`StopReason::Assignment`] and returning the variable reread from memory.
-//!
-//! V8's scope listings retain their values from the pause. Substitute each
-//! assigned value; names remain valid only if every listed value matches its slot.
-
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,43 +18,32 @@ use crate::runtime_model::{
 };
 use crate::{RuntimeId, StopReason, TextCompletion};
 
-/// Sets a variable of a paused frame.
 const SET_VARIABLE: &str = "Debugger.setVariableValue";
 
-/// How long V8 has to make an assignment and list the frame again.
 const ASSIGNMENT_WAIT: Duration = Duration::from_secs(5);
 
-/// An assignment V8 is asked to make in a frame of the pause it holds.
 #[derive(Debug)]
 pub(in crate::backend::linux) struct Assigning {
     pub(super) number: u64,
 
-    /// The isolate whose pause holds the frame, and the paused thread.
     pub(super) session: Session,
     pub(super) thread: Pid,
 
-    /// The frame's index among the pause's frames.
     frame: usize,
 
-    /// The variable's name and which of the frame's scopes may hold it.
     name: Arc<str>,
     reach: BindingReach,
     refusable: Option<Arc<str>>,
     given: Given,
     state: State,
 
-    /// When V8 has not answered in time, once begun.
     deadline: Option<Instant>,
 }
 
-/// What the variable is given.
 #[derive(Debug, Clone)]
 pub(super) enum Given {
-    /// A value V8 makes from its `CallArgument`.
     Argument(Value),
 
-    /// An object held by a named variable in the frame's scopes. Only V8's
-    /// scope listing provides the object id.
     Variable(Arc<str>),
 }
 
@@ -72,13 +51,11 @@ pub(super) enum Given {
 enum State {
     Unbegun,
 
-    /// Pending scope listings and the variable's argument found in each scope.
     Finding {
         requests: BTreeMap<RequestId, usize>,
         found: BTreeMap<usize, Option<(Value, ReportedValue)>>,
     },
 
-    /// Assignment pending in `scope`; try `remaining` if it lacks the variable.
     Setting {
         request: RequestId,
         scope: usize,
@@ -87,13 +64,10 @@ enum State {
         reported: ReportedValue,
     },
 
-    /// Completed, with a failure reason if unsuccessful.
     Done(Option<Arc<str>>),
 }
 
 impl Assigning {
-    /// An assignment of `argument` to `name` in the innermost frame of the
-    /// main isolate's pause on `thread`, which `number` names.
     #[cfg(test)]
     pub(super) fn scripted(number: u64, thread: Pid, name: &str, argument: Value) -> Self {
         Self {
@@ -110,13 +84,10 @@ impl Assigning {
         }
     }
 
-    /// Whether the assignment waits for the program to run to begin.
     pub(super) const fn unbegun(&self) -> bool {
         matches!(self.state, State::Unbegun)
     }
 
-    /// Whether `id` is a request of this assignment that V8 has not
-    /// answered.
     pub(super) fn awaits(&self, id: RequestId) -> bool {
         match &self.state {
             State::Finding { requests, .. } => requests.contains_key(&id),
@@ -125,12 +96,10 @@ impl Assigning {
         }
     }
 
-    /// Whether the assignment has ended, made or not.
     pub(super) const fn ended(&self) -> bool {
         matches!(self.state, State::Done(_))
     }
 
-    /// Whether V8 made the assignment.
     pub(super) const fn made(&self) -> bool {
         matches!(self.state, State::Done(None))
     }
@@ -147,8 +116,6 @@ impl Assigning {
     }
 }
 
-/// The scopes of `frame`, a frame a pause reported, that may hold a
-/// variable `reach` says, innermost first, by their index in its chain.
 fn candidates(frame: &Value, reach: BindingReach) -> VecDeque<usize> {
     let chain = frame["scopeChain"]
         .as_array()
@@ -176,8 +143,6 @@ fn candidates(frame: &Value, reach: BindingReach) -> VecDeque<usize> {
         .collect()
 }
 
-/// The scopes of `frame` whose variables an object a variable holds may
-/// be found among: all but the global object and `with` objects.
 fn listed_scopes(frame: &Value) -> Vec<(usize, Arc<str>)> {
     frame["scopeChain"]
         .as_array()
@@ -192,8 +157,6 @@ fn listed_scopes(frame: &Value) -> Vec<(usize, Arc<str>)> {
         .collect()
 }
 
-/// The `CallArgument` that gives a variable the value V8 described by
-/// `object`, a `RemoteObject`.
 fn argument_of(object: &Value) -> Value {
     match (
         object["objectId"].as_str(),
@@ -206,8 +169,6 @@ fn argument_of(object: &Value) -> Value {
     }
 }
 
-/// What V8 reports a variable given `argument`, a `CallArgument` of a
-/// primitive, holds.
 fn reported_of(argument: &Value) -> ReportedValue {
     match (&argument["value"], argument["unserializableValue"].as_str()) {
         (_, Some(text)) => text.strip_suffix('n').map_or_else(
@@ -231,8 +192,6 @@ fn reported_of(argument: &Value) -> ReportedValue {
     }
 }
 
-/// The argument and reported value for `name` in a scope listing;
-/// `None` if the scope does not hold it.
 fn listed_as(properties: &Value, name: &str) -> Option<(Value, ReportedValue)> {
     properties["result"]
         .as_array()?
@@ -242,8 +201,6 @@ fn listed_as(properties: &Value, name: &str) -> Option<(Value, ReportedValue)> {
         .map(|value| (argument_of(value), protocol::reported_value(value)))
 }
 
-/// Resolves `name` in the innermost scope that holds it, accounting for
-/// assignments since V8 captured the scope listings.
 fn held(
     isolate: &Isolate,
     frame: usize,
@@ -262,8 +219,6 @@ fn held(
     given_in_pause(isolate, frame, scope, name).unwrap_or(Ok(listed))
 }
 
-/// Overrides V8's stale scope listing with the value assigned in this pause.
-/// Refuses a same-name assignment elsewhere that may share this context.
 fn given_in_pause(
     isolate: &Isolate,
     frame: usize,
@@ -293,7 +248,6 @@ fn given_in_pause(
     })
 }
 
-/// The `CallArgument` for a JavaScript number.
 fn js_number(value: f64) -> Value {
     if value.is_nan() {
         json!({ "unserializableValue": "NaN" })
@@ -306,8 +260,6 @@ fn js_number(value: f64) -> Value {
     }
 }
 
-/// What a variable of `runtime` is given for `value`, or the object of
-/// `runtime` whose value it is given, which is read first.
 fn given_value(
     value: Assigned<Place>,
     runtime: RuntimeId,
@@ -347,8 +299,6 @@ fn given_value(
     Ok(Ok(Given::Argument(argument)))
 }
 
-/// What a variable is given for the value `operand` describes, which
-/// the variable `assigned_name` holds when the expression names one.
 fn given_operand(
     operand: &InterpretedOperand,
     assigned_name: Option<&str>,
@@ -376,8 +326,6 @@ fn given_operand(
     })
 }
 
-/// Sends `assignment`'s first request to the isolate `session` reaches,
-/// which holds its pause, as the program resumes.
 pub(super) fn begin(
     connection: &Connection,
     session: &Session,
@@ -441,9 +389,6 @@ pub(super) fn begin(
     }
 }
 
-/// Asks V8 to give `assignment`'s variable `argument` in the innermost
-/// scope of `frame` left to try: the first of those its reach names when
-/// `remaining` is `None`.
 fn set(
     connection: &Connection,
     session: &Session,
@@ -484,8 +429,6 @@ fn set(
     }
 }
 
-/// The scope V8 was asked to set a variable in, with what it was asked
-/// to give it, and the scopes left to try.
 struct Tried {
     scope: usize,
     remaining: VecDeque<usize>,
@@ -493,8 +436,6 @@ struct Tried {
     reported: ReportedValue,
 }
 
-/// Goes on with `assignment` once V8 answered `result` to setting its
-/// variable as `tried` says, in `frame` of the pause `isolate` holds.
 #[cfg_attr(
     not(debug_assertions),
     expect(unused_variables, reason = "only recorded")
@@ -524,7 +465,6 @@ fn set_replied(
             }
             assignment.state = State::Done(None);
         }
-        // V8 refuses a scope that does not hold the name.
         Err(error) if !remaining.is_empty() => {
             record!("V8 refused {} in one scope: {error}", assignment.name);
             set(
@@ -547,11 +487,6 @@ fn set_replied(
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// The assignment V8 is to make, at the stop where it holds thread
-    /// `pid` paused, of `value` to the variable in slot `slot` of the
-    /// interpreted frame `frame` of `runtime`, which `assigned_name` names
-    /// when the expression gives it another variable's value; or why V8
-    /// cannot make it exactly. Nothing is sent.
     #[expect(clippy::too_many_arguments, reason = "one assignment's parts")]
     pub(in crate::backend::linux) fn javascript_assignment(
         &self,
@@ -642,8 +577,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    /// Has the inspector of `runtime` make `assignment` as the program
-    /// resumes, or, given none, forgets the one it was to make.
     pub(in crate::backend::linux) fn await_javascript_assignment(
         &mut self,
         runtime: RuntimeId,
@@ -658,7 +591,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Goes on with the assignment V8 answered `id` of.
     pub(super) fn assignment_replied(
         &mut self,
         runtime: RuntimeId,
@@ -759,7 +691,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Ends each assignment V8 has not answered by `now`.
     pub(in crate::backend::linux) fn assignment_expired(
         &mut self,
         now: Instant,
@@ -791,9 +722,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
-    /// Ends the assignment V8 made, or could not, once every thread is
-    /// stopped: its frame's variables are bound again, and the stop is the
-    /// assignment's.
     #[cfg_attr(
         not(debug_assertions),
         expect(unused_variables, reason = "only recorded")
@@ -852,8 +780,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    /// Forgets every assignment under way as a stop forms, noting whether
-    /// V8 made it, so that its request is answered by the stop.
     pub(in crate::backend::linux) fn end_javascript_assignments(&mut self) {
         let Some(inferior) = self.session.inferior_mut() else {
             return;
@@ -874,7 +800,6 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl super::Inspectors {
-    /// The earliest time an assignment under way must be answered by.
     pub(in crate::backend::linux) fn assignment_deadline(&self) -> Option<Instant> {
         self.records
             .values()

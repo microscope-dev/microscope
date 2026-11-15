@@ -1,13 +1,3 @@
-//! Physical frames whose code a runtime compiled, which the runtime names.
-//!
-//! A runtime such as V8 runs its functions on the native stack, in code
-//! that no image's debug information describes: its own builtins, and the
-//! code it generates for the program. The unwinder walks those frames by
-//! the runtime's convention, and the runtime, which recorded what each
-//! runs, names it: the function, its place, and the functions its code
-//! inlined, innermost first. Only frames whose code the runtime is proven
-//! to own are asked about, never a frame because of what its stack holds.
-
 use std::collections::BTreeSet;
 
 use super::frames::{Expanded, FrameOrigin, FrameSource, PhysicalStack, StackRoot};
@@ -20,8 +10,6 @@ use crate::unwind::{UnwindModule, unwind_module_for};
 use crate::{FrameKind, ImageAddress, ModuleId, RuntimeId, StackFrame};
 
 impl<P: InspectionOps> Controller<P> {
-    /// Names each frame of `expanded` whose code a runtime owns as the
-    /// runtime recorded it, adding the functions its code inlined.
     pub(super) fn describe_code_frames(
         &self,
         inferior: &Inferior,
@@ -55,9 +43,6 @@ impl<P: InspectionOps> Controller<P> {
             };
 
             let after_call = activation != 0 || stack.after_call;
-            // The frame at an instruction other than a call's return has
-            // entered its frame where its unwind rules find it 16 bytes
-            // above rbp.
             let entered = after_call
                 || physical
                     .registers
@@ -100,24 +85,14 @@ impl<P: InspectionOps> Controller<P> {
     }
 }
 
-/// What the process's runtimes own at a stop.
 struct Owned<'a> {
     runtimes: &'a [BoundRuntime],
 
-    /// The modules of code a runtime generated.
     generated: &'a BTreeSet<ModuleId>,
 
-    /// The code each runtime owns as the process says, in the order of
-    /// `runtimes`.
     process_code: &'a [Vec<ProcessCode>],
 }
 
-/// The runtime that owns the code of a stack's `activation`, if one does:
-/// the code is in one of the modules a runtime generated, in the image the
-/// runtime was bound to, as the runtime says, through any binding of that
-/// image, such as a copy of its code, or where the runtime says the
-/// process keeps code it owns. With it, whether the runtime generated the
-/// code, and where the runtime's image holds the activation's instruction.
 fn owner<'a>(
     owned: &Owned<'a>,
     modules: &[UnwindModule<'_>],
@@ -163,12 +138,6 @@ fn owner<'a>(
         })
 }
 
-/// Replaces each described activation's frames with the functions its
-/// runtime recorded: those inlined as inline frames, then its own as the
-/// physical frame, which keeps its instruction, module, and symbol. Each
-/// described frame's source is its runtime. A description with no function
-/// only sets the role. An await chain a description names is kept for
-/// splicing, by the first of the activation's frames.
 fn rewrite(
     expanded: &mut Expanded,
     described: &[(usize, RuntimeId, DescribedFrame)],
@@ -198,8 +167,6 @@ fn rewrite(
         };
         next.next();
 
-        // The activation's own frames: its function and any the image's
-        // debug information inlined into it, the physical frame last.
         let missing = || Error::internal("an activation's frames end in its physical frame");
         let end = old
             .iter()
@@ -242,8 +209,6 @@ fn rewrite(
     Ok(())
 }
 
-/// Pushes the frames `description` gives the activation whose frames are
-/// `activation`, its physical frame last.
 fn push_described(
     frames: &mut Vec<StackFrame>,
     activation: &[StackFrame],
@@ -309,8 +274,6 @@ mod tests {
         }
     }
 
-    /// Three activations: the first and last plain, the middle one with a
-    /// function its image's debug information inlined into it.
     fn expanded() -> Expanded {
         let frames = [
             frame(FrameKind::Physical, 0x10),
@@ -336,11 +299,6 @@ mod tests {
         }
     }
 
-    /// A described activation's frames, its image's inlined ones included,
-    /// become the runtime's: the functions its code inlined as inline
-    /// frames, innermost first, then its own on the physical frame, which
-    /// keeps its instruction. Levels and ids are renumbered, and each frame
-    /// keeps its activation.
     #[test]
     fn a_described_activation_becomes_the_functions_its_runtime_recorded() {
         let mut expanded = expanded();
@@ -383,7 +341,6 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(activations, [0, 1, 1, 1, 2]);
 
-        // Each described frame names its runtime; only the last is not inlined.
         let runtime = RuntimeId::new(7);
         let sources = expanded
             .origins
@@ -414,8 +371,6 @@ mod tests {
         );
     }
 
-    /// A description with no function, as of V8's own machinery, keeps the
-    /// activation's frames and gives them its role.
     #[test]
     fn a_description_without_functions_only_sets_the_role() {
         let mut expanded = expanded();

@@ -1,7 +1,7 @@
-"""A program whose threads that spin run no Python: numpy multiplies
-matrices on OpenMP's worker threads, which no interpreter knows, until a
-line arrives on standard input.
-"""
+
+
+
+
 import sys
 import threading
 

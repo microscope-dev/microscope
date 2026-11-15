@@ -1,6 +1,3 @@
-//! Starting and ending sessions: launch, attach, core dumps, configuration
-//! errors, and every way a session ends.
-
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Profile, Sent, fixture, line_of, source};
@@ -29,8 +26,6 @@ fn every_client_profile_runs_a_program_to_its_breakpoints_and_exit() {
             started.function_breakpoints[0].clone(),
         ];
         if profile == Profile::DeferredLaunch {
-            // Configured before the program is loaded, the breakpoints wait
-            // for it and then resolve.
             for breakpoint in &mut breakpoints {
                 assert_eq!(breakpoint["verified"], false);
                 assert_eq!(breakpoint["reason"], "pending");
@@ -54,7 +49,6 @@ fn every_client_profile_runs_a_program_to_its_breakpoints_and_exit() {
         assert_eq!(frames[0]["name"], "main");
         assert_eq!(frames[0]["source"]["path"], path.display().to_string());
 
-        // The function is called twice, so its breakpoint stops twice.
         for _ in 0..2 {
             let resumed = dap.send("continue", json!({"threadId": stop.thread}));
             assert_eq!(dap.success(resumed), json!({"allThreadsContinued": true}));
@@ -97,7 +91,6 @@ fn launches_pass_arguments_environment_and_directory_and_report_output() {
         json!({"exitCode": 3})
     );
 
-    // The program's output is complete when it exits.
     assert_eq!(
         dap.output_text(started.mark, "stdout"),
         format!(
@@ -106,7 +99,6 @@ fn launches_pass_arguments_environment_and_directory_and_report_output() {
         )
     );
 
-    // Its stdin is empty rather than the adapter's protocol stream.
     assert_eq!(dap.output_text(started.mark, "stderr"), "input: (eof)\n");
     let process = dap.event(started.mark, "process", |_| true);
     assert_eq!(process["startMethod"], "launch");
@@ -131,8 +123,6 @@ fn stop_on_entry_stops_before_the_program_runs_any_code() {
     assert_eq!(stop.reason, "entry");
     let frames = dap.inspect_as(Profile::VsCode, &stop);
 
-    // The first instruction is the dynamic loader's entry point, a label
-    // with no size.
     assert_eq!(
         frames[0]["name"].as_str(),
         Some("_start (unsized symbol)"),
@@ -192,7 +182,6 @@ fn invalid_configurations_are_shown_to_the_user_and_the_session_survives() {
         let message = response["message"].as_str().expect("message");
         assert!(message.starts_with(&expected), "{message}");
 
-        // Requests still work after the failure.
         dap.request("threads", Value::Null);
         dap.finish();
     }
@@ -219,13 +208,11 @@ fn requests_out_of_order_are_refused_without_ending_the_session() {
         "the 'frobnicate' request is not supported"
     );
 
-    // Every source has a path, so a client never needs its contents sent.
     assert_eq!(
         dap.request_error("source", json!({"sourceReference": 1})),
         "source contents are not available from the debugger; open the file locally"
     );
 
-    // A thread to pause exists even before anything is launched.
     assert_eq!(
         dap.request("threads", Value::Null),
         json!({"threads": [{"id": 1, "name": "program"}]})
@@ -265,7 +252,6 @@ fn disconnecting_kills_a_launched_program_whether_running_or_stopped() {
         let sent = dap.send("disconnect", json!({}));
         dap.success(sent);
 
-        // The program's end is reported before the disconnect response.
         let messages = dap.messages_since(sent.mark);
         let position = |predicate: &dyn Fn(&Value) -> bool| messages.iter().position(predicate);
         let exited = position(&|message| message["event"] == "exited").expect("exited");
@@ -274,7 +260,6 @@ fn disconnecting_kills_a_launched_program_whether_running_or_stopped() {
         assert!(exited < terminated && terminated < response, "{messages:?}");
         assert_eq!(messages[exited]["body"], json!({"exitCode": 128 + 9}));
 
-        // Finishing checks that the program is gone.
         dap.close_stdin();
         dap.finish();
     }
@@ -306,9 +291,6 @@ fn ending_input_or_signaling_the_adapter_ends_the_session_and_the_program() {
     }
 }
 
-/// Sends `launch` or `attach` and waits until the session holds it for
-/// `configurationDone`: requests are handled in order, so the answer to
-/// the `threads` sent after it means the start is waiting.
 fn send_and_hold_start(dap: &mut Dap, command: &str, arguments: Value) -> Sent {
     dap.initialize(Profile::VsCode);
     let start = dap.send(command, arguments);
@@ -338,7 +320,6 @@ fn a_session_that_ends_before_configuration_is_done_fails_its_launch_or_attach()
         );
         dap.finish();
 
-        // The attached process was released, not left traced and stopped.
         if let Some(mut process) = process {
             process.release();
             assert_eq!(process.wait().code(), Some(23));
@@ -358,7 +339,6 @@ fn terminating_before_configuration_is_done_fails_the_launch_and_launches_nothin
     );
     dap.event(terminate.mark, "terminated", |_| true);
 
-    // A client that restarts or configures anyway starts nothing.
     assert_eq!(
         dap.request_error("restart", json!({})),
         "the session was terminated before its configuration was done, so there is nothing to restart"
@@ -417,7 +397,6 @@ fn attaching_continues_the_process_and_detaching_leaves_it_running() {
         assert_eq!(event["startMethod"], "attach");
         assert_eq!(event["systemProcessId"], pid);
 
-        // Reading the process's debug information shows progress.
         let progress = dap.event(started.mark, "progressStart", |_| true);
         assert_eq!(progress["title"], format!("Attaching to process {pid}"));
         dap.event(started.mark, "progressEnd", |_| true);
@@ -436,7 +415,6 @@ fn attaching_continues_the_process_and_detaching_leaves_it_running() {
         let frames = dap.inspect_as(Profile::VsCode, &stop);
         assert_eq!(frames[0]["name"], "attach_breakpoint");
 
-        // Detaching leaves the process running; it then finishes alone.
         dap.finish();
         assert_eq!(process.wait().code(), Some(23));
     }
@@ -479,7 +457,6 @@ fn core_dumps_open_stopped_at_their_signal_and_refuse_to_run() {
     assert_eq!(stop.reason, "exception");
     assert_eq!(stop.body["text"], "SIGSEGV");
 
-    // A core dump has no program to restart, so a client opens it again.
     assert_eq!(
         dap.event(started.mark, "capabilities", |_| true),
         json!({"capabilities": {"supportsRestartRequest": false}})
@@ -515,7 +492,6 @@ fn restarting_relaunches_the_program_with_new_arguments_in_the_same_session() {
     );
     dap.success(restart);
 
-    // The old process ends, but the session goes on.
     assert_eq!(
         dap.event(restart.mark, "exited", |_| true),
         json!({"exitCode": 128 + 9})
@@ -565,9 +541,6 @@ fn restarts_keep_the_program_and_attached_processes_are_attached_again() {
     );
     dap.finish();
 
-    // An attached process is restarted by attaching to it again, which a
-    // client does itself; the disconnect that begins it detaches, even
-    // when it asks to terminate, so the process is there to attach to.
     let mut process = ExternalProcess::spawn(&fixture("attach"));
     let mut dap = Dap::start("restart attached");
     let started = dap.begin(
@@ -605,8 +578,6 @@ fn restarts_keep_the_program_and_attached_processes_are_attached_again() {
 
 #[test]
 fn core_dumps_explain_their_signal_their_missing_modules_and_mismatched_files() {
-    // A library the core records but this machine lacks is reported, and
-    // the rest of the dump is still debugged.
     let core = fixture("core-missing-library/crash.core");
     let mut dap = Dap::start("core missing a library");
     let started = dap.begin(
@@ -624,7 +595,6 @@ fn core_dumps_explain_their_signal_their_missing_modules_and_mismatched_files() 
     dap.inspect_as(Profile::VsCode, &stop);
     dap.finish();
 
-    // A rebuilt executable is refused unless mismatches are allowed.
     for allowed in [false, true] {
         let mut dap = Dap::start(format!("mismatched core, allowed {allowed}"));
         dap.initialize(Profile::VsCode);

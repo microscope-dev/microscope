@@ -1,12 +1,6 @@
-//! The seccomp filter the ptrace engine installs in a program it launches.
-//!
-//! `SECCOMP_RET_TRACE` for the chosen calls, which stop for the tracer,
-//! and `SECCOMP_RET_ALLOW` for every other, which runs at full speed.
-
 use crate::syscalls::table::X32_SYSCALL_BIT;
 use crate::syscalls::{Abi, CallSet};
 
-/// One classic BPF instruction, laid out as the kernel's `sock_filter`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Instruction {
     pub code: u16,
@@ -26,11 +20,11 @@ impl From<Instruction> for nix::libc::sock_filter {
     }
 }
 
-const LOAD_WORD: u16 = 0x20; // BPF_LD | BPF_W | BPF_ABS
-const JUMP: u16 = 0x05; // BPF_JMP | BPF_JA
-const JUMP_EQUAL: u16 = 0x15; // BPF_JMP | BPF_JEQ | BPF_K
-const JUMP_SET: u16 = 0x45; // BPF_JMP | BPF_JSET | BPF_K
-const RETURN: u16 = 0x06; // BPF_RET | BPF_K
+const LOAD_WORD: u16 = 0x20;
+const JUMP: u16 = 0x05;
+const JUMP_EQUAL: u16 = 0x15;
+const JUMP_SET: u16 = 0x45;
+const RETURN: u16 = 0x06;
 
 pub const RET_ALLOW: u32 = 0x7fff_0000;
 
@@ -38,7 +32,6 @@ pub const RET_TRACE: u32 = 0x7ff0_0000;
 const AUDIT_ARCH_X86_64: u32 = 0xc000_003e;
 const AUDIT_ARCH_I386: u32 = 0x4000_0003;
 
-/// `seccomp_data`'s fields.
 const NUMBER: u32 = 0;
 const ARCH: u32 = 4;
 
@@ -51,8 +44,6 @@ const fn op(code: u16, k: u32) -> Instruction {
     }
 }
 
-/// `ret TRACE` for each number, after `jeq number`: two instructions each,
-/// so no jump reaches further than the next instruction.
 fn traced(program: &mut Vec<Instruction>, numbers: impl Iterator<Item = u32>) {
     for number in numbers {
         program.push(Instruction {
@@ -67,7 +58,6 @@ fn traced(program: &mut Vec<Instruction>, numbers: impl Iterator<Item = u32>) {
     program.push(op(RETURN, RET_ALLOW));
 }
 
-/// A filter that stops at exactly `calls`.
 #[must_use]
 pub fn filter(calls: &CallSet) -> Vec<Instruction> {
     if calls.is_all() {
@@ -83,8 +73,6 @@ pub fn filter(calls: &CallSet) -> Vec<Instruction> {
             .map(|number| number | X32_SYSCALL_BIT),
     );
 
-    // An x32 call sets a bit of its number; the jump past the 64-bit calls
-    // lands on the x32 ones.
     x86_64.push(Instruction {
         code: JUMP_SET,
         jt: 0,
@@ -103,7 +91,6 @@ pub fn filter(calls: &CallSet) -> Vec<Instruction> {
     let mut i386 = vec![op(LOAD_WORD, NUMBER)];
     traced(&mut i386, calls.numbers(Abi::X86_32));
 
-    // The architecture decides which list applies; any other is allowed.
     let mut program = vec![
         op(LOAD_WORD, ARCH),
         Instruction {
@@ -132,8 +119,6 @@ pub fn filter(calls: &CallSet) -> Vec<Instruction> {
     program
 }
 
-/// Runs a filter over a call, as the kernel would: what it returns, or
-/// `None` for a program the kernel would reject.
 #[must_use]
 pub fn run(program: &[Instruction], arch: u32, number: u32) -> Option<u32> {
     let mut accumulator = 0;
@@ -183,11 +168,6 @@ mod tests {
             .calls
     }
 
-    /// The rules the kernel's `bpf_check_classic` and
-    /// `seccomp_check_filter` hold a program to, apart from `run`: at
-    /// most `BPF_MAXINSNS` instructions, only the codes seccomp allows,
-    /// loads of aligned `seccomp_data` words, every jump landing inside
-    /// the program, and a return last.
     fn check_structure(program: &[Instruction]) -> Result<(), TestCaseError> {
         prop_assert!(
             !program.is_empty() && program.len() <= 4096,
@@ -221,8 +201,6 @@ mod tests {
         crate::syscalls::table::all().collect()
     }
 
-    /// A set built by `trace=` lists of single calls, some removing, so
-    /// that both small sets and nearly every call come up.
     fn call_set() -> impl Strategy<Value = CallSet> {
         let list = prop::collection::vec(prop::sample::select(every_call()), 0..12);
         let first = prop::sample::select(vec!["trace=all", "trace=none", ""]);
@@ -248,8 +226,6 @@ mod tests {
         })
     }
 
-    /// Numbers to run a program on: listed calls, numbers past every
-    /// table, and words with the x32 bit or others set.
     fn number() -> impl Strategy<Value = u32> {
         prop_oneof![
             3 => prop::sample::select(every_call()).prop_map(|id| id.number),
@@ -275,7 +251,6 @@ mod tests {
 
             let traced = |traced: bool| if traced || calls.is_all() { RET_TRACE } else { RET_ALLOW };
 
-            // Calls in the set, then numbers of any kind.
             let listed: Vec<SyscallId> = calls.iter().collect();
             let members = members.iter().filter(|_| !listed.is_empty()).map(|index| {
                 let id = listed[index.index(listed.len())];

@@ -59,7 +59,6 @@ enum DwarfError {
     #[error("its code is for {}, which this debugger does not support", architecture_name(*.0))]
     UnsupportedArchitecture(object::Architecture),
 
-    /// An error and the part of the DWARF it was found in.
     #[error("{}", in_context(.error, .context))]
     Context { error: Box<Self>, context: String },
 
@@ -99,7 +98,6 @@ enum DwarfError {
     #[error("DWARF reference cycle")]
     ReferenceCycle,
 
-    /// A fact about the loader's own tables did not hold: a bug.
     #[error("internal error loading DWARF: {0}")]
     Internal(&'static str),
 
@@ -119,7 +117,6 @@ enum DwarfError {
     #[error(transparent)]
     Binding(crate::image::facts::Unbound),
 
-    /// More of something than an image numbers with its `u32` ids.
     #[error("the debug information has more {0} than an image can hold")]
     TooMany(&'static str),
 
@@ -128,8 +125,6 @@ enum DwarfError {
 }
 
 impl DwarfError {
-    /// Says where in the DWARF the error was found, unless it already says,
-    /// or is about the load as a whole.
     fn within(self, context: impl FnOnce() -> String) -> Self {
         match self {
             Self::Context { .. } | Self::Budget { .. } => self,
@@ -148,7 +143,6 @@ fn in_context(error: &DwarfError, context: &str) -> String {
     }
 }
 
-/// An architecture's name, as its users know it.
 fn architecture_name(architecture: object::Architecture) -> String {
     match architecture {
         object::Architecture::I386 => "32-bit x86".to_owned(),
@@ -160,8 +154,6 @@ fn architecture_name(architecture: object::Architecture) -> String {
     }
 }
 
-/// Names a unit for a reader: the source file it compiles, when it names
-/// one, and where it is.
 fn describe_unit(unit: &gimli::Unit<Reader<'_>>) -> String {
     let at = describe_unit_offset(&unit.header);
     unit.name.map_or_else(
@@ -174,8 +166,6 @@ fn describe_unit_offset(header: &gimli::UnitHeader<Reader<'_>>) -> String {
     format!("{}+{:#x}", header.section().name(), header.offset().0)
 }
 
-/// Parses an ELF file, saying what is wrong with one that cannot be: that
-/// it is not ELF, or is cut short of what its headers describe.
 fn parse_object(data: &[u8]) -> std::result::Result<object::File<'_>, DwarfError> {
     if !data.starts_with(&object::elf::ELFMAG) {
         return Err(DwarfError::NotElf);
@@ -190,8 +180,6 @@ fn parse_object(data: &[u8]) -> std::result::Result<object::File<'_>, DwarfError
     })
 }
 
-/// Where an ELF file's header, program headers, and section headers end,
-/// as its header says; `None` when the header is malformed.
 fn elf_headers_end(data: &[u8]) -> Option<u64> {
     let little = match data.get(5)? {
         1 => true,
@@ -199,7 +187,6 @@ fn elf_headers_end(data: &[u8]) -> Option<u64> {
         _ => return None,
     };
 
-    // The header's size and its fields' offsets differ by class.
     let (header, phoff, shoff, word, phentsize) = match data.get(4)? {
         1 => (52_usize, 0x1c, 0x20, 4, 0x2a),
         2 => (64, 0x20, 0x28, 8, 0x36),
@@ -234,9 +221,6 @@ fn elf_headers_end(data: &[u8]) -> Option<u64> {
     Some((header as u64).max(program_headers).max(section_headers))
 }
 
-/// Checks that an object is one whose code and DWARF a debugger can
-/// describe as they are: a linked program or library, for a supported
-/// architecture.
 fn check_object(object: &object::File<'_>) -> std::result::Result<(), DwarfError> {
     match object.kind() {
         object::ObjectKind::Relocatable if has_debug_relocations(object) => {
@@ -249,7 +233,6 @@ fn check_object(object: &object::File<'_>) -> std::result::Result<(), DwarfError
     target_description(object).map(drop)
 }
 
-/// Whether DWARF sections have relocations, which only a linker applies.
 fn has_debug_relocations(object: &object::File<'_>) -> bool {
     object.sections().any(|section| {
         section.name().is_ok_and(|name| name.starts_with(".debug_"))
@@ -266,9 +249,6 @@ struct UnitCatalog<'data> {
     code: CodeRanges,
 }
 
-/// An image's units, with where each `.debug_info` unit lies, so that a
-/// reference across units finds its unit by a binary search. A dwz
-/// supplementary file's units follow the file's own.
 #[expect(
     clippy::struct_field_names,
     reason = "the units are what the catalog lists"
@@ -276,50 +256,30 @@ struct UnitCatalog<'data> {
 struct Units<'data> {
     units: Vec<gimli::Unit<Reader<'data>>>,
 
-    /// The `.debug_info` offset of each of the file's own units and its
-    /// index, by offset. DWARF 4's type units are in `.debug_types`, which
-    /// `.debug_info` references never name.
     starts: Vec<(usize, usize)>,
 
-    /// The same for the supplementary file's units.
     supplementary_starts: Vec<(usize, usize)>,
 
-    /// The index of the supplementary file's first unit.
     first_supplementary: usize,
 
-    /// The language each unit without its own takes from the units that
-    /// refer to it, when they agree; empty when no unit is partial.
     inherited_languages: Vec<Option<gimli::DwLang>>,
 }
 
-/// A depth-first walk of one unit's DIEs that decodes only the DIEs its
-/// caller asks for.
-///
-/// Each DIE's depth, offset, and tag come from its abbreviation, without
-/// its attributes. Most walks act on a few tags, while most DIEs in a Rust
-/// or C++ program are members, parameters, and template arguments of
-/// types: decoding every attribute of every DIE, as gimli's cursor does,
-/// cost each of several walks over every unit far more than skipping them.
-/// A decoded DIE is read into one entry the walk reuses.
 pub(super) struct DieWalk<'a, 'data> {
     raw: gimli::EntriesRaw<'a, Reader<'data>>,
     entry: gimli::DebuggingInformationEntry<Reader<'data>>,
 
-    /// The DIE [`Self::next`] returned, until it is decoded or skipped.
     pending: Option<(&'a gimli::Abbreviation, WalkedDie)>,
 }
 
-/// Where one DIE of a [`DieWalk`] is, and what it is.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct WalkedDie {
-    /// The DIE's depth below the unit's root, which is at zero.
     pub(super) depth: isize,
     pub(super) offset: gimli::UnitOffset,
     pub(super) tag: gimli::DwTag,
 }
 
 impl<'a, 'data> DieWalk<'a, 'data> {
-    /// A walk of every DIE of `unit`, from its root.
     pub(super) fn new(unit: &'a gimli::Unit<Reader<'data>>) -> gimli::Result<Self> {
         Ok(Self {
             raw: unit.entries_raw(None)?,
@@ -328,14 +288,11 @@ impl<'a, 'data> DieWalk<'a, 'data> {
         })
     }
 
-    /// The next DIE, skipping the attributes of the one before unless it
-    /// was decoded, or `None` after the last.
     pub(super) fn next(&mut self) -> gimli::Result<Option<WalkedDie>> {
         if let Some((abbreviation, _)) = self.pending.take() {
             self.raw.skip_attributes(abbreviation.attributes())?;
         }
 
-        // Null entries end children, and pad the unit after its root's.
         while !self.raw.is_empty() {
             let depth = self.raw.next_depth();
             let offset = self.raw.next_offset();
@@ -354,7 +311,6 @@ impl<'a, 'data> DieWalk<'a, 'data> {
         Ok(None)
     }
 
-    /// Decodes the DIE [`Self::next`] last returned.
     pub(super) fn decode(
         &mut self,
     ) -> gimli::Result<&gimli::DebuggingInformationEntry<Reader<'data>>> {
@@ -374,8 +330,6 @@ impl<'a, 'data> DieWalk<'a, 'data> {
     }
 }
 
-/// A DIE reference that leaves its unit: to a `.debug_info` offset in the
-/// unit's own file, or in the supplementary file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Outward {
     Own(gimli::DebugInfoOffset),
@@ -388,15 +342,6 @@ impl<'data> Units<'data> {
         Self::catalog(units, 0)
     }
 
-    /// A file's units, then the units of its dwz supplementary file that
-    /// they reach: through the references their DIEs make, and the
-    /// references those units make in turn. A supplementary file serves
-    /// every file of a package, most of which the file never uses.
-    ///
-    /// dwz moves what units share into partial units. A partial unit
-    /// without a compilation directory or a language takes those of the
-    /// units referring to it, when they agree: dwz merges what names a file
-    /// by a relative path only among units that share their directory.
     fn load(
         dwarf: &DwarfSet<'data>,
         mut units: Vec<gimli::Unit<Reader<'data>>>,
@@ -421,7 +366,6 @@ impl<'data> Units<'data> {
             headers.push(header);
         }
 
-        // Where each supplementary unit lies, in offset order.
         let header_at = |offset: gimli::DebugInfoOffset| {
             let after = headers.partition_point(|header| {
                 header
@@ -484,8 +428,6 @@ impl<'data> Units<'data> {
         for (_, unit, references) in supplementary_units {
             units.push(unit);
 
-            // The supplementary file's references stay within it, and name
-            // nothing in another file.
             outward.push(
                 references
                     .into_iter()
@@ -502,16 +444,12 @@ impl<'data> Units<'data> {
         Ok(this)
     }
 
-    /// The units of a file followed by those of its supplementary file,
-    /// which begin at `first_supplementary`.
     fn catalog(units: Vec<gimli::Unit<Reader<'data>>>, first_supplementary: usize) -> Self {
         let starts_of = |supplementary: bool| {
             let mut starts = units
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| (*index >= first_supplementary) == supplementary)
-                // A split unit's offsets are its `.dwo` file's, and neither
-                // it nor its skeleton is named from another unit.
                 .filter(|(_, unit)| unit.dwo_id.is_none())
                 .filter_map(|(index, unit)| Some((unit.header.debug_info_offset()?.0, index)))
                 .collect::<Vec<_>>();
@@ -528,12 +466,6 @@ impl<'data> Units<'data> {
         }
     }
 
-    /// Gives each unit without a compilation directory or language those
-    /// of the units referring to it, given each unit's `outward`
-    /// references, in which a supplementary unit's name only its own file,
-    /// when they agree. Units take them in rounds outward from
-    /// the units that have their own, each from referrers settled in
-    /// earlier rounds.
     #[expect(
         clippy::indexing_slicing,
         reason = "every index is a unit's: below `count`, the length of each table here"
@@ -635,8 +567,6 @@ impl<'data> Units<'data> {
         self.inherited_languages = inherited;
     }
 
-    /// The unit whose DIEs `offset` lies among, in the supplementary file's
-    /// `.debug_info` or the file's own, and the offset within it.
     fn containing(&self, offset: gimli::DebugInfoOffset, supplementary: bool) -> Option<DieKey> {
         let starts = if supplementary {
             &self.supplementary_starts
@@ -653,21 +583,16 @@ impl<'data> Units<'data> {
         })
     }
 
-    /// The unit at `index`, which the catalog numbered itself.
     fn unit(&self, index: usize) -> std::result::Result<&gimli::Unit<Reader<'data>>, DwarfError> {
         self.units
             .get(index)
             .ok_or(DwarfError::Internal("a unit index is outside the catalog"))
     }
 
-    /// Whether the unit at `index` is the supplementary file's.
     const fn is_supplementary(&self, index: usize) -> bool {
         index >= self.first_supplementary
     }
 
-    /// Each unit's group, named by its first unit: units whose DIEs refer
-    /// to one another's, directly or through other units, share one, so a
-    /// unit reaches only its group's DIEs.
     #[expect(
         clippy::indexing_slicing,
         reason = "`parents` has one entry per unit, and holds only unit indexes"
@@ -703,15 +628,10 @@ impl<'data> Units<'data> {
             .collect())
     }
 
-    /// The language the unit at `index` takes from the units referring to
-    /// it, having none of its own.
     fn inherited_language(&self, index: usize) -> Option<gimli::DwLang> {
         self.inherited_languages.get(index).copied().flatten()
     }
 
-    /// The `.debug_info` offset of the DIE `key`, which expressions and
-    /// call sites name DIEs by. The supplementary file's DIEs have none:
-    /// their offsets are in another section.
     fn debug_info_offset(&self, key: DieKey) -> Option<u64> {
         if self.is_supplementary(key.unit) {
             return None;
@@ -723,8 +643,6 @@ impl<'data> Units<'data> {
     }
 }
 
-/// Whether dwz made the unit to hold what other units share, by its root's
-/// tag alone, whose attributes every load reads later.
 fn is_partial_unit(unit: &gimli::Unit<Reader<'_>>) -> bool {
     matches!(unit.header.type_(), gimli::UnitType::Partial)
         || unit
@@ -735,7 +653,6 @@ fn is_partial_unit(unit: &gimli::Unit<Reader<'_>>) -> bool {
             .is_some_and(|root| root.tag() == gimli::DW_TAG_partial_unit)
 }
 
-/// The references a unit's DIEs make outside it, each once, in order.
 fn outward_references(
     unit: &gimli::Unit<Reader<'_>>,
 ) -> std::result::Result<Vec<Outward>, DwarfError> {
@@ -762,10 +679,6 @@ fn outward_references(
     Ok(references)
 }
 
-/// The DWARF whose sections a unit's attributes name: that of the `.dwo`
-/// file a split unit was read from, or the supplementary file's for a unit
-/// that file holds, else the file's own. A unit holds its DIEs' bytes,
-/// which lie in one file's `.debug_info`.
 fn unit_dwarf<'a, 'data>(
     dwarf: &'a DwarfSet<'data>,
     unit: &gimli::Unit<Reader<'data>>,
@@ -788,7 +701,6 @@ fn unit_dwarf<'a, 'data>(
     if held { supplementary } else { dwarf }
 }
 
-/// The value every one of `values` that has one agrees on.
 fn agreed<T: PartialEq>(values: impl Iterator<Item = Option<T>>) -> Option<T> {
     let mut agreed = None;
     for value in values.flatten() {
@@ -810,12 +722,6 @@ impl<'data> std::ops::Deref for Units<'data> {
     }
 }
 
-/// The executable address ranges of an image.
-///
-/// When a linker discards a function, through `--gc-sections` or by merging
-/// duplicate template instances, it points the function's debug information
-/// at address 0 or a tombstone near `u64::MAX`. Those ranges lie outside
-/// every executable section, which is how they are told apart from code.
 struct CodeRanges(Vec<AddressRange<ImageAddress>>);
 
 impl CodeRanges {
@@ -830,8 +736,6 @@ impl CodeRanges {
     }
 }
 
-/// Reads the code ranges a DIE covers, dropping empty ranges and the stubs
-/// of discarded functions that lie outside the image's code.
 fn die_code_ranges<'data>(
     dwarf: &DwarfSet<'data>,
     unit: &gimli::Unit<Reader<'data>>,
@@ -849,8 +753,6 @@ fn die_code_ranges<'data>(
         entry.attr_value(gimli::DW_AT_high_pc),
     ) && let Some(begin) = unit_dwarf(dwarf, unit).attr_address(unit, low)?
     {
-        // A constant high_pc is an offset from low_pc. gimli would add it
-        // unchecked, which overflows for a tombstone low_pc.
         let end = unit_dwarf(dwarf, unit)
             .attr_address(unit, high)?
             .or_else(|| high.udata_value().and_then(|size| begin.checked_add(size)));
@@ -888,19 +790,11 @@ mod fuzz;
 #[cfg(all(feature = "fuzzing", feature = "tools"))]
 pub(super) use fuzz::fuzz_load;
 
-/// Unwinds by the call-frame sections and Go's table an image keeps.
 struct DwarfUnwindInfo {
     tables: Arc<crate::image::Image>,
 
-    /// Go's function table, which unwinds Go code no call-frame information
-    /// describes and says where Go frames saved the frame pointer, parsed
-    /// on the first unwind that needs it.
     go: std::sync::OnceLock<Option<super::gopclntab::GoUnwind>>,
 
-    /// The row found at each address unwound, by whether it is
-    /// `.debug_frame`'s. Finding a row runs its entry's instructions from
-    /// the start, and a tracer or sampler unwinds the same few addresses
-    /// over and over.
     rows: std::sync::Mutex<HashMap<(bool, u64), Arc<FrameRow>>>,
 }
 
@@ -935,8 +829,6 @@ pub fn load_bytes(
     load_bytes_on_pool(path, data, image_id, search, crate::cache::current(), false)
 }
 
-/// Native recording needs symbols and unwind rules, not unit DWARF.
-/// Runtime images retain their full metadata. The bool identifies deferral.
 pub fn load_profile_bytes(
     path: &Path,
     data: &[u8],
@@ -968,9 +860,6 @@ pub fn load_profile_bytes(
     .map_err(Error::debug_info)
 }
 
-/// Loads the debug information of an image that lives only as long as a
-/// process keeps it in memory, as a JIT compiler's objects do, which no
-/// other session would read from the cache.
 pub fn load_transient_bytes(
     path: &Path,
     data: &[u8],
@@ -981,9 +870,6 @@ pub fn load_transient_bytes(
     load_bytes_on_pool(path, data, image_id, &search, None, true)
 }
 
-/// Loads an image's debug information on the loader's workers. A
-/// `transient` image, as a JIT compiler's object, is small and loads on one
-/// worker: a load on the shared pool wakes all of its workers.
 fn load_bytes_on_pool(
     path: &Path,
     data: &[u8],
@@ -1013,29 +899,17 @@ fn load_bytes_on_pool(
     })
 }
 
-/// What a load found in the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CacheOutcome {
-    /// The load had no cache.
     Off,
 
-    /// The cache held the image.
     Hit,
 
-    /// The cache held no image, so the load built one and wrote it.
     Miss,
 
-    /// The cache held an unusable image, which the load removed before
-    /// building and writing another.
     Corrupt,
 }
 
-/// Loads an image's debug information. A file without DWARF of its own may
-/// have a separate debug file, whose DWARF, symbols, and call-frame
-/// information describe the code here. One that cannot be loaded leaves
-/// the image as its own file describes it, and DWARF that cannot be read
-/// leaves it as its symbols describe it, with the reason recorded. Only a
-/// file that is no linked ELF image of a supported architecture fails.
 fn load_debug_info(
     path: &Path,
     data: &[u8],
@@ -1070,7 +944,6 @@ fn load_debug_info_kind(
         rejected,
     } = search.find(path, &object);
 
-    // The supplementary file is named by whichever file holds the DWARF.
     let supplementary = if kind == LoadKind::Profile {
         Supplementary::None
     } else {
@@ -1112,7 +985,6 @@ fn load_debug_info_kind(
     let Some(cache) = cache else {
         let read = read(separate.as_ref(), &supplementary)?;
 
-        // What the image was read from is not needed to seal it.
         drop((separate, supplementary, rejected));
         return Ok((built(read.seal()?)?, CacheOutcome::Off));
     };
@@ -1124,13 +996,11 @@ fn load_debug_info_kind(
     }
     inputs.extend(separate.as_ref().map(|file| file.data.as_slice()));
 
-    // A rejected file's reason is recorded, so its bytes key the image too.
     inputs.extend(rejected.as_ref().map(|(file, _)| file.data.as_slice()));
     if let Supplementary::Found(file) = &supplementary {
         inputs.push(file.data.as_slice());
     }
 
-    // So are the `.dwo` files split DWARF keeps its units in, as found now.
     let dwarf_data = separate.as_ref().map_or(data, |file| file.data.as_slice());
     let split = (kind == LoadKind::Full)
         .then(|| {
@@ -1175,14 +1045,6 @@ fn load_debug_info_kind(
     Ok((built(tables)?, outcome))
 }
 
-/// Reads what an image of a file's debug information holds, from the
-/// separate debug file `separate` when one was found, with the dwz supplementary file its
-/// DWARF shares. A separate debug file that cannot be loaded, or whose
-/// supplementary file was not found, leaves the image as its own file
-/// describes it, and DWARF of its own that cannot be read leaves it as its
-/// symbols and call-frame information describe it, with the reasons
-/// recorded. Without one, the file `rejected` names that describes another
-/// module is recorded with why.
 fn read_debug_info(
     program: &Path,
     data: &[u8],
@@ -1210,7 +1072,6 @@ fn read_debug_info(
         );
     }
 
-    // The file's own DWARF, or, when it cannot be read, none.
     let own = |separate: Separate<'_>, supplementary| {
         load_image(
             program,
@@ -1260,28 +1121,20 @@ fn read_debug_info(
     }
 }
 
-/// Whether a load reads the DWARF of the file that holds it.
 enum DwarfUse {
     Read,
 
-    /// Collection defers unit metadata until it no longer competes with samples.
     Deferred,
 
-    /// It could not be read, for the reason given, so the image is loaded
-    /// without it.
     Unusable(Arc<str>),
 }
 
 type Sections<'data> = DwarfSections<Cow<'data, [u8]>>;
 
-/// An object's DWARF sections, those compressed decompressed in parallel
-/// within `limits`. Also returns their uncompressed bytes, which the load's
-/// budget follows.
 fn load_sections<'data>(
     object: &object::File<'data>,
     limits: LoadLimits,
 ) -> std::result::Result<(Sections<'data>, u64), DwarfError> {
-    // gimli names the sections it reads by asking for each in turn.
     let mut wanted = Vec::new();
     DwarfSections::load(|id| {
         wanted.push(id);
@@ -1302,17 +1155,14 @@ fn load_sections<'data>(
     Ok((sections, input))
 }
 
-/// What a separate debug file contributes to an image.
 #[derive(Clone)]
 enum Separate<'a> {
     None,
     Used(&'a super::separate::DebugFile),
 
-    /// One found but unusable, for the reason given.
     Unusable(&'a Path, Arc<str>),
 }
 
-/// What an image holds, read from its sources, which need not outlive it.
 struct Read {
     target: TargetDescription,
     address_range: AddressRange<ImageAddress>,
@@ -1387,15 +1237,11 @@ fn load_image(
         EndianSlice::new(section, endian)
     });
 
-    // Units a compiler emitted together share their abbreviations: each
-    // shared table is read and held once rather than for every unit, which
-    // was half a gigabyte for 14,000 units of 2,800 ThinLTO modules.
     dwarf.populate_abbreviations_cache(gimli::AbbreviationsCacheStrategy::Duplicates);
     let mut files = Files::default();
     let mut line_tables = LineTables::default();
     let mut headers = Vec::new();
 
-    // Where the next unit's header is, which a malformed one names.
     let mut next = 0;
     let mut unit_headers = dwarf.units();
 
@@ -1416,8 +1262,6 @@ fn load_image(
         headers.push(header);
     }
 
-    // Each unit's abbreviations, root DIE, and line program header, in
-    // parallel and in order.
     let units = first_error(
         headers
             .into_par_iter()
@@ -1429,13 +1273,10 @@ fn load_image(
             .collect(),
     )?;
 
-    // A skeleton unit's DIEs are in the `.dwo` file it names, read in its
-    // place where found.
     let dwo_files: Vec<(usize, Vec<u8>)> = split::read_files(&dwarf, &units, program)
         .into_iter()
         .filter_map(|(index, found)| found.ok().map(|(_, bytes)| (index, bytes)))
         .collect();
-    // The budget follows the debug information, which is theirs too.
     let dwo_bytes: u64 = dwo_files.iter().map(|(_, bytes)| bytes.len() as u64).sum();
     crate::count!("dwo_bytes", dwo_bytes);
     input += dwo_bytes;
@@ -1454,7 +1295,6 @@ fn load_image(
     crate::count!("units", catalog.units.len());
     drop(phase);
 
-    // Go's own function table, which the runtime reads and stripping keeps.
     let (mut go_table, mut runtime_function_table) = match super::gopclntab::load(&object) {
         Ok(Some(table)) => (Some(Arc::new(table)), EmbeddedSymbolTable::Loaded),
         Ok(None) => (None, EmbeddedSymbolTable::Absent),
@@ -1468,9 +1308,6 @@ fn load_image(
     drop(phase);
     let phase = crate::span!("lines");
 
-    // Each unit's line program, decoded in parallel with files of its own,
-    // and appended in unit order: interning a unit's files in the order it
-    // first names them gives every file the identifier a serial load would.
     let unit_lines = catalog
         .units
         .par_iter()
@@ -1503,8 +1340,6 @@ fn load_image(
     crate::count!("line_rows", line_tables.rows.len());
     drop(phase);
 
-    // Code no DWARF describes, such as a stripped image's, gets functions
-    // and lines from the function table.
     let phase = crate::span!("go_completion");
     let code = |address: u64, length: usize| {
         code_bytes(&object, address, address.checked_add(length as u64)?)
@@ -1526,7 +1361,6 @@ fn load_image(
         go_table = None;
     }
 
-    // Function and code instance identifiers index their tables.
     for (index, function) in function_metadata.functions.iter().enumerate() {
         debug_assert_eq!(
             function.id.index(),
@@ -1548,7 +1382,6 @@ fn load_image(
     drop(phase);
     let phase = crate::span!("prologues");
 
-    // The prologue and coroutine analyses below find statements by address.
     let statements = line_tables.statements_by_address();
     super::roles::link_loop_bodies(&mut function_metadata.functions);
     refine_proved_prologue_entries(
@@ -1560,8 +1393,6 @@ fn load_image(
 
     drop(phase);
 
-    // Unwinding and symbols need nothing the variables produce, and most of
-    // the variables' work runs on one thread, so they are read beside it.
     let (variables, unwind_and_symbols) = rayon::join(
         || {
             let _phase = crate::span!("variables");
@@ -1570,7 +1401,6 @@ fn load_image(
                     &dwarf,
                     &catalog,
                     target,
-                    // The module's identifier is its binding's, not the image's.
                     crate::ModuleImageId::new(0),
                     variables::CodeMetadata {
                         instance_ids: &function_metadata.instance_ids,
@@ -1585,8 +1415,6 @@ fn load_image(
             let known = files.paths().len();
 
             match read(&mut files, variables::Locals::Read) {
-                // Locals are most of what a large program's debug
-                // information describes, and the rest may fit without them.
                 Err(error @ DwarfError::Budget { .. }) => {
                     let _phase = crate::span!("variables.without_locals");
                     files.truncate(known);
@@ -1622,7 +1450,6 @@ fn load_image(
         },
     );
 
-    // The variables' failure is reported first, as when they were read first.
     let (mut variables, locals_left_out) =
         variables.map_err(|error| error.within(|| "its variables and types".to_owned()))?;
     let locals_left_out = locals_left_out.map(|error| -> Arc<str> {
@@ -1686,7 +1513,6 @@ fn load_image(
     let resume_points = Vec::new();
     drop(statements);
 
-    // Which variables an await holds is asked of the module's code.
     #[cfg(target_arch = "x86_64")]
     let held = variables::coroutine::held_ranges(
         &ObjectCode(&object),
@@ -1790,8 +1616,6 @@ fn load_image(
     })
 }
 
-/// The debug information `tables` describe for the module `binding`
-/// names: what a load sealed, or the same bytes read back from a cache.
 fn bind(
     binding: &Binding,
     tables: Arc<crate::image::Image>,
@@ -1808,13 +1632,10 @@ fn bind(
     })
 }
 
-/// The variables of an image no DWARF describes: it has none, and says
-/// so as a module stripped of its DWARF does.
 pub(super) fn no_variables(image: &ModuleImage) -> Arc<dyn super::VariableInfo> {
     Arc::new(variables::DwarfVariableInfo::new(image))
 }
 
-/// The bytes of the views a module carries for its own types.
 fn embedded_views(
     object: &object::File<'_>,
     most: u64,
@@ -1823,8 +1644,6 @@ fn embedded_views(
     Ok(super::compressed::read_one(section, most)?.into_owned())
 }
 
-/// Which part of the unit `header` begins could not be read: its
-/// abbreviations, its root entry, or its line program's header.
 fn unit_failure(
     dwarf: &gimli::Dwarf<Reader<'_>>,
     header: &gimli::UnitHeader<Reader<'_>>,
@@ -1854,7 +1673,6 @@ fn unit_failure(
     }
 }
 
-/// Where the unit after the one `header` begins.
 fn unit_end(header: &gimli::UnitHeader<Reader<'_>>) -> usize {
     header
         .offset()
@@ -1862,9 +1680,6 @@ fn unit_end(header: &gimli::UnitHeader<Reader<'_>>) -> usize {
         .saturating_add(header.length_including_self())
 }
 
-/// Why the image's DWARF is incomplete when compile units keep it in split
-/// DWARF files that were not found or could not be read: how many, and the
-/// first one's file.
 fn split_units<'data>(
     dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
@@ -1907,7 +1722,6 @@ fn split_units<'data>(
     Ok(Some(reason.into()))
 }
 
-/// The producers the units name, in unit order.
 fn unit_producers<'data>(
     dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
@@ -1927,12 +1741,8 @@ fn unit_producers<'data>(
     Ok(producers)
 }
 
-/// Go's attribute naming the package a unit compiles, which its
-/// `DW_AT_name` names by import path.
 const DW_AT_GO_PACKAGE_NAME: gimli::DwAt = gimli::DwAt(0x2905);
 
-/// The Go packages the image has units for, with the names their code
-/// declares.
 fn go_packages(
     dwarf: &DwarfSet<'_>,
     catalog: &UnitCatalog<'_>,
@@ -1961,9 +1771,6 @@ fn unusable_table(error: &super::gopclntab::PclntabError) -> EmbeddedSymbolTable
     }
 }
 
-/// Gives each symbol naming a Go function's entry the role the function
-/// table records for it. Its name is the table's, without the ELF symbol's
-/// ABI suffix.
 fn assign_go_symbol_roles(table: &super::gopclntab::GoTable, symbols: &mut [crate::SymbolInfo]) {
     for symbol in symbols {
         let Some(function) = table
@@ -1979,9 +1786,6 @@ fn assign_go_symbol_roles(table: &super::gopclntab::GoTable, symbols: &mut [crat
     }
 }
 
-/// Returns the code ranges of every unit written in Go, merged and sorted
-/// by start address. A Go unit's ranges also cover the assembly functions
-/// of its package, which follow the same calling convention.
 fn go_code_ranges<'data>(
     dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
@@ -2001,8 +1805,6 @@ fn go_code_ranges<'data>(
         }
     }
 
-    // Merging lets a lookup check only the last range starting at or before
-    // an address.
     ranges.sort_unstable_by_key(|range| range.start);
     let mut merged: Vec<AddressRange<ImageAddress>> = Vec::with_capacity(ranges.len());
     for range in ranges {
@@ -2015,8 +1817,6 @@ fn go_code_ranges<'data>(
     Ok(merged)
 }
 
-/// The results' values, or the first one's error: what a serial run
-/// would have stopped at, whichever order parallel work finished in.
 fn first_error<T, E>(results: Vec<std::result::Result<T, E>>) -> std::result::Result<Vec<T>, E> {
     results.into_iter().collect()
 }
@@ -2078,8 +1878,6 @@ fn image_address_range(
         );
     }
 
-    // An image with no program headers, as a JIT compiler writes one to
-    // memory, lies where its allocated sections say.
     if start == u64::MAX
         && let Some(allocated) = super::gdb_jit::allocated_range(object)?
     {
@@ -2110,8 +1908,6 @@ fn load_unwind_info(
 
     let section_data = |name| data_in(object, name);
 
-    // A separate debug file may hold the `.debug_frame` the module's file
-    // was stripped of.
     let debug_frame = match section_data(".debug_frame")? {
         frame if frame.is_empty() => match debug_object {
             Some(debug_object) => data_in(debug_object, ".debug_frame")?,
@@ -2179,13 +1975,6 @@ fn load_unwind_info(
     Ok(unwind)
 }
 
-/// The frames of code no call-frame information describes, as its
-/// instructions prove them: V8's builtins, by V8's conventions too, and,
-/// in a module whose call-frame information leaves most of its code
-/// undescribed, as Google's build of Chrome does, every function its own
-/// code or relocations reach. A separate debug file may name the builtins
-/// its module's file was stripped of. The code of each function proved
-/// that a symbol may not name is added to `functions`.
 #[cfg(target_arch = "x86_64")]
 fn proved_frames(
     object: &object::File<'_>,
@@ -2197,7 +1986,6 @@ fn proved_frames(
     if builtins.is_empty()
         && let Some(debug_object) = debug_object
     {
-        // The debug file holds the symbols; the module's file, the code.
         builtins = super::v8::builtins(debug_object)
             .into_iter()
             .filter_map(|(address, code)| {
@@ -2232,8 +2020,6 @@ fn proved_frames(
         );
     }
 
-    // The process's entry point has no caller. glibc's call-frame
-    // information says so; musl's start has none.
     let entry = object.entry();
     if !described(entry)
         && let Some(range) = object
@@ -2250,11 +2036,6 @@ fn proved_frames(
         starts.insert(entry);
     }
 
-    // Hand-written code, as assembly kernels and the C runtime's `_init`,
-    // has no call-frame information even where everything compiled has.
-    // Unless the module is small or mostly undescribed, only the functions
-    // that symbols and relocations name are proved: finding what every
-    // instruction calls costs as much as the rest of a load.
     let scan = scanned(object, unwind);
     undescribed_frames(
         (object, debug_object),
@@ -2265,8 +2046,6 @@ fn proved_frames(
         (&mut frames, functions),
     );
 
-    // Where glibc's clone returns in both threads, which no frame of the
-    // function's other code describes.
     let clones = clone_returns(object, unwind, &described);
     if let Some(value) = super::x86_64::frames::CodeFrame::Clone.encode() {
         frames.retain(|(range, _)| {
@@ -2279,16 +2058,12 @@ fn proved_frames(
     frames
 }
 
-/// The instructions of glibc's `clone` and `clone3` that follow their
-/// system call, which glibc's call-frame information leaves out: each
-/// begins where an entry of it ends.
 #[cfg(target_arch = "x86_64")]
 fn clone_returns(
     object: &object::File<'_>,
     unwind: &crate::image::unwind::Unwind,
     described: &dyn Fn(u64) -> bool,
 ) -> Vec<AddressRange<ImageAddress>> {
-    // The call's number is loaded just before.
     const LOAD: u64 = 5;
 
     let sections: Vec<(u64, &[u8])> = object
@@ -2311,8 +2086,6 @@ fn clone_returns(
         .collect()
 }
 
-/// The frames of V8's builtins and of V8's other hand-written code, whose
-/// starts are added to `starts`.
 #[cfg(target_arch = "x86_64")]
 fn v8_frames(
     object: &object::File<'_>,
@@ -2328,10 +2101,6 @@ fn v8_frames(
         }
     }
 
-    // V8's hand-written code that is not a builtin, as the heap's scan of
-    // the stack (`PushAllRegistersAndIterateStack`), has no call-frame
-    // information either, and every collection samples under it. Its
-    // instructions alone prove its frames: it keeps no convention.
     let symbols = debug_object
         .filter(|_| object.symbols().next().is_none())
         .unwrap_or(object);
@@ -2346,14 +2115,11 @@ fn v8_frames(
         if starts.contains(&address) || described(address) {
             continue;
         }
-        // A symbol of no size, as Node 22's build gives the scan, runs at
-        // most to the next; its paths end at its return.
         let end = match size {
             0 => match functions.get(at + 1) {
                 Some((next, _)) => *next,
                 None => continue,
             },
-            // Its size is input, and may run past the address space.
             size => match address.checked_add(size) {
                 Some(end) => end,
                 None => continue,
@@ -2366,32 +2132,20 @@ fn v8_frames(
     }
 }
 
-/// Frames proved over ranges of code, each encoded as the frame prover
-/// encodes it.
 #[cfg(target_arch = "x86_64")]
 type ProvedFrames = Vec<(AddressRange<ImageAddress>, u32)>;
 
-/// The most code a module may hold and still have every call and address
-/// load of it scanned for the functions they reach, as the vDSO's few
-/// kilobytes are.
 #[cfg(target_arch = "x86_64")]
 const SCANNED_CODE: u64 = 64 * 1024;
 
-/// Whether to scan all of `object`'s code for the functions it reaches:
-/// when it is small, or when call-frame information describes less than
-/// half of its executable sections.
 #[cfg(target_arch = "x86_64")]
 fn scanned(object: &object::File<'_>, unwind: &crate::image::unwind::Unwind) -> bool {
-    // Section sizes are input, and may claim more than a number holds.
     let code = object
         .sections()
         .filter(|section| section.kind() == object::SectionKind::Text)
         .map(|section| section.size())
         .fold(0, u64::saturating_add);
 
-    // A module this small costs nothing to scan. The vDSO is one: its
-    // hand-written ChaCha20 code has neither a symbol nor call-frame
-    // information, and only getrandom's call names it.
     if code <= SCANNED_CODE {
         return true;
     }
@@ -2404,9 +2158,6 @@ fn scanned(object: &object::File<'_>, unwind: &crate::image::unwind::Unwind) -> 
     described.saturating_mul(2) < code
 }
 
-/// Where the functions of `object` may begin, in its code `sections`: at
-/// an address a symbol of the module or its debug file names or a
-/// relocation holds, and, with `scan`, where its code calls or loads.
 #[cfg(target_arch = "x86_64")]
 fn function_entries(
     (object, debug_object): (&object::File<'_>, Option<&object::File<'_>>),
@@ -2436,8 +2187,6 @@ fn function_entries(
                 .map(|symbol| symbol.address()),
         );
     }
-    // The C runtime's `_init` and `_fini` begin the sections the dynamic
-    // loader calls them in, named or not.
     entries.extend(
         object
             .sections()
@@ -2467,11 +2216,6 @@ fn function_entries(
     entries
 }
 
-/// The frames of the functions of `object` that no call-frame information
-/// describes and that `starts` does not already hold, each found at an
-/// address a symbol of the module or its debug file names, a relocation
-/// holds, or, with `scan`, its code calls or loads, and analyzed up to the
-/// next function's start, which bounds the function added to `functions`.
 #[cfg(target_arch = "x86_64")]
 fn undescribed_frames(
     (object, debug_object): (&object::File<'_>, Option<&object::File<'_>>),
@@ -2488,8 +2232,6 @@ fn undescribed_frames(
         .collect();
     let mut entries = function_entries((object, debug_object), &sections, scan);
 
-    // Where each function ends: at the next start of any function,
-    // described or not.
     let mut bounds = entries.clone();
     bounds.extend(
         [&unwind.eh_frame_index, &unwind.debug_frame_index]
@@ -2517,9 +2259,6 @@ fn undescribed_frames(
                 .copied()
                 .unwrap_or(section_end)
                 .min(section_end);
-            // Google's Chrome describes only the prologue of many functions,
-            // in an entry of a few bytes; the rest of such a function is
-            // proved, and unwinding prefers an entry wherever one exists.
             if described(address) && (!scan || described(end.saturating_sub(1))) {
                 return None;
             }
@@ -2529,9 +2268,6 @@ fn undescribed_frames(
             if let Some(frames) = super::x86_64::frames::musl_clone(code, address) {
                 return Some(((address, end), frames));
             }
-            // A function that begins by linking its frame was built to keep
-            // the chain, so each call its paths do not reach, as the cases
-            // of a jump table, keeps it too.
             let convention = code.starts_with(&super::x86_64::frames::PROLOGUE);
             let mut frames = Vec::new();
             super::x86_64::frames::runtime_frames(code, address, convention, &mut frames);
@@ -2545,18 +2281,6 @@ fn undescribed_frames(
     frames.extend(found.into_iter().flat_map(|(_, found)| found));
 }
 
-/// The instructions of `section`'s functions at which registers their
-/// callers keep are already restored, though the rules still name the
-/// slots they were saved in, each with the registers as bits of
-/// [`X86_64_CALLEE_SAVED_REGISTERS`]: GCC's epilogues pop them and leave
-/// those rules, and a sample's copy of the stack begins above the slots.
-/// Only a row whose frame is gone, its return address at the stack
-/// pointer, that still names such a slot is read, from its first
-/// instruction, which a row always begins at. Code that runs straight to
-/// its return holds every one; otherwise the `pop` or `leave` that freed
-/// the frame, the last instruction of the row before, restored the
-/// register it loaded from the slot the row names, until code writes it
-/// or may go elsewhere.
 fn restored_returns<'data, S>(
     section: &S,
     bases: &BaseAddresses,
@@ -2589,7 +2313,6 @@ where
             continue;
         };
 
-        // The row before: where it starts, and whether its frame is gone.
         let mut before: Option<(u64, bool)> = None;
 
         while let Ok(Some(row)) = rows.next_row() {
@@ -2598,8 +2321,6 @@ where
                 row.cfa(),
                 CfaRule::RegisterAndOffset { register, offset: 8 } if register.0 == X86_64_RSP
             );
-            // The registers the row names slots of, and those whose slot
-            // is just below the return address.
             let (mut slotted, mut below) = (0_u32, 0_u32);
             for (register, rule) in row.registers() {
                 let RegisterRule::Offset(offset) = rule else {
@@ -2624,7 +2345,6 @@ where
                         return Some((end, super::x86_64::ALL_CALLEE_SAVED));
                     }
 
-                    // A pop of the slot just below the return address.
                     let (from, _) = before.filter(|(_, gone)| !gone)?;
                     let popped = super::x86_64::restored_by(bytes(from, start)?, from)?;
                     (below & popped != 0).then(|| (epilogues.keeps(code, start, popped), popped))
@@ -2645,7 +2365,6 @@ where
     restored
 }
 
-/// The call-frame sections as gimli reads them.
 struct UnwindSections<'data> {
     eh_frame: &'data [u8],
     debug_frame: &'data [u8],
@@ -2725,14 +2444,6 @@ impl<'data> UnwindSections<'data> {
     }
 }
 
-/// Indexes the frame description entries of one call-frame section by
-/// address, so that finding an address's entry is a binary search rather
-/// than a walk of the section. Lookups agree exactly with gimli's walk
-/// (`UnwindSection::fde_for_address`), which returns the first entry in
-/// section order that contains the address, or the first error before it:
-/// the index keeps the offset of the first entry that fails to parse, or
-/// [`WHOLE_SECTION`](crate::image::unwind::WHOLE_SECTION) when the section
-/// itself is malformed and enumeration stops.
 fn fde_index<'data, S>(section: &S, bases: &BaseAddresses) -> crate::image::unwind::FdeIndex
 where
     S: UnwindSection<Reader<'data>>,
@@ -2758,7 +2469,6 @@ where
                     start: ImageAddress::new(fde.initial_address()),
                     end: ImageAddress::new(fde.end_address()),
                 },
-                // A section too large for the image fails when sealed.
                 u32::try_from(fde.offset()).unwrap_or(u32::MAX),
             )),
             Err(error) => {
@@ -2774,9 +2484,6 @@ where
 }
 
 impl crate::image::unwind::Unwind {
-    /// Returns the code range of every function the call-frame information
-    /// describes. Enumeration stops at the first malformed entry, so the
-    /// result is evidence of function boundaries rather than a complete map.
     fn function_ranges(&self) -> Vec<AddressRange<ImageAddress>> {
         self.eh_frame_index
             .entries
@@ -2801,7 +2508,6 @@ impl DwarfUnwindInfo {
                 let view = self.view();
                 let (bytes, facts) = view.go()?;
 
-                // The loader parsed these same bytes.
                 let table = super::gopclntab::GoTable::reparse(bytes.into(), facts).ok()?;
                 Some(super::gopclntab::GoUnwind::new(
                     Arc::new(table),
@@ -2811,8 +2517,6 @@ impl DwarfUnwindInfo {
             .as_ref()
     }
 
-    /// The row at `address` of `.debug_frame` if `debug`, else of
-    /// `.eh_frame`, as `find` finds it, found once.
     fn row(
         &self,
         debug: bool,
@@ -2838,9 +2542,6 @@ impl DwarfUnwindInfo {
         Ok(row)
     }
 
-    /// Returns the registers the function at `address` may overwrite
-    /// without saving them, by the calling convention it follows. Go's
-    /// lets a callee overwrite registers the System V ABI preserves.
     fn call_clobbered_registers(&self, address: ImageAddress) -> &'static [DwarfRegister] {
         if self.view().is_go_code(address) || self.go().is_some_and(|go| go.is_go(address)) {
             &X86_64_GO_CALL_CLOBBERED_REGISTERS
@@ -2905,8 +2606,6 @@ impl UnwindInfo for DwarfUnwindInfo {
         let view = self.view();
         let sections = UnwindSections::in_image(view);
         let clobbered = self.call_clobbered_registers(address);
-        // Only an epilogue whose saved registers lie below the copy needs
-        // this, so it is looked up only then.
         let restored = || view.restored(address);
         let eh_frame = sections.eh_frame();
         let result = self
@@ -2974,7 +2673,6 @@ impl UnwindInfo for DwarfUnwindInfo {
     }
 
     fn frame_pointer_rule(&self, address: ImageAddress) -> FramePointerRule {
-        // Go's rules find the frame by SP, but its prologue keeps the chain.
         self.go()
             .and_then(|go| go.frame_pointer_rule(address))
             .unwrap_or_else(|| crate::unwind::frame_pointer_rule(self, address))
@@ -2988,8 +2686,6 @@ impl UnwindInfo for DwarfUnwindInfo {
     }
 }
 
-/// The frame proved for the instruction at `address` of runtime code no
-/// call-frame information describes.
 fn proved_frame(
     view: crate::image::unwind::UnwindView<'_>,
     address: ImageAddress,
@@ -3014,7 +2710,6 @@ where
     cfa_from_rule(row.cfa(), registers, section, fde.cie().encoding(), memory)
 }
 
-/// The call-frame row in effect at `address`, and the entry holding it.
 fn unwind_row<'data, 'context, S>(
     section: &S,
     index: crate::image::unwind::FdeLookup<'_>,
@@ -3050,9 +2745,6 @@ where
     Ok((fde, row))
 }
 
-/// What unwinding a frame at one address needs of the call-frame
-/// information: the row in effect there, with only the rules it has, and
-/// the facts of the entry that holds it.
 #[derive(Debug)]
 struct FrameRow {
     cfa: CfaRule<usize>,
@@ -3062,11 +2754,8 @@ struct FrameRow {
     signal_frame: bool,
 }
 
-/// The rows an image's call-frame information was asked for most, past
-/// which a row is found again each time it is needed.
 const MOST_FRAME_ROWS: usize = 1 << 16;
 
-/// The row of `section` in effect at `address`.
 fn frame_row<'data, S>(
     section: &S,
     index: crate::image::unwind::FdeLookup<'_>,
@@ -3104,7 +2793,6 @@ where
     unwind_by_row(section, &row, registers, (clobbered, &|| restored), memory)
 }
 
-/// The caller of the frame whose `registers` `row` describes.
 fn unwind_by_row<'data, S>(
     section: &S,
     row: &FrameRow,
@@ -3119,14 +2807,6 @@ where
     let cfa = cfa_from_rule(&row.cfa, registers, section, row.encoding, memory)?;
     let mut caller = registers.clone();
 
-    // A callee may overwrite every register its calling convention does not
-    // preserve across calls, so the caller's value survives only where the
-    // row says where it was saved. Keeping the callee's value would present
-    // it as the caller's.
-    //
-    // Each frame asks this of every register it knows, so the registers
-    // numbered below 64, which are all a System V or Go callee may
-    // overwrite, are tested as bits.
     let clobbered_bits = low_register_bits(clobbered.iter().copied());
     let described_bits = low_register_bits(
         row.rules
@@ -3156,13 +2836,6 @@ where
     for &(register, ref rule) in &row.rules {
         let register = DwarfRegister::from(register);
         match rules.apply(&mut caller, memory, register, rule) {
-            // A register saved where memory cannot be read is unknown in
-            // the caller, as an undefined one is: an epilogue's rules may
-            // still name a slot it popped, below a sample's copy. Where the
-            // code proves it restored the registers its caller keeps, the
-            // caller's value is the one the register holds. Only the
-            // return address, without which there is no caller, ends the
-            // unwind.
             Err(UnwindTermination::MemoryReadFailed { .. }) if register != return_register => {
                 let proved = X86_64_CALLEE_SAVED_REGISTERS
                     .iter()
@@ -3189,15 +2862,12 @@ where
     })
 }
 
-/// The registers of `registers` numbered below 64, as bits.
 fn low_register_bits(registers: impl Iterator<Item = DwarfRegister>) -> u64 {
     registers
         .filter(|register| register.number() < 64)
         .fold(0, |bits, register| bits | 1 << register.number())
 }
 
-/// The canonical frame address of a PLT stub that has pushed `pushed`
-/// words since its call, which pushed the return address.
 fn stub_cfa(
     pushed: u32,
     registers: &RegisterFile,
@@ -3214,9 +2884,6 @@ fn stub_cfa(
     Ok(VirtualAddress::new(cfa))
 }
 
-/// The caller of a PLT stub that has pushed `pushed` words since its call.
-/// The stub changes no register its caller keeps, but the call may change
-/// any it does not.
 fn unwind_stub(
     pushed: u32,
     registers: &RegisterFile,
@@ -3242,28 +2909,16 @@ fn unwind_stub(
     })
 }
 
-/// The DWARF numbers of the registers the x86-64 System V ABI lets a callee
-/// overwrite: rax, rdx, rcx, rsi, rdi, r8-r11, rflags, the SSE registers,
-/// and the x87 stack.
 const X86_64_SYSV_CALL_CLOBBERED_REGISTERS: [DwarfRegister; 34] = DwarfRegister::each([
     0, 1, 2, 4, 5, 8, 9, 10, 11, 49, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
     32, 33, 34, 35, 36, 37, 38, 39, 40,
 ]);
 
-/// The DWARF numbers of the registers besides rsp the x86-64 System V ABI
-/// has a function return with as its caller left them: rbx, rbp, and
-/// r12-r15, in the order whose bits a restored return names them by.
 const X86_64_CALLEE_SAVED_REGISTERS: [DwarfRegister; 6] =
     DwarfRegister::each([3, 6, 12, 13, 14, 15]);
 
-/// The DWARF number of x86-64's stack pointer.
 const X86_64_RSP: u16 = 7;
 
-/// The DWARF numbers of the registers Go code may overwrite: every System V
-/// call-clobbered register, and rbx, rbp, and r12-r15 too. Go's register ABI
-/// preserves none of them across calls, assembly functions may overwrite the
-/// goroutine pointer in r14, and Go's call-frame information does not
-/// describe the frame pointer a prologue saves.
 const X86_64_GO_CALL_CLOBBERED_REGISTERS: [DwarfRegister; 40] = DwarfRegister::each([
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 49, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
@@ -3304,19 +2959,13 @@ where
     }
 }
 
-// Bounds unwind-expression evaluation so a malformed expression with a
-// backward branch cannot hang the controller thread.
 const MAX_UNWIND_EXPRESSION_ITERATIONS: u32 = 10_000;
 
-/// What an unwind expression computed: an address, or with
-/// `DW_OP_stack_value`, a value.
 enum Evaluated {
     Address(u64),
     Value(u64),
 }
 
-/// Evaluates a CFA or register rule's expression. A register rule's
-/// expression starts with the CFA on its stack, as `initial`.
 fn evaluate_unwind_expression<'data, S>(
     expression: &UnwindExpression<usize>,
     section: &S,
@@ -3406,9 +3055,7 @@ where
     }
 }
 
-/// What a row's register rules are applied with.
 struct RuleContext<'a, S> {
-    /// The registers of the frame being unwound.
     current: &'a RegisterFile,
     cfa: VirtualAddress,
     section: &'a S,
@@ -3454,7 +3101,6 @@ impl<'data, S: UnwindSection<Reader<'data>>> RuleContext<'_, S> {
                 .get(DwarfRegister::from(*source))
                 .ok_or_else(|| register_unavailable(DwarfRegister::from(*source)))?,
             RegisterRule::Constant(value) => *value,
-            // The register was saved where the expression computes.
             RegisterRule::Expression(expression) => match self.evaluate(expression, memory)? {
                 Evaluated::Address(address) => {
                     let address = VirtualAddress::new(address);
@@ -3470,7 +3116,6 @@ impl<'data, S: UnwindSection<Reader<'data>>> RuleContext<'_, S> {
                     });
                 }
             },
-            // The register's value is what the expression computes.
             RegisterRule::ValExpression(expression) => match self.evaluate(expression, memory)? {
                 Evaluated::Address(value) | Evaluated::Value(value) => value,
             },
@@ -3534,17 +3179,8 @@ struct DieKey {
     offset: usize,
 }
 
-/// A map from DIEs, kept per unit.
-///
-/// The variables walk reads one unit at a time, and nearly every reference
-/// stays in its unit, so the map of the unit being read stays in cache,
-/// where one map of every DIE in a large program misses on most lookups.
-/// A map holds the units from the least it has a DIE of to the greatest:
-/// one unit's walk names few, and a map for each of 14,000 units cost
-/// every walk's maps megabytes of empty ones.
 #[derive(Clone)]
 struct DieMap<V> {
-    /// The unit of the first map.
     first: usize,
     units: Vec<HashMap<usize, V>>,
 }
@@ -3563,7 +3199,6 @@ impl<V> DieMap<V> {
         self.units.get(unit.checked_sub(self.first)?)
     }
 
-    /// The map of `unit`, made with those between it and the others.
     #[expect(
         clippy::indexing_slicing,
         reason = "the maps were just extended to hold `index`"
@@ -3603,7 +3238,6 @@ impl<V> DieMap<V> {
         self.units.iter().all(HashMap::is_empty)
     }
 
-    /// Replaces each value with `map` of it.
     fn map_values(&mut self, mut map: impl FnMut(V) -> V)
     where
         V: Copy,
@@ -3625,7 +3259,6 @@ impl<V> DieMap<V> {
         self.units.get_mut(index)?.remove(&key.offset)
     }
 
-    /// Every entry, in no order.
     fn into_entries(self) -> impl Iterator<Item = (DieKey, V)> {
         let first = self.first;
         self.units
@@ -3644,7 +3277,6 @@ impl<V> DieMap<V> {
             })
     }
 
-    /// Adds every entry of `other`, whose entries replace these.
     fn extend(&mut self, other: Self) {
         let first = other.first;
         for (index, entries) in other.units.into_iter().enumerate() {
@@ -3671,7 +3303,6 @@ enum RawFunctionKind {
 struct RawFunction {
     key: DieKey,
 
-    /// The language of the unit holding the DIE.
     language: SourceLanguage,
     kind: RawFunctionKind,
     parent: Option<DieKey>,
@@ -3680,23 +3311,17 @@ struct RawFunction {
     name: Option<Arc<str>>,
     linkage_name: Option<Arc<str>>,
 
-    /// Whether the DIE says the code only forwards to another function.
     trampoline: bool,
 
-    /// Whether the DIE says it is the program's main subprogram.
     main_subprogram: bool,
     declaration: Option<SourceLocation>,
     call_site: Option<SourceLocation>,
 
-    /// Its code, held once for its code instance too.
     ranges: Arc<[AddressRange<ImageAddress>]>,
     entry: Option<ImageAddress>,
 
-    /// The names of the namespaces enclosing the DIE, outermost first,
-    /// joined by `::`, as Rust's debug information nests its functions.
     namespace: Option<Arc<str>>,
 
-    /// The type the function returns.
     returns: Option<DieKey>,
 }
 
@@ -3704,14 +3329,8 @@ struct FunctionMetadata {
     functions: Vec<FunctionInfo>,
     code_instances: Vec<CodeInstanceInfo>,
 
-    /// Maps each concrete function DIE to its code instance so the variable
-    /// catalog can attribute scopes to logical frames.
     instance_ids: DieMap<CodeInstanceId>,
 
-    /// Each Rust async body, with the full name of the coroutine type that
-    /// rustc's naming says it runs (see [`super::coroutines::body_future`]):
-    /// how a body is linked to its coroutine where its debug information
-    /// does not otherwise say.
     body_futures: Vec<(FunctionId, Arc<str>)>,
 }
 
@@ -3732,16 +3351,12 @@ fn load_function_metadata<'data>(
     drop(phase);
     let _phase = crate::span!("functions.resolve");
 
-    // Each function's definition: where its origin and specification
-    // chains end, as an index into `raw`.
     let definitions = first_error(
         raw.par_iter()
             .map(|function| definition_of(function.key, &raw))
             .collect(),
     )?;
 
-    // The definitions code belongs to. Clang also emits subprograms with
-    // no code and no name, only to scope a function's local types.
     let mut concrete = vec![false; raw.len()];
     for (function, definition) in raw.iter().zip(&definitions) {
         if !function.ranges.is_empty() {
@@ -3749,7 +3364,6 @@ fn load_function_metadata<'data>(
         }
     }
 
-    // Each definition once, in the order DIEs first name it.
     let mut seen = vec![false; raw.len()];
     let order = definitions
         .iter()
@@ -3761,8 +3375,6 @@ fn load_function_metadata<'data>(
         .map(|definition| {
             let origin = &raw[*definition];
 
-            // Clang names the thunks a multiply inherited virtual function
-            // needs only by their linkage names.
             function_name(origin).map(|name| {
                 let role = origin_role(origin, &name, &futures);
                 (name, role)
@@ -3770,9 +3382,6 @@ fn load_function_metadata<'data>(
         })
         .collect::<Vec<_>>();
 
-    // Only numbering the functions is done in turn; they are built in
-    // parallel, which on Chrome's 14 million took a tenth of a cold load
-    // on one thread.
     let mut function_ids = vec![None; raw.len()];
     let mut nameless = vec![false; raw.len()];
     let mut named_definitions = Vec::new();
@@ -3783,9 +3392,6 @@ fn load_function_metadata<'data>(
             function_ids[*definition] = Some(FunctionId::new(id));
             named_definitions.push(*definition);
         } else {
-            // Clang also emits code with no name of any kind, as some
-            // subprograms Chromium's split DWARF has: its code keeps its
-            // symbol's name, and what it inlined, theirs.
             nameless[*definition] = concrete[*definition];
         }
     }
@@ -3842,8 +3448,6 @@ fn load_function_metadata<'data>(
     })
 }
 
-/// Each Rust async body of the functions `definitions` name, with the full
-/// name of the coroutine type rustc's naming says it runs.
 fn body_futures(
     raw: &RawFunctions,
     definitions: &[usize],
@@ -3870,9 +3474,6 @@ fn body_futures(
         .collect()
 }
 
-/// Each function DIE with code as an instance, numbered in DIE order, of
-/// its definition's function; and the instance each such DIE is. Code of a
-/// definition with no name is no instance, and keeps its symbol's.
 #[expect(
     clippy::indexing_slicing,
     reason = "definitions and function indexes are into `raw`, and each table indexed by one \
@@ -3892,9 +3493,6 @@ fn code_instances(
         function_ids.len(),
     );
 
-    // Which DIEs are instances is found in parallel, and only their
-    // numbering in turn: reading each of Chrome's 53 million DIEs on one
-    // thread took seconds.
     let has_code = raw
         .par_iter()
         .zip(definitions)
@@ -3908,7 +3506,6 @@ fn code_instances(
                 u32::try_from(instance_functions.len())
                     .map_err(|_| gimli::Error::UnsupportedOffset)?,
             );
-            // Every instance's definition has an ID.
             let Some(of) = function_ids[*definition] else {
                 let key = raw[index].key;
                 return Err(DwarfError::ReferencedFunctionMissing {
@@ -3921,8 +3518,6 @@ fn code_instances(
         }
     }
 
-    // Each unit's map is filled on its own: one thread inserting Chrome's
-    // 21 million instances in turn took over a second.
     let instance_ids = DieMap {
         first: 0,
         units: raw
@@ -3968,15 +3563,12 @@ fn code_instances(
     Ok((code_instances, instance_ids))
 }
 
-/// What a function is to unwinding and stepping.
 fn origin_role(origin: &RawFunction, name: &str, futures: &Futures) -> crate::CodeRole {
     let role = super::roles::function_role(
         origin.linkage_name.as_deref().unwrap_or(name),
         origin.trampoline || builds_future(origin, futures),
     );
 
-    // What builds a future only wraps, even a runtime's: a step that
-    // enters the runtime goes on into the future's body.
     match (&origin.namespace, &origin.name) {
         (Some(namespace), Some(own))
             if origin.language == SourceLanguage::Rust && role != crate::CodeRole::Wrapper =>
@@ -3987,9 +3579,6 @@ fn origin_role(origin: &RawFunction, name: &str, futures: &Futures) -> crate::Co
     }
 }
 
-/// What a function's language writes for a function whose DWARF name is
-/// an encoding: Nim names its procedures' C functions by their mangled
-/// names, and GNAT its subprograms by their scopes, encoded.
 fn written_name(language: SourceLanguage, name: &str) -> Option<String> {
     match language {
         SourceLanguage::Nim => crate::demangle::qualified_name(name),
@@ -3998,9 +3587,6 @@ fn written_name(language: SourceLanguage, name: &str) -> Option<String> {
     }
 }
 
-/// A function's own name, without the scopes its language qualifies it
-/// with, as C names a function: Nim's `values::add`, Odin's, and Ada's
-/// `values.add` are `add`. Other languages' DWARF names are their own.
 pub(super) fn own_name(language: SourceLanguage, name: &str) -> Option<String> {
     let written = written_name(language, name);
     let qualified = written.as_deref().unwrap_or(name);
@@ -4013,9 +3599,6 @@ pub(super) fn own_name(language: SourceLanguage, name: &str) -> Option<String> {
     own.map(str::to_owned).or(written)
 }
 
-/// The name a function shows. Clang names the thunks a multiply inherited
-/// virtual function needs only by their linkage names, and the body of a
-/// Rust `async fn` or block shows as the function its programmer wrote.
 fn function_name(function: &RawFunction) -> Option<Arc<str>> {
     if let Some(written) = function
         .name
@@ -4041,15 +3624,6 @@ fn function_name(function: &RawFunction) -> Option<Arc<str>> {
     }
 }
 
-/// Links each async body whose parameters name no coroutine to the
-/// coroutine type rustc's naming says it runs, as `body_futures` lists
-/// them: what a Rust older than 1.93 leaves to its names alone.
-///
-/// A type is described once in every unit that uses it, as Rust 1.88's
-/// coroutines spawned through tokio are, so one name may answer several
-/// type ids. Those are one type to the image, which classes types by the
-/// same identity (see `ModuleImage::same_type`), and the body is linked to
-/// the first.
 fn link_bodies_by_name(
     functions: &mut [FunctionInfo],
     body_futures: &[(FunctionId, Arc<str>)],
@@ -4095,11 +3669,6 @@ fn link_bodies_by_name(
     }
 }
 
-/// Whether a function is an `async fn` as rustc compiles it apart from its
-/// body: code that only builds the future, which returns the coroutine of
-/// the `async fn` of its own name, less a generic function's arguments.
-/// `futures` names the function each `async fn`'s coroutine type belongs
-/// to.
 fn builds_future(function: &RawFunction, futures: &Futures) -> bool {
     function.language == SourceLanguage::Rust
         && function
@@ -4114,8 +3683,6 @@ fn builds_future(function: &RawFunction, futures: &Futures) -> bool {
             .is_some_and(|(of, own)| **of == *own)
 }
 
-/// Where a breakpoint on a code instance goes: the entry its DIE names,
-/// when that lies in its code, or else where its code begins.
 fn breakpoint_entry(function: &RawFunction) -> Option<BreakpointEntry> {
     function
         .entry
@@ -4132,10 +3699,6 @@ fn breakpoint_entry(function: &RawFunction) -> Option<BreakpointEntry> {
         })
 }
 
-/// Gives each Go function its role, from its name, whether the compiler
-/// generated it as a trampoline or an ABI wrapper, and what the function
-/// table records at its entry. An ABI wrapper shares its function's DWARF
-/// name but has its own entry.
 fn assign_go_function_roles(
     functions: &mut [FunctionInfo],
     trampolines: &[bool],
@@ -4180,7 +3743,6 @@ fn assign_go_function_roles(
             function.role = super::roles::go_role(&function.name, facts, generated);
         } else if function.role == crate::CodeRole::Ordinary {
             if generated {
-                // cgo's C, such as the code that Go's calls to C enter.
                 function.role = crate::CodeRole::Wrapper;
             } else if runtime_c && go_table.is_some() {
                 function.role = crate::CodeRole::RuntimeInternal;
@@ -4189,8 +3751,6 @@ fn assign_go_function_roles(
     }
 }
 
-/// One unit's function DIEs, decoded on a worker of its own, with the
-/// files they name numbered within the unit.
 #[derive(Default)]
 struct UnitFunctions {
     functions: Vec<RawFunction>,
@@ -4198,22 +3758,16 @@ struct UnitFunctions {
     files: UnitFiles,
 }
 
-/// The files one unit's DIEs name, each path resolved once.
 #[derive(Default)]
 struct UnitFiles {
     files: Files,
 
-    /// The file each of the line program's file indexes names.
     by_index: HashMap<u64, Option<crate::SourceFileId>>,
 }
 
-/// Every unit's function DIEs, in DIE order: by unit, then by offset.
-/// Each unit's stay where its worker decoded them, and an index counts
-/// through them all.
 struct RawFunctions {
     units: Vec<Vec<RawFunction>>,
 
-    /// The index of each unit's first function, and then of the end.
     starts: Vec<usize>,
 }
 
@@ -4230,7 +3784,6 @@ impl RawFunctions {
         (0..self.len()).into_par_iter().map(|index| &self[index])
     }
 
-    /// Where `key`'s function is.
     fn at(&self, key: DieKey) -> std::result::Result<usize, DwarfError> {
         self.units
             .get(key.unit)
@@ -4261,8 +3814,6 @@ impl std::ops::Index<usize> for RawFunctions {
     }
 }
 
-/// Every unit's function DIEs, decoded in parallel, with the files they
-/// name numbered as one walk of every unit in order would number them.
 fn collect_function_dies<'data>(
     dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
@@ -4319,7 +3870,6 @@ fn collect_function_dies<'data>(
     Ok((RawFunctions { units, starts }, futures))
 }
 
-/// One unit's function DIEs, and the coroutine types of its `async fn`s.
 fn collect_unit_functions<'data>(
     dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
@@ -4334,7 +3884,6 @@ fn collect_unit_functions<'data>(
 
     let language = unit_language(dwarf, units, unit_index)?;
 
-    // Only these DIEs are read; every other one's attributes are skipped.
     let wanted = |tag| match tag {
         gimli::DW_TAG_subprogram | gimli::DW_TAG_inlined_subroutine | gimli::DW_TAG_namespace => {
             true
@@ -4346,8 +3895,6 @@ fn collect_unit_functions<'data>(
     let mut entries = unit.entries_raw(None)?;
     let mut entry = gimli::DebuggingInformationEntry::null();
 
-    // What the DIEs at each depth are within: the nearest function, and
-    // the namespace path, an index into `paths`.
     let mut levels = Vec::<(Option<DieKey>, Option<usize>)>::new();
     let mut paths = Vec::<Arc<str>>::new();
 
@@ -4355,7 +3902,6 @@ fn collect_unit_functions<'data>(
         let depth = entries.next_depth();
         let mut next = entries.clone();
 
-        // Null entries end children, and pad the unit after its root's.
         let Some(abbreviation) = next.read_abbreviation()? else {
             entries = next;
             continue;
@@ -4384,8 +3930,6 @@ fn collect_unit_functions<'data>(
             offset: entry.offset().0,
         };
 
-        // A namespace's children are within its path; an unnamed one's
-        // within none.
         #[expect(
             clippy::indexing_slicing,
             reason = "namespace indexes are positions this walk pushed to `paths`, which only grows"
@@ -4431,7 +3975,6 @@ fn collect_unit_functions<'data>(
     Ok(batch)
 }
 
-/// What a function DIE says of its function.
 fn raw_function<'data>(
     dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
@@ -4499,11 +4042,8 @@ fn raw_function<'data>(
     })
 }
 
-/// The coroutine type of each `async fn`, and that function's name.
 type Futures = HashMap<DieKey, Arc<str>>;
 
-/// The name of the `async fn` whose coroutine type a DIE is, which rustc
-/// nests in the function's namespace.
 fn future_of(
     dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
@@ -4526,7 +4066,6 @@ fn future_of(
     .map(Arc::from))
 }
 
-/// The language a unit is written in, by its root DIE or its importers.
 fn unit_language(
     dwarf: &DwarfSet<'_>,
     units: &Units<'_>,
@@ -4565,8 +4104,6 @@ fn string_attribute(
         .map(|value| value.map(|value| Arc::<str>::from(text(value).as_ref())))
 }
 
-/// A string attribute as the section holds it, without copying it: for
-/// callers that only inspect a name, which need not allocate one.
 fn str_attribute<'data>(
     dwarf: &DwarfSet<'data>,
     unit: &gimli::Unit<Reader<'data>>,
@@ -4581,8 +4118,6 @@ fn str_attribute<'data>(
         .map(|value| value.map(text))
 }
 
-/// A DWARF string as text, replacing what is not UTF-8. Checking that it
-/// is first is far faster than gimli's lossy conversion of valid text.
 fn text(value: Reader<'_>) -> Cow<'_, str> {
     std::str::from_utf8(value.slice())
         .map_or_else(|_| String::from_utf8_lossy(value.slice()), Cow::Borrowed)
@@ -4602,7 +4137,6 @@ fn die_reference(
             unit: unit_index,
             offset: offset.0,
         })),
-        // A supplementary file's references stay within it.
         gimli::AttributeValue::DebugInfoRef(offset) => units
             .containing(offset, units.is_supplementary(unit_index))
             .map(Some)
@@ -4637,12 +4171,9 @@ fn die_reference_with_signatures(
     }
 }
 
-/// Where the function `start` names is defined: the end of its origin and
-/// specification chain, as an index into `raw`.
 fn definition_of(start: DieKey, raw: &RawFunctions) -> std::result::Result<usize, DwarfError> {
     let mut index = raw.at(start)?;
 
-    // A chain longer than the functions repeats one.
     for _ in 0..=raw.len() {
         let function = &raw[index];
         let Some(next) = function.abstract_origin.or(function.specification) else {
@@ -4655,7 +4186,6 @@ fn definition_of(start: DieKey, raw: &RawFunctions) -> std::result::Result<usize
     Err(DwarfError::ReferenceCycle)
 }
 
-/// The nearest code instance enclosing the DIE `key`.
 fn containing_instance(
     mut key: Option<DieKey>,
     raw: &RawFunctions,
@@ -4673,7 +4203,6 @@ fn containing_instance(
     None
 }
 
-/// The source location a DIE's file, line, and column attributes name.
 fn entry_source_location(
     dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
@@ -4729,8 +4258,6 @@ fn entry_source_location(
     }))
 }
 
-/// Appends a unit's line program to `tables`: every row of each sequence
-/// in the image's code, and the range of code each located row describes.
 fn load_lines(
     dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
@@ -4744,12 +4271,9 @@ fn load_lines(
 
     let (program, sequences) = program.sequences()?;
 
-    // Rows name files by index into the program header; resolving a path
-    // allocates, so each index is resolved once.
     let mut file_ids = HashMap::new();
 
     for sequence in sequences {
-        // A discarded function's sequence starts outside the image's code.
         if !code.contains_address(ImageAddress::new(sequence.start)) {
             continue;
         }
@@ -4757,15 +4281,11 @@ fn load_lines(
         tables.begin_sequence()?;
         let mut rows = program.resume_from(&sequence);
 
-        // The line range being described: its start, the row whose location
-        // it has, and whether it begins at a statement.
         let mut open: Option<(u64, u32, bool)> = None;
 
         while let Some((header, row)) = rows.next_row()? {
             let line = row.line().map_or(0, std::num::NonZeroU64::get);
 
-            // Only a row with a line names a file: one with line 0 is
-            // compiler-generated code, whose file is never shown.
             let file = match row.file(header) {
                 Some(file) if line != 0 => {
                     Some(if let Some(&id) = file_ids.get(&row.file_index()) {
@@ -4798,18 +4318,11 @@ fn load_lines(
 
             let at = tables.push_row(&decoded)?;
 
-            // A row without a location still ends the previous range, so the
-            // gap is not attributed to a neighboring line.
             if decoded.end_sequence || decoded.location().is_none() {
                 close_line_range(&mut open, row.address(), tables)?;
                 continue;
             }
 
-            // Rows at one address collapse into a single range, a statement
-            // boundary if any collapsed row recommends it. Its location is
-            // the last statement row's, as gdb presents it: a later row that
-            // is no statement, such as the line an inlined call came from,
-            // does not describe where execution stands.
             if let Some((start, _, true)) = open
                 && start == row.address()
                 && !row.is_stmt()
@@ -4888,10 +4401,6 @@ fn close_line_range(
     Ok(())
 }
 
-/// Moves an out-of-line function's breakpoint entry past a prologue that
-/// x86-64 instruction analysis proves only sets up the frame, when the line
-/// table marks no `prologue_end`. A heuristic: anything unproven keeps the
-/// raw entry, and no failure here fails the module.
 fn refine_proved_prologue_entries(
     object: &object::File<'_>,
     target: TargetDescription,
@@ -4942,7 +4451,6 @@ fn refine_proved_prologue_entries(
     }
 }
 
-/// The bytes of an object file a coroutine's dispatch is decoded from.
 #[cfg(target_arch = "x86_64")]
 struct ObjectCode<'a, 'data>(&'a object::File<'data>);
 
@@ -4980,9 +4488,6 @@ impl super::dispatch::DispatchImage for ObjectCode<'_, '_> {
     }
 }
 
-/// Decodes where each out-of-line function that runs a coroutine goes for
-/// each state, and moves the breakpoint entry of every instance of one past
-/// what leads into its body.
 #[cfg(target_arch = "x86_64")]
 fn decode_resume_points(
     object: &object::File<'_>,
@@ -5011,9 +4516,6 @@ fn decode_resume_points(
             ranges.iter().any(|range| range.contains(address))
         };
 
-        // What leads into the body before its first statement carries the
-        // header's line, which the dispatch and the argument moves have,
-        // or none.
         let leading = |address: u64| {
             in_function(address)
                 && rows
@@ -5027,8 +4529,6 @@ fn decode_resume_points(
         };
 
         if !matches!(instance.kind, CodeInstanceKind::OutOfLine) {
-            // A body inlined into its awaiter is entered straight from the
-            // awaiter's code.
             if let Some(body) = instance
                 .breakpoint_entry
                 .and_then(|entry| body_after(entry.address))
@@ -5053,9 +4553,6 @@ fn decode_resume_points(
             .collect::<Vec<_>>();
         let points = super::dispatch::decode(&image, &ranges, entry, coroutine.state, &states).map(
             |mut points| {
-                // The code a first poll can run. Resuming runs code of its
-                // own until it joins that, such as the rest of a line
-                // whose awaited call is inlined.
                 let arrival = points
                     .points
                     .iter()
@@ -5088,13 +4585,6 @@ fn decode_resume_points(
                         continue;
                     }
 
-                    // Resuming runs the code of the state's own line, of the
-                    // function's header, and of no line, which includes the
-                    // loop polling the awaited future that arriving at the
-                    // await runs too, and so is not where the await's line
-                    // begins. It also runs code no first poll runs before
-                    // it joins one's path, such as the rest of a line whose
-                    // awaited body is inlined.
                     let own = state.location.as_ref().map(|location| location.line);
                     let within = |address: u64| {
                         in_function(address)
@@ -5125,10 +4615,6 @@ fn first_distinct_source_statement(
     range: AddressRange<ImageAddress>,
     raw_entry: ImageAddress,
 ) -> Option<ImageAddress> {
-    // Overlapping line programs (COMDAT folding, duplicated metadata) can
-    // attribute the same image address from unrelated sequences. Prologue
-    // reasoning is only sound within the single sequence that describes the
-    // entry, so an ambiguous entry attribution keeps the raw entry.
     let entry_end = ImageAddress::new(raw_entry.get().checked_add(1)?);
     let mut entry_rows = rows
         .within(AddressRange {
@@ -5141,9 +4627,6 @@ fn first_distinct_source_statement(
         return None;
     }
 
-    // Line programs collapse equal-address rows by taking the final source
-    // attribution. Mirror that rule here, and do not mistake a later row for
-    // the same signature line for proof that argument homing has completed.
     let entry_location = entry_row.location.as_ref()?;
     rows.within(AddressRange {
         start: entry_end,
@@ -5158,7 +4641,6 @@ fn first_distinct_source_statement(
     .map(|row| row.address)
 }
 
-/// Returns the bytes of `[start, end)` from an executable section.
 pub(super) fn code_bytes<'data>(
     object: &'data object::File<'data>,
     start: u64,
@@ -5223,8 +4705,6 @@ mod tests {
     use crate::{LineSequenceId, SourceFileId, StatementFlags, StatementRow};
     use std::fs;
 
-    /// A shared object whose `.text` at `address` holds `size` bytes, with
-    /// the DWARF sections `sections` holds.
     fn elf_with_dwarf(
         address: u64,
         size: usize,
@@ -5243,8 +4723,6 @@ mod tests {
         elf_with_sections(address, size, &debug)
     }
 
-    /// A shared object whose `.text` at `address` holds `size` bytes, with
-    /// each of `debug`'s sections: its name, bytes, and `sh_flags`.
     fn elf_with_sections(address: u64, size: usize, debug: &[(&str, Vec<u8>, u64)]) -> Vec<u8> {
         let mut bytes = Vec::new();
         let mut writer =
@@ -5316,16 +4794,10 @@ mod tests {
         bytes
     }
 
-    /// A compressed section's header is input. One claiming far more than
-    /// its bytes could hold, or more than a file may, leaves the module's
-    /// DWARF unusable, saying why, before anything is decompressed, and
-    /// neither allocates more than a few MiB. A stream longer than its
-    /// claim is `compressed`'s to stop.
     #[test]
     fn a_compressed_section_is_read_only_within_its_claim_and_our_limits() {
         use crate::test_memory::memory_cap::{start_totals, stop_totals, totals};
 
-        // An Elf64_Chdr, then the compressed bytes.
         let compressed = |kind: u32, claim: u64, payload: &[u8]| {
             let mut data = Vec::new();
             data.extend_from_slice(&kind.to_le_bytes());
@@ -5345,7 +4817,6 @@ mod tests {
             encoder.finish().expect("compress")
         };
 
-        // Bytes zlib cannot compress, by a linear congruential generator.
         let mut state = 1_u64;
         let noise: Vec<u8> = (0..2 << 20)
             .map(|_| {
@@ -5399,8 +4870,6 @@ mod tests {
         }
     }
 
-    /// Section headers are input: code sections that together claim more
-    /// bytes than any number holds still load.
     #[test]
     fn code_sections_claiming_more_bytes_than_a_number_holds_still_load() {
         let code = u64::from(object::elf::SHF_ALLOC | object::elf::SHF_EXECINSTR);
@@ -5430,9 +4899,6 @@ mod tests {
         .expect("a load");
     }
 
-    /// Symbols are input: in V8, whose hand-written code is proved from
-    /// its instructions, a function whose size runs past the end of the
-    /// address space still loads.
     #[test]
     fn a_v8_function_sized_past_the_address_space_still_loads() {
         use object::write;
@@ -5472,9 +4938,6 @@ mod tests {
         .expect("a load");
     }
 
-    /// Clang leaves some functions with code and no name of any kind, as
-    /// in Chromium's split DWARF. Such a function is none the image names,
-    /// and the rest of its DWARF still loads.
     #[test]
     fn a_function_with_code_and_no_name_leaves_the_rest_loaded() {
         use gimli::write::AttributeValue;
@@ -5644,7 +5107,6 @@ mod tests {
             }])
         };
 
-        // A sequence outside the image's code belongs to a discarded function.
         load_lines(&dwarf, &unit, &code(0x200, 0x300), &mut files, &mut tables)
             .expect("load test line program");
         assert!(tables.rows.is_empty() && tables.ranges.is_empty());
@@ -5674,8 +5136,6 @@ mod tests {
         assert_eq!(lines[0].range.end, ImageAddress::new(0x104));
     }
 
-    /// One row of a generated line program: how far past the previous row
-    /// it is, its line (0 for none), and whether it is a statement.
     #[derive(Debug, Clone, Copy)]
     struct ModelRow {
         advance: u64,
@@ -5683,8 +5143,6 @@ mod tests {
         statement: bool,
     }
 
-    /// A generated sequence: its rows, how far past the last row it ends,
-    /// and whether it lies in the image's code.
     #[derive(Debug, Clone)]
     struct ModelSequence {
         rows: Vec<ModelRow>,
@@ -5692,15 +5150,10 @@ mod tests {
         in_code: bool,
     }
 
-    /// Where sequence `index` starts; sequences are far enough apart not to
-    /// touch.
     fn model_sequence_start(index: usize) -> u64 {
         0x1000 * (index as u64 + 1)
     }
 
-    /// Loads the line tables of one unit whose program holds `sequences`.
-    /// Each row's column is its position among all rows plus one, which
-    /// names the row a range takes its location from.
     fn load_model_lines(version: u16, sequences: &[ModelSequence]) -> LineTables {
         let encoding = Encoding {
             format: Format::Dwarf32,
@@ -5774,8 +5227,6 @@ mod tests {
         tables
     }
 
-    /// Each line range as its start, end, the column of the row whose
-    /// location it has, and whether it starts at a statement.
     fn loaded_ranges(tables: &LineTables) -> Vec<(u64, u64, u64, bool)> {
         tables
             .ranges
@@ -5792,13 +5243,6 @@ mod tests {
             .collect()
     }
 
-    /// The line ranges a program of `sequences` describes. At each address,
-    /// only the rows after the last one without a line count. With none,
-    /// the address has no line; a line-0 row means code no source line
-    /// owns, and naming the line an earlier row gave would be a guess.
-    /// Otherwise the range runs to the next address, has the location of
-    /// the last statement row that counts, or of the last row if none is a
-    /// statement, and is a statement boundary if any is one.
     fn model_ranges(sequences: &[ModelSequence]) -> Vec<(u64, u64, u64, bool)> {
         let mut ranges = Vec::new();
         let mut column = 0;
@@ -5910,7 +5354,6 @@ mod tests {
                 proptest::prop_assert!(pair[0].1 <= pair[1].0, "{:x?} overlap", pair);
             }
 
-            // Every row of a sequence in the code, and its end.
             let rows = sequences
                 .iter()
                 .filter(|sequence| sequence.in_code)
@@ -5949,8 +5392,6 @@ mod tests {
                 ],
                 Some(0x120),
             ),
-            // A foreign sequence at the entry address makes attribution
-            // ambiguous.
             (
                 [
                     row(0x100, 10, 0, 0),
@@ -5959,7 +5400,6 @@ mod tests {
                 ],
                 None,
             ),
-            // A foreign sequence within the body supplies no candidate.
             (
                 [
                     row(0x100, 10, 0, 0),
@@ -5969,7 +5409,6 @@ mod tests {
                 Some(0x120),
             ),
         ] {
-            // A line program keeps each sequence's rows together.
             let mut rows = rows;
             rows.sort_by_key(|row| (row.sequence, row.ordinal));
             let tables = crate::image::lines::from_statement_rows(&rows);
@@ -6011,13 +5450,12 @@ mod tests {
                 .collect(),
         };
 
-        // Each expression starts with the CFA on its stack.
         let expressions: [&[u8]; 5] = [
-            &[0x38, 0x1c],       // DW_OP_lit8, DW_OP_minus: saved at CFA - 8
-            &[0x40, 0x22],       // DW_OP_lit16, DW_OP_plus: CFA + 16 is the value
-            &[0x31, 0x22, 0x9f], // DW_OP_lit1, DW_OP_plus, DW_OP_stack_value
-            &[0x71, 0x00],       // DW_OP_breg1 0: saved where register 1 points
-            &[0x9f],             // DW_OP_stack_value: no address at all
+            &[0x38, 0x1c],
+            &[0x40, 0x22],
+            &[0x31, 0x22, 0x9f],
+            &[0x71, 0x00],
+            &[0x9f],
         ];
         let bytes = expressions.concat();
         let section = EhFrame::new(&bytes, RunTimeEndian::Little);
@@ -6110,9 +5548,6 @@ mod tests {
 
     #[test]
     fn unwind_expressions_reject_non_default_address_spaces() {
-        // DW_OP_lit0, DW_OP_lit1, DW_OP_xderef: dereference address 0 in
-        // address space 1. The evaluator must reject the non-default space
-        // instead of silently reading the default inferior address space.
         let bytes = [0x30, 0x31, 0x18];
         let section = EhFrame::new(&bytes, RunTimeEndian::Little);
         let expression = UnwindExpression {
@@ -6140,9 +5575,6 @@ mod tests {
         ));
     }
 
-    /// Checks that looking an address up in a section's index finds the
-    /// entry gimli's walk of the whole section finds, or fails as it does,
-    /// at every entry's edges and at `extra`.
     fn check_fde_index<'data, S: UnwindSection<Reader<'data>>>(
         section: &S,
         bases: &BaseAddresses,
@@ -6158,10 +5590,6 @@ mod tests {
             probes.extend([start.wrapping_sub(1), start, start + 1, end - 1, end]);
         }
 
-        // The walk `fde_for_address` makes for each address, made once:
-        // the first entry in section order that contains an address
-        // answers it, and an entry that does not parse answers every
-        // address no entry before it contains.
         let mut open = probes
             .iter()
             .copied()
@@ -6206,11 +5634,6 @@ mod tests {
         }
     }
 
-    /// Loading on one worker or eight builds a byte-identical image.
-    /// One worker walks the units in order; more walk them apart and add
-    /// what each built in order. Units that reach each other's types, as
-    /// Go's and Zig's do, are walked in order with each other, apart from
-    /// the rest.
     #[test]
     fn every_number_of_workers_loads_the_same_image() {
         for fixture in [
@@ -6249,8 +5672,6 @@ mod tests {
             let load = |jobs| load_with(jobs, LoadLimits::default());
             let serial = load(1);
 
-            // Walks that may run only one unit past those added wait on the
-            // adding, and build the same image.
             let waiting = LoadLimits {
                 walk_ahead: 1,
                 ..LoadLimits::default()
@@ -6274,16 +5695,8 @@ mod tests {
         }
     }
 
-    /// mold and lld describe no PLT stub with call-frame information. A
-    /// stub's caller is where its call left the return address, past the
-    /// words the stub pushed, at its first instruction and past it. The
-    /// `.plt` header has no frame of its own: what is pushed when it runs
-    /// depends on the stub that jumped to it.
     #[test]
     fn plt_stubs_unwind_to_their_callers_without_call_frame_information() {
-        // `printf@plt` is `mov $0, %r11d` (6 bytes), then the jump through
-        // the GOT; `__cxa_finalize@plt`, in `.plt.got`, is the jump alone,
-        // as `memcpy@plt` was where the tokio suite once caught a thread.
         for (fixture, stub, offsets) in [
             ("disassembly-gcc-mold", "printf@plt", &[0, 6][..]),
             ("disassembly-gcc-mold", "__cxa_finalize@plt", &[0]),
@@ -6369,11 +5782,6 @@ mod tests {
         }
     }
 
-    /// Debug information that would build more than its budget is left out,
-    /// with the budget's error naming what asked; whose locals alone would
-    /// take it past its budget loads without them, keeping its functions,
-    /// lines, globals, and the coroutines async bodies run, and says why it
-    /// has no locals.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -6423,9 +5831,6 @@ mod tests {
         assert_eq!(over.image.functions().len(), 0);
         assert_ne!(over.image.symbols().count(), 0, "its symbols describe it");
 
-        // A budget too small for the locals but large enough for the rest.
-        // Those budgets differ by a factor rather than a margin, which
-        // halving the factor between the bounds finds in a few loads.
         let (mut small, mut large) = (64_u64 << 10, 1 << 32);
         let partial = loop {
             assert!(small + 1 < large, "no budget leaves out only the locals");
@@ -6472,8 +5877,6 @@ mod tests {
             full.image.globals().count()
         );
 
-        // A frame says why it shows no locals, rather than seeming to have
-        // none.
         let run = full
             .image
             .functions_named("run")
@@ -6500,8 +5903,6 @@ mod tests {
         );
     }
 
-    /// FDE lookups in real images agree with a walk of the section, and so
-    /// do lookups in a section cut short mid-entry, and in the loaded image.
     #[test]
     fn indexed_fde_lookups_match_a_walk_of_real_sections() {
         let mut indexed = 0;
@@ -6537,7 +5938,6 @@ mod tests {
             );
             indexed += unwind.eh_frame_index.entries.len() + unwind.debug_frame_index.entries.len();
 
-            // The loaded image keeps the same sections and indexes.
             let info = load_bytes(
                 &path,
                 &data,
@@ -6556,7 +5956,6 @@ mod tests {
             );
             assert_eq!(view.eh_frame_index().entries, unwind.eh_frame_index.entries);
 
-            // Cut short mid-entry, a section's walk fails where it ends.
             let probes: Vec<u64> = unwind
                 .function_ranges()
                 .iter()
@@ -6586,25 +5985,14 @@ mod tests {
         );
     }
 
-    /// Functions shaped as GCC builds CPython's `_PyObject_Malloc` and
-    /// 3.15's handlers: after its `leave` or `pop rbp`, a function's rules
-    /// still name the slots that saved rbp and rbx, below the stack pointer
-    /// and so below a sample's copy of the stack. Where the code proves it
-    /// restored them, running straight to its return, the caller has the
-    /// values they hold; where it proves the `pop` restored rbp, until it
-    /// jumps, rbp only; without a proof, they are unknown.
     #[test]
     fn an_epilogue_that_restored_its_callers_registers_unwinds_from_a_samples_copy() {
         use gimli::write::CallFrameInstruction;
 
-        // push rbp; mov rbp, rsp; push rbx; mov rbx, [rbp-8]; leave;
-        // xor edx, edx; xor ecx, ecx; ret
         let mut code = vec![
             0x55, 0x48, 0x89, 0xe5, 0x53, 0x48, 0x8b, 0x5d, 0xf8, 0xc9, 0x31, 0xd2, 0x31, 0xc9,
             0xc3,
         ];
-        // push rbp; mov rbp, rsp; sub rsp, 0x30; add rsp, 0x30; pop rbp;
-        // cmp qword [r8+rax*8], 0x1a01d40; je elsewhere; jmp [r8+rax*8]
         let handler = [
             0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x30, 0x48, 0x83, 0xc4, 0x30, 0x5d, 0x49,
             0x81, 0x3c, 0xc0, 0x40, 0x1d, 0xa0, 0x01, 0x0f, 0x84, 0x00, 0x10, 0x00, 0x00, 0x41,
@@ -6690,7 +6078,6 @@ mod tests {
         );
         assert_eq!(kept(&unwind(0, &mut copy())), [None, None, Some(0x4242)]);
 
-        // Memory that still holds the slots is read, as a live unwind's is.
         let mut live = copy();
         live.values.insert(VirtualAddress::new(stack - 8), 0xbeef);
         live.values.insert(VirtualAddress::new(stack - 16), 0xcafe);
@@ -6699,8 +6086,6 @@ mod tests {
             [Some(0xbeef), Some(0xcafe), Some(0x4242)]
         );
 
-        // Code that writes rbx on its way to the return proves only rbp,
-        // which its `leave` loaded.
         code[13] = 0xdb;
         assert_eq!(
             restored_returns(&section, &bases, &[(start, &code)]),
@@ -6708,11 +6093,8 @@ mod tests {
         );
     }
 
-    /// Where entries overlap, the first in section order wins, and an entry
-    /// that does not parse hides every entry after it, as in a walk.
     #[test]
     fn indexed_fde_lookups_follow_section_order() {
-        // Overlapping entries, in an order the section's walk must respect.
         let mut table = gimli::write::FrameTable::default();
         let cie = table.add_cie(gimli::write::CommonInformationEntry::new(
             Encoding {
@@ -6747,8 +6129,6 @@ mod tests {
         assert_eq!(index.entries.len(), 5);
         check_fde_index(&section, &bases, index.lookup(), &[0x1050, 0x1150, 0x1fff]);
 
-        // An entry whose CIE pointer leads nowhere stops the walk there, so
-        // later entries never match.
         let mut offsets: Vec<usize> = index
             .entries
             .iter()
@@ -6768,11 +6148,6 @@ mod tests {
         );
     }
 
-    /// Loading a large real program, gofmt, does work in proportion to its
-    /// debug information, counted as what the loading thread allocates: a
-    /// regression bound that a loader doing far more than it did fails.
-    /// Loading allocates about 100 bytes, in 0.47 blocks, for each byte of
-    /// gofmt's; the bounds are half again as much.
     #[test]
     fn loading_a_large_program_allocates_in_proportion_to_its_debug_information() {
         use crate::test_memory::memory_cap::{start_totals, stop_totals, totals};
@@ -6795,8 +6170,6 @@ mod tests {
                 })
                 .sum::<u64>();
 
-            // Totals count every thread's blocks, so that work spread
-            // over worker threads counts too.
             start_totals();
             let before = totals();
             let info = load_bytes(
@@ -6816,12 +6189,6 @@ mod tests {
         }
     }
 
-    /// Before Rust 1.93 an async body names the coroutine it runs only by
-    /// rustc's naming. Each body is linked to the coroutine type of its
-    /// future's full name, the first of its copies when several units
-    /// describe it; a coroutine whose layout did not load, a name no type
-    /// answers, and a body already linked by its parameter are left as
-    /// they are.
     #[test]
     fn async_bodies_link_by_name_to_the_one_coroutine_they_run() {
         let function = |id: u32, coroutine: Option<u32>| FunctionInfo {
@@ -6869,7 +6236,6 @@ mod tests {
         let types = vec![
             coroutine_type(0, &["steps", "leaf"], "{async_fn_env#0}"),
             coroutine_type(1, &["steps", "leaf"], "{async_fn_env#0}<u32>"),
-            // One type, described in two units.
             coroutine_type(2, &["steps", "twice"], "{async_fn_env#0}"),
             coroutine_type(3, &["steps", "twice"], "{async_fn_env#0}"),
             coroutine_type(4, &["steps", "broken"], "{async_fn_env#0}"),

@@ -1,11 +1,3 @@
-//! The shared harness for debugger scenarios.
-//!
-//! A [`Scenario`] drives the public request and event API, records every
-//! request, reply, and event in a transcript that it prints on failure,
-//! bounds every wait with a deadline, checks that event revisions never move
-//! backward, and verifies at shutdown that the inferior was reaped. A test
-//! that fails keeps the debugger's [`flight_recordings`].
-
 #![allow(dead_code, reason = "each test crate uses a subset of the harness")]
 
 pub mod flight_recordings;
@@ -42,28 +34,15 @@ use tokio::time::timeout;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-// Event delivery includes cold shared-library metadata loading on the
-// controller. Under the stress gate the first wave of Python tests all load
-// an interpreter's debug information before any has cached it, which takes
-// near thirty seconds.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long a scenario's check of a stop may take, all its requests
-/// together.
 const STOP_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// How long an attach may take. It reads the executable's debug
-/// information, which a launched scenario reads before any deadline, and
-/// which takes several times as long under `just stress` as idle.
 const ATTACH_TIMEOUT: Duration = Duration::from_mins(1);
 
-/// Checks what must hold at every stop of a scenario, through the handle;
-/// an error says what does not, and fails the scenario.
 pub type StopCheck =
     fn(DebuggerHandle) -> Pin<Box<dyn Future<Output = std::result::Result<(), String>> + Send>>;
 
-/// A uniquely named temporary directory, removed with its contents on drop,
-/// even when the test panics.
 pub struct ScratchDir(PathBuf);
 
 impl ScratchDir {
@@ -84,9 +63,6 @@ impl ScratchDir {
     }
 }
 
-/// Copies `from` to `to`, its permissions included, with the first bytes
-/// of its section `section` overwritten by `0xff`, which begins no DWARF
-/// section well formed.
 pub fn corrupt_section(from: &Path, to: &Path, section: &str) {
     use object::{Object as _, ObjectSection as _};
     std::fs::copy(from, to).expect("copy the file");
@@ -115,22 +91,16 @@ impl Drop for ScratchDir {
     }
 }
 
-/// A fixture process for attach tests, killed and reaped when dropped, even
-/// when the test panics.
 pub struct ExternalProcess {
     child: Option<Child>,
     ready: String,
 }
 
 impl ExternalProcess {
-    /// Spawns a fixture and waits for the line it prints, beginning with
-    /// `READY`, once it can be attached to.
     pub fn spawn(path: &Path) -> Self {
         Self::handshake(&mut Command::new(path))
     }
 
-    /// Spawns a shell that execs `program` with `arguments` once a line
-    /// arrives on its standard input, as a terminal's launcher would.
     pub fn exec_gate(program: &Path, arguments: &[&str]) -> Self {
         Self::handshake(
             Command::new("sh")
@@ -140,8 +110,6 @@ impl ExternalProcess {
         )
     }
 
-    /// Spawns `command`, which must exec a fixture that prints its
-    /// readiness line, and waits for that line.
     pub fn spawn_command(command: &mut Command) -> Self {
         Self::handshake(command)
     }
@@ -150,8 +118,6 @@ impl ExternalProcess {
         Self::spawn_within(command, ATTACH_TIMEOUT)
     }
 
-    /// Spawns `command` and waits up to `timeout` for its readiness line,
-    /// failing with the command's name if it ends or stays silent first.
     pub fn spawn_within(command: &mut Command, timeout: Duration) -> Self {
         let mut child = command
             .stdin(Stdio::piped())
@@ -160,14 +126,11 @@ impl ExternalProcess {
             .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"));
         let mut stdout = child.stdout.take().expect("fixture stdout");
 
-        // Owned before reading, so a failed handshake still kills the child.
         let mut process = Self {
             child: Some(child),
             ready: String::new(),
         };
 
-        // A byte at a time, so that what follows the line stays in the pipe
-        // for whoever takes the output next.
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut line = Vec::new();
@@ -209,8 +172,6 @@ impl ExternalProcess {
         process
     }
 
-    /// Spawns a dynamically linked fixture that runs without a readiness
-    /// handshake, and waits until its exec has finished.
     pub fn spawn_running(path: &Path) -> Self {
         let child = Command::new(path)
             .spawn()
@@ -221,11 +182,6 @@ impl ExternalProcess {
             ready: String::new(),
         };
 
-        // `posix_spawn` returns once the exec releases the test's memory,
-        // before the exec finishes, so an attach could find the test's own
-        // executable or stop at the exec. Nothing shows the exec's end but
-        // the new image running: its loader mapping the C library, which the
-        // test's image had mapped too until the fixture's replaced it.
         let image = std::fs::canonicalize(path).expect("canonical fixture path");
         let pid = process.process_id().get();
         let deadline = Instant::now() + EVENT_TIMEOUT;
@@ -245,7 +201,6 @@ impl ExternalProcess {
         process
     }
 
-    /// Returns the readiness line, without its newline.
     pub fn ready_line(&self) -> &str {
         &self.ready
     }
@@ -254,7 +209,6 @@ impl ExternalProcess {
         ProcessId::new(u64::from(self.child.as_ref().expect("live child").id()))
     }
 
-    /// Attaches a debugger to the process within the attach deadline.
     pub async fn attach(&self) -> Debugger {
         timeout(ATTACH_TIMEOUT, Debugger::attach(self.process_id()))
             .await
@@ -262,7 +216,6 @@ impl ExternalProcess {
             .expect("attach debugger")
     }
 
-    /// Writes the byte a READY fixture waits for before continuing.
     pub fn release(&mut self) {
         self.child
             .as_mut()
@@ -274,7 +227,6 @@ impl ExternalProcess {
             .expect("release fixture");
     }
 
-    /// Takes the standard input that releases the process.
     pub fn take_stdin(&mut self) -> ChildStdin {
         self.child
             .as_mut()
@@ -282,8 +234,6 @@ impl ExternalProcess {
             .expect("fixture stdin")
     }
 
-    /// Takes the standard output the process writes past its readiness
-    /// line.
     pub fn take_stdout(&mut self) -> ChildStdout {
         self.child
             .as_mut()
@@ -291,8 +241,6 @@ impl ExternalProcess {
             .expect("fixture stdout")
     }
 
-    /// Gives up a process that a debugger traced to its exit, and so reaped:
-    /// the debugger runs in this process, its parent.
     pub fn reaped(mut self) {
         drop(self.child.take());
     }
@@ -315,14 +263,8 @@ impl Drop for ExternalProcess {
     }
 }
 
-/// How many fixtures a test process keeps read: a test that loops over
-/// builds launches each build again and again before it goes on to the next.
 const LOADED_FIXTURES: usize = 2;
 
-/// The fixture at `path`, read once for each test process however many
-/// scenarios launch it, since reading a large program's debug information
-/// takes much longer than most scenarios. Fixtures are built before tests
-/// run, and nothing changes them while they do.
 fn loaded_fixture(path: &Path) -> Program {
     static LOADED: Mutex<Vec<(PathBuf, Program)>> = Mutex::new(Vec::new());
     assert!(
@@ -357,7 +299,6 @@ pub struct Scenario {
     events: broadcast::Receiver<DebuggerEvent>,
     transcript: Vec<String>,
 
-    /// Every inferior launched, the latest last.
     process_ids: Vec<ProcessId>,
     last_revision: u64,
     last_exit: Option<ExitStatus>,
@@ -369,8 +310,6 @@ impl Scenario {
         Self::with_debug_files(name, fixture, &microscope::DebugFileOptions::default())
     }
 
-    /// A scenario whose modules' separate debug files are found as
-    /// `debug_files` says.
     pub fn with_debug_files(
         name: impl Into<String>,
         fixture: impl AsRef<Path>,
@@ -390,19 +329,16 @@ impl Scenario {
         Self::from_debugger(name, debugger)
     }
 
-    /// Launches the named fixture under a scenario of the same name.
     pub fn launch(fixture: &str) -> Self {
         Self::for_fixture(fixture, Self::fixture(fixture))
     }
 
-    /// A built, immutable fixture whose program is shared across scenarios.
     pub fn for_fixture(name: impl Into<String>, fixture: impl AsRef<Path>) -> Self {
         let debugger = Debugger::for_program(loaded_fixture(fixture.as_ref()))
             .expect("initialize debugger scenario");
         Self::from_debugger(name.into(), debugger)
     }
 
-    /// Opens a post-mortem core dump through the public API.
     pub fn open_core(name: impl Into<String>, options: &CoreDumpOptions) -> Self {
         let name = name.into();
         assert!(
@@ -421,8 +357,6 @@ impl Scenario {
         Self::from_debugger(name, debugger)
     }
 
-    /// Drives a debugger attached to an external process. Shutting the
-    /// scenario down detaches; the process's owner reaps it.
     pub fn attached(name: impl Into<String>, debugger: Debugger) -> Self {
         Self::from_debugger(name.into(), debugger)
     }
@@ -445,7 +379,6 @@ impl Scenario {
         }
     }
 
-    /// Runs `check` after every stop a run-control request ends in.
     #[must_use]
     pub fn checking_stops(mut self, check: StopCheck) -> Self {
         self.stop_check = Some(check);
@@ -534,7 +467,6 @@ impl Scenario {
         self.run_request(true).await
     }
 
-    /// Launches with explicit options and waits for that launch's stop or exit.
     pub async fn run_with_to_stop(&mut self, options: LaunchOptions) -> StopReason {
         let task = self.spawn_request(&format!("run {options:?}"), |handle| async move {
             handle.run_with(options).await
@@ -547,7 +479,6 @@ impl Scenario {
         self.run_request(false).await
     }
 
-    /// Launches the inferior the first time and resumes it afterwards.
     pub async fn resume_or_run(&mut self) -> StopReason {
         self.run_request(self.process_ids.is_empty()).await
     }
@@ -569,8 +500,6 @@ impl Scenario {
         self.wait_for_request(task, "step").await
     }
 
-    /// Runs until the selected thread reaches a location or its selected
-    /// frame returns.
     pub async fn advance_to_stop(&mut self, spec: BreakpointSpec) -> StopReason {
         let task = self.spawn_request(&format!("advance {spec:?}"), move |handle| async move {
             handle.advance(spec).await
@@ -579,8 +508,6 @@ impl Scenario {
         self.wait_for_request(task, "advance").await
     }
 
-    /// Steps the selected thread into the call at `call` on its line,
-    /// running its line's other calls to their returns.
     pub async fn step_into_to_stop(&mut self, call: microscope::VirtualAddress) -> StopReason {
         let task = self.spawn_request(&format!("step into {call}"), move |handle| async move {
             handle.step_into(call).await
@@ -589,8 +516,6 @@ impl Scenario {
         self.wait_for_request(task, "step into").await
     }
 
-    /// Moves the selected thread, without running it, to resume at a
-    /// location, and waits for the stop that publishes.
     pub async fn jump_to_stop(&mut self, spec: BreakpointSpec) -> StopReason {
         let task = self.spawn_request(&format!("jump {spec:?}"), move |handle| async move {
             handle.jump(spec).await
@@ -599,7 +524,6 @@ impl Scenario {
         self.wait_for_request(task, "jump").await
     }
 
-    /// Steps the selected thread while every other thread stays stopped.
     pub async fn step_alone_to_stop(&mut self, kind: StepKind) -> StopReason {
         let task = self.spawn_request(&format!("step {kind:?} alone"), move |handle| async move {
             let snapshot = handle.snapshot().await?;
@@ -637,8 +561,6 @@ impl Scenario {
         self.wait_for_request(task, "step").await
     }
 
-    /// Continues `thread` while every other thread stays stopped, until its
-    /// execution stops or ends.
     pub async fn continue_alone_to_stop(&mut self, thread: ThreadId) -> StopReason {
         let task = self.spawn_request(
             &format!("continue thread {thread} alone"),
@@ -665,8 +587,6 @@ impl Scenario {
         self.wait_for_request(task, "continue").await
     }
 
-    /// Launches through `process`, which execs the scenario's program once
-    /// `release` runs, and waits for that launch's stop or exit.
     pub async fn launch_by_exec_to_stop(
         &mut self,
         process: ProcessId,
@@ -688,9 +608,6 @@ impl Scenario {
         self.wait_for_request(task, "launch by exec").await
     }
 
-    /// Launches and returns once the program runs past its launch, so that
-    /// an immediate shutdown meets an active execution rather than the
-    /// launch itself.
     pub async fn start_running(&mut self) -> JoinHandle<Result<StopReason>> {
         let task = self.run_task(true);
 
@@ -700,8 +617,6 @@ impl Scenario {
         task
     }
 
-    /// Launches with explicit options and returns once the inferior runs,
-    /// with what ends the run.
     pub async fn start_running_with(
         &mut self,
         options: LaunchOptions,
@@ -716,8 +631,6 @@ impl Scenario {
         task
     }
 
-    /// Launches and returns as soon as the inferior exists, which may be
-    /// before its initial exec stop has been processed.
     pub async fn start_launching(&mut self) -> JoinHandle<Result<StopReason>> {
         let task = self.run_task(true);
 
@@ -727,14 +640,11 @@ impl Scenario {
         task
     }
 
-    /// Starts a step of the selected thread or task, and returns once it
-    /// runs, with what ends it.
     pub async fn start_stepping(&mut self, kind: StepKind) -> JoinHandle<Result<StopReason>> {
         let mut task = self.spawn_request(&format!("step {kind:?}"), move |handle| async move {
             handle.step(kind).await
         });
 
-        // A step refused never continues the inferior.
         let refused = tokio::select! {
             _ = self.wait_for(|event| matches!(event, DebuggerEvent::InferiorContinued { .. })) => None,
             ended = &mut task => Some(ended),
@@ -762,7 +672,6 @@ impl Scenario {
             .await
     }
 
-    /// Spawns a launch, or a resume.
     fn run_task(&mut self, launch: bool) -> JoinHandle<Result<StopReason>> {
         let description = if launch { "run" } else { "continue" };
         self.spawn_request(description, move |handle| async move {
@@ -774,7 +683,6 @@ impl Scenario {
         })
     }
 
-    /// Records and spawns a run-control request after the events before it.
     fn spawn_request<F>(
         &mut self,
         description: &str,
@@ -788,8 +696,6 @@ impl Scenario {
         tokio::spawn(request(self.handle.clone()))
     }
 
-    /// Waits for a run-control request's stop or exit. A request that fails
-    /// before running reports its error rather than an event timeout.
     async fn wait_for_request(
         &mut self,
         mut task: JoinHandle<Result<StopReason>>,
@@ -845,14 +751,12 @@ impl Scenario {
         self.drain_events();
     }
 
-    /// Runs one request that must succeed within the request deadline.
     pub async fn operation<T>(&self, name: &str, future: impl Future<Output = Result<T>>) -> T {
         self.attempt(name, future)
             .await
             .unwrap_or_else(|error| self.fail(&format!("{name} failed: {error}")))
     }
 
-    /// Runs one request that may fail, within the request deadline.
     pub async fn attempt<T>(
         &self,
         name: &str,
@@ -951,9 +855,6 @@ impl Scenario {
     }
 }
 
-/// Fails, saying why, unless microscope read the program's instrumentation
-/// to its end. A test whose program exited before microscope read it would
-/// otherwise fail on the zones it lacks, saying nothing of the cause.
 pub fn assert_probes_read(profile: &microscope::profiler::Profile) {
     let unread = profile.probe_counts().unread;
     assert!(
@@ -963,8 +864,6 @@ pub fn assert_probes_read(profile: &microscope::profiler::Profile) {
     );
 }
 
-/// Waits until `condition`, a fact outside the debugger such as `/proc`,
-/// holds, failing with `what` at the event deadline.
 pub fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + EVENT_TIMEOUT;
 
@@ -974,7 +873,6 @@ pub fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
     }
 }
 
-/// Waits until `process` is blocked in system call `number`.
 pub fn wait_for_system_call(process: ProcessId, number: u64) {
     let path = format!("/proc/{process}/syscall");
 
@@ -985,8 +883,6 @@ pub fn wait_for_system_call(process: ProcessId, number: u64) {
     });
 }
 
-/// Sends `signal` to one thread of `process`, which takes it once it next
-/// runs, whatever its siblings do. `kill` would let any thread take it.
 pub fn signal_thread(process: ProcessId, thread: microscope::ThreadId, signal: nix::libc::c_int) {
     let (Ok(process), Ok(thread)) = (
         nix::libc::pid_t::try_from(process.get()),
@@ -1015,7 +911,6 @@ pub fn signal_thread(process: ProcessId, thread: microscope::ThreadId, signal: n
     );
 }
 
-/// Returns the address of a breakpoint stop, failing on any other stop.
 pub fn breakpoint_address(reason: &StopReason) -> VirtualAddress {
     match reason {
         StopReason::Breakpoint {
@@ -1026,7 +921,6 @@ pub fn breakpoint_address(reason: &StopReason) -> VirtualAddress {
     }
 }
 
-/// The 64-bit register with `role` in a snapshot of saved registers.
 pub fn register_u64(registers: &RegisterSnapshot, role: RegisterRole) -> u64 {
     let value = registers
         .registers
@@ -1046,7 +940,6 @@ pub fn register_u64(registers: &RegisterSnapshot, role: RegisterRole) -> u64 {
     )
 }
 
-/// Names each frame by its owning module's file name and its function.
 pub fn frame_modules(
     trace: &Backtrace,
     modules: &LoadedModuleSnapshot,
@@ -1079,7 +972,6 @@ pub fn frame_modules(
         .collect()
 }
 
-/// Where `module`'s `function` is among named frames.
 pub fn position_of(frames: &[(String, Option<String>)], module: &str, function: &str) -> usize {
     frames
         .iter()
@@ -1089,8 +981,6 @@ pub fn position_of(frames: &[(String, Option<String>)], module: &str, function: 
         .unwrap_or_else(|| panic!("no {module}:{function} frame in {frames:#?}"))
 }
 
-/// The one-based line of `path`, relative to the repository, that contains
-/// `marker`.
 pub fn source_line(path: &str, marker: &str) -> u64 {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
         .unwrap_or_else(|error| panic!("read {path}: {error}"));
@@ -1103,8 +993,6 @@ pub fn source_line(path: &str, marker: &str) -> u64 {
     u64::try_from(index + 1).expect("line fits u64")
 }
 
-/// Randomizes the address space of every process this thread starts from
-/// now on, as an ordinary shell does; `nix develop` turns that off.
 pub fn randomize_addresses() {
     let persona = personality::get().expect("read this thread's personality");
     personality::set(persona - Persona::ADDR_NO_RANDOMIZE).expect("randomize addresses");
@@ -1117,7 +1005,6 @@ async fn join_request(task: JoinHandle<Result<StopReason>>) -> Result<StopReason
         .expect("debugger task panicked")
 }
 
-/// Waits for the stop or exit that ends `execution`.
 async fn execution_end(
     events: &mut broadcast::Receiver<DebuggerEvent>,
     execution: ExecutionId,
@@ -1140,10 +1027,8 @@ async fn execution_end(
     }
 }
 
-/// The name `/proc/<pid>/maps` gives the vDSO, which microscope's module takes.
 pub const VDSO: &str = "[vdso]";
 
-/// Where the kernel mapped a process's vDSO, read from `/proc`.
 pub fn vdso_mapping(process: ProcessId) -> std::ops::Range<u64> {
     let maps = std::fs::read_to_string(format!("/proc/{process}/maps")).expect("read maps");
     let (start, end) = maps
@@ -1157,7 +1042,6 @@ pub fn vdso_mapping(process: ProcessId) -> std::ops::Range<u64> {
         ..u64::from_str_radix(end, 16).expect("vDSO end")
 }
 
-/// The process's loaded vDSO module.
 pub fn vdso_module(modules: &LoadedModuleSnapshot) -> microscope::LoadedModuleRecord {
     let mut found = modules
         .modules
@@ -1174,10 +1058,6 @@ pub fn vdso_module(modules: &LoadedModuleSnapshot) -> microscope::LoadedModuleRe
     vdso
 }
 
-/// Checks each of the `threads` threads of a `tls-modules` fixture stopped in
-/// `tls_stop`: every TLS variable holds the value its thread stored, at the
-/// address the thread recorded for it in `tls_addresses`. Statically linked
-/// builds have no `plugin`.
 pub async fn assert_tls_modules(
     scenario: &mut Scenario,
     fixture: &str,
@@ -1202,7 +1082,6 @@ pub async fn assert_tls_modules(
             .operation("select thread", scenario.handle().select_context(thread.id))
             .await;
 
-        // Each thread adds its index to every variable's initial value.
         let index = evaluate_value(scenario, "main_tls").await.signed() - 100;
 
         for &(name, field, initial) in &variables {
@@ -1231,7 +1110,6 @@ pub async fn assert_tls_modules(
     assert_eq!(indices, (0..threads).collect::<Vec<_>>(), "{fixture}");
 }
 
-/// The value of an expression in the selected frame.
 pub async fn evaluate_value(scenario: &Scenario, text: &str) -> EvaluatedValue {
     let expression =
         microscope::Expression::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
@@ -1250,7 +1128,6 @@ pub async fn evaluate_value(scenario: &Scenario, text: &str) -> EvaluatedValue {
     }
 }
 
-/// An available value and the expression it came from.
 pub struct EvaluatedValue(String, microscope::VariableValue);
 
 impl EvaluatedValue {

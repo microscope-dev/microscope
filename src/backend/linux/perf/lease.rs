@@ -1,43 +1,14 @@
-//! Ring memory as a lease, for test builds only.
-//!
-//! The kernel lets a user lock `perf_event_mlock_kb` for each CPU in rings,
-//! and each process `RLIMIT_MEMLOCK` past that. Tests that record at once
-//! share it: past it, rings shrink, and below the fewest pages a recording
-//! needs, opening fails. Built with the `ring-lease` feature, as `just`
-//! builds tests, every recording first leases what its rings lock from a
-//! pool that size, held in lock files that every test process shares. A
-//! lease that is not free makes the rings smaller, as the kernel's refusal
-//! does; at the fewest pages, opening waits for one, unless the process
-//! holds a lease of other rings it opens these beside.
-//!
-//! The locks are POSIX record locks, which belong to a process and which
-//! a child does not inherit. A launch's child waits at its gate before it
-//! executes, with a copy of every descriptor open when it forked, until
-//! its parent has leased its rings: a lock the child could keep would make
-//! two launches at once each wait for the other's child.
-//!
-//! Without the feature, every lease is granted and holds nothing.
-
-/// How to take a lease that is not free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wanted {
-    /// Give up at once, for rings that can still be smaller.
     Try,
 
-    /// Wait for one, for the fewest pages the rings can have, and go on
-    /// without one if it takes too long.
     Wait,
 
-    /// Take one if it is free and otherwise go on without one, for the
-    /// fewest pages of rings a process opens beside rings it holds a lease
-    /// of: two that each held one and waited for another would wait out
-    /// the deadline together.
     Beside,
 }
 
 #[cfg(not(feature = "ring-lease"))]
 mod imp {
-    /// A lease of nothing.
     #[derive(Debug)]
     pub struct Lease;
 
@@ -62,44 +33,28 @@ mod imp {
 
     use super::Wanted;
 
-    /// The pool is cut in this many slots, so that a lease of any size
-    /// rounds up to whole slots and leases never sum past the pool.
     const SLOTS: usize = 256;
 
-    /// How long opening waits at the fewest pages before it goes on without
-    /// a lease, so that a process holding one while it waits for another
-    /// cannot wait for good.
     const MOST_WAIT: Duration = Duration::from_secs(20);
 
     const RETRY: Duration = Duration::from_millis(20);
 
-    /// Slots of ring memory, each a lock on its slot file, held until
-    /// dropped: none without a pool.
     #[derive(Debug)]
     pub struct Lease {
         files: Option<Arc<Files>>,
         slots: Vec<usize>,
     }
 
-    /// A pool of `unit` bytes a slot.
     #[derive(Debug)]
     pub struct Pool {
         files: Arc<Files>,
         unit: usize,
     }
 
-    /// The pool's lock files, open while it is. Closing any descriptor of
-    /// a file lets go of every lock this process holds on it, so a process
-    /// opens each once, and only one pool a directory.
     #[derive(Debug)]
     struct Files {
-        /// Locked while a process picks its slots, so that two never each
-        /// hold part of what both need.
         taking: File,
 
-        /// Each slot's file, and whether this process holds it. Its locks
-        /// keep other processes out, but not its own threads, which keep
-        /// apart here.
         slots: Mutex<Vec<(File, bool)>>,
     }
 
@@ -127,16 +82,12 @@ mod imp {
         };
         let lease = pool.take(bytes, wanted, MOST_WAIT);
         if lease.is_none() && wanted != Wanted::Try {
-            // The kernel decides.
             record!("perf: no ring lease of {bytes} bytes ({wanted:?})");
             return Some(nothing());
         }
         lease
     }
 
-    /// What this user may lock in rings: `perf_event_mlock_kb` for each
-    /// online CPU, then this process's `RLIMIT_MEMLOCK`. Every test process
-    /// has the same.
     fn user_ring_bytes() -> Option<usize> {
         let kib: usize = std::fs::read_to_string("/proc/sys/kernel/perf_event_mlock_kb")
             .ok()?
@@ -155,7 +106,6 @@ mod imp {
     }
 
     impl Pool {
-        /// The pool of `bytes` whose lock files are in `directory`.
         pub fn new(directory: &Path, bytes: usize) -> std::io::Result<Self> {
             std::fs::create_dir_all(directory)?;
             let slots = (0..SLOTS)
@@ -175,9 +125,6 @@ mod imp {
             })
         }
 
-        /// A lease of `bytes`, all of it or none: while another holds what
-        /// it needs, once enough is let go if `wanted` is [`Wanted::Wait`],
-        /// or none after `most`, and otherwise none.
         pub fn take(&self, bytes: usize, wanted: Wanted, most: Duration) -> Option<Lease> {
             let needed = bytes.div_ceil(self.unit);
             if needed > SLOTS && wanted != Wanted::Wait {
@@ -200,8 +147,6 @@ mod imp {
             }
         }
 
-        /// `needed` free slots, taken together under the pool's own lock
-        /// so that two takers never each hold part of what both need.
         fn try_take(&self, needed: usize) -> std::io::Result<Option<Vec<usize>>> {
             let files = &*self.files;
             let mut slots = files.slots.lock().unwrap_or_else(PoisonError::into_inner);
@@ -240,7 +185,6 @@ mod imp {
         }
     }
 
-    /// Unlocks each of `taken` among `slots`.
     fn let_go(slots: &mut [(File, bool)], taken: &[usize]) {
         for &slot in taken {
             if let Some((file, held)) = slots.get_mut(slot) {
@@ -250,8 +194,6 @@ mod imp {
         }
     }
 
-    /// Locks, or with `F_UNLCK` unlocks, the whole of `file` for this
-    /// process, waiting for another to let go if `wait`.
     fn lock(file: &File, kind: libc::c_int, wait: bool) -> nix::Result<()> {
         let whole = libc::flock {
             l_type: i16::try_from(kind).unwrap_or(i16::MAX),
@@ -273,7 +215,6 @@ mod imp {
     mod tests {
         use super::*;
 
-        /// A pool whose lock files are removed with it.
         struct Scratch {
             pool: Pool,
             directory: std::path::PathBuf,
@@ -293,7 +234,6 @@ mod imp {
             }
         }
 
-        /// A scratch pool of `bytes` named `name`.
         fn scratch(name: &str, bytes: usize) -> Scratch {
             let directory = std::env::temp_dir().join(format!(
                 "microscope-ring-lease-{name}-{}",
@@ -304,15 +244,12 @@ mod imp {
             Scratch { pool, directory }
         }
 
-        /// A scratch pool of 256 bytes, a byte a slot.
         fn pool(name: &str) -> Scratch {
             scratch(name, SLOTS)
         }
 
         const NONE: Duration = Duration::ZERO;
 
-        /// Leases are granted while what they hold fits the pool, and one
-        /// that does not fit is refused until another lets go.
         #[test]
         fn leases_never_hold_more_than_the_pool() {
             let pool = pool("fits");
@@ -331,9 +268,6 @@ mod imp {
             assert!(pool.take(257, Wanted::Try, NONE).is_none(), "more than all");
         }
 
-        /// A lease that waits is granted once enough is let go, by another
-        /// thread here as by another test process, and gives up at its
-        /// deadline.
         #[test]
         fn a_lease_waits_for_another_to_let_go_or_gives_up() {
             let pool = pool("waits");
@@ -348,9 +282,6 @@ mod imp {
             std::thread::scope(|scope| {
                 scope.spawn(move || {
                     waiting.recv().expect("the taker waits");
-                    // A few retries for the taker to wait through, so that
-                    // it is granted on a retry. Nothing depends on how long
-                    // the wait lasts.
                     std::thread::sleep(RETRY * 3);
                     drop(held);
                 });
@@ -360,8 +291,6 @@ mod imp {
             });
         }
 
-        /// A lease beside another is refused at once while the pool is
-        /// full, where waiting would last as long as it is let wait.
         #[test]
         fn a_lease_beside_another_does_not_wait() {
             let pool = pool("beside");
@@ -375,13 +304,8 @@ mod imp {
             assert!(pool.take(1, Wanted::Beside, most).is_some(), "free");
         }
 
-        /// The pool a run of this test executable by
-        /// [`another_process_is_refused_a_lease_until_it_is_let_go`] takes
-        /// its lease from.
         const OTHER_POOL: &str = "MICROSCOPE_TEST_LEASE_POOL";
 
-        /// Another test process is refused what this one holds, and given
-        /// it once this one lets go.
         #[test]
         fn another_process_is_refused_a_lease_until_it_is_let_go() {
             if let Some(directory) = std::env::var_os(OTHER_POOL) {
@@ -415,11 +339,6 @@ mod imp {
             assert!(other(), "another process was refused a free slot");
         }
 
-        /// A lease let go is free again while a child forked as it was held
-        /// still waits at its gate. A launch forks with every descriptor
-        /// this process has open, and its child execs only once its parent
-        /// has taken a lease of its own: if the child kept another's lease,
-        /// two launches at once would each wait for the other's child.
         #[test]
         fn a_lease_let_go_is_free_while_a_child_forked_holding_it_waits() {
             use std::io::Read as _;
@@ -446,7 +365,6 @@ mod imp {
             );
 
             let (again, status) = std::thread::scope(|scope| {
-                // Spawning returns once the child executes.
                 let child = scope.spawn(move || command.spawn()?.wait());
                 let mut pid = [0_u8; 4];
                 std::fs::File::from(pid_read)
@@ -467,7 +385,6 @@ mod imp {
             );
         }
 
-        /// A lease is a byte count rounded up to whole slots of the pool.
         #[test]
         fn a_lease_rounds_up_to_whole_slots() {
             let pool = scratch("round", 1000 * SLOTS);

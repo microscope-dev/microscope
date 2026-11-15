@@ -1,7 +1,3 @@
-// One pane's body, given what it needs: when a need is missing it says why
-// instead, and when the body throws, it shows the error and the rest of the
-// workbench keeps running.
-
 import { Component, memo, type ReactNode } from "react";
 
 import { classOf } from "./classes";

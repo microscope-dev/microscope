@@ -21,7 +21,6 @@ apply(savedTheme());
 const session = createSession(
   { connect: browserConnect, authorized: browserAuthorized },
   (event) => {
-    // A name chosen in an earlier visit is this browser's from now on.
     if (event.type === "message" && event.message.type === "hello") {
       const name = read("microscope-name", "", isString);
       if (name) {
@@ -32,7 +31,7 @@ const session = createSession(
 );
 forgetting(session.store);
 leaveWhileCached(session.connection, window);
-// The join page connects once it has traded its token for a cookie.
+
 if (withinBase(window.location.pathname) !== "/join") {
   session.connection.start();
 }

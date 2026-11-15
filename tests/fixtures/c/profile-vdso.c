@@ -1,8 +1,8 @@
-// Time a profiler test samples in the vDSO, the kernel's shared object that
-// no file holds: main reads the clock in a loop through it for the number
-// of reads its first argument names, or, given "random" as its second,
-// draws that many pages of random bytes, which the vDSO's hand-written
-// ChaCha20 code makes without call-frame information.
+
+
+
+
+
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <string.h>

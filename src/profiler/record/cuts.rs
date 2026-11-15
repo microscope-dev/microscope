@@ -1,14 +1,8 @@
-//! How a recording is cut: kept whole, to a rolling window, or into
-//! segments. A cut falls only where the events' counts were read and every
-//! record before them was processed, so a capture's counts and its records
-//! cover the same span (dev/profiling.md).
-
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::backend::perf;
 use crate::profiler::Cuts;
 
-/// A moment where counts read were counted, and the accounts then.
 pub(super) struct Mark {
     pub(super) time: u64,
     pub(super) accounts: BTreeMap<u32, u64>,
@@ -19,32 +13,23 @@ pub(super) enum Cut {
     Whole,
 
     /// Only the span since the newest mark at least `length` before the
-    /// newest is kept.
     Window { length: u64, observed: Observed },
 
-    /// Only the span since the last segment ended, where `start` marks it.
     Segments {
         start: Option<Mark>,
         observed: Observed,
     },
 }
 
-/// The counts read as a cut recording goes on, each waiting until every
-/// record before it is processed, and the marks of those counted since,
-/// oldest first. A window keeps the marks it may yet start at, and
-/// segments only the newest.
 #[derive(Default)]
 pub(super) struct Observed {
     waiting: VecDeque<(u64, perf::Counts)>,
     marks: VecDeque<Mark>,
 }
 
-/// Where a capture ends.
 pub(super) enum End<'a> {
-    /// Where its records do: a whole recording.
     Records,
 
-    /// Nowhere yet: no counts read have been counted.
     Unobserved,
 
     At(&'a Mark),
@@ -72,8 +57,6 @@ impl Cut {
         }
     }
 
-    /// Takes counts read at `time`, giving back those to count now: a
-    /// whole recording's. A cut one's wait for the records before them.
     pub(super) fn observe(&mut self, time: u64, counts: perf::Counts) -> Option<perf::Counts> {
         let Some(observed) = self.observed_mut() else {
             return Some(counts);
@@ -92,16 +75,12 @@ impl Cut {
         None
     }
 
-    /// The oldest counts waiting that were read by `time`, every record
-    /// before which is now processed, for the caller to count and mark.
     pub(super) fn ripe(&mut self, time: u64) -> Option<(u64, perf::Counts)> {
         self.observed_mut()?
             .waiting
             .pop_front_if(|(at, _)| *at <= time)
     }
 
-    /// Marks `time`, where ripe counts were counted into `accounts`, and
-    /// gives back where a window now starts: nothing before it is kept.
     pub(super) fn mark(&mut self, time: u64, accounts: &BTreeMap<u32, u64>) -> Option<u64> {
         debug_assert!(
             !matches!(self, Self::Whole),
@@ -135,8 +114,6 @@ impl Cut {
         }
     }
 
-    /// Whether counts read at `at` have been counted, with every record
-    /// before them: at once in a whole recording.
     pub(super) fn observed(&self, at: u64) -> bool {
         match self.end() {
             End::Records => true,
@@ -154,7 +131,6 @@ impl Cut {
         }
     }
 
-    /// Where what is kept starts, if not where its records do.
     pub(super) fn start(&self) -> Option<&Mark> {
         match self {
             Self::Whole => None,
@@ -170,11 +146,6 @@ impl Cut {
 
 #[cfg(test)]
 mod tests {
-    //! What each cut mode keeps after each event: a whole recording, a
-    //! rolling window, and segments, each in the phases a recording passes
-    //! through. Every phase is reached and every event made through the
-    //! processor's records and observations, so the table holds however
-    //! the processor keeps its mode.
 
     use std::time::Duration;
 
@@ -193,15 +164,11 @@ mod tests {
         Segments,
     }
 
-    /// The window's length.
     const WINDOW: u64 = 30;
 
-    /// The thread every sample is of, and the one that leaves its CPU.
     const SAMPLED: u32 = 8;
     const SLEEPER: u32 = 9;
 
-    /// A recording's processor in `mode`, its counts told as `drive` tells
-    /// them, and its captures taken as a save takes them.
     struct Recording {
         mode: Mode,
         processor: Processor,
@@ -219,7 +186,6 @@ mod tests {
             Self { mode, processor }
         }
 
-        /// The events' counts read at `time`: one counted per nanosecond.
         fn observe(&mut self, time: u64) {
             let counts = perf::Counts {
                 counted: time,
@@ -228,7 +194,6 @@ mod tests {
             self.processor.observe(time, counts);
         }
 
-        /// Whether a save asked for at `at` can be taken.
         fn observed(&self, at: u64) -> bool {
             self.processor.observed(at)
         }
@@ -237,8 +202,6 @@ mod tests {
             self.processor.save()
         }
 
-        /// Ends the recording at `time` as `drive` does once the events
-        /// are disabled.
         fn end(mut self, time: u64) -> Capture {
             self.observe(time);
             if self.mode != Mode::Whole {
@@ -263,13 +226,11 @@ mod tests {
         record
     }
 
-    /// A sample of the sampled thread with no chain, registers, or stack.
     fn sample(time: u64) -> Vec<u8> {
         let thread = 7 | (u64::from(SAMPLED) << 32);
         record(9, 0, &[1, thread, time, 3, 1_000, 0, 0, 0])
     }
 
-    /// The sleeper leaving its CPU, or coming back.
     fn switch(time: u64, out: bool) -> Vec<u8> {
         let thread = 7 | (u64::from(SLEEPER) << 32);
         record(14, if out { 1 << 13 } else { 0 }, &[thread, time, 1, 3])
@@ -296,8 +257,6 @@ mod tests {
         "save then end",
     ];
 
-    /// A recording in phase `name`. Each observes its counts before any
-    /// record, as `drive` does, and the sleeper leaves its CPU at 22.
     fn phase(name: &str) -> Recording {
         let mode = match name.split(' ').next() {
             Some("whole") => Mode::Whole,
@@ -310,8 +269,7 @@ mod tests {
 
         match name {
             "whole" => recording.ingest(&early, 35),
-            // Every record is held back behind the watermark, and so is
-            // the observation after them.
+
             "window waiting" | "segments waiting" => recording.ingest(&early, 4),
             "window shorter than its length" | "segments before a cut" => {
                 recording.observe(25);
@@ -383,13 +341,10 @@ mod tests {
         )
     }
 
-    /// A save's capture, or `none` where a segment would span no time.
     fn saved(capture: Option<&Capture>) -> String {
         capture.map_or_else(|| "none".to_owned(), describe)
     }
 
-    /// One event in one phase: the captures it makes, and what a save
-    /// asked for knew of its counts on the way.
     fn outcome(name: &str, event: &str) -> String {
         let mut recording = phase(name);
         let later = [sample(60), switch(62, false), sample(70)];
@@ -429,18 +384,14 @@ mod tests {
 
     #[derive(Clone, Debug)]
     enum Step {
-        /// A sample, or the sleeper leaving its CPU or coming back, this
-        /// long after the last.
         Record { after: u64, kind: u8 },
-        /// The counts read this long after the last record or reading.
+
         Observe { after: u64 },
-        /// A drain: every record so far arrives, and those this long
-        /// before now are all there are.
+
         Drain { lag: u64 },
-        /// A save, if anything was observed yet, as `drive` asks for one.
+
         Save,
-        /// A sample this long before the last record or reading, which is
-        /// late if one after it was processed first.
+
         Late { before: u64 },
     }
 
@@ -454,24 +405,19 @@ mod tests {
         ]
     }
 
-    /// What the oracle knows of a run: every record and observation, and
-    /// how far records are known to have arrived when each save was taken.
     #[derive(Default)]
     struct Run {
         samples: Vec<u64>,
         observations: Vec<u64>,
-        /// Each time the sleeper left its CPU and came back, if it did.
+
         off: Vec<(u64, Option<u64>)>,
         saves: Vec<(u64, Capture)>,
-        /// Each save that made no segment, and where the one before ended.
+
         skipped: Vec<(u64, Option<i64>)>,
-        /// The samples processed after a later record was.
+
         late: Vec<u64>,
     }
 
-    /// Records waiting to be processed, by time and whether each is a
-    /// sample, the latest time processed, and the latest watermark, by
-    /// which every record before it had come.
     #[derive(Default)]
     struct Unprocessed {
         records: Vec<(u64, bool)>,
@@ -480,9 +426,6 @@ mod tests {
     }
 
     impl Unprocessed {
-        /// Processes, in time order, every record at or before `watermark`,
-        /// or every record, noting each sample older than one processed or
-        /// than an earlier watermark.
         fn process(&mut self, watermark: Option<u64>, late: &mut Vec<u64>) {
             self.records.sort_unstable();
             let ready = self
@@ -498,9 +441,6 @@ mod tests {
         }
     }
 
-    /// Runs `steps` in `mode`, ending at the last time plus one, and
-    /// returns what the oracle needs with the captures, the last being
-    /// the recording's own.
     fn run(mode: Mode, steps: &[Step]) -> (Run, Capture) {
         let mut recording = Recording::new(mode);
         let mut run = Run::default();
@@ -541,7 +481,6 @@ mod tests {
                     run.observations.push(now);
                 }
                 Step::Drain { lag } => {
-                    // A record is later than every watermark before it.
                     watermark = now.saturating_sub(lag).max(watermark);
                     recording.ingest(&std::mem::take(&mut pending), watermark);
                     unprocessed.process(Some(watermark), &mut run.late);
@@ -573,7 +512,6 @@ mod tests {
         (run, recording.end(end))
     }
 
-    /// The latest observation at or before `time`.
     fn observed_by(run: &Run, time: u64) -> Option<u64> {
         run.observations
             .iter()
@@ -615,8 +553,8 @@ mod tests {
                 prop_assert_eq!(capture.span().1, next.span().0);
             }
 
-            // A segment spans time, and a save makes none only where
-            // nothing was observed since the last segment ended.
+
+
             for (watermark, capture) in &run.saves {
                 let (from, to) = capture.span();
                 prop_assert!(from < to, "segment {:?} saved by {}", (from, to), watermark);
@@ -628,9 +566,9 @@ mod tests {
                 }
             }
 
-            // Every sample is within its segment's span. One on time is in
-            // the segment it falls in; one that came late is in at most one,
-            // or dropped, and counted.
+
+
+
             let mut on_time = run.samples.clone();
             on_time.sort_unstable();
             for time in &run.late {
@@ -711,7 +649,7 @@ mod tests {
                     let at = on_time.iter().position(|kept| kept == time).expect("recorded");
                     on_time.remove(at);
                 }
-                // A late sample in the window may be kept or dropped.
+
                 let mut kept = sample_times(capture);
                 for time in &on_time {
                     let at = kept.iter().position(|kept| kept == time);
@@ -723,7 +661,7 @@ mod tests {
                 }
                 prop_assert_eq!(capture.account(AccountKind::Counted as u32), end - start);
 
-                // The sleeper's time off its CPU, cut to the window.
+
                 let off: u64 = capture.off_cpu.iter().map(|interval| interval.duration.get()).sum();
                 let expected: u64 = run
                     .off
@@ -738,10 +676,6 @@ mod tests {
         }
     }
 
-    /// Each capture a recording makes, in each phase of each cut mode,
-    /// spans, counts, and keeps what it always has: where it starts and
-    /// ends, what the events counted in it, its samples, the time a thread
-    /// spent off its CPU, and the records that came too late.
     #[test]
     fn each_cut_mode_keeps_the_same_span_counts_and_records_after_each_event() {
         let actual: Vec<String> = PHASES

@@ -1,11 +1,8 @@
-//! Splits an expression's text into tokens.
-
 use super::Span;
 use super::ast::Suffix;
 use crate::eval::error::ExpressionError;
 use crate::eval::number::{Float, MAX_WIDTH};
 
-/// A token and the text it was read from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
@@ -14,10 +11,8 @@ pub struct Token {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
-    /// A plain identifier, including keywords.
     Ident(String),
 
-    /// A backticked name, which is never a keyword.
     Quoted(String),
 
     /// `$name`, without the `$`.
@@ -33,8 +28,6 @@ pub enum TokenKind {
     End,
 }
 
-/// Punctuation, longest spellings first so that matching takes the
-/// longest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Punct {
     ShlEq,
@@ -79,7 +72,6 @@ pub enum Punct {
     OpenBracket,
     CloseBracket,
 
-    /// Only `offsetof(TYPE, member)` in a view's expressions takes one.
     Comma,
 }
 
@@ -177,10 +169,8 @@ impl Punct {
     }
 }
 
-/// The longest expression text accepted, in bytes.
 pub const MAX_TEXT_BYTES: usize = 4096;
 
-/// Splits `text` into tokens, ending with [`TokenKind::End`].
 pub fn lex(text: &str) -> Result<Vec<Token>, ExpressionError> {
     if text.len() > MAX_TEXT_BYTES {
         return Err(ExpressionError::new(
@@ -212,8 +202,6 @@ pub fn lex(text: &str) -> Result<Vec<Token>, ExpressionError> {
         );
         let kind = lexer.token(after_dot)?;
 
-        // Every token consumes text, so a mistake here cannot loop while
-        // the token list grows.
         assert!(lexer.cursor > start, "the lexer made no progress");
         tokens.push(Token {
             kind,
@@ -254,7 +242,6 @@ impl Lexer<'_> {
         self.cursor += rest.len() - trimmed.len();
     }
 
-    /// Consumes bytes while `accept` holds, returning them.
     fn take_while(&mut self, accept: impl Fn(u8) -> bool) -> &str {
         let start = self.cursor;
         let length = self.rest().bytes().take_while(|&byte| accept(byte)).count();
@@ -337,7 +324,6 @@ impl Lexer<'_> {
         Ok(TokenKind::Quoted(name))
     }
 
-    /// A tuple field's index after `.`, such as the `0` and `1` of `t.0.1`.
     fn field_index(&mut self, start: usize) -> Result<TokenKind, ExpressionError> {
         let digits = self.take_while(|byte| byte.is_ascii_digit());
         let value = digits.parse::<u32>();
@@ -520,7 +506,7 @@ impl Lexer<'_> {
                 start,
                 "a character literal holds one character and a closing `'`",
             );
-            // Text in single quotes, as Python and JavaScript write it.
+
             let quoted = self
                 .text
                 .get(start + 1..)
@@ -569,7 +555,6 @@ impl Lexer<'_> {
         }
     }
 
-    /// Reads the escape at the cursor.
     fn escape(&mut self, start: usize) -> Result<Escaped, ExpressionError> {
         self.cursor += 1;
         let Some(byte) = self.peek() else {
@@ -622,14 +607,11 @@ impl Lexer<'_> {
     }
 }
 
-/// What an escape in a literal denotes.
 enum Escaped {
-    /// `\xHH`, one byte.
     Byte(u8),
     Char(char),
 }
 
-/// `iN` or `uN` for N from 1 to 128.
 fn int_suffix(text: &str) -> Option<Suffix> {
     let (signed, digits) = match text.as_bytes().first()? {
         b'i' => (true, &text[1..]),

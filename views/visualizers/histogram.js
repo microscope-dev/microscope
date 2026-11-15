@@ -1,17 +1,4 @@
 // @ts-check
-// The built-in histogram: how many samples fall in each range.
-//
-//   values   raw samples, or
-//   counts   counts already binned, with
-//   edges    the bins' edges, one more than the counts
-//   bins     optional: how many bins to cut raw samples into
-//   log      optional; true draws counts in powers of ten
-//
-// Raw samples get Freedman–Diaconis bins unless `bins` says otherwise,
-// over the samples' whole range, and markers at p50, p90, and p99, found
-// by selection rather than sorting (linear interpolation, type 7). Each
-// bin's title gives its range, count, and the share of samples up to it.
-// An outline shows the stop before's counts in the same bins.
 
 const HEIGHT = 260;
 const LEFT = 56;
@@ -224,8 +211,7 @@ microscope.draw((input, { previous, width }) => {
       }),
     );
   }
-  // Each quantile's line, and its label above the plot; labels that would
-  // overlap stack instead.
+
   let lastX = Number.NEGATIVE_INFINITY;
   let row = 0;
   for (const [name, at] of marks) {
@@ -266,8 +252,6 @@ microscope.draw((input, { previous, width }) => {
   return microscope.picture({ width: W, height: HEIGHT, shapes, caption: caption.join(" · ") });
 });
 
-/** The p-quantile of `values`, interpolating linearly between the order
- * statistics around (n - 1)p, as R's type 7 does; it reorders `values`. */
 function quantile(values, p) {
   const n = values.length;
   if (n === 0) return Number.NaN;
@@ -275,14 +259,12 @@ function quantile(values, p) {
   const lo = Math.floor(h);
   const below = select(values, lo);
   if (lo + 1 >= n) return below;
-  // After selecting lo, everything past it is at least as large.
+
   let above = Number.POSITIVE_INFINITY;
   for (let i = lo + 1; i < n; i++) if (values[i] < above) above = values[i];
   return below + (h - lo) * (above - below);
 }
 
-/** The k-th smallest of `values` (Hoare's selection), which it leaves at
- * index k with smaller values before it and larger after. */
 function select(values, k) {
   let left = 0;
   let right = values.length - 1;
@@ -308,7 +290,6 @@ function select(values, k) {
   return values[k];
 }
 
-/** A quantile of binned counts, interpolating within its bin. */
 function binnedQuantile(counts, edges, p, n) {
   if (n <= 0) return Number.NaN;
   const target = p * n;
@@ -356,8 +337,6 @@ function exact(v) {
   return Object.is(v, -0) ? "-0" : String(v);
 }
 
-/** A caption's number: integers whole, floats to six significant digits;
- * titles and the Table have every digit. */
 function brief(text) {
   return /^-?\d*\.\d{7,}|e/iu.test(text) && Number.isFinite(Number(text))
     ? String(Number(Number(text).toPrecision(6)))

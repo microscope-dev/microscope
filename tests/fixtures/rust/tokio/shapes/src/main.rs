@@ -1,10 +1,10 @@
-//! The shapes a future a task awaits takes: an async function, an async
-//! block, a boxed trait object, a generic async function, a trait's and a
-//! type's async methods, and tokio's own future, a channel's receive. A test steps into
-//! each await from its line, marked `INTO`, to the line the future's code
-//! begins on, marked `STEP`. Each await is alone on its line, so that
-//! nothing else there is a call to step into. The channel receives twice,
-//! for a test that steps into tokio once and then turns that off.
+
+
+
+
+
+
+
 
 use std::future::Future;
 use std::hint::black_box;

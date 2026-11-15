@@ -11,8 +11,8 @@ static void *worker(void *unused) {
     return NULL;
 }
 
-// The main thread exits alone while the worker runs on. Linux reports the
-// main thread's exit only once every other thread is gone.
+
+
 int main(void) {
     pthread_t thread;
 

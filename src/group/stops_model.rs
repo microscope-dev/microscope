@@ -1,9 +1,3 @@
-//! A model of the group's stop rule over events from up to four members
-//! and a client's commands. The reference follows the rules, to say
-//! which events can happen next: only a running member stops, and only a
-//! member being paused fails to pause. The test drives [`Stops`] as the
-//! driver does, and checks what it reports against bookkeeping of its own.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -25,14 +19,11 @@ enum Command {
     Continue,
     Resume,
 
-    /// A continue or resume from a stop that is no longer current, which
-    /// the driver refuses before it asks the rule anything.
     Stale,
 }
 
 #[derive(Debug, Clone)]
 enum Event {
-    /// A running member stopped, for a pause or a breakpoint of its own.
     Stopped {
         member: MemberNumber,
         pause: bool,
@@ -41,24 +32,17 @@ enum Event {
     /// A member being paused will not stop for it.
     PauseFailed(MemberNumber),
 
-    /// A member's process exited or left the group.
     Gone(MemberNumber),
 
-    /// A client continued a stopped member through its own session.
     ContinueMember(MemberNumber),
     PauseAll,
     Client(Command),
 }
 
-/// Where the group is, as the rules say.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Phase {
     Running,
 
-    /// Waiting for `awaited`; `first` is the member whose stop the stop
-    /// reports, `stopped` the members that stopped for it, and
-    /// `was_stopped` whether the group was stopped before it began. A
-    /// member that moves on is no longer either.
     Stopping {
         awaited: BTreeSet<MemberNumber>,
         first: Option<MemberNumber>,
@@ -68,15 +52,12 @@ enum Phase {
     Stopped,
 }
 
-/// The group as the rules say it should be.
 #[derive(Debug, Clone)]
 struct Reference {
     scope: StopScope,
     members: Vec<Member>,
     phase: Phase,
 
-    /// The members whose stops wait to be reported at continues, in
-    /// order. A member that moves on or goes leaves its stop behind.
     pending: Vec<MemberNumber>,
     deferred: Vec<Command>,
 }
@@ -101,9 +82,6 @@ impl Reference {
         }
     }
 
-    /// Notes that `number` no longer holds up a stop under way, which
-    /// completes once nobody does. A stop no member stopped for leaves
-    /// the group as it was.
     fn settled(&mut self, number: MemberNumber) {
         let Phase::Stopping {
             awaited,
@@ -127,8 +105,6 @@ impl Reference {
         }
     }
 
-    /// A stop pauses every running member but the one stopping. A pause
-    /// asked while a stop is under way joins it.
     fn begin_stop(&mut self, first: Option<MemberNumber>) {
         let running = self
             .numbered(Member::Running)
@@ -148,8 +124,6 @@ impl Reference {
         }
     }
 
-    /// A continue reports a pending stop, or resumes the stopped members;
-    /// a resume forgets the pending stops first.
     fn serve(&mut self, command: Command) {
         if command == Command::Stale {
             return;
@@ -276,7 +250,6 @@ impl ReferenceStateMachine for Model {
                     stopped.insert(member);
                 }
 
-                // A member's stop is its own, but settles a pause of all.
                 if !group {
                     state.settled(member);
                     return state;
@@ -303,9 +276,6 @@ impl ReferenceStateMachine for Model {
                 state.settled(member);
             }
 
-            // Where each member's stop is its own, the group is no longer
-            // stopped as a whole once a member runs again. A stop under way
-            // no longer stops for a member that moved on.
             Event::ContinueMember(member) => {
                 state.set(member, Member::Running);
                 state.pending.retain(|&waiting| waiting != member);
@@ -337,31 +307,20 @@ impl ReferenceStateMachine for Model {
     }
 }
 
-/// The rule under test and what the test knows apart from it.
 struct Harness {
-    /// The member a client runs alone from a group stop, as the CLI's
-    /// commands do, one at a time.
     alone: Option<MemberNumber>,
     scope: StopScope,
     stops: Stops<(u32, Command)>,
     members: Vec<Member>,
 
-    /// The members the stop under way was told to wait for, and have not
-    /// stopped, failed to pause, or gone since.
     awaited: Option<BTreeSet<MemberNumber>>,
 
-    /// The members that stopped for the stop under way, and are still
-    /// there.
     stopped_for_stop: BTreeSet<MemberNumber>,
 
-    /// Each member's stop while it is stopped, as its session would say.
     current: Vec<Option<StopId>>,
 
-    /// Breakpoint stops not yet reported, which a resume may discard, and
-    /// a member that moves on or goes leaves behind.
     owed: Vec<MemberStop>,
 
-    /// Client commands sent and not yet served.
     unserved: BTreeSet<u32>,
     next_command: u32,
     next_breakpoint: u64,
@@ -373,13 +332,11 @@ impl Harness {
         self.owed.retain(|owed| owed != stop);
     }
 
-    /// Forgets what member `member` owed, as it moved on or went.
     fn left(&mut self, member: MemberNumber) {
         self.current[member as usize - 1] = None;
         self.owed.retain(|owed| owed.member != member);
     }
 
-    /// A group stop the rule reports as it completes.
     fn completed(&mut self, stop: Option<MemberStop>) {
         let Some(stop) = stop else {
             if self.awaited.as_ref().is_some_and(BTreeSet::is_empty) {
@@ -394,7 +351,6 @@ impl Harness {
 
         let (member, reason) = (stop.member, &stop.reason);
 
-        // Each member's stop was reported as its own.
         assert_eq!(
             self.scope,
             StopScope::Group,
@@ -405,8 +361,7 @@ impl Harness {
             awaited.as_ref().is_some_and(BTreeSet::is_empty),
             "member {member}'s group stop completed while {awaited:?} were awaited"
         );
-        // One that stopped and then exited is fair to name: its stop
-        // happened, and its exit was reported.
+
         assert_ne!(
             self.members[member as usize - 1],
             Member::Running,
@@ -421,7 +376,6 @@ impl Harness {
         }
     }
 
-    /// Pauses the running members but `except`, as the driver does.
     fn pause_all(&mut self, first: Option<MemberStop>) {
         let except = first.as_ref().map(|first| first.member);
         let waiting = (1..)
@@ -437,8 +391,6 @@ impl Harness {
         self.completed(completed);
     }
 
-    /// Serves a client's command as the driver does, once nothing defers
-    /// it.
     fn serve(&mut self, (id, command): (u32, Command)) {
         assert!(
             self.awaited.is_none(),
@@ -478,7 +430,6 @@ impl Harness {
         }
     }
 
-    /// Serves the commands that waited for a stop, after a member's event.
     fn after_internal(&mut self) {
         for command in self.stops.take_deferred() {
             self.serve(command);
@@ -521,8 +472,6 @@ impl Harness {
                 }
                 let action = self.stops.stopped(stop.clone());
 
-                // The CLI waits for the group stop that names the stop its
-                // command ended at, so that stop is reported on its own.
                 if self.alone.take() == Some(member) {
                     assert_eq!(
                         action,
@@ -535,7 +484,6 @@ impl Harness {
                         self.completed(Some(reported));
                     }
 
-                    // Outside a group stop, a member's stop is its own.
                     Some(StopAction::Report(reported)) => {
                         assert_eq!(reported, stop, "a stop of its own");
                         self.report(&reported);
@@ -572,7 +520,7 @@ impl Harness {
                 self.stopped_for_stop.remove(&member);
                 self.stops.continued(member);
             }
-            // The CLI pauses the whole group only with its member stopped.
+
             Event::PauseAll => {
                 self.alone = None;
                 self.pause_all(None);
@@ -640,8 +588,6 @@ impl StateMachineTest for Harness {
         }
     }
 
-    /// Lets every awaited member stop and continues until nothing is left
-    /// to report: every breakpoint stop no resume discarded is reported.
     fn teardown(mut harness: Self, _: Reference) {
         for _ in 0..64 {
             if let Some(member) = harness.awaited.iter().flatten().next().copied() {

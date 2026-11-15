@@ -5,7 +5,7 @@ type record struct {
 	label string
 }
 
-// crashTarget is nil at run time, but the compiler cannot prove it.
+
 var crashTarget *int32
 
 //go:noinline

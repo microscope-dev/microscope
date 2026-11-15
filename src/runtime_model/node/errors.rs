@@ -1,10 +1,3 @@
-//! Errors as inspect reads them: `stack` from its builtin getter, and
-//! `name` and `message` through the prototype chain.
-//!
-//! V8 stores an error's stack under the private `error_stack_symbol`. Once
-//! something has read `stack` it is the text; before that it is the raw
-//! call sites, as a fixed array or inside an `ErrorStackData`.
-
 use super::access;
 use super::inspect::{ErrorDetails, JsString, Key, Property, Value};
 use super::lookup;
@@ -15,10 +8,8 @@ use super::values;
 use super::values::Builder;
 use crate::image::v8::{Constant, Field};
 
-/// The own non-enumerable properties inspect shows on an error.
 const HIDDEN: [&str; 4] = ["cause", "errors", "error", "suppressed"];
 
-/// What inspect reads from the error `object`, with values at `level`.
 pub(super) fn details(
     builder: &mut Builder<'_>,
     object: Object,
@@ -60,7 +51,6 @@ pub(super) fn details(
     })
 }
 
-/// The value of `error.stack` when V8's own getter computes it.
 fn stack(builder: &mut Builder<'_>, error: Object) -> Result<Value, Problem> {
     let reader = builder.reader;
     let accessor = match lookup::find(&reader, error, lookup::Key::Name("stack"))? {
@@ -80,7 +70,6 @@ fn stack(builder: &mut Builder<'_>, error: Object) -> Result<Value, Problem> {
         .find(|property| property.key == symbol)
         .map(|property| property.held);
     let Some(Held::Data(word)) = kept else {
-        // V8's getter returns undefined if no stack was captured.
         return Ok(Value::Undefined);
     };
     let mut limit = None;
@@ -115,12 +104,6 @@ fn stack(builder: &mut Builder<'_>, error: Object) -> Result<Value, Problem> {
     Ok(builder.value(held, 0))
 }
 
-/// V8's private `error_stack_symbol`, the key an error's stack is stored
-/// under. In every supported version `InstallError` (`bootstrapper.cc`)
-/// puts it in the first descriptor of `%Error%`'s initial map, at
-/// `kJSErrorErrorStackSymbolIndex`. Private root symbols have no
-/// description to search for, so it is found by position. The same map's
-/// stack accessor proves that the error still uses V8's getter.
 fn stack_symbol(reader: &Reader<'_>, error: Object, accessor: Object) -> Result<Object, Problem> {
     let native = access::native_context(reader, reader.map(error)?)?;
     let function = reader
@@ -183,8 +166,6 @@ fn stack_symbol(reader: &Reader<'_>, error: Object, accessor: Object) -> Result<
     )
 }
 
-/// `AccessorPair::GetComponent` lazily replaces a `FunctionTemplateInfo` with
-/// its instantiated `JSFunction`. Both forms name the same native getter.
 fn getter_template(reader: &Reader<'_>, accessor: Object) -> Result<Option<Object>, Problem> {
     if !reader.is(accessor, Constant::AccessorPairType)? {
         return Ok(None);

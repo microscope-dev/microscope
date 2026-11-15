@@ -1,6 +1,3 @@
-// The page's theme: the system's, or light or dark as this browser chose.
-// The stylesheet reads `data-theme` on the root element.
-
 import { useSyncExternalStore } from "react";
 import { createStore, useStore } from "zustand";
 
@@ -18,7 +15,6 @@ export function savedTheme(): Theme {
 
 const chosen = createStore(() => ({ theme: savedTheme() }));
 
-/** The theme shown, as the toolbar's button says it. */
 export function useChosenTheme(): Theme {
   return useStore(chosen, (state) => state.theme);
 }
@@ -31,15 +27,12 @@ function watchSystem(changed: () => void): () => void {
   return () => query.removeEventListener("change", changed);
 }
 
-/** The scheme the page shows: the chosen theme's, or the system's while it
- * follows the system, which may change at any time. */
 export function useShownScheme(): "light" | "dark" {
   const theme = useChosenTheme();
   const dark = useSyncExternalStore(watchSystem, () => systemDark().matches);
   return theme === "system" ? (dark ? "dark" : "light") : theme;
 }
 
-/** Shows `theme`, and remembers it for the next visit. */
 export function chooseTheme(theme: Theme): void {
   apply(theme);
   write("microscope-theme", theme);

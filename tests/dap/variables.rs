@@ -1,12 +1,9 @@
-//! Scopes, variables, and expressions as clients show them.
-
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
 use crate::dap::{Configuration, Dap, Profile, Stopped, fixture, line_of, source};
 
-/// Launches a fixture stopped at a breakpoint on the line holding `marker`.
 fn stopped_at(dap: &mut Dap, program: &str, path: &str, marker: &str) -> Stopped {
     let path = source(path);
     let started = dap.launch(
@@ -28,7 +25,6 @@ fn frames(dap: &mut Dap, thread: i64) -> Vec<Value> {
         .clone()
 }
 
-/// Every scope of a frame by name.
 fn scopes(dap: &mut Dap, frame: &Value) -> BTreeMap<String, Value> {
     dap.request("scopes", json!({"frameId": frame["id"]}))["scopes"]
         .as_array()
@@ -57,7 +53,6 @@ fn named<'a>(variables: &'a [Value], name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no variable {name} in {variables:?}"))
 }
 
-/// Variables as (name, value) pairs.
 fn values(variables: &[Value]) -> Vec<(String, String)> {
     variables
         .iter()
@@ -70,8 +65,6 @@ fn values(variables: &[Value]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Every check here reads one stop; the last two change the session's
-/// format and resume the program.
 #[test]
 fn a_stop_shows_its_variables_expressions_and_formats() {
     let mut dap = Dap::start("variables");
@@ -110,7 +103,6 @@ fn variables_show_values_and_types_and_expand_aggregates(dap: &mut Dap, stop: &S
     );
     assert_eq!(parameter["variablesReference"], 0);
 
-    // A pointer to a scalar expands to what it points to.
     let pointer = named(&arguments, "pointer_parameter");
     assert_eq!(pointer["type"], "int *");
     assert_eq!(
@@ -120,7 +112,6 @@ fn variables_show_values_and_types_and_expand_aggregates(dap: &mut Dap, stop: &S
 
     let locals = variables(dap, &scopes["Locals"]["variablesReference"]);
 
-    // Records and arrays say how many children they have.
     let pair = named(&locals, "pair");
     assert_eq!(
         (&pair["value"], &pair["namedVariables"]),
@@ -153,7 +144,6 @@ fn variables_show_values_and_types_and_expand_aggregates(dap: &mut Dap, stop: &S
         assert_evaluates(dap, &frame, child);
     }
 
-    // A client paging by kind gets only rows of that kind.
     let mut filtered = |reference: &Value, filter: &str| {
         dap.request(
             "variables",
@@ -179,7 +169,6 @@ fn pointers_expand_to_what_they_point_to_or_say_why_not(dap: &mut Dap, stop: &St
     let reference = scopes(dap, &frame)["Locals"]["variablesReference"].clone();
     let locals = variables(dap, &reference);
 
-    // A pointer to a record expands straight to the record's members.
     let structure = named(&locals, "structure_pointer");
     let members = variables(dap, &structure["variablesReference"]);
     assert_eq!(
@@ -191,7 +180,6 @@ fn pointers_expand_to_what_they_point_to_or_say_why_not(dap: &mut Dap, stop: &St
     );
     assert_eq!(members[0]["evaluateName"], "(*structure_pointer).first");
 
-    // A list can be walked node by node.
     let mut node = named(&locals, "recursive_pointer").clone();
     for expected in ["40", "41", "42"] {
         let fields = variables(dap, &node["variablesReference"]);
@@ -204,7 +192,6 @@ fn pointers_expand_to_what_they_point_to_or_say_why_not(dap: &mut Dap, stop: &St
         "the last node's next is null"
     );
 
-    // Values that cannot be followed say why, as values.
     let null = named(&locals, "null_pointer");
     assert_eq!(
         (&null["value"], &null["variablesReference"]),
@@ -220,13 +207,11 @@ fn pointers_expand_to_what_they_point_to_or_say_why_not(dap: &mut Dap, stop: &St
         "{target:?}"
     );
 
-    // Every child's evaluate name evaluates to the same value.
     for child in &members {
         assert_evaluates(dap, &frame, child);
     }
 }
 
-/// Checks that a variable's evaluate name evaluates to its value.
 fn assert_evaluates(dap: &mut Dap, frame: &Value, variable: &Value) {
     let result = dap.request(
         "evaluate",
@@ -256,7 +241,6 @@ fn caller_frames_registers_and_hexadecimal_values(dap: &mut Dap, stop: &Stopped)
         );
     }
 
-    // The innermost frame's program counter is its instruction pointer.
     let innermost = scopes(dap, &frames[0]);
     let registers = variables(dap, &innermost["Registers"]["variablesReference"]);
     let rip = named(&registers, "rip")["value"]
@@ -270,8 +254,6 @@ fn caller_frames_registers_and_hexadecimal_values(dap: &mut Dap, stop: &Stopped)
     let number = |text: &str| u64::from_str_radix(text.trim_start_matches("0x"), 16).expect("hex");
     assert_eq!(number(&rip), number(&pointer));
 
-    // A register's row names it as an expression; the innermost frame's
-    // can be changed, as the thread's own.
     let row = named(&registers, "rip");
     assert_eq!(row["evaluateName"], "$rip");
     assert_eq!(row["presentationHint"]["attributes"], json!([]));
@@ -284,11 +266,9 @@ fn caller_frames_registers_and_hexadecimal_values(dap: &mut Dap, stop: &Stopped)
         number(&rip)
     );
 
-    // A caller's registers that its callees may change are unknown.
     let caller_registers = variables(dap, &caller["Registers"]["variablesReference"]);
     assert_eq!(named(&caller_registers, "rax")["value"], "<not saved>");
 
-    // Values can be shown in hexadecimal.
     let reference = innermost["Arguments"]["variablesReference"].clone();
     let arguments = dap.request(
         "variables",
@@ -313,7 +293,6 @@ fn large_arrays_are_read_in_the_pages_clients_ask_for() {
     let padding = named(&large, "padding");
     assert_eq!(padding["indexedVariables"], 2048);
 
-    // VS Code asks for big arrays a hundred elements at a time.
     let page = dap.request(
         "variables",
         json!({"variablesReference": padding["variablesReference"], "filter": "indexed", "start": 1000, "count": 100}),
@@ -327,8 +306,6 @@ fn large_arrays_are_read_in_the_pages_clients_ask_for() {
     assert_eq!(page[99]["evaluateName"], "large.padding[1099]");
     assert!(page.iter().all(|element| element["value"] == "0"));
 
-    // Any window holds exactly the elements it covers; a count of zero, as
-    // the protocol says, means every element from the start.
     for (start, count, expected) in [
         (0, 1, 1),
         (7, 13, 13),
@@ -353,7 +330,6 @@ fn large_arrays_are_read_in_the_pages_clients_ask_for() {
         assert_eq!(names, wanted, "start {start}, count {count}");
     }
 
-    // Past the end there is nothing.
     let past = dap.request(
         "variables",
         json!({"variablesReference": padding["variablesReference"], "start": 2048, "count": 10}),
@@ -385,7 +361,6 @@ fn optimized_out_values_explain_themselves_as_values() {
     );
     assert_eq!(unavailable["variablesReference"], 0);
 
-    // Following an unavailable pointer gives an unavailable value too.
     let result = dap.request(
         "evaluate",
         json!({"expression": "*pointer_pointer", "frameId": frame["id"], "context": "watch"}),
@@ -412,7 +387,6 @@ fn expressions_evaluate_for_watches_hovers_ranges_and_without_a_frame(
         );
     }
 
-    // Expressions compute, in every context.
     for context in ["watch", "hover", "clipboard", "variables", "repl"] {
         let result = dap.request(
             "evaluate",
@@ -440,7 +414,6 @@ fn expressions_evaluate_for_watches_hovers_ranges_and_without_a_frame(
         "division by zero"
     );
 
-    // Without a frame, the stopped thread's innermost frame is used.
     assert_eq!(
         dap.request(
             "evaluate",
@@ -498,7 +471,6 @@ fn references_from_an_earlier_stop_are_refused_after_resuming() {
     let resumed = dap.send("continue", json!({"threadId": stop.thread}));
     dap.success(resumed);
 
-    // The function is called twice, so the same breakpoint stops again.
     let again = dap.stopped(resumed.mark);
     let new_frame = frames(&mut dap, again.thread)[0].clone();
     assert_ne!(new_frame["id"], frame["id"], "references are never reused");
@@ -526,7 +498,6 @@ fn references_from_an_earlier_stop_are_refused_after_resuming() {
         stale("frame", &frame["id"])
     );
 
-    // Once the program is gone, every inspection says so.
     let resumed = dap.send("continue", json!({"threadId": again.thread}));
     dap.success(resumed);
     dap.event(resumed.mark, "terminated", |_| true);
@@ -556,7 +527,6 @@ fn strings_show_their_text_and_still_expand() {
         "{value}"
     );
 
-    // The pointer still leads to its first character.
     let pointee = variables(&mut dap, &greeting["variablesReference"]);
     assert_eq!(
         values(&pointee),
@@ -580,8 +550,6 @@ fn strings_show_their_text_and_still_expand() {
     dap.finish();
 }
 
-/// Rows lead to where their variables are declared, and a static's row
-/// reaches the static, not a local that shadows it.
 #[test]
 fn rows_lead_to_their_declarations_and_statics_past_a_shadowing_local() {
     let path = source("c/command-names.c");
@@ -616,8 +584,6 @@ fn rows_lead_to_their_declarations_and_statics_past_a_shadowing_local() {
         assert_eq!(location["line"], line_of(&path, marker), "{name}");
     }
 
-    // A member's declaration is its type's, which is not where the value
-    // lives, so it has none.
     let origin = named(&rows, "origin")["variablesReference"].clone();
     let members = variables(&mut dap, &origin);
     assert!(members[0].get("declarationLocationReference").is_none());
@@ -628,7 +594,6 @@ fn rows_lead_to_their_declarations_and_statics_past_a_shadowing_local() {
     let locals = variables(&mut dap, &scopes["Locals"]["variablesReference"]);
     assert_eq!(named(&locals, "shadowed")["value"], "-1");
 
-    // Every way a client uses the row's name reaches the static.
     let evaluate_name = row["evaluateName"].clone();
     let watched = dap.request(
         "evaluate",
@@ -722,8 +687,6 @@ fn function_pointers_link_to_the_function_they_point_to(dap: &mut Dap, stop: &St
         line_of(&path, "static int pointer_identity(int value)")
     );
 
-    // Evaluating the pointer links it too; data pointers and null link
-    // nowhere.
     let evaluated = dap.request(
         "evaluate",
         json!({"expression": "function_pointer", "frameId": frame["id"], "context": "watch"}),
@@ -743,7 +706,6 @@ fn function_pointers_link_to_the_function_they_point_to(dap: &mut Dap, stop: &St
     let message = dap.request_error("locations", json!({"locationReference": 999_999}));
     assert!(message.contains("stale"), "{message}");
 
-    // References end with the stop.
     let resumed = dap.send("next", json!({"threadId": stop.thread}));
     dap.success(resumed);
     dap.stopped(resumed.mark);
@@ -811,7 +773,6 @@ fn hexadecimal_is_a_session_default_each_request_may_override(dap: &mut Dap, sto
         "pointer_target(parameter = 40, pointer_parameter = 0x",
     );
 
-    // Setting what is already set changes nothing.
     let mark = dap.mark();
     dap.request("microscope/setValueFormat", json!({"hex": true}));
     dap.request("threads", Value::Null);
@@ -852,7 +813,6 @@ fn a_variable_an_inner_block_hides_cannot_be_named() {
         (&json!("100"), &json!("200"))
     );
 
-    // The name means the inner variable, so only its row has it.
     assert_eq!(visible["evaluateName"], "shadowed");
     assert!(hidden.get("evaluateName").is_none(), "{hidden}");
     assert!(
@@ -877,9 +837,6 @@ fn a_variable_an_inner_block_hides_cannot_be_named() {
     dap.finish();
 }
 
-/// A value a view presents shows its summary, counts its elements as
-/// indexed and its fields and `[raw]` as named, pages its elements by the
-/// client's filter, and its elements evaluate back and can be changed.
 #[test]
 fn views_present_containers_with_paged_elements_and_raw_one_step_away() {
     let mut dap = Dap::start("views");
@@ -956,7 +913,6 @@ fn views_present_containers_with_paged_elements_and_raw_one_step_away() {
         [json!("buf"), json!("len")]
     );
 
-    // An element in memory is changed through its view.
     let ints = named(&locals, "ints");
     let elements = variables(&mut dap, &ints["variablesReference"]);
     assert_eq!(
@@ -983,9 +939,6 @@ fn views_present_containers_with_paged_elements_and_raw_one_step_away() {
     dap.finish();
 }
 
-/// A map's entries are indexed and named by their keys; each entry's value
-/// evaluates back by where it is, and can be changed. A scanned sequence's
-/// elements evaluate back by their index.
 #[test]
 fn views_present_maps_as_entries_named_by_their_keys() {
     let mut dap = Dap::start("maps");
@@ -1054,8 +1007,6 @@ fn views_present_maps_as_entries_named_by_their_keys() {
     dap.finish();
 }
 
-/// A launch's `viewFiles` present values ahead of the program's own views,
-/// and what kept a view out is said as output.
 #[test]
 fn launch_view_files_present_values_and_report_their_errors() {
     let directory = crate::support::ScratchDir::new("dap-view-files");
@@ -1083,7 +1034,6 @@ fn launch_view_files_present_values_and_report_their_errors() {
     let locals = variables(&mut dap, &scopes["Locals"]["variablesReference"]);
     assert_eq!(named(&locals, "here")["value"], "from the launch");
 
-    // The launch's broken view of a vector leaves it to the program's own.
     assert_eq!(named(&locals, "numbers")["value"], "len=3 [1, 2, 3]");
     let said = dap
         .events(started.mark, "output")

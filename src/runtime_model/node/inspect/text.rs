@@ -1,14 +1,8 @@
-//! Text conversions inspect needs: string escaping, JavaScript's
-//! `Number::toString` and `BigInt::toString`, `Date`'s `toISOString`, and
-//! entry display width.
-
 use std::fmt::Write as _;
 
 use super::BigInt;
-// `Number::toString` lives with the summaries, which computed values use too.
 pub use crate::view::summary::number_to_string;
 
-/// `meta` in inspect.js: the escape of each code unit below 0xA0 that has one.
 fn meta(unit: u16) -> Option<&'static str> {
     const LOW: [&str; 32] = [
         "\\x00", "\\x01", "\\x02", "\\x03", "\\x04", "\\x05", "\\x06", "\\x07", "\\b", "\\t",
@@ -33,9 +27,6 @@ fn meta(unit: u16) -> Option<&'static str> {
     }
 }
 
-/// Escapes control characters, backslashes, lone surrogates, and (if
-/// `single`) single quotes: `strEscapeSequencesReplacer`, its `Single`
-/// variant, and `escapeFn`.
 pub fn escape(units: &[u16], single: bool) -> String {
     let mut kept: Vec<u16> = Vec::with_capacity(units.len());
     let mut out = String::with_capacity(units.len());
@@ -72,8 +63,6 @@ pub fn escape(units: &[u16], single: bool) -> String {
     out
 }
 
-/// `strEscape`: quotes and escapes the units, picking a quote that needs no
-/// escaping if one exists.
 pub fn str_escape(units: &[u16]) -> String {
     const SINGLE: u16 = 0x27;
     const DOUBLE: u16 = 0x22;
@@ -92,7 +81,6 @@ pub fn str_escape(units: &[u16]) -> String {
     format!("{quote}{}{quote}", escape(units, quote == '\''))
 }
 
-/// `keyStrRegExp`: whether a key prints bare.
 pub fn is_identifier(key: &str) -> bool {
     let mut chars = key.chars();
     chars
@@ -101,27 +89,20 @@ pub fn is_identifier(key: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// A string's length in UTF-16 units, JavaScript's `length`.
 pub fn js_len(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()
 }
 
-/// `text` padded on the left with spaces to `width` UTF-16 units.
 pub fn pad_start(text: &str, width: usize) -> String {
     let fill = width.saturating_sub(js_len(text));
     format!("{}{text}", " ".repeat(fill))
 }
 
-/// `text` padded on the right with spaces to `width` UTF-16 units.
 pub fn pad_end(text: &str, width: usize) -> String {
     let fill = width.saturating_sub(js_len(text));
     format!("{text}{}", " ".repeat(fill))
 }
 
-/// `getStringWidth(text, false)`: an entry's width in columns. Node uses ICU
-/// once a string has a unit at or past 0x7F. Below U+0300 ICU's widths are
-/// reproduced (1 per printable character, 0 per control character); past
-/// that the second value is false and the width is Node's no-ICU estimate.
 pub fn string_width(text: &str) -> (usize, bool) {
     let mut width = 0;
     let mut exact = true;
@@ -143,7 +124,6 @@ pub fn string_width(text: &str) -> (usize, bool) {
     (width, exact)
 }
 
-/// `isFullWidthCodePoint` in Node's build without ICU.
 const fn is_full_width(code: u32) -> bool {
     code >= 0x1100
         && (code <= 0x115f
@@ -165,7 +145,6 @@ const fn is_full_width(code: u32) -> bool {
             || (code >= 0x20000 && code <= 0x3fffd))
 }
 
-/// `isZeroWidthCodePoint`.
 const fn is_zero_width(code: u32) -> bool {
     code <= 0x1f
         || (code >= 0x7f && code <= 0x9f)
@@ -177,7 +156,6 @@ const fn is_zero_width(code: u32) -> bool {
         || (code >= 0xe0100 && code <= 0xe01ef)
 }
 
-/// A `BigInt`'s decimal digits with its sign.
 pub fn bigint_to_string(value: &BigInt) -> String {
     const CHUNK: u128 = 10_000_000_000_000_000_000;
     let mut digits: Vec<u64> = value.magnitude.clone();
@@ -224,8 +202,6 @@ pub fn bigint_to_string(value: &BigInt) -> String {
     text
 }
 
-/// `Date.prototype.toISOString` of a valid time value, or `None` outside a
-/// Date's range.
 pub fn iso_date(time: f64) -> Option<String> {
     const DAY: i64 = 86_400_000;
     if !time.is_finite() || time.abs() > 8.64e15 || time.fract() != 0.0 {
@@ -263,8 +239,6 @@ pub fn iso_date(time: f64) -> Option<String> {
     ))
 }
 
-/// The proleptic Gregorian date of a day count from 1970-01-01 (Howard
-/// Hinnant's `civil_from_days`).
 const fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -278,7 +252,6 @@ const fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
-/// An IEEE 754 half-precision number's value.
 pub fn f16_to_f64(bits: u16) -> f64 {
     let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
     let exponent = i32::from((bits >> 10) & 0x1f);
