@@ -164,8 +164,20 @@ struct call_spec {
 	u8 execs;
 	// Its row in STATS, which holds only the chosen calls.
 	u16 stat;
-	u32 ends;
+	u8 ends;
+	// Whether it waits, as enum waits says.
+	u8 waits;
+	u16 pad;
 	struct arg_copy args[6];
+};
+
+// Whether a call waits for another thread, a device, or a clock, and so
+// has its stack taken as it begins rather than once it is woken.
+enum waits {
+	WAITS_NOT = 0,
+	WAITS = 1,
+	// As futex's operation, its second argument, says.
+	WAITS_BY_FUTEX_OP = 2,
 };
 
 struct config {
@@ -201,7 +213,9 @@ struct entry {
 	u32 exec_tid;
 	u8 abi;
 	u8 flags;
-	u8 pad[2];
+	// Whether its stack was sent as it began.
+	u8 stacked;
+	u8 pad;
 };
 
 // What the in_flight iterator writes for each call in progress.
@@ -291,6 +305,13 @@ struct stack_record {
 	struct record header;
 	u32 frames;
 	u32 copied;
+	// For a stack taken as a waiting call began, the call's entry time,
+	// by which it is merged and paired; zero for a stack that goes with
+	// the call or signal record its program sends next.
+	u64 entered;
+	// Whether the thread's interpreted frames went just before it.
+	u32 interpreted;
+	u32 pad;
 	// The user registers by DWARF number: ax, dx, cx, bx, si, di, bp, sp,
 	// r8 to r15, and the instruction pointer.
 	u64 regs[17];

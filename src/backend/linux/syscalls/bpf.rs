@@ -32,6 +32,7 @@ use super::super::perf;
 use super::Sink;
 use super::ptrace::{Finished, TraceOptions, monotonic, seed_descriptors};
 
+use super::pairs::{Pairs, Taken};
 use super::rings::Merge;
 use crate::syscalls::captures::{self, CopyKind};
 use crate::syscalls::specs::{self, Arg, Count, MemKind, Ret, Struct};
@@ -214,7 +215,9 @@ pub struct RawCallSpec {
     pub forks: u8,
     pub execs: u8,
     pub stat: u16,
-    pub ends: u32,
+    pub ends: u8,
+    pub waits: u8,
+    pub pad: u16,
     pub args: [RawArgCopy; 6],
 }
 
@@ -246,7 +249,8 @@ pub struct RawEntry {
     pub exec_tid: u32,
     pub abi: u8,
     pub flags: u8,
-    pub pad: [u8; 2],
+    pub stacked: u8,
+    pub pad: u8,
 }
 
 /// `struct in_flight_record`.
@@ -388,6 +392,9 @@ pub struct RawStackRecord {
     pub header: RawRecord,
     pub frames: u32,
     pub copied: u32,
+    pub entered: u64,
+    pub interpreted: u32,
+    pub pad: u32,
     pub regs: [u64; 17],
 }
 
@@ -516,7 +523,8 @@ pub fn call_spec(call: SyscallId, options: &TraceOptions) -> RawCallSpec {
             Some("clone" | "clone3" | "fork" | "vfork")
         )),
         execs: u8::from(matches!(call.name(), Some("execve" | "execveat"))),
-        ends: u32::from(matches!(call.name(), Some("exit" | "exit_group"))),
+        ends: u8::from(matches!(call.name(), Some("exit" | "exit_group"))),
+        waits: waits(call),
         ..RawCallSpec::default()
     };
 
@@ -587,6 +595,67 @@ fn reads_at_entry(call: SyscallId) -> bool {
     matches!(call.name(), Some("execve" | "execveat" | "rseq"))
 }
 
+/// Whether a call waits for another thread, a device, or a clock, as
+/// `enum waits` says: such a call's stack is taken as it begins, while
+/// the thread waits, rather than at its exit, once it is woken.
+///
+/// `futex` waits as its operation says, which the kernel reads.
+fn waits(call: SyscallId) -> u8 {
+    const WAITS: u8 = 1;
+    const WAITS_BY_FUTEX_OP: u8 = 2;
+    match call.name() {
+        Some("futex" | "futex_time64") => WAITS_BY_FUTEX_OP,
+        Some(
+            "read"
+            | "readv"
+            | "pread64"
+            | "preadv"
+            | "preadv2"
+            | "recvfrom"
+            | "recvmsg"
+            | "recvmmsg"
+            | "recvmmsg_time64"
+            | "accept"
+            | "accept4"
+            | "connect"
+            | "poll"
+            | "ppoll"
+            | "ppoll_time64"
+            | "select"
+            | "_newselect"
+            | "pselect6"
+            | "pselect6_time64"
+            | "epoll_wait"
+            | "epoll_pwait"
+            | "epoll_pwait2"
+            | "nanosleep"
+            | "clock_nanosleep"
+            | "clock_nanosleep_time64"
+            | "wait4"
+            | "waitid"
+            | "waitpid"
+            | "pause"
+            | "sigsuspend"
+            | "rt_sigsuspend"
+            | "rt_sigtimedwait"
+            | "rt_sigtimedwait_time64"
+            | "futex_wait"
+            | "futex_waitv"
+            | "semop"
+            | "semtimedop"
+            | "semtimedop_time64"
+            | "msgrcv"
+            | "mq_timedreceive"
+            | "mq_timedreceive_time64"
+            | "io_getevents"
+            | "io_pgetevents"
+            | "io_pgetevents_time64"
+            | "flock",
+        ) => WAITS,
+        _ => 0,
+    }
+}
+
 /// One record from the ring, decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Record {
@@ -605,10 +674,11 @@ pub enum Record {
         entered: u64,
     },
 
-    /// The stack of the thread whose call or signal follows.
+    /// The stack of the thread whose call or signal follows, or of a
+    /// waiting call that began then.
     Stack(SampledStack),
 
-    /// The Python frames of the thread whose stack came before, as the
+    /// The Python frames of the thread whose stack follows, as the
     /// walker wrote them, to read when the stack is unwound.
     Python {
         thread: Tid,
@@ -622,9 +692,9 @@ impl Record {
     fn time(&self) -> Option<u64> {
         match self {
             Self::Call(call) | Self::Entry(call) => Some(call.time()),
+            Self::Stack(stack) => stack.entered,
             Self::Event(TraceEvent::Descriptor { .. })
             | Self::Handoff { .. }
-            | Self::Stack(_)
             | Self::Python { .. } => None,
             Self::Event(event) => Some(event.time()),
         }
@@ -636,6 +706,13 @@ impl Record {
 pub struct SampledStack {
     pub thread: Tid,
     pub process: Pid,
+
+    /// When the waiting call it was taken at began; none for a stack
+    /// taken at the call or signal its record goes before.
+    pub entered: Option<u64>,
+
+    /// Whether the thread's interpreted frames went just before it.
+    pub interpreted: bool,
 
     /// The user registers by DWARF number.
     pub registers: [(DwarfRegister, u64); 17],
@@ -816,6 +893,8 @@ fn stack_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> 
     Ok(Record::Stack(SampledStack {
         thread: Tid::new(header.tid),
         process: Pid::new(header.tgid),
+        entered: (raw.entered != 0).then_some(raw.entered),
+        interpreted: raw.interpreted != 0,
         registers,
         chain: chain
             .as_chunks::<8>()
@@ -2104,8 +2183,7 @@ fn run(
         end: None,
         entries: BTreeMap::new(),
         stacks: options.stacks.clone(),
-        sampled: BTreeMap::new(),
-        python: BTreeMap::new(),
+        pairs: Pairs::default(),
         layouts: None,
         v8_layouts: None,
         laid_out: BTreeSet::new(),
@@ -2224,11 +2302,9 @@ struct Reader<'a> {
     /// Unwinds each stack, when stacks were asked for.
     stacks: Option<super::stacks::SharedStacks>,
 
-    /// Each thread's stack, until the call or signal it precedes.
-    sampled: BTreeMap<Tid, SampledStack>,
-
-    /// Each thread's Python or JavaScript frames, which follow its stack.
-    python: BTreeMap<Tid, Vec<u8>>,
+    /// Each stack and its interpreted frames, until the call or signal
+    /// it belongs to.
+    pairs: Pairs,
 
     /// The walker's layouts, when stacks were asked for and the kernel's
     /// process ids are microscope's, and the processes given one or found
@@ -2399,9 +2475,13 @@ impl Reader<'_> {
 
         self.release(Until::None);
         self.report_lost(loaded, monotonic());
-        for event in loaded.unfinished() {
-            self.sink.event(TraceEvent::Call(event));
+        for call in loaded.unfinished() {
+            // A waiting call took its stack as it began.
+            let taken = self.pairs.waiting(call.thread, call.entered);
+            let unwound = self.unwind(taken, None);
+            self.emit_unwound(TraceEvent::Call(call), unwound);
         }
+        self.release(Until::None);
 
         for (_, entry) in std::mem::take(&mut self.entries) {
             self.sink.event(TraceEvent::Call(entry));
@@ -2628,21 +2708,26 @@ impl Reader<'_> {
         }
     }
 
-    /// Unwinds the stack the kernel sent before a thread's call or signal,
-    /// unless the record says its stack did not fit in the ring, and that
-    /// whatever the thread's last stack was, it is another record's.
+    /// Unwinds the stack paired with a call or signal, unless the record
+    /// says its stack did not fit in the ring, and that whatever stack it
+    /// was paired with is another record's.
     ///
     /// A stack is unwound on the thread of [`Self::unwinder`], through its
     /// process's modules as they are now, and finished, with its
     /// interpreted frames, as its event is given to the sink.
-    fn unwind(&mut self, thread: Tid, lost: Option<CallStack>) -> Unwound {
-        let python = self.python.remove(&thread);
-        let sampled = self.sampled.remove(&thread);
+    fn unwind(&mut self, taken: Option<Taken>, lost: Option<CallStack>) -> Unwound {
         if lost.is_some() {
             return Unwound::Now(lost);
         }
 
-        let (Some(sampled), Some(stacks)) = (sampled, self.stacks.as_ref()) else {
+        let (
+            Some(Taken {
+                stack: sampled,
+                python,
+            }),
+            Some(stacks),
+        ) = (taken, self.stacks.as_ref())
+        else {
             return Unwound::Now(None);
         };
         let mut stacks = stacks
@@ -2780,13 +2865,8 @@ impl Reader<'_> {
 
     fn handle(&mut self, record: Record) {
         match record {
-            Record::Stack(stack) => {
-                self.python.remove(&stack.thread);
-                self.sampled.insert(stack.thread, stack);
-            }
-            Record::Python { thread, record } => {
-                self.python.insert(thread, record);
-            }
+            Record::Stack(stack) => self.pairs.stack(stack),
+            Record::Python { thread, record } => self.pairs.python(thread, record),
             Record::Entry(entry) => {
                 self.entries.insert(entry.thread, entry);
             }
@@ -2809,7 +2889,8 @@ impl Reader<'_> {
                 }
             }
             Record::Call(mut call) => {
-                let unwound = self.unwind(call.thread, call.stack.take());
+                let taken = self.pairs.call(call.thread, call.entered);
+                let unwound = self.unwind(taken, call.stack.take());
                 if let Some(entry) = self.entries.remove(&call.thread) {
                     if Some(entry.entered.unwrap_or(0)) == call.entered.or(Some(0)) {
                         let mut captured = entry.captured;
@@ -2832,8 +2913,8 @@ impl Reader<'_> {
 
                 let unwound = match &mut event {
                     TraceEvent::Signal { thread, stack, .. } => {
-                        let (thread, stack) = (*thread, stack.take());
-                        self.unwind(thread, stack)
+                        let (taken, stack) = (self.pairs.signal(*thread), stack.take());
+                        self.unwind(taken, stack)
                     }
                     _ => Unwound::Now(None),
                 };
@@ -2942,7 +3023,7 @@ mod tests {
                 RawCallSpec,
                 "call_spec",
                 [
-                    selected, moves, makes, makes_arg, forks, execs, stat, ends, args
+                    selected, moves, makes, makes_arg, forks, execs, stat, ends, waits, pad, args
                 ]
             ),
             (
@@ -2958,7 +3039,7 @@ mod tests {
             (
                 RawEntry,
                 "entry",
-                [entered, args, nr, tgid, exec_tid, abi, flags, pad]
+                [entered, args, nr, tgid, exec_tid, abi, flags, stacked, pad]
             ),
             (RawRecord, "record", [kind, size, tid, tgid]),
             (RawInFlightRecord, "in_flight_record", [tid, pad, entry]),
@@ -3001,7 +3082,7 @@ mod tests {
             (
                 RawStackRecord,
                 "stack_record",
-                [header, frames, copied, regs]
+                [header, frames, copied, entered, interpreted, pad, regs]
             ),
         );
     }
@@ -3095,6 +3176,40 @@ mod tests {
             })
         );
         assert_eq!(decode(&bytes[..20]), Err(DecodeError::Short(20)));
+    }
+
+    /// A stack taken as a waiting call began is merged by that time, since
+    /// its call can return on another CPU; one taken at its call's exit or
+    /// signal goes with that record.
+    #[test]
+    fn a_stack_taken_as_its_call_began_is_merged_by_that_time() {
+        for (entered, interpreted, time) in [(0, 1, None), (5_000, 0, Some(5_000))] {
+            let raw = RawStackRecord {
+                header: RawRecord {
+                    kind: RECORD_STACK,
+                    size: u32::try_from(size_of::<RawStackRecord>() + 8).expect("small"),
+                    tid: 11,
+                    tgid: 10,
+                },
+                frames: 1,
+                copied: 0,
+                entered,
+                interpreted,
+                pad: 0,
+                regs: [0; 17],
+            };
+            let mut bytes = raw.as_bytes().to_vec();
+            bytes.extend(0x40_1000_u64.to_le_bytes());
+            let record = decode(&bytes).expect("a stack");
+            let merged = record.time();
+            let Record::Stack(stack) = record else {
+                panic!("a stack: {record:?}");
+            };
+            assert_eq!(
+                (stack.chain, stack.interpreted, merged),
+                (vec![0x40_1000], interpreted == 1, time)
+            );
+        }
     }
 
     #[test]

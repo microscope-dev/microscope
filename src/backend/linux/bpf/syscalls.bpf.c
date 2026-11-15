@@ -3,7 +3,7 @@
 // copies the bytes behind its arguments as its spec says, and sends one
 // record. microscope decodes and interprets everything in Rust. With
 // stacks, a thread of a Python process microscope told it of sends its
-// Python frames after its stack, read by the sampler's walker.
+// Python frames before its stack, read by the sampler's walker.
 //
 // The verifier proves these programs terminate and touch only what they
 // may; they keep to bounded loops, no tail calls, and per-CPU scratch for
@@ -884,16 +884,16 @@ static __always_inline void send_file(u32 tid, u32 tgid, s32 fd)
 }
 
 // Sends the current thread's Python frames, when microscope told the walker
-// its process's layout, after its stack.
-static __always_inline void send_python(u32 tid, u32 tgid)
+// its process's layout, before its stack: whether it did.
+static __always_inline int send_python(u32 tid, u32 tgid)
 {
 	u32 host = bpf_get_current_pid_tgid() >> 32, zero = 0;
 	struct py_layout *layout = bpf_map_lookup_elem(&LAYOUTS, &host);
 	if (!layout)
-		return;
+		return 0;
 	struct py_stack *stack = bpf_map_lookup_elem(&PY_SCRATCH, &zero);
 	if (!stack)
-		return;
+		return 0;
 	struct py_stack_record *header = &stack->header;
 	header->header.kind = RECORD_PY_STACK;
 	header->header.tid = tid;
@@ -910,22 +910,22 @@ static __always_inline void send_python(u32 tid, u32 tgid)
 	u64 size = sizeof(struct py_stack_record) + (u64)frames * sizeof(struct py_frame);
 	header->header.size = size;
 	if (size > sizeof(struct py_stack))
-		return;
-	output(stack, size);
+		return 0;
+	return !output(stack, size);
 }
 
 // Sends the current thread's JavaScript frames, from the frame pointer and
 // instruction `regs` holds, when microscope told the walker its process's
-// V8 layout, after its stack.
-static __always_inline void send_v8(u32 tid, u32 tgid, struct pt_regs *regs)
+// V8 layout, before its stack: whether it did.
+static __always_inline int send_v8(u32 tid, u32 tgid, struct pt_regs *regs)
 {
 	u32 host = bpf_get_current_pid_tgid() >> 32, zero = 0;
 	struct v8_layout *layout = bpf_map_lookup_elem(&V8_LAYOUTS, &host);
 	if (!layout)
-		return;
+		return 0;
 	struct v8_stack *stack = bpf_map_lookup_elem(&V8_SCRATCH, &zero);
 	if (!stack)
-		return;
+		return 0;
 	struct v8_stack_record *header = &stack->header;
 	header->header.kind = RECORD_V8_STACK;
 	header->header.tid = tid;
@@ -940,8 +940,8 @@ static __always_inline void send_v8(u32 tid, u32 tgid, struct pt_regs *regs)
 	u64 size = sizeof(struct v8_stack_record) + (u64)frames * sizeof(struct v8_frame);
 	header->header.size = size;
 	if (size > sizeof(struct v8_stack))
-		return;
-	output(stack, size);
+		return 0;
+	return !output(stack, size);
 }
 
 // Sends the stack of the current thread, whose user registers `regs`
@@ -950,9 +950,17 @@ static __always_inline void send_v8(u32 tid, u32 tgid, struct pt_regs *regs)
 // top, as far as it reads. Fails, having counted the loss, when the ring
 // has no room for it; the record it precedes then says so, so that the
 // reader shows it without a stack rather than with the thread's last one.
+//
+// The thread's interpreted frames go before it, and it says whether they
+// did: when they did not fit, the reader drops any it holds of the thread's,
+// which are of a stack that did not fit.
+//
+// A stack taken as a waiting call begins, at `entered`, carries that time:
+// the call can return on another CPU, whose ring this stack is not in.
 static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_regs *regs,
-				      u32 flags)
+				      u32 flags, u64 entered)
 {
+	u32 interpreted = send_python(tid, tgid) | send_v8(tid, tgid, regs);
 	u32 zero = 0;
 	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);
 	if (!buffer) {
@@ -963,6 +971,9 @@ static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_re
 	record->header.kind = RECORD_STACK;
 	record->header.tid = tid;
 	record->header.tgid = tgid;
+	record->entered = entered;
+	record->interpreted = interpreted;
+	record->pad = 0;
 	record->regs[0] = BPF_CORE_READ(regs, ax);
 	record->regs[1] = BPF_CORE_READ(regs, dx);
 	record->regs[2] = BPF_CORE_READ(regs, cx);
@@ -1002,9 +1013,19 @@ static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_re
 	record->header.size = size;
 	if (output(buffer->data, bounded(size, 16383)))
 		return -1;
-	send_python(tid, tgid);
-	send_v8(tid, tgid, regs);
 	return 0;
+}
+
+// Whether a call waits, as its spec says, from its arguments.
+static __always_inline int waits(struct call_spec *spec, u64 *args)
+{
+	if (spec->waits != WAITS_BY_FUTEX_OP)
+		return spec->waits;
+	// Less FUTEX_PRIVATE_FLAG and FUTEX_CLOCK_REALTIME: FUTEX_WAIT,
+	// FUTEX_LOCK_PI, FUTEX_WAIT_BITSET, FUTEX_WAIT_REQUEUE_PI, and
+	// FUTEX_LOCK_PI2.
+	u32 op = args[1] & ~(u32)(128 | 256);
+	return op == 0 || op == 6 || op == 9 || op == 11 || op == 13;
 }
 
 // Describes the descriptors a call made, as its spec says.
@@ -1023,8 +1044,9 @@ static __always_inline void send_files(u32 tid, u32 tgid, struct call_spec *spec
 	}
 }
 
-// A call's entry, with the registers it entered with and its number.
-static __always_inline int on_enter(struct pt_regs *regs, u64 id, int ending)
+// A call's entry, with the program's context for its stack, the registers
+// it entered with, and its number.
+static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int ending)
 {
 	u64 ids = bpf_get_current_pid_tgid();
 	u32 tgid = ids >> 32, tid = (u32)ids;
@@ -1063,6 +1085,14 @@ static __always_inline int on_enter(struct pt_regs *regs, u64 id, int ending)
 	*held = entry;
 	if (!sent(settings, entry.flags))
 		return 0;
+	// Taken now, a waiting call's stack costs the thread while it waits,
+	// not once it is woken, as one taken at its exit would. The calls
+	// that end their thread never wait, and their program leaves this out.
+	if (!ending && (settings->flags & CONFIG_STACKS) && waits(spec, entry.args)) {
+		held->stacked = 1;
+		if (send_stack(ctx, tid, tgid, regs, settings->flags, entry.entered))
+			held->flags |= CALL_STACK_LOST;
+	}
 	// Arguments the old image holds, as execve's, are read now.
 	for (u32 index = 0; index < 6; index++) {
 		if (spec->args[index].kind != COPY_NONE && spec->args[index].when == READ_ENTRY) {
@@ -1144,8 +1174,8 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	if (send) {
 		if (spec->makes)
 			send_files(tid, tgid, spec, &entry, ret);
-		if ((settings->flags & CONFIG_STACKS) &&
-		    send_stack(ctx, tid, tgid, regs, settings->flags))
+		if ((settings->flags & CONFIG_STACKS) && !entry.stacked &&
+		    send_stack(ctx, tid, tgid, regs, settings->flags, 0))
 			entry.flags |= CALL_STACK_LOST;
 		if (send_call(tid, tgid, &entry, RECORD_CALL, READ_EXIT, ret, now)) {
 			if (counted)
@@ -1161,7 +1191,7 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 SEC("tp_btf/sys_enter")
 int sys_enter(u64 *ctx)
 {
-	return on_enter((struct pt_regs *)ctx[0], ctx[1], 0);
+	return on_enter(ctx, (struct pt_regs *)ctx[0], ctx[1], 0);
 }
 
 SEC("tp_btf/sys_exit")
@@ -1174,7 +1204,7 @@ SEC("kprobe")
 int terminal_enter(void *ctx)
 {
 	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
-	return on_enter(regs, BPF_CORE_READ(regs, orig_ax), 1);
+	return on_enter(ctx, regs, BPF_CORE_READ(regs, orig_ax), 1);
 }
 
 // Or only the chosen calls' kernel functions, each `__x64_sys_NAME(regs)`
@@ -1186,7 +1216,7 @@ int terminal_enter(void *ctx)
 	int enter_##n(u64 *ctx)                                                    \
 	{                                                                          \
 		struct pt_regs *regs = (struct pt_regs *)ctx[0];                   \
-		return on_enter(regs, BPF_CORE_READ(regs, orig_ax), 0);            \
+		return on_enter(ctx, regs, BPF_CORE_READ(regs, orig_ax), 0);       \
 	}                                                                          \
 	SEC("fexit")                                                               \
 	int exit_##n(u64 *ctx)                                                     \
@@ -1363,7 +1393,7 @@ int signal_deliver(u64 *ctx)
 	u32 flags = 0;
 	if (settings->flags & CONFIG_STACKS) {
 		struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
-		if (send_stack(ctx, tid, tgid, regs, settings->flags))
+		if (send_stack(ctx, tid, tgid, regs, settings->flags, 0))
 			flags = CALL_STACK_LOST;
 	}
 	struct signal_record *record = reserve(sizeof(*record));

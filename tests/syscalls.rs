@@ -2863,6 +2863,108 @@ mod bpf {
         assert!(trace.contains("exit_group(23) = ?"), "{trace}");
         assert!(trace.ends_with("+++ exited with 23 +++"), "{trace}");
     }
+
+    /// A waiting call's stack is taken as the call begins. Each read the
+    /// fixture's sleeper makes begins on one CPU and returns on another,
+    /// whose ring its stack is not in, and keeps its own stack. The last
+    /// read, still waiting when the recording ends, is unfinished, and has
+    /// its stack too. By the read's own kernel function, then by the
+    /// tracepoints that see every call.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_waiting_calls_stack_is_taken_as_it_begins() {
+        const ROUNDS: usize = 20;
+        for arguments in [
+            &["--syscall-filter", "trace=read"][..],
+            &["--syscalls", "calls"],
+        ] {
+            let directory = ScratchDir::new("syscalls-waiting");
+            let mut target = ExternalProcess::spawn_command(
+                Command::new(fixture()).args(["migrate", &ROUNDS.to_string()]),
+            );
+            let pid = target.process_id().get().to_string();
+            let mut running = Running::spawn(
+                privileged()
+                    .args(["record", "-o", "trace.usprof", "--pid", &pid])
+                    .args(arguments)
+                    .current_dir(directory.path()),
+            );
+            running.line(|line| line.contains(&format!("recording process {pid}")));
+
+            let stdout = target.take_stdout();
+            let (sender, said) = mpsc::channel();
+            std::thread::spawn(move || {
+                let mut line = String::new();
+                let _ = BufReader::new(stdout).read_line(&mut line);
+                let _ = sender.send(line);
+            });
+            target.release();
+            let blocked = said
+                .recv_timeout(DEADLINE)
+                .expect("the fixture's next line");
+            assert_eq!(blocked, "blocked\n", "{arguments:?}");
+            running.interrupt();
+            let (code, lines) = running.finish();
+            assert_eq!(code, Some(0), "{lines:?}");
+
+            let profile = read(directory.path());
+            let syscalls = profile.syscalls();
+            let functions = |stack: Option<u32>| {
+                stack.map_or_else(Vec::new, |stack| profile.syscall_stack(stack).0)
+            };
+            let calls = |name: &str| -> Vec<(Outcome, Vec<String>)> {
+                syscalls
+                    .events
+                    .iter()
+                    .filter_map(|event| match &event.event {
+                        // Not the main thread's read of its release.
+                        TraceEvent::Call(call)
+                            if call.call.name() == Some(name)
+                                && (name != "read" || call.args[0] != 0) =>
+                        {
+                            Some((call.outcome, functions(event.stack)))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            };
+
+            let reads = calls("read");
+            let returned = reads
+                .iter()
+                .filter(|(outcome, _)| *outcome == Outcome::Returned(1))
+                .count();
+            let unfinished = reads
+                .iter()
+                .filter(|(outcome, _)| *outcome == Outcome::Unfinished)
+                .count();
+            let lost = syscalls.lost.dropped;
+            assert!(
+                returned <= ROUNDS && returned as u64 + lost >= ROUNDS as u64,
+                "{arguments:?}: {reads:#?}"
+            );
+            assert_eq!(unfinished, 1, "{arguments:?}: {reads:#?}");
+
+            // A stack the ring had no room for is shown as none.
+            for (outcome, functions) in &reads {
+                assert!(
+                    functions.iter().any(|function| function == "wait_here")
+                        || (functions.is_empty() && lost > 0),
+                    "{arguments:?}: a read {outcome:?} in {functions:?}"
+                );
+            }
+
+            // The main thread's own wait, which every call's trace holds.
+            if arguments.contains(&"calls") {
+                let pauses = calls("pause");
+                assert!(
+                    matches!(&pauses[..], [(Outcome::Unfinished, functions)]
+                        if functions.iter().any(|function| function == "migrate")),
+                    "{pauses:?}"
+                );
+            }
+        }
+    }
 }
 
 /// Each thread and child is announced, as what it is, before anything it

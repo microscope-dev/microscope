@@ -16,7 +16,7 @@ the model; [profiling](profiling.md) covers the recording around them.
 | `src/present/syscalls/` | strace's text format and the `-c` table, shared by `report` and the browser |
 | `src/backend/linux/syscalls/ptrace.rs`, `seccomp.rs`, `info.rs`, `launch.rs` | The ptrace engine |
 | `src/backend/linux/syscalls/bpf.rs`, `src/backend/linux/bpf/syscalls.bpf.c`, `bpf/records.h` | The BPF engine: its loader and its kernel programs |
-| `src/backend/linux/syscalls/rings.rs`, `stacks.rs`, `unwinder.rs`, `capture.rs` | Each CPU's ring merged by time, stacks and the thread that unwinds them, and captures |
+| `src/backend/linux/syscalls/rings.rs`, `pairs.rs`, `stacks.rs`, `unwinder.rs`, `capture.rs` | Each CPU's ring merged by time, each stack paired with its call or signal, stacks and the thread that unwinds them, and captures |
 | `src/backend/linux/catchpoints.rs` | Debugger catchpoints |
 | `src/profiler/syscall_trace.rs` | The trace a recording runs beside its samples: levels, the filter, save triggers, cuts, and `--print` |
 | `src/profiler/ladder.rs`, `src/profiler/session.rs` | The one budget's ladder, whose upper rungs shed call detail, and the recording loop that climbs it |
@@ -83,10 +83,10 @@ records each frame as an `Interpreted` frame row, and a call's site is its
 innermost interpreted frame with a line, if any.
 
 The BPF engine's programs run the sampler's walker (`python.bpf.h`) in
-`send_stack`, after the native stack, and send its frames as a
-`RECORD_PY_STACK` record, which the reader pairs with the next call or signal
-of its thread, as it pairs the stack. Dropping stacks under the budget drops
-them too. The walker reads a process by its `py_layout` in `LAYOUTS`. The
+`send_stack`, and send its frames as a `RECORD_PY_STACK` record just before
+the native stack, whose record says whether they went. The reader pairs them
+with that stack, and drops frames whose own stack did not fit. Dropping
+stacks under the budget drops them too. The walker reads a process by its `py_layout` in `LAYOUTS`. The
 reader sets that layout once per process, as soon as the process's mappings
 show its interpreter (`Stacks::python_layout`), and sets it again after an exec
 or a fork. Python need not be running yet: the layout holds the image's
@@ -239,6 +239,24 @@ How it reads calls:
   ending `no stack` rather than pair it with the thread's last stack. A call
   whose entry record (`execve`, `rseq`) went out is thus never left
   unfinished by a lost stack.
+- A call that waits, for another thread, a device, or a clock, has its stack
+  taken as it begins rather than at its exit (`waits` in `bpf.rs`: reads,
+  receives, polls, sleeps, waits for children and signals, and `futex` as
+  its operation says). Taken at the exit, the stack cost lands on the woken
+  thread's way back to the lock or data it waited for: under `dev`, on 8
+  threads taking turns at a lock, about 1.4 µs a wakeup, which held the
+  lock's next owner up. Taken at the entry, it costs the thread while it
+  waits: on a request and reply over a socket, what `dev` adds to the median
+  fell from 8.2 µs to 4.6 µs. It still delays a waiter before the kernel
+  reads the futex word, so on a contended lock more `futex` waits fail with
+  `EAGAIN`, and fewer sleep: 4,000 to 8,000 in two seconds of the lock
+  workload, against about 200 with stacks at exit.
+  A call still waiting as the trace ends then has its stack too. The
+  call can return on another CPU, so this stack carries the call's entry
+  time, by which it is merged; `pairs.rs` pairs it with the call that began
+  then, not with whatever the thread sends next. A counted call kept because
+  it failed or was slow takes its stack at its exit, since its entry cannot
+  know it will be kept.
 - The reader copies everything the ring holds out of it and handles the
   batch: it pairs each stack with its call or signal, and gives each event
   to the recording's sink. Each stack is unwound on a thread of its own
@@ -396,6 +414,12 @@ strace's `-c` columns, in microseconds.
   Another traces `tests/fixtures/node/frameless.js --opens`, whose opens of
   `/dev/zero` an addon (`frameless.c`) makes with 8 in `rbp`: each must name
   the function that made it or end saying its JavaScript frames are missing.
+- `pairs.rs`'s property sends each thread's stacks, frames, calls, and
+  signals, losing any of them, in any interleaving of threads, and checks
+  that each call and signal gets its own stack and frames or none. In
+  `tests/syscalls.rs`, `a_waiting_calls_stack_is_taken_as_it_begins` moves
+  a thread to another CPU while it waits in each read, and checks that each
+  read, and the last, still waiting as the trace ends, has its stack.
 - `a_burst_of_copied_stacks_loses_no_calls` traces 6,600 calls of
   `syscall-load` with copied stacks, made in about 10 ms: 57 MB of records,
   which the rings hold whatever the reader does meanwhile, so that

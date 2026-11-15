@@ -5,6 +5,7 @@ pub mod bpf;
 pub mod capture;
 pub mod info;
 pub mod launch;
+pub mod pairs;
 pub mod ptrace;
 pub mod rings;
 pub mod seccomp;

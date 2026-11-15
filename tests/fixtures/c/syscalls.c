@@ -190,6 +190,117 @@ static void block(void) {
     }
 }
 
+// The sleeper's pipe, its thread id, and how many reads of the pipe it has
+// begun.
+static int wake[2];
+static int sleeper_tid;
+static int begun;
+static int first_cpu, second_cpu;
+
+// Waits for a byte, in the read the test finds by this function.
+static __attribute__((noinline)) void wait_here(void) {
+    char byte;
+    if (read(wake[0], &byte, 1) != 1) {
+        _exit(40);
+    }
+}
+
+static int pin(pid_t tid, int cpu) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    return sched_setaffinity(tid, sizeof set, &set);
+}
+
+static void *sleeper(void *unused) {
+    (void)unused;
+    __atomic_store_n(&sleeper_tid, (int)gettid(), __ATOMIC_SEQ_CST);
+    for (;;) {
+        if (pin(0, first_cpu) != 0) {
+            _exit(41);
+        }
+        __atomic_fetch_add(&begun, 1, __ATOMIC_SEQ_CST);
+        wait_here();
+    }
+    return NULL;
+}
+
+// Waits until the sleeper has begun its `count`th read and sleeps in it,
+// as its state in /proc says.
+static void wait_asleep(int count) {
+    while (__atomic_load_n(&begun, __ATOMIC_SEQ_CST) < count) {
+        sched_yield();
+    }
+    char path[64];
+    snprintf(path, sizeof path, "/proc/self/task/%d/stat",
+             __atomic_load_n(&sleeper_tid, __ATOMIC_SEQ_CST));
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        _exit(42);
+    }
+    for (;;) {
+        char stat[512];
+        ssize_t got = pread(fd, stat, sizeof stat - 1, 0);
+        if (got <= 0) {
+            _exit(43);
+        }
+        stat[got] = 0;
+        // The state follows the name, which may hold spaces and parentheses.
+        char *name_end = strrchr(stat, ')');
+        if (name_end && name_end[1] == ' ' && name_end[2] == 'S') {
+            break;
+        }
+        sched_yield();
+    }
+    close(fd);
+}
+
+// Once released, a sleeper thread reads a pipe `rounds` times, each read
+// begun on one CPU and returning on another, as the main thread moves it
+// while it sleeps. Then it begins a read that never returns; the main
+// thread says "blocked" and pauses until killed.
+static void migrate(int rounds) {
+    dprintf(1, "READY\n");
+    char byte;
+    if (read(0, &byte, 1) != 1) {
+        _exit(44);
+    }
+    cpu_set_t allowed;
+    if (sched_getaffinity(0, sizeof allowed, &allowed) != 0 || CPU_COUNT(&allowed) < 2) {
+        _exit(45);
+    }
+    first_cpu = -1;
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+        if (CPU_ISSET(cpu, &allowed)) {
+            if (first_cpu < 0) {
+                first_cpu = cpu;
+            } else {
+                second_cpu = cpu;
+                break;
+            }
+        }
+    }
+    if (pipe(wake) != 0) {
+        _exit(46);
+    }
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, sleeper, NULL) != 0) {
+        _exit(47);
+    }
+    for (int round = 0; round < rounds; round++) {
+        wait_asleep(round + 1);
+        pid_t sleeper_now = __atomic_load_n(&sleeper_tid, __ATOMIC_SEQ_CST);
+        if (pin(sleeper_now, second_cpu) != 0 || write(wake[1], "x", 1) != 1) {
+            _exit(48);
+        }
+    }
+    wait_asleep(rounds + 1);
+    dprintf(1, "blocked\n");
+    for (;;) {
+        pause();
+    }
+}
+
 // Asks for its parent's pid until a byte arrives on its input, then prints
 // how many times it asked.
 static void spin(void) {
@@ -333,6 +444,9 @@ int main(int argc, char **argv) {
     if (strcmp(mode, "block") == 0) {
         block();
         return 0;
+    }
+    if (strcmp(mode, "migrate") == 0 && argc > 2) {
+        migrate(atoi(argv[2]));
     }
     if (strcmp(mode, "spin") == 0) {
         spin();
