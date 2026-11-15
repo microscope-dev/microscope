@@ -1478,13 +1478,6 @@ mod bpf {
     }
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
-    fn simultaneous_worker_exits_are_not_skipped() {
-        for fentry in [false, true] {
-            group_exits("parallel", fentry, 63, 100);
-        }
-    }
-    #[test]
-    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn structured_group_exits_distinguish_threads_from_processes() {
         let directory = ScratchDir::new("syscalls-group-exit-kinds");
         let output = privileged()

@@ -38,7 +38,7 @@ test-group = 'bpf-profiles'
 # `just stress` beside other tests it got too little to fill even 4 MiB.
 # The BPF engine's bursts lose no calls only while its reader gets a CPU.
 [[profile.default.overrides]]
-filter = '(binary(profiler) & test(=maximum_rate_keeps_at_least_99_percent_of_a_short_rust_burst)) | (binary(microscope) & test(/^backend::linux::perf::tests::a_reader_(that_falls_behind|far_behind)/)) | (binary(syscalls) & test(/^bpf::(simultaneous_worker_exits_are_not_skipped|a_burst_of_copied_stacks_loses_no_calls)$/))'
+filter = '(binary(profiler) & test(=maximum_rate_keeps_at_least_99_percent_of_a_short_rust_burst)) | (binary(microscope) & test(/^backend::linux::perf::tests::a_reader_(that_falls_behind|far_behind)/)) | (binary(syscalls) & test(=bpf::a_burst_of_copied_stacks_loses_no_calls))'
 threads-required = 'num-test-threads'
 
 # Node's profile and syscall tests record a program that spins two threads,
