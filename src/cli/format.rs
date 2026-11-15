@@ -1225,10 +1225,20 @@ pub fn task_place(
     match trace {
         Ok(trace) => trace.user_frame().map_or_else(
             || {
-                task_function(task, trace).map_or_else(
-                    || renderer.paint(Role::Metadata, "<runtime code>").to_string(),
-                    |entry| renderer.paint(Role::Name, entry).to_string(),
-                )
+                task_function(task, trace)
+                    .or_else(|| {
+                        trace
+                            .frames
+                            .iter()
+                            .find(|frame| {
+                                matches!(frame.kind, microscope::FrameKind::Awaited { .. })
+                            })
+                            .map(|frame| elide_arguments(&frame_code(frame, images)))
+                    })
+                    .map_or_else(
+                        || renderer.paint(Role::Metadata, "<runtime code>").to_string(),
+                        |place| renderer.paint(Role::Name, place).to_string(),
+                    )
             },
             |frame| {
                 let name = renderer.paint(Role::Name, frames::code(frame));

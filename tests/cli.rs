@@ -1462,6 +1462,26 @@ fn tokio_tasks_are_listed_by_number() {
 }
 
 #[test]
+fn a_task_without_user_code_is_placed_by_what_it_awaits() {
+    let stdout = batch(
+        &[
+            "--core",
+            "build/test-programs/tokio-values-o0.core",
+            "build/test-programs/tokio-values-o0",
+        ],
+        &["tasks -g"],
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line
+                .starts_with("3 tasks in awaiting core::future::pending::Pending<u32>: ")),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("<runtime code>"), "{stdout}");
+}
+
+#[test]
 fn a_task_says_where_it_was_created() {
     let created = |program: &str, commands: &[&str], source: &str| {
         let stdout = batch(&[program], commands);
