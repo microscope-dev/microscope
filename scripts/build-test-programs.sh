@@ -1253,7 +1253,7 @@ readonly tokio_target_dir="build/tokio-target"
 readonly tokio_outputs="${output_dir}/.tokio.outputs"
 
 
-readonly tokio_older_release="1.52"
+readonly tokio_older_release="1.51"
 readonly tokio_older_lock="${tokio_fixtures_dir}/tokio-${tokio_older_release}/Cargo.lock"
 
 

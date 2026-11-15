@@ -17,8 +17,8 @@ use crate::workers::check_saved_local;
 const BUILDS: [&str; 4] = [
     "tokio-drivers-o0",
     "tokio-drivers-o3",
-    "tokio-drivers-1.52-o0",
-    "tokio-drivers-1.52-o3",
+    "tokio-drivers-1.51-o0",
+    "tokio-drivers-1.51-o3",
 ];
 const SOURCE: &str = "drivers/src/main.rs";
 

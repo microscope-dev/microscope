@@ -11,8 +11,8 @@ use crate::support::Scenario;
 const BUILDS: [&str; 4] = [
     "tokio-std-async-o0",
     "tokio-std-async-o3",
-    "tokio-std-async-1.52-o0",
-    "tokio-std-async-1.52-o3",
+    "tokio-std-async-1.51-o0",
+    "tokio-std-async-1.51-o3",
 ];
 const SOURCE: &str = "std-async/src/main.rs";
 

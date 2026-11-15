@@ -886,7 +886,7 @@ async fn go_library_values_present_as_go_shows_them() {
 
 #[tokio::test]
 async fn tokio_values_present_as_their_views_say() {
-    for fixture in ["tokio-values-o0", "tokio-values-1.52-o0"] {
+    for fixture in ["tokio-values-o0", "tokio-values-1.51-o0"] {
         let mut seen = check_printed_markers(fixture, "barrier", MarkedFrame::Caller, false).await;
         seen.extend(
             microscope::built_in_views()
@@ -910,7 +910,7 @@ async fn tokio_values_present_as_their_views_say() {
 
 #[tokio::test]
 async fn tokio_values_in_a_core_present_as_their_views_say() {
-    for (variant, optimized) in [("o0", false), ("o3", true), ("1.52-o3", true)] {
+    for (variant, optimized) in [("o0", false), ("o3", true), ("1.51-o3", true)] {
         let core = format!("tokio-values-{variant}.core");
         let log =
             fs::read_to_string(Scenario::fixture(&format!("{core}.log"))).expect("the core's log");

@@ -14,7 +14,7 @@ publish = false
 
 [workspace.dependencies]
 truth = { path = "truth" }
-tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+tokio = { version = "1.51.6", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 libc = "0.2"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 

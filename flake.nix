@@ -1020,7 +1020,7 @@
         name = "tokio-fixture-crates";
         paths = map (lockFile: pkgs.rustPlatform.importCargoLock { inherit lockFile; }) [
           ./tests/fixtures/rust/tokio/Cargo.lock
-          ./tests/fixtures/rust/tokio/tokio-1.52/Cargo.lock
+          ./tests/fixtures/rust/tokio/tokio-1.51/Cargo.lock
         ];
       };
 

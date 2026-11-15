@@ -14,8 +14,8 @@ use crate::workers::tasks;
 const BUILDS: [&str; 4] = [
     "tokio-server-o0",
     "tokio-server-o3",
-    "tokio-server-1.52-o0",
-    "tokio-server-1.52-o3",
+    "tokio-server-1.51-o0",
+    "tokio-server-1.51-o3",
 ];
 const SOURCE: &str = "server/src/main.rs";
 

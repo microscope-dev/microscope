@@ -18,8 +18,8 @@ use crate::support::{Scenario, ScratchDir};
 const BUILDS: [&str; 4] = [
     "tokio-workers-o0",
     "tokio-workers-o3",
-    "tokio-workers-1.52-o0",
-    "tokio-workers-1.52-o3",
+    "tokio-workers-1.51-o0",
+    "tokio-workers-1.51-o3",
 ];
 
 const LEGACY: &str = "tokio-workers-legacy";
@@ -35,8 +35,8 @@ const WRAPPED: &str = "tokio-workers-wrapped";
 const UNTYPED: [&str; 2] = ["tokio-workers-lines", "tokio-workers-stripped"];
 
 fn release(fixture: &str) -> &'static str {
-    if fixture.contains("-1.52-") {
-        "1.52.3"
+    if fixture.contains("-1.51-") {
+        "1.51.6"
     } else {
         "1.53.2"
     }
@@ -786,7 +786,7 @@ async fn a_cores_tasks_are_those_the_program_reported() {
 async fn every_type_of_a_large_program_is_read_and_named_once() {
     for fixture in BUILDS {
         let workers = Workers::parked(fixture, false).await;
-        let shared = if release(fixture) == "1.52.3" {
+        let shared = if release(fixture) == "1.51.6" {
             296
         } else {
             312

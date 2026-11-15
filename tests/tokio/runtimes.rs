@@ -16,8 +16,8 @@ use crate::workers::{activities, tasks};
 const BUILDS: [&str; 4] = [
     "tokio-runtimes-o0",
     "tokio-runtimes-o3",
-    "tokio-runtimes-1.52-o0",
-    "tokio-runtimes-1.52-o3",
+    "tokio-runtimes-1.51-o0",
+    "tokio-runtimes-1.51-o3",
 ];
 
 #[derive(Debug, Default)]
@@ -345,7 +345,7 @@ async fn a_thread_stopped_in_clone_still_shows_the_set_it_runs() {
     use microscope::CatchPhase;
     use microscope::syscalls::{Abi, SyscallId};
 
-    for fixture in ["tokio-runtimes-o0", "tokio-runtimes-1.52-o0"] {
+    for fixture in ["tokio-runtimes-o0", "tokio-runtimes-1.51-o0"] {
         let mut scenario = Scenario::launch(fixture);
         let clone3 = SyscallId::named(Abi::X86_64, "clone3").expect("x86-64 names clone3");
         scenario

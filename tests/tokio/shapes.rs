@@ -10,8 +10,8 @@ use crate::stops::{line, place};
 const BUILDS: [&str; 4] = [
     "tokio-shapes-o0",
     "tokio-shapes-o3",
-    "tokio-shapes-1.52-o0",
-    "tokio-shapes-1.52-o3",
+    "tokio-shapes-1.51-o0",
+    "tokio-shapes-1.51-o3",
 ];
 const SOURCE: &str = "shapes/src/main.rs";
 

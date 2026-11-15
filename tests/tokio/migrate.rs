@@ -16,8 +16,8 @@ use crate::workers::{activities, tasks};
 const BUILDS: [&str; 4] = [
     "tokio-migrate-o0",
     "tokio-migrate-o3",
-    "tokio-migrate-1.52-o0",
-    "tokio-migrate-1.52-o3",
+    "tokio-migrate-1.51-o0",
+    "tokio-migrate-1.51-o3",
 ];
 const SOURCE: &str = "migrate/src/main.rs";
 

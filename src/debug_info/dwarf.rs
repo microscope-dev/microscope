@@ -5639,7 +5639,7 @@ mod tests {
         for fixture in [
             "containers-cpp-clang-o2",
             "containers-rust-o2",
-            "tokio-server-1.52-o0",
+            "tokio-server-1.51-o0",
             "values-go-o0",
             "containers-zig-self-hosted",
             "callers-go-stripped",

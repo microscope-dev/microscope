@@ -9,8 +9,8 @@ use crate::support::Scenario;
 const BUILDS: [&str; 4] = [
     "tokio-cancel-o0",
     "tokio-cancel-o3",
-    "tokio-cancel-1.52-o0",
-    "tokio-cancel-1.52-o3",
+    "tokio-cancel-1.51-o0",
+    "tokio-cancel-1.51-o3",
 ];
 const SOURCE: &str = "cancel/src/main.rs";
 
