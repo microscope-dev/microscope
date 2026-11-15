@@ -2867,40 +2867,77 @@ mod bpf {
         assert!(trace.ends_with("+++ exited with 23 +++"), "{trace}");
     }
 
-    /// A call whose entry program the kernel skipped, as it does when it
-    /// finds the program already running on the CPU, is shown at its
-    /// exit, its entry unseen, not dropped as a call that began before the
-    /// trace: on the launched program's first thread and on a new one,
-    /// each its thread's first traced call. The test build's programs skip
-    /// the entry of a getppid whose first argument is `SKIP_ENTRY`. By the
-    /// call's own kernel function, then by the tracepoints.
+    /// A call whose entry or exit program the kernel skipped, as it does
+    /// when it finds the program already running on the CPU, is shown and
+    /// counted. A skipped entry leaves the call to show at its exit with
+    /// its entry unseen, not dropped as a call that began before the trace;
+    /// on the launched program's first thread and on a new one, each is its
+    /// thread's first traced call. A skipped exit leaves the call to show,
+    /// its return unavailable, once its thread enters another call or
+    /// ends, as the new thread does, and never with another call's return.
+    /// The test build's programs skip the entry or exit of a getpgid whose
+    /// second argument is `SKIP_ENTRY` or `SKIP_EXIT`. By the call's own
+    /// kernel function; by the tracepoints for chosen calls, as
+    /// `rt_sigreturn` has no function of its own, where a call not chosen
+    /// follows the skipped exit; then by the tracepoints for every call,
+    /// counting in the kernel.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
-    fn a_call_whose_entry_the_kernel_skipped_is_shown_unseen() {
+    fn a_call_whose_entry_or_exit_the_kernel_skipped_is_shown() {
         const SKIP_ENTRY: u64 = 0x5ca1_ab1e;
-        for arguments in [&["--syscall-filter", "trace=getppid"][..], &[]] {
+        const SKIP_EXIT: u64 = 0x5ca1_ab1f;
+        for (hook, arguments) in [
+            ("fentry", &["--syscall-filter", "trace=getpgid"][..]),
+            (
+                "tp_btf",
+                &["--syscall-filter", "trace=getpgid,rt_sigreturn"],
+            ),
+            ("tp_btf", &["--preset", "prod"]),
+        ] {
             let directory = ScratchDir::new("syscalls-skipped");
             let code = recorded(directory.path(), arguments, &fixture(), &["skipped"]);
             assert_eq!(code, Some(0), "{arguments:?}");
 
-            let events = read(directory.path()).syscalls().events;
-            let getppids: Vec<_> = events
+            let profile = read(directory.path());
+            assert_eq!(profile.setting("syscall hook"), Some(hook), "{arguments:?}");
+            let counted = profile
+                .syscalls()
+                .stats()
+                .per_call()
+                .into_iter()
+                .find(|(call, _)| call.name() == Some("getpgid"))
+                .map(|(_, stats)| stats.calls);
+            assert_eq!(counted, Some(5), "{arguments:?}");
+            if arguments.contains(&"prod") {
+                continue;
+            }
+
+            let events = profile.syscalls().events;
+            let getpgids: Vec<_> = events
                 .iter()
                 .filter_map(|event| match &event.event {
-                    TraceEvent::Call(call) if call.call.name() == Some("getppid") => Some(call),
+                    TraceEvent::Call(call) if call.call.name() == Some("getpgid") => Some(call),
                     _ => None,
                 })
                 .collect();
-            let (skipped, seen): (Vec<&SyscallEvent>, Vec<&SyscallEvent>) =
-                getppids.iter().partition(|call| call.args[0] == SKIP_ENTRY);
+            let of = |mark: u64| -> Vec<&SyscallEvent> {
+                getpgids
+                    .iter()
+                    .copied()
+                    .filter(|call| call.args[1] == mark)
+                    .collect()
+            };
+            let threads = |calls: &[&SyscallEvent]| -> BTreeSet<_> {
+                calls.iter().map(|call| call.thread).collect()
+            };
 
-            let threads: BTreeSet<_> = skipped.iter().map(|call| call.thread).collect();
+            let entries = of(SKIP_ENTRY);
             assert_eq!(
-                (skipped.len(), threads.len()),
+                (entries.len(), threads(&entries).len()),
                 (2, 2),
-                "{arguments:?}: {getppids:#?}"
+                "{arguments:?}: {getpgids:#?}"
             );
-            for call in &skipped {
+            for call in &entries {
                 assert!(
                     call.flags.contains(EventFlags::ENTRY_UNSEEN)
                         && call.entered.is_none()
@@ -2908,10 +2945,29 @@ mod bpf {
                     "{arguments:?}: {call:#?}"
                 );
             }
-            assert!(
-                matches!(&seen[..], [call] if !call.flags.contains(EventFlags::ENTRY_UNSEEN)),
-                "{arguments:?}: {getppids:#?}"
+
+            let exits = of(SKIP_EXIT);
+            assert_eq!(
+                (exits.len(), threads(&exits)),
+                (2, threads(&entries)),
+                "{arguments:?}: {getpgids:#?}"
             );
+            for call in &exits {
+                assert!(
+                    !call.flags.contains(EventFlags::ENTRY_UNSEEN)
+                        && call.entered.is_some()
+                        && call.exited.is_none()
+                        && call.outcome == Outcome::Unavailable,
+                    "{arguments:?}: {call:#?}"
+                );
+            }
+
+            assert!(
+                matches!(&of(0)[..], [call] if !call.flags.contains(EventFlags::ENTRY_UNSEEN)
+                    && call.exited.is_some()),
+                "{arguments:?}: {getpgids:#?}"
+            );
+            assert_eq!(getpgids.len(), 5, "{arguments:?}: {getpgids:#?}");
         }
     }
 

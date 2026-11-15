@@ -40,9 +40,11 @@
 #define STACK_CHUNKS 16
 
 #ifdef MICROSCOPE_FAULTS
-// The first argument of a getppid whose entry the bpf-faults build skips,
+// The second argument of a getpgid whose entry the bpf-faults build skips,
 // as tests/fixtures/c/syscalls.c's `skipped` mode makes it.
 #define FAULT_SKIP_ENTRY 0x5ca1ab1e
+// And of one whose exit it skips.
+#define FAULT_SKIP_EXIT 0x5ca1ab1f
 #endif
 
 struct {
@@ -1059,15 +1061,33 @@ static __always_inline void know(struct task_struct *task)
 		held->known = 1;
 }
 
+// Sends, or counts, a call the thread entered whose return no exit
+// program saw, with `entry->flags` saying why. Its stack, when it took one
+// as it began, went then; one taken now would be another call's.
+static __always_inline void send_unreturned(struct config *settings, u32 tid, u32 tgid,
+					    struct entry *entry)
+{
+	u32 slot = slot_of(entry->abi, entry->nr);
+	struct call_spec *spec = bpf_map_lookup_elem(&CALLS, &slot);
+	if (!spec || !spec->selected)
+		return;
+	if (!sent(settings, entry->flags)) {
+		if (settings->flags & CONFIG_COUNT)
+			count(settings, spec, slot, tid, tgid, 0, 0, 0, 0);
+	} else if (send_call(tid, tgid, entry, RECORD_CALL, READ_EXIT + 1, 0, 0)) {
+		unsent(settings, spec, slot, tid, tgid, 0, 0, 0, 0);
+	}
+}
+
 // A call's entry, with the program's context for its stack, the registers
 // it entered with, and its number.
 static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int ending)
 {
 #ifdef MICROSCOPE_FAULTS
 	// Test builds only: the kernel skips this program for a getppid whose
-	// first argument is FAULT_SKIP_ENTRY, as it does when it finds the
+	// second argument is FAULT_SKIP_ENTRY, as it does when it finds the
 	// program already running on this CPU.
-	if (id == 110 && BPF_CORE_READ(regs, di) == FAULT_SKIP_ENTRY)
+	if (id == 121 && BPF_CORE_READ(regs, si) == FAULT_SKIP_ENTRY)
 		return 0;
 #endif
 	u64 ids = bpf_get_current_pid_tgid();
@@ -1100,11 +1120,14 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 		lost();
 		return 0;
 	}
-	// The thread's last call never had its return seen: a function's exit
-	// programs are skipped for calls in progress when another tracer
-	// attaches to it.
-	if (held->entered)
-		lost_as(LOSS_UNSEEN);
+	// The thread's last call returned unseen: the kernel skipped its exit
+	// program, finding it already running on this CPU, or skipped a
+	// function's exit programs for calls in progress as another tracer
+	// attached to it.
+	if (held->entered) {
+		held->flags |= CALL_EXIT_SKIPPED;
+		send_unreturned(settings, tid, tgid, held);
+	}
 	*held = entry;
 	if (!sent(settings, entry.flags))
 		return 0;
@@ -1130,6 +1153,11 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 // A call's exit, with the program's context for its stack.
 static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 {
+#ifdef MICROSCOPE_FAULTS
+	// Test builds only, as on_enter's.
+	if (BPF_CORE_READ(regs, orig_ax) == 121 && BPF_CORE_READ(regs, si) == FAULT_SKIP_EXIT)
+		return 0;
+#endif
 	u64 ids = bpf_get_current_pid_tgid();
 	u32 tgid = ids >> 32, tid = (u32)ids;
 	if (!traced(tgid))
@@ -1151,6 +1179,18 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 		return 0;
 	}
 	u8 known = found->known;
+	u64 id = BPF_CORE_READ(regs, orig_ax);
+	// An entry held from another call returned unseen, as on_enter finds,
+	// and this call's own entry was not held: it is not chosen, or its
+	// entry was skipped too. The first is shown without its return, never
+	// with this one's. An exec returns with another number, and a
+	// sigreturn with -1, from the registers they load.
+	if (found->entered && !found->exec_tid && id != (u64)-1 &&
+	    found->nr != (u32)(id & ~(u64)X32_SYSCALL_BIT)) {
+		found->flags |= CALL_EXIT_SKIPPED;
+		send_unreturned(settings, tid, tgid, found);
+		found->entered = 0;
+	}
 	if (!found->entered)
 		found = 0;
 	if (found) {
@@ -1166,7 +1206,6 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 		// running on its CPU, and the call is shown without it.
 		if ((settings->flags & CONFIG_SKIP_UNSEEN) && !known)
 			return 0;
-		u64 id = BPF_CORE_READ(regs, orig_ax);
 		entry.flags = CALL_ENTRY_UNSEEN;
 		entry.abi = abi_of(id, &entry.flags);
 		entry.nr = entry.abi == ABI_X32 ? (id & ~X32_SYSCALL_BIT) : id;
@@ -1368,19 +1407,9 @@ int process_exit(void *ctx)
 	// A call the thread never returned from, as exit_group.
 	struct entry *found = bpf_task_storage_get(&ENTRIES, task, 0, 0);
 	if (found && found->entered) {
-		struct entry entry = *found;
+		found->flags |= CALL_PROCESS_EXITED;
+		send_unreturned(settings, tid, tgid, found);
 		found->entered = 0;
-		entry.flags |= CALL_PROCESS_EXITED;
-		u32 slot = slot_of(entry.abi, entry.nr);
-		struct call_spec *spec = bpf_map_lookup_elem(&CALLS, &slot);
-		if (spec && spec->selected) {
-			if (!sent(settings, entry.flags)) {
-				if (settings->flags & CONFIG_COUNT)
-					count(settings, spec, slot, tid, tgid, 0, 0, 0, 0);
-			} else if (send_call(tid, tgid, &entry, RECORD_CALL, READ_EXIT + 1, 0, 0)) {
-				unsent(settings, spec, slot, tid, tgid, 0, 0, 0, 0);
-			}
-		}
 	}
 	s32 code = BPF_CORE_READ(task, exit_code);
 	// Workers keep their own status; the leader identifies the final process exit.

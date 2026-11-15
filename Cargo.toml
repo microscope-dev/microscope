@@ -37,9 +37,9 @@ self-probes = ["microscope-probes/enabled"]
 # information gives, loads programs for benchmarks, and summarizes timings.
 tools = []
 # Builds the syscall programs with faults that tests set off: the entry
-# program skips a getppid whose first argument is 0x5ca1ab1e, as the kernel
-# skips a program it finds already running on a CPU. `just` builds tests
-# with it.
+# and exit programs skip a getpgid whose second argument is 0x5ca1ab1e or
+# 0x5ca1ab1f, as the kernel skips a program it finds already running on a
+# CPU. `just` builds tests with it.
 bpf-faults = []
 # Leases perf ring memory from a pool every test process shares, so that
 # recordings beside each other never lock more than the user may

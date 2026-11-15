@@ -148,8 +148,9 @@ Rules the engine keeps:
   one missing piece and its fix. microscope never switches to ptrace by itself.
 - **It never traces the whole host.** Every program filters by process or by
   cgroup before doing any work.
-- **Loss is reported.** Ring overflows, sampling, and calls whose return was
-  never seen all become counted losses, never silent gaps.
+- **Loss is reported.** Ring overflows and sampling become counted losses,
+  never silent gaps. A call whose entry or return went unseen is shown
+  without it.
 
 Signals come from `tp_btf/signal_deliver`, whose arguments are `int sig`,
 `struct kernel_siginfo *info`, and `struct k_sigaction *ka`. The BPF context
@@ -211,23 +212,33 @@ How it attaches:
   failures are errors, not a fallback to preemptible exit hooks.
 - When any tracer attaches to or detaches from a kernel function, the kernel
   skips the old trampoline's `fexit` programs for calls in progress, and
-  counts nothing. The engine sees a call that entered and never returned and
-  reports it lost, unless the call was `exit`, `exit_group`, `execve`, or
-  `execveat`, which end without returning.
+  counts nothing. The engine sees a call that entered and never returned,
+  and shows it with its return unavailable (below), unless the call was
+  `exit`, `exit_group`, `execve`, or `execveat`, which end without
+  returning.
 - The call programs run with preemption on, and the kernel's recursion
   guard (`prog->active`) is per CPU, not per task. A task preempted inside
   `sys_enter` makes the kernel skip `sys_enter` for every task that enters
   a call on that CPU until it runs again, and count only
   `recursion_misses`. Those skips are mostly of processes outside the
   trace, so the engine does not add the call programs' skips to its
-  losses; it counts the other programs' skips there. A traced thread's
-  skipped exit leaves an entry that its next call counts lost as unseen. A
-  skipped entry leaves a call with no entry at its exit, which a launched
+  losses; it counts the other programs' skips there.
+- A traced thread's skipped exit leaves its entry held. The thread's next
+  chosen call finds it as it enters, and a call not chosen as it exits, by
+  its different number; or the thread's exit finds it. Each sends the held
+  call, or counts it in the kernel, with `CALL_EXIT_SKIPPED` or
+  `CALL_PROCESS_EXITED`, and microscope shows it with its return
+  unavailable. It has no stack unless it took one as it began: one taken
+  then would be the new call's. Before this check, a call not chosen
+  reported the held call with its own return.
+- A skipped entry leaves a call with no entry at its exit, which a launched
   program's trace would otherwise drop as begun before tracing. Task
   storage's `known` marks a thread that entered a traced call, or that the
   trace saw made or executing a program, and such a thread's call is shown
   at its exit with its entry unseen. A call whose entry and exit are both
-  skipped leaves no trace and no count.
+  skipped leaves no trace and no count. A call whose entry is skipped just
+  after the same call's exit was takes that call's entry: two skips in a
+  row on one thread, which nothing tells apart.
 
 How it reads calls:
 
@@ -436,11 +447,13 @@ strace's `-c` columns, in microseconds.
   a thread to another CPU while it waits in each read, and checks that each
   read, and the last, still waiting as the trace ends, has its stack.
 - Test builds have the `bpf-faults` feature, whose syscall programs skip
-  the entry of a getppid whose first argument is `0x5ca1ab1e`, as the
-  kernel's guard does. `a_call_whose_entry_the_kernel_skipped_is_shown_unseen`
-  makes one on the first thread and one on a new thread, each its thread's
-  first traced call, under fentry and tracepoints, and checks that each is
-  shown with its entry unseen.
+  the entry or exit of a getpgid whose second argument is `0x5ca1ab1e` or
+  `0x5ca1ab1f`, as the kernel's guard does. getpgid, unlike getppid, has a
+  kernel function BTF describes. `a_call_whose_entry_or_exit_the_kernel_skipped_is_shown`
+  makes one of each on the first thread and on a new thread, under fentry,
+  filtered tracepoints, and the production preset. It checks that each is
+  shown, with its entry unseen or its return unavailable, and that the
+  kernel counts all five calls.
 - `a_burst_of_copied_stacks_loses_no_calls` traces 6,600 calls of
   `syscall-load` with copied stacks, made in about 10 ms: 57 MB of records,
   which the rings hold whatever the reader does meanwhile, so that

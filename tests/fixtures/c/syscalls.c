@@ -301,27 +301,31 @@ static void migrate(int rounds) {
     }
 }
 
-// The first argument of a getppid whose entry the bpf-faults build of the
-// BPF engine skips, as the kernel skips a program it finds already running
-// on a CPU.
+// The second argument, which the kernel ignores, of a getpgid whose entry,
+// or exit, the bpf-faults build of the BPF engine skips, as the kernel
+// skips a program it finds already running on a CPU.
 #define SKIP_ENTRY 0x5ca1ab1eL
+#define SKIP_EXIT 0x5ca1ab1fL
 
 static void *skipped_thread(void *unused) {
     (void)unused;
-    syscall(SYS_getppid, SKIP_ENTRY);
+    syscall(SYS_getpgid, 0L, SKIP_ENTRY);
+    syscall(SYS_getpgid, 0L, SKIP_EXIT);
     return NULL;
 }
 
-// A getppid whose entry is skipped on the first thread, then on a new one,
-// each its thread's first getppid; then one whose entry is not.
+// On the first thread, then on a new one, a getpgid whose entry is
+// skipped, each its thread's first, and one whose exit is, the new
+// thread's last; then one whose entry and exit are both seen.
 static void skipped(void) {
-    syscall(SYS_getppid, SKIP_ENTRY);
+    syscall(SYS_getpgid, 0L, SKIP_ENTRY);
+    syscall(SYS_getpgid, 0L, SKIP_EXIT);
     pthread_t thread;
     if (pthread_create(&thread, NULL, skipped_thread, NULL) != 0 ||
         pthread_join(thread, NULL) != 0) {
         _exit(50);
     }
-    syscall(SYS_getppid, 0L);
+    syscall(SYS_getpgid, 0L, 0L);
 }
 
 // Asks for its parent's pid until a byte arrives on its input, then prints

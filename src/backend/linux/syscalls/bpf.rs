@@ -95,6 +95,7 @@ const CONFIG_STACK_COPY: u32 = 32;
 const CONFIG_GENERATION: u32 = 64;
 const CONFIG_EXCEPTIONS: u32 = 128;
 
+const CALL_EXIT_SKIPPED: u8 = 1;
 const CALL_PROCESS_EXITED: u8 = 8;
 const CALL_STACK_LOST: u8 = 32;
 const SIGNAL_INFO_LOST: u32 = 1;
@@ -957,23 +958,15 @@ fn call_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> {
     }
 
     let unseen = raw.flags & EventFlags::ENTRY_UNSEEN.0 != 0;
-    let exited_inside = raw.flags & CALL_PROCESS_EXITED != 0;
     let call = SyscallId::new(abi, raw.nr);
 
-    // Only these end a thread inside them. Any other call returns first,
-    // so its return went unseen: a function's exit programs are skipped
-    // for calls in progress whenever another tracer attaches to it.
+    // Only these end a thread inside them. Any other call returned first,
+    // unseen, as one whose exit program the kernel skipped.
     let ends = call
         .name()
         .is_some_and(|name| matches!(name, "exit" | "exit_group" | "execve" | "execveat"));
-    if exited_inside && !ends {
-        record!("syscalls bpf: {call:?} on {} never returned", header.tid);
-        return Ok(Record::Event(TraceEvent::Lost {
-            time: monotonic(),
-            count: 1,
-            why: Loss::Unseen,
-        }));
-    }
+    let exited_inside = raw.flags & CALL_PROCESS_EXITED != 0 && ends;
+    let skipped = raw.flags & (CALL_EXIT_SKIPPED | CALL_PROCESS_EXITED) != 0 && !exited_inside;
 
     let event = SyscallEvent {
         thread: Tid::new(header.tid),
@@ -985,11 +978,13 @@ fn call_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> {
             Outcome::Unfinished
         } else if exited_inside {
             Outcome::ProcessExited
+        } else if skipped {
+            Outcome::Unavailable
         } else {
             Outcome::of_return(raw.ret)
         },
         entered: (!unseen).then_some(raw.entered),
-        exited: (header.kind == RECORD_CALL && !exited_inside).then_some(raw.exited),
+        exited: (header.kind == RECORD_CALL && !exited_inside && !skipped).then_some(raw.exited),
         stack: (raw.flags & CALL_STACK_LOST != 0).then(lost_stack),
         flags: EventFlags(raw.flags & CALL_EVENT_FLAGS),
     };
@@ -3277,12 +3272,23 @@ mod tests {
         assert!(call.flags.contains(EventFlags::ENTRY_UNSEEN));
 
         // Every other call returns before its thread ends, so one held
-        // then had its return go unseen.
-        let bytes = call_bytes(RECORD_CALL, CALL_PROCESS_EXITED, &[]);
-        assert!(matches!(
-            decode(&bytes),
-            Ok(Record::Event(TraceEvent::Lost { count: 1, .. }))
-        ));
+        // then returned unseen, as one whose thread entered another call
+        // first did.
+        for flags in [CALL_PROCESS_EXITED, CALL_EXIT_SKIPPED] {
+            let Ok(Record::Call(call)) = decode(&call_bytes(RECORD_CALL, flags, &[])) else {
+                panic!("a call");
+            };
+            assert_eq!(
+                (
+                    call.outcome,
+                    call.entered.is_some(),
+                    call.exited,
+                    call.flags
+                ),
+                (Outcome::Unavailable, true, None, EventFlags::default()),
+                "{flags}"
+            );
+        }
 
         // A call whose stack did not fit in the ring says so, rather than
         // take the thread's last stack.

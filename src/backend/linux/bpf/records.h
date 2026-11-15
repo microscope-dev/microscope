@@ -68,6 +68,10 @@ enum config_flags {
 
 // Bits of call_record.flags, as EventFlags.
 enum call_flags {
+	// The thread entered another call, or this one again, before an exit
+	// program saw this one return: the kernel skipped its exit program.
+	// Never an EventFlags bit, as SPANNED_STOP is the ptrace engine's.
+	CALL_EXIT_SKIPPED = 1,
 	CALL_ENTRY_UNSEEN = 2,
 	CALL_ABI_UNCERTAIN = 4,
 	// The thread ended inside the call, which never returned.
