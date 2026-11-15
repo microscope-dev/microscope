@@ -47,7 +47,13 @@ use crate::unwind::DwarfRegister;
 use crate::unwind::sample::SampledState;
 
 /// The programs, as `build.rs` compiled them.
+#[cfg(not(feature = "bpf-faults"))]
 static OBJECT: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/syscalls.bpf.o"));
+
+/// The programs with the faults tests set off (the `bpf-faults` feature).
+#[cfg(feature = "bpf-faults")]
+static OBJECT: &[u8] =
+    aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/syscalls-faults.bpf.o"));
 
 /// The tracepoints the programs attach to, by program name.
 const PROGRAMS: [(&str, &str); 5] = [
@@ -250,7 +256,7 @@ pub struct RawEntry {
     pub abi: u8,
     pub flags: u8,
     pub stacked: u8,
-    pub pad: u8,
+    pub known: u8,
 }
 
 /// `struct in_flight_record`.
@@ -654,6 +660,16 @@ fn waits(call: SyscallId) -> u8 {
         ) => WAITS,
         _ => 0,
     }
+}
+
+/// Whether a program is one that every call's entry or exit runs: the
+/// tracepoints' or a function slot's.
+fn call_program(name: &str) -> bool {
+    matches!(name, "sys_enter" | "sys_exit")
+        || name
+            .strip_prefix("enter_")
+            .or_else(|| name.strip_prefix("exit_"))
+            .is_some_and(|slot| slot.parse::<u8>().is_ok())
 }
 
 /// One record from the ring, decoded.
@@ -1769,7 +1785,7 @@ impl Loaded {
     fn run_time(&self) -> Option<u64> {
         let enabled = std::fs::read_to_string("/proc/sys/kernel/bpf_stats_enabled")
             .is_ok_and(|text| text.trim() == "1");
-        enabled.then(|| self.fdinfo_sum("run_time_ns:"))
+        enabled.then(|| self.fdinfo_sum("run_time_ns:", |_| true))
     }
 
     fn target(&mut self, process: u32) -> Result<(), BpfError> {
@@ -1852,9 +1868,10 @@ impl Loaded {
     }
 
     /// Records the programs dropped, and the times the kernel skipped a
-    /// program because it was already running on that CPU: a bound on
-    /// what the trace is missing, since a skip may have been of a thread
-    /// it does not trace.
+    /// program because it was already running on that CPU, as [`skipped`]
+    /// counts them.
+    ///
+    /// [`skipped`]: Self::skipped
     fn lost(&self) -> [u64; 4] {
         let mut lost = [0; 4];
         if let Some(map) = self.ebpf.map("LOST")
@@ -1871,18 +1888,26 @@ impl Loaded {
         lost
     }
 
-    /// The kernel's count of skipped runs of every loaded program, which
-    /// it prints among a program descriptor's details.
+    /// The kernel's count of skipped runs of each loaded program but the
+    /// call programs, which it prints among a program descriptor's
+    /// details: a bound on what the trace is missing, since a skip may
+    /// have been of a process it does not trace.
+    ///
+    /// A call program's skips of every process on the host are not this
+    /// trace's: those of a traced thread show in the thread's own calls.
+    /// A skipped entry leaves the call to show at its exit, unseen, and a
+    /// skipped exit leaves an entry the thread's next call counts unseen.
     fn skipped(&self) -> u64 {
-        self.fdinfo_sum("recursion_misses:")
+        self.fdinfo_sum("recursion_misses:", |name| !call_program(name))
     }
 
-    /// The sum over every loaded program of a count the kernel prints
-    /// among its descriptor's details.
-    fn fdinfo_sum(&self, field: &str) -> u64 {
+    /// The sum over the loaded programs that `chosen` accepts by name of
+    /// a count the kernel prints among each descriptor's details.
+    fn fdinfo_sum(&self, field: &str, chosen: impl Fn(&str) -> bool) -> u64 {
         use std::os::fd::{AsFd as _, AsRawFd as _};
         self.ebpf
             .programs()
+            .filter(|(name, _)| chosen(name))
             .filter_map(|(_, program)| program.fd().ok())
             .filter_map(|fd| {
                 let raw = fd.as_fd().as_raw_fd();
@@ -3039,7 +3064,9 @@ mod tests {
             (
                 RawEntry,
                 "entry",
-                [entered, args, nr, tgid, exec_tid, abi, flags, stacked, pad]
+                [
+                    entered, args, nr, tgid, exec_tid, abi, flags, stacked, known
+                ]
             ),
             (RawRecord, "record", [kind, size, tid, tgid]),
             (RawInFlightRecord, "in_flight_record", [tid, pad, entry]),

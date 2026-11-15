@@ -1093,7 +1093,7 @@ mod bpf {
     use std::io::{Read as _, Write as _};
 
     use microscope::profiler::{Profile, StackEnding};
-    use microscope::syscalls::{Outcome, ProcessEnd, TraceEvent};
+    use microscope::syscalls::{EventFlags, Outcome, ProcessEnd, SyscallEvent, TraceEvent};
 
     use super::*;
 
@@ -1869,13 +1869,16 @@ mod bpf {
         );
         let streamed = record_load(directory.path(), "dev.usprof", &[], 2, 100);
         assert_eq!(counted.setting("syscalls"), Some("counts"));
-        assert!(
-            !sites(&counted)
-                .keys()
-                .any(|site| site.contains("syscall-load.c")),
-            "{:#?}",
-            sites(&counted)
-        );
+
+        // A busy host can make any call slow, such as the program's join of
+        // its workers, and a slow call is kept.
+        let quick: Vec<_> = counted
+            .syscalls()
+            .events
+            .into_iter()
+            .filter(|event| matches!(&event.event, TraceEvent::Call(call) if !call.flags.kept()))
+            .collect();
+        assert!(quick.is_empty(), "{quick:#?}");
 
         let per_call = |profile: &microscope::profiler::Profile| -> BTreeMap<String, u64> {
             profile
@@ -2862,6 +2865,54 @@ mod bpf {
         );
         assert!(trace.contains("exit_group(23) = ?"), "{trace}");
         assert!(trace.ends_with("+++ exited with 23 +++"), "{trace}");
+    }
+
+    /// A call whose entry program the kernel skipped, as it does when it
+    /// finds the program already running on the CPU, is shown at its
+    /// exit, its entry unseen, not dropped as a call that began before the
+    /// trace: on the launched program's first thread and on a new one,
+    /// each its thread's first traced call. The test build's programs skip
+    /// the entry of a getppid whose first argument is `SKIP_ENTRY`. By the
+    /// call's own kernel function, then by the tracepoints.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_call_whose_entry_the_kernel_skipped_is_shown_unseen() {
+        const SKIP_ENTRY: u64 = 0x5ca1_ab1e;
+        for arguments in [&["--syscall-filter", "trace=getppid"][..], &[]] {
+            let directory = ScratchDir::new("syscalls-skipped");
+            let code = recorded(directory.path(), arguments, &fixture(), &["skipped"]);
+            assert_eq!(code, Some(0), "{arguments:?}");
+
+            let events = read(directory.path()).syscalls().events;
+            let getppids: Vec<_> = events
+                .iter()
+                .filter_map(|event| match &event.event {
+                    TraceEvent::Call(call) if call.call.name() == Some("getppid") => Some(call),
+                    _ => None,
+                })
+                .collect();
+            let (skipped, seen): (Vec<&SyscallEvent>, Vec<&SyscallEvent>) =
+                getppids.iter().partition(|call| call.args[0] == SKIP_ENTRY);
+
+            let threads: BTreeSet<_> = skipped.iter().map(|call| call.thread).collect();
+            assert_eq!(
+                (skipped.len(), threads.len()),
+                (2, 2),
+                "{arguments:?}: {getppids:#?}"
+            );
+            for call in &skipped {
+                assert!(
+                    call.flags.contains(EventFlags::ENTRY_UNSEEN)
+                        && call.entered.is_none()
+                        && matches!(call.outcome, Outcome::Returned(_)),
+                    "{arguments:?}: {call:#?}"
+                );
+            }
+            assert!(
+                matches!(&seen[..], [call] if !call.flags.contains(EventFlags::ENTRY_UNSEEN)),
+                "{arguments:?}: {getppids:#?}"
+            );
+        }
     }
 
     /// A waiting call's stack is taken as the call begins. Each read the

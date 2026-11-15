@@ -215,7 +215,11 @@ struct entry {
 	u8 flags;
 	// Whether its stack was sent as it began.
 	u8 stacked;
-	u8 pad;
+	// Whether the trace knows the thread: it entered a traced call, or
+	// was made or executed a program while traced. Such a thread's call
+	// with no entry had its entry hook skipped, and did not begin before
+	// tracing did.
+	u8 known;
 };
 
 // What the in_flight iterator writes for each call in progress.

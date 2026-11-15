@@ -39,6 +39,12 @@
 #define STACK_CHUNK 512
 #define STACK_CHUNKS 16
 
+#ifdef MICROSCOPE_FAULTS
+// The first argument of a getppid whose entry the bpf-faults build skips,
+// as tests/fixtures/c/syscalls.c's `skipped` mode makes it.
+#define FAULT_SKIP_ENTRY 0x5ca1ab1e
+#endif
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 8192);
@@ -1044,10 +1050,26 @@ static __always_inline void send_files(u32 tid, u32 tgid, struct call_spec *spec
 	}
 }
 
+// Marks `task` known to the trace (struct entry's `known`).
+static __always_inline void know(struct task_struct *task)
+{
+	struct entry *held = bpf_task_storage_get(&ENTRIES, task, 0,
+						  BPF_LOCAL_STORAGE_GET_F_CREATE);
+	if (held)
+		held->known = 1;
+}
+
 // A call's entry, with the program's context for its stack, the registers
 // it entered with, and its number.
 static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int ending)
 {
+#ifdef MICROSCOPE_FAULTS
+	// Test builds only: the kernel skips this program for a getppid whose
+	// first argument is FAULT_SKIP_ENTRY, as it does when it finds the
+	// program already running on this CPU.
+	if (id == 110 && BPF_CORE_READ(regs, di) == FAULT_SKIP_ENTRY)
+		return 0;
+#endif
 	u64 ids = bpf_get_current_pid_tgid();
 	u32 tgid = ids >> 32, tid = (u32)ids;
 	if (!traced(tgid))
@@ -1068,6 +1090,7 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 		read_args(regs, entry.abi, entry.args);
 	entry.tgid = tgid;
 	entry.exec_tid = spec->execs ? tid : 0;
+	entry.known = 1;
 	entry.entered = bpf_ktime_get_ns();
 	if ((settings->flags & CONFIG_STREAM) && !sampled_in(settings->sample))
 		entry.flags |= CALL_SAMPLED_OUT;
@@ -1127,6 +1150,7 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 		lost();
 		return 0;
 	}
+	u8 known = found->known;
 	if (!found->entered)
 		found = 0;
 	if (found) {
@@ -1137,7 +1161,10 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	} else {
 		// A call that is not chosen, or one that began before tracing
 		// did, which a launched program's never do but microscope's own.
-		if (settings->flags & CONFIG_SKIP_UNSEEN)
+		// A thread the trace knows began this call while traced: the
+		// kernel skipped its entry, finding the entry program already
+		// running on its CPU, and the call is shown without it.
+		if ((settings->flags & CONFIG_SKIP_UNSEEN) && !known)
 			return 0;
 		u64 id = BPF_CORE_READ(regs, orig_ax);
 		entry.flags = CALL_ENTRY_UNSEEN;
@@ -1249,6 +1276,9 @@ int process_fork(u64 *ctx)
 		u8 one = 1;
 		bpf_map_update_elem(&TARGETS, &child_tgid, &one, BPF_ANY);
 	}
+	// Traced from its first instruction, the child is known to the trace.
+	if (child_tgid == parent_tgid || (settings->flags & CONFIG_FOLLOW))
+		know(child);
 	// Sent in count mode too: microscope follows which processes live by them.
 	struct spawn_record *record = reserve(sizeof(*record));
 	if (!record) {
@@ -1276,6 +1306,9 @@ int process_exec(u64 *ctx)
 	u32 tgid = BPF_CORE_READ(task, tgid);
 	if (!traced(tgid))
 		return 0;
+	// A launched program's first thread is known to the trace from its
+	// exec on; the call it was in before, at microscope's gate, is not.
+	know(task);
 	struct config *settings = config();
 	u32 zero = 0;
 	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);

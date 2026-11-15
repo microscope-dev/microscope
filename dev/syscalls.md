@@ -169,8 +169,9 @@ the task leaves its thread group. Terminal syscall entries (`exit` and
 `exit_group`) also use kprobes, in both attachment modes. Kprobes disable
 preemption before the BPF recursion guard. BTF tracepoints and fentry do
 not: an exiting task can preempt another task's callback on the same CPU,
-then be skipped by its per-CPU guard even though the ring has room. Normal
-syscall hooks remain best-effort, and their skip counters remain visible.
+then be skipped by its per-CPU guard even though the ring has room. The
+call hooks stay on tracepoints and fentry, and the engine recovers what
+their guard skips (below).
 The kprobe PMU attaches without needing permission to read tracefs.
 
 The final process exit comes from `fentry/do_notify_parent`, only when the
@@ -213,6 +214,20 @@ How it attaches:
   counts nothing. The engine sees a call that entered and never returned and
   reports it lost, unless the call was `exit`, `exit_group`, `execve`, or
   `execveat`, which end without returning.
+- The call programs run with preemption on, and the kernel's recursion
+  guard (`prog->active`) is per CPU, not per task. A task preempted inside
+  `sys_enter` makes the kernel skip `sys_enter` for every task that enters
+  a call on that CPU until it runs again, and count only
+  `recursion_misses`. Those skips are mostly of processes outside the
+  trace, so the engine does not add the call programs' skips to its
+  losses; it counts the other programs' skips there. A traced thread's
+  skipped exit leaves an entry that its next call counts lost as unseen. A
+  skipped entry leaves a call with no entry at its exit, which a launched
+  program's trace would otherwise drop as begun before tracing. Task
+  storage's `known` marks a thread that entered a traced call, or that the
+  trace saw made or executing a program, and such a thread's call is shown
+  at its exit with its entry unseen. A call whose entry and exit are both
+  skipped leaves no trace and no count.
 
 How it reads calls:
 
@@ -420,6 +435,12 @@ strace's `-c` columns, in microseconds.
   `tests/syscalls.rs`, `a_waiting_calls_stack_is_taken_as_it_begins` moves
   a thread to another CPU while it waits in each read, and checks that each
   read, and the last, still waiting as the trace ends, has its stack.
+- Test builds have the `bpf-faults` feature, whose syscall programs skip
+  the entry of a getppid whose first argument is `0x5ca1ab1e`, as the
+  kernel's guard does. `a_call_whose_entry_the_kernel_skipped_is_shown_unseen`
+  makes one on the first thread and one on a new thread, each its thread's
+  first traced call, under fentry and tracepoints, and checks that each is
+  shown with its entry unseen.
 - `a_burst_of_copied_stacks_loses_no_calls` traces 6,600 calls of
   `syscall-load` with copied stacks, made in about 10 ms: 57 MB of records,
   which the rings hold whatever the reader does meanwhile, so that

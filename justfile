@@ -14,7 +14,7 @@ max_test_threads := "16"
 # Every build of the test profile has the same features, so that none
 # rebuilds what another built. Recordings in tests lease their perf ring
 # memory (src/backend/linux/perf/lease.rs).
-test_features := "tools,ring-lease"
+test_features := "tools,ring-lease,bpf-faults"
 
 # The fuzz targets that decode x86, whose decoder tables iced-x86 never
 # frees; see `fuzz`.

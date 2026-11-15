@@ -159,6 +159,11 @@ fn bpf_programs(manifest: &Path, out: &Path) {
     let timing = std::env::var_os("CARGO_FEATURE_BPF_WALK_TIMING").is_some();
     digest.write_u8(u8::from(timing));
 
+    // The bpf-faults feature builds second syscall programs that skip what
+    // tests ask, as the kernel can.
+    let faults = std::env::var_os("CARGO_FEATURE_BPF_FAULTS").is_some();
+    digest.write_u8(u8::from(faults));
+
     let inputs = format!("{:016x}", digest.finish());
     let mut sources: Vec<(&PathBuf, PathBuf, &[&str])> = files
         .iter()
@@ -173,6 +178,13 @@ fn bpf_programs(manifest: &Path, out: &Path) {
             sampler,
             out.join("sampler-timed.bpf.o"),
             &["-DMICROSCOPE_WALK_TIMING"][..],
+        ));
+    }
+    if faults && let Some(syscalls) = files.iter().find(|path| path.ends_with("syscalls.bpf.c")) {
+        sources.push((
+            syscalls,
+            out.join("syscalls-faults.bpf.o"),
+            &["-DMICROSCOPE_FAULTS"][..],
         ));
     }
     let stamp = out.join("bpf-inputs");
