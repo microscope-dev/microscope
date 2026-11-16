@@ -112,7 +112,7 @@ fn symbolize_module(builder: &mut CaptureBuilder, module: u32, info: &DebugInfo)
     symbolized
 }
 
-pub(super) fn locate(
+pub fn locate(
     path: &str,
     build_id: Option<&str>,
     digest: [u8; 16],

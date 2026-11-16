@@ -46,6 +46,35 @@ struct Mapped {
 struct Image {
     info: Option<Arc<DebugInfo>>,
     identity: Option<Arc<Identity>>,
+
+    deferred: Option<Arc<Deferred>>,
+}
+
+struct Deferred {
+    path: PathBuf,
+    full: std::sync::OnceLock<Option<DebugInfo>>,
+}
+
+impl Image {
+    fn lines(&self, search: &DebugFileSearch) -> Option<&DebugInfo> {
+        let info = self.info.as_deref()?;
+        let (Some(deferred), Some(identity)) = (&self.deferred, &self.identity) else {
+            return Some(info);
+        };
+
+        let full = deferred.full.get_or_init(|| {
+            crate::profiler::locate(
+                &deferred.path.to_string_lossy(),
+                identity.build_id.as_deref(),
+                identity.digest,
+                info.image.id(),
+                search,
+            )
+            .ok()
+            .map(|(_, full)| full)
+        });
+        Some(full.as_ref().unwrap_or(info))
+    }
 }
 
 #[derive(Debug)]
@@ -282,6 +311,7 @@ impl Stacks {
             let image = Image {
                 info: Some(Arc::new(info)),
                 identity: Some(Arc::new(Identity::of(&data))),
+                deferred: None,
             };
 
             Some((image, link))
@@ -865,9 +895,9 @@ impl Stacks {
                 )
             });
             let frame = builder.frame(FrameKind::Native, module, image_address, 0);
-            if let Some(info) = &mapped.image.info
-                && module != NONE
+            if module != NONE
                 && !builder.symbolized(frame)
+                && let Some(info) = mapped.image.lines(&self.search)
             {
                 let lines = symbolize_lines(&info.image, ImageAddress::new(image_address));
                 let inputs: Vec<LineInput<'_>> = lines.iter().map(OwnedLine::input).collect();
@@ -1068,6 +1098,7 @@ impl Stacks {
             image: Image {
                 info: Some(Arc::new(info)),
                 identity: None,
+                deferred: None,
             },
             generated: true,
             anonymous: true,
@@ -1089,11 +1120,23 @@ impl Stacks {
         let id = self.next_image_id();
         let image = crate::image::backing::read_input(file)
             .ok()
-            .map(|(data, _)| Image {
-                info: crate::debug_info::load_module_bytes(file, &data, id, &self.search)
-                    .ok()
-                    .map(Arc::new),
-                identity: Some(Arc::new(Identity::of(&data))),
+            .map(|(data, _)| {
+                let loaded =
+                    crate::debug_info::load_profile_module_bytes(file, &data, id, &self.search)
+                        .ok();
+                Image {
+                    deferred: loaded
+                        .as_ref()
+                        .is_some_and(|(_, deferred)| *deferred)
+                        .then(|| {
+                            Arc::new(Deferred {
+                                path: file.to_path_buf(),
+                                full: std::sync::OnceLock::new(),
+                            })
+                        }),
+                    info: loaded.map(|(info, _)| Arc::new(info)),
+                    identity: Some(Arc::new(Identity::of(&data))),
+                }
             })
             .unwrap_or_default();
         self.images.insert(key, image.clone());

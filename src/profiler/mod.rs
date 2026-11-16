@@ -9,6 +9,7 @@ pub mod ladder;
 mod probes;
 mod record;
 pub(crate) use record::{OwnedLine, hex, symbolize as symbolize_lines};
+pub(crate) use symbols::locate;
 
 mod inspect;
 mod segments;
