@@ -697,40 +697,30 @@ fn collect_versions(object: &object::File<'_>, raw: &mut BTreeMap<(Box<[u8]>, u6
     }
 }
 
+type Spelled = Vec<((Box<[u8]>, u64), RawSymbol)>;
+
 fn distinguish_versions(
     raw: BTreeMap<(Box<[u8]>, u64), RawSymbol>,
 ) -> BTreeMap<(Box<[u8]>, u64), RawSymbol> {
-    fn respell(
-        raw: BTreeMap<(Box<[u8]>, u64), RawSymbol>,
-        default: bool,
-    ) -> BTreeMap<(Box<[u8]>, u64), RawSymbol> {
-        let mut addresses = BTreeMap::<&[u8], usize>::new();
-        for (name, _) in raw.keys() {
-            *addresses.entry(name).or_default() += 1;
+    fn respell(raw: Spelled, default: bool) -> Spelled {
+        let next = raw
+            .windows(2)
+            .map(|pair| matches!(pair, [((left, _), _), ((right, _), _)] if left == right))
+            .chain([false])
+            .collect::<Vec<_>>();
+        let shared = std::iter::once(false)
+            .chain(next.iter().copied())
+            .zip(&next)
+            .map(|(before, after)| before || *after)
+            .collect::<Vec<_>>();
+        if !shared.contains(&true) {
+            return raw;
         }
 
-        let shared = addresses
-            .into_iter()
-            .filter(|(_, count)| *count > 1)
-            .map(|(name, _)| Box::<[u8]>::from(name))
-            .collect::<BTreeSet<_>>();
-        let mut spelled = BTreeMap::new();
-        let mut add = |key: (Box<[u8]>, u64), symbol: RawSymbol| match spelled.entry(key) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(symbol);
-            }
-
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                let existing: &mut RawSymbol = entry.get_mut();
-                existing.exported |= symbol.exported;
-                existing.unversioned |= symbol.unversioned;
-                existing.versions.extend(symbol.versions);
-            }
-        };
-
-        for ((name, address), mut symbol) in raw {
-            if !shared.contains(&name) {
-                add((name, address), symbol);
+        let mut spelled = Vec::with_capacity(raw.len());
+        for (((name, address), mut symbol), shared) in raw.into_iter().zip(shared) {
+            if !shared {
+                spelled.push(((name, address), symbol));
                 continue;
             }
 
@@ -741,7 +731,7 @@ fn distinguish_versions(
 
             for (version, _) in respelled {
                 let spelling = [&name[..], separator, &version].concat().into_boxed_slice();
-                add(
+                spelled.push((
                     (spelling, address),
                     RawSymbol {
                         exported: true,
@@ -749,19 +739,32 @@ fn distinguish_versions(
                         versions: Vec::new(),
                         ..symbol
                     },
-                );
+                ));
             }
 
             symbol.versions = kept;
             if symbol.unversioned || !symbol.versions.is_empty() {
-                add((name, address), symbol);
+                spelled.push(((name, address), symbol));
             }
         }
 
+        spelled.sort_by(|(left, _), (right, _)| left.cmp(right));
+        spelled.dedup_by(|(key, later), (kept_key, kept)| {
+            if key != kept_key {
+                return false;
+            }
+
+            kept.exported |= later.exported;
+            kept.unversioned |= later.unversioned;
+            kept.versions.append(&mut later.versions);
+            true
+        });
         spelled
     }
 
-    respell(respell(raw, false), true)
+    respell(respell(raw.into_iter().collect(), false), true)
+        .into_iter()
+        .collect()
 }
 
 fn got_slots(object: &object::File<'_>) -> Vec<GotSlot> {
@@ -1059,18 +1062,14 @@ fn normalize(
     let mut symbols = raw
         .into_iter()
         .map(|((name, address), symbol)| {
-            let extent = symbol.code_section.and_then(|section| {
-                extent(address, symbol.size, section, &code_starts, &unwind_ends)
-            });
-            let storage = symbol
-                .storage_section
-                .and_then(|section| storage(address, symbol.size, section));
             let spelling = Arc::<str>::from(String::from_utf8_lossy(&name));
-            (address, spelling, name, symbol, (extent, storage))
+            (address, spelling, name, symbol)
         })
         .collect::<Vec<_>>();
 
-    symbols.sort_by(|left, right| (left.0, &left.1, &left.2).cmp(&(right.0, &right.1, &right.2)));
+    symbols.sort_unstable_by(|left, right| {
+        (left.0, &left.1, &left.2).cmp(&(right.0, &right.1, &right.2))
+    });
 
     debug_assert!(
         u32::try_from(symbols.len()).is_ok(),
@@ -1081,19 +1080,21 @@ fn normalize(
     symbols
         .into_iter()
         .zip(0..=u32::MAX)
-        .map(
-            |((address, name, _, symbol, (extent, storage)), index)| SymbolInfo {
-                id: SymbolId::new(index),
-                address: ImageAddress::new(address),
-                kind: symbol.kind,
-                binding: symbol.binding,
-                exported: symbol.exported,
-                role: super::roles::symbol_role(&name),
-                name,
-                extent,
-                storage,
-            },
-        )
+        .map(|((address, name, _, symbol), index)| SymbolInfo {
+            id: SymbolId::new(index),
+            address: ImageAddress::new(address),
+            kind: symbol.kind,
+            binding: symbol.binding,
+            exported: symbol.exported,
+            role: super::roles::symbol_role(&name),
+            name,
+            extent: symbol.code_section.and_then(|section| {
+                extent(address, symbol.size, section, &code_starts, &unwind_ends)
+            }),
+            storage: symbol
+                .storage_section
+                .and_then(|section| storage(address, symbol.size, section)),
+        })
         .collect()
 }
 

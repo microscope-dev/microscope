@@ -145,14 +145,23 @@ fn go_loop_parent(name: &str) -> Option<&str> {
         .then_some(parent)
 }
 
+const ROLES: [(&str, CodeRole); 4] = [
+    ("_start", CodeRole::Outermost),
+    ("__restore_rt", CodeRole::SignalTrampoline),
+    ("__rust_try", CodeRole::RuntimeInternal),
+    ("py::jit:executor", CodeRole::Interpreter),
+];
+
 pub fn symbol_role(name: &str) -> CodeRole {
-    match split_from(name) {
-        "_start" => CodeRole::Outermost,
-        "__restore_rt" => CodeRole::SignalTrampoline,
-        "__rust_try" => CodeRole::RuntimeInternal,
-        "py::jit:executor" => CodeRole::Interpreter,
-        _ => CodeRole::Ordinary,
+    if !ROLES.iter().any(|(role, _)| name.starts_with(role)) {
+        return CodeRole::Ordinary;
     }
+
+    let name = split_from(name);
+    ROLES
+        .iter()
+        .find(|(role, _)| *role == name)
+        .map_or(CodeRole::Ordinary, |(_, role)| *role)
 }
 
 const CPYTHON_MACHINERY: [&str; 87] = [
