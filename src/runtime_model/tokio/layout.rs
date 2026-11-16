@@ -20,7 +20,6 @@ pub struct Storage {
     pub tls: ThreadLocal,
     pub value: Field,
 
-    pub state_tls: ThreadLocal,
     pub state: u64,
     pub alive: u64,
 }
@@ -28,39 +27,14 @@ pub struct Storage {
 impl Storage {
     fn bind(image: &dyn RuntimeImage, scope: &str, value: &str) -> Option<Result<Self, Missing>> {
         let tls = thread_local_storage(image, scope)?;
-        Some(tls.and_then(|tls| Self::bind_at(image, scope, value, tls)))
+        Some(tls.and_then(|tls| Self::bind_at(image, value, tls)))
     }
 
-    fn bind_at(
-        image: &dyn RuntimeImage,
-        scope: &str,
-        value: &str,
-        tls: ThreadLocal,
-    ) -> Result<Self, Missing> {
-        let [newest, older] = crate::rust_names::EAGER_STORAGE
-            .map(|storage| records::named(image, &format!("{storage}<{value}>")));
-        let storage = match newest.or_else(|missing| older.map_err(|_| missing)) {
-            Ok(storage) => storage,
-            Err(missing) => {
-                let Some(state_tls) =
-                    image.thread_local_within(scope, crate::rust_names::STATE_STATIC)
-                else {
-                    return Err(missing);
-                };
-
-                return Ok(Self {
-                    tls,
-                    value: Field {
-                        offset: 0,
-                        ty: records::named(image, value)?,
-                    },
-                    state_tls: state_tls?,
-                    state: 0,
-                    alive: crate::rust_names::STATE_STATIC_ALIVE,
-                });
-            }
-        };
-
+    fn bind_at(image: &dyn RuntimeImage, value: &str, tls: ThreadLocal) -> Result<Self, Missing> {
+        let storage = records::named(
+            image,
+            &format!("std::sys::thread_local::native::eager::Storage<{value}>"),
+        )?;
         let state = records::field(image, storage, &["state", "value", "value"])?;
         let alive = records::enumerator(image, state.ty, "Alive")?;
         if records::size(image, state.ty)? != 1 {
@@ -70,7 +44,6 @@ impl Storage {
         Ok(Self {
             tls,
             value: records::field(image, storage, &["val", "value"])?,
-            state_tls: tls,
             state: state.offset,
             alive,
         })
@@ -601,12 +574,11 @@ fn deque_words(
     deque: TypeReference,
 ) -> Result<(u64, u64, u64, u64), Missing> {
     let sized = |path: &[&str]| records::sized(image, deque, path, 8);
-    let raw = |name| sized(&["buf", "inner", name]).or_else(|_| sized(&["buf", name]));
     Ok((
         sized(&["head"])?,
         sized(&["len"])?,
-        raw("ptr")?,
-        raw("cap")?,
+        sized(&["buf", "inner", "ptr"])?,
+        sized(&["buf", "inner", "cap"])?,
     ))
 }
 

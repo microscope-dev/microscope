@@ -4,15 +4,6 @@ pub const RUST_PANIC: [&str; 2] = ["__rustc::rust_panic", "rust_panic"];
 
 pub const THREAD_LOCAL_STORAGE: [&str; 2] = ["__RUST_STD_INTERNAL_VAL", "VAL"];
 
-pub const EAGER_STORAGE: [&str; 2] = [
-    "std::sys::thread_local::native::eager::Storage",
-    "std::sys::thread_local::fast_local::eager::Storage",
-];
-
-pub const STATE_STATIC: &str = "STATE";
-
-pub const STATE_STATIC_ALIVE: u64 = 1;
-
 pub const ARC: [&str; 2] = ["alloc::sync::Arc", "alloc::rcs::arc::Arc"];
 
 pub fn drop_glue_of(ty: &str) -> [String; 2] {

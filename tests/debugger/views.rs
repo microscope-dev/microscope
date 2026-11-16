@@ -895,8 +895,8 @@ async fn tokio_values_present_as_their_views_say() {
                     [
                         "rust tokio::runtime::task::core::Cell<_, _>",
                         "rust tokio::sync::batch_semaphore::Acquire",
-                        "rust **::future::poll_fn::PollFn<tokio::sync::mpsc::**::recv::`{async_fn#0}`::`{closure_env#0}`<_>>",
-                        "rust **::future::poll_fn::PollFn<tokio::io::util::lines::**::next_line::`{async_fn#0}`::`{closure_env#0}`<_>>",
+                        "rust core::future::poll_fn::PollFn<tokio::sync::mpsc::**::recv::`{async_fn#0}`::`{closure_env#0}`<_>>",
+                        "rust core::future::poll_fn::PollFn<tokio::io::util::lines::**::next_line::`{async_fn#0}`::`{closure_env#0}`<_>>",
                         "rust tokio::runtime::io::scheduled_io::Readiness",
                     ]
                     .contains(&&*view.header)

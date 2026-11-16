@@ -55,7 +55,6 @@ struct Image {
     hidden: Vec<&'static str>,
     source: Option<&'static str>,
     overlay: Vec<TypeInfo>,
-    state: Option<ThreadLocal>,
 }
 
 const VERIFIED_SOURCE: &str = "/crates/tokio-1.51.6/src/runtime/task/raw.rs";
@@ -106,10 +105,6 @@ impl RuntimeImage for Image {
         scope: &str,
         name: &str,
     ) -> Option<Result<ThreadLocal, Arc<str>>> {
-        if name == crate::rust_names::STATE_STATIC {
-            return self.state.map(Ok);
-        }
-
         RuntimeImage::thread_local_within(self.module.as_ref(), scope, name)
     }
 
@@ -236,15 +231,6 @@ impl World {
         source: Option<&'static str>,
         overlay: Vec<TypeInfo>,
     ) -> Self {
-        Self::with_state(hidden, source, overlay, None)
-    }
-
-    fn with_state(
-        hidden: &[&'static str],
-        source: Option<&'static str>,
-        overlay: Vec<TypeInfo>,
-        state: Option<ThreadLocal>,
-    ) -> Self {
         static POLLS: OnceLock<(u64, u64)> = OnceLock::new();
         let module = module();
 
@@ -274,7 +260,6 @@ impl World {
             hidden: hidden.to_vec(),
             source,
             overlay,
-            state,
         };
 
         Self {
@@ -468,9 +453,7 @@ impl World {
         task: Option<u64>,
     ) {
         let context = self.context();
-        let (ThreadLocal::Offset(offset), ThreadLocal::Offset(state_offset)) =
-            (context.storage.tls, context.storage.state_tls)
-        else {
+        let ThreadLocal::Offset(offset) = context.storage.tls else {
             panic!("an executable's thread-local storage is at an offset");
         };
 
@@ -506,8 +489,7 @@ impl World {
         let pointer = HEAP + 0x1000_0000 * (tid + 1);
         let base = pointer.wrapping_add_signed(offset);
         self.memory.threads.insert(ThreadId::new(tid), pointer);
-        self.memory
-            .write(pointer.wrapping_add_signed(state_offset) + state, alive, 1);
+        self.memory.write(base + state, alive, 1);
 
         let (at, size, value) = handle_tag;
         self.memory.write(base + handle_at + at, value, size);
@@ -720,52 +702,6 @@ fn a_thread_runs_the_task_its_context_names() {
             )
             .expect("read")
             .is_none()
-    );
-}
-
-#[test]
-fn a_context_kept_apart_from_its_state_as_before_rust_1_80_is_read() {
-    let state = ThreadLocal::Offset(-0x4000);
-    let mut world = World::with_state(
-        &[
-            "std::sys::thread_local::native::eager::Storage<tokio::runtime::context::Context>",
-            "std::sys::thread_local::native::eager::Storage<tokio::task::local::LocalData>",
-        ],
-        Some(VERIFIED_SOURCE),
-        Vec::new(),
-        Some(state),
-    );
-    let storage = &world.context().storage;
-    assert_eq!(
-        (storage.value.offset, storage.state_tls, storage.state),
-        (0, state, 0)
-    );
-
-    let runtime = world.runtime(
-        Flavor::MultiThread,
-        3,
-        &[vec![(10, RUNNING)], vec![(11, 0)]],
-    );
-    world.thread(1, Some(&runtime), true, Some(10));
-    world.thread(2, Some(&runtime), true, None);
-    world.thread(3, Some(&runtime), true, Some(11));
-    let pointer = world.memory.threads[&ThreadId::new(3)];
-    world
-        .memory
-        .write(pointer.wrapping_add_signed(-0x4000), 2, 1);
-
-    let task = |number| ThreadActivity::Task {
-        number,
-        stack: crate::StackSegment::Task,
-    };
-    assert_eq!(world.activity(1), task(10));
-    assert_eq!(world.activity(2), ThreadActivity::Idle);
-    assert_eq!(world.activity(3), ThreadActivity::Outside);
-    let (listed, gaps) = world.tasks(4096, true);
-    assert!(gaps.is_empty(), "{gaps:?}");
-    assert_eq!(
-        listed.iter().map(|task| task.number).collect::<Vec<_>>(),
-        [10, 11]
     );
 }
 
@@ -1218,7 +1154,6 @@ fn a_missing_name_makes_only_what_needs_it_unavailable() {
         hidden: vec![pool],
         source: Some(VERIFIED_SOURCE),
         overlay: Vec::new(),
-        state: None,
     }));
     let page = without_pool.tasks(&memory, 0, 64, true);
     let numbers = page
@@ -1240,7 +1175,6 @@ fn a_missing_name_makes_only_what_needs_it_unavailable() {
         hidden: vec![header],
         source: Some(VERIFIED_SOURCE),
         overlay: Vec::new(),
-        state: None,
     }));
     let page = without_header.tasks(&memory, 0, 64, true);
     assert!(page.value.tasks.is_empty());
@@ -1262,7 +1196,6 @@ fn a_missing_name_makes_only_what_needs_it_unavailable() {
         hidden: vec![storage],
         source: Some(VERIFIED_SOURCE),
         overlay: Vec::new(),
-        state: None,
     }));
     let page = without_context.tasks(&memory, 0, 64, true);
     assert!(

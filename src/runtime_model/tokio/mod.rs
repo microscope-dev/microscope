@@ -551,14 +551,11 @@ fn alive(
     thread: ThreadId,
     what: &str,
 ) -> Result<Option<VirtualAddress>, Arc<str>> {
-    let at = thread_local(stop, &storage.state_tls, thread)?.wrapping_add(storage.state);
+    let base = thread_local(stop, &storage.tls, thread)?;
+    let at = base.wrapping_add(storage.state);
     let state = records::read(stop, at, 1)
         .ok_or_else(|| format!("the state of {what} at {at:#x} is unreadable"))?;
-    if state != storage.alive {
-        return Ok(None);
-    }
-
-    thread_local(stop, &storage.tls, thread).map(Some)
+    Ok((state == storage.alive).then_some(base))
 }
 
 impl RuntimeModel for TokioRuntime {
