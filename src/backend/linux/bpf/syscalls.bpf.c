@@ -297,8 +297,8 @@ static __always_inline u32 claim(void)
 	if (!claims)
 		return SCRATCHES;
 	for (u32 which = 0; which < SCRATCHES; which++)
-		if (!__sync_lock_test_and_set(&claims->busy[which], 1))
-			return which;
+		if (!__sync_lock_test_and_set(&claims->busy[which], which + 1))
+			return *(volatile u32 *)&claims->busy[which] - 1;
 	return SCRATCHES;
 }
 
