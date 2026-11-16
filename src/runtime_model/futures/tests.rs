@@ -38,6 +38,7 @@ const OPTION: u32 = 19;
 const SOME: u32 = 20;
 const NONE: u32 = 21;
 const TAG: u32 = 22;
+const PIN_DECLARED: u32 = 23;
 
 const AWAITEE: u64 = 8;
 
@@ -121,6 +122,26 @@ fn pin(id: u32, target: u32) -> TypeInfo {
         "Pin",
         vec![member("pointer", target, 0)],
     )
+}
+
+fn pin_outer(id: u32) -> TypeInfo {
+    TypeInfo {
+        name: "Pin<Box<outer>>".into(),
+        ..pin(id, OUTER_BOX)
+    }
+}
+
+fn declaration(defined: TypeInfo) -> TypeInfo {
+    TypeInfo {
+        byte_size: None,
+        kind: TypeKind::Record {
+            kind: RecordKind::Struct,
+            members: Arc::new([]),
+            bases: Arc::new([]),
+            incomplete: true,
+        },
+        ..defined
+    }
 }
 
 fn state(value: u64, kind: CoroutineStateKind, at: u64, awaits: Option<u32>) -> CoroutineState {
@@ -216,7 +237,7 @@ impl Types {
             ),
             pin(PIN_DYN, DYN_BOX),
             pointer(OUTER_BOX, "Box<outer>", Some(OUTER)),
-            pin(PIN_OUTER, OUTER_BOX),
+            pin_outer(PIN_OUTER),
             record(WRAPPER, "Coop<inner>", vec![member("fut", INNER, 0)]),
             named(
                 INSTRUMENTED,
@@ -256,6 +277,7 @@ impl Types {
         ]
         .into_iter()
         .chain(option(INNER))
+        .chain([declaration(pin_outer(PIN_DECLARED))])
         .collect();
         let outer = coroutine(vec![
             state(0, CoroutineStateKind::Unresumed, 10, None),
@@ -322,6 +344,18 @@ impl RuntimeImage for Types {
 
     fn thread_local(&self, _name: &str) -> Option<Result<ThreadLocal, Arc<str>>> {
         None
+    }
+
+    fn types_named(&self, name: &str) -> Vec<TypeReference> {
+        self.types
+            .iter()
+            .filter(|info| {
+                info.identity.as_ref().is_some_and(|identity| {
+                    format!("{}::{}", identity.path.join("::"), info.name) == name
+                })
+            })
+            .map(|info| info.reference)
+            .collect()
     }
 
     fn type_info(&self, ty: TypeReference) -> Option<&TypeInfo> {
@@ -503,6 +537,19 @@ fn a_chain_reads_each_coroutine_in_the_state_its_caller_chooses() {
     assert!(
         matches!(&chain.end, ChainEnd::Broken(reason) if reason.contains("unknown")),
         "{chain:?}"
+    );
+}
+
+#[test]
+fn a_pin_declared_without_its_members_points_where_its_definition_does() {
+    let types = Types::new();
+    assert_eq!(
+        super::pinned_target(&types, reference(PIN_DECLARED)),
+        Some(reference(OUTER))
+    );
+    assert_eq!(
+        super::pinned_target(&types, reference(PIN_OUTER)),
+        Some(reference(OUTER))
     );
 }
 

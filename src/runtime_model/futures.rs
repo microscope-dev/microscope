@@ -371,6 +371,15 @@ fn representation(
                 ty = *target;
                 continue;
             }
+            TypeKind::Record {
+                incomplete: true, ..
+            }
+            | TypeKind::Variant {
+                incomplete: true, ..
+            } => {
+                ty = defined(image, info)?;
+                continue;
+            }
 
             TypeKind::Pointer {
                 target: Some(target),
@@ -428,6 +437,12 @@ fn representation(
     }
 
     None
+}
+
+fn defined(image: &dyn RuntimeImage, declared: &crate::TypeInfo) -> Option<TypeReference> {
+    let identity = declared.identity.as_ref()?;
+    let name = format!("{}::{}", identity.path.join("::"), declared.name);
+    records::named(image, &name).ok()
 }
 
 fn is_coroutine(image: &dyn RuntimeImage, mut ty: TypeReference) -> bool {
