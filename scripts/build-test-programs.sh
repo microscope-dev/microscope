@@ -1400,7 +1400,7 @@ build_tokio_fixtures() {
     variant lines lines "" "" workers
     variant stripped stripped "" "" workers
     variant remapped dev \
-        "--remap-path-prefix=${MICROSCOPE_FIXTURE_CRATES}/tokio-1.53.2=/vendor/tokio" "" workers
+        "--remap-path-prefix=${MICROSCOPE_FIXTURE_CRATES}/tokio-1.54.1=/vendor/tokio" "" workers
 
 
     variant unstable dev "--cfg tokio_unstable" "" workers

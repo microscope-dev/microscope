@@ -38,7 +38,7 @@ fn release(fixture: &str) -> &'static str {
     if fixture.contains("-1.51-") {
         "1.51.6"
     } else {
-        "1.53.2"
+        "1.54.1"
     }
 }
 
@@ -789,7 +789,7 @@ async fn every_type_of_a_large_program_is_read_and_named_once() {
         let shared = if release(fixture) == "1.51.6" {
             296
         } else {
-            312
+            640
         };
 
         for (name, size) in [

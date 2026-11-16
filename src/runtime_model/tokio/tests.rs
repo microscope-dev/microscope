@@ -15,7 +15,7 @@ use crate::{
     TypeReference, VirtualAddress,
 };
 
-const FIXTURE: &str = "tokio-workers-o0";
+const FIXTURE: &str = "tokio-workers-1.51-o0";
 
 const HEAP: u64 = 0x7000_0000_0000;
 
@@ -29,7 +29,7 @@ const REF_ONE: u64 = 1 << 6;
 fn one_queue(model: &TokioRuntime) -> Guarded {
     match &model.layout.pool.as_ref().expect("the pool binds").queues {
         Queues::One(one) => *one,
-        other @ Queues::Chosen { .. } => panic!("tokio 1.53 has one blocking queue: {other:?}"),
+        other @ Queues::Chosen { .. } => panic!("tokio 1.51 has one blocking queue: {other:?}"),
     }
 }
 
@@ -58,7 +58,7 @@ struct Image {
     state: Option<ThreadLocal>,
 }
 
-const VERIFIED_SOURCE: &str = "/crates/tokio-1.53.2/src/runtime/task/raw.rs";
+const VERIFIED_SOURCE: &str = "/crates/tokio-1.51.6/src/runtime/task/raw.rs";
 
 impl RuntimeImage for Image {
     fn producers(&self) -> Vec<&str> {
@@ -1291,14 +1291,17 @@ fn locks_are_held_as_their_mutex_says() {
         let layout = super::layout::Layout::bind(image);
         let context = layout.context.expect("CONTEXT binds");
         let pool = layout.pool.expect("the pool binds");
-        let Queues::One(one) = pool.queues else {
-            panic!("tokio 1.53 has one blocking queue");
+        let queues = match pool.queues {
+            Queues::One(one) => vec![one.lock],
+            Queues::Chosen {
+                locked, sharded, ..
+            } => vec![locked.lock, sharded.lock],
         };
         context
             .runtimes
             .iter()
             .map(|(.., runtime)| runtime.owned.shard_lock)
-            .chain([one.lock])
+            .chain(queues)
             .collect::<Vec<_>>()
     };
 
