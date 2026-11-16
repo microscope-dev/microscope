@@ -396,17 +396,29 @@ static __always_inline void *ring(void)
 	return bpf_map_lookup_elem(&EVENTS, &cpu);
 }
 
-static __always_inline void *reserve(u64 size)
+#define WAKE_SHIFT 2
+
+static __always_inline u64 wakeup(void *events, u64 size, u64 otherwise)
+{
+	u64 held = bpf_ringbuf_query(events, BPF_RB_AVAIL_DATA);
+	u64 mark = bpf_ringbuf_query(events, BPF_RB_RING_SIZE) >> WAKE_SHIFT;
+	return held <= mark && held + size > mark ? BPF_RB_FORCE_WAKEUP : otherwise;
+}
+
+static __always_inline void *reserve(u64 size, u64 otherwise, u64 *wake)
 {
 	void *events = ring();
-	return events ? bpf_ringbuf_reserve(events, size, 0) : 0;
+	if (!events)
+		return 0;
+	*wake = wakeup(events, size, otherwise);
+	return bpf_ringbuf_reserve(events, size, 0);
 }
 
 
 static __always_inline int output(void *data, u64 size)
 {
 	void *events = ring();
-	if (events && !bpf_ringbuf_output(events, data, size, 0))
+	if (events && !bpf_ringbuf_output(events, data, size, wakeup(events, size, BPF_RB_NO_WAKEUP)))
 		return 0;
 	lost();
 	return -1;
@@ -416,7 +428,7 @@ static __always_inline int output(void *data, u64 size)
 static __always_inline int emit(void *data, u64 size)
 {
 	void *events = ring();
-	return events ? bpf_ringbuf_output(events, data, size, 0) : -1;
+	return events ? bpf_ringbuf_output(events, data, size, wakeup(events, size, BPF_RB_NO_WAKEUP)) : -1;
 }
 
 
@@ -804,7 +816,8 @@ static __always_inline int send_call(u32 tid, u32 tgid, struct entry *entry, u32
 {
 
 	if (kind == RECORD_CALL && entry->exec_tid && entry->exec_tid != tid) {
-		struct handoff_record *handoff = reserve(sizeof(*handoff));
+		u64 wake = 0;
+		struct handoff_record *handoff = reserve(sizeof(*handoff), BPF_RB_NO_WAKEUP, &wake);
 		if (handoff) {
 			handoff->header.kind = RECORD_HANDOFF;
 			handoff->header.size = sizeof(*handoff);
@@ -813,7 +826,7 @@ static __always_inline int send_call(u32 tid, u32 tgid, struct entry *entry, u32
 			handoff->entered = entry->entered;
 			handoff->former = entry->exec_tid;
 			handoff->pad = 0;
-			bpf_ringbuf_submit(handoff, 0);
+			bpf_ringbuf_submit(handoff, wake);
 		} else {
 			lost();
 		}
@@ -1414,7 +1427,8 @@ int process_fork(u64 *ctx)
 	if (child_tgid == parent_tgid || (settings->flags & CONFIG_FOLLOW))
 		know(child);
 
-	struct spawn_record *record = reserve(sizeof(*record));
+	u64 wake = 0;
+	struct spawn_record *record = reserve(sizeof(*record), 0, &wake);
 	if (!record) {
 		lost();
 		return 0;
@@ -1428,7 +1442,7 @@ int process_fork(u64 *ctx)
 	record->time = bpf_ktime_get_ns();
 	record->child = child_tid;
 	record->child_tgid = child_tgid;
-	bpf_ringbuf_submit(record, 0);
+	bpf_ringbuf_submit(record, wake);
 	return 0;
 }
 
@@ -1476,7 +1490,8 @@ int process_exec(u64 *ctx)
 
 static __always_inline void send_exit(u32 tid, u32 tgid, u64 now, s32 code, u32 last)
 {
-	struct exit_record *record = reserve(sizeof(*record));
+	u64 wake = 0;
+	struct exit_record *record = reserve(sizeof(*record), 0, &wake);
 	if (!record) {
 		lost();
 		return;
@@ -1488,7 +1503,7 @@ static __always_inline void send_exit(u32 tid, u32 tgid, u64 now, s32 code, u32 
 	record->time = now;
 	record->code = code;
 	record->last = last;
-	bpf_ringbuf_submit(record, 0);
+	bpf_ringbuf_submit(record, wake);
 }
 
 
@@ -1558,7 +1573,8 @@ int signal_deliver(u64 *ctx)
 		if (send_stack(ctx, tid, tgid, regs, settings->flags, 0))
 			flags = CALL_STACK_LOST;
 	}
-	struct signal_record *record = reserve(sizeof(*record));
+	u64 wake = 0;
+	struct signal_record *record = reserve(sizeof(*record), 0, &wake);
 	if (!record) {
 		lost();
 		return 0;
@@ -1574,7 +1590,7 @@ int signal_deliver(u64 *ctx)
 		__builtin_memset(record->info, 0, sizeof(record->info));
 		record->flags |= SIGNAL_INFO_LOST;
 	}
-	bpf_ringbuf_submit(record, 0);
+	bpf_ringbuf_submit(record, wake);
 	return 0;
 }
 
