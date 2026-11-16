@@ -446,7 +446,7 @@ static __always_inline u8 abi_of(u64 id, u8 *flags)
 {
 	struct task_struct *task = bpf_get_current_task_btf();
 	if (bpf_core_field_exists(task->thread_info.status)) {
-		if (BPF_CORE_READ(task, thread_info.status) & TS_COMPAT)
+		if (task->thread_info.status & TS_COMPAT)
 			return ABI_32;
 	} else {
 		*flags |= CALL_ABI_UNCERTAIN;
@@ -457,19 +457,19 @@ static __always_inline u8 abi_of(u64 id, u8 *flags)
 static __always_inline void read_args(struct pt_regs *regs, u8 abi, u64 *args)
 {
 	if (abi == ABI_32) {
-		args[0] = BPF_CORE_READ(regs, bx) & 0xffffffff;
-		args[1] = BPF_CORE_READ(regs, cx) & 0xffffffff;
-		args[2] = BPF_CORE_READ(regs, dx) & 0xffffffff;
-		args[3] = BPF_CORE_READ(regs, si) & 0xffffffff;
-		args[4] = BPF_CORE_READ(regs, di) & 0xffffffff;
-		args[5] = BPF_CORE_READ(regs, bp) & 0xffffffff;
+		args[0] = regs->bx & 0xffffffff;
+		args[1] = regs->cx & 0xffffffff;
+		args[2] = regs->dx & 0xffffffff;
+		args[3] = regs->si & 0xffffffff;
+		args[4] = regs->di & 0xffffffff;
+		args[5] = regs->bp & 0xffffffff;
 	} else {
-		args[0] = BPF_CORE_READ(regs, di);
-		args[1] = BPF_CORE_READ(regs, si);
-		args[2] = BPF_CORE_READ(regs, dx);
-		args[3] = BPF_CORE_READ(regs, r10);
-		args[4] = BPF_CORE_READ(regs, r8);
-		args[5] = BPF_CORE_READ(regs, r9);
+		args[0] = regs->di;
+		args[1] = regs->si;
+		args[2] = regs->dx;
+		args[3] = regs->r10;
+		args[4] = regs->r8;
+		args[5] = regs->r9;
 	}
 }
 
@@ -1012,7 +1012,7 @@ static __always_inline int send_v8(u32 which, u32 tid, u32 tgid, struct pt_regs 
 	header->isolate_read = V8_ISOLATE_NOT_READ;
 	header->pad[0] = header->pad[1] = 0;
 	header->isolate = 0;
-	v8_walk(layout, stack, BPF_CORE_READ(regs, bp), BPF_CORE_READ(regs, ip));
+	v8_walk(layout, stack, regs->bp, regs->ip);
 	u32 frames = header->frames;
 	if (frames > V8_FRAMES)
 		frames = V8_FRAMES;
@@ -1054,23 +1054,23 @@ static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_re
 	record->entered = entered;
 	record->interpreted = interpreted;
 	record->pad = 0;
-	record->regs[0] = BPF_CORE_READ(regs, ax);
-	record->regs[1] = BPF_CORE_READ(regs, dx);
-	record->regs[2] = BPF_CORE_READ(regs, cx);
-	record->regs[3] = BPF_CORE_READ(regs, bx);
-	record->regs[4] = BPF_CORE_READ(regs, si);
-	record->regs[5] = BPF_CORE_READ(regs, di);
-	record->regs[6] = BPF_CORE_READ(regs, bp);
-	record->regs[7] = BPF_CORE_READ(regs, sp);
-	record->regs[8] = BPF_CORE_READ(regs, r8);
-	record->regs[9] = BPF_CORE_READ(regs, r9);
-	record->regs[10] = BPF_CORE_READ(regs, r10);
-	record->regs[11] = BPF_CORE_READ(regs, r11);
-	record->regs[12] = BPF_CORE_READ(regs, r12);
-	record->regs[13] = BPF_CORE_READ(regs, r13);
-	record->regs[14] = BPF_CORE_READ(regs, r14);
-	record->regs[15] = BPF_CORE_READ(regs, r15);
-	record->regs[16] = BPF_CORE_READ(regs, ip);
+	record->regs[0] = regs->ax;
+	record->regs[1] = regs->dx;
+	record->regs[2] = regs->cx;
+	record->regs[3] = regs->bx;
+	record->regs[4] = regs->si;
+	record->regs[5] = regs->di;
+	record->regs[6] = regs->bp;
+	record->regs[7] = regs->sp;
+	record->regs[8] = regs->r8;
+	record->regs[9] = regs->r9;
+	record->regs[10] = regs->r10;
+	record->regs[11] = regs->r11;
+	record->regs[12] = regs->r12;
+	record->regs[13] = regs->r13;
+	record->regs[14] = regs->r14;
+	record->regs[15] = regs->r15;
+	record->regs[16] = regs->ip;
 	long walked = bpf_get_stack(ctx, buffer->data + sizeof(*record), STACK_FRAMES * 8,
 				    BPF_F_USER_STACK);
 	u32 frames = walked > 0 ? (u32)walked / 8 : 0;
@@ -1159,7 +1159,7 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 
 
 
-	if (id == 121 && BPF_CORE_READ(regs, si) == FAULT_SKIP_ENTRY)
+	if (id == 121 && regs->si == FAULT_SKIP_ENTRY)
 		return 0;
 #endif
 	u64 ids = bpf_get_current_pid_tgid();
@@ -1227,7 +1227,7 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 {
 #ifdef MICROSCOPE_FAULTS
 
-	if (BPF_CORE_READ(regs, orig_ax) == 121 && BPF_CORE_READ(regs, si) == FAULT_SKIP_EXIT)
+	if (regs->orig_ax == 121 && regs->si == FAULT_SKIP_EXIT)
 		return 0;
 #endif
 	u64 ids = bpf_get_current_pid_tgid();
@@ -1251,7 +1251,7 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 		return 0;
 	}
 	u8 known = found->known;
-	u64 id = BPF_CORE_READ(regs, orig_ax);
+	u64 id = regs->orig_ax;
 
 
 
@@ -1342,7 +1342,7 @@ SEC("kprobe")
 int terminal_enter(void *ctx)
 {
 	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
-	return on_enter(ctx, regs, BPF_CORE_READ(regs, orig_ax), 1);
+	return on_enter(ctx, regs, regs->orig_ax, 1);
 }
 
 
@@ -1354,7 +1354,7 @@ int terminal_enter(void *ctx)
 	int enter_##n(u64 *ctx)                                                    \
 	{                                                                          \
 		struct pt_regs *regs = (struct pt_regs *)ctx[0];                   \
-		return on_enter(ctx, regs, BPF_CORE_READ(regs, orig_ax), 0);       \
+		return on_enter(ctx, regs, regs->orig_ax, 0);       \
 	}                                                                          \
 	SEC("fexit")                                                               \
 	int exit_##n(u64 *ctx)                                                     \
