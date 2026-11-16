@@ -2766,6 +2766,59 @@ mod bpf {
         }
     }
 
+    #[cfg(feature = "tools")]
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn each_program_verifies_within_its_budget() {
+        let budget = |program: &str| match program.trim_end_matches(|c: char| c.is_ascii_digit()) {
+            "sys_enter" | "enter_" => Some(160_000),
+            "sys_exit" | "exit_" => Some(300_000),
+            "signal_deliver" | "python_sample" | "python_sample with kernel samples" => {
+                Some(100_000)
+            }
+            "terminal_enter" => Some(52_000),
+            "process_end" | "process_exec" | "process_exit" | "process_fork" | "in_flight" => {
+                Some(2_000)
+            }
+            _ => None,
+        };
+
+        for (filter, expected) in [
+            ("trace=all", ["sys_enter", "sys_exit", "terminal_enter"]),
+            (
+                "trace=getpgid,exit_group",
+                ["enter_0", "exit_0", "terminal_enter"],
+            ),
+        ] {
+            let output = Command::new(launcher())
+                .env_clear()
+                .arg(env!("CARGO_BIN_EXE_microscope-tools"))
+                .args(["bpf-verified", "--syscall-filter", filter])
+                .output()
+                .expect("run microscope-tools bpf-verified");
+            assert!(output.status.success(), "{}", text(&output.stderr));
+            let verified: BTreeMap<String, u64> =
+                serde_json::from_slice(&output.stdout).expect("JSON of each program's count");
+
+            for program in expected {
+                assert!(
+                    verified.contains_key(program),
+                    "{filter}: no {program} in {verified:?}"
+                );
+            }
+
+            let over: Vec<String> = verified
+                .iter()
+                .filter_map(|(program, &count)| match budget(program) {
+                    Some(most) if count <= most => None,
+                    Some(most) => Some(format!("{program}: {count} > {most}")),
+                    None => Some(format!("{program}: {count}, and no budget")),
+                })
+                .collect();
+            assert!(over.is_empty(), "{filter}: {over:#?}");
+        }
+    }
+
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_waiting_calls_stack_is_taken_as_it_begins() {

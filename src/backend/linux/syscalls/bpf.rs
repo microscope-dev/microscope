@@ -19,7 +19,8 @@ use super::ptrace::{Finished, TraceOptions, monotonic, seed_descriptors};
 
 use super::pairs::{Pairs, Taken};
 use super::rings::Merge;
-use crate::syscalls::captures::{self, CopyKind};
+use crate::syscalls::captures::{self, CopyKind, Limits};
+use crate::syscalls::filter::CallSet;
 use crate::syscalls::specs::{self, Arg, Count, MemKind, Ret, Struct};
 use crate::syscalls::stats::{self, BUCKETS, Folded};
 use crate::syscalls::{
@@ -1692,22 +1693,21 @@ impl Loaded {
     }
 
     fn fdinfo_sum(&self, field: &str, chosen: impl Fn(&str) -> bool) -> u64 {
-        use std::os::fd::{AsFd as _, AsRawFd as _};
         self.ebpf
             .programs()
             .filter(|(name, _)| chosen(name))
-            .filter_map(|(_, program)| program.fd().ok())
-            .filter_map(|fd| {
-                let raw = fd.as_fd().as_raw_fd();
-                std::fs::read_to_string(format!("/proc/self/fdinfo/{raw}")).ok()
-            })
-            .filter_map(|details| {
-                details
-                    .lines()
-                    .find_map(|line| line.strip_prefix(field))
-                    .and_then(|count| count.trim().parse::<u64>().ok())
-            })
+            .filter_map(|(_, program)| fdinfo(program.fd().ok()?.as_fd(), field))
             .sum()
+    }
+
+    fn verified(&self) -> Vec<(String, u64)> {
+        self.ebpf
+            .programs()
+            .filter_map(|(name, program)| {
+                let verified = fdinfo(program.fd().ok()?.as_fd(), "verified_insns:")?;
+                Some((name.to_owned(), verified))
+            })
+            .collect()
     }
 
     fn counted(&self, process: Pid) -> Folded {
@@ -1907,6 +1907,29 @@ fn attach(
     iterator.load("task", btf).map_err(load_error)?;
 
     Ok(())
+}
+
+#[must_use]
+pub fn fdinfo(fd: std::os::fd::BorrowedFd<'_>, field: &str) -> Option<u64> {
+    use std::os::fd::AsRawFd as _;
+    std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd()))
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix(field))
+        .and_then(|count| count.trim().parse().ok())
+}
+
+pub fn verified_instructions(calls: CallSet) -> Result<Vec<(String, u64)>, BpfError> {
+    Probe::read().check()?;
+    let options = TraceOptions {
+        calls,
+        limits: Limits::default(),
+        verbose: false,
+        follow: true,
+        stacks: None,
+    };
+    let loaded = Loaded::load(&options, BpfOptions::default(), false)?;
+    Ok(loaded.verified())
 }
 
 fn missing(name: &str) -> BpfError {

@@ -120,6 +120,14 @@ enum Tool {
     /// report what tracing cost each call.
     SyscallOverhead(SyscallOverheadArgs),
 
+    /// Load the BPF programs that trace the calls FILTER selects, and the
+    /// sampler's, and print how many instructions the verifier walked in
+    /// each as JSON. Needs `CAP_BPF` and `CAP_PERFMON`.
+    BpfVerified {
+        #[arg(long, default_value = "trace=all")]
+        syscall_filter: String,
+    },
+
     /// Record each Python interpreter under the snapshot engine, without
     /// the image cache and then with it warm, and report how long each
     /// snapshot held the program paused.
@@ -417,6 +425,11 @@ fn run(args: Args) -> Result<bool> {
         Tool::BenchSmoke(args) => smoke::run(&args),
         Tool::Overhead(overhead) => run_overhead(&overhead),
         Tool::SyscallOverhead(args) => run_syscall_overhead(&args),
+        Tool::BpfVerified { syscall_filter } => {
+            let verified = microscope::tools::bpf_verified::measure(&syscall_filter)?;
+            println!("{}", serde_json::to_string_pretty(&verified)?);
+            Ok(true)
+        }
         Tool::SnapshotPause(pause) => run_snapshot_pause(&pause, args.cache.as_deref()),
         Tool::UnwindOracle {
             program,

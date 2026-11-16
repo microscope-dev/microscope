@@ -603,6 +603,35 @@ impl V8Layouts {
     }
 }
 
+fn object(kernel: bool) -> Result<Ebpf, SamplerError> {
+    let cpus = aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?;
+    EbpfLoader::new()
+        .override_global("KERNEL_SAMPLES", &u32::from(kernel), true)
+        .override_global("loop_helper", &super::loop_helper(), true)
+        .map_max_entries("OUTPUT", u32::try_from(cpus).unwrap_or(u32::MAX))
+        .load(OBJECT)
+        .map_err(load_error)
+}
+
+fn loaded_program(ebpf: &mut Ebpf) -> Result<&mut PerfEvent, SamplerError> {
+    let program: &mut PerfEvent = ebpf
+        .program_mut("python_sample")
+        .ok_or_else(|| load_error("the object has no python_sample program"))?
+        .try_into()
+        .map_err(load_error)?;
+    program.load().map_err(load_error)?;
+    Ok(program)
+}
+
+#[cfg(feature = "tools")]
+pub fn verified_instructions(kernel: bool) -> Result<u64, SamplerError> {
+    let mut ebpf = object(kernel)?;
+    let program = loaded_program(&mut ebpf)?;
+    let fd = program.fd().map_err(load_error)?;
+    super::super::syscalls::bpf::fdinfo(fd.as_fd(), "verified_insns:")
+        .ok_or_else(|| load_error("the kernel reports no verified_insns"))
+}
+
 pub struct Sampler {
     _ebpf: Ebpf,
     layouts: PythonLayouts,
@@ -645,14 +674,7 @@ impl Sampler {
             )));
         }
 
-        let cpus = aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?;
-        let kernel = u32::from(kernel);
-        let mut ebpf = EbpfLoader::new()
-            .override_global("KERNEL_SAMPLES", &kernel, true)
-            .override_global("loop_helper", &super::loop_helper(), true)
-            .map_max_entries("OUTPUT", u32::try_from(cpus).unwrap_or(u32::MAX))
-            .load(OBJECT)
-            .map_err(load_error)?;
+        let mut ebpf = object(kernel)?;
         let outputs = events.outputs()?;
 
         {
@@ -666,12 +688,7 @@ impl Sampler {
             }
         }
 
-        let program: &mut PerfEvent = ebpf
-            .program_mut("python_sample")
-            .ok_or_else(|| load_error("the object has no python_sample program"))?
-            .try_into()
-            .map_err(load_error)?;
-        program.load().map_err(load_error)?;
+        let program = loaded_program(&mut ebpf)?;
         events
             .run_program(program.fd().map_err(load_error)?.as_fd())
             .map_err(SamplerError::Attach)?;
