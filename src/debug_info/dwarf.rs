@@ -4997,6 +4997,104 @@ mod tests {
     }
 
     #[test]
+    fn a_slice_of_a_type_reached_through_a_pointer_to_it_names_its_element() {
+        use gimli::write::{AttributeValue, Expression};
+
+        let encoding = Encoding {
+            format: Format::Dwarf32,
+            version: 4,
+            address_size: 8,
+        };
+        let mut written = WriteDwarf::new();
+        let id = written.units.add(Unit::new(encoding, LineProgram::none()));
+        let unit = written.units.get_mut(id);
+        let root = unit.root();
+        unit.get_mut(root)
+            .set(gimli::DW_AT_name, AttributeValue::String(b"a.rs".to_vec()));
+        unit.get_mut(root).set(
+            gimli::DW_AT_language,
+            AttributeValue::Language(gimli::DW_LANG_Rust),
+        );
+
+        let pointer = unit.add(root, gimli::DW_TAG_pointer_type);
+        let remote = unit.add(root, gimli::DW_TAG_structure_type);
+        let slice = unit.add(root, gimli::DW_TAG_structure_type);
+        let usize = unit.add(root, gimli::DW_TAG_base_type);
+
+        let entry = unit.get_mut(pointer);
+        entry.set(
+            gimli::DW_AT_name,
+            AttributeValue::String(b"*const Remote".to_vec()),
+        );
+        entry.set(gimli::DW_AT_type, AttributeValue::UnitRef(remote));
+        entry.set(gimli::DW_AT_byte_size, AttributeValue::Udata(8));
+
+        let entry = unit.get_mut(usize);
+        entry.set(gimli::DW_AT_name, AttributeValue::String(b"usize".to_vec()));
+        entry.set(
+            gimli::DW_AT_encoding,
+            AttributeValue::Encoding(gimli::DW_ATE_unsigned),
+        );
+        entry.set(gimli::DW_AT_byte_size, AttributeValue::Udata(8));
+
+        for (record, name, members) in [
+            (remote, "Remote", &[("remotes", slice)][..]),
+            (
+                slice,
+                "&[Remote]",
+                &[("data_ptr", pointer), ("length", usize)][..],
+            ),
+        ] {
+            let entry = unit.get_mut(record);
+            entry.set(gimli::DW_AT_name, AttributeValue::String(name.into()));
+            entry.set(gimli::DW_AT_byte_size, AttributeValue::Udata(16));
+            for (offset, (member, ty)) in (0..).step_by(8).zip(members) {
+                let die = unit.add(record, gimli::DW_TAG_member);
+                let entry = unit.get_mut(die);
+                entry.set(gimli::DW_AT_name, AttributeValue::String((*member).into()));
+                entry.set(gimli::DW_AT_type, AttributeValue::UnitRef(*ty));
+                entry.set(
+                    gimli::DW_AT_data_member_location,
+                    AttributeValue::Udata(offset),
+                );
+            }
+        }
+
+        let global = unit.add(root, gimli::DW_TAG_variable);
+        let mut location = Expression::new();
+        location.op_addr(Address::Constant(0x1000));
+        let entry = unit.get_mut(global);
+        entry.set(gimli::DW_AT_name, AttributeValue::String(b"FIRST".to_vec()));
+        entry.set(gimli::DW_AT_type, AttributeValue::UnitRef(pointer));
+        entry.set(gimli::DW_AT_location, AttributeValue::Exprloc(location));
+
+        let mut sections = Sections::new(EndianVec::new(LittleEndian));
+        written.write(&mut sections).expect("write test DWARF");
+
+        let elf = elf_with_dwarf(0x1000, 0x20, &sections);
+        let info = load_transient_bytes(Path::new("remotes"), &elf, crate::ModuleImageId::new(0))
+            .expect("load");
+        let named = |name: &str| {
+            info.image.types().find_map(|node| match node {
+                crate::TypeNode::Resolved(info) if info.name.as_ref() == name => Some(info),
+                _ => None,
+            })
+        };
+
+        let Some(crate::TypeInfo {
+            kind: crate::TypeKind::Slice { element, .. },
+            ..
+        }) = named("&[Remote]")
+        else {
+            panic!("{:?}", info.image.types().collect::<Vec<_>>());
+        };
+        assert_eq!(
+            Some(element.id),
+            named("Remote").map(|remote| remote.reference.id)
+        );
+    }
+
+    #[test]
     fn type_signature_references_resolve_only_indexed_primary_dies() {
         let signature = gimli::DebugTypeSignature(0x1234_5678_9abc_def0);
         let key = DieKey {

@@ -4227,15 +4227,17 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 .attr(gimli::DW_AT_data_member_location)
                 .and_then(gimli::Attribute::udata_value)
                 .ok_or("slice member has no constant offset")?;
+            let type_value = child.attr_value(gimli::DW_AT_type);
+            let type_key = self.reference(unit_index, type_value);
             let field_type = self
-                .target(child, unit_index)?
+                .type_reference(unit_index, type_value)?
                 .ok_or("slice member has no type")?;
-            fields.push((field_name, offset, field_type));
+            fields.push((field_name, offset, field_type, type_key));
         }
 
         if fields.len() != field_names.len()
             || fields.iter().zip(field_names).enumerate().any(
-                |(index, ((name, offset, _), expected_name))| {
+                |(index, ((name, offset, _, _), expected_name))| {
                     name.as_ref() != *expected_name || *offset != index as u64 * word_size
                 },
             )
@@ -4252,14 +4254,14 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let field = |word| {
             fields
                 .get(usize::from(word))
-                .map(|(_, _, field_type)| *field_type)
                 .ok_or("slice descriptor layout names a word past its members")
         };
-        let element = self.slice_element(layout, field(words.data)?)?;
+        let data = field(words.data)?.3;
+        let element = self.slice_element(layout, data)?;
         let counts = [Some(words.length), words.capacity];
 
         for word in counts.into_iter().flatten() {
-            let field_type = &field(word)?;
+            let field_type = field(word)?.2;
             let valid = matches!(self.unnamed(field_type.id), Some(TypeInfo {
                 kind: TypeKind::Base(BaseType {
                     encoding: BaseTypeEncoding::Unsigned | BaseTypeEncoding::Signed,
@@ -4295,7 +4297,7 @@ impl TypeArenaBuilder<'_, '_> {
     fn slice_element(
         &mut self,
         layout: SliceLayout,
-        data: TypeReference,
+        data: Option<DieKey>,
     ) -> std::result::Result<TypeReference, Arc<str>> {
         if let SliceLayout::RustBytes(bytes) = layout {
             let array = super::unit_at(self.units, bytes.unit)
@@ -4306,17 +4308,16 @@ impl TypeArenaBuilder<'_, '_> {
                 .ok_or_else(|| "string type's bytes have no type".into());
         }
 
-        match self.entries.get(data.id.index()) {
-            Some(TypeEntry::Resolved(TypeInfo {
-                kind:
-                    TypeKind::Pointer {
-                        target: Some(target),
-                        ..
-                    },
-                ..
-            })) => Ok(*target),
-            _ => Err("slice data member is not a typed pointer".into()),
+        let pointer = self.canonical_type_key(data.ok_or("slice data member has no type")?)?;
+        let entry = super::unit_at(self.units, pointer.unit)
+            .entry(gimli::UnitOffset(pointer.offset))
+            .map_err(malformed)?;
+        if entry.tag() != gimli::DW_TAG_pointer_type {
+            return Err("slice data member is not a typed pointer".into());
         }
+
+        self.type_reference(pointer.unit, entry.attr_value(gimli::DW_AT_type))?
+            .ok_or_else(|| "slice data member is not a typed pointer".into())
     }
 }
 
