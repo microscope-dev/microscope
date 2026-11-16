@@ -271,8 +271,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(false);
         }
 
-        let Some((module, _, _)) = self.holding(inferior, VirtualAddress::new(registers.rip))
-        else {
+        let Some((module, _, _)) = self.holding(inferior, registers.program_counter()) else {
             return Ok(false);
         };
 
@@ -298,8 +297,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if !activation.has_returned(self.stack_position(pid, &registers)) {
             return Ok(false);
         }
-        let Some((module, _, _)) = self.holding(inferior, VirtualAddress::new(registers.rip))
-        else {
+        let Some((module, _, _)) = self.holding(inferior, registers.program_counter()) else {
             return Ok(false);
         };
         Ok(self

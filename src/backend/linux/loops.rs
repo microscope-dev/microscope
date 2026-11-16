@@ -1,6 +1,6 @@
+use crate::backend::linux::Registers;
 use std::collections::BTreeSet;
 
-use nix::libc;
 use nix::unistd::Pid;
 
 use crate::unwind::{CallerProvider, CallerResult, DEFAULT_MAX_FRAMES};
@@ -57,7 +57,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn step_loops(
         &self,
         pid: Pid,
-        registers: &libc::user_regs_struct,
+        registers: &Registers,
         kind: StepKind,
         code_instance: Option<CodeInstanceId>,
         activation: Option<Activation>,
@@ -145,7 +145,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn enclosing_activation(
         &self,
         pid: Pid,
-        native: &libc::user_regs_struct,
+        native: &Registers,
         enclosing: FunctionId,
     ) -> Result<Option<(Activation, VirtualAddress)>> {
         let inferior = self.session.inferior().ok_or(crate::Error::NotRunning)?;
@@ -289,7 +289,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let begun_on = self.active_step().and_then(|start| start.source.clone());
         let here = self
-            .image_location(VirtualAddress::new(registers.rip))
+            .image_location(registers.program_counter())
             .and_then(|location| location.source);
 
         if !loops.in_body && !source_line_changed(begun_on.as_ref(), here.as_ref()) {

@@ -32,13 +32,13 @@ use crate::{
 
 use super::{ControllerChannels, ControllerMessage, EventSender, Executable, FileIdentity};
 use activation::{Activation, StackPosition};
+use arch::{BREAKPOINT_OPCODE, FloatingRegisters, Registers};
 use classify::{is_stopping_signal, is_superseded};
 use debug_registers::DebugRegisterPlan;
 use memory::MemoryAccessError;
 use modules::{ModuleMapping, loader_link_maps, mapped_module_load_bias, module_mappings};
 use native::{InspectionOps, LinuxPtrace, LinuxTraceOps, is_vanished_tracee};
 pub use proc_status::{Asleep, ThreadFiles};
-use registers::Fxsave;
 pub(super) use tls::CLibrary;
 pub use tls::RunningTls;
 use tls::TlsModule;
@@ -47,6 +47,7 @@ use trap::{AtTrap, Lift, Trap, TrapEvent};
 mod activation;
 mod agent_files;
 mod alarm;
+mod arch;
 mod assignments;
 mod async_frames;
 pub use async_frames::resume_address;
@@ -100,7 +101,6 @@ mod python_launch;
 pub mod reaped;
 #[cfg(debug_assertions)]
 mod recorded;
-mod registers;
 mod returns;
 mod run_control;
 mod run_phase;
@@ -206,7 +206,6 @@ pub fn watchpoint_capabilities() -> WatchpointCapabilities {
 
 const CONTROLLER_THREAD_NAME: &str = "microscope-controller";
 const WAITER_THREAD_NAME: &str = "microscope-waitpid";
-const BREAKPOINT_OPCODE: u8 = 0xcc;
 const TRAP_UNKNOWN: i32 = 5;
 const TRAP_HARDWARE_BREAKPOINT: i32 = 4;
 const MAX_LOGICAL_MEMORY_READ: usize = 1024 * 1024;

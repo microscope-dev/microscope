@@ -1,9 +1,9 @@
+use crate::backend::linux::Registers;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::IoSliceMut;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
-use nix::libc;
 use nix::sys::ptrace;
 use nix::sys::uio::{RemoteIoVec, process_vm_readv};
 use nix::unistd::Pid;
@@ -268,10 +268,11 @@ impl ProcessServices for RunningThread<'_> {
         usize::try_from(address).is_ok_and(|address| read_process(self.tls.pid, address, output))
     }
 
-    fn registers(&self, _lwp: Pid) -> Option<libc::user_regs_struct> {
-        let mut values = [0; super::core_dump::GENERAL_REGISTER_COUNT];
-        values[FS_BASE] = self.thread_pointer;
-        Some(super::core_dump::user_registers(values))
+    fn registers(&self, _lwp: Pid) -> Option<Registers> {
+        let mut registers =
+            Registers::from_general_registers([0; super::arch::GENERAL_REGISTER_COUNT]);
+        registers.set_thread_pointer(self.thread_pointer);
+        Some(registers)
     }
 
     fn read_descriptor(&self, address: u64, output: &mut [u8; DESCRIPTOR_SIZE]) -> bool {
@@ -299,13 +300,11 @@ impl ProcessServices for RunningThread<'_> {
 
 pub(super) const DESCRIPTOR_SIZE: usize = 12;
 
-const FS_BASE: usize = 21;
-
 fn thread_pointer(services: &dyn ProcessServices, thread: Pid) -> Result<u64, TlsError> {
     let thread_pointer = services
         .registers(thread)
         .ok_or_else(|| failed(format!("the registers of thread {thread} are unavailable")))?
-        .fs_base;
+        .thread_pointer();
     if thread_pointer == 0 {
         return Err(TlsError::Deferred);
     }
@@ -342,7 +341,7 @@ pub(super) trait ProcessServices {
         self.read(address, output)
     }
 
-    fn registers(&self, lwp: Pid) -> Option<libc::user_regs_struct>;
+    fn registers(&self, lwp: Pid) -> Option<Registers>;
 
     fn lookup_symbol(&self, object: Option<&str>, symbol: &str) -> Option<u64>;
 }
@@ -356,8 +355,8 @@ impl ProcessServices for LiveProcess {
         usize::try_from(address).is_ok_and(|address| read_process(self.pid, address, output))
     }
 
-    fn registers(&self, lwp: Pid) -> Option<libc::user_regs_struct> {
-        ptrace::getregs(lwp).ok()
+    fn registers(&self, lwp: Pid) -> Option<Registers> {
+        ptrace::getregs(lwp).ok().map(Registers::from_native)
     }
 
     fn lookup_symbol(&self, object: Option<&str>, symbol: &str) -> Option<u64> {

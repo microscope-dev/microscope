@@ -37,10 +37,9 @@ pub(super) fn tls_address(
 mod tests {
     use std::collections::BTreeMap;
 
-    use nix::libc;
-
     use super::*;
-    use crate::backend::linux::core_dump::{GENERAL_REGISTER_COUNT, user_registers};
+    use crate::backend::linux::Registers;
+    use crate::backend::linux::arch::GENERAL_REGISTER_COUNT;
 
     const THREAD_POINTER: u64 = 0x7000_0000;
     const DTV: u64 = 0x6000_0000;
@@ -60,9 +59,9 @@ mod tests {
             true
         }
 
-        fn registers(&self, _: Pid) -> Option<libc::user_regs_struct> {
-            let mut registers = user_registers([0; GENERAL_REGISTER_COUNT]);
-            registers.fs_base = self.thread_pointer;
+        fn registers(&self, _: Pid) -> Option<Registers> {
+            let mut registers = Registers::from_general_registers([0; GENERAL_REGISTER_COUNT]);
+            registers.set_thread_pointer(self.thread_pointer);
             Some(registers)
         }
 

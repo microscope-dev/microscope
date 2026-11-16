@@ -11,7 +11,6 @@ use super::breakpoints::remove_breakpoint_owner_from;
 use super::debug_registers;
 use super::frames::unwind_module_for;
 use super::native::{InspectionOps, LinuxTraceOps};
-use super::registers::x86_64_registers;
 use super::runtimes::BoundRuntime;
 use super::{BreakpointOwner, Controller, Edit, Inferior, debug_pid, debug_thread_id};
 
@@ -85,7 +84,7 @@ impl<P: InspectionOps> Controller<P> {
             return Ok(false);
         };
         let registers = self.ptrace.registers(pid)?;
-        let instruction = VirtualAddress::new(registers.rip);
+        let instruction = registers.program_counter();
         let context = crate::unwind::FrameContext {
             instruction,
             cfa: None,
@@ -93,7 +92,7 @@ impl<P: InspectionOps> Controller<P> {
         };
         let runtimes = self.runtimes(inferior);
         let mut provider =
-            self.caller_provider(inferior, &runtimes, pid, x86_64_registers(&registers), true);
+            self.caller_provider(inferior, &runtimes, pid, registers.register_file(), true);
         let cfa = provider.frame_cfa(&context).ok().map(VirtualAddress::get);
         let own = frame
             .get()
@@ -133,16 +132,17 @@ impl<P: InspectionOps> Controller<P> {
             });
         let returned = on_stack == Some(false)
             || cfa.is_some_and(|cfa| cfa > own)
-            || (in_runtime && registers.rbp > frame.get());
+            || (in_runtime && registers.frame_pointer() > frame.get());
         if returned {
             record!(
                 "the frame at {frame} on {pid} returned: the innermost frame is at {cfa:x?}, rbp {:#x}",
-                registers.rbp
+                registers.frame_pointer()
             );
             return Ok(true);
         }
         let building = in_builder
-            && (cfa == Some(own) || (hit && cfa.is_none() && registers.rbp == frame.get()));
+            && (cfa == Some(own)
+                || (hit && cfa.is_none() && registers.frame_pointer() == frame.get()));
         if building {
             record!("a new frame takes the place of the frame at {frame} on {pid}");
         }
@@ -306,14 +306,16 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return Ok(());
             }
             let registers = self.ptrace.registers(pid)?;
-            let returns_to = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
+            let pending =
+                registers.pending_return(|address| self.ptrace.read_word(pid, address))?;
+            let returns_to = pending.returns_to;
             record!("a collection begins on {pid}, returning to {returns_to}");
             let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             inferior.interpreted_moves.collecting.push(Collection {
                 thread: pid,
                 runtime,
                 returns_to,
-                stack: registers.rsp.wrapping_add(8),
+                stack: pending.stack,
                 places: None,
                 returned: false,
             });
@@ -321,7 +323,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if let Some(&(runtime, links)) = moves.replacers.get(&address) {
-            let mut frame = self.ptrace.registers(pid)?.rbp;
+            let mut frame = self.ptrace.registers(pid)?.frame_pointer();
             for _ in 0..links {
                 frame = self.ptrace.read_word(pid, frame)?;
             }
@@ -359,7 +361,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .find(|collection| {
                     collection.thread == pid
                         && collection.returns_to == address
-                        && collection.stack == registers.rsp
+                        && collection.stack == registers.stack_pointer()
                         && !collection.returned
                 })
         {

@@ -1,3 +1,5 @@
+use crate::backend::linux::Registers;
+use crate::backend::linux::arch::SYSCALL_INSTRUCTION;
 use std::time::Duration;
 
 use nix::unistd::Pid;
@@ -77,8 +79,8 @@ fn deliver_at_stop(
     let (status, _) = wait_stopped(edge, pid, wait);
     if let WaitEvent::Stopped(_, signal) = status {
         let (registers, metadata) = evidence(edge, pid)?;
-        let signal_entry =
-            metadata.code == crate::backend::linux::TRAP_UNKNOWN && registers.rip == native_handler;
+        let signal_entry = metadata.code == crate::backend::linux::TRAP_UNKNOWN
+            && registers.program_counter().get() == native_handler;
         if signal == Signal::SIGTRAP && signal_entry {
             return Ok(());
         }
@@ -90,7 +92,8 @@ fn deliver_at_stop(
         });
         return Err(Error::internal(format!(
             "native inspector activation was interrupted: {signal:?}, code {}, PC {:#x}, handler {native_handler:#x}",
-            metadata.code, registers.rip,
+            metadata.code,
+            registers.program_counter(),
         )));
     }
     if matches!(status, WaitEvent::PtraceEvent(_, _, event) if event == nix::libc::PTRACE_EVENT_STOP)
@@ -118,10 +121,7 @@ fn has_exited(pid: Pid) -> bool {
 fn evidence(
     edge: &LinuxPtrace,
     pid: Pid,
-) -> Result<(
-    nix::libc::user_regs_struct,
-    crate::backend::linux::SignalMetadata,
-)> {
+) -> Result<(Registers, crate::backend::linux::SignalMetadata)> {
     loop {
         if let Ok(registers) = edge.registers(pid)
             && let Ok(metadata) = edge.signal_metadata(pid)
@@ -146,9 +146,10 @@ fn query_stopped(
     wait: &crate::backend::linux::wait_hub::DirectWait,
 ) -> Result<u64> {
     let saved = edge.registers(pid)?;
-    let code = edge.read_word(pid, saved.rip)?;
+    let at = saved.program_counter();
+    let code = edge.read_word(pid, at.get())?;
     let scratch = saved
-        .rsp
+        .stack_pointer()
         .checked_sub(256)
         .ok_or_else(|| Error::internal("no scratch space below the thread's red zone"))?;
     let mut words = [0; 4];
@@ -156,16 +157,15 @@ fn query_stopped(
         *word = edge.read_word(pid, scratch + index as u64 * 8)?;
     }
     let mut query = saved;
-    query.rax = 13;
-    query.orig_rax = u64::MAX;
-    query.rdi = u64::try_from(signal.number())
+    let signal_number = u64::try_from(signal.number())
         .map_err(|_| Error::internal("a signal number is negative"))?;
-    query.rsi = 0;
-    query.rdx = scratch;
-    query.r10 = 8;
+    query.prepare_syscall(
+        nix::libc::SYS_rt_sigaction,
+        [signal_number, 0, scratch, 8, 0, 0],
+    );
     let mut exited = false;
     let outcome = (|| {
-        edge.write_word(pid, saved.rip, (code & !0xffff) | 0x050f)?;
+        edge.write_word(pid, at.get(), with_syscall_instruction(code))?;
         edge.set_registers(pid, query)?;
         edge.step(pid, None)?;
         let (status, timed_out) = wait_stopped(edge, pid, wait);
@@ -190,7 +190,7 @@ fn query_stopped(
         }
         let (registers, metadata) = evidence(edge, pid)?;
         record!("signal query trap code {}", metadata.code);
-        if !matches!(metadata.code, 1 | 2) || registers.rip != saved.rip.wrapping_add(2) {
+        if !matches!(metadata.code, 1 | 2) || !registers.after_syscall_instruction(at) {
             *interrupted = Some(crate::backend::linux::PendingSignal {
                 signal: Signal::SIGTRAP,
                 code: metadata.code,
@@ -198,16 +198,15 @@ fn query_stopped(
                 fault_address: metadata.fault_address,
             });
             return Err(Error::internal(format!(
-                "the signal query stopped for another trap (code {}, PC {:#x}, expected {:#x})",
+                "the signal query stopped for another trap (code {}, PC {}, syscall at {at})",
                 metadata.code,
-                registers.rip,
-                saved.rip.wrapping_add(2)
+                registers.program_counter(),
             )));
         }
-        if timed_out || registers.rax != 0 {
+        if timed_out || registers.syscall_result() != 0 {
             return Err(Error::internal(format!(
                 "rt_sigaction did not complete successfully (result {:#x})",
-                registers.rax
+                registers.syscall_result()
             )));
         }
         edge.read_word(pid, scratch)
@@ -220,7 +219,7 @@ fn query_stopped(
             for (index, word) in words.into_iter().enumerate() {
                 edge.write_word(pid, scratch + index as u64 * 8, word)?;
             }
-            edge.write_word(pid, saved.rip, code)?;
+            edge.write_word(pid, at.get(), code)?;
             edge.set_registers(pid, saved)
         });
         if restored.is_ok() {
@@ -238,9 +237,18 @@ fn query_stopped(
     outcome
 }
 
+fn with_syscall_instruction(word: u64) -> u64 {
+    let mut bytes = word.to_le_bytes();
+    for (byte, instruction) in bytes.iter_mut().zip(SYSCALL_INSTRUCTION) {
+        *byte = instruction;
+    }
+    u64::from_le_bytes(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::linux::arch::GENERAL_REGISTER_COUNT;
 
     struct Child(std::process::Child);
 
@@ -253,36 +261,8 @@ mod tests {
         }
     }
 
-    fn registers(registers: nix::libc::user_regs_struct) -> [u64; 27] {
-        [
-            registers.r15,
-            registers.r14,
-            registers.r13,
-            registers.r12,
-            registers.rbp,
-            registers.rbx,
-            registers.r11,
-            registers.r10,
-            registers.r9,
-            registers.r8,
-            registers.rax,
-            registers.rcx,
-            registers.rdx,
-            registers.rsi,
-            registers.rdi,
-            registers.orig_rax,
-            registers.rip,
-            registers.cs,
-            registers.eflags,
-            registers.rsp,
-            registers.ss,
-            registers.fs_base,
-            registers.gs_base,
-            registers.ds,
-            registers.es,
-            registers.fs,
-            registers.gs,
-        ]
+    fn registers(registers: Registers) -> [u64; GENERAL_REGISTER_COUNT] {
+        registers.general_registers()
     }
 
     #[test]
@@ -349,7 +329,7 @@ mod tests {
             &mut pending,
             &wait,
         );
-        let pc = edge.registers(pid).unwrap().rip;
+        let pc = edge.registers(pid).unwrap().program_counter().get();
         assert_eq!(
             pc, handler,
             "the kernel stops before any handler instruction"
@@ -414,13 +394,16 @@ mod tests {
             WaitEvent::PtraceEvent(..)
         ));
         let before = edge.registers(pid).unwrap();
-        let code = edge.read_word(pid, before.rip).unwrap();
+        let code = edge.read_word(pid, before.program_counter().get()).unwrap();
         let mut pending = None;
         let error = open_inspector(&edge, pid, 0, &mut pending).unwrap_err();
         assert!(error.to_string().contains("seccomp"), "{error}");
         assert!(pending.is_none());
         assert_eq!(registers(edge.registers(pid).unwrap()), registers(before));
-        assert_eq!(edge.read_word(pid, before.rip).unwrap(), code);
+        assert_eq!(
+            edge.read_word(pid, before.program_counter().get()).unwrap(),
+            code
+        );
         assert!(edge.detach(pid, None).unwrap());
         child.0.stdin.as_mut().unwrap().write_all(b"x").unwrap();
         assert!(child.0.wait().unwrap().success());
@@ -470,13 +453,16 @@ mod tests {
             let original = edge.registers(pid).unwrap();
             if bad_scratch {
                 let mut registers = original;
-                registers.rsp = original.rip + 256;
+                registers.set_stack_pointer(original.program_counter().get() + 256);
                 edge.set_registers(pid, registers).unwrap();
             }
             let before = edge.registers(pid).unwrap();
-            let code = edge.read_word(pid, before.rip).unwrap();
+            let code = edge.read_word(pid, before.program_counter().get()).unwrap();
             let scratch = (0..4)
-                .map(|at| edge.read_word(pid, before.rsp - 256 + at * 8).unwrap())
+                .map(|at| {
+                    edge.read_word(pid, before.stack_pointer() - 256 + at * 8)
+                        .unwrap()
+                })
                 .collect::<Vec<_>>();
             if let Some(signal) = interrupt {
                 edge.kill(pid, signal).unwrap();
@@ -484,10 +470,13 @@ mod tests {
             let mut pending = None;
             let outcome = query_stopped(&edge, pid, Signal::SIGUSR1, &mut pending, &wait);
             assert_eq!(registers(edge.registers(pid).unwrap()), registers(before));
-            assert_eq!(edge.read_word(pid, before.rip).unwrap(), code);
+            assert_eq!(
+                edge.read_word(pid, before.program_counter().get()).unwrap(),
+                code
+            );
             for (at, word) in scratch.into_iter().enumerate() {
                 assert_eq!(
-                    edge.read_word(pid, before.rsp - 256 + at as u64 * 8)
+                    edge.read_word(pid, before.stack_pointer() - 256 + at as u64 * 8)
                         .unwrap(),
                     word
                 );

@@ -75,7 +75,7 @@ impl<P: InspectionOps> Controller<P> {
     }
 
     fn own_thread_pointer(&self, pid: Pid) -> Option<u64> {
-        let thread_pointer = self.ptrace.registers(pid).ok()?.fs_base;
+        let thread_pointer = self.ptrace.registers(pid).ok()?.thread_pointer();
         (thread_pointer != 0 && self.ptrace.read_word(pid, thread_pointer).ok()? == thread_pointer)
             .then_some(thread_pointer)
     }

@@ -61,7 +61,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let rewind = || {
             let inferior = self.session.inferior()?;
             let mut registers = self.ptrace.registers(pid).ok()?;
-            let address = registers.rip.checked_sub(1)?;
+            let address = registers.breakpoint_address()?.get();
             let memory = inferior.memory_thread();
             let mappings = self.ptrace.module_mappings(memory).ok()?;
             let mapping = &mappings
@@ -80,7 +80,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .iter()
                 .any(|trap| trap.address == address)
                 .then_some(())?;
-            registers.rip = address;
+            registers.set_program_counter(VirtualAddress::new(address));
             self.ptrace.set_registers(pid, registers).ok()
         };
         rewind().is_some()

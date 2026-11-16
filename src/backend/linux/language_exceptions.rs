@@ -10,7 +10,6 @@ use crate::{Error, LanguageExceptionKind, Result, RuntimeId, VirtualAddress};
 use super::breakpoints::remove_breakpoint_owner_from;
 use super::frames::StackRoot;
 use super::native::{InspectionOps, LinuxTraceOps};
-use super::registers::x86_64_registers;
 use super::{BreakpointOwner, Controller, debug_thread_id};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,7 +269,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.session
             .inferior()?
             .runtime_hooks
-            .get(&VirtualAddress::new(registers.rip))
+            .get(&registers.program_counter())
             .filter(|site| matches!(site.purpose, HookPurpose::Internal(HookPlace::Companion(_))))
     }
 
@@ -320,7 +319,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ptrace
             .registers(pid)
             .map_err(|error| Arc::<str>::from(error.to_string()))?;
-        let registers = x86_64_registers(&registers);
+        let registers = registers.register_file();
 
         self.with_runtime_stop(inferior, &runtime, pid, |stop| {
             read(runtime.model.as_ref(), stop, &registers)

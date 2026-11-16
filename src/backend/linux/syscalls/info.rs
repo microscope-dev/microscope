@@ -1,7 +1,7 @@
 use nix::errno::Errno;
-use nix::libc;
 use nix::unistd::Pid;
 
+use crate::backend::linux::Registers;
 use crate::syscalls::table::X32_SYSCALL_BIT;
 use crate::syscalls::{Abi, SyscallId};
 
@@ -11,7 +11,7 @@ pub const OP_EXIT: u8 = 2;
 
 pub const OP_SECCOMP: u8 = 3;
 
-pub const AUDIT_ARCH_X86_64: u32 = 0xc000_003e;
+pub(in crate::backend::linux) use crate::backend::linux::arch::AUDIT_ARCH_X86_64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SyscallInfo {
@@ -47,17 +47,15 @@ pub fn syscall_info(pid: Pid) -> Result<SyscallInfo, Errno> {
 }
 
 #[must_use]
-pub fn from_registers(arch: u32, registers: &libc::user_regs_struct) -> (SyscallId, [u64; 6]) {
-    let r = registers;
+pub(in crate::backend::linux) const fn from_registers(
+    arch: u32,
+    registers: &Registers,
+) -> (SyscallId, [u64; 6]) {
     let info = SyscallInfo {
         op: OP_EXIT,
         arch,
-        number: r.orig_rax,
-        args: if arch == AUDIT_ARCH_X86_64 {
-            [r.rdi, r.rsi, r.rdx, r.r10, r.r8, r.r9]
-        } else {
-            [r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rbp].map(|word| word & 0xffff_ffff)
-        },
+        number: registers.syscall_number(),
+        args: registers.syscall_arguments(arch),
         value: 0,
     };
 

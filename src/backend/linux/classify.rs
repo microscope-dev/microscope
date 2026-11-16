@@ -119,7 +119,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     pub(super) fn normalize_breakpoint_pc(&self, pid: Pid) -> Option<VirtualAddress> {
         let mut registers = self.ptrace.registers(pid).ok()?;
-        let address = VirtualAddress::new(registers.rip.checked_sub(1)?);
+        let address = registers.breakpoint_address()?;
         let installed = self
             .session
             .inferior()
@@ -129,7 +129,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return None;
         }
 
-        registers.rip = address.get();
+        registers.set_program_counter(address);
         self.ptrace.set_registers(pid, registers).ok()?;
         Some(address)
     }
@@ -138,13 +138,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         let rewind = || {
             let inferior = self.session.inferior()?;
             let mut registers = self.ptrace.registers(pid).ok()?;
-            let address = VirtualAddress::new(registers.rip.checked_sub(1)?);
+            let address = registers.breakpoint_address()?;
             let original = *inferior.former_sites.get(&address)?;
             if original == BREAKPOINT_OPCODE || inferior.breakpoints.contains_key(&address) {
                 return None;
             }
 
-            registers.rip = address.get();
+            registers.set_program_counter(address);
             self.ptrace.set_registers(pid, registers).ok()
         };
 
@@ -152,7 +152,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn program_trap(&self, pid: Pid) -> Option<VirtualAddress> {
-        let address = VirtualAddress::new(self.ptrace.registers(pid).ok()?.rip.checked_sub(1)?);
+        let address = self.ptrace.registers(pid).ok()?.breakpoint_address()?;
         let ours = self
             .session
             .inferior()
@@ -172,10 +172,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         let rewind = || {
             let inferior = self.session.inferior()?;
             let mut registers = self.ptrace.registers(pid).ok()?;
-            let address = registers.rip.checked_sub(1)?;
+            let address = registers.breakpoint_address()?;
             let moved = self.moved_code_now(inferior.memory_thread()).ok()?;
             let carried = moved.iter().any(|code| {
-                let Some(source) = code.source(VirtualAddress::new(address)) else {
+                let Some(source) = code.source(address) else {
                     return false;
                 };
 
@@ -187,7 +187,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return None;
             }
 
-            registers.rip = address;
+            registers.set_program_counter(address);
             self.ptrace.set_registers(pid, registers).ok()
         };
 

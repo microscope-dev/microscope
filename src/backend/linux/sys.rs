@@ -8,7 +8,7 @@ use nix::libc;
 use nix::sys::ptrace;
 use nix::unistd::Pid;
 
-use super::core_dump::FXSAVE_SIZE;
+use super::arch::FLOATING_REGISTERS_SIZE;
 
 const PTRACE_GET_SYSCALL_INFO: u16 = 0x420e;
 
@@ -196,8 +196,8 @@ pub(super) fn syscall_info(pid: Pid) -> Result<[u8; 88], Errno> {
 }
 
 #[allow(unsafe_code, reason = "a raw ptrace request")]
-pub(super) fn floating_registers(pid: Pid) -> Result<[u8; FXSAVE_SIZE], Errno> {
-    let mut buffer = [0_u8; FXSAVE_SIZE];
+pub(super) fn floating_registers(pid: Pid) -> Result<[u8; FLOATING_REGISTERS_SIZE], Errno> {
+    let mut buffer = [0_u8; FLOATING_REGISTERS_SIZE];
 
     // SAFETY: PTRACE_GETFPREGS writes one 512-byte FXSAVE image on x86-64
     // into the buffer, which is that size and outlives the call.

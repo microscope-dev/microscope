@@ -1,3 +1,4 @@
+use crate::backend::linux::arch::stack_after_return;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -349,7 +350,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .with_runtime_stop(inferior, &bound, pid, |stop| {
                         bound.model.inspector_message_matches(
                             stop,
-                            VirtualAddress::new(registers.rsi),
+                            VirtualAddress::new(registers.arguments()[1]),
                             &cleanup.message,
                         )
                     })
@@ -359,8 +360,10 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
                 Phase::Captured {
                     pid,
-                    stack: registers.rsp,
-                    returns_to: VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?),
+                    stack: registers.stack_pointer(),
+                    returns_to: registers
+                        .pending_return(|address| self.ptrace.read_word(pid, address))?
+                        .returns_to,
                 }
             }
             Phase::Returning {
@@ -369,7 +372,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 returns_to,
             } if pid == *owner
                 && address == *returns_to
-                && registers.rsp == stack.wrapping_add(8) =>
+                && registers.stack_pointer() == stack_after_return(*stack) =>
             {
                 Phase::Done
             }
@@ -474,7 +477,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             ));
         }
         let mut registers = self.ptrace.registers(pid)?;
-        if Some(VirtualAddress::new(registers.rip)) != cleanup.dispatch || registers.rsp != stack {
+        if Some(registers.program_counter()) != cleanup.dispatch
+            || registers.stack_pointer() != stack
+        {
             return Err(Error::RuntimeAgent(
                 "the inspector cleanup dispatch moved before all-stop".into(),
             ));
@@ -497,8 +502,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(cleanup) = inferior.inspectors.cleanup.as_mut() {
             cleanup.return_hook = Some(returns_to);
         }
-        registers.rip = stop.get();
-        registers.rdi = agent.get();
+        registers.set_program_counter(stop);
+        registers.set_first_argument(agent.get());
         self.ptrace.set_registers(pid, registers)?;
         inferior.trap_event(pid, TrapEvent::Moved(stop))?;
         if let Some(cleanup) = inferior.inspectors.cleanup.as_mut() {

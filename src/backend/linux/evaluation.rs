@@ -36,8 +36,8 @@ use super::inspection::{
 };
 use super::interpreted_values::interpreted_key;
 
+use super::Registers;
 use super::native::{InspectionOps, LinuxTraceOps};
-use super::registers::x86_64_register_snapshot;
 use super::{Controller, Inferior, RuntimeModule, debug_thread_id, validate_image_current};
 
 #[derive(Debug, Clone, Copy)]
@@ -298,11 +298,11 @@ impl<'a, P: InspectionOps> Frame<'a, P> {
                     FrameRegisters::Thread(native) => (Some(*native), None),
                 };
 
-                Some(x86_64_register_snapshot(
+                Some(Registers::snapshot(
+                    native.as_ref(),
                     self.controller.revision,
                     self.root.context,
                     self.controller.main.image.target(),
-                    native.as_ref(),
                     caller,
                 ))
             })

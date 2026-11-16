@@ -1,3 +1,4 @@
+use crate::backend::linux::Registers;
 use std::collections::{BTreeMap, BTreeSet};
 
 use nix::unistd::Pid;
@@ -10,7 +11,6 @@ use crate::{
 
 use super::breakpoints::install_plan_breakpoint;
 use super::native::{InspectionOps, LinuxTraceOps};
-use super::registers::x86_64_registers;
 use super::{ActiveKind, Controller, StepOwner, StepStart};
 
 #[derive(Debug, Clone, Copy)]
@@ -101,7 +101,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 stack,
                 ..
             } if returns_to == address => {
-                if thread == pid && self.ptrace.registers(pid)?.rsp == stack {
+                if thread == pid && self.ptrace.registers(pid)?.stack_pointer() == stack {
                     self.return_from_starter(pid, address, starter)?;
                 } else {
                     self.repair_when_alone(pid, address)?;
@@ -148,7 +148,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         starters: BTreeMap<VirtualAddress, Starter>,
     ) -> Result<()> {
         let registers = self.ptrace.registers(pid)?;
-        let returns_to = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
+        let pending = registers.pending_return(|address| self.ptrace.read_word(pid, address))?;
+        let returns_to = pending.returns_to;
         record!("thread {pid} starts a task, returning to {returns_to}");
         let execution = self.active_execution()?;
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
@@ -160,7 +161,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 starter,
                 thread: pid,
                 returns_to,
-                stack: registers.rsp.wrapping_add(8),
+                stack: pending.stack,
             });
         }
 
@@ -187,7 +188,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         &self,
         pid: Pid,
         starter: Starter,
-        registers: &nix::libc::user_regs_struct,
+        registers: &Registers,
     ) -> std::result::Result<Option<StartedTask>, std::sync::Arc<str>> {
         let inferior = self.session.inferior().ok_or("the process is gone")?;
         self.runtimes(inferior)
@@ -198,7 +199,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.with_runtime_stop(inferior, &bound, pid, |stop| {
                     bound
                         .model
-                        .started_task(stop, starter.entry, &x86_64_registers(registers))
+                        .started_task(stop, starter.entry, &registers.register_file())
                 })
             })
     }

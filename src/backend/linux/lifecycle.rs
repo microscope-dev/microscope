@@ -444,7 +444,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ptrace
             .registers(pid)
             .ok()
-            .map(|registers| registers.rsp);
+            .map(|registers| registers.stack_pointer());
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         let execution_id = inferior
@@ -740,7 +740,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.ptrace
                 .registers(pid)
                 .ok()
-                .map(|registers| registers.rsp)
+                .map(|registers| registers.stack_pointer())
         };
 
         if let Some(inferior) = self.session.inferior_mut() {
@@ -890,7 +890,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(None);
         };
 
-        if registers.orig_rax.cast_signed() != libc::SYS_exit || word & 0x7f != 0 {
+        if registers.syscall_number().cast_signed() != libc::SYS_exit || word & 0x7f != 0 {
             return Ok(None);
         }
 
@@ -1255,7 +1255,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ptrace
             .registers(pid)
             .ok()
-            .map(|registers| registers.rsp);
+            .map(|registers| registers.stack_pointer());
 
         inferior.tracked.remove(&pid);
         inferior.threads.insert(pid, survivor);

@@ -21,7 +21,7 @@ use super::native::{
     InspectionOps, LinuxTraceOps, maps_executable, siginfo_has_fault_address, siginfo_names_sender,
 };
 
-use super::registers::Fxsave;
+use super::FloatingRegisters;
 use super::signals::{Signal, WaitEvent};
 use super::tls::TlsModule;
 use super::{Controller, LinuxError, SessionLease, SignalMetadata, Waiter, backend_error};
@@ -374,15 +374,17 @@ impl InspectionOps for SimTrace {
         }
     }
 
-    fn registers(&self, pid: Pid) -> Result<libc::user_regs_struct> {
+    fn registers(&self, pid: Pid) -> Result<super::Registers> {
         let (registers, orig_rax) = self
             .kernel()
             .get_registers_and_call(tid(pid))
             .map_err(|errno| failed_read("PTRACE_GETREGS", pid, errno))?;
-        Ok(user_registers(&registers, orig_rax))
+        Ok(super::Registers::from_native(user_registers(
+            &registers, orig_rax,
+        )))
     }
 
-    fn floating_registers(&self, _pid: Pid) -> Result<Fxsave> {
+    fn floating_registers(&self, _pid: Pid) -> Result<FloatingRegisters> {
         self.gap("floating-point registers")
     }
 
@@ -624,7 +626,8 @@ impl LinuxTraceOps for SimTrace {
         })
     }
 
-    fn set_registers(&self, pid: Pid, registers: libc::user_regs_struct) -> Result<()> {
+    fn set_registers(&self, pid: Pid, registers: super::Registers) -> Result<()> {
+        let registers = *registers.native();
         let mut kernel = self.kernel_mut();
         let (mut current, orig_rax) = kernel.get_registers_and_call(tid(pid)).map_err(system)?;
         if let Some(change) =

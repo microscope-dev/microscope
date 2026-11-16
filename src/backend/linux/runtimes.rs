@@ -1,3 +1,5 @@
+use crate::backend::linux::Registers;
+use crate::backend::linux::arch::NATIVE_AUDIT_ARCH;
 use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -148,11 +150,12 @@ impl<P: InspectionOps> ProcessStop<'_, P> {
     }
 }
 
-fn blocked_futex(registers: &nix::libc::user_regs_struct) -> Option<u64> {
-    const FUTEX: u64 = 202;
+fn blocked_futex(registers: &Registers) -> Option<u64> {
     const INTERRUPTED: [i64; 5] = [-4, -512, -513, -514, -516];
-    (registers.orig_rax == FUTEX && INTERRUPTED.contains(&registers.rax.cast_signed()))
-        .then_some(registers.rdi)
+    let [address, ..] = registers.syscall_arguments(NATIVE_AUDIT_ARCH);
+    (registers.syscall_number() == nix::libc::SYS_futex.cast_unsigned()
+        && INTERRUPTED.contains(&registers.syscall_result().cast_signed()))
+    .then_some(address)
 }
 
 impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
@@ -221,7 +224,7 @@ impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
         self.ptrace
             .registers(pid)
             .ok()
-            .map(|registers| registers.fs_base)
+            .map(|registers| registers.thread_pointer())
     }
 
     fn module_thread_local(
@@ -241,7 +244,7 @@ impl<P: InspectionOps> RuntimeStop for ProcessStop<'_, P> {
         self.ptrace
             .registers(pid)
             .ok()
-            .map(|registers| VirtualAddress::new(registers.rip))
+            .map(|registers| registers.program_counter())
     }
 
     fn load_bias(&self) -> crate::LoadBias {
@@ -1145,7 +1148,7 @@ mod identity_tests {
         fn read_word(&self, _: Pid, _: u64) -> Result<u64> {
             Err(Error::internal("identity queries read no memory"))
         }
-        fn registers(&self, _: Pid) -> Result<nix::libc::user_regs_struct> {
+        fn registers(&self, _: Pid) -> Result<Registers> {
             Err(Error::internal("identity queries read no registers"))
         }
     }

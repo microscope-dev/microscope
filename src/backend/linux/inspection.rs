@@ -18,15 +18,15 @@ use crate::{
     VariableUnavailableReason, VirtualAddress,
 };
 
+use super::Registers;
+use super::arch::{
+    FloatingRegisters, caller_variable_register, floating_variable_register, is_floating_register,
+};
 use super::callers::{Callers, FrameAt};
 use super::evaluation::StopMachine;
 use super::frames::{FrameRegisters, FrameScope, ResolvedFrame, StackRoot};
 use super::memory::read_logical_memory;
 use super::native::InspectionOps;
-use super::registers::{
-    Fxsave, x86_64_caller_variable_register, x86_64_general_variable_register,
-    x86_64_register_snapshot, x86_64_x87_variable_register, x86_64_xmm_variable_register,
-};
 
 use super::tls::TlsModule;
 use super::{
@@ -82,11 +82,11 @@ impl<P: InspectionOps> Controller<P> {
             Some(FrameRegisters::Thread(_)) | None => None,
         };
 
-        Ok(x86_64_register_snapshot(
+        Ok(Registers::snapshot(
+            native.as_ref(),
             self.revision,
             root.context,
             self.main.image.target(),
-            native.as_ref(),
             caller,
         ))
     }
@@ -625,7 +625,7 @@ pub(super) struct LinuxVariableRuntime<'a, P: InspectionOps> {
     pub(super) image_range: AddressRange<ImageAddress>,
     pub(super) breakpoints: &'a BTreeMap<VirtualAddress, BreakpointSite>,
     pub(super) registers: &'a FrameRegisters,
-    pub(super) floating: Option<std::result::Result<Fxsave, Arc<str>>>,
+    pub(super) floating: Option<std::result::Result<FloatingRegisters, Arc<str>>>,
     pub(super) cfa: std::result::Result<VirtualAddress, VariableRuntimeError>,
     pub(super) tls: Option<TlsModule>,
     pub(super) frame: FrameAt,
@@ -647,7 +647,7 @@ impl<P: InspectionOps> VariableRuntime for LinuxVariableRuntime<'_, P> {
         let native = match self.registers {
             FrameRegisters::Thread(native) => native,
             FrameRegisters::Caller(registers) => {
-                return x86_64_caller_variable_register(registers, register);
+                return caller_variable_register(registers, register);
             }
             FrameRegisters::Discarded => {
                 return Err(VariableUnavailableReason::CallFrameUnavailable(
@@ -657,11 +657,11 @@ impl<P: InspectionOps> VariableRuntime for LinuxVariableRuntime<'_, P> {
             }
         };
 
-        if let Some(value) = x86_64_general_variable_register(native, register) {
+        if let Some(value) = native.variable_register(register) {
             return Ok(value);
         }
 
-        if (17..=40).contains(&register.number()) {
+        if is_floating_register(register) {
             let floating = self.floating.get_or_insert_with(|| {
                 self.ptrace
                     .floating_registers(self.pid)
@@ -676,13 +676,7 @@ impl<P: InspectionOps> VariableRuntime for LinuxVariableRuntime<'_, P> {
                         ),
                     )
                 })
-                .map(|floating| {
-                    if register.number() <= 32 {
-                        x86_64_xmm_variable_register(floating, register)
-                    } else {
-                        x86_64_x87_variable_register(floating, register)
-                    }
-                });
+                .map(|floating| floating_variable_register(floating, register));
         }
 
         Err(VariableRuntimeError::Unavailable(

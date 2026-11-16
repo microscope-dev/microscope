@@ -14,7 +14,6 @@ use super::breakpoints::remove_breakpoint_owner_from;
 use super::debug_registers;
 use super::frames::StackRoot;
 use super::native::{InspectionOps, LinuxTraceOps};
-use super::registers::x86_64_registers;
 use super::{BreakpointOwner, Controller, Edit, Inferior, WatchRecord};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,9 +299,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             };
 
             let task = self.with_runtime_stop(inferior, &runtime, pid, |stop| {
-                runtime
-                    .model
-                    .moving_task(stop, &x86_64_registers(&registers))
+                runtime.model.moving_task(stop, &registers.register_file())
             });
             let task = match task {
                 Ok(number) => TaskId {
@@ -325,7 +322,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return Ok(());
             }
 
-            let returns_to = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
+            let pending =
+                registers.pending_return(|address| self.ptrace.read_word(pid, address))?;
+            let returns_to = pending.returns_to;
             record!("task {task}'s stack moves on {pid}, returning to {returns_to}");
 
             let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
@@ -333,7 +332,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 thread: pid,
                 task,
                 returns_to,
-                stack: registers.rsp.wrapping_add(8),
+                stack: pending.stack,
                 returned: false,
             });
 
@@ -344,7 +343,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(moving) = inferior.stack_moves.moving.iter_mut().find(|moving| {
             moving.thread == pid
                 && moving.returns_to == address
-                && moving.stack == registers.rsp
+                && moving.stack == registers.stack_pointer()
                 && !moving.returned
         }) {
             record!("task {}'s stack moved", moving.task);

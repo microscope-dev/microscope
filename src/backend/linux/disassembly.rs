@@ -4,7 +4,7 @@ use nix::unistd::Pid;
 
 use crate::disassembly::{CodeRead, CodeSource, Engine, decoder_for};
 use crate::protocol::StopId;
-use crate::unwind::{FS_BASE, GS_BASE, RAX, RegisterFile};
+use crate::unwind::RegisterFile;
 use crate::{
     AddressDescription, AddressRange, BoundaryEvidence, DisassembledFunction, Disassembly,
     DisassemblyQuery, DisassemblyRange, DisassemblyView, Error, FunctionOrigin, MAX_WINDOW_AFTER,
@@ -14,7 +14,6 @@ use crate::{
 use super::frames::{UnwindModule, describe_address, unwind_module_for};
 use super::memory::read_logical_memory;
 use super::native::InspectionOps;
-use super::registers::x86_64_registers;
 use super::{BreakpointSite, Controller};
 
 impl<P: InspectionOps> Controller<P> {
@@ -40,8 +39,8 @@ impl<P: InspectionOps> Controller<P> {
             pid,
             breakpoints: &inferior.breakpoints,
             modules: &modules,
-            program_counter: VirtualAddress::new(native.rip),
-            registers: next_instruction_registers(&native),
+            program_counter: native.program_counter(),
+            registers: native.next_instruction_file(),
         };
 
         let view = match query.range {
@@ -136,17 +135,6 @@ fn function_ranges(
         },
         vec![to_virtual(extent.range)?],
     ))
-}
-
-fn next_instruction_registers(native: &nix::libc::user_regs_struct) -> RegisterFile {
-    let mut registers = x86_64_registers(native);
-    registers.set(FS_BASE, native.fs_base);
-    registers.set(GS_BASE, native.gs_base);
-    if super::registers::restarts_call(native) {
-        registers.remove(RAX);
-    }
-
-    registers
 }
 
 struct TargetCode<'a, P> {

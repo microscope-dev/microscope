@@ -91,7 +91,7 @@ impl<P: InspectionOps> Controller<P> {
     fn read_returned(&self, pid: Pid, returning: Returning) -> Option<Returned> {
         let inferior = self.session.inferior()?;
         let registers = self.ptrace.registers(pid).ok()?;
-        if VirtualAddress::new(registers.rip) != returning.return_address
+        if registers.program_counter() != returning.return_address
             || !returning
                 .activation
                 .just_returned(self.stack_position(pid, &registers))

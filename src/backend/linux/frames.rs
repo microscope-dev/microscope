@@ -1,7 +1,7 @@
+use crate::backend::linux::Registers;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use nix::libc;
 use nix::unistd::Pid;
 
 use crate::debug_info::{TailJump, VariableRuntimeError};
@@ -28,7 +28,6 @@ use super::callers::Callers;
 use super::loops::is_loop_body;
 use super::memory::PtraceMemory;
 use super::native::InspectionOps;
-use super::registers::x86_64_registers;
 use super::{
     BreakpointOwner, Controller, Inferior, StepOwner, debug_thread_id, validate_image_current,
     validate_public_stop, validate_stopped_thread,
@@ -54,7 +53,7 @@ impl<P: InspectionOps> Controller<P> {
     ) -> Result<FramePresentation> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let registers = self.ptrace.registers(pid)?;
-        let instruction = VirtualAddress::new(registers.rip);
+        let instruction = registers.program_counter();
         let physical = || FramePresentation {
             instruction,
             frame: PresentedFrame::Physical,
@@ -189,7 +188,7 @@ impl<P: InspectionOps> Controller<P> {
         }
 
         let registers = self.ptrace.registers(pid)?;
-        let address = VirtualAddress::new(registers.rip);
+        let address = registers.program_counter();
         let modules = self.unwind_modules(inferior);
         let (module, image_address) =
             unwind_module_for(&modules, address).ok_or(Error::AddressOutsideModule)?;
@@ -318,9 +317,9 @@ impl<P: InspectionOps> Controller<P> {
         &self,
         inferior: &Inferior,
         root: &StackRoot,
-        native: Option<&libc::user_regs_struct>,
+        native: Option<&Registers>,
         walk: impl FnOnce(&mut RoleCallerProvider<'_, '_>, FrameContext) -> T,
-    ) -> Result<(Option<libc::user_regs_struct>, bool, T)> {
+    ) -> Result<(Option<Registers>, bool, T)> {
         let runtimes = self.runtimes(inferior);
         let (native, registers, after_call, stacks) = match &root.origin {
             RootOrigin::Thread(pid) => {
@@ -330,7 +329,7 @@ impl<P: InspectionOps> Controller<P> {
                 };
 
                 let stacks = self.thread_stacks(inferior, &runtimes, *pid);
-                (Some(native), x86_64_registers(&native), false, stacks)
+                (Some(native), native.register_file(), false, stacks)
             }
 
             RootOrigin::Saved {
@@ -695,12 +694,8 @@ impl<P: InspectionOps> Controller<P> {
             )
     }
 
-    pub(super) fn stack_position(
-        &self,
-        pid: Pid,
-        native: &libc::user_regs_struct,
-    ) -> StackPosition {
-        self.stack_view(pid).position(native.rsp)
+    pub(super) fn stack_position(&self, pid: Pid, native: &Registers) -> StackPosition {
+        self.stack_view(pid).position(native.stack_pointer())
     }
 
     pub(super) fn unwind_modules<'a>(&'a self, inferior: &Inferior) -> Vec<UnwindModule<'a>> {
@@ -1330,7 +1325,7 @@ pub(super) struct PhysicalFrame {
 
 #[derive(Clone)]
 pub(super) struct PhysicalStack {
-    pub(super) native: Option<libc::user_regs_struct>,
+    pub(super) native: Option<Registers>,
 
     pub(super) after_call: bool,
     pub(super) frames: Vec<PhysicalFrame>,
@@ -1419,7 +1414,7 @@ impl StackRoot {
     reason = "one per frame the debugger resolves; a register file is inline so that unwinding a sample allocates nothing"
 )]
 pub(super) enum FrameRegisters {
-    Thread(libc::user_regs_struct),
+    Thread(Registers),
 
     Caller(RegisterFile),
 

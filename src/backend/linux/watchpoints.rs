@@ -25,7 +25,6 @@ use super::debug_registers::{DebugRegisterPlan, SlotAccess};
 use super::frames::{StackRoot, frame_lookup_address};
 use super::memory::read_logical_memory;
 use super::native::{InspectionOps, LinuxTraceOps, is_vanished_tracee};
-use super::registers::x86_64_registers;
 use super::{
     Controller, Inferior, LinuxError, NativeThreadState, WatchRecord, backend_error, debug_pid,
     debug_thread_id, validate_image_current,
@@ -977,19 +976,19 @@ impl<P: InspectionOps> Controller<P> {
             inferior,
             &self.runtimes(inferior),
             pid,
-            x86_64_registers(&native),
+            native.register_file(),
             true,
         );
 
         let mut context = FrameContext {
-            instruction: VirtualAddress::new(native.rip),
+            instruction: native.program_counter(),
             cfa: None,
             signal_frame: false,
         };
 
         let view = self.stack_view(pid);
         let activation = view.activation(activation);
-        let unproven = !activation.has_returned(view.position(native.rsp));
+        let unproven = !activation.has_returned(view.position(native.stack_pointer()));
 
         for level in 0..DEFAULT_MAX_FRAMES {
             let caller = match provider.caller(&context) {

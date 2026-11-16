@@ -30,6 +30,7 @@ use super::modules::{ModuleMapping, parse_maps};
 use super::native::{InspectionOps, LinuxTraceOps, interrupt_outcome, queued_in_status};
 use super::session::Startup;
 
+use super::arch::GENERAL_REGISTER_COUNT;
 use super::*;
 
 #[test]
@@ -952,17 +953,17 @@ impl InspectionOps for FakeTrace {
             .map_err(|_| MemoryAccessError::Inaccessible)
     }
 
-    fn registers(&self, pid: Pid) -> Result<libc::user_regs_struct> {
+    fn registers(&self, pid: Pid) -> Result<Registers> {
         self.reach(pid, "registers")?;
-        let mut registers =
-            super::sim_edge::user_registers(&crate::sim::cpu::Registers::default(), 0);
-        registers.rip = self
-            .program_counters
-            .borrow()
-            .get(&pid)
-            .copied()
-            .unwrap_or(0x5000);
-        registers.rsp = self.stack_pointers.borrow().get(&pid).copied().unwrap_or(0);
+        let mut registers = Registers::from_general_registers([0; GENERAL_REGISTER_COUNT]);
+        registers.set_program_counter(VirtualAddress::new(
+            self.program_counters
+                .borrow()
+                .get(&pid)
+                .copied()
+                .unwrap_or(0x5000),
+        ));
+        registers.set_stack_pointer(self.stack_pointers.borrow().get(&pid).copied().unwrap_or(0));
         Ok(registers)
     }
 }
@@ -1218,8 +1219,11 @@ impl LinuxTraceOps for FakeTrace {
             .ok_or(Errno::EIO)
     }
 
-    fn set_registers(&self, pid: Pid, registers: libc::user_regs_struct) -> Result<()> {
-        self.record(format!("set_registers {pid} rip={:#x}", registers.rip));
+    fn set_registers(&self, pid: Pid, registers: Registers) -> Result<()> {
+        self.record(format!(
+            "set_registers {pid} rip={:#x}",
+            registers.program_counter().get()
+        ));
         self.reach(pid, "set_registers")
     }
 
@@ -7888,8 +7892,8 @@ fn an_activation_missing_from_a_wholly_unwound_stack_has_returned() {
         .trace()
         .registers(harness.threads[0])
         .expect("registers");
-    registers.rip = 0x30;
-    registers.rsp = 0x0ff8;
+    registers.set_program_counter(VirtualAddress::new(0x30));
+    registers.set_stack_pointer(0x0ff8);
 
     let elsewhere = harness
         .controller

@@ -1,10 +1,10 @@
+use crate::backend::linux::Registers;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 
-use nix::libc;
 use nix::sys::signal::Signal as NixSignal;
 use nix::unistd::Pid;
 use object::Object as _;
@@ -20,9 +20,10 @@ use super::session::Session;
 use super::tls::{self, ProcessServices, TlsModule};
 use super::vdso::{AT_SYSINFO_EHDR, VDSO_NAME, read_memory_image};
 use super::{
-    Controller, ControllerChannels, ExpectedStop, FileIdentity, Fxsave, Inferior, InferiorOrigin,
-    InspectionOps, LinuxError, MemoryAccessError, NativeThreadState, PublicStop, Reply,
-    RuntimeModule, SessionLease, TraceThread, allocate_stop_id, backend_error, loader_link_maps,
+    Controller, ControllerChannels, ExpectedStop, FileIdentity, FloatingRegisters, Inferior,
+    InferiorOrigin, InspectionOps, LinuxError, MemoryAccessError, NativeThreadState, PublicStop,
+    Reply, RuntimeModule, SessionLease, TraceThread, allocate_stop_id, backend_error,
+    loader_link_maps,
 };
 
 use crate::backend::ControllerMessage;
@@ -56,7 +57,7 @@ impl ProcessServices for CoreTarget {
         self.memory.read(address, output).is_ok()
     }
 
-    fn registers(&self, lwp: Pid) -> Option<libc::user_regs_struct> {
+    fn registers(&self, lwp: Pid) -> Option<Registers> {
         self.thread(lwp).ok().map(|thread| thread.registers)
     }
 
@@ -213,11 +214,11 @@ impl InspectionOps for CoreTarget {
         read_word(&self.memory, address)
     }
 
-    fn registers(&self, pid: Pid) -> Result<libc::user_regs_struct> {
+    fn registers(&self, pid: Pid) -> Result<Registers> {
         Ok(self.thread(pid)?.registers)
     }
 
-    fn floating_registers(&self, pid: Pid) -> Result<Fxsave> {
+    fn floating_registers(&self, pid: Pid) -> Result<FloatingRegisters> {
         self.thread(pid)?
             .fxsave
             .clone()

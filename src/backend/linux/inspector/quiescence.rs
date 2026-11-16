@@ -1,3 +1,4 @@
+use crate::backend::linux::arch::stack_after_return;
 use nix::unistd::Pid;
 
 use crate::backend::linux::native::LinuxTraceOps;
@@ -28,7 +29,7 @@ struct Call {
 
 impl Call {
     fn returned(self, pid: Pid, address: VirtualAddress, stack: u64) -> bool {
-        pid == self.pid && address == self.returns_to && stack == self.stack.wrapping_add(8)
+        pid == self.pid && address == self.returns_to && stack == stack_after_return(self.stack)
     }
 }
 
@@ -173,8 +174,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         let registers = self.ptrace.registers(pid)?;
         let call = Call {
             pid,
-            stack: registers.rsp,
-            returns_to: VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?),
+            stack: registers.stack_pointer(),
+            returns_to: registers
+                .pending_return(|address| self.ptrace.read_word(pid, address))?
+                .returns_to,
         };
         let startup = self
             .session

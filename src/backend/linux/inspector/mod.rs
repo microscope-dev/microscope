@@ -595,29 +595,29 @@ impl<P: LinuxTraceOps> Controller<P> {
             .find(|bound| bound.id == runtime)
             .ok_or(Error::NotRunning)?;
         let mut registers = self.ptrace.registers(pid)?;
-        let caller = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
+        let pending = registers.pending_return(|address| self.ptrace.read_word(pid, address))?;
+        let caller = pending.returns_to;
         let target = self
             .with_runtime_stop(inferior, &bound, pid, |stop| {
-                bound
-                    .model
-                    .inspector_target(stop, caller, VirtualAddress::new(registers.rsi))
+                bound.model.inspector_target(
+                    stop,
+                    caller,
+                    VirtualAddress::new(registers.arguments()[1]),
+                )
             })
             .map_err(Error::RuntimeAgent)?;
         let Some(target) = target else {
             return Ok(());
         };
         for offset in [0, 8, 16] {
-            let address = registers.rdi.checked_add(offset).ok_or_else(|| {
-                Error::RuntimeAgent("the inspector result address overflows".into())
-            })?;
+            let address = registers.arguments()[0]
+                .checked_add(offset)
+                .ok_or_else(|| {
+                    Error::RuntimeAgent("the inspector result address overflows".into())
+                })?;
             self.ptrace.write_word(pid, address, 0)?;
         }
-        registers.rax = registers.rdi;
-        registers.rip = caller.get();
-        registers.rsp = registers
-            .rsp
-            .checked_add(8)
-            .ok_or_else(|| Error::RuntimeAgent("the inspector return stack overflows".into()))?;
+        registers.return_now(pending, registers.arguments()[0]);
         self.ptrace.set_registers(pid, registers)?;
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior.trap_event(pid, TrapEvent::Moved(caller))?;

@@ -450,12 +450,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
 
-        let Some(address) = registers.rip.checked_sub(1) else {
+        let Some(address) = registers.breakpoint_address() else {
             return;
         };
 
-        if traps.contains(&VirtualAddress::new(address)) {
-            registers.rip = address;
+        if traps.contains(&address) {
+            registers.set_program_counter(address);
             let _ = self.ptrace.set_registers(pid, registers);
         }
     }

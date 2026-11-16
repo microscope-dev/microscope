@@ -1,3 +1,4 @@
+use crate::backend::linux::arch::stack_after_return;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -321,7 +322,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .with_runtime_stop(inferior, &bound, pid, |stop| {
                         bound.model.inspector_received_matches(
                             stop,
-                            crate::VirtualAddress::new(registers.rdx),
+                            crate::VirtualAddress::new(registers.arguments()[2]),
                             message,
                         )
                     })
@@ -331,10 +332,10 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
                 GatePhase::Receiving {
                     pid,
-                    stack: registers.rsp,
-                    returns_to: crate::VirtualAddress::new(
-                        self.ptrace.read_word(pid, registers.rsp)?,
-                    ),
+                    stack: registers.stack_pointer(),
+                    returns_to: registers
+                        .pending_return(|address| self.ptrace.read_word(pid, address))?
+                        .returns_to,
                 }
             }
             GatePhase::Receiving {
@@ -343,7 +344,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 returns_to,
             } if pid == *owner
                 && address == *returns_to
-                && registers.rsp == stack.wrapping_add(8) =>
+                && registers.stack_pointer() == stack_after_return(*stack) =>
             {
                 record!("the inspector's I/O thread handed the step's pause on");
                 GatePhase::Passed

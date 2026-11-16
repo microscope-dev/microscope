@@ -1,3 +1,4 @@
+use super::arch::SYSCALL_INSTRUCTION;
 use std::sync::Arc;
 
 use nix::unistd::Pid;
@@ -68,20 +69,20 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let registers = self.ptrace.registers(pid)?;
-        if super::registers::restarts_call(&registers) {
+        if registers.restarts_call() {
             return Ok(true);
         }
 
-        let pc = registers.rip;
+        let pc = registers.program_counter().get();
         let read = read_logical_memory(
             &self.ptrace,
             pid,
             &inferior.breakpoints,
             VirtualAddress::new(pc),
-            SYSCALL.len(),
+            SYSCALL_INSTRUCTION.len(),
         )?;
 
-        Ok(read.bytes == SYSCALL)
+        Ok(read.bytes == SYSCALL_INSTRUCTION)
     }
 
     pub(super) fn handle_syscall_stop(&mut self, pid: Pid) -> Result<()> {
@@ -274,8 +275,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         )
     }
 }
-
-const SYSCALL: [u8; 2] = [0x0f, 0x05];
 
 #[derive(Debug, Clone)]
 pub(super) struct Entered {

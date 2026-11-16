@@ -1,8 +1,8 @@
+use crate::backend::linux::Registers;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use nix::errno::Errno;
-use nix::libc;
 use nix::unistd::Pid;
 
 use crate::protocol::{
@@ -29,7 +29,6 @@ use super::trap::Trap;
 
 use super::loops::{StepLoops, inline_loop_step_is_complete};
 use super::native::LinuxTraceOps;
-use super::registers::x86_64_registers;
 use super::returns::Returning;
 use crate::disassembly::{AssemblySyntax, ControlFlow, RawDecode, decoder_for};
 
@@ -203,7 +202,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.continue_thread(pid);
         }
 
-        let rip = VirtualAddress::new(self.ptrace.registers(pid)?.rip);
+        let rip = self.ptrace.registers(pid)?.program_counter();
         if !self.before_breakpoint(pid, rip)? && self.pass_unchosen_call(pid)? {
             return Ok(());
         }
@@ -222,14 +221,14 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn stopped_outside_described_code(&self, pid: Pid) -> Result<bool> {
         let registers = self.ptrace.registers(pid)?;
         Ok(self
-            .located(VirtualAddress::new(registers.rip))
+            .located(registers.program_counter())
             .is_none_or(|located| undescribed(&located.location)))
     }
 
     pub(super) fn stopped_where_step_leaves(&self, pid: Pid) -> Result<bool> {
         let registers = self.ptrace.registers(pid)?;
         let enters_runtime = self.step_enters_runtime();
-        Ok(match self.code_role(VirtualAddress::new(registers.rip)) {
+        Ok(match self.code_role(registers.program_counter()) {
             Some(CodeRole::StackSwitch) => true,
             Some(role) => is_runtime_role(role) && !enters_runtime,
             None => false,
@@ -250,8 +249,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         let call_out = into.then(|| self.call_out(pid, &registers)).flatten();
         let candidate = match self.caller_address(pid, &registers) {
             Ok(address) => address,
-            Err(_) => match self.ptrace.read_word(pid, registers.rsp) {
-                Ok(word) => VirtualAddress::new(word),
+            Err(_) => match registers.pending_return(|address| self.ptrace.read_word(pid, address))
+            {
+                Ok(pending) => pending.returns_to,
                 Err(_) => return Ok(false),
             },
         };
@@ -392,7 +392,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let position = self.stack_position(pid, &registers);
         let Some(Located {
             module, location, ..
-        }) = self.located(VirtualAddress::new(registers.rip))
+        }) = self.located(registers.program_counter())
         else {
             return Ok(false);
         };
@@ -404,7 +404,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         });
 
         let role = self
-            .code_role(VirtualAddress::new(registers.rip))
+            .code_role(registers.program_counter())
             .unwrap_or_default();
         let returned = frame.is_some_and(|frame| frame.has_returned(position));
 
@@ -415,7 +415,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let pending = left_inlined
             && self.active_step().is_some_and(|start| {
-                self.left_inlined_body_pending(pid, start, VirtualAddress::new(registers.rip))
+                self.left_inlined_body_pending(pid, start, registers.program_counter())
             });
         let enters = match role {
             CodeRole::Panic => true,
@@ -615,8 +615,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(false);
         };
 
-        Ok(self.ptrace.registers(pid)?.rip == address.get()
-            && !self.before_breakpoint(pid, address)?)
+        Ok(
+            self.ptrace.registers(pid)?.program_counter().get() == address.get()
+                && !self.before_breakpoint(pid, address)?,
+        )
     }
 
     pub(super) fn forget_trap_judgement(&mut self, pid: Pid, address: VirtualAddress) {
@@ -812,7 +814,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(
             activation.has_returned(self.stack_position(pid, &registers))
                 && self
-                    .located(VirtualAddress::new(registers.rip))
+                    .located(registers.program_counter())
                     .is_none_or(|located| undescribed(&located.location)),
         )
     }
@@ -854,7 +856,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(false);
         }
 
-        let instruction = VirtualAddress::new(registers.rip);
+        let instruction = registers.program_counter();
         let Some(Located {
             image, location, ..
         }) = self.located(instruction)
@@ -1148,7 +1150,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         if kind == StepKind::OverInstruction {
             let position = self.stack_position(pid, &registers);
             return Ok(Completion::from(start.call_return.is_none_or(
-                |(address, stack)| registers.rip == address.get() && position == stack,
+                |(address, stack)| {
+                    registers.program_counter().get() == address.get() && position == stack
+                },
             )));
         }
 
@@ -1156,7 +1160,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(Completion::from(complete));
         }
 
-        let instruction = VirtualAddress::new(registers.rip);
+        let instruction = registers.program_counter();
         if self.before_breakpoint(pid, instruction)? {
             return Ok(Completion::AtTrap(instruction));
         }
@@ -1168,7 +1172,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn reaches_step_destination(
         &self,
         pid: Pid,
-        registers: &libc::user_regs_struct,
+        registers: &Registers,
         start: &StepStart,
         kind: StepKind,
         instruction: VirtualAddress,
@@ -1235,11 +1239,11 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn traversal_step_is_complete(
         &self,
         pid: Pid,
-        registers: &libc::user_regs_struct,
+        registers: &Registers,
         start: &StepStart,
         kind: StepKind,
     ) -> Option<bool> {
-        let instruction = VirtualAddress::new(registers.rip);
+        let instruction = registers.program_counter();
         let trapped = self
             .session
             .inferior()
@@ -1277,14 +1281,14 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn returned_step_is_complete(
         &self,
         pid: Pid,
-        registers: &libc::user_regs_struct,
+        registers: &Registers,
         caller: Activation,
         kind: StepKind,
     ) -> bool {
         let current = self.top_activation(pid, registers).ok();
         current.is_some_and(|current| current == caller || caller.is_callee_of(current))
             && self
-                .located(VirtualAddress::new(registers.rip))
+                .located(registers.program_counter())
                 .is_some_and(|located| {
                     source_step_destination(located.image, &located.location, kind)
                 })
@@ -1293,14 +1297,14 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn undescribed_step_out_is_complete(
         &self,
         pid: Pid,
-        registers: &libc::user_regs_struct,
+        registers: &Registers,
         activation: Activation,
     ) -> Result<bool> {
         Ok(self
             .located_activation(pid, registers, activation)?
             .is_none()
             && self
-                .located(VirtualAddress::new(registers.rip))
+                .located(registers.program_counter())
                 .is_some_and(|located| {
                     source_step_destination(located.image, &located.location, StepKind::Out)
                 }))
@@ -1309,11 +1313,11 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn step_into_source_is_complete(
         &self,
         pid: Pid,
-        registers: &libc::user_regs_struct,
+        registers: &Registers,
         start: &StepStart,
     ) -> Result<bool> {
         let Some(located) = self
-            .located(VirtualAddress::new(registers.rip))
+            .located(registers.program_counter())
             .filter(|located| !undescribed(&located.location))
         else {
             return Ok(false);
@@ -1332,7 +1336,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(false);
         }
 
-        let physical_role = self.code_role(VirtualAddress::new(registers.rip));
+        let physical_role = self.code_role(registers.program_counter());
 
         let role = current_instance
             .filter(|instance| described.physical_instance != Some(*instance))
@@ -1432,7 +1436,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Result<StepStart> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let registers = self.ptrace.registers(pid)?;
-        let located = self.located(VirtualAddress::new(registers.rip));
+        let located = self.located(registers.program_counter());
 
         let code_instance = if steps_instructions(kind) {
             None
@@ -1534,7 +1538,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             panic_guards,
             enters_runtime: self.step_into_runtime
                 || self
-                    .code_role(VirtualAddress::new(registers.rip))
+                    .code_role(registers.program_counter())
                     .is_some_and(is_runtime_role),
             loops,
             returning,
@@ -1545,7 +1549,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn step_activation(
         &self,
         pid: Pid,
-        registers: &libc::user_regs_struct,
+        registers: &Registers,
         kind: StepKind,
         code_instance: Option<CodeInstanceId>,
     ) -> Result<Option<Activation>> {
@@ -1564,7 +1568,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn plan_source_lines(
         &self,
         pid: Pid,
-        registers: &libc::user_regs_struct,
+        registers: &Registers,
         located: &Located<'_>,
         source: &SourceLocation,
         instance_id: crate::CodeInstanceId,
@@ -1617,39 +1621,42 @@ impl<P: LinuxTraceOps> Controller<P> {
         &self,
         inferior: &Inferior,
         pid: Pid,
-        registers: &libc::user_regs_struct,
+        registers: &Registers,
     ) -> Result<Option<(VirtualAddress, StackPosition)>> {
         let mut decoder = decoder_for(self.main.image.target(), AssemblySyntax::Intel)?;
         let read = read_logical_memory(
             &self.ptrace,
             pid,
             &inferior.breakpoints,
-            VirtualAddress::new(registers.rip),
+            registers.program_counter(),
             decoder.max_instruction_length(),
         )?;
 
-        Ok(match decoder.decode(registers.rip, &read.bytes, None) {
-            RawDecode::Instruction {
-                length,
-                flow: ControlFlow::Call | ControlFlow::IndirectCall,
-                ..
-            } => Some((
-                VirtualAddress::new(
-                    registers
-                        .rip
-                        .checked_add(length as u64)
-                        .ok_or(Error::AddressOverflow)?,
-                ),
-                self.stack_position(pid, registers),
-            )),
-            _ => None,
-        })
+        Ok(
+            match decoder.decode(registers.program_counter().get(), &read.bytes, None) {
+                RawDecode::Instruction {
+                    length,
+                    flow: ControlFlow::Call | ControlFlow::IndirectCall,
+                    ..
+                } => Some((
+                    VirtualAddress::new(
+                        registers
+                            .program_counter()
+                            .get()
+                            .checked_add(length as u64)
+                            .ok_or(Error::AddressOverflow)?,
+                    ),
+                    self.stack_position(pid, registers),
+                )),
+                _ => None,
+            },
+        )
     }
 
     fn outer_step_out_start(
         &self,
         pid: Pid,
-        registers: &libc::user_regs_struct,
+        registers: &Registers,
         frame: StackFrameId,
     ) -> Result<StepStart> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
@@ -1733,19 +1740,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         })
     }
 
-    pub(super) fn top_activation(
-        &self,
-        pid: Pid,
-        native: &libc::user_regs_struct,
-    ) -> Result<Activation> {
+    pub(super) fn top_activation(&self, pid: Pid, native: &Registers) -> Result<Activation> {
         Ok(self.stack_view(pid).activation(self.top_cfa(pid, native)?))
     }
 
-    pub(super) fn top_cfa(
-        &self,
-        pid: Pid,
-        native: &libc::user_regs_struct,
-    ) -> Result<VirtualAddress> {
+    pub(super) fn top_cfa(&self, pid: Pid, native: &Registers) -> Result<VirtualAddress> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         self.stack_unwinder(inferior, pid, native)
             .frame_cfa(&innermost_frame(native))
@@ -1755,7 +1754,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn location_for_activation(
         &self,
         pid: Pid,
-        native: &libc::user_regs_struct,
+        native: &Registers,
         activation: Activation,
     ) -> Result<Option<ImageLocation>> {
         let Some(address) = self.activation_address(pid, native, activation)? else {
@@ -1774,7 +1773,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn located_activation(
         &self,
         pid: Pid,
-        native: &libc::user_regs_struct,
+        native: &Registers,
         activation: Activation,
     ) -> Result<Option<Located<'_>>> {
         Ok(self
@@ -1785,7 +1784,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn activation_address(
         &self,
         pid: Pid,
-        native: &libc::user_regs_struct,
+        native: &Registers,
         activation: Activation,
     ) -> Result<Option<VirtualAddress>> {
         if activation.has_returned(self.stack_position(pid, native)) {
@@ -1805,11 +1804,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         found
     }
 
-    pub(super) fn caller_address(
-        &self,
-        pid: Pid,
-        native: &libc::user_regs_struct,
-    ) -> Result<VirtualAddress> {
+    pub(super) fn caller_address(&self, pid: Pid, native: &Registers) -> Result<VirtualAddress> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         match self
             .stack_unwinder(inferior, pid, native)
@@ -1842,21 +1837,21 @@ impl<P: LinuxTraceOps> Controller<P> {
         &'a self,
         inferior: &Inferior,
         pid: Pid,
-        native: &libc::user_regs_struct,
+        native: &Registers,
     ) -> DwarfCallerProvider<'a> {
         self.caller_provider(
             inferior,
             &self.runtimes(inferior),
             pid,
-            x86_64_registers(native),
+            native.register_file(),
             true,
         )
     }
 
-    fn call_out(&self, pid: Pid, registers: &libc::user_regs_struct) -> Option<VirtualAddress> {
+    fn call_out(&self, pid: Pid, registers: &Registers) -> Option<VirtualAddress> {
         let inferior = self.session.inferior()?;
-        let rip = VirtualAddress::new(registers.rip);
-        let file = x86_64_registers(registers);
+        let rip = registers.program_counter();
+        let file = registers.register_file();
         let target = self.runtimes(inferior).into_iter().find_map(|runtime| {
             let entry = runtime.module.image_address(rip).ok()?;
             runtime.model.call_out(entry, &file)
@@ -2122,9 +2117,9 @@ fn called_from(location: &crate::ImageLocation, caller: CodeInstanceId) -> Optio
     chain.instances.get(at + 1).copied()
 }
 
-pub(super) const fn innermost_frame(native: &libc::user_regs_struct) -> FrameContext {
+pub(super) const fn innermost_frame(native: &Registers) -> FrameContext {
     FrameContext {
-        instruction: VirtualAddress::new(native.rip),
+        instruction: native.program_counter(),
         cfa: None,
         signal_frame: false,
     }

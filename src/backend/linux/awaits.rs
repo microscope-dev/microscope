@@ -1,3 +1,4 @@
+use crate::backend::linux::Registers;
 use std::collections::BTreeSet;
 
 use nix::unistd::Pid;
@@ -154,7 +155,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let poll = self.running_future(pid, None).or(own)?;
         let future = own.unwrap_or(poll);
         let registers = self.ptrace.registers(pid).ok()?;
-        let location = self.image_location(VirtualAddress::new(registers.rip))?;
+        let location = self.image_location(registers.program_counter())?;
         let InlineFrameLookup::Unique(chain) = &location.inline_frames else {
             return None;
         };
@@ -798,16 +799,11 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Result<()> {
         let registers = self.ptrace.registers(pid)?;
         let returned = task_return.is_some_and(|task_return| {
-            task_return.address == address && task_return.stack_pointer == registers.rsp
+            task_return.address == address && task_return.stack_pointer == registers.stack_pointer()
         });
         let entered = !returned
             && self.with_task_runtime(pid, task, |runtime, stop| {
-                Ok(runtime.takes_up(
-                    stop,
-                    &entries,
-                    address,
-                    &super::registers::x86_64_registers(&registers),
-                ))
+                Ok(runtime.takes_up(stop, &entries, address, &registers.register_file()))
             }) == Ok(true);
 
         let ends = returned || entered && entries.frees.contains(&address);
@@ -842,10 +838,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if entered && entries.runs.contains(&address) && !entries.frees.is_empty() {
-            let returns = self.ptrace.read_word(pid, registers.rsp)?;
+            let pending =
+                registers.pending_return(|address| self.ptrace.read_word(pid, address))?;
             self.watch_task_return(TaskReturn {
-                address: VirtualAddress::new(returns),
-                stack_pointer: registers.rsp + 8,
+                address: pending.returns_to,
+                stack_pointer: pending.stack,
             })?;
         }
 
@@ -1116,9 +1113,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
-    fn returned_to_runtime(&self, pid: Pid, registers: &nix::libc::user_regs_struct) -> bool {
+    fn returned_to_runtime(&self, pid: Pid, registers: &Registers) -> bool {
         if !self
-            .code_role(VirtualAddress::new(registers.rip))
+            .code_role(registers.program_counter())
             .is_some_and(super::stepping::is_runtime_role)
         {
             return false;
@@ -1191,7 +1188,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         if awaiting.drop_glue.contains(&address) || awaiting.inlined_drops.contains(&address) {
             let ours = if awaiting.drop_glue.contains(&address) {
-                self.ptrace.registers(pid)?.rdi == awaiting.future.object.get()
+                self.ptrace.registers(pid)?.arguments()[0] == awaiting.future.object.get()
             } else {
                 self.runs_step(owner, pid)
             };

@@ -1,3 +1,4 @@
+use crate::backend::linux::Registers;
 use std::collections::BTreeMap;
 use std::fmt::{self, Arguments, Debug, Display, Formatter};
 use std::path::{Path, PathBuf};
@@ -13,10 +14,10 @@ use crate::debug_info::DebugInfo;
 use crate::protocol::{LaunchOptions, StopId};
 use crate::{Result, VirtualAddress};
 
+use super::FloatingRegisters;
 use super::memory::MemoryAccessError;
 use super::modules::{ModuleMapping, ProcessMappings};
 use super::native::{InspectionOps, LinuxTraceOps};
-use super::registers::Fxsave;
 use super::signals::{Signal, WaitEvent};
 use super::tls::TlsModule;
 use super::trap::Lift;
@@ -119,7 +120,7 @@ impl<P: InspectionOps> InspectionOps for Recorded<P> {
         self.0.read_block(pid, address, size)
     }
 
-    fn registers(&self, pid: Pid) -> Result<libc::user_regs_struct> {
+    fn registers(&self, pid: Pid) -> Result<Registers> {
         self.0.registers(pid)
     }
 
@@ -127,7 +128,7 @@ impl<P: InspectionOps> InspectionOps for Recorded<P> {
         self.0.auxv(pid)
     }
 
-    fn floating_registers(&self, pid: Pid) -> Result<Fxsave> {
+    fn floating_registers(&self, pid: Pid) -> Result<FloatingRegisters> {
         self.0.floating_registers(pid)
     }
 
@@ -390,9 +391,12 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
         info
     }
 
-    fn set_registers(&self, pid: Pid, registers: libc::user_regs_struct) -> Result<()> {
+    fn set_registers(&self, pid: Pid, registers: Registers) -> Result<()> {
         issued(
-            format_args!("PTRACE_SETREGS {pid} rip={:#x}", registers.rip),
+            format_args!(
+                "PTRACE_SETREGS {pid} rip={:#x}",
+                registers.program_counter().get()
+            ),
             &(),
             || self.0.set_registers(pid, registers),
         )

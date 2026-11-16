@@ -21,7 +21,7 @@ impl<P: InspectionOps> Controller<P> {
     pub(super) fn step_targets(&self, stop_id: StopId, pid: Pid) -> Result<Arc<[StepTarget]>> {
         let inferior = self.stopped_inferior(stop_id, pid)?;
         let registers = self.ptrace.registers(pid)?;
-        let pc = VirtualAddress::new(registers.rip);
+        let pc = registers.program_counter();
         let Some(location) = locate(self, inferior, pc) else {
             return Ok(Arc::from([]));
         };
@@ -184,7 +184,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let registers = self.ptrace.registers(pid)?;
-        if registers.rip == chosen.get() {
+        if registers.program_counter().get() == chosen.get() {
             return Ok(false);
         }
 
@@ -203,7 +203,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         }
 
-        record!("{pid} runs the call at {:#x} to {address}", registers.rip);
+        record!(
+            "{pid} runs the call at {:#x} to {address}",
+            registers.program_counter().get()
+        );
 
         Ok(true)
     }

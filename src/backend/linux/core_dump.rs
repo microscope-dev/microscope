@@ -1,3 +1,7 @@
+use crate::backend::linux::Registers;
+use crate::backend::linux::arch::{
+    ELF_MACHINE, FLOATING_REGISTERS_SIZE, GENERAL_REGISTER_COUNT, PRSTATUS_SIZE,
+};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::File;
@@ -8,14 +12,12 @@ use std::os::unix::fs::FileExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use nix::libc;
 use object::elf;
 use object::read::elf::{ElfFile64, FileHeader as _, Note, NoteIterator, ProgramHeader as _};
 use object::{LittleEndian, ReadCache, ReadRef};
 
 use crate::{ImageAddress, LoadBias, VirtualAddress};
 
-const PRSTATUS_SIZE: usize = 336;
 const PRSTATUS_SIGNAL_OFFSET: usize = 12;
 const PRSTATUS_PID_OFFSET: usize = 32;
 const PRSTATUS_REGISTERS_OFFSET: usize = 112;
@@ -25,9 +27,6 @@ const PRPSINFO_NAME: std::ops::Range<usize> = 40..56;
 const PRPSINFO_ARGUMENTS: std::ops::Range<usize> = 56..136;
 const SIGINFO_SIZE: usize = 128;
 
-pub(super) const FXSAVE_SIZE: usize = 512;
-
-pub(super) const GENERAL_REGISTER_COUNT: usize = 27;
 const AUXV_ENTRY_SIZE: usize = 16;
 const FILE_ENTRY_SIZE: usize = 24;
 
@@ -139,8 +138,8 @@ pub(super) struct CoreThread {
     pub(super) tid: u32,
 
     pub(super) current_signal: u16,
-    pub(super) registers: libc::user_regs_struct,
-    pub(super) fxsave: Option<Arc<[u8; FXSAVE_SIZE]>>,
+    pub(super) registers: Registers,
+    pub(super) fxsave: Option<Arc<[u8; FLOATING_REGISTERS_SIZE]>>,
     pub(super) signal: Option<CoreSignal>,
 }
 
@@ -331,7 +330,7 @@ fn parse<'data, R: ReadRef<'data>>(data: R, len: u64) -> Result<Metadata, CoreEr
         return Err(invalid("the ELF file is not a core dump"));
     }
 
-    if header.e_machine.get(endian) != elf::EM_X86_64 {
+    if header.e_machine.get(endian) != ELF_MACHINE {
         return Err(invalid("only x86-64 core dumps are supported"));
     }
 
@@ -453,12 +452,13 @@ fn parse_notes(
             }
             elf::NT_PRFPREG => {
                 let thread = current_thread(state, "NT_FPREGSET")?;
-                let fxsave: [u8; FXSAVE_SIZE] = descriptor.try_into().map_err(|_| {
-                    invalid(format!(
-                        "NT_FPREGSET has {} bytes; expected {FXSAVE_SIZE}",
-                        descriptor.len()
-                    ))
-                })?;
+                let fxsave: [u8; FLOATING_REGISTERS_SIZE] =
+                    descriptor.try_into().map_err(|_| {
+                        invalid(format!(
+                            "NT_FPREGSET has {} bytes; expected {FLOATING_REGISTERS_SIZE}",
+                            descriptor.len()
+                        ))
+                    })?;
                 if thread.fxsave.replace(Arc::new(fxsave)).is_some() {
                     return Err(invalid(format!(
                         "thread {} has two NT_FPREGSET notes",
@@ -547,73 +547,10 @@ fn parse_prstatus(bytes: &[u8]) -> Result<CoreThread, CoreError> {
     Ok(CoreThread {
         tid,
         current_signal: u16_at(bytes, PRSTATUS_SIGNAL_OFFSET)?,
-        registers: user_registers(values),
+        registers: Registers::from_general_registers(values),
         fxsave: None,
         signal: None,
     })
-}
-
-pub(super) const fn user_registers(
-    values: [u64; GENERAL_REGISTER_COUNT],
-) -> libc::user_regs_struct {
-    let [
-        r15,
-        r14,
-        r13,
-        r12,
-        rbp,
-        rbx,
-        r11,
-        r10,
-        r9,
-        r8,
-        rax,
-        rcx,
-        rdx,
-        rsi,
-        rdi,
-        orig_rax,
-        rip,
-        cs,
-        eflags,
-        rsp,
-        ss,
-        fs_base,
-        gs_base,
-        ds,
-        es,
-        fs,
-        gs,
-    ] = values;
-    libc::user_regs_struct {
-        r15,
-        r14,
-        r13,
-        r12,
-        rbp,
-        rbx,
-        r11,
-        r10,
-        r9,
-        r8,
-        rax,
-        rcx,
-        rdx,
-        rsi,
-        rdi,
-        orig_rax,
-        rip,
-        cs,
-        eflags,
-        rsp,
-        ss,
-        fs_base,
-        gs_base,
-        ds,
-        es,
-        fs,
-        gs,
-    }
 }
 
 fn parse_siginfo(bytes: &[u8]) -> Result<CoreSignal, CoreError> {
@@ -1395,6 +1332,7 @@ pub(super) fn fuzz(data: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nix::libc;
 
     const CORE: &[u8] = b"CORE";
     const ELF_HEADER_SIZE: usize = 64;
@@ -1553,7 +1491,7 @@ mod tests {
     }
 
     fn fxsave(marker: u8) -> Vec<u8> {
-        vec![marker; FXSAVE_SIZE]
+        vec![marker; FLOATING_REGISTERS_SIZE]
     }
 
     fn auxv(entries: &[(u64, u64)]) -> Vec<u8> {
@@ -1668,7 +1606,10 @@ mod tests {
             };
 
             assert_eq!(
-                (first.registers.rip, second.registers.rip),
+                (
+                    first.registers.program_counter().get(),
+                    second.registers.program_counter().get()
+                ),
                 (0x40_1234, 0x40_2000)
             );
             assert_eq!(

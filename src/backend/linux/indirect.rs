@@ -235,21 +235,25 @@ impl<P: LinuxTraceOps> Controller<P> {
         let registers = self.ptrace.registers(pid)?;
 
         if let Some(&resolver) = indirect.entries.get(&address) {
-            let returns_to = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
+            let pending =
+                registers.pending_return(|address| self.ptrace.read_word(pid, address))?;
+            let returns_to = pending.returns_to;
             record!("{pid} calls the resolver at {address}, returning to {returns_to}");
             let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             inferior.indirect.calls.push(Call {
                 thread: pid,
                 resolver,
                 returns_to,
-                stack: registers.rsp.wrapping_add(8),
+                stack: pending.stack,
             });
 
             return self.queue_module_refresh();
         }
 
         let Some(index) = indirect.calls.iter().position(|call| {
-            call.thread == pid && call.returns_to == address && call.stack == registers.rsp
+            call.thread == pid
+                && call.returns_to == address
+                && call.stack == registers.stack_pointer()
         }) else {
             return Ok(());
         };
@@ -258,12 +262,16 @@ impl<P: LinuxTraceOps> Controller<P> {
         let call = inferior.indirect.calls.remove(index);
         let (module, resolver) = call.resolver;
         let chosen = self.modules.get(&module).and_then(|defining| {
-            implementation_in(defining, VirtualAddress::new(registers.rax), resolver)
+            implementation_in(
+                defining,
+                VirtualAddress::new(registers.return_value()),
+                resolver,
+            )
         });
 
         record!(
             "the resolver {resolver} in module {module} returned {:#x}, choosing {chosen:?}",
-            registers.rax
+            registers.return_value()
         );
         if let Some(implementation) = chosen {
             let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;

@@ -161,7 +161,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let mut registers = self.ptrace.registers(pid)?;
-        let slot = super::registers::x86_64_register_slot(&mut registers, register)
+        let slot = registers
+            .slot(register)
             .ok_or_else(|| backend_error(LinuxError::UnsupportedRegisterWrite))?;
         let mut value = slot.to_le_bytes();
         for (to, from) in value.iter_mut().zip(bytes) {
@@ -169,9 +170,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         *slot = u64::from_le_bytes(value);
 
-        let moves = super::registers::is_program_counter(register);
+        let moves = super::arch::is_program_counter(register);
         if moves {
-            registers.orig_rax = u64::MAX;
+            registers.cancel_syscall_restart();
         }
 
         self.ptrace.set_registers(pid, registers)?;
@@ -202,7 +203,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .jump_target(process_id, stop_id, pid, spec)
             .and_then(|target| {
                 record!("jump {pid} to {target}");
-                let program_counter = crate::RegisterId::new(super::registers::PROGRAM_COUNTER);
+                let program_counter = crate::RegisterId::new(super::arch::PROGRAM_COUNTER);
                 self.write_register(pid, program_counter, &target.get().to_le_bytes())?;
                 self.publish_moved_thread(pid)
             });
@@ -230,7 +231,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         validate_public_stop(inferior, Some(stop_id))?;
         validate_resumable(inferior)?;
         validate_stopped_thread(inferior, pid)?;
-        let pc = VirtualAddress::new(self.ptrace.registers(pid)?.rip);
+        let pc = self.ptrace.registers(pid)?.program_counter();
         let function = self
             .physical_function_at(pc)
             .ok_or(Error::JumpWithoutFunction)?;
@@ -271,7 +272,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Result<(ExecutionId, DebuggerEvent)> {
         let reason = StopReason::Jump;
         let presentation = self.presentation_for_thread(pid, Some(&reason))?;
-        let pc = VirtualAddress::new(self.ptrace.registers(pid)?.rip);
+        let pc = self.ptrace.registers(pid)?.program_counter();
         let stop_id = self.ptrace.allocate_stop_id()?;
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let execution = ExecutionId::new(inferior.next_execution + 1);

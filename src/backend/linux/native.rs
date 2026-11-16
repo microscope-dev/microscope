@@ -1,3 +1,4 @@
+use crate::backend::linux::Registers;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
@@ -32,7 +33,7 @@ use super::modules::{
     read_maps,
 };
 
-use super::registers::Fxsave;
+use super::FloatingRegisters;
 use super::signals::{Signal, WaitEvent};
 use super::trap::Lift;
 use super::{
@@ -107,7 +108,7 @@ pub(super) trait InspectionOps {
         None
     }
 
-    fn registers(&self, pid: Pid) -> Result<libc::user_regs_struct>;
+    fn registers(&self, pid: Pid) -> Result<Registers>;
 
     fn auxv(&self, _pid: Pid) -> Option<Vec<(u64, u64)>> {
         None
@@ -117,7 +118,7 @@ pub(super) trait InspectionOps {
         true
     }
 
-    fn floating_registers(&self, _pid: Pid) -> Result<Fxsave> {
+    fn floating_registers(&self, _pid: Pid) -> Result<FloatingRegisters> {
         Err(backend_error(LinuxError::UnsupportedFloatingRegisters))
     }
 
@@ -266,7 +267,7 @@ pub(super) trait LinuxTraceOps: InspectionOps {
         &self,
         pid: Pid,
     ) -> std::result::Result<super::syscalls::info::SyscallInfo, Errno>;
-    fn set_registers(&self, pid: Pid, registers: libc::user_regs_struct) -> Result<()>;
+    fn set_registers(&self, pid: Pid, registers: Registers) -> Result<()>;
 
     fn set_options(&self, pid: Pid, exit_kill: bool) -> Result<()>;
 
@@ -467,9 +468,11 @@ impl InspectionOps for LinuxPtrace {
         Some(bytes)
     }
 
-    fn registers(&self, pid: Pid) -> Result<libc::user_regs_struct> {
+    fn registers(&self, pid: Pid) -> Result<Registers> {
         self.assert_owner_thread();
-        ptrace::getregs(pid).map_err(|error| backend_error(LinuxError::System(error)))
+        ptrace::getregs(pid)
+            .map(Registers::from_native)
+            .map_err(|error| backend_error(LinuxError::System(error)))
     }
 
     fn auxv(&self, pid: Pid) -> Option<Vec<(u64, u64)>> {
@@ -486,7 +489,7 @@ impl InspectionOps for LinuxPtrace {
         )
     }
 
-    fn floating_registers(&self, pid: Pid) -> Result<Fxsave> {
+    fn floating_registers(&self, pid: Pid) -> Result<FloatingRegisters> {
         self.assert_owner_thread();
         super::sys::floating_registers(pid)
             .map(Arc::new)
@@ -814,9 +817,10 @@ impl LinuxTraceOps for LinuxPtrace {
         super::syscalls::info::syscall_info(pid)
     }
 
-    fn set_registers(&self, pid: Pid, registers: libc::user_regs_struct) -> Result<()> {
+    fn set_registers(&self, pid: Pid, registers: Registers) -> Result<()> {
         self.assert_owner_thread();
-        ptrace::setregs(pid, registers).map_err(|error| backend_error(LinuxError::System(error)))
+        ptrace::setregs(pid, *registers.native())
+            .map_err(|error| backend_error(LinuxError::System(error)))
     }
 
     fn set_options(&self, pid: Pid, exit_kill: bool) -> Result<()> {

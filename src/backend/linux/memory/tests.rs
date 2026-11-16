@@ -5,6 +5,7 @@ use proptest::prelude::*;
 use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
 
 use super::*;
+use crate::backend::linux::Registers;
 use crate::protocol::BreakpointId;
 use crate::test_strategies::u64_edges;
 
@@ -97,7 +98,7 @@ impl InspectionOps for Target<'_> {
             .collect()
     }
 
-    fn registers(&self, _pid: Pid) -> Result<nix::libc::user_regs_struct> {
+    fn registers(&self, _pid: Pid) -> Result<Registers> {
         Err(Error::NotStopped)
     }
 }

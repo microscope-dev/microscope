@@ -154,10 +154,11 @@ impl NativeTracee {
     }
 
     pub fn registers(&self, thread: Tid) -> std::result::Result<Registers, Errno> {
-        let user = self
+        let user = *self
             .ptrace
             .registers(Pid::from_raw(thread))
-            .map_err(errno_of)?;
+            .map_err(errno_of)?
+            .native();
         let mut registers = Registers::default();
         apply_user_registers(&mut registers, &user);
         registers.rflags = user.eflags;
@@ -168,7 +169,7 @@ impl NativeTracee {
     pub fn system_call(&self, thread: Tid) -> std::result::Result<u64, Errno> {
         self.ptrace
             .registers(Pid::from_raw(thread))
-            .map(|user| user.orig_rax)
+            .map(|user| user.syscall_number())
             .map_err(errno_of)
     }
 
@@ -177,10 +178,11 @@ impl NativeTracee {
         thread: Tid,
         registers: &Registers,
     ) -> std::result::Result<(), Errno> {
-        let mut user = self
+        let mut user = *self
             .ptrace
             .registers(Pid::from_raw(thread))
-            .map_err(errno_of)?;
+            .map_err(errno_of)?
+            .native();
         let flags = user.eflags;
         user = libc::user_regs_struct {
             orig_rax: user.orig_rax,
@@ -190,7 +192,7 @@ impl NativeTracee {
         user.eflags = (flags & !SETTABLE_FLAGS) | (registers.rflags & SETTABLE_FLAGS);
 
         self.ptrace
-            .set_registers(Pid::from_raw(thread), user)
+            .set_registers(Pid::from_raw(thread), super::Registers::from_native(user))
             .map_err(errno_of)
     }
 

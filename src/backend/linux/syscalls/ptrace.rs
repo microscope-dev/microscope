@@ -12,15 +12,15 @@ use nix::unistd::Pid;
 use super::super::native::{ptrace_with_signal, wait_for};
 use super::super::signals::{Signal, WaitEvent};
 use super::super::sys::tgkill;
-use super::info::{OP_ENTRY, OP_EXIT, OP_SECCOMP, SyscallInfo, call_id, syscall_info};
+use super::info::{self, OP_ENTRY, OP_EXIT, OP_SECCOMP, SyscallInfo, call_id, syscall_info};
 use super::launch::{self, Gate, GateOptions};
 use super::{Sink, seccomp};
+use crate::backend::linux::Registers;
 use crate::syscalls::captures::{self, Limits, Memory};
 use crate::syscalls::specs::{self, Ret};
-use crate::syscalls::table::X32_SYSCALL_BIT;
 use crate::syscalls::{
-    self as syscalls, Abi, CallSet, Capture, Device, EventFlags, InFlight, Outcome, ProcessEnd,
-    ReadAt, SyscallEvent, SyscallId, TraceEvent,
+    self as syscalls, CallSet, Capture, Device, EventFlags, InFlight, Outcome, ProcessEnd, ReadAt,
+    SyscallEvent, SyscallId, TraceEvent,
 };
 
 #[derive(Debug, Clone)]
@@ -408,39 +408,8 @@ impl Tracer<'_> {
             let Ok(registers) = ptrace::getregs(Pid::from_raw(tid.cast_signed())) else {
                 return self.resume(tid, None);
             };
-
-            #[expect(clippy::cast_possible_truncation, reason = "call numbers are small")]
-            let number = registers.orig_rax as u32;
-            let (call, args) = if registers.cs == 0x23 {
-                let args = [
-                    registers.rbx,
-                    registers.rcx,
-                    registers.rdx,
-                    registers.rsi,
-                    registers.rdi,
-                    registers.rbp,
-                ];
-                (
-                    SyscallId::new(Abi::X86_32, number),
-                    args.map(|word| word & 0xffff_ffff),
-                )
-            } else {
-                let abi = if number & X32_SYSCALL_BIT == 0 {
-                    Abi::X86_64
-                } else {
-                    Abi::X32
-                };
-
-                let args = [
-                    registers.rdi,
-                    registers.rsi,
-                    registers.rdx,
-                    registers.r10,
-                    registers.r8,
-                    registers.r9,
-                ];
-                (SyscallId::new(abi, number & !X32_SYSCALL_BIT), args)
-            };
+            let registers = Registers::from_native(registers);
+            let (call, args) = info::from_registers(registers.syscall_audit_arch(), &registers);
 
             let chosen = self.options.calls.contains(call);
             (
@@ -487,33 +456,20 @@ impl Tracer<'_> {
 
     fn stack(&self, process: u32, tid: u32) -> Option<crate::syscalls::CallStack> {
         let stacks = self.options.stacks.as_ref()?;
-        let registers = ptrace::getregs(Pid::from_raw(tid.cast_signed())).ok()?;
-        let fs_base = registers.fs_base;
-        let registers = [
-            (0, registers.rax),
-            (1, registers.rdx),
-            (2, registers.rcx),
-            (3, registers.rbx),
-            (4, registers.rsi),
-            (5, registers.rdi),
-            (6, registers.rbp),
-            (7, registers.rsp),
-            (8, registers.r8),
-            (9, registers.r9),
-            (10, registers.r10),
-            (11, registers.r11),
-            (12, registers.r12),
-            (13, registers.r13),
-            (14, registers.r14),
-            (15, registers.r15),
-            (16, registers.rip),
-        ]
-        .map(|(number, value)| (crate::unwind::DwarfRegister::new(number), value));
+        let registers =
+            Registers::from_native(ptrace::getregs(Pid::from_raw(tid.cast_signed())).ok()?);
+        let thread_pointer = registers.thread_pointer();
+        let registers: Vec<_> = registers.register_file().iter().collect();
         let mut stacks = stacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        Some(stacks.unwind_live(syscalls::Pid::new(process), tid, &registers, Some(fs_base)))
+        Some(stacks.unwind_live(
+            syscalls::Pid::new(process),
+            tid,
+            &registers,
+            Some(thread_pointer),
+        ))
     }
 
     fn syscall_stop(&mut self, tid: u32, seccomp: bool) -> Result<(), Errno> {

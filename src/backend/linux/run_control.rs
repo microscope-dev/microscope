@@ -280,7 +280,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let standing = match &kind {
             ActiveKind::Step { owner, start, .. } if !start.targets.is_empty() => {
-                let at = VirtualAddress::new(self.ptrace.registers(owner.thread)?.rip);
+                let at = self.ptrace.registers(owner.thread)?.program_counter();
                 start.targets.contains(&at).then_some((owner.thread, at))
             }
             _ => None,
@@ -761,7 +761,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .ok_or(Error::NotRunning)?
                     .thread_mut(pid)?
                     .reason = None;
-                let address = self.ptrace.registers(pid)?.rip;
+                let address = self.ptrace.registers(pid)?.program_counter().get();
                 self.forget_copy_at(address);
                 self.queue_module_refresh()?;
                 self.restart_after_internal(pid)
@@ -1282,7 +1282,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let registers = self.ptrace.registers(pid)?;
         let guard = ResumeGuard {
-            address: VirtualAddress::new(registers.rip),
+            address: registers.program_counter(),
             stack: self.stack_position(pid, &registers),
             call: false,
         };
