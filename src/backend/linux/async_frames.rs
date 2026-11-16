@@ -618,7 +618,7 @@ impl<P: InspectionOps> Controller<P> {
             .iter()
             .map(|body| {
                 let inner = StackFrameId::new(frame_u32(body.frame.checked_sub(1)?).ok()?);
-                self.polled_self(inferior, root, stack, modules, expanded, inner)
+                Some(self.polled_self(inferior, root, stack, modules, expanded, inner))
             })
             .collect();
 
@@ -632,15 +632,25 @@ impl<P: InspectionOps> Controller<P> {
                     let Some(body) = bodies.get(at) else {
                         return futures::StateChoice::Stored;
                     };
-                    match awaiting_at(coroutine, body.line.as_ref()) {
-                        futures::StateChoice::Unknown => polled
-                            .get(at)
-                            .copied()
-                            .flatten()
-                            .map_or(futures::StateChoice::Unknown, |polled| {
-                                awaiting(coroutine, object, polled)
-                            }),
-                        choice => choice,
+                    match (awaiting_at(coroutine, body.line.as_ref()), polled.get(at)) {
+                        (futures::StateChoice::Unknown, Some(Some(Polled::At(polled)))) => {
+                            awaiting(coroutine, |awaitee| {
+                                matches!(awaitee.layout, RecordMemberLayout::ByteOffset(offset)
+                                    if object.checked_add(offset) == Some(*polled))
+                            })
+                        }
+                        (futures::StateChoice::Unknown, Some(Some(Polled::Typed(Some(ty))))) => {
+                            let image = module.image.as_ref();
+                            futures::pinned_target(image, *ty).map_or(
+                                futures::StateChoice::Unknown,
+                                |polled| {
+                                    awaiting(coroutine, |awaitee| {
+                                        image.same_type(awaitee.type_ref, polled)
+                                    })
+                                },
+                            )
+                        }
+                        (choice, _) => choice,
                     }
                 },
             )
@@ -705,14 +715,27 @@ impl<P: InspectionOps> Controller<P> {
         modules: &[UnwindModule<'_>],
         expanded: &Expanded,
         frame: StackFrameId,
-    ) -> Option<VirtualAddress> {
-        let (module, storage, ty, _) = self
-            .frame_variable(inferior, root, stack, modules, expanded, frame, "self")
-            .ok()?;
+    ) -> Polled {
+        let (module, storage, ty, _) =
+            match self.frame_variable(inferior, root, stack, modules, expanded, frame, "self") {
+                Ok(found) => found,
+                Err(unread) => return Polled::Typed(unread.declared),
+            };
         if !futures::pinned(module.image.as_ref(), ty) {
-            return None;
+            return Polled::Typed(None);
         }
 
+        self.polled_word(inferior, root, module, storage)
+            .map_or(Polled::Typed(Some(ty)), Polled::At)
+    }
+
+    fn polled_word(
+        &self,
+        inferior: &Inferior,
+        root: &StackRoot,
+        module: &RuntimeModule,
+        storage: ValueStorage,
+    ) -> Option<VirtualAddress> {
         let word = match storage {
             ValueStorage::Memory(at) => {
                 self.with_module_stop(inferior, &module.loaded, root.reader(), |stop| {
@@ -1131,17 +1154,19 @@ struct Body {
     frame: usize,
 }
 
+enum Polled {
+    At(VirtualAddress),
+
+    Typed(Option<TypeReference>),
+}
+
 fn awaiting(
     coroutine: &CoroutineInfo,
-    object: VirtualAddress,
-    polled: VirtualAddress,
+    polls: impl Fn(&crate::RecordMember) -> bool,
 ) -> futures::StateChoice {
     let mut at = coroutine.states.iter().filter(|state| {
         matches!(state.kind, crate::CoroutineStateKind::Suspended { .. })
-            && state.awaitee().is_some_and(|awaitee| {
-                matches!(awaitee.layout, RecordMemberLayout::ByteOffset(offset)
-                    if object.checked_add(offset) == Some(polled))
-            })
+            && state.awaitee().is_some_and(&polls)
     });
     match (at.next(), at.next()) {
         (Some(state), None) => futures::StateChoice::Chosen(state.value),

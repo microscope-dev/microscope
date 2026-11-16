@@ -453,6 +453,18 @@ pub fn pinned(image: &dyn RuntimeImage, ty: TypeReference) -> bool {
         .is_some_and(is_pin)
 }
 
+pub fn pinned_target(image: &dyn RuntimeImage, ty: TypeReference) -> Option<TypeReference> {
+    let (_, Shape::Pinned { pointer, .. }) = representation(image, ty)? else {
+        return None;
+    };
+
+    let (_, Shape::Pointer(target)) = representation(image, pointer)? else {
+        return None;
+    };
+
+    Some(target)
+}
+
 fn is_pin(info: &crate::TypeInfo) -> bool {
     info.identity.as_ref().is_some_and(|identity| {
         identity.language == SourceLanguage::Rust
