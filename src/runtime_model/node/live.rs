@@ -7,7 +7,7 @@ use crate::image::v8::Constant;
 use crate::runtime_model::{
     CodeAt, CodeFrame, InterpretedFrame, LiveFrames, LiveThread, RuntimeStop,
 };
-use crate::unwind::{RBP, RegisterFile};
+use crate::unwind::{FRAME_POINTER, RegisterFile};
 use crate::{AddressRange, CodeRole, ImageAddress, SourceLanguage, ThreadLocal, VirtualAddress};
 
 const MOST_FRAMES: usize = 4096;
@@ -456,7 +456,7 @@ impl Walk<'_, '_> {
             self.sp,
             self.js_entry_sp
         );
-        let registers = RegisterFile::new([(RBP, fp)]);
+        let registers = RegisterFile::new([(FRAME_POINTER, fp)]);
         let frame = CodeFrame {
             thread: thread.thread,
             instruction: VirtualAddress::new(pc),

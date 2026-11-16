@@ -5,6 +5,13 @@ use crate::{ImageAddress, LoadedModule, ModuleImage, UnwindTermination, VirtualA
 
 pub mod code_copies;
 pub mod sample;
+pub mod x86_64;
+
+#[cfg(target_arch = "x86_64")]
+pub use x86_64::{
+    ARGUMENTS, CALL_CLOBBERED_REGISTERS, CALLEE_SAVED_REGISTERS, FRAME_POINTER,
+    GO_CALL_CLOBBERED_REGISTERS, PROGRAM_COUNTER, STACK_POINTER, interrupted_registers,
+};
 
 pub const DEFAULT_MAX_FRAMES: usize = 256;
 
@@ -86,14 +93,14 @@ pub fn frame_pointer_rule<U: UnwindInfo + ?Sized>(
         }
     }
 
-    let registers = RegisterFile::new([(RBP, FRAME), (RSP, STACK)]);
+    let registers = RegisterFile::new([(FRAME_POINTER, FRAME), (STACK_POINTER, STACK)]);
     match unwind.unwind(address, &registers, &mut Named) {
-        Ok(step) => match step.registers.get(RETURN_ADDRESS) {
+        Ok(step) => match step.registers.get(PROGRAM_COUNTER) {
             None => FramePointerRule::Outermost,
             Some(caller)
                 if step.cfa.get() == FRAME + 16
                     && caller == !(FRAME + 8)
-                    && step.registers.get(RBP) == Some(!FRAME) =>
+                    && step.registers.get(FRAME_POINTER) == Some(!FRAME) =>
             {
                 FramePointerRule::Kept
             }
@@ -103,21 +110,6 @@ pub fn frame_pointer_rule<U: UnwindInfo + ?Sized>(
         Err(UnwindTermination::NoUnwindInfo { .. }) => FramePointerRule::NoUnwindInfo,
         Err(_) => FramePointerRule::NotKept,
     }
-}
-
-pub const UCONTEXT_MCONTEXT: u64 = 40;
-
-pub const SIGCONTEXT_REGISTERS: [DwarfRegister; 17] =
-    DwarfRegister::each([8, 9, 10, 11, 12, 13, 14, 15, 5, 4, 6, 3, 1, 0, 2, 7, 16]);
-
-pub fn interrupted_registers(context: u64, memory: &mut dyn MemoryReader) -> Option<RegisterFile> {
-    let mut registers = RegisterFile::new([]);
-    for (slot, register) in SIGCONTEXT_REGISTERS.iter().enumerate() {
-        let address = context.checked_add(UCONTEXT_MCONTEXT + 8 * slot as u64)?;
-        registers.set(*register, memory.read_u64(VirtualAddress::new(address))?);
-    }
-
-    Some(registers)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -162,26 +154,6 @@ impl std::fmt::Display for DwarfRegister {
         self.0.fmt(formatter)
     }
 }
-
-pub const RAX: DwarfRegister = DwarfRegister(0);
-
-pub const RBX: DwarfRegister = DwarfRegister(3);
-
-pub const RSI: DwarfRegister = DwarfRegister(4);
-
-pub const RDI: DwarfRegister = DwarfRegister(5);
-
-pub const RBP: DwarfRegister = DwarfRegister(6);
-
-pub const RSP: DwarfRegister = DwarfRegister(7);
-
-pub const R12: DwarfRegister = DwarfRegister(12);
-
-pub const RETURN_ADDRESS: DwarfRegister = DwarfRegister(16);
-
-pub const FS_BASE: DwarfRegister = DwarfRegister(58);
-
-pub const GS_BASE: DwarfRegister = DwarfRegister(59);
 
 #[derive(Debug, Clone)]
 pub struct FrameContext {

@@ -15,7 +15,7 @@ use super::{
     TaskEntries, TaskPage, TaskRef, TaskStarter, ThreadActivity,
 };
 
-use crate::unwind::{RDI, RSI, RegisterFile};
+use crate::unwind::{ARGUMENTS, RegisterFile};
 use crate::{
     ImageAddress, StackSegment, TaskState, ThreadId, ThreadLocal, TypeReference, VirtualAddress,
 };
@@ -749,7 +749,7 @@ impl RuntimeModel for TokioRuntime {
             .find(|(entry, _)| *entry == starter)
             .ok_or("tokio starts no task there")?;
         let header = registers
-            .get(RSI)
+            .get(ARGUMENTS[1])
             .map(VirtualAddress::new)
             .ok_or("the task being started is unavailable")?;
         self.started(stop, header, schedules)
@@ -838,7 +838,8 @@ impl RuntimeModel for TokioRuntime {
         entry: VirtualAddress,
         registers: &RegisterFile,
     ) -> bool {
-        let (Some(header), Some(argument)) = (task.task.locator, registers.get(RDI)) else {
+        let (Some(header), Some(argument)) = (task.task.locator, registers.get(ARGUMENTS[0]))
+        else {
             return false;
         };
 

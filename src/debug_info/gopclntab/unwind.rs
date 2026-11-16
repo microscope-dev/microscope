@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use super::{GoFunction, GoTable};
 use crate::unwind::{
-    DwarfRegister, FramePointerRule, MemoryReader, RBP, RETURN_ADDRESS, RSP, RegisterFile,
-    UnwindStep,
+    DwarfRegister, FRAME_POINTER, FramePointerRule, MemoryReader, PROGRAM_COUNTER, RegisterFile,
+    STACK_POINTER, UnwindStep,
 };
 
 use crate::{ImageAddress, UnwindTermination, VirtualAddress};
@@ -98,11 +98,11 @@ impl GoUnwind {
     ) -> Option<std::result::Result<VirtualAddress, UnwindTermination>> {
         let (_, function) = self.function(address)?;
         Some(self.sp_delta(function, address).and_then(|delta| {
-            let sp = registers
-                .get(RSP)
-                .ok_or_else(|| UnwindTermination::RegisterUnavailable {
+            let sp = registers.get(STACK_POINTER).ok_or_else(|| {
+                UnwindTermination::RegisterUnavailable {
                     register: "rsp".into(),
-                })?;
+                }
+            })?;
             sp.checked_add(delta)
                 .and_then(|cfa| cfa.checked_add(8))
                 .map(VirtualAddress::new)
@@ -134,8 +134,8 @@ impl GoUnwind {
                 caller.remove(*register);
             }
 
-            caller.set(RETURN_ADDRESS, return_address);
-            caller.set(RSP, cfa.get());
+            caller.set(PROGRAM_COUNTER, return_address);
+            caller.set(STACK_POINTER, cfa.get());
 
             Ok(UnwindStep {
                 registers: caller,
@@ -196,14 +196,14 @@ impl GoUnwind {
         match self.caller_frame_pointer(address, step.cfa) {
             None => {}
             Some(CallerFramePointer::Saved(slot)) => match memory.read_u64(slot) {
-                Some(value) => step.registers.set(RBP, value),
-                None => step.registers.remove(RBP),
+                Some(value) => step.registers.set(FRAME_POINTER, value),
+                None => step.registers.remove(FRAME_POINTER),
             },
-            Some(CallerFramePointer::Unchanged) => match current.get(RBP) {
-                Some(value) => step.registers.set(RBP, value),
-                None => step.registers.remove(RBP),
+            Some(CallerFramePointer::Unchanged) => match current.get(FRAME_POINTER) {
+                Some(value) => step.registers.set(FRAME_POINTER, value),
+                None => step.registers.remove(FRAME_POINTER),
             },
-            Some(CallerFramePointer::Unknown) => step.registers.remove(RBP),
+            Some(CallerFramePointer::Unknown) => step.registers.remove(FRAME_POINTER),
         }
     }
 }

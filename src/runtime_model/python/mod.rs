@@ -768,16 +768,13 @@ impl RuntimeModel for PythonRuntime {
         if hook != super::HookPlace::Companion(hook::SYMBOL) {
             return Err("not Python's agent hook".into());
         }
-        let argument = |register, name| {
+        let [first, second, third, ..] = crate::unwind::ARGUMENTS;
+        let argument = |register| {
             registers.get(register).ok_or_else(|| -> Arc<str> {
-                format!("Python agent hook argument {name} is unavailable").into()
+                format!("Python agent hook argument register {register} is unavailable").into()
             })
         };
-        let report = agent::decode(
-            argument(crate::unwind::RDI, "rdi")?,
-            argument(crate::unwind::RSI, "rsi")?,
-            argument(crate::unwind::DwarfRegister::new(1), "rdx")?,
-        )?;
+        let report = agent::decode(argument(first)?, argument(second)?, argument(third)?)?;
 
         Ok(match report {
             agent::Report::Armed { generation } => super::HookEvent::Armed { generation },

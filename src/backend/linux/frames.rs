@@ -9,8 +9,8 @@ use crate::model::FrameMetadata;
 use crate::protocol::{FramePresentation, PresentedFrame, StepKind, StopId, StopReason};
 use crate::runtime_model::{Crossing, InterpretedFrame, InterpretedFrameRef, futures};
 use crate::unwind::{
-    CallerProvider, CallerResult, DEFAULT_MAX_FRAMES, FrameContext, MemoryReader, RETURN_ADDRESS,
-    RSP, RegisterFile, collect_frames,
+    CallerProvider, CallerResult, DEFAULT_MAX_FRAMES, FrameContext, PROGRAM_COUNTER, RegisterFile,
+    STACK_POINTER, collect_frames, interrupted_registers,
 };
 
 pub(super) use crate::unwind::{UnwindModule, unwind_module_for};
@@ -347,7 +347,7 @@ impl<P: InspectionOps> Controller<P> {
         };
 
         let instruction = registers
-            .get(RETURN_ADDRESS)
+            .get(PROGRAM_COUNTER)
             .ok_or(Error::LocationUnavailable)?;
         let initial = FrameContext {
             instruction: VirtualAddress::new(instruction),
@@ -549,7 +549,7 @@ impl<P: InspectionOps> Controller<P> {
         let scope = source_scope(
             &selected,
             source,
-            physical.registers.get(crate::unwind::RBP),
+            physical.registers.get(crate::unwind::FRAME_POINTER),
         );
 
         if jump.is_some() {
@@ -594,7 +594,7 @@ impl<P: InspectionOps> Controller<P> {
             return None;
         }
 
-        let stack_pointer = frame.registers.get(RSP)?;
+        let stack_pointer = frame.registers.get(STACK_POINTER)?;
         let low = match (root.thread(), root.context) {
             (Some(pid), _) => self.task_stack(inferior, pid)?.low,
             (None, ExecutionContext::Task(task)) => {
@@ -1527,7 +1527,7 @@ impl RoleCallerProvider<'_, '_> {
     fn bounded_segment(&self) -> StackSegment {
         self.dwarf
             .registers
-            .get(RSP)
+            .get(STACK_POINTER)
             .and_then(|pointer| {
                 self.stacks
                     .iter()
@@ -1542,25 +1542,20 @@ impl RoleCallerProvider<'_, '_> {
     }
 
     fn interrupted(&mut self) -> CallerResult {
-        let Some(context) = self.dwarf.registers.get(RSP) else {
+        let Some(context) = self.dwarf.registers.get(STACK_POINTER) else {
             return CallerResult::Finished(UnwindTermination::RegisterUnavailable {
                 register: "rsp".into(),
             });
         };
 
-        let mut registers = RegisterFile::new([]);
-        for (slot, register) in SIGCONTEXT_REGISTERS.iter().enumerate() {
-            let address = context + UCONTEXT_MCONTEXT + 8 * slot as u64;
-            let Some(value) = self.dwarf.memory.read_u64(VirtualAddress::new(address)) else {
-                return CallerResult::Finished(UnwindTermination::MemoryReadFailed {
-                    address: VirtualAddress::new(address),
-                });
-            };
+        let registers = match interrupted_registers(context, &mut self.dwarf.memory) {
+            Ok(registers) => registers,
+            Err(address) => {
+                return CallerResult::Finished(UnwindTermination::MemoryReadFailed { address });
+            }
+        };
 
-            registers.set(*register, value);
-        }
-
-        let instruction = registers.get(RETURN_ADDRESS).unwrap_or(0);
+        let instruction = registers.get(PROGRAM_COUNTER).unwrap_or(0);
         self.dwarf.first = false;
         self.dwarf.registers = registers;
         self.carried = None;
@@ -1573,8 +1568,6 @@ impl RoleCallerProvider<'_, '_> {
         })
     }
 }
-
-pub(super) use crate::unwind::{SIGCONTEXT_REGISTERS, UCONTEXT_MCONTEXT};
 
 pub(super) type CrossStacks<'c> = dyn FnMut(ModuleId, &RegisterFile, bool) -> Option<std::result::Result<Crossing, Arc<str>>>
     + 'c;
@@ -1635,7 +1628,7 @@ impl RoleCallerProvider<'_, '_> {
                         self.dwarf.caller(current)
                     }
                     Some(Ok(Crossing::Continue(registers))) => {
-                        let Some(instruction) = registers.get(RETURN_ADDRESS) else {
+                        let Some(instruction) = registers.get(PROGRAM_COUNTER) else {
                             return unresolved("the task saved no instruction".into());
                         };
 
@@ -1743,7 +1736,7 @@ impl DwarfCallerProvider<'_> {
     fn zero_return_address(&self, cfa: VirtualAddress) -> UnwindTermination {
         let floor = self
             .registers
-            .get(crate::unwind::RSP)
+            .get(crate::unwind::STACK_POINTER)
             .into_iter()
             .chain(self.stack_start)
             .max();
@@ -1790,7 +1783,7 @@ impl DwarfCallerProvider<'_> {
 impl CallerProvider for DwarfCallerProvider<'_> {
     fn caller(&mut self, current: &FrameContext) -> CallerResult {
         if self.first
-            && let Some(stack) = self.registers.get(crate::unwind::RSP)
+            && let Some(stack) = self.registers.get(crate::unwind::STACK_POINTER)
             && !self.memory.ptrace.memory_written(stack)
         {
             return CallerResult::Finished(UnwindTermination::StackNotSaved {
@@ -1833,7 +1826,7 @@ impl CallerProvider for DwarfCallerProvider<'_> {
             }
         };
 
-        let Some(instruction) = step.registers.get(RETURN_ADDRESS) else {
+        let Some(instruction) = step.registers.get(PROGRAM_COUNTER) else {
             return CallerResult::Finished(UnwindTermination::Complete);
         };
 

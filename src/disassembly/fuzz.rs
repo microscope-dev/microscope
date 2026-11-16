@@ -15,7 +15,8 @@ use super::{
     Window, decoder_for,
 };
 
-use crate::unwind::{DwarfRegister, RAX, RegisterFile};
+use crate::unwind::x86_64::RAX;
+use crate::unwind::{DwarfRegister, RegisterFile};
 use crate::{
     AddressRange, Architecture, ByteOrder, PointerWidth, TargetDescription, VirtualAddress,
 };

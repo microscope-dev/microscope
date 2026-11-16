@@ -3,7 +3,8 @@ use std::sync::Arc;
 use nix::libc;
 
 use crate::debug_info::{VariableRegister, VariableRuntimeError};
-use crate::unwind::{DwarfRegister, FS_BASE, GS_BASE, RAX, RegisterFile};
+use crate::unwind::x86_64::{FS_BASE, GS_BASE, RAX};
+use crate::unwind::{DwarfRegister, RegisterFile};
 use crate::{
     ExecutionContext, RegisterDescriptor, RegisterId, RegisterRole, RegisterSnapshot,
     RegisterValue, UnsupportedVariableFeature, VariableUnavailableReason, VirtualAddress,

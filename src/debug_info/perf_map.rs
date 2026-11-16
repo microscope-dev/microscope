@@ -239,7 +239,7 @@ impl UnwindInfo for PerfMapUnwind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unwind::{FramePointerRule, RBP, RETURN_ADDRESS, RSP};
+    use crate::unwind::{FramePointerRule, PROGRAM_COUNTER, STACK_POINTER};
 
     fn named(start: u64, end: u64, name: &str) -> Entry {
         Entry {
@@ -328,7 +328,10 @@ mod tests {
             (0x6000, 0x7000),
             (0x6008, 0xbbbb),
         ]));
-        let registers = RegisterFile::new([(RSP, 0x5008), (RBP, 0x9000)]);
+        let registers = RegisterFile::new([
+            (STACK_POINTER, 0x5008),
+            (crate::unwind::FRAME_POINTER, 0x9000),
+        ]);
         let step = info
             .unwind
             .unwind(ImageAddress::new(0x1005), &registers, &mut memory)
@@ -336,17 +339,28 @@ mod tests {
         assert_eq!(step.cfa.get(), 0x5018);
         assert_eq!(
             step.registers,
-            RegisterFile::new([(RETURN_ADDRESS, 0xaaaa), (RSP, 0x5018), (RBP, 0x9000)])
+            RegisterFile::new([
+                (PROGRAM_COUNTER, 0xaaaa),
+                (STACK_POINTER, 0x5018),
+                (crate::unwind::FRAME_POINTER, 0x9000)
+            ])
         );
 
-        let registers = RegisterFile::new([(RSP, 0x5ff0), (RBP, 0x6000)]);
+        let registers = RegisterFile::new([
+            (STACK_POINTER, 0x5ff0),
+            (crate::unwind::FRAME_POINTER, 0x6000),
+        ]);
         let step = info
             .unwind
             .unwind(ImageAddress::new(0x1015), &registers, &mut memory)
             .expect("unwinds");
         assert_eq!(
             step.registers,
-            RegisterFile::new([(RETURN_ADDRESS, 0xbbbb), (RSP, 0x6010), (RBP, 0x7000)])
+            RegisterFile::new([
+                (PROGRAM_COUNTER, 0xbbbb),
+                (STACK_POINTER, 0x6010),
+                (crate::unwind::FRAME_POINTER, 0x7000)
+            ])
         );
 
         assert_eq!(

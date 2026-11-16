@@ -785,7 +785,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let caller = stack.frames.get(level + 1)?;
         Some(TaskReturn {
             address: caller.context.instruction,
-            stack_pointer: caller.registers.get(crate::unwind::RSP)?,
+            stack_pointer: caller.registers.get(crate::unwind::STACK_POINTER)?,
         })
     }
 

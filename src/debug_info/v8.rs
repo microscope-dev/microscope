@@ -900,7 +900,9 @@ mod tests {
     fn the_heaps_stack_scan_unwinds_to_its_caller() {
         use object::{Object as _, ObjectSymbol as _};
 
-        use crate::unwind::{MemoryReader, RBP, RETURN_ADDRESS, RSP, RegisterFile};
+        use crate::unwind::{
+            FRAME_POINTER, MemoryReader, PROGRAM_COUNTER, RegisterFile, STACK_POINTER,
+        };
 
         struct Words(std::collections::HashMap<u64, u64>);
         impl MemoryReader for Words {
@@ -937,14 +939,14 @@ mod tests {
 
             let info = super::super::load_bytes(&path, &data).expect("its debug information");
             let rbp = 0x7fff_0000_0000;
-            let registers = RegisterFile::new([(RBP, rbp), (RSP, rbp - 48)]);
+            let registers = RegisterFile::new([(FRAME_POINTER, rbp), (STACK_POINTER, rbp - 48)]);
             let mut memory = Words([(rbp, 0x1111), (rbp + 8, 0x2222)].into());
             let step = info
                 .unwind
                 .unwind(crate::ImageAddress::new(returned), &registers, &mut memory)
                 .unwrap_or_else(|stop| panic!("{entry}: {stop:?}"));
-            assert_eq!(step.registers.get(RETURN_ADDRESS), Some(0x2222), "{entry}");
-            assert_eq!(step.registers.get(RBP), Some(0x1111), "{entry}");
+            assert_eq!(step.registers.get(PROGRAM_COUNTER), Some(0x2222), "{entry}");
+            assert_eq!(step.registers.get(FRAME_POINTER), Some(0x1111), "{entry}");
             assert_eq!(step.cfa.get(), rbp + 16, "{entry}");
         }
     }

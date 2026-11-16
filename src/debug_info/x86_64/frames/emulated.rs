@@ -253,7 +253,7 @@ proptest! {
             let caller = frame_caller(frame, &registers, &mut machine);
             let caller = caller.as_ref().map(|step| {
                 (
-                    step.registers.get(RETURN_ADDRESS),
+                    step.registers.get(RIP),
                     step.registers.get(RSP),
                     step.registers.get(RBP).is_none_or(|rbp| rbp == CALLER_RBP),
                 )

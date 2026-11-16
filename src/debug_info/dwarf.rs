@@ -2319,14 +2319,14 @@ where
             let (start, end) = (row.start_address(), row.end_address());
             let gone = matches!(
                 row.cfa(),
-                CfaRule::RegisterAndOffset { register, offset: 8 } if register.0 == X86_64_RSP
+                CfaRule::RegisterAndOffset { register, offset: 8 } if register.0 == crate::unwind::x86_64::RSP.number()
             );
             let (mut slotted, mut below) = (0_u32, 0_u32);
             for (register, rule) in row.registers() {
                 let RegisterRule::Offset(offset) = rule else {
                     continue;
                 };
-                if let Some(index) = X86_64_CALLEE_SAVED_REGISTERS
+                if let Some(index) = crate::unwind::x86_64::CALLEE_SAVED_REGISTERS
                     .iter()
                     .position(|saved| *saved == DwarfRegister::from(*register))
                 {
@@ -2544,9 +2544,9 @@ impl DwarfUnwindInfo {
 
     fn call_clobbered_registers(&self, address: ImageAddress) -> &'static [DwarfRegister] {
         if self.view().is_go_code(address) || self.go().is_some_and(|go| go.is_go(address)) {
-            &X86_64_GO_CALL_CLOBBERED_REGISTERS
+            &crate::unwind::GO_CALL_CLOBBERED_REGISTERS
         } else {
-            &X86_64_SYSV_CALL_CLOBBERED_REGISTERS
+            &crate::unwind::CALL_CLOBBERED_REGISTERS
         }
     }
 }
@@ -2837,7 +2837,7 @@ where
         let register = DwarfRegister::from(register);
         match rules.apply(&mut caller, memory, register, rule) {
             Err(UnwindTermination::MemoryReadFailed { .. }) if register != return_register => {
-                let proved = X86_64_CALLEE_SAVED_REGISTERS
+                let proved = crate::unwind::CALLEE_SAVED_REGISTERS
                     .iter()
                     .position(|saved| *saved == register)
                     .is_some_and(|index| restored() & (1 << index) != 0);
@@ -2849,11 +2849,12 @@ where
         }
     }
 
-    caller.set(crate::unwind::RSP, cfa.get());
+    caller.set(crate::unwind::STACK_POINTER, cfa.get());
 
-    if caller.get(return_register).is_none() {
+    let Some(return_address) = caller.get(return_register) else {
         return Err(UnwindTermination::Complete);
-    }
+    };
+    caller.set(crate::unwind::PROGRAM_COUNTER, return_address);
 
     Ok(UnwindStep {
         registers: caller,
@@ -2873,8 +2874,8 @@ fn stub_cfa(
     registers: &RegisterFile,
 ) -> std::result::Result<VirtualAddress, UnwindTermination> {
     let stack = registers
-        .get(crate::unwind::RSP)
-        .ok_or_else(|| register_unavailable(crate::unwind::RSP))?;
+        .get(crate::unwind::STACK_POINTER)
+        .ok_or_else(|| register_unavailable(crate::unwind::STACK_POINTER))?;
     let cfa = (u64::from(pushed) + 1)
         .checked_mul(8)
         .and_then(|bytes| stack.checked_add(bytes))
@@ -2900,29 +2901,14 @@ fn unwind_stub(
         caller.remove(register);
     }
 
-    caller.set(crate::unwind::RETURN_ADDRESS, return_address);
-    caller.set(crate::unwind::RSP, cfa.get());
+    caller.set(crate::unwind::PROGRAM_COUNTER, return_address);
+    caller.set(crate::unwind::STACK_POINTER, cfa.get());
     Ok(UnwindStep {
         registers: caller,
         cfa,
         signal_frame: false,
     })
 }
-
-const X86_64_SYSV_CALL_CLOBBERED_REGISTERS: [DwarfRegister; 34] = DwarfRegister::each([
-    0, 1, 2, 4, 5, 8, 9, 10, 11, 49, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-    32, 33, 34, 35, 36, 37, 38, 39, 40,
-]);
-
-const X86_64_CALLEE_SAVED_REGISTERS: [DwarfRegister; 6] =
-    DwarfRegister::each([3, 6, 12, 13, 14, 15]);
-
-const X86_64_RSP: u16 = 7;
-
-const X86_64_GO_CALL_CLOBBERED_REGISTERS: [DwarfRegister; 40] = DwarfRegister::each([
-    0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 49, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-]);
 
 fn cfa_from_rule<'data, S>(
     rule: &CfaRule<usize>,
@@ -5827,8 +5813,8 @@ mod tests {
             for offset in offsets {
                 let address = ImageAddress::new(start + offset);
                 let registers = RegisterFile::new([
-                    (crate::unwind::RSP, stack),
-                    (crate::unwind::RETURN_ADDRESS, address.get()),
+                    (crate::unwind::STACK_POINTER, stack),
+                    (crate::unwind::PROGRAM_COUNTER, address.get()),
                     (DwarfRegister::new(3), 0xb),
                     (DwarfRegister::new(0), 0xa),
                 ]);
@@ -5842,10 +5828,13 @@ mod tests {
                     Ok(step.cfa)
                 );
                 assert_eq!(
-                    step.registers.get(crate::unwind::RETURN_ADDRESS),
+                    step.registers.get(crate::unwind::PROGRAM_COUNTER),
                     Some(0x1234)
                 );
-                assert_eq!(step.registers.get(crate::unwind::RSP), Some(stack + 8));
+                assert_eq!(
+                    step.registers.get(crate::unwind::STACK_POINTER),
+                    Some(stack + 8)
+                );
                 assert_eq!(
                     step.registers.get(DwarfRegister::new(3)),
                     Some(0xb),
@@ -5867,8 +5856,8 @@ mod tests {
                 .range
                 .start;
             let registers = RegisterFile::new([
-                (crate::unwind::RSP, stack),
-                (crate::unwind::RETURN_ADDRESS, header.get()),
+                (crate::unwind::STACK_POINTER, stack),
+                (crate::unwind::PROGRAM_COUNTER, header.get()),
             ]);
             assert!(
                 matches!(
@@ -6142,8 +6131,8 @@ mod tests {
 
         let stack = 0x7fff_0000;
         let registers = RegisterFile::new([
-            (crate::unwind::RSP, stack),
-            (crate::unwind::RETURN_ADDRESS, start + 12),
+            (crate::unwind::STACK_POINTER, stack),
+            (crate::unwind::PROGRAM_COUNTER, start + 12),
             (DwarfRegister::new(6), 0xf00d),
             (DwarfRegister::new(3), 0xb0b),
         ]);
@@ -6158,7 +6147,7 @@ mod tests {
                 &bases,
                 ImageAddress::new(start + 12),
                 &registers,
-                (&X86_64_SYSV_CALL_CLOBBERED_REGISTERS, restored),
+                (&crate::unwind::CALL_CLOBBERED_REGISTERS, restored),
                 memory,
             )
             .expect("a caller")

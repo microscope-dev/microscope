@@ -1386,7 +1386,7 @@ fn reads_in_a_block_read_before_cost_nothing_and_bytes_in_a_block_not_mapped_who
 #[test]
 fn agent_reports_are_read_from_the_calling_threads_registers() {
     use crate::runtime_model::{HookEvent, HookPlace, RuntimeModel as _};
-    use crate::unwind::{DwarfRegister, RDI, RSI, RegisterFile};
+    use crate::unwind::{ARGUMENTS, RegisterFile};
     let model = super::PythonRuntime {
         free_threaded: false,
         entries: Vec::new(),
@@ -1398,26 +1398,27 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
     let hook = HookPlace::Companion(super::hook::SYMBOL);
     assert_eq!(model.internal_hooks(), &[hook]);
 
-    let mut registers = RegisterFile::new([(RDI, 1), (RSI, 42), (DwarfRegister::new(1), 0)]);
+    let mut registers =
+        RegisterFile::new([(ARGUMENTS[0], 1), (ARGUMENTS[1], 42), (ARGUMENTS[2], 0)]);
     assert_eq!(
         model.hook_event(&stop, hook, &registers),
         Ok(HookEvent::Breakpoint { numbers: vec![41] })
     );
 
-    registers.set(RSI, 1);
+    registers.set(ARGUMENTS[1], 1);
     assert_eq!(
         model.hook_event(&stop, hook, &registers),
         Ok(HookEvent::Breakpoint { numbers: vec![0] })
     );
-    registers.set(RSI, 0);
+    registers.set(ARGUMENTS[1], 0);
     assert!(model.hook_event(&stop, hook, &registers).is_err());
 
     let mut holding = Memory::default();
     holding.write(0x9000, 3, 8);
     holding.write(0x9008, 1, 8);
     holding.write(0x9010, 0, 8);
-    registers.set(RSI, 2);
-    registers.set(DwarfRegister::new(1), 0x9000);
+    registers.set(ARGUMENTS[1], 2);
+    registers.set(ARGUMENTS[2], 0x9000);
     assert_eq!(
         model.hook_event(&holding, hook, &registers),
         Ok(HookEvent::Breakpoint {
@@ -1426,40 +1427,40 @@ fn agent_reports_are_read_from_the_calling_threads_registers() {
     );
 
     assert!(model.hook_event(&stop, hook, &registers).is_err());
-    registers.set(RSI, 3);
+    registers.set(ARGUMENTS[1], 3);
     assert!(model.hook_event(&holding, hook, &registers).is_err());
-    registers.set(DwarfRegister::new(1), 0);
+    registers.set(ARGUMENTS[2], 0);
 
-    registers.set(RSI, 42);
-    registers.set(RDI, 2);
+    registers.set(ARGUMENTS[1], 42);
+    registers.set(ARGUMENTS[0], 2);
     assert_eq!(
         model.hook_event(&stop, hook, &registers),
         Ok(HookEvent::StepEnded { number: 41 })
     );
-    registers.set(DwarfRegister::new(1), 1);
+    registers.set(ARGUMENTS[2], 1);
     assert!(matches!(
         model.hook_event(&stop, hook, &registers),
         Ok(HookEvent::StepIncomplete { number: 41, ref description })
             if description.contains("not where microscope found it")
     ));
-    registers.set(DwarfRegister::new(1), 2);
+    registers.set(ARGUMENTS[2], 2);
     assert!(matches!(
         model.hook_event(&stop, hook, &registers),
         Ok(HookEvent::StepIncomplete { number: 41, ref description })
             if description.contains("ran on before the step began")
     ));
-    registers.set(DwarfRegister::new(1), 0);
-    registers.set(RDI, 0);
+    registers.set(ARGUMENTS[2], 0);
+    registers.set(ARGUMENTS[0], 0);
     assert_eq!(
         model.hook_event(&stop, hook, &registers),
         Ok(HookEvent::Armed { generation: 42 })
     );
-    registers.set(RDI, 3);
-    registers.set(DwarfRegister::new(1), 4);
+    registers.set(ARGUMENTS[0], 3);
+    registers.set(ARGUMENTS[2], 4);
     assert!(
         matches!(model.hook_event(&stop, hook, &registers), Ok(HookEvent::AgentFailed { generation: 42, ref description }) if description.contains("initialization failed"))
     );
-    for missing in [RDI, RSI, DwarfRegister::new(1)] {
+    for missing in [ARGUMENTS[0], ARGUMENTS[1], ARGUMENTS[2]] {
         let mut absent = registers.clone();
         absent.remove(missing);
         assert!(model.hook_event(&stop, hook, &absent).is_err());

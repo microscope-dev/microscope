@@ -7873,8 +7873,8 @@ impl UnwindInfo for OutermostCallerUnwindInfo {
         match address.get() {
             0x30 => Ok(crate::unwind::UnwindStep {
                 registers: RegisterFile::new([
-                    (crate::unwind::RETURN_ADDRESS, 0x50),
-                    (crate::unwind::RSP, 0x1000),
+                    (crate::unwind::PROGRAM_COUNTER, 0x50),
+                    (crate::unwind::STACK_POINTER, 0x1000),
                 ]),
                 cfa: VirtualAddress::new(0x1000),
                 signal_frame: false,
@@ -8310,7 +8310,7 @@ fn nested_presentations_share_one_interval_between_looks_for_run_control() {
 
 #[test]
 fn glibc_signal_trampoline_expressions_find_the_kernels_saved_registers() {
-    use super::frames::{SIGCONTEXT_REGISTERS, UCONTEXT_MCONTEXT};
+    use crate::unwind::x86_64::{SIGCONTEXT_REGISTERS, UCONTEXT_MCONTEXT};
 
     struct Saved(BTreeMap<u64, u64>);
 
@@ -8348,8 +8348,8 @@ fn glibc_signal_trampoline_expressions_find_the_kernels_saved_registers() {
             .collect(),
     );
     let registers = RegisterFile::new([
-        (crate::unwind::RSP, stack),
-        (crate::unwind::RETURN_ADDRESS, trampoline.get()),
+        (crate::unwind::STACK_POINTER, stack),
+        (crate::unwind::PROGRAM_COUNTER, trampoline.get()),
     ]);
     let step = debug
         .unwind

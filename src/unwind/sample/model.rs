@@ -6,9 +6,10 @@ use proptest::prelude::*;
 use super::{CHAIN_LIMIT, FrameRules, SampledFrame, SampledState, StackEnd, unwind_sample};
 use crate::capture::records::Truncation;
 use crate::debug_info::UnwindInfo;
+use crate::unwind::x86_64::{SIGCONTEXT_REGISTERS, UCONTEXT_MCONTEXT};
 use crate::unwind::{
-    DwarfRegister, MemoryReader, RBP, RETURN_ADDRESS, RSP, RegisterFile, SIGCONTEXT_REGISTERS,
-    UCONTEXT_MCONTEXT, UnwindModule, UnwindStep,
+    DwarfRegister, FRAME_POINTER, MemoryReader, PROGRAM_COUNTER, RegisterFile, STACK_POINTER,
+    UnwindModule, UnwindStep,
 };
 use crate::{
     AddressRange, CodeRole, ImageAddress, LoadedModule, ModuleId, ModuleImage, ModuleImageId,
@@ -188,9 +189,9 @@ impl Stack {
                     let context = stack_pointers[index] + UCONTEXT_MCONTEXT;
                     for (slot, register) in (0..).zip(SIGCONTEXT_REGISTERS) {
                         let value = match register {
-                            RBP => caller_frame_pointer,
-                            RSP => cfa,
-                            RETURN_ADDRESS => self.address(index + 1),
+                            FRAME_POINTER => caller_frame_pointer,
+                            STACK_POINTER => cfa,
+                            PROGRAM_COUNTER => self.address(index + 1),
                             _ => continue,
                         };
                         memory.insert(context + 8 * slot, value);
@@ -272,9 +273,9 @@ impl UnwindInfo for Rules<'_> {
 
         let (cfa, saved_frame_pointer) = match self.stack.functions[function].rule {
             Rule::Outermost => {
-                let cfa = register(RSP)? + 8;
+                let cfa = register(STACK_POINTER)? + 8;
                 return Ok(UnwindStep {
-                    registers: RegisterFile::new([(RSP, cfa)]),
+                    registers: RegisterFile::new([(STACK_POINTER, cfa)]),
                     cfa: VirtualAddress::new(cfa),
                     signal_frame: false,
                 });
@@ -284,17 +285,17 @@ impl UnwindInfo for Rules<'_> {
                     address: VirtualAddress::new(address.get()),
                 });
             }
-            Rule::FramePointer if within == 0 => (register(RSP)? + 8, None),
+            Rule::FramePointer if within == 0 => (register(STACK_POINTER)? + 8, None),
             Rule::FramePointer if within == 1 => {
-                let cfa = register(RSP)? + 16;
+                let cfa = register(STACK_POINTER)? + 16;
                 (cfa, Some(cfa - 16))
             }
             Rule::FramePointer => {
-                let cfa = register(RBP)?.wrapping_add(16);
+                let cfa = register(FRAME_POINTER)?.wrapping_add(16);
                 (cfa, Some(cfa.wrapping_sub(16)))
             }
             Rule::StackPointer { locals, saves_rbp } => {
-                let cfa = register(RSP)? + 8 * (locals + 1 + u64::from(saves_rbp));
+                let cfa = register(STACK_POINTER)? + 8 * (locals + 1 + u64::from(saves_rbp));
                 (cfa, saves_rbp.then(|| cfa - 16))
             }
         };
@@ -302,12 +303,15 @@ impl UnwindInfo for Rules<'_> {
         let return_address = cfa.wrapping_sub(8);
         let caller =
             Self::read(memory, return_address).ok_or_else(|| unreadable(return_address))?;
-        let mut caller_registers = RegisterFile::new([(RSP, cfa), (RETURN_ADDRESS, caller)]);
+        let mut caller_registers =
+            RegisterFile::new([(STACK_POINTER, cfa), (PROGRAM_COUNTER, caller)]);
 
-        let frame_pointer = saved_frame_pointer
-            .map_or_else(|| registers.get(RBP), |saved| Self::read(memory, saved));
+        let frame_pointer = saved_frame_pointer.map_or_else(
+            || registers.get(FRAME_POINTER),
+            |saved| Self::read(memory, saved),
+        );
         if let Some(frame_pointer) = frame_pointer {
-            caller_registers.set(RBP, frame_pointer);
+            caller_registers.set(FRAME_POINTER, frame_pointer);
         }
 
         Ok(UnwindStep {
@@ -539,9 +543,9 @@ fn sample(stack: &Stack, truth: &Truth) -> (Vec<SampledFrame>, StackEnd) {
     let bytes = copy(truth, words);
     let chain = kernel_chain(truth);
     let registers = [
-        (RETURN_ADDRESS, truth.frames[0].0),
-        (RSP, truth.stack_pointer),
-        (RBP, truth.frames[0].1),
+        (PROGRAM_COUNTER, truth.frames[0].0),
+        (STACK_POINTER, truth.stack_pointer),
+        (FRAME_POINTER, truth.frames[0].1),
     ];
     unwind(
         stack,
@@ -668,7 +672,11 @@ fn zero_return_address(frame_pointer: u64) -> (Vec<u64>, StackEnd) {
     let (frames, end) = unwind(
         &stack,
         SampledState {
-            registers: &[(RETURN_ADDRESS, rip), (RSP, STACK), (RBP, frame_pointer)],
+            registers: &[
+                (PROGRAM_COUNTER, rip),
+                (STACK_POINTER, STACK),
+                (FRAME_POINTER, frame_pointer),
+            ],
             stack: &bytes,
             chain: &[rip],
         },

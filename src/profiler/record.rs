@@ -1852,7 +1852,7 @@ impl Processor {
                     .find_map(|(register, value)| (*register == number).then_some(*value))
             };
 
-            let at = register(crate::unwind::RETURN_ADDRESS) == Some(address);
+            let at = register(crate::unwind::PROGRAM_COUNTER) == Some(address);
             if at && register(decode::DWARF_FLAGS).is_some_and(|flags| branch.taken(flags)) {
                 self.builder.count(AccountKind::Repeats as u32, 1);
                 return;

@@ -12,9 +12,8 @@ use super::{
     TaskLabels, TaskPage, TaskRef, TaskStarter, ThreadActivity, Unbound,
 };
 
-use crate::unwind::{
-    DwarfRegister, R12, RAX, RBP, RDI, RETURN_ADDRESS as RIP, RSI, RSP, RegisterFile,
-};
+use crate::unwind::x86_64::{R12, RAX, RBP, RDI, RIP, RSI, RSP};
+use crate::unwind::{DwarfRegister, RegisterFile};
 
 use crate::{AddressRange, ImageAddress, StackSegment, TaskState, ThreadId, VirtualAddress};
 

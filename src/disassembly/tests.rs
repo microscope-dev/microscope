@@ -438,9 +438,9 @@ fn indirect_targets_are_read_from_the_stopped_state() {
     };
 
     let registers = RegisterFile::new([
-        (crate::unwind::RAX, 0x1_0000_2008),
-        (crate::unwind::RSP, 0x2008),
-        (crate::unwind::FS_BASE, 0x1ff0),
+        (crate::unwind::x86_64::RAX, 0x1_0000_2008),
+        (crate::unwind::x86_64::RSP, 0x2008),
+        (crate::unwind::x86_64::FS_BASE, 0x1ff0),
     ]);
     let needs = Some(IndirectTarget::NeedsRegisters);
 
@@ -515,7 +515,7 @@ fn indirect_targets_are_read_from_the_stopped_state() {
     }
 
     let mut unknown = registers;
-    unknown.remove(crate::unwind::RAX);
+    unknown.remove(crate::unwind::x86_64::RAX);
     assert_eq!(indirect_target(&[0xff, 0xd0], Some(&unknown)), needs);
     assert_eq!(
         indirect_target(&[0xff, 0x24, 0xc5, 0x08, 0x20, 0, 0], Some(&unknown)),

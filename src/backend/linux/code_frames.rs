@@ -46,7 +46,7 @@ impl<P: InspectionOps> Controller<P> {
             let entered = after_call
                 || physical
                     .registers
-                    .get(crate::unwind::RBP)
+                    .get(crate::unwind::FRAME_POINTER)
                     .and_then(|rbp| rbp.checked_add(16))
                     .zip(
                         self.caller_provider(

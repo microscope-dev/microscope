@@ -15,7 +15,8 @@ use crate::runtime_model::{
     SampledCodeFrame, SampledFrame, StopMemory, StoredValue, TargetThreadId, TaskContext, TaskRef,
     futures,
 };
-use crate::unwind::{DwarfRegister, FS_BASE, RETURN_ADDRESS, RSP, RegisterFile};
+use crate::unwind::x86_64::FS_BASE;
+use crate::unwind::{DwarfRegister, PROGRAM_COUNTER, RegisterFile, STACK_POINTER};
 use crate::{
     CoroutineInfo, ImageAddress, InspectionLimits, IntegerValue, ModuleImage, ThreadId,
     ThreadLocal, TypeInfo, TypeNode, TypeReference, VirtualAddress,
@@ -885,7 +886,7 @@ impl RuntimeStop for Stop<'_> {
     fn instruction(&self, thread: ThreadId) -> Option<VirtualAddress> {
         self.thread(thread)?
             .registers
-            .get(RETURN_ADDRESS)
+            .get(PROGRAM_COUNTER)
             .map(VirtualAddress::new)
     }
 
@@ -1153,7 +1154,7 @@ fn threads(model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Query) {
 
         let _ = model.native_callee(stop, registers);
 
-        let Some(instruction) = registers.get(RETURN_ADDRESS) else {
+        let Some(instruction) = registers.get(PROGRAM_COUNTER) else {
             continue;
         };
         let instruction = VirtualAddress::new(instruction);
@@ -1170,7 +1171,7 @@ fn threads(model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Query) {
         };
         let _ = model.code_frame(stop, &frame);
 
-        let stack_pointer = registers.get(RSP).unwrap_or(0);
+        let stack_pointer = registers.get(STACK_POINTER).unwrap_or(0);
         let code = |address: VirtualAddress| {
             let image = ImageAddress::new(address.get());
             if model.owns_code(image) {

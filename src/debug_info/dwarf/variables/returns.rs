@@ -21,7 +21,7 @@ const INTEGER: [DwarfRegister; 9] = DwarfRegister::each([0, 3, 2, 5, 4, 8, 9, 10
 const FLOATING: [DwarfRegister; 15] =
     DwarfRegister::each([17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]);
 
-const STACK_POINTER: DwarfRegister = crate::unwind::RSP;
+const STACK_POINTER: DwarfRegister = crate::unwind::STACK_POINTER;
 
 const WORD: u64 = 8;
 

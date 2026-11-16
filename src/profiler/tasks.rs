@@ -1362,7 +1362,7 @@ impl LiveRuntime<'_> {
     ) -> Option<(Vec<WaitFrame>, LivePages<'_>)> {
         let mut pages = LivePages {
             stop: self.stop,
-            start: registers.get(crate::unwind::RSP)?,
+            start: registers.get(crate::unwind::STACK_POINTER)?,
             pages: BTreeMap::new(),
         };
 

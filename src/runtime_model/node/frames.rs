@@ -7,7 +7,7 @@ use super::positions::{self, Encoding};
 use super::scripts::Table;
 use crate::image::v8::{Constant, Field};
 use crate::runtime_model::{CodeFrame, DescribedFrame};
-use crate::unwind::RBP;
+use crate::unwind::FRAME_POINTER;
 use crate::{CodeRole, RecordedFrame, RecordedPlace, SourceLanguage};
 
 pub(super) fn describe(
@@ -31,7 +31,7 @@ pub(super) fn describe(
     } else {
         return None;
     };
-    let fp = frame.registers.get(RBP)?;
+    let fp = frame.registers.get(FRAME_POINTER)?;
     let marker = reader
         .word(fp.wrapping_add_signed(reader.constant(Constant::OffFpContextOrFrameType).ok()?))
         .ok()?;

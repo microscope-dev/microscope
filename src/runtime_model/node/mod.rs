@@ -781,8 +781,8 @@ impl RuntimeModel for NodeRuntime {
         registers: &RegisterFile,
     ) -> Result<crate::VirtualAddress, Arc<str>> {
         let info = registers
-            .get(crate::unwind::RDI)
-            .ok_or("the call's info is not in rdi")?;
+            .get(crate::unwind::ARGUMENTS[0])
+            .ok_or("the call's info is not in its first argument register")?;
         let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
         self.reading(stop, &mut budget, |reader| {
             napi::callback(reader, self.version, info)

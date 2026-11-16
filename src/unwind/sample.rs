@@ -1,8 +1,8 @@
 use foldhash::HashMap;
 
 use super::{
-    DwarfRegister, FramePointerRule, MemoryReader, Modules, RBP, RETURN_ADDRESS, RSP, RegisterFile,
-    UnwindModule, interrupted_registers,
+    DwarfRegister, FRAME_POINTER, FramePointerRule, MemoryReader, Modules, PROGRAM_COUNTER,
+    RegisterFile, STACK_POINTER, UnwindModule, interrupted_registers,
 };
 
 use crate::capture::records::Truncation;
@@ -116,14 +116,14 @@ fn sampled_frames<M: Modules + ?Sized>(
 ) -> StackEnd {
     let registers = RegisterFile::new(sample.registers.iter().copied());
     let Some(instruction) = registers
-        .get(RETURN_ADDRESS)
+        .get(PROGRAM_COUNTER)
         .or_else(|| sample.chain.first().copied())
     else {
         return StackEnd::Truncated(Truncation::NoStack, None);
     };
 
     let mut memory = StackCopy {
-        start: registers.get(RSP),
+        start: registers.get(STACK_POINTER),
         bytes: sample.stack,
     };
 
@@ -185,7 +185,7 @@ pub fn unwind_memory<M: Modules + ?Sized>(
     limit: usize,
 ) -> (Vec<SampledFrame>, StackEnd) {
     let registers = RegisterFile::new(registers.iter().copied());
-    let Some(instruction) = registers.get(RETURN_ADDRESS) else {
+    let Some(instruction) = registers.get(PROGRAM_COUNTER) else {
         return (Vec::new(), StackEnd::Truncated(Truncation::NoStack, None));
     };
 
@@ -248,7 +248,7 @@ fn walk_cfi<M: Modules + ?Sized>(
             address,
             module: index,
             role,
-            frame_pointer: registers.get(RBP),
+            frame_pointer: registers.get(FRAME_POINTER),
             cfa: None,
         });
 
@@ -266,10 +266,10 @@ fn walk_cfi<M: Modules + ?Sized>(
 
         if role == CodeRole::SignalTrampoline {
             let Some((interrupted, instruction)) = registers
-                .get(RSP)
-                .and_then(|context| interrupted_registers(context, memory))
+                .get(STACK_POINTER)
+                .and_then(|context| interrupted_registers(context, memory).ok())
                 .and_then(|interrupted| {
-                    let instruction = interrupted.get(RETURN_ADDRESS)?;
+                    let instruction = interrupted.get(PROGRAM_COUNTER)?;
                     Some((interrupted, instruction))
                 })
             else {
@@ -304,7 +304,7 @@ fn walk_cfi<M: Modules + ?Sized>(
             last.cfa = Some(step.cfa.get());
         }
 
-        let caller = match step.registers.get(RETURN_ADDRESS) {
+        let caller = match step.registers.get(PROGRAM_COUNTER) {
             None => return Walked::certain(StackEnd::Complete),
             Some(0) => return zero_return_address(&registers, step.cfa, index),
             Some(caller) => caller,
@@ -324,10 +324,10 @@ fn walk_cfi<M: Modules + ?Sized>(
 
             let interrupted = step
                 .registers
-                .get(RSP)
-                .and_then(|context| interrupted_registers(context, memory));
+                .get(STACK_POINTER)
+                .and_then(|context| interrupted_registers(context, memory).ok());
             let Some((interrupted, instruction)) = interrupted.and_then(|interrupted| {
-                let instruction = interrupted.get(RETURN_ADDRESS)?;
+                let instruction = interrupted.get(PROGRAM_COUNTER)?;
                 Some((interrupted, instruction))
             }) else {
                 break StackEnd::Truncated(Truncation::StackCopyExhausted, None);
@@ -358,7 +358,7 @@ fn zero_return_address(
     cfa: VirtualAddress,
     index: Option<usize>,
 ) -> Walked {
-    if registers.get(RSP).is_none_or(|sp| cfa.get() > sp) {
+    if registers.get(STACK_POINTER).is_none_or(|sp| cfa.get() > sp) {
         return Walked::certain(StackEnd::Complete);
     }
 
@@ -380,7 +380,7 @@ fn signal_trampoline<M: Modules + ?Sized>(
             address: VirtualAddress::new(caller),
             module: Some(index),
             role: CodeRole::SignalTrampoline,
-            frame_pointer: registers.get(RBP),
+            frame_pointer: registers.get(FRAME_POINTER),
             cfa: None,
         }
     })
@@ -398,7 +398,7 @@ fn splice<M: Modules + ?Sized>(
     let mut link = sample
         .registers
         .iter()
-        .find_map(|(register, value)| (*register == RBP).then_some(*value));
+        .find_map(|(register, value)| (*register == FRAME_POINTER).then_some(*value));
 
     while let Some(current) = link {
         links.push(current);
@@ -703,11 +703,11 @@ mod tests {
 
         fn unwind(&self, rax: Option<u64>, top: u64) -> (Vec<u64>, StackEnd) {
             let mut registers = vec![
-                (RETURN_ADDRESS, self.tail),
-                (RSP, 0x7000_0000),
-                (RBP, 0x7100_0000),
+                (PROGRAM_COUNTER, self.tail),
+                (STACK_POINTER, 0x7000_0000),
+                (FRAME_POINTER, 0x7100_0000),
             ];
-            registers.extend(rax.map(|rax| (crate::unwind::RAX, rax)));
+            registers.extend(rax.map(|rax| (crate::unwind::x86_64::RAX, rax)));
             unwind_in(&self.info, &registers, &[top], &[self.tail])
         }
     }
@@ -762,7 +762,11 @@ mod tests {
         assert_eq!(
             work.unwind(
                 rip,
-                &[(RETURN_ADDRESS, rip), (RSP, sp), (RBP, sp + 16)],
+                &[
+                    (PROGRAM_COUNTER, rip),
+                    (STACK_POINTER, sp),
+                    (FRAME_POINTER, sp + 16)
+                ],
                 &[7, 8, 0, work.returns_to],
             ),
             (vec![rip, work.returns_to - 1], StackEnd::Complete)
@@ -775,7 +779,7 @@ mod tests {
         let rip = work.body;
         let (addresses, _) = work.unwind(
             rip,
-            &[(RETURN_ADDRESS, rip), (RBP, 0x10)],
+            &[(PROGRAM_COUNTER, rip), (FRAME_POINTER, 0x10)],
             &[0, 0, 0, work.returns_to + 0x20],
         );
         assert_eq!(addresses, [rip, work.returns_to - 1]);

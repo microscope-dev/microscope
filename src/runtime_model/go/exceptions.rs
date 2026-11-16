@@ -4,7 +4,8 @@ use super::layout::{Missing, constant, member, offset, symbol};
 use super::types::TypeTables;
 use super::{read_unsigned, word};
 use crate::runtime_model::{RuntimeException, RuntimeHook, RuntimeImage, RuntimeStop};
-use crate::unwind::{DwarfRegister, RAX, RBX, RegisterFile};
+use crate::unwind::x86_64::{RAX, RBX};
+use crate::unwind::{DwarfRegister, RegisterFile};
 use crate::{ExceptionFilter, ImageAddress, LanguageExceptionKind, VirtualAddress};
 
 pub const EXCEPTION_FILTERS: [ExceptionFilter; 3] = [UNHANDLED, FATAL, PANIC];

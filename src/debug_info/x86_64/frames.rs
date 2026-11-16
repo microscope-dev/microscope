@@ -6,7 +6,8 @@ use iced_x86::{
 };
 
 use super::{full_register, is_immediate, is_push_register, is_register_move};
-use crate::unwind::{MemoryReader, RAX, RBP, RETURN_ADDRESS, RSP, RegisterFile, UnwindStep};
+use crate::unwind::x86_64::{RAX, RBP, RIP, RSP};
+use crate::unwind::{MemoryReader, RegisterFile, UnwindStep};
 use crate::{AddressRange, ImageAddress, UnwindTermination, VirtualAddress};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -740,7 +741,7 @@ pub(in crate::debug_info) fn frame_caller(
         } => None,
     };
 
-    let mut caller = RegisterFile::new([(RETURN_ADDRESS, return_address), (RSP, cfa.get())]);
+    let mut caller = RegisterFile::new([(RIP, return_address), (RSP, cfa.get())]);
     if let Some(frame_pointer) = frame_pointer {
         caller.set(RBP, frame_pointer);
     }
@@ -971,7 +972,7 @@ mod tests {
                 panic!("no caller where rax is {rax:#x}");
             };
             assert_eq!(caller.cfa, VirtualAddress::new(0x7008));
-            assert_eq!(caller.registers.get(RETURN_ADDRESS), Some(0x40_1234));
+            assert_eq!(caller.registers.get(RIP), Some(0x40_1234));
             assert_eq!(caller.registers.get(RSP), Some(0x7008));
             assert_eq!(caller.registers.get(RBP), Some(0x7100));
         }

@@ -311,7 +311,7 @@ impl Stacks {
         thread_pointer: Option<u64>,
     ) -> CallStack {
         let instruction = registers.iter().find_map(|&(register, value)| {
-            (register == crate::unwind::RETURN_ADDRESS).then_some(value)
+            (register == crate::unwind::PROGRAM_COUNTER).then_some(value)
         });
         self.cover(process, instruction);
         let (mut frames, mut end) = unwind_memory(
@@ -468,7 +468,8 @@ impl Stacks {
     ) -> Option<(bool, crate::unwind::RegisterFile)> {
         let frame_pointer = frame.frame_pointer?;
         let generated = self.owned_at(process, model, runtime, stored, frame.address)?;
-        let registers = crate::unwind::RegisterFile::new([(crate::unwind::RBP, frame_pointer)]);
+        let registers =
+            crate::unwind::RegisterFile::new([(crate::unwind::FRAME_POINTER, frame_pointer)]);
         Some((generated, registers))
     }
 
@@ -1330,7 +1331,7 @@ mod tests {
         });
 
         let registers = [(
-            crate::unwind::RETURN_ADDRESS,
+            crate::unwind::PROGRAM_COUNTER,
             nix::libc::getpid as *const () as usize as u64,
         )];
         let sample = SampledState {

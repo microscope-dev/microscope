@@ -12,7 +12,8 @@ use super::{
 };
 
 use crate::ByteOrder;
-use crate::unwind::{DwarfRegister, FS_BASE, GS_BASE, RegisterFile};
+use crate::unwind::x86_64::{FS_BASE, GS_BASE};
+use crate::unwind::{DwarfRegister, RegisterFile};
 
 const MAX_INSTRUCTION_LENGTH: usize = 15;
 

@@ -8,7 +8,7 @@ use super::{
     ThreadActivity,
 };
 
-use crate::unwind::{RDI, RSI, RegisterFile};
+use crate::unwind::{ARGUMENTS, RegisterFile};
 use crate::{
     ExceptionFilter, ImageAddress, LanguageExceptionKind, StackSegment, ThreadId, VirtualAddress,
 };
@@ -338,7 +338,7 @@ impl RuntimeModel for RustRuntime {
             image: self.image.as_ref(),
         };
 
-        let (data, vtable) = (argument(RDI)?, argument(RSI)?);
+        let (data, vtable) = (argument(ARGUMENTS[0])?, argument(ARGUMENTS[1])?);
 
         let size = payload.word(past(vtable, VTABLE_SIZE)?)?;
         if size > 1 << 12 {
@@ -612,7 +612,7 @@ mod tests {
                 address: ImageAddress::new(0),
             }],
         };
-        let registers = RegisterFile::new([(RDI, data), (RSI, vtable)]);
+        let registers = RegisterFile::new([(ARGUMENTS[0], data), (ARGUMENTS[1], vtable)]);
         runtime.exception(memory, ImageAddress::new(0), &registers)
     }
 
