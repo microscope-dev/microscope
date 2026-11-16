@@ -7,11 +7,13 @@ use crate::support::Scenario;
 use crate::invariants::checked;
 use crate::stops::{line, place};
 
-const BUILDS: [&str; 4] = [
+const BUILDS: [&str; 6] = [
     "tokio-shapes-o0",
     "tokio-shapes-o3",
     "tokio-shapes-1.51-o0",
     "tokio-shapes-1.51-o3",
+    "tokio-shapes-1.53-o0",
+    "tokio-shapes-1.53-o3",
 ];
 const SOURCE: &str = "shapes/src/main.rs";
 

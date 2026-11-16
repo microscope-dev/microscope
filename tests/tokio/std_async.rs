@@ -8,11 +8,13 @@ use microscope::{
 use crate::stops::{backtrace, evaluated, frames_to, integer, line, locals, place};
 use crate::support::Scenario;
 
-const BUILDS: [&str; 4] = [
+const BUILDS: [&str; 6] = [
     "tokio-std-async-o0",
     "tokio-std-async-o3",
     "tokio-std-async-1.51-o0",
     "tokio-std-async-1.51-o3",
+    "tokio-std-async-1.53-o0",
+    "tokio-std-async-1.53-o3",
 ];
 const SOURCE: &str = "std-async/src/main.rs";
 

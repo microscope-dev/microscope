@@ -13,11 +13,13 @@ use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 use crate::workers::{activities, tasks};
 
-const BUILDS: [&str; 4] = [
+const BUILDS: [&str; 6] = [
     "tokio-migrate-o0",
     "tokio-migrate-o3",
     "tokio-migrate-1.51-o0",
     "tokio-migrate-1.51-o3",
+    "tokio-migrate-1.53-o0",
+    "tokio-migrate-1.53-o3",
 ];
 const SOURCE: &str = "migrate/src/main.rs";
 

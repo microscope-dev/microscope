@@ -1253,8 +1253,7 @@ readonly tokio_target_dir="build/tokio-target"
 readonly tokio_outputs="${output_dir}/.tokio.outputs"
 
 
-readonly tokio_older_release="1.51"
-readonly tokio_older_lock="${tokio_fixtures_dir}/tokio-${tokio_older_release}/Cargo.lock"
+readonly -a tokio_lts_releases=(1.51 1.53)
 
 
 
@@ -1272,9 +1271,13 @@ compile_tokio_variant() {
     if [[ -n "$features" ]]; then
         packages+=(--features "$features")
     fi
-    if [[ "$variant" == "${tokio_older_release}-"* ]]; then
-        packages+=(--config "resolver.lockfile-path='${PWD}/${tokio_older_lock}'")
-    fi
+    local release
+    for release in "${tokio_lts_releases[@]}"; do
+        if [[ "$variant" == "${release}-"* ]]; then
+            local lock="${tokio_fixtures_dir}/tokio-${release}/Cargo.lock"
+            packages+=(--config "resolver.lockfile-path='${PWD}/${lock}'")
+        fi
+    done
     local -a cargo=(
         env CARGO_TARGET_DIR="$tokio_target_dir/$variant"
         RUSTFLAGS="${RUSTFLAGS-} -D warnings ${flags}" NIX_HARDENING_ENABLE=
@@ -1390,8 +1393,11 @@ build_tokio_fixtures() {
     variant o3 release "" "" "${fixtures[@]}" profile
 
 
-    variant "${tokio_older_release}-o0" dev "" "" "${fixtures[@]}"
-    variant "${tokio_older_release}-o3" release "" "" "${fixtures[@]}"
+    local release
+    for release in "${tokio_lts_releases[@]}"; do
+        variant "${release}-o0" dev "" "" "${fixtures[@]}"
+        variant "${release}-o3" release "" "" "${fixtures[@]}"
+    done
 
     variant abort abort "" "" panics
 
@@ -1435,7 +1441,11 @@ build_tokio_fixtures() {
 
     export TRUTH_CORE=1 MALLOC_ARENA_MAX=1
     local name
-    for name in o0 o3 "${tokio_older_release}-o0" "${tokio_older_release}-o3"; do
+    local -a cored=(o0 o3)
+    for release in "${tokio_lts_releases[@]}"; do
+        cored+=("${release}-o0" "${release}-o3")
+    done
+    for name in "${cored[@]}"; do
         local program="$output_dir/tokio-workers-${name}"
         generate_core "${program}.core" 5 "$default_core_filter" "$program" "$program"
         generate_core "${program}-current.core" 5 "$default_core_filter" "$program" "$program" current

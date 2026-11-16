@@ -1124,6 +1124,7 @@ fn every_page_says_when_the_version_is_unverified_or_unknown() {
         (Some("/vendor/tokio/src/runtime/task/raw.rs"), Some(unknown)),
         (None, Some(unknown)),
         (Some("/crates/tokio-1.51.6/src/runtime/task/raw.rs"), None),
+        (Some("/crates/tokio-1.53.3/src/runtime/task/raw.rs"), None),
         (Some("/crates/tokio-1.54.1/src/runtime/task/raw.rs"), None),
     ] {
         let mut world = World::with_source(&[], source);

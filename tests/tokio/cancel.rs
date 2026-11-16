@@ -6,11 +6,13 @@ use crate::invariants::checked;
 use crate::stops::{line, place};
 use crate::support::Scenario;
 
-const BUILDS: [&str; 4] = [
+const BUILDS: [&str; 6] = [
     "tokio-cancel-o0",
     "tokio-cancel-o3",
     "tokio-cancel-1.51-o0",
     "tokio-cancel-1.51-o3",
+    "tokio-cancel-1.53-o0",
+    "tokio-cancel-1.53-o3",
 ];
 const SOURCE: &str = "cancel/src/main.rs";
 

@@ -15,11 +15,13 @@ use crate::stops::{backtrace, integer, line};
 use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 
-const BUILDS: [&str; 4] = [
+const BUILDS: [&str; 6] = [
     "tokio-workers-o0",
     "tokio-workers-o3",
     "tokio-workers-1.51-o0",
     "tokio-workers-1.51-o3",
+    "tokio-workers-1.53-o0",
+    "tokio-workers-1.53-o3",
 ];
 
 const LEGACY: &str = "tokio-workers-legacy";
@@ -37,6 +39,8 @@ const UNTYPED: [&str; 2] = ["tokio-workers-lines", "tokio-workers-stripped"];
 fn release(fixture: &str) -> &'static str {
     if fixture.contains("-1.51-") {
         "1.51.6"
+    } else if fixture.contains("-1.53-") {
+        "1.53.3"
     } else {
         "1.54.1"
     }
@@ -786,10 +790,10 @@ async fn a_cores_tasks_are_those_the_program_reported() {
 async fn every_type_of_a_large_program_is_read_and_named_once() {
     for fixture in BUILDS {
         let workers = Workers::parked(fixture, false).await;
-        let shared = if release(fixture) == "1.51.6" {
-            296
-        } else {
-            640
+        let shared = match release(fixture) {
+            "1.51.6" => 296,
+            "1.53.3" => 312,
+            _ => 640,
         };
 
         for (name, size) in [

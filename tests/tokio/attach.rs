@@ -11,11 +11,13 @@ use crate::stops::{integer, line};
 use crate::support::{ExternalProcess, Scenario};
 use crate::workers::tasks;
 
-const BUILDS: [&str; 4] = [
+const BUILDS: [&str; 6] = [
     "tokio-server-o0",
     "tokio-server-o3",
     "tokio-server-1.51-o0",
     "tokio-server-1.51-o3",
+    "tokio-server-1.53-o0",
+    "tokio-server-1.53-o3",
 ];
 const SOURCE: &str = "server/src/main.rs";
 

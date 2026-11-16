@@ -10,11 +10,13 @@ use crate::stops::{integer, line, place};
 use crate::support::Scenario;
 use crate::workers::tasks;
 
-const BUILDS: [&str; 4] = [
+const BUILDS: [&str; 6] = [
     "tokio-steps-o0",
     "tokio-steps-o3",
     "tokio-steps-1.51-o0",
     "tokio-steps-1.51-o3",
+    "tokio-steps-1.53-o0",
+    "tokio-steps-1.53-o3",
 ];
 const SOURCE: &str = "steps/src/main.rs";
 

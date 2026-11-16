@@ -14,11 +14,13 @@ use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 use crate::workers::check_saved_local;
 
-const BUILDS: [&str; 4] = [
+const BUILDS: [&str; 6] = [
     "tokio-drivers-o0",
     "tokio-drivers-o3",
     "tokio-drivers-1.51-o0",
     "tokio-drivers-1.51-o3",
+    "tokio-drivers-1.53-o0",
+    "tokio-drivers-1.53-o3",
 ];
 const SOURCE: &str = "drivers/src/main.rs";
 

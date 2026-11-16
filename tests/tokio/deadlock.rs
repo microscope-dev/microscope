@@ -10,11 +10,13 @@ use crate::stops::line;
 use crate::support::Scenario;
 use crate::workers::tasks;
 
-const BUILDS: [&str; 4] = [
+const BUILDS: [&str; 6] = [
     "tokio-deadlock-o0",
     "tokio-deadlock-o3",
     "tokio-deadlock-1.51-o0",
     "tokio-deadlock-1.51-o3",
+    "tokio-deadlock-1.53-o0",
+    "tokio-deadlock-1.53-o3",
 ];
 const SOURCE: &str = "deadlock/src/main.rs";
 

@@ -10,11 +10,13 @@ use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 use crate::workers::{activities, tasks};
 
-const BUILDS: [&str; 4] = [
+const BUILDS: [&str; 6] = [
     "tokio-blocking-o0",
     "tokio-blocking-o3",
     "tokio-blocking-1.51-o0",
     "tokio-blocking-1.51-o3",
+    "tokio-blocking-1.53-o0",
+    "tokio-blocking-1.53-o3",
 ];
 const SOURCE: &str = "blocking/src/main.rs";
 
