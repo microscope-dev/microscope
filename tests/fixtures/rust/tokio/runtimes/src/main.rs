@@ -95,8 +95,13 @@ fn main() {
         }
     });
     all_spawned.recv().expect("the thread spawns");
-
-
+    while join
+        && !(truth::all_parked(4)
+            && truth::workers_parked(multi.handle())
+            && truth::thread_parked(current_tid))
+    {
+        std::thread::yield_now();
+    }
 
     let (release_local, local_released) = oneshot::channel::<()>();
     let (local_tid, local_thread) = thread("local", {
