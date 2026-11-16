@@ -1364,9 +1364,32 @@ fn rings(ebpf: &mut Ebpf, engine: BpfOptions) -> Result<Vec<RingBuf<MapData>>, B
     }
 }
 
+const PID_LIMIT: u32 = 1 << 22;
+
+struct Targets(Array<MapData, u64>);
+
+impl Targets {
+    fn word(&self, process: u32) -> u64 {
+        assert!(process < PID_LIMIT, "the kernel gave out pid {process}");
+        self.0.get(&(process / 64), 0).unwrap_or(0)
+    }
+
+    fn holds(&self, process: u32) -> bool {
+        self.word(process) >> (process % 64) & 1 == 1
+    }
+
+    fn first(&mut self, process: u32) -> Result<(), BpfError> {
+        let word = self.word(process);
+        assert_eq!(word, 0, "a process was traced before the first");
+        self.0
+            .set(process / 64, 1 << (process % 64), 0)
+            .map_err(load_error)
+    }
+}
+
 struct Loaded {
     ebpf: Ebpf,
-    targets: HashMap<MapData, u32, u8>,
+    targets: Targets,
 
     rings: Vec<RingBuf<MapData>>,
 
@@ -1452,9 +1475,10 @@ impl Loaded {
             attach(&mut ebpf, &btf, &attachment, &terminal)?;
         }
 
-        let targets =
-            HashMap::try_from(ebpf.take_map("TARGETS").ok_or_else(|| missing("TARGETS"))?)
-                .map_err(load_error)?;
+        let targets = Targets(
+            Array::try_from(ebpf.take_map("TARGETS").ok_or_else(|| missing("TARGETS"))?)
+                .map_err(load_error)?,
+        );
         let fence = (
             ArrayOfMaps::try_from(ebpf.take_map("FENCE").ok_or_else(|| missing("FENCE"))?)
                 .map_err(load_error)?,
@@ -1577,7 +1601,7 @@ impl Loaded {
 
     fn target(&mut self, process: u32) -> Result<(), BpfError> {
         record!("syscalls bpf: trace {process}");
-        self.targets.insert(process, 1, 0).map_err(load_error)
+        self.targets.first(process)
     }
 
     fn in_flight(&mut self, after: u64) -> Vec<InFlight> {
@@ -2132,7 +2156,7 @@ impl Reader<'_> {
                 .copied()
                 .filter(|&pid| {
                     ended(pid.get())
-                        && (loaded.targets.get(&pid.get(), 0).is_err()
+                        && (!loaded.targets.holds(pid.get())
                             || !std::path::Path::new(&format!("/proc/{}", pid.get())).exists())
                 })
                 .collect();

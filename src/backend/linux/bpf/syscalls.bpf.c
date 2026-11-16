@@ -21,6 +21,7 @@
 #define SIGNAL_GROUP_EXIT 0x00000004
 #define X32_SYSCALL_BIT 0x40000000
 #define SLOTS 3072
+#define PID_LIMIT 4194304
 
 #define SCRATCH 32768
 
@@ -49,11 +50,13 @@
 #define FAULT_INTERLEAVE 0x5ca1ab20
 #endif
 
+#define TARGET_WORDS (PID_LIMIT / 64)
+
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 8192);
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, TARGET_WORDS);
 	__type(key, u32);
-	__type(value, u8);
+	__type(value, u64);
 } TARGETS SEC(".maps");
 
 struct {
@@ -349,9 +352,30 @@ static __always_inline struct config *config(void)
 }
 
 
+static __always_inline u64 *target_word(u32 tgid)
+{
+	u32 word = (tgid / 64) & (TARGET_WORDS - 1);
+	return bpf_map_lookup_elem(&TARGETS, &word);
+}
+
 static __always_inline int traced(u32 tgid)
 {
-	return bpf_map_lookup_elem(&TARGETS, &tgid) != 0;
+	u64 *word = target_word(tgid);
+	return word && (*word >> (tgid % 64)) & 1;
+}
+
+static __always_inline void set_traced(u32 tgid)
+{
+	u64 *word = target_word(tgid);
+	if (word)
+		__sync_fetch_and_or(word, 1ULL << (tgid % 64));
+}
+
+static __always_inline void clear_traced(u32 tgid)
+{
+	u64 *word = target_word(tgid);
+	if (word)
+		__sync_fetch_and_and(word, ~(1ULL << (tgid % 64)));
 }
 
 static __always_inline void lost_as(u32 why)
@@ -1384,8 +1408,7 @@ int process_fork(u64 *ctx)
 	if (!settings)
 		return 0;
 	if (child_tgid != parent_tgid && (settings->flags & CONFIG_FOLLOW)) {
-		u8 one = 1;
-		bpf_map_update_elem(&TARGETS, &child_tgid, &one, BPF_ANY);
+		set_traced(child_tgid);
 	}
 
 	if (child_tgid == parent_tgid || (settings->flags & CONFIG_FOLLOW))
@@ -1500,7 +1523,7 @@ int process_end(u64 *ctx)
 {
 	struct task_struct *task = (struct task_struct *)ctx[0];
 	u32 host = BPF_CORE_READ(task, tgid);
-	if (!bpf_map_lookup_elem(&TARGETS, &host))
+	if (!traced(host))
 		return 0;
 	if (task != task->group_leader || BPF_CORE_READ(task, signal, live.counter) != 0 ||
 	    BPF_CORE_READ(task, signal, nr_threads) != 1)
@@ -1509,7 +1532,7 @@ int process_end(u64 *ctx)
 	s32 code = BPF_CORE_READ(task, signal, flags) & SIGNAL_GROUP_EXIT
 		? BPF_CORE_READ(task, signal, group_exit_code) : BPF_CORE_READ(task, exit_code);
 	send_exit(tid, tgid, bpf_ktime_get_ns(), code, 1);
-	bpf_map_delete_elem(&TARGETS, &host);
+	clear_traced(host);
 	return 0;
 }
 
@@ -1567,7 +1590,7 @@ int in_flight(struct bpf_iter__task *ctx)
 	struct config *settings = config();
 	if (!settings)
 		return 0;
-	if (!bpf_map_lookup_elem(&TARGETS, &(u32){BPF_CORE_READ(task, tgid)}))
+	if (!traced(BPF_CORE_READ(task, tgid)))
 		return 0;
 	struct entry *held = bpf_task_storage_get(&ENTRIES, task, 0, 0);
 	if (!held || !held->entered)
