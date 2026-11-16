@@ -2081,21 +2081,45 @@ fn statements_in(
         return Ok(BTreeSet::new());
     };
 
+    let changes = |location: &crate::ImageLocation| {
+        source_for_code_instance(image, location, instance_id).is_some_and(|candidate| {
+            except.is_none_or(|source| source_line_changed(Some(source), Some(&candidate)))
+        })
+    };
+
     let mut statements = BTreeSet::new();
     for line in image.line_entries_in(instance) {
-        if !line.statement {
-            continue;
+        let location = image.locate(line.range.start);
+        if line.statement && changes(&location) {
+            statements.insert(module.virtual_address(line.range.start)?);
         }
 
-        let location = image.locate(line.range.start);
-        if source_for_code_instance(image, &location, instance_id).is_some_and(|candidate| {
-            except.is_none_or(|source| source_line_changed(Some(source), Some(&candidate)))
-        }) {
-            statements.insert(module.virtual_address(line.range.start)?);
+        if let Some(entry) = called_from(&location, instance_id)
+            .and_then(|called| image.code_instance(called)?.breakpoint_entry())
+            .map(|entry| entry.address)
+            .filter(|entry| instance.contains(*entry) && changes(&image.locate(*entry)))
+        {
+            statements.insert(module.virtual_address(entry)?);
         }
     }
 
     Ok(statements)
+}
+
+fn called_from(location: &crate::ImageLocation, caller: CodeInstanceId) -> Option<CodeInstanceId> {
+    let InlineFrameLookup::Unique(chain) = &location.inline_frames else {
+        return None;
+    };
+
+    if location.physical_instance == Some(caller) {
+        return chain.instances.first().copied();
+    }
+
+    let at = chain
+        .instances
+        .iter()
+        .position(|instance| *instance == caller)?;
+    chain.instances.get(at + 1).copied()
 }
 
 pub(super) const fn innermost_frame(native: &libc::user_regs_struct) -> FrameContext {

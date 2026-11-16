@@ -217,6 +217,79 @@ entry_values() {
 
 
 
+call_sites() {
+    awk 'FILENAME == ARGV[1] {
+            if (/<End of list>/) { list = ""; next }
+            if (list == "" && match($0, /^ +([0-9a-f]{8}) /, found)) list = strtonum("0x" found[1])
+            if (match($0, /^ +([0-9a-f]{8}) ([0-9a-f]{16}) ([0-9a-f]{16})/, found)) {
+                begin = strtonum("0x" found[2])
+                end = strtonum("0x" found[3])
+                if (begin < end) {
+                    if (!(list in first)) first[list] = begin
+                    spans[list] = spans[list] " " begin ":" end
+                }
+            }
+            next
+         }
+         FILENAME == ARGV[2] {
+            if (match($0, /^ +Offset: +(0x[0-9a-f]+|[0-9]+)$/, found)) table = strtonum(found[1])
+            if (/The File Name Table/) { listing = 1; next }
+            if (listing && /^ *$/) listing = 0
+            if (listing && match($0, /^ +([0-9]+)\t.*[ \t]([^ \t]+)$/, found)) {
+                name = found[2]
+                sub(/.*\//, "", name)
+                files[table, found[1] + 0] = name
+            }
+            next
+         }
+         function flush() {
+            if (inline && call_line != "" && call_file != "") {
+                entry = ""
+                if (low != "" && low < high) {
+                    if (entry_pc != "" && entry_pc >= low && entry_pc < high) entry = entry_pc
+                    else entry = low
+                } else if (ranges != "" && (ranges in first)) {
+                    entry = first[ranges]
+                    count = split(substr(spans[ranges], 2), pairs, " ")
+                    for (at = 1; entry_pc != "" && at <= count; at++) {
+                        split(pairs[at], bounds, ":")
+                        if (entry_pc >= bounds[1] + 0 && entry_pc < bounds[2] + 0) entry = entry_pc
+                    }
+                }
+                if (entry != "" && ((unit, call_file) in files)) {
+                    printf "%s        [%d, \"%s\", %d]", separator, entry, files[unit, call_file], call_line
+                    separator = ",\n"
+                }
+            }
+            inline = 0
+            call_file = call_line = entry_pc = low = high = ranges = ""
+         }
+         match($0, /^ *<[0-9]+><[0-9a-f]+>: Abbrev Number/) {
+            flush()
+            inline = index($0, "(DW_TAG_inlined_subroutine)") > 0
+            next
+         }
+         match($0, /DW_AT_stmt_list *: \([a-z_0-9]+\) (0x[0-9a-f]+|[0-9]+)$/, found) { unit = strtonum(found[1]) }
+         match($0, /DW_AT_call_file *: \([a-z_0-9]+\) ([0-9]+)$/, found) { call_file = found[1] + 0 }
+         match($0, /DW_AT_call_line *: \([a-z_0-9]+\) ([0-9]+)$/, found) { call_line = found[1] + 0 }
+         match($0, /DW_AT_entry_pc *: \(addr[a-z0-9]*\).*(0x[0-9a-f]+)$/, found) { entry_pc = strtonum(found[1]) }
+         match($0, /DW_AT_low_pc *: .*(0x[0-9a-f]+)$/, found) { low = strtonum(found[1]) }
+         match($0, /DW_AT_high_pc *: \(data[0-9]\) (0x[0-9a-f]+)$/, found) { high = low + strtonum(found[1]) }
+         match($0, /DW_AT_high_pc *: \(addr[a-z]*\).* (0x[0-9a-f]+)$/, found) { high = strtonum(found[1]) }
+         match($0, /DW_AT_ranges *: .*(0x[0-9a-f]+)$/, found) { ranges = strtonum(found[1]) }
+         END {
+            flush()
+            printf "\n"
+         }' <(readelf -W --debug-dump=Ranges "$1") <(readelf -W --debug-dump=rawline "$1") \
+            <(readelf -W --debug-dump=info "$1")
+}
+
+
+
+
+
+
+
 facts() {
     local name="$1"
     local separator="" variant
@@ -264,6 +337,8 @@ facts() {
                  }'
         printf '],\n      "entry_values": [\n'
         entry_values "$binary"
+        printf '      ],\n      "call_sites": [\n'
+        call_sites "$binary"
         printf '      ]\n    }'
         separator=$',\n'
     done

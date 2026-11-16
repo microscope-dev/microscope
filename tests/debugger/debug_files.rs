@@ -498,6 +498,7 @@ async fn debug_files_read_what_they_share_from_their_supplementary_file() {
         .add_source_breakpoint("tests/fixtures/cpp/shapes/shapes.h", width)
         .await;
     scenario.resume_to_stop().await;
+    scenario.step_to_stop(StepKind::IntoSource).await;
     let places = frame_places(&scenario).await;
     let named = |function: &str, file: &str| (function.to_owned(), file.to_owned());
     assert_eq!(

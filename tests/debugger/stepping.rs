@@ -1579,6 +1579,32 @@ async fn a_user_breakpoint_interrupts_finish_at_a_shared_site() {
 }
 
 #[tokio::test]
+async fn next_stops_on_lines_made_only_of_inlined_calls() {
+    for fixture in ["hit-counts-clang-o2", "hit-counts-gcc-o2-nopie"] {
+        let mut scenario = Scenario::launch(fixture);
+        scenario.add_breakpoint("caller").await;
+        scenario.run_to_stop().await;
+
+        let mut lines = Vec::new();
+        for _ in 0..3 {
+            let location = scenario
+                .operation("location", scenario.handle().current_location())
+                .await;
+            lines.push((
+                location_function(&location).map(str::to_owned),
+                location_line(&location),
+            ));
+            scenario.step_to_stop(StepKind::OverSource).await;
+        }
+
+        let caller = |line| (Some("caller".to_owned()), Some(line));
+        assert_eq!(lines, [caller(20), caller(21), caller(22)], "{fixture}");
+
+        scenario.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn source_next_steps_over_calls_but_preserves_user_breakpoints() {
     let mut step_over = Scenario::new("next over call", Scenario::fixture("unwind-o0"));
     step_over.add_breakpoint("middle").await;

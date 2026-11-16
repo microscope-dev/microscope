@@ -1702,6 +1702,7 @@ fn script(
         catching: swarm.catching,
         overlap: swarm.overlap,
         statements: statements(program, variant),
+        call_sites: call_sites(program, variant),
         unoptimized_functions: (!variant.facts.optimized).then(|| {
             variant
                 .facts
@@ -1729,6 +1730,24 @@ fn statements(program: &Program, variant: &Variant) -> BTreeMap<u64, BTreeSet<u6
     }
 
     statements
+}
+
+fn call_sites(program: &Program, variant: &Variant) -> BTreeMap<u64, BTreeSet<u64>> {
+    let facts = &variant.facts;
+    let source = program
+        .source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let mut call_sites = BTreeMap::<u64, BTreeSet<u64>>::new();
+
+    for &(entry, line) in &facts.call_sites {
+        if facts.file(line) == source {
+            call_sites.entry(line.line).or_default().insert(entry);
+        }
+    }
+
+    call_sites
 }
 
 fn marker_rows(program: &Program, variant: &Variant) -> BTreeMap<u64, u64> {

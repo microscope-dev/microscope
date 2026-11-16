@@ -75,6 +75,8 @@ pub struct Script {
 
     pub statements: BTreeMap<u64, BTreeSet<u64>>,
 
+    pub call_sites: BTreeMap<u64, BTreeSet<u64>>,
+
     pub unoptimized_functions: Option<Vec<(String, std::ops::Range<u64>)>>,
 }
 

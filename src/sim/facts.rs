@@ -17,6 +17,7 @@ pub(super) struct VariantFacts {
     lines: Vec<(u64, String, i64, bool)>,
     epilogues: Vec<u64>,
     entry_values: Vec<(String, u64, u64, String)>,
+    call_sites: Vec<(u64, String, u64)>,
 }
 
 #[derive(Deserialize)]
@@ -64,6 +65,18 @@ pub struct Facts {
     pub epilogues: std::collections::BTreeSet<u64>,
 
     pub entry_values: Vec<EntryValue>,
+
+    pub call_sites: Vec<(u64, Line)>,
+}
+
+fn file_index(files: &mut Vec<String>, file: &str) -> usize {
+    files
+        .iter()
+        .position(|known| known == file)
+        .unwrap_or_else(|| {
+            files.push(file.to_owned());
+            files.len() - 1
+        })
 }
 
 impl Facts {
@@ -95,16 +108,10 @@ impl Facts {
                 }
                 Err(_) => return Err(format!("row at {address:#x} has line {line}")),
                 Ok(0) => None,
-                Ok(line) => {
-                    let file = files
-                        .iter()
-                        .position(|known| known == file)
-                        .unwrap_or_else(|| {
-                            files.push(file.clone());
-                            files.len() - 1
-                        });
-                    Some(Line { file, line })
-                }
+                Ok(line) => Some(Line {
+                    file: file_index(&mut files, file),
+                    line,
+                }),
             };
 
             if *statement && let Some(line) = line {
@@ -144,6 +151,15 @@ impl Facts {
             .collect::<Vec<_>>();
         functions.sort_by_key(|function| function.start);
 
+        let call_sites = variant
+            .call_sites
+            .into_iter()
+            .map(|(entry, file, line)| {
+                let file = file_index(&mut files, &file);
+                (entry, Line { file, line })
+            })
+            .collect();
+
         if !variant.optimized && variant.inlined > 0 {
             return Err(format!(
                 "unoptimized {} describes {} inlined calls",
@@ -168,6 +184,7 @@ impl Facts {
                     register,
                 })
                 .collect(),
+            call_sites,
         })
     }
 
@@ -250,6 +267,7 @@ mod tests {
             ],
             epilogues: Vec::new(),
             entry_values: Vec::new(),
+            call_sites: Vec::new(),
         })
         .expect("valid facts");
         let line = |address| facts.range(address).and_then(|range| range.line);

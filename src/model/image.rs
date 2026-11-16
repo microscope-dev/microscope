@@ -523,6 +523,8 @@ pub struct ModuleImage {
 
     panic_entries: std::sync::OnceLock<Arc<[ImageAddress]>>,
 
+    call_sites: std::sync::OnceLock<Arc<[(SourceFileId, u64, ImageAddress)]>>,
+
     globals_by_selector: std::sync::OnceLock<BTreeMap<Arc<str>, Arc<[GlobalVariableId]>>>,
 
     resume_code: RangeIndex<CodeInstanceId>,
@@ -572,6 +574,7 @@ impl ModuleImage {
         Ok(Self {
             coroutine_functions: std::sync::OnceLock::new(),
             panic_entries: std::sync::OnceLock::new(),
+            call_sites: std::sync::OnceLock::new(),
             globals_by_selector: std::sync::OnceLock::new(),
             id: binding.id,
             path: Arc::clone(&binding.path),
@@ -1276,6 +1279,14 @@ impl ModuleImage {
             .iter()
             .map(|key| lines.address(key.row.get()))
             .collect::<Vec<_>>();
+        if addresses.is_empty() {
+            addresses.extend(
+                self.call_sites(file, line.get()..=line.get())
+                    .iter()
+                    .map(|&(.., entry)| entry),
+            );
+        }
+
         addresses.sort_unstable();
         addresses.dedup();
         addresses.into_iter()
@@ -1285,15 +1296,22 @@ impl ModuleImage {
         &self,
         file: SourceFileId,
         lines: std::ops::RangeInclusive<LineNumber>,
-    ) -> impl Iterator<Item = LineNumber> + '_ {
-        let mut previous = None;
-        self.lines()
-            .statements(file, lines.start().get()..=lines.end().get())
+    ) -> impl Iterator<Item = LineNumber> + use<> {
+        let range = lines.start().get()..=lines.end().get();
+        let mut breakable = self
+            .lines()
+            .statements(file, range.clone())
             .iter()
-            .filter_map(move |key| {
-                let line = key.line.get();
-                (previous.replace(line) != Some(line)).then(|| LineNumber::new(line))?
-            })
+            .map(|key| key.line.get())
+            .chain(
+                self.call_sites(file, range)
+                    .iter()
+                    .map(|&(_, line, _)| line),
+            )
+            .collect::<Vec<_>>();
+        breakable.sort_unstable();
+        breakable.dedup();
+        breakable.into_iter().filter_map(LineNumber::new)
     }
 
     pub(crate) fn next_statement_line(
@@ -1301,11 +1319,17 @@ impl ModuleImage {
         file: SourceFileId,
         line: LineNumber,
     ) -> Option<LineNumber> {
-        let key = self
+        let range = line.get()..=u64::MAX;
+        let statement = self
             .lines()
-            .statements(file, line.get()..=u64::MAX)
-            .first()?;
-        LineNumber::new(key.line.get())
+            .statements(file, range.clone())
+            .first()
+            .map(|key| key.line.get());
+        let call = self
+            .call_sites(file, range)
+            .first()
+            .map(|&(_, line, _)| line);
+        LineNumber::new(statement.into_iter().chain(call).min()?)
     }
 
     pub(crate) fn previous_statement_line(
@@ -1313,8 +1337,50 @@ impl ModuleImage {
         file: SourceFileId,
         line: u64,
     ) -> Option<LineNumber> {
-        let key = self.lines().statements(file, 1..=line).last()?;
-        LineNumber::new(key.line.get())
+        let statement = self
+            .lines()
+            .statements(file, 1..=line)
+            .last()
+            .map(|key| key.line.get());
+        let call = self
+            .call_sites(file, 1..=line)
+            .last()
+            .map(|&(_, line, _)| line);
+        LineNumber::new(statement.into_iter().chain(call).max()?)
+    }
+
+    fn call_sites(
+        &self,
+        file: SourceFileId,
+        lines: std::ops::RangeInclusive<u64>,
+    ) -> &[(SourceFileId, u64, ImageAddress)] {
+        let sites = self.call_sites.get_or_init(|| {
+            let mut sites = self
+                .function_view()
+                .instances()
+                .filter_map(|instance| {
+                    let CodeInstanceKind::Inline {
+                        call_site: Some(site),
+                    } = instance.kind()
+                    else {
+                        return None;
+                    };
+
+                    Some((
+                        site.file,
+                        site.line.get(),
+                        instance.breakpoint_entry()?.address,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            sites.sort_unstable();
+            sites.dedup();
+            sites.into()
+        });
+
+        let start = sites.partition_point(|&(at, line, _)| (at, line) < (file, *lines.start()));
+        let end = sites.partition_point(|&(at, line, _)| (at, line) <= (file, *lines.end()));
+        sites.get(start..end).unwrap_or_default()
     }
 
     #[must_use]

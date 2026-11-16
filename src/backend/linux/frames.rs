@@ -839,7 +839,12 @@ pub(super) fn default_inline_visible_count(
         .position(|instance| {
             module_image
                 .code_instance(*instance)
-                .is_some_and(|instance| instance.ranges().any(|range| range.start == image_address))
+                .is_some_and(|instance| {
+                    instance.ranges().any(|range| range.start == image_address)
+                        || instance
+                            .breakpoint_entry()
+                            .is_some_and(|entry| entry.address == image_address)
+                })
         })
         .map_or(inline_chain.len(), |index| {
             inline_chain
@@ -994,6 +999,20 @@ pub(super) fn source_step_destination(
             || module_image
                 .line_entry_containing(location.address)
                 .is_some_and(|entry| entry.statement))
+        || inlined_call_begins(module_image, location)
+}
+
+fn inlined_call_begins(module_image: &ModuleImage, location: &ImageLocation) -> bool {
+    let InlineFrameLookup::Unique(chain) = &location.inline_frames else {
+        return false;
+    };
+
+    chain.instances.iter().any(|instance| {
+        module_image
+            .code_instance(*instance)
+            .and_then(crate::image::functions::CodeInstance::breakpoint_entry)
+            .is_some_and(|entry| entry.address == location.address)
+    })
 }
 
 pub(super) fn source_line_changed(

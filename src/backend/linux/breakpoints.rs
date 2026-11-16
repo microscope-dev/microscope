@@ -1263,14 +1263,32 @@ fn resolve_in_image(
                 let mut code_instances = image.instances_containing(address).collect::<Vec<_>>();
                 code_instances.sort_unstable_by_key(|instance| instance.id());
                 code_instances.dedup_by_key(|instance| instance.id());
-                let innermost = code_instances
+                let called_here = |instance: &crate::CodeInstance<'_>| {
+                    matches!(instance.kind(), crate::CodeInstanceKind::Inline { call_site: Some(site) }
+                        if site.file == source.id && site.line == line)
+                        && instance
+                            .breakpoint_entry()
+                            .is_some_and(|entry| entry.address == address)
+                };
+                let caller = code_instances
                     .iter()
                     .find(|instance| {
-                        !code_instances
-                            .iter()
-                            .any(|other| other.parent() == Some(instance.id()))
+                        called_here(instance)
+                            && !code_instances.iter().any(|other| {
+                                called_here(other) && instance.parent() == Some(other.id())
+                            })
                     })
-                    .map(|instance| instance.id());
+                    .and_then(|instance| instance.parent());
+                let innermost = caller.or_else(|| {
+                    code_instances
+                        .iter()
+                        .find(|instance| {
+                            !code_instances
+                                .iter()
+                                .any(|other| other.parent() == Some(instance.id()))
+                        })
+                        .map(|instance| instance.id())
+                });
 
                 if innermost.is_none_or(|instance| seen.insert(instance)) {
                     locations.push((address, innermost.into_iter().collect()));

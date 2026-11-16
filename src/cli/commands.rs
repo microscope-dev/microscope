@@ -1360,7 +1360,15 @@ impl Cli {
 
         let mut placed = Vec::new();
         for resolved in breakpoint.ready_locations() {
-            placed.push(self.place(debugger, resolved.location.clone(), main).await);
+            placed.push(
+                self.place(
+                    debugger,
+                    resolved.location.clone(),
+                    resolved.code_instances.first().copied(),
+                    main,
+                )
+                .await,
+            );
         }
 
         placed
@@ -1370,6 +1378,7 @@ impl Cli {
         &self,
         debugger: &microscope::DebuggerHandle,
         location: microscope::BreakpointLocation,
+        selected: Option<microscope::CodeInstanceId>,
         main: Option<microscope::LoadedModule>,
     ) -> format::Placed {
         let mut placed = format::Placed {
@@ -1424,9 +1433,27 @@ impl Cli {
         };
 
         let located = image.locate(address);
-        let inline = match &located.inline_frames {
-            microscope::InlineFrameLookup::Unique(chain) => chain.instances.last().copied(),
-            _ => None,
+        let chain = match &located.inline_frames {
+            microscope::InlineFrameLookup::Unique(chain) => &chain.instances[..],
+            _ => &[],
+        };
+        let depth = selected.and_then(|selected| {
+            if located.physical_instance == Some(selected) {
+                Some(0)
+            } else {
+                Some(chain.iter().position(|instance| *instance == selected)? + 1)
+            }
+        });
+        let call_site = depth
+            .and_then(|depth| chain.get(depth))
+            .and_then(|called| image.code_instance(*called))
+            .and_then(|called| match called.kind() {
+                microscope::CodeInstanceKind::Inline { call_site } => call_site,
+                microscope::CodeInstanceKind::OutOfLine => None,
+            });
+        let (inline, source) = match call_site {
+            Some(site) => (selected, Some(site)),
+            None => (chain.last().copied(), located.source.clone()),
         };
 
         placed.function = inline
@@ -1444,7 +1471,7 @@ impl Cli {
                 Some(format::code_name(None, Some(&symbol)).into())
             });
 
-        placed.source = located.source.as_ref().and_then(|source| {
+        placed.source = source.as_ref().and_then(|source| {
             image
                 .source_file(source.file)
                 .map(|file| (std::sync::Arc::clone(&file.path), source.line))

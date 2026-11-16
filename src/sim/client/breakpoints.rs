@@ -941,6 +941,7 @@ impl Client {
             &breakpoint.spec,
             &breakpoint.locations,
             &self.script.statements,
+            &self.script.call_sites,
             self.script.unoptimized_functions.as_deref(),
         )
         .map_or(Ok(()), |message| {
@@ -959,6 +960,7 @@ fn misplaced(
     spec: &BreakpointSpec,
     locations: &[crate::ResolvedBreakpointLocation],
     statements: &BTreeMap<u64, BTreeSet<u64>>,
+    call_sites: &BTreeMap<u64, BTreeSet<u64>>,
     functions: Option<&[(String, std::ops::Range<u64>)]>,
 ) -> Option<String> {
     let mut addresses = Vec::new();
@@ -981,17 +983,25 @@ fn misplaced(
             let stops = statements
                 .values()
                 .flatten()
+                .chain(call_sites.keys())
                 .copied()
                 .filter(|&known| known >= line)
                 .min();
+            let has_statements =
+                |stops: u64| statements.values().any(|lines| lines.contains(&stops));
 
             addresses
                 .iter()
                 .find(|address| {
                     stops.is_none_or(|stops| {
-                        !statements
+                        let statement = statements
                             .get(address)
-                            .is_some_and(|lines| lines.contains(&stops))
+                            .is_some_and(|lines| lines.contains(&stops));
+                        let call = !has_statements(stops)
+                            && call_sites
+                                .get(&stops)
+                                .is_some_and(|entries| entries.contains(address));
+                        !statement && !call
                     })
                 })
                 .map(|address| {
@@ -999,8 +1009,8 @@ fn misplaced(
                         || format!("{address:#x} is past the source's last statement"),
                         |stops| {
                             format!(
-                                "{address:#x} begins no statement row of line {stops}, the \
-                                 first at or after {line} with any"
+                                "{address:#x} begins no statement row or inlined call of \
+                                 line {stops}, the first at or after {line} with either"
                             )
                         },
                     )
@@ -1072,6 +1082,7 @@ mod tests {
             (0x20, BTreeSet::from([6, 2])),
             (0x30, BTreeSet::from([6])),
         ]);
+        let call_sites = BTreeMap::from([(4, BTreeSet::from([0x18])), (7, BTreeSet::from([0x38]))]);
         let functions = [("f".to_owned(), 0x10..0x40)];
         let line = |line| BreakpointSpec::Source {
             path: "a.c".into(),
@@ -1082,7 +1093,7 @@ mod tests {
                 .iter()
                 .map(|&address| at(address))
                 .collect::<Vec<_>>();
-            misplaced(spec, &locations, &statements, Some(&functions))
+            misplaced(spec, &locations, &statements, &call_sites, Some(&functions))
         };
 
         assert_eq!(judge(&line(6), &[0x20, 0x30]), None);
@@ -1090,7 +1101,10 @@ mod tests {
         assert_eq!(judge(&line(5), &[0x30]), None, "5 has none, so 6's");
         assert!(judge(&line(6), &[0x10]).is_some(), "0x10 is line 4's");
         assert!(judge(&line(3), &[0x20]).is_some(), "3 slides to 4");
-        assert!(judge(&line(7), &[0x30]).is_some(), "nothing follows 6");
+        assert_eq!(judge(&line(7), &[0x38]), None, "7 calls inlined code");
+        assert!(judge(&line(7), &[0x30]).is_some(), "0x30 is line 6's");
+        assert!(judge(&line(8), &[0x38]).is_some(), "nothing follows 7");
+        assert!(judge(&line(4), &[0x18]).is_some(), "4 has a statement");
 
         let function = BreakpointSpec::Function("f".to_owned());
         assert_eq!(judge(&function, &[0x10]), None);
@@ -1101,6 +1115,6 @@ mod tests {
             location: BreakpointLocation::Virtual(crate::VirtualAddress::new(0x20)),
             ..at(0)
         };
-        assert!(misplaced(&line(6), &[other], &statements, None).is_some());
+        assert!(misplaced(&line(6), &[other], &statements, &call_sites, None).is_some());
     }
 }

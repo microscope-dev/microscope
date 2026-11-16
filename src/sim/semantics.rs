@@ -352,7 +352,7 @@ pub fn step(
         }
         StepKind::Out => {
             let lines = Lines::of(variant);
-            let described = |address| lines.line(address).is_some();
+            let described = |address| lines.line(address).is_some() || lines.call_site(address);
 
             let stepped = before.len().checked_sub(begun.outer + 1);
             let returned = stepped.is_some_and(|index| {
@@ -516,6 +516,15 @@ impl<'a> Lines<'a> {
             .filter(|range| range.start + self.bias == address && range.statement)
     }
 
+    fn call_site(&self, address: u64) -> bool {
+        address.checked_sub(self.bias).is_some_and(|image| {
+            self.facts
+                .call_sites
+                .iter()
+                .any(|&(entry, _)| entry == image)
+        })
+    }
+
     fn epilogue(&self, address: u64) -> bool {
         address
             .checked_sub(self.bias)
@@ -590,6 +599,10 @@ fn source_step(
              marks an epilogue",
             describe(from)
         ));
+    }
+
+    if lines.facts.optimized && lines.call_site(end) {
+        return Ok(Judged::Loosely);
     }
 
     let Some(stop) = lines.row(end).filter(|range| range.line.is_some()) else {
