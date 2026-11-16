@@ -546,22 +546,23 @@ impl<P: LinuxTraceOps> Controller<P> {
             image: module.loaded.image,
             id: coroutine,
         };
-        let Ok(key) = module.variables.visible_object(
-            address,
-            (instance != physical).then_some(instance),
-            "$future",
-        ) else {
-            return (instance == physical)
-                .then(|| self.polled_future(pid, coroutine_type, None))
-                .flatten()
+        let selected = (instance != physical).then_some(instance);
+        let mut runtime = self.frame_runtime(inferior, &root, &resolved, module);
+        let mut budget =
+            crate::inspection::InspectionBudget::new(crate::InspectionLimits::default());
+        let Ok(key) = module
+            .variables
+            .visible_object(address, selected, "$future")
+        else {
+            return module
+                .variables
+                .captured_future(address, selected, &mut runtime, &mut budget)
+                .or_else(|| self.polled_future(pid, coroutine_type, None))
                 .map(|object| RunningFuture {
                     object,
                     ty: coroutine_type,
                 });
         };
-        let mut runtime = self.frame_runtime(inferior, &root, &resolved, module);
-        let mut budget =
-            crate::inspection::InspectionBudget::new(crate::InspectionLimits::default());
         let located = module
             .variables
             .locate(key, Some(address), &mut runtime, &mut budget)

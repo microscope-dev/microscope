@@ -361,18 +361,20 @@ async fn the_panic_machinery_is_marked() {
         })
         .collect::<Vec<_>>();
 
-    for name in [
-        "rust_panic",
-        "panic_with_hook",
-        "panic_handler",
-        "panic_fmt",
+    for names in [
+        &["rust_panic"][..],
+        &["panic_with_hook", "rust_panic_with_hook"],
+        &["panic_handler", "begin_panic_handler"],
+        &["panic_fmt"],
     ] {
         assert!(
-            roles
-                .iter()
-                .any(|(function, role)| function.as_deref() == Some(name)
-                    && *role == microscope::CodeRole::Panic),
-            "{name}: {roles:?}"
+            roles.iter().any(|(function, role)| {
+                function
+                    .as_deref()
+                    .is_some_and(|function| names.contains(&function))
+                    && *role == microscope::CodeRole::Panic
+            }),
+            "{names:?}: {roles:?}"
         );
     }
 

@@ -11,7 +11,7 @@ pub const MAX_DEPTH: usize = 256;
 
 const MAX_WRAPPERS: usize = 16;
 
-const HOLDERS: [(&[&str], &str, &[&str]); 9] = [
+const HOLDERS: [(&[&str], &str, &[&str]); 10] = [
     (&["tracing", "instrument"], "Instrumented", &["inner"]),
     (&["tracing", "instrument"], "WithDispatch", &["inner"]),
     (
@@ -29,6 +29,7 @@ const HOLDERS: [(&[&str], &str, &[&str]); 9] = [
         "InstrumentedAsyncOp",
         &["inner"],
     ),
+    (&["tokio", "time", "timeout"], "Timeout", &["value"]),
     (
         &["tokio", "task", "task_local"],
         "TaskLocalFuture",

@@ -357,13 +357,12 @@ impl<P: InspectionOps> Frame<'_, P> {
         address: ImageAddress,
         selected: Option<CodeInstanceId>,
     ) -> Option<Lookup<StopObject>> {
-        if selected.is_some() {
-            return None;
-        }
-
         let pid = self.root.thread()?;
         let image = &module.image;
-        let instance = image.locate(address).physical_instance?;
+        let instance = match selected {
+            Some(instance) => instance,
+            None => image.locate(address).physical_instance?,
+        };
         let coroutine = image
             .code_instance(instance)
             .and_then(|instance| image.function(instance.function()))?

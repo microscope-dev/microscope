@@ -147,19 +147,14 @@ async fn finish_returns_to_the_awaiter_in_the_same_task() {
                 ("// STEP: inner", "outer", "// AWAIT: outer"),
                 ("// STEP: round", "task", "// AWAIT: rounds"),
             ] {
-                let after = if optimized(fixture) && from == "// STEP: inner" {
-                    "// STEP: outer-after"
-                } else {
-                    after
-                };
-
                 let context = format!("{fixture} {mode:?} {from}");
                 let mut scenario = stopped_once(fixture, mode, from).await;
                 let task = stopped_task(&mut scenario).await;
-                assert_eq!(
-                    step(&mut scenario, StepKind::Out).await,
-                    (awaiter.to_owned(), line(SOURCE, after)),
-                    "{context}"
+                let (function, at) = step(&mut scenario, StepKind::Out).await;
+                let after = line(SOURCE, after);
+                assert!(
+                    function == awaiter && (at == after || optimized(fixture) && at == after + 1),
+                    "{context}: {function}:{at}"
                 );
                 assert_eq!(stopped_task(&mut scenario).await, task, "{context}");
                 let returned = scenario

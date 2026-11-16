@@ -1657,7 +1657,7 @@ impl VariableInfo for DwarfVariableInfo {
                         .collect()
                 })
             }
-            VariableQuery::Name(name) => vec![self.visible_object(address, selected, name)?],
+            VariableQuery::Name(name) => vec![self.visible_object(address, selected, name, false)?],
             VariableQuery::Global(global) => {
                 return Err(Error::VariableNotFound(global.variable.to_string()));
             }
@@ -1706,8 +1706,20 @@ impl VariableInfo for DwarfVariableInfo {
         selected: Option<CodeInstanceId>,
         name: &str,
     ) -> Result<ObjectKey> {
-        self.visible_object(address, selected, name)
+        self.visible_object(address, selected, name, false)
             .map(|object| ObjectKey(object.id().0))
+    }
+
+    fn captured_future(
+        &self,
+        address: ImageAddress,
+        selected: Option<CodeInstanceId>,
+        runtime: &mut dyn VariableRuntime,
+        budget: &mut InspectionBudget,
+    ) -> Option<crate::VirtualAddress> {
+        let mut frame_base = FrameBaseCache::Empty;
+        self.captured_future(address, selected, runtime, &mut frame_base, budget)
+            .map(|(future, _)| future)
     }
 
     fn global_object(&self, id: GlobalVariableId) -> Result<ObjectKey> {

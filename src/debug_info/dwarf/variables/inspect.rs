@@ -1133,6 +1133,7 @@ impl DwarfVariableInfo {
         address: ImageAddress,
         selected: Option<CodeInstanceId>,
         name: &str,
+        outermost: bool,
     ) -> Result<Object<'_>> {
         self.locals_read()?;
         let function = self
@@ -1146,11 +1147,13 @@ impl DwarfVariableInfo {
                     && self.visible_at(*object, address)
             })
             .collect::<Vec<_>>();
-        let depth = named
-            .iter()
-            .map(|object| object.lexical_depth())
-            .max()
-            .ok_or_else(|| Error::VariableNotFound(name.to_owned()))?;
+        let depths = named.iter().map(|object| object.lexical_depth());
+        let depth = if outermost {
+            depths.min()
+        } else {
+            depths.max()
+        }
+        .ok_or_else(|| Error::VariableNotFound(name.to_owned()))?;
         named.retain(|object| object.lexical_depth() == depth);
         let [object] = named.as_slice() else {
             return Err(Error::AmbiguousVariable(name.to_owned()));

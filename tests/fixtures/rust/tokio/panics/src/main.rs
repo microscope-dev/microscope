@@ -11,7 +11,12 @@ use std::panic::{self, AssertUnwindSafe};
 fn install_hook() {
     let default = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
-        let message = info.payload_as_str().unwrap_or("-");
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("-");
         let (file, line) = info
             .location()
             .map_or(("-", 0), |location| (location.file(), location.line()));

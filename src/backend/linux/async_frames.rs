@@ -27,7 +27,7 @@ use super::frames::{
 use super::inspection::variable_context;
 use super::interpreted::{Placed, interpreted_frame};
 use super::native::InspectionOps;
-use super::{Controller, Inferior, RuntimeModule};
+use super::{Controller, Inferior, RuntimeModule, debug_thread_id};
 
 const DESCRIPTION_LIMITS: InspectionLimits = InspectionLimits {
     variables: 16,
@@ -390,6 +390,33 @@ impl<P: InspectionOps> Controller<P> {
         Ok(spliced)
     }
 
+    fn driving_root(
+        &self,
+        inferior: &Inferior,
+        root: &StackRoot,
+        stack: &PhysicalStack,
+        modules: &[UnwindModule<'_>],
+        expanded: &Expanded,
+        (driver, variable): (usize, &str),
+    ) -> Option<(&RuntimeModule, VirtualAddress, TypeReference)> {
+        let driver = StackFrameId::new(frame_u32(driver).ok()?);
+        if let Ok(found) =
+            self.driven_root(inferior, root, stack, modules, expanded, driver, variable)
+        {
+            return Some(found);
+        }
+
+        let pid = root.reader();
+        self.runtimes(inferior).iter().find_map(|runtime| {
+            let (future, ty) = self
+                .with_runtime_stop(inferior, runtime, pid, |stop| {
+                    runtime.model.running_future(stop, debug_thread_id(pid))
+                })
+                .ok()??;
+            Some((self.module_of(ty)?, future, ty))
+        })
+    }
+
     pub(super) fn polled_future(
         &self,
         pid: nix::unistd::Pid,
@@ -437,6 +464,7 @@ impl<P: InspectionOps> Controller<P> {
 
         let runtimes = self.runtimes(inferior);
         let mut bodies = Vec::new();
+        let mut known = None;
         let mut driver = None;
         for (index, frame) in frames.iter().enumerate().skip(body) {
             let inner = index.checked_sub(1).and_then(|inner| frames.get(inner));
@@ -459,18 +487,18 @@ impl<P: InspectionOps> Controller<P> {
                 break;
             }
 
-            if let Some(function) = runs(frame).and(frame.function.as_ref()) {
+            if let Some((function, ty)) = frame.function.as_ref().zip(runs(frame)) {
                 bodies.push((function.id, frame.source.clone()));
+                known = self
+                    .captured_future(inferior, &root, &stack, &modules, &expanded, frame.id, ty);
+                if known.is_some() {
+                    break;
+                }
             }
         }
 
-        let (driver, variable) = driver?;
-        let driver = StackFrameId::new(frame_u32(driver).ok()?);
-        let (module, object, ty) = self
-            .driven_root(
-                inferior, &root, &stack, &modules, &expanded, driver, variable,
-            )
-            .ok()?;
+        let (module, object, ty) = known
+            .or_else(|| self.driving_root(inferior, &root, &stack, &modules, &expanded, driver?))?;
 
         bodies.reverse();
         let lines: Vec<_> = bodies
@@ -500,6 +528,37 @@ impl<P: InspectionOps> Controller<P> {
                 .iter()
                 .any(|candidate| candidate.id() == function)
         })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a stack's parts and the body frame"
+    )]
+    fn captured_future(
+        &self,
+        inferior: &Inferior,
+        root: &StackRoot,
+        stack: &PhysicalStack,
+        modules: &[UnwindModule<'_>],
+        expanded: &Expanded,
+        frame: StackFrameId,
+        coroutine: crate::TypeId,
+    ) -> Option<(&RuntimeModule, VirtualAddress, TypeReference)> {
+        let resolved = self
+            .resolved_in(inferior, root, stack, modules, expanded, frame)
+            .ok()?;
+        let (module, address, selected) = self.frame_scope(&resolved)?;
+        let mut runtime = self.frame_runtime(inferior, root, &resolved, module);
+        let mut budget = InspectionBudget::new(crate::InspectionLimits::default());
+        let future =
+            module
+                .variables
+                .captured_future(address, selected, &mut runtime, &mut budget)?;
+        let ty = TypeReference {
+            image: module.loaded.image,
+            id: coroutine,
+        };
+        Some((module, future, ty))
     }
 
     pub(super) fn driven_futures(

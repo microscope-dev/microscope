@@ -16,7 +16,9 @@ use super::{
 };
 
 use crate::unwind::{RDI, RSI, RegisterFile};
-use crate::{ImageAddress, StackSegment, TaskState, ThreadId, ThreadLocal, VirtualAddress};
+use crate::{
+    ImageAddress, StackSegment, TaskState, ThreadId, ThreadLocal, TypeReference, VirtualAddress,
+};
 
 pub(super) const TASK_NOUN: (&str, &str) = ("task", "tasks");
 
@@ -632,6 +634,28 @@ impl RuntimeModel for TokioRuntime {
                 Ok(Some(TaskContext::Suspended { future, ty }))
             }
         }
+    }
+
+    fn running_future(
+        &self,
+        stop: &dyn RuntimeStop,
+        thread: ThreadId,
+    ) -> Result<Option<(VirtualAddress, TypeReference)>, Arc<str>> {
+        let Some(number) = self.current_task(stop, thread)? else {
+            return Ok(None);
+        };
+
+        let census = self.census(stop)?;
+        let task = TaskRef {
+            number,
+            locator: None,
+        };
+        let Some(found) = self.find(stop, &census, task)? else {
+            return Ok(None);
+        };
+
+        self.future(stop, VirtualAddress::new(found.locator))
+            .map(Some)
     }
 
     fn thread_stacks(

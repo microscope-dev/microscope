@@ -119,6 +119,16 @@ impl VariableInfo for UnusedVariableInfo {
         panic!("unexpected variable lookup")
     }
 
+    fn captured_future(
+        &self,
+        _address: ImageAddress,
+        _selected: Option<crate::CodeInstanceId>,
+        _runtime: &mut dyn crate::debug_info::VariableRuntime,
+        _budget: &mut InspectionBudget,
+    ) -> Option<crate::VirtualAddress> {
+        panic!("unexpected variable lookup")
+    }
+
     fn global_object(&self, _id: crate::GlobalVariableId) -> Result<crate::debug_info::ObjectKey> {
         panic!("unexpected global variable lookup")
     }

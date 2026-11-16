@@ -319,6 +319,14 @@ pub trait VariableInfo: Send + Sync {
         name: &str,
     ) -> Result<ObjectKey>;
 
+    fn captured_future(
+        &self,
+        address: ImageAddress,
+        selected: Option<CodeInstanceId>,
+        runtime: &mut dyn VariableRuntime,
+        budget: &mut InspectionBudget,
+    ) -> Option<VirtualAddress>;
+
     fn global_object(&self, id: GlobalVariableId) -> Result<ObjectKey>;
 
     fn object_type(&self, object: ObjectKey) -> std::result::Result<TypeId, Arc<str>>;

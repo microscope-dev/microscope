@@ -15,7 +15,11 @@ use crate::{
 use super::DwarfVariableInfo;
 use super::codec::unsigned_value;
 use super::evaluate::FrameBaseCache;
+use crate::TypeId;
+use crate::image::functions::FunctionView;
+use crate::image::variables::TypeResolution;
 use crate::image::variables::{Object, VariableFunction};
+use std::collections::BTreeSet;
 
 pub(super) struct Resumption<'a> {
     object: VirtualAddress,
@@ -39,18 +43,22 @@ impl DwarfVariableInfo {
         frame_base: &mut FrameBaseCache,
         budget: &mut InspectionBudget,
     ) -> Option<Resumption<'_>> {
-        let (future, ty) = function.objects().find_map(|object| {
+        let parameter = function.objects().find_map(|object| {
             (object.instance() == selected && self.visible_at(object, address)).then_some(())?;
             Some((object, object.coroutine()?))
-        })?;
+        });
+        let (object, ty) = match parameter {
+            Some((future, ty)) => match self
+                .located_data_object(future, Some(address), runtime, frame_base, budget)
+                .ok()?
+            {
+                ValueStorage::Memory(object) => (object, ty),
+                _ => return None,
+            },
+            None => self.captured_future(address, selected, runtime, frame_base, budget)?,
+        };
         let coroutine = self.types.coroutine(ty)?.ok()?;
         let size = self.type_info(ty).ok()?.byte_size?;
-        let ValueStorage::Memory(object) = self
-            .located_data_object(future, Some(address), runtime, frame_base, budget)
-            .ok()?
-        else {
-            return None;
-        };
 
         let state_size = usize::try_from(coroutine.state.size).ok()?;
         budget.consume_memory(state_size).ok()?;
@@ -72,6 +80,66 @@ impl DwarfVariableInfo {
             resumes: self.resumes(),
             locations: self.locations(),
         })
+    }
+
+    pub(super) fn captured_future(
+        &self,
+        address: ImageAddress,
+        selected: Option<CodeInstanceId>,
+        runtime: &mut dyn VariableRuntime,
+        frame_base: &mut FrameBaseCache,
+        budget: &mut InspectionBudget,
+    ) -> Option<(VirtualAddress, TypeId)> {
+        let functions = FunctionView::new(self.types.tables());
+        let instance = match selected {
+            Some(instance) => instance,
+            None => functions
+                .instances_containing(address)
+                .filter(|instance| instance.is_out_of_line())
+                .min_by_key(|instance| instance.id())?
+                .id(),
+        };
+        let ty = functions
+            .function(functions.instance(instance)?.function())?
+            .coroutine()?;
+        let coroutine = self.types.coroutine(ty)?.ok()?;
+        let types = self.types.view();
+        let mut futures = BTreeSet::new();
+
+        for capture in coroutine.captures.iter() {
+            let (Some(name), RecordMemberLayout::ByteOffset(offset)) =
+                (capture.name.as_deref(), capture.layout)
+            else {
+                continue;
+            };
+
+            let Ok(object) = self.visible_object(address, selected, name, true) else {
+                continue;
+            };
+
+            let TypeResolution::Resolved(object_ty) = object.type_info() else {
+                continue;
+            };
+
+            let same_type = object_ty == capture.type_ref.id
+                || types
+                    .class(object_ty)
+                    .zip(types.class(capture.type_ref.id))
+                    .is_some_and(|(left, right)| left == right);
+            if same_type
+                && let Ok(ValueStorage::Memory(at)) =
+                    self.located_data_object(object, Some(address), runtime, frame_base, budget)
+                && let Some(future) = at.get().checked_sub(offset)
+            {
+                futures.insert(future);
+            }
+        }
+
+        let [future] = futures.into_iter().collect::<Vec<_>>()[..] else {
+            return None;
+        };
+
+        Some((VirtualAddress::new(future), ty))
     }
 }
 

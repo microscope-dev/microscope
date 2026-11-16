@@ -316,37 +316,42 @@ view rust tokio::task::join_set::JoinSet<T> {
 
 
 view rust tokio::net::tcp::stream::TcpStream {
+    let fd = io.io.Some.0.inner.inner.0.inner.0.0.fd.0 or io.io.Some.0.inner.inner.0.inner.0.0.fd
     show match io.io {
         None => empty("deregistered")
-        Some => empty("fd {io.io.Some.0.inner.inner.0.inner.0.0.fd.0}")
+        Some => empty("fd {fd}")
     }
 }
 
 view rust tokio::net::tcp::listener::TcpListener {
+    let fd = io.io.Some.0.inner.inner.0.inner.0.0.fd.0 or io.io.Some.0.inner.inner.0.inner.0.0.fd
     show match io.io {
         None => empty("deregistered")
-        Some => empty("fd {io.io.Some.0.inner.inner.0.inner.0.0.fd.0}")
+        Some => empty("fd {fd}")
     }
 }
 
 view rust tokio::net::udp::UdpSocket {
+    let fd = io.io.Some.0.inner.inner.0.inner.0.0.fd.0 or io.io.Some.0.inner.inner.0.inner.0.0.fd
     show match io.io {
         None => empty("deregistered")
-        Some => empty("fd {io.io.Some.0.inner.inner.0.inner.0.0.fd.0}")
+        Some => empty("fd {fd}")
     }
 }
 
 view rust tokio::net::unix::stream::UnixStream {
+    let fd = io.io.Some.0.inner.inner.0.0.0.fd.0 or io.io.Some.0.inner.inner.0.0.0.fd
     show match io.io {
         None => empty("deregistered")
-        Some => empty("fd {io.io.Some.0.inner.inner.0.0.0.fd.0}")
+        Some => empty("fd {fd}")
     }
 }
 
 view rust tokio::net::unix::listener::UnixListener {
+    let fd = io.io.Some.0.inner.inner.0.0.0.fd.0 or io.io.Some.0.inner.inner.0.0.0.fd
     show match io.io {
         None => empty("deregistered")
-        Some => empty("fd {io.io.Some.0.inner.inner.0.0.0.fd.0}")
+        Some => empty("fd {fd}")
     }
 }
 

@@ -760,6 +760,15 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         task: TaskRef,
     ) -> Result<Option<TaskContext>, Arc<str>>;
 
+    fn running_future(
+        &self,
+        stop: &dyn RuntimeStop,
+        thread: ThreadId,
+    ) -> Result<Option<(VirtualAddress, TypeReference)>, Arc<str>> {
+        let _ = (stop, thread);
+        Ok(None)
+    }
+
     fn thread_stacks(
         &self,
         stop: &dyn RuntimeStop,
