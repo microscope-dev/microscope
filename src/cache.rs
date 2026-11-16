@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use crate::image::backing::FileStamp;
 use crate::image::{AlignedBytes, Image, ImageError, Limits};
 
+mod one_at_a_time;
+
 pub const DIRECTORY_VARIABLE: &str = "MICROSCOPE_CACHE_DIR";
 
 pub const DEFAULT_CAPACITY: u64 = crate::image::backing::MAX_INPUT;
@@ -203,6 +205,7 @@ pub struct ImageCache {
     directory: PathBuf,
     capacity: u64,
     live: Mutex<HashMap<Key, (FileStamp, Weak<Image>)>>,
+    loading: one_at_a_time::OneAtATime<(PathBuf, u64, bool)>,
 }
 
 const SUFFIX: &str = ".image";
@@ -224,11 +227,16 @@ impl ImageCache {
             directory: directory.to_owned(),
             capacity,
             live: Mutex::default(),
+            loading: one_at_a_time::OneAtATime::new(),
         };
 
         cache.evict(capacity, true).map_err(open)?;
 
         Ok(cache)
+    }
+
+    pub fn load_alone<T>(&self, file: &Path, size: u64, full: bool, load: impl FnOnce() -> T) -> T {
+        self.loading.run((file.to_owned(), size, full), load)
     }
 
     #[must_use]

@@ -6,6 +6,9 @@ mod in_order;
 #[path = "../../src/backend/linux/alarm.rs"]
 mod alarm;
 
+#[path = "../../src/cache/one_at_a_time.rs"]
+mod one_at_a_time;
+
 mod mutex;
 
 mod sync {
@@ -18,3 +21,6 @@ mod tests;
 
 #[cfg(test)]
 mod alarm_tests;
+
+#[cfg(test)]
+mod one_at_a_time_tests;

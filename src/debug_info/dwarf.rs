@@ -844,16 +844,19 @@ pub fn load_profile_bytes(
     if runtime {
         return load_bytes(path, data, image_id, search).map(|info| (info, false));
     }
-    crate::pool::install(|| {
-        load_debug_info_kind(
-            path,
-            data,
-            image_id,
-            search,
-            LoadLimits::default(),
-            crate::cache::current(),
-            LoadKind::Profile,
-        )
+    let cache = crate::cache::current();
+    alone(path, data, LoadKind::Profile, cache, || {
+        crate::pool::install(|| {
+            load_debug_info_kind(
+                path,
+                data,
+                image_id,
+                search,
+                LoadLimits::default(),
+                cache,
+                LoadKind::Profile,
+            )
+        })
     })
     .map_err(Error::debug_info)?
     .map(|(info, _)| (info, true))
@@ -882,7 +885,9 @@ fn load_bytes_on_pool(
     if transient {
         crate::pool::install_small(load)
     } else {
-        crate::pool::install(load)
+        alone(path, data, LoadKind::Full, cache, || {
+            crate::pool::install(load)
+        })
     }
     .map_err(Error::debug_info)?
     .map(|(info, _)| info)
@@ -897,6 +902,21 @@ fn load_bytes_on_pool(
         }
         error => Error::debug_info(error),
     })
+}
+
+fn alone<T>(
+    path: &Path,
+    data: &[u8],
+    kind: LoadKind,
+    cache: Option<&crate::cache::ImageCache>,
+    load: impl FnOnce() -> T,
+) -> T {
+    match cache {
+        Some(cache) if rayon::current_thread_index().is_none() => {
+            cache.load_alone(path, data.len() as u64, kind == LoadKind::Full, load)
+        }
+        _ => load(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
