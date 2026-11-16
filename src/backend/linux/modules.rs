@@ -677,14 +677,16 @@ pub(super) fn parse_maps(maps: &str) -> Result<Vec<ModuleMapping>> {
 }
 
 pub(super) fn mapped_module_load_bias(mapping: &ModuleMapping) -> Result<LoadBias> {
-    const PAGE_MASK: u64 = !0xfff;
+    let page_size = rustix::param::page_size() as u64;
+    debug_assert!(page_size.is_power_of_two(), "a page is {page_size} bytes");
+    let page_mask = !(page_size - 1);
     let file = object::ReadCache::new(fs::File::open(&mapping.path)?);
     let object =
         object::File::parse(&file).map_err(|error| Error::backend(LinuxError::Object(error)))?;
 
     for segment in object.segments() {
         let (file_offset, _) = segment.file_range();
-        if file_offset & PAGE_MASK != mapping.file_offset {
+        if file_offset & page_mask != mapping.file_offset {
             continue;
         }
 
@@ -696,7 +698,7 @@ pub(super) fn mapped_module_load_bias(mapping: &ModuleMapping) -> Result<LoadBia
             continue;
         }
 
-        let image_start = segment.address() & PAGE_MASK;
+        let image_start = segment.address() & page_mask;
 
         return mapping
             .start
