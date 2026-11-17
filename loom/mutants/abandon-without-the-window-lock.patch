@@ -2,10 +2,10 @@ Abandons without taking the window lock: a worker that just saw the walk held wa
 
 --- a/src/in_order.rs
 +++ b/src/in_order.rs
-@@ -105,12 +105,6 @@
+@@ -74,12 +74,6 @@
+     fn abandon(&self) {
+         self.abandoned.store(true, Ordering::Relaxed);
  
-         // Under the lock, so that no worker sees the walk held and then
-         // waits past the wake.
 -        drop(
 -            self.window
 -                .added

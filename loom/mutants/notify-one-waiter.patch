@@ -2,7 +2,7 @@ Wakes one waiter where two can wait for different windows: the other may never w
 
 --- a/src/in_order.rs
 +++ b/src/in_order.rs
-@@ -111,7 +111,7 @@
+@@ -80,7 +80,7 @@
                  .lock()
                  .unwrap_or_else(PoisonError::into_inner),
          );
@@ -10,9 +10,9 @@ Wakes one waiter where two can wait for different windows: the other may never w
 +        self.window.progress.notify_one();
      }
  
-     /// The number of units added, and what they were added to.
-@@ -198,6 +198,6 @@
-     /// Records that the units before `next` are added.
+     pub fn into_parts(self) -> (usize, A) {
+@@ -156,6 +156,6 @@
+ 
      fn advance(&self, next: usize) {
          *self.added.lock().unwrap_or_else(PoisonError::into_inner) = next;
 -        self.progress.notify_all();
