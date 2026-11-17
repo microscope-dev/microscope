@@ -29,3 +29,20 @@ fn an_allocation_past_the_cap_aborts_the_test_process() {
         "unexpected stderr: {stderr}"
     );
 }
+
+#[test]
+fn threads_that_exit_give_back_what_they_reserved() {
+    let before = memory_cap::reserved();
+    let threads: Vec<_> = (0..1000)
+        .map(|_| std::thread::spawn(|| vec![1_u8; 5000]))
+        .collect();
+    for thread in threads {
+        std::hint::black_box(thread.join().expect("an allocating thread"));
+    }
+
+    let after = memory_cap::reserved();
+    assert!(
+        after.abs_diff(before) < 1 << 20,
+        "{before} bytes reserved before 1000 threads came and went, {after} after"
+    );
+}
