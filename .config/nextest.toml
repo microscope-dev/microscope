@@ -40,6 +40,7 @@ test-group = 'bpf-profiles'
 [[profile.default.overrides]]
 filter = '(binary(profiler) & test(=maximum_rate_keeps_at_least_99_percent_of_a_short_rust_burst)) | (binary(microscope) & test(/^backend::linux::perf::tests::a_reader_(that_falls_behind|far_behind)/)) | (binary(syscalls) & test(=bpf::a_burst_of_copied_stacks_loses_no_calls))'
 threads-required = 'num-test-threads'
+priority = 100
 
 
 
@@ -51,6 +52,7 @@ max-threads = 1
 [[profile.default.overrides]]
 filter = 'binary(node) & test(/^(profile|syscalls|live)::|^debian::debian_live/)'
 test-group = 'node-recordings'
+priority = 90
 
 
 
