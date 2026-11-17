@@ -675,6 +675,41 @@ impl Events {
         self.queue_bytes = bytes;
     }
 
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> usize {
+        self.buffered.as_ref().map_or(0, |queue| {
+            queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .bytes
+        })
+    }
+
+    #[cfg(test)]
+    fn is_behind(&self) -> bool {
+        self.gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .holds(Hold::Behind)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rings_read(&self) -> bool {
+        self.rings.iter().all(|ring| ring.unread() == 0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn holding_the_reader<R>(&self, work: impl FnOnce() -> R) -> R {
+        let held = self.buffered.as_ref().map(|queue| {
+            queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        let result = work();
+        drop(held);
+        result
+    }
+
     pub fn reader_cpu(&self) -> Duration {
         Duration::from_nanos(self.reader_cpu.load(Ordering::Relaxed))
     }
@@ -1811,10 +1846,12 @@ mod tests {
 
     #[test]
     fn a_reader_that_falls_behind_shortens_stacks_instead_of_pausing_sampling() {
-        let (events, exit, gate) = spin_with_deep_copies();
+        let (events, exit, gate, spinning) = spin_with_deep_copies();
         let status = events
             .read_while(|| {
                 gate.open().expect("open the gate");
+                until("stacks are shortened", || events.counts().shortened > 0);
+                drop(spinning);
                 exit.join()
             })
             .expect("the launch thread ends")
@@ -1857,10 +1894,12 @@ mod tests {
 
     #[test]
     fn a_reader_far_behind_pauses_sampling_instead_of_losing_samples() {
-        let (mut events, exit, gate) = spin_with_deep_copies();
+        let (mut events, exit, gate, spinning) = spin_with_deep_copies();
         events.queue_bytes = 4 * 1024 * 1024;
         let (status, exited) = events.read_while(|| {
             gate.open().expect("open the gate");
+            until("sampling pauses", || events.is_behind());
+            drop(spinning);
             (exit.join(), sys::monotonic())
         });
         let status = status
@@ -1878,7 +1917,20 @@ mod tests {
         assert_eq!(events.behind(Some(end)), []);
     }
 
-    fn spin_with_deep_copies() -> (Events, JoinHandle<std::io::Result<ExitStatus>>, LaunchGate) {
+    fn until(what: &str, done: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "{what} within 20 s");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn spin_with_deep_copies() -> (
+        Events,
+        JoinHandle<std::io::Result<ExitStatus>>,
+        LaunchGate,
+        std::io::PipeWriter,
+    ) {
         let options = EventOptions {
             source: Source::Clock {
                 period: Duration::from_millis(1),
@@ -1890,13 +1942,14 @@ mod tests {
         };
         let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("build/test-programs/profile-switches");
+        let (stop, spinning) = std::io::pipe().expect("a pipe");
         let mut command = Command::new(program);
-        command.args(["0", "750", "8"]);
+        command.args(["0", "-1", "8"]).stdin(stop);
         let Launched {
             events, exit, gate, ..
         } = launch(command, &options, &LaunchOptions::default(), |_, _| Ok(()))
             .expect("launch the program");
-        (events, exit, gate)
+        (events, exit, gate, spinning)
     }
 
     #[test]

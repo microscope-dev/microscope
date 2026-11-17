@@ -1524,56 +1524,109 @@ mod tests {
         );
     }
 
+    struct Caller {
+        asking: std::io::PipeWriter,
+        answers: std::io::BufReader<std::io::PipeReader>,
+    }
+
+    impl Caller {
+        fn launch(ring_pages: usize) -> (super::perf::Launched, Self, super::perf::EventOptions) {
+            use nix::sched::{CpuSet, sched_getaffinity, sched_setaffinity};
+            use nix::unistd::Pid;
+
+            let allowed = sched_getaffinity(Pid::from_raw(0)).expect("read allowed CPUs");
+            let cpu = (0..CpuSet::count())
+                .find(|&cpu| allowed.is_set(cpu).unwrap_or(false))
+                .expect("an allowed CPU");
+            let mut affinity = CpuSet::new();
+            affinity.set(cpu).expect("select one CPU");
+            let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("build/test-programs/profile-calls");
+            let (source, _) = super::perf_source(
+                &program,
+                &super::SampleSource::Function {
+                    symbol: "hot".into(),
+                },
+                None,
+                1,
+            )
+            .expect("find hot");
+            let options = super::perf::EventOptions {
+                source,
+                stack_bytes: 32768,
+                kernel: false,
+                ring_pages,
+                switches: false,
+            };
+            let (asked, asking) = std::io::pipe().expect("a pipe");
+            let (answers, answering) = std::io::pipe().expect("a pipe");
+            let mut command = std::process::Command::new(program);
+            command.arg("-").stdin(asked).stdout(answering);
+            let launched = super::perf::launch(
+                command,
+                &options,
+                &super::perf::LaunchOptions {
+                    no_address_randomization: true,
+                    filter: None,
+                },
+                |pid, _| {
+                    sched_setaffinity(Pid::from_raw(pid.cast_signed()), &affinity)
+                        .map_err(|error| error.to_string())
+                },
+            )
+            .expect("launch the program");
+            let caller = Self {
+                asking,
+                answers: std::io::BufReader::new(answers),
+            };
+
+            (launched, caller, options)
+        }
+
+        fn call(&mut self, events: &super::perf::Events, calls: u64) {
+            use std::io::{BufRead as _, Write as _};
+
+            events.holding_the_reader(|| {
+                writeln!(self.asking, "{calls}").expect("ask for calls");
+                let mut answer = String::new();
+                self.answers
+                    .read_line(&mut answer)
+                    .expect("hear the calls end");
+                assert_eq!(answer, "called\n", "{calls} calls");
+            });
+        }
+    }
+
+    fn read_everything(events: &super::perf::Events) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !events.rings_read() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the reader left records in the rings: {} bytes queued, {:?}",
+                events.queued(),
+                events.counts()
+            );
+            std::thread::sleep(Duration::from_micros(100));
+        }
+    }
+
     #[test]
     fn breakpoint_samples_are_read_while_processing_is_busy() {
-        use nix::sched::{CpuSet, sched_getaffinity, sched_setaffinity};
-        use nix::unistd::Pid;
-
-        let allowed = sched_getaffinity(Pid::from_raw(0)).expect("read allowed CPUs");
-        let cpu = (0..CpuSet::count())
-            .find(|&cpu| allowed.is_set(cpu).unwrap_or(false))
-            .expect("an allowed CPU");
-        let mut affinity = CpuSet::new();
-        affinity.set(cpu).expect("select one CPU");
-        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("build/test-programs/profile-stacks-gcc-o0");
-        let (source, _) = super::perf_source(
-            &program,
-            &super::SampleSource::Function {
-                symbol: "leaf".into(),
+        let (
+            super::perf::Launched {
+                events, exit, gate, ..
             },
-            None,
-            1,
-        )
-        .expect("find leaf");
-        let options = super::perf::EventOptions {
-            source,
-            stack_bytes: 32768,
-            kernel: false,
-            ring_pages: 32,
-            switches: false,
-        };
-        sched_setaffinity(Pid::from_raw(0), &affinity).expect("pin the reader");
-        let mut command = std::process::Command::new("chrt");
-        command.args(["--idle", "0"]).arg(program).arg("1000000");
-        let super::perf::Launched {
-            events, exit, gate, ..
-        } = super::perf::launch(
-            command,
-            &options,
-            &super::perf::LaunchOptions {
-                no_address_randomization: true,
-                filter: None,
-            },
-            |pid, _| {
-                sched_setaffinity(Pid::from_raw(pid.cast_signed()), &affinity)
-                    .map_err(|error| error.to_string())
-            },
-        )
-        .expect("launch the program");
+            mut caller,
+            _,
+        ) = Caller::launch(32);
         let status = events
             .read_while(|| {
                 gate.open().expect("open the gate");
+                for _ in 0..6 {
+                    caller.call(&events, 1);
+                    read_everything(&events);
+                }
+                drop(caller);
                 exit.join()
             })
             .expect("the waiter ends")
@@ -1643,58 +1696,29 @@ mod tests {
 
     #[test]
     fn a_full_breakpoint_queue_keeps_counting_calls() {
-        use nix::sched::{CpuSet, sched_getaffinity, sched_setaffinity};
-        use nix::unistd::Pid;
-
-        let allowed = sched_getaffinity(Pid::from_raw(0)).expect("read allowed CPUs");
-        let cpu = (0..CpuSet::count())
-            .find(|&cpu| allowed.is_set(cpu).unwrap_or(false))
-            .expect("an allowed CPU");
-        let mut affinity = CpuSet::new();
-        affinity.set(cpu).expect("select one CPU");
-        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("build/test-programs/profile-calls");
-        let (source, _) = super::perf_source(
-            &program,
-            &super::SampleSource::Function {
-                symbol: "hot".into(),
+        let (
+            super::perf::Launched {
+                mut events,
+                exit,
+                gate,
+                ..
             },
-            None,
-            1,
-        )
-        .expect("find hot");
-        let options = super::perf::EventOptions {
-            source,
-            stack_bytes: 32768,
-            kernel: false,
-            ring_pages: 128,
-            switches: false,
-        };
-        let mut command = std::process::Command::new(program);
-        command.arg("20000");
-        let super::perf::Launched {
-            mut events,
-            exit,
-            gate,
-            ..
-        } = super::perf::launch(
-            command,
-            &options,
-            &super::perf::LaunchOptions {
-                no_address_randomization: true,
-                filter: None,
-            },
-            |pid, _| {
-                sched_setaffinity(Pid::from_raw(pid.cast_signed()), &affinity)
-                    .map_err(|error| error.to_string())
-            },
-        )
-        .expect("launch the program");
-        let queue = 1024 * 1024;
+            mut caller,
+            options,
+        ) = Caller::launch(128);
+        let queue = 256 * 1024;
         events.set_queue_bytes(queue);
         let status = events
             .read_while(|| {
                 gate.open().expect("open the gate");
+                let mut calls = 0;
+                while events.queued() < queue {
+                    caller.call(&events, 1);
+                    calls += 1;
+                    read_everything(&events);
+                }
+                caller.call(&events, 20000 - calls);
+                drop(caller);
                 exit.join()
             })
             .expect("the waiter ends")

@@ -388,6 +388,14 @@ impl Ring {
             .drain(out)
     }
 
+    #[cfg(test)]
+    pub fn unread(&self) -> u64 {
+        self.memory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unread()
+    }
+
     pub fn untrusted(&self) -> u64 {
         self.memory
             .lock()
@@ -456,6 +464,12 @@ impl RingMemory {
         // SAFETY: the metadata is the ring's for its life, the word is
         // aligned, and the kernel accesses it atomically too.
         unsafe { AtomicU64::from_ptr(self.base.as_ptr().add(offset).cast::<u64>()) }
+    }
+
+    #[cfg(test)]
+    fn unread(&self) -> u64 {
+        let head = self.word(DATA_HEAD).load(Ordering::Acquire);
+        head.wrapping_sub(self.word(DATA_TAIL).load(Ordering::Relaxed))
     }
 
     pub fn drain(&mut self, out: &mut Vec<u8>) -> usize {

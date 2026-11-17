@@ -4,6 +4,7 @@
 
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
@@ -14,6 +15,8 @@ static int there[2];
 static int back[2];
 static long rounds;
 static long long until;
+static int forever;
+static atomic_int stopping;
 
 static void *answer(void *unused) {
     (void)unused;
@@ -34,7 +37,7 @@ static long long now(void) {
 
 static void *spin(void *unused) {
     (void)unused;
-    while (now() < until) {
+    while (forever ? !atomic_load_explicit(&stopping, memory_order_relaxed) : now() < until) {
         sink++;
     }
     return NULL;
@@ -59,6 +62,7 @@ int main(int argc, char **argv) {
     }
     void *failed;
     pthread_join(thread, &failed);
+    forever = spin_ms < 0;
     until = now() + spin_ms * 1000000LL;
     pthread_t others[64];
     for (long index = 1; index < spinners; ++index) {
@@ -66,7 +70,14 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
-    spin(NULL);
+    if (forever) {
+        char rest;
+        while (read(0, &rest, 1) > 0) {
+        }
+        atomic_store(&stopping, 1);
+    } else {
+        spin(NULL);
+    }
     for (long index = 1; index < spinners; ++index) {
         pthread_join(others[index], NULL);
     }
