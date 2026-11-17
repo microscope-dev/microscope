@@ -92,11 +92,7 @@ pub(super) struct TypeArenaBuilder<'a, 'data> {
 
     pub(super) passed_by_value: Layered<HashMap<TypeId, bool>>,
 
-    pub(super) home: Option<(usize, &'a [usize])>,
-
-    pub(super) foreign: bool,
-
-    pub(super) aliases: Vec<DieKey>,
+    pub(super) trail: Option<super::merge::Trail>,
 }
 
 #[derive(Clone)]
@@ -531,9 +527,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             complex_parts: HashMap::new(),
             passed_by_value: Layered::default(),
             go_dict_indices: Layered::default(),
-            home: None,
-            foreign: false,
-            aliases: Vec::new(),
+            trail: None,
         };
 
         let mut distinct = HashMap::<*const ScopeSegment, usize>::new();
@@ -720,20 +714,14 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             return *id;
         }
 
-        if let Some((home, groups)) = self.home
-            && groups.get(key.unit) != Some(&home)
-        {
-            self.foreign = true;
-        }
-
         let canonical = self.canonical_type_key(key);
         if let Ok(canonical) = canonical
             && canonical != key
         {
             let id = self.resolve(canonical);
             self.by_die.insert(key, id);
-            if self.home.is_some() {
-                self.aliases.push(key);
+            if let Some(trail) = &mut self.trail {
+                trail.alias(key);
             }
 
             return id;
@@ -743,12 +731,17 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             return self.type_limit(key);
         };
 
+        let mark = self.trail.is_some().then(|| self.build_mark());
         if self.budget.charge("types", size_of::<TypeEntry>()).is_err() {
             return self.type_limit(key);
         }
 
         self.by_die.insert(key, id);
-        self.entries.push(TypeEntry::Building);
+        self.push_entry(TypeEntry::Building, Some(key));
+        if let Some(trail) = &mut self.trail {
+            trail.open(id);
+        }
+
         let entry = match canonical {
             Err(reason) => TypeEntry::Malformed(reason),
             Ok(_) if self.resolution_depth >= MAX_TYPE_RESOLUTION_DEPTH => {
@@ -763,6 +756,9 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         };
 
         *self.entry_mut(id) = entry;
+        if let Some(mark) = mark {
+            self.close_build(id, mark);
+        }
 
         id
     }
@@ -772,9 +768,10 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             id
         } else {
             let id = self.reserved_id();
-            self.entries.push(TypeEntry::Malformed(
-                "type graph exceeds its work limit".into(),
-            ));
+            self.push_entry(
+                TypeEntry::Malformed("type graph exceeds its work limit".into()),
+                None,
+            );
             self.limit_type = Some(id);
             id
         };
@@ -790,12 +787,10 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         };
 
         if self.void_type.is_none() {
-            self.entries.push(resolved(
-                reference,
-                "void".into(),
+            self.push_entry(
+                resolved(reference, "void".into(), None, TypeKind::Unspecified),
                 None,
-                TypeKind::Unspecified,
-            ));
+            );
             self.void_type = Some(reference.id);
         }
 
@@ -810,18 +805,21 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         if self.character_type.is_none() {
             let name: Arc<str> = "character".into();
-            self.entries.push(resolved(
-                reference,
-                Arc::clone(&name),
-                Some(1),
-                TypeKind::Base(BaseType {
-                    base_name: Arc::clone(&name),
-                    name,
-                    encoding: BaseTypeEncoding::UnsignedCharacter,
-                    byte_size: 1,
-                    bit_size: None,
-                }),
-            ));
+            self.push_entry(
+                resolved(
+                    reference,
+                    Arc::clone(&name),
+                    Some(1),
+                    TypeKind::Base(BaseType {
+                        base_name: Arc::clone(&name),
+                        name,
+                        encoding: BaseTypeEncoding::UnsignedCharacter,
+                        byte_size: 1,
+                        bit_size: None,
+                    }),
+                ),
+                None,
+            );
             self.explicit_names.insert(reference.id.index());
             self.character_type = Some(reference.id);
         }
@@ -1922,12 +1920,15 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 id,
             };
 
-            self.entries.push(resolved(
-                reference,
-                Arc::clone(&part.name),
-                Some(part.byte_size),
-                TypeKind::Base(part),
-            ));
+            self.push_entry(
+                resolved(
+                    reference,
+                    Arc::clone(&part.name),
+                    Some(part.byte_size),
+                    TypeKind::Base(part),
+                ),
+                None,
+            );
             self.explicit_names.insert(reference.id.index());
             self.complex_parts.insert(key, reference.id);
         }

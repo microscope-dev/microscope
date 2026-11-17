@@ -3418,22 +3418,6 @@ impl<V> DieMap<V> {
         self.units.iter().all(HashMap::is_empty)
     }
 
-    fn map_values(&mut self, mut map: impl FnMut(V) -> V)
-    where
-        V: Copy,
-    {
-        for unit in &mut self.units {
-            #[expect(
-                clippy::disallowed_methods,
-                clippy::iter_over_hash_type,
-                reason = "each value is replaced on its own, whatever the order"
-            )]
-            for value in unit.values_mut() {
-                *value = map(*value);
-            }
-        }
-    }
-
     fn remove(&mut self, key: &DieKey) -> Option<V> {
         let index = key.unit.checked_sub(self.first)?;
         self.units.get_mut(index)?.remove(&key.offset)
@@ -5994,10 +5978,12 @@ mod tests {
 
     #[test]
     fn every_number_of_workers_loads_the_same_image() {
+        let mut rewalked = 0;
+
         for fixture in [
             "containers-cpp-clang-o2",
             "containers-rust-o2",
-            "tokio-server-1.51-o0",
+            "tokio-server-1.51-o3",
             "values-go-o0",
             "containers-zig-self-hosted",
             "callers-go-stripped",
@@ -6050,7 +6036,17 @@ mod tests {
                 None,
                 "{fixture} walks its units apart with 8 workers"
             );
+            rewalked += report
+                .counters
+                .get("units_rewalked_in_order")
+                .copied()
+                .unwrap_or(0);
         }
+
+        assert!(
+            rewalked > 0,
+            "some fixture walks a unit in order after its types differ"
+        );
     }
 
     #[test]

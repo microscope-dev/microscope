@@ -319,6 +319,10 @@ impl LocationsBuilder {
         Ok(LocationListId(id))
     }
 
+    pub const fn counts(&self) -> (usize, usize) {
+        (self.expressions.len(), self.lists.len())
+    }
+
     pub fn largest_table(&self) -> usize {
         [
             self.bytes.len(),

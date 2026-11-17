@@ -76,10 +76,6 @@ impl Meter {
         self.spent
     }
 
-    pub const fn left(&self) -> u64 {
-        self.limit - self.spent
-    }
-
     pub const fn remaining(&self) -> Self {
         Self {
             limit: self.limit - self.spent,
@@ -94,6 +90,15 @@ impl Meter {
             spent: self.spent - mark,
             exceeded: self.exceeded,
         }
+    }
+
+    pub fn refund(&mut self, bytes: u64) {
+        debug_assert!(
+            bytes <= self.spent,
+            "a refund of {bytes} exceeds the {} spent",
+            self.spent
+        );
+        self.spent = self.spent.saturating_sub(bytes);
     }
 
     pub fn absorb(&mut self, apart: &Self) -> bool {

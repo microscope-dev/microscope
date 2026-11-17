@@ -1,4 +1,5 @@
 use crate::debug_info::dwarf::DwarfSet;
+use std::ops::Range;
 use std::sync::{Mutex, PoisonError};
 
 use foldhash::HashMap;
@@ -14,7 +15,7 @@ use super::types::{
 
 use super::{Metadata, ValueDescription, WalkContext, Walked, dedup, die, row, walk_unit};
 use crate::debug_info::dwarf::budget::Meter;
-use crate::debug_info::dwarf::{DieMap, DwarfError, is_type_unit};
+use crate::debug_info::dwarf::{DieKey, DieMap, DwarfError, is_type_unit};
 use crate::image::lines::Files;
 use crate::image::locations::ExpressionId;
 use crate::image::variables::TypeResolution;
@@ -86,6 +87,7 @@ impl Renumbered<'_> {
 }
 
 struct UnitWalk {
+    unit: usize,
     group: usize,
     result: Result<(), DwarfError>,
     walked: Walked,
@@ -110,7 +112,92 @@ pub(super) struct UnitTypes {
     character_type: Option<TypeId>,
     limit_type: Option<TypeId>,
     budget: Meter,
-    foreign: bool,
+    traced: Vec<Traced>,
+    aliases: Vec<(DieKey, TypeId, Option<usize>)>,
+}
+
+#[derive(Default)]
+pub(super) struct Trail {
+    entries: Vec<Traced>,
+    open: Vec<usize>,
+    aliases: Vec<(DieKey, Option<usize>)>,
+}
+
+#[derive(Clone, Default)]
+struct Traced {
+    key: Option<DieKey>,
+    parent: Option<usize>,
+    spent: u64,
+    expressions: Range<usize>,
+    lists: Range<usize>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct BuildMark {
+    spent: u64,
+    expressions: usize,
+    lists: usize,
+}
+
+impl Trail {
+    pub(super) fn open(&mut self, id: TypeId) {
+        self.open.push(id.index());
+    }
+
+    pub(super) fn alias(&mut self, key: DieKey) {
+        self.aliases.push((key, self.open.last().copied()));
+    }
+}
+
+impl TypeArenaBuilder<'_, '_> {
+    pub(super) fn push_entry(&mut self, entry: TypeEntry, key: Option<DieKey>) {
+        self.entries.push(entry);
+        if let Some(trail) = &mut self.trail {
+            trail.entries.push(Traced {
+                key,
+                parent: trail.open.last().copied(),
+                ..Traced::default()
+            });
+        }
+    }
+
+    pub(super) fn build_mark(&self) -> BuildMark {
+        let (expressions, lists) = self
+            .pool
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .counts();
+        BuildMark {
+            spent: self.budget.spent(),
+            expressions,
+            lists,
+        }
+    }
+
+    pub(super) fn close_build(&mut self, id: TypeId, mark: BuildMark) {
+        let end = self.build_mark();
+        let base = self.entries.base_len();
+        let Some(trail) = &mut self.trail else {
+            return;
+        };
+
+        let closed = trail.open.pop();
+        debug_assert_eq!(
+            closed,
+            Some(id.index()),
+            "type builds close in the order they open"
+        );
+        let traced = id
+            .index()
+            .checked_sub(base)
+            .and_then(|own| trail.entries.get_mut(own));
+        debug_assert!(traced.is_some(), "a type build closes an entry it pushed");
+        if let Some(traced) = traced {
+            traced.spent = end.spent - mark.spent;
+            traced.expressions = mark.expressions..end.expressions;
+            traced.lists = mark.lists..end.lists;
+        }
+    }
 }
 
 struct Frozen<'a, 'data> {
@@ -158,7 +245,6 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 impl<'data> Frozen<'_, 'data> {
     fn split<'b>(
         &'b self,
-        home: (usize, &'b [usize]),
         pool: &'b Mutex<LocationsBuilder>,
         die_buffers: &'b DieBuffers<'data>,
     ) -> TypeArenaBuilder<'b, 'data> {
@@ -187,9 +273,7 @@ impl<'data> Frozen<'_, 'data> {
             complex_parts: HashMap::default(),
             go_dict_indices: self.go_dict_indices.split(),
             passed_by_value: self.passed_by_value.split(),
-            home: Some(home),
-            foreign: false,
-            aliases: Vec::new(),
+            trail: Some(Trail::default()),
         }
     }
 }
@@ -204,7 +288,6 @@ struct Cut {
     aliases: usize,
 
     budget: Meter,
-    foreign: bool,
 }
 
 fn owner(units: &mut [UnitTypes], index: usize) -> Option<&mut UnitTypes> {
@@ -228,6 +311,11 @@ impl TypeArenaBuilder<'_, '_> {
         );
         let base = self.entries.base_len();
         check_cut_order(cuts);
+        let Some(trail) = self.trail else {
+            debug_assert!(false, "only a walk apart is cut into units");
+            return None;
+        };
+        debug_assert!(trail.open.is_empty(), "every type build closed");
 
         let unit_of = |id: usize| cuts.partition_point(|cut| cut.end <= id);
         let made = |made: Option<TypeId>, start: usize, end: usize| {
@@ -254,7 +342,8 @@ impl TypeArenaBuilder<'_, '_> {
                 character_type: made(self.character_type, start, cut.end),
                 limit_type: made(self.limit_type, start, cut.end),
                 budget: cut.budget.clone(),
-                foreign: cut.foreign,
+                traced: Vec::new(),
+                aliases: Vec::new(),
             })
             .collect::<Vec<_>>();
         let mut entries = self.entries.into_own();
@@ -263,31 +352,21 @@ impl TypeArenaBuilder<'_, '_> {
             cuts.last().map_or(base, |cut| cut.end)
         );
 
+        let mut traced = trail.entries;
+        debug_assert_eq!(traced.len(), entries.len(), "every own entry is traced");
+
         for unit in units.iter_mut().rev() {
             unit.entries = entries.split_off(unit.start);
+            unit.traced = traced.split_off(unit.start);
         }
 
-        let mut by_die = self.by_die.into_own();
-
-        for (position, key) in self.aliases.into_iter().enumerate() {
-            let Some(id) = by_die.remove(&key) else {
-                debug_assert!(false, "an alias names its type");
-                return None;
-            };
-
-            let unit = cuts.partition_point(|cut| cut.aliases <= position);
-            owner(&mut units, unit)?.by_die.insert(key, id);
-        }
-
-        for (key, id) in by_die.into_entries() {
-            debug_assert!(
-                id.index() >= base,
-                "a walk's own DIE names type {}, below the shared {base}",
-                id.index()
-            );
-            let unit = owner(&mut units, unit_of(id.index()))?;
-            unit.by_die.insert(key, id);
-        }
+        split_dies(
+            self.by_die.into_own(),
+            trail.aliases,
+            cuts,
+            base,
+            &mut units,
+        )?;
 
         for id in self.explicit_names.into_own().iter() {
             owner(&mut units, unit_of(id))?.explicit_names.insert(id);
@@ -341,14 +420,89 @@ impl TypeArenaBuilder<'_, '_> {
         Some(units)
     }
 
-    fn made_once(&self, unit: &UnitTypes) -> [(Option<TypeId>, Option<TypeId>); 2] {
-        [
-            (unit.void_type, unit.void_type.and(self.void_type)),
-            (
-                unit.character_type,
-                unit.character_type.and(self.character_type),
-            ),
-        ]
+    fn repeats(&self, unit: &UnitTypes, first: usize) -> Option<Repeats> {
+        let mut repeats = Repeats {
+            existing: Vec::with_capacity(unit.traced.len()),
+            inside: Vec::with_capacity(unit.traced.len()),
+        };
+
+        for (own, traced) in unit.traced.iter().enumerate() {
+            let id = type_id(first + own)?;
+            let inside = match traced.parent {
+                Some(parent) => repeats.dropped(parent.checked_sub(first)?)?,
+                None => false,
+            };
+            let known = match traced.key {
+                Some(key) => self.by_die.get(&key).copied(),
+                None if unit.void_type == Some(id) => self.void_type,
+                None if unit.character_type == Some(id) => self.character_type,
+                None => None,
+            };
+
+            if inside && known.is_none() {
+                return None;
+            }
+
+            repeats.existing.push(known);
+            repeats.inside.push(inside);
+        }
+
+        Some(repeats)
+    }
+
+    fn same_as_existing(
+        &self,
+        unit: &UnitTypes,
+        first: usize,
+        repeats: &Repeats,
+        renumbered: &Renumbered<'_>,
+    ) -> bool {
+        unit.entries
+            .iter()
+            .zip(&repeats.existing)
+            .enumerate()
+            .all(|(own, (entry, existing))| {
+                let Some(existing) = existing else {
+                    return true;
+                };
+
+                let id = TypeId::new(super::row(first + own));
+                self.entries.get(existing.index()) == Some(&renumber(entry.clone(), renumbered))
+                    && unit.explicit_names.contains(id.index())
+                        == self.explicit_names.contains(existing.index())
+                    && unit.passed_by_value.get(&id) == self.passed_by_value.get(existing)
+                    && unit.go_dict_indices.get(&id) == self.go_dict_indices.get(existing)
+            })
+    }
+
+    fn matches(&self, unit: &UnitTypes, ids: &mut Vec<TypeId>) -> Option<Repeats> {
+        let base = self.entries.base_len();
+        debug_assert!(
+            unit.limit_type.is_none(),
+            "a unit that exceeds the budget is walked in order"
+        );
+        debug_assert_eq!(ids.len(), unit.start, "a group's units are added in order");
+        debug_assert_eq!(unit.traced.len(), unit.entries.len());
+        let first = base + unit.start;
+        let repeats = self.repeats(unit, first)?;
+
+        let mut next = self.entries.len();
+        let numbered = repeats
+            .existing
+            .iter()
+            .map(|existing| {
+                existing.or_else(|| {
+                    let id = type_id(next);
+                    next += 1;
+                    id
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        ids.extend(numbered);
+        let renumbered = Renumbered { base, ids };
+
+        self.same_as_existing(unit, first, &repeats, &renumbered)
+            .then_some(repeats)
     }
 
     #[expect(
@@ -358,125 +512,182 @@ impl TypeArenaBuilder<'_, '_> {
     fn absorb<'r>(
         &mut self,
         unit: UnitTypes,
+        repeats: &Repeats,
         pooled: &Pooled,
-        ids: &'r mut Vec<TypeId>,
+        pooled_before: (usize, usize),
+        ids: &'r [TypeId],
     ) -> Option<Renumbered<'r>> {
         let base = self.entries.base_len();
-        debug_assert!(
-            unit.limit_type.is_none(),
-            "a unit that exceeds the budget is walked in order"
-        );
-        debug_assert_eq!(ids.len(), unit.start, "a group's units are added in order");
         let first = base + unit.start;
-        let made = self.made_once(&unit);
-        let [(own_void, _), (own_character, _)] = made;
-        let shared = |own: usize| {
-            made.into_iter().find_map(|(made, before)| {
-                before.filter(|_| made.is_some_and(|id| id.index() == first + own))
-            })
+        debug_assert_eq!(ids.len(), unit.start + unit.entries.len());
+        let renumbered = Renumbered { base, ids };
+        let mut budget = unit.budget;
+        budget.refund(repeats.refund(&unit.traced, pooled, pooled_before)?);
+        if !self.budget.absorb(&budget) {
+            return None;
+        }
+
+        let kept = |id: usize| {
+            id.checked_sub(first)
+                .and_then(|own| repeats.dropped(own))
+                .is_none_or(|dropped| !dropped)
         };
 
-        let mut next = self.entries.len();
-        let numbered = (0..unit.entries.len())
-            .map(|own| {
-                shared(own).map_or_else(
-                    || {
-                        let id = type_id(next);
-                        next += 1;
-                        id
-                    },
-                    Some,
-                )
-            })
-            .collect::<Option<Vec<_>>>()?;
-        ids.extend(numbered);
-        let renumbered = Renumbered { base, ids };
-
         for (own, entry) in unit.entries.into_iter().enumerate() {
-            if shared(own).is_some() {
-                continue;
+            if !repeats.dropped(own)? {
+                self.entries.push(renumber(entry, &renumbered));
             }
-
-            self.entries.push(match entry {
-                TypeEntry::Resolved(mut info) => {
-                    info.reference = renumbered.reference(info.reference);
-                    dedup::map_references(&mut info, &mut |reference| {
-                        renumbered.reference(reference)
-                    });
-                    TypeEntry::Resolved(info)
-                }
-                other => other,
-            });
         }
 
         if self.void_type.is_none() {
-            self.void_type = own_void.map(|id| renumbered.id(id));
+            self.void_type = unit.void_type.map(|id| renumbered.id(id));
         }
 
         if self.character_type.is_none() {
-            self.character_type = own_character.map(|id| renumbered.id(id));
+            self.character_type = unit.character_type.map(|id| renumbered.id(id));
         }
 
         for own in unit.explicit_names.iter() {
-            let id = type_id(own)?;
-            self.explicit_names.insert(renumbered.id(id).index());
+            if kept(own) {
+                self.explicit_names
+                    .insert(renumbered.id(type_id(own)?).index());
+            }
         }
 
         for (id, mut parts) in unit.identity_parts {
+            if !kept(id) {
+                continue;
+            }
+
             for argument in &mut parts.template {
                 if let TypeArgument::Type(reference) = argument {
                     *reference = renumbered.reference(*reference);
                 }
             }
 
-            let id = type_id(id)?;
-            let index = renumbered.id(id).index();
+            let index = renumbered.id(type_id(id)?).index();
             self.identity_parts.resize_with(index + 1, || None);
             *self.identity_parts.get_mut(index)? = Some(parts);
         }
 
         for (id, mut parts) in unit.go_identity_parts {
-            parts.map_references(|reference| renumbered.reference(reference));
-            self.go_identity_parts.insert(renumbered.id(id), parts);
+            if kept(id.index()) {
+                parts.map_references(|reference| renumbered.reference(reference));
+                self.go_identity_parts.insert(renumbered.id(id), parts);
+            }
         }
 
         for (id, index) in unit.go_dict_indices {
-            self.go_dict_indices.insert(renumbered.id(id), index);
+            if kept(id.index()) {
+                self.go_dict_indices.insert(renumbered.id(id), index);
+            }
         }
 
         for (id, by_value) in unit.passed_by_value {
-            self.passed_by_value.insert(renumbered.id(id), by_value);
+            if kept(id.index()) {
+                self.passed_by_value.insert(renumbered.id(id), by_value);
+            }
         }
 
         for mut pending in unit.pending_arguments {
-            let id = type_id(pending.entry)?;
-            pending.entry = renumbered.id(id).index();
-            self.pending_arguments.push(pending);
+            if kept(pending.entry) {
+                pending.entry = renumbered.id(type_id(pending.entry)?).index();
+                self.pending_arguments.push(pending);
+            }
         }
 
-        self.record_member_declarations
-            .extend(
-                unit.record_member_declarations
-                    .into_iter()
-                    .map(|mut declaration| {
-                        declaration.aggregate = renumbered.id(declaration.aggregate);
-                        declaration
-                    }),
-            );
+        self.record_member_declarations.extend(
+            unit.record_member_declarations
+                .into_iter()
+                .filter(|declaration| kept(declaration.aggregate.index()))
+                .map(|mut declaration| {
+                    declaration.aggregate = renumbered.id(declaration.aggregate);
+                    declaration
+                }),
+        );
 
         for (mut key, expression) in unit.dynamic_record_layouts {
-            key.aggregate = renumbered.id(key.aggregate);
-            self.dynamic_record_layouts
-                .insert(key, pooled.expression(expression));
+            if kept(key.aggregate.index()) {
+                key.aggregate = renumbered.id(key.aggregate);
+                self.dynamic_record_layouts
+                    .insert(key, pooled.expression(expression));
+            }
         }
 
-        let mut by_die = unit.by_die;
-        by_die.map_values(|id| renumbered.id(id));
-        self.by_die.extend_own(by_die);
-        let absorbed = self.budget.absorb(&unit.budget);
-        debug_assert!(absorbed, "units are absorbed within the budget");
+        for (key, id) in unit.by_die.into_entries() {
+            let id = renumbered.id(id);
+            match self.by_die.get(&key) {
+                Some(existing) if *existing != id => return None,
+                Some(_) => {}
+                None => self.by_die.insert(key, id),
+            }
+        }
+
+        for (key, id, parent) in unit.aliases {
+            let id = renumbered.id(id);
+            match self.by_die.get(&key) {
+                Some(existing) if *existing != id => return None,
+                Some(_) => {}
+                None if parent.is_some_and(|parent| !kept(parent)) => return None,
+                None => self.by_die.insert(key, id),
+            }
+        }
 
         Some(renumbered)
+    }
+}
+
+struct Repeats {
+    existing: Vec<Option<TypeId>>,
+    inside: Vec<bool>,
+}
+
+impl Repeats {
+    fn dropped(&self, own: usize) -> Option<bool> {
+        self.existing.get(own).map(Option::is_some)
+    }
+
+    fn refund(
+        &self,
+        traced: &[Traced],
+        pooled: &Pooled,
+        (expressions, lists): (usize, usize),
+    ) -> Option<u64> {
+        let mut refund = 0;
+
+        for (own, traced) in traced.iter().enumerate() {
+            if !self.dropped(own)? || *self.inside.get(own)? {
+                continue;
+            }
+
+            refund += traced.spent;
+            if traced.expressions.clone().any(|index| {
+                pooled
+                    .expressions
+                    .get(index)
+                    .is_none_or(|id| id.0 as usize >= expressions)
+            }) || traced.lists.clone().any(|index| {
+                pooled
+                    .lists
+                    .get(index)
+                    .is_none_or(|id| id.0 as usize >= lists)
+            }) {
+                return None;
+            }
+        }
+
+        Some(refund)
+    }
+}
+
+fn renumber(entry: TypeEntry, renumbered: &Renumbered<'_>) -> TypeEntry {
+    match entry {
+        TypeEntry::Resolved(mut info) => {
+            info.reference = renumbered.reference(info.reference);
+            dedup::map_references(&mut info, &mut |reference| renumbered.reference(reference));
+            TypeEntry::Resolved(info)
+        }
+        other => other,
     }
 }
 
@@ -657,12 +868,15 @@ impl Checkpoint {
 }
 
 struct Merge<'m, 'a, 'data> {
+    cx: &'m WalkContext<'m, 'data>,
     walked: &'m mut Walked,
     types: &'m mut TypeArenaBuilder<'a, 'data>,
     files: &'m mut Files,
-    pool: &'m mut LocationsBuilder,
+    pool: &'m Mutex<LocationsBuilder>,
+    declared_files: die::DeclaredFiles,
 
     groups: HashMap<usize, Vec<TypeId>>,
+    in_order: foldhash::HashSet<usize>,
 
     kept: bool,
 }
@@ -681,23 +895,40 @@ impl Merge<'_, '_, '_> {
             return;
         };
 
-        if !self.kept
-            || unit.result.is_err()
-            || unit.types.foreign
-            || unit.types.budget.check().is_err()
-            || unit.types.budget.spent() > self.types.budget.left()
-            || u32::try_from(
-                self.pool
-                    .largest_table()
-                    .saturating_add(unit.pool.largest_table()),
-            )
-            .is_err()
+        if !self.kept {
+            return;
+        }
+
+        if self.in_order.contains(&unit.group) {
+            self.walk_in_order(unit.unit);
+            return;
+        }
+
+        if unit.result.is_err() || unit.types.budget.check().is_err() {
+            self.kept = false;
+            return;
+        }
+
+        let ids = self.groups.entry(unit.group).or_default();
+        let Some(repeats) = self.types.matches(&unit.types, ids) else {
+            self.in_order.insert(unit.group);
+            self.walk_in_order(unit.unit);
+            return;
+        };
+
+        let pool = &mut *self.pool.lock().unwrap_or_else(PoisonError::into_inner);
+        if u32::try_from(
+            pool.largest_table()
+                .saturating_add(unit.pool.largest_table()),
+        )
+        .is_err()
         {
             self.kept = false;
             return;
         }
 
-        let Ok((expressions, lists)) = self.pool.absorb(&unit.pool) else {
+        let pooled_before = pool.counts();
+        let Ok((expressions, lists)) = pool.absorb(&unit.pool) else {
             self.kept = false;
             return;
         };
@@ -709,8 +940,10 @@ impl Merge<'_, '_, '_> {
             .iter()
             .map(|path| self.files.intern(path.clone()))
             .collect::<Vec<_>>();
-        let ids = self.groups.entry(unit.group).or_default();
-        let Some(renumbered) = self.types.absorb(unit.types, &pooled, ids) else {
+        let Some(renumbered) = self
+            .types
+            .absorb(unit.types, &repeats, &pooled, pooled_before, ids)
+        else {
             self.kept = false;
             return;
         };
@@ -719,7 +952,26 @@ impl Merge<'_, '_, '_> {
             self.kept = false;
         }
     }
+
+    fn walk_in_order(&mut self, unit: usize) {
+        crate::count!("units_rewalked_in_order", 1);
+        let result = walk_unit(
+            self.cx,
+            unit,
+            self.walked,
+            self.types,
+            self.files,
+            &mut self.declared_files,
+        );
+
+        if result.is_err() || self.types.limit_type.is_some() || self.types.budget.check().is_err()
+        {
+            self.kept = false;
+        }
+    }
 }
+
+const PIECES_PER_WORKER: usize = 128;
 
 pub(super) fn walk_units_apart<'data>(
     cx: &WalkContext<'_, 'data>,
@@ -752,14 +1004,36 @@ pub(super) fn walk_units_apart<'data>(
     }
 
     debug_assert!(walk_ahead > 0, "a walk window of no units waits forever");
-    let mut members = vec![Vec::new(); units.len()];
+    let mut connected = vec![Vec::new(); units.len()];
 
     for (unit, group) in groups.iter().enumerate() {
-        let Some(group) = members.get_mut(*group) else {
+        let Some(group) = connected.get_mut(*group) else {
             return false;
         };
 
         group.push(unit);
+    }
+
+    let workers = rayon::current_num_threads();
+    let share = units.len().div_ceil(workers);
+    let piece = units
+        .len()
+        .div_ceil(workers.saturating_mul(PIECES_PER_WORKER))
+        .max(1);
+    let mut members = vec![Vec::new(); units.len()];
+
+    for piece in connected.iter().flat_map(|group| {
+        group.chunks(if group.len() > share {
+            piece
+        } else {
+            group.len().max(1)
+        })
+    }) {
+        if let Some(&first) = piece.first()
+            && let Some(members) = members.get_mut(first)
+        {
+            members.extend_from_slice(piece);
+        }
     }
 
     crate::count!(
@@ -767,15 +1041,22 @@ pub(super) fn walk_units_apart<'data>(
         members.iter().filter(|units| !units.is_empty()).count()
     );
     let frozen = types.frozen();
-    let pool = &mut *pool.lock().unwrap_or_else(PoisonError::into_inner);
     debug_assert!(walked.calls.is_empty(), "only the walk records calls");
-    let checkpoint = Checkpoint::take(walked, types, files, pool);
+    let checkpoint = Checkpoint::take(
+        walked,
+        types,
+        files,
+        &pool.lock().unwrap_or_else(PoisonError::into_inner),
+    );
     let merge = Merge {
+        cx,
         walked,
         types,
         files,
         pool,
+        declared_files: die::DeclaredFiles::default(),
         groups: HashMap::default(),
+        in_order: foldhash::HashSet::default(),
         kept: true,
     };
 
@@ -784,13 +1065,12 @@ pub(super) fn walk_units_apart<'data>(
         .enumerate()
         .filter_map(|(group, units)| (!units.is_empty()).then_some(group))
         .collect::<Vec<_>>();
-    let workers = rayon::current_num_threads();
     let in_order = InOrder::new(&order, &members, merge, walk_ahead.saturating_mul(workers));
     rayon::in_place_scope(|scope| {
         for _ in 0..workers {
-            let (frozen, groups, in_order) = (&frozen, &groups, &in_order);
+            let (frozen, in_order) = (&frozen, &in_order);
             scope.spawn(move |_| {
-                in_order.work(|group, units| walk_group(cx, frozen, (group, groups), units));
+                in_order.work(|group, units| walk_group(cx, frozen, group, units));
             });
         }
     });
@@ -800,14 +1080,19 @@ pub(super) fn walk_units_apart<'data>(
         return true;
     }
 
-    checkpoint.restore(merge.walked, merge.types, merge.files, merge.pool);
+    checkpoint.restore(
+        merge.walked,
+        merge.types,
+        merge.files,
+        &mut merge.pool.lock().unwrap_or_else(PoisonError::into_inner),
+    );
     false
 }
 
 fn walk_group<'data>(
     cx: &WalkContext<'_, 'data>,
     frozen: &Frozen<'_, 'data>,
-    home: (usize, &[usize]),
+    group: usize,
     units: &[usize],
 ) -> Vec<(usize, Option<UnitWalk>)> {
     let pools = units
@@ -819,7 +1104,7 @@ fn walk_group<'data>(
         return Vec::new();
     };
 
-    let mut types = frozen.split(home, first_pool, &die_buffers);
+    let mut types = frozen.split(first_pool, &die_buffers);
     let mut walks = Vec::with_capacity(units.len());
     let mut cuts = Vec::with_capacity(units.len());
 
@@ -843,12 +1128,11 @@ fn walk_group<'data>(
             &mut die::DeclaredFiles::default(),
         );
         names = std::mem::take(&mut walked.names);
-        let left = result.is_err() || types.foreign || types.budget.check().is_err();
+        let left = result.is_err() || types.budget.check().is_err();
         cuts.push(Cut {
             end: types.entries.len(),
-            aliases: types.aliases.len(),
+            aliases: types.trail.as_ref().map_or(0, |trail| trail.aliases.len()),
             budget: types.budget.since(mark),
-            foreign: types.foreign,
         });
         walks.push((result, walked, files));
         if left {
@@ -871,7 +1155,8 @@ fn walk_group<'data>(
                 .next()
                 .zip(built.next())
                 .map(|((result, walked, files), types)| UnitWalk {
-                    group: home.0,
+                    unit,
+                    group,
                     result,
                     walked,
                     types,
@@ -881,6 +1166,36 @@ fn walk_group<'data>(
             (unit, walk)
         })
         .collect()
+}
+
+fn split_dies(
+    mut by_die: DieMap<TypeId>,
+    aliases: Vec<(DieKey, Option<usize>)>,
+    cuts: &[Cut],
+    base: usize,
+    units: &mut [UnitTypes],
+) -> Option<()> {
+    for (position, (key, parent)) in aliases.into_iter().enumerate() {
+        let Some(id) = by_die.remove(&key) else {
+            debug_assert!(false, "an alias names its type");
+            return None;
+        };
+
+        let unit = cuts.partition_point(|cut| cut.aliases <= position);
+        owner(units, unit)?.aliases.push((key, id, parent));
+    }
+
+    for (key, id) in by_die.into_entries() {
+        debug_assert!(
+            id.index() >= base,
+            "a walk's own DIE names type {}, below the shared {base}",
+            id.index()
+        );
+        let unit = cuts.partition_point(|cut| cut.end <= id.index());
+        owner(units, unit)?.by_die.insert(key, id);
+    }
+
+    Some(())
 }
 
 fn check_cut_order(cuts: &[Cut]) {

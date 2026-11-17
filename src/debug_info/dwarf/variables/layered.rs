@@ -251,10 +251,6 @@ impl<M: Table> Layered<M> {
         self.own = M::default();
     }
 
-    pub(super) fn extend_own(&mut self, entries: M) {
-        self.own.extend_with(entries);
-    }
-
     pub(super) fn flat(&mut self) -> &mut M {
         if !self.base.is_empty() {
             let base = std::mem::take(&mut self.base);
