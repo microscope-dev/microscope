@@ -1,8 +1,12 @@
 use std::path::PathBuf;
 
-use rayon::slice::ParallelSliceMut as _;
+use rayon::iter::{
+    IndexedParallelIterator as _, IntoParallelIterator as _, IntoParallelRefIterator as _,
+    IntoParallelRefMutIterator as _, ParallelIterator as _,
+};
+use rayon::slice::{ParallelSlice as _, ParallelSliceMut as _};
 use zerocopy::little_endian::{U16, U32, U64};
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use super::{NONE, Record, TableKind};
 use crate::{
@@ -342,13 +346,94 @@ impl LineTables {
         Ok(())
     }
 
+    pub fn concat(parts: &[(Self, Vec<SourceFileId>)]) -> Result<Self, TooManyRows> {
+        let total = |count: fn(&Self) -> usize| parts.iter().map(|(part, _)| count(part)).sum();
+        let rows = total(|part| part.rows.len());
+        index(rows)?;
+        index(total(|part| part.ranges.len()))?;
+
+        let mut tables = Self {
+            addresses: zeroed(rows),
+            rows: zeroed(rows),
+            extras: zeroed(total(|part| part.extras.len())),
+            sequences: zeroed(total(|part| part.sequences.len())),
+            ranges: zeroed(total(|part| part.ranges.len())),
+        };
+
+        let addresses = split(&mut tables.addresses, parts, |part| part.addresses.len());
+        let row_parts = split(&mut tables.rows, parts, |part| part.rows.len());
+        let extras = split(&mut tables.extras, parts, |part| part.extras.len());
+        let sequences = split(&mut tables.sequences, parts, |part| part.sequences.len());
+        let ranges = split(&mut tables.ranges, parts, |part| part.ranges.len());
+        let bases = parts.iter().scan(0, |base, (part, _)| {
+            let first = *base;
+            *base += part.rows.len();
+            Some(first)
+        });
+
+        parts
+            .par_iter()
+            .zip(addresses)
+            .zip(row_parts)
+            .zip(extras)
+            .zip(sequences)
+            .zip(ranges)
+            .zip(bases.collect::<Vec<_>>())
+            .for_each(
+                |(((((((part, ids), addresses), rows), extras), sequences), ranges), base)| {
+                    #[expect(clippy::cast_possible_truncation, reason = "checked by index above")]
+                    let base = base as u32;
+                    addresses.copy_from_slice(&part.addresses);
+                    #[expect(
+                        clippy::indexing_slicing,
+                        reason = "a part's rows name only its own files, which `ids` maps one to one"
+                    )]
+                    for (row, from) in rows.iter_mut().zip(&part.rows) {
+                        let file = from.file.get();
+                        *row = LineRow {
+                            file: if file == NONE {
+                                NONE
+                            } else {
+                                ids[file as usize].get()
+                            }
+                            .into(),
+                            ..*from
+                        };
+                    }
+
+                    for (extra, from) in extras.iter_mut().zip(&part.extras) {
+                        *extra = LineExtra {
+                            row: (from.row.get() + base).into(),
+                            ..*from
+                        };
+                    }
+
+                    for (sequence, from) in sequences.iter_mut().zip(&part.sequences) {
+                        *sequence = LineSequence {
+                            first: (from.first.get() + base).into(),
+                            rows: from.rows,
+                        };
+                    }
+
+                    for (range, from) in ranges.iter_mut().zip(&part.ranges) {
+                        *range = LineRange {
+                            row: (from.row.get() + base).into(),
+                            ..*from
+                        };
+                    }
+                },
+            );
+
+        Ok(tables)
+    }
+
     pub fn clip_at(&mut self, function_starts: &[ImageAddress]) {
         debug_assert!(
             function_starts.is_sorted_by(|earlier, later| earlier < later),
             "the {} function starts that clip line ranges are not in strict order",
             function_starts.len()
         );
-        for range in &mut self.ranges {
+        self.ranges.par_iter_mut().for_each(|range| {
             let start = ImageAddress::new(range.start.get());
             let end = ImageAddress::new(range.end.get());
             let after = function_starts.partition_point(|function| *function <= start);
@@ -357,7 +442,7 @@ impl LineTables {
             {
                 range.end = function.get().into();
             }
-        }
+        });
     }
 
     pub fn row(&self, index: usize) -> Row {
@@ -370,26 +455,32 @@ impl LineTables {
     }
 
     pub fn statements_by_address(&self) -> StatementsByAddress<'_> {
-        let mut order = self
+        let mut keyed = self
             .sequences
-            .iter()
-            .zip(0u32..)
-            .flat_map(|(run, sequence)| {
+            .par_iter()
+            .enumerate()
+            .flat_map_iter(|(sequence, run)| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "`begin_sequence` keeps the sequences' count within u32"
+                )]
+                let sequence = sequence as u32;
                 let first = run.first.get();
-                (first..first + run.rows.get())
-                    .filter(|index| {
-                        let index = *index as usize;
-                        index < self.addresses.len() && self.rows.get(index).is_some_and(is_public)
-                    })
-                    .map(move |index| (index, sequence))
+                (first..first + run.rows.get()).filter_map(move |index| {
+                    let address = self.addresses.get(index as usize)?;
+                    self.rows
+                        .get(index as usize)
+                        .is_some_and(is_public)
+                        .then_some((address.address.get(), index, sequence))
+                })
             })
             .collect::<Vec<_>>();
 
-        order.sort_by_key(|(index, _)| {
-            self.addresses
-                .get(*index as usize)
-                .map(|address| address.address.get())
-        });
+        keyed.par_sort_by_key(|&(address, ..)| address);
+        let order = keyed
+            .into_par_iter()
+            .map(|(_, index, sequence)| (index, sequence))
+            .collect::<Vec<_>>();
         let mut reach = 0;
         let reaches = order
             .iter()
@@ -648,39 +739,81 @@ pub(super) struct LineIndexes {
     pub boundaries: Vec<ControlBoundary>,
 }
 
+fn zeroed<T: FromZeros + Copy>(length: usize) -> Vec<T> {
+    T::new_vec_zeroed(length).unwrap_or_else(|_| vec![T::new_zeroed(); length])
+}
+
+fn split<'a, T>(
+    mut all: &'a mut [T],
+    parts: &[(LineTables, Vec<SourceFileId>)],
+    length: impl Fn(&LineTables) -> usize,
+) -> Vec<&'a mut [T]> {
+    parts
+        .iter()
+        .map(|(part, _)| {
+            let length = length(part).min(all.len());
+            let (part, rest) = std::mem::take(&mut all).split_at_mut(length);
+            all = rest;
+            part
+        })
+        .collect()
+}
+
+fn fill_prefix_max_ends(ranges: &mut [LineRange]) {
+    const CHUNK: usize = 1 << 16;
+    let chunk_ends = ranges
+        .par_chunks(CHUNK)
+        .map(|chunk| chunk.iter().map(|range| range.end.get()).max().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let before = chunk_ends
+        .iter()
+        .scan(0, |most, end| {
+            let before = *most;
+            *most = before.max(*end);
+            Some(before)
+        })
+        .collect::<Vec<_>>();
+
+    ranges
+        .par_chunks_mut(CHUNK)
+        .zip(before)
+        .for_each(|(chunk, mut prefix_max_end)| {
+            for range in chunk {
+                prefix_max_end = prefix_max_end.max(range.end.get());
+                range.prefix_max_end = prefix_max_end.into();
+            }
+        });
+}
+
 pub(super) fn build_indexes(tables: &LineTables) -> LineIndexes {
-    let mut ranges = tables.ranges.clone();
+    let mut ranges = tables.ranges.par_iter().copied().collect::<Vec<_>>();
     ranges.par_sort_unstable_by_key(|range| (range.start.get(), range.end.get(), range.row.get()));
-    let mut prefix_max_end = 0;
+    fill_prefix_max_ends(&mut ranges);
 
-    for range in &mut ranges {
-        prefix_max_end = prefix_max_end.max(range.end.get());
-        range.prefix_max_end = prefix_max_end.into();
-    }
-
-    let mut statements = Vec::new();
-    let mut boundaries = Vec::new();
-
-    for (at, _) in (0u32..).zip(&tables.rows) {
-        let row = tables.row(at as usize);
-        if !row.is_public() {
-            continue;
-        }
-
-        if row.statement
-            && let Some(location) = row.location()
-        {
-            statements.push(StatementKey {
+    let rows = || {
+        (0..tables.rows.len()).into_par_iter().filter_map(|at| {
+            let row = tables.row(at);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the rows are indexed by u32"
+            )]
+            row.is_public().then_some((at as u32, row))
+        })
+    };
+    let mut statements = rows()
+        .filter_map(|(at, row)| {
+            let location = row.location().filter(|_| row.statement)?;
+            Some(StatementKey {
                 file: location.file.get().into(),
                 line: location.line.get().into(),
                 row: at.into(),
-            });
-        }
-
-        if row.prologue_end || row.epilogue_begin {
-            boundaries.push(ControlBoundary { row: at.into() });
-        }
-    }
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut boundaries = rows()
+        .filter(|(_, row)| row.prologue_end || row.epilogue_begin)
+        .map(|(at, _)| ControlBoundary { row: at.into() })
+        .collect::<Vec<_>>();
 
     statements.par_sort_unstable_by_key(|key| (key.file.get(), key.line.get(), key.row.get()));
     boundaries.par_sort_unstable_by_key(|boundary| {

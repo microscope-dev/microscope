@@ -1259,7 +1259,6 @@ fn load_image(
 
     dwarf.populate_abbreviations_cache(gimli::AbbreviationsCacheStrategy::Duplicates);
     let mut files = Files::default();
-    let mut line_tables = LineTables::default();
     let mut headers = Vec::new();
 
     let mut next = 0;
@@ -1321,41 +1320,47 @@ fn load_image(
         Err(error) => (None, unusable_table(&error)),
     };
 
-    let phase = crate::span!("functions");
-    let mut function_metadata =
-        load_function_metadata(&dwarf, &catalog, go_table.as_deref(), &mut files)?;
+    let (function_metadata, unit_lines) = rayon::join(
+        || {
+            let _phase = crate::span!("functions");
+            load_function_metadata(&dwarf, &catalog, go_table.as_deref(), &mut files)
+        },
+        || {
+            let _phase = crate::span!("lines");
+            catalog
+                .units
+                .par_iter()
+                .filter(|unit| !is_type_unit(unit))
+                .map(|unit| {
+                    let mut files = Files::default();
+                    let mut tables = LineTables::default();
+                    load_lines(&dwarf, unit, &catalog.code, &mut files, &mut tables).map_err(
+                        |error| {
+                            error.within(|| format!("the line program of {}", describe_unit(unit)))
+                        },
+                    )?;
+                    Ok::<_, DwarfError>((files, tables))
+                })
+                .collect::<Vec<_>>()
+        },
+    );
+    let mut function_metadata = function_metadata?;
+    let unit_lines = first_error(unit_lines)?;
+    let phase = crate::span!("lines.merge");
 
-    drop(phase);
-    let phase = crate::span!("lines");
-
-    let unit_lines = catalog
-        .units
-        .par_iter()
-        .filter(|unit| !is_type_unit(unit))
-        .map(|unit| {
-            let mut files = Files::default();
-            let mut tables = LineTables::default();
-            load_lines(&dwarf, unit, &catalog.code, &mut files, &mut tables).map_err(|error| {
-                error.within(|| format!("the line program of {}", describe_unit(unit)))
-            })?;
-            Ok::<_, DwarfError>((files, tables))
+    let unit_lines = unit_lines
+        .into_iter()
+        .map(|(unit_files, tables)| {
+            let ids = unit_files
+                .paths()
+                .iter()
+                .map(|path| files.intern(path.clone()))
+                .collect::<Vec<_>>();
+            (tables, ids)
         })
         .collect::<Vec<_>>();
-    let unit_lines = first_error(unit_lines)?;
-
-    for (unit_files, tables) in unit_lines {
-        let ids = unit_files
-            .paths()
-            .iter()
-            .map(|path| files.intern(path.clone()))
-            .collect::<Vec<_>>();
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "the unit's rows name only its own files, which `ids` maps one to one"
-        )]
-        let id = |file: crate::SourceFileId| ids[file.index()];
-        line_tables.append(&tables, id)?;
-    }
+    let mut line_tables = LineTables::concat(&unit_lines)?;
+    crate::model::free(unit_lines, line_tables.rows.len());
 
     crate::count!("line_rows", line_tables.rows.len());
     drop(phase);
@@ -3775,6 +3780,8 @@ struct RawFunctions {
     units: Vec<Vec<RawFunction>>,
 
     starts: Vec<usize>,
+
+    unit_of: Vec<u32>,
 }
 
 impl RawFunctions {
@@ -3810,12 +3817,12 @@ impl std::ops::Index<usize> for RawFunctions {
 
     #[expect(
         clippy::indexing_slicing,
-        reason = "callers index below `len()`, and `starts` begins at 0 and has one more entry \
-                  than `units`"
+        reason = "callers index below `len()`, `unit_of` names the unit of each function, and \
+                  `starts` has one more entry than `units`"
     )]
     fn index(&self, index: usize) -> &RawFunction {
         debug_assert!(index < self.len(), "function {index} of {}", self.len());
-        let unit = self.starts.partition_point(|start| *start <= index) - 1;
+        let unit = self.unit_of[index] as usize;
         &self.units[unit][index - self.starts[unit]]
     }
 }
@@ -3857,7 +3864,7 @@ fn collect_function_dies<'data>(
         clippy::indexing_slicing,
         reason = "a unit's functions name only its own files, which `ids` maps one to one"
     )]
-    let units = renumbered
+    let units: Vec<Vec<RawFunction>> = renumbered
         .into_par_iter()
         .map(|(mut functions, ids)| {
             for function in &mut functions {
@@ -3873,7 +3880,22 @@ fn collect_function_dies<'data>(
         })
         .collect();
 
-    Ok((RawFunctions { units, starts }, futures))
+    let unit_of = (0..units.len())
+        .into_par_iter()
+        .flat_map_iter(|unit: usize| {
+            #[expect(clippy::cast_possible_truncation, reason = "units are numbered by u32")]
+            std::iter::repeat_n(unit as u32, units.get(unit).map_or(0, Vec::len))
+        })
+        .collect();
+
+    Ok((
+        RawFunctions {
+            units,
+            starts,
+            unit_of,
+        },
+        futures,
+    ))
 }
 
 fn collect_unit_functions<'data>(
@@ -4450,18 +4472,18 @@ fn refine_proved_prologue_entries(
         return;
     }
 
-    for instance in instances {
+    instances.par_iter_mut().for_each(|instance| {
         if !matches!(instance.kind, CodeInstanceKind::OutOfLine)
             || instance
                 .ranges
                 .iter()
                 .any(|range| rows.within(*range).any(|row| row.flags.prologue_end()))
         {
-            continue;
+            return;
         }
 
         let Some(raw_entry) = instance.breakpoint_entry.map(|entry| entry.address) else {
-            continue;
+            return;
         };
 
         let Some(entry_range) = instance
@@ -4469,15 +4491,15 @@ fn refine_proved_prologue_entries(
             .iter()
             .find(|range| range.contains(raw_entry))
         else {
-            continue;
+            return;
         };
 
         let Some(candidate) = first_distinct_source_statement(rows, *entry_range, raw_entry) else {
-            continue;
+            return;
         };
 
         let Some(bytes) = code_bytes(object, raw_entry.get(), candidate.get()) else {
-            continue;
+            return;
         };
 
         #[cfg(target_arch = "x86_64")]
@@ -4487,7 +4509,7 @@ fn refine_proved_prologue_entries(
                 provenance: EntryProvenance::AnalyzedPrologue,
             });
         }
-    }
+    });
 }
 
 #[cfg(target_arch = "x86_64")]
