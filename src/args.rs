@@ -271,6 +271,9 @@ pub enum Tool {
 
     /// Give a profile recorded with `--symbols later` its source lines.
     Symbolize(cli::profile::SymbolizeArgs),
+
+    /// Register this host with a Microscope server.
+    Agent(microscope::agent::AgentArgs),
 }
 
 pub fn parse_environment_variable(text: &str) -> std::result::Result<(OsString, OsString), String> {

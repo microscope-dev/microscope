@@ -179,3 +179,10 @@ path = "fuzz_targets/runtime_node.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "agent-input"
+path = "fuzz_targets/agent_input.rs"
+test = false
+doc = false
+bench = false

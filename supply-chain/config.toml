@@ -59,7 +59,7 @@ criteria = "safe-to-deploy"
 
 [[exemptions.autocfg]]
 version = "1.5.1"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
 
 [[exemptions.axum]]
 version = "0.8.9"
@@ -387,6 +387,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.memchr]]
 version = "2.8.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.memoffset]]
+version = "0.9.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.micromap]]

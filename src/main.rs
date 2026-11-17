@@ -55,6 +55,14 @@ fn main() -> ExitCode {
         return web::terminal::run_helper(std::env::args_os().skip(2));
     }
 
+    if std::env::args_os()
+        .skip(1)
+        .any(|argument| argument == "agent")
+        && let Some(Tool::Agent(agent)) = parse_args().tool
+    {
+        return microscope::agent::main(&agent);
+    }
+
     #[cfg(debug_assertions)]
     start_flight_recording();
 
@@ -146,6 +154,10 @@ async fn async_main() -> ExitCode {
         Some(Tool::Record(record)) => return cli::profile::run_record(record),
         Some(Tool::Report(report)) => return cli::profile::run_report(report),
         Some(Tool::Symbolize(symbolize)) => return cli::profile::run_symbolize(symbolize),
+        Some(Tool::Agent(_)) => {
+            eprintln!("error: internal: the agent runs before the async runtime starts");
+            return ExitCode::FAILURE;
+        }
         Some(Tool::Config(config)) => {
             return match run_config(config) {
                 Ok(true) => ExitCode::SUCCESS,

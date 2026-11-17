@@ -21,6 +21,7 @@ macro_rules! record {
 #[cfg(test)]
 extern crate self as microscope;
 
+pub mod agent;
 mod analysis;
 mod backend;
 pub(crate) mod capture;

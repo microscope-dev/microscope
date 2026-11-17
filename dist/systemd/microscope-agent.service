@@ -1,0 +1,19 @@
+[Unit]
+Description=Microscope agent
+Documentation=https://microscope.dev
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/microscope agent run
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=30s
+TimeoutStopSec=10s
+StateDirectory=microscope/agent
+StateDirectoryMode=0700
+ConfigurationDirectory=microscope
+
+[Install]
+WantedBy=multi-user.target
