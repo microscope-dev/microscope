@@ -1,4 +1,6 @@
-use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
+use rayon::iter::{
+    IndexedParallelIterator as _, IntoParallelRefIterator as _, ParallelIterator as _,
+};
 use rayon::slice::ParallelSliceMut as _;
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
@@ -883,45 +885,50 @@ fn validate_functions(image: &Image) -> Result<(), String> {
     let members = image.shared::<Member>(TableKind::FunctionInstances);
     let instances = image.table::<InstanceRecord>();
 
-    let mut next_member = 0;
-    let mut next_generic = 0;
+    let (generic_starts, next_generic) = starts(functions.iter().map(|f| f.generics.count()));
+    let (member_starts, next_member) = starts(functions.iter().map(|f| f.instances.count()));
 
-    for (index, function) in functions.iter().enumerate() {
-        if !strings.contains(StrId(function.name.get()))
-            || (function.linkage_name.get() != NONE
-                && !strings.contains(StrId(function.linkage_name.get())))
-            || !function.declaration.valid(files)
-            || (function.enclosing.get() != NONE
-                && function.enclosing.get() as usize >= functions.len())
-            || !valid_language(function.language, function.other_language.get())
-            || !valid_role(function.role)
-            || function.main_subprogram > 1
-            || function.generics.first() != next_generic
-            || !function.generics.within(generics.len())
-            || function.instances.first() as usize != next_member
-            || !function.instances.within(members.len())
-        {
-            return Err("a function is malformed".into());
-        }
+    let failure = functions
+        .par_iter()
+        .zip(generic_starts)
+        .zip(member_starts)
+        .enumerate()
+        .find_map_first(|(index, ((function, next_generic), next_member))| {
+            if !strings.contains(StrId(function.name.get()))
+                || (function.linkage_name.get() != NONE
+                    && !strings.contains(StrId(function.linkage_name.get())))
+                || !function.declaration.valid(files)
+                || (function.enclosing.get() != NONE
+                    && function.enclosing.get() as usize >= functions.len())
+                || !valid_language(function.language, function.other_language.get())
+                || !valid_role(function.role)
+                || function.main_subprogram > 1
+                || u64::from(function.generics.first()) != next_generic
+                || !function.generics.within(generics.len())
+                || u64::from(function.instances.first()) != next_member
+                || !function.instances.within(members.len())
+            {
+                return Some("a function is malformed");
+            }
 
-        next_generic += function.generics.count();
-        next_member += function.instances.count() as usize;
-        let own = function.instances.rows(members);
-        if !own.iter().all(|member| {
-            instances
-                .get(member.value.get() as usize)
-                .is_some_and(|instance| instance.function.get() as usize == index)
-        }) || !own.is_sorted_by(|earlier, later| earlier.value.get() < later.value.get())
-        {
-            return Err("the instance index disagrees with the instances".into());
-        }
+            let own = function.instances.rows(members);
+            (!own.iter().all(|member| {
+                instances
+                    .get(member.value.get() as usize)
+                    .is_some_and(|instance| instance.function.get() as usize == index)
+            }) || !own.is_sorted_by(|earlier, later| earlier.value.get() < later.value.get()))
+            .then_some("the instance index disagrees with the instances")
+        });
+
+    if let Some(failure) = failure {
+        return Err(failure.into());
     }
 
-    if next_generic as usize != generics.len()
-        || next_member != members.len()
+    if next_generic != generics.len() as u64
+        || next_member != members.len() as u64
         || members.len() != instances.len()
         || !generics
-            .iter()
+            .par_iter()
             .all(|generic| strings.contains(StrId(generic.name.get())))
     {
         return Err("the function indexes do not cover their tables".into());
@@ -929,16 +936,16 @@ fn validate_functions(image: &Image) -> Result<(), String> {
 
     let names = image.shared::<NameEntry>(TableKind::FunctionNames);
     let main = |function: &FunctionRecord| {
-        aliased(
-            function.main_subprogram == 1,
-            strings.bytes(StrId(function.name.get())),
-        )
+        function.main_subprogram == 1 && aliased(true, strings.bytes(StrId(function.name.get())))
     };
 
-    let aliases = functions.iter().filter(|function| main(function)).count();
+    let aliases = functions
+        .par_iter()
+        .filter(|function| main(function))
+        .count();
     if names.len() != functions.len() + aliases
         || !index::valid_names(&strings, names, functions.len())
-        || !names.iter().all(|entry| {
+        || !names.par_iter().all(|entry| {
             functions
                 .get(entry.value.get() as usize)
                 .is_some_and(|function| {
@@ -952,6 +959,18 @@ fn validate_functions(image: &Image) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn starts(counts: impl Iterator<Item = u32>) -> (Vec<u64>, u64) {
+    let mut next = 0;
+    let starts = counts
+        .map(|count| {
+            let first = next;
+            next += u64::from(count);
+            first
+        })
+        .collect();
+    (starts, next)
 }
 
 fn distinct_ranges(ranges: &[RangeRecord]) -> usize {
@@ -982,42 +1001,45 @@ fn validate_instances(image: &Image) -> Result<(), String> {
     let instances = image.table::<InstanceRecord>();
     let ranges = image.table::<RangeRecord>();
     let entries = image.table::<EntryRecord>();
-    let mut next_range = 0;
-    let mut next_entry = 0;
+    let (range_starts, next_range) = starts(instances.iter().map(|i| i.ranges.count()));
+    let (entry_starts, next_entry) = starts(instances.iter().map(|i| i.entries.count()));
 
-    for (index, instance) in instances.iter().enumerate() {
-        let inline = match instance.inline {
-            0 => false,
-            1 => true,
-            _ => return Err("an instance is malformed".into()),
-        };
+    let malformed = instances
+        .par_iter()
+        .zip(range_starts)
+        .zip(entry_starts)
+        .enumerate()
+        .any(|(index, ((instance, next_range), next_entry))| {
+            let inline = match instance.inline {
+                0 => false,
+                1 => true,
+                _ => return true,
+            };
 
-        if instance.function.get() as usize >= functions.len()
-            || (instance.parent.get() != NONE && instance.parent.get() as usize >= index)
-            || !instance.call_site.valid(files)
-            || (!inline && instance.call_site != LocationRecord::NONE)
-            || instance.ranges.first() != next_range
-            || !instance.ranges.within(ranges.len())
-            || instance.entries.first() != next_entry
-            || !instance.entries.within(entries.len())
-            || (instance.provenance == NONE_PROVENANCE && instance.entry.get() != 0)
-            || (instance.provenance != NONE_PROVENANCE
-                && usize::from(instance.provenance) >= PROVENANCES.len())
-        {
-            return Err("an instance is malformed".into());
-        }
+            instance.function.get() as usize >= functions.len()
+                || (instance.parent.get() != NONE && instance.parent.get() as usize >= index)
+                || !instance.call_site.valid(files)
+                || (!inline && instance.call_site != LocationRecord::NONE)
+                || u64::from(instance.ranges.first()) != next_range
+                || !instance.ranges.within(ranges.len())
+                || u64::from(instance.entries.first()) != next_entry
+                || !instance.entries.within(entries.len())
+                || (instance.provenance == NONE_PROVENANCE && instance.entry.get() != 0)
+                || (instance.provenance != NONE_PROVENANCE
+                    && usize::from(instance.provenance) >= PROVENANCES.len())
+        });
 
-        next_range += instance.ranges.count();
-        next_entry += instance.entries.count();
+    if malformed {
+        return Err("an instance is malformed".into());
     }
 
-    if next_range as usize != ranges.len()
-        || next_entry as usize != entries.len()
+    if next_range != ranges.len() as u64
+        || next_entry != entries.len() as u64
         || !ranges
-            .iter()
+            .par_iter()
             .all(|range| range.start.get() < range.end.get())
         || !entries
-            .iter()
+            .par_iter()
             .all(|entry| usize::from(entry.provenance) < PROVENANCES.len())
     {
         return Err("an instance's ranges or entries are malformed".into());
@@ -1027,7 +1049,7 @@ fn validate_instances(image: &Image) -> Result<(), String> {
     let own = |instance: &InstanceRecord| instance.ranges.rows(ranges);
 
     if !index::valid_intervals(code_ranges, instances.len())
-        || !code_ranges.iter().all(|interval| {
+        || !code_ranges.par_iter().all(|interval| {
             instances
                 .get(interval.value.get() as usize)
                 .is_some_and(|instance| {
@@ -1037,7 +1059,7 @@ fn validate_instances(image: &Image) -> Result<(), String> {
                 })
         })
         || instances
-            .iter()
+            .par_iter()
             .map(|instance| distinct_ranges(own(instance)))
             .sum::<usize>()
             != code_ranges.len()

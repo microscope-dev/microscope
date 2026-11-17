@@ -1,4 +1,5 @@
-use rayon::slice::ParallelSliceMut as _;
+use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
+use rayon::slice::{ParallelSlice as _, ParallelSliceMut as _};
 use zerocopy::little_endian::{U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -142,11 +143,13 @@ pub fn named<'a>(
 }
 
 pub(super) fn valid_names(strings: &Strings<'_>, names: &[NameEntry], values: usize) -> bool {
-    names.iter().all(|entry| {
+    names.par_iter().all(|entry| {
         strings.contains(StrId(entry.name.get()))
             && (entry.value.get() as usize) < values
             && entry.hash.get() == hash(strings.bytes(StrId(entry.name.get())))
-    }) && names.is_sorted_by(|earlier, later| key(earlier) < key(later))
+    }) && names
+        .par_windows(2)
+        .all(|pair| matches!(pair, [earlier, later] if key(earlier) < key(later)))
 }
 
 #[cfg(test)]

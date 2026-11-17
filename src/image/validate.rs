@@ -165,8 +165,19 @@ struct Lines<'a> {
     parallel: bool,
 }
 
-fn strictly_ordered<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K) -> bool {
-    items.is_sorted_by(|earlier, later| key(earlier) < key(later))
+fn strictly_ordered<T: Sync, K: Ord>(items: &[T], key: impl Fn(&T) -> K + Sync) -> bool {
+    items
+        .par_windows(2)
+        .with_min_len(1 << 14)
+        .all(|pair| matches!(pair, [earlier, later] if key(earlier) < key(later)))
+}
+
+fn count<T: Sync>(items: &[T], counted: impl Fn(&T) -> bool + Sync) -> usize {
+    items
+        .par_iter()
+        .with_min_len(1 << 14)
+        .filter(|item| counted(item))
+        .count()
 }
 
 impl Lines<'_> {
@@ -306,7 +317,7 @@ impl Lines<'_> {
             lines::is_public(row) && row.flags & row_flags::STATEMENT != 0 && lines::is_located(row)
         };
 
-        if statements.len() != self.rows.iter().filter(|row| indexed(row)).count() {
+        if statements.len() != count(self.rows, indexed) {
             return Err(malformed("the statement index misses statements"));
         }
 
@@ -342,11 +353,11 @@ impl Lines<'_> {
                 && row.flags & (row_flags::PROLOGUE_END | row_flags::EPILOGUE_BEGIN) != 0
         };
 
-        if boundaries.len() != self.rows.iter().filter(|row| marks(row)).count() {
+        if boundaries.len() != count(self.rows, marks) {
             return Err(malformed("the boundary index misses boundaries"));
         }
 
-        if !boundaries.iter().all(|boundary| {
+        if !boundaries.par_iter().with_min_len(1 << 14).all(|boundary| {
             self.rows
                 .get(boundary.row.get() as usize)
                 .is_some_and(marks)
