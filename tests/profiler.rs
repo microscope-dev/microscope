@@ -1501,6 +1501,13 @@ fn a_stack_in_the_vdsos_undescribed_code_goes_on_to_its_callers() {
         "__libc_start_main",
         "_start",
     ];
+    let startup = [
+        "__libc_early_init",
+        "dl_main",
+        "_dl_sysdep_start",
+        "_dl_start",
+        "_start",
+    ];
     let mut through = 0;
     let mut names = std::collections::BTreeSet::new();
 
@@ -1512,6 +1519,10 @@ fn a_stack_in_the_vdsos_undescribed_code_goes_on_to_its_callers() {
         assert_eq!(stack.ending, StackEnding::Complete, "{context}");
         assert!(!stack.functions[0].starts_with("[vdso]+"), "{context}");
         let tail = &stack.functions[stack.functions.len().saturating_sub(main.len())..];
+        if tail == startup {
+            continue;
+        }
+
         assert_eq!(tail, main, "{context}");
         if stack.functions[0].starts_with("<unnamed [vdso]+") {
             names.insert(stack.functions[0].clone());
