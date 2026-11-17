@@ -1691,7 +1691,11 @@ mod tests {
         assert_eq!(events.behind(Some(super::monotonic())), []);
         let mut records = Vec::new();
         events.drain(&mut records);
-        assert!(records.len() >= queue, "the queue filled");
+        assert!(
+            records.len() >= queue,
+            "the queue filled: {} bytes, {counts:?}",
+            records.len()
+        );
         let ring = options.ring_pages * 4096;
         assert!(
             records.len() <= queue + 2 * ring,
