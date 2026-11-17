@@ -1072,6 +1072,7 @@ pub struct Launched {
 
 #[derive(Debug)]
 pub struct LaunchGate {
+    #[cfg_attr(not(debug_assertions), expect(dead_code))]
     pid: u32,
     go: OwnedFd,
 }
@@ -1081,6 +1082,7 @@ impl LaunchGate {
         let opened = write_all(&self.go, &[1]);
         match &opened {
             Ok(()) => record!("perf launch: {} opened its gate", self.pid),
+            #[cfg_attr(not(debug_assertions), expect(unused_variables))]
             Err(error) => record!("perf launch: {}'s gate did not open: {error}", self.pid),
         }
 
