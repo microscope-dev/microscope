@@ -16,8 +16,7 @@ const MAX_LABELS: usize = 32;
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
-    url: Option<String>,
-    enroll_key: Option<String>,
+    enroll: Option<String>,
     environment: Option<String>,
     cluster: Option<String>,
     #[serde(default)]
@@ -68,18 +67,14 @@ pub enum ConfigError {
         path: PathBuf,
         error: Box<toml::de::Error>,
     },
-    #[error("no server: set `url` in {DEFAULT_PATH} or MICROSCOPE_URL")]
+    #[error("no server: set `enroll` in {DEFAULT_PATH} or MICROSCOPE_ENROLL")]
     NoServer,
     #[error("the server URL: {0}")]
     Server(#[from] ServerError),
-    #[error(
-        "no enrollment key: put it in the URL (https://mse_…@host), `enroll_key`, or MICROSCOPE_ENROLL_KEY"
-    )]
+    #[error("no enrollment key: `enroll` is https://mse_…@host, copied from Add machines")]
     NoKey,
     #[error("the enrollment key: {0}")]
     Key(#[from] EnrollKeyError),
-    #[error("{0} is set twice with different values; keep one")]
-    Twice(&'static str),
     #[error(
         "{name} must be 1 to 64 characters, with no control characters or spaces at either end"
     )]
@@ -150,18 +145,12 @@ pub fn fingerprint(path: Option<&Path>) -> Option<[u8; 32]> {
 pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, ConfigError> {
     let (path, file, fingerprint) = read(path)?;
 
-    let url = env
-        .get("MICROSCOPE_URL")
-        .or(file.url)
+    let enroll = env
+        .get("MICROSCOPE_ENROLL")
+        .or(file.enroll)
         .ok_or(ConfigError::NoServer)?;
-    let (server, url_key) = Server::parse(&url)?;
-    let explicit_key = env.get("MICROSCOPE_ENROLL_KEY").or(file.enroll_key);
-    let key = match (url_key, explicit_key) {
-        (Some(a), Some(b)) if a != b => return Err(ConfigError::Twice("the enrollment key")),
-        (Some(key), _) | (None, Some(key)) => key,
-        (None, None) => return Err(ConfigError::NoKey),
-    };
-    let enroll_key = EnrollKey::parse(&key)?;
+    let (server, key) = Server::parse(&enroll)?;
+    let enroll_key = EnrollKey::parse(&key.ok_or(ConfigError::NoKey)?)?;
 
     let environment = name(
         "environment",

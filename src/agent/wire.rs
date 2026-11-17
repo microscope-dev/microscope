@@ -194,8 +194,6 @@ pub enum ServerError {
     NoHost,
     #[error("the server URL must be just a scheme and host, with no path, query, or fragment")]
     Path,
-    #[error("the server URL holds an enrollment key and so does `enroll_key`; keep one")]
-    TwoKeys,
 }
 
 impl Server {

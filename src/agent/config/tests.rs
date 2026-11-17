@@ -4,6 +4,7 @@ use super::{ConfigError, Limits, load, state_dir};
 use crate::agent::scratch::Scratch;
 
 const KEY: &str = "mse_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaasnb47oni";
+const ENROLL: &str = "https://mse_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaasnb47oni@a.test";
 
 struct Written {
     _scratch: Scratch,
@@ -33,7 +34,7 @@ fn env(pairs: &[(&'static str, &'static str)]) -> BTreeMap<&'static str, &'stati
 fn a_whole_file_reads_with_its_defaults() {
     let config = file(&format!(
         r#"
-url = "https://{KEY}@app.microscope.dev"
+enroll = "https://{KEY}@app.microscope.dev"
 environment = "prod"
 cluster = "checkout-us1"
 state_dir = "/tmp/agent"
@@ -69,7 +70,7 @@ memory_mib = 256
 #[test]
 fn the_environment_wins_over_the_file() {
     let config = file(&format!(
-        "url = \"https://{KEY}@a.test\"\nenvironment = \"prod\"\n[labels]\nteam = \"a\"\ntier = \"web\"\n"
+        "enroll = \"https://{KEY}@a.test\"\nenvironment = \"prod\"\n[labels]\nteam = \"a\"\ntier = \"web\"\n"
     ));
     let loaded = load(
         Some(config.path()),
@@ -100,15 +101,8 @@ fn the_environment_wins_over_the_file() {
 
 #[test]
 fn a_container_needs_no_file_at_all() {
-    let loaded = load(
-        None,
-        &env(&[
-            ("MICROSCOPE_URL", "https://app.microscope.dev"),
-            ("MICROSCOPE_ENROLL_KEY", KEY),
-        ]),
-    )
-    .unwrap();
-    assert_eq!(loaded.server.origin(), "https://app.microscope.dev");
+    let loaded = load(None, &env(&[("MICROSCOPE_ENROLL", ENROLL)])).unwrap();
+    assert_eq!(loaded.server.origin(), "https://a.test");
     assert!(loaded.path.is_none() || Path::new(super::DEFAULT_PATH).exists());
 }
 
@@ -122,16 +116,16 @@ type Case = (
 fn mistakes_are_named_before_anything_is_sent() {
     let cases: &[Case] = &[
         ("", &[], |e| matches!(e, ConfigError::NoServer)),
-        ("url = \"https://a.test\"", &[], |e| {
+        ("enroll = \"https://a.test\"", &[], |e| {
             matches!(e, ConfigError::NoKey)
         }),
-        ("url = \"http://a.test\"", &[], |e| {
+        ("enroll = \"http://a.test\"", &[], |e| {
             matches!(e, ConfigError::Server(_))
         }),
-        ("url = \"https://mse_nope@a.test\"", &[], |e| {
+        ("enroll = \"https://mse_nope@a.test\"", &[], |e| {
             matches!(e, ConfigError::Key(_))
         }),
-        ("urll = \"https://a.test\"", &[], |e| {
+        ("url = \"https://a.test\"", &[], |e| {
             matches!(e, ConfigError::Parse { .. })
         }),
         ("[limits]\ncpu = 5", &[], |e| {
@@ -139,41 +133,28 @@ fn mistakes_are_named_before_anything_is_sent() {
         }),
         (
             "[limits]\ncpu_percent = 0",
-            &[
-                ("MICROSCOPE_URL", "https://a.test"),
-                ("MICROSCOPE_ENROLL_KEY", KEY),
-            ],
+            &[("MICROSCOPE_ENROLL", ENROLL)],
             |e| matches!(e, ConfigError::Cpu),
         ),
         (
             "[limits]\nmemory_mib = 1",
-            &[
-                ("MICROSCOPE_URL", "https://a.test"),
-                ("MICROSCOPE_ENROLL_KEY", KEY),
-            ],
+            &[("MICROSCOPE_ENROLL", ENROLL)],
             |e| matches!(e, ConfigError::Memory),
         ),
         (
             "environment = \" prod\"",
-            &[
-                ("MICROSCOPE_URL", "https://a.test"),
-                ("MICROSCOPE_ENROLL_KEY", KEY),
-            ],
+            &[("MICROSCOPE_ENROLL", ENROLL)],
             |e| matches!(e, ConfigError::Name { .. }),
         ),
         (
             "[labels]\n\"bad key\" = \"x\"",
-            &[
-                ("MICROSCOPE_URL", "https://a.test"),
-                ("MICROSCOPE_ENROLL_KEY", KEY),
-            ],
+            &[("MICROSCOPE_ENROLL", ENROLL)],
             |e| matches!(e, ConfigError::Labels(_)),
         ),
         (
             "",
             &[
-                ("MICROSCOPE_URL", "https://a.test"),
-                ("MICROSCOPE_ENROLL_KEY", KEY),
+                ("MICROSCOPE_ENROLL", ENROLL),
                 ("MICROSCOPE_LABELS", "novalue"),
             ],
             |e| matches!(e, ConfigError::Labels(_)),
@@ -181,8 +162,7 @@ fn mistakes_are_named_before_anything_is_sent() {
         (
             "",
             &[
-                ("MICROSCOPE_URL", "https://a.test"),
-                ("MICROSCOPE_ENROLL_KEY", KEY),
+                ("MICROSCOPE_ENROLL", ENROLL),
                 ("MICROSCOPE_REPORT_NETWORK", "yes"),
             ],
             |e| matches!(e, ConfigError::Bool { .. }),
@@ -190,16 +170,10 @@ fn mistakes_are_named_before_anything_is_sent() {
         (
             "",
             &[
-                ("MICROSCOPE_URL", "https://a.test"),
-                ("MICROSCOPE_ENROLL_KEY", KEY),
+                ("MICROSCOPE_ENROLL", ENROLL),
                 ("MICROSCOPE_NODE_IPS", "10.0.0.300"),
             ],
             |e| matches!(e, ConfigError::NodeIp(_)),
-        ),
-        (
-            "enroll_key = \"mse_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
-            &[("MICROSCOPE_URL", "https://x@a.test")],
-            |e| matches!(e, ConfigError::Twice(_)),
         ),
     ];
     for (text, pairs, expected) in cases {
@@ -220,11 +194,18 @@ fn mistakes_are_named_before_anything_is_sent() {
 }
 
 #[test]
-fn the_same_key_twice_is_fine() {
-    let config = file(&format!(
-        "url = \"https://{KEY}@a.test\"\nenroll_key = \"{KEY}\""
-    ));
-    assert!(load(Some(config.path()), &env(&[])).is_ok());
+fn the_environment_names_another_server_and_key() {
+    let config = file(&format!("enroll = \"https://{KEY}@a.test\""));
+    let loaded = load(
+        Some(config.path()),
+        &env(&[(
+            "MICROSCOPE_ENROLL",
+            "https://mse_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbblgterh7w@b.test",
+        )]),
+    )
+    .unwrap();
+    assert_eq!(loaded.server.origin(), "https://b.test");
+    assert!(loaded.enroll_key.expose().starts_with("mse_bbbb"));
 }
 
 #[test]

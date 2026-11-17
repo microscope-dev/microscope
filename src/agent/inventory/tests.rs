@@ -11,12 +11,12 @@ use crate::agent::{
     scratch::Scratch,
 };
 
-const KEY: &str = "mse_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaasnb47oni";
+const ENROLL: &str =
+    "https://mse_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaasnb47oni@app.microscope.dev";
 
 fn config(extra: &[(&'static str, &'static str)]) -> crate::agent::config::Config {
     let mut env: BTreeMap<&str, &str> = BTreeMap::from([
-        ("MICROSCOPE_URL", "https://app.microscope.dev"),
-        ("MICROSCOPE_ENROLL_KEY", KEY),
+        ("MICROSCOPE_ENROLL", ENROLL),
         ("MICROSCOPE_ENVIRONMENT", "prod"),
         ("MICROSCOPE_LABELS", "team=payments"),
     ]);

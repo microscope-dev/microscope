@@ -27,13 +27,12 @@ proptest! {
 #[test]
 fn the_route_target_names_the_servers_port() {
     let target = |url: &'static str| {
-        let env = BTreeMap::from([
-            ("MICROSCOPE_URL", url),
-            (
-                "MICROSCOPE_ENROLL_KEY",
-                "mse_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaasnb47oni",
-            ),
-        ]);
+        let enroll = url.replacen(
+            "://",
+            "://mse_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaasnb47oni@",
+            1,
+        );
+        let env = BTreeMap::from([("MICROSCOPE_ENROLL", enroll.as_str())]);
         route_target(&load(Some(std::path::Path::new("/dev/null")), &env).unwrap())
     };
     assert_eq!(

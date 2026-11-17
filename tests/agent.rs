@@ -238,8 +238,9 @@ impl Server {
             .push_back((path, status, body));
     }
 
-    fn url(&self) -> String {
-        self.fake.origin.clone()
+    fn enroll(&self, key: &str) -> String {
+        let with_key = self.fake.origin.replacen("://", &format!("://{key}@"), 1);
+        format!("enroll = \"{with_key}\"\n")
     }
 }
 
@@ -249,14 +250,13 @@ struct Agent {
     config: PathBuf,
 }
 
-fn start(server: &Server, scratch: &support::ScratchDir, config: &str) -> Agent {
+fn start(scratch: &support::ScratchDir, config: &str) -> Agent {
     let state = scratch.path().join("state");
     let path = scratch.path().join("agent.toml");
     std::fs::write(&path, config).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_microscope"))
         .args(["agent", "run", "--config"])
         .arg(&path)
-        .env("MICROSCOPE_URL", server.url())
         .env("MICROSCOPE_STATE_DIR", &state)
         .env("MICROSCOPE_CLOUD_METADATA", "false")
         .env_remove("KUBERNETES_SERVICE_HOST")
@@ -327,9 +327,8 @@ fn an_agent_enrolls_refreshes_and_says_goodbye_on_sigterm() {
     let server = Server::start();
     let scratch = support::ScratchDir::new("agent-lifecycle");
     let agent = start(
-        &server,
         &scratch,
-        &format!("enroll_key = \"{KEY}\"\nenvironment = \"test\"\n"),
+        &format!("{}environment = \"test\"\n", server.enroll(KEY)),
     );
 
     let enroll = server.next("/api/agent/v1/enroll");
@@ -385,16 +384,16 @@ fn an_agent_enrolls_refreshes_and_says_goodbye_on_sigterm() {
 fn a_restart_keeps_the_agent_and_a_kill_is_reported_as_a_death() {
     let server = Server::start();
     let scratch = support::ScratchDir::new("agent-restart");
-    let config = format!("enroll_key = \"{KEY}\"\n");
+    let config = server.enroll(KEY);
 
-    let first = start(&server, &scratch, &config);
+    let first = start(&scratch, &config);
     let enrolled = server.next("/api/agent/v1/enroll");
     server.next("/api/agent/v1/refresh");
     first.signal(Signal::SIGTERM);
     server.next("/api/agent/v1/goodbye");
     first.exit_within(Duration::from_secs(3));
 
-    let second = start(&server, &scratch, &config);
+    let second = start(&scratch, &config);
     let refresh = server.next("/api/agent/v1/refresh");
     assert_eq!(refresh.body["agent_id"], 1);
     assert_eq!(refresh.body["previous_run"], "clean");
@@ -402,7 +401,7 @@ fn a_restart_keeps_the_agent_and_a_kill_is_reported_as_a_death() {
     second.signal(Signal::SIGKILL);
     second.exit_within(Duration::from_secs(3));
 
-    let third = start(&server, &scratch, &config);
+    let third = start(&scratch, &config);
     let refresh = server.next("/api/agent/v1/refresh");
     assert_eq!(refresh.body["agent_id"], 1);
     assert_eq!(refresh.body["previous_run"], "agent_died");
@@ -418,7 +417,7 @@ fn a_restart_keeps_the_agent_and_a_kill_is_reported_as_a_death() {
 fn reenroll_makes_a_new_key_that_points_back() {
     let server = Server::start();
     let scratch = support::ScratchDir::new("agent-reenroll");
-    let agent = start(&server, &scratch, &format!("enroll_key = \"{KEY}\"\n"));
+    let agent = start(&scratch, &server.enroll(KEY));
 
     let first = server.next("/api/agent/v1/enroll");
     server.answer_next(
@@ -445,7 +444,7 @@ fn reenroll_makes_a_new_key_that_points_back() {
 fn a_revoked_agent_drops_its_key_and_starts_over_when_told() {
     let server = Server::start();
     let scratch = support::ScratchDir::new("agent-revoked");
-    let agent = start(&server, &scratch, &format!("enroll_key = \"{KEY}\"\n"));
+    let agent = start(&scratch, &server.enroll(KEY));
 
     let first = server.next("/api/agent/v1/enroll");
     server.answer_next(
@@ -472,18 +471,14 @@ fn a_revoked_agent_drops_its_key_and_starts_over_when_told() {
 fn a_wrong_enrollment_key_waits_for_a_fixed_config() {
     let server = Server::start();
     let scratch = support::ScratchDir::new("agent-blocked");
-    let agent = start(
-        &server,
-        &scratch,
-        &format!("enroll_key = \"{OTHER_KEY}\"\n"),
-    );
+    let agent = start(&scratch, &server.enroll(OTHER_KEY));
 
     let refused = server.next("/api/agent/v1/enroll");
     assert_eq!(
         refused.authorization.as_deref(),
         Some(format!("Enroll {OTHER_KEY}").as_str())
     );
-    std::fs::write(&agent.config, format!("enroll_key = \"{KEY}\"\n")).unwrap();
+    std::fs::write(&agent.config, server.enroll(KEY)).unwrap();
     agent.signal(Signal::SIGHUP);
 
     let accepted = server.next("/api/agent/v1/enroll");
@@ -505,7 +500,7 @@ fn a_host_clock_hours_off_is_corrected_from_the_server() {
         StatusCode::UNAUTHORIZED,
         json!({ "error": "clock", "message": "skew", "time": server_time }),
     );
-    let agent = start(&server, &scratch, &format!("enroll_key = \"{KEY}\"\n"));
+    let agent = start(&scratch, &server.enroll(KEY));
 
     let skewed = server.next("/api/agent/v1/enroll");
     let corrected = server.next("/api/agent/v1/enroll");
@@ -521,15 +516,11 @@ fn a_host_clock_hours_off_is_corrected_from_the_server() {
 fn a_bad_config_fails_at_start_with_a_reason() {
     let scratch = support::ScratchDir::new("agent-bad-config");
     let path = scratch.path().join("agent.toml");
-    std::fs::write(
-        &path,
-        "url = \"http://microscope.dev\"\nenroll_key = \"mse_x\"\n",
-    )
-    .unwrap();
+    std::fs::write(&path, "enroll = \"http://mse_x@microscope.dev\"\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_microscope"))
         .args(["agent", "run", "--config"])
         .arg(&path)
-        .env_remove("MICROSCOPE_URL")
+        .env_remove("MICROSCOPE_ENROLL")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
