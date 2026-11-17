@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+use rayon::iter::{IndexedParallelIterator as _, IntoParallelIterator as _, ParallelIterator as _};
 use zerocopy::{FromBytes as _, Immutable, IntoBytes};
 
 use super::backing::AlignedBytes;
@@ -36,6 +37,21 @@ pub fn structure<F: Format, const N: usize>(
     bytes: &[u8],
     limits: Limits,
 ) -> Result<[Option<Placed>; N], ImageError> {
+    checked_structure::<F, N>(bytes, limits, true)
+}
+
+pub fn sealed_structure<F: Format, const N: usize>(
+    bytes: &[u8],
+    limits: Limits,
+) -> Result<[Option<Placed>; N], ImageError> {
+    checked_structure::<F, N>(bytes, limits, false)
+}
+
+fn checked_structure<F: Format, const N: usize>(
+    bytes: &[u8],
+    limits: Limits,
+    checksum: bool,
+) -> Result<[Option<Placed>; N], ImageError> {
     const { assert!(N > 0) };
     assert_eq!(N, F::KINDS, "a directory has one slot per kind");
     let header = check_header::<F>(bytes, limits)?;
@@ -48,7 +64,7 @@ pub fn structure<F: Format, const N: usize>(
         .split_at_checked(trailer_start)
         .ok_or(ImageError::Truncated)?;
     let trailer = Trailer::ref_from_bytes(trailer).map_err(|_| ImageError::Truncated)?;
-    if trailer.checksum.get() != twox_hash::XxHash3_64::oneshot(body) {
+    if checksum && trailer.checksum.get() != twox_hash::XxHash3_64::oneshot(body) {
         return Err(ImageError::Checksum);
     }
 
@@ -274,9 +290,30 @@ impl<'a, F: Format> Tables<'a, F> {
         copy_at(buffer, 0, header.as_bytes());
         copy_at(buffer, directory_start, entries.as_bytes());
 
-        for ((_, _, _, table), start) in self.tables.into_iter().zip(offsets) {
-            copy_at(buffer, start, table.bytes());
+        let mut rest = &mut *buffer;
+        let mut consumed = 0;
+        let mut slots = Vec::with_capacity(self.tables.len());
+        for ((_, _, _, table), start) in self.tables.iter().zip(&offsets) {
+            let length = table.bytes().len();
+            let (_, after) = std::mem::take(&mut rest)
+                .split_at_mut_checked(start - consumed)
+                .ok_or(ImageError::TooLarge)?;
+            let (slot, after) = after
+                .split_at_mut_checked(length)
+                .ok_or(ImageError::TooLarge)?;
+            slots.push(slot);
+            rest = after;
+            consumed = start + length;
         }
+
+        self.tables
+            .into_iter()
+            .map(|(_, _, _, table)| table)
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .zip(slots)
+            .for_each(|(table, slot)| slot.copy_from_slice(table.bytes()));
+        let buffer = bytes.as_mut_bytes();
 
         let (body, trailer) = buffer
             .split_at_mut_checked(offset)

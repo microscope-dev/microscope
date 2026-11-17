@@ -61,6 +61,13 @@ pub(super) fn structure(
     super::container::structure::<super::DebugImage, { TableKind::COUNT }>(bytes, limits)
 }
 
+pub(super) fn sealed_structure(
+    bytes: &[u8],
+    limits: Limits,
+) -> Result<[Option<Placed>; TableKind::COUNT], ImageError> {
+    super::container::sealed_structure::<super::DebugImage, { TableKind::COUNT }>(bytes, limits)
+}
+
 pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
     let strings = image.bytes(TableKind::Strings);
     if !strings::valid_pool(strings, true) {

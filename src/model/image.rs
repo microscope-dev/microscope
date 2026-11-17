@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
+
+use rayon::slice::ParallelSliceMut as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -271,65 +273,70 @@ fn seal_image(
 
     let mut builder = crate::image::Builder::new(target);
     let mut strings = crate::image::StringsBuilder::default();
-    let ((classes, code), before) = rayon::join(
+    let (code, encoded) = rayon::join(
+        || encode_without_strings(target, metadata, &code_instances),
         || {
-            rayon::join(
+            let (classes, before) = rayon::join(
                 || {
                     let _phase = crate::span!("image.type_classes");
                     type_classes(&types)
                 },
-                || encode_without_strings(target, metadata, &code_instances),
-            )
-        },
-        || {
-            encode_strings_before_types(
+                || {
+                    encode_strings_before_types(
+                        &mut builder,
+                        &mut strings,
+                        address_range,
+                        metadata,
+                        variables,
+                    )
+                },
+            );
+
+            before?;
+            let phase = crate::span!("image.encode_types");
+            crate::image::types::add_to(
                 &mut builder,
                 &mut strings,
-                address_range,
-                metadata,
-                variables,
-            )
+                &crate::image::types::Types {
+                    nodes: &types,
+                    classes: &classes?,
+                },
+            )?;
+            drop(phase);
+            let records = types.len();
+            free(types, records);
+            crate::image::packages::add_to(
+                &mut builder,
+                &mut strings,
+                metadata
+                    .packages
+                    .iter()
+                    .map(|package| (&*package.path, &*package.name)),
+                &locations::packaged_names(&functions, &metadata.packages),
+            )?;
+            crate::image::functions::add_functions_to(
+                &mut builder,
+                &mut strings,
+                &functions,
+                &code_instances,
+            )?;
+            let records = functions.len();
+            free(functions, records);
+
+            if let Some(unwind) = &metadata.unwind {
+                crate::image::unwind::add_to(&mut builder, &mut strings, unwind)?;
+            }
+
+            crate::image::python::add_to(&mut builder, &mut strings, metadata.python.as_ref())?;
+            crate::image::v8::add_to(&mut builder, &mut strings, metadata.v8.as_ref())?;
+            Ok::<_, SealError>(())
         },
     );
 
-    before?;
+    encoded?;
     builder.absorb(code?);
-    let phase = crate::span!("image.encode_types");
-    crate::image::types::add_to(
-        &mut builder,
-        &mut strings,
-        &crate::image::types::Types {
-            nodes: &types,
-            classes: &classes?,
-        },
-    )?;
-    drop(phase);
-    let records = types.len();
-    free(types, records);
-    crate::image::packages::add_to(
-        &mut builder,
-        &mut strings,
-        metadata
-            .packages
-            .iter()
-            .map(|package| (&*package.path, &*package.name)),
-        &locations::packaged_names(&functions, &metadata.packages),
-    )?;
-    crate::image::functions::add_functions_to(
-        &mut builder,
-        &mut strings,
-        &functions,
-        &code_instances,
-    )?;
-    let records = functions.len() + code_instances.len();
-    free((functions, code_instances), records);
-
-    if let Some(unwind) = &metadata.unwind {
-        crate::image::unwind::add_to(&mut builder, &mut strings, unwind)?;
-    }
-
-    crate::image::python::add_to(&mut builder, &mut strings, metadata.python.as_ref())?;
-    crate::image::v8::add_to(&mut builder, &mut strings, metadata.v8.as_ref())?;
+    let records = code_instances.len();
+    free(code_instances, records);
 
     builder
         .bytes(
@@ -1634,7 +1641,6 @@ fn instruction_starts(
     metadata: &ModuleMetadata,
     code_instances: &[CodeInstanceInfo],
 ) -> Vec<(ImageAddress, crate::BoundaryEvidence)> {
-    let mut starts = BTreeMap::new();
     let functions = code_instances
         .iter()
         .filter(|instance| matches!(instance.kind, CodeInstanceKind::OutOfLine))
@@ -1651,14 +1657,10 @@ fn instruction_starts(
         .filter(|section| section.executable)
         .map(|section| (section.range.start, crate::BoundaryEvidence::SectionStart));
 
-    for (address, evidence) in functions.chain(symbols).chain(sections) {
-        starts
-            .entry(address)
-            .and_modify(|current: &mut crate::BoundaryEvidence| *current = (*current).min(evidence))
-            .or_insert(evidence);
-    }
-
-    starts.into_iter().collect()
+    let mut starts = functions.chain(symbols).chain(sections).collect::<Vec<_>>();
+    starts.par_sort_unstable();
+    starts.dedup_by_key(|(address, _)| *address);
+    starts
 }
 
 fn path_matches(candidate: &Path, requested: &Path) -> bool {

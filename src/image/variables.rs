@@ -428,7 +428,8 @@ fn resolution(
 struct Encoder {
     ranges: Vec<CodeRange>,
 
-    pooled_ranges: foldhash::HashMap<Box<[AddressRange<ImageAddress>]>, U32>,
+    pooled_ranges: foldhash::HashMap<u64, (u32, u32)>,
+    collided_ranges: Vec<(u32, u32)>,
     scopes: Vec<ScopeRecord>,
     pooled_scopes: foldhash::HashMap<ScopeRecord, u32>,
     constants: Vec<ConstantRecord>,
@@ -441,8 +442,27 @@ impl Encoder {
         ranges: &[AddressRange<ImageAddress>],
     ) -> Result<Span<CodeRange>, TooMany> {
         let count = number(ranges.len())?;
-        if let Some(first) = self.pooled_ranges.get(ranges) {
-            return Ok(Span::new(first.get(), count));
+        let hash = std::hash::BuildHasher::hash_one(&foldhash::fast::FixedState::default(), ranges);
+        let same = |(first, pooled): (u32, u32)| {
+            pooled == count
+                && self
+                    .ranges
+                    .get(first as usize..)
+                    .and_then(|rest| rest.get(..ranges.len()))
+                    .is_some_and(|rows| {
+                        rows.iter()
+                            .zip(ranges)
+                            .all(|(row, range)| row.get() == *range)
+                    })
+        };
+        let pooled = self.pooled_ranges.get(&hash).copied();
+        if let Some((first, _)) = pooled.filter(|entry| same(*entry)).or_else(|| {
+            self.collided_ranges
+                .iter()
+                .copied()
+                .find(|entry| same(*entry))
+        }) {
+            return Ok(Span::new(first, count));
         }
 
         let first = number(self.ranges.len())?;
@@ -451,7 +471,11 @@ impl Encoder {
             end: range.end.get().into(),
         }));
         number(self.ranges.len())?;
-        self.pooled_ranges.insert(ranges.into(), first.into());
+        if pooled.is_some() {
+            self.collided_ranges.push((first, count));
+        } else {
+            self.pooled_ranges.insert(hash, (first, count));
+        }
 
         Ok(Span::new(first, count))
     }
@@ -598,6 +622,10 @@ pub fn add_to(
     variables: &Variables,
 ) -> Result<(), TooMany> {
     let mut encoder = Encoder::default();
+    encoder
+        .pooled_ranges
+        .reserve(variables.objects.len() + variables.functions.len());
+    encoder.pooled_scopes.reserve(variables.objects.len());
     let mut objects = Vec::with_capacity(variables.objects.len());
 
     for object in &variables.objects {

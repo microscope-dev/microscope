@@ -37,27 +37,31 @@ impl Pooled {
     }
 }
 
+pub(super) fn hash(text: &str) -> u64 {
+    std::hash::BuildHasher::hash_one(&foldhash::fast::FixedState::default(), text)
+}
+
 impl StringsBuilder {
     pub fn push(&mut self, text: &str) -> Option<StrId> {
-        self.push_hashed(
-            text,
-            std::hash::BuildHasher::hash_one(&foldhash::fast::FixedState::default(), text),
-        )
+        self.push_hashed(text, hash(text))
     }
 
     pub(super) fn push_hashed(&mut self, text: &str, hash: u64) -> Option<StrId> {
+        let text = text.as_bytes();
+        if text.contains(&0) {
+            return None;
+        }
+
         if let Some(id) = self.pooled.find(hash, |id| {
-            Strings(&self.bytes).bytes(StrId(id)) == text.as_bytes()
+            let start = id as usize;
+            self.bytes.get(start..start + text.len()) == Some(text)
+                && self.bytes.get(start + text.len()) == Some(&0)
         }) {
             return Some(StrId(id));
         }
 
-        if text.as_bytes().contains(&0) {
-            return None;
-        }
-
         let id = StrId(u32::try_from(self.bytes.len()).ok()?);
-        self.bytes.extend_from_slice(text.as_bytes());
+        self.bytes.extend_from_slice(text);
         self.bytes.push(0);
         u32::try_from(self.bytes.len()).ok()?;
         self.pooled.insert(hash, id.0);

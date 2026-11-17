@@ -175,7 +175,19 @@ pub struct Image {
 
 impl Image {
     pub fn from_bytes(bytes: AlignedBytes, limits: Limits) -> Result<Self, ImageError> {
-        let tables = validate::structure(&bytes, limits)?;
+        Self::checked(bytes, limits, true)
+    }
+
+    fn from_sealed(bytes: AlignedBytes, limits: Limits) -> Result<Self, ImageError> {
+        Self::checked(bytes, limits, false)
+    }
+
+    fn checked(bytes: AlignedBytes, limits: Limits, checksum: bool) -> Result<Self, ImageError> {
+        let tables = if checksum {
+            validate::structure(&bytes, limits)?
+        } else {
+            validate::sealed_structure(&bytes, limits)?
+        };
         let target = container::target(&bytes)?;
         let image = Self {
             bytes,
@@ -386,6 +398,6 @@ impl<'a> Builder<'a> {
     }
 
     pub fn seal(self, limits: Limits) -> Result<Image, ImageError> {
-        Image::from_bytes(self.tables.seal(self.target)?, limits)
+        Image::from_sealed(self.tables.seal(self.target)?, limits)
     }
 }

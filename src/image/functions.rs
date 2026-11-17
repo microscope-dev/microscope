@@ -1,3 +1,4 @@
+use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
 use rayon::slice::ParallelSliceMut as _;
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
@@ -349,8 +350,20 @@ fn add_functions(
     let mut generics = Vec::new();
     let mut first_instance = 0;
 
-    for function in functions {
-        let name = strings.push(&function.name).ok_or(TooMany)?;
+    let hashes = functions
+        .par_iter()
+        .map(|function| {
+            (
+                super::strings::hash(&function.name),
+                function.linkage_name.as_deref().map(super::strings::hash),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for (function, (name_hash, linkage_hash)) in functions.iter().zip(hashes) {
+        let name = strings
+            .push_hashed(&function.name, name_hash)
+            .ok_or(TooMany)?;
         names.push((&*function.name, name, function.id.get()));
         if aliased(function.main_subprogram, function.name.as_bytes()) {
             let main = strings.push(MAIN).ok_or(TooMany)?;
@@ -374,9 +387,11 @@ fn add_functions(
         let (language, other_language) = language_code(function.language).ok_or(TooMany)?;
         records.push(FunctionRecord {
             name: name.0.into(),
-            linkage_name: match &function.linkage_name {
-                Some(name) => strings.push(name).ok_or(TooMany)?.0.into(),
-                None => NONE.into(),
+            linkage_name: match (&function.linkage_name, linkage_hash) {
+                (Some(name), Some(hash)) => {
+                    strings.push_hashed(name, hash).ok_or(TooMany)?.0.into()
+                }
+                _ => NONE.into(),
             },
             declaration: LocationRecord::of(function.declaration.as_ref()),
             enclosing: optional(function.enclosing.map(FunctionId::get)),
