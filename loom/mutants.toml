@@ -6,4 +6,5 @@ exclude_re = [
     "<impl Time for std::time::Instant>::until",
     "AlarmThread::",
     "<impl Drop for AlarmThread>::drop",
+    "<impl std::fmt::Debug for OneAtATime<K>>::fmt",
 ]
