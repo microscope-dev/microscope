@@ -4275,72 +4275,105 @@ fn load_lines(
         return Ok(());
     };
 
-    let (program, sequences) = program.sequences()?;
-
+    let mut rows = program.rows();
+    let mut sequence = Vec::new();
+    let mut keep = None;
     let mut file_ids = HashMap::new();
 
-    for sequence in sequences {
-        if !code.contains_address(ImageAddress::new(sequence.start)) {
+    while let Some((_, row)) = rows.next_row()? {
+        let kept = *keep.get_or_insert_with(|| {
+            let start = if row.end_sequence() { 0 } else { row.address() };
+            code.contains_address(ImageAddress::new(start))
+        });
+
+        if kept {
+            sequence.push(*row);
+        }
+
+        if !row.end_sequence() {
             continue;
         }
 
-        tables.begin_sequence()?;
-        let mut rows = program.resume_from(&sequence);
-
-        let mut open: Option<(u64, u32, bool)> = None;
-
-        while let Some((header, row)) = rows.next_row()? {
-            let line = row.line().map_or(0, std::num::NonZeroU64::get);
-
-            let file = match row.file(header) {
-                Some(file) if line != 0 => {
-                    Some(if let Some(&id) = file_ids.get(&row.file_index()) {
-                        id
-                    } else {
-                        let id = files.intern(source_path(dwarf, unit, header, file)?);
-                        file_ids.insert(row.file_index(), id);
-                        id
-                    })
-                }
-                _ => None,
-            };
-
-            let decoded = Row {
-                address: row.address(),
-                file,
-                line: if file.is_some() { line } else { 0 },
-                column: match row.column() {
-                    ColumnType::LeftEdge => 0,
-                    ColumnType::Column(column) => column.get(),
-                },
-                operation_index: row.op_index(),
-                discriminator: row.discriminator(),
-                isa: row.isa(),
-                statement: row.is_stmt(),
-                prologue_end: row.prologue_end(),
-                epilogue_begin: row.epilogue_begin(),
-                end_sequence: row.end_sequence(),
-            };
-
-            let at = tables.push_row(&decoded)?;
-
-            if decoded.end_sequence || decoded.location().is_none() {
-                close_line_range(&mut open, row.address(), tables)?;
-                continue;
-            }
-
-            if let Some((start, _, true)) = open
-                && start == row.address()
-                && !row.is_stmt()
-            {
-                continue;
-            }
-
-            let statement = row.is_stmt()
-                || open.is_some_and(|(start, _, statement)| start == row.address() && statement);
-            close_line_range(&mut open, row.address(), tables)?;
-            open = Some((row.address(), at, statement));
+        if kept {
+            add_sequence(
+                dwarf,
+                unit,
+                rows.header(),
+                &sequence,
+                files,
+                tables,
+                &mut file_ids,
+            )?;
         }
+
+        sequence.clear();
+        keep = None;
+    }
+
+    Ok(())
+}
+
+fn add_sequence(
+    dwarf: &DwarfSet<'_>,
+    unit: &gimli::Unit<Reader<'_>>,
+    header: &gimli::LineProgramHeader<Reader<'_>>,
+    sequence: &[gimli::LineRow],
+    files: &mut Files,
+    tables: &mut LineTables,
+    file_ids: &mut HashMap<u64, crate::SourceFileId>,
+) -> std::result::Result<(), DwarfError> {
+    tables.begin_sequence()?;
+    let mut open: Option<(u64, u32, bool)> = None;
+
+    for row in sequence {
+        let line = row.line().map_or(0, std::num::NonZeroU64::get);
+
+        let file = match row.file(header) {
+            Some(file) if line != 0 => Some(if let Some(&id) = file_ids.get(&row.file_index()) {
+                id
+            } else {
+                let id = files.intern(source_path(dwarf, unit, header, file)?);
+                file_ids.insert(row.file_index(), id);
+                id
+            }),
+            _ => None,
+        };
+
+        let decoded = Row {
+            address: row.address(),
+            file,
+            line: if file.is_some() { line } else { 0 },
+            column: match row.column() {
+                ColumnType::LeftEdge => 0,
+                ColumnType::Column(column) => column.get(),
+            },
+            operation_index: row.op_index(),
+            discriminator: row.discriminator(),
+            isa: row.isa(),
+            statement: row.is_stmt(),
+            prologue_end: row.prologue_end(),
+            epilogue_begin: row.epilogue_begin(),
+            end_sequence: row.end_sequence(),
+        };
+
+        let at = tables.push_row(&decoded)?;
+
+        if decoded.end_sequence || decoded.location().is_none() {
+            close_line_range(&mut open, row.address(), tables)?;
+            continue;
+        }
+
+        if let Some((start, _, true)) = open
+            && start == row.address()
+            && !row.is_stmt()
+        {
+            continue;
+        }
+
+        let statement = row.is_stmt()
+            || open.is_some_and(|(start, _, statement)| start == row.address() && statement);
+        close_line_range(&mut open, row.address(), tables)?;
+        open = Some((row.address(), at, statement));
     }
 
     Ok(())
