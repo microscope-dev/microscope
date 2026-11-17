@@ -144,6 +144,7 @@ pub fn record_watched(
         exit,
         killer,
         executed,
+        gate,
     } = launched?;
 
     settings(
@@ -156,8 +157,9 @@ pub fn record_watched(
         stack_copy,
     );
 
-    let started = executed.recv().is_ok().then_some(pid);
     events.read_while(|| {
+        let Ok(()) = gate.open() else { return };
+        let started = executed.recv().is_ok().then_some(pid);
         drive(
             &mut processor,
             &events,
@@ -1554,7 +1556,9 @@ mod tests {
         sched_setaffinity(Pid::from_raw(0), &affinity).expect("pin the reader");
         let mut command = std::process::Command::new("chrt");
         command.args(["--idle", "0"]).arg(program).arg("1000000");
-        let super::perf::Launched { events, exit, .. } = super::perf::launch(
+        let super::perf::Launched {
+            events, exit, gate, ..
+        } = super::perf::launch(
             command,
             &options,
             &super::perf::LaunchOptions {
@@ -1568,7 +1572,10 @@ mod tests {
         )
         .expect("launch the program");
         let status = events
-            .read_while(|| exit.join())
+            .read_while(|| {
+                gate.open().expect("open the gate");
+                exit.join()
+            })
             .expect("the waiter ends")
             .expect("the program exits");
         assert!(status.success(), "{status}");
@@ -1611,6 +1618,7 @@ mod tests {
             events,
             exit,
             killer,
+            gate,
             ..
         } = super::perf::launch(
             command,
@@ -1623,6 +1631,7 @@ mod tests {
         )
         .expect("launch the program");
         let stopping = events.read_while(|| {
+            gate.open().expect("open the gate");
             std::thread::sleep(Duration::from_millis(30));
             std::time::Instant::now()
         });
@@ -1664,7 +1673,10 @@ mod tests {
         let mut command = std::process::Command::new(program);
         command.arg("20000");
         let super::perf::Launched {
-            mut events, exit, ..
+            mut events,
+            exit,
+            gate,
+            ..
         } = super::perf::launch(
             command,
             &options,
@@ -1681,7 +1693,10 @@ mod tests {
         let queue = 1024 * 1024;
         events.set_queue_bytes(queue);
         let status = events
-            .read_while(|| exit.join())
+            .read_while(|| {
+                gate.open().expect("open the gate");
+                exit.join()
+            })
             .expect("the waiter ends")
             .expect("the program exits");
         assert!(status.success(), "{status}");

@@ -566,8 +566,10 @@ impl Events {
         let (block, ring_bytes) = (self.block_bytes(), self.pages * sys::page_size());
         let stop = AtomicBool::new(false);
         let poller = sys::Poller::new(&self.rings).ok();
+        let reading = std::sync::Barrier::new(2);
         std::thread::scope(|scope| {
             let reader = scope.spawn(|| {
+                reading.wait();
                 let began = sys::thread_cpu();
                 let sampling: Vec<u64> = if self.pause_on_full {
                     self.rings
@@ -632,6 +634,7 @@ impl Events {
                     }
                 }
             });
+            reading.wait();
             let guard = StopReader(&stop, poller.as_ref());
             let result = work();
             drop(guard);
@@ -1063,6 +1066,26 @@ pub struct Launched {
     pub killer: Killer,
 
     pub executed: std::sync::mpsc::Receiver<()>,
+
+    pub gate: LaunchGate,
+}
+
+#[derive(Debug)]
+pub struct LaunchGate {
+    pid: u32,
+    go: OwnedFd,
+}
+
+impl LaunchGate {
+    pub fn open(self) -> std::io::Result<()> {
+        let opened = write_all(&self.go, &[1]);
+        match &opened {
+            Ok(()) => record!("perf launch: {} opened its gate", self.pid),
+            Err(error) => record!("perf launch: {}'s gate did not open: {error}", self.pid),
+        }
+
+        opened
+    }
 }
 
 #[derive(Debug)]
@@ -1162,15 +1185,13 @@ pub fn launch(
         return Err(LaunchError::Held(why));
     }
 
-    write_all(&go_write, &[1])?;
-    record!("perf launch: {pid} opened its gate");
-
     Ok(Launched {
         pid,
         events,
         exit: spawner,
         killer,
         executed,
+        gate: LaunchGate { pid, go: go_write },
     })
 }
 
@@ -1766,6 +1787,7 @@ mod tests {
             |_, _| Ok(()),
         )
         .expect("launch the program");
+        launched.gate.open().expect("open the gate");
         let status = launched
             .exit
             .join()
@@ -1787,9 +1809,12 @@ mod tests {
 
     #[test]
     fn a_reader_that_falls_behind_shortens_stacks_instead_of_pausing_sampling() {
-        let (events, exit) = spin_with_deep_copies();
+        let (events, exit, gate) = spin_with_deep_copies();
         let status = events
-            .read_while(|| exit.join())
+            .read_while(|| {
+                gate.open().expect("open the gate");
+                exit.join()
+            })
             .expect("the launch thread ends")
             .expect("the program exits");
         assert!(status.success(), "{status}");
@@ -1830,9 +1855,12 @@ mod tests {
 
     #[test]
     fn a_reader_far_behind_pauses_sampling_instead_of_losing_samples() {
-        let (mut events, exit) = spin_with_deep_copies();
+        let (mut events, exit, gate) = spin_with_deep_copies();
         events.queue_bytes = 4 * 1024 * 1024;
-        let (status, exited) = events.read_while(|| (exit.join(), sys::monotonic()));
+        let (status, exited) = events.read_while(|| {
+            gate.open().expect("open the gate");
+            (exit.join(), sys::monotonic())
+        });
         let status = status
             .expect("the launch thread ends")
             .expect("the program exits");
@@ -1848,7 +1876,7 @@ mod tests {
         assert_eq!(events.behind(Some(end)), []);
     }
 
-    fn spin_with_deep_copies() -> (Events, JoinHandle<std::io::Result<ExitStatus>>) {
+    fn spin_with_deep_copies() -> (Events, JoinHandle<std::io::Result<ExitStatus>>, LaunchGate) {
         let options = EventOptions {
             source: Source::Clock {
                 period: Duration::from_millis(1),
@@ -1862,10 +1890,11 @@ mod tests {
             .join("build/test-programs/profile-switches");
         let mut command = Command::new(program);
         command.args(["0", "750", "8"]);
-        let Launched { events, exit, .. } =
-            launch(command, &options, &LaunchOptions::default(), |_, _| Ok(()))
-                .expect("launch the program");
-        (events, exit)
+        let Launched {
+            events, exit, gate, ..
+        } = launch(command, &options, &LaunchOptions::default(), |_, _| Ok(()))
+            .expect("launch the program");
+        (events, exit, gate)
     }
 
     #[test]
@@ -1879,7 +1908,9 @@ mod tests {
             ring_pages: 16,
             switches: false,
         };
-        let Launched { events, exit, .. } = launch(
+        let Launched {
+            events, exit, gate, ..
+        } = launch(
             Command::new("true"),
             &options,
             &LaunchOptions::default(),
@@ -1888,6 +1919,7 @@ mod tests {
         .expect("launch the program");
 
         events.read_while(|| {
+            gate.open().expect("open the gate");
             let status = exit.join().expect("the launch thread ends").expect("wait");
             assert!(status.success(), "{status}");
             std::thread::sleep(Duration::from_millis(500));
@@ -1914,11 +1946,13 @@ mod tests {
             .args(["-c", "echo ready; read line; (:); :"])
             .stdin(reader)
             .stdout(saying);
-        let Launched { events, exit, .. } =
-            launch(command, &options, &LaunchOptions::default(), |_, _| Ok(()))
-                .expect("launch the program");
+        let Launched {
+            events, exit, gate, ..
+        } = launch(command, &options, &LaunchOptions::default(), |_, _| Ok(()))
+            .expect("launch the program");
 
         let status = events.read_while(|| {
+            gate.open().expect("open the gate");
             let mut ready = [0_u8; 6];
             std::io::Read::read_exact(&mut said, &mut ready).expect("the shell starts");
             events.hold(Hold::Budget, true);

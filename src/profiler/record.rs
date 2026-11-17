@@ -4035,7 +4035,9 @@ mod tests {
             .join("build/test-programs/profile-stacks-gcc-o2-nofp");
         let mut command = std::process::Command::new(program);
         command.arg("30000000");
-        let perf::Launched { events, exit, .. } = perf::launch(
+        let perf::Launched {
+            events, exit, gate, ..
+        } = perf::launch(
             command,
             &options,
             &perf::LaunchOptions::default(),
@@ -4044,7 +4046,10 @@ mod tests {
         .expect("launch the program");
 
         let status = events
-            .read_while(|| exit.join())
+            .read_while(|| {
+                gate.open().expect("open the gate");
+                exit.join()
+            })
             .expect("the launch thread ends")
             .expect("the program exits");
         assert!(status.success(), "{status}");
