@@ -9,7 +9,16 @@ import {
   typing,
 } from "./keys";
 
-export type Menu = "File" | "Edit" | "View" | "Go" | "Run" | "Debug" | "Window" | "Help";
+export type Menu =
+  | "File"
+  | "Edit"
+  | "View"
+  | "Machines"
+  | "Go"
+  | "Run"
+  | "Debug"
+  | "Window"
+  | "Help";
 
 export type Availability =
   | { readonly state: "ready" }

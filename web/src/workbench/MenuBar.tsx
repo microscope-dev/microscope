@@ -12,6 +12,7 @@ export const MENUS: readonly Menu[] = [
   "File",
   "Edit",
   "View",
+  "Machines",
   "Go",
   "Run",
   "Debug",

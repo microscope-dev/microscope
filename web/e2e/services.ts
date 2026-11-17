@@ -227,7 +227,7 @@ async function mockIdp(log: string[]): Promise<{ base: string; stop: () => Promi
 }
 
 export async function startServices(
-  options: { sso?: boolean; localhost?: boolean } = {},
+  options: { sso?: boolean; localhost?: boolean; agents?: boolean } = {},
 ): Promise<Services> {
   const inbox: Mail[] = [];
   const waiting: (() => void)[] = [];
@@ -301,8 +301,18 @@ export async function startServices(
       "--totp-metadata-url",
       `${kms.origin}/`,
       ...ssoFlags,
+      ...(options.agents
+        ? [
+            "--agent-token-keys",
+            `1:${randomBytes(32).toString("base64url")}`,
+            "--agent-refresh-secs",
+            "2",
+            "--agent-token-ttl-secs",
+            "60",
+          ]
+        : []),
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, RUST_LOG: "info" } },
   );
   createInterface({ input: child.stderr }).on("line", (line) => log.push(`stderr: ${line}`));
   const stop = async () => {

@@ -6,6 +6,7 @@ import { type ActionName, action } from "../actions";
 import { breakpointAt, toggleBreakpoint } from "../breakpoints";
 import type { Connection } from "../connection";
 import { documentsGroup, KIND } from "../documents";
+import { type Look, openMachines } from "../fleet";
 import { type At, inView, type View, watching } from "../focus";
 import type { Model } from "../model";
 import type { ProfileView } from "../profile/look";
@@ -297,6 +298,21 @@ const always = (): Availability => READY;
 
 const signedIn = (): Availability => (account.getState().now.kind === "in" ? READY : ABSENT);
 
+function machines(label: string, look: Partial<Look>, keys: Chord[] = []): Spec {
+  return {
+    label,
+    menu: standalone ? "Machines" : null,
+    keys,
+    available: () =>
+      standalone
+        ? account.getState().now.kind === "in"
+          ? READY
+          : blocked("Sign in to see your machines")
+        : ABSENT,
+    run: () => openMachines({ machine: null, ...look }),
+  };
+}
+
 function arrange(label: string, keys: Chord[], why: () => Why, run: () => void): Spec {
   return {
     label,
@@ -484,6 +500,10 @@ export const COMMANDS = registry({
       showPane(KIND.account);
     },
   },
+  machines: machines("Machines", { view: "overview" }, [{ key: "m", alt: true, shift: true }]),
+  findMachine: machines("Find a machine…", { view: "list" }),
+  addMachines: machines("Add machines…", { view: "add" }),
+  enrollmentKeys: machines("Enrollment keys", { view: "keys" }),
   share: {
     label: "Share…",
     menu: "File",

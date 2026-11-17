@@ -2,12 +2,14 @@ import { Link, Outlet, useLocation } from "@tanstack/react-router";
 import { useCallback, useEffect } from "react";
 
 import { base } from "../base";
+import { machinesWindow } from "../fleet";
 import { commandName } from "../model";
 import { useModel } from "../store";
 import { flash } from "../tab";
 import { isTextBox, keepsEscape } from "../workbench/keys";
 import { MenuBar } from "../workbench/MenuBar";
 import { COMMANDS, useCommands } from "./commands";
+import { MachinesWindow } from "./machines/MachinesWindow";
 import { People } from "./People";
 import { RunToolbar } from "./RunToolbar";
 import { Share } from "./Share";
@@ -67,6 +69,7 @@ export function Frame() {
       </header>
       <Outlet />
       <StatusBar />
+      <MachinesWindow />
     </div>
   );
 }
@@ -75,7 +78,11 @@ function useKeys() {
   const { run } = useCommands();
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
-      if (event.isComposing || (event.key === "Escape" && keepsEscape(document.activeElement))) {
+      if (
+        event.isComposing ||
+        machinesWindow.getState().open ||
+        (event.key === "Escape" && keepsEscape(document.activeElement))
+      ) {
         return;
       }
       const typing = isTextBox(document.activeElement);

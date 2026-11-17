@@ -23,6 +23,12 @@
   background: var(--surface-2);
 }
 
+@media (width < 760px) {
+  .menu-button {
+    padding: 0 5px;
+  }
+}
+
 .menu {
   position: absolute;
   z-index: 30;

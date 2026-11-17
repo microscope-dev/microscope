@@ -1,0 +1,172 @@
+import * as fc from "fast-check";
+import { describe, expect, it } from "vitest";
+
+import {
+  ago,
+  clearFilters,
+  day,
+  filtered,
+  HOME,
+  type Look,
+  lookHash,
+  memory,
+  parseLabels,
+  parseLook,
+  shownState,
+  snippet,
+  type View,
+} from "../src/fleet";
+
+const VIEWS: readonly View[] = ["overview", "list", "keys", "add", "newkey"];
+
+const text = fc.string({ unit: "grapheme", maxLength: 24 });
+const name = fc.option(
+  text.filter((value) => value !== ""),
+  { nil: null },
+);
+
+const looks: fc.Arbitrary<Look> = fc
+  .option(fc.integer({ min: 1, max: 2 ** 40 }), { nil: null })
+  .chain((machine) =>
+    fc.record({
+      view: machine === null ? fc.constantFrom(...VIEWS) : fc.constant<View>("list"),
+      org: fc.option(fc.integer({ min: 1, max: 2 ** 40 }), { nil: null }),
+      q: text,
+      state: fc.constantFrom(null, "live", "quiet", "stopped", "revoked", "any"),
+      environment: name,
+      cluster: name,
+      version: name,
+      machine: fc.constant(machine),
+    }),
+  );
+
+function rank(words: string): number {
+  if (words === "just now") {
+    return 0;
+  }
+  if (words === "yesterday") {
+    return 86_400;
+  }
+  const [count = "0", unit = ""] = words.split(" ");
+  const scale: Record<string, number> = { s: 1, min: 60, hour: 3600, hours: 3600, days: 86_400 };
+  return Number(count) * (scale[unit] ?? 0);
+}
+
+describe("the machines window in the URL", () => {
+  it("reads back every look it writes", () => {
+    fc.assert(
+      fc.property(looks, (look) => {
+        expect(parseLook(`#${lookHash(look)}`)).toEqual(look);
+      }),
+    );
+  });
+
+  it("writes the links the plan promises", () => {
+    expect(lookHash(HOME)).toBe("machines");
+    expect(lookHash({ ...HOME, view: "list", q: "10.0.3", state: "any" })).toBe(
+      "machines/list?q=10.0.3&state=any",
+    );
+    expect(lookHash({ ...HOME, view: "list", machine: 81723 })).toBe("machines/m/81723");
+    expect(
+      lookHash({ ...HOME, view: "list", org: 7, environment: "staging", version: "0.4.1" }),
+    ).toBe("machines/list?org=7&environment=staging&version=0.4.1");
+    expect(lookHash({ ...HOME, view: "newkey" })).toBe("machines/keys/new");
+  });
+
+  it("ignores fragments that are not the window's and values it does not know", () => {
+    for (const hash of [
+      "",
+      "#",
+      "#machine",
+      "#machines/",
+      "#machines/m/0",
+      "#machines/m/x",
+      "#other",
+    ]) {
+      expect(parseLook(hash)).toBeNull();
+    }
+    expect(parseLook("#machines/list?state=asleep&org=-3&environment=")).toEqual({
+      ...HOME,
+      view: "list",
+    });
+  });
+
+  it("browses live machines and searches every state unless a chip says otherwise", () => {
+    expect(shownState(HOME)).toBe("live");
+    expect(shownState({ ...HOME, q: "db-03" })).toBe("any");
+    expect(shownState({ ...HOME, q: "  " })).toBe("live");
+    expect(shownState({ ...HOME, q: "db-03", state: "live" })).toBe("live");
+    const narrowed = { ...HOME, q: "db", state: "stopped" as const, cluster: "eu1" };
+    expect(filtered(narrowed)).toBe(true);
+    expect(clearFilters(narrowed)).toEqual({ ...HOME, q: "db" });
+    expect(filtered(clearFilters(narrowed))).toBe(false);
+  });
+});
+
+describe("words for times and sizes", () => {
+  const now = 1_795_000_000;
+
+  it("says how long ago in the units a person would", () => {
+    expect(ago(now, now)).toBe("just now");
+    expect(ago(now + 30, now)).toBe("just now");
+    expect(ago(now - 40, now)).toBe("40 s ago");
+    expect(ago(now - 125, now)).toBe("2 min ago");
+    expect(ago(now - 3_600, now)).toBe("1 hour ago");
+    expect(ago(now - 5 * 3_600, now)).toBe("5 hours ago");
+    expect(ago(now - 86_400, now)).toBe("yesterday");
+    expect(ago(now - 3 * 86_400, now)).toBe("3 days ago");
+    expect(ago(1_762_041_600, now)).toBe("2 Nov 2025");
+  });
+
+  it("never goes backwards as time passes", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 58 * 86_400 }),
+        fc.integer({ min: 0, max: 86_400 }),
+        (age, more) => {
+          expect(rank(ago(now - age - more, now))).toBeGreaterThanOrEqual(
+            rank(ago(now - age, now)),
+          );
+        },
+      ),
+    );
+  });
+
+  it("writes dates in UTC and memory in GB from a gigabyte up", () => {
+    expect(day(0)).toBe("1 Jan 1970");
+    expect(day(1_802_649_599)).toBe("14 Feb 2027");
+    expect(memory(512)).toBe("512 MB");
+    expect(memory(32_768)).toBe("32 GB");
+  });
+});
+
+describe("labels typed into Add machines", () => {
+  it("reads KEY=VALUE pairs split by commas", () => {
+    expect(parseLabels("")).toEqual({});
+    expect(parseLabels(" team = payments ,tier=web,")).toEqual({ team: "payments", tier: "web" });
+    expect(parseLabels("url=a=b")).toEqual({ url: "a=b" });
+  });
+
+  it("names the pair that is wrong", () => {
+    expect(parseLabels("team")).toBe("team is not KEY=VALUE");
+    expect(parseLabels("=x")).toBe("=x is not KEY=VALUE");
+    expect(parseLabels("team=")).toBe("team= is not KEY=VALUE");
+    expect(parseLabels("a=1, a=2")).toBe("a is set twice");
+  });
+});
+
+describe("install snippets", () => {
+  const url = "https://mse_4gq7aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaasnb47oni@microscope.dev";
+
+  it("carry the enroll URL the agent reads", () => {
+    expect(snippet("systemd", url)).toContain(`enroll = "${url}"`);
+    expect(snippet("docker", url)).toContain(`-e MICROSCOPE_ENROLL='${url}'`);
+    expect(snippet("kubernetes", url)).toContain(`--from-literal=enroll='${url}'`);
+  });
+
+  it("quote anything a shell or TOML would read differently", () => {
+    const odd = `https://it's "odd"@host`;
+    expect(snippet("docker", odd)).toContain(`MICROSCOPE_ENROLL='https://it'\\''s "odd"@host'`);
+    expect(snippet("systemd", odd)).toContain(`enroll = "https://it's \\"odd\\"@host"`);
+  });
+});
