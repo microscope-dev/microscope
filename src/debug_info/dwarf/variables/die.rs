@@ -436,7 +436,7 @@ fn declared_with<'a, 'data, F>(
         return Ok(None);
     };
 
-    let Some(program) = file_unit.line_program.as_ref() else {
+    let Some(program) = units.line_program(file_unit) else {
         return Ok(None);
     };
 

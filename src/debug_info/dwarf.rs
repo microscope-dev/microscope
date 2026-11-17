@@ -262,6 +262,8 @@ struct Units<'data> {
 
     first_supplementary: usize,
 
+    supplementary_programs: Vec<Option<Arc<LineProgram<'data>>>>,
+
     inherited_languages: Vec<Option<gimli::DwLang>>,
 }
 
@@ -328,6 +330,135 @@ impl<'a, 'data> DieWalk<'a, 'data> {
             .read_attributes(abbreviation.attributes(), &mut self.entry.attrs)?;
         Ok(&self.entry)
     }
+}
+
+type LineProgram<'data> = gimli::IncompleteLineProgram<Reader<'data>>;
+
+type ProgramKey<'data> = (usize, u8, Option<&'data [u8]>, Option<&'data [u8]>);
+
+type Programs<'data> = std::sync::Mutex<HashMap<ProgramKey<'data>, Arc<LineProgram<'data>>>>;
+
+fn shared_program<'data>(
+    dwarf: &gimli::Dwarf<Reader<'data>>,
+    unit: &gimli::Unit<Reader<'data>>,
+    offset: gimli::DebugLineOffset,
+    programs: &Programs<'data>,
+) -> gimli::Result<Arc<LineProgram<'data>>> {
+    let address_size = unit.header.address_size();
+    let key = (
+        offset.0,
+        address_size,
+        unit.comp_dir.map(|path| path.slice()),
+        unit.name.map(|name| name.slice()),
+    );
+    let cached = programs
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .cloned();
+    if let Some(program) = cached {
+        return Ok(program);
+    }
+
+    let program = Arc::new(dwarf.debug_line.program(
+        offset,
+        address_size,
+        unit.comp_dir,
+        unit.name,
+    )?);
+    Ok(programs
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(key)
+        .or_insert(program)
+        .clone())
+}
+
+fn supplementary_unit<'data>(
+    dwarf: &gimli::Dwarf<Reader<'data>>,
+    header: gimli::UnitHeader<Reader<'data>>,
+    programs: &Programs<'data>,
+) -> gimli::Result<(gimli::Unit<Reader<'data>>, Option<Arc<LineProgram<'data>>>)> {
+    let abbreviations = dwarf.abbreviations(&header)?;
+    let mut unit = gimli::Unit {
+        abbreviations,
+        name: None,
+        comp_dir: None,
+        low_pc: 0,
+        str_offsets_base: gimli::DebugStrOffsetsBase::default_for_encoding_and_file(
+            header.encoding(),
+            dwarf.file_type,
+        ),
+        addr_base: gimli::DebugAddrBase(0),
+        loclists_base: gimli::DebugLocListsBase::default_for_encoding_and_file(
+            header.encoding(),
+            dwarf.file_type,
+        ),
+        rnglists_base: gimli::DebugRngListsBase::default_for_encoding_and_file(
+            header.encoding(),
+            dwarf.file_type,
+        ),
+        line_program: None,
+        dwo_id: match header.type_() {
+            gimli::UnitType::Skeleton(dwo_id) | gimli::UnitType::SplitCompilation(dwo_id) => {
+                Some(dwo_id)
+            }
+            _ => None,
+        },
+        header,
+    };
+
+    let mut name = None;
+    let mut comp_dir = None;
+    let mut line_program_offset = None;
+    let mut low_pc = None;
+    let mut entries = unit.header.entries(&unit.abbreviations);
+    entries.next_dfs()?;
+    let root = entries.current().ok_or(gimli::Error::MissingUnitDie)?;
+    for attribute in root.attrs() {
+        match (attribute.name(), attribute.value()) {
+            (gimli::DW_AT_name, value) => name = Some(value),
+            (gimli::DW_AT_comp_dir, value) => comp_dir = Some(value),
+            (gimli::DW_AT_low_pc, value) => low_pc = Some(value),
+            (gimli::DW_AT_stmt_list, gimli::AttributeValue::DebugLineRef(offset)) => {
+                line_program_offset = Some(offset);
+            }
+            (gimli::DW_AT_str_offsets_base, gimli::AttributeValue::DebugStrOffsetsBase(base)) => {
+                unit.str_offsets_base = base;
+            }
+            (
+                gimli::DW_AT_addr_base | gimli::DW_AT_GNU_addr_base,
+                gimli::AttributeValue::DebugAddrBase(base),
+            ) => unit.addr_base = base,
+            (gimli::DW_AT_loclists_base, gimli::AttributeValue::DebugLocListsBase(base)) => {
+                unit.loclists_base = base;
+            }
+            (
+                gimli::DW_AT_rnglists_base | gimli::DW_AT_GNU_ranges_base,
+                gimli::AttributeValue::DebugRngListsBase(base),
+            ) => unit.rnglists_base = base,
+            (gimli::DW_AT_GNU_dwo_id, gimli::AttributeValue::DwoId(dwo_id))
+                if unit.dwo_id.is_none() =>
+            {
+                unit.dwo_id = Some(dwo_id);
+            }
+            _ => {}
+        }
+    }
+
+    unit.name = name.and_then(|value| dwarf.attr_string(&unit, value).ok());
+    unit.comp_dir = comp_dir.and_then(|value| dwarf.attr_string(&unit, value).ok());
+    let shared = line_program_offset
+        .map(|offset| shared_program(dwarf, &unit, offset, programs))
+        .transpose()?;
+
+    if let Some(value) = low_pc
+        && let Some(address) = dwarf.attr_address(&unit, value)?
+    {
+        unit.low_pc = address;
+    }
+
+    Ok((unit, shared))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -404,29 +535,32 @@ impl<'data> Units<'data> {
         }
 
         let mut supplementary_units = Vec::new();
+        let programs = std::sync::Mutex::new(HashMap::new());
 
         while !wave.is_empty() {
             let loaded = first_error(
                 std::mem::take(&mut wave)
                     .into_par_iter()
                     .map(|(index, header)| {
-                        let unit = supplementary.unit(header)?;
+                        let (unit, program) = supplementary_unit(supplementary, header, &programs)?;
                         let references = outward_references(&unit)?;
-                        Ok::<_, DwarfError>((index, unit, references))
+                        Ok::<_, DwarfError>((index, unit, program, references))
                     })
                     .collect(),
             )?;
-            for (index, unit, references) in loaded {
+            for (index, unit, program, references) in loaded {
                 reach(&references, true, &mut wave);
-                supplementary_units.push((index, unit, references));
+                supplementary_units.push((index, unit, program, references));
             }
         }
 
         supplementary_units.sort_unstable_by_key(|(index, ..)| *index);
         let first_supplementary = units.len();
+        let mut supplementary_programs = Vec::with_capacity(supplementary_units.len());
 
-        for (_, unit, references) in supplementary_units {
+        for (_, unit, program, references) in supplementary_units {
             units.push(unit);
+            supplementary_programs.push(program);
 
             outward.push(
                 references
@@ -440,6 +574,7 @@ impl<'data> Units<'data> {
         }
 
         let mut this = Self::catalog(units, first_supplementary);
+        this.supplementary_programs = supplementary_programs;
         this.inherit(&outward);
         Ok(this)
     }
@@ -462,6 +597,7 @@ impl<'data> Units<'data> {
             supplementary_starts: starts_of(true),
             units,
             first_supplementary,
+            supplementary_programs: Vec::new(),
             inherited_languages: Vec::new(),
         }
     }
@@ -587,6 +723,29 @@ impl<'data> Units<'data> {
         self.units
             .get(index)
             .ok_or(DwarfError::Internal("a unit index is outside the catalog"))
+    }
+
+    fn line_program<'u>(
+        &'u self,
+        unit: &'u gimli::Unit<Reader<'data>>,
+    ) -> Option<&'u LineProgram<'data>> {
+        if let Some(program) = &unit.line_program {
+            return Some(program);
+        }
+
+        let start = unit.header.debug_info_offset()?.0;
+        let found = self
+            .supplementary_starts
+            .binary_search_by_key(&start, |(start, _)| *start)
+            .ok()?;
+        let (_, index) = *self.supplementary_starts.get(found)?;
+        if !std::ptr::eq(self.units.get(index)?, unit) {
+            return None;
+        }
+
+        self.supplementary_programs
+            .get(index.checked_sub(self.first_supplementary)?)?
+            .as_deref()
     }
 
     const fn is_supplementary(&self, index: usize) -> bool {
@@ -1258,6 +1417,9 @@ fn load_image(
     });
 
     dwarf.populate_abbreviations_cache(gimli::AbbreviationsCacheStrategy::Duplicates);
+    if let Some(supplementary) = dwarf.sup.as_mut().and_then(Arc::get_mut) {
+        supplementary.populate_abbreviations_cache(gimli::AbbreviationsCacheStrategy::Duplicates);
+    }
     let mut files = Files::default();
     let mut headers = Vec::new();
 
@@ -1334,11 +1496,18 @@ fn load_image(
                 .map(|unit| {
                     let mut files = Files::default();
                     let mut tables = LineTables::default();
-                    load_lines(&dwarf, unit, &catalog.code, &mut files, &mut tables).map_err(
-                        |error| {
-                            error.within(|| format!("the line program of {}", describe_unit(unit)))
-                        },
-                    )?;
+                    let program = catalog.units.line_program(unit);
+                    load_lines(
+                        &dwarf,
+                        unit,
+                        program,
+                        &catalog.code,
+                        &mut files,
+                        &mut tables,
+                    )
+                    .map_err(|error| {
+                        error.within(|| format!("the line program of {}", describe_unit(unit)))
+                    })?;
                     Ok::<_, DwarfError>((files, tables))
                 })
                 .collect::<Vec<_>>()
@@ -4038,6 +4207,7 @@ fn raw_function<'data>(
             .is_some_and(|value| value != gimli::AttributeValue::Flag(false)),
         declaration: entry_source_location(
             dwarf,
+            units,
             unit,
             entry,
             [
@@ -4049,6 +4219,7 @@ fn raw_function<'data>(
         )?,
         call_site: entry_source_location(
             dwarf,
+            units,
             unit,
             entry,
             [
@@ -4231,10 +4402,11 @@ fn containing_instance(
     None
 }
 
-fn entry_source_location(
-    dwarf: &DwarfSet<'_>,
-    unit: &gimli::Unit<Reader<'_>>,
-    entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
+fn entry_source_location<'data>(
+    dwarf: &DwarfSet<'data>,
+    units: &Units<'data>,
+    unit: &gimli::Unit<Reader<'data>>,
+    entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
     [file_attribute, line_attribute, column_attribute]: [gimli::DwAt; 3],
     files: &mut UnitFiles,
 ) -> std::result::Result<Option<SourceLocation>, DwarfError> {
@@ -4256,9 +4428,8 @@ fn entry_source_location(
     let file = if let Some(file) = files.by_index.get(&file_index) {
         *file
     } else {
-        let header = unit
-            .line_program
-            .as_ref()
+        let header = units
+            .line_program(unit)
             .map(gimli::IncompleteLineProgram::header);
         let named = header.and_then(|header| Some((header, header.file(file_index)?)));
         let file = match named {
@@ -4286,16 +4457,23 @@ fn entry_source_location(
     }))
 }
 
-fn load_lines(
-    dwarf: &DwarfSet<'_>,
-    unit: &gimli::Unit<Reader<'_>>,
+fn load_lines<'data>(
+    dwarf: &DwarfSet<'data>,
+    unit: &gimli::Unit<Reader<'data>>,
+    program: Option<&LineProgram<'data>>,
     code: &CodeRanges,
     files: &mut Files,
     tables: &mut LineTables,
 ) -> std::result::Result<(), DwarfError> {
-    let Some(program) = unit.line_program.clone() else {
+    let Some(program) = program else {
         return Ok(());
     };
+
+    if program.header().raw_program_buf().is_empty() {
+        return Ok(());
+    }
+
+    let program = program.clone();
 
     let mut rows = program.rows();
     let mut sequence = Vec::new();
@@ -5266,12 +5444,26 @@ mod tests {
             }])
         };
 
-        load_lines(&dwarf, &unit, &code(0x200, 0x300), &mut files, &mut tables)
-            .expect("load test line program");
+        load_lines(
+            &dwarf,
+            &unit,
+            unit.line_program.as_ref(),
+            &code(0x200, 0x300),
+            &mut files,
+            &mut tables,
+        )
+        .expect("load test line program");
         assert!(tables.rows.is_empty() && tables.ranges.is_empty());
 
-        load_lines(&dwarf, &unit, &code(0x100, 0x200), &mut files, &mut tables)
-            .expect("load test line program");
+        load_lines(
+            &dwarf,
+            &unit,
+            unit.line_program.as_ref(),
+            &code(0x100, 0x200),
+            &mut files,
+            &mut tables,
+        )
+        .expect("load test line program");
         let statements = tables.statement_rows();
         let lines = tables.line_entries();
 
@@ -5381,8 +5573,15 @@ mod tests {
         );
 
         let mut tables = LineTables::default();
-        load_lines(&dwarf, &unit, &code, &mut Files::default(), &mut tables)
-            .expect("load test line program");
+        load_lines(
+            &dwarf,
+            &unit,
+            unit.line_program.as_ref(),
+            &code,
+            &mut Files::default(),
+            &mut tables,
+        )
+        .expect("load test line program");
         tables
     }
 
