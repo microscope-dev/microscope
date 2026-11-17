@@ -85,19 +85,29 @@ fn an_allocator_that_records_never_hangs_or_crashes_the_program() {
         || drop(microscope_probes::zone!("outer")),
     );
     assert_eq!(rings(), 1, "the thread took one ring");
+    flushed();
 }
 
 fn rings() -> u32 {
+    const RINGS: usize = 20;
+    control_word(RINGS).load(Ordering::Acquire)
+}
+
+fn flushed() {
+    const FLUSHED: usize = 48;
+    control_word(FLUSHED).store(1, Ordering::Release);
+}
+
+fn control_word(offset: usize) -> &'static AtomicU32 {
     unsafe extern "C" {
         static __start_microscope_probe_control: AtomicU32;
     }
-    const RINGS: usize = 20;
 
     // SAFETY: the linker places the SDK's control block at the section's
-    // start, and its rings word is an aligned `u32` the SDK writes
-    // atomically.
+    // start, and its rings and flushed words are aligned `u32`s the SDK
+    // and its recorder share atomically.
     unsafe {
         let control = (&raw const __start_microscope_probe_control).cast::<u8>();
-        (*control.add(RINGS).cast::<AtomicU32>()).load(Ordering::Acquire)
+        &*control.add(offset).cast::<AtomicU32>()
     }
 }

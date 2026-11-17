@@ -18,6 +18,7 @@ fn listen() -> std::sync::MutexGuard<'static, ()> {
         .store(abi::LEAST_RING_SIZE, Ordering::Relaxed);
     CONTROL.heartbeat.store(monotonic(), Ordering::Relaxed);
     CONTROL.timeout.store(u32::MAX, Ordering::Relaxed);
+    CONTROL.flushed.store(1, Ordering::Release);
     CONTROL.enable.store(1, Ordering::Release);
     serial
 }
