@@ -31,7 +31,7 @@ pub fn measure_load(path: &Path, instructions: bool) -> anyhow::Result<Measured>
     let loaded = crate::debug_info::load_module(
         path,
         crate::ModuleImageId::new(0),
-        &crate::debug_info::DebugFileSearch::default(),
+        &crate::debug_info::DebugFileSearch::new(&crate::protocol::DebugFileOptions::default()),
     );
     let retained = crate::timings::alloc::totals().since(&before).live_bytes;
     let report = recording.finish()?;
