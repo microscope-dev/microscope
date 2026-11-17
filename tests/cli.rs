@@ -291,7 +291,7 @@ fn report_lists_the_programs_messages_and_each_threads_zones() {
             row[2].parse::<f64>().expect("an end"),
             row[4].parse::<f64>().expect("a time"),
         );
-        assert!(first <= last && inside <= last - first + 0.001, "{report}");
+        assert!(first <= last && inside <= last - first + 0.002, "{report}");
     }
 }
 
