@@ -89,7 +89,12 @@ impl Session {
         if let (Some(image), Ok(handle)) = (&image, self.target_handle())
             && image.id() != handle.module_image().id()
         {
-            for warning in crate::present::debug_information::warnings(image, false) {
+            for warning in crate::present::debug_information::warnings(image, false)
+                .into_iter()
+                .chain(crate::present::debug_information::unkept_images(
+                    std::slice::from_ref(image),
+                ))
+            {
                 self.client.important(warning).await?;
             }
 

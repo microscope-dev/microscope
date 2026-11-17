@@ -116,25 +116,28 @@ pub(crate) fn report(problem: fmt::Arguments<'_>) {
     let _ = problem;
 }
 
-static UNWRITTEN: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unkept {
+    pub directory: PathBuf,
+    pub error: String,
+}
 
-pub(crate) fn unwritten(path: &Path, error: &WriteError) {
+impl fmt::Display for Unkept {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "in {}: {}", self.directory.display(), self.error)
+    }
+}
+
+pub(crate) fn unwritten(path: &Path, error: &WriteError) -> Unkept {
     report(format_args!(
         "{} for {}: {error}",
         error.key,
         path.display()
     ));
-    let why = format!("in {}: {}", error.directory.display(), error.error);
-    if let Ok(mut unwritten) = UNWRITTEN.lock() {
-        unwritten.push((path.to_owned(), why));
+    Unkept {
+        directory: error.directory.clone(),
+        error: error.error.to_string(),
     }
-}
-
-pub fn take_unwritten() -> Vec<(PathBuf, String)> {
-    UNWRITTEN
-        .lock()
-        .map(|mut unwritten| std::mem::take(&mut *unwritten))
-        .unwrap_or_default()
 }
 
 pub(crate) fn current() -> Option<&'static ImageCache> {

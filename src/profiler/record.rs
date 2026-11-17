@@ -1252,9 +1252,11 @@ impl Processor {
         let deferred = loaded.as_ref().is_some_and(|(_, deferred)| *deferred);
         let info = loaded.map(|(info, _)| info);
 
-        for (unwritten, why) in crate::cache::take_unwritten() {
-            self.builder
-                .setting(&format!("image cache {}", unwritten.display()), &why);
+        if let Some(unkept) = info.as_ref().and_then(|info| info.image.unkept_in_cache()) {
+            self.builder.setting(
+                &format!("image cache {}", path.display()),
+                &unkept.to_string(),
+            );
         }
 
         if let Some(info) = &info

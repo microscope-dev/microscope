@@ -539,6 +539,8 @@ pub struct ModuleImage {
     views: std::sync::OnceLock<Arc<crate::view::ViewSet>>,
 
     debug_file: Option<crate::DebugFile>,
+
+    pub(crate) unkept: Option<crate::cache::Unkept>,
 }
 
 impl ModuleImage {
@@ -599,6 +601,7 @@ impl ModuleImage {
             ),
             views: std::sync::OnceLock::new(),
             debug_file,
+            unkept: None,
             tables,
         })
     }
@@ -614,6 +617,11 @@ impl ModuleImage {
     #[must_use]
     pub const fn separate_debug_file(&self) -> Option<&crate::DebugFile> {
         self.debug_file.as_ref()
+    }
+
+    #[must_use]
+    pub const fn unkept_in_cache(&self) -> Option<&crate::cache::Unkept> {
+        self.unkept.as_ref()
     }
 
     #[must_use]

@@ -4240,6 +4240,8 @@ impl RunLines {
     }
 
     pub(super) async fn finish(mut self, renderer: Renderer) -> String {
+        let mut images = Vec::new();
+
         for (debugger, module) in std::mem::take(&mut self.loaded) {
             if let Ok(image) = debugger.loaded_module_image(module).await {
                 self.lines.extend(
@@ -4255,8 +4257,15 @@ impl RunLines {
                         renderer.paint(Role::Warning, "warning")
                     )
                 }));
+                images.push(image);
             }
         }
+
+        self.lines.extend(
+            crate::present::debug_information::unkept_images(&images)
+                .into_iter()
+                .map(|warning| format!("{}: {warning}", renderer.paint(Role::Warning, "warning"))),
+        );
         self.lines.join("\n")
     }
 }

@@ -422,19 +422,20 @@ impl Cli {
     pub async fn debug_information_warnings(&self) -> Vec<String> {
         let program = self.debugger().module_image();
         let mut warnings = crate::present::debug_information::warnings(&program, true);
+        let mut images = vec![std::sync::Arc::clone(&program)];
 
-        let Ok(loaded) = self.debugger().loaded_modules().await else {
-            return warnings;
-        };
-
-        for record in loaded.modules.iter() {
-            if let Ok(image) = self.debugger().loaded_module_image(record.module.id).await
-                && image.id() != program.id()
-            {
-                warnings.extend(crate::present::debug_information::warnings(&image, false));
+        if let Ok(loaded) = self.debugger().loaded_modules().await {
+            for record in loaded.modules.iter() {
+                if let Ok(image) = self.debugger().loaded_module_image(record.module.id).await
+                    && image.id() != program.id()
+                {
+                    warnings.extend(crate::present::debug_information::warnings(&image, false));
+                    images.push(image);
+                }
             }
         }
 
+        warnings.extend(crate::present::debug_information::unkept_images(&images));
         warnings
     }
 

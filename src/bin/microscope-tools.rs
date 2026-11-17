@@ -360,7 +360,13 @@ fn run(args: Args) -> Result<bool> {
             if let Err(error) = &measured.outcome {
                 eprintln!("{}: {error}", program.display());
             }
-            Ok(measured.outcome.is_ok())
+            if let Some(why) = &measured.unkept_in_cache {
+                eprintln!(
+                    "{}: image not kept in the image cache {why}",
+                    program.display()
+                );
+            }
+            Ok(measured.outcome.is_ok() && measured.unkept_in_cache.is_none())
         }
         Tool::Warm { paths } => {
             if args.cache.is_none() {
@@ -373,12 +379,19 @@ fn run(args: Args) -> Result<bool> {
                 println!("{}: {error}", path.display());
             }
 
+            for (path, why) in &warmed.unkept {
+                println!(
+                    "{}: image not kept in the image cache {why}",
+                    path.display()
+                );
+            }
+
             println!(
                 "{} modules in the image cache, {} that do not load",
                 warmed.loaded,
                 warmed.failed.len()
             );
-            Ok(true)
+            Ok(warmed.unkept.is_empty())
         }
 
         Tool::Timings {

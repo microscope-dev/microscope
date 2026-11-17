@@ -1145,7 +1145,8 @@ fn load_debug_info_kind(
         id: image_id,
     };
 
-    let built = |tables| bind(&binding, Arc::new(tables)).map_err(DwarfError::Binding);
+    let built =
+        |tables, unkept| bind(&binding, Arc::new(tables), unkept).map_err(DwarfError::Binding);
     let read = |separate: Option<&super::separate::DebugFile>, supplementary: &Supplementary| {
         let rejected = rejected
             .as_ref()
@@ -1165,7 +1166,7 @@ fn load_debug_info_kind(
         let read = read(separate.as_ref(), &supplementary)?;
 
         drop((separate, supplementary, rejected));
-        return Ok((built(read.seal()?)?, CacheOutcome::Off));
+        return Ok((built(read.seal()?, None)?, CacheOutcome::Off));
     };
 
     let phase = crate::span!("cache.read");
@@ -1192,7 +1193,7 @@ fn load_debug_info_kind(
 
     let key = crate::cache::Key::of(&inputs);
     let outcome = match cache.get(key) {
-        crate::cache::Lookup::Hit { image, stamp } => match bind(&binding, image) {
+        crate::cache::Lookup::Hit { image, stamp } => match bind(&binding, image, None) {
             Ok(info) => {
                 crate::count!("cache_hits", 1);
                 return Ok((info, CacheOutcome::Hit));
@@ -1216,12 +1217,13 @@ fn load_debug_info_kind(
     drop((separate, supplementary, rejected));
     let tables = read.seal()?;
     let phase = crate::span!("cache.write");
-    if let Err(error) = cache.put(key, &tables) {
-        crate::cache::unwritten(path, &error);
-    }
+    let unkept = cache
+        .put(key, &tables)
+        .err()
+        .map(|error| crate::cache::unwritten(path, &error));
 
     drop(phase);
-    Ok((built(tables)?, outcome))
+    Ok((built(tables, unkept)?, outcome))
 }
 
 fn read_debug_info(
@@ -1813,8 +1815,11 @@ fn load_image(
 fn bind(
     binding: &Binding,
     tables: Arc<crate::image::Image>,
+    unkept: Option<crate::cache::Unkept>,
 ) -> std::result::Result<DebugInfo, crate::image::facts::Unbound> {
-    let image = Arc::new(ModuleImage::bind(binding, tables)?);
+    let mut image = ModuleImage::bind(binding, tables)?;
+    image.unkept = unkept;
+    let image = Arc::new(image);
     Ok(DebugInfo {
         unwind: Arc::new(DwarfUnwindInfo {
             tables: Arc::clone(image.tables()),

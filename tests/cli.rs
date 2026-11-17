@@ -36,6 +36,48 @@ fn tools_load_reports_failure_in_both_json_and_exit_status() {
 
 #[cfg(feature = "tools")]
 #[test]
+fn tools_fail_when_the_cache_cannot_keep_an_image() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let scratch = support::ScratchDir::new("tools-cache-unwritable");
+    let cache = scratch.path().join("images");
+    fs::create_dir(&cache).unwrap();
+    fs::set_permissions(&cache, fs::Permissions::from_mode(0o500)).unwrap();
+    let run = |tool: &str| {
+        Command::new(env!("CARGO_BIN_EXE_microscope-tools"))
+            .arg("--cache")
+            .arg(&cache)
+            .arg(tool)
+            .arg(fixture(BASIC))
+            .output()
+            .unwrap()
+    };
+    let loaded = run("load");
+    let warmed = run("warm");
+    fs::set_permissions(&cache, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let measured: serde_json::Value = serde_json::from_slice(&loaded.stdout).unwrap();
+    assert!(measured["outcome"].get("Ok").is_some(), "{loaded:?}");
+    assert!(!loaded.status.success(), "{loaded:?}");
+    assert!(
+        String::from_utf8_lossy(&loaded.stderr).contains("image not kept in the image cache"),
+        "{loaded:?}"
+    );
+
+    let summary = String::from_utf8_lossy(&warmed.stdout);
+    assert!(!warmed.status.success(), "{warmed:?}");
+    assert!(
+        summary.contains("image not kept in the image cache"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("0 modules in the image cache, 0 that do not load"),
+        "{summary}"
+    );
+}
+
+#[cfg(feature = "tools")]
+#[test]
 fn bench_smoke_checks_the_nix_corpus_without_host_worker_or_cache_settings() {
     let scratch = support::ScratchDir::new("bench-smoke");
     let report = scratch.path().join("measurements.json");
@@ -5538,6 +5580,8 @@ fn backtraces_show_the_functions_that_left_by_tail_calls() {
 
 #[test]
 fn sessions_cache_images_unless_told_not_to() {
+    use std::os::unix::fs::PermissionsExt as _;
+
     let directory = support::ScratchDir::new("cli-image-cache");
     let entries = |cache: &std::path::Path| {
         std::fs::read_dir(cache).map_or(0, |entries| {
@@ -5585,6 +5629,18 @@ fn sessions_cache_images_unless_told_not_to() {
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
         stderr.contains("warning: cannot use the image cache"),
+        "{stderr}"
+    );
+    assert!(assert_success(output).contains("breakpoint 1"));
+
+    let unwritable = directory.path().join("unwritable");
+    std::fs::create_dir(&unwritable).unwrap();
+    std::fs::set_permissions(&unwritable, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let output = session(&unwritable, &[]);
+    std::fs::set_permissions(&unwritable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("basic's image was not kept in the image cache"),
         "{stderr}"
     );
     assert!(assert_success(output).contains("breakpoint 1"));

@@ -1070,7 +1070,11 @@ impl Session {
             return Ok(());
         };
 
-        for warning in crate::present::debug_information::warnings(&handle.module_image(), true) {
+        let program = handle.module_image();
+        for warning in crate::present::debug_information::warnings(&program, true)
+            .into_iter()
+            .chain(crate::present::debug_information::unkept_images(&[program]))
+        {
             self.client.important(warning).await?;
         }
 

@@ -1600,40 +1600,16 @@ fn debug_information_notes(profile: &Profile) -> Vec<String> {
         })
         .collect::<Vec<_>>();
 
-    let mut unwritten = std::collections::BTreeMap::<&str, Vec<&str>>::new();
-    for (key, value) in &settings {
-        if let Some(module) = key.strip_prefix("image cache ") {
-            unwritten.entry(value).or_default().push(module);
-        }
-    }
-    for (why, modules) in unwritten {
-        let (location, error) = why.split_once(": ").unwrap_or((why, "unknown"));
-        notes.push(match modules.as_slice() {
-            [module] => format!(
-                "{module}'s image was not kept in the image cache {location}, so the next \
-                 recording reads its debug information again: {error}."
-            ),
-            [first, second, rest @ ..] => {
-                let name = |module: &&str| {
-                    std::path::Path::new(module).file_name().map_or_else(
-                        || (*module).to_owned(),
-                        |name| name.to_string_lossy().into_owned(),
-                    )
-                };
-                let named = match rest {
-                    [] => format!("{} and {}", name(first), name(second)),
-                    [third] => format!("{}, {}, and {}", name(first), name(second), name(third)),
-                    more => format!("{}, {}, and {} more", name(first), name(second), more.len()),
-                };
-                format!(
-                    "{} images were not kept in the image cache {location}, so the next \
-                     recording reads their debug information again: {error}. They are {named}.",
-                    modules.len()
-                )
-            }
-            [] => continue,
-        });
-    }
+    let unkept = settings.iter().filter_map(|(key, value)| {
+        let module = key.strip_prefix("image cache ")?;
+        let (location, error) = value.split_once(": ").unwrap_or((value, "unknown"));
+        Some((module, location, error))
+    });
+    notes.extend(
+        crate::present::debug_information::unkept_notes(unkept, "recording")
+            .into_iter()
+            .map(|note| format!("{note}.")),
+    );
 
     notes
 }

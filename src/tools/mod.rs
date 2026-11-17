@@ -23,6 +23,9 @@ pub struct Measured {
 
     #[serde(default)]
     pub retained_parts: Vec<(String, i64)>,
+
+    #[serde(default)]
+    pub unkept_in_cache: Option<String>,
 }
 
 pub fn measure_load(path: &Path, instructions: bool) -> anyhow::Result<Measured> {
@@ -37,7 +40,9 @@ pub fn measure_load(path: &Path, instructions: bool) -> anyhow::Result<Measured>
     let report = recording.finish()?;
     let counted = report.summary.allocations.is_some();
     let mut retained_parts = Vec::new();
+    let mut unkept_in_cache = None;
     let outcome = loaded.map(|loaded| {
+        unkept_in_cache = loaded.image.unkept_in_cache().map(ToString::to_string);
         let live = || crate::timings::alloc::totals().live_bytes;
         let mut freed = |name: &str, part: Box<dyn FnOnce() + '_>| {
             let held = live();
@@ -60,6 +65,7 @@ pub fn measure_load(path: &Path, instructions: bool) -> anyhow::Result<Measured>
         report,
         retained_heap_bytes: counted.then_some(retained),
         retained_parts: if counted { retained_parts } else { Vec::new() },
+        unkept_in_cache,
     })
 }
 
@@ -68,6 +74,8 @@ pub struct Warmed {
     pub loaded: usize,
 
     pub failed: Vec<(PathBuf, String)>,
+
+    pub unkept: Vec<(PathBuf, String)>,
 }
 
 pub fn warm(paths: &[PathBuf]) -> anyhow::Result<Warmed> {
@@ -83,7 +91,11 @@ pub fn warm(paths: &[PathBuf]) -> anyhow::Result<Warmed> {
             .par_iter()
             .map(|path| {
                 crate::debug_info::load_module(path, crate::ModuleImageId::new(0), &search)
-                    .map(drop)
+                    .map(|info| {
+                        info.image
+                            .unkept_in_cache()
+                            .map(|why| (path.clone(), why.to_string()))
+                    })
                     .map_err(|error| (path.clone(), error.to_string()))
             })
             .collect::<Vec<_>>()
@@ -92,7 +104,8 @@ pub fn warm(paths: &[PathBuf]) -> anyhow::Result<Warmed> {
     let mut warmed = Warmed::default();
     for load in loads {
         match load {
-            Ok(()) => warmed.loaded += 1,
+            Ok(None) => warmed.loaded += 1,
+            Ok(Some(unkept)) => warmed.unkept.push(unkept),
             Err(failure) => warmed.failed.push(failure),
         }
     }
