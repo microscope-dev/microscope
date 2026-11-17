@@ -31,7 +31,7 @@ line = target.__code__.co_firstlineno + 1
 probe = ('LINE', 1, 42, __file__, line, '')
 records = []
 depths = []
-limit = 1001 if sys.argv[2] == "chain" else 1
+limit = 101 if sys.argv[2] == "chain" else 1
 
 def queue(generation, probes):
     payload = json.dumps([generation, probes]).encode()
