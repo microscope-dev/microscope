@@ -304,7 +304,6 @@ fn quoted(path: &Path) -> OsString {
 
 fn launches_node(executable: &Path) -> bool {
     use object::read::elf::{Dyn as _, SectionHeader as _};
-    use object::{Object as _, ObjectSymbol as _};
 
     let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
@@ -337,10 +336,32 @@ fn launches_node(executable: &Path) -> bool {
         })
     });
 
-    library
-        || elf
-            .dynamic_symbols()
-            .any(|symbol| symbol.name_bytes() == Ok(b"napi_module_register".as_slice()))
+    library || dynamic_symbol(&elf, &data, b"napi_module_register").is_some()
+}
+
+pub(super) fn dynamic_symbol<'data, R: object::ReadRef<'data>>(
+    elf: &object::read::elf::ElfFile64<'data, object::Endianness, R>,
+    data: R,
+    name: &[u8],
+) -> Option<&'data object::elf::Sym64<object::Endianness>> {
+    use object::read::elf::{SectionHeader as _, Sym as _};
+
+    let endian = elf.endian();
+    let sections = elf.elf_section_table();
+    let symbols = sections
+        .symbols(endian, data, object::elf::SHT_DYNSYM)
+        .ok()?;
+    let strings = sections
+        .section(symbols.string_section())
+        .ok()?
+        .data(endian, data)
+        .ok()?;
+    let strings = object::read::StringTable::new(strings, 0, strings.len() as u64);
+
+    symbols
+        .symbols()
+        .iter()
+        .find(|symbol| symbol.name(endian, strings) == Ok(name))
 }
 
 #[cfg(test)]

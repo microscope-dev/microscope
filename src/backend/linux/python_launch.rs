@@ -247,8 +247,8 @@ impl Drop for PythonLaunch {
 }
 
 fn launches_bootstrapped_python(executable: &Path) -> bool {
-    use object::read::elf::{Dyn as _, SectionHeader as _};
-    use object::{Object as _, ObjectSection as _, ObjectSymbol as _, ReadRef as _};
+    use object::read::elf::{Dyn as _, SectionHeader as _, Sym as _};
+    use object::{Object as _, ObjectSection as _, ReadRef as _};
 
     let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
@@ -286,12 +286,18 @@ fn launches_bootstrapped_python(executable: &Path) -> bool {
         return true;
     }
 
-    elf.dynamic_symbols()
-        .find(|symbol| symbol.name() == Ok("Py_Version"))
+    super::node_launch::dynamic_symbol(&elf, &data, b"Py_Version")
         .and_then(|symbol| {
-            let section = elf.section_by_index(symbol.section_index()?).ok()?;
+            let index = symbol.st_shndx(endian);
+            if index == object::elf::SHN_UNDEF || index >= object::elf::SHN_LORESERVE {
+                return None;
+            }
+
+            let section = elf
+                .section_by_index(object::SectionIndex(usize::from(index)))
+                .ok()?;
             let (offset, _) = section.file_range()?;
-            let within = symbol.address().checked_sub(section.address())?;
+            let within = symbol.st_value(endian).checked_sub(section.address())?;
             let bytes = data.read_bytes_at(offset.checked_add(within)?, 4).ok()?;
             Some(u32::from_le_bytes(bytes.try_into().ok()?))
         })
