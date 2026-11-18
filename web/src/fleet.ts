@@ -23,7 +23,7 @@ export interface Group {
   went_quiet_24h: number;
   live_min_7d: number;
   live_max_7d: number;
-  hours: number[];
+  hours: (number | null)[];
   first_hour: number | null;
 }
 

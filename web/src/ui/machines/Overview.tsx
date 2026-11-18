@@ -51,7 +51,7 @@ function GroupRow({ group }: { group: Group }) {
         <span className="n">{group.live}</span>
         <span className="n">{range}</span>
         <span className="machines-chart">
-          {group.hours.some((live) => live > 0) ? (
+          {group.hours.some((live) => live !== null && live > 0) ? (
             <Sparkline hours={group.hours} label={`Live per hour over 7 days: ${range}`} />
           ) : (
             <span className="muted">no history yet</span>

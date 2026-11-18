@@ -130,16 +130,41 @@ export function Ask(props: {
   );
 }
 
-export function Sparkline({ hours, label }: { hours: readonly number[]; label: string }) {
+export function sparkRuns(
+  hours: readonly (number | null)[],
+  width: number,
+  height: number,
+): string[] {
+  const top = Math.max(1, ...hours.map((live) => live ?? 0));
+  const step = width / Math.max(1, hours.length - 1);
+  const runs: [number, number][][] = [];
+  let run: [number, number][] | null = null;
+  for (const [at, live] of hours.entries()) {
+    if (live === null) {
+      run = null;
+      continue;
+    }
+    if (run === null) {
+      run = [];
+      runs.push(run);
+    }
+    run.push([at * step, height - 1 - (live / top) * (height - 2)]);
+  }
+
+  return runs.map((points) => {
+    const [only] = points;
+    if (points.length === 1 && only) {
+      const [x, y] = only;
+      points.splice(0, 1, [Math.max(0, x - step / 4), y], [Math.min(width, x + step / 4), y]);
+    }
+    return points.map(([x, y]) => `${x},${y}`).join(" ");
+  });
+}
+
+export function Sparkline({ hours, label }: { hours: readonly (number | null)[]; label: string }) {
   const width = 168;
   const height = 24;
-  const top = Math.max(1, ...hours);
-  const points = hours
-    .map(
-      (live, at) =>
-        `${(at / Math.max(1, hours.length - 1)) * width},${height - 1 - (live / top) * (height - 2)}`,
-    )
-    .join(" ");
+  const runs = sparkRuns(hours, width, height);
   return (
     <svg
       className="machines-spark"
@@ -149,13 +174,16 @@ export function Sparkline({ hours, label }: { hours: readonly number[]; label: s
       role="img"
       aria-label={label}
     >
-      <polyline
-        points={points}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        vectorEffect="non-scaling-stroke"
-      />
+      {runs.map((points) => (
+        <polyline
+          key={points}
+          points={points}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
     </svg>
   );
 }
