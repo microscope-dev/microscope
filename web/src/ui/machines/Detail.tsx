@@ -308,6 +308,15 @@ export function DetailPanel(props: {
       <button type="button" className="link-button machines-back" onClick={props.back}>
         Back to the list
       </button>
+      <button
+        type="button"
+        className="machines-close"
+        aria-label="Close machine"
+        title="Close"
+        onClick={props.back}
+      >
+        ×
+      </button>
       {loaded.data ? (
         <Panel detail={loaded.data} owner={props.owner} now={props.now} changed={refresh} />
       ) : (

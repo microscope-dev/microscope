@@ -4864,6 +4864,7 @@ li:hover > .frame-links .link-button,
   min-height: 0;
   padding: 12px 14px;
   overflow: auto;
+  container-type: size;
 }
 
 .machines-rows ul {
@@ -4972,16 +4973,47 @@ button.machines-row:hover,
 }
 
 .machines-detail {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
   flex: 0 0 400px;
   min-width: 0;
+  max-height: calc(100cqh - 24px);
   padding-left: 14px;
   border-left: 1px solid var(--line);
+  overflow-y: auto;
 }
 
 .machines-detail h3 {
   margin: 0 0 4px;
+  padding-right: 28px;
   font-size: 13.5px;
   overflow-wrap: anywhere;
+}
+
+.machines-close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.machines-close:hover,
+.machines-close:focus-visible {
+  background: var(--select-bg);
+  color: var(--ink);
 }
 
 .machines-detail h4 {
@@ -5414,15 +5446,22 @@ button.machines-row:hover,
   }
 
   .machines-detail {
+    position: static;
     flex: 1 1 auto;
+    max-height: none;
     padding-left: 0;
     border-left: 0;
+    overflow-y: visible;
   }
 
   .machines-back {
     display: inline-flex;
     min-height: 44px;
     align-items: center;
+  }
+
+  .machines-close {
+    display: none;
   }
 
   .machines-table {

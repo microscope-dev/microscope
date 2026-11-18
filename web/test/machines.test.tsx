@@ -405,6 +405,32 @@ it("says why it could not load, keeps the window open, and tries again", async (
   await expect.element(machines().getByText(/^55 live in 2 groups/u)).toBeVisible();
 });
 
+it("closes a machine when its row is clicked again or its x is", async () => {
+  services({
+    "GET /api/fleet": [200, overview()],
+    "GET /api/fleet/keys": [200, []],
+    "GET /api/fleet/machines": [
+      200,
+      { machines: [machine(81723, "db-03")], next: null, newest_version: null },
+    ],
+    "GET /api/fleet/machines/81723": [200, detail({ hostname: "db-03" })],
+  });
+  mount("/#machines/list");
+
+  const row = machines().getByRole("button", { name: "db-03, live" });
+  const panel = machines().getByRole("complementary", { name: "Machine" });
+  await row.click();
+  await expect.element(panel.getByRole("heading", { name: "db-03" })).toBeVisible();
+  await row.click();
+  await expect.poll(() => fragment()).toBe("machines/list");
+  expect(panel.query()).toBeNull();
+
+  await row.click();
+  await panel.getByRole("button", { name: "Close machine" }).click();
+  await expect.poll(() => fragment()).toBe("machines/list");
+  expect(panel.query()).toBeNull();
+});
+
 it("searches every state, marks the match, and says which address matched when it is not shown", async () => {
   const asked = services({
     "GET /api/fleet": [200, overview()],

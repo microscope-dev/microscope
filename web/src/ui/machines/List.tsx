@@ -209,8 +209,11 @@ function walk(event: KeyboardEvent<HTMLButtonElement>) {
 }
 
 function Row({ machine, look, now }: { machine: Machine; look: Look; now: number }) {
-  const open = useCallback(() => setLook({ machine: machine.id }), [machine.id]);
   const chosen = look.machine === machine.id;
+  const open = useCallback(
+    () => setLook({ machine: chosen ? null : machine.id }),
+    [chosen, machine.id],
+  );
   return (
     <li>
       <button
