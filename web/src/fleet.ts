@@ -145,8 +145,14 @@ export interface Detail {
     stopped_at: number | null;
     last_seen_at: number;
   } | null;
-  shares_host_ids: { source: string; live_machines: number }[];
+  shares_host_ids: SharedHostId[];
   warnings: Warning[];
+}
+
+export interface SharedHostId {
+  kind: "same_image" | "same_machine";
+  source: string;
+  live_machines: number;
 }
 
 export interface EnrollmentKey {
@@ -402,6 +408,16 @@ export function ago(at: number, now: number): string {
 
 export function memory(mib: number): string {
   return mib >= 1024 ? `${Math.round(mib / 1024)} GB` : `${mib} MB`;
+}
+
+export function sharedText({ kind, source, live_machines: count }: SharedHostId): string {
+  const one = count === 1;
+  if (kind === "same_machine") {
+    return one
+      ? `One other live agent reports the same ${source}, so it runs on this machine too.`
+      : `${count} other live agents report the same ${source}, so they run on this machine too.`;
+  }
+  return `${one ? "One other live machine has" : `${count} other live machines have`} the same ${source}. They may be copies of one disk image that was not emptied before capture.`;
 }
 
 export function parseLabels(text: string): Record<string, string> | string {

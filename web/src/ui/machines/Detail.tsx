@@ -1,7 +1,16 @@
 import { type ReactNode, useCallback, useState } from "react";
 
 import { copyText } from "../../clipboard";
-import { ago, type Detail, fleetApi, labelText, lookHash, HOME, memory } from "../../fleet";
+import {
+  ago,
+  type Detail,
+  fleetApi,
+  labelText,
+  lookHash,
+  HOME,
+  memory,
+  sharedText,
+} from "../../fleet";
 import { Loading, useLoaded } from "../Orgs";
 import { Ask, Dot, OwnerButton, STATE_LABEL, WARNING_LABEL } from "./parts";
 
@@ -184,11 +193,8 @@ function History({ detail, now }: { detail: Detail; now: number }) {
         </p>
       ))}
       {detail.shares_host_ids.map((shared) => (
-        <p key={shared.source} className="machines-warning-text">
-          {shared.live_machines === 1
-            ? `One other live machine has the same ${shared.source}.`
-            : `${shared.live_machines} other live machines have the same ${shared.source}.`}{" "}
-          They may be copies of one disk image.
+        <p key={`${shared.kind} ${shared.source}`} className="machines-warning-text">
+          {sharedText(shared)}
         </p>
       ))}
     </section>

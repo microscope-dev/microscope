@@ -12,6 +12,7 @@ import {
   memory,
   parseLabels,
   parseLook,
+  sharedText,
   shownState,
   snippet,
   type View,
@@ -137,6 +138,21 @@ describe("words for times and sizes", () => {
     expect(day(1_802_649_599)).toBe("14 Feb 2027");
     expect(memory(512)).toBe("512 MB");
     expect(memory(32_768)).toBe("32 GB");
+  });
+
+  it("tells one machine with several agents from copies of one image", () => {
+    expect(sharedText({ kind: "same_machine", source: "smbios-uuid", live_machines: 1 })).toBe(
+      "One other live agent reports the same smbios-uuid, so it runs on this machine too.",
+    );
+    expect(sharedText({ kind: "same_machine", source: "smbios-uuid", live_machines: 2 })).toBe(
+      "2 other live agents report the same smbios-uuid, so they run on this machine too.",
+    );
+    expect(sharedText({ kind: "same_image", source: "machine-id", live_machines: 1 })).toBe(
+      "One other live machine has the same machine-id. They may be copies of one disk image that was not emptied before capture.",
+    );
+    expect(sharedText({ kind: "same_image", source: "machine-id", live_machines: 40 })).toBe(
+      "40 other live machines have the same machine-id. They may be copies of one disk image that was not emptied before capture.",
+    );
   });
 });
 

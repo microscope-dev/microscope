@@ -381,7 +381,15 @@ it("opens a machine beside the list, and walks the rows with the arrow keys", as
         newest_version: null,
       },
     ],
-    "GET /api/fleet/machines/81723": [200, detail()],
+    "GET /api/fleet/machines/81723": [
+      200,
+      detail({
+        shares_host_ids: [
+          { kind: "same_image", source: "machine-id", live_machines: 3 },
+          { kind: "same_machine", source: "smbios-uuid", live_machines: 1 },
+        ],
+      }),
+    ],
   });
   mount("/#machines/list");
 
@@ -396,6 +404,10 @@ it("opens a machine beside the list, and walks the rows with the arrow keys", as
   await expect.element(panel.getByText("BPF, perf events, ptrace")).toBeVisible();
   await expect.element(panel.getByText("2 container bridges not listed")).toBeVisible();
   await expect.element(panel.getByText(/Enrolled 3 days ago with key prod-eks\./u)).toBeVisible();
+  await expect
+    .element(panel.getByText(/^3 other live machines have the same machine-id\./u))
+    .toBeVisible();
+  await expect.element(panel.getByText(/so it runs on this machine too\.$/u)).toBeVisible();
   expect(fragment()).toBe("machines/m/81723");
 
   await userEvent.keyboard("{ArrowDown}");
