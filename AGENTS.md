@@ -34,3 +34,24 @@ Use the `justfile` for project tasks. Run `just --list` to see available recipes
     - You may write code comments if the compiler/linter requires it (i.e. unsafe).
 - Keep files under 1500 lines (excluding tests) and ensure the code is logically organized so it's easy to consume later.
 
+## Code Map
+
+One Rust crate (`src/`), plus a TypeScript web UI (`web/`).
+
+- `src/backend/linux/`: ptrace tracer, run control, stepping, breakpoints/watchpoints, frames, memory, core dumps, BPF (`bpf/`), perf (`perf/`), CDP inspector, syscalls
+- `src/debug_info/`: ELF, DWARF, gopclntab, CPython, V8, GDB JIT, perf maps, JS source maps
+- `src/image/`: indexed, cached per-binary facts (symbols, lines, types, variables, unwind)
+- `src/runtime_model/`: language runtimes (`go/`, `python/`, `node/`, `rust/`, `tokio/`, futures)
+- `src/eval/`: expression language (parse in `syntax/`, bind, IR, interpret)
+- `src/view/` + `views/*.views`: type visualizer DSL and the built-in visualizers
+- `src/unwind/`: stack unwinding
+- `src/profiler/`, `src/capture/`, `src/analysis/`: sampling profiler, capture files, profile queries/diffs
+- `src/syscalls/`: syscall tables (`*.gen.rs` are generated), filters, decoding
+- Frontends: `src/cli/` (REPL), `src/dap/` (Debug Adapter Protocol), `src/web/` (server for `web/`), `src/present/` (shared formatting)
+- `src/agent/`: remote machine agent, cloud, inventory, wire protocol
+- `src/group.rs`: multi-process groups; `src/model.rs`: core newtypes (`Pid`, `Tid`, ...); `src/protocol.rs`: shared query types
+- `src/sim/`: deterministic simulation (`just sim`); `src/tools/` + `src/bin/`: internal tools
+- `web/src/` UI, `web/test/` unit tests, `web/e2e/` Playwright
+- `tests/`: integration tests by area (`debugger/`, `dap/`, `go/`, `python/`, `node/`, `tokio/`, `web/`, `golden/`); `tests/fixtures/<lang>/` debuggee programs; `tests/support/` harness helpers
+- `fuzz/`, `loom/`, `proptest-regressions/`, `bench/`: fuzz targets, loom models, saved proptest cases, benchmarks
+- `sdk/`: in-process probe SDKs per language; `editors/`: VS Code and Neovim integrations; `docs/`: user docs (VitePress)
