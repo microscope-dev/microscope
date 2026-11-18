@@ -52,6 +52,11 @@ ignore = true
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+skip = [
+    { crate = "base64@0.22", reason = "axum 0.8 uses base64 0.22 and ureq 3 uses 0.23" },
+    { crate = "getrandom@0.2", reason = "ring 0.17 uses getrandom 0.2 and rand_core 0.9 uses 0.3" },
+    { crate = "syn@2", reason = "tokio-macros, zerocopy-derive, ts-rs-macros, and strum_macros are still on syn 2" },
+]
 
 allow-wildcard-paths = true
 
