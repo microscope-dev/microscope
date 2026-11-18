@@ -5129,6 +5129,39 @@ button.machines-row:hover,
   font: inherit;
 }
 
+.machines-chip > label {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+}
+
+.machines-chip.set select {
+  padding-right: 2px;
+}
+
+.machines-chip-clear {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.machines-chip-clear:hover,
+.machines-chip-clear:focus-visible {
+  background: var(--select-bg);
+  color: var(--ink);
+}
+
 .machines-chip.add {
   border-style: dashed;
 }

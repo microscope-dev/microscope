@@ -215,7 +215,6 @@ export const fleetApi = {
       })}`,
     ),
   machine: (id: number) => request<Detail>("GET", `/api/fleet/machines/${id}`),
-  remove: (id: number) => request<undefined>("DELETE", `/api/fleet/machines/${id}`),
   revoke: (id: number) => request<undefined>("POST", `/api/fleet/machines/${id}/revoke`, null),
   keys: (org: number | null) => request<EnrollmentKey[]>("GET", `/api/fleet/keys${query({ org })}`),
   createKey: (key: NewKey) => request<CreatedKey>("POST", "/api/fleet/keys", key),

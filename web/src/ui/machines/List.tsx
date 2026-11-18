@@ -35,12 +35,22 @@ function TagChip(props: { look: Look; name: string; value: string; values: strin
     },
     [look.tags, name],
   );
-  const options = useMemo(() => [...(props.values ?? []), NONE], [props.values]);
+  const options = useMemo(() => [ANY, NONE, ...(props.values ?? [])], [props.values]);
+  const clear = useCallback(() => pick(ANY), [pick]);
   const names = useCallback(
     (value: string) => (value === ANY ? "any" : value === NONE ? "none" : value),
     [],
   );
-  return <Chip label={name} value={props.value} options={options} names={names} pick={pick} />;
+  return (
+    <Chip
+      label={name}
+      value={props.value}
+      options={options}
+      names={names}
+      pick={pick}
+      clear={clear}
+    />
+  );
 }
 
 function AddTag({ look, overview }: { look: Look; overview: Overview }) {
@@ -104,9 +114,13 @@ function Chips(props: { look: Look; overview: Overview; keys: EnrollmentKey[] | 
     (value: string) =>
       value === ANY
         ? ANY
-        : (keys?.find((each) => String(each.id) === value)?.name ?? `key ${value}`),
+        : (keys?.find((each) => String(each.id) === value)?.name ?? `enrollment key ${value}`),
     [keys],
   );
+  const clearState = useCallback(() => setLook({ state: null, machine: null }), []);
+  const clearEnvironment = useCallback(() => environment(ANY), [environment]);
+  const clearVersion = useCallback(() => version(ANY), [version]);
+  const clearKey = useCallback(() => key(ANY), [key]);
   const stateName = useCallback(
     (value: string) => (value === ANY ? "any" : STATE_LABEL[value as keyof typeof STATE_LABEL]),
     [],
@@ -119,26 +133,30 @@ function Chips(props: { look: Look; overview: Overview; keys: EnrollmentKey[] | 
         options={STATE_CHOICES}
         names={stateName}
         pick={state}
+        clear={look.state === null ? undefined : clearState}
       />
       <Chip
         label="Environment"
         value={look.environment ?? ANY}
         options={overview.environments}
         pick={environment}
+        clear={look.environment === null ? undefined : clearEnvironment}
       />
       <Chip
         label="Version"
         value={look.version ?? ANY}
         options={overview.versions}
         pick={version}
+        clear={look.version === null ? undefined : clearVersion}
       />
       {keys !== null && (keys.length > 0 || look.key !== null) && (
         <Chip
-          label="Key"
+          label="Enrollment key"
           value={look.key === null ? ANY : String(look.key)}
           options={keyIds}
           names={keyName}
           pick={key}
+          clear={look.key === null ? undefined : clearKey}
         />
       )}
       {Object.entries(look.tags).map(([name, value]) => (
@@ -316,11 +334,6 @@ export function ListView(props: {
   const { look, overview, now, changed } = props;
   const { machines, error, next, showMore, again } = useMachines(look);
   const back = useCallback(() => setLook({ machine: null }), []);
-  const gone = useCallback(() => {
-    setLook({ machine: null });
-    again();
-    changed();
-  }, [again, changed]);
   const refresh = useCallback(() => {
     again();
     changed();
@@ -369,7 +382,6 @@ export function ListView(props: {
           owner={overview.role === "owner"}
           now={now}
           back={back}
-          gone={gone}
           changed={refresh}
         />
       )}

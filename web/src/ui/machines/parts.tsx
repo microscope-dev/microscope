@@ -173,8 +173,9 @@ export function Chip(props: {
   options: readonly string[];
   names?: (value: string) => string;
   pick: (value: string) => void;
+  clear?: (() => void) | undefined;
 }) {
-  const { pick } = props;
+  const { pick, clear } = props;
   const change = useCallback(
     (event: ChangeEvent<HTMLSelectElement>) => pick(event.target.value),
     [pick],
@@ -182,15 +183,28 @@ export function Chip(props: {
   const listed = props.options.includes(ANY) ? props.options : [ANY, ...props.options];
   const options = listed.includes(props.value) ? listed : [...listed, props.value];
   return (
-    <label className="machines-chip">
-      <span>{props.label}</span>
-      <select value={props.value} onChange={change}>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {props.names ? props.names(option) : option}
-          </option>
-        ))}
-      </select>
-    </label>
+    <span className={`machines-chip${clear ? " set" : ""}`}>
+      <label>
+        <span>{props.label}</span>
+        <select value={props.value} onChange={change}>
+          {options.map((option) => (
+            <option key={option} value={option}>
+              {props.names ? props.names(option) : option}
+            </option>
+          ))}
+        </select>
+      </label>
+      {clear && (
+        <button
+          type="button"
+          className="machines-chip-clear"
+          aria-label={`Clear ${props.label}`}
+          title={`Clear ${props.label}`}
+          onClick={clear}
+        >
+          ×
+        </button>
+      )}
+    </span>
   );
 }

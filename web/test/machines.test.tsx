@@ -335,8 +335,44 @@ it("filters by tags that stack, and drops one set back to any", async () => {
     .toBe("?tags=team%3Dsearch%2Ccluster%3D");
   expect(machines().getByRole("combobox", { name: "Add tag filter" }).query()).toBeNull();
 
-  await machines().getByRole("combobox", { name: "team" }).selectOptions("any");
+  const team = machines().getByRole("combobox", { name: "team" });
+  expect(
+    Array.from(team.element().querySelectorAll("option"), (option) => option.textContent),
+  ).toEqual(["any", "none", "payments", "search"]);
+  await team.selectOptions("any");
   await expect.poll(() => fragment()).toBe("machines/list?tags=cluster%3D");
+
+  await machines().getByRole("button", { name: "Clear cluster" }).click();
+  await expect.poll(() => fragment()).toBe("machines/list");
+});
+
+it("clears any chip set away from its default with its x, and shows no x on the rest", async () => {
+  services({
+    "GET /api/fleet": [200, overview()],
+    "GET /api/fleet/keys": [200, [key(9, "prod-eks")]],
+    "GET /api/fleet/machines": [
+      200,
+      { machines: [machine(1, "web-1")], next: null, newest_version: null },
+    ],
+  });
+  mount("/#machines/list?state=any&environment=prod&version=0.4.1&key=9");
+
+  for (const name of ["State", "Environment", "Version", "Enrollment key"]) {
+    await machines()
+      .getByRole("button", { name: `Clear ${name}` })
+      .click();
+  }
+  await expect.poll(() => fragment()).toBe("machines/list");
+  expect(
+    machines()
+      .getByRole("button", { name: /^Clear/u })
+      .all(),
+  ).toHaveLength(0);
+
+  await machines().getByRole("tab", { name: "Overview" }).click();
+  await machines().getByRole("combobox", { name: "Split by" }).selectOptions("cluster");
+  await machines().getByRole("button", { name: "Clear Split by" }).click();
+  await expect.poll(() => fragment()).toBe("machines");
 });
 
 it("opens on adding machines when there are none, without tabs, a way back, or an organization picker", async () => {
@@ -503,7 +539,7 @@ it("opens a machine beside the list, and walks the rows with the arrow keys", as
     .toHaveFocus();
 });
 
-it("asks before removing, and Escape closes the question before the window", async () => {
+it("asks before revoking, and Escape closes the question before the window", async () => {
   const asked = services({
     "GET /api/fleet": [200, overview()],
     "GET /api/fleet/machines": [
@@ -511,24 +547,26 @@ it("asks before removing, and Escape closes the question before the window", asy
       { machines: [machine(81723, "db-03.ams1")], next: null, newest_version: null },
     ],
     "GET /api/fleet/machines/81723": [200, detail({ hostname: "db-03.ams1" })],
-    "DELETE /api/fleet/machines/81723": [204],
+    "POST /api/fleet/machines/81723/revoke": [204],
   });
   mount("/#machines/m/81723");
 
-  await page.getByRole("button", { name: "Remove" }).click();
-  const question = page.getByRole("alertdialog", { name: "Remove db-03.ams1?" });
-  await expect.poll(() => text(question)).toContain("it enrolls again as a new machine");
+  expect(page.getByRole("button", { name: "Remove" }).query()).toBeNull();
+  await page.getByRole("button", { name: "Revoke" }).click();
+  const question = page.getByRole("alertdialog", { name: "Revoke db-03.ams1?" });
+  await expect.poll(() => text(question)).toContain("Its agent stops soon");
   await expect.element(question.getByRole("button", { name: "Cancel" })).toHaveFocus();
   await userEvent.keyboard("{Escape}");
   expect(question.query()).toBeNull();
   await expect.element(machines()).toBeVisible();
 
-  await page.getByRole("button", { name: "Remove" }).click();
-  await question.getByRole("button", { name: "Remove" }).click();
+  await page.getByRole("button", { name: "Revoke" }).click();
+  await question.getByRole("button", { name: "Revoke" }).click();
   await expect
-    .poll(() => asked.some((one) => one.route === "DELETE /api/fleet/machines/81723"))
+    .poll(() => asked.some((one) => one.route === "POST /api/fleet/machines/81723/revoke"))
     .toBe(true);
-  await expect.poll(() => fragment()).toBe("machines/list");
+  expect(question.query()).toBeNull();
+  expect(fragment()).toBe("machines/m/81723");
 
   await userEvent.keyboard("{Escape}");
   await expect.poll(() => machinesWindow.getState().open).toBe(false);
@@ -625,7 +663,7 @@ it("lists a key's machines from its count, and the key chip names and clears the
   await expect
     .poll(() => asked.findLast((one) => one.route === "GET /api/fleet/machines")?.url.search)
     .toBe("?state=any&key=9");
-  const chip = machines().getByRole("combobox", { name: /Key/u });
+  const chip = machines().getByRole("combobox", { name: /Enrollment key/u });
   await expect.element(chip).toHaveDisplayValue("prod-eks");
   await chip.selectOptions("any");
   await expect.poll(() => fragment()).toBe("machines/list?state=any");
@@ -756,14 +794,14 @@ it("shows members everything, with the owners' buttons greyed and saying why", a
   });
   mount("/#machines/m/81723");
 
-  for (const name of ["Add machines", "Remove", "Revoke"]) {
+  for (const name of ["Add machines", "Revoke"]) {
     const button = machines().getByRole("button", { name, exact: true });
     await expect.element(button).toHaveAttribute("aria-disabled", "true");
     await expect.element(button).toHaveAttribute("title", "Only owners can do this");
   }
-  await machines().getByRole("button", { name: "Remove" }).click({ force: true });
+  await machines().getByRole("button", { name: "Revoke" }).click({ force: true });
   expect(page.getByRole("alertdialog").query()).toBeNull();
-  expect(asked.some((one) => one.route.startsWith("DELETE"))).toBe(false);
+  expect(asked.some((one) => one.route.startsWith("POST"))).toBe(false);
 });
 
 it("closes when its person signs out, and its menu greys out with the reason", async () => {

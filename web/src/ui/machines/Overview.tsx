@@ -56,6 +56,7 @@ function SplitPicker({ overview }: { overview: Overview }) {
     (value: string) => setLook({ split: value === ANY ? null : value, machine: null }),
     [],
   );
+  const clear = useCallback(() => pick(ANY), [pick]);
   if (keys.length === 0 && overview.split === null) {
     return null;
   }
@@ -67,6 +68,7 @@ function SplitPicker({ overview }: { overview: Overview }) {
         options={keys}
         names={splitName}
         pick={pick}
+        clear={overview.split === null ? undefined : clear}
       />
     </div>
   );

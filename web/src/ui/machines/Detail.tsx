@@ -204,19 +204,15 @@ function History({ detail, now }: { detail: Detail; now: number }) {
   );
 }
 
-type Asking = "remove" | "revoke" | null;
-
-function Actions(props: { detail: Detail; owner: boolean; gone: () => void; changed: () => void }) {
-  const { detail, owner, gone, changed } = props;
-  const [asking, setAsking] = useState<Asking>(null);
+function Actions(props: { detail: Detail; owner: boolean; changed: () => void }) {
+  const { detail, owner, changed } = props;
+  const [asking, setAsking] = useState(false);
   const [copied, setCopied] = useState<boolean | null>(null);
-  const remove = useCallback(() => setAsking("remove"), []);
-  const revoke = useCallback(() => setAsking("revoke"), []);
-  const cancel = useCallback(() => setAsking(null), []);
-  const removeIt = useCallback(() => fleetApi.remove(detail.id), [detail.id]);
+  const revoke = useCallback(() => setAsking(true), []);
+  const cancel = useCallback(() => setAsking(false), []);
   const revokeIt = useCallback(() => fleetApi.revoke(detail.id), [detail.id]);
   const revoked = useCallback(() => {
-    setAsking(null);
+    setAsking(false);
     changed();
   }, [changed]);
   const copy = useCallback(() => {
@@ -225,9 +221,6 @@ function Actions(props: { detail: Detail; owner: boolean; gone: () => void; chan
   }, [detail.id]);
   return (
     <div className="actions">
-      <OwnerButton owner={owner} onClick={remove}>
-        Remove
-      </OwnerButton>
       {detail.state !== "revoked" && (
         <OwnerButton owner={owner} className="button danger" onClick={revoke}>
           Revoke
@@ -241,23 +234,7 @@ function Actions(props: { detail: Detail; owner: boolean; gone: () => void; chan
           {copied ? "Copied" : "Could not copy"}
         </output>
       )}
-      {asking === "remove" && (
-        <Ask
-          title={`Remove ${detail.hostname}?`}
-          verb="Remove"
-          danger={false}
-          act={removeIt}
-          done={gone}
-          cancel={cancel}
-        >
-          <p>
-            It disappears from your machines. If its agent starts again, it enrolls again as a new
-            machine, linked to this one&apos;s history.
-          </p>
-          <p className="muted">To keep it out instead, revoke it.</p>
-        </Ask>
-      )}
-      {asking === "revoke" && (
+      {asking && (
         <Ask
           title={`Revoke ${detail.hostname}?`}
           verb="Revoke"
@@ -276,13 +253,7 @@ function Actions(props: { detail: Detail; owner: boolean; gone: () => void; chan
   );
 }
 
-function Panel(props: {
-  detail: Detail;
-  owner: boolean;
-  now: number;
-  gone: () => void;
-  changed: () => void;
-}) {
+function Panel(props: { detail: Detail; owner: boolean; now: number; changed: () => void }) {
   const { detail, now } = props;
   const since =
     detail.state === "revoked" && detail.revoked_at !== null
@@ -313,7 +284,7 @@ function Panel(props: {
       <Network detail={detail} />
       <Host detail={detail} />
       <History detail={detail} now={now} />
-      <Actions detail={detail} owner={props.owner} gone={props.gone} changed={props.changed} />
+      <Actions detail={detail} owner={props.owner} changed={props.changed} />
     </>
   );
 }
@@ -323,7 +294,6 @@ export function DetailPanel(props: {
   owner: boolean;
   now: number;
   back: () => void;
-  gone: () => void;
   changed: () => void;
 }) {
   const { id, changed } = props;
@@ -339,13 +309,7 @@ export function DetailPanel(props: {
         Back to the list
       </button>
       {loaded.data ? (
-        <Panel
-          detail={loaded.data}
-          owner={props.owner}
-          now={props.now}
-          gone={props.gone}
-          changed={refresh}
-        />
+        <Panel detail={loaded.data} owner={props.owner} now={props.now} changed={refresh} />
       ) : (
         <Loading error={loaded.error} what="this machine" />
       )}
