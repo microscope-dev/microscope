@@ -1,7 +1,6 @@
 import { useCallback } from "react";
 
 import { type Group, type Overview, setLook } from "../../fleet";
-import { Sparkline } from "./parts";
 
 function GroupRow({ group }: { group: Group }) {
   const open = useCallback(
@@ -39,7 +38,7 @@ function GroupRow({ group }: { group: Group }) {
       <button
         type="button"
         className="machines-row"
-        aria-label={`${group.environment ?? "no environment"}, ${group.cluster ?? "not Kubernetes"}: ${group.live} live now, ${range} in the last 7 days, ${group.enrolled_24h} enrolled and ${group.stopped_24h} stopped in 24 hours`}
+        aria-label={`${group.environment ?? "no environment"}, ${group.cluster ?? "not Kubernetes"}: ${group.live} live now, ${range} live over the last 7 days, ${group.enrolled_24h} enrolled and ${group.stopped_24h} stopped in 24 hours`}
         onClick={open}
       >
         <span className={group.environment ? "" : "muted"}>
@@ -50,13 +49,6 @@ function GroupRow({ group }: { group: Group }) {
         </span>
         <span className="n">{group.live}</span>
         <span className="n">{range}</span>
-        <span className="machines-chart">
-          {group.hours.some((live) => live !== null && live > 0) ? (
-            <Sparkline hours={group.hours} label={`Live per hour over 7 days: ${range}`} />
-          ) : (
-            <span className="muted">no history yet</span>
-          )}
-        </span>
         <span className="n">{group.enrolled_24h}</span>
         <span className="n">{group.stopped_24h}</span>
       </button>
@@ -84,8 +76,7 @@ export function OverviewView({ overview }: { overview: Overview }) {
           <span>Environment</span>
           <span>Cluster</span>
           <span className="n">Live now</span>
-          <span className="n">Last 7 days</span>
-          <span className="machines-chart">Live per hour, 7 days</span>
+          <span className="n">Live range, 7 days</span>
           <span className="n">Enrolled, 24 h</span>
           <span className="n">Stopped, 24 h</span>
         </div>

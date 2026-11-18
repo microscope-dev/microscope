@@ -4915,7 +4915,7 @@ button.machines-row:hover,
 }
 
 .machines-rows.overview .machines-row {
-  grid-template-columns: minmax(80px, 1fr) minmax(120px, 2fr) 70px 90px 170px 90px 90px;
+  grid-template-columns: minmax(80px, 1fr) minmax(120px, 2fr) 70px 130px 100px 100px;
 }
 
 .machines-rows.list .machines-row {
@@ -4954,13 +4954,6 @@ button.machines-row:hover,
 
 .machines-rows.overview {
   margin-right: 100px;
-}
-
-.machines-spark {
-  display: block;
-  color: var(--accent);
-  width: 168px;
-  height: 22px;
 }
 
 .machines-split {
@@ -5159,9 +5152,9 @@ button.machines-row:hover,
 
 .machines-ask {
   display: grid;
-  gap: 8px;
+  gap: 14px;
   width: min(460px, 100%);
-  padding: 16px 18px;
+  padding: 20px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
@@ -5194,6 +5187,18 @@ button.machines-row:hover,
 
 .machines-check input {
   margin-top: 3px;
+}
+
+.machines-key-action {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.machines-check-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-3);
+  font-size: 12px;
 }
 
 .machines-table tr.revoked td {

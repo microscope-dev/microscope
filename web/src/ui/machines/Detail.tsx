@@ -264,8 +264,8 @@ function Actions(props: { detail: Detail; owner: boolean; gone: () => void; chan
           cancel={cancel}
         >
           <p>
-            Its agent stops within 15 minutes and cannot come back with its key. To return, it needs
-            a new enrollment key.
+            Its agent stops soon and cannot come back with its key. To return, it needs a new
+            enrollment key.
           </p>
         </Ask>
       )}

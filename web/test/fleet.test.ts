@@ -17,7 +17,6 @@ import {
   snippet,
   type View,
 } from "../src/fleet";
-import { sparkRuns } from "../src/ui/machines/parts";
 
 const VIEWS: readonly View[] = ["overview", "list", "keys", "add", "newkey"];
 
@@ -38,6 +37,7 @@ const looks: fc.Arbitrary<Look> = fc
       environment: name,
       cluster: name,
       version: name,
+      key: fc.option(fc.integer({ min: 1, max: 2 ** 40 }), { nil: null }),
       machine: fc.constant(machine),
     }),
   );
@@ -139,29 +139,6 @@ describe("words for times and sizes", () => {
     expect(day(1_802_649_599)).toBe("14 Feb 2027");
     expect(memory(512)).toBe("512 MB");
     expect(memory(32_768)).toBe("32 GB");
-  });
-
-  it("draws the hours it knows and leaves gaps for the ones never counted", () => {
-    expect(sparkRuns([null, null], 10, 12)).toEqual([]);
-    expect(sparkRuns([0, 2, null, 1], 3, 12)).toEqual(["0,11 1,1", "2.75,6 3,6"]);
-    fc.assert(
-      fc.property(fc.array(fc.option(fc.nat(500), { nil: null }), { maxLength: 200 }), (hours) => {
-        const runs = sparkRuns(hours, 168, 24);
-        const starts = hours.filter(
-          (live, at) => live !== null && (at === 0 || hours[at - 1] === null),
-        );
-        expect(runs).toHaveLength(starts.length);
-        for (const run of runs) {
-          for (const point of run.split(" ")) {
-            const [x, y] = point.split(",").map(Number);
-            expect(x).toBeGreaterThanOrEqual(0);
-            expect(x).toBeLessThanOrEqual(168);
-            expect(y).toBeGreaterThanOrEqual(1);
-            expect(y).toBeLessThanOrEqual(23);
-          }
-        }
-      }),
-    );
   });
 
   it("tells one machine with several agents from copies of one image", () => {

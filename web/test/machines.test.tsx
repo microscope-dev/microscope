@@ -233,6 +233,7 @@ function key(id: number, name: string, changes: Partial<EnrollmentKey> = {}): En
     environment: "prod",
     labels: {},
     live: 100,
+    unrevoked: 120,
     uses: 2314,
     max_uses: null,
     created_at: NOW - 90 * 86_400,
@@ -258,19 +259,17 @@ it("opens on the groups, with how each has moved and only the quiet one in red",
     .element(machines().getByText(/^55 live in 2 groups · updated 4\d s ago$/u))
     .toBeVisible();
   const prod = machines().getByRole("button", {
-    name: /^prod, checkout-us1: 52 live now, 44 to 70 in the last 7 days/u,
+    name: /^prod, checkout-us1: 52 live now, 44 to 70 live over the last 7 days/u,
   });
   await expect.element(prod).toBeVisible();
   await expect
     .element(
       machines().getByRole("button", {
-        name: /^staging, not Kubernetes: 3 live now, 3 in the last 7 days/u,
+        name: /^staging, not Kubernetes: 3 live now, 3 live over the last 7 days/u,
       }),
     )
     .toBeVisible();
-  await expect
-    .element(machines().getByRole("img", { name: "Live per hour over 7 days: 44 to 70" }))
-    .toBeVisible();
+  expect(machines().getByRole("img").query()).toBeNull();
   expect(
     machines()
       .getByRole("button", { name: /went quiet/u })
@@ -279,7 +278,7 @@ it("opens on the groups, with how each has moved and only the quiet one in red",
 
   await machines().getByRole("button", { name: "1 went quiet" }).click();
   await expect
-    .poll(() => asked.at(-1)?.url.search)
+    .poll(() => asked.findLast((one) => one.route === "GET /api/fleet/machines")?.url.search)
     .toBe("?state=quiet&environment=prod&cluster=checkout-us1");
   expect(fragment()).toBe("machines/list?state=quiet&environment=prod&cluster=checkout-us1");
 });
@@ -339,7 +338,7 @@ it("searches every state, marks the match, and says which address matched when i
         : [200, { machines: [], next: null, newest_version: "0.4.2" }],
   });
   mount();
-  openMachines({});
+  openMachines({ view: "list" });
 
   await machines().getByRole("searchbox", { name: "Find a machine" }).fill("10.0.3");
   await expect.element(machines().getByText("matched bond0.30 10.0.3.5")).toBeVisible();
@@ -352,6 +351,22 @@ it("searches every state, marks the match, and says which address matched when i
     machines().getByRole("button", { name: "db-03.ams1, stopped" }).element().textContent,
   ).toContain("yesterday");
   expect(fragment()).toBe("machines/list?q=10.0.3");
+});
+
+it("searches only on the Machines tab, and / goes there to search", async () => {
+  services({
+    "GET /api/fleet": [200, overview()],
+    "GET /api/fleet/machines": [200, { machines: [], next: null, newest_version: null }],
+  });
+  mount();
+  openMachines({});
+  await expect.element(machines().getByRole("tab", { name: "Overview" })).toBeVisible();
+  expect(machines().getByRole("searchbox").query()).toBeNull();
+
+  await userEvent.keyboard("/");
+  const search = machines().getByRole("searchbox", { name: "Find a machine" });
+  await expect.element(search).toHaveFocus();
+  expect(fragment()).toBe("machines/list");
 });
 
 it("says nothing matched, and offers to clear only the filters a chip set", async () => {
@@ -464,7 +479,7 @@ it("asks before removing, and Escape closes the question before the window", asy
   expect(fragment()).toBe("");
 });
 
-it("revokes a key alone unless asked to take its machines too", async () => {
+it("revokes a key only once its name is typed, alone unless asked to take its machines too", async () => {
   const asked = services({
     "GET /api/fleet": [200, overview()],
     "GET /api/fleet/keys": [
@@ -478,23 +493,86 @@ it("revokes a key alone unless asked to take its machines too", async () => {
   });
   mount("/#machines/keys");
 
-  await expect.element(machines().getByRole("cell", { name: "100 / 2,314" })).toBeVisible();
-  await expect.element(machines().getByText(/^revoked /u)).toBeVisible();
+  await expect.element(machines().getByRole("button", { name: "2,314" })).toBeVisible();
+  expect(machines().getByRole("searchbox").query()).toBeNull();
+  await expect.element(machines().getByRole("row", { name: /old-prod/u })).toHaveClass("revoked");
   await machines().getByRole("button", { name: "Revoke" }).click();
-  const question = page.getByRole("alertdialog", { name: "Revoke the key prod-eks?" });
+  const question = page.getByRole("alertdialog", { name: "Revoke key prod-eks?" });
   const also = question.getByRole("checkbox");
   await expect.element(also).not.toBeChecked();
-  await question.getByRole("button", { name: "Revoke key" }).click();
+  const typed = question.getByRole("textbox", { name: "Type prod-eks to confirm" });
+  await expect.element(typed).toHaveFocus();
+  const revoke = question.getByRole("button", { name: "Revoke key" });
+  await expect.element(revoke).toBeDisabled();
+  await typed.fill("prod-ek");
+  await expect.element(revoke).toBeDisabled();
+  await userEvent.keyboard("{Enter}");
+  await typed.fill("PROD-EKS");
+  await expect.element(revoke).toBeDisabled();
+  expect(asked.some((one) => one.route === "POST /api/fleet/keys/9/revoke")).toBe(false);
+  await typed.fill("prod-eks");
+  await revoke.click();
   await expect
     .poll(() => asked.find((one) => one.route === "POST /api/fleet/keys/9/revoke")?.body)
     .toEqual({ machines: false });
 
   await machines().getByRole("button", { name: "Revoke" }).click();
-  await page.getByRole("alertdialog").getByRole("checkbox").click();
-  await page.getByRole("alertdialog").getByRole("button", { name: "Revoke key" }).click();
+  const again = page.getByRole("alertdialog");
+  await again.getByRole("checkbox").click();
+  await again.getByRole("textbox").fill("prod-eks");
+  await userEvent.keyboard("{Enter}");
   await expect
     .poll(() => asked.findLast((one) => one.route === "POST /api/fleet/keys/9/revoke")?.body)
     .toEqual({ machines: true });
+});
+
+it("revokes the machines of a key that is already revoked, once its name is typed", async () => {
+  const asked = services({
+    "GET /api/fleet": [200, overview()],
+    "GET /api/fleet/keys": [
+      200,
+      [key(4, "old-prod", { live: 3, unrevoked: 7, uses: 41, revoked_at: NOW - 15 * 86_400 })],
+    ],
+    "POST /api/fleet/keys/4/revoke": [200, { revoked_machines: 7 }],
+  });
+  mount("/#machines/keys");
+
+  await machines().getByRole("button", { name: "Revoke machines" }).click();
+  const question = page.getByRole("alertdialog", {
+    name: "Revoke the 7 machines old-prod enrolled?",
+  });
+  const revoke = question.getByRole("button", { name: "Revoke machines" });
+  await expect.element(revoke).toBeDisabled();
+  await question.getByRole("textbox", { name: "Type old-prod to confirm" }).fill("old-prod");
+  await revoke.click();
+  await expect
+    .poll(() => asked.find((one) => one.route === "POST /api/fleet/keys/4/revoke")?.body)
+    .toEqual({ machines: true });
+});
+
+it("lists a key's machines from its count, and the key chip names and clears the filter", async () => {
+  const asked = services({
+    "GET /api/fleet": [200, overview()],
+    "GET /api/fleet/keys": [200, [key(9, "prod-eks")]],
+    "GET /api/fleet/machines": [
+      200,
+      { machines: [machine(81723, "db-03")], next: null, newest_version: null },
+    ],
+  });
+  mount("/#machines/keys");
+
+  await machines().getByRole("button", { name: "100", exact: true }).click();
+  await expect.poll(() => fragment()).toBe("machines/list?state=live&key=9");
+  await machines().getByRole("tab", { name: "Enrollment keys" }).click();
+  await machines().getByRole("button", { name: "2,314" }).click();
+  await expect.poll(() => fragment()).toBe("machines/list?state=any&key=9");
+  await expect
+    .poll(() => asked.findLast((one) => one.route === "GET /api/fleet/machines")?.url.search)
+    .toBe("?state=any&key=9");
+  const chip = machines().getByRole("combobox", { name: /Key/u });
+  await expect.element(chip).toHaveDisplayValue("prod-eks");
+  await chip.selectOptions("any");
+  await expect.poll(() => fragment()).toBe("machines/list?state=any");
 });
 
 it("makes a key, shows the install with it once, and lists machines as they arrive", async () => {

@@ -122,13 +122,15 @@ test("adds a machine with a real agent, finds it, and revokes the key that let i
     expect(new URL(page.url()).hash).toMatch(/^#machines\/m\/\d+$/u);
 
     await machines.getByRole("tab", { name: "Enrollment keys" }).click();
-    await expect(machines.getByRole("cell", { name: "1 / 1" })).toBeVisible();
+    const keyRow = machines.getByRole("row").filter({ hasText: "team=payments" });
+    await expect(keyRow.getByRole("button", { name: "1", exact: true })).toHaveCount(2);
     await machines.getByRole("button", { name: "Revoke" }).click();
-    const question = page.getByRole("alertdialog", { name: "Revoke the key prod?" });
+    const question = page.getByRole("alertdialog", { name: "Revoke key prod?" });
     await question.getByRole("checkbox").check();
+    await question.getByRole("textbox", { name: "Type prod to confirm" }).fill("prod");
     await question.getByRole("button", { name: "Revoke key" }).click();
     await expect(question).toBeHidden();
-    await expect(machines.getByText(/^revoked /u)).toBeVisible();
+    await expect(keyRow).toHaveClass(/revoked/u);
 
     await machines.getByRole("tab", { name: "Machines" }).click();
     await machines.getByRole("combobox", { name: "State" }).selectOption("any");

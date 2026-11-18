@@ -1,4 +1,6 @@
 import {
+  type ChangeEvent,
+  type FormEvent,
   type KeyboardEvent,
   type ReactNode,
   useCallback,
@@ -69,20 +71,37 @@ export function Ask(props: {
   act: () => Promise<unknown>;
   done: () => void;
   cancel: () => void;
+  typeToConfirm?: string;
   children: ReactNode;
 }) {
   const dialog = useRef<HTMLDivElement>(null);
   const keep = useRef<HTMLButtonElement>(null);
-  useDialogFocus(dialog, keep);
+  const field = useRef<HTMLInputElement>(null);
+  const { typeToConfirm } = props;
+  useDialogFocus(dialog, typeToConfirm === undefined ? keep : field);
   const { working, error, run } = useAction();
   const { act, done, cancel } = props;
-  const confirm = useCallback(
-    () =>
-      run(async () => {
-        await act();
-        done();
-      }),
-    [run, act, done],
+  const [typed, setTyped] = useState("");
+  const type = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setTyped(event.target.value),
+    [],
+  );
+  const ready = typeToConfirm === undefined || typed === typeToConfirm;
+  const confirm = useCallback(() => {
+    if (!ready) {
+      return;
+    }
+    run(async () => {
+      await act();
+      done();
+    });
+  }, [ready, run, act, done]);
+  const submit = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      confirm();
+    },
+    [confirm],
   );
   const key = useCallback(
     (event: KeyboardEvent) => {
@@ -107,6 +126,22 @@ export function Ask(props: {
       >
         <h3>{props.title}</h3>
         {props.children}
+        {typeToConfirm !== undefined && (
+          <form className="field" onSubmit={submit}>
+            <label htmlFor="machines-ask-typed">
+              Type <span className="mono">{typeToConfirm}</span> to confirm
+            </label>
+            <input
+              id="machines-ask-typed"
+              ref={field}
+              className="input mono"
+              value={typed}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={type}
+            />
+          </form>
+        )}
         {error && (
           <p className="error" role="alert">
             {error}
@@ -119,7 +154,7 @@ export function Ask(props: {
           <button
             type="button"
             className={props.danger ? "button danger" : "button"}
-            disabled={working}
+            disabled={working || !ready}
             onClick={confirm}
           >
             {props.verb}
@@ -127,63 +162,5 @@ export function Ask(props: {
         </div>
       </div>
     </div>
-  );
-}
-
-export function sparkRuns(
-  hours: readonly (number | null)[],
-  width: number,
-  height: number,
-): string[] {
-  const top = Math.max(1, ...hours.map((live) => live ?? 0));
-  const step = width / Math.max(1, hours.length - 1);
-  const runs: [number, number][][] = [];
-  let run: [number, number][] | null = null;
-  for (const [at, live] of hours.entries()) {
-    if (live === null) {
-      run = null;
-      continue;
-    }
-    if (run === null) {
-      run = [];
-      runs.push(run);
-    }
-    run.push([at * step, height - 1 - (live / top) * (height - 2)]);
-  }
-
-  return runs.map((points) => {
-    const [only] = points;
-    if (points.length === 1 && only) {
-      const [x, y] = only;
-      points.splice(0, 1, [Math.max(0, x - step / 4), y], [Math.min(width, x + step / 4), y]);
-    }
-    return points.map(([x, y]) => `${x},${y}`).join(" ");
-  });
-}
-
-export function Sparkline({ hours, label }: { hours: readonly (number | null)[]; label: string }) {
-  const width = 168;
-  const height = 24;
-  const runs = sparkRuns(hours, width, height);
-  return (
-    <svg
-      className="machines-spark"
-      viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="none"
-      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an inline drawing, not an image file
-      role="img"
-      aria-label={label}
-    >
-      {runs.map((points) => (
-        <polyline
-          key={points}
-          points={points}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          vectorEffect="non-scaling-stroke"
-        />
-      ))}
-    </svg>
   );
 }

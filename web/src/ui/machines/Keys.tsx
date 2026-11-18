@@ -1,7 +1,14 @@
 import { type ChangeEvent, useCallback, useState } from "react";
 
-import { ago, day, type EnrollmentKey, fleetApi, labelText } from "../../fleet";
+import { ago, day, type EnrollmentKey, fleetApi, labelText, setLook } from "../../fleet";
 import { Ask, OwnerButton } from "./parts";
+
+const count = (n: number): string => n.toLocaleString("en-US");
+
+const stops = (n: number): string =>
+  n === 1
+    ? "If it is running, it stops soon, and it cannot enroll again without a new key."
+    : "Any that are running stop soon, and none can enroll again without a new key.";
 
 function RevokeKey(props: { enrollmentKey: EnrollmentKey; done: () => void; cancel: () => void }) {
   const { enrollmentKey, done, cancel } = props;
@@ -14,29 +21,33 @@ function RevokeKey(props: { enrollmentKey: EnrollmentKey; done: () => void; canc
     () => fleetApi.revokeKey(enrollmentKey.id, machines),
     [enrollmentKey.id, machines],
   );
-  const live = enrollmentKey.live;
+  const n = enrollmentKey.unrevoked;
   return (
     <Ask
-      title={`Revoke the key ${enrollmentKey.name}?`}
+      title={`Revoke key ${enrollmentKey.name}?`}
       verb="Revoke key"
       danger
+      typeToConfirm={enrollmentKey.name}
       act={act}
       done={done}
       cancel={cancel}
     >
-      <p>
-        New machines can no longer enroll with it.
-        {live > 0 &&
-          (live === 1
-            ? " The live machine it enrolled keeps running unless you revoke it too."
-            : ` The ${live} live machines it enrolled keep running unless you revoke them too.`)}
-      </p>
-      {live > 0 && (
+      <p>New machines can no longer enroll with this key.</p>
+      {n > 0 && (
+        <p>
+          {n === 1
+            ? "The machine it already enrolled is not affected unless you revoke it too."
+            : `The ${count(n)} machines it already enrolled are not affected unless you revoke them too.`}
+        </p>
+      )}
+      {n > 0 && (
         <label className="machines-check">
           <input type="checkbox" checked={machines} onChange={tick} />
           <span>
-            {live === 1 ? "Also revoke that machine." : `Also revoke those ${live} machines.`} Each
-            stops within 15 minutes and needs a new key to come back.
+            {n === 1
+              ? "Also revoke the machine it enrolled"
+              : `Also revoke all ${count(n)} machines it enrolled`}
+            <span className="machines-check-note">{stops(n)}</span>
           </span>
         </label>
       )}
@@ -44,32 +55,104 @@ function RevokeKey(props: { enrollmentKey: EnrollmentKey; done: () => void; canc
   );
 }
 
+function RevokeMachines(props: {
+  enrollmentKey: EnrollmentKey;
+  done: () => void;
+  cancel: () => void;
+}) {
+  const { enrollmentKey, done, cancel } = props;
+  const act = useCallback(() => fleetApi.revokeKey(enrollmentKey.id, true), [enrollmentKey.id]);
+  const n = enrollmentKey.unrevoked;
+  return (
+    <Ask
+      title={
+        n === 1
+          ? `Revoke the machine ${enrollmentKey.name} enrolled?`
+          : `Revoke the ${count(n)} machines ${enrollmentKey.name} enrolled?`
+      }
+      verb={n === 1 ? "Revoke machine" : "Revoke machines"}
+      danger
+      typeToConfirm={enrollmentKey.name}
+      act={act}
+      done={done}
+      cancel={cancel}
+    >
+      <p>{stops(n)}</p>
+    </Ask>
+  );
+}
+
+const showMachines = (key: EnrollmentKey, state: "live" | "any") =>
+  setLook({
+    view: "list",
+    key: key.id,
+    q: "",
+    state,
+    environment: null,
+    cluster: null,
+    version: null,
+    machine: null,
+  });
+
 function KeyRow(props: {
   enrollmentKey: EnrollmentKey;
   owner: boolean;
   now: number;
-  revoke: (key: EnrollmentKey) => void;
+  revoke: (key: EnrollmentKey, machinesOnly: boolean) => void;
 }) {
   const { enrollmentKey: key, owner, now, revoke } = props;
-  const ask = useCallback(() => revoke(key), [revoke, key]);
+  const ask = useCallback(() => revoke(key, false), [revoke, key]);
+  const askMachines = useCallback(() => revoke(key, true), [revoke, key]);
+  const showLive = useCallback(() => showMachines(key, "live"), [key]);
+  const showAll = useCallback(() => showMachines(key, "any"), [key]);
   return (
     <tr className={key.revoked_at === null ? "" : "revoked"}>
       <td className="mono">{key.name}</td>
       <td>{key.environment ?? ""}</td>
       <td className="mono">{labelText(key.labels ?? {})}</td>
       <td className="n">
-        {key.live.toLocaleString("en-US")} / {key.uses.toLocaleString("en-US")}
+        {key.live === 0 ? (
+          "0"
+        ) : (
+          <button
+            type="button"
+            className="link-button"
+            title={`Show the live machines ${key.name} enrolled`}
+            onClick={showLive}
+          >
+            {count(key.live)}
+          </button>
+        )}
       </td>
-      <td>{key.max_uses === null ? "no limit" : `${key.uses} of ${key.max_uses}`}</td>
+      <td className="n">
+        {key.uses === 0 ? (
+          "0"
+        ) : (
+          <button
+            type="button"
+            className="link-button"
+            title={`Show every machine ${key.name} enrolled`}
+            onClick={showAll}
+          >
+            {count(key.uses)}
+          </button>
+        )}
+      </td>
+      <td className="n">{key.max_uses === null ? "none" : count(key.max_uses)}</td>
       <td>{key.expires_at === null ? "never" : day(key.expires_at)}</td>
       <td>{key.last_used_at === null ? "never" : ago(key.last_used_at, now)}</td>
-      <td>
+      <td>{key.revoked_at === null ? "" : day(key.revoked_at)}</td>
+      <td className="machines-key-action">
         {key.revoked_at === null ? (
           <OwnerButton owner={owner} className="button small danger" onClick={ask}>
             Revoke
           </OwnerButton>
         ) : (
-          <span className="muted">revoked {day(key.revoked_at)}</span>
+          key.unrevoked > 0 && (
+            <OwnerButton owner={owner} className="button small danger" onClick={askMachines}>
+              Revoke machines
+            </OwnerButton>
+          )
         )}
       </td>
     </tr>
@@ -83,7 +166,13 @@ export function KeysView(props: {
   changed: () => void;
 }) {
   const { keys, owner, now, changed } = props;
-  const [revoking, setRevoking] = useState<EnrollmentKey | null>(null);
+  const [revoking, setRevoking] = useState<{ key: EnrollmentKey; machinesOnly: boolean } | null>(
+    null,
+  );
+  const revoke = useCallback(
+    (key: EnrollmentKey, machinesOnly: boolean) => setRevoking({ key, machinesOnly }),
+    [],
+  );
   const cancel = useCallback(() => setRevoking(null), []);
   const done = useCallback(() => {
     setRevoking(null);
@@ -104,10 +193,12 @@ export function KeysView(props: {
             <th>Name</th>
             <th>Environment</th>
             <th>Labels</th>
-            <th className="n">Machines live / enrolled</th>
-            <th>Uses</th>
+            <th className="n">Live</th>
+            <th className="n">Enrolled</th>
+            <th className="n">Limit</th>
             <th>Expires</th>
             <th>Last used</th>
+            <th>Revoked</th>
             <th>
               <span className="visually-hidden">Actions</span>
             </th>
@@ -115,11 +206,16 @@ export function KeysView(props: {
         </thead>
         <tbody>
           {keys.map((key) => (
-            <KeyRow key={key.id} enrollmentKey={key} owner={owner} now={now} revoke={setRevoking} />
+            <KeyRow key={key.id} enrollmentKey={key} owner={owner} now={now} revoke={revoke} />
           ))}
         </tbody>
       </table>
-      {revoking && <RevokeKey enrollmentKey={revoking} done={done} cancel={cancel} />}
+      {revoking &&
+        (revoking.machinesOnly ? (
+          <RevokeMachines enrollmentKey={revoking.key} done={done} cancel={cancel} />
+        ) : (
+          <RevokeKey enrollmentKey={revoking.key} done={done} cancel={cancel} />
+        ))}
     </div>
   );
 }

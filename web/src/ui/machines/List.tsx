@@ -1,9 +1,10 @@
-import { type ChangeEvent, type KeyboardEvent, useCallback, useState } from "react";
+import { type ChangeEvent, type KeyboardEvent, useCallback, useMemo, useState } from "react";
 
 import {
   ago,
   clearFilters,
   day,
+  type EnrollmentKey,
   fleetApi,
   filtered,
   type Look,
@@ -49,7 +50,8 @@ function Chip(props: {
   );
 }
 
-function Chips({ look, overview }: { look: Look; overview: Overview }) {
+function Chips(props: { look: Look; overview: Overview; keys: EnrollmentKey[] | null }) {
+  const { look, overview, keys } = props;
   const state = useCallback(
     (value: string) => setLook({ state: value as StateChoice, machine: null }),
     [],
@@ -65,6 +67,18 @@ function Chips({ look, overview }: { look: Look; overview: Overview }) {
   const cluster = useCallback(
     (value: string) => setLook({ cluster: value === ANY ? null : value, machine: null }),
     [],
+  );
+  const key = useCallback(
+    (value: string) => setLook({ key: value === ANY ? null : Number(value), machine: null }),
+    [],
+  );
+  const keyIds = useMemo(() => (keys ?? []).map((each) => String(each.id)), [keys]);
+  const keyName = useCallback(
+    (value: string) =>
+      value === ANY
+        ? ANY
+        : (keys?.find((each) => String(each.id) === value)?.name ?? `key ${value}`),
+    [keys],
   );
   const stateName = useCallback(
     (value: string) => (value === ANY ? "any" : STATE_LABEL[value as keyof typeof STATE_LABEL]),
@@ -97,6 +111,15 @@ function Chips({ look, overview }: { look: Look; overview: Overview }) {
         options={overview.clusters}
         pick={cluster}
       />
+      {keys !== null && (keys.length > 0 || look.key !== null) && (
+        <Chip
+          label="Key"
+          value={look.key === null ? ANY : String(look.key)}
+          options={keyIds}
+          names={keyName}
+          pick={key}
+        />
+      )}
     </div>
   );
 }
@@ -218,6 +241,7 @@ function useMachines(look: Look) {
     look.environment,
     look.cluster,
     look.version,
+    look.key,
   ]);
   const first = useLoaded(() => fleetApi.machines(look, null), key);
   const [more, setMore] = useState<{
@@ -260,6 +284,7 @@ function useMachines(look: Look) {
 export function ListView(props: {
   look: Look;
   overview: Overview;
+  keys: EnrollmentKey[] | null;
   now: number;
   changed: () => void;
 }) {
@@ -278,7 +303,7 @@ export function ListView(props: {
   return (
     <div className={`machines-split${look.machine === null ? "" : " has-detail"}`}>
       <div className="machines-list">
-        <Chips look={look} overview={overview} />
+        <Chips look={look} overview={overview} keys={props.keys} />
         {machines === null ? (
           <Retry error={error} again={again} />
         ) : machines.length === 0 ? (

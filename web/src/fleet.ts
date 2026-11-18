@@ -161,6 +161,7 @@ export interface EnrollmentKey {
   environment: string | null;
   labels: Record<string, string>;
   live: number;
+  unrevoked: number;
   uses: number;
   max_uses: number | null;
   created_at: number;
@@ -211,6 +212,7 @@ export const fleetApi = {
         environment: look.environment,
         cluster: look.cluster,
         version: look.version,
+        key: look.key,
         after,
       })}`,
     ),
@@ -236,6 +238,7 @@ export interface Look {
   environment: string | null;
   cluster: string | null;
   version: string | null;
+  key: number | null;
   machine: number | null;
 }
 
@@ -247,6 +250,7 @@ export const HOME: Look = {
   environment: null,
   cluster: null,
   version: null,
+  key: null,
   machine: null,
 };
 
@@ -279,6 +283,9 @@ export function lookHash(look: Look): string {
     if (value !== null) {
       params.set(name, value);
     }
+  }
+  if (look.key !== null) {
+    params.set("key", String(look.key));
   }
   const search = params.toString();
   return search === "" ? path : `${path}?${search}`;
@@ -314,12 +321,13 @@ export function parseLook(hash: string): Look | null {
     environment: filter("environment"),
     cluster: filter("cluster"),
     version: filter("version"),
+    key: id(params.get("key")),
     machine: machineMatch ? Number(machineMatch[1]) : null,
   };
 }
 
 export const filtered = (look: Look): boolean =>
-  look.state !== null || FILTERS.some((name) => look[name] !== null);
+  look.state !== null || look.key !== null || FILTERS.some((name) => look[name] !== null);
 
 export const clearFilters = (look: Look): Look => ({
   ...look,
@@ -327,6 +335,7 @@ export const clearFilters = (look: Look): Look => ({
   environment: null,
   cluster: null,
   version: null,
+  key: null,
 });
 
 export const shownState = (look: Look): StateChoice =>

@@ -250,7 +250,8 @@ const newKeyBack = () => setLook({ view: "keys", machine: null });
 function Body({ look, field }: { look: Look; field: RefObject<HTMLInputElement | null> }) {
   const now = useNow(5_000);
   const overview = useLoaded(() => fleetApi.overview(look.org), String(look.org));
-  const keysWanted = look.view === "keys" || look.view === "add" || look.view === "newkey";
+  const keysWanted =
+    look.view === "keys" || look.view === "add" || look.view === "newkey" || look.view === "list";
   const keys = useLoaded(
     () => (keysWanted ? fleetApi.keys(look.org) : Promise.resolve(null)),
     `${look.org}:${keysWanted}`,
@@ -323,9 +324,9 @@ function Body({ look, field }: { look: Look; field: RefObject<HTMLInputElement |
           )}
         </div>
       )}
-      {!adding && (
+      {(look.view === "overview" || look.view === "list") && (
         <div className="machines-find">
-          <Search look={look} field={field} />
+          {look.view === "list" && <Search look={look} field={field} />}
           <span className="muted machines-summary">
             {summary(data.total.live, data.groups.length, data.computed_at, now)}
           </span>
@@ -338,7 +339,7 @@ function Body({ look, field }: { look: Look; field: RefObject<HTMLInputElement |
       >
         {look.view === "overview" && <OverviewView overview={data} />}
         {look.view === "list" && (
-          <ListView look={look} overview={data} now={now} changed={changed} />
+          <ListView look={look} overview={data} keys={keys.data} now={now} changed={changed} />
         )}
         {look.view === "keys" &&
           (keys.data ? (
@@ -375,7 +376,11 @@ function Open({ look }: { look: Look }) {
       closeMachines();
     } else if (event.key === "/" && !isTextBox(document.activeElement)) {
       event.preventDefault();
-      field.current?.focus();
+      if (field.current) {
+        field.current.focus();
+      } else {
+        setLook({ view: "list", machine: null });
+      }
     }
   }, []);
   const title =
