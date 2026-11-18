@@ -826,19 +826,19 @@ version = "0.2.129"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasmi]]
-version = "2.0.0"
+version = "2.0.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasmi_collections]]
-version = "2.0.0"
+version = "2.0.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasmi_core]]
-version = "2.0.0"
+version = "2.0.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasmi_ir]]
-version = "2.0.0"
+version = "2.0.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasmparser]]
