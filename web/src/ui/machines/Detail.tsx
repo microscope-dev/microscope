@@ -105,7 +105,7 @@ function Network({ detail }: { detail: Detail }) {
                 {[link.mac, ...(link.addresses ?? [])].filter(Boolean).join(" · ") ||
                   "no addresses"}
               </span>
-              {link.state !== "up" && <span className="muted"> ({link.state})</span>}
+              {link.state && link.state !== "up" && <span className="muted"> ({link.state})</span>}
             </Fact>
           ))}
         </dl>

@@ -2,6 +2,8 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use proptest::prelude::*;
 
+use crate::agent::scratch::Scratch;
+
 use super::{
     Facts, Kind, Link, MAX_ADDRESSES, V6, classify, container_bridge, default_route_interface,
     parse_if_inet6, parse_mac, report,
@@ -251,10 +253,27 @@ enp5s0f1\t00000000\t0156A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
 }
 
 #[test]
-fn the_route_to_a_local_address_comes_from_loopback() {
-    let root = super::Root::system();
-    let source = super::route_source("127.0.0.1:9", &[], &root);
-    assert_eq!(source, Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+fn a_server_on_loopback_leaves_the_primary_to_the_default_route() {
+    let scratch = Scratch::new();
+    std::fs::create_dir_all(scratch.path().join("proc/net")).unwrap();
+    std::fs::write(
+        scratch.path().join("proc/net/route"),
+        "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n\
+         docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n\
+         enp5s0\t00000000\t0140A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n",
+    )
+    .unwrap();
+    let root = super::Root::at(scratch.path());
+    let links = [
+        link("docker0", Kind::Bridge, &[("172.17.0.1", 16)], &[]),
+        link("enp5s0", Kind::Physical, &[("192.168.86.31", 18)], &[]),
+    ];
+
+    assert_eq!(
+        super::route_source("127.0.0.1:9", &links, &root),
+        Some(IpAddr::V4(Ipv4Addr::new(192, 168, 86, 31)))
+    );
+    assert_eq!(super::route_source("127.0.0.1:9", &[], &root), None);
 }
 
 fn any_link() -> impl Strategy<Value = Link> {

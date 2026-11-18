@@ -396,7 +396,8 @@ pub fn route_source(target: &str, links: &[Link], root: &Root) -> Option<IpAddr>
         .ok()
         .into_iter()
         .flatten()
-        .find_map(source_for);
+        .find_map(source_for)
+        .filter(|source| !source.is_loopback());
     by_route.or_else(|| {
         let name = default_route_interface(&root.read("/proc/net/route")?)?;
         let link = links.iter().find(|link| link.name == name)?;

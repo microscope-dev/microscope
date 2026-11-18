@@ -73,7 +73,7 @@ export interface MachineList {
 export interface Interface {
   name: string;
   kind: string;
-  state: string;
+  state?: string;
   mac?: string;
   mac_local?: boolean;
   mtu?: number;

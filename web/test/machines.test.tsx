@@ -371,6 +371,19 @@ it("says nothing matched, and offers to clear only the filters a chip set", asyn
 });
 
 it("opens a machine beside the list, and walks the rows with the arrow keys", async () => {
+  const base = detail();
+  const network = base.inventory.network ?? { interfaces: [] };
+  const inventory = {
+    ...base.inventory,
+    network: {
+      ...network,
+      interfaces: [
+        ...network.interfaces,
+        { name: "eth1", kind: "physical", state: "down", mac: "0a:00:00:00:00:01" },
+        { name: "eth2", kind: "physical", mac: "0a:00:00:00:00:02" },
+      ],
+    },
+  };
   services({
     "GET /api/fleet": [200, overview()],
     "GET /api/fleet/machines": [
@@ -384,6 +397,7 @@ it("opens a machine beside the list, and walks the rows with the arrow keys", as
     "GET /api/fleet/machines/81723": [
       200,
       detail({
+        inventory,
         shares_host_ids: [
           { kind: "same_image", source: "machine-id", live_machines: 3 },
           { kind: "same_machine", source: "smbios-uuid", live_machines: 1 },
@@ -403,6 +417,8 @@ it("opens a machine beside the list, and walks the rows with the arrow keys", as
   await expect.element(panel.getByText("8 CPUs · 32 GB")).toBeVisible();
   await expect.element(panel.getByText("BPF, perf events, ptrace")).toBeVisible();
   await expect.element(panel.getByText("2 container bridges not listed")).toBeVisible();
+  await expect.element(panel.getByText("(down)")).toBeVisible();
+  expect(panel.getByText("()").elements()).toHaveLength(0);
   await expect.element(panel.getByText(/Enrolled 3 days ago with key prod-eks\./u)).toBeVisible();
   await expect
     .element(panel.getByText(/^3 other live machines have the same machine-id\./u))
