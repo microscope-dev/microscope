@@ -4991,7 +4991,7 @@ button.machines-row:hover,
   overflow-wrap: anywhere;
 }
 
-.machines-close {
+.machines-detail-close {
   position: absolute;
   top: 0;
   right: 0;
@@ -5010,8 +5010,8 @@ button.machines-row:hover,
   cursor: pointer;
 }
 
-.machines-close:hover,
-.machines-close:focus-visible {
+.machines-detail-close:hover,
+.machines-detail-close:focus-visible {
   background: var(--select-bg);
   color: var(--ink);
 }
@@ -5444,7 +5444,7 @@ button.machines-row:hover,
     align-items: center;
   }
 
-  .machines-close {
+  .machines-detail-close {
     display: none;
   }
 

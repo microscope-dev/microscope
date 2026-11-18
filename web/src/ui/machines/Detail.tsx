@@ -310,7 +310,7 @@ export function DetailPanel(props: {
       </button>
       <button
         type="button"
-        className="machines-close"
+        className="machines-detail-close"
         aria-label="Close machine"
         title="Close"
         onClick={props.back}

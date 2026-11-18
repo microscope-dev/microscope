@@ -6,7 +6,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { cleanup, render } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { type Locator, page, userEvent } from "vitest/browser";
 
 import { account, type User } from "../src/account";
@@ -23,6 +23,8 @@ import {
 import { directory } from "../src/orgs";
 import { COMMANDS } from "../src/ui/commands";
 import { MachinesWindow } from "../src/ui/machines/MachinesWindow";
+
+import "../src/styles.css";
 
 const ME: User = { id: 1, username: "ana", email: "ana@example.com", totp_enabled: false };
 
@@ -79,6 +81,10 @@ function mount(at = "/") {
   });
   render(<RouterProvider router={router as never} />);
 }
+
+beforeAll(async () => {
+  await page.viewport(1400, 900);
+});
 
 afterEach(() => {
   cleanup();
@@ -405,7 +411,13 @@ it("says why it could not load, keeps the window open, and tries again", async (
   await expect.element(machines().getByText(/^55 live in 2 groups/u)).toBeVisible();
 });
 
-it("closes a machine when its row is clicked again or its x is", async () => {
+const inside = (inner: DOMRect, outer: DOMRect) =>
+  inner.left >= outer.left &&
+  inner.right <= outer.right &&
+  inner.top >= outer.top &&
+  inner.bottom <= outer.bottom;
+
+it("closes a machine when its row is clicked again or its x is, each x inside what it closes", async () => {
   services({
     "GET /api/fleet": [200, overview()],
     "GET /api/fleet/keys": [200, []],
@@ -426,7 +438,15 @@ it("closes a machine when its row is clicked again or its x is", async () => {
   expect(panel.query()).toBeNull();
 
   await row.click();
-  await panel.getByRole("button", { name: "Close machine" }).click();
+  const frame = machines().element().getBoundingClientRect();
+  const closeWindow = machines().getByRole("button", { name: "Close", exact: true });
+  const closePanel = panel.getByRole("button", { name: "Close machine" });
+  await expect.element(closePanel).toBeVisible();
+  expect(inside(closeWindow.element().getBoundingClientRect(), frame)).toBe(true);
+  expect(
+    inside(closePanel.element().getBoundingClientRect(), panel.element().getBoundingClientRect()),
+  ).toBe(true);
+  await closePanel.click();
   await expect.poll(() => fragment()).toBe("machines/list");
   expect(panel.query()).toBeNull();
 });
