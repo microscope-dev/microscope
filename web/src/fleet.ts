@@ -174,14 +174,6 @@ export interface CreatedKey extends EnrollmentKey {
   enroll_url: string | null;
 }
 
-export interface Arrival {
-  id: number;
-  hostname: string;
-  primary_ip: string | null;
-  tags: Tags;
-  created_at: number;
-}
-
 export interface NewKey {
   org_id?: number;
   name: string;
@@ -220,7 +212,6 @@ export const fleetApi = {
   createKey: (key: NewKey) => request<CreatedKey>("POST", "/api/fleet/keys", key),
   revokeKey: (id: number, machines: boolean) =>
     request<{ revoked_machines: number }>("POST", `/api/fleet/keys/${id}/revoke`, { machines }),
-  arrivals: (key: number) => request<Arrival[]>("GET", `/api/fleet/keys/${key}/machines`),
 };
 
 export type View = "overview" | "list" | "keys" | "add" | "newkey";

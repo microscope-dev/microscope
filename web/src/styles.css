@@ -5319,6 +5319,10 @@ button.machines-row:hover,
   gap: 10px;
 }
 
+.machines-step > .button {
+  justify-self: start;
+}
+
 .machines-note {
   color: var(--ink-3);
   font-size: 12px;
@@ -5347,26 +5351,6 @@ button.machines-row:hover,
 .machines-snippet.wrap {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.machines-arrivals {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.machines-arrivals li {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 1fr) minmax(0, 1fr) max-content;
-  gap: 12px;
-  padding: 5px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.machines-arrivals span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .machines-made {

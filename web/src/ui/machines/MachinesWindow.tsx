@@ -358,7 +358,6 @@ function Body({ look, field }: { look: Look; field: RefObject<HTMLInputElement |
               overview={data}
               keys={keys.data}
               install={look.view === "add"}
-              now={now}
               changed={changed}
             />
           ) : (

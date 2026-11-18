@@ -2,12 +2,12 @@ import { type ChangeEvent, type FormEvent, useCallback, useEffect, useRef, useSt
 
 import { copyText } from "../../clipboard";
 import {
-  ago,
-  type Arrival,
   type EnrollmentKey,
   fleetApi,
+  HOME,
   type Install,
   INSTALLS,
+  lookHash,
   type Overview,
   ENVIRONMENT,
   parseTags,
@@ -342,82 +342,18 @@ function InstallTab(props: { option: Install; chosen: boolean; pick: (install: I
   );
 }
 
-const WAIT_HINT_SECS = 5 * 60;
-
-function Arrivals({ chosen, now }: { chosen: Chosen; now: number }) {
-  const [arrivals, setArrivals] = useState<Arrival[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [since] = useState(() => Date.now() / 1000);
-  const id = chosen.key.id;
-  useEffect(() => {
-    let live = true;
-    const ask = async () => {
-      try {
-        const found = await fleetApi.arrivals(id);
-        if (live) {
-          setArrivals(found);
-          setError(null);
-        }
-      } catch (failure) {
-        if (live) {
-          setError((failure as Error).message);
-        }
-      }
-    };
-    void ask();
-    const timer = setInterval(ask, 3000);
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [id]);
+function EnrolledLink({ chosen, org }: { chosen: Chosen; org: number }) {
+  const hash = lookHash({ ...HOME, view: "list", org, state: "any", key: chosen.key.id });
   return (
-    <section className="machines-step" aria-labelledby="machines-arrived">
-      <h3 id="machines-arrived">Machines enrolled with this key</h3>
-      {error && (
-        <p className="error" role="alert">
-          Could not check for machines: {error}.
-        </p>
-      )}
-      {arrivals && arrivals.length > 0 ? (
-        <>
-          <ul className="machines-arrivals" aria-label="Arrived">
-            {arrivals.map((arrival) => (
-              <li key={arrival.id}>
-                <span className="mono">{arrival.hostname}</span>
-                <span className="mono">{arrival.primary_ip ?? ""}</span>
-                <span className="mono">{tagText(arrival.tags)}</span>
-                <span>{ago(arrival.created_at, now)}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="note">
-            New machines appear here as they enroll. You can close this window; they keep enrolling
-            without it.
-          </p>
-        </>
-      ) : (
-        <>
-          {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result */}
-          <p className="muted" role="status">
-            Waiting for the first machine. Machines usually appear within a minute of the agent
-            starting.
-          </p>
-          {now - since > WAIT_HINT_SECS && (
-            <div className="note">
-              <p>Still nothing? The usual causes:</p>
-              <ul>
-                <li>The agent is not running.</li>
-                <li>The agent cannot reach this server.</li>
-                <li>The enroll URL was copied incompletely.</li>
-              </ul>
-              <p>
-                Run <code>microscope agent status</code> on the machine to see which.
-              </p>
-            </div>
-          )}
-        </>
-      )}
+    <section className="machines-step">
+      <a
+        className="button"
+        href={`${window.location.pathname}${window.location.search}#${hash}`}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Show machines enrolled with this key
+      </a>
     </section>
   );
 }
@@ -448,7 +384,6 @@ export function AddView(props: {
   overview: Overview;
   keys: EnrollmentKey[];
   install: boolean;
-  now: number;
   changed: () => void;
 }) {
   const { overview, install, changed } = props;
@@ -511,7 +446,7 @@ export function AddView(props: {
             </p>
           </section>
           <Installing chosen={chosen} />
-          <Arrivals chosen={chosen} now={props.now} />
+          <EnrolledLink chosen={chosen} org={overview.org_id} />
         </>
       )}
     </div>

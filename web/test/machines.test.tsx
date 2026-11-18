@@ -695,9 +695,7 @@ it("lists a key's machines from its count, and the key chip names and clears the
   await expect.poll(() => fragment()).toBe("machines/list?state=any");
 });
 
-it("makes a key, shows the install with it once, and lists machines as they arrive", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-  let arrived = false;
+it("makes a key, shows the install with it once, and links to its machines in a new tab", async () => {
   const asked = services({
     "GET /api/fleet": [200, overview()],
     "GET /api/fleet/keys": [200, []],
@@ -708,20 +706,6 @@ it("makes a key, shows the install with it once, and lists machines as they arri
         secret: "mse_x",
         enroll_url: "https://mse_x@microscope.test",
       },
-    ],
-    "GET /api/fleet/keys/12/machines": () => [
-      200,
-      arrived
-        ? [
-            {
-              id: 5,
-              hostname: "ip-10-0-7-12",
-              primary_ip: "10.0.7.12",
-              tags: { environment: "prod", cluster: "checkout-us2" },
-              created_at: NOW,
-            },
-          ]
-        : [],
     ],
   });
   mount("/#machines/add");
@@ -742,18 +726,17 @@ it("makes a key, shows the install with it once, and lists machines as they arri
     .poll(() => text(add.getByRole("tabpanel", { name: "Kubernetes" })))
     .toContain("--from-literal=enroll='https://mse_x@microscope.test'");
   await expect.element(add.getByText(/only time you can see it/u)).toBeVisible();
-  await expect.element(add.getByText(/^Waiting for the first machine/u)).toBeVisible();
+  const link = add.getByRole("link", { name: "Show machines enrolled with this key" });
+  await expect.element(link).toHaveAttribute("target", "_blank");
+  expect(link.element().getAttribute("href")).toMatch(/#machines\/list\?org=3&state=any&key=12$/u);
+  expect(
+    add.getByText(/Machines enrolled with this key|Waiting for the first/u).query(),
+  ).toBeNull();
 
   await add.getByRole("tab", { name: "Linux (systemd)" }).click();
   await expect
     .poll(() => text(add.getByRole("tabpanel", { name: "Linux (systemd)" })))
     .toContain('enroll = "https://mse_x@microscope.test"');
-
-  arrived = true;
-  vi.advanceTimersByTime(3000);
-  await expect.element(add.getByText("ip-10-0-7-12")).toBeVisible();
-  await expect.element(add.getByText("cluster=checkout-us2")).toBeVisible();
-  vi.useRealTimers();
 });
 
 it("names a bad tag before asking the server", async () => {

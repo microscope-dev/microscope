@@ -98,15 +98,24 @@ test("adds a machine with a real agent, finds it, and revokes the key that let i
   const snippet = await add.getByRole("tabpanel", { name: "Linux (systemd)" }).textContent();
   const enroll = /enroll = "([^"]+)"/u.exec(snippet ?? "")?.[1] ?? "";
   expect(enroll).toMatch(/^http:\/\/mse_[a-z0-9]{56}@127\.0\.0\.1:\d+$/u);
-  await expect(add.getByText(/^Waiting for the first machine/u)).toBeVisible();
 
   const state = await mkdtemp(path.join(tmpdir(), "microscope-machines-e2e-"));
   const running = agent(enroll, state);
   try {
     const host = hostname();
-    await expect(add.getByRole("list", { name: "Arrived" })).toContainText(host, {
-      timeout: 15_000,
-    });
+    const [tab] = await Promise.all([
+      page.context().waitForEvent("page"),
+      add.getByRole("link", { name: "Show machines enrolled with this key" }).click(),
+    ]);
+    const enrolled = tab
+      .getByRole("dialog", { name: "Machines" })
+      .getByRole("button", { name: `${host}, live` });
+    await expect(async () => {
+      await tab.reload();
+      await expect(enrolled).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 15_000 });
+    await expect(tab.getByRole("combobox", { name: "State" })).toHaveValue("any");
+    await tab.close();
 
     await page.keyboard.press("Escape");
     await expect(add).toBeHidden();
