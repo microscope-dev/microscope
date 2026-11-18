@@ -4,9 +4,11 @@ use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
 };
-use ring::signature::{Ed25519KeyPair, KeyPair as _};
+use ring::{
+    digest::{Context, SHA256, digest},
+    signature::{Ed25519KeyPair, KeyPair as _},
+};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 
 pub const SIGNATURE_HEADER: &str = "microscope-signature";
 pub const ENROLL_PATH: &str = "/api/agent/v1/enroll";
@@ -103,12 +105,11 @@ pub struct PublicKey([u8; 32]);
 impl PublicKey {
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        let digest = Sha256::new()
-            .chain_update(ED25519)
-            .chain_update([0])
-            .chain_update(self.0)
-            .finalize();
-        format!("SHA256:{}", STANDARD_NO_PAD.encode(digest))
+        let mut context = Context::new(&SHA256);
+        context.update(ED25519.as_bytes());
+        context.update(&[0]);
+        context.update(&self.0);
+        format!("SHA256:{}", STANDARD_NO_PAD.encode(context.finish()))
     }
 }
 
@@ -148,8 +149,8 @@ impl EnrollKey {
         }
 
         let (body, check) = text.split_at(ENROLL_KEY_PREFIX.len() + ENROLL_KEY_BODY);
-        let digest = Sha256::digest(body.as_bytes());
-        if base32_of_five(digest.get(..5).unwrap_or_default()) != check {
+        let hash = digest(&SHA256, body.as_bytes());
+        if base32_of_five(hash.as_ref().get(..5).unwrap_or_default()) != check {
             return Err(EnrollKeyError::Mistyped);
         }
         Ok(Self(text.to_owned()))
@@ -276,7 +277,7 @@ pub fn hex(bytes: &[u8]) -> String {
 
 #[must_use]
 pub fn inventory_hash(inventory: &[u8]) -> String {
-    URL_SAFE_NO_PAD.encode(Sha256::digest(inventory))
+    URL_SAFE_NO_PAD.encode(digest(&SHA256, inventory))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

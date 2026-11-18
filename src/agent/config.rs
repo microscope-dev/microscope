@@ -4,8 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ring::digest::{SHA256, digest};
 use serde::Deserialize;
-use sha2::{Digest as _, Sha256};
 
 use super::wire::{EnrollKey, EnrollKeyError, Server, ServerError};
 
@@ -113,7 +113,7 @@ fn read(path: Option<&Path>) -> Result<(Option<PathBuf>, File, [u8; 32]), Config
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if !required && error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((None, File::default(), Sha256::digest(b"").into()));
+            return Ok((None, File::default(), sha256(b"")));
         }
         Err(error) => return Err(ConfigError::Read { path, error }),
     };
@@ -121,7 +121,13 @@ fn read(path: Option<&Path>) -> Result<(Option<PathBuf>, File, [u8; 32]), Config
         path: path.clone(),
         error: Box::new(error),
     })?;
-    Ok((Some(path), file, Sha256::digest(text.as_bytes()).into()))
+    Ok((Some(path), file, sha256(text.as_bytes())))
+}
+
+fn sha256(bytes: &[u8]) -> [u8; 32] {
+    let mut hash = [0; 32];
+    hash.copy_from_slice(digest(&SHA256, bytes).as_ref());
+    hash
 }
 
 pub fn state_dir(path: Option<&Path>, env: &dyn Environment) -> Result<PathBuf, ConfigError> {

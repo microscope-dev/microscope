@@ -89,10 +89,6 @@ criteria = "safe-to-deploy"
 version = "0.10.4"
 criteria = "safe-to-deploy"
 
-[[exemptions.block-buffer]]
-version = "0.12.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.borrow-or-share]]
 version = "0.2.4"
 criteria = "safe-to-run"
@@ -149,10 +145,6 @@ criteria = "safe-to-deploy"
 version = "0.5.1"
 criteria = "safe-to-run"
 
-[[exemptions.const-oid]]
-version = "0.10.2"
-criteria = "safe-to-deploy"
-
 [[exemptions.cpp_demangle]]
 version = "0.5.1@git:3f6f357479cd8b7ffea785d8dace50e2bf974b5b"
 criteria = "safe-to-deploy"
@@ -189,20 +181,12 @@ criteria = "safe-to-deploy"
 version = "0.1.7"
 criteria = "safe-to-deploy"
 
-[[exemptions.crypto-common]]
-version = "0.2.2"
-criteria = "safe-to-deploy"
-
 [[exemptions.data-encoding]]
 version = "2.11.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.digest]]
 version = "0.10.7"
-criteria = "safe-to-deploy"
-
-[[exemptions.digest]]
-version = "0.11.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.either]]
@@ -311,10 +295,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.httparse]]
 version = "1.10.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.hybrid-array]]
-version = "0.4.15"
 criteria = "safe-to-deploy"
 
 [[exemptions.hyper]]
@@ -635,10 +615,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.sha1]]
 version = "0.10.7"
-criteria = "safe-to-deploy"
-
-[[exemptions.sha2]]
-version = "0.11.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.shlex]]

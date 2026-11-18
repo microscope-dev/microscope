@@ -432,15 +432,6 @@ criteria = "safe-to-deploy"
 delta = "0.7.0 -> 0.8.0"
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
-[[audits.mozilla.audits.cpufeatures]]
-who = "Alex Franchuk <afranchuk@mozilla.com>"
-criteria = "safe-to-deploy"
-version = "0.3.1"
-notes = """
-No dependencies aside from libc, and no use of std. Unsafe code is minimal and necessary.
-"""
-aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
-
 [[audits.mozilla.audits.fnv]]
 who = "Bobby Holley <bobbyholley@gmail.com>"
 criteria = "safe-to-deploy"

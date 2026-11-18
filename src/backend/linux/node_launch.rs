@@ -174,7 +174,7 @@ impl NodeLaunch {
     }
 
     fn create(follows: bool) -> Result<Self, Arc<str>> {
-        use sha2::{Digest as _, Sha256};
+        use ring::digest::{SHA256, digest};
         use std::fmt::Write as _;
 
         let cached = if follows {
@@ -190,7 +190,7 @@ impl NodeLaunch {
                 .create(&root)
                 .map_err(problem)?;
             let mut key = String::with_capacity(64);
-            for byte in Sha256::digest(PRELOAD.as_bytes()) {
+            for byte in digest(&SHA256, PRELOAD.as_bytes()).as_ref() {
                 write!(&mut key, "{byte:02x}").map_err(problem)?;
             }
             Some(root.join(key))

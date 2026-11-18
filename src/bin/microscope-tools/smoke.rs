@@ -3,8 +3,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
+use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -134,14 +134,14 @@ fn inputs(corpus: &Path) -> Result<BTreeMap<String, Usage>> {
                 anyhow::anyhow!("input/configuration mismatch: non-UTF-8 corpus name")
             })?;
             let bytes = std::fs::read(entry.path())?;
-            let mut digest = String::with_capacity(64);
-            for byte in Sha256::digest(bytes) {
-                write!(digest, "{byte:02x}")?;
+            let mut hex = String::with_capacity(64);
+            for byte in digest(&SHA256, &bytes).as_ref() {
+                write!(hex, "{byte:02x}")?;
             }
             Ok((
                 name,
                 Usage {
-                    sha256: digest,
+                    sha256: hex,
                     allocations: None,
                     allocated_bytes: None,
                 },
