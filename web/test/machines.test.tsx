@@ -362,9 +362,7 @@ it("says nothing matched, and offers to clear only the filters a chip set", asyn
   mount("/#machines/list?q=zz&version=0.4.1");
   await expect
     .element(
-      machines().getByText(
-        "No machine has a hostname, address, MAC, or instance id starting with zz.",
-      ),
+      machines().getByText("No machine has zz in its hostname, addresses, MACs, or instance id."),
     )
     .toBeVisible();
   await machines().getByRole("button", { name: "Clear filters" }).click();

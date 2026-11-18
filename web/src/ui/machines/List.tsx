@@ -103,13 +103,15 @@ function Chips({ look, overview }: { look: Look; overview: Overview }) {
 
 function Marked({ text, query }: { text: string; query: string }) {
   const q = query.trim().toLowerCase();
-  if (q === "" || !text.toLowerCase().startsWith(q)) {
+  const at = q === "" ? -1 : text.toLowerCase().indexOf(q);
+  if (at === -1) {
     return text;
   }
   return (
     <>
-      <mark>{text.slice(0, q.length)}</mark>
-      {text.slice(q.length)}
+      {text.slice(0, at)}
+      <mark>{text.slice(at, at + q.length)}</mark>
+      {text.slice(at + q.length)}
     </>
   );
 }
@@ -191,7 +193,7 @@ function Empty({ look }: { look: Look }) {
           ? filtered(look)
             ? "No machine matches these filters."
             : "No machines are live right now."
-          : `No machine has a hostname, address, MAC, or instance id starting with ${q}.`}
+          : `No machine has ${q} in its hostname, addresses, MACs, or instance id.`}
       </p>
       {filtered(look) ? (
         <button type="button" className="button" onClick={clear}>
