@@ -69,9 +69,9 @@ lint: deny vet
 [script]
 deny *ARGS:
     ./scripts/advisory-db.sh >/dev/null
-    cargo deny --locked check --config deny.toml --disable-fetch "$@"
+    cargo deny --locked check --config deny.toml --disable-fetch -D warnings "$@"
     for manifest in fuzz/Cargo.toml loom/Cargo.toml sdk/rust/Cargo.toml sdk/rust-probes/Cargo.toml; do
-        cargo deny --locked --manifest-path "$manifest" check --config deny.toml --disable-fetch \
+        cargo deny --locked --manifest-path "$manifest" check --config deny.toml --disable-fetch -D warnings \
             --allow advisory-not-detected --allow unmatched-skip --allow unnecessary-skip "$@"
     done
 
