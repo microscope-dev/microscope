@@ -4918,6 +4918,10 @@ button.machines-row:hover,
   grid-template-columns: minmax(80px, 1fr) minmax(120px, 2fr) 70px 130px 100px 100px;
 }
 
+.machines-rows.overview.whole .machines-row {
+  grid-template-columns: minmax(120px, 1fr) 70px 130px 100px 100px;
+}
+
 .machines-rows.list .machines-row {
   grid-template-columns: minmax(180px, 3fr) 110px 70px minmax(90px, 1fr) 70px 100px minmax(
       90px,
@@ -5123,6 +5127,15 @@ button.machines-row:hover,
   background: none;
   color: var(--ink);
   font: inherit;
+}
+
+.machines-chip.add {
+  border-style: dashed;
+}
+
+.machines-chip.add select {
+  padding-left: 10px;
+  color: var(--ink-3);
 }
 
 .machines-empty,
@@ -5336,6 +5349,14 @@ button.machines-row:hover,
   }
 
   .machines-rows.overview .machines-row > span:nth-child(n + 5) {
+    display: none;
+  }
+
+  .machines-rows.overview.whole .machines-row {
+    grid-template-columns: minmax(0, 1fr) 50px 70px;
+  }
+
+  .machines-rows.overview.whole .machines-row > span:nth-child(n + 4) {
     display: none;
   }
 

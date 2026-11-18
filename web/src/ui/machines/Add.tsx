@@ -9,11 +9,12 @@ import {
   type Install,
   INSTALLS,
   type Overview,
-  labelText,
-  parseLabels,
+  ENVIRONMENT,
+  parseTags,
   PLACEHOLDER,
   setLook,
   snippet,
+  tagText,
 } from "../../fleet";
 import { useAction } from "../Orgs";
 import { OWNERS_ONLY } from "./parts";
@@ -58,7 +59,7 @@ function Form(props: {
   const [environment, setEnvironment] = useState("");
   const [which, setWhich] = useState<"new" | "existing">("new");
   const [existing, setExisting] = useState<number | null>(active[0]?.id ?? null);
-  const [labels, setLabels] = useState("");
+  const [tags, setTags] = useState("");
   const [expires, setExpires] = useState("");
   const { working, error, run } = useAction();
   const [invalid, setInvalid] = useState<string | null>(null);
@@ -69,8 +70,8 @@ function Form(props: {
     (event: ChangeEvent<HTMLInputElement>) => setEnvironment(event.target.value),
     [],
   );
-  const typeLabels = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setLabels(event.target.value),
+  const typeTags = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setTags(event.target.value),
     [],
   );
   const typeExpires = useCallback(
@@ -98,13 +99,13 @@ function Form(props: {
         return;
       }
       const name = environment.trim();
-      const parsed = parseLabels(labels);
+      const parsed = parseTags(tags);
       if (name === "") {
         setInvalid("Enter an environment, such as prod.");
         return;
       }
       if (typeof parsed === "string") {
-        setInvalid(`Labels: ${parsed}.`);
+        setInvalid(`Tags: ${parsed}.`);
         return;
       }
       setInvalid(null);
@@ -114,14 +115,13 @@ function Form(props: {
         const created = await fleetApi.createKey({
           org_id: org,
           name,
-          environment: name,
-          labels: parsed,
+          tags: { ...parsed, [ENVIRONMENT]: name },
           ...(expiresAt === undefined ? {} : { expires_at: expiresAt }),
         });
         chose({ key: created, enroll: created.enroll_url });
       });
     },
-    [owner, which, active, existing, environment, labels, expires, org, run, chose],
+    [owner, which, active, existing, environment, tags, expires, org, run, chose],
   );
 
   return (
@@ -193,18 +193,18 @@ function Form(props: {
             </span>
           </div>
           <div className="field">
-            <label htmlFor="machines-labels">Labels (optional)</label>
+            <label htmlFor="machines-tags">Tags (optional)</label>
             <input
-              id="machines-labels"
+              id="machines-tags"
               className="input"
-              value={labels}
-              placeholder="team=payments, region=us-east"
+              value={tags}
+              placeholder="cluster=checkout, team=payments"
               disabled={!owner}
-              aria-describedby="machines-labels-note"
-              onChange={typeLabels}
+              aria-describedby="machines-tags-note"
+              onChange={typeTags}
             />
-            <span id="machines-labels-note" className="note">
-              Name=value pairs, separated by commas.
+            <span id="machines-tags-note" className="note">
+              Key=value pairs, separated by commas.
             </span>
           </div>
           <div className="field">
@@ -224,8 +224,8 @@ function Form(props: {
             </span>
           </div>
           <p className="machines-note">
-            Every machine that enrolls with this key gets its environment and labels, unless its own
-            config sets different ones.
+            Every machine that enrolls with this key gets these tags. A tag set in the agent config
+            wins over the same tag here.
           </p>
         </>
       )}
@@ -309,12 +309,19 @@ function Installing({ chosen }: { chosen: Chosen }) {
         {text}
       </pre>
       <Copy text={text} />
-      {install === "kubernetes" && (
-        <p className="note">
-          Replace <code>your-cluster-name</code> with the name of this cluster. Machines are grouped
-          by cluster.
-        </p>
-      )}
+      <p className="note">
+        {install === "kubernetes" ? (
+          <>
+            Replace <code>your-cluster-name</code> with the name of this cluster.
+          </>
+        ) : (
+          <>
+            Replace <code>your-cluster-name</code> with the name of the cluster these machines
+            belong to, or remove that line.
+          </>
+        )}{" "}
+        Tags set here win over the key tags.
+      </p>
     </section>
   );
 }
@@ -379,7 +386,7 @@ function Arrivals({ chosen, now }: { chosen: Chosen; now: number }) {
               <li key={arrival.id}>
                 <span className="mono">{arrival.hostname}</span>
                 <span className="mono">{arrival.primary_ip ?? ""}</span>
-                <span className="mono">{arrival.cluster ?? ""}</span>
+                <span className="mono">{tagText(arrival.tags)}</span>
                 <span>{ago(arrival.created_at, now)}</span>
               </li>
             ))}
@@ -496,11 +503,8 @@ export function AddView(props: {
             <h3 id="machines-key">Enrollment key</h3>
             <p>
               Using <span className="mono">{chosen.key.name}</span>
-              {chosen.key.environment && <>, environment {chosen.key.environment}</>}
-              {Object.keys(chosen.key.labels ?? {}).length > 0 && (
-                <>, labels {labelText(chosen.key.labels)}</>
-              )}
-              .{" "}
+              {chosen.key.tags[ENVIRONMENT] && <>, environment {chosen.key.tags[ENVIRONMENT]}</>}
+              {tagText(chosen.key.tags) && <>, tags {tagText(chosen.key.tags)}</>}.{" "}
               <button type="button" className="link-button" onClick={again}>
                 Use a different key
               </button>

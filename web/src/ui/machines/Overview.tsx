@@ -1,52 +1,39 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 
 import { type Group, type Overview, setLook } from "../../fleet";
+import { ANY, Chip } from "./parts";
 
-function GroupRow({ group }: { group: Group }) {
-  const open = useCallback(
-    () =>
+function GroupRow({ group, split }: { group: Group; split: string | null }) {
+  const show = useCallback(
+    (state: "quiet" | null) =>
       setLook({
         view: "list",
         q: "",
-        state: null,
+        state,
         environment: group.environment,
-        cluster: group.cluster,
+        tags: split === null ? {} : { [split]: group.value ?? "" },
         version: null,
         machine: null,
       }),
-    [group],
+    [group, split],
   );
-  const quiet = useCallback(
-    () =>
-      setLook({
-        view: "list",
-        q: "",
-        state: "quiet",
-        environment: group.environment,
-        cluster: group.cluster,
-        version: null,
-        machine: null,
-      }),
-    [group],
-  );
+  const open = useCallback(() => show(null), [show]);
+  const quiet = useCallback(() => show("quiet"), [show]);
   const range =
     group.live_min_7d === group.live_max_7d
       ? String(group.live_max_7d)
       : `${group.live_min_7d} to ${group.live_max_7d}`;
+  const value = group.value ?? `no ${split}`;
   return (
     <li className="machines-group">
       <button
         type="button"
         className="machines-row"
-        aria-label={`${group.environment ?? "no environment"}, ${group.cluster ?? "not Kubernetes"}: ${group.live} live now, ${range} live over the last 7 days, ${group.enrolled_24h} enrolled and ${group.stopped_24h} stopped in 24 hours`}
+        aria-label={`${group.environment}${split === null ? "" : `, ${value}`}: ${group.live} live now, ${range} live over the last 7 days, ${group.enrolled_24h} enrolled and ${group.stopped_24h} stopped in 24 hours`}
         onClick={open}
       >
-        <span className={group.environment ? "" : "muted"}>
-          {group.environment ?? "no environment"}
-        </span>
-        <span className={group.cluster ? "mono" : "muted"}>
-          {group.cluster ?? "not Kubernetes"}
-        </span>
+        <span>{group.environment}</span>
+        {split !== null && <span className={group.value ? "mono" : "muted"}>{value}</span>}
         <span className="n">{group.live}</span>
         <span className="n">{range}</span>
         <span className="n">{group.enrolled_24h}</span>
@@ -61,7 +48,32 @@ function GroupRow({ group }: { group: Group }) {
   );
 }
 
+const splitName = (value: string) => (value === ANY ? "environment only" : value);
+
+function SplitPicker({ overview }: { overview: Overview }) {
+  const keys = useMemo(() => Object.keys(overview.tags), [overview.tags]);
+  const pick = useCallback(
+    (value: string) => setLook({ split: value === ANY ? null : value, machine: null }),
+    [],
+  );
+  if (keys.length === 0 && overview.split === null) {
+    return null;
+  }
+  return (
+    <div className="machines-chips">
+      <Chip
+        label="Split by"
+        value={overview.split ?? ANY}
+        options={keys}
+        names={splitName}
+        pick={pick}
+      />
+    </div>
+  );
+}
+
 export function OverviewView({ overview }: { overview: Overview }) {
+  const split = overview.split;
   if (overview.groups.length === 0) {
     return (
       <p className="machines-empty">
@@ -71,10 +83,11 @@ export function OverviewView({ overview }: { overview: Overview }) {
   }
   return (
     <>
-      <div className="machines-rows overview">
+      <SplitPicker overview={overview} />
+      <div className={`machines-rows overview${split === null ? " whole" : ""}`}>
         <div className="machines-row head" aria-hidden="true">
           <span>Environment</span>
-          <span>Cluster</span>
+          {split !== null && <span>{split}</span>}
           <span className="n">Live now</span>
           <span className="n">Live range, 7 days</span>
           <span className="n">Enrolled, 24 h</span>
@@ -82,13 +95,14 @@ export function OverviewView({ overview }: { overview: Overview }) {
         </div>
         <ul aria-label="Groups">
           {overview.groups.map((group) => (
-            <GroupRow key={`${group.environment}\u0000${group.cluster}`} group={group} />
+            <GroupRow
+              key={`${group.environment}\u0000${group.value ?? ""}`}
+              group={group}
+              split={split}
+            />
           ))}
         </ul>
       </div>
-      <p className="note">
-        Machines outside Kubernetes group by environment alone. Opening a row shows its machines.
-      </p>
     </>
   );
 }

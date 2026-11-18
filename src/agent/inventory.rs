@@ -25,12 +25,8 @@ pub struct Inventory {
     pub hostname: String,
     pub agent_version: &'static str,
     pub key_algs: [&'static str; 1],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub environment: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cluster: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub labels: BTreeMap<String, String>,
+    pub tags: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub host_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,9 +82,7 @@ pub fn gather(
             .unwrap_or_else(|| "localhost".to_owned()),
         agent_version: AGENT_VERSION,
         key_algs: ["ed25519"],
-        environment: config.environment.clone(),
-        cluster: config.cluster.clone(),
-        labels: config.labels.clone(),
+        tags: config.tags.clone(),
         host_ids: host::host_ids(root),
         cloud,
         kubernetes: if config.report_network {
@@ -113,7 +107,7 @@ pub fn encode(inventory: &mut Inventory) -> Vec<u8> {
             return bytes;
         }
         let Some(network) = &mut inventory.network else {
-            inventory.labels.clear();
+            inventory.tags.clear();
             inventory.host_ids.clear();
             return serde_json::to_vec(inventory).unwrap_or_default();
         };

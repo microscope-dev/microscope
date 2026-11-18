@@ -117,9 +117,15 @@ export function useAction() {
   return { working, error: error?.message ?? null, run };
 }
 
-export function useLoaded<T>(load: () => Promise<T>, key: string) {
-  const [loaded, setLoaded] = useState<{ key: string; data: T | null; error: string | null }>({
+export function useLoaded<T>(load: () => Promise<T>, key: string, keepFor?: string) {
+  const [loaded, setLoaded] = useState<{
+    key: string;
+    keepFor: string | undefined;
+    data: T | null;
+    error: string | null;
+  }>({
     key,
+    keepFor,
     data: null,
     error: null,
   });
@@ -127,11 +133,12 @@ export function useLoaded<T>(load: () => Promise<T>, key: string) {
   useEffect(() => {
     let live = true;
     load().then(
-      (data) => live && setLoaded({ key, data, error: null }),
+      (data) => live && setLoaded({ key, keepFor, data, error: null }),
       (failure: Error) =>
         live &&
         setLoaded((before) => ({
           key,
+          keepFor,
           data: before.key === key ? before.data : null,
           error: failure.message,
         })),
@@ -143,7 +150,12 @@ export function useLoaded<T>(load: () => Promise<T>, key: string) {
   }, [key, round]);
   const again = useCallback(() => setRound((before) => before + 1), []);
   const current = loaded.key === key;
-  return { data: current ? loaded.data : null, error: current ? loaded.error : null, again };
+  const kept = keepFor !== undefined && loaded.keepFor === keepFor;
+  return {
+    data: current || kept ? loaded.data : null,
+    error: current ? loaded.error : null,
+    again,
+  };
 }
 
 function showAccount() {

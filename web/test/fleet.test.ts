@@ -10,11 +10,12 @@ import {
   type Look,
   lookHash,
   memory,
-  parseLabels,
   parseLook,
+  parseTags,
   sharedText,
   shownState,
   snippet,
+  tagText,
   type View,
 } from "../src/fleet";
 
@@ -26,6 +27,13 @@ const name = fc.option(
   { nil: null },
 );
 
+const tagKey = fc
+  .stringMatching(/^[A-Za-z0-9._\-/]{1,63}$/u)
+  .filter((key) => key !== "environment");
+const tagValue = fc
+  .string({ unit: "grapheme", maxLength: 24 })
+  .filter((value) => !value.includes(","));
+
 const looks: fc.Arbitrary<Look> = fc
   .option(fc.integer({ min: 1, max: 2 ** 40 }), { nil: null })
   .chain((machine) =>
@@ -35,9 +43,10 @@ const looks: fc.Arbitrary<Look> = fc
       q: text,
       state: fc.constantFrom(null, "live", "quiet", "stopped", "revoked", "any"),
       environment: name,
-      cluster: name,
+      tags: fc.dictionary(tagKey, tagValue, { maxKeys: 4 }),
       version: name,
       key: fc.option(fc.integer({ min: 1, max: 2 ** 40 }), { nil: null }),
+      split: name,
       machine: fc.constant(machine),
     }),
   );
@@ -73,6 +82,10 @@ describe("the machines window in the URL", () => {
       lookHash({ ...HOME, view: "list", org: 7, environment: "staging", version: "0.4.1" }),
     ).toBe("machines/list?org=7&environment=staging&version=0.4.1");
     expect(lookHash({ ...HOME, view: "newkey" })).toBe("machines/keys/new");
+    expect(
+      lookHash({ ...HOME, view: "list", environment: "prod", tags: { cluster: "eu1", team: "" } }),
+    ).toBe("machines/list?environment=prod&tags=cluster%3Deu1%2Cteam%3D");
+    expect(lookHash({ ...HOME, split: "cluster" })).toBe("machines?split=cluster");
   });
 
   it("ignores fragments that are not the window's and values it does not know", () => {
@@ -87,9 +100,14 @@ describe("the machines window in the URL", () => {
     ]) {
       expect(parseLook(hash)).toBeNull();
     }
-    expect(parseLook("#machines/list?state=asleep&org=-3&environment=")).toEqual({
+    expect(parseLook("#machines/list?state=asleep&org=-3&environment=&split=")).toEqual({
       ...HOME,
       view: "list",
+    });
+    expect(parseLook("#machines/list?tags=environment%3Dprod%2C%3Dx%2Cbare%2Cteam%3Dweb")).toEqual({
+      ...HOME,
+      view: "list",
+      tags: { team: "web" },
     });
   });
 
@@ -98,7 +116,8 @@ describe("the machines window in the URL", () => {
     expect(shownState({ ...HOME, q: "db-03" })).toBe("any");
     expect(shownState({ ...HOME, q: "  " })).toBe("live");
     expect(shownState({ ...HOME, q: "db-03", state: "live" })).toBe("live");
-    const narrowed = { ...HOME, q: "db", state: "stopped" as const, cluster: "eu1" };
+    const narrowed = { ...HOME, q: "db", state: "stopped" as const, tags: { cluster: "eu1" } };
+    expect(filtered({ ...HOME, tags: { cluster: "" } })).toBe(true);
     expect(filtered(narrowed)).toBe(true);
     expect(clearFilters(narrowed)).toEqual({ ...HOME, q: "db" });
     expect(filtered(clearFilters(narrowed))).toBe(false);
@@ -157,18 +176,31 @@ describe("words for times and sizes", () => {
   });
 });
 
-describe("labels typed into Add machines", () => {
-  it("reads name=value pairs split by commas", () => {
-    expect(parseLabels("")).toEqual({});
-    expect(parseLabels(" team = payments ,tier=web,")).toEqual({ team: "payments", tier: "web" });
-    expect(parseLabels("url=a=b")).toEqual({ url: "a=b" });
+describe("tags typed into Add machines", () => {
+  it("reads key=value pairs split by commas", () => {
+    expect(parseTags("")).toEqual({});
+    expect(parseTags(" team = payments ,cluster=eu1,")).toEqual({
+      team: "payments",
+      cluster: "eu1",
+    });
+    expect(parseTags("url=a=b")).toEqual({ url: "a=b" });
+    expect(parseTags("k8s.io/zone=b")).toEqual({ "k8s.io/zone": "b" });
   });
 
   it("names the pair that is wrong", () => {
-    expect(parseLabels("team")).toBe("write team as name=value");
-    expect(parseLabels("=x")).toBe("write =x as name=value");
-    expect(parseLabels("team=")).toBe("write team= as name=value");
-    expect(parseLabels("a=1, a=2")).toBe("a is set twice");
+    expect(parseTags("team")).toBe("write team as key=value");
+    expect(parseTags("=x")).toBe("write =x as key=value");
+    expect(parseTags("team=")).toBe("write team= as key=value");
+    expect(parseTags("my team=x")).toBe("my team can only use letters, digits, and . _ - /");
+    expect(parseTags("environment=prod")).toBe("set the environment in its own field");
+    expect(parseTags("a=1, a=2")).toBe("a is set twice");
+  });
+
+  it("shows every tag but the environment", () => {
+    expect(tagText({ environment: "prod", cluster: "eu1", team: "web" })).toBe(
+      "cluster=eu1, team=web",
+    );
+    expect(tagText({ environment: "prod" })).toBe("");
   });
 });
 
@@ -179,6 +211,12 @@ describe("install snippets", () => {
     expect(snippet("systemd", url)).toContain(`enroll = "${url}"`);
     expect(snippet("docker", url)).toContain(`-e MICROSCOPE_ENROLL='${url}'`);
     expect(snippet("kubernetes", url)).toContain(`--from-literal=enroll='${url}'`);
+  });
+
+  it("show where the cluster tag goes", () => {
+    expect(snippet("systemd", url)).toContain('[tags]\ncluster = "your-cluster-name"');
+    expect(snippet("docker", url)).toContain("-e MICROSCOPE_TAGS=cluster=your-cluster-name");
+    expect(snippet("kubernetes", url)).toContain("--set tags.cluster=your-cluster-name");
   });
 
   it("quote anything a shell or TOML would read differently", () => {

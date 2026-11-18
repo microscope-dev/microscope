@@ -4,11 +4,12 @@ import { copyText } from "../../clipboard";
 import {
   ago,
   type Detail,
+  ENVIRONMENT,
   fleetApi,
-  labelText,
   lookHash,
   HOME,
   memory,
+  otherTags,
   sharedText,
 } from "../../fleet";
 import { Loading, useLoaded } from "../Orgs";
@@ -51,17 +52,19 @@ function Fact({ name, children }: { name: string; children: ReactNode }) {
 function Where({ detail }: { detail: Detail }) {
   const cloud = detail.inventory.cloud;
   const node = detail.inventory.kubernetes?.node;
-  const labels = labelText(detail.labels ?? {});
   return (
     <section>
       <h4>Where</h4>
       <dl>
-        <Fact name="Environment">
-          {[detail.environment ?? "none", labels].filter(Boolean).join(" · ")}
-        </Fact>
-        {(detail.cluster || node) && (
-          <Fact name="Kubernetes">
-            {[detail.cluster, node && `node ${node}`].filter(Boolean).join(", ")}
+        <Fact name="Environment">{detail.tags[ENVIRONMENT] ?? "none"}</Fact>
+        {otherTags(detail.tags).map(([key, value]) => (
+          <Fact key={key} name={key}>
+            <span className="mono">{value}</span>
+          </Fact>
+        ))}
+        {node && (
+          <Fact name="Kubernetes node">
+            <span className="mono">{node}</span>
           </Fact>
         )}
         {cloud && (

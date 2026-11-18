@@ -17,8 +17,7 @@ const ENROLL: &str =
 fn config(extra: &[(&'static str, &'static str)]) -> crate::agent::config::Config {
     let mut env: BTreeMap<&str, &str> = BTreeMap::from([
         ("MICROSCOPE_ENROLL", ENROLL),
-        ("MICROSCOPE_ENVIRONMENT", "prod"),
-        ("MICROSCOPE_LABELS", "team=payments"),
+        ("MICROSCOPE_TAGS", "environment=prod,team=payments"),
     ]);
     env.extend(extra.iter().copied());
     load(Some(std::path::Path::new("/dev/null")), &env).unwrap()
@@ -70,8 +69,11 @@ fn the_inventory_has_the_shape_services_reads() {
     assert_eq!(value["hostname"], "ip-10-0-3-17.us-west-2.compute.internal");
     assert_eq!(value["agent_version"], AGENT_VERSION);
     assert_eq!(value["key_algs"], json!(["ed25519"]));
-    assert_eq!(value["environment"], "prod");
-    assert_eq!(value["labels"], json!({ "team": "payments" }));
+    assert_eq!(
+        value["tags"],
+        json!({ "environment": "prod", "team": "payments" })
+    );
+    assert_eq!(value.get("environment"), None);
     assert!(
         value["host_ids"][0]
             .as_str()
@@ -163,4 +165,24 @@ fn an_inventory_too_big_for_services_sheds_interfaces() {
         128
     );
     assert!(network.addresses_left_out > 0);
+}
+
+#[test]
+fn an_inventory_too_big_without_a_network_drops_its_tags() {
+    let scratch = root();
+    let mut inventory = gather(
+        &config(&[("MICROSCOPE_REPORT_NETWORK", "false")]),
+        &Root::at(scratch.path()),
+        None,
+        "127.0.0.1:9",
+    );
+    inventory.tags = (0..200)
+        .map(|n| (format!("t{n}"), "v".repeat(256)))
+        .collect();
+
+    let bytes = encode(&mut inventory);
+    assert!(bytes.len() <= MAX_BYTES, "{}", bytes.len());
+    assert!(inventory.tags.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value.get("tags"), None);
 }

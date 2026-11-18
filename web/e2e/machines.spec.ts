@@ -63,6 +63,7 @@ function agent(enroll: string, state: string): ChildProcess {
         MICROSCOPE_ENROLL: enroll,
         MICROSCOPE_STATE_DIR: state,
         MICROSCOPE_CLOUD_METADATA: "false",
+        MICROSCOPE_TAGS: "cluster=lab-1,team=search",
       },
       stdio: ["ignore", "ignore", "pipe"],
     },
@@ -91,7 +92,7 @@ test("adds a machine with a real agent, finds it, and revokes the key that let i
   await menu(page, "Machines", "Add machines…");
   const add = page.getByRole("dialog", { name: "Add machines" });
   await add.getByRole("textbox", { name: "Environment" }).fill("prod");
-  await add.getByRole("textbox", { name: /Labels/u }).fill("team=payments");
+  await add.getByRole("textbox", { name: /Tags/u }).fill("team=payments");
   await add.getByRole("button", { name: "Create key" }).click();
   await add.getByRole("tab", { name: "Linux (systemd)" }).click();
   const snippet = await add.getByRole("tabpanel", { name: "Linux (systemd)" }).textContent();
@@ -117,9 +118,15 @@ test("adds a machine with a real agent, finds it, and revokes the key that let i
     await row.click();
     const panel = machines.getByRole("complementary", { name: "Machine" });
     await expect(panel.getByRole("heading", { name: host })).toBeVisible();
-    await expect(panel).toContainText("prod · team=payments");
+    await expect(panel).toContainText("Environmentprod");
+    await expect(panel).toContainText("clusterlab-1");
+    await expect(panel).toContainText("teamsearch");
     await expect(panel).toContainText("with key prod");
     expect(new URL(page.url()).hash).toMatch(/^#machines\/m\/\d+$/u);
+
+    await machines.getByRole("combobox", { name: "Add tag filter" }).selectOption("lab-1");
+    await expect(machines.getByRole("combobox", { name: "cluster" })).toHaveValue("lab-1");
+    await expect(row).toBeVisible();
 
     await machines.getByRole("tab", { name: "Enrollment keys" }).click();
     const keyRow = machines.getByRole("row").filter({ hasText: "team=payments" });

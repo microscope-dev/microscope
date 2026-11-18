@@ -249,7 +249,11 @@ const newKeyBack = () => setLook({ view: "keys", machine: null });
 
 function Body({ look, field }: { look: Look; field: RefObject<HTMLInputElement | null> }) {
   const now = useNow(5_000);
-  const overview = useLoaded(() => fleetApi.overview(look.org), String(look.org));
+  const overview = useLoaded(
+    () => fleetApi.overview(look.org, look.split),
+    `${look.org}:${look.split}`,
+    String(look.org),
+  );
   const keysWanted =
     look.view === "keys" || look.view === "add" || look.view === "newkey" || look.view === "list";
   const keys = useLoaded(

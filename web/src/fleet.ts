@@ -12,9 +12,13 @@ export type Warning =
   | "cannot_record_syscalls"
   | "not_on_host_network";
 
+export type Tags = Record<string, string>;
+
+export const ENVIRONMENT = "environment";
+
 export interface Group {
-  environment: string | null;
-  cluster: string | null;
+  environment: string;
+  value: string | null;
   live: number;
   quiet: number;
   stopped: number;
@@ -23,8 +27,6 @@ export interface Group {
   went_quiet_24h: number;
   live_min_7d: number;
   live_max_7d: number;
-  hours: (number | null)[];
-  first_hour: number | null;
 }
 
 export interface Overview {
@@ -35,9 +37,10 @@ export interface Overview {
   live_window_secs: number;
   newest_version: string | null;
   total: { live: number; quiet: number; stopped: number; revoked: number };
+  split: string | null;
   groups: Group[];
   environments: string[];
-  clusters: string[];
+  tags: Record<string, string[]>;
   versions: string[];
 }
 
@@ -51,9 +54,7 @@ export interface Machine {
   hostname: string;
   state: MachineState;
   primary_ip: string | null;
-  environment: string | null;
-  cluster: string | null;
-  place: string | null;
+  tags: Tags;
   agent_version: string;
   created_at: number;
   last_seen_at: number;
@@ -83,7 +84,7 @@ export interface Interface {
 export interface Inventory {
   hostname?: string;
   agent_version?: string;
-  labels?: Record<string, string>;
+  tags?: Tags;
   cloud?: {
     provider: string;
     region?: string;
@@ -125,9 +126,7 @@ export interface Detail {
   hostname: string;
   state: MachineState;
   fingerprint: string;
-  environment: string | null;
-  cluster: string | null;
-  labels: Record<string, string>;
+  tags: Tags;
   agent_version: string;
   primary_ip: string | null;
   egress_ip: string | null;
@@ -158,8 +157,7 @@ export interface SharedHostId {
 export interface EnrollmentKey {
   id: number;
   name: string;
-  environment: string | null;
-  labels: Record<string, string>;
+  tags: Tags;
   live: number;
   unrevoked: number;
   uses: number;
@@ -180,15 +178,14 @@ export interface Arrival {
   id: number;
   hostname: string;
   primary_ip: string | null;
-  cluster: string | null;
+  tags: Tags;
   created_at: number;
 }
 
 export interface NewKey {
   org_id?: number;
   name: string;
-  environment?: string;
-  labels: Record<string, string>;
+  tags: Tags;
   max_uses?: number;
   expires_at?: number;
 }
@@ -201,7 +198,8 @@ const query = (params: Record<string, string | number | null | undefined>): stri
 };
 
 export const fleetApi = {
-  overview: (org: number | null) => request<Overview>("GET", `/api/fleet${query({ org })}`),
+  overview: (org: number | null, split: string | null) =>
+    request<Overview>("GET", `/api/fleet${query({ org, split })}`),
   machines: (look: Look, after: string | null) =>
     request<MachineList>(
       "GET",
@@ -210,7 +208,7 @@ export const fleetApi = {
         q: look.q.trim() || null,
         state: look.state,
         environment: look.environment,
-        cluster: look.cluster,
+        tags: tagFilter(look.tags) || null,
         version: look.version,
         key: look.key,
         after,
@@ -236,9 +234,10 @@ export interface Look {
   q: string;
   state: StateChoice | null;
   environment: string | null;
-  cluster: string | null;
+  tags: Tags;
   version: string | null;
   key: number | null;
+  split: string | null;
   machine: number | null;
 }
 
@@ -248,9 +247,10 @@ export const HOME: Look = {
   q: "",
   state: null,
   environment: null,
-  cluster: null,
+  tags: {},
   version: null,
   key: null,
+  split: null,
   machine: null,
 };
 
@@ -264,7 +264,24 @@ const PATHS: Record<View, string> = {
 
 const STATES: readonly StateChoice[] = ["live", "quiet", "stopped", "revoked", "any"];
 
-const FILTERS = ["environment", "cluster", "version"] as const;
+const FILTERS = ["environment", "version"] as const;
+
+const tagFilter = (tags: Tags): string =>
+  Object.entries(tags)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(",");
+
+function parseTagFilter(text: string | null): Tags {
+  const tags = new Map<string, string>();
+  for (const pair of (text ?? "").split(",")) {
+    const at = pair.indexOf("=");
+    const key = pair.slice(0, at);
+    if (at > 0 && key !== ENVIRONMENT) {
+      tags.set(key, pair.slice(at + 1));
+    }
+  }
+  return Object.fromEntries(tags);
+}
 
 export function lookHash(look: Look): string {
   const path = look.machine === null ? PATHS[look.view] : `machines/m/${look.machine}`;
@@ -284,8 +301,14 @@ export function lookHash(look: Look): string {
       params.set(name, value);
     }
   }
+  if (Object.keys(look.tags).length > 0) {
+    params.set("tags", tagFilter(look.tags));
+  }
   if (look.key !== null) {
     params.set("key", String(look.key));
+  }
+  if (look.split !== null) {
+    params.set("split", look.split);
   }
   const search = params.toString();
   return search === "" ? path : `${path}?${search}`;
@@ -319,21 +342,25 @@ export function parseLook(hash: string): Look | null {
     q: params.get("q") ?? "",
     state: STATES.find((known) => known === state) ?? null,
     environment: filter("environment"),
-    cluster: filter("cluster"),
+    tags: parseTagFilter(params.get("tags")),
     version: filter("version"),
     key: id(params.get("key")),
+    split: params.get("split") || null,
     machine: machineMatch ? Number(machineMatch[1]) : null,
   };
 }
 
 export const filtered = (look: Look): boolean =>
-  look.state !== null || look.key !== null || FILTERS.some((name) => look[name] !== null);
+  look.state !== null ||
+  look.key !== null ||
+  Object.keys(look.tags).length > 0 ||
+  FILTERS.some((name) => look[name] !== null);
 
 export const clearFilters = (look: Look): Look => ({
   ...look,
   state: null,
   environment: null,
-  cluster: null,
+  tags: {},
   version: null,
   key: null,
 });
@@ -429,28 +456,33 @@ export function sharedText({ kind, source, live_machines: count }: SharedHostId)
   return `${one ? "One other live machine has" : `${count} other live machines have`} the same ${source}. They may be copies of one disk image that was not emptied before capture.`;
 }
 
-export function parseLabels(text: string): Record<string, string> | string {
-  const labels: Record<string, string> = {};
+const TAG_KEY = /^[A-Za-z0-9._\-/]{1,63}$/u;
+
+export function parseTags(text: string): Tags | string {
+  const tags = new Map<string, string>();
   for (const part of text.split(",")) {
     const pair = part.trim();
     if (pair === "") {
       continue;
     }
     const at = pair.indexOf("=");
-    if (at <= 0) {
-      return `write ${pair} as name=value`;
-    }
-    const key = pair.slice(0, at).trim();
-    const value = pair.slice(at + 1).trim();
+    const key = at <= 0 ? "" : pair.slice(0, at).trim();
+    const value = at <= 0 ? "" : pair.slice(at + 1).trim();
     if (key === "" || value === "") {
-      return `write ${pair} as name=value`;
+      return `write ${pair} as key=value`;
     }
-    if (key in labels) {
+    if (!TAG_KEY.test(key)) {
+      return `${key} can only use letters, digits, and . _ - /`;
+    }
+    if (key === ENVIRONMENT) {
+      return "set the environment in its own field";
+    }
+    if (tags.has(key)) {
       return `${key} is set twice`;
     }
-    labels[key] = value;
+    tags.set(key, value);
   }
-  return labels;
+  return Object.fromEntries(tags);
 }
 
 export type Install = "kubernetes" | "docker" | "systemd";
@@ -469,13 +501,14 @@ export function snippet(install: Install, enroll: string): string {
         `  --from-literal=enroll=${shell(enroll)}`,
         "helm install microscope microscope/agent \\",
         "  --set enroll.secretName=microscope-enroll \\",
-        "  --set cluster=your-cluster-name",
+        "  --set tags.cluster=your-cluster-name",
       ].join("\n");
     case "docker":
       return [
         "docker run -d --name microscope-agent --pid host --network host --privileged \\",
         "  -v /var/lib/microscope:/var/lib/microscope \\",
         `  -e MICROSCOPE_ENROLL=${shell(enroll)} \\`,
+        "  -e MICROSCOPE_TAGS=cluster=your-cluster-name \\",
         "  ghcr.io/microscope-dev/microscope",
       ].join("\n");
     case "systemd":
@@ -483,13 +516,19 @@ export function snippet(install: Install, enroll: string): string {
         "sudo install -d -m 0700 /etc/microscope",
         "sudo tee /etc/microscope/agent.toml > /dev/null <<'EOF'",
         `enroll = ${JSON.stringify(enroll)}`,
+        "",
+        "[tags]",
+        'cluster = "your-cluster-name"',
         "EOF",
         "sudo systemctl enable --now microscope-agent",
       ].join("\n");
   }
 }
 
-export const labelText = (labels: Record<string, string>): string =>
-  Object.entries(labels)
+export const otherTags = (tags: Tags): [string, string][] =>
+  Object.entries(tags).filter(([key]) => key !== ENVIRONMENT);
+
+export const tagText = (tags: Tags): string =>
+  otherTags(tags)
     .map(([key, value]) => `${key}=${value}`)
     .join(", ");

@@ -1,6 +1,6 @@
 import { type ChangeEvent, useCallback, useState } from "react";
 
-import { ago, day, type EnrollmentKey, fleetApi, labelText, setLook } from "../../fleet";
+import { ago, day, ENVIRONMENT, type EnrollmentKey, fleetApi, setLook, tagText } from "../../fleet";
 import { Ask, OwnerButton } from "./parts";
 
 const count = (n: number): string => n.toLocaleString("en-US");
@@ -89,7 +89,7 @@ const showMachines = (key: EnrollmentKey, state: "live" | "any") =>
     q: "",
     state,
     environment: null,
-    cluster: null,
+    tags: {},
     version: null,
     machine: null,
   });
@@ -108,8 +108,8 @@ function KeyRow(props: {
   return (
     <tr className={key.revoked_at === null ? "" : "revoked"}>
       <td className="mono">{key.name}</td>
-      <td>{key.environment ?? ""}</td>
-      <td className="mono">{labelText(key.labels ?? {})}</td>
+      <td>{key.tags[ENVIRONMENT] ?? ""}</td>
+      <td className="mono">{tagText(key.tags)}</td>
       <td className="n">
         {key.live === 0 ? (
           "0"
@@ -192,7 +192,7 @@ export function KeysView(props: {
           <tr>
             <th>Name</th>
             <th>Environment</th>
-            <th>Labels</th>
+            <th>Tags</th>
             <th className="n">Live</th>
             <th className="n">Enrolled</th>
             <th className="n">Limit</th>

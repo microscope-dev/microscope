@@ -103,10 +103,11 @@ function overview(changes: Partial<Overview> = {}): Overview {
     live_window_secs: 1500,
     newest_version: "0.4.2",
     total: { live: 55, quiet: 1, stopped: 30, revoked: 0 },
+    split: "cluster",
     groups: [
       {
         environment: "prod",
-        cluster: "checkout-us1",
+        value: "checkout-us1",
         live: 52,
         quiet: 1,
         stopped: 20,
@@ -115,12 +116,10 @@ function overview(changes: Partial<Overview> = {}): Overview {
         went_quiet_24h: 1,
         live_min_7d: 44,
         live_max_7d: 70,
-        hours: Array.from({ length: 168 }, (_, hour) => 44 + (hour % 26)),
-        first_hour: NOW - 168 * 3600,
       },
       {
         environment: "staging",
-        cluster: null,
+        value: null,
         live: 3,
         quiet: 0,
         stopped: 10,
@@ -129,12 +128,10 @@ function overview(changes: Partial<Overview> = {}): Overview {
         went_quiet_24h: 0,
         live_min_7d: 3,
         live_max_7d: 3,
-        hours: Array.from({ length: 168 }, () => 3),
-        first_hour: NOW - 168 * 3600,
       },
     ],
     environments: ["prod", "staging"],
-    clusters: ["checkout-us1"],
+    tags: { cluster: ["checkout-us1"], team: ["payments", "search"] },
     versions: ["0.4.2", "0.4.1"],
     ...changes,
   };
@@ -143,8 +140,9 @@ function overview(changes: Partial<Overview> = {}): Overview {
 const EMPTY = overview({
   total: { live: 0, quiet: 0, stopped: 0, revoked: 0 },
   groups: [],
+  split: null,
   environments: [],
-  clusters: [],
+  tags: {},
   versions: [],
 });
 
@@ -154,9 +152,7 @@ function machine(id: number, hostname: string, changes: Partial<Machine> = {}): 
     hostname,
     state: "live",
     primary_ip: "10.0.3.17",
-    environment: "prod",
-    cluster: "checkout-us1",
-    place: "checkout-us1",
+    tags: { environment: "prod", cluster: "checkout-us1" },
     agent_version: "0.4.2",
     created_at: NOW - 3 * 86_400,
     last_seen_at: NOW - 120,
@@ -176,9 +172,7 @@ function detail(changes: Partial<Detail> = {}): Detail {
     hostname: "ip-10-0-3-17.us-west-2.compute.internal",
     state: "live",
     fingerprint: "SHA256:Jw3kq9Ps",
-    environment: "prod",
-    cluster: "checkout-us1",
-    labels: { team: "payments" },
+    tags: { environment: "prod", cluster: "checkout-us1", team: "payments" },
     agent_version: "0.4.2",
     primary_ip: "10.0.3.17",
     egress_ip: "203.0.113.24",
@@ -230,8 +224,7 @@ function key(id: number, name: string, changes: Partial<EnrollmentKey> = {}): En
   return {
     id,
     name,
-    environment: "prod",
-    labels: {},
+    tags: { environment: "prod" },
     live: 100,
     unrevoked: 120,
     uses: 2314,
@@ -253,7 +246,7 @@ it("opens on the groups, with how each has moved and only the quiet one in red",
     "GET /api/fleet/machines": [200, { machines: [], next: null, newest_version: null }],
   });
   mount();
-  openMachines({});
+  openMachines({ split: "cluster" });
 
   await expect
     .element(machines().getByText(/^55 live in 2 groups · updated 4\d s ago$/u))
@@ -265,7 +258,7 @@ it("opens on the groups, with how each has moved and only the quiet one in red",
   await expect
     .element(
       machines().getByRole("button", {
-        name: /^staging, not Kubernetes: 3 live now, 3 live over the last 7 days/u,
+        name: /^staging, no cluster: 3 live now, 3 live over the last 7 days/u,
       }),
     )
     .toBeVisible();
@@ -279,8 +272,71 @@ it("opens on the groups, with how each has moved and only the quiet one in red",
   await machines().getByRole("button", { name: "1 went quiet" }).click();
   await expect
     .poll(() => asked.findLast((one) => one.route === "GET /api/fleet/machines")?.url.search)
-    .toBe("?state=quiet&environment=prod&cluster=checkout-us1");
-  expect(fragment()).toBe("machines/list?state=quiet&environment=prod&cluster=checkout-us1");
+    .toBe("?state=quiet&environment=prod&tags=cluster%3Dcheckout-us1");
+  expect(fragment()).toBe(
+    "machines/list?state=quiet&environment=prod&tags=cluster%3Dcheckout-us1&split=cluster",
+  );
+  expect(asked.find((one) => one.route === "GET /api/fleet")?.url.search).toBe("?split=cluster");
+});
+
+it("rows are environments until a tag splits them, and a missing tag is its own row", async () => {
+  const whole = overview({
+    split: null,
+    groups: overview().groups.map((group) => Object.assign(group, { value: null })),
+  });
+  const asked = services({
+    "GET /api/fleet": (_, url) =>
+      url.searchParams.get("split") === "cluster" ? [200, overview()] : [200, whole],
+    "GET /api/fleet/machines": [200, { machines: [], next: null, newest_version: null }],
+  });
+  mount();
+  openMachines({});
+
+  await expect
+    .element(machines().getByRole("button", { name: /^prod: 52 live now/u }))
+    .toBeVisible();
+  const split = machines().getByRole("combobox", { name: "Split by" });
+  await expect.element(split).toHaveDisplayValue("environment only");
+  await split.selectOptions("cluster");
+  await expect.poll(() => fragment()).toBe("machines?split=cluster");
+  await expect
+    .element(machines().getByRole("button", { name: /^staging, no cluster: 3 live now/u }))
+    .toBeVisible();
+
+  await machines()
+    .getByRole("button", { name: /^staging, no cluster/u })
+    .click();
+  await expect
+    .poll(() => asked.findLast((one) => one.route === "GET /api/fleet/machines")?.url.search)
+    .toBe("?environment=staging&tags=cluster%3D");
+  await expect.element(machines().getByRole("combobox", { name: "cluster" })).toHaveValue("");
+});
+
+it("filters by tags that stack, and drops one set back to any", async () => {
+  const asked = services({
+    "GET /api/fleet": [200, overview()],
+    "GET /api/fleet/keys": [200, []],
+    "GET /api/fleet/machines": [
+      200,
+      { machines: [machine(1, "web-1")], next: null, newest_version: null },
+    ],
+  });
+  mount("/#machines/list");
+
+  await expect.element(machines().getByText("cluster=checkout-us1")).toBeVisible();
+  const add = machines().getByRole("combobox", { name: "Add tag filter" });
+  await add.selectOptions("search");
+  await expect
+    .poll(() => asked.findLast((one) => one.route === "GET /api/fleet/machines")?.url.search)
+    .toBe("?tags=team%3Dsearch");
+  await add.selectOptions("no cluster");
+  await expect
+    .poll(() => asked.findLast((one) => one.route === "GET /api/fleet/machines")?.url.search)
+    .toBe("?tags=team%3Dsearch%2Ccluster%3D");
+  expect(machines().getByRole("combobox", { name: "Add tag filter" }).query()).toBeNull();
+
+  await machines().getByRole("combobox", { name: "team" }).selectOptions("any");
+  await expect.poll(() => fragment()).toBe("machines/list?tags=cluster%3D");
 });
 
 it("opens on adding machines when there are none, without tabs, a way back, or an organization picker", async () => {
@@ -597,7 +653,7 @@ it("makes a key, shows the install with it once, and lists machines as they arri
               id: 5,
               hostname: "ip-10-0-7-12",
               primary_ip: "10.0.7.12",
-              cluster: "checkout-us2",
+              tags: { environment: "prod", cluster: "checkout-us2" },
               created_at: NOW,
             },
           ]
@@ -608,7 +664,7 @@ it("makes a key, shows the install with it once, and lists machines as they arri
 
   const add = page.getByRole("dialog", { name: "Add machines" });
   await add.getByRole("textbox", { name: "Environment" }).fill("prod");
-  await add.getByRole("textbox", { name: /Labels/u }).fill("team=payments");
+  await add.getByRole("textbox", { name: /Tags/u }).fill("team=payments");
   await add.getByRole("button", { name: "Create key" }).click();
 
   await expect
@@ -616,8 +672,7 @@ it("makes a key, shows the install with it once, and lists machines as they arri
     .toEqual({
       org_id: 3,
       name: "prod",
-      environment: "prod",
-      labels: { team: "payments" },
+      tags: { team: "payments", environment: "prod" },
     });
   await expect
     .poll(() => text(add.getByRole("tabpanel", { name: "Kubernetes" })))
@@ -633,19 +688,18 @@ it("makes a key, shows the install with it once, and lists machines as they arri
   arrived = true;
   vi.advanceTimersByTime(3000);
   await expect.element(add.getByText("ip-10-0-7-12")).toBeVisible();
+  await expect.element(add.getByText("cluster=checkout-us2")).toBeVisible();
   vi.useRealTimers();
 });
 
-it("names a bad label before asking the server", async () => {
+it("names a bad tag before asking the server", async () => {
   const asked = services({ "GET /api/fleet": [200, overview()], "GET /api/fleet/keys": [200, []] });
   mount("/#machines/add");
   const add = page.getByRole("dialog", { name: "Add machines" });
   await add.getByRole("textbox", { name: "Environment" }).fill("prod");
-  await add.getByRole("textbox", { name: /Labels/u }).fill("team");
+  await add.getByRole("textbox", { name: /Tags/u }).fill("team");
   await add.getByRole("button", { name: "Create key" }).click();
-  await expect
-    .element(add.getByRole("alert"))
-    .toHaveTextContent("Labels: write team as name=value.");
+  await expect.element(add.getByRole("alert")).toHaveTextContent("Tags: write team as key=value.");
   expect(asked.some((one) => one.route === "POST /api/fleet/keys")).toBe(false);
 });
 

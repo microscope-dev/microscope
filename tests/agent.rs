@@ -328,7 +328,7 @@ fn an_agent_enrolls_refreshes_and_says_goodbye_on_sigterm() {
     let scratch = support::ScratchDir::new("agent-lifecycle");
     let agent = start(
         &scratch,
-        &format!("{}environment = \"test\"\n", server.enroll(KEY)),
+        &format!("{}[tags]\nenvironment = \"test\"\n", server.enroll(KEY)),
     );
 
     let enroll = server.next("/api/agent/v1/enroll");
@@ -337,7 +337,10 @@ fn an_agent_enrolls_refreshes_and_says_goodbye_on_sigterm() {
         enroll.authorization.as_deref(),
         Some(format!("Enroll {KEY}").as_str())
     );
-    assert_eq!(enroll.body["inventory"]["environment"], "test");
+    assert_eq!(
+        enroll.body["inventory"]["tags"],
+        json!({ "environment": "test" })
+    );
     assert_eq!(enroll.body["inventory"]["key_algs"], json!(["ed25519"]));
     assert_eq!(enroll.body.get("previous"), None);
 

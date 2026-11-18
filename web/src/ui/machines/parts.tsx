@@ -164,3 +164,33 @@ export function Ask(props: {
     </div>
   );
 }
+
+export const ANY = "any";
+
+export function Chip(props: {
+  label: string;
+  value: string;
+  options: readonly string[];
+  names?: (value: string) => string;
+  pick: (value: string) => void;
+}) {
+  const { pick } = props;
+  const change = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => pick(event.target.value),
+    [pick],
+  );
+  const listed = props.options.includes(ANY) ? props.options : [ANY, ...props.options];
+  const options = listed.includes(props.value) ? listed : [...listed, props.value];
+  return (
+    <label className="machines-chip">
+      <span>{props.label}</span>
+      <select value={props.value} onChange={change}>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {props.names ? props.names(option) : option}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}

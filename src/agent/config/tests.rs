@@ -35,12 +35,12 @@ fn a_whole_file_reads_with_its_defaults() {
     let config = file(&format!(
         r#"
 enroll = "https://{KEY}@app.microscope.dev"
-environment = "prod"
-cluster = "checkout-us1"
 state_dir = "/tmp/agent"
 report_network = false
 
-[labels]
+[tags]
+environment = "prod"
+cluster = "checkout-us1"
 team = "payments"
 
 [limits]
@@ -51,9 +51,14 @@ memory_mib = 256
     let loaded = load(Some(config.path()), &env(&[])).unwrap();
     assert_eq!(loaded.server.origin(), "https://app.microscope.dev");
     assert_eq!(loaded.enroll_key.expose(), KEY);
-    assert_eq!(loaded.environment.as_deref(), Some("prod"));
-    assert_eq!(loaded.cluster.as_deref(), Some("checkout-us1"));
-    assert_eq!(loaded.labels["team"], "payments");
+    assert_eq!(
+        loaded.tags,
+        BTreeMap::from([
+            ("cluster".into(), "checkout-us1".into()),
+            ("environment".into(), "prod".into()),
+            ("team".into(), "payments".into())
+        ])
+    );
     assert_eq!(loaded.state_dir, Path::new("/tmp/agent"));
     assert!(loaded.cloud_metadata);
     assert!(!loaded.report_network);
@@ -70,13 +75,15 @@ memory_mib = 256
 #[test]
 fn the_environment_wins_over_the_file() {
     let config = file(&format!(
-        "enroll = \"https://{KEY}@a.test\"\nenvironment = \"prod\"\n[labels]\nteam = \"a\"\ntier = \"web\"\n"
+        "enroll = \"https://{KEY}@a.test\"\n[tags]\nenvironment = \"prod\"\nteam = \"a\"\ntier = \"web\"\n"
     ));
     let loaded = load(
         Some(config.path()),
         &env(&[
-            ("MICROSCOPE_ENVIRONMENT", "staging"),
-            ("MICROSCOPE_LABELS", "team=b, zone = 2"),
+            (
+                "MICROSCOPE_TAGS",
+                "environment=staging,team=b, zone = 2,url=a=b",
+            ),
             ("MICROSCOPE_STATE_DIR", "/run/agent"),
             ("MICROSCOPE_NODE_NAME", "ip-10-0-3-17"),
             ("MICROSCOPE_NODE_IPS", "10.0.3.17,fd00::17"),
@@ -84,12 +91,13 @@ fn the_environment_wins_over_the_file() {
         ]),
     )
     .unwrap();
-    assert_eq!(loaded.environment.as_deref(), Some("staging"));
     assert_eq!(
-        loaded.labels,
+        loaded.tags,
         BTreeMap::from([
+            ("environment".into(), "staging".into()),
             ("team".into(), "b".into()),
             ("tier".into(), "web".into()),
+            ("url".into(), "a=b".into()),
             ("zone".into(), "2".into())
         ])
     );
@@ -142,22 +150,20 @@ fn mistakes_are_named_before_anything_is_sent() {
             |e| matches!(e, ConfigError::Memory),
         ),
         (
-            "environment = \" prod\"",
+            "environment = \"prod\"",
             &[("MICROSCOPE_ENROLL", ENROLL)],
-            |e| matches!(e, ConfigError::Name { .. }),
+            |e| matches!(e, ConfigError::Parse { .. }),
         ),
-        (
-            "[labels]\n\"bad key\" = \"x\"",
-            &[("MICROSCOPE_ENROLL", ENROLL)],
-            |e| matches!(e, ConfigError::Labels(_)),
-        ),
+        ("[tags]\nteam = 5", &[("MICROSCOPE_ENROLL", ENROLL)], |e| {
+            matches!(e, ConfigError::Parse { .. })
+        }),
         (
             "",
             &[
                 ("MICROSCOPE_ENROLL", ENROLL),
-                ("MICROSCOPE_LABELS", "novalue"),
+                ("MICROSCOPE_NODE_NAME", " ip-10-0-3-17"),
             ],
-            |e| matches!(e, ConfigError::Labels(_)),
+            |e| matches!(e, ConfigError::Name { .. }),
         ),
         (
             "",
@@ -191,6 +197,91 @@ fn mistakes_are_named_before_anything_is_sent() {
         load(Some(missing), &env(&[])),
         Err(ConfigError::Read { .. })
     ));
+}
+
+fn tag_error(text: &str, pairs: &[(&'static str, &'static str)]) -> String {
+    let config = file(&format!("enroll = \"{ENROLL}\"\n{text}"));
+    match load(Some(config.path()), &env(pairs)) {
+        Err(ConfigError::Tags(message)) => message.to_owned(),
+        other => panic!("{text:?} {pairs:?}: {other:?}"),
+    }
+}
+
+#[test]
+fn bad_tags_are_named() {
+    let keys = "tag keys are 1 to 63 letters, digits, or . _ - /";
+    let values = "tag values are 1 to 256 characters with no control characters or commas";
+    let long_key = "k".repeat(64);
+    let long_value = "v".repeat(257);
+
+    for text in [
+        "[tags]\n\"bad key\" = \"x\"".to_owned(),
+        "[tags]\n\"\" = \"x\"".to_owned(),
+        "[tags]\n\"é\" = \"x\"".to_owned(),
+        format!("[tags]\n{long_key} = \"x\""),
+    ] {
+        assert_eq!(tag_error(&text, &[]), keys, "{text:?}");
+    }
+    assert_eq!(tag_error("", &[("MICROSCOPE_TAGS", "=x")]), keys);
+
+    for text in [
+        "[tags]\nteam = \"\"".to_owned(),
+        "[tags]\nteam = \"a\\tb\"".to_owned(),
+        "[tags]\nteam = \"a\\u0000b\"".to_owned(),
+        "[tags]\nteam = \"a,b\"".to_owned(),
+        format!("[tags]\nteam = \"{long_value}\""),
+    ] {
+        assert_eq!(tag_error(&text, &[]), values, "{text:?}");
+    }
+    assert_eq!(tag_error("", &[("MICROSCOPE_TAGS", "team=")]), values);
+    assert_eq!(tag_error("", &[("MICROSCOPE_TAGS", "team= ")]), values);
+
+    assert_eq!(
+        tag_error("", &[("MICROSCOPE_TAGS", "team=a,novalue")]),
+        "MICROSCOPE_TAGS is key=value pairs split by commas"
+    );
+}
+
+#[test]
+fn tags_stop_at_32() {
+    let text = (0..32).fold(String::from("[tags]\n"), |text, n| {
+        text + &format!("t{n} = \"x\"\n")
+    });
+    let config = file(&format!("enroll = \"{ENROLL}\"\n{text}"));
+    let loaded = load(Some(config.path()), &env(&[])).unwrap();
+    assert_eq!(loaded.tags.len(), 32);
+    assert_eq!(loaded.tags["t31"], "x");
+
+    assert_eq!(
+        tag_error(&text, &[("MICROSCOPE_TAGS", "t32=x")]),
+        "at most 32 tags"
+    );
+    assert!(
+        load(
+            Some(config.path()),
+            &env(&[("MICROSCOPE_TAGS", "t0=y,t31=z")])
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn edge_sized_tags_are_kept() {
+    let key = "a.b_c-d/E9".repeat(6) + "xyz";
+    let value = "é".repeat(256);
+    let config = file(&format!(
+        "enroll = \"{ENROLL}\"\n[tags]\n\"{key}\" = \"{value}\"\n"
+    ));
+    let loaded = load(Some(config.path()), &env(&[])).unwrap();
+    assert_eq!(key.len(), 63);
+    assert_eq!(loaded.tags[&key], value);
+}
+
+#[test]
+fn no_tags_is_fine() {
+    let config = file(&format!("enroll = \"{ENROLL}\""));
+    let loaded = load(Some(config.path()), &env(&[("MICROSCOPE_TAGS", " , ")])).unwrap();
+    assert!(loaded.tags.is_empty());
 }
 
 #[test]

@@ -11,16 +11,14 @@ use super::wire::{EnrollKey, EnrollKeyError, Server, ServerError};
 
 pub const DEFAULT_PATH: &str = "/etc/microscope/agent.toml";
 pub const DEFAULT_STATE_DIR: &str = "/var/lib/microscope/agent";
-const MAX_LABELS: usize = 32;
+const MAX_TAGS: usize = 32;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
     enroll: Option<String>,
-    environment: Option<String>,
-    cluster: Option<String>,
     #[serde(default)]
-    labels: BTreeMap<String, String>,
+    tags: BTreeMap<String, String>,
     state_dir: Option<PathBuf>,
     #[serde(rename = "ca_file")]
     certificate_authority: Option<PathBuf>,
@@ -43,9 +41,7 @@ pub struct Config {
     pub fingerprint: [u8; 32],
     pub server: Server,
     pub enroll_key: EnrollKey,
-    pub environment: Option<String>,
-    pub cluster: Option<String>,
-    pub labels: BTreeMap<String, String>,
+    pub tags: BTreeMap<String, String>,
     pub state_dir: PathBuf,
     pub ca_file: Option<PathBuf>,
     pub cloud_metadata: bool,
@@ -80,7 +76,7 @@ pub enum ConfigError {
     )]
     Name { name: &'static str },
     #[error("{0}")]
-    Labels(&'static str),
+    Tags(&'static str),
     #[error("{name} must be true or false, not {value:?}")]
     Bool { name: &'static str, value: String },
     #[error("MICROSCOPE_NODE_IPS has {0:?}, which is not an IP address")]
@@ -152,16 +148,11 @@ pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, Config
     let (server, key) = Server::parse(&enroll)?;
     let enroll_key = EnrollKey::parse(&key.ok_or(ConfigError::NoKey)?)?;
 
-    let environment = name(
-        "environment",
-        env.get("MICROSCOPE_ENVIRONMENT").or(file.environment),
-    )?;
-    let cluster = name("cluster", env.get("MICROSCOPE_CLUSTER").or(file.cluster))?;
-    let mut labels = file.labels;
-    if let Some(text) = env.get("MICROSCOPE_LABELS") {
-        labels.extend(parse_labels(&text)?);
+    let mut tags = file.tags;
+    if let Some(text) = env.get("MICROSCOPE_TAGS") {
+        tags.extend(parse_tags(&text)?);
     }
-    check_labels(&labels)?;
+    check_tags(&tags)?;
 
     let node = name("MICROSCOPE_NODE_NAME", env.get("MICROSCOPE_NODE_NAME"))?;
     let node_ips = env
@@ -195,9 +186,7 @@ pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, Config
         fingerprint,
         server,
         enroll_key,
-        environment,
-        cluster,
-        labels,
+        tags,
         state_dir: env
             .get("MICROSCOPE_STATE_DIR")
             .map(PathBuf::from)
@@ -245,37 +234,40 @@ fn boolean(
     }
 }
 
-fn parse_labels(text: &str) -> Result<BTreeMap<String, String>, ConfigError> {
+fn parse_tags(text: &str) -> Result<BTreeMap<String, String>, ConfigError> {
     text.split(',')
         .map(str::trim)
         .filter(|pair| !pair.is_empty())
         .map(|pair| {
             pair.split_once('=')
                 .map(|(key, value)| (key.trim().to_owned(), value.trim().to_owned()))
-                .ok_or(ConfigError::Labels(
-                    "MICROSCOPE_LABELS is KEY=VALUE pairs split by commas",
+                .ok_or(ConfigError::Tags(
+                    "MICROSCOPE_TAGS is key=value pairs split by commas",
                 ))
         })
         .collect()
 }
 
-fn check_labels(labels: &BTreeMap<String, String>) -> Result<(), ConfigError> {
-    if labels.len() > MAX_LABELS {
-        return Err(ConfigError::Labels("at most 32 labels"));
+fn check_tags(tags: &BTreeMap<String, String>) -> Result<(), ConfigError> {
+    if tags.len() > MAX_TAGS {
+        return Err(ConfigError::Tags("at most 32 tags"));
     }
-    for (key, value) in labels {
+    for (key, value) in tags {
         let key_ok = (1..=63).contains(&key.len())
             && key
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'));
         if !key_ok {
-            return Err(ConfigError::Labels(
-                "label keys are 1 to 63 letters, digits, or . _ - /",
+            return Err(ConfigError::Tags(
+                "tag keys are 1 to 63 letters, digits, or . _ - /",
             ));
         }
-        if value.chars().count() > 256 || value.chars().any(char::is_control) {
-            return Err(ConfigError::Labels(
-                "label values are at most 256 characters with no control characters",
+
+        let value_ok = (1..=256).contains(&value.chars().count())
+            && !value.chars().any(|c| c.is_control() || c == ',');
+        if !value_ok {
+            return Err(ConfigError::Tags(
+                "tag values are 1 to 256 characters with no control characters or commas",
             ));
         }
     }

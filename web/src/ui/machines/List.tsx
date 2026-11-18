@@ -13,37 +13,68 @@ import {
   setLook,
   shownState,
   type StateChoice,
+  tagText,
 } from "../../fleet";
 import { Loading, useLoaded } from "../Orgs";
 import { DetailPanel } from "./Detail";
-import { Dot, STATE_LABEL, WARNING_LABEL } from "./parts";
+import { ANY, Chip, Dot, STATE_LABEL, WARNING_LABEL } from "./parts";
 
 const STATE_CHOICES: readonly StateChoice[] = ["live", "quiet", "stopped", "revoked", "any"];
 
-const ANY = "any";
+const NONE = "";
 
-function Chip(props: {
-  label: string;
-  value: string;
-  options: readonly string[];
-  names?: (value: string) => string;
-  pick: (value: string) => void;
-}) {
-  const { pick } = props;
-  const change = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => pick(event.target.value),
-    [pick],
+function TagChip(props: { look: Look; name: string; value: string; values: string[] | undefined }) {
+  const { look, name } = props;
+  const pick = useCallback(
+    (value: string) => {
+      const others = Object.entries(look.tags).filter(([other]) => other !== name);
+      setLook({
+        tags: Object.fromEntries(value === ANY ? others : [...others, [name, value]]),
+        machine: null,
+      });
+    },
+    [look.tags, name],
   );
-  const listed = props.options.includes(ANY) ? props.options : [ANY, ...props.options];
-  const options = listed.includes(props.value) ? listed : [...listed, props.value];
+  const options = useMemo(() => [...(props.values ?? []), NONE], [props.values]);
+  const names = useCallback(
+    (value: string) => (value === ANY ? "any" : value === NONE ? "none" : value),
+    [],
+  );
+  return <Chip label={name} value={props.value} options={options} names={names} pick={pick} />;
+}
+
+function AddTag({ look, overview }: { look: Look; overview: Overview }) {
+  const choices = Object.entries(overview.tags).filter(([name]) => !(name in look.tags));
+  const pick = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const choice = event.target.value;
+      const at = choice.indexOf("=");
+      if (at > 0) {
+        setLook({
+          tags: { ...look.tags, [choice.slice(0, at)]: choice.slice(at + 1) },
+          machine: null,
+        });
+      }
+    },
+    [look.tags],
+  );
+  if (choices.length === 0) {
+    return null;
+  }
   return (
-    <label className="machines-chip">
-      <span>{props.label}</span>
-      <select value={props.value} onChange={change}>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {props.names ? props.names(option) : option}
-          </option>
+    <label className="machines-chip add">
+      <span className="visually-hidden">Add tag filter</span>
+      <select value="" onChange={pick}>
+        <option value="">Add tag filter</option>
+        {choices.map(([name, values]) => (
+          <optgroup key={name} label={name}>
+            {values.map((value) => (
+              <option key={value} value={`${name}=${value}`}>
+                {value}
+              </option>
+            ))}
+            <option value={`${name}=`}>no {name}</option>
+          </optgroup>
         ))}
       </select>
     </label>
@@ -62,10 +93,6 @@ function Chips(props: { look: Look; overview: Overview; keys: EnrollmentKey[] | 
   );
   const version = useCallback(
     (value: string) => setLook({ version: value === ANY ? null : value, machine: null }),
-    [],
-  );
-  const cluster = useCallback(
-    (value: string) => setLook({ cluster: value === ANY ? null : value, machine: null }),
     [],
   );
   const key = useCallback(
@@ -105,12 +132,6 @@ function Chips(props: { look: Look; overview: Overview; keys: EnrollmentKey[] | 
         options={overview.versions}
         pick={version}
       />
-      <Chip
-        label="Cluster"
-        value={look.cluster ?? ANY}
-        options={overview.clusters}
-        pick={cluster}
-      />
       {keys !== null && (keys.length > 0 || look.key !== null) && (
         <Chip
           label="Key"
@@ -120,6 +141,10 @@ function Chips(props: { look: Look; overview: Overview; keys: EnrollmentKey[] | 
           pick={key}
         />
       )}
+      {Object.entries(look.tags).map(([name, value]) => (
+        <TagChip key={name} look={look} name={name} value={value} values={overview.tags[name]} />
+      ))}
+      <AddTag look={look} overview={overview} />
     </div>
   );
 }
@@ -189,8 +214,8 @@ function Row({ machine, look, now }: { machine: Machine; look: Look; now: number
         <span className="mono">
           {machine.primary_ip ? <Marked text={machine.primary_ip} query={look.q} /> : ""}
         </span>
-        <span>{machine.environment ?? ""}</span>
-        <span className="mono">{machine.place ?? ""}</span>
+        <span>{machine.tags.environment ?? ""}</span>
+        <span className="mono">{tagText(machine.tags)}</span>
         <span className="mono">{machine.agent_version}</span>
         <span>{seen(machine, now)}</span>
         <span className="machines-warnings">
@@ -239,7 +264,7 @@ function useMachines(look: Look) {
     look.q.trim(),
     look.state,
     look.environment,
-    look.cluster,
+    look.tags,
     look.version,
     look.key,
   ]);
@@ -314,7 +339,7 @@ export function ListView(props: {
               <span>Hostname</span>
               <span>Primary IP</span>
               <span>Env</span>
-              <span>Where</span>
+              <span>Tags</span>
               <span>Version</span>
               <span>Last seen</span>
               <span />
