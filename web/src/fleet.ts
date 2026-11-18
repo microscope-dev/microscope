@@ -429,12 +429,12 @@ export function parseLabels(text: string): Record<string, string> | string {
     }
     const at = pair.indexOf("=");
     if (at <= 0) {
-      return `${pair} is not KEY=VALUE`;
+      return `write ${pair} as name=value`;
     }
     const key = pair.slice(0, at).trim();
     const value = pair.slice(at + 1).trim();
     if (key === "" || value === "") {
-      return `${pair} is not KEY=VALUE`;
+      return `write ${pair} as name=value`;
     }
     if (key in labels) {
       return `${key} is set twice`;
@@ -467,7 +467,7 @@ export function snippet(install: Install, enroll: string): string {
         "docker run -d --name microscope-agent --pid host --network host --privileged \\",
         "  -v /var/lib/microscope:/var/lib/microscope \\",
         `  -e MICROSCOPE_ENROLL=${shell(enroll)} \\`,
-        "  ghcr.io/microscope-dev/agent",
+        "  ghcr.io/microscope-dev/microscope",
       ].join("\n");
     case "systemd":
       return [

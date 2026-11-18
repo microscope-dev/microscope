@@ -18,6 +18,7 @@ import {
   machinesWindow,
   openMachines,
   type Overview,
+  setLook,
 } from "../src/fleet";
 import { directory } from "../src/orgs";
 import { COMMANDS } from "../src/ui/commands";
@@ -283,16 +284,17 @@ it("opens on the groups, with how each has moved and only the quiet one in red",
   expect(fragment()).toBe("machines/list?state=quiet&environment=prod&cluster=checkout-us1");
 });
 
-it("goes straight to adding machines the first time, without tabs or an organization picker", async () => {
-  services({ "GET /api/fleet": [200, EMPTY] });
+it("opens on adding machines when there are none, without tabs, a way back, or an organization picker", async () => {
+  services({ "GET /api/fleet": [200, EMPTY], "GET /api/fleet/keys": [200, []] });
   mount();
   openMachines({});
 
-  await expect.element(machines().getByRole("heading", { name: "No machines yet" })).toBeVisible();
-  expect(machines().getByRole("tablist").query()).toBeNull();
-  expect(machines().getByRole("combobox", { name: "Organization" }).query()).toBeNull();
-  await machines().getByRole("button", { name: "Add machines" }).click();
-  await expect.element(page.getByRole("dialog", { name: "Add machines" })).toBeVisible();
+  const add = page.getByRole("dialog", { name: "Add machines" });
+  await expect.element(add.getByRole("button", { name: "Create key" })).toBeVisible();
+  expect(fragment()).toBe("machines/add");
+  expect(add.getByRole("tablist").query()).toBeNull();
+  expect(add.getByRole("button", { name: "Back to machines" }).query()).toBeNull();
+  expect(add.getByRole("combobox", { name: "Organization" }).query()).toBeNull();
 });
 
 it("says why it could not load, keeps the window open, and tries again", async () => {
@@ -544,7 +546,7 @@ it("makes a key, shows the install with it once, and lists machines as they arri
   await expect
     .poll(() => text(add.getByRole("tabpanel", { name: "Kubernetes" })))
     .toContain("--from-literal=enroll='https://mse_x@microscope.test'");
-  await expect.element(add.getByText(/The key is shown only this once/u)).toBeVisible();
+  await expect.element(add.getByText(/only time you can see it/u)).toBeVisible();
   await expect.element(add.getByText(/^Waiting for the first machine/u)).toBeVisible();
 
   await add.getByRole("tab", { name: "Linux (systemd)" }).click();
@@ -565,8 +567,52 @@ it("names a bad label before asking the server", async () => {
   await add.getByRole("textbox", { name: "Environment" }).fill("prod");
   await add.getByRole("textbox", { name: /Labels/u }).fill("team");
   await add.getByRole("button", { name: "Create key" }).click();
-  await expect.element(add.getByRole("alert")).toHaveTextContent("Labels: team is not KEY=VALUE.");
+  await expect
+    .element(add.getByRole("alert"))
+    .toHaveTextContent("Labels: write team as name=value.");
   expect(asked.some((one) => one.route === "POST /api/fleet/keys")).toBe(false);
+});
+
+it("installs with an existing key, asking only which one and leaving its URL to fill in", async () => {
+  const asked = services({
+    "GET /api/fleet": [200, overview()],
+    "GET /api/fleet/keys": [200, [key(9, "prod-eks"), key(4, "staging")]],
+    "GET /api/fleet/keys/4/machines": [200, []],
+  });
+  mount("/#machines/add");
+  const add = page.getByRole("dialog", { name: "Add machines" });
+  await add.getByRole("radio", { name: "Use an existing key" }).click();
+  expect(add.getByRole("textbox", { name: "Environment" }).query()).toBeNull();
+  await add.getByRole("combobox", { name: "Existing key" }).selectOptions("staging");
+  await add.getByRole("button", { name: "Use this key" }).click();
+
+  await expect.element(add.getByText(/^Replace ENROLL_URL with the enroll URL/u)).toBeVisible();
+  await expect
+    .poll(() => text(add.getByRole("tabpanel", { name: "Kubernetes" })))
+    .toContain("--from-literal=enroll='ENROLL_URL'");
+  expect(add.getByText(/only time you can see it/u).query()).toBeNull();
+  expect(asked.some((one) => one.route === "POST /api/fleet/keys")).toBe(false);
+
+  await add.getByRole("button", { name: "Use a different key" }).click();
+  await expect.element(add.getByRole("button", { name: "Create key" })).toBeVisible();
+});
+
+it("starts a new enrollment key fresh after choosing a key on Add machines", async () => {
+  services({
+    "GET /api/fleet": [200, overview()],
+    "GET /api/fleet/keys": [200, [key(4, "staging")]],
+    "GET /api/fleet/keys/4/machines": [200, []],
+  });
+  mount("/#machines/add");
+  const add = page.getByRole("dialog", { name: "Add machines" });
+  await add.getByRole("radio", { name: "Use an existing key" }).click();
+  await add.getByRole("button", { name: "Use this key" }).click();
+  await expect.element(add.getByRole("heading", { name: "Install the agent" })).toBeVisible();
+
+  setLook({ view: "newkey" });
+  const fresh = page.getByRole("dialog", { name: "New enrollment key" });
+  await expect.element(fresh.getByRole("button", { name: "Create key" })).toBeVisible();
+  expect(fresh.getByText(/^Created the key/u).query()).toBeNull();
 });
 
 it("shows members everything, with the owners' buttons greyed and saying why", async () => {

@@ -181,16 +181,16 @@ describe("words for times and sizes", () => {
 });
 
 describe("labels typed into Add machines", () => {
-  it("reads KEY=VALUE pairs split by commas", () => {
+  it("reads name=value pairs split by commas", () => {
     expect(parseLabels("")).toEqual({});
     expect(parseLabels(" team = payments ,tier=web,")).toEqual({ team: "payments", tier: "web" });
     expect(parseLabels("url=a=b")).toEqual({ url: "a=b" });
   });
 
   it("names the pair that is wrong", () => {
-    expect(parseLabels("team")).toBe("team is not KEY=VALUE");
-    expect(parseLabels("=x")).toBe("=x is not KEY=VALUE");
-    expect(parseLabels("team=")).toBe("team= is not KEY=VALUE");
+    expect(parseLabels("team")).toBe("write team as name=value");
+    expect(parseLabels("=x")).toBe("write =x as name=value");
+    expect(parseLabels("team=")).toBe("write team= as name=value");
     expect(parseLabels("a=1, a=2")).toBe("a is set twice");
   });
 });

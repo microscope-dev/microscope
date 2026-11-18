@@ -238,23 +238,6 @@ function OrgPicker({ look }: { look: Look }) {
   );
 }
 
-function FirstRun({ owner }: { owner: boolean }) {
-  const add = useCallback(() => setLook({ view: "add", machine: null }), []);
-  return (
-    <div className="machines-first">
-      <h3>No machines yet</h3>
-      <p>
-        Run the microscope agent on your servers, VMs, or Kubernetes nodes, and each one shows up
-        here: where it runs, its addresses, and whether it is healthy. Recording from them comes
-        next.
-      </p>
-      <OwnerButton owner={owner} className="button primary" onClick={add}>
-        Add machines
-      </OwnerButton>
-    </div>
-  );
-}
-
 function summary(live: number, groups: number, computedAt: number, now: number): string {
   const secs = Math.max(0, Math.round(now - computedAt));
   const updated =
@@ -287,28 +270,36 @@ function Body({ look, field }: { look: Look; field: RefObject<HTMLInputElement |
   const back = useCallback(() => setLook({ view: "overview", machine: null }), []);
 
   const data = overview.data;
-  if (!data) {
+  const empty =
+    data !== null &&
+    data.total.live + data.total.quiet + data.total.stopped + data.total.revoked === 0;
+  const skipToAdd = empty && look.q === "" && (look.view === "overview" || look.view === "list");
+  useEffect(() => {
+    if (skipToAdd) {
+      setLook({ view: "add", machine: null });
+    }
+  }, [skipToAdd]);
+
+  if (!data || skipToAdd) {
     return <Retry error={overview.error} again={againOverview} />;
   }
   const owner = data.role === "owner";
-  const total = data.total.live + data.total.quiet + data.total.stopped + data.total.revoked;
   const adding = look.view === "add" || look.view === "newkey";
-  if (total === 0 && !adding && look.view !== "keys" && look.q === "") {
-    return <FirstRun owner={owner} />;
-  }
 
   return (
     <>
       {adding ? (
-        <div className="machines-bar">
-          <button
-            type="button"
-            className="link-button"
-            onClick={look.view === "newkey" ? newKeyBack : back}
-          >
-            {look.view === "newkey" ? "Back to enrollment keys" : "Back to machines"}
-          </button>
-        </div>
+        empty && look.view === "add" ? null : (
+          <div className="machines-bar">
+            <button
+              type="button"
+              className="link-button"
+              onClick={look.view === "newkey" ? newKeyBack : back}
+            >
+              {look.view === "newkey" ? "Back to enrollment keys" : "Back to machines"}
+            </button>
+          </div>
+        )
       ) : (
         <div className="machines-bar">
           <div className="machines-tabs" role="tablist" aria-label="Views">
@@ -358,6 +349,7 @@ function Body({ look, field }: { look: Look; field: RefObject<HTMLInputElement |
         {adding &&
           (keys.data ? (
             <AddView
+              key={`${look.view}:${look.org}`}
               overview={data}
               keys={keys.data}
               install={look.view === "add"}

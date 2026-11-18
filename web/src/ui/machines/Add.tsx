@@ -1,4 +1,4 @@
-import { type ChangeEvent, type FormEvent, useCallback, useEffect, useState } from "react";
+import { type ChangeEvent, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { copyText } from "../../clipboard";
 import {
@@ -62,6 +62,8 @@ function Form(props: {
   const [expires, setExpires] = useState("");
   const { working, error, run } = useAction();
   const [invalid, setInvalid] = useState<string | null>(null);
+  const first = useRef<HTMLInputElement>(null);
+  useEffect(() => first.current?.focus(), []);
 
   const typeEnvironment = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => setEnvironment(event.target.value),
@@ -98,7 +100,7 @@ function Form(props: {
       const name = environment.trim();
       const parsed = parseLabels(labels);
       if (name === "") {
-        setInvalid("Name the environment these machines run in.");
+        setInvalid("Enter an environment, such as prod.");
         return;
       }
       if (typeof parsed === "string") {
@@ -123,24 +125,19 @@ function Form(props: {
   );
 
   return (
-    <form className="machines-form" onSubmit={submit}>
-      <h3>{props.install ? "1. Where they go" : "Where its machines go"}</h3>
-      <div className="field">
-        <label htmlFor="machines-environment">Environment</label>
-        <input
-          id="machines-environment"
-          className="input"
-          data-autofocus
-          value={environment}
-          placeholder="prod"
-          disabled={!owner}
-          onChange={typeEnvironment}
-        />
-        <span className="note">prod, staging, canary, or any name you use</span>
-      </div>
+    <form className="machines-form" aria-label="Enrollment key" onSubmit={submit}>
+      {props.install && (
+        <>
+          <h3>Enrollment key</h3>
+          <p>
+            The agent on each machine uses an enrollment key to join. One key can enroll many
+            machines.
+          </p>
+        </>
+      )}
       {props.install && active.length > 0 && (
         <fieldset className="field">
-          <legend className="label">Enrollment key</legend>
+          <legend className="visually-hidden">Which key</legend>
           <label className="machines-check">
             <input
               type="radio"
@@ -149,7 +146,7 @@ function Form(props: {
               disabled={!owner}
               onChange={pickNew}
             />
-            <span>A new key, named {environment.trim() || "after the environment"}</span>
+            <span>Create a new key</span>
           </label>
           <label className="machines-check">
             <input
@@ -159,7 +156,7 @@ function Form(props: {
               disabled={!owner}
               onChange={pickExisting}
             />
-            <span>An existing key</span>
+            <span>Use an existing key</span>
           </label>
           {which === "existing" && (
             <select
@@ -180,31 +177,56 @@ function Form(props: {
       {which === "new" && (
         <>
           <div className="field">
-            <label htmlFor="machines-labels">
-              Labels <span className="muted">optional</span>
-            </label>
+            <label htmlFor="machines-environment">Environment</label>
+            <input
+              id="machines-environment"
+              ref={first}
+              className="input"
+              value={environment}
+              placeholder="prod"
+              disabled={!owner}
+              aria-describedby="machines-environment-note"
+              onChange={typeEnvironment}
+            />
+            <span id="machines-environment-note" className="note">
+              Such as prod or staging. The key is named after it.
+            </span>
+          </div>
+          <div className="field">
+            <label htmlFor="machines-labels">Labels (optional)</label>
             <input
               id="machines-labels"
               className="input"
               value={labels}
-              placeholder="team=payments"
+              placeholder="team=payments, region=us-east"
               disabled={!owner}
+              aria-describedby="machines-labels-note"
               onChange={typeLabels}
             />
+            <span id="machines-labels-note" className="note">
+              Name=value pairs, separated by commas.
+            </span>
           </div>
           <div className="field">
-            <label htmlFor="machines-expires">
-              Expires <span className="muted">optional</span>
-            </label>
+            <label htmlFor="machines-expires">Expires (optional)</label>
             <input
               id="machines-expires"
               className="input"
               type="date"
               value={expires}
               disabled={!owner}
+              aria-describedby="machines-expires-note"
               onChange={typeExpires}
             />
+            <span id="machines-expires-note" className="note">
+              After this day (UTC), new machines cannot enroll with the key. Machines already
+              enrolled keep running.
+            </span>
           </div>
+          <p className="machines-note">
+            Every machine that enrolls with this key gets its environment and labels, unless its own
+            config sets different ones.
+          </p>
         </>
       )}
       {(invalid ?? error) && (
@@ -223,10 +245,6 @@ function Form(props: {
         </button>
         {!owner && <span className="muted">{OWNERS_ONLY}</span>}
       </div>
-      <p className="note">
-        Machines can override the environment and labels in their own config. The key only sets the
-        defaults.
-      </p>
     </form>
   );
 }
@@ -256,8 +274,8 @@ function Installing({ chosen }: { chosen: Chosen }) {
   }, []);
   const text = snippet(install, chosen.enroll ?? PLACEHOLDER);
   return (
-    <section className="machines-step">
-      <h3>2. Install</h3>
+    <section className="machines-step" aria-labelledby="machines-install">
+      <h3 id="machines-install">Install the agent</h3>
       <div className="segmented" role="tablist" aria-label="How to install">
         {INSTALLS.map((option) => (
           <InstallTab key={option} option={option} chosen={install === option} pick={pick} />
@@ -265,25 +283,38 @@ function Installing({ chosen }: { chosen: Chosen }) {
       </div>
       {chosen.enroll ? (
         <p className="machines-warning-text">
-          Copy this now. The key is shown only this once. If you lose it, make another; it takes a
-          second.
+          This command contains the new key, and this is the only time you can see it. To add more
+          machines later, save it in your secret manager, or create another key.
         </p>
       ) : (
-        <p className="note">
-          Put the enroll URL you saved when you made {chosen.key.name} where it says {PLACEHOLDER}.
+        <p>
+          Replace <code>{PLACEHOLDER}</code> with the enroll URL you saved when you created{" "}
+          <span className="mono">{chosen.key.name}</span>.
         </p>
       )}
-      <pre className="machines-snippet" role="tabpanel" aria-label={INSTALL_LABEL[install]}>
+      {install !== "systemd" && (
+        <p className="error">
+          TODO:{" "}
+          {install === "docker" ? "the Docker image is" : "the Docker image and Helm chart are"} not
+          published yet, so {install === "docker" ? "this command does" : "these commands do"} not
+          work.
+        </p>
+      )}
+      <pre
+        className="machines-snippet"
+        role="tabpanel"
+        tabIndex={0}
+        aria-label={INSTALL_LABEL[install]}
+      >
         {text}
       </pre>
-      <div className="actions">
-        <Copy text={text} />
-        {install === "kubernetes" && (
-          <span className="note">
-            Set the cluster name: it is how this window groups your nodes.
-          </span>
-        )}
-      </div>
+      <Copy text={text} />
+      {install === "kubernetes" && (
+        <p className="note">
+          Replace <code>your-cluster-name</code> with the name of this cluster. Machines are grouped
+          by cluster.
+        </p>
+      )}
     </section>
   );
 }
@@ -334,8 +365,8 @@ function Arrivals({ chosen, now }: { chosen: Chosen; now: number }) {
     };
   }, [id]);
   return (
-    <section className="machines-step">
-      <h3>3. Machines enrolled with this key</h3>
+    <section className="machines-step" aria-labelledby="machines-arrived">
+      <h3 id="machines-arrived">Machines enrolled with this key</h3>
       {error && (
         <p className="error" role="alert">
           Could not check for machines: {error}.
@@ -354,26 +385,27 @@ function Arrivals({ chosen, now }: { chosen: Chosen; now: number }) {
             ))}
           </ul>
           <p className="note">
-            Updates as machines arrive. Closing this window is safe: they keep enrolling.
+            New machines appear here as they enroll. You can close this window; they keep enrolling
+            without it.
           </p>
         </>
       ) : (
         <>
           {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result */}
           <p className="muted" role="status">
-            Waiting for the first machine. It usually shows up within a minute of the agent
+            Waiting for the first machine. Machines usually appear within a minute of the agent
             starting.
           </p>
           {now - since > WAIT_HINT_SECS && (
             <div className="note">
-              <p>Nothing yet. The usual reasons:</p>
+              <p>Still nothing? The usual causes:</p>
               <ul>
-                <li>the agent cannot reach this server,</li>
-                <li>the enroll URL was mistyped, or</li>
-                <li>the agent is not running.</li>
+                <li>The agent is not running.</li>
+                <li>The agent cannot reach this server.</li>
+                <li>The enroll URL was copied incompletely.</li>
               </ul>
               <p>
-                On the machine, <code>microscope agent status</code> shows which.
+                Run <code>microscope agent status</code> on the machine to see which.
               </p>
             </div>
           )}
@@ -386,13 +418,13 @@ function Arrivals({ chosen, now }: { chosen: Chosen; now: number }) {
 function NewKeyMade({ chosen, done }: { chosen: Chosen; done: () => void }) {
   return (
     <section className="machines-step">
-      <output className="machines-made">Key {chosen.key.name} created.</output>
+      <output className="machines-made">Created the key {chosen.key.name}.</output>
       {chosen.enroll && (
         <>
           <p className="machines-warning-text">
-            Copy this enroll URL now. It holds the key, which is shown only this once.
+            Copy the enroll URL now. It contains the key, and this is the only time you can see it.
           </p>
-          <pre className="machines-snippet">{chosen.enroll}</pre>
+          <pre className="machines-snippet wrap">{chosen.enroll}</pre>
           <Copy text={chosen.enroll} />
         </>
       )}
@@ -426,54 +458,57 @@ export function AddView(props: {
   if (!overview.agents_on) {
     return (
       <p className="machines-empty">
-        This server does not take machines yet. Whoever runs it needs to give it a public URL and
-        agent token keys.
+        This server cannot enroll machines yet. Whoever runs it needs to set{" "}
+        <code>--public-url</code> and <code>--agent-token-keys</code>.
       </p>
     );
   }
-  return (
-    <div className={install ? "machines-add" : "machines-add one"}>
-      <div>
+  if (!install) {
+    return (
+      <div className="machines-add one">
         {chosen === null ? (
           <Form
             org={overview.org_id}
             owner={overview.role === "owner"}
             keys={props.keys}
-            install={install}
+            install={false}
             chose={chose}
           />
-        ) : install ? (
-          <section className="machines-step">
-            <h3>1. Where they go</h3>
-            <p>
-              Key <span className="mono">{chosen.key.name}</span>
-              {chosen.key.environment && <>, environment {chosen.key.environment}</>}
-              {Object.keys(chosen.key.labels ?? {}).length > 0 && (
-                <>, labels {labelText(chosen.key.labels)}</>
-              )}
-              .
-            </p>
-            <div className="actions">
-              <button type="button" className="button" onClick={again}>
-                Choose another key
-              </button>
-            </div>
-          </section>
         ) : (
           <NewKeyMade chosen={chosen} done={done} />
         )}
       </div>
-      {install && (
-        <div>
-          {chosen ? (
-            <>
-              <Installing chosen={chosen} />
-              <Arrivals chosen={chosen} now={props.now} />
-            </>
-          ) : (
-            <p className="muted">Create or choose a key, and the install steps appear here.</p>
-          )}
-        </div>
+    );
+  }
+  return (
+    <div className="machines-add">
+      {chosen === null ? (
+        <Form
+          org={overview.org_id}
+          owner={overview.role === "owner"}
+          keys={props.keys}
+          install
+          chose={chose}
+        />
+      ) : (
+        <>
+          <section className="machines-step" aria-labelledby="machines-key">
+            <h3 id="machines-key">Enrollment key</h3>
+            <p>
+              Using <span className="mono">{chosen.key.name}</span>
+              {chosen.key.environment && <>, environment {chosen.key.environment}</>}
+              {Object.keys(chosen.key.labels ?? {}).length > 0 && (
+                <>, labels {labelText(chosen.key.labels)}</>
+              )}
+              .{" "}
+              <button type="button" className="link-button" onClick={again}>
+                Use a different key
+              </button>
+            </p>
+          </section>
+          <Installing chosen={chosen} />
+          <Arrivals chosen={chosen} now={props.now} />
+        </>
       )}
     </div>
   );

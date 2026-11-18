@@ -5133,8 +5133,7 @@ button.machines-row:hover,
 }
 
 .machines-empty,
-.machines-loading,
-.machines-first {
+.machines-loading {
   display: grid;
   justify-items: start;
   gap: 10px;
@@ -5145,22 +5144,6 @@ button.machines-row:hover,
 .machines-empty p,
 .machines-loading p {
   margin: 0;
-}
-
-.machines-first {
-  margin: auto;
-  padding: 48px 24px;
-}
-
-.machines-first h3 {
-  margin: 0;
-  font-size: 16px;
-}
-
-.machines-first p {
-  margin: 0;
-  color: var(--ink-2);
-  line-height: 1.55;
 }
 
 .machines-ask-scrim {
@@ -5219,17 +5202,22 @@ button.machines-row:hover,
 
 .machines-add {
   display: grid;
-  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
   gap: 28px;
+  max-width: 720px;
 }
 
 .machines-add.one {
-  grid-template-columns: minmax(0, 420px);
+  max-width: 420px;
 }
 
 .machines-form {
   display: grid;
-  gap: 12px;
+  gap: 14px;
+  max-width: 420px;
+}
+
+.machines-form p {
+  margin: 0;
 }
 
 .machines-form fieldset {
@@ -5239,14 +5227,18 @@ button.machines-row:hover,
 }
 
 .machines-add h3 {
-  margin: 0 0 4px;
-  font-size: 13px;
+  margin: 0;
+  font-size: 14px;
 }
 
 .machines-step {
   display: grid;
   gap: 10px;
-  margin-bottom: 22px;
+}
+
+.machines-note {
+  color: var(--ink-3);
+  font-size: 12px;
 }
 
 .machines-step .segmented {
@@ -5265,6 +5257,11 @@ button.machines-row:hover,
   border-radius: 6px;
   background: var(--surface-2);
   font: 12px / 1.6 var(--mono);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.machines-snippet.wrap {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -5367,10 +5364,6 @@ button.machines-row:hover,
     display: inline-flex;
     min-height: 44px;
     align-items: center;
-  }
-
-  .machines-add {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   .machines-table {
