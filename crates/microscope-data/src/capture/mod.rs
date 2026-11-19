@@ -234,7 +234,8 @@ impl Capture {
         (time("start"), time("end"))
     }
 
-    fn tables(&self) -> [(CaptureTable, usize, usize, &[u8]); CaptureTable::COUNT] {
+    #[must_use]
+    pub fn tables(&self) -> [(CaptureTable, usize, usize, &[u8]); CaptureTable::COUNT] {
         macro_rules! rows {
             ($field:ident, $table:ident) => {
                 (

@@ -133,6 +133,33 @@ enum Tool {
     /// snapshot held the program paused.
     SnapshotPause(SnapshotPauseArgs),
 
+    /// Encode each table of each capture in sections, compress them with
+    /// zstd, decode them back, and report sizes and speeds for each layout,
+    /// level, and section size.
+    ChunkBench {
+        #[arg(required = true)]
+        captures: Vec<PathBuf>,
+
+        #[arg(
+            long,
+            value_enum,
+            value_delimiter = ',',
+            default_value = "rows,columns"
+        )]
+        layouts: Vec<microscope::tools::chunk_bench::Layout>,
+
+        #[arg(long, value_delimiter = ',', default_value = "1,3,9,19")]
+        levels: Vec<i32>,
+
+        /// Bytes of raw rows in each section.
+        #[arg(long, value_delimiter = ',', default_value = "65536,1048576,4194304")]
+        sections: Vec<usize>,
+
+        /// Print the rows as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Single-step PROGRAM to its end and check the stack unwound at each
     /// instruction against the calls it made.
     UnwindOracle {
@@ -441,6 +468,16 @@ fn run(args: Args) -> Result<bool> {
         Tool::BpfVerified { syscall_filter } => {
             let verified = microscope::tools::bpf_verified::measure(&syscall_filter)?;
             println!("{}", serde_json::to_string_pretty(&verified)?);
+            Ok(true)
+        }
+        Tool::ChunkBench {
+            captures,
+            layouts,
+            levels,
+            sections,
+            json,
+        } => {
+            chunk_bench(&captures, &layouts, &levels, &sections, json)?;
             Ok(true)
         }
         Tool::SnapshotPause(pause) => run_snapshot_pause(&pause, args.cache.as_deref()),
@@ -1393,4 +1430,49 @@ fn compare_text(base: &BenchReport, new: &BenchReport) -> String {
     }
 
     text
+}
+
+fn chunk_bench(
+    captures: &[PathBuf],
+    layouts: &[microscope::tools::chunk_bench::Layout],
+    levels: &[i32],
+    sections: &[usize],
+    json: bool,
+) -> Result<()> {
+    let mut rows = Vec::new();
+    for capture in captures {
+        rows.extend(microscope::tools::chunk_bench::measure(
+            capture, layouts, levels, sections,
+        )?);
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+
+    println!(
+        "{:<8} {:>5} {:>8} {:>12} {:>12} {:>7} {:>12} {:>10} {:>10}  file",
+        "layout", "level", "section", "raw", "compressed", "share", "a day", "enc MB/s", "dec MB/s"
+    );
+    for row in &rows {
+        let day = row
+            .per_day()
+            .map_or_else(|| "-".to_owned(), |bytes| format!("{:.1} MB", bytes / 1e6));
+        println!(
+            "{:<8} {:>5} {:>8} {:>12} {:>12} {:>6.1}% {:>12} {:>10.0} {:>10.0}  {}",
+            format!("{:?}", row.layout).to_lowercase(),
+            row.level,
+            row.section,
+            row.raw,
+            row.compressed,
+            row.share() * 100.0,
+            day,
+            row.encode_mb_per_second(),
+            row.decode_mb_per_second(),
+            row.file
+        );
+    }
+
+    Ok(())
 }

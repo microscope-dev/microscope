@@ -1,4 +1,5 @@
 pub mod bpf_verified;
+pub mod chunk_bench;
 pub mod dump;
 pub mod overhead;
 pub mod snapshot_pause;

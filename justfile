@@ -288,6 +288,10 @@ profile-overhead *ARGS: build-test-programs
     cargo build --quiet --release --features tools --bin microscope-tools
     ./scripts/contained.sh ./target/release/microscope-tools overhead "$@"
 
+chunk-bench *ARGS:
+    cargo build --quiet --release --features tools --bin microscope-tools
+    ./target/release/microscope-tools chunk-bench "$@"
+
 bench-snapshots *ARGS:
     cargo build --quiet --release --features tools --bin microscope-tools
     ./scripts/contained.sh ./target/release/microscope-tools snapshot-pause "$@"
