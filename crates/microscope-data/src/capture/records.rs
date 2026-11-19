@@ -94,10 +94,12 @@ impl CaptureTable {
 
     pub const COUNT: usize = Self::ALL.len();
 
+    #[must_use]
     pub const fn index(self) -> usize {
         self as usize - 1
     }
 
+    #[must_use]
     pub fn from_number(number: u32) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| *kind as u32 == number)
     }
@@ -183,6 +185,7 @@ pub enum FrameKind {
 }
 
 impl FrameKind {
+    #[must_use]
     pub const fn from_number(number: u8) -> Option<Self> {
         match number {
             0 => Some(Self::Native),
@@ -196,6 +199,7 @@ impl FrameKind {
         }
     }
 
+    #[must_use]
     pub const fn named(self) -> bool {
         matches!(self, Self::Awaited | Self::Interpreted | Self::Kernel)
     }
@@ -254,10 +258,12 @@ impl Truncation {
         Self::ChainLimit,
     ];
 
+    #[must_use]
     pub fn from_number(number: u64) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| *kind as u64 == number)
     }
 
+    #[must_use]
     pub const fn describe(self) -> &'static str {
         match self {
             Self::NoUnwindInfo => "no unwind information",
@@ -379,6 +385,7 @@ pub struct Function {
     pub reserved: [u8; 3],
 }
 
+#[must_use]
 pub const fn role_number(role: CodeRole) -> u8 {
     match role {
         CodeRole::Ordinary => 0,
@@ -394,6 +401,7 @@ pub const fn role_number(role: CodeRole) -> u8 {
     }
 }
 
+#[must_use]
 pub const fn role_of(number: u8) -> Option<CodeRole> {
     Some(match number {
         0 => CodeRole::Ordinary,
@@ -711,6 +719,7 @@ pub enum CallOutcome {
 }
 
 impl CallOutcome {
+    #[must_use]
     pub const fn from_number(number: u8) -> Option<Self> {
         Some(match number {
             0 => Self::Returned,
@@ -823,6 +832,7 @@ pub enum NoteKind {
 }
 
 impl NoteKind {
+    #[must_use]
     pub const fn from_number(number: u8) -> Option<Self> {
         Some(match number {
             1 => Self::Signal,

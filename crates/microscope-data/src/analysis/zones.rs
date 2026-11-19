@@ -52,6 +52,7 @@ fn off_cpu_within(spans: &[OffCpu], (start, end): (i64, i64)) -> (i64, i64) {
     (blocked, preempted)
 }
 
+#[must_use]
 pub fn zone_blocks(
     capture: &Capture,
     range: (i64, i64),
@@ -177,6 +178,7 @@ pub struct ZoneStats {
 const BUCKETS: usize = 32;
 const LONGEST: usize = 10;
 
+#[must_use]
 pub fn zone_stats(
     capture: &Capture,
     sites: &[u32],
@@ -334,6 +336,7 @@ pub struct PlotBin {
     pub high: f64,
 }
 
+#[must_use]
 pub fn plot_series(
     capture: &Capture,
     range: (i64, i64),
@@ -448,6 +451,7 @@ pub fn plot_series(
     series
 }
 
+#[must_use]
 pub fn sites_named(capture: &Capture, name: &str) -> Vec<u32> {
     (0..)
         .zip(&capture.sites)

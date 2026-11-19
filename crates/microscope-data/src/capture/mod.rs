@@ -86,6 +86,7 @@ pub struct Capture {
 pub const LIMITS: Limits = Limits { bytes: 16 << 30 };
 
 impl Capture {
+    #[must_use]
     pub fn string(&self, id: u32) -> &str {
         if id == NONE {
             return "";
@@ -94,6 +95,7 @@ impl Capture {
         Strings(&self.strings).get(StrId(id))
     }
 
+    #[must_use]
     pub fn setting(&self, key: &str) -> Option<&str> {
         self.settings
             .iter()
@@ -101,6 +103,7 @@ impl Capture {
             .map(|setting| self.string(setting.value.get()))
     }
 
+    #[must_use]
     pub fn account(&self, kind: u32) -> u64 {
         self.accounting
             .iter()
@@ -109,24 +112,29 @@ impl Capture {
             .sum()
     }
 
+    #[must_use]
     pub fn thread_samples(&self, range: &ThreadRange) -> &[Sample] {
         rows(&self.samples, range.start.get(), range.count.get())
     }
 
+    #[must_use]
     pub fn thread_off_cpu(&self, range: &ThreadRange) -> &[OffCpu] {
         rows(&self.off_cpu, range.start.get(), range.count.get())
     }
 
+    #[must_use]
     pub fn frame_lines(&self, frame: u32) -> &[Line] {
         self.frame_symbols.get(frame as usize).map_or(&[], |range| {
             rows(&self.lines, range.start.get(), range.count.get())
         })
     }
 
+    #[must_use]
     pub fn range_zones(&self, range: &ZoneRange) -> &[Zone] {
         rows(&self.zones, range.start.get(), range.count.get())
     }
 
+    #[must_use]
     pub fn blob(&self, start: u32, len: u32) -> &[u8] {
         if start == NONE {
             return &[];
@@ -135,6 +143,7 @@ impl Capture {
         rows(&self.syscall_blobs, start, len)
     }
 
+    #[must_use]
     pub fn stat_errnos(&self, stat: &SyscallStat) -> &[SyscallErrno] {
         rows(
             &self.syscall_errnos,
@@ -147,6 +156,7 @@ impl Capture {
         clippy::indexing_slicing,
         reason = "`validate` checks every stack's frame and task's root against the frames"
     )]
+    #[must_use]
     pub fn frame(&self, frame: u32) -> &Frame {
         &self.frames[frame as usize]
     }
@@ -155,6 +165,7 @@ impl Capture {
         clippy::indexing_slicing,
         reason = "`validate` checks every line's function against the functions"
     )]
+    #[must_use]
     pub fn function(&self, function: u32) -> &Function {
         &self.functions[function as usize]
     }
@@ -163,6 +174,7 @@ impl Capture {
         clippy::indexing_slicing,
         reason = "`validate` checks every module id but `NONE` against the modules"
     )]
+    #[must_use]
     pub fn module(&self, module: u32) -> &Module {
         &self.modules[module as usize]
     }
@@ -171,6 +183,7 @@ impl Capture {
         clippy::indexing_slicing,
         reason = "`validate` checks every site id but `NONE` against the sites"
     )]
+    #[must_use]
     pub fn site(&self, site: u32) -> &Site {
         &self.sites[site as usize]
     }
@@ -179,6 +192,7 @@ impl Capture {
         clippy::indexing_slicing,
         reason = "`validate` requires every sample, off-CPU, and zone range's thread to be a row"
     )]
+    #[must_use]
     pub fn thread(&self, thread: u32) -> &Thread {
         &self.threads[thread as usize]
     }
@@ -187,6 +201,7 @@ impl Capture {
         clippy::indexing_slicing,
         reason = "`validate` requires every thread's and mapping's process to be a row"
     )]
+    #[must_use]
     pub fn process(&self, process: u32) -> &Process {
         &self.processes[process as usize]
     }
@@ -195,6 +210,7 @@ impl Capture {
         clippy::indexing_slicing,
         reason = "`validate` checks every task id but `NONE` against the tasks"
     )]
+    #[must_use]
     pub fn task(&self, task: u32) -> &Task {
         &self.tasks[task as usize]
     }
@@ -207,6 +223,7 @@ impl Capture {
         })
     }
 
+    #[must_use]
     pub fn span(&self) -> (i64, i64) {
         let time = |key| {
             self.setting(key)

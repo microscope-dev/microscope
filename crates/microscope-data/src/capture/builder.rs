@@ -111,6 +111,7 @@ const fn call_time(call: &Syscall) -> i64 {
 }
 
 impl CaptureBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -176,6 +177,7 @@ impl CaptureBuilder {
         process
     }
 
+    #[must_use]
     pub fn process_end(&self, pid: Pid) -> Option<i64> {
         let process = *self.ended_processes.get(&pid)?.last()?;
         Some(own(&self.processes, process).end.get())
@@ -296,6 +298,7 @@ impl CaptureBuilder {
         frame
     }
 
+    #[must_use]
     pub fn frames(&self) -> &[Frame] {
         &self.frames
     }
@@ -414,6 +417,7 @@ impl CaptureBuilder {
         });
     }
 
+    #[must_use]
     pub fn sample_weight(&self) -> u64 {
         self.samples
             .iter()
@@ -464,10 +468,12 @@ impl CaptureBuilder {
         }
     }
 
+    #[must_use]
     pub fn account(&self, kind: u32) -> u64 {
         self.accounts.get(&kind).copied().unwrap_or(0)
     }
 
+    #[must_use]
     pub fn symbolized(&self, frame: u32) -> bool {
         self.symbols.contains_key(&frame)
     }
@@ -753,6 +759,7 @@ impl CaptureBuilder {
         }
     }
 
+    #[must_use]
     pub const fn accounts(&self) -> &BTreeMap<u32, u64> {
         &self.accounts
     }
@@ -1106,6 +1113,7 @@ impl CaptureBuilder {
         }
     }
 
+    #[must_use]
     pub fn finish(self) -> Capture {
         let capture = self.assemble();
 

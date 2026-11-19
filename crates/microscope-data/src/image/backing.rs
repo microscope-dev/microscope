@@ -27,6 +27,7 @@ impl std::fmt::Debug for AlignedBytes {
 }
 
 impl AlignedBytes {
+    #[must_use]
     pub fn zeroed(length: usize) -> Option<Self> {
         let blocks = length.div_ceil(TABLE_ALIGNMENT);
         Some(Self {
@@ -35,7 +36,8 @@ impl AlignedBytes {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
     pub fn copy_of(bytes: &[u8]) -> Option<Self> {
         let mut aligned = Self::zeroed(bytes.len())?;
         aligned.as_mut_bytes().copy_from_slice(bytes);
@@ -46,6 +48,7 @@ impl AlignedBytes {
         clippy::indexing_slicing,
         reason = "`zeroed`, the only constructor, allocates blocks for at least `length` bytes"
     )]
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.blocks.as_bytes()[..self.length]
     }
@@ -105,6 +108,7 @@ pub struct FileStamp {
 }
 
 impl FileStamp {
+    #[must_use]
     pub fn of(metadata: &std::fs::Metadata) -> Self {
         use std::os::unix::fs::MetadataExt as _;
         Self {

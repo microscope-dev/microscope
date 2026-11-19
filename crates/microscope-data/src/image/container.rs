@@ -231,6 +231,7 @@ impl<F: Format> Default for Tables<'_, F> {
 }
 
 impl<'a, F: Format> Tables<'a, F> {
+    #[must_use]
     pub const fn new() -> Self {
         Self { tables: Vec::new() }
     }
@@ -330,7 +331,7 @@ impl<'a, F: Format> Tables<'a, F> {
     }
 }
 
-#[cfg(any(test, feature = "fuzzing"))]
+#[cfg(any(test, feature = "fuzzing", feature = "testing"))]
 #[allow(clippy::indexing_slicing, reason = "callers pass a whole image")]
 pub fn reseal(bytes: &mut [u8]) {
     let end = bytes.len() - size_of::<Trailer>();
@@ -387,6 +388,7 @@ fn header<F: Format>(
     })
 }
 
+#[must_use]
 pub const fn target_of(header: &Header) -> Option<TargetDescription> {
     let architecture = match header.architecture {
         1 => Architecture::X86_64,

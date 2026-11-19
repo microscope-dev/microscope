@@ -45,7 +45,7 @@ pub fn hostile_address(valid: Vec<u64>) -> impl Strategy<Value = u64> + Clone {
 
 pub fn damaged_corpus(target: &str) -> impl Strategy<Value = Vec<u8>> + use<> {
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("fuzz/corpus")
+        .join("../../fuzz/corpus")
         .join(target);
     let mut files = std::fs::read_dir(&directory)
         .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))

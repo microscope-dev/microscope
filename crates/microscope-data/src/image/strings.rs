@@ -12,13 +12,13 @@ pub struct StringsBuilder {
 }
 
 #[derive(Debug, Default, Clone)]
-pub(super) struct Pooled {
+pub struct Pooled {
     first: foldhash::HashMap<u64, u32>,
     collided: Vec<u32>,
 }
 
 impl Pooled {
-    pub(super) fn find(&self, hash: u64, same: impl Fn(u32) -> bool) -> Option<u32> {
+    pub fn find(&self, hash: u64, same: impl Fn(u32) -> bool) -> Option<u32> {
         let first = *self.first.get(&hash)?;
         if same(first) {
             return Some(first);
@@ -27,7 +27,7 @@ impl Pooled {
         self.collided.iter().copied().find(|row| same(*row))
     }
 
-    pub(super) fn insert(&mut self, hash: u64, row: u32) {
+    pub fn insert(&mut self, hash: u64, row: u32) {
         match self.first.entry(hash) {
             std::collections::hash_map::Entry::Occupied(_) => self.collided.push(row),
             std::collections::hash_map::Entry::Vacant(vacant) => {
@@ -37,7 +37,8 @@ impl Pooled {
     }
 }
 
-pub(super) fn hash(text: &str) -> u64 {
+#[must_use]
+pub fn hash(text: &str) -> u64 {
     std::hash::BuildHasher::hash_one(&foldhash::fast::FixedState::default(), text)
 }
 
@@ -46,7 +47,7 @@ impl StringsBuilder {
         self.push_hashed(text, hash(text))
     }
 
-    pub(super) fn push_hashed(&mut self, text: &str, hash: u64) -> Option<StrId> {
+    pub fn push_hashed(&mut self, text: &str, hash: u64) -> Option<StrId> {
         let text = text.as_bytes();
         if text.contains(&0) {
             return None;
@@ -68,6 +69,7 @@ impl StringsBuilder {
         Some(id)
     }
 
+    #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
     }
@@ -77,16 +79,19 @@ impl StringsBuilder {
 pub struct Strings<'a>(pub &'a [u8]);
 
 impl<'a> Strings<'a> {
+    #[must_use]
     pub fn get(self, id: StrId) -> &'a str {
         let text = std::str::from_utf8(self.bytes(id));
         debug_assert!(text.is_ok(), "validation checked string {} is UTF-8", id.0);
         text.unwrap_or("\u{fffd}")
     }
 
+    #[must_use]
     pub fn bytes(self, id: StrId) -> &'a [u8] {
         terminated(self.0, id.0)
     }
 
+    #[must_use]
     pub fn contains(self, id: StrId) -> bool {
         valid_reference(self.0, id.0, true)
     }
@@ -120,6 +125,7 @@ impl PathsBuilder {
         Some(id)
     }
 
+    #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
     }
@@ -129,6 +135,7 @@ impl PathsBuilder {
 pub struct Paths<'a>(pub &'a [u8]);
 
 impl<'a> Paths<'a> {
+    #[must_use]
     pub fn get(self, id: PathId) -> &'a Path {
         Path::new(OsStr::from_bytes(terminated(self.0, id.0)))
     }
@@ -144,6 +151,7 @@ fn terminated(pool: &[u8], start: u32) -> &[u8] {
     rest.get(..end.unwrap_or(0)).unwrap_or_default()
 }
 
+#[must_use]
 pub fn valid_pool(pool: &[u8], utf8: bool) -> bool {
     if pool.last().is_some_and(|last| *last != 0) {
         return false;
@@ -151,6 +159,7 @@ pub fn valid_pool(pool: &[u8], utf8: bool) -> bool {
     !utf8 || std::str::from_utf8(pool).is_ok()
 }
 
+#[must_use]
 pub fn valid_reference(pool: &[u8], offset: u32, utf8: bool) -> bool {
     let Some(&byte) = pool.get(offset as usize) else {
         return false;

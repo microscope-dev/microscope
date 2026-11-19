@@ -978,7 +978,9 @@ dependencies = [
  "jsonschema",
  "lzma-rs",
  "memchr",
+ "microscope-data",
  "microscope-probes",
+ "microscope-test-strategies",
  "mimalloc",
  "nix 0.31.3",
  "object",
@@ -1009,8 +1011,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "microscope-data"
+version = "0.1.0"
+dependencies = [
+ "foldhash 0.2.0",
+ "memchr",
+ "microscope-probes",
+ "microscope-test-strategies",
+ "nix 0.31.3",
+ "proptest",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "twox-hash",
+ "zerocopy",
+]
+
+[[package]]
 name = "microscope-probes"
 version = "0.1.0"
+
+[[package]]
+name = "microscope-test-strategies"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "mimalloc"

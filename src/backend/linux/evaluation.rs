@@ -501,7 +501,7 @@ impl<P: InspectionOps> TypeSource for Frame<'_, P> {
     }
 
     fn c_base_type(&self, ty: crate::CBaseType) -> Option<crate::BaseType> {
-        self.controller.main.image.target().c_base_type(ty)
+        crate::model::c_base_type(self.controller.main.image.target(), ty)
     }
 
     fn same_type(&self, left: TypeReference, right: TypeReference) -> bool {

@@ -76,74 +76,9 @@ address_type!(
     "An address in the virtual address space of a running process."
 );
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct Pid(u32);
-
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct Tid(u32);
-
-macro_rules! os_id {
-    ($name:ident) => {
-        impl $name {
-            #[must_use]
-            pub const fn new(id: u32) -> Self {
-                Self(id)
-            }
-
-            #[must_use]
-            pub const fn get(self) -> u32 {
-                self.0
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                self.0.fmt(formatter)
-            }
-        }
-    };
-}
-
-os_id!(Pid);
-os_id!(Tid);
-
-impl Pid {
-    #[must_use]
-    pub const fn led_by(leader: Tid) -> Self {
-        Self(leader.0)
-    }
-
-    #[must_use]
-    pub const fn leader(self) -> Tid {
-        Tid(self.0)
-    }
-}
+pub use microscope_data::model::{
+    Architecture, ByteOrder, CodeRole, Pid, PointerWidth, TargetDescription, Tid,
+};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LoadBias(u64);
@@ -2707,81 +2642,35 @@ pub struct VariableSnapshot {
     pub usage: InspectionUsage,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Architecture {
-    X86_64,
-    Aarch64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ByteOrder {
-    Little,
-
-    Big,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PointerWidth {
-    Bits32,
-    Bits64,
-}
-
-impl PointerWidth {
-    #[must_use]
-    pub const fn bytes(self) -> u8 {
-        match self {
-            Self::Bits32 => 4,
-            Self::Bits64 => 8,
-        }
+pub fn c_base_type(target: TargetDescription, ty: CBaseType) -> Option<BaseType> {
+    use BaseTypeEncoding as E;
+    if target.architecture != Architecture::X86_64 || target.pointer_width != PointerWidth::Bits64 {
+        return None;
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TargetDescription {
-    pub architecture: Architecture,
-    pub byte_order: ByteOrder,
-    pub pointer_width: PointerWidth,
-}
-
-impl TargetDescription {
-    pub const X86_64: Self = Self {
-        architecture: Architecture::X86_64,
-        byte_order: ByteOrder::Little,
-        pointer_width: PointerWidth::Bits64,
+    let (encoding, byte_size) = match ty {
+        CBaseType::Char | CBaseType::SignedChar => (E::SignedCharacter, 1),
+        CBaseType::UnsignedChar => (E::UnsignedCharacter, 1),
+        CBaseType::Short => (E::Signed, 2),
+        CBaseType::UnsignedShort => (E::Unsigned, 2),
+        CBaseType::Int => (E::Signed, 4),
+        CBaseType::UnsignedInt => (E::Unsigned, 4),
+        CBaseType::Long | CBaseType::LongLong => (E::Signed, 8),
+        CBaseType::UnsignedLong | CBaseType::UnsignedLongLong => (E::Unsigned, 8),
+        CBaseType::Float => (E::Floating, 4),
+        CBaseType::Double => (E::Floating, 8),
+        CBaseType::LongDouble => (E::Floating, 16),
     };
 
-    #[must_use]
-    pub fn c_base_type(&self, ty: CBaseType) -> Option<BaseType> {
-        use BaseTypeEncoding as E;
-        if self.architecture != Architecture::X86_64 || self.pointer_width != PointerWidth::Bits64 {
-            return None;
-        }
+    let name: Arc<str> = ty.name().into();
 
-        let (encoding, byte_size) = match ty {
-            CBaseType::Char | CBaseType::SignedChar => (E::SignedCharacter, 1),
-            CBaseType::UnsignedChar => (E::UnsignedCharacter, 1),
-            CBaseType::Short => (E::Signed, 2),
-            CBaseType::UnsignedShort => (E::Unsigned, 2),
-            CBaseType::Int => (E::Signed, 4),
-            CBaseType::UnsignedInt => (E::Unsigned, 4),
-            CBaseType::Long | CBaseType::LongLong => (E::Signed, 8),
-            CBaseType::UnsignedLong | CBaseType::UnsignedLongLong => (E::Unsigned, 8),
-            CBaseType::Float => (E::Floating, 4),
-            CBaseType::Double => (E::Floating, 8),
-            CBaseType::LongDouble => (E::Floating, 16),
-        };
-
-        let name: Arc<str> = ty.name().into();
-
-        Some(BaseType {
-            name: Arc::clone(&name),
-            base_name: name,
-            encoding,
-            byte_size,
-            bit_size: None,
-        })
-    }
+    Some(BaseType {
+        name: Arc::clone(&name),
+        base_name: name,
+        encoding,
+        byte_size,
+        bit_size: None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -3117,30 +3006,6 @@ impl CoroutineState {
             .iter()
             .find(|member| member.name.as_deref() == Some("__awaitee"))
     }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum CodeRole {
-    #[default]
-    Ordinary,
-
-    Wrapper,
-
-    RuntimeInternal,
-
-    Panic,
-
-    StackSwitch,
-
-    Outermost,
-
-    TrapEntry,
-
-    SignalTrampoline,
-
-    Dispatch,
-
-    Interpreter,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

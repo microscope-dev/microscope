@@ -797,6 +797,7 @@ dependencies = [
  "iced-x86",
  "lzma-rs",
  "memchr",
+ "microscope-data",
  "microscope-probes",
  "mimalloc",
  "nix",
@@ -820,6 +821,23 @@ dependencies = [
  "twox-hash",
  "ureq",
  "wasmi",
+ "zerocopy",
+]
+
+[[package]]
+name = "microscope-data"
+version = "0.1.0"
+dependencies = [
+ "foldhash 0.2.0",
+ "memchr",
+ "microscope-probes",
+ "nix",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "twox-hash",
  "zerocopy",
 ]
 

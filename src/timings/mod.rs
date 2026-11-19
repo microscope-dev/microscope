@@ -147,6 +147,10 @@ impl Recording {
             return Err(AlreadyRecording);
         }
 
+        microscope_data::spans::time_with(microscope_data::spans::Timer {
+            open: |name| enabled() && open_span(name, None, None),
+            close: close_span,
+        });
         let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
         MULTIPLEXED.store(false, Ordering::Relaxed);
         *INSTRUCTIONS_UNAVAILABLE

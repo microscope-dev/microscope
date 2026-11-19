@@ -182,7 +182,8 @@ fn code_role(capture: &Capture, kind: KeyKind) -> CodeRole {
 }
 
 impl<'a> Keys<'a> {
-    pub(crate) fn new(capture: &'a Capture, granularity: Granularity) -> Self {
+    #[must_use]
+    pub fn new(capture: &'a Capture, granularity: Granularity) -> Self {
         let _span = crate::span!("analysis keys");
         let mut kinds = Vec::new();
         let mut known: HashMap<KeyKind, u32> = HashMap::default();
@@ -286,7 +287,7 @@ impl<'a> Keys<'a> {
     }
 
     #[expect(clippy::indexing_slicing, reason = "label rows are rows of `labels`")]
-    pub(crate) fn label_of(&self, label: u32) -> Label<'a> {
+    pub fn label_of(&self, label: u32) -> Label<'a> {
         self.labels[label as usize]
     }
 
@@ -304,18 +305,18 @@ impl<'a> Keys<'a> {
             .unwrap_or(NONE)
     }
 
-    pub(crate) fn syscall(&self, abi: u8, number: u32) -> u32 {
+    pub fn syscall(&self, abi: u8, number: u32) -> u32 {
         self.syscalls
             .get(&KeyKind::Syscall { abi, number })
             .copied()
             .unwrap_or(NONE)
     }
 
-    pub(crate) fn spans(&self, thread: u32) -> &[(i64, i64, u32)] {
+    pub fn spans(&self, thread: u32) -> &[(i64, i64, u32)] {
         self.spans.get(thread as usize).map_or(&[], Vec::as_slice)
     }
 
-    pub(crate) fn task_labels(&self, task: u32) -> &[u32] {
+    pub fn task_labels(&self, task: u32) -> &[u32] {
         self.task_labels
             .get(task as usize)
             .map_or(&[], Vec::as_slice)

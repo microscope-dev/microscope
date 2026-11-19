@@ -1,0 +1,17 @@
+[package]
+name = "microscope-test-strategies"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Proptest strategies shared by microscope's crates"
+repository = "https://github.com/microscope-dev/microscope"
+readme = "../../README.md"
+publish = false
+keywords = ["testing"]
+categories = ["development-tools::testing"]
+
+[dependencies]
+proptest = { version = "1.11", default-features = false, features = ["fork", "std", "timeout"] }
+
+[lints]
+workspace = true

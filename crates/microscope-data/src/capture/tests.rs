@@ -484,8 +484,8 @@ fn a_damaged_index_is_passed_over_for_the_chunks() {
 
 #[test]
 fn the_fuzzers_seed_is_a_capture_of_this_revision() {
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/capture/two-threads");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/capture/two-threads");
     let mut expected = Vec::new();
     file::write(&sample_capture(0), &mut expected).expect("write");
 

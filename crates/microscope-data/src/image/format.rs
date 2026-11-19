@@ -364,15 +364,18 @@ impl TableKind {
 
     pub const COUNT: usize = Self::ALL.len();
 
+    #[must_use]
     pub const fn index(self) -> usize {
         self as usize - 1
     }
 
+    #[must_use]
     pub fn from_number(number: u32) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| *kind as u32 == number)
     }
 }
 
+#[must_use]
 pub const fn aligned(offset: usize) -> Option<usize> {
     match offset.checked_add(TABLE_ALIGNMENT - 1) {
         Some(end) => Some(end / TABLE_ALIGNMENT * TABLE_ALIGNMENT),

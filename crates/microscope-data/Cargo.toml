@@ -1,0 +1,36 @@
+[package]
+name = "microscope-data"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Microscope's recorded data: captures, their analysis, and system call models"
+repository = "https://github.com/microscope-dev/microscope"
+readme = "../../README.md"
+publish = false
+keywords = ["profiler", "observability"]
+categories = ["development-tools::profiling"]
+
+[features]
+fuzzing = []
+testing = []
+self-probes = ["microscope-probes/enabled"]
+
+[dependencies]
+foldhash = "0.2"
+memchr = "2.8"
+microscope-probes = { path = "../../sdk/rust-probes" }
+nix = { version = "0.31", features = ["fs", "resource", "time"] }
+rayon = "1.11"
+regex = "1.13"
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+thiserror = "2.0"
+twox-hash = { version = "2.1", default-features = false, features = ["std", "xxhash3_64", "xxhash3_128"] }
+zerocopy = { version = "0.8", features = ["alloc", "derive"] }
+
+[dev-dependencies]
+microscope-test-strategies = { path = "../microscope-test-strategies" }
+proptest = { version = "1.11", default-features = false, features = ["fork", "std", "timeout"] }
+
+[lints]
+workspace = true

@@ -2,6 +2,37 @@
 
 cargo-features = ["profile-rustflags"]
 
+[workspace]
+members = ["crates/microscope-data", "crates/microscope-test-strategies"]
+default-members = [".", "crates/microscope-data", "crates/microscope-test-strategies"]
+exclude = ["fuzz", "loom", "sdk", "tests/fixtures"]
+resolver = "3"
+
+[workspace.lints.rust]
+future_incompatible = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused = { level = "deny", priority = -1 }
+
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(loom)"] }
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+
+iter_over_hash_type = "deny"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+missing_safety_doc = "deny"
+module_name_repetitions = "allow"
+multiple_crate_versions = "allow"
+undocumented_unsafe_blocks = "deny"
+
+
 [package]
 name = "microscope"
 version = "0.1.0"
@@ -19,7 +50,7 @@ categories = ["command-line-utilities", "development-tools::debugging"]
 
 [features]
 
-fuzzing = ["object/write"]
+fuzzing = ["object/write", "microscope-data/fuzzing"]
 
 
 sim = []
@@ -32,7 +63,7 @@ system-alloc = []
 bpf-walk-timing = []
 
 
-self-probes = ["microscope-probes/enabled"]
+self-probes = ["microscope-probes/enabled", "microscope-data/self-probes"]
 
 
 tools = []
@@ -57,29 +88,8 @@ name = "microscope-sim"
 path = "src/bin/microscope-sim.rs"
 required-features = ["sim"]
 
-[lints.rust]
-future_incompatible = { level = "deny", priority = -1 }
-rust_2018_idioms = { level = "deny", priority = -1 }
-unsafe_code = "deny"
-unsafe_op_in_unsafe_fn = "deny"
-unused = { level = "deny", priority = -1 }
-
-unexpected_cfgs = { level = "deny", check-cfg = ["cfg(loom)"] }
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-cargo = { level = "deny", priority = -1 }
-nursery = { level = "deny", priority = -1 }
-pedantic = { level = "deny", priority = -1 }
-
-
-iter_over_hash_type = "deny"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-missing_safety_doc = "deny"
-module_name_repetitions = "allow"
-multiple_crate_versions = "allow"
-undocumented_unsafe_blocks = "deny"
+[lints]
+workspace = true
 
 [dependencies]
 anyhow = "1.0"
@@ -110,6 +120,7 @@ twox-hash = { version = "2.1", default-features = false, features = ["std", "xxh
 
 
 microscope-probes = { path = "sdk/rust-probes" }
+microscope-data = { path = "crates/microscope-data" }
 getrandom = "0.3"
 base64 = "0.22"
 ring = "0.17"
@@ -139,6 +150,8 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 rustc-demangle = "0.1"
 
 [dev-dependencies]
+microscope-data = { path = "crates/microscope-data", features = ["testing"] }
+microscope-test-strategies = { path = "crates/microscope-test-strategies" }
 expectrl = "0.9"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
 jsonschema = { version = "0.58", default-features = false }

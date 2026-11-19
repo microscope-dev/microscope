@@ -1019,6 +1019,7 @@ pub struct OffCpuLane {
     pub preempted: Vec<u64>,
 }
 
+#[must_use]
 pub fn off_cpu(capture: &Capture, query: &Query, buckets: usize) -> Vec<OffCpuLane> {
     let Some((start, end)) = query
         .range

@@ -1006,12 +1006,14 @@ impl TypeSource for World {
     }
 
     fn c_base_type(&self, ty: crate::CBaseType) -> Option<crate::BaseType> {
-        crate::TargetDescription {
-            architecture: crate::Architecture::X86_64,
-            byte_order: ByteOrder::Little,
-            pointer_width: crate::PointerWidth::Bits64,
-        }
-        .c_base_type(ty)
+        crate::model::c_base_type(
+            crate::TargetDescription {
+                architecture: crate::Architecture::X86_64,
+                byte_order: ByteOrder::Little,
+                pointer_width: crate::PointerWidth::Bits64,
+            },
+            ty,
+        )
     }
 
     fn same_type(&self, left: TypeReference, right: TypeReference) -> bool {

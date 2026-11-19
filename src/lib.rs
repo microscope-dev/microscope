@@ -22,9 +22,9 @@ macro_rules! record {
 extern crate self as microscope;
 
 pub mod agent;
-mod analysis;
+use microscope_data::analysis;
 mod backend;
-pub(crate) mod capture;
+pub(crate) use microscope_data::capture;
 
 mod condition;
 mod debug_info;
@@ -62,13 +62,13 @@ mod source_map;
 mod step_skip;
 pub mod suggest;
 mod sync;
-pub mod syscalls;
+pub use microscope_data::syscalls;
 
 pub use backend::syscall_engines;
 #[cfg(test)]
 mod test_memory;
 #[cfg(test)]
-pub(crate) mod test_strategies;
+pub(crate) use microscope_test_strategies as test_strategies;
 pub mod timings;
 
 #[doc(hidden)]

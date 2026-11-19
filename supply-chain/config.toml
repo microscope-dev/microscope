@@ -13,6 +13,9 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 [policy.cpp_demangle]
 audit-as-crates-io = true
 
+[policy.microscope-test-strategies]
+criteria = "safe-to-run"
+
 [[exemptions.ahash]]
 version = "0.8.12"
 criteria = "safe-to-run"

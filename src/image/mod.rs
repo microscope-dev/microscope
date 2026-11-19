@@ -1,9 +1,6 @@
-pub mod backing;
 pub mod calls;
-pub mod container;
 pub mod declarations;
 pub mod facts;
-mod format;
 pub mod functions;
 pub mod index;
 pub mod lines;
@@ -12,7 +9,6 @@ pub mod packages;
 pub mod python;
 pub mod resumes;
 mod schema;
-mod strings;
 pub mod symbols;
 pub mod type_facts;
 pub mod types;
@@ -34,15 +30,12 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 pub use backing::AlignedBytes;
 pub use format::TableKind;
-pub use strings::{
-    PathId, Paths, PathsBuilder, StrId, Strings, StringsBuilder, valid_pool, valid_reference,
-};
+pub use microscope_data::image::{MAX_ROWS, NONE, Placed, backing, container, format, strings};
+pub use strings::{PathId, Paths, PathsBuilder, Strings, StringsBuilder};
 
-pub use validate::{ImageError, Limits};
+pub use microscope_data::image::{ImageError, Limits};
 
 use container::{Format, TableBytes, Tables};
-
-pub const NONE: u32 = u32::MAX;
 
 fn ids(rows: usize) -> Range<u32> {
     let end = u32::try_from(rows).unwrap_or(NONE);
@@ -142,20 +135,12 @@ impl<T> std::fmt::Debug for Span<T> {
     }
 }
 
-pub const MAX_ROWS: u64 = NONE as u64;
-
 pub trait Record: FromBytes + IntoBytes + KnownLayout + Immutable + Unaligned {
     const KIND: TableKind;
 }
 
 pub trait SharedRecord: FromBytes + IntoBytes + KnownLayout + Immutable + Unaligned {
     const NAME: &'static str;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Placed {
-    pub(crate) offset: usize,
-    pub(crate) length: usize,
 }
 
 pub fn revisions() -> [u64; 3] {
