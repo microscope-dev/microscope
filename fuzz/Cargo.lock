@@ -834,6 +834,7 @@ dependencies = [
  "nix",
  "rayon",
  "regex",
+ "ring",
  "serde",
  "serde_json",
  "thiserror",

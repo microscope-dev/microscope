@@ -22,6 +22,7 @@ microscope-probes = { path = "../../sdk/rust-probes" }
 nix = { version = "0.31", features = ["fs", "resource", "time"] }
 rayon = "1.11"
 regex = "1.13"
+ring = "0.17"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 thiserror = "2.0"

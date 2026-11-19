@@ -186,3 +186,10 @@ path = "fuzz_targets/agent_input.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "sanitize"
+path = "fuzz_targets/sanitize.rs"
+test = false
+doc = false
+bench = false
