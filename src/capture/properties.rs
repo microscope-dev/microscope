@@ -7,7 +7,7 @@
     reason = "a model names every table's rows in one place, of small counts and times"
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use proptest::prelude::*;
 
@@ -504,6 +504,31 @@ fn rows(capture: &Capture, depths: bool) -> Rows {
 
     rows.sort();
     rows
+}
+
+fn used_threads(rows: &Rows) -> BTreeSet<ThreadKey> {
+    let traced = rows.traced.iter().filter_map(|row| match row {
+        TracedRow::Call(thread, ..) => Some(thread),
+        TracedRow::Note(thread, ..) => thread.as_ref(),
+    });
+    rows.samples
+        .iter()
+        .map(|row| &row.0)
+        .chain(rows.off_cpu.iter().map(|row| &row.0))
+        .chain(rows.zones.iter().map(|row| &row.0))
+        .chain(rows.markers.iter().filter_map(|row| row.0.as_ref()))
+        .chain(rows.plots.iter().map(|row| &row.0))
+        .chain(traced)
+        .cloned()
+        .collect()
+}
+
+fn alive(start: i64, end: i64, (lo, hi): (i64, i64)) -> bool {
+    if start == end {
+        lo <= start && start < hi
+    } else {
+        start < hi && end > lo
+    }
 }
 
 fn note_row(capture: &Capture, note: &SyscallNote) -> TracedRow {
@@ -1061,6 +1086,38 @@ proptest! {
         let whole = merged(&pieces);
         prop_assert_eq!(whole.validate(), Ok(()));
         prop_assert_eq!(rows(&whole, false), expected_pieces(&model, &cuts));
+    }
+
+    #[test]
+    fn a_compacted_piece_keeps_every_row_and_only_what_it_uses(model in model(), draws in cut_draws()) {
+        let cuts = cuts(&model, &draws);
+        let pieces = pieces(build(&model, false), &cuts);
+        let bounds: Vec<i64> = std::iter::once(i64::MIN)
+            .chain(cuts.iter().copied())
+            .chain(std::iter::once(i64::MAX))
+            .collect();
+
+        for (piece, window) in pieces.iter().zip(bounds.windows(2)) {
+            let window = (window[0], window[1]);
+            let compacted = piece.compact(window);
+            prop_assert_eq!(compacted.validate(), Ok(()));
+            prop_assert_eq!(&compacted.compact(window), &compacted);
+            prop_assert!(compacted.strings.len() <= piece.strings.len());
+
+            let mut wanted = rows(piece, false);
+            let used = used_threads(&wanted);
+            let numbers: BTreeSet<u64> = wanted
+                .samples
+                .iter()
+                .filter_map(|sample| sample.4)
+                .chain(wanted.waits.iter().map(|wait| wait.2))
+                .collect();
+            wanted.threads.retain(|thread| {
+                used.contains(thread) || alive(thread.2, thread.3, window)
+            });
+            wanted.tasks.retain(|task| numbers.contains(&task.1));
+            prop_assert_eq!(rows(&compacted, false), wanted, "{:?}", window);
+        }
     }
 
     /// A file of a recording's pieces reads back as them merged; cut at

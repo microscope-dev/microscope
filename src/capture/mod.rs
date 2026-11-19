@@ -1,4 +1,5 @@
 pub mod builder;
+mod compact;
 pub mod file;
 #[cfg(test)]
 mod properties;

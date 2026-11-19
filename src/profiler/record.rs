@@ -2214,7 +2214,7 @@ impl Processor {
         self.close(&mut builder, end);
         self.start(&mut builder);
         self.scale(&mut builder);
-        builder.finish()
+        self.trimmed(builder.finish(), end)
     }
 
     pub fn finish(mut self) -> Capture {
@@ -2229,7 +2229,15 @@ impl Processor {
         self.close(&mut builder, end);
         self.start(&mut builder);
         self.scale(&mut builder);
-        builder.finish()
+        self.trimmed(builder.finish(), end)
+    }
+
+    fn trimmed(&self, capture: Capture, end: u64) -> Capture {
+        if matches!(self.cut, Cut::Whole) {
+            return capture;
+        }
+        let start = self.start_time().unwrap_or(end);
+        capture.compact((start.cast_signed(), end.cast_signed()))
     }
 
     pub fn save(&mut self) -> Option<Capture> {
@@ -2256,13 +2264,14 @@ impl Processor {
 
         self.builder.forget_before(end.cast_signed());
         self.paces.retain(|pace| pace.until > end);
-        if let Cut::Segments { start, .. } = &mut self.cut {
-            *start = Some(cuts::Mark {
+        let capture = self.trimmed(builder.finish(), end);
+        if let Cut::Segments { start: from, .. } = &mut self.cut {
+            *from = Some(cuts::Mark {
                 time: end,
                 accounts,
             });
         }
-        Some(builder.finish())
+        Some(capture)
     }
 
     fn start_time(&self) -> Option<u64> {
