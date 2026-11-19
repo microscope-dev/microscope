@@ -16,7 +16,7 @@ use super::{
 };
 
 use super::syscall_trace::{SyscallEngine, SyscallLevel, SyscallTrace, Traced};
-use crate::backend::bpf::sampler::{Sampler, SamplerError};
+use crate::backend::bpf::sampler::{Sampler, SamplerError, Thin};
 use crate::backend::perf;
 use crate::capture::records::{AccountKind, GapReason, MarkerKind};
 use crate::model::Pid;
@@ -77,6 +77,10 @@ fn ready(command: &mut Command, options: &RecordOptions, processor: &mut record:
         .setting(super::ARGUMENTS, &super::encode_arguments(arguments));
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "launching, attaching the samplers, and recording happen in order"
+)]
 pub fn record_watched(
     mut command: Command,
     options: &RecordOptions,
@@ -113,6 +117,7 @@ pub fn record_watched(
 
     let mut syscalls = None;
     let mut walker = None;
+    let mut thin = None;
     let mut refused = None;
     let launched = perf::launch(command, &events, &launch, |pid, events| {
         if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
@@ -129,6 +134,7 @@ pub fn record_watched(
             }
         }
 
+        thin = thinned(walker.as_mut(), events, options);
         syscalls = SyscallTrace::beside(Traced::Held(pid), options, stack_bytes, watched)?;
 
         Ok(())
@@ -168,6 +174,7 @@ pub fn record_watched(
             started,
             syscalls.as_ref(),
             walker.as_mut(),
+            thin.take(),
             |timeout| killer.exited(timeout),
             || {
                 record!("record: stopping, killing {pid}");
@@ -250,6 +257,7 @@ pub fn record_attached(
     } else {
         None
     };
+    let mut thin = thinned(walker.as_mut(), &events, options);
 
     let syscalls = SyscallTrace::beside(Traced::Running(pid), options, stack_bytes, watched)
         .map_err(RecordError::Syscalls)?;
@@ -283,6 +291,7 @@ pub fn record_attached(
             Some(pid),
             syscalls.as_ref(),
             walker.as_mut(),
+            thin.take(),
             |timeout| process.exited(timeout),
             || {
                 record!("record: stopping, detaching from {pid}");
@@ -307,6 +316,26 @@ pub fn record_attached(
         profile: Profile { capture },
         exited: !stopped,
     })
+}
+
+fn thinned(
+    walker: Option<&mut Walker>,
+    events: &perf::Events,
+    options: &RecordOptions,
+) -> Option<Thin> {
+    if let Some(walker) = walker {
+        return walker.sampler.thin();
+    }
+
+    options.budget?;
+    match Thin::load(events) {
+        Ok(thin) => Some(thin),
+        Err(error) => {
+            record!("record: budget: sampling pauses instead of keeping a share: {error}");
+            drop(error);
+            None
+        }
+    }
 }
 
 const EARLY_DRAINS: Duration = Duration::from_millis(50);
@@ -650,6 +679,7 @@ fn drive(
     started: Option<u32>,
     syscalls: Option<&SyscallTrace>,
     mut walker: Option<&mut Walker>,
+    thin: Option<Thin>,
     mut ended: impl FnMut(Duration) -> bool,
     mut stop: impl FnMut() -> bool,
 ) {
@@ -657,7 +687,7 @@ fn drive(
     let mut pacer = options
         .budget
         .filter(|_| started.is_some())
-        .map(|budget| Pacer::new(budget, monotonic(), processor, syscalls));
+        .map(|budget| Pacer::new(budget, monotonic(), processor, syscalls, thin));
     let mut snapshots = started.map_or_else(Vec::new, |pid| snapshotters(pid, options));
     let mut probes = started
         .filter(|_| options.probes != ProbeSelection::Off)
@@ -1123,6 +1153,7 @@ struct Pacer<'a> {
     period: u64,
     length: u64,
     window: (u64, u64),
+    slices: Slices,
 
     toggled: (u64, u64),
 
@@ -1137,6 +1168,9 @@ struct Pacer<'a> {
     paused_cpu: Duration,
     paused_at: Duration,
     random: u64,
+
+    thin: Option<Thin>,
+    kept: u32,
 }
 
 impl<'a> Pacer<'a> {
@@ -1145,6 +1179,7 @@ impl<'a> Pacer<'a> {
         now: u64,
         processor: &record::Processor,
         syscalls: Option<&'a SyscallTrace>,
+        thin: Option<Thin>,
     ) -> Self {
         let rungs = syscalls.map_or_else(Vec::new, SyscallTrace::rungs);
         Self {
@@ -1155,6 +1190,7 @@ impl<'a> Pacer<'a> {
             period: now,
             length: nanoseconds(budget.period),
             window: (now, u64::MAX),
+            slices: Slices::default(),
             toggled: (0, 0),
             pace: Pace::On { since: now },
             sampled: 0,
@@ -1165,6 +1201,8 @@ impl<'a> Pacer<'a> {
             kernel: Duration::ZERO,
             calls: 0,
             random: now | 1,
+            thin,
+            kept: STEPS,
         }
     }
 
@@ -1187,8 +1225,12 @@ impl<'a> Pacer<'a> {
         };
         if now >= self.period.saturating_add(current(self)) {
             let toggling = Duration::from_nanos(self.toggled.0.saturating_add(self.toggled.1));
-            self.length = nanoseconds(self.budget.period_for(toggling));
+            self.length = nanoseconds(self.budget.period_for(toggling * STEPS));
             self.next_period(now, self.length, processor);
+        }
+
+        while now >= self.window.1 {
+            self.window = self.slice();
         }
 
         let (from, until) = self.window;
@@ -1213,7 +1255,8 @@ impl<'a> Pacer<'a> {
 
         let next = [from, until, self.period.saturating_add(current(self))]
             .into_iter()
-            .find(|edge| *edge > now)
+            .filter(|edge| *edge > now)
+            .min()
             .unwrap_or(now);
         Duration::from_nanos(next - now)
     }
@@ -1229,6 +1272,9 @@ impl<'a> Pacer<'a> {
                 self.paused_cpu += cpu.saturating_sub(self.paused_at);
                 self.paused_at = cpu;
             }
+        }
+        if self.thin.is_some() {
+            self.sampled = share(self.sampled, self.kept);
         }
 
         let loading = processor.loading();
@@ -1269,8 +1315,18 @@ impl<'a> Pacer<'a> {
             self.controller.whole();
         } else if let Some(decision) = decision {
             let text = format!(
-                "sampling {:.1}% of each period: recording used {:.2}% of a CPU, against a budget of {:.2}%",
+                "{} {:.1}% of {}: recording used {:.2}% of a CPU, against a budget of {:.2}%",
+                if self.thin.is_some() {
+                    "keeping"
+                } else {
+                    "sampling"
+                },
                 f64::from(decision.steps) * 100.0 / f64::from(STEPS),
+                if self.thin.is_some() {
+                    "samples"
+                } else {
+                    "each period"
+                },
                 decision.used * 100.0,
                 self.budget.cpu * 100.0
             );
@@ -1280,14 +1336,50 @@ impl<'a> Pacer<'a> {
                 .marker(now.cast_signed(), MarkerKind::Budget, &text);
         }
 
-        let span = length / u64::from(STEPS) * u64::from(self.controller.steps());
+        let steps = self.controller.steps();
+        if let Some(thin) = &mut self.thin {
+            if steps != self.kept && thin.keep(steps).is_ok() {
+                self.kept = steps;
+            }
+            self.window = (now, u64::MAX);
+            processor.planned(now, length, share(length, self.kept));
+            return;
+        }
 
+        self.plan(now, length, steps);
+        processor.planned(now, length, share(length, steps));
+    }
+
+    fn plan(&mut self, now: u64, length: u64, steps: u32) {
+        self.slices = Slices {
+            first: now,
+            length,
+            steps,
+            next: 0,
+        };
+        self.window = self.slice();
+    }
+
+    fn slice(&mut self) -> (u64, u64) {
+        let Slices {
+            first,
+            length,
+            steps,
+            next,
+        } = self.slices;
+        if next >= STEPS {
+            return (u64::MAX, u64::MAX);
+        }
+
+        self.slices.next += 1;
+        let at = first + share(length, next);
+        let slot = first + share(length, next + 1) - at;
+        let piece = share(slot, steps);
         self.random ^= self.random << 13;
         self.random ^= self.random >> 7;
         self.random ^= self.random << 17;
-        let offset = self.random % (length - span + 1);
-        self.window = (now + offset, now + offset + span);
-        processor.planned(now, length, span);
+        let from = at + self.random % (slot - piece + 1);
+        (from, from + piece)
     }
 
     fn climb(
@@ -1345,6 +1437,9 @@ impl<'a> Pacer<'a> {
                 processor.gap(since, now, GapReason::Budget);
                 self.sampled
             }
+            Pace::On { since } if self.thin.is_some() => {
+                share(self.sampled + now.saturating_sub(since), self.kept)
+            }
             Pace::On { since } => self.sampled + now.saturating_sub(since),
         };
         processor.paced(self.period, now, sampled);
@@ -1366,6 +1461,21 @@ fn process_cpu() -> Duration {
 
         time(usage.user_time()) + time(usage.system_time())
     })
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Slices {
+    first: u64,
+    length: u64,
+    steps: u32,
+    next: u32,
+}
+
+const _: () = assert!(STEPS == crate::backend::bpf::sampler::SHARES);
+
+fn share(length: u64, steps: u32) -> u64 {
+    debug_assert!(steps <= STEPS, "{steps} steps of {STEPS}");
+    u64::try_from(u128::from(length) * u128::from(steps) / u128::from(STEPS)).unwrap_or(u64::MAX)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1481,7 +1591,7 @@ mod tests {
         };
 
         let mut paused = processor();
-        let mut pacer = super::Pacer::new(budget, 1_000, &paused, None);
+        let mut pacer = super::Pacer::new(budget, 1_000, &paused, None, None);
         pacer.window = (1_000, 3_000);
         assert_eq!(
             pace(&mut pacer, &mut paused, 1_500),
@@ -1496,7 +1606,7 @@ mod tests {
         pacer.finish(9_000, &mut paused);
 
         let mut sampling = processor();
-        let mut pacer = super::Pacer::new(budget, 1_000, &sampling, None);
+        let mut pacer = super::Pacer::new(budget, 1_000, &sampling, None, None);
         pacer.window = (1_000, 3_000);
         pace(&mut pacer, &mut sampling, 2_000);
         pacer.finish(2_500, &mut sampling);
@@ -1513,6 +1623,56 @@ mod tests {
             capture: sampling.finish(),
         };
         assert_eq!(sampling.gaps(), []);
+    }
+
+    #[test]
+    fn a_paused_budget_measures_bursty_cpu_within_a_few_percent() {
+        let processor =
+            super::record::Processor::new(crate::debug_info::DebugFileSearch::default(), 64);
+        let budget = super::Budget {
+            cpu: 0.01,
+            period: Duration::from_secs(1),
+        };
+        let (length, periods) = (999_999_937_u64, 20);
+        let slot = length / u64::from(super::STEPS);
+
+        for (cycle, burst, within) in [(700_000_000, 130_000_000, 25), (slot, slot * 4 / 7, 10)] {
+            let busy_until = |time: u64| time / cycle * burst + (time % cycle).min(burst);
+            let truth = u128::from(busy_until(length * periods));
+
+            let mut worst = 0;
+            for seed in 1..=100 {
+                for steps in [1, 4, 16, super::STEPS] {
+                    let mut pacer = super::Pacer::new(budget, seed, &processor, None, None);
+                    let (mut sampled, mut seen) = (0, 0);
+                    for period in 0..periods {
+                        pacer.plan(period * length, length, steps);
+                        let mut window = pacer.window;
+                        while window.0 != u64::MAX {
+                            assert!(
+                                window.0 >= period * length && window.1 <= (period + 1) * length
+                            );
+                            sampled += window.1 - window.0;
+                            seen += busy_until(window.1) - busy_until(window.0);
+                            window = pacer.slice();
+                        }
+                    }
+
+                    if steps == super::STEPS {
+                        assert_eq!(sampled, length * periods);
+                    }
+
+                    let estimate =
+                        u128::from(seen) * u128::from(length * periods) / u128::from(sampled);
+                    worst = worst.max(estimate.abs_diff(truth));
+                }
+            }
+
+            assert!(
+                worst * within < truth,
+                "{cycle} ns cycles: off by {worst} ns of {truth} ns"
+            );
+        }
     }
 
     #[test]

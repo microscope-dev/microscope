@@ -132,6 +132,49 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
     );
 }
 
+#[test]
+#[ignore = "needs CAP_BPF and CAP_PERFMON; use MICROSCOPE_BPF_LAUNCHER"]
+fn a_budget_keeps_a_share_of_each_process_samples_and_scales_them_to_its_cpu_time() {
+    let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER").expect("the BPF launcher");
+    let scratch = ScratchDir::new("profiler-kept-share");
+    let path = scratch.path().join("kept.usprof");
+    let output = Command::new(&launcher)
+        .arg(env!("CARGO_BIN_EXE_microscope"))
+        .args([
+            "record", "--preset", "prod", "--rate", "9999", "--budget", "0.001",
+        ])
+        .args(["--syscalls", "off", "-o"])
+        .arg(&path)
+        .args(["--", "sh", "-c"])
+        .arg("for child in 1 2 3; do timeout 2.5 sh -c 'while :; do :; done' & done; wait")
+        .stdin(Stdio::null())
+        .output()
+        .expect("record three spinning children");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let profile = Profile::read(&path).expect("read the recording").profile;
+    assert!(
+        profile.gaps().is_empty(),
+        "sampling paused: {:?}",
+        profile.gaps()
+    );
+    let (total, sampled, counted) = (
+        profile.total_weight(),
+        profile.sampled_weight(),
+        profile.counted(),
+    );
+    assert!(sampled * 3 < total * 2, "kept {sampled} of {total} ns");
+    assert!(
+        total.abs_diff(counted) * 25 < counted,
+        "scaled to {total} ns of {counted} ns"
+    );
+    assert!(profile.scaled_spread() > 0);
+}
+
 fn ending_paths(tree: &CallTree, keys: &Keys<'_>) -> Vec<(Vec<String>, u64)> {
     (0..tree.key.len())
         .filter(|&node| tree.own[node] > 0)

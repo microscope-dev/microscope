@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd as _;
 use std::os::unix::fs::MetadataExt as _;
 
-use aya::maps::{HashMap, Map, MapData, PerCpuArray};
+use aya::maps::{Array, HashMap, Map, MapData, PerCpuArray};
 use aya::programs::PerfEvent;
 use aya::{Ebpf, EbpfLoader};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -632,8 +632,84 @@ pub fn verified_instructions(kernel: bool) -> Result<u64, SamplerError> {
         .ok_or_else(|| load_error("the kernel reports no verified_insns"))
 }
 
+pub const SHARES: u32 = 64;
+
+pub struct Thin {
+    _ebpf: Option<Ebpf>,
+    dropped: Array<MapData, u32>,
+}
+
+impl std::fmt::Debug for Thin {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Thin").finish_non_exhaustive()
+    }
+}
+
+impl Thin {
+    pub fn load(events: &perf::Events) -> Result<Self, SamplerError> {
+        let probe = super::super::syscalls::bpf::Probe::read();
+        if let Some(missing) = probe.lacks_privileges() {
+            return Err(SamplerError::Unavailable(format!(
+                "keeping a share of samples needs CAP_BPF and CAP_PERFMON, and this process {missing}"
+            )));
+        }
+
+        let mut ebpf = object(false)?;
+        let program: &mut PerfEvent = ebpf
+            .program_mut("thin_sample")
+            .ok_or_else(|| load_error("the object has no thin_sample program"))?
+            .try_into()
+            .map_err(load_error)?;
+        program.load().map_err(load_error)?;
+        events
+            .run_program(program.fd().map_err(load_error)?.as_fd())
+            .map_err(SamplerError::Attach)?;
+        let dropped = thin_maps(&mut ebpf)?;
+
+        Ok(Self {
+            _ebpf: Some(ebpf),
+            dropped,
+        })
+    }
+
+    pub fn keep(&mut self, shares: u32) -> Result<(), SamplerError> {
+        debug_assert!(
+            (1..=SHARES).contains(&shares),
+            "{shares} shares of {SHARES}"
+        );
+        self.dropped
+            .set(0, SHARES - shares.clamp(1, SHARES), 0)
+            .map_err(load_error)
+    }
+}
+
+fn thin_maps(ebpf: &mut Ebpf) -> Result<Array<MapData, u32>, SamplerError> {
+    use std::hash::BuildHasher as _;
+    let mut take = |name: &str| {
+        ebpf.take_map(name)
+            .ok_or_else(|| load_error(format!("the program has no {name} map")))
+    };
+
+    let mut owed: PerCpuArray<MapData, u32> =
+        PerCpuArray::try_from(take("OWED")?).map_err(load_error)?;
+    let cpus = aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?;
+    let random = std::collections::hash_map::RandomState::new();
+    let starts: Vec<u32> = (0..cpus)
+        .map(|cpu| u32::try_from(random.hash_one(cpu) % u64::from(SHARES)).unwrap_or(0))
+        .collect();
+    owed.set(
+        0,
+        aya::maps::PerCpuValues::try_from(starts).map_err(load_error)?,
+        0,
+    )
+    .map_err(load_error)?;
+
+    Array::try_from(take("DROPPED")?).map_err(load_error)
+}
+
 pub struct Sampler {
     _ebpf: Ebpf,
+    dropped: Option<Array<MapData, u32>>,
     layouts: PythonLayouts,
     v8_layouts: V8Layouts,
     threads: HashMap<MapData, u32, Bytes<THREAD_BYTES>>,
@@ -704,12 +780,14 @@ impl Sampler {
         let lost = PerCpuArray::try_from(take("LOST")?).map_err(load_error)?;
         #[cfg(feature = "bpf-walk-timing")]
         let walk_times = PerCpuArray::try_from(take("V8_WALK_TIMES")?).map_err(load_error)?;
+        let dropped = Some(thin_maps(&mut ebpf)?);
         let ids = outputs.iter().map(|output| output.id).collect();
         record!("python sampler: attached, {} outputs", outputs.len());
 
         Ok((
             Self {
                 _ebpf: ebpf,
+                dropped,
                 layouts,
                 v8_layouts,
                 threads,
@@ -721,6 +799,13 @@ impl Sampler {
             },
             ids,
         ))
+    }
+
+    pub fn thin(&mut self) -> Option<Thin> {
+        self.dropped.take().map(|dropped| Thin {
+            _ebpf: None,
+            dropped,
+        })
     }
 
     pub fn set_layout(&mut self, tgid: u32, layout: &RawPyLayout) -> Result<(), SamplerError> {

@@ -90,6 +90,43 @@ struct {
 	__type(value, u64);
 } LOST SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u32);
+} DROPPED SEC(".maps");
+
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u32);
+} OWED SEC(".maps");
+
+#define SHARES 64
+
+static __always_inline int kept(void)
+{
+	u32 zero = 0;
+	u32 *dropped = bpf_map_lookup_elem(&DROPPED, &zero);
+	u32 *owed = bpf_map_lookup_elem(&OWED, &zero);
+	if (!dropped || !owed || !*dropped || *dropped >= SHARES)
+		return 1;
+	*owed += SHARES - *dropped;
+	if (*owed < SHARES)
+		return 0;
+	*owed -= SHARES;
+	return 1;
+}
+
+SEC("perf_event")
+int thin_sample(struct bpf_perf_event_data *ctx)
+{
+	return kept();
+}
+
 #ifdef MICROSCOPE_WALK_TIMING
 
 
@@ -269,6 +306,8 @@ static __always_inline int v8_sample(struct bpf_perf_event_data *ctx, u32 tgid, 
 SEC("perf_event")
 int python_sample(struct bpf_perf_event_data *ctx)
 {
+	if (!kept())
+		return 0;
 	u32 zero = 0;
 	struct sampled_python *storage = bpf_map_lookup_elem(&SCRATCH, &zero);
 	if (!storage)
