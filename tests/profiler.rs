@@ -846,7 +846,7 @@ fn assert_cpu_accounting(profile: &Profile) {
     assert!(start <= end, "{start}..{end}");
     support::profile::assert_loss_explained(profile);
     let (weight, counted, lost) = (
-        profile.total_weight(),
+        profile.sampled_weight(),
         profile.counted(),
         profile.lost_samples(),
     );

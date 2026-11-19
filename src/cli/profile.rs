@@ -1455,7 +1455,7 @@ const LEAST_JUDGED_CPU: u64 = 50_000_000;
     reason = "seconds and percentages need no more precision than f64's"
 )]
 fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Write) -> Result<()> {
-    let total = profile.total_weight();
+    let total = profile.sampled_weight();
     let seconds = |value: u64| format!("{:.3} s", value as f64 / 1e9);
     let counted = profile.counted();
     let paused = !profile.gaps().is_empty();

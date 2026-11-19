@@ -251,6 +251,12 @@ type Ordered<'a> = (&'a [(u64, usize)], &'a [RecordAt], &'a Pairs);
 
 type ProcessMappings = (Pid, Vec<perf::Mapped>);
 
+struct Pace {
+    from: u64,
+    until: u64,
+    sampled: u64,
+}
+
 pub struct Processor {
     builder: CaptureBuilder,
     rules: FrameRules,
@@ -295,6 +301,9 @@ pub struct Processor {
 
     gaps: Vec<(u64, u64)>,
     gaps_end: u64,
+
+    paces: Vec<Pace>,
+    planned: Option<Pace>,
 
     began: std::time::Duration,
     setup: Option<std::time::Duration>,
@@ -360,6 +369,8 @@ impl Processor {
             registers: Vec::with_capacity(decode::DWARF_REGISTERS.len()),
             repeats: None,
             fixed_period: None,
+            paces: Vec::new(),
+            planned: None,
             chain: Vec::new(),
             frames: Vec::new(),
             off_cpu: off_cpu::OffCpu::default(),
@@ -1939,6 +1950,44 @@ impl Processor {
             .sample(thread, time, sample.period, stack, NONE);
     }
 
+    pub fn paced(&mut self, from: u64, until: u64, sampled: u64) {
+        debug_assert!(
+            self.paces.last().is_none_or(|pace| pace.until <= from),
+            "periods overlap at {from}"
+        );
+        if sampled > 0 && until > from {
+            self.paces.push(Pace {
+                from,
+                until,
+                sampled,
+            });
+        }
+    }
+
+    pub fn planned(&mut self, from: u64, period: u64, sampled: u64) {
+        self.planned = (sampled > 0).then_some(Pace {
+            from,
+            until: from.saturating_add(period),
+            sampled,
+        });
+    }
+
+    fn scale(&self, builder: &mut CaptureBuilder) {
+        let sampled = builder.sample_weight();
+        builder.count(AccountKind::SampledWeight as u32, sampled);
+        let paces = &self.paces;
+        let planned = self.planned.as_ref();
+        builder.scale_samples(|time| {
+            let time = time.cast_unsigned();
+            let index = paces.partition_point(|pace| pace.until <= time);
+            paces
+                .get(index)
+                .or(planned)
+                .filter(|pace| pace.from <= time)
+                .map(|pace| (pace.until - pace.from, pace.sampled))
+        });
+    }
+
     fn sampled_interpreted(
         &mut self,
         sample: &decode::Sample<'_>,
@@ -2164,6 +2213,7 @@ impl Processor {
         let end = self.end(&mut builder, self.latest);
         self.close(&mut builder, end);
         self.start(&mut builder);
+        self.scale(&mut builder);
         builder.finish()
     }
 
@@ -2178,6 +2228,7 @@ impl Processor {
         let end = self.end(&mut builder, self.latest);
         self.close(&mut builder, end);
         self.start(&mut builder);
+        self.scale(&mut builder);
         builder.finish()
     }
 
@@ -2199,10 +2250,12 @@ impl Processor {
         self.close(&mut builder, end);
         let accounts = builder.accounts().clone();
         self.start(&mut builder);
+        self.scale(&mut builder);
         builder.forget_from(end.cast_signed());
         builder.setting("end", &end.to_string());
 
         self.builder.forget_before(end.cast_signed());
+        self.paces.retain(|pace| pace.until > end);
         if let Cut::Segments { start, .. } = &mut self.cut {
             *start = Some(cuts::Mark {
                 time: end,
@@ -4286,5 +4339,31 @@ mod tests {
         processor.task_snapshot(pid, (60_000, 61_000), 0, &located(0x5000));
         let capture = processor.finish();
         assert_eq!(capture.account(AccountKind::TaskSamples as u32), 1);
+    }
+
+    #[test]
+    fn samples_stand_for_the_time_their_period_paused_once_per_capture() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        processor.paced(1_000, 2_000, 250);
+        processor.paced(2_000, 3_000, 1_000);
+        processor.planned(3_000, 1_000, 100);
+
+        let builder = processor.builder();
+        let thread = builder.thread(Pid::new(7), Tid::new(7), 0);
+        for time in [500, 1_500, 2_500, 3_500] {
+            builder.sample(thread, time, 10, NONE, NONE);
+        }
+
+        let weights = |capture: &crate::capture::Capture| {
+            capture
+                .samples
+                .iter()
+                .map(|sample| (sample.time.get(), sample.weight.get()))
+                .collect::<Vec<_>>()
+        };
+        let expected = [(500, 10), (1_500, 40), (2_500, 10), (3_500, 100)];
+        assert_eq!(weights(&processor.snapshot()), expected);
+        assert_eq!(weights(&processor.snapshot()), expected);
+        assert_eq!(weights(&processor.finish()), expected);
     }
 }

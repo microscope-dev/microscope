@@ -1248,6 +1248,11 @@ impl<'a> Pacer<'a> {
                 .min(spent),
         };
 
+        processor.paced(self.period, now, self.sampled);
+        let builder = processor.builder();
+        builder.count(AccountKind::SampledNs as u32, self.sampled);
+        builder.count(AccountKind::PacedNs as u32, now.saturating_sub(self.period));
+
         let traced = calls.saturating_sub(self.calls);
         (self.cpu, self.loading, self.kernel, self.calls) = (cpu, loading, kernel, calls);
         (self.sampled, self.period, self.paused_cpu) = (0, now, Duration::ZERO);
@@ -1279,6 +1284,7 @@ impl<'a> Pacer<'a> {
         self.random ^= self.random << 17;
         let offset = self.random % (length - span + 1);
         self.window = (now + offset, now + offset + span);
+        processor.planned(now, length, span);
     }
 
     fn climb(
@@ -1331,9 +1337,17 @@ impl<'a> Pacer<'a> {
     }
 
     fn finish(self, now: u64, processor: &mut record::Processor) {
-        if let Pace::Paused { since } = self.pace {
-            processor.gap(since, now, GapReason::Budget);
-        }
+        let sampled = match self.pace {
+            Pace::Paused { since } => {
+                processor.gap(since, now, GapReason::Budget);
+                self.sampled
+            }
+            Pace::On { since } => self.sampled + now.saturating_sub(since),
+        };
+        processor.paced(self.period, now, sampled);
+        let builder = processor.builder();
+        builder.count(AccountKind::SampledNs as u32, sampled);
+        builder.count(AccountKind::PacedNs as u32, now.saturating_sub(self.period));
     }
 }
 

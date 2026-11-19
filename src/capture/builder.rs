@@ -414,6 +414,23 @@ impl CaptureBuilder {
         });
     }
 
+    pub fn sample_weight(&self) -> u64 {
+        self.samples
+            .iter()
+            .flatten()
+            .fold(0, |total, sample| total.saturating_add(sample.weight.get()))
+    }
+
+    pub fn scale_samples(&mut self, scale: impl Fn(i64) -> Option<(u64, u64)>) {
+        for sample in self.samples.iter_mut().flatten() {
+            if let Some((period, sampled)) = scale(sample.time.get()) {
+                let weight =
+                    u128::from(sample.weight.get()) * u128::from(period) / u128::from(sampled);
+                sample.weight = u64::try_from(weight).unwrap_or(u64::MAX).into();
+            }
+        }
+    }
+
     pub fn claim(&mut self, thread: u32, time: i64, task: u32) -> u64 {
         let mut claimed = 0;
 

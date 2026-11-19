@@ -478,6 +478,12 @@ pub enum AccountKind {
     ProbesRead = 34,
 
     OffCpuLost = 35,
+
+    SampledNs = 39,
+
+    PacedNs = 40,
+
+    SampledWeight = 41,
 }
 
 #[repr(C)]
