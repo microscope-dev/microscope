@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "jobs": {
+    "check": {
+      "run": "just check",
+      "on": ["push", "pull_request"],
+      "timeout_minutes": 60
+    },
+    "all": {
+      "run": "just all",
+      "on": ["nightly"],
+      "timeout_minutes": 360
+    }
+  }
+}
