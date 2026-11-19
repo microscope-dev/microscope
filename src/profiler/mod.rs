@@ -775,6 +775,14 @@ impl Profile {
     }
 
     #[must_use]
+    pub fn scaled_spread(&self) -> u64 {
+        let variance = self
+            .capture
+            .account(crate::capture::records::AccountKind::ScaledVarianceSquareUs as u32);
+        variance.isqrt() * 1_000
+    }
+
+    #[must_use]
     pub fn counted(&self) -> u64 {
         self.capture
             .account(crate::capture::records::AccountKind::Counted as u32)

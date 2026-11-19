@@ -1977,7 +1977,7 @@ impl Processor {
         builder.count(AccountKind::SampledWeight as u32, sampled);
         let paces = &self.paces;
         let planned = self.planned.as_ref();
-        builder.scale_samples(|time| {
+        let variance = builder.scale_samples(|time| {
             let time = time.cast_unsigned();
             let index = paces.partition_point(|pace| pace.until <= time);
             paces
@@ -1986,6 +1986,7 @@ impl Processor {
                 .filter(|pace| pace.from <= time)
                 .map(|pace| (pace.until - pace.from, pace.sampled))
         });
+        builder.count(AccountKind::ScaledVarianceSquareUs as u32, variance);
     }
 
     fn sampled_interpreted(
@@ -4359,18 +4360,32 @@ mod tests {
 
         let builder = processor.builder();
         let thread = builder.thread(Pid::new(7), Tid::new(7), 0);
+        let ms = 1_000_000;
         for time in [500, 1_500, 2_500, 3_500] {
-            builder.sample(thread, time, 10, NONE, NONE);
+            builder.sample(thread, time, 10 * ms, NONE, NONE);
         }
 
         let weights = |capture: &crate::capture::Capture| {
-            capture
+            let weights = capture
                 .samples
                 .iter()
                 .map(|sample| (sample.time.get(), sample.weight.get()))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            let spread = crate::profiler::Profile {
+                capture: capture.clone(),
+            }
+            .scaled_spread();
+            (weights, spread)
         };
-        let expected = [(500, 10), (1_500, 40), (2_500, 10), (3_500, 100)];
+        let expected = (
+            vec![
+                (500, 10 * ms),
+                (1_500, 40 * ms),
+                (2_500, 10 * ms),
+                (3_500, 100 * ms),
+            ],
+            100_995_000,
+        );
         assert_eq!(weights(&processor.snapshot()), expected);
         assert_eq!(weights(&processor.snapshot()), expected);
         assert_eq!(weights(&processor.finish()), expected);

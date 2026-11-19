@@ -492,6 +492,8 @@ pub enum AccountKind {
     PacedNs = 40,
 
     SampledWeight = 41,
+
+    ScaledVarianceSquareUs = 42,
 }
 
 #[repr(C)]

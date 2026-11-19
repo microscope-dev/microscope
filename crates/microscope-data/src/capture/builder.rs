@@ -425,14 +425,18 @@ impl CaptureBuilder {
             .fold(0, |total, sample| total.saturating_add(sample.weight.get()))
     }
 
-    pub fn scale_samples(&mut self, scale: impl Fn(i64) -> Option<(u64, u64)>) {
+    pub fn scale_samples(&mut self, scale: impl Fn(i64) -> Option<(u64, u64)>) -> u64 {
+        let mut variance = 0_u128;
         for sample in self.samples.iter_mut().flatten() {
             if let Some((period, sampled)) = scale(sample.time.get()) {
-                let weight =
-                    u128::from(sample.weight.get()) * u128::from(period) / u128::from(sampled);
+                let before = u128::from(sample.weight.get());
+                let weight = before * u128::from(period) / u128::from(sampled);
+                variance += weight / 1_000 * (weight.saturating_sub(before) / 1_000);
                 sample.weight = u64::try_from(weight).unwrap_or(u64::MAX).into();
             }
         }
+
+        u64::try_from(variance).unwrap_or(u64::MAX)
     }
 
     pub fn claim(&mut self, thread: u32, time: i64, task: u32) -> u64 {

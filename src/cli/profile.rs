@@ -1461,10 +1461,15 @@ const LEAST_JUDGED_CPU: u64 = 50_000_000;
     reason = "seconds and percentages need no more precision than f64's"
 )]
 fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Write) -> Result<()> {
-    let total = profile.sampled_weight();
+    let paused = !profile.gaps().is_empty();
+    let thinned = !paused && profile.scaled_spread() > 0;
+    let total = if thinned {
+        profile.total_weight()
+    } else {
+        profile.sampled_weight()
+    };
     let seconds = |value: u64| format!("{:.3} s", value as f64 / 1e9);
     let counted = profile.counted();
-    let paused = !profile.gaps().is_empty();
     let judged = profile.samples() >= FEWEST_JUDGED_SAMPLES
         && (unit != "nanoseconds" || counted == 0 || counted >= LEAST_JUDGED_CPU);
     if !judged {
@@ -1497,7 +1502,8 @@ fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Wr
     } else if unit == "nanoseconds" && counted > total {
         writeln!(
             out,
-            "The samples cover {:.0}% of the {} of CPU time the program ran{}.",
+            "The {}samples cover {:.0}% of the {} of CPU time the program ran{}.",
+            if thinned { "scaled " } else { "" },
             total as f64 * 100.0 / counted as f64,
             seconds(counted),
             if paused { " while sampling was on" } else { "" }
@@ -1505,6 +1511,7 @@ fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Wr
         if profile.setting("kernel stacks") != Some("on")
             && total < counted / 2
             && !paused
+            && !thinned
             && lost == 0
         {
             writeln!(
@@ -1722,6 +1729,16 @@ fn summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Re
         writeln!(
             out,
             "Stacks are sampled; function costs are estimates, not exact call counts."
+        )?;
+    } else if unit == "nanoseconds" && profile.scaled_spread() > 0 {
+        let spread = profile.scaled_spread();
+        writeln!(
+            out,
+            "{program}: {} samples, {} ± {:.3} s ({:.0}%), scaled up from a share of them",
+            profile.samples(),
+            weight(total),
+            spread as f64 / 1e9,
+            spread as f64 * 100.0 / total.max(1) as f64
         )?;
     } else {
         writeln!(
