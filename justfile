@@ -218,6 +218,16 @@ docs-dev: docs-deps
 web HOST="0.0.0.0": web-deps
     cd web && ./node_modules/.bin/vite --host "$1"
 
+dev_enroll_key := "mse_nvuwg4tponrw64dffvsgk5rnmvxhe33mnrwwk3tufvvwk6jb2nwhedoh"
+
+[doc("Enrolls an agent with the key services' `just up` seeds and runs it, with its state under target/.")]
+[script]
+agent-dev SERVER="http://127.0.0.1:3000":
+    cargo build --quiet --profile test --bin microscope
+    export MICROSCOPE_ENROLL="${1%%://*}://{{dev_enroll_key}}@${1#*://}"
+    export MICROSCOPE_STATE_DIR="$PWD/target/agent-dev" MICROSCOPE_CLOUD_METADATA=false
+    exec ./target/debug/microscope agent run --config /dev/null
+
 web-build: web-deps
     cd web && ./node_modules/.bin/vite build --logLevel warn
 
