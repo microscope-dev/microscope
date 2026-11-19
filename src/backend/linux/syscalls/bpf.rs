@@ -1584,20 +1584,10 @@ impl Loaded {
             .map_or(0, |values| values.iter().sum())
     }
 
-    fn kernel_cost(&mut self, runs: u64) -> u64 {
-        if let Some(time) = self.run_time() {
-            return time;
-        }
-
+    const fn kernel_cost(&mut self, runs: u64) -> u64 {
         self.estimated += runs.saturating_sub(self.runs) * per_call(self.base.flags, self.shedding);
         self.runs = runs;
         self.estimated
-    }
-
-    fn run_time(&self) -> Option<u64> {
-        let enabled = std::fs::read_to_string("/proc/sys/kernel/bpf_stats_enabled")
-            .is_ok_and(|text| text.trim() == "1");
-        enabled.then(|| self.fdinfo_sum("run_time_ns:", |_| true))
     }
 
     fn target(&mut self, process: u32) -> Result<(), BpfError> {
