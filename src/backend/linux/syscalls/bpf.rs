@@ -1383,6 +1383,13 @@ impl Targets {
             .set(process / 64, 1 << (process % 64), 0)
             .map_err(load_error)
     }
+
+    fn add(&mut self, process: u32) -> Result<(), BpfError> {
+        let word = self.word(process);
+        self.0
+            .set(process / 64, word | 1 << (process % 64), 0)
+            .map_err(load_error)
+    }
 }
 
 struct Loaded {
@@ -1590,6 +1597,11 @@ impl Loaded {
     fn target(&mut self, process: u32) -> Result<(), BpfError> {
         record!("syscalls bpf: trace {process}");
         self.targets.first(process)
+    }
+
+    fn also_target(&mut self, process: u32) -> Result<(), BpfError> {
+        record!("syscalls bpf: also trace {process}");
+        self.targets.add(process)
     }
 
     fn in_flight(&mut self, after: u64) -> Vec<InFlight> {
@@ -2047,13 +2059,30 @@ fn begin(
                 );
             }
 
-            live.insert(Pid::new(pid));
-            sink.attached(pid);
-            if let Some(stacks) = &options.stacks {
-                stacks
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .read_maps(Pid::new(pid));
+            let mut children = BTreeSet::new();
+            loop {
+                let found: Vec<u32> = perf::descendants(pid)
+                    .into_iter()
+                    .filter(|child| !children.contains(child))
+                    .collect();
+                if found.is_empty() {
+                    break;
+                }
+                for child in found {
+                    loaded.also_target(child)?;
+                    children.insert(child);
+                }
+            }
+
+            for process in std::iter::once(pid).chain(children) {
+                live.insert(Pid::new(process));
+                sink.attached(process);
+                if let Some(stacks) = &options.stacks {
+                    stacks
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .read_maps(Pid::new(process));
+                }
             }
 
             Pid::new(pid)

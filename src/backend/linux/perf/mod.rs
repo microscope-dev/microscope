@@ -367,7 +367,10 @@ impl Events {
         let mut owner = None;
 
         loop {
-            let threads = threads(pid).map_err(OpenError::NoProcess)?;
+            let mut threads = threads(pid).map_err(OpenError::NoProcess)?;
+            for child in descendants(pid) {
+                threads.extend(self::threads(child).unwrap_or_default());
+            }
             let new: Vec<u32> = threads
                 .into_iter()
                 .filter(|tid| !opened.contains(tid))
@@ -990,6 +993,37 @@ fn threads(pid: u32) -> std::io::Result<Vec<u32>> {
 
     threads.sort_unstable();
     Ok(threads)
+}
+
+pub fn descendants(pid: u32) -> Vec<u32> {
+    let mut children: std::collections::BTreeMap<u32, Vec<u32>> = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(process) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{process}/stat")) else {
+            continue;
+        };
+        let parent = stat
+            .rfind(')')
+            .and_then(|end| stat[end + 1..].split_whitespace().nth(1)?.parse().ok());
+        if let Some(parent) = parent {
+            children.entry(parent).or_default().push(process);
+        }
+    }
+
+    let mut tree = vec![pid];
+    let mut next = 0;
+    while let Some(&process) = tree.get(next) {
+        tree.extend(children.remove(&process).unwrap_or_default());
+        next += 1;
+    }
+    tree.remove(0);
+    tree
 }
 
 fn raise_descriptor_limit() {

@@ -850,8 +850,14 @@ pub fn trace(
             (Mode::Filtered, pid)
         }
         Target::Attach(pids) => {
-            for &pid in &pids {
-                seize_process(pid, trace_options(false, options.follow), &mut initial)?;
+            for (index, &pid) in pids.iter().enumerate() {
+                match seize_process(pid, trace_options(false, options.follow), &mut initial) {
+                    Err(TraceError::Attach {
+                        errno: Errno::ESRCH,
+                        ..
+                    }) if index > 0 => continue,
+                    seized => seized?,
+                }
                 seed_descriptors(pid, sink);
                 sink.attached(pid);
             }

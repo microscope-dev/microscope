@@ -2372,6 +2372,8 @@ build_fixture gcc "$c_fixtures_dir/profile-attach.c" "$output_dir/profile-attach
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie -pthread
 build_fixture clang "$c_fixtures_dir/profile-attach.c" "$output_dir/profile-attach-clang-o2-nofp" \
     -O2 -g3 -fomit-frame-pointer -fPIE -pie -pthread
+build_fixture gcc "$c_fixtures_dir/profile-attach-children.c" \
+    "$output_dir/profile-attach-children-gcc-o0" -O0 -g3 -fno-omit-frame-pointer -fPIE -pie
 
 build_fixture gcc "$c_fixtures_dir/profile-signals.c" "$output_dir/profile-signals-gcc-o0" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie

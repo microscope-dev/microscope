@@ -253,7 +253,10 @@ pub fn record_attached(
 
     let syscalls = SyscallTrace::beside(Traced::Running(pid), options, stack_bytes, watched)
         .map_err(RecordError::Syscalls)?;
-    processor.attached(Pid::new(pid), monotonic());
+    let now = monotonic();
+    for process in std::iter::once(pid).chain(perf::descendants(pid)) {
+        processor.attached(Pid::new(process), now);
+    }
     let name = std::fs::read_link(&program).unwrap_or(program);
     let pages = events.pages();
     settings(

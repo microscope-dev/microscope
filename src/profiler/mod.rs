@@ -224,7 +224,7 @@ impl RecordOptions {
             kernel_stacks: false,
             max_frames: 512,
             ring_pages: 128,
-            max_events: 16_384,
+            max_events: 65_536,
             off_cpu: preset.off_cpu(),
             budget: preset.budget(),
             cuts: Cuts::Whole,

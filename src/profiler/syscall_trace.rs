@@ -636,8 +636,13 @@ fn run(
         (Traced::Held(pid), None) => {
             ptrace::trace_held(pid, trace, stop, sink).map_err(|error| error.to_string())
         }
-        (Traced::Running(pid), None) => ptrace::trace(Target::Attach(vec![pid]), trace, stop, sink)
-            .map_err(|error| error.to_string()),
+        (Traced::Running(pid), None) => {
+            let tree = std::iter::once(pid)
+                .chain(crate::backend::perf::descendants(pid))
+                .collect();
+            ptrace::trace(Target::Attach(tree), trace, stop, sink)
+                .map_err(|error| error.to_string())
+        }
     };
 
     ended.map(|_| ())

@@ -1934,6 +1934,25 @@ fn an_attach_reads_a_contained_programs_library_through_its_root() {
 }
 
 #[test]
+fn an_attach_follows_child_processes_that_began_before_it() {
+    let mut process =
+        support::ExternalProcess::spawn(&Scenario::fixture("profile-attach-children-gcc-o0"));
+    let parent = u32::try_from(process.process_id().get()).expect("a pid");
+
+    let attachment = attach_and_release(&mut process, &calls_of("leaf"), false).expect("attach");
+    assert!(attachment.exited);
+    assert!(process.wait().success());
+
+    let mut processes = std::collections::BTreeMap::<u32, usize>::new();
+    for stack in attachment.profile.stacks() {
+        *processes.entry(stack.pid).or_default() += 1;
+    }
+    assert_eq!(processes.len(), 2, "{processes:?}");
+    assert!(processes.contains_key(&parent), "{processes:?}");
+    assert!(processes.values().all(|&calls| calls <= 3), "{processes:?}");
+}
+
+#[test]
 fn an_attach_past_its_event_budget_is_refused_with_the_count() {
     let mut process = support::ExternalProcess::spawn(&Scenario::fixture("profile-attach-gcc-o0"));
     let options = RecordOptions {
