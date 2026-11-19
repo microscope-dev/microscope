@@ -183,7 +183,7 @@ fn trace_notes(profile: &Profile, lost: Losses, out: &mut impl Write) -> Result<
         ),
         (
             lost.capped,
-            "failed or slow calls were over the cap: counted, but not kept",
+            "calls were over the cap: counted, but not kept",
         ),
         (
             lost.overflowed,

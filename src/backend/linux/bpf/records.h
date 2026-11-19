@@ -64,6 +64,9 @@ enum config_flags {
 
 
 	CONFIG_EXCEPTIONS = 128,
+
+
+	CONFIG_CAP_STREAM = 256,
 };
 
 
@@ -197,7 +200,8 @@ struct config {
 
 
 	u32 cap;
-	u32 pad;
+
+	u32 examples;
 };
 
 
@@ -217,6 +221,9 @@ struct entry {
 
 
 	u8 known;
+
+	u8 capped;
+	u8 pad[7];
 };
 
 
@@ -350,6 +357,13 @@ struct stat_key {
 	u32 tgid;
 	u32 row;
 	u32 reserved;
+};
+
+struct example_key {
+	u32 tgid;
+	u32 slot;
+	u32 err;
+	u32 pad;
 };
 
 struct errno_key {

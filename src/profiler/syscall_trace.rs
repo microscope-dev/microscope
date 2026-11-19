@@ -110,6 +110,8 @@ pub struct SyscallOptions {
 
     pub slow: Duration,
 
+    pub kept_per_second: Option<u32>,
+
     pub save_on: SaveOn,
 
     pub print: Option<Printer>,
@@ -126,6 +128,7 @@ impl SyscallOptions {
             engine: SyscallEngine::Bpf,
             filter: None,
             slow: Duration::from_millis(10),
+            kept_per_second: None,
             save_on: SaveOn {
                 slow: None,
                 errnos: Vec::new(),
@@ -142,6 +145,22 @@ impl SyscallOptions {
                  BPF engine, or calls with ptrace"
                     .to_owned(),
             );
+        }
+
+        if self.kept_per_second.is_some() {
+            if self.engine == SyscallEngine::Ptrace {
+                return Err(
+                    "ptrace cannot cap the calls it keeps; cap them with the BPF engine".to_owned(),
+                );
+            }
+
+            if self.level < SyscallLevel::Calls {
+                return Err(format!(
+                    "--syscalls {} keeps only failed and slow calls, already capped at \
+                     {KEPT_PER_SECOND} a second; cap calls or full",
+                    self.level
+                ));
+            }
         }
 
         Ok(())
@@ -204,6 +223,9 @@ impl SyscallOptions {
             if self.level == SyscallLevel::Counts {
                 settings.push(("syscall slow", format!("{:?}", self.slow)));
                 settings.push(("syscall cap", format!("{KEPT_PER_SECOND}/s")));
+                settings.push(("syscall examples", format!("{EXAMPLES_PER_MINUTE}/min")));
+            } else if let Some(most) = self.kept_per_second {
+                settings.push(("syscall cap", format!("{most}/s")));
             }
         }
 
@@ -336,6 +358,8 @@ impl Held {
 }
 
 const KEPT_PER_SECOND: u32 = 2000;
+
+const EXAMPLES_PER_MINUTE: u32 = 10;
 
 const BLOCKED_AFTER: u64 = 1_000_000;
 
@@ -475,7 +499,9 @@ impl SyscallTrace {
                     .slow
                     .map_or(options.slow, |slow| slow.min(options.slow)),
                 per_second: KEPT_PER_SECOND,
+                examples_per_minute: (!streams).then_some(EXAMPLES_PER_MINUTE),
             }),
+            streamed_per_second: options.kept_per_second,
         };
 
         let stacks = trace.stacks.clone();

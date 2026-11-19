@@ -135,11 +135,18 @@ struct {
 } LOST SEC(".maps");
 
 struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 1);
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 4096);
 	__type(key, u32);
 	__type(value, u64);
 } KEPT SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 65536);
+	__type(key, struct example_key);
+	__type(value, u64);
+} EXAMPLES SEC(".maps");
 
 
 
@@ -434,24 +441,48 @@ static __always_inline int emit(void *data, u64 size)
 
 
 
-static __always_inline int admitted(struct config *settings, u64 now)
+static __always_inline u64 *counter_in(void *map, void *key)
 {
-	if (!settings->cap)
-		return 1;
-	u32 zero = 0;
-	u64 *kept = bpf_map_lookup_elem(&KEPT, &zero);
-	if (!kept)
-		return 0;
-	u64 second = (now / 1000000000ULL) & 0xffffffffULL;
+	u64 *counter = bpf_map_lookup_elem(map, key);
+	if (counter)
+		return counter;
+	u64 zero = 0;
+	bpf_map_update_elem(map, key, &zero, BPF_NOEXIST);
+	return bpf_map_lookup_elem(map, key);
+}
+
+
+
+
+static __always_inline int counted_in(u64 *counter, u64 period, u32 most)
+{
 	for (int tries = 0; tries < 8; tries++) {
-		u64 seen = *(volatile u64 *)kept;
-		u64 count = seen >> 32 == second ? seen & 0xffffffffULL : 0;
-		if (count >= settings->cap)
+		u64 seen = *(volatile u64 *)counter;
+		u64 count = seen >> 32 == period ? seen & 0xffffffffULL : 0;
+		if (count >= most)
 			return 0;
-		if (__sync_val_compare_and_swap(kept, seen, second << 32 | (count + 1)) == seen)
+		if (__sync_val_compare_and_swap(counter, seen, period << 32 | (count + 1)) == seen)
 			return 1;
 	}
 	return 0;
+}
+
+static __always_inline int admitted(struct config *settings, u32 tgid, u64 now)
+{
+	if (!settings->cap)
+		return 1;
+	u64 *kept = counter_in(&KEPT, &tgid);
+	return kept && counted_in(kept, (now / 1000000000ULL) & 0xffffffffULL, settings->cap);
+}
+
+static __always_inline int exemplary(struct config *settings, u32 tgid, u32 slot, u32 err, u64 now)
+{
+	if (!settings->examples)
+		return 1;
+	struct example_key key = { .tgid = tgid, .slot = slot, .err = err };
+	u64 *examples = counter_in(&EXAMPLES, &key);
+	return examples &&
+	       counted_in(examples, (now / 60000000000ULL) & 0xffffffffULL, settings->examples);
 }
 
 static __always_inline int failed(s64 ret)
@@ -1220,6 +1251,12 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 	entry.entered = bpf_ktime_get_ns();
 	if ((settings->flags & CONFIG_STREAM) && !sampled_in(settings->sample))
 		entry.flags |= CALL_SAMPLED_OUT;
+	if ((settings->flags & CONFIG_CAP_STREAM) && sent(settings, entry.flags) &&
+	    !admitted(settings, tgid, entry.entered)) {
+		entry.flags |= CALL_SAMPLED_OUT;
+		entry.capped = 1;
+		lost_as(LOSS_CAPPED);
+	}
 	struct entry *held = bpf_task_storage_get(&ENTRIES, bpf_get_current_task_btf(), 0,
 						  BPF_LOCAL_STORAGE_GET_F_CREATE);
 	if (!held) {
@@ -1335,12 +1372,15 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	int counted = (settings->flags & CONFIG_COUNT) && !send;
 	if (counted) {
 		count(settings, spec, slot, tid, tgid, entry.entered, now, ret, 1);
-		u8 kept = exception(settings, entry.entered, now, ret, 1);
-		if (kept && admitted(settings, now)) {
-			entry.flags |= kept;
-			send = 1;
-		} else if (kept) {
-			lost_as(LOSS_CAPPED);
+		u8 kept = entry.capped ? 0 : exception(settings, entry.entered, now, ret, 1);
+		u32 err = kept == CALL_KEPT_FAILED ? (u32)-ret : 0;
+		if (kept && exemplary(settings, tgid, slot, err, now)) {
+			if (admitted(settings, tgid, now)) {
+				entry.flags |= kept;
+				send = 1;
+			} else {
+				lost_as(LOSS_CAPPED);
+			}
 		}
 	}
 	if (send) {

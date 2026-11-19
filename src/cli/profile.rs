@@ -202,6 +202,11 @@ pub struct RecordArgs {
     #[arg(long)]
     print: bool,
 
+    /// Keep at most N system calls a second from each recorded process at
+    /// --syscalls calls or full, counting the rest. Uncapped if not given.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    syscall_cap: Option<u32>,
+
     /// What sees system calls: bpf, which never stops the program, or
     /// ptrace, which stops it at each call and needs no privileges.
     #[arg(long, value_name = "ENGINE", default_value = "bpf")]
@@ -661,6 +666,7 @@ fn syscall_options(args: &RecordArgs, syscalls: &mut SyscallOptions) -> Result<(
         syscalls.filter = Some((text.clone(), filter));
     }
 
+    syscalls.kept_per_second = args.syscall_cap;
     syscalls.save_on.slow = args.save_on_slow;
     if let Some(names) = &args.save_on_errno {
         for name in names.split(',') {

@@ -2129,9 +2129,9 @@ mod bpf {
 
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
-    fn a_counting_recording_caps_the_calls_it_keeps() {
-        let directory = ScratchDir::new("syscalls-record-cap");
-        let program = ["0", "20000", "0"].map(str::to_owned);
+    fn a_counting_recording_keeps_ten_examples_a_minute_of_each_kind() {
+        let directory = ScratchDir::new("syscalls-record-examples");
+        let program = ["0", "20000", "12"].map(str::to_owned);
         let profile = record_fixture(
             directory.path(),
             "prod.usprof",
@@ -2139,25 +2139,97 @@ mod bpf {
             "syscall-exceptions",
             &program,
         );
-        assert_eq!(profile.setting("syscall cap"), Some("2000/s"));
+        assert_eq!(profile.setting("syscall examples"), Some("10/min"));
 
-        let kept: u64 = kept(&profile).values().sum();
-        let lost = profile.syscalls_lost();
-        let failed: u64 = profile
-            .syscalls()
-            .stats()
-            .per_call()
-            .values()
-            .map(|stats| stats.errors)
-            .sum();
-        assert!(failed >= 20_000, "{failed}");
-        assert!(kept + lost.capped <= failed, "{kept} kept, {lost:?}");
+        let kept = kept(&profile);
+        let of = |name: &str, why: &str| -> u64 {
+            kept.iter()
+                .filter(|((call, reason, _), _)| call == name && *reason == why)
+                .map(|(_, count)| count)
+                .sum()
+        };
+        assert!((10..=20).contains(&of("close", "failed")), "{kept:#?}");
         assert!(
-            kept + lost.capped + lost.dropped >= failed,
-            "{kept} kept, {lost:?}"
+            (10..=12).contains(&of("clock_nanosleep", "slow")),
+            "{kept:#?}"
         );
-        assert!((1..=2_500).contains(&kept), "{kept} kept, {lost:?}");
-        assert_eq!(lost.unseen, 0);
+
+        let counts = profile.syscalls().stats().per_call();
+        let count = |name: &str| {
+            counts
+                .iter()
+                .find(|(call, _)| call.name() == Some(name))
+                .map(|(_, stats)| (stats.calls, stats.errors))
+        };
+        assert_eq!(count("close").map(|(_, errors)| errors), Some(20_000));
+        assert_eq!(count("clock_nanosleep"), Some((12, 0)));
+        assert_eq!(profile.syscalls_lost().capped, 0);
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_capped_recording_keeps_its_cap_from_each_process_and_counts_the_rest() {
+        let directory = ScratchDir::new("syscalls-record-stream-cap");
+        let load = Scenario::fixture("syscall-load");
+        let load = load.to_str().expect("a UTF-8 path");
+        let script = format!("{load} 1 9000 9000 & {load} 1 9000 9000; wait");
+        let record = |file: &str, arguments: &[&str]| {
+            let recorded = privileged()
+                .args(["record", "-o", file, "--syscalls", "calls"])
+                .args(arguments)
+                .args(["--", "/bin/sh", "-c", &script])
+                .current_dir(directory.path())
+                .output()
+                .expect("run microscope record");
+            assert!(recorded.status.success(), "{}", text(&recorded.stderr));
+            microscope::profiler::Profile::read(&directory.path().join(file))
+                .expect("the capture reads")
+                .profile
+        };
+        let loads = |profile: &microscope::profiler::Profile| {
+            let mut closes: BTreeMap<microscope::syscalls::Pid, u64> = BTreeMap::new();
+            for ((process, _, call), stats) in &profile.syscalls().stats().by_call {
+                if call.name() == Some("close") {
+                    *closes.entry(*process).or_default() += stats.calls;
+                }
+            }
+            closes.retain(|_, closes| *closes >= 9000);
+            closes
+        };
+
+        let capped = record("capped.usprof", &["--syscall-cap", "500"]);
+        let whole = record("whole.usprof", &[]);
+        assert_eq!(capped.setting("syscall cap"), Some("500/s"));
+        assert!(capped.syscalls_lost().capped > 0);
+
+        let processes = loads(&capped);
+        assert_eq!(processes.len(), 2, "{processes:?}");
+        let mut by_process: BTreeMap<microscope::syscalls::Pid, (u64, u64, u64)> = BTreeMap::new();
+        for event in capped.syscalls().events {
+            if let TraceEvent::Call(call) = &event.event
+                && processes.contains_key(&call.process)
+            {
+                let (streamed, first, last) =
+                    by_process.entry(call.process).or_insert((0, u64::MAX, 0));
+                *streamed += 1;
+                *first = (*first).min(call.time());
+                *last = (*last).max(call.time());
+            }
+        }
+
+        for (process, (streamed, first, last)) in &by_process {
+            let seconds = (last - first) / 1_000_000_000 + 2;
+            assert!(
+                (1_200..=500 * seconds).contains(streamed),
+                "{process:?} streamed {streamed} in {seconds} s: {by_process:?}"
+            );
+        }
+
+        let mut capped: Vec<u64> = processes.into_values().collect();
+        let mut whole: Vec<u64> = loads(&whole).into_values().collect();
+        capped.sort_unstable();
+        whole.sort_unstable();
+        assert_eq!(capped, whole);
     }
 
     #[test]

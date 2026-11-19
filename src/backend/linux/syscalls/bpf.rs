@@ -77,6 +77,7 @@ const CONFIG_STACKS: u32 = 16;
 const CONFIG_STACK_COPY: u32 = 32;
 const CONFIG_GENERATION: u32 = 64;
 const CONFIG_EXCEPTIONS: u32 = 128;
+const CONFIG_CAP_STREAM: u32 = 256;
 
 const CALL_EXIT_SKIPPED: u8 = 1;
 const CALL_PROCESS_EXITED: u8 = 8;
@@ -193,7 +194,7 @@ pub struct RawConfig {
     pub rows: u32,
     pub slow_ns: u64,
     pub cap: u32,
-    pub pad: u32,
+    pub examples: u32,
 }
 
 #[repr(C)]
@@ -210,6 +211,8 @@ pub struct RawEntry {
     pub flags: u8,
     pub stacked: u8,
     pub known: u8,
+    pub capped: u8,
+    pub pad: [u8; 7],
 }
 
 #[repr(C)]
@@ -1161,12 +1164,15 @@ pub struct BpfOptions {
     pub stack_copy: bool,
 
     pub exceptions: Option<Exceptions>,
+
+    pub streamed_per_second: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Exceptions {
     pub slow: std::time::Duration,
     pub per_second: u32,
+    pub examples_per_minute: Option<u32>,
 }
 
 impl RawConfig {
@@ -1192,13 +1198,19 @@ impl RawConfig {
             }
         }
 
-        let (slow_ns, cap) = engine.exceptions.map_or((0, 0), |exceptions| {
+        let (slow_ns, mut cap, examples) = engine.exceptions.map_or((0, 0, 0), |exceptions| {
             flags |= CONFIG_EXCEPTIONS;
             (
                 u64::try_from(exceptions.slow.as_nanos()).unwrap_or(u64::MAX),
                 exceptions.per_second.max(1),
+                exceptions.examples_per_minute.map_or(0, |most| most.max(1)),
             )
         });
+
+        if let Some(most) = engine.streamed_per_second.filter(|_| !engine.count_only) {
+            flags |= CONFIG_CAP_STREAM;
+            cap = most.max(1);
+        }
 
         Self {
             flags,
@@ -1207,7 +1219,7 @@ impl RawConfig {
             rows,
             slow_ns,
             cap,
-            pad: 0,
+            examples,
         }
     }
 }
@@ -2760,13 +2772,13 @@ mod tests {
             (
                 RawConfig,
                 "config",
-                [flags, elements, sample, rows, slow_ns, cap, pad]
+                [flags, elements, sample, rows, slow_ns, cap, examples]
             ),
             (
                 RawEntry,
                 "entry",
                 [
-                    entered, args, nr, tgid, exec_tid, abi, flags, stacked, known
+                    entered, args, nr, tgid, exec_tid, abi, flags, stacked, known, capped, pad
                 ]
             ),
             (RawRecord, "record", [kind, size, tid, tgid]),
