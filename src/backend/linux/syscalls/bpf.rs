@@ -193,7 +193,7 @@ pub struct RawConfig {
     pub rows: u32,
     pub slow_ns: u64,
     pub cap: u32,
-    pub burst: u32,
+    pub pad: u32,
 }
 
 #[repr(C)]
@@ -1192,14 +1192,11 @@ impl RawConfig {
             }
         }
 
-        let (slow_ns, cap, burst) = engine.exceptions.map_or((0, 0, 0), |exceptions| {
+        let (slow_ns, cap) = engine.exceptions.map_or((0, 0), |exceptions| {
             flags |= CONFIG_EXCEPTIONS;
-            let cpus = u32::try_from(aya::util::nr_cpus().unwrap_or(1)).unwrap_or(1);
-            let cap = (exceptions.per_second / cpus).max(1);
             (
                 u64::try_from(exceptions.slow.as_nanos()).unwrap_or(u64::MAX),
-                cap,
-                cap,
+                exceptions.per_second.max(1),
             )
         });
 
@@ -1210,7 +1207,7 @@ impl RawConfig {
             rows,
             slow_ns,
             cap,
-            burst,
+            pad: 0,
         }
     }
 }
@@ -2734,7 +2731,7 @@ mod tests {
             (
                 RawConfig,
                 "config",
-                [flags, elements, sample, rows, slow_ns, cap, burst]
+                [flags, elements, sample, rows, slow_ns, cap, pad]
             ),
             (
                 RawEntry,

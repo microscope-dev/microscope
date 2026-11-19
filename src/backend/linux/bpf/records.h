@@ -197,14 +197,7 @@ struct config {
 
 
 	u32 cap;
-	u32 burst;
-};
-
-
-
-struct bucket {
-	u64 credit;
-	u64 filled;
+	u32 pad;
 };
 
 

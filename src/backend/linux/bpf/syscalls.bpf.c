@@ -135,11 +135,11 @@ struct {
 } LOST SEC(".maps");
 
 struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
 	__type(key, u32);
-	__type(value, struct bucket);
-} BUCKETS SEC(".maps");
+	__type(value, u64);
+} KEPT SEC(".maps");
 
 
 
@@ -439,22 +439,19 @@ static __always_inline int admitted(struct config *settings, u64 now)
 	if (!settings->cap)
 		return 1;
 	u32 zero = 0;
-	struct bucket *bucket = bpf_map_lookup_elem(&BUCKETS, &zero);
-	if (!bucket)
+	u64 *kept = bpf_map_lookup_elem(&KEPT, &zero);
+	if (!kept)
 		return 0;
-	u64 one = 1000000000ULL;
-	u64 full = (u64)settings->burst * one;
-	u64 elapsed = now - bucket->filled;
-	bucket->filled = now;
-	u64 credit = elapsed >= full / settings->cap ? full : bucket->credit + elapsed * settings->cap;
-	if (credit > full)
-		credit = full;
-	if (credit < one) {
-		bucket->credit = credit;
-		return 0;
+	u64 second = (now / 1000000000ULL) & 0xffffffffULL;
+	for (int tries = 0; tries < 8; tries++) {
+		u64 seen = *(volatile u64 *)kept;
+		u64 count = seen >> 32 == second ? seen & 0xffffffffULL : 0;
+		if (count >= settings->cap)
+			return 0;
+		if (__sync_val_compare_and_swap(kept, seen, second << 32 | (count + 1)) == seen)
+			return 1;
 	}
-	bucket->credit = credit - one;
-	return 1;
+	return 0;
 }
 
 static __always_inline int failed(s64 ret)
