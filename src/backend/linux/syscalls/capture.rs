@@ -365,9 +365,10 @@ impl SyscallCapture {
 
     #[must_use]
     pub fn finish(mut self) -> Profile {
-        let first = self.first.unwrap_or(0);
-        self.builder.setting("start", &first.to_string());
-        self.builder.setting("end", &self.last.to_string());
+        if let Some(first) = self.first {
+            self.builder.setting("start", &first.to_string());
+            self.builder.setting("end", &self.last.to_string());
+        }
         Profile::from_capture(self.builder.finish())
     }
 }

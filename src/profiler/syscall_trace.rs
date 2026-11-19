@@ -779,6 +779,29 @@ mod tests {
     }
 
     #[test]
+    fn a_trace_that_kept_no_calls_leaves_the_samples_span() {
+        let shared = Mutex::new(Shared {
+            events: VecDeque::new(),
+            counted: VecDeque::new(),
+            settings: Vec::new(),
+            window: None,
+            flushing: false,
+            last_flush: 0,
+            trigger: None,
+            saving: None,
+            quiet_until: 0,
+            blocked: Vec::new(),
+            blocked_at: 0,
+        });
+        let mut samples = CaptureBuilder::new();
+        samples.setting("start", "5000000000");
+        samples.setting("end", "9000000000");
+
+        let capture = cut(&shared, None, &samples.finish(), Taken::Rest);
+        assert_eq!(capture.span(), (5_000_000_000, 9_000_000_000));
+    }
+
+    #[test]
     fn only_calls_that_name_files_follow_descriptors() {
         let traced = |expression: &str| {
             let filter = Filter::parse(&[expression.to_owned()], &|_| None).expect("a filter");
