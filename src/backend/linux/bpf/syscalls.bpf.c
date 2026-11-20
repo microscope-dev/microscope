@@ -141,6 +141,15 @@ struct {
 	__type(value, u64);
 } KEPT SEC(".maps");
 
+// A launched program is traced from its exec. Until then the process is still
+// the launcher's, between fork and exec, and only its execve is the program's.
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u32);
+} UNEXECED SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 65536);
@@ -1238,6 +1247,10 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 	struct call_spec *spec = bpf_map_lookup_elem(&CALLS, &slot);
 	if (!spec || !spec->selected || spec->ends != ending)
 		return 0;
+	u32 first = 0;
+	u32 *unexeced = bpf_map_lookup_elem(&UNEXECED, &first);
+	if (unexeced && *unexeced == tgid && !spec->execs)
+		return 0;
 	struct config *settings = config();
 	if (!settings)
 		return 0;
@@ -1491,6 +1504,10 @@ int process_exec(u64 *ctx)
 	u32 tgid = BPF_CORE_READ(task, tgid);
 	if (!traced(tgid))
 		return 0;
+	u32 first = 0;
+	u32 *unexeced = bpf_map_lookup_elem(&UNEXECED, &first);
+	if (unexeced && *unexeced == tgid)
+		*unexeced = 0;
 
 
 	know(task);

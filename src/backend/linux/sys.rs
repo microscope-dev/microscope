@@ -38,17 +38,22 @@ pub(super) struct Gate {
 )]
 pub(super) fn before_exec(command: &mut Command, plan: BeforeExec) {
     let parent = i32::try_from(std::process::id()).unwrap_or(i32::MAX);
+    let pause = gate_pause();
 
     // SAFETY: after fork, `in_child` makes only async-signal-safe system
     // calls on the descriptors the child inherited and on the plan built
     // before the fork, and builds errors from fixed numbers. It does not
     // allocate.
     unsafe {
-        command.pre_exec(move || in_child(&plan, parent));
+        command.pre_exec(move || in_child(&plan, parent, pause));
     }
 }
 
-fn in_child(plan: &BeforeExec, parent: i32) -> io::Result<()> {
+fn in_child(
+    plan: &BeforeExec,
+    parent: i32,
+    pause: Option<rustix::thread::Timespec>,
+) -> io::Result<()> {
     if plan.dies_with_parent {
         rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))?;
         if rustix::process::getppid().map(|pid| pid.as_raw_nonzero().get()) != Some(parent) {
@@ -61,7 +66,7 @@ fn in_child(plan: &BeforeExec, parent: i32) -> io::Result<()> {
     }
 
     if let Some(gate) = plan.gate {
-        wait_at(gate)?;
+        wait_at(gate, pause)?;
     }
 
     if let Some(filter) = &plan.filter {
@@ -80,7 +85,7 @@ fn in_child(plan: &BeforeExec, parent: i32) -> io::Result<()> {
     unsafe_code,
     reason = "a forked child names the descriptors it inherited by number"
 )]
-fn wait_at(gate: Gate) -> io::Result<()> {
+fn wait_at(gate: Gate, pause: Option<rustix::thread::Timespec>) -> io::Result<()> {
     // SAFETY: the parent keeps the gate's descriptors open until the child
     // execs, so each number names its pipe end in the child; `go_write` is
     // the child's own copy, which nothing else in the child closes.
@@ -100,6 +105,10 @@ fn wait_at(gate: Gate) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(libc::EPIPE));
     }
 
+    if let Some(pause) = pause {
+        let _ = rustix::thread::nanosleep(&pause);
+    }
+
     drop(go_write);
     let mut go = [0_u8];
     if rustix::io::read(go_read, &mut go) != Ok(1) {
@@ -107,6 +116,26 @@ fn wait_at(gate: Gate) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+// Stretches the moment after a child has said its pid and before it waits at
+// its gate, where a slow machine can deschedule it, so tests can make that
+// happen every time.
+#[cfg(debug_assertions)]
+const GATE_PAUSE_MS: &str = "MICROSCOPE_TEST_GATE_PAUSE_MS";
+
+#[cfg(debug_assertions)]
+fn gate_pause() -> Option<rustix::thread::Timespec> {
+    let ms: i64 = std::env::var(GATE_PAUSE_MS).ok()?.parse().ok()?;
+    Some(rustix::thread::Timespec {
+        tv_sec: ms / 1000,
+        tv_nsec: (ms % 1000) * 1_000_000,
+    })
+}
+
+#[cfg(not(debug_assertions))]
+const fn gate_pause() -> Option<rustix::thread::Timespec> {
+    None
 }
 
 #[allow(unsafe_code, reason = "neither nix nor rustix wraps seccomp")]

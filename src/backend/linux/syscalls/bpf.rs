@@ -1417,6 +1417,8 @@ struct Loaded {
         Array<MapData, u32>,
     ),
 
+    unexeced: Array<MapData, u32>,
+
     generation: u32,
     attachment: Attachment,
 
@@ -1505,6 +1507,11 @@ impl Loaded {
             )
             .map_err(load_error)?,
         );
+        let unexeced = Array::try_from(
+            ebpf.take_map("UNEXECED")
+                .ok_or_else(|| missing("UNEXECED"))?,
+        )
+        .map_err(load_error)?;
         record!("syscalls bpf: loaded and attached");
 
         Ok(Self {
@@ -1512,6 +1519,7 @@ impl Loaded {
             targets,
             rings,
             fence,
+            unexeced,
             generation: 0,
             rows: calls,
 
@@ -1609,6 +1617,11 @@ impl Loaded {
     fn target(&mut self, process: u32) -> Result<(), BpfError> {
         record!("syscalls bpf: trace {process}");
         self.targets.first(process)
+    }
+
+    fn target_from_exec(&mut self, process: u32) -> Result<(), BpfError> {
+        self.unexeced.set(0, process, 0).map_err(load_error)?;
+        self.target(process)
     }
 
     fn also_target(&mut self, process: u32) -> Result<(), BpfError> {
@@ -2089,7 +2102,7 @@ fn begin(
     let mut mappings = Vec::new();
     let first = match start {
         Start::Held(pid) => {
-            loaded.target(pid)?;
+            loaded.target_from_exec(pid)?;
             if options.stacks.is_some() {
                 mappings.push(perf::Events::open(pid, &MAPPINGS).map_err(BpfError::Mappings)?);
             }

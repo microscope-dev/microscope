@@ -1095,6 +1095,67 @@ mod bpf {
     }
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_launched_programs_calls_begin_at_its_exec() {
+        let scratch = ScratchDir::new("syscalls-gate");
+        let record = |name: &str, arguments: &[&str]| {
+            let directory = below(&scratch, name);
+            let output = Command::new(launcher())
+                .env_clear()
+                .arg("MICROSCOPE_TEST_GATE_PAUSE_MS=2000")
+                .arg(env!("CARGO_BIN_EXE_microscope"))
+                .args(["record", "-o", "trace.usprof"])
+                .args(arguments)
+                .arg("--")
+                .arg(fixture())
+                .arg("files")
+                .current_dir(&directory)
+                .stdin(Stdio::null())
+                .output()
+                .expect("run microscope record");
+            assert!(
+                directory.join("trace.usprof").exists(),
+                "{}",
+                text(&output.stderr)
+            );
+            directory
+        };
+
+        let streamed = log(&record("streamed", &[]), &["trace=all"]);
+        assert!(
+            streamed
+                .lines()
+                .next()
+                .and_then(|line| line.split_once(' '))
+                .is_some_and(|(_, call)| call.starts_with("execve(")),
+            "{streamed}"
+        );
+
+        let counted = read(&record("counted", &["--syscalls", "counts"]))
+            .syscalls()
+            .stats()
+            .per_call()
+            .iter()
+            .map(|(call, stats)| (call.display_name().into_owned(), stats.calls))
+            .collect::<Vec<_>>();
+        let ptrace = below(&scratch, "ptrace");
+        recorded(
+            &ptrace,
+            &["--syscall-engine", "ptrace"],
+            &fixture(),
+            &["files"],
+        );
+        let traced = read(&ptrace)
+            .syscalls()
+            .stats()
+            .per_call()
+            .iter()
+            .map(|(call, stats)| (call.display_name().into_owned(), stats.calls))
+            .collect::<Vec<_>>();
+        assert_eq!(counted, traced);
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn the_engines_trace_a_program_alike() {
         for (filter, mode) in [
             ("trace=all", "files"),
