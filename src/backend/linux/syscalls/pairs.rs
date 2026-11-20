@@ -50,6 +50,15 @@ impl Pairs {
         self.next.remove(&thread)
     }
 
+    #[must_use]
+    pub fn has_waiting(&self, thread: Tid, entered: Option<u64>) -> bool {
+        entered.is_some()
+            && self
+                .waiting
+                .get(&thread)
+                .is_some_and(|waiting| waiting.stack.entered == entered)
+    }
+
     pub fn waiting(&mut self, thread: Tid, entered: Option<u64>) -> Option<Taken> {
         let waiting = self.waiting.remove(&thread)?;
         (entered.is_some() && waiting.stack.entered == entered).then_some(waiting)

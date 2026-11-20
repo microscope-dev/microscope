@@ -1630,6 +1630,14 @@ impl Loaded {
     }
 
     fn in_flight(&mut self, after: u64) -> Vec<InFlight> {
+        self.in_flight_stacked(after)
+            .into_iter()
+            .map(|(call, _)| call)
+            .collect()
+    }
+
+    // Each call in flight, and whether its entry took a stack.
+    fn in_flight_stacked(&mut self, after: u64) -> Vec<(InFlight, bool)> {
         let listed = match self.list_in_flight() {
             Ok(listed) => listed,
             #[cfg_attr(not(debug_assertions), expect(unused_variables))]
@@ -1640,23 +1648,24 @@ impl Loaded {
         };
 
         let now = monotonic();
-        let mut calls: Vec<InFlight> = listed
+        let mut calls: Vec<(InFlight, bool)> = listed
             .as_chunks::<{ size_of::<RawInFlightRecord>() }>()
             .0
             .iter()
             .filter_map(|bytes| {
                 let record = RawInFlightRecord::read_from_bytes(bytes).ok()?;
                 let entry = record.entry;
-                (now.saturating_sub(entry.entered) >= after).then_some(InFlight {
+                let call = InFlight {
                     thread: Tid::new(record.tid),
                     process: Pid::new(entry.tgid),
                     call: SyscallId::new(abi_of(entry.abi)?, entry.nr),
                     args: entry.args,
                     entered: entry.entered,
-                })
+                };
+                (now.saturating_sub(entry.entered) >= after).then_some((call, entry.stacked != 0))
             })
             .collect();
-        calls.sort_by_key(|call| (call.entered, call.thread));
+        calls.sort_by_key(|(call, _)| (call.entered, call.thread));
 
         calls
     }
@@ -1678,20 +1687,25 @@ impl Loaded {
         Ok(listed)
     }
 
-    fn unfinished(&mut self) -> Vec<SyscallEvent> {
-        self.in_flight(0)
+    fn unfinished(&mut self) -> Vec<(SyscallEvent, bool)> {
+        self.in_flight_stacked(0)
             .into_iter()
-            .map(|call| SyscallEvent {
-                thread: call.thread,
-                process: call.process,
-                call: call.call,
-                args: call.args,
-                captured: Vec::new(),
-                outcome: Outcome::Unfinished,
-                entered: Some(call.entered),
-                exited: None,
-                stack: None,
-                flags: EventFlags::default(),
+            .map(|(call, stacked)| {
+                (
+                    SyscallEvent {
+                        thread: call.thread,
+                        process: call.process,
+                        call: call.call,
+                        args: call.args,
+                        captured: Vec::new(),
+                        outcome: Outcome::Unfinished,
+                        entered: Some(call.entered),
+                        exited: None,
+                        stack: None,
+                        flags: EventFlags::default(),
+                    },
+                    stacked,
+                )
             })
             .collect()
     }
@@ -2237,6 +2251,8 @@ const MOST_DRAINED: usize = 4096;
 
 const SETTLED_NS: u64 = 5_000_000;
 
+const STACK_SETTLE_NS: u64 = 100_000_000;
+
 const MOST_PENDING: usize = 2048;
 
 impl Reader<'_> {
@@ -2315,7 +2331,23 @@ impl Reader<'_> {
 
         self.release(Until::None);
         self.report_lost(loaded, monotonic());
-        for call in loaded.unfinished() {
+
+        // on_enter keeps a call's entry before it sends the entry's stack, so a
+        // call that began as the trace stopped can be in flight with its stack
+        // still on the way. Drain until each such stack is read, or a while.
+        let unfinished = loaded.unfinished();
+        let until = monotonic().saturating_add(STACK_SETTLE_NS);
+        loop {
+            self.drain(&mut rings, true);
+            let arrived = unfinished.iter().all(|(call, stacked)| {
+                !stacked || self.pairs.has_waiting(call.thread, call.entered)
+            });
+            if arrived || monotonic() >= until {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        for (call, _) in unfinished {
             let taken = self.pairs.waiting(call.thread, call.entered);
             let unwound = self.unwind(taken, None);
             self.emit_unwound(TraceEvent::Call(call), unwound);
