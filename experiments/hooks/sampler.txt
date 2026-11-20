@@ -1,0 +1,19 @@
+round=1 stacks=kernel mode=raw ns=566.0 1131 samples, 1.133 s
+round=1 stacks=kernel mode=multi ns=676.2 1095 samples, 1.354 s
+round=1 stacks=kernel mode=backstop ns=636.3 1213 samples, 1.274 s
+round=1 stacks=user mode=raw ns=559.6 515 samples, 1.120 s
+round=1 stacks=user mode=multi ns=684.1 500 samples, 1.369 s
+round=1 stacks=user mode=backstop ns=620.7 466 samples, 1.242 s
+round=2 stacks=kernel mode=raw ns=566.0 1131 samples, 1.133 s
+round=2 stacks=kernel mode=multi ns=677.8 1098 samples, 1.357 s
+round=2 stacks=kernel mode=backstop ns=639.6 1230 samples, 1.280 s
+round=2 stacks=user mode=raw ns=547.5 496 samples, 1.096 s
+round=2 stacks=user mode=multi ns=664.2 488 samples, 1.329 s
+round=2 stacks=user mode=backstop ns=623.7 494 samples, 1.248 s
+round=3 stacks=kernel mode=raw ns=566.2 1131 samples, 1.133 s
+round=3 stacks=kernel mode=multi ns=664.6 1042 samples, 1.330 s
+round=3 stacks=kernel mode=backstop ns=637.1 1205 samples, 1.275 s
+round=3 stacks=user mode=raw ns=547.5 469 samples, 1.096 s
+round=3 stacks=user mode=multi ns=667.8 481 samples, 1.336 s
+round=3 stacks=user mode=backstop ns=619.3 486 samples, 1.239 s
+DONE

@@ -1,0 +1,25 @@
+round=1 load=0 mode=raw exit=0 | sys_enter 1 | EXPERIMENT 280002 closes: 219244 counted, 219244 of them timed, lost Losses { dropped: 68558, unseen: 0, capped: 0, overflowed: 50637 }
+round=1 load=0 mode=multi exit=0 | | EXPERIMENT 280002 closes: 219448 counted, 219448 of them timed, lost Losses { dropped: 70820, unseen: 0, capped: 0, overflowed: 52308 }
+round=1 load=0 mode=backstop exit=0 | backstop_closes 280002 | EXPERIMENT 280002 closes: 220954 counted, 220954 of them timed, lost Losses { dropped: 78906, unseen: 0, capped: 0, overflowed: 58577 }
+round=1 load=16 mode=raw exit=100 | sys_enter 2063733 sys_exit 2268206 | EXPERIMENT 279898 closes: 233970 counted, 225332 of them timed, lost Losses { dropped: 153984, unseen: 0, capped: 0, overflowed: 121544 }
+round=1 load=16 mode=multi exit=0 | | EXPERIMENT 280002 closes: 237806 counted, 237806 of them timed, lost Losses { dropped: 150403, unseen: 0, capped: 0, overflowed: 112699 }
+round=1 load=16 mode=backstop exit=100 | sys_exit 1619864 sys_enter 1587592 backstop_closes 280002 | EXPERIMENT 279966 closes: 236257 counted, 226514 of them timed, lost Losses { dropped: 150997, unseen: 0, capped: 0, overflowed: 116358 }
+round=2 load=0 mode=raw exit=0 | | EXPERIMENT 280002 closes: 216289 counted, 216289 of them timed, lost Losses { dropped: 66795, unseen: 0, capped: 0, overflowed: 49365 }
+round=2 load=0 mode=multi exit=0 | | EXPERIMENT 280002 closes: 219559 counted, 219559 of them timed, lost Losses { dropped: 71012, unseen: 0, capped: 0, overflowed: 52507 }
+round=2 load=0 mode=backstop exit=0 | backstop_closes 280002 | EXPERIMENT 280002 closes: 216169 counted, 216169 of them timed, lost Losses { dropped: 67164, unseen: 0, capped: 0, overflowed: 49595 }
+round=2 load=16 mode=raw exit=100 | sys_exit 2573850 sys_enter 1895271 | EXPERIMENT 279908 closes: 230782 counted, 222827 of them timed, lost Losses { dropped: 151914, unseen: 0, capped: 0, overflowed: 115965 }
+round=2 load=16 mode=multi exit=0 | | EXPERIMENT 280002 closes: 231269 counted, 231269 of them timed, lost Losses { dropped: 141895, unseen: 0, capped: 0, overflowed: 106413 }
+round=2 load=16 mode=backstop exit=100 | sys_exit 1737501 sys_enter 1645313 backstop_closes 280002 | EXPERIMENT 279860 closes: 232133 counted, 222510 of them timed, lost Losses { dropped: 139586, unseen: 0, capped: 0, overflowed: 107247 }
+round=3 load=0 mode=raw exit=0 | | EXPERIMENT 280002 closes: 216306 counted, 216306 of them timed, lost Losses { dropped: 66599, unseen: 0, capped: 0, overflowed: 49182 }
+round=3 load=0 mode=multi exit=0 | | EXPERIMENT 280002 closes: 217053 counted, 217053 of them timed, lost Losses { dropped: 68820, unseen: 0, capped: 0, overflowed: 50895 }
+round=3 load=0 mode=backstop exit=0 | sys_enter 1 backstop_closes 280002 | EXPERIMENT 280002 closes: 219374 counted, 219374 of them timed, lost Losses { dropped: 71070, unseen: 0, capped: 0, overflowed: 52571 }
+round=3 load=16 mode=raw exit=100 | sys_enter 2438838 sys_exit 2408482 | EXPERIMENT 279980 closes: 240466 counted, 233596 of them timed, lost Losses { dropped: 172288, unseen: 0, capped: 0, overflowed: 132460 }
+round=3 load=16 mode=multi exit=0 | | EXPERIMENT 280002 closes: 229328 counted, 229328 of them timed, lost Losses { dropped: 131774, unseen: 0, capped: 0, overflowed: 99481 }
+round=3 load=16 mode=backstop exit=100 | sys_exit 1410021 sys_enter 1430862 backstop_closes 280002 | EXPERIMENT 279881 closes: 235996 counted, 224837 of them timed, lost Losses { dropped: 160064, unseen: 0, capped: 0, overflowed: 124207 }
+round=4 load=0 mode=raw exit=0 | sys_exit 1 | EXPERIMENT 280002 closes: 216242 counted, 216242 of them timed, lost Losses { dropped: 66601, unseen: 0, capped: 0, overflowed: 49200 }
+round=4 load=0 mode=multi exit=0 | | EXPERIMENT 280002 closes: 220365 counted, 220365 of them timed, lost Losses { dropped: 76886, unseen: 0, capped: 0, overflowed: 56949 }
+round=4 load=0 mode=backstop exit=0 | backstop_closes 280002 | EXPERIMENT 280002 closes: 216087 counted, 216087 of them timed, lost Losses { dropped: 65161, unseen: 0, capped: 0, overflowed: 48133 }
+round=4 load=16 mode=raw exit=0 | sys_enter 2045119 sys_exit 2206794 | EXPERIMENT 280004 closes: 231285 counted, 222649 of them timed, lost Losses { dropped: 139618, unseen: 0, capped: 0, overflowed: 108178 }
+round=4 load=16 mode=multi exit=0 | | EXPERIMENT 280002 closes: 232006 counted, 232006 of them timed, lost Losses { dropped: 140465, unseen: 0, capped: 0, overflowed: 105202 }
+round=4 load=16 mode=backstop exit=100 | sys_exit 1615294 sys_enter 1678525 backstop_closes 280002 | EXPERIMENT 279916 closes: 230712 counted, 222549 of them timed, lost Losses { dropped: 118569, unseen: 0, capped: 0, overflowed: 90737 }
+DONE

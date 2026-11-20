@@ -1,0 +1,32 @@
+diff -ru /home/jcalabro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/aya-0.14.0/src/programs/kprobe.rs aya/src/programs/kprobe.rs
+--- /home/jcalabro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/aya-0.14.0/src/programs/kprobe.rs	2006-07-23 21:21:28.000000000 -0400
++++ aya/src/programs/kprobe.rs	2026-11-20 12:43:33.253900631 -0500
+@@ -59,6 +59,16 @@
+         load_program_without_attach_type(BPF_PROG_TYPE_KPROBE, data)
+     }
+ 
++    /// Hook experiment: loads the program for a kprobe.multi link.
++    pub fn load_multi(&mut self) -> Result<(), ProgramError> {
++        let Self { data, kind: _ } = self;
++        super::load_program_with_attach_type(
++            BPF_PROG_TYPE_KPROBE,
++            aya_obj::generated::bpf_attach_type::BPF_TRACE_KPROBE_MULTI,
++            data,
++        )
++    }
++
+     /// Returns [`ProbeKind::Entry`] if the program is a `kprobe`, or
+     /// [`ProbeKind::Return`] if the program is a `kretprobe`.
+     pub const fn kind(&self) -> ProbeKind {
+diff -ru /home/jcalabro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/aya-0.14.0/src/programs/mod.rs aya/src/programs/mod.rs
+--- /home/jcalabro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/aya-0.14.0/src/programs/mod.rs	2006-07-23 21:21:28.000000000 -0400
++++ aya/src/programs/mod.rs	2026-11-20 12:43:33.260169754 -0500
+@@ -697,7 +697,7 @@
+     load_program(prog_type, None, data)
+ }
+ 
+-fn load_program_with_attach_type<A: Into<bpf_attach_type>, T: Link>(
++pub(crate) fn load_program_with_attach_type<A: Into<bpf_attach_type>, T: Link>(
+     prog_type: bpf_prog_type,
+     expected_attach_type: A,
+     data: &mut ProgramData<T>,

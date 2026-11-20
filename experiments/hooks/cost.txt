@@ -1,0 +1,101 @@
+round=1 setup=bare ns=396.5
+round=1 setup=untargeted mode=raw ns=498.9
+round=1 setup=counts mode=raw ns=551.0
+round=1 setup=calls mode=raw ns=2068.5
+round=1 setup=untargeted mode=multi ns=471.7
+round=1 setup=counts mode=multi ns=677.8
+round=1 setup=calls mode=multi ns=1888.6
+round=1 setup=untargeted mode=backstop ns=556.3
+round=1 setup=counts mode=backstop ns=621.6
+round=1 setup=calls mode=backstop ns=2578.1
+round=2 setup=bare ns=395.4
+round=2 setup=untargeted mode=raw ns=488.3
+round=2 setup=counts mode=raw ns=554.8
+round=2 setup=calls mode=raw ns=1998.8
+round=2 setup=untargeted mode=multi ns=476.6
+round=2 setup=counts mode=multi ns=671.6
+round=2 setup=calls mode=multi ns=1898.8
+round=2 setup=untargeted mode=backstop ns=564.2
+round=2 setup=counts mode=backstop ns=625.1
+round=2 setup=calls mode=backstop ns=2230.3
+round=3 setup=bare ns=395.8
+round=3 setup=untargeted mode=raw ns=480.8
+round=3 setup=counts mode=raw ns=550.4
+round=3 setup=calls mode=raw ns=2086.6
+round=3 setup=untargeted mode=multi ns=479.7
+round=3 setup=counts mode=multi ns=671.5
+round=3 setup=calls mode=multi ns=2014.3
+round=3 setup=untargeted mode=backstop ns=568.0
+round=3 setup=counts mode=backstop ns=622.7
+round=3 setup=calls mode=backstop ns=2480.2
+round=4 setup=bare ns=401.7
+round=4 setup=untargeted mode=raw ns=478.5
+round=4 setup=counts mode=raw ns=551.0
+round=4 setup=calls mode=raw ns=2074.4
+round=4 setup=untargeted mode=multi ns=469.8
+round=4 setup=counts mode=multi ns=672.8
+round=4 setup=calls mode=multi ns=2293.4
+round=4 setup=untargeted mode=backstop ns=558.1
+round=4 setup=counts mode=backstop ns=621.8
+round=4 setup=calls mode=backstop ns=2292.9
+round=5 setup=bare ns=394.6
+round=5 setup=untargeted mode=raw ns=495.9
+round=5 setup=counts mode=raw ns=556.5
+round=5 setup=calls mode=raw ns=2416.9
+round=5 setup=untargeted mode=multi ns=474.6
+round=5 setup=counts mode=multi ns=673.7
+round=5 setup=calls mode=multi ns=2246.1
+round=5 setup=untargeted mode=backstop ns=559.2
+round=5 setup=counts mode=backstop ns=625.5
+round=5 setup=calls mode=backstop ns=2017.2
+round=6 setup=bare ns=396.6
+round=6 setup=untargeted mode=raw ns=483.8
+round=6 setup=counts mode=raw ns=552.8
+round=6 setup=calls mode=raw ns=1833.4
+round=6 setup=untargeted mode=multi ns=468.7
+round=6 setup=counts mode=multi ns=675.3
+round=6 setup=calls mode=multi ns=2116.0
+round=6 setup=untargeted mode=backstop ns=561.9
+round=6 setup=counts mode=backstop ns=624.1
+round=6 setup=calls mode=backstop ns=1972.8
+round=7 setup=bare ns=395.6
+round=7 setup=untargeted mode=raw ns=503.3
+round=7 setup=counts mode=raw ns=552.2
+round=7 setup=calls mode=raw ns=1996.3
+round=7 setup=untargeted mode=multi ns=468.2
+round=7 setup=counts mode=multi ns=677.5
+round=7 setup=calls mode=multi ns=2637.5
+round=7 setup=untargeted mode=backstop ns=564.3
+round=7 setup=counts mode=backstop ns=619.3
+round=7 setup=calls mode=backstop ns=2294.8
+round=8 setup=bare ns=394.8
+round=8 setup=untargeted mode=raw ns=477.4
+round=8 setup=counts mode=raw ns=552.9
+round=8 setup=calls mode=raw ns=1737.0
+round=8 setup=untargeted mode=multi ns=480.1
+round=8 setup=counts mode=multi ns=677.4
+round=8 setup=calls mode=multi ns=2167.5
+round=8 setup=untargeted mode=backstop ns=555.6
+round=8 setup=counts mode=backstop ns=626.7
+round=8 setup=calls mode=backstop ns=2159.7
+round=9 setup=bare ns=395.1
+round=9 setup=untargeted mode=raw ns=489.3
+round=9 setup=counts mode=raw ns=552.4
+round=9 setup=calls mode=raw ns=2190.7
+round=9 setup=untargeted mode=multi ns=475.2
+round=9 setup=counts mode=multi ns=673.5
+round=9 setup=calls mode=multi ns=2126.0
+round=9 setup=untargeted mode=backstop ns=540.6
+round=9 setup=counts mode=backstop ns=634.3
+round=9 setup=calls mode=backstop ns=2417.4
+round=10 setup=bare ns=391.9
+round=10 setup=untargeted mode=raw ns=474.7
+round=10 setup=counts mode=raw ns=544.8
+round=10 setup=calls mode=raw ns=1808.9
+round=10 setup=untargeted mode=multi ns=479.9
+round=10 setup=counts mode=multi ns=678.8
+round=10 setup=calls mode=multi ns=1906.9
+round=10 setup=untargeted mode=backstop ns=564.7
+round=10 setup=counts mode=backstop ns=623.0
+round=10 setup=calls mode=backstop ns=2547.4
+DONE

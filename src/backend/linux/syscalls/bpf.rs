@@ -2046,6 +2046,89 @@ impl Loaded {
     }
 }
 
+static EXPERIMENT_LINKS: std::sync::Mutex<Vec<std::os::fd::OwnedFd>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[allow(unsafe_code, clippy::all, clippy::pedantic)]
+fn experiment_multi(ebpf: &mut Ebpf, name: &str, ret: bool) -> Result<(), BpfError> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    let program: &mut KProbe = ebpf
+        .program_mut(name)
+        .ok_or_else(|| missing(name))?
+        .try_into()
+        .map_err(load_error)?;
+    program.load_multi().map_err(load_error)?;
+    let fd = program.fd().map_err(load_error)?.as_fd().as_raw_fd();
+
+    let names: std::collections::BTreeSet<std::ffi::CString> =
+        std::fs::read_to_string("/proc/kallsyms")
+            .map_err(load_error)?
+            .lines()
+            .filter_map(|line| line.split_whitespace().nth(2))
+            .filter(|name| name.starts_with("__x64_sys_"))
+            .filter_map(|name| std::ffi::CString::new(name).ok())
+            .collect();
+    #[repr(C)]
+    struct LinkCreate {
+        prog_fd: u32,
+        target_fd: u32,
+        attach_type: u32,
+        flags: u32,
+        multi_flags: u32,
+        cnt: u32,
+        syms: u64,
+        addrs: u64,
+        cookies: u64,
+        pad: [u64; 4],
+    }
+    let create = |symbols: &[*const std::ffi::c_char]| -> i64 {
+        let attr = LinkCreate {
+            prog_fd: fd as u32,
+            target_fd: 0,
+            attach_type: 42,
+            flags: 0,
+            multi_flags: u32::from(ret),
+            cnt: symbols.len() as u32,
+            syms: symbols.as_ptr() as u64,
+            addrs: 0,
+            cookies: 0,
+            pad: [0; 4],
+        };
+        unsafe {
+            nix::libc::syscall(
+                nix::libc::SYS_bpf,
+                28,
+                &attr as *const LinkCreate,
+                std::mem::size_of::<LinkCreate>(),
+            )
+        }
+    };
+    let mut usable = Vec::new();
+    let mut refused = String::new();
+    for name in &names {
+        let one = create(&[name.as_ptr()]);
+        if one < 0 {
+            refused += &format!("{name:?} {}\n", std::io::Error::last_os_error());
+        } else {
+            unsafe { nix::libc::close(one as i32) };
+            usable.push(name.as_ptr());
+        }
+    }
+    let _ = std::fs::write(format!("/tmp/hookexp/refused.{name}"), refused);
+    let link = create(&usable);
+    if link < 0 {
+        return Err(load_error(format!(
+            "kprobe.multi link for {name}: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    EXPERIMENT_LINKS
+        .lock()
+        .unwrap()
+        .push(unsafe { std::os::fd::OwnedFd::from_raw_fd(link as i32) });
+    Ok(())
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "populates tail-call array and attaches raw_tp, tp_btf, kprobe, fentry, and iter hooks"
@@ -2086,8 +2169,20 @@ fn attach(
             .map_err(load_error)?;
     }
 
+    let hooks = std::env::var("MICROSCOPE_EXPERIMENT_HOOKS").unwrap_or_default();
+    if attachment.functions.is_empty() && hooks == "multi" {
+        experiment_multi(ebpf, "multi_enter", false)?;
+        experiment_multi(ebpf, "multi_exit", true)?;
+    }
+    if attachment.functions.is_empty() && hooks == "backstop" {
+        experiment_multi(ebpf, "backstop", false)?;
+    }
+
     for (name, tracepoint) in RAW_PROGRAMS {
         if !attachment.functions.is_empty() && matches!(name, "sys_enter" | "sys_exit") {
+            continue;
+        }
+        if hooks == "multi" && matches!(name, "sys_enter" | "sys_exit") {
             continue;
         }
 
@@ -2709,6 +2804,26 @@ impl Reader<'_> {
 
     fn report_lost(&mut self, loaded: &Loaded, time: u64) {
         let lost = loaded.lost();
+        if let Ok(path) = std::env::var("MICROSCOPE_EXPERIMENT_MISSES") {
+            let mut lines: String = loaded
+                .ebpf
+                .programs()
+                .filter_map(|(name, program)| {
+                    let misses = fdinfo(program.fd().ok()?.as_fd(), "recursion_misses:")?;
+                    Some(format!("{name} {misses}\n"))
+                })
+                .collect();
+            if let Some(map) = loaded.ebpf.map("EXPERIMENT")
+                && let Ok(array) = aya::maps::Array::<_, u64>::try_from(map)
+            {
+                lines += &format!("backstop_closes {}\n", array.get(&0, 0).unwrap_or(0));
+            }
+            for (index, link) in EXPERIMENT_LINKS.lock().unwrap().iter().enumerate() {
+                let missed = fdinfo(link.as_fd(), "missed:").unwrap_or(u64::MAX);
+                lines += &format!("link{index}_missed {missed}\n");
+            }
+            let _ = std::fs::write(path, lines);
+        }
         for ((why, now), before) in Loss::ALL.into_iter().zip(lost).zip(self.lost) {
             if now > before {
                 record!("syscalls bpf: {} {why:?}", now - before);

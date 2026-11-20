@@ -1957,6 +1957,8 @@ mod bpf {
             .iter()
             .find(|(call, _)| call.name() == Some("close"))
             .map_or(0, |(_, stats)| stats.calls);
+        let timed = syscalls.counted.per_call().iter().find(|(call, _)| call.name() == Some("close")).map_or(0, |(_, stats)| stats.timed);
+        eprintln!("EXPERIMENT {closes} closes: {in_counts} counted, {timed} of them timed, lost {:?}", syscalls.lost);
         assert!(
             (280_000..280_020).contains(&closes),
             "{closes} closes: {in_counts} counted in the kernel, {} streamed; lost {:?}",

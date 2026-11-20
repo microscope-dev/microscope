@@ -1869,3 +1869,59 @@ int in_flight(struct bpf_iter__task *ctx)
 }
 
 char LICENSE[] SEC("license") = "GPL";
+
+// Hook experiment (not for merge). Option 1: kprobe.multi on the syscall
+// dispatchers, which run with preemption off. Option 2: the raw_tp hooks plus a
+// preemption-off counter of each traced thread's entries.
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 4);
+	__type(key, u32);
+	__type(value, u64);
+} EXPERIMENT SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, u64);
+} BACKSTOP_SEQ SEC(".maps");
+
+SEC("kprobe")
+int multi_enter(struct pt_regs *ctx)
+{
+	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
+	if (!regs)
+		return 0;
+	return on_enter(ctx, regs, regs->orig_ax, 0, 0);
+}
+
+SEC("kprobe")
+int multi_exit(struct pt_regs *ctx)
+{
+	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
+	if (!regs)
+		return 0;
+	return on_exit(ctx, regs, (s64)ctx->ax, 0);
+}
+
+SEC("kprobe")
+int backstop(struct pt_regs *ctx)
+{
+	u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	if (!traced(tgid))
+		return 0;
+	u64 *seq = bpf_task_storage_get(&BACKSTOP_SEQ, bpf_get_current_task_btf(), 0,
+					BPF_LOCAL_STORAGE_GET_F_CREATE);
+	if (seq)
+		*seq += 1;
+	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
+	if (regs && regs->orig_ax == 3) {
+		u32 zero = 0;
+		u64 *closes = bpf_map_lookup_elem(&EXPERIMENT, &zero);
+		if (closes)
+			__sync_fetch_and_add(closes, 1);
+	}
+	return 0;
+}
