@@ -9,11 +9,12 @@ use zerocopy::little_endian::{I64, U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 pub use codec::{
-    Codec, Coding, ColumnEntry, GroupEntry, SectionHeader, SectionReader, SectionWriter,
+    Codec, Coding, ColumnEntry, DecodeBudget, GroupEntry, SectionHeader, SectionReader,
+    SectionWriter,
 };
 pub use tables::{
     ChunkData, ChunkRow, DimensionRow, SanitizerCountRow, decode_flame_tables, decode_tables,
-    encode_tables, merge_chunks, round_capture_times,
+    encode_tables, merge_chunks, round_capture_times, shift_capture_times,
 };
 
 pub const OBJECT_MAGIC: [u8; 8] = *b"USCOPEOB";
@@ -701,7 +702,18 @@ impl<'a> ObjectReader<'a> {
             return Err(ObjectError::Checksum { what: "part list" });
         }
 
-        let parts = parse_part_list(list_bytes, list_start as u64)?;
+        let max_parts = if kind == ObjectKind::Post {
+            1
+        } else {
+            MAX_PARTS
+        };
+        let parts = parse_part_list_bounded(list_bytes, list_start as u64, max_parts)?;
+        if kind == ObjectKind::Post && parts.len() != 1 {
+            return Err(ObjectError::Layout(format!(
+                "post object must have 1 part, got {}",
+                parts.len()
+            )));
+        }
         Ok(Self {
             bytes,
             kind,
@@ -823,11 +835,19 @@ pub fn verify_part_list_org(
         })
 }
 
+pub fn parse_part_list(list_bytes: &[u8], data_end: u64) -> Result<Vec<PartMeta>, ObjectError> {
+    parse_part_list_bounded(list_bytes, data_end, MAX_PARTS)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "validates part entries and section descriptors together"
 )]
-pub fn parse_part_list(list_bytes: &[u8], data_end: u64) -> Result<Vec<PartMeta>, ObjectError> {
+fn parse_part_list_bounded(
+    list_bytes: &[u8],
+    data_end: u64,
+    max_parts: usize,
+) -> Result<Vec<PartMeta>, ObjectError> {
     let header = PartListHeader::read_from_bytes(
         list_bytes
             .get(..PART_LIST_HEADER_LEN)
@@ -840,7 +860,7 @@ pub fn parse_part_list(list_bytes: &[u8], data_end: u64) -> Result<Vec<PartMeta>
 
     let part_count = header.parts.get() as usize;
     let section_count = header.sections.get() as usize;
-    if part_count > MAX_PARTS {
+    if part_count > max_parts {
         return Err(ObjectError::Limit("too many parts"));
     }
 
@@ -878,6 +898,7 @@ pub fn parse_part_list(list_bytes: &[u8], data_end: u64) -> Result<Vec<PartMeta>
     .map_err(|_| ObjectError::Truncated)?;
 
     let mut out = Vec::with_capacity(part_count);
+    let mut prev_end_sec = 0_usize;
     for part in part_entries {
         if part.reserved != [0; 6] {
             return Err(ObjectError::NonZeroReserved("part entry"));
@@ -905,12 +926,18 @@ pub fn parse_part_list(list_bytes: &[u8], data_end: u64) -> Result<Vec<PartMeta>
 
         let first = part.first_section.get() as usize;
         let count = part.section_count.get() as usize;
+        if first < prev_end_sec {
+            return Err(ObjectError::Layout(
+                "part section ranges overlap or are out of order".into(),
+            ));
+        }
         let end_sec = first
             .checked_add(count)
             .ok_or(ObjectError::Limit("section range overflow"))?;
         let slice = section_entries
             .get(first..end_sec)
             .ok_or_else(|| ObjectError::Layout("part section indices are out of bounds".into()))?;
+        prev_end_sec = end_sec;
 
         let mut sections = Vec::with_capacity(count);
         for sec in slice {

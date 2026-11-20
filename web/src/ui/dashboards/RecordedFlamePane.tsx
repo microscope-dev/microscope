@@ -2,7 +2,7 @@ import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from "rea
 
 import { checkAccount, useAccount } from "../../account";
 import { KIND } from "../../documents";
-import { type Project, request, useDirectory } from "../../orgs";
+import { type Project, reload, request, useDirectory } from "../../orgs";
 import { formatCount } from "../../profile/paint";
 import {
   type CallTree,
@@ -24,6 +24,7 @@ interface FlameResponse {
   samples: number;
   unit: string;
   blocks: number;
+  truncated?: boolean;
   keys: ProfileKey[];
   own: number[];
   total: number[];
@@ -35,6 +36,7 @@ interface LoadedFlame {
   tree: CallTree;
   unit: string;
   blocks: number;
+  truncated: boolean;
 }
 
 async function queryFlame(projectId: number): Promise<LoadedFlame> {
@@ -53,6 +55,7 @@ async function queryFlame(projectId: number): Promise<LoadedFlame> {
     }),
     unit: answer.unit,
     blocks: answer.blocks,
+    truncated: Boolean(answer.truncated),
   };
 }
 
@@ -128,6 +131,9 @@ export function RecordedFlamePane() {
     setZoomPath(pathOf(zoomed, node));
     setSelectedName(nameOf(zoomed, node));
   }, []);
+  const onRetryProjects = useCallback(() => {
+    void reload();
+  }, []);
 
   if (now.kind !== "in") {
     return (
@@ -198,12 +204,24 @@ export function RecordedFlamePane() {
         {current ? (
           <span className="muted" data-testid="recorded-summary">
             {formatCount(current.blocks, "block")} · {formatCount(current.tree.samples, "sample")}
+            {current.truncated ? " · truncated" : ""}
           </span>
         ) : null}
       </div>
       <div className="pane-body">
         {directory.projects === null ? (
-          <div className="empty muted">Loading projects…</div>
+          directory.error ? (
+            <div className="empty error" role="alert">
+              <p>{directory.error}</p>
+              <div className="actions">
+                <button type="button" className="button" onClick={onRetryProjects}>
+                  Retry
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="empty muted">Loading projects…</div>
+          )
         ) : projects.length === 0 ? (
           <div className="empty muted">
             No projects yet. Create a project to query recorded data.

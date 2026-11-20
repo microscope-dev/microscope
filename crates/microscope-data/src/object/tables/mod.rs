@@ -15,8 +15,8 @@ use crate::syscalls::specs;
 use crate::syscalls::{Abi, SyscallId};
 
 use super::codec::{
-    Coding, FLAG_BIT_PACKED, SectionReader, SectionWriter, decode_dict_u64, decode_ints,
-    delta_decode_i64, delta_decode_u64, encode_ints, relative_decode_i64, zigzag_decode,
+    Coding, FLAG_BIT_PACKED, SectionReader, SectionWriter, decode_dict_u64_budgeted, decode_ints,
+    delta_decode_i64, delta_decode_u64_in_place, encode_ints, relative_decode_i64, zigzag_decode,
 };
 use super::{MAX_ROWS, ObjectError, TimeUnit};
 
@@ -73,6 +73,107 @@ impl ChunkData {
         }
 
         self.capture.span()
+    }
+}
+
+pub fn shift_capture_times(capture: &mut Capture, delta_ns: i64) {
+    if delta_ns == 0 {
+        return;
+    }
+
+    let shift = |t: i64| {
+        if t == UNSEEN {
+            UNSEEN
+        } else {
+            t.saturating_add(delta_ns)
+        }
+    };
+
+    for process in &mut capture.processes {
+        let s = shift(process.start.get());
+        let e = shift(process.end.get()).max(s);
+        process.start = s.into();
+        process.end = e.into();
+    }
+
+    for thread in &mut capture.threads {
+        let s = shift(thread.start.get());
+        let e = shift(thread.end.get()).max(s);
+        thread.start = s.into();
+        thread.end = e.into();
+    }
+
+    for mapping in &mut capture.mappings {
+        mapping.time = shift(mapping.time.get()).into();
+    }
+
+    for sample in &mut capture.samples {
+        sample.time = shift(sample.time.get()).into();
+    }
+
+    for interval in &mut capture.off_cpu {
+        interval.time = shift(interval.time.get()).into();
+    }
+
+    for zone in &mut capture.zones {
+        let s = shift(zone.start.get());
+        let e = shift(zone.end.get()).max(s);
+        zone.start = s.into();
+        zone.end = e.into();
+    }
+
+    for plot in &mut capture.plots {
+        plot.time = shift(plot.time.get()).into();
+    }
+
+    for marker in &mut capture.markers {
+        marker.time = shift(marker.time.get()).into();
+    }
+
+    for task in &mut capture.tasks {
+        let s = shift(task.first_seen.get());
+        let e = shift(task.last_seen.get()).max(s);
+        task.first_seen = s.into();
+        task.last_seen = e.into();
+    }
+
+    for wait in &mut capture.task_waits {
+        wait.time = shift(wait.time.get()).into();
+    }
+
+    for gap in &mut capture.gaps {
+        let s = shift(gap.start.get());
+        let e = shift(gap.end.get()).max(s);
+        gap.start = s.into();
+        gap.end = e.into();
+    }
+
+    for call in &mut capture.syscalls {
+        call.entered = shift(call.entered.get()).into();
+        call.exited = shift(call.exited.get()).into();
+    }
+
+    for note in &mut capture.syscall_notes {
+        note.time = shift(note.time.get()).into();
+    }
+
+    let mut updated_settings = Vec::new();
+    for (idx, setting) in capture.settings.iter().enumerate() {
+        let key = capture.string(setting.key.get());
+        if matches!(key, "start" | "end")
+            && let Ok(val) = capture.string(setting.value.get()).parse::<i64>()
+        {
+            updated_settings.push((idx, shift(val).to_string()));
+        }
+    }
+    for (idx, text) in updated_settings {
+        if let Ok(offset) = u32::try_from(capture.strings.len()) {
+            capture.strings.extend_from_slice(text.as_bytes());
+            capture.strings.push(0);
+            if let Some(setting) = capture.settings.get_mut(idx) {
+                setting.value = offset.into();
+            }
+        }
     }
 }
 
@@ -255,15 +356,16 @@ fn add_u64_col(
 }
 
 fn read_u64_col(
-    reader: &SectionReader<'_>,
+    reader: &SectionReader<'_, '_>,
     group: u16,
     col: u8,
     count: usize,
 ) -> Result<Vec<u64>, ObjectError> {
+    reader.charge(count.saturating_mul(size_of::<u64>()))?;
     let slice = reader.column(group, col)?;
     let raw = slice.decompress()?;
     match slice.coding {
-        Coding::Dictionary => decode_dict_u64(&raw, count),
+        Coding::Dictionary => decode_dict_u64_budgeted(&raw, count, reader.budget()),
         Coding::Plain
         | Coding::Delta
         | Coding::DeltaByKey
@@ -275,34 +377,37 @@ fn read_u64_col(
 }
 
 fn read_delta_u64_col(
-    reader: &SectionReader<'_>,
+    reader: &SectionReader<'_, '_>,
     group: u16,
     col: u8,
     count: usize,
 ) -> Result<Vec<u64>, ObjectError> {
+    reader.charge(count.saturating_mul(size_of::<u64>()))?;
     let slice = reader.column(group, col)?;
     let raw = slice.decompress()?;
-    let ints = match slice.coding {
-        Coding::Dictionary => decode_dict_u64(&raw, count)?,
+    let mut ints = match slice.coding {
+        Coding::Dictionary => decode_dict_u64_budgeted(&raw, count, reader.budget())?,
         _ => decode_ints(&raw, count, slice.bit_packed())?,
     };
-    Ok(match slice.coding {
-        Coding::Delta => delta_decode_u64(&ints),
-        Coding::Plain | Coding::String | Coding::Dictionary | Coding::Order => ints,
-        _ => {
-            return Err(ObjectError::Layout(
-                "unexpected coding for unsigned column".into(),
-            ));
+    match slice.coding {
+        Coding::Delta => {
+            delta_decode_u64_in_place(&mut ints);
+            Ok(ints)
         }
-    })
+        Coding::Plain | Coding::String | Coding::Dictionary | Coding::Order => Ok(ints),
+        _ => Err(ObjectError::Layout(
+            "unexpected coding for unsigned column".into(),
+        )),
+    }
 }
 
 fn read_u32_col(
-    reader: &SectionReader<'_>,
+    reader: &SectionReader<'_, '_>,
     group: u16,
     col: u8,
     count: usize,
 ) -> Result<Vec<u32>, ObjectError> {
+    reader.charge(count.saturating_mul(size_of::<u32>()))?;
     read_delta_u64_col(reader, group, col, count)?
         .into_iter()
         .map(|v| u32_from_u64(v, "u32 column"))
@@ -310,11 +415,12 @@ fn read_u32_col(
 }
 
 fn read_u8_col(
-    reader: &SectionReader<'_>,
+    reader: &SectionReader<'_, '_>,
     group: u16,
     col: u8,
     count: usize,
 ) -> Result<Vec<u8>, ObjectError> {
+    reader.charge(count.saturating_mul(size_of::<u8>()))?;
     read_delta_u64_col(reader, group, col, count)?
         .into_iter()
         .map(|v| u8_from_u64(v, "u8 column"))
@@ -322,15 +428,16 @@ fn read_u8_col(
 }
 
 fn read_time_col(
-    reader: &SectionReader<'_>,
+    reader: &SectionReader<'_, '_>,
     group: u16,
     col: u8,
     count: usize,
 ) -> Result<Vec<i64>, ObjectError> {
+    reader.charge(count.saturating_mul(size_of::<u64>() + size_of::<i64>()))?;
     let slice = reader.column(group, col)?;
     let raw = slice.decompress()?;
     let ints = decode_ints(&raw, count, slice.bit_packed())?;
-    let units = match slice.coding {
+    let mut units = match slice.coding {
         Coding::Delta => delta_decode_i64(&ints, reader.base_time),
         Coding::Plain => ints.into_iter().map(zigzag_decode).collect(),
         _ => {
@@ -339,22 +446,27 @@ fn read_time_col(
             ));
         }
     };
-    Ok(units
-        .into_iter()
-        .map(|u| reader.time_unit.to_nanos(u))
-        .collect())
+    for slot in &mut units {
+        *slot = reader.time_unit.to_nanos(*slot);
+    }
+    Ok(units)
 }
 
 fn read_relative_time_col(
-    reader: &SectionReader<'_>,
+    reader: &SectionReader<'_, '_>,
     group: u16,
     col: u8,
     anchor_units: &[i64],
 ) -> Result<Vec<i64>, ObjectError> {
+    reader.charge(
+        anchor_units
+            .len()
+            .saturating_mul(size_of::<u64>() + size_of::<i64>()),
+    )?;
     let slice = reader.column(group, col)?;
     let raw = slice.decompress()?;
     let ints = decode_ints(&raw, anchor_units.len(), slice.bit_packed())?;
-    let units = match slice.coding {
+    let mut units = match slice.coding {
         Coding::Relative => relative_decode_i64(&ints, anchor_units)?,
         Coding::Delta => delta_decode_i64(&ints, reader.base_time),
         Coding::Plain => ints.into_iter().map(zigzag_decode).collect(),
@@ -364,10 +476,10 @@ fn read_relative_time_col(
             ));
         }
     };
-    Ok(units
-        .into_iter()
-        .map(|u| reader.time_unit.to_nanos(u))
-        .collect())
+    for slot in &mut units {
+        *slot = reader.time_unit.to_nanos(*slot);
+    }
+    Ok(units)
 }
 
 type InternedExtraStrings = (Vec<u8>, Vec<u32>, Vec<(u32, u32)>, Vec<u32>);

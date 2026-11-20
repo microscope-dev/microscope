@@ -213,7 +213,7 @@ fn run_seed(seed: u64, max_spool_bytes: u64) {
                 match outcome {
                     PosterOutcome::Accepted { last_chunk }
                     | PosterOutcome::Overlap { last_chunk } => {
-                        let _ = spool.ack(last_chunk).expect("ack");
+                        let _ = spool.ack(batch.owner_gen, last_chunk).expect("ack");
                     }
                     PosterOutcome::Unauthorized | PosterOutcome::Retry { .. } => {}
                 }
@@ -266,7 +266,7 @@ fn run_seed(seed: u64, max_spool_bytes: u64) {
                 if let PosterOutcome::Accepted { last_chunk }
                 | PosterOutcome::Overlap { last_chunk } = outcome
                 {
-                    let _ = spool.ack(last_chunk).expect("ack");
+                    let _ = spool.ack(batch.owner_gen, last_chunk).expect("ack");
                 }
                 poster.on(outcome, now, !spool.is_empty(), clean_rng.next_f64());
             }

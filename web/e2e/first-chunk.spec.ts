@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
@@ -57,7 +57,12 @@ async function signUp(page: Page, services: Services): Promise<void> {
   await expect(account(page)).toContainText(`Signed in as ${username}`);
 }
 
-function startAgent(enroll: string, state: string, log: string[]): ChildProcess {
+function startAgent(
+  enroll: string,
+  state: string,
+  processName: string,
+  log: string[],
+): ChildProcess {
   const child = spawn(
     path.join(root, "target", "debug", "microscope"),
     ["agent", "run", "--config", "/dev/null"],
@@ -67,7 +72,7 @@ function startAgent(enroll: string, state: string, log: string[]): ChildProcess 
         MICROSCOPE_ENROLL: enroll,
         MICROSCOPE_STATE_DIR: state,
         MICROSCOPE_CLOUD_METADATA: "false",
-        MICROSCOPE_RECORD_PROCESS: "hot-calls",
+        MICROSCOPE_RECORD_PROCESS: processName,
         MICROSCOPE_RECORD_SERVICE: "hot-calls",
         MICROSCOPE_RECORD_PROJECT: "services",
         MICROSCOPE_RECORD_PRESET: "dev",
@@ -116,9 +121,12 @@ test("records a live process with the real agent and renders its hot function in
   await expect(add).toBeHidden();
 
   const state = await mkdtemp(path.join(tmpdir(), "microscope-first-chunk-e2e-"));
+  const processName = `hot-${randomBytes(4).toString("hex")}`;
+  const workloadBinary = path.join(state, processName);
+  await symlink(hotCallsBinary, workloadBinary);
   const agentLog: string[] = [];
-  const workload = spawn(hotCallsBinary, [], { stdio: "ignore" });
-  const running = startAgent(enroll, state, agentLog);
+  const workload = spawn(workloadBinary, [], { stdio: "ignore" });
+  const running = startAgent(enroll, state, processName, agentLog);
   try {
     await menu(page, "Dashboards", "Flame graph…");
     const flame = page.getByRole("tabpanel", { name: "Flame graph" });

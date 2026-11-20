@@ -202,38 +202,52 @@ fn sanitize_string_id(
     }
 }
 
+fn arg_setting_suffix(key: &str, prefix: &str) -> Option<String> {
+    if key == prefix {
+        Some(String::new())
+    } else {
+        key.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix(' '))
+            .map(str::to_owned)
+    }
+}
+
 fn sanitize_arguments_setting(
     old: &Capture,
     strings: &mut StringsBuilder,
     id: u32,
     sanitizer: &Sanitizer,
     tally: &mut Tally,
-) -> u32 {
+) -> (u32, Option<Vec<String>>) {
     if id == NONE {
-        return NONE;
+        return (NONE, None);
     }
 
     let text = old.string(id);
     if let Ok(args) = serde_json::from_str::<Vec<String>>(text) {
         return match sanitizer.args(&args, tally) {
-            Outcome::Kept => strings.push(text).map_or(NONE, |StrId(i)| i),
+            Outcome::Kept => (strings.push(text).map_or(NONE, |StrId(i)| i), Some(args)),
             Outcome::Replaced(changed) => {
                 let encoded = serde_json::to_string(&changed).unwrap_or_else(|_| "[]".to_owned());
-                strings
-                    .push(encoded.split('\0').next().unwrap_or_default())
-                    .map_or(NONE, |StrId(i)| i)
+                (
+                    strings
+                        .push(encoded.split('\0').next().unwrap_or_default())
+                        .map_or(NONE, |StrId(i)| i),
+                    Some(changed),
+                )
             }
-            Outcome::DropField | Outcome::DropRecord => NONE,
+            Outcome::DropField | Outcome::DropRecord => (NONE, Some(Vec::new())),
         };
     }
 
-    match sanitizer.text(FieldClass::ProcessArgs, text, tally) {
+    let out = match sanitizer.text(FieldClass::ProcessArgs, text, tally) {
         Outcome::Kept => strings.push(text).map_or(NONE, |StrId(i)| i),
         Outcome::Replaced(changed) => strings
             .push(changed.split('\0').next().unwrap_or_default())
             .map_or(NONE, |StrId(i)| i),
         Outcome::DropField | Outcome::DropRecord => NONE,
-    }
+    };
+    (out, None)
 }
 
 #[expect(
@@ -260,30 +274,78 @@ pub fn sanitize_chunk(
         }
     };
 
+    let mut sanitized_args_by_scope: BTreeMap<String, (u32, Vec<String>)> = BTreeMap::new();
+    for s in &old.settings {
+        let key_str = old.string(s.key.get());
+        if let Some(scope) =
+            arg_setting_suffix(key_str, "arguments").or_else(|| arg_setting_suffix(key_str, "argv"))
+        {
+            let (new_val, parsed) = sanitize_arguments_setting(
+                &old,
+                &mut strings,
+                s.value.get(),
+                sanitizer,
+                &mut tally,
+            );
+            if let Some(args) = parsed {
+                sanitized_args_by_scope.insert(scope, (new_val, args));
+            }
+        }
+    }
+
     let settings = old
         .settings
         .iter()
         .map(|s| {
             let key_str = old.string(s.key.get());
             let key = copy(&mut strings, s.key.get());
-            let value = match setting_field_class(key_str) {
-                Some(FieldClass::ProcessArgs) => sanitize_arguments_setting(
-                    &old,
-                    &mut strings,
-                    s.value.get(),
-                    sanitizer,
-                    &mut tally,
-                ),
-                class => {
-                    sanitize_string_id(
-                        &old,
-                        &mut strings,
-                        s.value.get(),
-                        class,
-                        sanitizer,
-                        &mut tally,
-                    )
-                    .0
+            let value = if let Some(scope) = arg_setting_suffix(key_str, "arguments")
+                .or_else(|| arg_setting_suffix(key_str, "argv"))
+                && let Some(&(cached, _)) = sanitized_args_by_scope.get(&scope)
+            {
+                cached
+            } else if let Some(scope) = arg_setting_suffix(key_str, "command")
+                && let Some((_, clean_args)) = sanitized_args_by_scope.get(&scope)
+            {
+                if clean_args.is_empty() {
+                    NONE
+                } else {
+                    let joined = clean_args.join(" ");
+                    let final_text =
+                        match sanitizer.text(FieldClass::ProcessArgs, &joined, &mut tally) {
+                            Outcome::Kept => Some(joined),
+                            Outcome::Replaced(changed) => Some(changed),
+                            Outcome::DropField | Outcome::DropRecord => None,
+                        };
+                    final_text.map_or(NONE, |t| {
+                        strings
+                            .push(t.split('\0').next().unwrap_or_default())
+                            .map_or(NONE, |StrId(i)| i)
+                    })
+                }
+            } else {
+                match setting_field_class(key_str) {
+                    Some(FieldClass::ProcessArgs) => {
+                        sanitize_arguments_setting(
+                            &old,
+                            &mut strings,
+                            s.value.get(),
+                            sanitizer,
+                            &mut tally,
+                        )
+                        .0
+                    }
+                    class => {
+                        sanitize_string_id(
+                            &old,
+                            &mut strings,
+                            s.value.get(),
+                            class,
+                            sanitizer,
+                            &mut tally,
+                        )
+                        .0
+                    }
                 }
             };
             crate::capture::records::Setting {

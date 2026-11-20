@@ -306,6 +306,15 @@ pub fn delta_decode_u64(encoded: &[u64]) -> Vec<u64> {
     out
 }
 
+pub fn delta_decode_u64_in_place(values: &mut [u64]) {
+    let mut prev = 0_u64;
+    for slot in values {
+        let value = prev.wrapping_add(zigzag_decode(*slot).cast_unsigned());
+        *slot = value;
+        prev = value;
+    }
+}
+
 #[must_use]
 pub fn delta_encode_i64(values: &[i64], base: i64) -> Vec<u64> {
     let mut out = Vec::with_capacity(values.len());
@@ -440,6 +449,14 @@ pub fn encode_dict_u64(values: &[u64]) -> Vec<u8> {
 }
 
 pub fn decode_dict_u64(bytes: &[u8], count: usize) -> Result<Vec<u64>, ObjectError> {
+    decode_dict_u64_budgeted(bytes, count, None)
+}
+
+pub fn decode_dict_u64_budgeted(
+    bytes: &[u8],
+    count: usize,
+    budget: Option<&DecodeBudget>,
+) -> Result<Vec<u64>, ObjectError> {
     if count > MAX_ROWS {
         return Err(ObjectError::Limit("row count exceeds limit"));
     }
@@ -447,11 +464,14 @@ pub fn decode_dict_u64(bytes: &[u8], count: usize) -> Result<Vec<u64>, ObjectErr
     let mut at = 0;
     let dict_len = usize::try_from(read_varint(bytes, &mut at)?)
         .map_err(|_| ObjectError::Limit("dictionary size overflow"))?;
-    if dict_len > count.max(1) && dict_len > MAX_ROWS {
+    if dict_len > MAX_ROWS {
         return Err(ObjectError::Limit("dictionary exceeds limit"));
     }
+    if let Some(budget) = budget {
+        budget.take(dict_len.saturating_mul(size_of::<u64>()))?;
+    }
 
-    let mut dict = Vec::with_capacity(dict_len.min(MAX_ROWS));
+    let mut dict = Vec::with_capacity(dict_len);
     for _ in 0..dict_len {
         dict.push(read_varint(bytes, &mut at)?);
     }
@@ -541,12 +561,46 @@ pub fn compress_stream(raw: &[u8], zstd_level: i32) -> Result<(Codec, Vec<u8>), 
     }
 }
 
+#[derive(Debug)]
+pub struct DecodeBudget {
+    remaining: std::cell::Cell<usize>,
+}
+
+impl DecodeBudget {
+    #[must_use]
+    pub const fn new(limit: usize) -> Self {
+        Self {
+            remaining: std::cell::Cell::new(limit),
+        }
+    }
+
+    pub fn take(&self, bytes: usize) -> Result<(), ObjectError> {
+        let next = self
+            .remaining
+            .get()
+            .checked_sub(bytes)
+            .ok_or(ObjectError::Limit("object exceeds maximum decoded size"))?;
+        self.remaining.set(next);
+        Ok(())
+    }
+}
+
 pub fn decompress_stream(codec: Codec, stored: &[u8]) -> Result<Vec<u8>, ObjectError> {
+    let budget = DecodeBudget::new(MAX_COLUMN_RAW_BYTES);
+    decompress_stream_budgeted(codec, stored, &budget)
+}
+
+pub fn decompress_stream_budgeted(
+    codec: Codec,
+    stored: &[u8],
+    budget: &DecodeBudget,
+) -> Result<Vec<u8>, ObjectError> {
     match codec {
         Codec::Raw => {
             if stored.len() > MAX_COLUMN_RAW_BYTES {
                 return Err(ObjectError::Limit("raw column exceeds maximum size"));
             }
+            budget.take(stored.len())?;
             Ok(stored.to_vec())
         }
         Codec::Zstd => {
@@ -565,6 +619,7 @@ pub fn decompress_stream(codec: Codec, stored: &[u8]) -> Result<Vec<u8>, ObjectE
                         "decompressed column exceeds maximum size",
                     ));
                 }
+                budget.take(read)?;
                 out.extend_from_slice(chunk.get(..read).ok_or(ObjectError::Truncated)?);
             }
             Ok(out)
@@ -699,41 +754,72 @@ impl SectionWriter {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ColumnSlice<'a> {
+pub struct ColumnSlice<'a, 'b> {
     pub entry: ColumnEntry,
     pub coding: Coding,
     pub codec: Codec,
     pub data: &'a [u8],
+    budget: Option<&'b DecodeBudget>,
 }
 
-impl ColumnSlice<'_> {
+impl ColumnSlice<'_, '_> {
     #[must_use]
     pub const fn bit_packed(&self) -> bool {
         self.entry.flags & FLAG_BIT_PACKED != 0
     }
 
     pub fn decompress(&self) -> Result<Vec<u8>, ObjectError> {
-        decompress_stream(self.codec, self.data)
+        self.budget.map_or_else(
+            || decompress_stream(self.codec, self.data),
+            |budget| decompress_stream_budgeted(self.codec, self.data, budget),
+        )
+    }
+
+    pub fn decompress_budgeted(&self, budget: &DecodeBudget) -> Result<Vec<u8>, ObjectError> {
+        decompress_stream_budgeted(self.codec, self.data, budget)
     }
 }
 
 #[derive(Debug)]
-pub struct SectionReader<'a> {
+pub struct SectionReader<'a, 'b> {
     pub kind: SectionKind,
     pub version: u8,
     pub time_unit: TimeUnit,
     pub rows: u32,
     pub base_time: i64,
     pub groups: &'a [GroupEntry],
-    columns: BTreeMap<(u16, u8), ColumnSlice<'a>>,
+    columns: BTreeMap<(u16, u8), ColumnSlice<'a, 'b>>,
+    budget: Option<&'b DecodeBudget>,
 }
 
-impl<'a> SectionReader<'a> {
+impl<'a> SectionReader<'a, 'static> {
+    pub fn open(bytes: &'a [u8], expected_kind: SectionKind) -> Result<Self, ObjectError> {
+        SectionReader::open_inner(bytes, expected_kind, None)
+    }
+}
+
+impl<'a, 'b> SectionReader<'a, 'b> {
+    pub fn open_budgeted(
+        bytes: &'a [u8],
+        expected_kind: SectionKind,
+        budget: &'b DecodeBudget,
+    ) -> Result<Self, ObjectError> {
+        Self::open_inner(bytes, expected_kind, Some(budget))
+    }
+
+    pub fn charge(&self, bytes: usize) -> Result<(), ObjectError> {
+        self.budget.map_or(Ok(()), |budget| budget.take(bytes))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "validates header, groups, and column slices in order"
     )]
-    pub fn open(bytes: &'a [u8], expected_kind: SectionKind) -> Result<Self, ObjectError> {
+    fn open_inner(
+        bytes: &'a [u8],
+        expected_kind: SectionKind,
+        budget: Option<&'b DecodeBudget>,
+    ) -> Result<Self, ObjectError> {
         let header = SectionHeader::read_from_bytes(
             bytes
                 .get(..SECTION_HEADER_LEN)
@@ -838,6 +924,7 @@ impl<'a> SectionReader<'a> {
                         coding,
                         codec,
                         data,
+                        budget,
                     },
                 )
                 .is_some()
@@ -858,10 +945,11 @@ impl<'a> SectionReader<'a> {
             base_time: header.base_time.get(),
             groups,
             columns,
+            budget,
         })
     }
 
-    pub fn column(&self, group: u16, column: u8) -> Result<ColumnSlice<'a>, ObjectError> {
+    pub fn column(&self, group: u16, column: u8) -> Result<ColumnSlice<'a, 'b>, ObjectError> {
         self.columns
             .get(&(group, column))
             .copied()
@@ -869,7 +957,12 @@ impl<'a> SectionReader<'a> {
     }
 
     #[must_use]
-    pub fn optional_column(&self, group: u16, column: u8) -> Option<ColumnSlice<'a>> {
+    pub const fn budget(&self) -> Option<&'b DecodeBudget> {
+        self.budget
+    }
+
+    #[must_use]
+    pub fn optional_column(&self, group: u16, column: u8) -> Option<ColumnSlice<'a, 'b>> {
         self.columns.get(&(group, column)).copied()
     }
 }

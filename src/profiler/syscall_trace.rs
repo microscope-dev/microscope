@@ -291,10 +291,31 @@ impl PartialEq for Printer {
 
 impl Eq for Printer {}
 
-#[derive(Clone)]
-pub struct SharedBpfEngine(pub Arc<Mutex<bpf::Engine>>);
+#[derive(Clone, Default)]
+pub struct SharedBpfEngine {
+    engine: Arc<Mutex<Option<bpf::Engine>>>,
+    load_failed: Arc<AtomicBool>,
+}
 
 impl SharedBpfEngine {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            engine: Arc::new(Mutex::new(None)),
+            load_failed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn available() -> Result<Self, bpf::BpfError> {
+        bpf::Probe::read().check()?;
+        Ok(Self::empty())
+    }
+
+    #[must_use]
+    pub fn load_failed(&self) -> bool {
+        self.load_failed.load(Ordering::Relaxed)
+    }
+
     pub fn load(stack_copy: bool) -> Result<Self, bpf::BpfError> {
         let trace = TraceOptions {
             calls: CallSet::all(),
@@ -309,9 +330,10 @@ impl SharedBpfEngine {
             exceptions: None,
             streamed_per_second: None,
         };
-        Ok(Self(Arc::new(Mutex::new(bpf::Engine::load(
-            &trace, engine,
-        )?))))
+        Ok(Self {
+            engine: Arc::new(Mutex::new(Some(bpf::Engine::load(&trace, engine)?))),
+            load_failed: Arc::new(AtomicBool::new(false)),
+        })
     }
 }
 
@@ -323,7 +345,7 @@ impl std::fmt::Debug for SharedBpfEngine {
 
 impl PartialEq for SharedBpfEngine {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        Arc::ptr_eq(&self.engine, &other.engine)
     }
 }
 
@@ -727,32 +749,56 @@ fn run(
     let ended = match (traced, bpf) {
         (Traced::Held(pid), Some(engine)) => {
             if let Some(shared) = shared_bpf {
-                let mut guard = shared.0.lock().unwrap_or_else(PoisonError::into_inner);
-                if guard.compatible(trace, engine) {
-                    guard
-                        .trace_held(pid, trace, engine, stop, sink)
-                        .map_err(|error| error.to_string())
-                } else {
-                    drop(guard);
-                    bpf::trace_held(pid, trace, engine, stop, sink)
-                        .map_err(|error| error.to_string())
+                let mut guard = shared.engine.lock().unwrap_or_else(PoisonError::into_inner);
+                if guard
+                    .as_ref()
+                    .is_none_or(|loaded| !loaded.compatible(trace, engine))
+                {
+                    *guard = None;
+                    match bpf::Engine::load(trace, engine) {
+                        Ok(loaded) => *guard = Some(loaded),
+                        Err(error) => {
+                            shared.load_failed.store(true, Ordering::Relaxed);
+                            return Err(error.to_string());
+                        }
+                    }
                 }
+                guard.as_mut().map_or_else(
+                    || Err("the shared BPF engine failed to initialize".to_owned()),
+                    |loaded| {
+                        loaded
+                            .trace_held(pid, trace, engine, stop, sink)
+                            .map_err(|error| error.to_string())
+                    },
+                )
             } else {
                 bpf::trace_held(pid, trace, engine, stop, sink).map_err(|error| error.to_string())
             }
         }
         (Traced::Running(pid), Some(engine)) => {
             if let Some(shared) = shared_bpf {
-                let mut guard = shared.0.lock().unwrap_or_else(PoisonError::into_inner);
-                if guard.compatible(trace, engine) {
-                    guard
-                        .trace_running(pid, trace, engine, stop, sink)
-                        .map_err(|error| error.to_string())
-                } else {
-                    drop(guard);
-                    bpf::trace_running(pid, trace, engine, stop, sink)
-                        .map_err(|error| error.to_string())
+                let mut guard = shared.engine.lock().unwrap_or_else(PoisonError::into_inner);
+                if guard
+                    .as_ref()
+                    .is_none_or(|loaded| !loaded.compatible(trace, engine))
+                {
+                    *guard = None;
+                    match bpf::Engine::load(trace, engine) {
+                        Ok(loaded) => *guard = Some(loaded),
+                        Err(error) => {
+                            shared.load_failed.store(true, Ordering::Relaxed);
+                            return Err(error.to_string());
+                        }
+                    }
                 }
+                guard.as_mut().map_or_else(
+                    || Err("the shared BPF engine failed to initialize".to_owned()),
+                    |loaded| {
+                        loaded
+                            .trace_running(pid, trace, engine, stop, sink)
+                            .map_err(|error| error.to_string())
+                    },
+                )
             } else {
                 bpf::trace_running(pid, trace, engine, stop, sink)
                     .map_err(|error| error.to_string())
