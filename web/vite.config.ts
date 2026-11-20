@@ -52,6 +52,9 @@ export default defineConfig({
   },
   test: {
     provide: { proptestCases: process.env.PROPTEST_CASES ?? "", budgetScale: budgetScale() },
+    // A case search takes as long as its cases take on this machine, so it has
+    // no per-test timeout; the CI job's own timeout still ends a hung run.
+    ...((process.env.PROPTEST_CASES ?? "") === "" ? {} : { testTimeout: 0 }),
 
     expect: { poll: { interval: 2 } },
     projects: [
