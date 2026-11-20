@@ -75,8 +75,15 @@ fn log(directory: &Path, arguments: &[&str]) -> String {
         directory,
         &[&["report", "trace.usprof", "--syscalls"][..], arguments].concat(),
     );
+    // What was lost is read from the profile; the report's notes about it are
+    // not calls, and a count in front of a note reads like a time.
+    let note = Regex::new(
+        r"^(--- lost \d+ events ---|records the kernel had no room|calls never returned where|calls were over the cap|calls came while the kernel's ring)",
+    )
+    .expect("regex");
     log.lines()
         .filter_map(untimed)
+        .filter(|line| !note.is_match(line))
         .map(|line| duration.replace(line, "").into_owned())
         .collect::<Vec<_>>()
         .join("\n")
@@ -1391,7 +1398,7 @@ mod bpf {
                 actual.entry(tid).or_default().push(found[2].to_owned());
             }
         }
-        assert_eq!(actual, expected, "{context}");
+        all_shown_right(&actual, &expected, lost, context);
         if mode == "parallel" {
             let terminal = Regex::new(r"^(\d+) +(exit|exit_group)\((\d+)\) += \?$")
                 .expect("terminal call regex");
@@ -1415,21 +1422,29 @@ mod bpf {
                 })
                 .collect();
 
-            assert!(
-                calls
-                    .iter()
-                    .all(|(tid, shown)| expected_calls.get(tid) == Some(shown)),
-                "{context}"
-            );
-            let missing = expected_calls
-                .keys()
-                .filter(|tid| !calls.contains_key(tid))
-                .count() as u64;
-            assert!(
-                missing <= lost,
-                "{missing} terminal calls missing, {lost} lost: {context}"
-            );
+            all_shown_right(&calls, &expected_calls, lost, context);
         }
+    }
+
+    // A record the kernel had no room for is counted as lost: everything shown
+    // must be right, and no more may be missing than were lost.
+    fn all_shown_right<V: PartialEq>(
+        shown: &BTreeMap<u32, V>,
+        expected: &BTreeMap<u32, V>,
+        lost: u64,
+        context: &str,
+    ) {
+        assert!(
+            shown
+                .iter()
+                .all(|(tid, value)| expected.get(tid) == Some(value)),
+            "{context}"
+        );
+        let missing = expected
+            .keys()
+            .filter(|tid| !shown.contains_key(tid))
+            .count() as u64;
+        assert!(missing <= lost, "{missing} missing, {lost} lost: {context}");
     }
 
     #[test]
@@ -1933,7 +1948,21 @@ mod bpf {
             .iter()
             .find(|(call, _)| call.name() == Some("close"))
             .map_or(0, |(_, stats)| stats.calls);
-        assert!((280_000..280_020).contains(&closes), "{closes}");
+        // On a miss, say whether the closes went missing from the kernel's
+        // counts or from the streamed calls.
+        let syscalls = profile.syscalls();
+        let in_counts = syscalls
+            .counted
+            .per_call()
+            .iter()
+            .find(|(call, _)| call.name() == Some("close"))
+            .map_or(0, |(_, stats)| stats.calls);
+        assert!(
+            (280_000..280_020).contains(&closes),
+            "{closes} closes: {in_counts} counted in the kernel, {} streamed; lost {:?}",
+            closes - in_counts,
+            syscalls.lost
+        );
     }
 
     #[test]
@@ -2563,11 +2592,13 @@ mod bpf {
 
     fn saved_by_a_call(
         directory: &Path,
+        environment: &[&str],
         arguments: &[&str],
         program: &[&str],
     ) -> (String, microscope::profiler::Profile) {
         let recorded = Command::new(launcher())
             .env_clear()
+            .args(environment)
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .args(["record", "--window", "10s", "-o", "window.usprof"])
             .args(arguments)
@@ -2594,6 +2625,7 @@ mod bpf {
         let directory = ScratchDir::new("syscalls-save-on-errno");
         let (said, saved) = saved_by_a_call(
             directory.path(),
+            &[],
             &["--syscalls", "calls", "--save-on-errno", "EBADF"],
             &["100", "3", "10"],
         );
@@ -2610,8 +2642,11 @@ mod bpf {
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_slow_call_saves_the_window_that_holds_it() {
         let directory = ScratchDir::new("syscalls-save-on-slow");
+        // The trace hands each slow call over late, as a loaded machine can, so
+        // the trigger arrives after the program has ended and must still save.
         let (said, saved) = saved_by_a_call(
             directory.path(),
+            &["MICROSCOPE_TEST_TRIGGER_DELAY_MS=300"],
             &["--preset", "prod", "--save-on-slow", "25ms"],
             &["100", "0", "10"],
         );
@@ -2795,12 +2830,16 @@ mod bpf {
         target.reaped();
 
         let trace = unpathed(&log(directory.path(), &["trace=read,exit_group"]));
+        let lost = read(directory.path()).syscalls().lost.dropped;
         assert!(
             trace.contains(r#"read(0, "x", 1) = 1 /* entry unseen */"#),
             "{trace}\n{lines:?}"
         );
         assert!(trace.contains("exit_group(23) = ?"), "{trace}");
-        assert!(trace.ends_with("+++ exited with 23 +++"), "{trace}");
+        assert!(
+            trace.ends_with("+++ exited with 23 +++"),
+            "{lost} lost: {trace}"
+        );
     }
 
     #[test]
