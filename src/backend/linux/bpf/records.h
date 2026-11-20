@@ -202,6 +202,9 @@ struct config {
 	u32 cap;
 
 	u32 examples;
+
+	u32 session;
+	u32 pad;
 };
 
 
@@ -223,7 +226,8 @@ struct entry {
 	u8 known;
 
 	u8 capped;
-	u8 pad[7];
+	u8 pad[3];
+	u32 session;
 };
 
 

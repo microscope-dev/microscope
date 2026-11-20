@@ -304,6 +304,48 @@ struct {
 	__type(value, struct v8_stack);
 } V8_SCRATCH SEC(".maps");
 
+enum tail_slot {
+	TAIL_WALK_STACK = 0,
+	TAIL_EXIT_FINISH = 1,
+	TAIL_SLOTS = 2,
+};
+
+enum handoff_caller {
+	CALLER_ENTER = 0,
+	CALLER_EXIT = 1,
+	CALLER_SIGNAL = 2,
+};
+
+struct stack_handoff {
+	u64 entered;
+	u64 now;
+	s64 ret;
+	u64 info;
+	u32 tid;
+	u32 tgid;
+	u32 flags;
+	u32 slot;
+	s32 signal;
+	u8 caller;
+	u8 counted;
+	u8 pad[2];
+	struct entry entry;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+	__uint(max_entries, TAIL_SLOTS);
+	__type(key, u32);
+	__type(value, u32);
+} TAIL_CALLS SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct stack_handoff);
+} STACK_HANDOFF SEC(".maps");
+
 
 
 
@@ -1110,14 +1152,13 @@ static __always_inline int send_v8(u32 which, u32 tid, u32 tgid, struct pt_regs 
 
 
 
-static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_regs *regs,
-				      u32 flags, u64 entered)
+static __always_inline int send_native_stack_with(void *ctx, u32 which, u32 tid, u32 tgid,
+						  struct pt_regs *regs, u32 flags, u64 entered,
+						  u32 interpreted)
 {
-
-	u32 which = claim();
-	u32 interpreted = send_python(which, tid, tgid) | send_v8(which, tid, tgid, regs);
 	struct scratch *buffer = scratch(which);
 	if (!buffer) {
+		release(which);
 		lost();
 		return -1;
 	}
@@ -1171,6 +1212,38 @@ static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_re
 }
 
 
+static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_regs *regs,
+				      u32 flags, u64 entered)
+{
+	u32 which = claim();
+	u32 interpreted = send_python(which, tid, tgid) | send_v8(which, tid, tgid, regs);
+	return send_native_stack_with(ctx, which, tid, tgid, regs, flags, entered, interpreted);
+}
+
+
+static __always_inline void send_signal_record(u32 tid, u32 tgid, s32 signal, void *info, u32 flags)
+{
+	u64 wake = 0;
+	struct signal_record *record = reserve(sizeof(*record), 0, &wake);
+	if (!record) {
+		lost();
+		return;
+	}
+	record->header.kind = RECORD_SIGNAL;
+	record->header.size = sizeof(*record);
+	record->header.tid = tid;
+	record->header.tgid = tgid;
+	record->time = bpf_ktime_get_ns();
+	record->signal = signal;
+	record->flags = flags;
+	if (bpf_probe_read_kernel(record->info, sizeof(record->info), info)) {
+		__builtin_memset(record->info, 0, sizeof(record->info));
+		record->flags |= SIGNAL_INFO_LOST;
+	}
+	bpf_ringbuf_submit(record, wake);
+}
+
+
 static __always_inline int waits(struct call_spec *spec, u64 *args)
 {
 	if (spec->waits != WAITS_BY_FUTEX_OP)
@@ -1199,12 +1272,17 @@ static __always_inline void send_files(u32 tid, u32 tgid, struct call_spec *spec
 }
 
 
-static __always_inline void know(struct task_struct *task)
+static __always_inline void know(struct task_struct *task, u32 session)
 {
 	struct entry *held = bpf_task_storage_get(&ENTRIES, task, 0,
 						  BPF_LOCAL_STORAGE_GET_F_CREATE);
-	if (held)
+	if (held) {
+		if (held->session != session) {
+			held->entered = 0;
+			held->session = session;
+		}
 		held->known = 1;
+	}
 }
 
 
@@ -1226,8 +1304,71 @@ static __always_inline void send_unreturned(struct config *settings, u32 tid, u3
 }
 
 
+SEC("raw_tp")
+int walk_stack(struct bpf_raw_tracepoint_args *ctx)
+{
+	u32 zero = 0;
+	struct stack_handoff *h = bpf_map_lookup_elem(&STACK_HANDOFF, &zero);
+	if (!h)
+		return 0;
+	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
+	if (!regs)
+		return 0;
+	u32 which = claim();
+	u32 interpreted = send_python(which, h->tid, h->tgid) | send_v8(which, h->tid, h->tgid, regs);
+	int unsent = send_native_stack_with(ctx, which, h->tid, h->tgid, regs, h->flags, h->entered,
+					    interpreted);
+	if (h->caller == CALLER_ENTER) {
+		if (unsent) {
+			struct config *settings = config();
+			struct entry *held = bpf_task_storage_get(&ENTRIES,
+								  bpf_get_current_task_btf(), 0, 0);
+			if (held && settings && held->session == settings->session &&
+			    held->entered == h->entered)
+				held->flags |= CALL_STACK_LOST;
+		}
+		return 0;
+	}
+	if (h->caller == CALLER_SIGNAL) {
+		send_signal_record(h->tid, h->tgid, h->signal, (void *)h->info,
+				   unsent ? CALL_STACK_LOST : 0);
+		return 0;
+	}
+	if (unsent)
+		h->entry.flags |= CALL_STACK_LOST;
+	bpf_tail_call(ctx, &TAIL_CALLS, TAIL_EXIT_FINISH);
+	lost();
+	return 0;
+}
 
-static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int ending)
+
+SEC("raw_tp")
+int exit_finish(struct bpf_raw_tracepoint_args *ctx)
+{
+	u32 zero = 0;
+	struct stack_handoff *h = bpf_map_lookup_elem(&STACK_HANDOFF, &zero);
+	if (!h)
+		return 0;
+	struct config *settings = config();
+	if (!settings)
+		return 0;
+	u32 slot = h->slot;
+	struct call_spec *spec = bpf_map_lookup_elem(&CALLS, &slot);
+	if (!spec || !spec->selected)
+		return 0;
+	if (send_call(h->tid, h->tgid, &h->entry, RECORD_CALL, READ_EXIT, h->ret, h->now)) {
+		if (h->counted)
+			lost();
+		else
+			unsent(settings, spec, slot, h->tid, h->tgid, h->entry.entered, h->now,
+			       h->ret, 1);
+	}
+	return 0;
+}
+
+
+
+static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int ending, int tail)
 {
 #ifdef MICROSCOPE_FAULTS
 
@@ -1261,6 +1402,7 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 	entry.tgid = tgid;
 	entry.exec_tid = spec->execs ? tid : 0;
 	entry.known = 1;
+	entry.session = settings->session;
 	entry.entered = bpf_ktime_get_ns();
 	if ((settings->flags & CONFIG_STREAM) && !sampled_in(settings->sample))
 		entry.flags |= CALL_SAMPLED_OUT;
@@ -1280,7 +1422,7 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 
 
 
-	if (held->entered) {
+	if (held->session == settings->session && held->entered) {
 		held->flags |= CALL_EXIT_SKIPPED;
 		send_unreturned(settings, tid, tgid, held);
 	}
@@ -1288,7 +1430,32 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 	if (!sent(settings, entry.flags))
 		return 0;
 
-
+	if (tail) {
+		for (u32 index = 0; index < 6; index++) {
+			if (spec->args[index].kind != COPY_NONE &&
+			    spec->args[index].when == READ_ENTRY) {
+				if (send_call(tid, tgid, &entry, RECORD_ENTRY, READ_ENTRY, 0, 0))
+					lost();
+				break;
+			}
+		}
+		if (!ending && (settings->flags & CONFIG_STACKS) && waits(spec, entry.args)) {
+			held->stacked = 1;
+			u32 zero = 0;
+			struct stack_handoff *h = bpf_map_lookup_elem(&STACK_HANDOFF, &zero);
+			if (h) {
+				h->caller = CALLER_ENTER;
+				h->tid = tid;
+				h->tgid = tgid;
+				h->flags = settings->flags;
+				h->entered = entry.entered;
+				bpf_tail_call(ctx, &TAIL_CALLS, TAIL_WALK_STACK);
+			}
+			held->flags |= CALL_STACK_LOST;
+			lost();
+		}
+		return 0;
+	}
 
 	if (!ending && (settings->flags & CONFIG_STACKS) && waits(spec, entry.args)) {
 		held->stacked = 1;
@@ -1307,7 +1474,7 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 }
 
 
-static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
+static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret, int tail)
 {
 #ifdef MICROSCOPE_FAULTS
 
@@ -1333,6 +1500,11 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	if (!found) {
 		lost();
 		return 0;
+	}
+	if (found->session != settings->session) {
+		found->entered = 0;
+		found->known = 0;
+		found->session = settings->session;
 	}
 	u8 known = found->known;
 	u64 id = regs->orig_ax;
@@ -1399,6 +1571,29 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	if (send) {
 		if (spec->makes)
 			send_files(tid, tgid, spec, &entry, ret);
+		if (tail) {
+			struct stack_handoff *h = bpf_map_lookup_elem(&STACK_HANDOFF, &zero);
+			if (!h) {
+				lost();
+				return 0;
+			}
+			h->caller = CALLER_EXIT;
+			h->tid = tid;
+			h->tgid = tgid;
+			h->flags = settings->flags;
+			h->entered = 0;
+			h->now = now;
+			h->ret = ret;
+			h->slot = slot;
+			h->counted = (u8)counted;
+			h->entry = entry;
+			if ((settings->flags & CONFIG_STACKS) && !entry.stacked)
+				bpf_tail_call(ctx, &TAIL_CALLS, TAIL_WALK_STACK);
+			else
+				bpf_tail_call(ctx, &TAIL_CALLS, TAIL_EXIT_FINISH);
+			lost();
+			return 0;
+		}
 		if ((settings->flags & CONFIG_STACKS) && !entry.stacked &&
 		    send_stack(ctx, tid, tgid, regs, settings->flags, 0))
 			entry.flags |= CALL_STACK_LOST;
@@ -1413,23 +1608,29 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 }
 
 
-SEC("tp_btf/sys_enter")
-int sys_enter(u64 *ctx)
+SEC("raw_tp/sys_enter")
+int sys_enter(struct bpf_raw_tracepoint_args *ctx)
 {
-	return on_enter(ctx, (struct pt_regs *)ctx[0], ctx[1], 0);
+	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
+	if (!regs)
+		return 0;
+	return on_enter(ctx, regs, ctx->args[1], 0, 1);
 }
 
-SEC("tp_btf/sys_exit")
-int sys_exit(u64 *ctx)
+SEC("raw_tp/sys_exit")
+int sys_exit(struct bpf_raw_tracepoint_args *ctx)
 {
-	return on_exit(ctx, (struct pt_regs *)ctx[0], ctx[1]);
+	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
+	if (!regs)
+		return 0;
+	return on_exit(ctx, regs, (s64)ctx->args[1], 1);
 }
 
 SEC("kprobe")
 int terminal_enter(void *ctx)
 {
 	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
-	return on_enter(ctx, regs, regs->orig_ax, 1);
+	return on_enter(ctx, regs, regs->orig_ax, 1, 0);
 }
 
 
@@ -1441,12 +1642,12 @@ int terminal_enter(void *ctx)
 	int enter_##n(u64 *ctx)                                                    \
 	{                                                                          \
 		struct pt_regs *regs = (struct pt_regs *)ctx[0];                   \
-		return on_enter(ctx, regs, regs->orig_ax, 0);       \
+		return on_enter(ctx, regs, regs->orig_ax, 0, 0);                   \
 	}                                                                          \
 	SEC("fexit")                                                               \
 	int exit_##n(u64 *ctx)                                                     \
 	{                                                                          \
-		return on_exit(ctx, (struct pt_regs *)ctx[0], ctx[1]);             \
+		return on_exit(ctx, (struct pt_regs *)ctx[0], ctx[1], 0);          \
 	}
 
 FUNCTION_SLOT(0) FUNCTION_SLOT(1) FUNCTION_SLOT(2) FUNCTION_SLOT(3)
@@ -1475,7 +1676,7 @@ int process_fork(u64 *ctx)
 	}
 
 	if (child_tgid == parent_tgid || (settings->flags & CONFIG_FOLLOW))
-		know(child);
+		know(child, settings->session);
 
 	u64 wake = 0;
 	struct spawn_record *record = reserve(sizeof(*record), 0, &wake);
@@ -1510,9 +1711,11 @@ int process_exec(u64 *ctx)
 		*unexeced = 0;
 
 
-	know(task);
 	struct config *settings = config();
-	if (!settings || !(settings->flags & CONFIG_STREAM))
+	if (!settings)
+		return 0;
+	know(task, settings->session);
+	if (!(settings->flags & CONFIG_STREAM))
 		return 0;
 	u32 which = claim();
 	struct scratch *buffer = scratch(which);
@@ -1575,7 +1778,7 @@ int process_exit(void *ctx)
 		return 0;
 
 	struct entry *found = bpf_task_storage_get(&ENTRIES, task, 0, 0);
-	if (found && found->entered) {
+	if (found && found->session == settings->session && found->entered) {
 		found->flags |= CALL_PROCESS_EXITED;
 		send_unreturned(settings, tid, tgid, found);
 		found->entered = 0;
@@ -1605,15 +1808,15 @@ int process_end(u64 *ctx)
 	return 0;
 }
 
-SEC("tp_btf/signal_deliver")
-int signal_deliver(u64 *ctx)
+SEC("raw_tp/signal_deliver")
+int signal_deliver(struct bpf_raw_tracepoint_args *ctx)
 {
 	u64 ids = bpf_get_current_pid_tgid();
 	u32 tgid = ids >> 32, tid = (u32)ids;
 	if (!traced(tgid))
 		return 0;
-	s32 signal = (s32)ctx[0];
-	void *info = (void *)ctx[1];
+	s32 signal = (s32)ctx->args[0];
+	void *info = (void *)ctx->args[1];
 
 
 	if (signal == 9 && !info)
@@ -1621,30 +1824,23 @@ int signal_deliver(u64 *ctx)
 	struct config *settings = config();
 	if (!settings || !(settings->flags & CONFIG_STREAM))
 		return 0;
-	u32 flags = 0;
 	if (settings->flags & CONFIG_STACKS) {
-		struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
-		if (send_stack(ctx, tid, tgid, regs, settings->flags, 0))
-			flags = CALL_STACK_LOST;
-	}
-	u64 wake = 0;
-	struct signal_record *record = reserve(sizeof(*record), 0, &wake);
-	if (!record) {
-		lost();
+		u32 zero = 0;
+		struct stack_handoff *h = bpf_map_lookup_elem(&STACK_HANDOFF, &zero);
+		if (h) {
+			h->caller = CALLER_SIGNAL;
+			h->tid = tid;
+			h->tgid = tgid;
+			h->flags = settings->flags;
+			h->entered = 0;
+			h->signal = signal;
+			h->info = (u64)info;
+			bpf_tail_call(ctx, &TAIL_CALLS, TAIL_WALK_STACK);
+		}
+		send_signal_record(tid, tgid, signal, info, CALL_STACK_LOST);
 		return 0;
 	}
-	record->header.kind = RECORD_SIGNAL;
-	record->header.size = sizeof(*record);
-	record->header.tid = tid;
-	record->header.tgid = tgid;
-	record->time = bpf_ktime_get_ns();
-	record->signal = signal;
-	record->flags = flags;
-	if (bpf_probe_read_kernel(record->info, sizeof(record->info), info)) {
-		__builtin_memset(record->info, 0, sizeof(record->info));
-		record->flags |= SIGNAL_INFO_LOST;
-	}
-	bpf_ringbuf_submit(record, wake);
+	send_signal_record(tid, tgid, signal, info, 0);
 	return 0;
 }
 
@@ -1663,7 +1859,7 @@ int in_flight(struct bpf_iter__task *ctx)
 	if (!traced(BPF_CORE_READ(task, tgid)))
 		return 0;
 	struct entry *held = bpf_task_storage_get(&ENTRIES, task, 0, 0);
-	if (!held || !held->entered)
+	if (!held || held->session != settings->session || !held->entered)
 		return 0;
 	struct in_flight_record record = {};
 	record.tid = BPF_CORE_READ(task, pid);

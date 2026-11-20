@@ -2976,11 +2976,12 @@ mod bpf {
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn each_program_verifies_within_its_budget() {
         let budget = |program: &str| match program.trim_end_matches(|c: char| c.is_ascii_digit()) {
-            "sys_enter" | "enter_" => Some(160_000),
-            "sys_exit" | "exit_" => Some(300_000),
-            "signal_deliver" | "python_sample" | "python_sample with kernel samples" => {
-                Some(100_000)
-            }
+            "sys_enter" | "exit_finish" => Some(55_000),
+            "enter_" => Some(160_000),
+            "sys_exit" => Some(18_000),
+            "exit_" => Some(300_000),
+            "walk_stack" | "python_sample" | "python_sample with kernel samples" => Some(100_000),
+            "signal_deliver" => Some(1_000),
             "terminal_enter" => Some(52_000),
             "process_end" | "process_exec" | "process_exit" | "process_fork" | "in_flight" => {
                 Some(2_000)

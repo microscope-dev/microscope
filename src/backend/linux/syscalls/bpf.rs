@@ -4,10 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use aya::maps::{
-    Array, ArrayOfMaps, HashMap, MapData, PerCpuArray, PerCpuHashMap, PerCpuValues, RingBuf,
+    Array, ArrayOfMaps, HashMap, MapData, PerCpuArray, PerCpuHashMap, PerCpuValues, ProgramArray,
+    RingBuf,
 };
 
-use aya::programs::{BtfTracePoint, FEntry, FExit, Iter, KProbe};
+use aya::programs::{BtfTracePoint, FEntry, FExit, Iter, KProbe, RawTracePoint};
 use aya::{Btf, Ebpf, EbpfLoader};
 use aya_obj::btf::BtfKind;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -39,13 +40,19 @@ static OBJECT: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/sy
 static OBJECT: &[u8] =
     aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/syscalls-faults.bpf.o"));
 
-const PROGRAMS: [(&str, &str); 5] = [
+const RAW_PROGRAMS: [(&str, &str); 3] = [
     ("sys_enter", "sys_enter"),
     ("sys_exit", "sys_exit"),
-    ("process_fork", "sched_process_fork"),
-    ("process_exec", "sched_process_exec"),
     ("signal_deliver", "signal_deliver"),
 ];
+
+const BTF_PROGRAMS: [(&str, &str); 2] = [
+    ("process_fork", "sched_process_fork"),
+    ("process_exec", "sched_process_exec"),
+];
+
+const TAIL_WALK_STACK: u32 = 0;
+const TAIL_EXIT_FINISH: u32 = 1;
 
 const RECORD_CALL: u32 = 1;
 const RECORD_ENTRY: u32 = 2;
@@ -195,6 +202,8 @@ pub struct RawConfig {
     pub slow_ns: u64,
     pub cap: u32,
     pub examples: u32,
+    pub session: u32,
+    pub pad: u32,
 }
 
 #[repr(C)]
@@ -212,7 +221,8 @@ pub struct RawEntry {
     pub stacked: u8,
     pub known: u8,
     pub capped: u8,
-    pub pad: [u8; 7],
+    pub pad: [u8; 3],
+    pub session: u32,
 }
 
 #[repr(C)]
@@ -582,11 +592,13 @@ fn waits(call: SyscallId) -> u8 {
 }
 
 fn call_program(name: &str) -> bool {
-    matches!(name, "sys_enter" | "sys_exit")
-        || name
-            .strip_prefix("enter_")
-            .or_else(|| name.strip_prefix("exit_"))
-            .is_some_and(|slot| slot.parse::<u8>().is_ok())
+    matches!(
+        name,
+        "sys_enter" | "sys_exit" | "walk_stack" | "exit_finish"
+    ) || name
+        .strip_prefix("enter_")
+        .or_else(|| name.strip_prefix("exit_"))
+        .is_some_and(|slot| slot.parse::<u8>().is_ok())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1176,7 +1188,13 @@ pub struct Exceptions {
 }
 
 impl RawConfig {
-    fn new(options: &TraceOptions, engine: BpfOptions, launch: bool, rows: u32) -> Self {
+    fn new(
+        options: &TraceOptions,
+        engine: BpfOptions,
+        launch: bool,
+        rows: u32,
+        session: u32,
+    ) -> Self {
         let mut flags = if engine.count_only {
             CONFIG_COUNT
         } else {
@@ -1220,6 +1238,8 @@ impl RawConfig {
             slow_ns,
             cap,
             examples,
+            session,
+            pad: 0,
         }
     }
 }
@@ -1402,15 +1422,38 @@ impl Targets {
             .set(process / 64, word | 1 << (process % 64), 0)
             .map_err(load_error)
     }
+
+    fn clear_many(&mut self, processes: &BTreeSet<u32>) -> Result<(), BpfError> {
+        let mut masks: BTreeMap<u32, u64> = BTreeMap::new();
+        for &process in processes {
+            if process < PID_LIMIT {
+                *masks.entry(process / 64).or_insert(0) |= 1_u64 << (process % 64);
+            }
+        }
+        for (word_index, mask) in masks {
+            let word = self.0.get(&word_index, 0).unwrap_or(0);
+            let cleared = word & !mask;
+            if cleared != word {
+                self.0.set(word_index, cleared, 0).map_err(load_error)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 struct Loaded {
     ebpf: Ebpf,
     targets: Targets,
+    _tail_calls: ProgramArray<MapData>,
 
     rings: Vec<RingBuf<MapData>>,
+    layouts: Option<PythonLayouts>,
+    v8_layouts: Option<V8Layouts>,
 
+    slots: Vec<(u32, SyscallId)>,
     rows: Vec<SyscallId>,
+    traced_calls: CallSet,
+    stack_copy: bool,
 
     fence: (
         ArrayOfMaps<MapData, Array<MapData, u32>>,
@@ -1420,6 +1463,7 @@ struct Loaded {
     unexeced: Array<MapData, u32>,
 
     generation: u32,
+    session: u32,
     attachment: Attachment,
 
     base: RawConfig,
@@ -1431,6 +1475,10 @@ struct Loaded {
 }
 
 impl Loaded {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "loads BPF object, rings, maps, tail calls, and attachment handles together"
+    )]
     fn load(options: &TraceOptions, engine: BpfOptions, launch: bool) -> Result<Self, BpfError> {
         let _span = crate::span!("syscalls bpf load");
         let all = options.calls.is_all();
@@ -1464,9 +1512,10 @@ impl Loaded {
         let mut ebpf = load_object(&btf, rows)?;
         let rings = rings(&mut ebpf, engine)?;
         let mut specs = Vec::with_capacity(chosen.len());
+        let session = 1;
         let base;
         {
-            let mut calls: Array<_, Bytes<SPEC_BYTES>> =
+            let mut calls_map: Array<_, Bytes<SPEC_BYTES>> =
                 Array::try_from(ebpf.map_mut("CALLS").ok_or_else(|| missing("CALLS"))?)
                     .map_err(load_error)?;
             for (row, &(slot, call)) in chosen.iter().enumerate() {
@@ -1475,24 +1524,24 @@ impl Loaded {
                 specs.push((slot, spec));
                 let mut value = [0; SPEC_BYTES];
                 value.copy_from_slice(spec.as_bytes());
-                calls.set(slot, value, 0).map_err(load_error)?;
+                calls_map.set(slot, value, 0).map_err(load_error)?;
             }
         }
         {
             let mut config: Array<_, Bytes<CONFIG_BYTES>> =
                 Array::try_from(ebpf.map_mut("CONFIG").ok_or_else(|| missing("CONFIG"))?)
                     .map_err(load_error)?;
-            let raw = RawConfig::new(options, engine, launch, rows);
+            let raw = RawConfig::new(options, engine, launch, rows, session);
             base = raw;
             let mut value = [0; CONFIG_BYTES];
             value.copy_from_slice(raw.as_bytes());
             config.set(0, value, 0).map_err(load_error)?;
         }
 
-        {
+        let tail_calls = {
             let _span = crate::span!("syscalls bpf attach");
-            attach(&mut ebpf, &btf, &attachment, &terminal)?;
-        }
+            attach(&mut ebpf, &btf, &attachment, &terminal)?
+        };
 
         let targets = Targets(
             Array::try_from(ebpf.take_map("TARGETS").ok_or_else(|| missing("TARGETS"))?)
@@ -1512,17 +1561,31 @@ impl Loaded {
                 .ok_or_else(|| missing("UNEXECED"))?,
         )
         .map_err(load_error)?;
+        let (layouts, v8_layouts) = if sampler::check_namespace().is_ok() {
+            (
+                Some(PythonLayouts::take(&mut ebpf).map_err(load_error)?),
+                Some(V8Layouts::take(&mut ebpf).map_err(load_error)?),
+            )
+        } else {
+            (None, None)
+        };
         record!("syscalls bpf: loaded and attached");
 
         Ok(Self {
             ebpf,
             targets,
+            _tail_calls: tail_calls,
             rings,
+            layouts,
+            v8_layouts,
+            slots: chosen,
+            rows: calls,
+            traced_calls: options.calls.clone(),
+            stack_copy: engine.stack_copy,
             fence,
             unexeced,
             generation: 0,
-            rows: calls,
-
+            session,
             attachment,
             base,
             specs,
@@ -1530,6 +1593,119 @@ impl Loaded {
             runs: 0,
             estimated: 0,
         })
+    }
+
+    fn reconfigure(
+        &mut self,
+        options: &TraceOptions,
+        engine: BpfOptions,
+        launch: bool,
+    ) -> Result<(), BpfError> {
+        let rows = u32::try_from(self.rows.len().max(1)).unwrap_or(u32::MAX);
+        self.session = self.session.wrapping_add(1).max(1);
+        let mut raw = RawConfig::new(options, engine, launch, rows, self.session);
+        if self.generation == 1 {
+            raw.flags |= CONFIG_GENERATION;
+        }
+        {
+            let mut calls_map: Array<_, Bytes<SPEC_BYTES>> =
+                Array::try_from(self.ebpf.map_mut("CALLS").ok_or_else(|| missing("CALLS"))?)
+                    .map_err(load_error)?;
+            self.specs.clear();
+            for (row, &(slot, call)) in self.slots.iter().enumerate() {
+                let mut spec = call_spec(call, options);
+                spec.stat = u16::try_from(row).unwrap_or(u16::MAX);
+                self.specs.push((slot, spec));
+                let mut value = [0; SPEC_BYTES];
+                value.copy_from_slice(spec.as_bytes());
+                calls_map.set(slot, value, 0).map_err(load_error)?;
+            }
+        }
+        {
+            let mut config: Array<_, Bytes<CONFIG_BYTES>> = Array::try_from(
+                self.ebpf
+                    .map_mut("CONFIG")
+                    .ok_or_else(|| missing("CONFIG"))?,
+            )
+            .map_err(load_error)?;
+            let mut value = [0; CONFIG_BYTES];
+            value.copy_from_slice(raw.as_bytes());
+            config.set(0, value, 0).map_err(load_error)?;
+        }
+
+        self.base = raw;
+        self.shedding = Shed::default();
+        self.runs = self.runs();
+        self.estimated = 0;
+        Ok(())
+    }
+
+    fn reset(&mut self, traced: &BTreeSet<u32>, laid_out: &BTreeSet<Pid>) -> Result<(), BpfError> {
+        let _ = self.unexeced.set(0, 0, 0);
+        self.targets.clear_many(traced)?;
+        let (fence, token) = &mut self.fence;
+        fence.set(0, token, 0).map_err(load_error)?;
+
+        for ring in &mut self.rings {
+            while ring.next().is_some() {}
+        }
+
+        for &pid in laid_out {
+            if let Some(layouts) = &mut self.layouts {
+                layouts.forget(pid.get());
+            }
+            if let Some(layouts) = &mut self.v8_layouts {
+                layouts.forget(pid.get());
+            }
+        }
+
+        let rows = u32::try_from(self.rows.len().max(1)).unwrap_or(u32::MAX);
+        if let Some(map) = self.ebpf.map_mut("STATS") {
+            let mut stats =
+                PerCpuArray::<_, Bytes<STAT_BYTES>>::try_from(map).map_err(load_error)?;
+            let cpus = aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?;
+            for idx in 0..(rows * 2) {
+                let zeros =
+                    PerCpuValues::try_from(vec![[0; STAT_BYTES]; cpus]).map_err(load_error)?;
+                stats.set(idx, zeros, 0).map_err(load_error)?;
+            }
+        }
+
+        if let Some(map) = self.ebpf.map_mut("THREAD_STATS") {
+            let mut threads = HashMap::<_, Bytes<STAT_KEY_BYTES>, Bytes<STAT_BYTES>>::try_from(map)
+                .map_err(load_error)?;
+            let keys: Vec<_> = threads.keys().flatten().collect();
+            for key in keys {
+                let _ = threads.remove(&key);
+            }
+        }
+
+        if let Some(map) = self.ebpf.map_mut("ERRNOS") {
+            let mut errnos = PerCpuHashMap::<_, Bytes<ERRNO_KEY_BYTES>, u64>::try_from(map)
+                .map_err(load_error)?;
+            let keys: Vec<_> = errnos.keys().flatten().collect();
+            for key in keys {
+                let _ = errnos.remove(&key);
+            }
+        }
+
+        if let Some(map) = self.ebpf.map_mut("KEPT") {
+            let mut kept = HashMap::<_, u32, u64>::try_from(map).map_err(load_error)?;
+            let keys: Vec<_> = kept.keys().flatten().collect();
+            for key in keys {
+                let _ = kept.remove(&key);
+            }
+        }
+
+        if let Some(map) = self.ebpf.map_mut("EXAMPLES") {
+            let mut examples = HashMap::<_, Bytes<12>, u64>::try_from(map).map_err(load_error)?;
+            let keys: Vec<_> = examples.keys().flatten().collect();
+            for key in keys {
+                let _ = examples.remove(&key);
+            }
+        }
+
+        Ok(())
     }
 
     fn configure(&mut self, change: impl FnOnce(&mut RawConfig)) -> Result<(), BpfError> {
@@ -1655,6 +1831,9 @@ impl Loaded {
             .filter_map(|bytes| {
                 let record = RawInFlightRecord::read_from_bytes(bytes).ok()?;
                 let entry = record.entry;
+                if entry.session != self.session {
+                    return None;
+                }
                 let call = InFlight {
                     thread: Tid::new(record.tid),
                     process: Pid::new(entry.tgid),
@@ -1867,17 +2046,61 @@ impl Loaded {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "populates tail-call array and attaches raw_tp, tp_btf, kprobe, fentry, and iter hooks"
+)]
 fn attach(
     ebpf: &mut Ebpf,
     btf: &Btf,
     attachment: &Attachment,
     terminal: &BTreeSet<String>,
-) -> Result<(), BpfError> {
-    for (name, tracepoint) in PROGRAMS {
+) -> Result<ProgramArray<MapData>, BpfError> {
+    let mut tail_calls = ProgramArray::try_from(
+        ebpf.take_map("TAIL_CALLS")
+            .ok_or_else(|| missing("TAIL_CALLS"))?,
+    )
+    .map_err(load_error)?;
+
+    {
+        let walk: &mut RawTracePoint = ebpf
+            .program_mut("walk_stack")
+            .ok_or_else(|| missing("walk_stack"))?
+            .try_into()
+            .map_err(load_error)?;
+        walk.load().map_err(load_error)?;
+        let fd = walk.fd().map_err(load_error)?;
+        tail_calls.set(TAIL_WALK_STACK, fd, 0).map_err(load_error)?;
+    }
+
+    if attachment.functions.is_empty() {
+        let finish: &mut RawTracePoint = ebpf
+            .program_mut("exit_finish")
+            .ok_or_else(|| missing("exit_finish"))?
+            .try_into()
+            .map_err(load_error)?;
+        finish.load().map_err(load_error)?;
+        let fd = finish.fd().map_err(load_error)?;
+        tail_calls
+            .set(TAIL_EXIT_FINISH, fd, 0)
+            .map_err(load_error)?;
+    }
+
+    for (name, tracepoint) in RAW_PROGRAMS {
         if !attachment.functions.is_empty() && matches!(name, "sys_enter" | "sys_exit") {
             continue;
         }
 
+        let program: &mut RawTracePoint = ebpf
+            .program_mut(name)
+            .ok_or_else(|| missing(name))?
+            .try_into()
+            .map_err(load_error)?;
+        program.load().map_err(load_error)?;
+        program.attach(tracepoint).map_err(load_error)?;
+    }
+
+    for (name, tracepoint) in BTF_PROGRAMS {
         let program: &mut BtfTracePoint = ebpf
             .program_mut(name)
             .ok_or_else(|| missing(name))?
@@ -1944,7 +2167,7 @@ fn attach(
         .map_err(load_error)?;
     iterator.load("task", btf).map_err(load_error)?;
 
-    Ok(())
+    Ok(tail_calls)
 }
 
 #[must_use]
@@ -2024,6 +2247,71 @@ fn ended(process: u32) -> bool {
     })
 }
 
+pub struct Engine {
+    loaded: Loaded,
+}
+
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Engine")
+            .field("attachment", &self.loaded.attachment)
+            .field("session", &self.loaded.session)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Engine {
+    pub fn load(options: &TraceOptions, engine: BpfOptions) -> Result<Self, BpfError> {
+        Probe::read().check()?;
+        let loaded = Loaded::load(options, engine, false)?;
+        Ok(Self { loaded })
+    }
+
+    #[must_use]
+    pub fn compatible(&self, options: &TraceOptions, engine: BpfOptions) -> bool {
+        self.loaded.traced_calls == options.calls && self.loaded.stack_copy == engine.stack_copy
+    }
+
+    pub fn trace_running(
+        &mut self,
+        pid: u32,
+        options: &TraceOptions,
+        engine: BpfOptions,
+        stop: &AtomicBool,
+        sink: &mut dyn Sink,
+    ) -> Result<Finished, BpfError> {
+        run_with(
+            &mut self.loaded,
+            Start::Attach(pid),
+            options,
+            engine,
+            stop,
+            sink,
+            true,
+        )
+    }
+
+    pub fn trace_held(
+        &mut self,
+        pid: u32,
+        options: &TraceOptions,
+        engine: BpfOptions,
+        stop: &AtomicBool,
+        sink: &mut dyn Sink,
+    ) -> Result<Finished, BpfError> {
+        run_with(
+            &mut self.loaded,
+            Start::Held(pid),
+            options,
+            engine,
+            stop,
+            sink,
+            true,
+        )
+    }
+}
+
 pub fn trace_running(
     pid: u32,
     options: &TraceOptions,
@@ -2059,16 +2347,34 @@ fn run(
 ) -> Result<Finished, BpfError> {
     Probe::read().check()?;
     let mut loaded = Loaded::load(options, engine, matches!(start, Start::Held(_)))?;
+    run_with(&mut loaded, start, options, engine, stop, sink, false)
+}
+
+fn run_with(
+    loaded: &mut Loaded,
+    start: Start,
+    options: &TraceOptions,
+    engine: BpfOptions,
+    stop: &AtomicBool,
+    sink: &mut dyn Sink,
+    persistent: bool,
+) -> Result<Finished, BpfError> {
+    if persistent {
+        loaded.reconfigure(options, engine, matches!(start, Start::Held(_)))?;
+    }
     sink.attached_by(&loaded.attachment);
     let Begun {
         first,
         live,
         mappings,
-    } = begin(start, &mut loaded, options, sink)?;
+    } = begin(start, loaded, options, sink)?;
+    let traced: BTreeSet<u32> = live.keys().map(|pid| pid.get()).collect();
+    let initial_lost = loaded.lost();
     let mut reader = Reader {
         sink,
         follow: options.follow,
         live,
+        traced,
         first,
         end: None,
         entries: BTreeMap::new(),
@@ -2080,7 +2386,7 @@ fn run(
         mappings,
         batch: Vec::new(),
         perf: Vec::new(),
-        lost: [0; 4],
+        lost: initial_lost,
         untrusted: 0,
         unwinder: options
             .stacks
@@ -2092,10 +2398,19 @@ fn run(
         next_job: 0,
     };
 
-    let result = reader.run(&mut loaded, stop);
+    let result = reader.run(loaded, stop);
     let end = reader.end;
+    let mut traced = reader.traced;
+    let laid_out = reader.laid_out;
     let Reader { sink, .. } = reader;
     sink.counted(loaded.counted(first));
+    if persistent {
+        traced.insert(first.get());
+        for child in perf::descendants(first.get()) {
+            traced.insert(child);
+        }
+        let _ = loaded.reset(&traced, &laid_out);
+    }
     result?;
     Ok(Finished { end })
 }
@@ -2191,6 +2506,7 @@ struct Reader<'a> {
     follow: bool,
 
     live: BTreeMap<Pid, Option<OwnedFd>>,
+    traced: BTreeSet<u32>,
     first: Pid,
     end: Option<ProcessEnd>,
 
@@ -2260,10 +2576,27 @@ impl Reader<'_> {
         let mut rings = std::mem::take(&mut loaded.rings);
         self.merge = Merge::new(rings.len());
 
-        if self.stacks.is_some() && sampler::check_namespace().is_ok() {
-            self.layouts = Some(PythonLayouts::take(&mut loaded.ebpf).map_err(load_error)?);
-            self.v8_layouts = Some(V8Layouts::take(&mut loaded.ebpf).map_err(load_error)?);
+        if self.stacks.is_some() {
+            self.layouts = loaded.layouts.take();
+            self.v8_layouts = loaded.v8_layouts.take();
         }
+        let outcome = self.run_loop(loaded, &mut rings, stop);
+        loaded.rings = rings;
+        if let Some(layouts) = self.layouts.take() {
+            loaded.layouts = Some(layouts);
+        }
+        if let Some(v8_layouts) = self.v8_layouts.take() {
+            loaded.v8_layouts = Some(v8_layouts);
+        }
+        outcome
+    }
+
+    fn run_loop(
+        &mut self,
+        loaded: &mut Loaded,
+        rings: &mut [RingBuf<MapData>],
+        stop: &AtomicBool,
+    ) -> Result<(), BpfError> {
         let mut stopping = false;
         let mut last_tick = monotonic();
         let mut last_stats = last_tick;
@@ -2285,14 +2618,14 @@ impl Reader<'_> {
                             || !std::path::Path::new(&format!("/proc/{}", pid.get())).exists())
                 })
                 .collect();
-            self.drain(&mut rings, false);
+            self.drain(rings, false);
             self.release(Until::Waiting);
             for pid in gone {
                 self.live.remove(&pid);
             }
 
             if self.live.is_empty() {
-                self.drain(&mut rings, true);
+                self.drain(rings, true);
                 self.release(Until::None);
 
                 self.report_lost(loaded, monotonic());
@@ -2326,7 +2659,7 @@ impl Reader<'_> {
             } else {
                 WAITING_TICK_MS
             };
-            wait(&rings, &mut self.live, tick)?;
+            wait(rings, &mut self.live, tick)?;
         }
 
         self.release(Until::None);
@@ -2338,7 +2671,7 @@ impl Reader<'_> {
         let unfinished = loaded.unfinished();
         let until = monotonic().saturating_add(STACK_SETTLE_NS);
         loop {
-            self.drain(&mut rings, true);
+            self.drain(rings, true);
             let arrived = unfinished.iter().all(|(call, stacked)| {
                 !stacked || self.pairs.has_waiting(call.thread, call.entered)
             });
@@ -2752,6 +3085,7 @@ impl Reader<'_> {
                 match &event {
                     TraceEvent::Spawn { child, thread, .. } if !*thread && self.follow => {
                         let process = Pid::led_by(*child);
+                        self.traced.insert(process.get());
                         self.live.insert(process, exits(process.get()));
                     }
 
@@ -2887,13 +3221,16 @@ mod tests {
             (
                 RawConfig,
                 "config",
-                [flags, elements, sample, rows, slow_ns, cap, examples]
+                [
+                    flags, elements, sample, rows, slow_ns, cap, examples, session, pad
+                ]
             ),
             (
                 RawEntry,
                 "entry",
                 [
-                    entered, args, nr, tgid, exec_tid, abi, flags, stacked, known, capped, pad
+                    entered, args, nr, tgid, exec_tid, abi, flags, stacked, known, capped, pad,
+                    session
                 ]
             ),
             (RawRecord, "record", [kind, size, tid, tgid]),

@@ -116,6 +116,8 @@ pub struct SyscallOptions {
 
     pub print: Option<Printer>,
 
+    pub shared_bpf: Option<SharedBpfEngine>,
+
     pub unavailable: Option<String>,
 }
 
@@ -134,6 +136,7 @@ impl SyscallOptions {
                 errnos: Vec::new(),
             },
             print: None,
+            shared_bpf: None,
             unavailable: None,
         }
     }
@@ -287,6 +290,44 @@ impl PartialEq for Printer {
 }
 
 impl Eq for Printer {}
+
+#[derive(Clone)]
+pub struct SharedBpfEngine(pub Arc<Mutex<bpf::Engine>>);
+
+impl SharedBpfEngine {
+    pub fn load(stack_copy: bool) -> Result<Self, bpf::BpfError> {
+        let trace = TraceOptions {
+            calls: CallSet::all(),
+            limits: Limits::default(),
+            verbose: false,
+            follow: true,
+            stacks: Some(SharedStacks::default()),
+        };
+        let engine = BpfOptions {
+            count_only: true,
+            stack_copy,
+            exceptions: None,
+            streamed_per_second: None,
+        };
+        Ok(Self(Arc::new(Mutex::new(bpf::Engine::load(
+            &trace, engine,
+        )?))))
+    }
+}
+
+impl std::fmt::Debug for SharedBpfEngine {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SharedBpfEngine")
+    }
+}
+
+impl PartialEq for SharedBpfEngine {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SharedBpfEngine {}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SaveOn {
@@ -558,11 +599,12 @@ impl SyscallTrace {
         };
 
         let engine = (options.engine == SyscallEngine::Bpf).then_some(engine);
+        let shared_bpf = options.shared_bpf.clone();
         let thread = std::thread::Builder::new()
             .name("microscope-record-syscalls".into())
             .spawn(move || {
                 let _ending = ending;
-                run(traced, engine, &trace, &stopped, &mut sink)
+                run(traced, engine, shared_bpf, &trace, &stopped, &mut sink)
             })
             .map_err(|error| error.to_string())?;
         if seen.recv().is_ok() {
@@ -677,16 +719,44 @@ fn names_files(call: SyscallId) -> bool {
 fn run(
     traced: Traced,
     bpf: Option<BpfOptions>,
+    shared_bpf: Option<SharedBpfEngine>,
     trace: &TraceOptions,
     stop: &AtomicBool,
     sink: &mut Held,
 ) -> Result<(), String> {
     let ended = match (traced, bpf) {
         (Traced::Held(pid), Some(engine)) => {
-            bpf::trace_held(pid, trace, engine, stop, sink).map_err(|error| error.to_string())
+            if let Some(shared) = shared_bpf {
+                let mut guard = shared.0.lock().unwrap_or_else(PoisonError::into_inner);
+                if guard.compatible(trace, engine) {
+                    guard
+                        .trace_held(pid, trace, engine, stop, sink)
+                        .map_err(|error| error.to_string())
+                } else {
+                    drop(guard);
+                    bpf::trace_held(pid, trace, engine, stop, sink)
+                        .map_err(|error| error.to_string())
+                }
+            } else {
+                bpf::trace_held(pid, trace, engine, stop, sink).map_err(|error| error.to_string())
+            }
         }
         (Traced::Running(pid), Some(engine)) => {
-            bpf::trace_running(pid, trace, engine, stop, sink).map_err(|error| error.to_string())
+            if let Some(shared) = shared_bpf {
+                let mut guard = shared.0.lock().unwrap_or_else(PoisonError::into_inner);
+                if guard.compatible(trace, engine) {
+                    guard
+                        .trace_running(pid, trace, engine, stop, sink)
+                        .map_err(|error| error.to_string())
+                } else {
+                    drop(guard);
+                    bpf::trace_running(pid, trace, engine, stop, sink)
+                        .map_err(|error| error.to_string())
+                }
+            } else {
+                bpf::trace_running(pid, trace, engine, stop, sink)
+                    .map_err(|error| error.to_string())
+            }
         }
         (Traced::Held(pid), None) => {
             ptrace::trace_held(pid, trace, stop, sink).map_err(|error| error.to_string())

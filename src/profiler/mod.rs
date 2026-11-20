@@ -37,7 +37,9 @@ pub use session::{
     Attachment, Recording, Save, Watch, affordable_rate, record, record_attached, record_watched,
 };
 pub use symbols::ModuleSymbols;
-pub use syscall_trace::{BLOCKED_AT, Printer, SyscallEngine, SyscallLevel, SyscallOptions};
+pub use syscall_trace::{
+    BLOCKED_AT, Printer, SharedBpfEngine, SyscallEngine, SyscallLevel, SyscallOptions,
+};
 pub use tasks::THREAD;
 pub use zones::{
     PlotValue, ProbeCounts, ProfileZone, ProgramMarker, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN,
@@ -307,6 +309,16 @@ pub type SourceFrame<'a> = (&'a str, &'a str, u32);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
     capture: Capture,
+}
+
+impl Profile {
+    pub(crate) const fn capture(&self) -> &Capture {
+        &self.capture
+    }
+
+    pub(crate) fn into_capture(self) -> Capture {
+        self.capture
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
