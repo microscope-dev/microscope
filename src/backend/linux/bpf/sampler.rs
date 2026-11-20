@@ -632,11 +632,14 @@ pub fn verified_instructions(kernel: bool) -> Result<u64, SamplerError> {
         .ok_or_else(|| load_error("the kernel reports no verified_insns"))
 }
 
-pub const SHARES: u32 = 64;
-
 pub struct Thin {
     _ebpf: Option<Ebpf>,
-    dropped: Array<MapData, u32>,
+    maps: ThinMaps,
+}
+
+struct ThinMaps {
+    share: Array<MapData, u64>,
+    counts: PerCpuArray<MapData, u64>,
 }
 
 impl std::fmt::Debug for Thin {
@@ -645,13 +648,39 @@ impl std::fmt::Debug for Thin {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Epoch(u32);
+
+impl Epoch {
+    #[must_use]
+    pub const fn next(self) -> Self {
+        Self(self.0 ^ 1)
+    }
+
+    #[must_use]
+    pub const fn odd(self) -> bool {
+        self.0 == 1
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Shared {
+    pub raised: u64,
+    pub kept: u64,
+}
+
 impl Thin {
+    pub fn unavailable() -> Option<String> {
+        super::super::syscalls::bpf::Probe::read()
+            .lacks_privileges()
+            .map(|missing| {
+                format!("keeping a share of samples needs CAP_BPF and CAP_PERFMON, and this process {missing}")
+            })
+    }
+
     pub fn load(events: &perf::Events) -> Result<Self, SamplerError> {
-        let probe = super::super::syscalls::bpf::Probe::read();
-        if let Some(missing) = probe.lacks_privileges() {
-            return Err(SamplerError::Unavailable(format!(
-                "keeping a share of samples needs CAP_BPF and CAP_PERFMON, and this process {missing}"
-            )));
+        if let Some(why) = Self::unavailable() {
+            return Err(SamplerError::Unavailable(why));
         }
 
         let mut ebpf = object(false)?;
@@ -664,52 +693,76 @@ impl Thin {
         events
             .run_program(program.fd().map_err(load_error)?.as_fd())
             .map_err(SamplerError::Attach)?;
-        let dropped = thin_maps(&mut ebpf)?;
+        let maps = ThinMaps::take(&mut ebpf)?;
 
         Ok(Self {
             _ebpf: Some(ebpf),
-            dropped,
+            maps,
         })
     }
 
-    pub fn keep(&mut self, shares: u32) -> Result<(), SamplerError> {
-        debug_assert!(
-            (1..=SHARES).contains(&shares),
-            "{shares} shares of {SHARES}"
-        );
-        self.dropped
-            .set(0, SHARES - shares.clamp(1, SHARES), 0)
+    pub fn keep(&mut self, share: f64) -> Result<(), SamplerError> {
+        debug_assert!(share > 0.0 && share <= 1.0, "a share of {share}");
+        self.maps
+            .share
+            .set(0, u64::from(threshold(share)), 0)
             .map_err(load_error)
+    }
+
+    pub fn close(&mut self, epoch: Epoch, boundary: u64, guard: u64) -> Result<(), SamplerError> {
+        let next = u64::from(epoch.next().0);
+        self.maps
+            .share
+            .set(2, guard, 0)
+            .and_then(|()| self.maps.share.set(1, (boundary & !1) | next, 0))
+            .map_err(load_error)
+    }
+
+    pub fn shared(&self, epoch: Epoch) -> Result<Shared, SamplerError> {
+        let sum = |index: u32| {
+            self.maps
+                .counts
+                .get(&(epoch.0 * 2 + index), 0)
+                .map(|cpus| cpus.iter().copied().sum())
+                .map_err(load_error)
+        };
+        Ok(Shared {
+            raised: sum(0)?,
+            kept: sum(1)?,
+        })
     }
 }
 
-fn thin_maps(ebpf: &mut Ebpf) -> Result<Array<MapData, u32>, SamplerError> {
-    use std::hash::BuildHasher as _;
-    let mut take = |name: &str| {
-        ebpf.take_map(name)
-            .ok_or_else(|| load_error(format!("the program has no {name} map")))
-    };
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a share scaled to the range of a u32"
+)]
+fn threshold(share: f64) -> u32 {
+    if share >= 1.0 {
+        return 0;
+    }
 
-    let mut owed: PerCpuArray<MapData, u32> =
-        PerCpuArray::try_from(take("OWED")?).map_err(load_error)?;
-    let cpus = aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?;
-    let random = std::collections::hash_map::RandomState::new();
-    let starts: Vec<u32> = (0..cpus)
-        .map(|cpu| u32::try_from(random.hash_one(cpu) % u64::from(SHARES)).unwrap_or(0))
-        .collect();
-    owed.set(
-        0,
-        aya::maps::PerCpuValues::try_from(starts).map_err(load_error)?,
-        0,
-    )
-    .map_err(load_error)?;
+    ((share * 4_294_967_296.0).round() as u64).clamp(1, u64::from(u32::MAX)) as u32
+}
 
-    Array::try_from(take("DROPPED")?).map_err(load_error)
+impl ThinMaps {
+    fn take(ebpf: &mut Ebpf) -> Result<Self, SamplerError> {
+        let mut take = |name: &str| {
+            ebpf.take_map(name)
+                .ok_or_else(|| load_error(format!("the program has no {name} map")))
+        };
+
+        Ok(Self {
+            share: Array::try_from(take("SHARE")?).map_err(load_error)?,
+            counts: PerCpuArray::try_from(take("SHARED")?).map_err(load_error)?,
+        })
+    }
 }
 
 pub struct Sampler {
     _ebpf: Ebpf,
-    dropped: Option<Array<MapData, u32>>,
+    thin: Option<ThinMaps>,
     layouts: PythonLayouts,
     v8_layouts: V8Layouts,
     threads: HashMap<MapData, u32, Bytes<THREAD_BYTES>>,
@@ -780,14 +833,14 @@ impl Sampler {
         let lost = PerCpuArray::try_from(take("LOST")?).map_err(load_error)?;
         #[cfg(feature = "bpf-walk-timing")]
         let walk_times = PerCpuArray::try_from(take("V8_WALK_TIMES")?).map_err(load_error)?;
-        let dropped = Some(thin_maps(&mut ebpf)?);
+        let thin = Some(ThinMaps::take(&mut ebpf)?);
         let ids = outputs.iter().map(|output| output.id).collect();
         record!("python sampler: attached, {} outputs", outputs.len());
 
         Ok((
             Self {
                 _ebpf: ebpf,
-                dropped,
+                thin,
                 layouts,
                 v8_layouts,
                 threads,
@@ -802,10 +855,7 @@ impl Sampler {
     }
 
     pub fn thin(&mut self) -> Option<Thin> {
-        self.dropped.take().map(|dropped| Thin {
-            _ebpf: None,
-            dropped,
-        })
+        self.thin.take().map(|maps| Thin { _ebpf: None, maps })
     }
 
     pub fn set_layout(&mut self, tgid: u32, layout: &RawPyLayout) -> Result<(), SamplerError> {
@@ -873,6 +923,15 @@ impl Sampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_share_becomes_the_threshold_a_random_u32_must_fall_below() {
+        assert_eq!(threshold(1.0), 0, "zero keeps every sample");
+        assert_eq!(threshold(0.5), 1 << 31);
+        assert_eq!(threshold(0.25), 1 << 30);
+        assert_eq!(threshold(1.0 - 1e-12), u32::MAX);
+        assert_eq!(threshold(1e-12), 1);
+    }
 
     #[test]
     fn kernel_syscalls_use_the_captured_number_and_abi_or_remain_unknown() {

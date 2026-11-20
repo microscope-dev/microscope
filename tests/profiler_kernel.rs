@@ -162,17 +162,13 @@ fn a_budget_keeps_a_share_of_each_process_samples_and_scales_them_to_its_cpu_tim
         "sampling paused: {:?}",
         profile.gaps()
     );
-    let (total, sampled, counted) = (
-        profile.total_weight(),
-        profile.sampled_weight(),
-        profile.counted(),
-    );
-    assert!(sampled * 3 < total * 2, "kept {sampled} of {total} ns");
+    let (raised, kept) = profile.kept_share().expect("the budget kept a share");
+    assert!(kept * 3 < raised * 2, "kept {kept} of {raised} samples");
+    let (total, counted) = (profile.total_weight(), profile.counted());
     assert!(
-        total.abs_diff(counted) * 25 < counted,
+        total.abs_diff(counted) * 100 < counted,
         "scaled to {total} ns of {counted} ns"
     );
-    assert!(profile.scaled_spread() > 0);
 }
 
 fn ending_paths(tree: &CallTree, keys: &Keys<'_>) -> Vec<(Vec<String>, u64)> {

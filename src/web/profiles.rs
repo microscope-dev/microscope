@@ -793,7 +793,6 @@ fn summary(entry: &Entry) -> ProfileSummary {
         throttles: profile.throttles(),
         recorder_cpu: profile.recorder_cpu().0,
         recorder_loading: profile.recorder_cpu().1,
-        gaps: paused(profile, GapReason::Budget, start),
         behind: paused(profile, GapReason::Behind, start),
         budget_changes: markers(profile.budget_changes(), start),
         tasks: tasks(profile),

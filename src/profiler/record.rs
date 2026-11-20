@@ -251,10 +251,11 @@ type Ordered<'a> = (&'a [(u64, usize)], &'a [RecordAt], &'a Pairs);
 
 type ProcessMappings = (Pid, Vec<perf::Mapped>);
 
-struct Pace {
+struct Share {
     from: u64,
     until: u64,
-    sampled: u64,
+    raised: u64,
+    kept: u64,
 }
 
 pub struct Processor {
@@ -302,8 +303,9 @@ pub struct Processor {
     gaps: Vec<(u64, u64)>,
     gaps_end: u64,
 
-    paces: Vec<Pace>,
-    planned: Option<Pace>,
+    shares: Vec<Share>,
+    unkept: Option<Share>,
+    ingesting: std::time::Duration,
 
     began: std::time::Duration,
     setup: Option<std::time::Duration>,
@@ -369,8 +371,9 @@ impl Processor {
             registers: Vec::with_capacity(decode::DWARF_REGISTERS.len()),
             repeats: None,
             fixed_period: None,
-            paces: Vec::new(),
-            planned: None,
+            shares: Vec::new(),
+            unkept: None,
+            ingesting: std::time::Duration::ZERO,
             chain: Vec::new(),
             frames: Vec::new(),
             off_cpu: off_cpu::OffCpu::default(),
@@ -616,6 +619,17 @@ impl Processor {
     }
 
     fn ingest_blocks(
+        &mut self,
+        batches: Batches,
+        blocks: std::ops::Range<u64>,
+        watermark: Option<u64>,
+    ) {
+        let began = self.own_cpu();
+        self.process_blocks(batches, blocks, watermark);
+        self.ingesting += self.own_cpu().saturating_sub(began);
+    }
+
+    fn process_blocks(
         &mut self,
         mut batches: Batches,
         blocks: std::ops::Range<u64>,
@@ -1950,43 +1964,53 @@ impl Processor {
             .sample(thread, time, sample.period, stack, NONE);
     }
 
-    pub fn paced(&mut self, from: u64, until: u64, sampled: u64) {
-        debug_assert!(
-            self.paces.last().is_none_or(|pace| pace.until <= from),
-            "periods overlap at {from}"
-        );
-        if sampled > 0 && until > from {
-            self.paces.push(Pace {
-                from,
-                until,
-                sampled,
-            });
+    pub fn shared(&mut self, from: u64, until: u64, raised: u64, kept: u64) {
+        debug_assert!(kept <= raised, "kept {kept} of {raised} samples");
+        debug_assert!(until >= from, "a period from {from} to {until}");
+        let builder = self.builder();
+        builder.count(AccountKind::RaisedSamples as u32, raised);
+        builder.count(AccountKind::KeptSamples as u32, kept);
+        if raised == 0 {
+            return;
+        }
+
+        let mut share = Share {
+            from,
+            until,
+            raised,
+            kept,
+        };
+        if let Some(unkept) = self.unkept.take() {
+            share.from = unkept.from;
+            share.raised += unkept.raised;
+        }
+
+        match self.shares.last_mut() {
+            Some(last) if kept == 0 && last.until == share.from => {
+                last.until = share.until;
+                last.raised += share.raised;
+            }
+            _ if kept == 0 => self.unkept = Some(share),
+            last => {
+                debug_assert!(
+                    last.is_none_or(|last| last.until <= share.from),
+                    "periods overlap at {from}"
+                );
+                self.shares.push(share);
+            }
         }
     }
 
-    pub fn planned(&mut self, from: u64, period: u64, sampled: u64) {
-        self.planned = (sampled > 0).then_some(Pace {
-            from,
-            until: from.saturating_add(period),
-            sampled,
-        });
-    }
-
     fn scale(&self, builder: &mut CaptureBuilder) {
-        let sampled = builder.sample_weight();
-        builder.count(AccountKind::SampledWeight as u32, sampled);
-        let paces = &self.paces;
-        let planned = self.planned.as_ref();
-        let variance = builder.scale_samples(|time| {
+        let shares = &self.shares;
+        builder.scale_samples(|time| {
             let time = time.cast_unsigned();
-            let index = paces.partition_point(|pace| pace.until <= time);
-            paces
+            let index = shares.partition_point(|share| share.until <= time);
+            shares
                 .get(index)
-                .or(planned)
-                .filter(|pace| pace.from <= time)
-                .map(|pace| (pace.until - pace.from, pace.sampled))
+                .filter(|share| share.from <= time)
+                .map(|share| (share.raised, share.kept))
         });
-        builder.count(AccountKind::ScaledVarianceSquareUs as u32, variance);
     }
 
     fn sampled_interpreted(
@@ -2264,7 +2288,7 @@ impl Processor {
         builder.setting("end", &end.to_string());
 
         self.builder.forget_before(end.cast_signed());
-        self.paces.retain(|pace| pace.until > end);
+        self.shares.retain(|share| share.until > end);
         let capture = self.trimmed(builder.finish(), end);
         if let Cut::Segments { start: from, .. } = &mut self.cut {
             *from = Some(cuts::Mark {
@@ -2734,6 +2758,10 @@ impl Processor {
 
     pub const fn loading(&self) -> std::time::Duration {
         self.loading
+    }
+
+    pub const fn processing(&self) -> std::time::Duration {
+        self.ingesting.saturating_add(self.collection)
     }
 
     pub const fn collection_cpu(&mut self, total: std::time::Duration) {
@@ -4352,42 +4380,39 @@ mod tests {
     }
 
     #[test]
-    fn samples_stand_for_the_time_their_period_paused_once_per_capture() {
+    fn samples_stand_for_the_samples_their_period_dropped_once_per_capture() {
         let mut processor = Processor::new(DebugFileSearch::default(), 64);
-        processor.paced(1_000, 2_000, 250);
-        processor.paced(2_000, 3_000, 1_000);
-        processor.planned(3_000, 1_000, 100);
+        processor.shared(0, 1_000, 10, 0);
+        processor.shared(1_000, 2_000, 400, 100);
+        processor.shared(2_000, 3_000, 50, 50);
+        processor.shared(3_000, 4_000, 30, 7);
+        processor.shared(4_000, 5_000, 20, 0);
 
         let builder = processor.builder();
         let thread = builder.thread(Pid::new(7), Tid::new(7), 0);
-        let ms = 1_000_000;
-        for time in [500, 1_500, 2_500, 3_500] {
-            builder.sample(thread, time, 10 * ms, NONE, NONE);
+        for time in [500, 1_500, 2_500, 3_500, 6_000] {
+            builder.sample(thread, time, 70, NONE, NONE);
         }
 
         let weights = |capture: &crate::capture::Capture| {
-            let weights = capture
+            capture
                 .samples
                 .iter()
                 .map(|sample| (sample.time.get(), sample.weight.get()))
-                .collect::<Vec<_>>();
-            let spread = crate::profiler::Profile {
-                capture: capture.clone(),
-            }
-            .scaled_spread();
-            (weights, spread)
+                .collect::<Vec<_>>()
         };
-        let expected = (
-            vec![
-                (500, 10 * ms),
-                (1_500, 40 * ms),
-                (2_500, 10 * ms),
-                (3_500, 100 * ms),
-            ],
-            100_995_000,
-        );
+        let expected = [
+            (500, 287),
+            (1_500, 287),
+            (2_500, 70),
+            (3_500, 500),
+            (6_000, 70),
+        ];
         assert_eq!(weights(&processor.snapshot()), expected);
         assert_eq!(weights(&processor.snapshot()), expected);
-        assert_eq!(weights(&processor.finish()), expected);
+        let capture = processor.finish();
+        assert_eq!(weights(&capture), expected);
+        assert_eq!(capture.account(AccountKind::RaisedSamples as u32), 510);
+        assert_eq!(capture.account(AccountKind::KeptSamples as u32), 157);
     }
 }

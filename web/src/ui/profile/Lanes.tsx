@@ -505,7 +505,7 @@ export function Lanes() {
 
     context.fillStyle = token("--line");
     context.globalAlpha = 0.7;
-    for (const [from, to] of [...summary.gaps, ...summary.behind]) {
+    for (const [from, to] of summary.behind) {
       context.fillRect(x(from), 0, Math.max(x(to) - x(from), 1), height);
     }
     context.globalAlpha = 1;
@@ -571,7 +571,6 @@ export function Lanes() {
     dragging,
     look.zs,
     palette,
-    summary.gaps,
     summary.behind,
     summary.budgetChanges,
     scheme,

@@ -9,8 +9,6 @@ pub enum Rung {
     Sampled,
 
     ExceptionsOnly,
-
-    Samples,
 }
 
 pub const HOLD: Duration = Duration::from_secs(5);
@@ -25,7 +23,6 @@ impl Rung {
             Self::Strings => "system call strings past 16 bytes",
             Self::Sampled => "15 of every 16 system calls, which are counted",
             Self::ExceptionsOnly => "every system call that neither failed nor was slow",
-            Self::Samples => "samples",
         }
     }
 }
@@ -84,11 +81,7 @@ impl Ladder {
             self.calm_since = None;
             let rung = *self.rungs.get(self.shed)?;
             self.shed += 1;
-            self.limits.push(if rung == Rung::Samples {
-                f64::INFINITY
-            } else {
-                period.calls / period.used.max(1.0)
-            });
+            self.limits.push(period.calls / period.used.max(1.0));
             return Some(Move::Down(rung));
         }
 
@@ -115,12 +108,11 @@ mod tests {
 
     use super::*;
 
-    const ALL: [Rung; 5] = [
+    const ALL: [Rung; 4] = [
         Rung::Stacks,
         Rung::Strings,
         Rung::Sampled,
         Rung::ExceptionsOnly,
-        Rung::Samples,
     ];
 
     const QUIET: Period = Period {
@@ -177,7 +169,7 @@ mod tests {
                         prop_assert!(over);
                         prop_assert_eq!(after, before + 1);
                         prop_assert_eq!(ladder.shed().last(), Some(&rung));
-                        shed_at.push(if rung == Rung::Samples { (0.0, 1.0) } else { (calls, used) });
+                        shed_at.push((calls, used));
                     }
                     Some(Move::Up(rung)) => {
                         prop_assert!(!over);
@@ -185,7 +177,7 @@ mod tests {
                         prop_assert!(!ladder.sheds(rung));
                         prop_assert!(calm_from.is_some_and(|from| now - from >= hold));
                         let (then, cost) = shed_at.pop().expect("a rung given up");
-                        prop_assert!(rung == Rung::Samples || calls * cost.max(1.0) <= then * (1.0 + 1e-9));
+                        prop_assert!(calls * cost.max(1.0) <= then * (1.0 + 1e-9));
                         calm = Some(now);
                     }
                     None => prop_assert_eq!(after, before),
@@ -229,7 +221,7 @@ mod tests {
 
     #[test]
     fn rungs_are_given_up_in_order_and_come_back_in_reverse() {
-        let mut ladder = Ladder::new([Rung::Samples, Rung::Stacks, Rung::ExceptionsOnly]);
+        let mut ladder = Ladder::new([Rung::ExceptionsOnly, Rung::Stacks, Rung::Strings]);
         let second = 1_000_000_000;
         assert_eq!(
             ladder.judge(over(2.0, 0.0), second),
@@ -237,11 +229,11 @@ mod tests {
         );
         assert_eq!(
             ladder.judge(over(2.0, 0.0), 2 * second),
-            Some(Move::Down(Rung::ExceptionsOnly))
+            Some(Move::Down(Rung::Strings))
         );
         assert_eq!(
             ladder.judge(over(2.0, 0.0), 3 * second),
-            Some(Move::Down(Rung::Samples))
+            Some(Move::Down(Rung::ExceptionsOnly))
         );
         assert_eq!(ladder.judge(over(2.0, 0.0), 4 * second), None);
 
@@ -249,38 +241,38 @@ mod tests {
         assert_eq!(ladder.judge(QUIET, 9 * second), None);
         assert_eq!(
             ladder.judge(QUIET, 10 * second),
-            Some(Move::Up(Rung::Samples))
+            Some(Move::Up(Rung::ExceptionsOnly))
         );
         assert_eq!(ladder.judge(QUIET, 11 * second), None);
         assert_eq!(
             ladder.judge(over(2.0, 0.0), 12 * second),
-            Some(Move::Down(Rung::Samples))
+            Some(Move::Down(Rung::ExceptionsOnly))
         );
     }
 
     #[test]
     fn call_detail_comes_back_once_the_calls_would_fit() {
-        let mut ladder = Ladder::new([Rung::ExceptionsOnly, Rung::Samples]);
+        let mut ladder = Ladder::new([Rung::ExceptionsOnly, Rung::Sampled]);
         let second = 1_000_000_000;
         assert_eq!(
             ladder.judge(over(300.0, 300_000.0), second),
-            Some(Move::Down(Rung::ExceptionsOnly))
+            Some(Move::Down(Rung::Sampled))
         );
         assert_eq!(
             ladder.judge(over(2.0, 300_000.0), 2 * second),
-            Some(Move::Down(Rung::Samples))
+            Some(Move::Down(Rung::ExceptionsOnly))
         );
 
         assert_eq!(ladder.judge(under(300_000.0), 3 * second), None);
+        assert_eq!(ladder.judge(under(300_000.0), 8 * second), None);
         assert_eq!(
-            ladder.judge(under(300_000.0), 8 * second),
-            Some(Move::Up(Rung::Samples))
-        );
-        assert_eq!(ladder.judge(under(300_000.0), 30 * second), None);
-        assert_eq!(ladder.judge(under(1_001.0), 31 * second), None);
-        assert_eq!(
-            ladder.judge(under(1_000.0), 32 * second),
+            ladder.judge(under(150_000.0), 9 * second),
             Some(Move::Up(Rung::ExceptionsOnly))
+        );
+        assert_eq!(ladder.judge(under(1_001.0), 30 * second), None);
+        assert_eq!(
+            ladder.judge(under(1_000.0), 31 * second),
+            Some(Move::Up(Rung::Sampled))
         );
     }
 }

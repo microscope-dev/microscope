@@ -590,7 +590,6 @@ impl SyscallTrace {
                 Rung::Strings => Shed::STRINGS.0,
                 Rung::Sampled => Shed::SAMPLED.0,
                 Rung::ExceptionsOnly => Shed::STREAM.0,
-                Rung::Samples => 0,
             })
             .fold(0, |bits, bit| bits | bit);
         self.budget.shed.store(bits, Ordering::Relaxed);

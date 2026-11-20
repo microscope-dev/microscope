@@ -139,7 +139,6 @@ function summaryOf(change: Partial<ProfileSummary> = {}): ProfileSummary {
     settings: [],
     recorderCpu: 0,
     recorderLoading: 0,
-    gaps: [],
     behind: [],
     budgetChanges: [],
     tasks: [],

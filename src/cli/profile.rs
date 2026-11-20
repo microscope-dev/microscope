@@ -608,6 +608,13 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         });
     }
 
+    if let (None, Some(budget), SampleSource::Clock { rate }) =
+        (args.rate, options.budget, &mut options.source)
+        && let Some(affordable) = microscope::profiler::affordable_rate(budget)
+    {
+        *rate = (*rate).min(affordable);
+    }
+
     if let Some(every) = args.task_snapshots {
         options.task_snapshots = Some(every);
         options.live_snapshots = args.live_snapshots;
@@ -1462,12 +1469,7 @@ const LEAST_JUDGED_CPU: u64 = 50_000_000;
 )]
 fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Write) -> Result<()> {
     let paused = !profile.gaps().is_empty();
-    let thinned = !paused && profile.scaled_spread() > 0;
-    let total = if thinned {
-        profile.total_weight()
-    } else {
-        profile.sampled_weight()
-    };
+    let total = profile.total_weight();
     let seconds = |value: u64| format!("{:.3} s", value as f64 / 1e9);
     let counted = profile.counted();
     let judged = profile.samples() >= FEWEST_JUDGED_SAMPLES
@@ -1502,8 +1504,7 @@ fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Wr
     } else if unit == "nanoseconds" && counted > total {
         writeln!(
             out,
-            "The {}samples cover {:.0}% of the {} of CPU time the program ran{}.",
-            if thinned { "scaled " } else { "" },
+            "The samples cover {:.0}% of the {} of CPU time the program ran{}.",
             total as f64 * 100.0 / counted as f64,
             seconds(counted),
             if paused { " while sampling was on" } else { "" }
@@ -1511,7 +1512,6 @@ fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Wr
         if profile.setting("kernel stacks") != Some("on")
             && total < counted / 2
             && !paused
-            && !thinned
             && lost == 0
         {
             writeln!(
@@ -1531,8 +1531,6 @@ fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Wr
 )]
 fn cost(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     let seconds = |nanoseconds: u64| nanoseconds as f64 / 1e9;
-    let (start, end) = profile.span();
-    let span = u64::try_from(end - start).unwrap_or(0).max(1);
     let (used, loading) = profile.recorder_cpu();
     let setup = profile.recorder_setup().min(used);
 
@@ -1568,24 +1566,19 @@ fn cost(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
         )?;
     }
 
-    let gaps = profile.paused(GapReason::Budget);
-    if !gaps.is_empty() {
-        let paused: u64 = gaps
-            .iter()
-            .map(|(start, end)| u64::try_from(end - start).unwrap_or(0))
-            .sum();
+    if let Some((raised, kept)) = profile.kept_share() {
         writeln!(
             out,
-            "Sampling paused for {:.3} s of the {:.3} s recorded, for a sampling budget of {}; \
-             the share sampled changed {}.",
-            seconds(paused),
-            seconds(span),
+            "To stay within a budget of {}, microscope kept {:.1}% of the samples, chosen at \
+             random, and weighted each by the ones dropped beside it: totals are exact, and a \
+             function's share is within {:.1} points 95% of the time.",
             profile.setting("budget").unwrap_or("its budget"),
-            match profile.budget_changes().len() {
-                1 => "once".to_owned(),
-                changes => format!("{changes} times"),
-            }
+            kept as f64 * 100.0 / raised.max(1) as f64,
+            profile.share_margin() * 100.0
         )?;
+    }
+    if let Some(warning) = profile.setting("budget warning") {
+        writeln!(out, "{warning}.")?;
     }
 
     if let Some(mut behind) = behind(profile) {
@@ -1730,15 +1723,11 @@ fn summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Re
             out,
             "Stacks are sampled; function costs are estimates, not exact call counts."
         )?;
-    } else if unit == "nanoseconds" && profile.scaled_spread() > 0 {
-        let spread = profile.scaled_spread();
+    } else if let Some((raised, kept)) = profile.kept_share() {
         writeln!(
             out,
-            "{program}: {} samples, {} ± {:.3} s ({:.0}%), scaled up from a share of them",
-            profile.samples(),
-            weight(total),
-            spread as f64 / 1e9,
-            spread as f64 * 100.0 / total.max(1) as f64
+            "{program}: {kept} of {raised} samples kept, {}",
+            weight(total)
         )?;
     } else {
         writeln!(

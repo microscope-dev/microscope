@@ -181,8 +181,6 @@ impl Queue {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hold {
-    Budget,
-
     Snapshot,
 
     Behind,
@@ -785,7 +783,7 @@ impl Events {
 
     pub fn hold(&self, who: Hold, held: bool) {
         debug_assert!(
-            matches!(who, Hold::Budget | Hold::Snapshot),
+            who == Hold::Snapshot,
             "{who:?} is held by the events themselves"
         );
         let mut gate = self
@@ -1050,7 +1048,7 @@ fn open_each(attr: &sys::Attr, pid: i32, cpus: &[u32]) -> Result<Vec<OwnedFd>, O
         .collect()
 }
 
-fn online_cpus() -> std::io::Result<Vec<u32>> {
+pub fn online_cpus() -> std::io::Result<Vec<u32>> {
     let text = std::fs::read_to_string("/sys/devices/system/cpu/online")?;
     let mut cpus = Vec::new();
 
@@ -1709,25 +1707,21 @@ mod tests {
 
     #[test]
     fn sampling_is_on_while_nothing_holds_it_off() {
-        use Hold::{Behind, Budget, Ended, Snapshot};
+        use Hold::{Behind, Ended, Snapshot};
 
         let mut gate = Gate::default();
         let mut on = true;
         let mut seen = Vec::new();
         for (time, who, held) in [
-            (10, Snapshot, true),
-            (20, Snapshot, false),
-            (30, Budget, true),
-            (40, Snapshot, true),
-            (50, Snapshot, false),
-            (60, Budget, false),
+            (30, Snapshot, true),
+            (60, Snapshot, false),
             (70, Behind, true),
-            (80, Budget, true),
+            (80, Snapshot, true),
             (90, Behind, false),
-            (100, Budget, false),
-            (110, Budget, true),
+            (100, Snapshot, false),
+            (110, Snapshot, true),
             (120, Behind, true),
-            (130, Budget, false),
+            (130, Snapshot, false),
             (140, Behind, false),
             (150, Behind, true),
             (160, Ended, true),
@@ -1743,11 +1737,7 @@ mod tests {
         assert_eq!(
             seen,
             [
-                (10, false),
-                (20, true),
                 (30, false),
-                (40, false),
-                (50, false),
                 (60, true),
                 (70, false),
                 (80, false),
@@ -1762,15 +1752,6 @@ mod tests {
                 (170, false),
             ]
         );
-        assert_eq!(gate.take_spans(None), [(70, 90), (120, 140), (150, 170)]);
-
-        let mut gate = Gate::default();
-        assert_eq!(gate.hold(Behind, true, 10), Some(false));
-        assert_eq!(gate.take_spans(None), []);
-        assert_eq!(gate.hold(Ended, true, 20), None);
-        assert_eq!(gate.take_spans(Some(30)), [(10, 30)]);
-        assert_eq!(gate.hold(Behind, false, 40), None);
-        assert_eq!(gate.take_spans(Some(50)), []);
     }
 
     fn mapping_end() -> u64 {
@@ -2044,7 +2025,7 @@ mod tests {
             gate.open().expect("open the gate");
             let mut ready = [0_u8; 6];
             std::io::Read::read_exact(&mut said, &mut ready).expect("the shell starts");
-            events.hold(Hold::Budget, true);
+            events.hold(Hold::Snapshot, true);
             let paused = sys::monotonic();
             std::io::Write::write_all(&mut writer, b"\n").expect("release the shell");
             (exit.join(), paused)

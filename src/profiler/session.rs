@@ -3,11 +3,11 @@ use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use super::budget::{Budget, Controller, Observation, STEPS, WARM_UP};
+use super::budget::{Budget, Model, Observation, WARM_UP};
 use super::calls::{self, Calls};
 use super::collector::{Collector, ProbeSelection};
 use super::interpreted::{Layout, Walked};
-use super::ladder::{HOLD, Ladder, Move, Period, Rung};
+use super::ladder::{HOLD, Ladder, Move, Period};
 use super::record::{self, Sites};
 use super::tasks::{self, Live, Reads, Snapshot, Snapshotter};
 use super::{
@@ -16,7 +16,7 @@ use super::{
 };
 
 use super::syscall_trace::{SyscallEngine, SyscallLevel, SyscallTrace, Traced};
-use crate::backend::bpf::sampler::{Sampler, SamplerError, Thin};
+use crate::backend::bpf::sampler::{Epoch, Sampler, SamplerError, Shared, Thin};
 use crate::backend::perf;
 use crate::capture::records::{AccountKind, GapReason, MarkerKind};
 use crate::model::Pid;
@@ -573,6 +573,18 @@ fn settings(
     for (key, value) in options.syscalls.settings() {
         builder.setting(key, &value);
     }
+    if let (Some(budget), SampleSource::Clock { .. }) = (options.budget, &options.source)
+        && let Some(why) = Thin::unavailable()
+        && let Some(affordable) = affordable_rate(budget)
+    {
+        builder.setting(
+            "budget warning",
+            &format!(
+                "{why}, so every sample is kept at {}; the budget affords {affordable} Hz with every CPU busy",
+                options.source
+            ),
+        );
+    }
     if ring_pages < options.ring_pages.next_power_of_two() {
         builder.setting(
             "ring warning",
@@ -647,6 +659,13 @@ fn settings(
     }
 }
 
+#[must_use]
+pub fn affordable_rate(budget: Budget) -> Option<u32> {
+    Thin::unavailable()?;
+    let cpus = perf::online_cpus().map_or(1, |cpus| cpus.len());
+    Some(super::budget::unfiltered_rate(budget, cpus))
+}
+
 fn resolved(options: &RecordOptions) -> Result<RecordOptions, RecordError> {
     let mut options = options.clone();
     options.syscalls.resolve().map_err(RecordError::Syscalls)?;
@@ -687,7 +706,7 @@ fn drive(
     let mut pacer = options
         .budget
         .filter(|_| started.is_some())
-        .map(|budget| Pacer::new(budget, monotonic(), processor, syscalls, thin));
+        .map(|budget| Pacer::new(budget, monotonic(), processor, syscalls, thin, options));
     let mut snapshots = started.map_or_else(Vec::new, |pid| snapshotters(pid, options));
     let mut probes = started
         .filter(|_| options.probes != ProbeSelection::Off)
@@ -758,16 +777,7 @@ fn drive(
             }
             .saturating_sub(drained_at.elapsed());
             if let Some(pacer) = &mut pacer {
-                let edge = pacer.pace(monotonic(), processor, |on| {
-                    let toggling = monotonic();
-                    events.hold(perf::Hold::Budget, !on);
-                    (toggling, monotonic())
-                });
-                wait = if pacer.sampling() {
-                    wait.min(edge)
-                } else {
-                    edge.min(Duration::from_millis(100))
-                };
+                wait = wait.min(pacer.pace(monotonic(), processor));
             }
             let due = snapshots.iter().map(Snapshots::due_in).min();
             let wait = if processor.stopped_at_load() {
@@ -775,11 +785,7 @@ fn drive(
             } else {
                 due.map_or(wait, |due| wait.min(due))
             };
-            if pacer.as_ref().is_none_or(Pacer::sampling) {
-                events.wait(wait);
-            } else {
-                ended(wait);
-            }
+            events.wait(wait);
         }
 
         let mut drained = 0;
@@ -798,9 +804,7 @@ fn drive(
             processor.gap(start, end, GapReason::Behind);
         }
         processor.collection_cpu(events.reader_cpu());
-        if let Some(walker) = &mut walker
-            && pacer.as_ref().is_none_or(Pacer::sampling)
-        {
+        if let Some(walker) = &mut walker {
             walker.refresh(processor);
         }
 
@@ -851,7 +855,7 @@ fn drive(
         processor.gap(start, end, GapReason::Behind);
     }
     if let Some(pacer) = pacer {
-        pacer.finish(end, processor);
+        pacer.finish(processor);
     }
 
     if let Some(walker) = walker {
@@ -1137,6 +1141,8 @@ impl Snapshots {
     }
 }
 
+const GUARD: u64 = 1_000_000;
+
 fn nanoseconds(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos())
         .unwrap_or(u64::MAX)
@@ -1145,32 +1151,27 @@ fn nanoseconds(duration: Duration) -> u64 {
 
 struct Pacer<'a> {
     budget: Budget,
-    controller: Controller,
+    model: Model,
+    warm: bool,
 
     ladder: Ladder,
     syscalls: Option<&'a SyscallTrace>,
 
     period: u64,
     length: u64,
-    window: (u64, u64),
-    slices: Slices,
 
-    toggled: (u64, u64),
-
-    pace: Pace,
-
-    sampled: u64,
     cpu: Duration,
     loading: Duration,
+    processing: Duration,
     kernel: Duration,
     calls: u64,
 
-    paused_cpu: Duration,
-    paused_at: Duration,
-    random: u64,
-
     thin: Option<Thin>,
-    kept: u32,
+    epoch: Epoch,
+    seen: [Shared; 2],
+    from: u64,
+    closing: Option<u64>,
+    share: f64,
 }
 
 impl<'a> Pacer<'a> {
@@ -1179,207 +1180,163 @@ impl<'a> Pacer<'a> {
         now: u64,
         processor: &record::Processor,
         syscalls: Option<&'a SyscallTrace>,
-        thin: Option<Thin>,
+        mut thin: Option<Thin>,
+        options: &RecordOptions,
     ) -> Self {
-        let rungs = syscalls.map_or_else(Vec::new, SyscallTrace::rungs);
+        let rate = match options.source {
+            SampleSource::Clock { rate } => Some(rate),
+            SampleSource::Function { .. } => None,
+        };
+        let cpus = perf::online_cpus().map_or(1, |cpus| cpus.len());
+        let model = Model::new(budget, rate, cpus);
+        let share = if thin
+            .as_mut()
+            .is_some_and(|thin| thin.keep(model.share()).is_ok())
+        {
+            model.share()
+        } else {
+            1.0
+        };
         Self {
             budget,
-            controller: Controller::default(),
-            ladder: Ladder::new(rungs.into_iter().chain([Rung::Samples])),
+            model,
+            warm: false,
+            ladder: Ladder::new(syscalls.map_or_else(Vec::new, SyscallTrace::rungs)),
             syscalls,
             period: now,
-            length: nanoseconds(budget.period),
-            window: (now, u64::MAX),
-            slices: Slices::default(),
-            toggled: (0, 0),
-            pace: Pace::On { since: now },
-            sampled: 0,
-            paused_cpu: Duration::ZERO,
-            paused_at: Duration::ZERO,
+            length: nanoseconds(budget.period) / u64::from(WARM_UP),
             cpu: process_cpu(),
             loading: processor.loading(),
+            processing: processor.processing(),
             kernel: Duration::ZERO,
             calls: 0,
-            random: now | 1,
             thin,
-            kept: STEPS,
+            epoch: Epoch::default(),
+            seen: [Shared::default(); 2],
+            from: 0,
+            closing: None,
+            share,
         }
     }
 
-    const fn sampling(&self) -> bool {
-        matches!(self.pace, Pace::On { .. })
+    fn pace(&mut self, now: u64, processor: &mut record::Processor) -> Duration {
+        if let Some(boundary) = self.closing {
+            let settled = boundary.saturating_add(GUARD);
+            if now < settled {
+                return Duration::from_nanos(settled - now);
+            }
+
+            self.closing = None;
+            let shared = self.close(boundary, processor);
+            self.next_period(now, shared, processor);
+            return Duration::from_nanos(self.length);
+        }
+
+        let end = self.period.saturating_add(self.length);
+        if now < end {
+            return Duration::from_nanos(end - now);
+        }
+
+        let boundary = now.saturating_add(GUARD);
+        if let Some(thin) = &mut self.thin
+            && thin.close(self.epoch, boundary, GUARD).is_ok()
+        {
+            self.epoch = self.epoch.next();
+            self.closing = Some(boundary);
+            return Duration::from_nanos(2 * GUARD);
+        }
+
+        self.next_period(now, Shared::default(), processor);
+        Duration::from_nanos(self.length)
     }
 
-    fn pace(
-        &mut self,
-        now: u64,
-        processor: &mut record::Processor,
-        mut toggle: impl FnMut(bool) -> (u64, u64),
-    ) -> Duration {
-        let current = |pacer: &Self| {
-            if pacer.controller.warm() {
-                pacer.length
-            } else {
-                pacer.length / u64::from(WARM_UP)
-            }
-        };
-        if now >= self.period.saturating_add(current(self)) {
-            let toggling = Duration::from_nanos(self.toggled.0.saturating_add(self.toggled.1));
-            self.length = nanoseconds(self.budget.period_for(toggling * STEPS));
-            self.next_period(now, self.length, processor);
-        }
-
-        while now >= self.window.1 {
-            self.window = self.slice();
-        }
-
-        let (from, until) = self.window;
-        let wanted = from <= now && now < until;
-        match self.pace {
-            Pace::Paused { since } if wanted => {
-                self.paused_cpu += process_cpu().saturating_sub(self.paused_at);
-                let (began, on) = toggle(true);
-                processor.gap(since, began, GapReason::Budget);
-                self.toggled.0 = on.saturating_sub(began);
-                self.pace = Pace::On { since: on };
-            }
-            Pace::On { since } if !wanted => {
-                let (began, off) = toggle(false);
-                self.toggled.1 = off.saturating_sub(began);
-                self.sampled += off.saturating_sub(since);
-                self.paused_at = process_cpu();
-                self.pace = Pace::Paused { since: off };
-            }
-            Pace::On { .. } | Pace::Paused { .. } => {}
-        }
-
-        let next = [from, until, self.period.saturating_add(current(self))]
-            .into_iter()
-            .filter(|edge| *edge > now)
-            .min()
-            .unwrap_or(now);
-        Duration::from_nanos(next - now)
-    }
-
-    fn next_period(&mut self, now: u64, length: u64, processor: &mut record::Processor) {
+    fn next_period(&mut self, now: u64, shared: Shared, processor: &mut record::Processor) {
         let cpu = process_cpu();
-        match &mut self.pace {
-            Pace::On { since } => {
-                self.sampled += now.saturating_sub(*since);
-                *since = now;
-            }
-            Pace::Paused { .. } => {
-                self.paused_cpu += cpu.saturating_sub(self.paused_at);
-                self.paused_at = cpu;
-            }
-        }
-        if self.thin.is_some() {
-            self.sampled = share(self.sampled, self.kept);
-        }
-
         let loading = processor.loading();
+        let processing = processor.processing();
         let (calls, kernel) = self
             .syscalls
             .map_or((0, Duration::ZERO), SyscallTrace::cost);
         let kernel_cost = kernel.saturating_sub(self.kernel);
-        let period = Duration::from_nanos(now.saturating_sub(self.period));
-        let sampled = Duration::from_nanos(self.sampled);
-        let paused = period.saturating_sub(sampled).max(Duration::from_nanos(1));
         let spent = cpu
             .saturating_sub(self.cpu)
             .saturating_sub(loading.saturating_sub(self.loading))
             + kernel_cost;
         let observed = Observation {
+            period: Duration::from_nanos(now.saturating_sub(self.period)),
             cpu: spent,
-            sampled,
-            period,
-            fixed: (kernel_cost + self.paused_cpu.mul_f64(period.div_duration_f64(paused)))
-                .min(spent),
+            processing: processing.saturating_sub(self.processing).min(spent),
+            raised: shared.raised,
+            kept: shared.kept,
         };
 
-        processor.paced(self.period, now, self.sampled);
-        let builder = processor.builder();
-        builder.count(AccountKind::SampledNs as u32, self.sampled);
-        builder.count(AccountKind::PacedNs as u32, now.saturating_sub(self.period));
-
         let traced = calls.saturating_sub(self.calls);
-        (self.cpu, self.loading, self.kernel, self.calls) = (cpu, loading, kernel, calls);
-        (self.sampled, self.period, self.paused_cpu) = (0, now, Duration::ZERO);
-        let warm = self.controller.warm();
-        let decision = self.controller.step(self.budget, observed);
+        (self.cpu, self.loading, self.processing) = (cpu, loading, processing);
+        (self.kernel, self.calls, self.period) = (kernel, calls, now);
+        self.length = nanoseconds(self.budget.period);
+        let warm = std::mem::replace(&mut self.warm, true);
+        let share = if warm {
+            self.model.step(self.budget, observed)
+        } else {
+            self.model.share()
+        };
         if warm {
             self.climb(now, observed, traced, processor);
         }
+        self.keep(now, share, observed, processor);
+    }
 
-        if !self.ladder.sheds(Rung::Samples) {
-            self.controller.whole();
-        } else if let Some(decision) = decision {
-            let text = format!(
-                "{} {:.1}% of {}: recording used {:.2}% of a CPU, against a budget of {:.2}%",
-                if self.thin.is_some() {
-                    "keeping"
-                } else {
-                    "sampling"
-                },
-                f64::from(decision.steps) * 100.0 / f64::from(STEPS),
-                if self.thin.is_some() {
-                    "samples"
-                } else {
-                    "each period"
-                },
-                decision.used * 100.0,
-                self.budget.cpu * 100.0
-            );
-            record!("record: budget: {text}");
-            processor
-                .builder()
-                .marker(now.cast_signed(), MarkerKind::Budget, &text);
+    fn close(&mut self, boundary: u64, processor: &mut record::Processor) -> Shared {
+        let shared = self.count(self.epoch.next(), boundary, processor);
+        self.from = boundary;
+        shared
+    }
+
+    fn count(&mut self, epoch: Epoch, until: u64, processor: &mut record::Processor) -> Shared {
+        let Some(total) = self.thin.as_ref().and_then(|thin| thin.shared(epoch).ok()) else {
+            return Shared::default();
+        };
+
+        let [even, odd] = &mut self.seen;
+        let seen = std::mem::replace(if epoch.odd() { odd } else { even }, total);
+        let shared = Shared {
+            raised: total.raised - seen.raised,
+            kept: total.kept - seen.kept,
+        };
+        processor.shared(self.from, until, shared.raised, shared.kept);
+        shared
+    }
+
+    fn keep(
+        &mut self,
+        now: u64,
+        share: f64,
+        observed: Observation,
+        processor: &mut record::Processor,
+    ) {
+        let Some(thin) = &mut self.thin else {
+            return;
+        };
+        if thin.keep(share).is_err() {
+            return;
         }
-
-        let steps = self.controller.steps();
-        if let Some(thin) = &mut self.thin {
-            if steps != self.kept && thin.keep(steps).is_ok() {
-                self.kept = steps;
-            }
-            self.window = (now, u64::MAX);
-            processor.planned(now, length, share(length, self.kept));
+        let moved =
+            (share / self.share).log2().abs() >= 0.5 || (share >= 1.0) != (self.share >= 1.0);
+        if !moved {
             return;
         }
 
-        self.plan(now, length, steps);
-        processor.planned(now, length, share(length, steps));
-    }
-
-    fn plan(&mut self, now: u64, length: u64, steps: u32) {
-        self.slices = Slices {
-            first: now,
-            length,
-            steps,
-            next: 0,
-        };
-        self.window = self.slice();
-    }
-
-    fn slice(&mut self) -> (u64, u64) {
-        let Slices {
-            first,
-            length,
-            steps,
-            next,
-        } = self.slices;
-        if next >= STEPS {
-            return (u64::MAX, u64::MAX);
-        }
-
-        self.slices.next += 1;
-        let at = first + share(length, next);
-        let slot = first + share(length, next + 1) - at;
-        let piece = share(slot, steps);
-        self.random ^= self.random << 13;
-        self.random ^= self.random >> 7;
-        self.random ^= self.random << 17;
-        let from = at + self.random % (slot - piece + 1);
-        (from, from + piece)
+        self.share = share;
+        let text = format!(
+            "keeping {} of samples: recording used {:.2}% of a CPU, against a budget of {:.2}%",
+            percent(share),
+            observed.cpu.as_secs_f64() / observed.period.as_secs_f64().max(f64::EPSILON) * 100.0,
+            self.budget.cpu * 100.0
+        );
+        record!("record: budget: {text}");
+        processor
+            .builder()
+            .marker(now.cast_signed(), MarkerKind::Budget, &text);
     }
 
     fn climb(
@@ -1392,8 +1349,7 @@ impl<'a> Pacer<'a> {
         let seconds = observed.period.as_secs_f64().max(f64::EPSILON);
         let used = observed.cpu.as_secs_f64() / seconds;
         let period = Period {
-            over: used > self.budget.cpu
-                || (self.ladder.sheds(Rung::Samples) && self.controller.steps() < STEPS),
+            over: used > self.budget.cpu || self.model.share() < 1.0,
             used: used / self.budget.cpu,
             #[expect(clippy::cast_precision_loss, reason = "a rate needs no precision")]
             calls: traced as f64 / seconds,
@@ -1402,10 +1358,8 @@ impl<'a> Pacer<'a> {
             return;
         };
 
-        if let Move::Down(rung) = moved
-            && rung != Rung::Samples
-        {
-            self.controller.forgive();
+        if let Move::Down(_) = moved {
+            self.model.forgive();
         }
 
         let text = match moved {
@@ -1431,21 +1385,22 @@ impl<'a> Pacer<'a> {
         }
     }
 
-    fn finish(self, now: u64, processor: &mut record::Processor) {
-        let sampled = match self.pace {
-            Pace::Paused { since } => {
-                processor.gap(since, now, GapReason::Budget);
-                self.sampled
-            }
-            Pace::On { since } if self.thin.is_some() => {
-                share(self.sampled + now.saturating_sub(since), self.kept)
-            }
-            Pace::On { since } => self.sampled + now.saturating_sub(since),
-        };
-        processor.paced(self.period, now, sampled);
-        let builder = processor.builder();
-        builder.count(AccountKind::SampledNs as u32, sampled);
-        builder.count(AccountKind::PacedNs as u32, now.saturating_sub(self.period));
+    fn finish(mut self, processor: &mut record::Processor) {
+        if let Some(boundary) = self.closing {
+            self.close(boundary, processor);
+        }
+        self.count(self.epoch, monotonic(), processor);
+    }
+}
+
+fn percent(share: f64) -> String {
+    let percent = share * 100.0;
+    if percent >= 10.0 {
+        format!("{percent:.0}%")
+    } else if percent >= 0.1 {
+        format!("{percent:.1}%")
+    } else {
+        format!("{percent:.4}%")
     }
 }
 
@@ -1461,27 +1416,6 @@ fn process_cpu() -> Duration {
 
         time(usage.user_time()) + time(usage.system_time())
     })
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct Slices {
-    first: u64,
-    length: u64,
-    steps: u32,
-    next: u32,
-}
-
-const _: () = assert!(STEPS == crate::backend::bpf::sampler::SHARES);
-
-fn share(length: u64, steps: u32) -> u64 {
-    debug_assert!(steps <= STEPS, "{steps} steps of {STEPS}");
-    u64::try_from(u128::from(length) * u128::from(steps) / u128::from(STEPS)).unwrap_or(u64::MAX)
-}
-
-#[derive(Debug, Clone, Copy)]
-enum Pace {
-    On { since: u64 },
-    Paused { since: u64 },
 }
 
 fn perf_source(
@@ -1572,108 +1506,6 @@ pub(super) fn which(program: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
-
-    #[test]
-    fn a_budget_pause_is_a_gap_from_sampling_off_to_sampling_on() {
-        let processor =
-            || super::record::Processor::new(crate::debug_info::DebugFileSearch::default(), 64);
-
-        let budget = super::Budget {
-            cpu: 0.01,
-            period: Duration::from_hours(1),
-        };
-        let mut toggled = Vec::new();
-        let mut pace = |pacer: &mut super::Pacer<'_>, processor: &mut _, now| {
-            pacer.pace(now, processor, |on| {
-                toggled.push((now, on));
-                (now, now + 100)
-            })
-        };
-
-        let mut paused = processor();
-        let mut pacer = super::Pacer::new(budget, 1_000, &paused, None, None);
-        pacer.window = (1_000, 3_000);
-        assert_eq!(
-            pace(&mut pacer, &mut paused, 1_500),
-            Duration::from_nanos(1_500)
-        );
-        pace(&mut pacer, &mut paused, 3_000);
-        pacer.window = (5_000, 7_000);
-        pace(&mut pacer, &mut paused, 4_500);
-        pace(&mut pacer, &mut paused, 5_000);
-        pace(&mut pacer, &mut paused, 7_000);
-        pace(&mut pacer, &mut paused, 8_000);
-        pacer.finish(9_000, &mut paused);
-
-        let mut sampling = processor();
-        let mut pacer = super::Pacer::new(budget, 1_000, &sampling, None, None);
-        pacer.window = (1_000, 3_000);
-        pace(&mut pacer, &mut sampling, 2_000);
-        pacer.finish(2_500, &mut sampling);
-
-        assert_eq!(toggled, [(3_000, false), (5_000, true), (7_000, false)]);
-        let paused = super::Profile {
-            capture: paused.finish(),
-        };
-        assert_eq!(
-            paused.paused(super::GapReason::Budget),
-            [(3_100, 5_000), (7_100, 9_000)]
-        );
-        let sampling = super::Profile {
-            capture: sampling.finish(),
-        };
-        assert_eq!(sampling.gaps(), []);
-    }
-
-    #[test]
-    fn a_paused_budget_measures_bursty_cpu_within_a_few_percent() {
-        let processor =
-            super::record::Processor::new(crate::debug_info::DebugFileSearch::default(), 64);
-        let budget = super::Budget {
-            cpu: 0.01,
-            period: Duration::from_secs(1),
-        };
-        let (length, periods) = (999_999_937_u64, 20);
-        let slot = length / u64::from(super::STEPS);
-
-        for (cycle, burst, within) in [(700_000_000, 130_000_000, 25), (slot, slot * 4 / 7, 10)] {
-            let busy_until = |time: u64| time / cycle * burst + (time % cycle).min(burst);
-            let truth = u128::from(busy_until(length * periods));
-
-            let mut worst = 0;
-            for seed in 1..=100 {
-                for steps in [1, 4, 16, super::STEPS] {
-                    let mut pacer = super::Pacer::new(budget, seed, &processor, None, None);
-                    let (mut sampled, mut seen) = (0, 0);
-                    for period in 0..periods {
-                        pacer.plan(period * length, length, steps);
-                        let mut window = pacer.window;
-                        while window.0 != u64::MAX {
-                            assert!(
-                                window.0 >= period * length && window.1 <= (period + 1) * length
-                            );
-                            sampled += window.1 - window.0;
-                            seen += busy_until(window.1) - busy_until(window.0);
-                            window = pacer.slice();
-                        }
-                    }
-
-                    if steps == super::STEPS {
-                        assert_eq!(sampled, length * periods);
-                    }
-
-                    let estimate =
-                        u128::from(seen) * u128::from(length * periods) / u128::from(sampled);
-                    worst = worst.max(estimate.abs_diff(truth));
-                }
-            }
-
-            assert!(
-                worst * within < truth,
-                "{cycle} ns cycles: off by {worst} ns of {truth} ns"
-            );
-        }
-    }
 
     #[test]
     fn a_program_ending_before_its_first_task_snapshot_explains_the_empty_result() {

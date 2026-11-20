@@ -203,7 +203,7 @@ fn build(model: &Model, counted: bool) -> CaptureBuilder {
     }
 
     for &(start, end) in &model.gaps {
-        builder.gap(start, end, GapReason::Budget);
+        builder.gap(start, end, GapReason::Behind);
     }
 
     for traced in &model.traced {
@@ -1185,7 +1185,7 @@ fn a_span_of_no_length_at_a_cut_is_in_the_later_piece() {
     let mut builder = CaptureBuilder::new();
     let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
     builder.off_cpu(thread, 24, 0, true, 0);
-    builder.gap(24, 24, GapReason::Budget);
+    builder.gap(24, 24, GapReason::Behind);
     let [before, after] = &pieces(builder, &[24])[..] else {
         panic!("two pieces");
     };

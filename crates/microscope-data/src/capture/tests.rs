@@ -47,7 +47,7 @@ fn sample_capture(offset: i64) -> Capture {
     builder.off_cpu(worker, offset + 1, 1, true, 0);
 
     builder.count(AccountKind::LostSamples as u32, 2);
-    builder.gap(offset + 6, offset + 7, GapReason::Budget);
+    builder.gap(offset + 6, offset + 7, GapReason::Behind);
 
     builder.marker(
         offset + 6,

@@ -705,7 +705,6 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
   const source = setting("source");
   const rate = source?.match(/^CPU time at (\d+ Hz)$/u)?.[1];
   const kernel = sampledKernel(summary.settings);
-  const paused = summary.gaps.reduce((sum, [from, to]) => sum + (to - from), 0);
   const behind = summary.behind.reduce((sum, [from, to]) => sum + (to - from), 0);
   const span = Math.max(summary.duration, 1);
   const offCpu = summary.threads.reduce((sum, each) => sum + each.blocked + each.preempted, 0);
@@ -779,17 +778,6 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
           warn
         >
           {formatPercent(truncated, summary.samples)}
-        </Stat>
-      ) : null}
-      {summary.gaps.length > 0 ? (
-        <Stat
-          label="Paused for budget"
-          title={summary.budgetChanges
-            .map((each) => `${formatDuration(each.time)}: ${each.text}`)
-            .join("\n")}
-          warn
-        >
-          {formatPercent(paused, span)}
         </Stat>
       ) : null}
       {summary.behind.length > 0 ? (

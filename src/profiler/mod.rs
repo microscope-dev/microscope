@@ -33,7 +33,9 @@ pub use crate::capture::records::MarkerKind;
 pub use crate::unwind::sample::CHAIN_LIMIT;
 pub use annotate::{CodeBlock, CodeLine, Disassembly, InstructionCost, LineCost, LineCosts};
 pub use collector::ProbeSelection;
-pub use session::{Attachment, Recording, Save, Watch, record, record_attached, record_watched};
+pub use session::{
+    Attachment, Recording, Save, Watch, affordable_rate, record, record_attached, record_watched,
+};
 pub use symbols::ModuleSymbols;
 pub use syscall_trace::{BLOCKED_AT, Printer, SyscallEngine, SyscallLevel, SyscallOptions};
 pub use tasks::THREAD;
@@ -764,22 +766,33 @@ impl Profile {
     }
 
     #[must_use]
-    pub fn sampled_weight(&self) -> u64 {
-        match self
-            .capture
-            .account(crate::capture::records::AccountKind::SampledWeight as u32)
-        {
-            0 => self.total_weight(),
-            sampled => sampled,
-        }
+    pub fn kept_share(&self) -> Option<(u64, u64)> {
+        use crate::capture::records::AccountKind;
+        let raised = self.capture.account(AccountKind::RaisedSamples as u32);
+        let kept = self.capture.account(AccountKind::KeptSamples as u32);
+        (kept < raised).then_some((raised, kept))
     }
 
     #[must_use]
-    pub fn scaled_spread(&self) -> u64 {
-        let variance = self
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a margin needs no more precision than f64's"
+    )]
+    pub fn share_margin(&self) -> f64 {
+        let (sum, squares) = self
             .capture
-            .account(crate::capture::records::AccountKind::ScaledVarianceSquareUs as u32);
-        variance.isqrt() * 1_000
+            .samples
+            .iter()
+            .map(|sample| sample.weight.get() as f64)
+            .fold((0.0, 0.0), |(sum, squares), weight| {
+                (sum + weight, weight.mul_add(weight, squares))
+            });
+        if sum <= 0.0 {
+            return 1.0;
+        }
+
+        let effective = sum * sum / squares;
+        (1.96 * 0.5 / effective.sqrt()).min(1.0)
     }
 
     #[must_use]

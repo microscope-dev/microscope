@@ -168,7 +168,7 @@ mod tests {
             }
             "back in a later gap" => {
                 processor.process(switch(THREAD, false, false, 8_000));
-                processor.gap(7_000, 8_500, GapReason::Budget);
+                processor.gap(7_000, 8_500, GapReason::Behind);
             }
             "snapshot then back" => {
                 processor.process(switch(OTHER, false, false, 7_000));

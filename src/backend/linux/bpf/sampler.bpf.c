@@ -90,34 +90,57 @@ struct {
 	__type(value, u64);
 } LOST SEC(".maps");
 
+enum share_entry {
+	SHARE_THRESHOLD = 0,
+	SHARE_BOUNDARY = 1,
+	SHARE_GUARD = 2,
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 1);
+	__uint(max_entries, 3);
 	__type(key, u32);
-	__type(value, u32);
-} DROPPED SEC(".maps");
+	__type(value, u64);
+} SHARE SEC(".maps");
 
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
+	__uint(max_entries, 4);
 	__type(key, u32);
-	__type(value, u32);
-} OWED SEC(".maps");
+	__type(value, u64);
+} SHARED SEC(".maps");
 
-#define SHARES 64
+static __always_inline u64 share_entry(u32 entry)
+{
+	u64 *value = bpf_map_lookup_elem(&SHARE, &entry);
+	return value ? *value : 0;
+}
+
+static __always_inline void tally(u32 which)
+{
+	u64 *count = bpf_map_lookup_elem(&SHARED, &which);
+	if (count)
+		*count += 1;
+}
 
 static __always_inline int kept(void)
 {
-	u32 zero = 0;
-	u32 *dropped = bpf_map_lookup_elem(&DROPPED, &zero);
-	u32 *owed = bpf_map_lookup_elem(&OWED, &zero);
-	if (!dropped || !owed || !*dropped || *dropped >= SHARES)
-		return 1;
-	*owed += SHARES - *dropped;
-	if (*owed < SHARES)
+	u64 now = bpf_ktime_get_ns();
+	u64 boundary = share_entry(SHARE_BOUNDARY);
+	u64 threshold = share_entry(SHARE_THRESHOLD);
+	u32 epoch = (u32)(boundary & 1);
+	boundary &= ~1ULL;
+	if (now < boundary)
+		epoch ^= 1;
+
+	u64 guard = share_entry(SHARE_GUARD);
+	tally(epoch * 2);
+	if (now + guard > boundary && now < boundary + guard)
 		return 0;
-	*owed -= SHARES;
+	if (threshold && bpf_get_prandom_u32() >= threshold)
+		return 0;
+	tally(epoch * 2 + 1);
 	return 1;
 }
 

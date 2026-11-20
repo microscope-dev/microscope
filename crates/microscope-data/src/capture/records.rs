@@ -487,13 +487,9 @@ pub enum AccountKind {
 
     OffCpuLost = 35,
 
-    SampledNs = 39,
+    RaisedSamples = 43,
 
-    PacedNs = 40,
-
-    SampledWeight = 41,
-
-    ScaledVarianceSquareUs = 42,
+    KeptSamples = 44,
 }
 
 #[repr(C)]
@@ -629,8 +625,6 @@ pub struct Gap {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum GapReason {
-    Budget = 1,
-
     TaskSnapshot = 2,
 
     Behind = 3,
@@ -640,7 +634,6 @@ impl GapReason {
     #[must_use]
     pub const fn from_number(number: u8) -> Option<Self> {
         match number {
-            1 => Some(Self::Budget),
             2 => Some(Self::TaskSnapshot),
             3 => Some(Self::Behind),
             _ => None,

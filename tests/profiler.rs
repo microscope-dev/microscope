@@ -6,9 +6,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use microscope::profiler::budget::Budget;
 use microscope::profiler::{
-    Attachment, CallNode, CommandIdentity, Cuts, DEEP_STACK_COPY, GapReason, MarkerKind, Preset,
+    Attachment, CallNode, CommandIdentity, Cuts, DEEP_STACK_COPY, MarkerKind, Preset,
     ProbeSelection, Profile, Query, RecordError, RecordOptions, SMALL_STACK_COPY, SampleSource,
     SampledStack, Save, StackCopy, StackEnding, StackView, Watch, ZONE_BEGAN_UNSEEN,
     ZONE_ENDED_UNSEEN, record, record_attached, record_watched,
@@ -721,118 +720,6 @@ fn a_threads_time_off_its_cpu_is_each_sleep_and_each_preemption() {
     }
 }
 
-#[test]
-fn a_recording_over_its_budget_pauses_between_samples_and_says_so() {
-    budget_pauses(Cuts::Whole);
-}
-
-#[test]
-fn a_rolling_recording_counts_only_cpu_while_sampling_is_enabled() {
-    budget_pauses(Cuts::Window(Duration::from_secs(10)));
-}
-
-fn budget_pauses(cuts: Cuts) {
-    let (reader, mut writer) = std::io::pipe().expect("pipe");
-    let mut command = Command::new(Scenario::fixture("profile-phases"));
-    command
-        .stdin(reader)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let options = RecordOptions {
-        cuts,
-        budget: Some(Budget {
-            cpu: 0.001,
-            period: Duration::from_millis(50),
-        }),
-        ..RecordOptions::preset(Preset::Maximum)
-    };
-
-    let stop = AtomicBool::new(false);
-    let mut released = false;
-
-    let recording = record_watched(
-        command,
-        &options,
-        &mut Watch {
-            every: Duration::from_millis(20),
-            publish: &mut |profile| {
-                if !released && !profile.budget_changes().is_empty() && !profile.gaps().is_empty() {
-                    writer.write_all(b"x").expect("release the program");
-                    released = true;
-                }
-            },
-            stop: &stop,
-            save: None,
-        },
-    )
-    .expect("record");
-    assert!(recording.status.success(), "{}", recording.status);
-    let profile = &recording.profile;
-    let (gaps, changes) = (profile.gaps(), profile.budget_changes());
-    assert!(!gaps.is_empty() && !changes.is_empty(), "{changes:?}");
-    assert!(profile.recorder_cpu().0 > 0);
-
-    let (start, end) = profile.span();
-    assert!(
-        gaps.iter().all(|(from, to)| start <= *from && *to <= end),
-        "{gaps:?} beyond {start}..{end}"
-    );
-    let inside = |time: i64| gaps.iter().any(|(start, end)| *start < time && time < *end);
-    let sampled = profile.stacks();
-    assert!(!sampled.is_empty());
-    assert_cpu_accounting(profile);
-    if let Some(stack) = sampled.iter().find(|stack| inside(stack.time)) {
-        panic!("{stack:?} was sampled in a gap: {gaps:?}");
-    }
-}
-
-#[test]
-fn a_program_that_exits_while_sampling_is_paused_ends_the_recording_at_once() {
-    let (reader, mut writer) = std::io::pipe().expect("pipe");
-    let mut command = Command::new("sh");
-    command
-        .args(["-c", "read line"])
-        .stdin(reader)
-        .stdout(Stdio::null());
-    let options = RecordOptions {
-        budget: Some(Budget {
-            cpu: 0.000_001,
-            period: Duration::from_secs(1),
-        }),
-        ..RecordOptions::preset(Preset::Production)
-    };
-
-    let stop = AtomicBool::new(false);
-    let mut released = None;
-    let recording = record_watched(
-        command,
-        &options,
-        &mut Watch {
-            every: Duration::from_millis(20),
-            publish: &mut |profile| {
-                if released.is_none() && !profile.budget_changes().is_empty() {
-                    let now = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
-                        .expect("read the clock");
-                    writer.write_all(b"\n").expect("release the program");
-                    released = Some(now.num_nanoseconds());
-                }
-            },
-            stop: &stop,
-            save: None,
-        },
-    )
-    .expect("record");
-    assert!(recording.status.success(), "{}", recording.status);
-
-    let released = released.expect("the budget paused sampling");
-    let (_, end) = recording.profile.span();
-    assert!(
-        end - released < 50_000_000,
-        "the recording ended {} ms after the program was released",
-        (end - released) / 1_000_000
-    );
-}
-
 fn on_stacks(profile: &Profile) -> std::collections::BTreeSet<String> {
     profile
         .stacks()
@@ -846,7 +733,7 @@ fn assert_cpu_accounting(profile: &Profile) {
     assert!(start <= end, "{start}..{end}");
     support::profile::assert_loss_explained(profile);
     let (weight, counted, lost) = (
-        profile.sampled_weight(),
+        profile.total_weight(),
         profile.counted(),
         profile.lost_samples(),
     );
@@ -2533,65 +2420,6 @@ fn a_program_that_exits_around_a_snapshot_keeps_its_status() {
             "{:?}",
             recording.profile.task_snapshot_problems()
         );
-    }
-}
-
-#[test]
-fn snapshots_in_a_budget_pause_leave_gaps_apart() {
-    let (reader, _writer) = std::io::pipe().expect("pipe");
-    let mut command = Command::new(Scenario::fixture("profile-go-waits"));
-    command
-        .stdin(reader)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let options = RecordOptions {
-        budget: Some(Budget {
-            cpu: 0.001,
-            period: Duration::from_millis(50),
-        }),
-        task_snapshots: Some(Duration::from_millis(50)),
-        ..RecordOptions::default()
-    };
-
-    let stop = AtomicBool::new(false);
-    let recording = record_watched(
-        command,
-        &options,
-        &mut Watch {
-            every: Duration::from_millis(20),
-            publish: &mut |profile| {
-                if profile.task_snapshots().0 >= 8 && profile.paused(GapReason::Budget).len() >= 3 {
-                    stop.store(true, Ordering::Relaxed);
-                }
-            },
-            stop: &stop,
-            save: None,
-        },
-    )
-    .expect("record");
-    let gaps = recording.profile.gaps();
-    assert!(
-        gaps.windows(2).all(|pair| pair[0].1 <= pair[1].0),
-        "{gaps:?}"
-    );
-
-    let snapshots = recording.profile.paused(GapReason::TaskSnapshot);
-    let budget = recording.profile.paused(GapReason::Budget);
-    assert!(
-        snapshots
-            .iter()
-            .any(|&(start, _)| budget.iter().any(|&(from, to)| from < start && start <= to)),
-        "no snapshot fell in a budget pause: {gaps:?}"
-    );
-
-    let stacks = recording.profile.stacks();
-    assert!(!stacks.is_empty());
-    if let Some(stack) = stacks.iter().find(|stack| {
-        budget
-            .iter()
-            .any(|&(from, to)| from < stack.time && stack.time < to)
-    }) {
-        panic!("{stack:?} was sampled in a budget pause: {gaps:?}");
     }
 }
 

@@ -1124,8 +1124,6 @@ pub struct ProfileSummary {
     pub recorder_cpu: u64,
     pub recorder_loading: u64,
 
-    pub gaps: Vec<[i64; 2]>,
-
     pub behind: Vec<[i64; 2]>,
 
     pub budget_changes: Vec<ProfileMarker>,
