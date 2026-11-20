@@ -894,8 +894,10 @@ fn a_recordings_calls_print_live_and_in_its_report_alike() {
     );
     assert!(said.contains("system calls, "), "{said}");
     assert!(said.contains("close EBADF × 2"), "{said}");
-    let busiest =
-        Regex::new(r"most time:  (clock_)?nanosleep 3\d\.\d{3} ms in 1 call, ").expect("regex");
+    let busiest = Regex::new(
+        r"most time:  (execve [\d.]+ ms in 1 call, )?(clock_)?nanosleep 3\d\.\d{3} ms in 1 call, ",
+    )
+    .expect("regex");
     assert!(busiest.is_match(&said), "{said}");
     assert!(said.contains("slow · syscall-exceptions.c:16"), "{said}");
 
