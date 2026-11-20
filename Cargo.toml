@@ -210,3 +210,6 @@ debug = 0
 
 
 codegen-units = 4096
+
+[patch.crates-io]
+aya = { path = "vendor/aya" }

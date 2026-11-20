@@ -1,0 +1,177 @@
+//! Cgroup skb programs.
+
+use std::{hash::Hash, os::fd::AsFd, path::Path};
+
+use aya_obj::generated::bpf_prog_type::BPF_PROG_TYPE_CGROUP_SKB;
+pub use aya_obj::programs::CgroupSkbAttachType;
+
+use crate::{
+    VerifierLogLevel,
+    programs::{
+        CgroupAttachMode, FdLink, Link, ProgAttachLink, ProgramData, ProgramError, ProgramType,
+        define_link_wrapper, id_as_key, impl_try_into_fdlink, load_program,
+    },
+    sys::{LinkTarget, SyscallError, bpf_link_create},
+    util::KernelVersion,
+};
+
+/// A program used to inspect or filter network activity for a given cgroup.
+///
+/// [`CgroupSkb`] programs can be used to inspect or filter network activity
+/// generated on all the sockets belonging to a given [cgroup]. They can be
+/// attached to both _ingress_ and _egress_.
+///
+/// [cgroup]: https://man7.org/linux/man-pages/man7/cgroups.7.html
+///
+/// # Minimum kernel version
+///
+/// The minimum kernel version required to use this feature is 4.10.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[derive(thiserror::Error, Debug)]
+/// # enum Error {
+/// #     #[error(transparent)]
+/// #     IO(#[from] std::io::Error),
+/// #     #[error(transparent)]
+/// #     Map(#[from] aya::maps::MapError),
+/// #     #[error(transparent)]
+/// #     Program(#[from] aya::programs::ProgramError),
+/// #     #[error(transparent)]
+/// #     Ebpf(#[from] aya::EbpfError)
+/// # }
+/// # let mut bpf = aya::Ebpf::load(&[])?;
+/// use std::fs::File;
+/// use aya::programs::{CgroupAttachMode, CgroupSkb, CgroupSkbAttachType};
+///
+/// let file = File::open("/sys/fs/cgroup/unified")?;
+/// let egress: &mut CgroupSkb = bpf.program_mut("egress_filter").unwrap().try_into()?;
+/// egress.load()?;
+/// egress.attach(file, CgroupSkbAttachType::Egress, CgroupAttachMode::Single)?;
+/// # Ok::<(), Error>(())
+/// ```
+#[derive(Debug)]
+#[doc(alias = "BPF_PROG_TYPE_CGROUP_SKB")]
+pub struct CgroupSkb {
+    pub(crate) data: ProgramData<CgroupSkbLink>,
+    pub(crate) attach_type: Option<CgroupSkbAttachType>,
+}
+
+impl CgroupSkb {
+    /// The type of the program according to the kernel.
+    pub const PROGRAM_TYPE: ProgramType = ProgramType::CgroupSkb;
+
+    /// Loads the program inside the kernel.
+    pub fn load(&mut self) -> Result<(), ProgramError> {
+        let Self { data, attach_type } = self;
+        load_program(BPF_PROG_TYPE_CGROUP_SKB, attach_type.map(Into::into), data)
+    }
+
+    /// Returns the expected attach type of the program.
+    ///
+    /// [`CgroupSkb`] programs can specify the expected attach type in their ELF
+    /// section name, eg `cgroup_skb/ingress` or `cgroup_skb/egress`. This
+    /// method returns `None` for programs defined with the generic section
+    /// `cgroup/skb`.
+    pub const fn expected_attach_type(&self) -> &Option<CgroupSkbAttachType> {
+        &self.attach_type
+    }
+
+    /// Attaches the program to the given cgroup.
+    ///
+    /// The returned value can be used to detach, see [`CgroupSkb::detach`].
+    pub fn attach<T: AsFd>(
+        &mut self,
+        cgroup: T,
+        attach_type: CgroupSkbAttachType,
+        mode: CgroupAttachMode,
+    ) -> Result<CgroupSkbLinkId, ProgramError> {
+        let prog_fd = self.fd()?;
+        let prog_fd = prog_fd.as_fd();
+        let cgroup_fd = cgroup.as_fd();
+        if KernelVersion::at_least(5, 7, 0) {
+            let link_fd = bpf_link_create(
+                prog_fd,
+                LinkTarget::Fd(cgroup_fd),
+                attach_type,
+                mode.into(),
+                None,
+            )
+            .map_err(|io_error| SyscallError {
+                call: "bpf_link_create",
+                io_error,
+            })?;
+            self.data
+                .links
+                .insert(CgroupSkbLink::new(CgroupSkbLinkInner::Fd(FdLink::new(
+                    link_fd,
+                ))))
+        } else {
+            let link = ProgAttachLink::attach(prog_fd, cgroup_fd, attach_type, mode)?;
+
+            self.data
+                .links
+                .insert(CgroupSkbLink::new(CgroupSkbLinkInner::ProgAttach(link)))
+        }
+    }
+
+    /// Creates a program from a pinned entry on a bpffs.
+    ///
+    /// Existing links will not be populated. To work with existing links you should use [`crate::programs::links::PinnedLink`].
+    ///
+    /// On drop, any managed links are detached and the program is unloaded. This will not result in
+    /// the program being unloaded from the kernel if it is still pinned.
+    pub fn from_pin<P: AsRef<Path>>(
+        path: P,
+        expected_attach_type: CgroupSkbAttachType,
+    ) -> Result<Self, ProgramError> {
+        let data = ProgramData::from_pinned_path(path, VerifierLogLevel::default())?;
+        Ok(Self {
+            data,
+            attach_type: Some(expected_attach_type),
+        })
+    }
+}
+
+#[derive(Debug, Hash, Eq, PartialEq)]
+enum CgroupSkbLinkIdInner {
+    Fd(<FdLink as Link>::Id),
+    ProgAttach(<ProgAttachLink as Link>::Id),
+}
+
+#[derive(Debug)]
+enum CgroupSkbLinkInner {
+    Fd(FdLink),
+    ProgAttach(ProgAttachLink),
+}
+
+impl Link for CgroupSkbLinkInner {
+    type Id = CgroupSkbLinkIdInner;
+
+    fn id(&self) -> Self::Id {
+        match self {
+            Self::Fd(fd) => CgroupSkbLinkIdInner::Fd(fd.id()),
+            Self::ProgAttach(p) => CgroupSkbLinkIdInner::ProgAttach(p.id()),
+        }
+    }
+
+    fn detach(self) -> Result<(), ProgramError> {
+        match self {
+            Self::Fd(fd) => fd.detach(),
+            Self::ProgAttach(p) => p.detach(),
+        }
+    }
+}
+
+id_as_key!(CgroupSkbLinkInner, CgroupSkbLinkIdInner);
+
+define_link_wrapper!(
+    CgroupSkbLink,
+    CgroupSkbLinkId,
+    CgroupSkbLinkInner,
+    CgroupSkbLinkIdInner,
+    CgroupSkb,
+);
+
+impl_try_into_fdlink!(CgroupSkbLink, CgroupSkbLinkInner);

@@ -1637,27 +1637,38 @@ int terminal_enter(void *ctx)
 
 
 
-#define FUNCTION_SLOT(n)                                                           \
-	SEC("fentry")                                                              \
-	int enter_##n(u64 *ctx)                                                    \
-	{                                                                          \
-		struct pt_regs *regs = (struct pt_regs *)ctx[0];                   \
-		return on_enter(ctx, regs, regs->orig_ax, 0, 0);                   \
-	}                                                                          \
-	SEC("fexit")                                                               \
-	int exit_##n(u64 *ctx)                                                     \
-	{                                                                          \
-		return on_exit(ctx, (struct pt_regs *)ctx[0], ctx[1], 0);          \
-	}
+// The call hooks where the kernel has kprobe.multi: entry probes on the
+// functions that run the sys_enter and sys_exit tracepoints. The kernel runs
+// these with preemption off, so a task preempted inside one can't make the
+// kernel skip it for every other task on its CPU, as it does for tracepoint,
+// fentry, and fexit programs. They are entry probes only: a return probe
+// leaves the probe's address on each sleeping task's stack, and the kernel
+// calls through it after the link is freed.
+SEC("kprobe")
+int call_enter(struct pt_regs *ctx)
+{
+	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
+	if (!regs)
+		return 0;
+	return on_enter(ctx, regs, ctx->si, 0, 0);
+}
 
-FUNCTION_SLOT(0) FUNCTION_SLOT(1) FUNCTION_SLOT(2) FUNCTION_SLOT(3)
-FUNCTION_SLOT(4) FUNCTION_SLOT(5) FUNCTION_SLOT(6) FUNCTION_SLOT(7)
-FUNCTION_SLOT(8) FUNCTION_SLOT(9) FUNCTION_SLOT(10) FUNCTION_SLOT(11)
-FUNCTION_SLOT(12) FUNCTION_SLOT(13) FUNCTION_SLOT(14) FUNCTION_SLOT(15)
-FUNCTION_SLOT(16) FUNCTION_SLOT(17) FUNCTION_SLOT(18) FUNCTION_SLOT(19)
-FUNCTION_SLOT(20) FUNCTION_SLOT(21) FUNCTION_SLOT(22) FUNCTION_SLOT(23)
-FUNCTION_SLOT(24) FUNCTION_SLOT(25) FUNCTION_SLOT(26) FUNCTION_SLOT(27)
-FUNCTION_SLOT(28) FUNCTION_SLOT(29) FUNCTION_SLOT(30) FUNCTION_SLOT(31)
+SEC("kprobe")
+int call_exit(struct pt_regs *ctx)
+{
+	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
+	if (!regs)
+		return 0;
+	return on_exit(ctx, regs, (s64)ctx->si, 0);
+}
+
+// The kernel calls the functions call_enter and call_exit probe only while a
+// sys_enter or sys_exit tracepoint has a probe; this one keeps them called.
+SEC("raw_tp/sys_enter")
+int syscall_work(struct bpf_raw_tracepoint_args *ctx)
+{
+	return 0;
+}
 
 SEC("tp_btf/sched_process_fork")
 int process_fork(u64 *ctx)

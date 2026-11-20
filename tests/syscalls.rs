@@ -1028,9 +1028,19 @@ mod bpf {
     }
 
     fn privileged() -> Command {
+        privileged_with(&[])
+    }
+
+    /// Makes the call hooks use the tracepoints rather than kprobe.multi.
+    const TRACEPOINTS: &str = "MICROSCOPE_TEST_TRACEPOINT_HOOKS=1";
+
+    /// Runs microscope with `environment`, as `NAME=value`, through the
+    /// launcher, which is `env`.
+    fn privileged_with(environment: &[&str]) -> Command {
         let mut command = Command::new(launcher());
         command
             .env_clear()
+            .args(environment)
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .stdin(Stdio::null());
         command
@@ -1042,17 +1052,24 @@ mod bpf {
         program: &Path,
         program_arguments: &[&str],
     ) -> Option<i32> {
+        let (environment, arguments): (Vec<&str>, Vec<&str>) = arguments
+            .iter()
+            .partition(|argument| argument.starts_with("MICROSCOPE_TEST_"));
         let mut command = if arguments.contains(&"ptrace") {
             let mut command = super::microscope();
-            command.env_clear();
+            command.env_clear().envs(
+                environment
+                    .iter()
+                    .filter_map(|variable| variable.split_once('=')),
+            );
             command
         } else {
-            privileged()
+            privileged_with(&environment)
         };
 
         let output = command
             .args(["record", "-o", "trace.usprof"])
-            .args(arguments)
+            .args(&arguments)
             .arg("--")
             .arg(program)
             .args(program_arguments)
@@ -1299,15 +1316,15 @@ mod bpf {
             }
         }
     }
-    fn group_exits(mode: &str, fentry: bool, workers: u32, rounds: u32) {
+    fn group_exits(mode: &str, hook: &str, workers: u32, rounds: u32) {
         let filter = "trace=exit,exit_group,kill";
         let directory = ScratchDir::new("syscalls-group-exits");
-        let arguments: &[&str] = if fentry {
-            &["--syscall-filter", filter]
+        let (environment, arguments): (&[&str], &[&str]) = if hook == "raw_tp" {
+            (&[TRACEPOINTS], &[])
         } else {
-            &[]
+            (&[], &["--syscall-filter", filter])
         };
-        let output = privileged()
+        let output = privileged_with(environment)
             .args(["record", "-o", "trace.usprof"])
             .args(arguments)
             .arg("--")
@@ -1325,7 +1342,6 @@ mod bpf {
         assert!(output.status.success(), "{}", text(&output.stderr));
 
         let profile = read(directory.path());
-        let hook = if fentry { "fentry" } else { "tp_btf" };
         assert_eq!(profile.setting("syscall hook"), Some(hook));
         let trace = log(directory.path(), &[filter]);
         let context = format!("{mode}, {hook}:\n{truth}\n{trace}");
@@ -1451,14 +1467,14 @@ mod bpf {
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn group_termination_reports_each_thread_and_one_process_exit() {
         for mode in ["term", "kill", "group", "worker-group", "return"] {
-            group_exits(mode, false, 7, 8);
+            group_exits(mode, "raw_tp", 7, 8);
         }
     }
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn group_exit_status_matches_the_status_reaped_by_the_parent() {
         for mode in ["leader-first", "parallel"] {
-            group_exits(mode, true, 7, 8);
+            group_exits(mode, "kprobe.multi", 7, 8);
         }
     }
     #[test]
@@ -1573,14 +1589,14 @@ mod bpf {
 
         // Two runs interleave their threads as each was scheduled, so compare
         // each thread's own calls.
-        let fentry = threads(&by("fentry", &["--syscall-filter", filter]));
-        let tracepoint = threads(&by("tp_btf", &[]));
+        let functions = threads(&by("kprobe.multi", &["--syscall-filter", filter]));
+        let tracepoint = threads(&by("raw_tp", &[TRACEPOINTS]));
         assert_eq!(
-            fentry,
+            functions,
             tracepoint,
-            "only fentry:\n{:#?}\nonly tp_btf:\n{:#?}",
-            fentry.difference(&tracepoint).collect::<Vec<_>>(),
-            tracepoint.difference(&fentry).collect::<Vec<_>>()
+            "only kprobe.multi:\n{:#?}\nonly raw_tp:\n{:#?}",
+            functions.difference(&tracepoint).collect::<Vec<_>>(),
+            tracepoint.difference(&functions).collect::<Vec<_>>()
         );
     }
     #[test]
@@ -1597,6 +1613,10 @@ mod bpf {
             for (hook, arguments) in [
                 ("filtered", &["--syscall-filter", filter.as_str()][..]),
                 ("all", &[]),
+                (
+                    "tracepoints",
+                    &[TRACEPOINTS, "--syscall-filter", filter.as_str()],
+                ),
             ] {
                 let directory = below(&scratch, hook);
                 recorded(&directory, arguments, &fixture(), &[mode]);
@@ -1609,9 +1629,9 @@ mod bpf {
                 }
             }
 
-            if filter == "trace=rt_sigreturn" {
-                let hooked = read(&scratch.path().join("filtered"));
-                assert_eq!(hooked.setting("syscall hook"), Some("tp_btf"));
+            for (directory, hook) in [("filtered", "kprobe.multi"), ("tracepoints", "raw_tp")] {
+                let hooked = read(&scratch.path().join(directory));
+                assert_eq!(hooked.setting("syscall hook"), Some(hook), "{filter}");
             }
         }
 
@@ -2768,7 +2788,7 @@ mod bpf {
             "syscall-load",
             &["1".to_owned(), rounds.to_string()],
         );
-        assert_eq!(profile.setting("syscall hook"), Some("tp_btf"));
+        assert_eq!(profile.setting("syscall hook"), Some("kprobe.multi"));
 
         let calls: Vec<Option<u32>> = profile
             .syscalls()
@@ -2848,12 +2868,13 @@ mod bpf {
         const SKIP_ENTRY: u64 = 0x5ca1_ab1e;
         const SKIP_EXIT: u64 = 0x5ca1_ab1f;
         for (hook, arguments) in [
-            ("fentry", &["--syscall-filter", "trace=getpgid"][..]),
+            ("kprobe.multi", &["--syscall-filter", "trace=getpgid"][..]),
             (
-                "tp_btf",
-                &["--syscall-filter", "trace=getpgid,rt_sigreturn"],
+                "raw_tp",
+                &[TRACEPOINTS, "--syscall-filter", "trace=getpgid"],
             ),
-            ("tp_btf", &["--preset", "prod"]),
+            ("kprobe.multi", &["--preset", "prod"]),
+            ("raw_tp", &[TRACEPOINTS, "--preset", "prod"]),
         ] {
             let directory = ScratchDir::new("syscalls-skipped");
             let code = recorded(directory.path(), arguments, &fixture(), &["skipped"]);
@@ -2937,8 +2958,9 @@ mod bpf {
     fn a_record_another_program_makes_meanwhile_leaves_a_call_whole() {
         const INTERLEAVE: u64 = 0x5ca1_ab20;
         for (hook, arguments) in [
-            ("fentry", &["--syscall-filter", "trace=getpgid"][..]),
-            ("tp_btf", &[]),
+            ("kprobe.multi", &["--syscall-filter", "trace=getpgid"][..]),
+            ("kprobe.multi", &[]),
+            ("raw_tp", &[TRACEPOINTS]),
         ] {
             let directory = ScratchDir::new("syscalls-interleaved");
             let code = recorded(directory.path(), arguments, &fixture(), &["interleaved"]);
@@ -2977,11 +2999,11 @@ mod bpf {
     fn each_program_verifies_within_its_budget() {
         let budget = |program: &str| match program.trim_end_matches(|c: char| c.is_ascii_digit()) {
             "sys_enter" | "exit_finish" => Some(55_000),
-            "enter_" => Some(160_000),
+            "call_enter" => Some(160_000),
             "sys_exit" => Some(18_000),
-            "exit_" => Some(300_000),
+            "call_exit" => Some(300_000),
             "walk_stack" | "python_sample" | "python_sample with kernel samples" => Some(100_000),
-            "signal_deliver" => Some(1_000),
+            "signal_deliver" | "syscall_work" => Some(1_000),
             "terminal_enter" => Some(52_000),
             "process_end" | "process_exec" | "process_exit" | "process_fork" | "in_flight" => {
                 Some(2_000)
@@ -2989,15 +3011,22 @@ mod bpf {
             _ => None,
         };
 
-        for (filter, expected) in [
-            ("trace=all", ["sys_enter", "sys_exit", "terminal_enter"]),
+        for (environment, filter, expected) in [
+            (&[][..], "trace=all", &["call_enter", "call_exit"][..]),
             (
+                &[],
                 "trace=getpgid,exit_group",
-                ["enter_0", "exit_0", "terminal_enter"],
+                &["call_enter", "call_exit"],
+            ),
+            (
+                &[TRACEPOINTS],
+                "trace=all",
+                &["sys_enter", "sys_exit", "terminal_enter"],
             ),
         ] {
             let output = Command::new(launcher())
                 .env_clear()
+                .args(environment)
                 .arg(env!("CARGO_BIN_EXE_microscope-tools"))
                 .args(["bpf-verified", "--syscall-filter", filter])
                 .output()
@@ -3006,7 +3035,7 @@ mod bpf {
             let verified: BTreeMap<String, u64> =
                 serde_json::from_slice(&output.stdout).expect("JSON of each program's count");
 
-            for program in expected {
+            for &program in expected {
                 assert!(
                     verified.contains_key(program),
                     "{filter}: no {program} in {verified:?}"

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::CStr;
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,7 +9,8 @@ use aya::maps::{
     RingBuf,
 };
 
-use aya::programs::{BtfTracePoint, FEntry, FExit, Iter, KProbe, RawTracePoint};
+use aya::programs::links::FdLink;
+use aya::programs::{BtfTracePoint, FEntry, Iter, KProbe, RawTracePoint};
 use aya::{Btf, Ebpf, EbpfLoader};
 use aya_obj::btf::BtfKind;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -594,11 +596,14 @@ fn waits(call: SyscallId) -> u8 {
 fn call_program(name: &str) -> bool {
     matches!(
         name,
-        "sys_enter" | "sys_exit" | "walk_stack" | "exit_finish"
-    ) || name
-        .strip_prefix("enter_")
-        .or_else(|| name.strip_prefix("exit_"))
-        .is_some_and(|slot| slot.parse::<u8>().is_ok())
+        "sys_enter"
+            | "sys_exit"
+            | "call_enter"
+            | "call_exit"
+            | "syscall_work"
+            | "walk_stack"
+            | "exit_finish"
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1244,92 +1249,34 @@ impl RawConfig {
     }
 }
 
-const FUNCTION_SLOTS: usize = 32;
-
+/// Where the call hooks attach: with `kprobe.multi` to the functions that run
+/// the syscall tracepoints, or to the tracepoints themselves on kernels that
+/// refuse that.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attachment {
-    pub functions: Vec<String>,
+    pub kprobe_multi: bool,
     pub reason: String,
 }
 
 impl Attachment {
     #[must_use]
     pub const fn name(&self) -> &'static str {
-        if self.functions.is_empty() {
-            "tp_btf"
+        if self.kprobe_multi {
+            "kprobe.multi"
         } else {
-            "fentry"
+            "raw_tp"
         }
     }
 }
 
-fn function_of(call: SyscallId, has: &impl Fn(&str) -> bool) -> Option<String> {
-    call.kernel_function().filter(|function| has(function))
-}
+/// The functions the kernel calls to run the `sys_enter` and `sys_exit`
+/// tracepoints, which see every call.
+const TRACEPOINT_FUNCTIONS: [&CStr; 2] = [c"trace_syscall_enter", c"trace_syscall_exit"];
 
-fn attachment(
-    all: bool,
-    chosen: &[SyscallId],
-    x32: impl FnOnce() -> bool,
-    has: &impl Fn(&str) -> bool,
-) -> Attachment {
-    let tracepoints = |reason: String| Attachment {
-        functions: Vec::new(),
-        reason,
-    };
-
-    let why = if all {
-        "every call is traced".to_owned()
-    } else {
-        let x32 = x32();
-        let mut functions: Vec<String> = Vec::new();
-        let mut missing = None;
-        for &call in chosen.iter().filter(|call| x32 || call.abi != Abi::X32) {
-            match function_of(call, has) {
-                Some(function) if !functions.contains(&function) => functions.push(function),
-                Some(_) => {}
-                None => {
-                    missing.get_or_insert(call);
-                }
-            }
-        }
-
-        match missing {
-            Some(call) => format!(
-                "{} has no kernel function that BTF describes",
-                call.display_name()
-            ),
-            None if functions.len() > FUNCTION_SLOTS => format!(
-                "the calls enter through {} kernel functions, more than {FUNCTION_SLOTS}",
-                functions.len()
-            ),
-            None => {
-                return Attachment {
-                    reason: format!(
-                        "{} calls enter through {} kernel functions",
-                        chosen.len(),
-                        functions.len()
-                    ),
-                    functions,
-                };
-            }
-        }
-    };
-
-    tracepoints(why)
-}
-
-fn has_x32(has: &impl Fn(&str) -> bool) -> bool {
-    if has("x64_sys_call") {
-        return has("x32_sys_call");
-    }
-    std::fs::read_to_string("/proc/kallsyms").is_ok_and(|symbols| {
-        symbols.lines().any(|line| {
-            line.rsplit_once(' ')
-                .is_some_and(|(_, name)| name == "x32_sys_call" || name == "x32_sys_call_table")
-        })
-    })
-}
+// Makes the call hooks use the tracepoints, so tests can cover the fallback
+// on kernels that have kprobe.multi.
+#[cfg(debug_assertions)]
+const TRACEPOINT_HOOKS: &str = "MICROSCOPE_TEST_TRACEPOINT_HOOKS";
 
 fn load_error(error: impl std::fmt::Display) -> BpfError {
     BpfError::Load(error.to_string())
@@ -1465,6 +1412,7 @@ struct Loaded {
     generation: u32,
     session: u32,
     attachment: Attachment,
+    _links: Vec<FdLink>,
 
     base: RawConfig,
     specs: Vec<(u32, RawCallSpec)>,
@@ -1495,19 +1443,12 @@ impl Loaded {
                 "the kernel's BTF has no do_notify_parent hook for complete process exits".into(),
             ));
         }
-        let attachment = attachment(all, &calls, || has_x32(&has), &has);
         let terminal: BTreeSet<_> = calls
             .iter()
             .filter(|call| matches!(call.name(), Some("exit" | "exit_group")))
             .filter_map(|&call| call.kernel_function())
             .filter(|function| !function.starts_with("__ia32_") || has(function))
             .collect();
-        record!(
-            "syscalls bpf: attach {} ({}): {:?}",
-            attachment.name(),
-            attachment.reason,
-            attachment.functions
-        );
 
         let mut ebpf = load_object(&btf, rows)?;
         let rings = rings(&mut ebpf, engine)?;
@@ -1538,10 +1479,15 @@ impl Loaded {
             config.set(0, value, 0).map_err(load_error)?;
         }
 
-        let tail_calls = {
+        let (tail_calls, links, attachment) = {
             let _span = crate::span!("syscalls bpf attach");
-            attach(&mut ebpf, &btf, &attachment, &terminal)?
+            attach(&mut ebpf, &btf, &terminal)?
         };
+        record!(
+            "syscalls bpf: attach {} ({})",
+            attachment.name(),
+            attachment.reason
+        );
 
         let targets = Targets(
             Array::try_from(ebpf.take_map("TARGETS").ok_or_else(|| missing("TARGETS"))?)
@@ -1587,6 +1533,7 @@ impl Loaded {
             generation: 0,
             session,
             attachment,
+            _links: links,
             base,
             specs,
             shedding: Shed::default(),
@@ -2048,14 +1995,38 @@ impl Loaded {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "populates tail-call array and attaches raw_tp, tp_btf, kprobe, fentry, and iter hooks"
+    reason = "populates tail-call array and attaches raw_tp, tp_btf, kprobe, kprobe.multi, fentry, \
+              and iter hooks"
 )]
 fn attach(
     ebpf: &mut Ebpf,
     btf: &Btf,
-    attachment: &Attachment,
     terminal: &BTreeSet<String>,
-) -> Result<ProgramArray<MapData>, BpfError> {
+) -> Result<(ProgramArray<MapData>, Vec<FdLink>, Attachment), BpfError> {
+    let attached = attach_calls(ebpf);
+    #[cfg(debug_assertions)]
+    let attached = if std::env::var_os(TRACEPOINT_HOOKS).is_some() {
+        Err(format!("{TRACEPOINT_HOOKS} asks for the tracepoints"))
+    } else {
+        attached
+    };
+    let (links, attachment) = match attached {
+        Ok(links) => (
+            links,
+            Attachment {
+                kprobe_multi: true,
+                reason: "kprobe.multi on the tracepoint functions".to_owned(),
+            },
+        ),
+        Err(reason) => (
+            Vec::new(),
+            Attachment {
+                kprobe_multi: false,
+                reason,
+            },
+        ),
+    };
+
     let mut tail_calls = ProgramArray::try_from(
         ebpf.take_map("TAIL_CALLS")
             .ok_or_else(|| missing("TAIL_CALLS"))?,
@@ -2073,7 +2044,7 @@ fn attach(
         tail_calls.set(TAIL_WALK_STACK, fd, 0).map_err(load_error)?;
     }
 
-    if attachment.functions.is_empty() {
+    if !attachment.kprobe_multi {
         let finish: &mut RawTracePoint = ebpf
             .program_mut("exit_finish")
             .ok_or_else(|| missing("exit_finish"))?
@@ -2087,7 +2058,8 @@ fn attach(
     }
 
     for (name, tracepoint) in RAW_PROGRAMS {
-        if !attachment.functions.is_empty() && matches!(name, "sys_enter" | "sys_exit") {
+        let calls = matches!(name, "sys_enter" | "sys_exit");
+        if attachment.kprobe_multi && calls {
             continue;
         }
 
@@ -2118,6 +2090,16 @@ fn attach(
     exit.load().map_err(load_error)?;
     exit.attach("exit_notify", 0).map_err(load_error)?;
 
+    if attachment.kprobe_multi {
+        let work: &mut RawTracePoint = ebpf
+            .program_mut("syscall_work")
+            .ok_or_else(|| missing("syscall_work"))?
+            .try_into()
+            .map_err(load_error)?;
+        work.load().map_err(load_error)?;
+        work.attach("sys_enter").map_err(load_error)?;
+    }
+
     if !terminal.is_empty() {
         let enter: &mut KProbe = ebpf
             .program_mut("terminal_enter")
@@ -2138,28 +2120,6 @@ fn attach(
     end.load("do_notify_parent", btf).map_err(load_error)?;
     end.attach().map_err(load_error)?;
 
-    for (slot, function) in attachment.functions.iter().enumerate() {
-        if terminal.contains(function) {
-            continue;
-        }
-        let enter = format!("enter_{slot}");
-        let program: &mut FEntry = ebpf
-            .program_mut(&enter)
-            .ok_or_else(|| missing(&enter))?
-            .try_into()
-            .map_err(load_error)?;
-        program.load(function, btf).map_err(load_error)?;
-        program.attach().map_err(load_error)?;
-        let exit = format!("exit_{slot}");
-        let program: &mut FExit = ebpf
-            .program_mut(&exit)
-            .ok_or_else(|| missing(&exit))?
-            .try_into()
-            .map_err(load_error)?;
-        program.load(function, btf).map_err(load_error)?;
-        program.attach().map_err(load_error)?;
-    }
-
     let iterator: &mut Iter = ebpf
         .program_mut("in_flight")
         .ok_or_else(|| missing("in_flight"))?
@@ -2167,7 +2127,32 @@ fn attach(
         .map_err(load_error)?;
     iterator.load("task", btf).map_err(load_error)?;
 
-    Ok(tail_calls)
+    Ok((tail_calls, links, attachment))
+}
+
+/// Attaches `call_enter` and `call_exit` as entry probes on the tracepoint
+/// functions, or says why the kernel refused.
+fn attach_calls(ebpf: &mut Ebpf) -> Result<Vec<FdLink>, String> {
+    let mut links = Vec::with_capacity(2);
+    for (program, function) in ["call_enter", "call_exit"]
+        .into_iter()
+        .zip(TRACEPOINT_FUNCTIONS)
+    {
+        let probe: &mut KProbe = ebpf
+            .program_mut(program)
+            .ok_or_else(|| format!("the BPF object has no {program}"))?
+            .try_into()
+            .map_err(|error| format!("{program}: {error}"))?;
+        probe
+            .load_multi()
+            .map_err(|error| format!("loading {program}: {error}"))?;
+        let link = probe
+            .attach_multi(&[function], &[])
+            .map_err(|error| format!("kprobe.multi on {function:?}: {error}"))?;
+        links.push(link);
+    }
+
+    Ok(links)
 }
 
 #[must_use]
@@ -3147,52 +3132,6 @@ mod tests {
         let _ = running.kill();
         let _ = running.wait();
         let _ = done.wait();
-    }
-
-    #[test]
-    fn short_lists_attach_to_their_functions_and_the_rest_say_why_not() {
-        let has = |name: &str| !name.contains("getppid");
-        let named = |abi, name| SyscallId::named(abi, name).expect(name);
-        let open = [
-            named(Abi::X86_64, "openat"),
-            named(Abi::X32, "openat"),
-            named(Abi::X86_32, "openat"),
-        ];
-        let chosen = attachment(false, &open, || true, &has);
-        assert_eq!(
-            chosen.functions,
-            ["__x64_sys_openat", "__ia32_compat_sys_openat"]
-        );
-        assert_eq!(chosen.name(), "fentry");
-
-        let without = [named(Abi::X86_64, "getppid")];
-        let fallen = attachment(false, &without, || true, &has);
-        assert_eq!(
-            (fallen.name(), fallen.reason.as_str()),
-            (
-                "tp_btf",
-                "getppid has no kernel function that BTF describes"
-            )
-        );
-        let all = attachment(true, &[], || unreachable!("every call needs no x32"), &has);
-        assert_eq!(all.reason, "every call is traced");
-
-        let many: Vec<SyscallId> = (0..=40)
-            .map(|number| SyscallId::new(Abi::X86_64, number))
-            .filter(|call| call.name().is_some())
-            .collect();
-        let wide = attachment(false, &many, || true, &|_: &str| true);
-        assert_eq!(wide.name(), "tp_btf", "{wide:?}");
-
-        let no_x32 = |name: &str| !name.starts_with("__x64_compat_");
-        let sigaction = [
-            named(Abi::X86_64, "rt_sigaction"),
-            named(Abi::X32, "rt_sigaction"),
-        ];
-        let chosen = attachment(false, &sigaction, || false, &no_x32);
-        assert_eq!(chosen.functions, ["__x64_sys_rt_sigaction"]);
-        let fallen = attachment(false, &sigaction, || true, &no_x32);
-        assert_eq!(fallen.name(), "tp_btf");
     }
 
     use crate::syscalls::captures::MOST_BYTES;

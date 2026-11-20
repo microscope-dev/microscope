@@ -1,0 +1,85 @@
+//! BTF-enabled raw tracepoints.
+
+use aya_obj::{
+    btf::{Btf, BtfKind},
+    generated::{bpf_attach_type::BPF_TRACE_RAW_TP, bpf_prog_type::BPF_PROG_TYPE_TRACING},
+};
+
+use crate::programs::{
+    FdLink, FdLinkId, ProgramData, ProgramError, ProgramType, define_link_wrapper,
+    load_program_with_attach_type, utils::attach_raw_tracepoint,
+};
+
+/// Marks a function as a [BTF-enabled raw tracepoint][1] eBPF program that can be attached at
+/// a pre-defined kernel trace point.
+///
+/// The kernel provides a set of pre-defined trace points that eBPF programs can
+/// be attached to. See `/sys/kernel/debug/tracing/events` for a list of which
+/// events can be traced.
+///
+/// # Minimum kernel version
+///
+/// The minimum kernel version required to use this feature is 5.5.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[derive(thiserror::Error, Debug)]
+/// # enum Error {
+/// #     #[error(transparent)]
+/// #     BtfError(#[from] aya::BtfError),
+/// #     #[error(transparent)]
+/// #     Program(#[from] aya::programs::ProgramError),
+/// #     #[error(transparent)]
+/// #     Ebpf(#[from] aya::EbpfError),
+/// # }
+/// # let mut bpf = Ebpf::load_file("ebpf_programs.o")?;
+/// use aya::{Ebpf, programs::BtfTracePoint, BtfError, Btf};
+///
+/// let btf = Btf::from_sys_fs()?;
+/// let program: &mut BtfTracePoint = bpf.program_mut("sched_process_fork").unwrap().try_into()?;
+/// program.load("sched_process_fork", &btf)?;
+/// program.attach()?;
+/// # Ok::<(), Error>(())
+/// ```
+///
+/// [1]: https://github.com/torvalds/linux/commit/9e15db66136a14cde3f35691f1d839d950118826
+#[derive(Debug)]
+#[doc(alias = "BPF_TRACE_RAW_TP")]
+#[doc(alias = "BPF_PROG_TYPE_TRACING")]
+pub struct BtfTracePoint {
+    pub(crate) data: ProgramData<BtfTracePointLink>,
+}
+
+impl BtfTracePoint {
+    /// The type of the program according to the kernel.
+    pub const PROGRAM_TYPE: ProgramType = ProgramType::Tracing;
+
+    /// Loads the program inside the kernel.
+    ///
+    /// # Arguments
+    ///
+    /// * `tracepoint` - full name of the tracepoint that we should attach to
+    /// * `btf` - btf information for the target system
+    pub fn load(&mut self, tracepoint: &str, btf: &Btf) -> Result<(), ProgramError> {
+        let Self { data } = self;
+        let type_name = format!("btf_trace_{tracepoint}");
+        data.attach_btf_id = Some(btf.id_by_type_name_kind(type_name.as_str(), BtfKind::Typedef)?);
+        load_program_with_attach_type(BPF_PROG_TYPE_TRACING, BPF_TRACE_RAW_TP, data)
+    }
+
+    /// Attaches the program.
+    ///
+    /// The returned value can be used to detach, see [`BtfTracePoint::detach`].
+    pub fn attach(&mut self) -> Result<BtfTracePointLinkId, ProgramError> {
+        attach_raw_tracepoint(&mut self.data, None)
+    }
+}
+
+define_link_wrapper!(
+    BtfTracePointLink,
+    BtfTracePointLinkId,
+    FdLink,
+    FdLinkId,
+    BtfTracePoint,
+);

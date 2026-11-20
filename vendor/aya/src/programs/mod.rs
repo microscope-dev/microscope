@@ -1,0 +1,1612 @@
+//! eBPF program types.
+//!
+//! eBPF programs are loaded inside the kernel and attached to one or more hook
+//! points. Whenever the hook points are reached, the programs are executed.
+//!
+//! # Loading and attaching programs
+//!
+//! When you call [`Ebpf::load_file`] or [`Ebpf::load`], all the programs included
+//! in the object code are parsed and relocated. Programs are not loaded
+//! automatically though, since often you will need to do some application
+//! specific setup before you can actually load them.
+//!
+//! In order to load and attach a program, you need to retrieve it using [`Ebpf::program_mut`],
+//! then call the `load()` and `attach()` methods, for example:
+//!
+//! ```no_run
+//! use aya::{Ebpf, programs::KProbe};
+//!
+//! let mut bpf = Ebpf::load_file("ebpf_programs.o")?;
+//! // intercept_wakeups is the name of the program we want to load
+//! let program: &mut KProbe = bpf.program_mut("intercept_wakeups").unwrap().try_into()?;
+//! program.load()?;
+//! // intercept_wakeups will be called every time try_to_wake_up() is called
+//! // inside the kernel
+//! program.attach("try_to_wake_up", 0)?;
+//! # Ok::<(), aya::EbpfError>(())
+//! ```
+//!
+//! The signature of the `attach()` method varies depending on what kind of
+//! program you're trying to attach.
+//!
+//! [`Ebpf::load_file`]: crate::Ebpf::load_file
+//! [`Ebpf::load`]: crate::Ebpf::load
+//! [`Ebpf::programs`]: crate::Ebpf::programs
+//! [`Ebpf::program`]: crate::Ebpf::program
+//! [`Ebpf::program_mut`]: crate::Ebpf::program_mut
+//! [`maps`]: crate::maps
+
+// modules we don't export
+mod info;
+mod probe;
+mod utils;
+
+// modules we explicitly export so their pub items (Links etc) get exported too
+pub mod cgroup_device;
+pub mod cgroup_skb;
+pub mod cgroup_sock;
+pub mod cgroup_sock_addr;
+pub mod cgroup_sockopt;
+pub mod cgroup_sysctl;
+pub mod extension;
+pub mod fentry;
+pub mod fexit;
+pub mod flow_dissector;
+pub mod iter;
+pub mod kprobe;
+pub mod links;
+pub mod lirc_mode2;
+pub mod lsm;
+pub mod lsm_cgroup;
+pub mod perf_attach;
+pub mod perf_event;
+pub mod raw_trace_point;
+pub mod sk_lookup;
+pub mod sk_msg;
+pub mod sk_reuseport;
+pub mod sk_skb;
+pub mod sock_ops;
+pub mod socket_filter;
+pub mod tc;
+pub mod tp_btf;
+pub mod trace_point;
+pub mod uprobe;
+pub mod xdp;
+
+// `libc` exposes `SO_ATTACH_REUSEPORT_EBPF` on all architectures, but
+// `SO_DETACH_REUSEPORT_BPF` is still commented out in libc's
+// `src/unix/linux_like/linux/arch/{mips,powerpc,sparc}/mod.rs`.
+// The values below are the asm-generic constants (52 and 68), which are
+// correct for every architecture aya supports; sparc uses different values
+// but aya does not target sparc. Both are defined locally to keep them
+// consistent rather than mixing a libc constant with a hand-written one.
+// TODO(https://github.com/rust-lang/libc/commit/95c9572): use libc's
+// constants once this lands in a released libc version.
+pub(crate) const SO_ATTACH_REUSEPORT_EBPF: libc::c_int = 52;
+pub(crate) const SO_DETACH_REUSEPORT_BPF: libc::c_int = 68;
+
+use std::{
+    borrow::Cow,
+    ffi::CString,
+    io,
+    os::fd::{AsFd, BorrowedFd},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+use aya_obj::{
+    VerifierLog,
+    btf::BtfError,
+    generated::{BPF_F_TEST_XDP_LIVE_FRAMES, bpf_attach_type, bpf_prog_info, bpf_prog_type},
+    programs::XdpAttachType,
+};
+use info::impl_info;
+pub use info::{LsmAttachType, ProgramInfo, ProgramType, loaded_programs};
+use libc::ENOSPC;
+use tc::SchedClassifierLink;
+use thiserror::Error;
+
+// re-export the main items needed to load and attach
+pub use crate::programs::{
+    cgroup_device::CgroupDevice,
+    cgroup_skb::{CgroupSkb, CgroupSkbAttachType},
+    cgroup_sock::{CgroupSock, CgroupSockAttachType},
+    cgroup_sock_addr::{CgroupSockAddr, CgroupSockAddrAttachType},
+    cgroup_sockopt::{CgroupSockopt, CgroupSockoptAttachType},
+    cgroup_sysctl::CgroupSysctl,
+    extension::{Extension, ExtensionError},
+    fentry::FEntry,
+    fexit::FExit,
+    flow_dissector::FlowDissector,
+    iter::Iter,
+    kprobe::{KProbe, KProbeError},
+    links::{CgroupAttachMode, Link, LinkOrder},
+    lirc_mode2::LircMode2,
+    lsm::Lsm,
+    lsm_cgroup::LsmCgroup,
+    perf_event::PerfEvent,
+    probe::ProbeKind,
+    raw_trace_point::RawTracePoint,
+    sk_lookup::SkLookup,
+    sk_msg::SkMsg,
+    sk_reuseport::{SkReuseport, SkReuseportAttachType, SkReuseportError},
+    sk_skb::{SkSkb, SkSkbKind},
+    sock_ops::SockOps,
+    socket_filter::{ReusePortSocketFilter, SocketFilter, SocketFilterError},
+    tc::{SchedClassifier, TcAttachType, TcError, TcHandle},
+    tp_btf::BtfTracePoint,
+    trace_point::{TracePoint, TracePointError},
+    uprobe::{UProbe, UProbeError},
+    xdp::{Xdp, XdpError, XdpMode},
+};
+use crate::{
+    VerifierLogLevel,
+    maps::MapError,
+    pin::PinError,
+    programs::{
+        links::{
+            FdLink, FdLinkId, LinkError, LinkInfo, Links, ProgAttachLink, ProgAttachLinkId,
+            define_link_wrapper, id_as_key, impl_try_from_fdlink, impl_try_into_fdlink,
+        },
+        perf_attach::{PerfLinkIdInner, PerfLinkInner, perf_attach, perf_attach_debugfs},
+    },
+    sys::{
+        EbpfLoadProgramAttrs, NetlinkError, ProgQueryTarget, SyscallError, bpf_btf_get_fd_by_id,
+        bpf_get_object, bpf_link_get_fd_by_id, bpf_load_program, bpf_pin_object,
+        bpf_prog_get_fd_by_id, bpf_prog_query, bpf_prog_test_run, bpf_prog_test_run_raw_tp,
+        bpf_prog_test_run_tracing, iter_link_ids, retry_with_verifier_logs,
+    },
+    util::KernelVersion,
+};
+
+/// Error type returned when working with programs.
+#[derive(Debug, Error)]
+pub enum ProgramError {
+    /// The program is already loaded.
+    #[error("the program is already loaded")]
+    AlreadyLoaded,
+
+    /// The program is not loaded.
+    #[error("the program is not loaded")]
+    NotLoaded,
+
+    /// The program is already attached.
+    #[error("the program was already attached")]
+    AlreadyAttached,
+
+    /// The program is not attached.
+    #[error("the program is not attached")]
+    NotAttached,
+
+    /// Loading the program failed.
+    #[error("the BPF_PROG_LOAD syscall returned {io_error}. Verifier output: {verifier_log}")]
+    LoadError {
+        /// The [`io::Error`] returned by the `BPF_PROG_LOAD` syscall.
+        #[source]
+        io_error: io::Error,
+        /// The error log produced by the kernel verifier.
+        verifier_log: VerifierLog,
+    },
+
+    /// A syscall failed.
+    #[error(transparent)]
+    SyscallError(#[from] SyscallError),
+
+    /// The network interface does not exist.
+    #[error("unknown network interface {name}")]
+    UnknownInterface {
+        /// interface name
+        name: String,
+    },
+
+    /// The program is not of the expected type.
+    #[error("unexpected program type")]
+    UnexpectedProgramType,
+
+    /// A map error occurred while loading or attaching a program.
+    #[error(transparent)]
+    MapError(#[from] MapError),
+
+    /// An error occurred while working with a [`KProbe`].
+    #[error(transparent)]
+    KProbeError(#[from] KProbeError),
+
+    /// An error occurred while working with an [`UProbe`].
+    #[error(transparent)]
+    UProbeError(#[from] UProbeError),
+
+    /// An error occurred while working with a [`TracePoint`].
+    #[error(transparent)]
+    TracePointError(#[from] TracePointError),
+
+    /// An error occurred while working with a [`SocketFilter`].
+    #[error(transparent)]
+    SocketFilterError(#[from] SocketFilterError),
+
+    /// An error occurred while working with a [`SkReuseport`] program.
+    #[error(transparent)]
+    SkReuseportError(#[from] SkReuseportError),
+
+    /// An error occurred while working with an [`Xdp`] program.
+    #[error(transparent)]
+    XdpError(#[from] XdpError),
+
+    /// An error occurred while working with a TC program.
+    #[error(transparent)]
+    TcError(#[from] TcError),
+
+    /// An error occurred while working with an [`Extension`] program.
+    #[error(transparent)]
+    ExtensionError(#[from] ExtensionError),
+
+    /// An error occurred while working with BTF.
+    #[error(transparent)]
+    Btf(#[from] BtfError),
+
+    /// The program is not attached.
+    #[error("the program name `{name}` is invalid")]
+    InvalidName {
+        /// program name
+        name: String,
+    },
+
+    /// An error occurred while working with IO.
+    #[error(transparent)]
+    IOError(#[from] io::Error),
+
+    /// Providing an attach cookie is not supported.
+    #[error("providing an attach cookie is not supported")]
+    AttachCookieNotSupported,
+
+    /// An error occurred while working with Netlink.
+    #[error(transparent)]
+    NetlinkError(#[from] NetlinkError),
+}
+
+/// A [`Program`] file descriptor.
+#[derive(Debug)]
+pub struct ProgramFd(crate::MockableFd);
+
+impl ProgramFd {
+    /// Creates a new instance that shares the same underlying file description as [`self`].
+    pub fn try_clone(&self) -> io::Result<Self> {
+        let Self(inner) = self;
+        let inner = inner.try_clone()?;
+        Ok(Self(inner))
+    }
+}
+
+impl AsFd for ProgramFd {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        let Self(fd) = self;
+        fd.as_fd()
+    }
+}
+
+/// A [`Program`] identifier.
+pub struct ProgramId(u32);
+
+impl ProgramId {
+    /// Create a new program id.  
+    ///  
+    /// # Safety
+    ///
+    /// This method is unsafe since it doesn't check that the given `id` is a
+    /// valid program id.
+    pub const unsafe fn new(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+/// eBPF program type.
+#[derive(Debug)]
+pub enum Program {
+    /// A [`KProbe`] program
+    KProbe(KProbe),
+    /// A [`UProbe`] program
+    UProbe(UProbe),
+    /// A [`TracePoint`] program
+    TracePoint(TracePoint),
+    /// A [`SocketFilter`] program
+    SocketFilter(SocketFilter),
+    /// A [`ReusePortSocketFilter`] program
+    ReusePortSocketFilter(ReusePortSocketFilter),
+    /// A [`Xdp`] program
+    Xdp(Xdp),
+    /// A [`SkMsg`] program
+    SkMsg(SkMsg),
+    /// A [`SkSkb`] program
+    SkSkb(SkSkb),
+    /// A [`CgroupSockAddr`] program
+    CgroupSockAddr(CgroupSockAddr),
+    /// A [`SockOps`] program
+    SockOps(SockOps),
+    /// A [`SchedClassifier`] program
+    SchedClassifier(SchedClassifier),
+    /// A [`CgroupSkb`] program
+    CgroupSkb(CgroupSkb),
+    /// A [`CgroupSysctl`] program
+    CgroupSysctl(CgroupSysctl),
+    /// A [`CgroupSockopt`] program
+    CgroupSockopt(CgroupSockopt),
+    /// A [`LircMode2`] program
+    LircMode2(LircMode2),
+    /// A [`PerfEvent`] program
+    PerfEvent(PerfEvent),
+    /// A [`RawTracePoint`] program
+    RawTracePoint(RawTracePoint),
+    /// A [`Lsm`] program
+    Lsm(Lsm),
+    /// A [`LsmCgroup`] program
+    LsmCgroup(LsmCgroup),
+    /// A [`BtfTracePoint`] program
+    BtfTracePoint(BtfTracePoint),
+    /// A [`FEntry`] program
+    FEntry(FEntry),
+    /// A [`FExit`] program
+    FExit(FExit),
+    /// A [`FlowDissector`] program
+    FlowDissector(FlowDissector),
+    /// A [`Extension`] program
+    Extension(Extension),
+    /// A [`SkLookup`] program
+    SkLookup(SkLookup),
+    /// A [`SkReuseport`] program
+    SkReuseport(SkReuseport),
+    /// A [`CgroupSock`] program
+    CgroupSock(CgroupSock),
+    /// A [`CgroupDevice`] program
+    CgroupDevice(CgroupDevice),
+    /// An [`Iter`] program
+    Iter(Iter),
+}
+
+impl Program {
+    /// Returns the program type.
+    pub const fn prog_type(&self) -> ProgramType {
+        match self {
+            Self::KProbe(_) | Self::UProbe(_) => ProgramType::KProbe,
+            Self::TracePoint(_) => ProgramType::TracePoint,
+            Self::SocketFilter(_) | Self::ReusePortSocketFilter(_) => ProgramType::SocketFilter,
+            Self::Xdp(_) => ProgramType::Xdp,
+            Self::SkMsg(_) => ProgramType::SkMsg,
+            Self::SkSkb(_) => ProgramType::SkSkb,
+            Self::SockOps(_) => ProgramType::SockOps,
+            Self::SchedClassifier(_) => ProgramType::SchedClassifier,
+            Self::CgroupSkb(_) => ProgramType::CgroupSkb,
+            Self::CgroupSysctl(_) => ProgramType::CgroupSysctl,
+            Self::CgroupSockopt(_) => ProgramType::CgroupSockopt,
+            Self::LircMode2(_) => ProgramType::LircMode2,
+            Self::PerfEvent(_) => ProgramType::PerfEvent,
+            Self::RawTracePoint(_) => ProgramType::RawTracePoint,
+            Self::Lsm(_) => ProgramType::Lsm(LsmAttachType::Mac),
+            Self::LsmCgroup(_) => ProgramType::Lsm(LsmAttachType::Cgroup),
+            // The following program types are a subset of `TRACING` programs:
+            //
+            // - `BPF_TRACE_RAW_TP` (`BtfTracePoint`)
+            // - `BTF_TRACE_FENTRY` (`FEntry`)
+            // - `BPF_MODIFY_RETURN` (not supported yet in Aya)
+            // - `BPF_TRACE_FEXIT` (`FExit`)
+            // - `BPF_TRACE_ITER` (`Iter`)
+            //
+            // https://github.com/torvalds/linux/blob/v6.12/kernel/bpf/syscall.c#L3935-L3940
+            Self::BtfTracePoint(_) | Self::FEntry(_) | Self::FExit(_) | Self::Iter(_) => {
+                ProgramType::Tracing
+            }
+            Self::Extension(_) => ProgramType::Extension,
+            Self::CgroupSockAddr(_) => ProgramType::CgroupSockAddr,
+            Self::SkLookup(_) => ProgramType::SkLookup,
+            Self::SkReuseport(_) => ProgramType::SkReuseport,
+            Self::CgroupSock(_) => ProgramType::CgroupSock,
+            Self::CgroupDevice(_) => ProgramType::CgroupDevice,
+            Self::FlowDissector(_) => ProgramType::FlowDissector,
+        }
+    }
+
+    /// Pin the program to the provided path
+    pub fn pin<P: AsRef<Path>>(&mut self, path: P) -> Result<(), PinError> {
+        match self {
+            Self::KProbe(p) => p.pin(path),
+            Self::UProbe(p) => p.pin(path),
+            Self::TracePoint(p) => p.pin(path),
+            Self::SocketFilter(p) => p.pin(path),
+            Self::ReusePortSocketFilter(p) => p.pin(path),
+            Self::Xdp(p) => p.pin(path),
+            Self::SkMsg(p) => p.pin(path),
+            Self::SkSkb(p) => p.pin(path),
+            Self::SockOps(p) => p.pin(path),
+            Self::SchedClassifier(p) => p.pin(path),
+            Self::CgroupSkb(p) => p.pin(path),
+            Self::CgroupSysctl(p) => p.pin(path),
+            Self::CgroupSockopt(p) => p.pin(path),
+            Self::LircMode2(p) => p.pin(path),
+            Self::PerfEvent(p) => p.pin(path),
+            Self::RawTracePoint(p) => p.pin(path),
+            Self::Lsm(p) => p.pin(path),
+            Self::LsmCgroup(p) => p.pin(path),
+            Self::BtfTracePoint(p) => p.pin(path),
+            Self::FEntry(p) => p.pin(path),
+            Self::FExit(p) => p.pin(path),
+            Self::FlowDissector(p) => p.pin(path),
+            Self::Extension(p) => p.pin(path),
+            Self::CgroupSockAddr(p) => p.pin(path),
+            Self::SkLookup(p) => p.pin(path),
+            Self::SkReuseport(p) => p.pin(path),
+            Self::CgroupSock(p) => p.pin(path),
+            Self::CgroupDevice(p) => p.pin(path),
+            Self::Iter(p) => p.pin(path),
+        }
+    }
+
+    /// Unloads the program from the kernel.
+    pub fn unload(self) -> Result<(), ProgramError> {
+        match self {
+            Self::KProbe(mut p) => p.unload(),
+            Self::UProbe(mut p) => p.unload(),
+            Self::TracePoint(mut p) => p.unload(),
+            Self::SocketFilter(mut p) => p.unload(),
+            Self::ReusePortSocketFilter(mut p) => p.unload(),
+            Self::Xdp(mut p) => p.unload(),
+            Self::SkMsg(mut p) => p.unload(),
+            Self::SkSkb(mut p) => p.unload(),
+            Self::SockOps(mut p) => p.unload(),
+            Self::SchedClassifier(mut p) => p.unload(),
+            Self::CgroupSkb(mut p) => p.unload(),
+            Self::CgroupSysctl(mut p) => p.unload(),
+            Self::CgroupSockopt(mut p) => p.unload(),
+            Self::LircMode2(mut p) => p.unload(),
+            Self::PerfEvent(mut p) => p.unload(),
+            Self::RawTracePoint(mut p) => p.unload(),
+            Self::Lsm(mut p) => p.unload(),
+            Self::LsmCgroup(mut p) => p.unload(),
+            Self::BtfTracePoint(mut p) => p.unload(),
+            Self::FEntry(mut p) => p.unload(),
+            Self::FExit(mut p) => p.unload(),
+            Self::FlowDissector(mut p) => p.unload(),
+            Self::Extension(mut p) => p.unload(),
+            Self::CgroupSockAddr(mut p) => p.unload(),
+            Self::SkLookup(mut p) => p.unload(),
+            Self::SkReuseport(mut p) => p.unload(),
+            Self::CgroupSock(mut p) => p.unload(),
+            Self::CgroupDevice(mut p) => p.unload(),
+            Self::Iter(mut p) => p.unload(),
+        }
+    }
+
+    /// Returns the file descriptor of a program.
+    ///
+    /// Can be used to add a program to a [`crate::maps::ProgramArray`] or attach an [`Extension`] program.
+    pub fn fd(&self) -> Result<&ProgramFd, ProgramError> {
+        match self {
+            Self::KProbe(p) => p.fd(),
+            Self::UProbe(p) => p.fd(),
+            Self::TracePoint(p) => p.fd(),
+            Self::SocketFilter(p) => p.fd(),
+            Self::ReusePortSocketFilter(p) => p.fd(),
+            Self::Xdp(p) => p.fd(),
+            Self::SkMsg(p) => p.fd(),
+            Self::SkSkb(p) => p.fd(),
+            Self::SockOps(p) => p.fd(),
+            Self::SchedClassifier(p) => p.fd(),
+            Self::CgroupSkb(p) => p.fd(),
+            Self::CgroupSysctl(p) => p.fd(),
+            Self::CgroupSockopt(p) => p.fd(),
+            Self::LircMode2(p) => p.fd(),
+            Self::PerfEvent(p) => p.fd(),
+            Self::RawTracePoint(p) => p.fd(),
+            Self::Lsm(p) => p.fd(),
+            Self::LsmCgroup(p) => p.fd(),
+            Self::BtfTracePoint(p) => p.fd(),
+            Self::FEntry(p) => p.fd(),
+            Self::FExit(p) => p.fd(),
+            Self::FlowDissector(p) => p.fd(),
+            Self::Extension(p) => p.fd(),
+            Self::CgroupSockAddr(p) => p.fd(),
+            Self::SkLookup(p) => p.fd(),
+            Self::SkReuseport(p) => p.fd(),
+            Self::CgroupSock(p) => p.fd(),
+            Self::CgroupDevice(p) => p.fd(),
+            Self::Iter(p) => p.fd(),
+        }
+    }
+
+    /// Returns information about a loaded program with the [`ProgramInfo`] structure.
+    ///
+    /// This information is populated at load time by the kernel and can be used
+    /// to get kernel details for a given [`Program`].
+    pub fn info(&self) -> Result<ProgramInfo, ProgramError> {
+        match self {
+            Self::KProbe(p) => p.info(),
+            Self::UProbe(p) => p.info(),
+            Self::TracePoint(p) => p.info(),
+            Self::SocketFilter(p) => p.info(),
+            Self::ReusePortSocketFilter(p) => p.info(),
+            Self::Xdp(p) => p.info(),
+            Self::SkMsg(p) => p.info(),
+            Self::SkSkb(p) => p.info(),
+            Self::SockOps(p) => p.info(),
+            Self::SchedClassifier(p) => p.info(),
+            Self::CgroupSkb(p) => p.info(),
+            Self::CgroupSysctl(p) => p.info(),
+            Self::CgroupSockopt(p) => p.info(),
+            Self::LircMode2(p) => p.info(),
+            Self::PerfEvent(p) => p.info(),
+            Self::RawTracePoint(p) => p.info(),
+            Self::Lsm(p) => p.info(),
+            Self::LsmCgroup(p) => p.info(),
+            Self::BtfTracePoint(p) => p.info(),
+            Self::FEntry(p) => p.info(),
+            Self::FExit(p) => p.info(),
+            Self::FlowDissector(p) => p.info(),
+            Self::Extension(p) => p.info(),
+            Self::CgroupSockAddr(p) => p.info(),
+            Self::SkLookup(p) => p.info(),
+            Self::SkReuseport(p) => p.info(),
+            Self::CgroupSock(p) => p.info(),
+            Self::CgroupDevice(p) => p.info(),
+            Self::Iter(p) => p.info(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ProgramData<T: Link> {
+    pub(crate) name: Option<Cow<'static, str>>,
+    pub(crate) obj: Option<(aya_obj::Program, aya_obj::Function)>,
+    pub(crate) fd: Option<ProgramFd>,
+    pub(crate) links: Links<T>,
+    pub(crate) attach_btf_obj_fd: Option<crate::MockableFd>,
+    pub(crate) attach_btf_id: Option<u32>,
+    pub(crate) attach_prog_fd: Option<ProgramFd>,
+    pub(crate) btf_fd: Option<Arc<crate::MockableFd>>,
+    pub(crate) verifier_log_level: VerifierLogLevel,
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) flags: u32,
+}
+
+impl<T: Link> ProgramData<T> {
+    pub(crate) fn new(
+        name: Option<Cow<'static, str>>,
+        obj: (aya_obj::Program, aya_obj::Function),
+        btf_fd: Option<Arc<crate::MockableFd>>,
+        verifier_log_level: VerifierLogLevel,
+    ) -> Self {
+        Self {
+            name,
+            obj: Some(obj),
+            fd: None,
+            links: Links::new(),
+            attach_btf_obj_fd: None,
+            attach_btf_id: None,
+            attach_prog_fd: None,
+            btf_fd,
+            verifier_log_level,
+            path: None,
+            flags: 0,
+        }
+    }
+
+    pub(crate) fn from_bpf_prog_info(
+        name: Option<Cow<'static, str>>,
+        fd: crate::MockableFd,
+        path: &Path,
+        info: bpf_prog_info,
+        verifier_log_level: VerifierLogLevel,
+    ) -> Result<Self, ProgramError> {
+        let attach_btf_id = (info.attach_btf_id > 0).then_some(info.attach_btf_id);
+        let attach_btf_obj_fd = (info.attach_btf_obj_id != 0)
+            .then(|| bpf_btf_get_fd_by_id(info.attach_btf_obj_id))
+            .transpose()?;
+
+        Ok(Self {
+            name,
+            obj: None,
+            fd: Some(ProgramFd(fd)),
+            links: Links::new(),
+            attach_btf_obj_fd,
+            attach_btf_id,
+            attach_prog_fd: None,
+            btf_fd: None,
+            verifier_log_level,
+            path: Some(path.to_path_buf()),
+            flags: 0,
+        })
+    }
+
+    pub(crate) fn from_pinned_path<P: AsRef<Path>>(
+        path: P,
+        verifier_log_level: VerifierLogLevel,
+    ) -> Result<Self, ProgramError> {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        // TODO: avoid this unwrap by adding a new error variant.
+        let path_string = CString::new(path.as_ref().as_os_str().as_bytes()).unwrap();
+        let fd = bpf_get_object(&path_string).map_err(|io_error| SyscallError {
+            call: "bpf_obj_get",
+            io_error,
+        })?;
+
+        let info = ProgramInfo::new_from_fd(fd.as_fd())?;
+        let name = info.name_as_str().map(ToOwned::to_owned).map(Into::into);
+        Self::from_bpf_prog_info(name, fd, path.as_ref(), info.0, verifier_log_level)
+    }
+}
+
+impl<T: Link> ProgramData<T> {
+    fn fd(&self) -> Result<&ProgramFd, ProgramError> {
+        self.fd.as_ref().ok_or(ProgramError::NotLoaded)
+    }
+}
+
+fn test_run<T: Link>(
+    data: &ProgramData<T>,
+    opts: TestRunOptions<'_>,
+) -> Result<TestRunResult, ProgramError> {
+    let fd = data.fd()?.as_fd();
+    bpf_prog_test_run(fd, opts).map_err(Into::into)
+}
+
+fn test_run_raw_tp<T: Link>(
+    data: &ProgramData<T>,
+    opts: RawTracePointRunOptions,
+) -> Result<RawTracePointTestRunResult, ProgramError> {
+    let fd = data.fd()?.as_fd();
+    bpf_prog_test_run_raw_tp(fd, opts).map_err(Into::into)
+}
+
+fn test_run_tracing<T: Link>(data: &ProgramData<T>) -> Result<(), ProgramError> {
+    let fd = data.fd()?.as_fd();
+    bpf_prog_test_run_tracing(fd).map_err(Into::into)
+}
+
+fn unload_program<T: Link>(data: &mut ProgramData<T>) -> Result<(), ProgramError> {
+    data.links.remove_all()?;
+    data.fd
+        .take()
+        .ok_or(ProgramError::NotLoaded)
+        .map(|ProgramFd { .. }| ())
+}
+
+fn pin_program<T: Link, P: AsRef<Path>>(data: &ProgramData<T>, path: P) -> Result<(), PinError> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let fd = data.fd.as_ref().ok_or_else(|| PinError::NoFd {
+        name: data
+            .name
+            .as_deref()
+            .unwrap_or("<unknown program>")
+            .to_string(),
+    })?;
+    let path = path.as_ref();
+    let path_string =
+        CString::new(path.as_os_str().as_bytes()).map_err(|error| PinError::InvalidPinPath {
+            path: path.into(),
+            error,
+        })?;
+    bpf_pin_object(fd.as_fd(), &path_string).map_err(|io_error| SyscallError {
+        call: "BPF_OBJ_PIN",
+        io_error,
+    })?;
+    Ok(())
+}
+
+fn load_program_without_attach_type<T: Link>(
+    prog_type: bpf_prog_type,
+    data: &mut ProgramData<T>,
+) -> Result<(), ProgramError> {
+    load_program(prog_type, None, data)
+}
+
+fn load_program_with_attach_type<A: Into<bpf_attach_type>, T: Link>(
+    prog_type: bpf_prog_type,
+    expected_attach_type: A,
+    data: &mut ProgramData<T>,
+) -> Result<(), ProgramError> {
+    load_program(prog_type, Some(expected_attach_type.into()), data)
+}
+
+fn load_program<T: Link>(
+    prog_type: bpf_prog_type,
+    expected_attach_type: Option<bpf_attach_type>,
+    data: &mut ProgramData<T>,
+) -> Result<(), ProgramError> {
+    let ProgramData {
+        name,
+        obj,
+        fd,
+        links: _,
+        attach_btf_obj_fd,
+        attach_btf_id,
+        attach_prog_fd,
+        btf_fd,
+        verifier_log_level,
+        path: _,
+        flags,
+    } = data;
+    if fd.is_some() {
+        return Err(ProgramError::AlreadyLoaded);
+    }
+    if obj.is_none() {
+        // This program was loaded from a pin in bpffs
+        return Err(ProgramError::AlreadyLoaded);
+    }
+    let obj = obj.as_ref().unwrap();
+    let (
+        aya_obj::Program {
+            license,
+            kernel_version,
+            ..
+        },
+        aya_obj::Function {
+            instructions,
+            func_info,
+            line_info,
+            func_info_rec_size,
+            line_info_rec_size,
+            ..
+        },
+    ) = obj;
+
+    let target_kernel_version =
+        kernel_version.unwrap_or_else(|| KernelVersion::current().map_or(0, KernelVersion::code));
+
+    let prog_name = if let Some(name) = name.as_deref() {
+        let prog_name = CString::new(name).map_err(|err @ std::ffi::NulError { .. }| {
+            let name = err.into_vec();
+            let name = unsafe { String::from_utf8_unchecked(name) };
+            ProgramError::InvalidName { name }
+        })?;
+        Some(prog_name)
+    } else {
+        None
+    };
+
+    let attr = EbpfLoadProgramAttrs {
+        name: prog_name,
+        ty: prog_type,
+        insns: instructions,
+        license,
+        kernel_version: target_kernel_version,
+        expected_attach_type,
+        prog_btf_fd: btf_fd.as_ref().map(|f| f.as_fd()),
+        attach_btf_obj_fd: attach_btf_obj_fd.as_ref().map(|fd| fd.as_fd()),
+        attach_btf_id: *attach_btf_id,
+        attach_prog_fd: attach_prog_fd.as_ref().map(|fd| fd.as_fd()),
+        func_info_rec_size: *func_info_rec_size,
+        func_info: func_info.clone(),
+        line_info_rec_size: *line_info_rec_size,
+        line_info: line_info.clone(),
+        flags: *flags,
+    };
+
+    let (ret, verifier_log) = retry_with_verifier_logs(10, |logger| {
+        bpf_load_program(&attr, logger, *verifier_log_level)
+    });
+
+    match ret {
+        Ok(prog_fd) => {
+            *fd = Some(ProgramFd(prog_fd));
+            Ok(())
+        }
+        Err(io_error) => Err(ProgramError::LoadError {
+            io_error,
+            verifier_log,
+        }),
+    }
+}
+
+pub(crate) fn query(
+    target: ProgQueryTarget<'_>,
+    attach_type: bpf_attach_type,
+    query_flags: u32,
+    attach_flags: &mut Option<u32>,
+) -> Result<(u64, Vec<u32>), ProgramError> {
+    let mut prog_ids = vec![0u32; 64];
+    let mut prog_cnt = prog_ids.len() as u32;
+    let mut revision = 0;
+
+    let mut retries = 0;
+
+    loop {
+        match bpf_prog_query(
+            &target,
+            attach_type,
+            query_flags,
+            attach_flags.as_mut(),
+            &mut prog_ids,
+            &mut prog_cnt,
+            &mut revision,
+        ) {
+            Ok(()) => {
+                prog_ids.resize(prog_cnt as usize, 0);
+                return Ok((revision, prog_ids));
+            }
+            Err(io_error) => {
+                if retries == 0 && io_error.raw_os_error() == Some(ENOSPC) {
+                    prog_ids.resize(prog_cnt as usize, 0);
+                    retries += 1;
+                } else {
+                    return Err(SyscallError {
+                        call: "bpf_prog_query",
+                        io_error,
+                    }
+                    .into());
+                }
+            }
+        }
+    }
+}
+
+macro_rules! impl_program_unload {
+    ($($struct_name:ident),+ $(,)?) => {
+        $(
+            impl $struct_name {
+                /// Unloads the program from the kernel.
+                ///
+                /// Tracked links will be detached before unloading the program.
+                /// Attachment mechanisms that do not create tracked links are
+                /// not affected. Note that owned links obtained using
+                /// `take_link()` will not be detached.
+                pub fn unload(&mut self) -> Result<(), ProgramError> {
+                    unload_program(&mut self.data)
+                }
+            }
+
+            impl Drop for $struct_name {
+                fn drop(&mut self) {
+                    let _unused: Result<(), ProgramError> = self.unload();
+                }
+            }
+        )+
+    }
+}
+
+impl_program_unload!(
+    KProbe,
+    UProbe,
+    TracePoint,
+    SocketFilter,
+    ReusePortSocketFilter,
+    Xdp,
+    SkMsg,
+    SkSkb,
+    SchedClassifier,
+    CgroupSkb,
+    CgroupSysctl,
+    CgroupSockopt,
+    LircMode2,
+    PerfEvent,
+    Lsm,
+    LsmCgroup,
+    RawTracePoint,
+    BtfTracePoint,
+    FEntry,
+    FExit,
+    FlowDissector,
+    Extension,
+    CgroupSockAddr,
+    SkLookup,
+    SkReuseport,
+    SockOps,
+    CgroupSock,
+    CgroupDevice,
+    Iter,
+);
+
+macro_rules! impl_fd {
+    ($($struct_name:ident),+ $(,)?) => {
+        $(
+            impl $struct_name {
+                /// Returns the file descriptor of this Program.
+                pub fn fd(&self) -> Result<&ProgramFd, ProgramError> {
+                    self.data.fd()
+                }
+            }
+        )+
+    }
+}
+
+impl_fd!(
+    KProbe,
+    UProbe,
+    TracePoint,
+    SocketFilter,
+    ReusePortSocketFilter,
+    Xdp,
+    SkMsg,
+    SkSkb,
+    SchedClassifier,
+    CgroupSkb,
+    CgroupSysctl,
+    CgroupSockopt,
+    LircMode2,
+    PerfEvent,
+    Lsm,
+    LsmCgroup,
+    RawTracePoint,
+    BtfTracePoint,
+    FEntry,
+    FExit,
+    FlowDissector,
+    Extension,
+    CgroupSockAddr,
+    SkLookup,
+    SkReuseport,
+    SockOps,
+    CgroupSock,
+    CgroupDevice,
+    Iter,
+);
+
+/// Kernel-side execution attributes for [`TestRunOptions`].
+///
+/// Controls *how* the kernel runs the test (XDP batch size, and
+/// the associated flag bits), as opposed to *what* data is passed.
+#[derive(Debug)]
+pub struct TestRunAttrs {
+    pub(crate) batch_size: u32,
+    pub(crate) flags: u32,
+}
+
+impl TestRunAttrs {
+    /// Creates a new `TestRunAttrs` with default values.
+    pub const fn new() -> Self {
+        Self {
+            batch_size: 0,
+            flags: 0,
+        }
+    }
+
+    /// Sets the batch size for XDP live frames testing.
+    ///
+    /// This automatically sets the `BPF_F_TEST_XDP_LIVE_FRAMES` flag.
+    /// This option only works with `XDP` programs.
+    #[must_use]
+    pub const fn xdp_live_frames(mut self, batch_size: u32) -> Self {
+        self.batch_size = batch_size;
+        self.flags |= BPF_F_TEST_XDP_LIVE_FRAMES;
+        self
+    }
+}
+
+impl Default for TestRunAttrs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Options for running a BPF program test.
+///
+/// See [kernel doc](https://docs.kernel.org/bpf/bpf_prog_run.html)
+/// and [ebpf.io](https://docs.ebpf.io/linux/syscall/BPF_PROG_TEST_RUN/) for detailed usage.
+#[derive(Debug)]
+pub struct TestRunOptions<'a> {
+    /// Input packet data to pass to the program.
+    pub data_in: Option<&'a [u8]>,
+    /// Output buffer for packet data modified by the program.
+    pub data_out: Option<&'a mut [u8]>,
+    /// Input context to pass to the program.
+    pub ctx_in: Option<&'a [u8]>,
+    /// Output buffer for context written back by the program.
+    pub ctx_out: Option<&'a mut [u8]>,
+    /// Number of times to repeat the test. Defaults to `1`.
+    pub repeat: u32,
+    /// Kernel execution attributes (XDP batch size).
+    pub attrs: TestRunAttrs,
+}
+
+impl Default for TestRunOptions<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TestRunOptions<'_> {
+    /// Creates a new `TestRunOptions` with default values.
+    pub const fn new() -> Self {
+        Self {
+            data_in: None,
+            data_out: None,
+            ctx_in: None,
+            ctx_out: None,
+            repeat: 1,
+            attrs: TestRunAttrs::new(),
+        }
+    }
+}
+
+/// Options for running a [`RawTracePoint`] program test via `BPF_PROG_TEST_RUN`.
+///
+/// The kernel's `bpf_prog_test_run_raw_tp` handler (v5.10, commit `b84e6faeed1`)
+/// is far more restrictive than the skb/XDP path:
+///
+/// - `data_in`, `data_out`, `ctx_out`, `repeat`, `batch_size` must all be zero/NULL;
+///   passing any of them returns `EINVAL`.
+/// - `ctx_in` is the only data path: a packed array of `u64` tracepoint arguments.
+/// - CPU pinning via `BPF_F_TEST_RUN_ON_CPU` is supported and is the primary
+///   reason to use `BPF_PROG_TEST_RUN` with raw tracepoints.
+///
+/// This struct deliberately omits the forbidden fields so misuse is a
+/// compile-time error rather than a runtime `EINVAL`.
+#[derive(Debug, Default)]
+pub struct RawTracePointRunOptions {
+    /// Fake tracepoint arguments, up to 12 `u64` values.
+    ///
+    /// Each element corresponds to one tracepoint argument in order. The kernel
+    /// copies the entire array into `ctx_in` before calling the program, which
+    /// reads them via `ctx.arg(n)`. Unused slots default to zero.
+    ///
+    /// The array size of 12 matches the kernel's maximum: the longest tracepoint
+    /// in the kernel takes 12 arguments. See
+    /// [`net/bpf/test_run.c`](https://github.com/torvalds/linux/blob/d91a46d680/net/bpf/test_run.c#L762).
+    pub args: [u64; 12],
+    /// If `Some(cpu)`, pin execution to that CPU via `BPF_F_TEST_RUN_ON_CPU`.
+    ///
+    /// The only flag the kernel accepts for raw tracepoints; `batch_size` and
+    /// all other [`TestRunAttrs`] knobs return `EINVAL`.
+    pub cpu: Option<u32>,
+}
+
+impl RawTracePointRunOptions {
+    /// Creates a new `RawTracePointRunOptions` with all arguments zeroed.
+    pub const fn new() -> Self {
+        Self {
+            args: [0; 12],
+            cpu: None,
+        }
+    }
+}
+
+/// Result of running a BPF program test.
+#[derive(Debug)]
+pub struct TestRunResult {
+    /// Return value from the program.
+    pub return_value: u32,
+    /// Duration of the test run.
+    pub duration: std::time::Duration,
+    /// Size of data written to `data_out`.
+    pub data_size_out: u32,
+    /// Size of context written to `ctx_out`.
+    pub ctx_size_out: u32,
+}
+
+/// Result of running a [`RawTracePoint`] program test via `BPF_PROG_TEST_RUN`.
+///
+/// Only `return_value` is returned by the kernel; `duration`, `data_size_out`,
+/// and `ctx_size_out` are omitted.
+#[derive(Debug)]
+pub struct RawTracePointTestRunResult {
+    /// Return value from the program.
+    pub return_value: u32,
+}
+
+/// Trait for BPF programs that support test execution via `BPF_PROG_TEST_RUN`.
+pub trait TestRun {
+    /// The options type used to configure a single test invocation.
+    ///
+    /// Different program types require different options: skb/XDP programs use
+    /// [`TestRunOptions`], raw tracepoint programs use
+    /// [`RawTracePointRunOptions`], and [`FExit`] programs use `()`. See
+    /// [`FExit`] for the tracing-specific test-run semantics.
+    type Opts<'a>;
+
+    /// The Result type for a single test invocation.
+    type Result;
+
+    /// Runs the program with test input data and returns the result.
+    ///
+    /// This function uses the kernel's `BPF_PROG_TEST_RUN` command to execute
+    /// the program in a test environment with provided input data.
+    ///
+    /// # Arguments
+    ///
+    /// * `opts` - Test run options including input/output data and context
+    ///
+    /// # Returns
+    ///
+    /// Returns a [`Self::Result`] containing the program-specific test output.
+    ///
+    /// For most program types this is [`crate::TestRunResult`]. For
+    /// [`RawTracePoint`] it is [`RawTracePointTestRunResult`]. For [`FExit`]
+    /// it is `()`; see [`FExit`] for what a successful tracing test run means.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProgramError::SyscallError`] if the underlying syscall fails.
+    /// Common errors include `-ENOSPC` if output buffers are too small.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let input_data = [0u8; 64];
+    /// let mut output_data = [0u8; 64];
+    ///
+    /// let opts = TestRunOptions {
+    ///     data_in: Some(&input_data),
+    ///     data_out: Some(&mut output_data),
+    ///     repeat: 1,
+    ///     ..Default::default()
+    /// };
+    ///
+    /// let result = program.test_run(opts)?;
+    /// println!("Program returned: {}, took {} ns", result.return_value, result.duration.as_nanos());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    fn test_run(&self, opts: Self::Opts<'_>) -> Result<Self::Result, ProgramError>;
+}
+
+macro_rules! impl_program_test_run {
+    ($($struct_name:ident), + $(,)?) => {
+        $(
+            impl TestRun for $struct_name {
+                type Opts<'a> = TestRunOptions<'a>;
+                type Result = TestRunResult;
+
+                fn test_run(&self, opts: Self::Opts<'_>) -> Result<Self::Result, ProgramError> {
+                    test_run(&self.data, opts)
+                }
+            }
+        )+
+    }
+}
+
+impl_program_test_run!(
+    SocketFilter,
+    ReusePortSocketFilter,
+    SchedClassifier,
+    Xdp,
+    CgroupSkb,
+    FlowDissector,
+);
+
+impl TestRun for RawTracePoint {
+    type Opts<'a> = RawTracePointRunOptions;
+    type Result = RawTracePointTestRunResult;
+
+    fn test_run(&self, opts: Self::Opts<'_>) -> Result<Self::Result, ProgramError> {
+        test_run_raw_tp(&self.data, opts)
+    }
+}
+
+impl TestRun for FExit {
+    // The kernel tracing test-run handler uses a fixed synthetic fentry/fexit
+    // call sequence; packet data, context data, repeat count, CPU pinning, and
+    // batch flags do not apply.
+    // https://github.com/torvalds/linux/blob/v7.1-rc4/net/bpf/test_run.c#L690-L735
+    type Opts<'a> = ();
+    // For fentry/fexit, test-run success only reports that the kernel's fixed
+    // synthetic call sequence ran.
+    type Result = ();
+
+    fn test_run(&self, _opts: Self::Opts<'_>) -> Result<Self::Result, ProgramError> {
+        test_run_tracing(&self.data)
+    }
+}
+
+/// Trait implemented by the [`Program`] types which support the kernel's
+/// [generic multi-prog API](https://github.com/torvalds/linux/commit/053c8e1f235dc3f69d13375b32f4209228e1cb96).
+///
+/// # Minimum kernel version
+///
+/// The minimum kernel version required to use this feature is 6.6.0.
+pub trait MultiProgram {
+    /// Borrows the file descriptor.
+    fn fd(&self) -> Result<BorrowedFd<'_>, ProgramError>;
+}
+
+macro_rules! impl_multiprog_fd {
+    ($($struct_name:ident),+ $(,)?) => {
+        $(
+            impl MultiProgram for $struct_name {
+                fn fd(&self) -> Result<BorrowedFd<'_>, ProgramError> {
+                    Ok(self.fd()?.as_fd())
+                }
+            }
+        )+
+    }
+}
+
+impl_multiprog_fd!(SchedClassifier);
+
+/// Trait implemented by the [`Link`] types which support the kernel's
+/// [generic multi-prog API](https://github.com/torvalds/linux/commit/053c8e1f235dc3f69d13375b32f4209228e1cb96).
+///
+/// # Minimum kernel version
+///
+/// The minimum kernel version required to use this feature is 6.6.0.
+pub trait MultiProgLink {
+    /// Borrows the file descriptor.
+    fn fd(&self) -> Result<BorrowedFd<'_>, LinkError>;
+}
+
+macro_rules! impl_multiproglink_fd {
+    ($($struct_name:ident),+ $(,)?) => {
+        $(
+            impl MultiProgLink for $struct_name {
+                fn fd(&self) -> Result<BorrowedFd<'_>, LinkError> {
+                    let link: &FdLink = self.try_into()?;
+                    Ok(link.fd.as_fd())
+                }
+            }
+        )+
+    }
+}
+
+impl_multiproglink_fd!(SchedClassifierLink);
+
+macro_rules! impl_program_pin{
+    ($($struct_name:ident),+ $(,)?) => {
+        $(
+            impl $struct_name {
+                /// Pins the program to a BPF filesystem.
+                ///
+                /// When a BPF object is pinned to a BPF filesystem it will remain loaded after
+                /// Aya has unloaded the program.
+                /// To remove the program, the file on the BPF filesystem must be removed.
+                /// Any directories in the the path provided should have been created by the caller.
+                pub fn pin<P: AsRef<Path>>(&mut self, path: P) -> Result<(), PinError> {
+                    self.data.path = Some(path.as_ref().to_path_buf());
+                    pin_program(&self.data, path)
+                }
+
+                /// Removes the pinned link from the filesystem.
+                pub fn unpin(&mut self) -> Result<(), io::Error> {
+                    if let Some(path) = self.data.path.take() {
+                        std::fs::remove_file(path)?;
+                    }
+                    Ok(())
+                }
+            }
+        )+
+    }
+}
+
+impl_program_pin!(
+    KProbe,
+    UProbe,
+    TracePoint,
+    SocketFilter,
+    ReusePortSocketFilter,
+    Xdp,
+    SkMsg,
+    SkSkb,
+    SchedClassifier,
+    CgroupSkb,
+    CgroupSysctl,
+    CgroupSockopt,
+    LircMode2,
+    PerfEvent,
+    Lsm,
+    LsmCgroup,
+    RawTracePoint,
+    BtfTracePoint,
+    FEntry,
+    FExit,
+    FlowDissector,
+    Extension,
+    CgroupSockAddr,
+    SkLookup,
+    SkReuseport,
+    SockOps,
+    CgroupSock,
+    CgroupDevice,
+    Iter,
+);
+
+macro_rules! impl_from_pin {
+    ($($struct_name:ident),+ $(,)?) => {
+        $(
+            impl $struct_name {
+                /// Creates a program from a pinned entry on a bpffs.
+                ///
+                /// Existing links will not be populated. To work with existing links you should use [`crate::programs::links::PinnedLink`].
+                ///
+                /// On drop, any managed links are detached and the program is unloaded. This will not result in
+                /// the program being unloaded from the kernel if it is still pinned.
+                pub fn from_pin<P: AsRef<Path>>(path: P) -> Result<Self, ProgramError> {
+                    let data = ProgramData::from_pinned_path(path, VerifierLogLevel::default())?;
+                    Ok(Self { data })
+                }
+            }
+        )+
+    }
+}
+
+// Use impl_from_pin if the program doesn't require additional data
+impl_from_pin!(
+    TracePoint,
+    SkMsg,
+    CgroupSysctl,
+    LircMode2,
+    Lsm,
+    PerfEvent,
+    RawTracePoint,
+    BtfTracePoint,
+    FEntry,
+    FExit,
+    FlowDissector,
+    Extension,
+    SkLookup,
+    SockOps,
+    CgroupDevice,
+    Iter,
+);
+
+macro_rules! impl_from_prog_info {
+    (
+        $(#[$doc:meta])*
+        @safety
+            [$($safety:tt)?]
+        @rest
+            $struct_name:ident $($var:ident : $var_ty:ty)?
+    ) => {
+        impl $struct_name {
+            /// Constructs an instance of a [`Self`] from a [`ProgramInfo`].
+            ///
+            /// This allows the caller to get a handle to an already loaded
+            /// program from the kernel without having to load it again.
+            ///
+            /// # Errors
+            ///
+            /// - If the program type reported by the kernel does not match
+            ///   [`Self::PROGRAM_TYPE`].
+            /// - If the file descriptor of the program cannot be cloned.
+            $(#[$doc])*
+            pub $($safety)?
+            fn from_program_info(
+                info: ProgramInfo,
+                name: Cow<'static, str>,
+                $($var: $var_ty,)?
+            ) -> Result<Self, ProgramError> {
+                if info.program_type() != Self::PROGRAM_TYPE.into() {
+                    return Err(ProgramError::UnexpectedProgramType {});
+                }
+                let ProgramInfo(bpf_program_info) = info;
+                let fd = info.fd()?;
+                let fd = fd.as_fd().try_clone_to_owned()?;
+
+                Ok(Self {
+                    data: ProgramData::from_bpf_prog_info(
+                        Some(name),
+                        crate::MockableFd::from_fd(fd),
+                        Path::new(""),
+                        bpf_program_info,
+                        VerifierLogLevel::default(),
+                    )?,
+                    $($var,)?
+                })
+            }
+        }
+    };
+
+    // Handle unsafe cases and pass a safety doc section
+    (
+        unsafe $struct_name:ident $($var:ident : $var_ty:ty)? $(, $($rest:tt)*)?
+    ) => {
+        impl_from_prog_info! {
+            ///
+            /// # Safety
+            ///
+            /// The runtime type of this program, as used by the kernel, is
+            /// overloaded. We assert the program type matches the runtime type
+            /// but we're unable to perform further checks. Therefore, the caller
+            /// must ensure that the program type is correct or the behavior is
+            /// undefined.
+            @safety [unsafe]
+            @rest $struct_name $($var : $var_ty)?
+        }
+        $( impl_from_prog_info!($($rest)*); )?
+    };
+
+    // Handle non-unsafe cases and omit safety doc section
+    (
+        $struct_name:ident $($var:ident : $var_ty:ty)? $(, $($rest:tt)*)?
+    ) => {
+        impl_from_prog_info! {
+            @safety []
+            @rest $struct_name $($var : $var_ty)?
+        }
+        $( impl_from_prog_info!($($rest)*); )?
+    };
+
+    // Handle trailing comma
+    (
+        $(,)?
+    ) => {};
+}
+
+impl_from_prog_info!(
+    unsafe KProbe kind : ProbeKind,
+    unsafe UProbe kind : ProbeKind,
+    TracePoint,
+    SocketFilter,
+    ReusePortSocketFilter,
+    Xdp attach_type : XdpAttachType,
+    SkMsg,
+    SkSkb kind : SkSkbKind,
+    SockOps,
+    SchedClassifier,
+    CgroupSkb attach_type : Option<CgroupSkbAttachType>,
+    CgroupSysctl,
+    CgroupSockopt attach_type : CgroupSockoptAttachType,
+    LircMode2,
+    PerfEvent,
+    Lsm,
+    RawTracePoint,
+    unsafe BtfTracePoint,
+    unsafe FEntry,
+    unsafe FExit,
+    Extension,
+    SkLookup,
+    SkReuseport attach_type : SkReuseportAttachType,
+    CgroupDevice,
+    Iter,
+);
+
+macro_rules! impl_try_from_program {
+    ($($ty:ident),+ $(,)?) => {
+        $(
+            impl<'a> TryFrom<&'a Program> for &'a $ty {
+                type Error = ProgramError;
+
+                fn try_from(program: &'a Program) -> Result<&'a $ty, ProgramError> {
+                    match program {
+                        Program::$ty(p) => Ok(p),
+                        _ => Err(ProgramError::UnexpectedProgramType),
+                    }
+                }
+            }
+
+            impl<'a> TryFrom<&'a mut Program> for &'a mut $ty {
+                type Error = ProgramError;
+
+                fn try_from(program: &'a mut Program) -> Result<&'a mut $ty, ProgramError> {
+                    match program {
+                        Program::$ty(p) => Ok(p),
+                        _ => Err(ProgramError::UnexpectedProgramType),
+                    }
+                }
+            }
+        )+
+    }
+}
+
+// Socket filters are special: Aya follows libbpf section rules, so
+// `SEC("socket")` always loads as `Program::SocketFilter`. There is no
+// `socket/reuseport` section to distinguish the reuseport use at load time.
+// The two uses have different return value semantics, so a program is not
+// expected to be meaningful for both; modeling them as separate program
+// abstractions is useful even though they share a section.
+macro_rules! impl_try_from_socket_filter_program {
+    ($ty:ident, $variant:ident, $other_variant:ident $(,)?) => {
+        impl<'a> TryFrom<&'a Program> for &'a $ty {
+            type Error = ProgramError;
+
+            fn try_from(program: &'a Program) -> Result<&'a $ty, ProgramError> {
+                match program {
+                    Program::$variant(p) => Ok(p),
+                    Program::$other_variant(p) => {
+                        // SAFETY: Both variants are `repr(transparent)`
+                        // wrappers around the same `ProgramData<FdLink>` field.
+                        Ok(unsafe { &*std::ptr::from_ref(p).cast::<$ty>() })
+                    }
+                    _ => Err(ProgramError::UnexpectedProgramType),
+                }
+            }
+        }
+
+        impl<'a> TryFrom<&'a mut Program> for &'a mut $ty {
+            type Error = ProgramError;
+
+            fn try_from(program: &'a mut Program) -> Result<&'a mut $ty, ProgramError> {
+                match program {
+                    Program::$variant(p) => Ok(p),
+                    Program::$other_variant(other) => {
+                        // SAFETY: Both variants are `repr(transparent)`
+                        // wrappers around the same `ProgramData<FdLink>` field.
+                        Ok(unsafe { &mut *std::ptr::from_mut(other).cast::<$ty>() })
+                    }
+                    _ => Err(ProgramError::UnexpectedProgramType),
+                }
+            }
+        }
+    };
+}
+
+impl_try_from_socket_filter_program!(SocketFilter, SocketFilter, ReusePortSocketFilter);
+impl_try_from_socket_filter_program!(ReusePortSocketFilter, ReusePortSocketFilter, SocketFilter);
+
+impl_try_from_program!(
+    KProbe,
+    UProbe,
+    TracePoint,
+    Xdp,
+    SkMsg,
+    SkSkb,
+    SockOps,
+    SchedClassifier,
+    CgroupSkb,
+    CgroupSysctl,
+    CgroupSockopt,
+    LircMode2,
+    PerfEvent,
+    Lsm,
+    LsmCgroup,
+    RawTracePoint,
+    BtfTracePoint,
+    FEntry,
+    FExit,
+    FlowDissector,
+    Extension,
+    CgroupSockAddr,
+    SkLookup,
+    SkReuseport,
+    CgroupSock,
+    CgroupDevice,
+    Iter,
+);
+
+impl_info!(
+    KProbe,
+    UProbe,
+    TracePoint,
+    SocketFilter,
+    ReusePortSocketFilter,
+    Xdp,
+    SkMsg,
+    SkSkb,
+    SchedClassifier,
+    CgroupSkb,
+    CgroupSysctl,
+    CgroupSockopt,
+    LircMode2,
+    PerfEvent,
+    Lsm,
+    LsmCgroup,
+    RawTracePoint,
+    BtfTracePoint,
+    FEntry,
+    FExit,
+    FlowDissector,
+    Extension,
+    CgroupSockAddr,
+    SkLookup,
+    SkReuseport,
+    SockOps,
+    CgroupSock,
+    CgroupDevice,
+    Iter,
+);
+
+/// Returns an iterator over all loaded links.
+///
+/// This function is useful for debugging and inspecting the state of
+/// loaded links in the kernel. It can be used to check which links are
+/// currently active and to gather information about them.
+///
+/// # Errors
+///
+/// The returned iterator may yield an error if link information cannot be
+/// retrieved from the kernel.
+///
+/// # Example
+///
+/// ```no_run
+/// use aya::programs::loaded_links;
+///
+/// for info in loaded_links() {
+///    let info = info.unwrap();
+///    println!("loaded link: {}", info.id());
+/// }
+/// ```
+pub fn loaded_links() -> impl Iterator<Item = Result<LinkInfo, LinkError>> {
+    iter_link_ids()
+        .map(|id| {
+            let id = id?;
+            bpf_link_get_fd_by_id(id)
+        })
+        .map(|fd| {
+            let fd = fd?;
+            LinkInfo::new_from_fd(fd.as_fd())
+        })
+}
