@@ -141,9 +141,15 @@ function Search({ look, field }: { look: Look; field: RefObject<HTMLInputElement
     if (text === look.q) {
       return;
     }
+    const typedOver = machinesWindow.getState().look.machine;
     const timer = setTimeout(() => {
       setShown(text);
-      setLook({ q: text, machine: null, ...(look.view === "list" ? {} : { view: "list" }) });
+      const picked = machinesWindow.getState().look.machine !== typedOver;
+      setLook({
+        q: text,
+        ...(picked ? {} : { machine: null }),
+        ...(look.view === "list" ? {} : { view: "list" }),
+      });
     }, SEARCH_DELAY_MS);
     return () => clearTimeout(timer);
   }, [text, look.q, look.view]);

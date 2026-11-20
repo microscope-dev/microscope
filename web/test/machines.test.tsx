@@ -585,6 +585,26 @@ it("opens a machine beside the list, and walks the rows with the arrow keys", as
     .toHaveFocus();
 });
 
+it("keeps a machine picked while its search was still waiting", async () => {
+  services({
+    "GET /api/fleet": [200, overview()],
+    "GET /api/fleet/machines": [
+      200,
+      { machines: [machine(81723, "ip-10-0-3-17")], next: null, newest_version: null },
+    ],
+    "GET /api/fleet/machines/81723": [200, detail()],
+  });
+  mount("/#machines/list");
+
+  const row = machines().getByRole("button", { name: "ip-10-0-3-17, live" });
+  await expect.element(row).toBeVisible();
+  await userEvent.type(machines().getByRole("searchbox", { name: "Find a machine" }), "ip-1");
+  await row.click();
+  await expect.poll(() => fragment()).toContain("q=ip-1");
+  await expect.element(machines().getByRole("complementary", { name: "Machine" })).toBeVisible();
+  expect(fragment()).toMatch(/^machines\/m\/81723/u);
+});
+
 it("asks before revoking, and Escape closes the question before the window", async () => {
   const asked = services({
     "GET /api/fleet": [200, overview()],

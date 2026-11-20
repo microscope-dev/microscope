@@ -123,6 +123,7 @@ test("adds a machine with a real agent, finds it, and revokes the key that let i
     const machines = page.getByRole("dialog", { name: "Machines" });
     await expect(machines.getByRole("searchbox", { name: "Find a machine" })).toBeFocused();
     await page.keyboard.type(host.slice(0, 4));
+    await expect(page).toHaveURL(/#machines\/list\?q=/u);
     const row = machines.getByRole("button", { name: `${host}, live` });
     await row.click();
     const panel = machines.getByRole("complementary", { name: "Machine" });
@@ -131,7 +132,7 @@ test("adds a machine with a real agent, finds it, and revokes the key that let i
     await expect(panel).toContainText("clusterlab-1");
     await expect(panel).toContainText("teamsearch");
     await expect(panel).toContainText("with key prod");
-    expect(new URL(page.url()).hash).toMatch(/^#machines\/m\/\d+$/u);
+    expect(new URL(page.url()).hash).toMatch(/^#machines\/m\/\d+\?q=[^&]+$/u);
 
     await machines.getByRole("combobox", { name: "Add tag filter" }).selectOption("lab-1");
     await expect(machines.getByRole("combobox", { name: "cluster" })).toHaveValue("lab-1");
