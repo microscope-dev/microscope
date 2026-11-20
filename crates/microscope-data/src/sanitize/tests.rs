@@ -232,6 +232,125 @@ fn arguments_are_read_together_so_a_flag_covers_the_next_one() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "covers multi-word, multiline, embedded shell, and cross-argument secret redaction"
+)]
+fn multi_word_secret_arguments_and_commands_are_fully_redacted() {
+    let args = [
+        "app",
+        "--password",
+        "correct horse battery",
+        "--api-key=one two three",
+        "--host",
+        "db.example",
+    ]
+    .map(str::to_owned);
+    let mut tally = Tally::default();
+    let cleaned = sanitizer(&Builtin::DEFAULT).args(&args, &mut tally);
+    assert_eq!(
+        cleaned,
+        Outcome::Replaced(
+            [
+                "app",
+                "--password",
+                "[redacted]",
+                "--api-key=[redacted]",
+                "--host",
+                "db.example",
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        )
+    );
+
+    let mut builder = crate::capture::builder::CaptureBuilder::new();
+    builder.setting(
+        "arguments 42",
+        &serde_json::to_string(&[
+            "app",
+            "--password",
+            "correct horse battery",
+            "--host",
+            "db.example",
+        ])
+        .expect("json args"),
+    );
+    builder.setting(
+        "command 42",
+        "app --password correct horse battery --host db.example",
+    );
+    let data = crate::object::ChunkData {
+        capture: builder.finish(),
+        chunks: Vec::new(),
+        dimensions: Vec::new(),
+        sanitizer_counts: Vec::new(),
+    };
+    let clean = sanitize_chunk(
+        data,
+        crate::object::TimeUnit::Us,
+        &sanitizer(&Builtin::DEFAULT),
+    );
+    let strings = String::from_utf8_lossy(&clean.data().capture.strings);
+    for word in ["correct", "horse", "battery"] {
+        assert!(!strings.contains(word), "leaked {word} in {strings:?}");
+    }
+    assert!(strings.contains("--host db.example"));
+
+    let multiline_and_shell = [
+        "sh",
+        "-c",
+        "curl --token embedded_secret https://example.com",
+        "--password=line1\nline2",
+        "Bearer",
+        "opaque_cross_arg_token_99",
+    ]
+    .map(str::to_owned);
+    let mut tally2 = Tally::default();
+    let cleaned2 = sanitizer(&Builtin::DEFAULT).args(&multiline_and_shell, &mut tally2);
+    assert_eq!(
+        cleaned2,
+        Outcome::Replaced(
+            [
+                "sh",
+                "-c",
+                "curl --token [redacted] https://example.com",
+                "--password=[redacted]",
+                "Bearer",
+                "[redacted]",
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        )
+    );
+
+    let mut b2 = crate::capture::builder::CaptureBuilder::new();
+    b2.setting(
+        "arguments 7",
+        &serde_json::to_string(&["curl", "-H", "Authorization:", "Bearer", "split_secret_xyz"])
+            .expect("json"),
+    );
+    b2.setting(
+        "command 7",
+        "curl -H Authorization: Bearer split_secret_xyz",
+    );
+    let clean2 = sanitize_chunk(
+        crate::object::ChunkData {
+            capture: b2.finish(),
+            chunks: Vec::new(),
+            dimensions: Vec::new(),
+            sanitizer_counts: Vec::new(),
+        },
+        crate::object::TimeUnit::Us,
+        &sanitizer(&Builtin::DEFAULT),
+    );
+    let args_setting = clean2.data().capture.setting("arguments 7").expect("args");
+    let cmd_setting = clean2.data().capture.setting("command 7").expect("cmd");
+    assert!(!args_setting.contains("split_secret_xyz"), "{args_setting}");
+    assert!(!cmd_setting.contains("split_secret_xyz"), "{cmd_setting}");
+}
+
+#[test]
 fn a_bad_rule_says_what_is_wrong_with_it() {
     let spec = |name: &str, fields: &[&str], pattern: &str| RuleSpec {
         name: name.to_owned(),

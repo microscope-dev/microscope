@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
 use super::super::codec::{
-    Coding, SectionReader, WHOLE_SECTION_GROUP, decode_ints, decode_words, delta_by_key_decode_u64,
-    delta_decode_i64, relative_decode_u64, zigzag_decode,
+    Coding, DecodeBudget, SectionReader, WHOLE_SECTION_GROUP, decode_ints, decode_words,
+    delta_by_key_decode_u64, delta_decode_i64, relative_decode_u64, zigzag_decode,
 };
-use super::super::{MAX_ROWS, ObjectError, RawSection, SectionKind, TimeUnit};
+use super::super::{
+    MAX_DECOMPRESSED_OBJECT_BYTES, MAX_ROWS, ObjectError, RawSection, SectionKind, TimeUnit,
+};
 use super::{
     ChunkData, ChunkRow, DimensionRow, NOTE_BLOBS_ARGUMENT, SanitizerCountRow, read_delta_u64_col,
     read_relative_time_col, read_time_col, read_u8_col, read_u32_col, read_u64_col, u32_from_u64,
@@ -16,6 +18,10 @@ use crate::capture::records::{
     TaskWait, Thread, ThreadRange, UNSEEN, Zone, ZoneRange,
 };
 use crate::image::{StrId, Strings};
+
+fn charge_rows<T>(r: &SectionReader<'_, '_>, rows: usize) -> Result<(), ObjectError> {
+    r.charge(rows.saturating_mul(size_of::<T>()))
+}
 
 pub fn decode_tables(sections: &[RawSection<'_>]) -> Result<ChunkData, ObjectError> {
     decode_selected(sections, |_| true)
@@ -46,13 +52,14 @@ fn decode_selected(
         }
     }
 
+    let budget = DecodeBudget::new(MAX_DECOMPRESSED_OBJECT_BYTES);
     let mut capture = Capture::default();
     let mut chunks = Vec::new();
     let mut dimensions = Vec::new();
     let mut sanitizer_counts = Vec::new();
 
     if let Some(sec) = by_kind.get(&SectionKind::Strings) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Strings)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Strings, &budget)?;
         capture.strings = r.column(WHOLE_SECTION_GROUP, 0)?.decompress()?;
     }
 
@@ -63,8 +70,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Settings) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Settings)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Settings, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Setting>(&r, n)?;
         let keys = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let vals = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         capture.settings = keys
@@ -78,8 +86,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Modules) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Modules)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Modules, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Module>(&r, n)?;
         let paths = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let bids = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let digests = r.column(WHOLE_SECTION_GROUP, 2)?.decompress()?;
@@ -106,11 +115,13 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Processes) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Processes)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Processes, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Process>(&r, n)?;
         let pids = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let names = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let start_units = {
+            r.charge(n.saturating_mul(8))?;
             let s = r.column(WHOLE_SECTION_GROUP, 2)?;
             let raw = s.decompress()?;
             delta_decode_i64(&decode_ints(&raw, n, s.bit_packed())?, r.base_time)
@@ -130,12 +141,14 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Threads) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Threads)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Threads, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Thread>(&r, n)?;
         let procs = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let tids = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let names = read_u32_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
         let start_units = {
+            r.charge(n.saturating_mul(8))?;
             let s = r.column(WHOLE_SECTION_GROUP, 3)?;
             let raw = s.decompress()?;
             delta_decode_i64(&decode_ints(&raw, n, s.bit_packed())?, r.base_time)
@@ -157,12 +170,14 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Mappings) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Mappings)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Mappings, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Mapping>(&r, n)?;
         let procs = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let mods = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let starts = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
         let ends_raw = read_u64_col(&r, WHOLE_SECTION_GROUP, 3, n)?;
+        charge_rows::<u64>(&r, n)?;
         let ends = relative_decode_u64(&ends_raw, &starts)?;
         let offs = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 4, n)?;
         let biases = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 5, n)?;
@@ -181,8 +196,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Frames) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Frames)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Frames, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Frame>(&r, n)?;
         let addrs = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let mods = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let kinds = read_u8_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -199,8 +215,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Stacks) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Stacks)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Stacks, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Stack>(&r, n)?;
         let parents = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let frames = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         capture.stacks = parents
@@ -214,8 +231,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Samples) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Samples)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Samples, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Sample>(&r, n)?;
         let times = read_time_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let weights = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let stacks = read_u32_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -237,12 +255,14 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SampleRanges) {
-        capture.sample_ranges = decode_thread_ranges(sec.bytes, SectionKind::SampleRanges)?;
+        capture.sample_ranges =
+            decode_thread_ranges(sec.bytes, SectionKind::SampleRanges, &budget)?;
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::FrameSymbols) {
-        let r = SectionReader::open(sec.bytes, SectionKind::FrameSymbols)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::FrameSymbols, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Range>(&r, n)?;
         let counts = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let explicit_starts = if r.optional_column(WHOLE_SECTION_GROUP, 1).is_some() {
             Some(read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?)
@@ -268,8 +288,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Lines) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Lines)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Lines, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Line>(&r, n)?;
         let funcs = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let files = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let nums = read_u32_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -285,8 +306,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Functions) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Functions)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Functions, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Function>(&r, n)?;
         let names = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let mods = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let files = read_u32_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -305,8 +327,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Accounting) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Accounting)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Accounting, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Account>(&r, n)?;
         let kinds = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let vals = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         capture.accounting = kinds
@@ -321,8 +344,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::OffCpu) {
-        let r = SectionReader::open(sec.bytes, SectionKind::OffCpu)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::OffCpu, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<OffCpu>(&r, n)?;
         let gaps = read_u64_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let durations = read_u64_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let packed = read_u8_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -347,12 +371,14 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::OffCpuRanges) {
-        capture.off_cpu_ranges = decode_thread_ranges(sec.bytes, SectionKind::OffCpuRanges)?;
+        capture.off_cpu_ranges =
+            decode_thread_ranges(sec.bytes, SectionKind::OffCpuRanges, &budget)?;
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Sites) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Sites)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Sites, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Site>(&r, n)?;
         let names = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let files = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let lines = read_u32_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -371,9 +397,11 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Zones) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Zones)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Zones, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Zone>(&r, n)?;
         let start_units = {
+            r.charge(n.saturating_mul(8))?;
             let s = r.column(WHOLE_SECTION_GROUP, 0)?;
             let raw = s.decompress()?;
             delta_decode_i64(&decode_ints(&raw, n, s.bit_packed())?, r.base_time)
@@ -398,8 +426,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::ZoneRanges) {
-        let r = SectionReader::open(sec.bytes, SectionKind::ZoneRanges)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::ZoneRanges, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<ZoneRange>(&r, n)?;
         let threads = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let depths = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let counts = read_u32_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -420,8 +449,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Plots) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Plots)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Plots, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Plot>(&r, n)?;
         let times = read_time_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let vals = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let sites = read_u32_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -437,8 +467,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Markers) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Markers)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Markers, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Marker>(&r, n)?;
         let times = read_time_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let threads = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let sites = read_u32_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -457,13 +488,15 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Tasks) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Tasks)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Tasks, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Task>(&r, n)?;
         let runtimes = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let numbers = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let roots = read_u32_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
         let labels = read_u32_col(&r, WHOLE_SECTION_GROUP, 3, n)?;
         let first_units = {
+            r.charge(n.saturating_mul(8))?;
             let s = r.column(WHOLE_SECTION_GROUP, 4)?;
             let raw = s.decompress()?;
             delta_decode_i64(&decode_ints(&raw, n, s.bit_packed())?, r.base_time)
@@ -485,8 +518,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::TaskWaits) {
-        let r = SectionReader::open(sec.bytes, SectionKind::TaskWaits)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::TaskWaits, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<TaskWait>(&r, n)?;
         let times = read_time_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let weights = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let tasks = read_u32_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -505,9 +539,11 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Gaps) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Gaps)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Gaps, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<Gap>(&r, n)?;
         let start_units = {
+            r.charge(n.saturating_mul(8))?;
             let s = r.column(WHOLE_SECTION_GROUP, 0)?;
             let raw = s.decompress()?;
             delta_decode_i64(&decode_ints(&raw, n, s.bit_packed())?, r.base_time)
@@ -527,12 +563,13 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Syscalls) {
-        capture.syscalls = decode_syscalls(sec.bytes)?;
+        capture.syscalls = decode_syscalls(sec.bytes, &budget)?;
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SyscallNotes) {
-        let r = SectionReader::open(sec.bytes, SectionKind::SyscallNotes)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::SyscallNotes, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<SyscallNote>(&r, n)?;
         let times = read_time_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let values = read_u64_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let extras = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -564,16 +601,17 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SyscallBlobs) {
-        decode_syscall_blobs(sec.bytes, &mut capture)?;
+        decode_syscall_blobs(sec.bytes, &mut capture, &budget)?;
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SyscallStats) {
-        capture.syscall_stats = decode_syscall_stats(sec.bytes)?;
+        capture.syscall_stats = decode_syscall_stats(sec.bytes, &budget)?;
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SyscallErrnos) {
-        let r = SectionReader::open(sec.bytes, SectionKind::SyscallErrnos)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::SyscallErrnos, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<SyscallErrno>(&r, n)?;
         let counts = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let errnos = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         capture.syscall_errnos = counts
@@ -600,15 +638,19 @@ fn decode_selected(
                 "string reference out of bounds".into(),
             ));
         }
-        Ok(Strings(&capture.strings).get(StrId(id)).to_owned())
+        let text = Strings(&capture.strings).get(StrId(id));
+        budget.take(text.len())?;
+        Ok(text.to_owned())
     };
 
     if let Some(sec) = by_kind.get(&SectionKind::Chunk) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Chunk)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Chunk, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<ChunkRow>(&r, n)?;
         let agents = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let numbers = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let start_units = {
+            r.charge(n.saturating_mul(8))?;
             let s = r.column(WHOLE_SECTION_GROUP, 2)?;
             let raw = s.decompress()?;
             delta_decode_i64(&decode_ints(&raw, n, s.bit_packed())?, r.base_time)
@@ -641,8 +683,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Dimensions) {
-        let r = SectionReader::open(sec.bytes, SectionKind::Dimensions)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Dimensions, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<DimensionRow>(&r, n)?;
         let procs = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let names = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let vals = read_u32_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -656,8 +699,9 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SanitizerCounts) {
-        let r = SectionReader::open(sec.bytes, SectionKind::SanitizerCounts)?;
+        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::SanitizerCounts, &budget)?;
         let n = r.rows as usize;
+        charge_rows::<SanitizerCountRow>(&r, n)?;
         let rules = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
         let fields = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
         let fired = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 2, n)?;
@@ -681,9 +725,14 @@ fn decode_selected(
     })
 }
 
-fn decode_thread_ranges(bytes: &[u8], kind: SectionKind) -> Result<Vec<ThreadRange>, ObjectError> {
-    let r = SectionReader::open(bytes, kind)?;
+fn decode_thread_ranges(
+    bytes: &[u8],
+    kind: SectionKind,
+    budget: &DecodeBudget,
+) -> Result<Vec<ThreadRange>, ObjectError> {
+    let r = SectionReader::open_budgeted(bytes, kind, budget)?;
     let n = r.rows as usize;
+    charge_rows::<ThreadRange>(&r, n)?;
     let threads = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
     let counts = read_u32_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
     let mut next = 0_u32;
@@ -706,7 +755,7 @@ fn decode_thread_ranges(bytes: &[u8], kind: SectionKind) -> Result<Vec<ThreadRan
     clippy::too_many_lines,
     reason = "decodes grouped syscall columns per abi and number"
 )]
-fn decode_syscalls(bytes: &[u8]) -> Result<Vec<Syscall>, ObjectError> {
+fn decode_syscalls(bytes: &[u8], budget: &DecodeBudget) -> Result<Vec<Syscall>, ObjectError> {
     struct DecodedGroup {
         abi: u8,
         number: u32,
@@ -722,10 +771,12 @@ fn decode_syscalls(bytes: &[u8]) -> Result<Vec<Syscall>, ObjectError> {
         cursor: usize,
     }
 
-    let r = SectionReader::open(bytes, SectionKind::Syscalls)?;
+    let r = SectionReader::open_budgeted(bytes, SectionKind::Syscalls, budget)?;
     let n = r.rows as usize;
+    charge_rows::<Syscall>(&r, n)?;
     let order = read_u64_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
     let exit_units = {
+        r.charge(n.saturating_mul(8))?;
         let s = r.column(WHOLE_SECTION_GROUP, 1)?;
         let raw = s.decompress()?;
         delta_decode_i64(&decode_ints(&raw, n, s.bit_packed())?, r.base_time)
@@ -740,14 +791,17 @@ fn decode_syscalls(bytes: &[u8]) -> Result<Vec<Syscall>, ObjectError> {
         }
 
         let dur_raw = read_u64_col(&r, g, 0, m)?;
+        charge_rows::<i64>(&r, m)?;
         let durations: Vec<i64> = dur_raw.into_iter().map(zigzag_decode).collect();
         let threads = read_u32_col(&r, g, 1, m)?;
         let rets_raw = read_u64_col(&r, g, 2, m)?;
+        charge_rows::<i64>(&r, m)?;
         let rets: Vec<i64> = delta_by_key_decode_u64(&rets_raw, &threads)?
             .into_iter()
             .map(u64::cast_signed)
             .collect();
         let stacks_raw = read_u64_col(&r, g, 3, m)?;
+        charge_rows::<u32>(&r, m)?;
         let stacks: Vec<u32> = delta_by_key_decode_u64(&stacks_raw, &threads)?
             .into_iter()
             .map(|v| u32_from_u64(v, "syscall stack"))
@@ -765,6 +819,7 @@ fn decode_syscalls(bytes: &[u8]) -> Result<Vec<Syscall>, ObjectError> {
         for i in 0_u8..6 {
             if r.optional_column(g, 10 + i).is_some() {
                 let raw = read_u64_col(&r, g, 10 + i, m)?;
+                charge_rows::<u64>(&r, m)?;
                 args.push(delta_by_key_decode_u64(&raw, &threads)?);
             } else {
                 break;
@@ -858,7 +913,11 @@ fn decode_syscalls(bytes: &[u8]) -> Result<Vec<Syscall>, ObjectError> {
     clippy::too_many_lines,
     reason = "decodes grouped syscall capture blobs and note blobs"
 )]
-fn decode_syscall_blobs(bytes: &[u8], capture: &mut Capture) -> Result<(), ObjectError> {
+fn decode_syscall_blobs(
+    bytes: &[u8],
+    capture: &mut Capture,
+    budget: &DecodeBudget,
+) -> Result<(), ObjectError> {
     struct DecodedBlobGroup {
         headers: Vec<u64>,
         wanted: Vec<u32>,
@@ -868,8 +927,9 @@ fn decode_syscall_blobs(bytes: &[u8], capture: &mut Capture) -> Result<(), Objec
         cursor: usize,
     }
 
-    let r = SectionReader::open(bytes, SectionKind::SyscallBlobs)?;
+    let r = SectionReader::open_budgeted(bytes, SectionKind::SyscallBlobs, budget)?;
     let total_captures = r.rows as usize;
+    r.charge(total_captures.saturating_mul(12))?;
     let call_counts = read_u32_col(&r, WHOLE_SECTION_GROUP, 0, capture.syscalls.len())?;
     let order = read_u64_col(&r, WHOLE_SECTION_GROUP, 1, total_captures)?;
 
@@ -904,6 +964,7 @@ fn decode_syscall_blobs(bytes: &[u8], capture: &mut Capture) -> Result<(), Objec
                         "word-coded blob group has varying lengths".into(),
                     ));
                 }
+                r.charge(m.saturating_mul(stride))?;
                 decode_words(&raw_data, m, stride)?
             }
             Coding::Bytes => raw_data,
@@ -971,6 +1032,7 @@ fn decode_syscall_blobs(bytes: &[u8], capture: &mut Capture) -> Result<(), Objec
                 .ok_or(ObjectError::Truncated)?;
             group.data_offset = end;
 
+            r.charge(payload.len())?;
             blobs.extend_from_slice(&[arg, when, state, 0]);
             blobs.extend_from_slice(&want.to_le_bytes());
             blobs.extend_from_slice(&len.to_le_bytes());
@@ -1009,6 +1071,7 @@ fn decode_syscall_blobs(bytes: &[u8], capture: &mut Capture) -> Result<(), Objec
             off = end;
             let start = u32::try_from(blobs.len())
                 .map_err(|_| ObjectError::Limit("syscall_blobs exceeds u32"))?;
+            r.charge(slice.len())?;
             blobs.extend_from_slice(slice);
             note.blob = start.into();
             note.blob_len = len.into();
@@ -1022,9 +1085,13 @@ fn decode_syscall_blobs(bytes: &[u8], capture: &mut Capture) -> Result<(), Objec
     Ok(())
 }
 
-fn decode_syscall_stats(bytes: &[u8]) -> Result<Vec<SyscallStat>, ObjectError> {
-    let r = SectionReader::open(bytes, SectionKind::SyscallStats)?;
+fn decode_syscall_stats(
+    bytes: &[u8],
+    budget: &DecodeBudget,
+) -> Result<Vec<SyscallStat>, ObjectError> {
+    let r = SectionReader::open_budgeted(bytes, SectionKind::SyscallStats, budget)?;
     let n = r.rows as usize;
+    charge_rows::<SyscallStat>(&r, n)?;
     let calls = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 0, n)?;
     let errors = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 1, n)?;
     let timed = read_delta_u64_col(&r, WHOLE_SECTION_GROUP, 2, n)?;

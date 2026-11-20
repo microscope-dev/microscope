@@ -127,6 +127,35 @@ impl FromStr for Builtin {
 
 const SECRET_WORDS: &str = r"[a-z0-9_.-]*(?:password|passwd|passphrase|token|api[_-]?key|secret|credentials?|private[_-]?key)[a-z0-9_.-]*";
 
+pub enum SecretFlagArg {
+    None,
+    NextArg,
+    Value(Range<usize>),
+}
+
+pub fn secret_flag_arg(arg: &str) -> SecretFlagArg {
+    static FLAG_ONLY: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(&format!(r"(?i-u)^--?{SECRET_WORDS}$"))
+            .unwrap_or_else(|error| panic!("flag-only regex: {error}"))
+    });
+    static FLAG_VALUE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(&format!(
+            r"(?is-u)^(?:--?{SECRET_WORDS}|[A-Z_]*{SECRET_WORDS})=(?<value>.+)$"
+        ))
+        .unwrap_or_else(|error| panic!("flag-value regex: {error}"))
+    });
+
+    if FLAG_ONLY.is_match(arg.as_bytes()) {
+        return SecretFlagArg::NextArg;
+    }
+    if let Some(captures) = FLAG_VALUE.captures(arg.as_bytes())
+        && let Some(value) = captures.name("value")
+    {
+        return SecretFlagArg::Value(value.range());
+    }
+    SecretFlagArg::None
+}
+
 fn compile(patterns: &[&str]) -> Vec<Regex> {
     patterns
         .iter()

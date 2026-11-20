@@ -346,10 +346,23 @@ impl Sanitizer {
     }
 
     pub fn bytes(&self, class: FieldClass, value: &[u8], tally: &mut Tally) -> Outcome<Vec<u8>> {
+        self.bytes_inner(class, value, tally, false)
+    }
+
+    fn bytes_inner(
+        &self,
+        class: FieldClass,
+        value: &[u8],
+        tally: &mut Tally,
+        skip_secret_flags: bool,
+    ) -> Outcome<Vec<u8>> {
         let mut current: Cow<'_, [u8]> = Cow::Borrowed(value);
 
         for (index, rule) in self.rules.iter().enumerate() {
             if !rule.fields.contains(class) {
+                continue;
+            }
+            if skip_secret_flags && matches!(rule.matcher, Matcher::Builtin(Builtin::SecretFlags)) {
                 continue;
             }
 
@@ -383,7 +396,17 @@ impl Sanitizer {
     }
 
     pub fn text(&self, class: FieldClass, value: &str, tally: &mut Tally) -> Outcome<String> {
-        match self.bytes(class, value.as_bytes(), tally) {
+        self.text_inner(class, value, tally, false)
+    }
+
+    fn text_inner(
+        &self,
+        class: FieldClass,
+        value: &str,
+        tally: &mut Tally,
+        skip_secret_flags: bool,
+    ) -> Outcome<String> {
+        match self.bytes_inner(class, value.as_bytes(), tally, skip_secret_flags) {
             Outcome::Kept => Outcome::Kept,
             Outcome::Replaced(changed) => Outcome::Replaced(
                 String::from_utf8(changed)
@@ -394,9 +417,116 @@ impl Sanitizer {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "redacts structured flag values, embedded flags, and cross-argument rules in one pass"
+    )]
     pub fn args(&self, args: &[String], tally: &mut Tally) -> Outcome<Vec<String>> {
-        match self.text(FieldClass::ProcessArgs, &args.join("\0"), tally) {
-            Outcome::Kept => Outcome::Kept,
+        let mut working: Vec<String> = args.to_vec();
+        let mut modified = false;
+        let mut handled = vec![false; working.len()];
+
+        for (index, rule) in self.rules.iter().enumerate() {
+            if !rule.fields.contains(FieldClass::ProcessArgs) {
+                continue;
+            }
+            if !matches!(rule.matcher, Matcher::Builtin(Builtin::SecretFlags)) {
+                continue;
+            }
+
+            let mut redact_next = false;
+            for (arg, was_handled) in working.iter_mut().zip(&mut handled) {
+                if redact_next {
+                    redact_next = false;
+                    *was_handled = true;
+                    if !arg.is_empty() {
+                        tally.fired(index, FieldClass::ProcessArgs, 1);
+                        match rule.action {
+                            Action::DropRecord => return Outcome::DropRecord,
+                            Action::DropField => return Outcome::DropField,
+                            Action::Redact | Action::Hash | Action::Mask => {
+                                let span = 0..arg.len();
+                                let replaced = self.replaced(
+                                    arg.as_bytes(),
+                                    std::slice::from_ref(&span),
+                                    rule.action,
+                                );
+                                *arg = String::from_utf8(replaced).unwrap_or_else(|error| {
+                                    String::from_utf8_lossy(error.as_bytes()).into_owned()
+                                });
+                                modified = true;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                match builtin::secret_flag_arg(arg) {
+                    builtin::SecretFlagArg::None => {}
+                    builtin::SecretFlagArg::NextArg => {
+                        redact_next = true;
+                    }
+                    builtin::SecretFlagArg::Value(span) => {
+                        *was_handled = true;
+                        tally.fired(index, FieldClass::ProcessArgs, 1);
+                        match rule.action {
+                            Action::DropRecord => return Outcome::DropRecord,
+                            Action::DropField => return Outcome::DropField,
+                            Action::Redact | Action::Hash | Action::Mask => {
+                                let replaced = self.replaced(
+                                    arg.as_bytes(),
+                                    std::slice::from_ref(&span),
+                                    rule.action,
+                                );
+                                *arg = String::from_utf8(replaced).unwrap_or_else(|error| {
+                                    String::from_utf8_lossy(error.as_bytes()).into_owned()
+                                });
+                                modified = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for (arg, &was_handled) in working.iter_mut().zip(&handled) {
+            if was_handled {
+                continue;
+            }
+            for (index, rule) in self.rules.iter().enumerate() {
+                if !rule.fields.contains(FieldClass::ProcessArgs)
+                    || !matches!(rule.matcher, Matcher::Builtin(Builtin::SecretFlags))
+                {
+                    continue;
+                }
+                let mut spans = Vec::new();
+                rule.found(arg.as_bytes(), &mut |found| {
+                    if !found.is_empty() {
+                        spans.push(found);
+                    }
+                });
+                if spans.is_empty() {
+                    continue;
+                }
+                let spans = merged(spans);
+                tally.fired(index, FieldClass::ProcessArgs, spans.len() as u64);
+                match rule.action {
+                    Action::DropRecord => return Outcome::DropRecord,
+                    Action::DropField => return Outcome::DropField,
+                    Action::Redact | Action::Hash | Action::Mask => {
+                        let replaced = self.replaced(arg.as_bytes(), &spans, rule.action);
+                        *arg = String::from_utf8(replaced).unwrap_or_else(|error| {
+                            String::from_utf8_lossy(error.as_bytes()).into_owned()
+                        });
+                        modified = true;
+                    }
+                }
+            }
+        }
+
+        match self.text_inner(FieldClass::ProcessArgs, &working.join("\0"), tally, true) {
+            Outcome::Kept if !modified => Outcome::Kept,
+            Outcome::Kept => Outcome::Replaced(working),
             Outcome::Replaced(joined) => {
                 Outcome::Replaced(joined.split('\0').map(str::to_owned).collect())
             }

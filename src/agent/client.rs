@@ -20,6 +20,11 @@ pub const INGEST_TIMEOUT: Duration = Duration::from_secs(15);
 pub const GOODBYE_TIMEOUT: Duration = Duration::from_secs(2);
 const BODY_LIMIT: u64 = 64 * 1024;
 
+#[derive(serde::Deserialize)]
+struct IngestErrorBody {
+    error: String,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum IngestReply {
     Accepted {
@@ -31,6 +36,7 @@ pub enum IngestReply {
     Unauthorized,
     Refused {
         status: u16,
+        error: Option<String>,
         retry_after: Option<Duration>,
         message: String,
     },
@@ -189,6 +195,10 @@ impl Client {
             .read_to_string()
             .unwrap_or_default();
 
+        let error = serde_json::from_str::<IngestErrorBody>(&text)
+            .ok()
+            .map(|body| body.error);
+
         match status {
             200 | 201 => serde_json::from_str::<IngestResponse>(&text).map_or_else(
                 |error| IngestReply::Unreachable(format!("bad ingest answer: {error}")),
@@ -199,6 +209,7 @@ impl Client {
             409 => serde_json::from_str::<IngestResponse>(&text).map_or_else(
                 |_| IngestReply::Refused {
                     status,
+                    error,
                     retry_after,
                     message: text,
                 },
@@ -209,6 +220,7 @@ impl Client {
             401 | 403 => IngestReply::Unauthorized,
             _ => IngestReply::Refused {
                 status,
+                error,
                 retry_after,
                 message: text,
             },

@@ -409,6 +409,11 @@ fn check_tags(tags: &BTreeMap<String, String>) -> Result<(), ConfigError> {
         return Err(ConfigError::Tags("at most 32 tags"));
     }
     for (key, value) in tags {
+        if key == "microscope.project" {
+            return Err(ConfigError::Tags(
+                "tag key \"microscope.project\" is reserved; configure record.project instead",
+            ));
+        }
         let key_ok = (1..=63).contains(&key.len())
             && key
                 .bytes()

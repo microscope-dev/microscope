@@ -12,7 +12,7 @@ use std::{
 
 use microscope_data::{
     capture::records::NONE,
-    object::{ChunkData, ChunkRow, DimensionRow},
+    object::{ChunkData, ChunkRow, DimensionRow, shift_capture_times},
     sanitize::{Builtin, HashKey, Sanitizer, sanitize_chunk},
 };
 
@@ -31,6 +31,7 @@ use crate::profiler::{
 const AGENT_DEV_MAX_SYSCALL_CAP: u32 = 20_000;
 
 struct SharedState {
+    server: String,
     token: Option<String>,
     agent_id: Option<u64>,
     need_token: bool,
@@ -51,9 +52,15 @@ impl Pipeline {
         record: &RecordConfig,
         host_name: String,
         initial_agent_id: Option<i64>,
+        adopt_legacy: bool,
     ) -> anyhow::Result<Self> {
         let max_bytes = u64::from(record.spool_mib) * 1024 * 1024;
-        let spool = Spool::open(&config.state_dir.join("spool"), max_bytes)?;
+        let server = config.server.origin().to_owned();
+        let agent_id = initial_agent_id
+            .and_then(|id| u64::try_from(id).ok())
+            .filter(|&id| id > 0);
+        let mut spool = Spool::open(&config.state_dir.join("spool"), max_bytes)?;
+        spool.bind_owner(&server, agent_id, adopt_legacy)?;
         let client = Client::new(config.server.clone(), config.ca_file.as_deref())?;
         let sanitizer = Arc::new(Sanitizer::new(
             &Builtin::DEFAULT,
@@ -64,8 +71,9 @@ impl Pipeline {
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new((
             Mutex::new(SharedState {
+                server,
                 token: None,
-                agent_id: initial_agent_id.and_then(|id| u64::try_from(id).ok()),
+                agent_id,
                 need_token: false,
                 spool_seq: 0,
                 spool,
@@ -108,11 +116,25 @@ impl Pipeline {
         })
     }
 
-    pub fn set_auth(&self, agent_id: i64, token: Option<String>) {
+    pub fn set_auth(&self, agent_id: Option<i64>, token: Option<String>) {
         let (lock, cvar) = &*self.shared;
         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        guard.agent_id = u64::try_from(agent_id).ok();
-        if let Some(tok) = token {
+        let parsed = agent_id
+            .and_then(|id| u64::try_from(id).ok())
+            .filter(|&id| id > 0);
+        let server = guard.server.clone();
+        if let Err(error) = guard.spool.bind_owner(&server, parsed, false) {
+            eprintln!("microscope agent: cannot update spool owner: {error}");
+            guard.agent_id = None;
+            guard.token = None;
+            drop(guard);
+            cvar.notify_all();
+            return;
+        }
+        guard.agent_id = parsed;
+        if parsed.is_some()
+            && let Some(tok) = token
+        {
             guard.token = Some(tok);
             guard.need_token = false;
         } else {
@@ -154,6 +176,22 @@ fn unix_now_ns() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
+}
+
+fn monotonic_ns() -> i64 {
+    nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC).map_or(0, |ts| {
+        ts.tv_sec()
+            .saturating_mul(1_000_000_000)
+            .saturating_add(ts.tv_nsec())
+    })
+}
+
+fn wall_clock_reference() -> (i64, i64) {
+    let mono_before = monotonic_ns();
+    let wall = unix_now_ns();
+    let mono_after = monotonic_ns();
+    let mono_mid = mono_before.saturating_add(mono_after.saturating_sub(mono_before) / 2);
+    (wall, wall.saturating_sub(mono_mid))
 }
 
 const fn preset_code(preset: Preset) -> u8 {
@@ -230,11 +268,62 @@ pub fn build_chunk_data(
     tags: &BTreeMap<String, String>,
     now_ns: i64,
 ) -> ChunkData {
-    let (mono_start, mono_end) = profile.capture().span();
-    let span_ns = mono_end.saturating_sub(mono_start).max(0);
-    let end = now_ns;
-    let start = end.saturating_sub(span_ns);
-    let sampled_ns = u64::try_from(span_ns).unwrap_or(0);
+    build_chunk_data_with_offset(
+        profile,
+        agent_id,
+        chunk_number,
+        record,
+        host_name,
+        tags,
+        now_ns,
+        None,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "packs a recorded profile with chunk metadata and clock alignment"
+)]
+fn build_chunk_data_with_offset(
+    profile: Profile,
+    agent_id: u64,
+    chunk_number: u64,
+    record: &RecordConfig,
+    host_name: &str,
+    tags: &BTreeMap<String, String>,
+    now_ns: i64,
+    wall_offset_ns: Option<i64>,
+) -> ChunkData {
+    let mut capture = profile.into_capture();
+    let (mut mono_start, mut mono_end) = capture.span();
+    if mono_end == 0 && !capture.samples.is_empty() {
+        mono_start = capture
+            .samples
+            .iter()
+            .map(|s| s.time.get())
+            .min()
+            .unwrap_or(0);
+        mono_end = capture
+            .samples
+            .iter()
+            .map(|s| s.time.get())
+            .max()
+            .unwrap_or(0);
+    }
+    let (start, end, sampled_ns) = if mono_end > 0 {
+        let delta = wall_offset_ns.unwrap_or_else(|| now_ns.saturating_sub(mono_end));
+        shift_capture_times(&mut capture, delta);
+        let shifted_start = mono_start.saturating_add(delta);
+        let shifted_end = mono_end.saturating_add(delta).max(shifted_start);
+        let span_ns = shifted_end.saturating_sub(shifted_start).max(0);
+        (
+            shifted_start,
+            shifted_end,
+            u64::try_from(span_ns).unwrap_or(0),
+        )
+    } else {
+        (now_ns, now_ns, 0)
+    };
 
     let mut dimensions = vec![
         DimensionRow {
@@ -254,6 +343,9 @@ pub fn build_chunk_data(
         },
     ];
     for (key, value) in tags {
+        if key == "microscope.project" {
+            continue;
+        }
         dimensions.push(DimensionRow {
             process: NONE,
             name: key.clone(),
@@ -262,7 +354,7 @@ pub fn build_chunk_data(
     }
 
     ChunkData {
-        capture: profile.into_capture(),
+        capture,
         chunks: vec![ChunkRow {
             agent: agent_id,
             number: chunk_number,
@@ -291,10 +383,14 @@ fn enqueue_profile(
         return;
     }
 
+    let (now_ns, wall_offset_ns) = wall_clock_reference();
+
     let (lock, cvar) = shared;
     let (agent_id, number) = {
         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let agent_id = guard.agent_id.unwrap_or(0);
+        let Some(agent_id) = guard.agent_id else {
+            return;
+        };
         let allocated = guard.spool.allocate_chunk();
         drop(guard);
         let Ok(number) = allocated else {
@@ -303,14 +399,32 @@ fn enqueue_profile(
         (agent_id, number)
     };
 
-    let now_ns = unix_now_ns();
-    let raw = build_chunk_data(profile, agent_id, number, record, host_name, tags, now_ns);
+    let raw = build_chunk_data_with_offset(
+        profile,
+        agent_id,
+        number,
+        record,
+        host_name,
+        tags,
+        now_ns,
+        Some(wall_offset_ns),
+    );
     let clean = sanitize_chunk(raw, record.time_unit, sanitizer);
 
     let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Err(error) = guard.spool.push(number, &clean, agent_id, now_ns) {
-        eprintln!("microscope agent: cannot spool chunk {number}: {error}");
+    if guard.agent_id != Some(agent_id) {
         return;
+    }
+    match guard.spool.push(number, &clean, agent_id, now_ns) {
+        Ok(0) => {
+            eprintln!("microscope agent: dropped oversized chunk {number} exceeding post limit");
+            return;
+        }
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("microscope agent: cannot spool chunk {number}: {error}");
+            return;
+        }
     }
     guard.spool_seq = guard.spool_seq.saturating_add(1);
     drop(guard);
@@ -333,8 +447,7 @@ fn recorder_loop(
     tags: &BTreeMap<String, String>,
     sanitizer: &Sanitizer,
 ) {
-    let stack_copy = record.preset != Preset::Production;
-    let shared_bpf = match SharedBpfEngine::load(stack_copy) {
+    let mut shared_bpf = match SharedBpfEngine::available() {
         Ok(engine) => Some(engine),
         Err(error) => {
             eprintln!(
@@ -344,7 +457,7 @@ fn recorder_loop(
         }
     };
 
-    let options = build_record_options(record, shared_bpf.as_ref());
+    let mut options = build_record_options(record, shared_bpf.as_ref());
     let trigger = AtomicBool::new(false);
 
     while !stop.load(Ordering::Relaxed) {
@@ -372,6 +485,17 @@ fn recorder_loop(
                 enqueue_profile(attached.profile, shared, record, host_name, tags, sanitizer);
             }
             Err(error) => {
+                if shared_bpf
+                    .as_ref()
+                    .is_some_and(SharedBpfEngine::load_failed)
+                {
+                    eprintln!(
+                        "microscope agent: syscall BPF failed to load ({error}); falling back to samples only"
+                    );
+                    shared_bpf = None;
+                    options = build_record_options(record, None);
+                    continue;
+                }
                 if !stop.load(Ordering::Relaxed) {
                     eprintln!(
                         "microscope agent: recording {} (pid {pid}) failed: {error}",
@@ -409,14 +533,14 @@ fn poster_loop(
     let mut machine = PosterMachine::new(now(), post_interval);
     let (lock, cvar) = shared;
     let mut last_seq = 0_u64;
+    let mut max_batch_chunks = usize::MAX;
 
     while !stop.load(Ordering::Relaxed) {
-        let (has_chunks, token, agent_id, seq) = {
+        let (has_chunks, has_token, seq) = {
             let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
             (
                 !guard.spool.is_empty(),
-                guard.token.clone(),
-                guard.agent_id,
+                guard.token.is_some() && guard.agent_id.is_some(),
                 guard.spool_seq,
             )
         };
@@ -425,11 +549,11 @@ fn poster_loop(
             last_seq = seq;
             machine.chunk_queued(now(), was_empty);
         }
-        if token.is_some() && machine.needs_token() {
+        if has_token && machine.needs_token() {
             machine.token_refreshed(now());
         }
 
-        match machine.next(now(), has_chunks, token.is_some()) {
+        match machine.next(now(), has_chunks, has_token) {
             PosterAction::NeedToken => {
                 let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                 guard.need_token = true;
@@ -441,15 +565,21 @@ fn poster_loop(
                 let _ = cvar.wait_timeout(guard, wait);
             }
             PosterAction::Post => {
-                let Some(token) = token else {
-                    continue;
-                };
-                let agent_id = agent_id.unwrap_or(0);
-                let batch = {
-                    let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                    guard
-                        .spool
-                        .peek_batch(MAX_POST_BYTES, agent_id, unix_now_ns(), sanitizer)
+                let (token, batch) = {
+                    let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                    let (Some(token), Some(agent_id)) = (guard.token.clone(), guard.agent_id)
+                    else {
+                        continue;
+                    };
+                    let batch = guard.spool.peek_batch_capped(
+                        MAX_POST_BYTES,
+                        max_batch_chunks,
+                        agent_id,
+                        unix_now_ns(),
+                        sanitizer,
+                    );
+                    drop(guard);
+                    (token, batch)
                 };
                 let batch = match batch {
                     Ok(Some(batch)) => batch,
@@ -469,33 +599,54 @@ fn poster_loop(
                 let reply = client.ingest(&token, &batch.post);
                 let outcome = match reply {
                     IngestReply::Accepted { last_chunk } => {
+                        max_batch_chunks = usize::MAX;
                         let _ = lock
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .spool
-                            .ack(last_chunk);
+                            .ack(batch.owner_gen, last_chunk);
                         PosterOutcome::Accepted { last_chunk }
                     }
                     IngestReply::Overlap { last_chunk } => {
+                        max_batch_chunks = usize::MAX;
                         let _ = lock
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .spool
-                            .ack(last_chunk);
+                            .ack(batch.owner_gen, last_chunk);
                         PosterOutcome::Overlap { last_chunk }
                     }
                     IngestReply::Unauthorized => {
                         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                        guard.token = None;
-                        guard.need_token = true;
+                        if guard.token.as_deref() == Some(token.as_str()) {
+                            guard.token = None;
+                            guard.need_token = true;
+                        }
+                        drop(guard);
                         PosterOutcome::Unauthorized
                     }
                     IngestReply::Refused {
                         status,
+                        error,
                         retry_after,
                         message,
                     } => {
                         eprintln!("microscope agent: ingest refused ({status}): {message}");
+                        if status == 413
+                            || (status == 400 && error.as_deref() == Some("invalid_payload"))
+                        {
+                            if batch.chunk_count > 1 {
+                                max_batch_chunks = (batch.chunk_count / 2).max(1);
+                                continue;
+                            }
+                            max_batch_chunks = usize::MAX;
+                            let _ = lock
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .spool
+                                .drop_chunk(batch.owner_gen, batch.first_chunk);
+                            continue;
+                        }
                         PosterOutcome::Retry { retry_after }
                     }
                     IngestReply::Unreachable(error) => {
@@ -535,6 +686,7 @@ mod tests {
     #[test]
     fn planted_secrets_in_real_recording_never_leave_the_agent() {
         let arg_secret = "supersecret_cli_pw_998877";
+        let phrase_secret = "correct horse battery staple";
         let gh_secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
         let bearer_secret = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
 
@@ -544,6 +696,8 @@ mod tests {
             "true",
             "sh",
             &format!("--password={arg_secret}"),
+            "--secret",
+            phrase_secret,
             "--token",
             gh_secret,
             &format!("Authorization: Bearer {bearer_secret}"),
@@ -591,7 +745,16 @@ mod tests {
             .expect("batch");
 
         let post_bytes = batch.post.as_bytes();
-        for secret in [arg_secret, gh_secret, bearer_secret] {
+        let forbidden = [
+            arg_secret,
+            phrase_secret,
+            "horse",
+            "battery",
+            "staple",
+            gh_secret,
+            bearer_secret,
+        ];
+        for secret in forbidden {
             assert!(
                 !post_bytes
                     .windows(secret.len())
@@ -605,11 +768,17 @@ mod tests {
             decode_tables(&reader.part_sections(0, None).expect("sections")).expect("dec");
         let strings = String::from_utf8_lossy(&decoded.capture.strings);
         let blobs = String::from_utf8_lossy(&decoded.capture.syscall_blobs);
-        for secret in [arg_secret, gh_secret, bearer_secret] {
-            assert!(!strings.contains(secret), "secret leaked in strings");
-            assert!(!blobs.contains(secret), "secret leaked in blobs");
+        for secret in forbidden {
+            assert!(
+                !strings.contains(secret),
+                "secret {secret} leaked in strings"
+            );
+            assert!(!blobs.contains(secret), "secret {secret} leaked in blobs");
             for dim in &decoded.dimensions {
-                assert!(!dim.value.contains(secret), "secret leaked in dimension");
+                assert!(
+                    !dim.value.contains(secret),
+                    "secret {secret} leaked in dimension"
+                );
             }
         }
         assert!(

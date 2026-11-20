@@ -2233,16 +2233,18 @@ fn ended(process: u32) -> bool {
 }
 
 pub struct Engine {
-    loaded: Loaded,
+    loaded: Option<Loaded>,
 }
 
 impl std::fmt::Debug for Engine {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("Engine")
-            .field("attachment", &self.loaded.attachment)
-            .field("session", &self.loaded.session)
-            .finish_non_exhaustive()
+        let mut debug = formatter.debug_struct("Engine");
+        if let Some(loaded) = &self.loaded {
+            debug
+                .field("attachment", &loaded.attachment)
+                .field("session", &loaded.session);
+        }
+        debug.finish_non_exhaustive()
     }
 }
 
@@ -2250,12 +2252,20 @@ impl Engine {
     pub fn load(options: &TraceOptions, engine: BpfOptions) -> Result<Self, BpfError> {
         Probe::read().check()?;
         let loaded = Loaded::load(options, engine, false)?;
-        Ok(Self { loaded })
+        Ok(Self {
+            loaded: Some(loaded),
+        })
     }
 
     #[must_use]
     pub fn compatible(&self, options: &TraceOptions, engine: BpfOptions) -> bool {
-        self.loaded.traced_calls == options.calls && self.loaded.stack_copy == engine.stack_copy
+        let Some(loaded) = &self.loaded else {
+            return false;
+        };
+        if loaded.stack_copy != engine.stack_copy {
+            return false;
+        }
+        loaded.traced_calls == options.calls
     }
 
     pub fn trace_running(
@@ -2266,15 +2276,24 @@ impl Engine {
         stop: &AtomicBool,
         sink: &mut dyn Sink,
     ) -> Result<Finished, BpfError> {
-        run_with(
-            &mut self.loaded,
+        let Some(loaded) = self.loaded.as_mut() else {
+            return Err(BpfError::Load(
+                "the persistent BPF engine was invalidated after a failed reset".into(),
+            ));
+        };
+        let (result, healthy) = run_with(
+            loaded,
             Start::Attach(pid),
             options,
             engine,
             stop,
             sink,
             true,
-        )
+        );
+        if !healthy {
+            self.loaded = None;
+        }
+        result
     }
 
     pub fn trace_held(
@@ -2285,15 +2304,17 @@ impl Engine {
         stop: &AtomicBool,
         sink: &mut dyn Sink,
     ) -> Result<Finished, BpfError> {
-        run_with(
-            &mut self.loaded,
-            Start::Held(pid),
-            options,
-            engine,
-            stop,
-            sink,
-            true,
-        )
+        let Some(loaded) = self.loaded.as_mut() else {
+            return Err(BpfError::Load(
+                "the persistent BPF engine was invalidated after a failed reset".into(),
+            ));
+        };
+        let (result, healthy) =
+            run_with(loaded, Start::Held(pid), options, engine, stop, sink, true);
+        if !healthy {
+            self.loaded = None;
+        }
+        result
     }
 }
 
@@ -2332,7 +2353,7 @@ fn run(
 ) -> Result<Finished, BpfError> {
     Probe::read().check()?;
     let mut loaded = Loaded::load(options, engine, matches!(start, Start::Held(_)))?;
-    run_with(&mut loaded, start, options, engine, stop, sink, false)
+    run_with(&mut loaded, start, options, engine, stop, sink, false).0
 }
 
 fn run_with(
@@ -2343,17 +2364,29 @@ fn run_with(
     stop: &AtomicBool,
     sink: &mut dyn Sink,
     persistent: bool,
-) -> Result<Finished, BpfError> {
-    if persistent {
-        loaded.reconfigure(options, engine, matches!(start, Start::Held(_)))?;
+) -> (Result<Finished, BpfError>, bool) {
+    if persistent
+        && let Err(error) = loaded.reconfigure(options, engine, matches!(start, Start::Held(_)))
+    {
+        return (Err(error), false);
     }
     sink.attached_by(&loaded.attachment);
+    let mut targeted = BTreeSet::new();
     let Begun {
         first,
         live,
         mappings,
-    } = begin(start, loaded, options, sink)?;
-    let traced: BTreeSet<u32> = live.keys().map(|pid| pid.get()).collect();
+    } = match begin(start, loaded, options, sink, &mut targeted) {
+        Ok(begun) => begun,
+        Err(error) => {
+            if persistent {
+                let _ = loaded.reset(&targeted, &BTreeSet::new());
+            }
+            return (Err(error), false);
+        }
+    };
+    let mut traced: BTreeSet<u32> = live.keys().map(|pid| pid.get()).collect();
+    traced.extend(targeted);
     let initial_lost = loaded.lost();
     let mut reader = Reader {
         sink,
@@ -2389,15 +2422,16 @@ fn run_with(
     let laid_out = reader.laid_out;
     let Reader { sink, .. } = reader;
     sink.counted(loaded.counted(first));
-    if persistent {
+    let healthy = if persistent {
         traced.insert(first.get());
         for child in perf::descendants(first.get()) {
             traced.insert(child);
         }
-        let _ = loaded.reset(&traced, &laid_out);
-    }
-    result?;
-    Ok(Finished { end })
+        loaded.reset(&traced, &laid_out).is_ok()
+    } else {
+        true
+    };
+    (result.map(|()| Finished { end }), healthy)
 }
 
 struct Begun {
@@ -2411,11 +2445,13 @@ fn begin(
     loaded: &mut Loaded,
     options: &TraceOptions,
     sink: &mut dyn Sink,
+    targeted: &mut BTreeSet<u32>,
 ) -> Result<Begun, BpfError> {
     let mut live = BTreeMap::new();
     let mut mappings = Vec::new();
     let first = match start {
         Start::Held(pid) => {
+            targeted.insert(pid);
             loaded.target_from_exec(pid)?;
             if options.stacks.is_some() {
                 mappings.push(perf::Events::open(pid, &MAPPINGS).map_err(BpfError::Mappings)?);
@@ -2431,6 +2467,7 @@ fn begin(
                 return Err(BpfError::NoProcess(pid));
             }
 
+            targeted.insert(pid);
             loaded.target(pid)?;
             if options.stacks.is_some() {
                 mappings.push(
@@ -2449,6 +2486,7 @@ fn begin(
                     break;
                 }
                 for child in found {
+                    targeted.insert(child);
                     loaded.also_target(child)?;
                     children.insert(child);
                 }

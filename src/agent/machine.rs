@@ -65,6 +65,7 @@ pub struct Machine {
     failures: u32,
     reenrolls: u32,
     loopback: bool,
+    last_token: Option<Instant>,
 }
 
 impl Machine {
@@ -85,6 +86,7 @@ impl Machine {
             failures: 0,
             reenrolls: 0,
             loopback,
+            last_token: None,
         }
     }
 
@@ -140,6 +142,33 @@ impl Machine {
             };
             self.failures = 0;
             self.reenrolls = 0;
+            self.last_token = None;
+        }
+    }
+
+    pub const fn request_refresh(&mut self, now: Instant) {
+        if let State::Enrolled { refresh_at, .. } = &mut self.state
+            && self.failures == 0
+        {
+            let low = if self.loopback {
+                MIN_REFRESH_LOOPBACK
+            } else {
+                MIN_REFRESH
+            };
+            let target = match self.last_token {
+                Some(at) => {
+                    let earliest = at.after(low);
+                    if now.0.as_nanos() >= earliest.0.as_nanos() {
+                        now
+                    } else {
+                        earliest
+                    }
+                }
+                None => now,
+            };
+            if target.0.as_nanos() < refresh_at.0.as_nanos() {
+                *refresh_at = target;
+            }
         }
     }
 
@@ -160,6 +189,7 @@ impl Machine {
                 if !enrolling {
                     self.reenrolls = 0;
                 }
+                self.last_token = Some(now);
                 let refresh = self.refresh_wait(refresh_after, jitter);
                 self.state = State::Enrolled {
                     agent_id,

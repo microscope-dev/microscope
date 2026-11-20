@@ -162,6 +162,32 @@ fn a_server_cannot_make_an_agent_refresh_in_a_tight_loop() {
     assert_eq!(local.next(at(0)), Action::Wait { until: at(1) });
 }
 
+#[test]
+fn request_refresh_schedules_early_refresh_but_respects_backoff_and_min_refresh() {
+    let mut machine = Machine::new(at(0), None, false);
+    machine.on(token(7, 600), at(0), 0.0);
+    assert_eq!(machine.next(at(5)), Action::Wait { until: at(600) });
+
+    machine.request_refresh(at(5));
+    assert_eq!(machine.next(at(5)), Action::Wait { until: at(10) });
+    assert_eq!(machine.next(at(10)), Action::Refresh { agent_id: 7 });
+
+    machine.on(token(7, 600), at(10), 0.0);
+    machine.request_refresh(at(30));
+    assert_eq!(machine.next(at(30)), Action::Refresh { agent_id: 7 });
+
+    machine.on(
+        Outcome::Retry {
+            retry_after: Some(Duration::from_secs(90)),
+        },
+        at(30),
+        0.0,
+    );
+    assert_eq!(machine.next(at(30)), Action::Wait { until: at(120) });
+    machine.request_refresh(at(35));
+    assert_eq!(machine.next(at(35)), Action::Wait { until: at(120) });
+}
+
 #[derive(Clone, Debug)]
 enum Step {
     Pass(Duration),

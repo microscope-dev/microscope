@@ -195,7 +195,13 @@ impl Agent {
                 .node
                 .clone()
                 .unwrap_or_else(|| recorder::host_name_from(Path::new("/")));
-            Some(Pipeline::start(&config, record, host_name, enrolled)?)
+            Some(Pipeline::start(
+                &config,
+                record,
+                host_name,
+                enrolled,
+                enrolled.is_some(),
+            )?)
         } else {
             None
         };
@@ -270,7 +276,7 @@ impl Agent {
         if let Reply::Token(token) = reply {
             self.token = Some(token.token.clone());
             if let Some(pipeline) = &self.pipeline {
-                pipeline.set_auth(token.agent_id, Some(token.token.clone()));
+                pipeline.set_auth(Some(token.agent_id), Some(token.token.clone()));
             }
             self.status.last_refresh = Some(client::unix_now());
             if refreshing {
@@ -290,7 +296,7 @@ impl Agent {
             self.key = None;
             self.token = None;
             if let Some(pipeline) = &self.pipeline {
-                pipeline.set_auth(0, None);
+                pipeline.set_auth(None, None);
             }
             if let Err(store_error) = self.store.forget() {
                 log(&format!("cannot delete the key: {store_error}"));
@@ -372,7 +378,45 @@ impl Agent {
                     return;
                 }
             };
+            let same_state_dir = config.state_dir == self.config.state_dir;
+            let pipeline_changed = config.record != self.config.record
+                || config.server.origin() != self.config.server.origin()
+                || config.ca_file != self.config.ca_file
+                || !same_state_dir
+                || config.node != self.config.node
+                || config.tags != self.config.tags
+                || (config.record.is_some() && self.pipeline.is_none());
             self.config = config;
+            if pipeline_changed {
+                if let Some(mut old) = self.pipeline.take() {
+                    old.stop();
+                }
+                if let Some(record) = self.config.record.as_ref() {
+                    let host_name = self
+                        .config
+                        .node
+                        .clone()
+                        .unwrap_or_else(|| recorder::host_name_from(Path::new("/")));
+                    let enrolled = self.machine.agent_id();
+                    match Pipeline::start(
+                        &self.config,
+                        record,
+                        host_name,
+                        enrolled,
+                        same_state_dir && enrolled.is_some(),
+                    ) {
+                        Ok(pipeline) => {
+                            if let Some(agent_id) = enrolled {
+                                pipeline.set_auth(Some(agent_id), self.token.clone());
+                            }
+                            self.pipeline = Some(pipeline);
+                        }
+                        Err(error) => {
+                            log(&format!("cannot restart the recording pipeline: {error:#}"));
+                        }
+                    }
+                }
+            }
         }
         self.machine.config_changed(self.now());
         self.save_status(None);
@@ -416,9 +460,8 @@ impl Agent {
                 None => {
                     if let Some(pipeline) = &self.pipeline
                         && pipeline.take_need_token()
-                        && let Some(agent_id) = self.machine.agent_id()
                     {
-                        self.refresh(agent_id);
+                        self.machine.request_refresh(self.now());
                     }
                 }
             }
