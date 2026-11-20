@@ -2,7 +2,14 @@ import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } fr
 
 import { assert } from "../../assert";
 import { diffModeOf, type ProfileLook, withLook } from "../../profile/look";
-import { changeFill, changeOf, fill, formatPercent, formatWeight } from "../../profile/paint";
+import {
+  changeFill,
+  changeOf,
+  type DiffMode,
+  fill,
+  formatPercent,
+  formatWeight,
+} from "../../profile/paint";
 import {
   type CallTree,
   findPath,
@@ -25,7 +32,8 @@ const unzoom = (look: ProfileLook) => withLook(look, "z", undefined);
 const ROW = 18;
 
 export function FlameView() {
-  const { query, look, setLook } = useProfile();
+  const { query, look, setLook, unit } = useProfile();
+  const mode = diffModeOf(look);
   const answer = useTree(query);
   const { tree } = answer;
   const [search, setSearch] = useFrameSearch();
@@ -70,6 +78,8 @@ export function FlameView() {
             matched={matched}
             selected={selected}
             onZoom={zoomTo}
+            unit={unit}
+            mode={mode}
           />
         )}
       </div>
@@ -77,23 +87,23 @@ export function FlameView() {
   );
 }
 
-function FlameGraph({
+export function FlameGraph({
   tree,
   zoom,
   matched,
   selected,
   onZoom,
+  unit,
+  mode = "time",
 }: {
   tree: CallTree;
   zoom: number | null;
-
   matched: Set<number> | null;
-
   selected: Set<number> | null;
   onZoom: (tree: CallTree, node: number) => void;
+  unit: string;
+  mode?: DiffMode;
 }) {
-  const { unit, look } = useProfile();
-  const mode = diffModeOf(look);
   const [box, width] = useWidth();
   const canvas = useRef<HTMLCanvasElement>(null);
   const scheme = useShownScheme();

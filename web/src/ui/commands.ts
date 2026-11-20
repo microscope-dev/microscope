@@ -504,6 +504,18 @@ export const COMMANDS = registry({
   findMachine: machines("Find a machine…", { view: "list" }),
   addMachines: machines("Add machines…", { view: "add" }),
   enrollmentKeys: machines("Enrollment keys", { view: "keys" }),
+  dashboardsFlame: {
+    label: "Flame graph…",
+    menu: standalone ? "Dashboards" : null,
+    keys: [],
+    available: () =>
+      standalone
+        ? account.getState().now.kind === "in"
+          ? READY
+          : blocked("Sign in to view recorded dashboards")
+        : ABSENT,
+    run: () => showPane(KIND.recordedFlame),
+  },
   share: {
     label: "Share…",
     menu: "File",

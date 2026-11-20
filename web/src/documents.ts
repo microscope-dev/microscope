@@ -50,6 +50,7 @@ export const KIND = {
   profileKernel: kind("profile-kernel"),
   profileZones: kind("profile-zones"),
   profileDetails: kind("profile-details"),
+  recordedFlame: kind("recorded-flame"),
   settings: kind("settings"),
   keys: kind("keys"),
 } as const;

@@ -221,9 +221,10 @@ kbd {
 
 .menu-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 2px;
-  height: 30px;
+  min-height: 30px;
   padding: 0 8px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
@@ -231,7 +232,7 @@ kbd {
 
 .menu-row-end {
   display: flex;
-  flex: 1;
+  flex: 1 0 auto;
   justify-content: flex-end;
   align-items: center;
   gap: 4px;

@@ -22,6 +22,56 @@ export interface CallTree {
   baseWeight: number | null;
 }
 
+export function treeFromColumns(columns: {
+  own: Float64Array;
+  total: Float64Array;
+  key: Uint32Array;
+  depth: Uint32Array;
+  keys: ProfileKey[];
+  weight: number;
+  samples: number;
+  baseOwn?: Float64Array | null;
+  baseTotal?: Float64Array | null;
+  baseWeight?: number | null;
+}): CallTree {
+  const count = columns.depth.length;
+  const parent = new Int32Array(count);
+  const end = new Uint32Array(count);
+
+  const open: number[] = [];
+  for (let node = 0; node < count; node += 1) {
+    const at = columns.depth[node] ?? 0;
+    while (open.length > at) {
+      const closed = open.pop();
+      assert(closed !== undefined, "closing a node with no open ancestor");
+      end[closed] = node;
+    }
+    if (open.length !== at) {
+      throw new Error(`node ${node} is ${at} deep under ${open.length} ancestors`);
+    }
+    parent[node] = open.at(-1) ?? -1;
+    open.push(node);
+  }
+  for (const node of open) {
+    end[node] = count;
+  }
+  return {
+    count,
+    own: columns.own,
+    total: columns.total,
+    key: columns.key,
+    depth: columns.depth,
+    parent,
+    end,
+    keys: columns.keys,
+    weight: columns.weight,
+    samples: columns.samples,
+    baseOwn: columns.baseOwn ?? null,
+    baseTotal: columns.baseTotal ?? null,
+    baseWeight: columns.baseWeight ?? null,
+  };
+}
+
 export function decodeTree(answer: ProfileTree, payload: Uint8Array | undefined): CallTree {
   const count = answer.nodes;
   const bytes = payload ?? new Uint8Array();
@@ -40,45 +90,22 @@ export function decodeTree(answer: ProfileTree, payload: Uint8Array | undefined)
     key[node] = view.getUint32(count * 16 + node * 4, true);
     depth[node] = view.getUint32(count * 20 + node * 4, true);
   }
-  const parent = new Int32Array(count);
-  const end = new Uint32Array(count);
-
-  const open: number[] = [];
-  for (let node = 0; node < count; node += 1) {
-    const at = depth[node] ?? 0;
-    while (open.length > at) {
-      const closed = open.pop();
-      assert(closed !== undefined, "closing a node with no open ancestor");
-      end[closed] = node;
-    }
-    if (open.length !== at) {
-      throw new Error(`node ${node} is ${at} deep under ${open.length} ancestors`);
-    }
-    parent[node] = open.at(-1) ?? -1;
-    open.push(node);
-  }
-  for (const node of open) {
-    end[node] = count;
-  }
   const baseColumn = (column: number) =>
     Float64Array.from({ length: count }, (_, node) =>
       view.getFloat64(count * 24 + (column * count + node) * 8, true),
     );
-  return {
-    count,
+  return treeFromColumns({
     own,
     total,
     key,
     depth,
-    parent,
-    end,
     keys: answer.keys,
     weight: answer.weight,
     samples: answer.samples,
     baseOwn: answer.base ? baseColumn(0) : null,
     baseTotal: answer.base ? baseColumn(1) : null,
     baseWeight: answer.base?.weight ?? null,
-  };
+  });
 }
 
 export function nameOf(tree: CallTree, node: number): string {

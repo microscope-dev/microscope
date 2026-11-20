@@ -13,6 +13,7 @@ export type Menu =
   | "File"
   | "Edit"
   | "View"
+  | "Dashboards"
   | "Machines"
   | "Go"
   | "Run"

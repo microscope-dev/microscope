@@ -227,7 +227,7 @@ async function mockIdp(log: string[]): Promise<{ base: string; stop: () => Promi
 }
 
 export async function startServices(
-  options: { sso?: boolean; localhost?: boolean; agents?: boolean } = {},
+  options: { sso?: boolean; localhost?: boolean; agents?: boolean; storage?: boolean } = {},
 ): Promise<Services> {
   const inbox: Mail[] = [];
   const waiting: (() => void)[] = [];
@@ -309,6 +309,22 @@ export async function startServices(
             "2",
             "--agent-token-ttl-secs",
             "60",
+          ]
+        : []),
+      ...(options.storage
+        ? [
+            "--storage-bucket",
+            process.env.STORAGE_BUCKET ?? "dev",
+            "--storage-endpoint",
+            process.env.STORAGE_ENDPOINT ?? "http://127.0.0.1:8333",
+            "--storage-access-key",
+            process.env.STORAGE_ACCESS_KEY ?? "microscope",
+            "--storage-secret-key",
+            process.env.STORAGE_SECRET_KEY ?? "microscope-dev-secret",
+            "--storage-allow-http",
+            "--ingest-fold-ms",
+            "200",
+            ...(process.env.STORAGE_PREFIX ? ["--storage-prefix", process.env.STORAGE_PREFIX] : []),
           ]
         : []),
     ],

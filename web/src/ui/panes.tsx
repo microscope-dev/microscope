@@ -24,6 +24,7 @@ import { change, useLink, workbench } from "../workbench/store";
 import { AccountBody, ConnectBody } from "./Account";
 import { Breakpoints, BreakpointsBadge } from "./Breakpoints";
 import { Console } from "./Console";
+import { RecordedFlamePane } from "./dashboards/RecordedFlamePane";
 import {
   closeDocument,
   DisassemblyBody,
@@ -133,6 +134,7 @@ export const KINDS = kinds<Need>([
   view(KIND.record, "Record", StartBody, { needs: "control" }),
   view(KIND.settings, "Settings", SettingsBody, { needs: null }),
   view(KIND.keys, "Keyboard shortcuts", KeysBody, { needs: null }),
+  view(KIND.recordedFlame, "Flame graph", RecordedFlamePane, { needs: null }),
   profileKind(KIND.profile, (pane) => fileName(paneParams(pane).name) || "Profile"),
   profileKind(KIND.profileFlame, () => "Flame graph"),
   profileKind(KIND.profileTree, () => "Call tree"),
