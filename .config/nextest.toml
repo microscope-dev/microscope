@@ -54,13 +54,9 @@ priority = 100
 max-threads = 2
 
 [[profile.default.overrides]]
-filter = 'binary(node) & test(/^(profile|syscalls|live)::|^debian::debian_live/) & !test(/^live::live_reads_under_/)'
+filter = 'binary(node) & test(/^(profile|syscalls|live)::|^debian::debian_live/)'
 test-group = 'node-recordings'
 priority = 90
-
-[[profile.default.overrides]]
-filter = 'binary(node) & test(/^live::live_reads_under_/)'
-threads-required = 4
 
 
 

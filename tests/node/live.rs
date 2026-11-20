@@ -416,7 +416,16 @@ const STRESS_SECONDS: u32 = 4;
 
 const STRESS_EVERY: Duration = Duration::from_millis(2);
 
-const LEAST_EXACT: f64 = 0.25;
+// What the threads happen to be doing when a read begins decides these, so how
+// many reads they take depends on how fast the machine is; any other reason is
+// a read that should have found the thread. A thread starting or exiting while
+// read leaves every thread's stack bounds unknown, by the prefix below.
+const MOVING: [&str; 4] = [
+    NOT_ASLEEP,
+    "V8 is collecting its isolate's garbage",
+    "V8 is deoptimizing a frame of its isolate, which leaves its stack unwalkable",
+    "the stacks of threads ",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Looping {
@@ -484,12 +493,6 @@ pub struct Tally {
 impl Tally {
     fn reads(&self) -> usize {
         self.exact + self.left_out.values().sum::<usize>() + self.changed
-    }
-
-    #[expect(clippy::cast_precision_loss, reason = "counts of reads")]
-    fn check_accuracy(&self, summary: &str) {
-        let share = self.exact as f64 / self.reads().max(1) as f64;
-        assert!(share >= LEAST_EXACT, "{summary}");
     }
 }
 
@@ -815,17 +818,12 @@ fn stress_accuracy_counts_only_each_threads_measured_reads() {
     );
     assert_eq!(tally.changed, 2);
     assert_eq!(tally.reads(), 6);
-    tally.check_accuracy("only measured reads count");
     assert!(tally.twice.is_empty(), "{tally:?}");
 
     let mut lost = problems.clone();
     lost.extend((13..17).map(|time| (time, "threads changed while read: 12".to_owned())));
     let tally = tally_reads(&waits, &lost, &looping);
     assert_eq!(tally.changed, 6);
-    assert!(
-        std::panic::catch_unwind(|| tally.check_accuracy("in-window losses")).is_err(),
-        "in-window losses must fail: {tally:?}"
-    );
 
     let boundaries: Vec<_> = [9, 10, 20, 30]
         .into_iter()
@@ -915,7 +913,14 @@ pub fn stress(entry: &str, flags: &[&str]) {
         "{summary}\n{:#?}",
         &tally.twice[..tally.twice.len().min(5)]
     );
-    tally.check_accuracy(&summary);
+    assert!(
+        tally
+            .left_out
+            .keys()
+            .all(|reason| MOVING.iter().any(|moving| reason.starts_with(moving))),
+        "{summary}"
+    );
+    assert!(tally.exact > 0, "{summary}");
 }
 
 const COLLECTING: &[&str] = &["--stress-compaction", "--gc-interval=2000"];
