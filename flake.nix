@@ -1101,6 +1101,17 @@
         PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
         PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = "true";
         PLAYWRIGHT_DRIVER_VERSION = pkgs.playwright-driver.version;
+        FONTCONFIG_FILE = pkgs.writeText "fonts.conf" ''
+          <?xml version="1.0"?>
+          <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+          <fontconfig>
+            <dir>${pkgs.ibm-plex.override { families = [ "sans" ]; }}</dir>
+            <dir>${pkgs.jetbrains-mono}</dir>
+            <cachedir prefix="xdg">fontconfig</cachedir>
+            <alias><family>sans-serif</family><prefer><family>IBM Plex Sans</family></prefer></alias>
+            <alias><family>monospace</family><prefer><family>JetBrains Mono</family></prefer></alias>
+          </fontconfig>
+        '';
 
 
 
