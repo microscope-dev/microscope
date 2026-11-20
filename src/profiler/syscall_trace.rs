@@ -236,6 +236,7 @@ impl SyscallOptions {
 pub(super) struct SyscallTrace {
     stop: Arc<AtomicBool>,
     thread: std::thread::JoinHandle<Result<(), String>>,
+    ended: Mutex<std::sync::mpsc::Receiver<()>>,
     shared: Arc<Mutex<Shared>>,
     stacks: Option<SharedStacks>,
     level: SyscallLevel,
@@ -367,6 +368,11 @@ pub const BLOCKED_AT: &str = "syscalls blocked at";
 
 const FLUSH_EVERY: u64 = 1_000_000_000;
 
+// Hands each call that would trigger a save over late, as a reader behind on a
+// loaded machine does, so tests can make the trigger arrive after the program.
+#[cfg(debug_assertions)]
+const TRIGGER_DELAY_MS: &str = "MICROSCOPE_TEST_TRIGGER_DELAY_MS";
+
 impl Sink for Held {
     fn event(&mut self, event: TraceEvent) {
         if !self.keeps(&event) {
@@ -381,6 +387,14 @@ impl Sink for Held {
             TraceEvent::Call(call) => self.save_on.reason(call),
             _ => None,
         };
+        #[cfg(debug_assertions)]
+        if reason.is_some()
+            && let Some(ms) = std::env::var(TRIGGER_DELAY_MS)
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+        {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
         let mut shared = lock(&self.shared);
         let time = event.time();
         if let Some(reason) = reason
@@ -524,6 +538,7 @@ impl SyscallTrace {
         let stop = Arc::new(AtomicBool::new(false));
         let budget = Arc::new(Budgeted::default());
         let (ready, seen) = std::sync::mpsc::channel();
+        let (ending, ended) = std::sync::mpsc::channel::<()>();
         let stopped = Arc::clone(&stop);
         let mut sink = Held {
             shared: Arc::clone(&shared),
@@ -545,12 +560,16 @@ impl SyscallTrace {
         let engine = (options.engine == SyscallEngine::Bpf).then_some(engine);
         let thread = std::thread::Builder::new()
             .name("microscope-record-syscalls".into())
-            .spawn(move || run(traced, engine, &trace, &stopped, &mut sink))
+            .spawn(move || {
+                let _ending = ending;
+                run(traced, engine, &trace, &stopped, &mut sink)
+            })
             .map_err(|error| error.to_string())?;
         if seen.recv().is_ok() {
             return Ok(Some(Self {
                 stop,
                 thread,
+                ended: Mutex::new(ended),
                 shared,
                 stacks,
                 level,
@@ -600,6 +619,17 @@ impl SyscallTrace {
             self.budget.calls.load(Ordering::Relaxed),
             Duration::from_nanos(self.budget.kernel.load(Ordering::Relaxed)),
         )
+    }
+
+    // Ends the trace and waits until its reader has handed over every call,
+    // so a trigger the last calls set is seen before the recording's last save.
+    pub(super) fn settle(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = self
+            .ended
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .recv();
     }
 
     pub(super) fn take_trigger(&self) -> bool {

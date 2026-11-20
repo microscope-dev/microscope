@@ -877,8 +877,15 @@ fn drive(
     if observing.is_some() {
         processor.ingest(&[], None);
     }
-    let called = syscalls.is_some_and(SyscallTrace::take_trigger);
-    if (pending_save.is_some() || called)
+    if let Some(syscalls) = syscalls {
+        syscalls.settle();
+    }
+    // A call that triggers only now saves the window that ends with the
+    // recording: nothing later can be observed.
+    if syscalls.is_some_and(SyscallTrace::take_trigger) && pending_save.is_none() {
+        pending_save = Some(end);
+    }
+    if pending_save.is_some()
         && let Some(save) = &mut watch.save
     {
         save_when_due(
@@ -886,7 +893,7 @@ fn drive(
             processor,
             events,
             syscalls,
-            called,
+            false,
             &mut pending_save,
             &mut segments,
         );
