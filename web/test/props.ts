@@ -4,6 +4,7 @@ import { inject } from "vitest";
 declare module "vitest" {
   export interface ProvidedContext {
     proptestCases: string;
+    budgetScale: number;
   }
 }
 

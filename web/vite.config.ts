@@ -19,6 +19,16 @@ const devCookie: NonNullable<ProxyOptions["configure"]> = (proxy) => {
   });
 };
 
+function budgetScale(): number {
+  const scale = Number(process.env.MICROSCOPE_TEST_BUDGET_SCALE ?? "1");
+  if (!Number.isFinite(scale) || scale < 1) {
+    throw new Error(
+      `MICROSCOPE_TEST_BUDGET_SCALE must be a number of at least 1, got ${process.env.MICROSCOPE_TEST_BUDGET_SCALE}`,
+    );
+  }
+  return scale;
+}
+
 export default defineConfig({
   plugins: [react()],
 
@@ -41,7 +51,7 @@ export default defineConfig({
     },
   },
   test: {
-    provide: { proptestCases: process.env.PROPTEST_CASES ?? "" },
+    provide: { proptestCases: process.env.PROPTEST_CASES ?? "", budgetScale: budgetScale() },
 
     expect: { poll: { interval: 2 } },
     projects: [

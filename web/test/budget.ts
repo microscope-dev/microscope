@@ -49,6 +49,8 @@ beforeEach(() => {
 
 const searching = inject("proptestCases") !== "";
 
+const scale = inject("budgetScale");
+
 afterEach(() => {
   if (searching) {
     return;
@@ -58,10 +60,12 @@ afterEach(() => {
   const file = (testPath ?? "").replace(/^.*\/web\//u, "");
   const name = `${file} :: ${currentTestName ?? ""}`;
   const own = OWN[name] ?? FILES[file];
-  const budget = own?.ms ?? (typeof window === "undefined" ? UNIT : BROWSER);
+  const base = own?.ms ?? (typeof window === "undefined" ? UNIT : BROWSER);
+  const budget = Math.round(scale * base);
   if (elapsed > budget) {
+    const scaled = scale === 1 ? "" : ` (${base}ms times MICROSCOPE_TEST_BUDGET_SCALE ${scale})`;
     throw new Error(
-      `${name} took ${Math.round(elapsed)}ms, over its ${budget}ms budget. ` +
+      `${name} took ${Math.round(elapsed)}ms, over its ${budget}ms budget${scaled}. ` +
         "Make it faster, or give it a budget of its own in test/budget.ts with the reason.",
     );
   }
