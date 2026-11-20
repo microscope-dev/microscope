@@ -5,7 +5,7 @@ import type { Page } from "@playwright/test";
 
 import { base32, totp, wrong } from "./authenticator";
 import { allowErrors, test as base, expect, expectErrors } from "./server";
-import { haveServices, type Services, servicesBinary, startServices } from "./services";
+import { type Services, skippedServices, skipServices, startServices } from "./services";
 
 const test = base.extend<{ services: Services }>({
   services: async ({ context }, provide, info) => {
@@ -25,7 +25,7 @@ const test = base.extend<{ services: Services }>({
   },
 });
 
-test.skip(!haveServices, `services is not built at ${servicesBinary}`);
+test.skip(skipServices, skippedServices);
 
 const account = (page: Page) => page.getByRole("tabpanel", { name: "Account" });
 
