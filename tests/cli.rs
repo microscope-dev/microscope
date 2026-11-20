@@ -6025,7 +6025,12 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
          while time.process_time() < end: await asyncio.sleep(0)\n\
          async def main():\n    await asyncio.to_thread(sys.stdin.readline)\n    \
          await asyncio.gather(spin(), spin())\nasyncio.run(main())\n",
-        |_| true,
+        |profile| {
+            profile
+                .tasks()
+                .iter()
+                .any(|task| task.noun != microscope::profiler::THREAD)
+        },
     );
     assert!(
         tasks
