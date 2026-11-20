@@ -1,3 +1,4 @@
+use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -175,7 +176,7 @@ pub fn record_watched(
             syscalls.as_ref(),
             walker.as_mut(),
             thin.take(),
-            |timeout| killer.exited(timeout),
+            killer.as_fd(),
             || {
                 record!("record: stopping, killing {pid}");
                 killer.kill();
@@ -292,7 +293,7 @@ pub fn record_attached(
             syscalls.as_ref(),
             walker.as_mut(),
             thin.take(),
-            |timeout| process.exited(timeout),
+            process.as_fd(),
             || {
                 record!("record: stopping, detaching from {pid}");
                 stopped = true;
@@ -699,9 +700,10 @@ fn drive(
     syscalls: Option<&SyscallTrace>,
     mut walker: Option<&mut Walker>,
     thin: Option<Thin>,
-    mut ended: impl FnMut(Duration) -> bool,
+    exit: BorrowedFd<'_>,
     mut stop: impl FnMut() -> bool,
 ) {
+    let ended = || perf::sys::readable(exit, Duration::ZERO);
     processor.set_up();
     let mut pacer = options
         .budget
@@ -748,7 +750,7 @@ fn drive(
     let mut published = std::time::Instant::now();
     let begun = std::time::Instant::now();
     let mut drained_at = begun;
-    let mut wait = watch.every.min(Duration::from_millis(250));
+    let mut publish = watch.every.min(Duration::from_millis(250));
     let mut stopping = false;
     let mut now = false;
     let end = loop {
@@ -757,7 +759,7 @@ fn drive(
             now = stop();
         }
 
-        let finished = now || ended(Duration::ZERO);
+        let finished = now || ended();
         let disabled_at = finished.then(|| {
             events.stop();
             monotonic()
@@ -773,11 +775,17 @@ fn drive(
             let mut wait = if walker.is_some() && begun.elapsed() < EARLY_DRAINS {
                 Duration::from_millis(1)
             } else {
-                Duration::from_millis(10)
+                Duration::from_millis(100)
             }
             .saturating_sub(drained_at.elapsed());
             if let Some(pacer) = &mut pacer {
                 wait = wait.min(pacer.pace(monotonic(), processor));
+            }
+            if let Some(every) = observing {
+                wait = wait.min(every.saturating_sub(observed.elapsed()));
+            }
+            if started {
+                wait = wait.min(publish.saturating_sub(published.elapsed()));
             }
             let due = snapshots.iter().map(Snapshots::due_in).min();
             let wait = if processor.stopped_at_load() {
@@ -785,7 +793,7 @@ fn drive(
             } else {
                 due.map_or(wait, |due| wait.min(due))
             };
-            events.wait(wait);
+            events.wait(wait, exit);
         }
 
         let mut drained = 0;
@@ -810,7 +818,7 @@ fn drive(
 
         if let Some(probes) = &mut probes {
             if finished {
-                probes.finish(processor, !ended(Duration::ZERO));
+                probes.finish(processor, !ended());
             } else {
                 probes.drain(processor);
             }
@@ -841,13 +849,13 @@ fn drive(
             );
         }
 
-        if started && published.elapsed() >= wait {
+        if started && published.elapsed() >= publish {
             if observing.is_none() {
                 processor.observe(monotonic(), events.counts());
             }
             (watch.publish)(live(processor));
             published = std::time::Instant::now();
-            wait = (wait * 2).min(watch.every);
+            publish = (publish * 2).min(watch.every);
         }
     };
 

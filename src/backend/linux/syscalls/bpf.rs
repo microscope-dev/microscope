@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::os::fd::AsFd as _;
+use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1947,6 +1947,47 @@ fn missing(name: &str) -> BpfError {
     BpfError::Load(format!("the BPF object has no {name}"))
 }
 
+fn wait(
+    rings: &[impl AsFd],
+    live: &mut BTreeMap<Pid, Option<OwnedFd>>,
+    tick: u16,
+) -> Result<(), BpfError> {
+    let waiting: Vec<Pid> = live
+        .iter()
+        .filter(|(_, exits)| exits.is_some())
+        .map(|(&pid, _)| pid)
+        .collect();
+    let mut fds: Vec<_> = rings
+        .iter()
+        .map(AsFd::as_fd)
+        .chain(live.values().flatten().map(AsFd::as_fd))
+        .map(|fd| nix::poll::PollFd::new(fd, nix::poll::PollFlags::POLLIN))
+        .collect();
+    debug_assert_eq!(fds.len(), rings.len() + waiting.len());
+    match nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(tick)) {
+        Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+        Err(error) => return Err(BpfError::System(error)),
+    }
+
+    let exited: Vec<Pid> = fds
+        .iter()
+        .skip(rings.len())
+        .zip(waiting)
+        .filter(|(fd, _)| fd.any().unwrap_or(true))
+        .map(|(_, pid)| pid)
+        .collect();
+    drop(fds);
+    for pid in exited {
+        live.insert(pid, None);
+    }
+    Ok(())
+}
+
+fn exits(process: u32) -> Option<OwnedFd> {
+    let pid = rustix::process::Pid::from_raw(i32::try_from(process).ok()?)?;
+    rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).ok()
+}
+
 fn ended(process: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{process}/stat")).map_or(true, |stat| {
         stat.rsplit_once(") ").is_some_and(|(_, rest)| {
@@ -2034,7 +2075,7 @@ fn run(
 
 struct Begun {
     first: Pid,
-    live: BTreeSet<Pid>,
+    live: BTreeMap<Pid, Option<OwnedFd>>,
     mappings: Vec<perf::Events>,
 }
 
@@ -2044,7 +2085,7 @@ fn begin(
     options: &TraceOptions,
     sink: &mut dyn Sink,
 ) -> Result<Begun, BpfError> {
-    let mut live = BTreeSet::new();
+    let mut live = BTreeMap::new();
     let mut mappings = Vec::new();
     let first = match start {
         Start::Held(pid) => {
@@ -2054,7 +2095,7 @@ fn begin(
             }
 
             seed_descriptors(pid, sink);
-            live.insert(Pid::new(pid));
+            live.insert(Pid::new(pid), exits(pid));
             sink.attached(pid);
             Pid::new(pid)
         }
@@ -2087,7 +2128,7 @@ fn begin(
             }
 
             for process in std::iter::once(pid).chain(children) {
-                live.insert(Pid::new(process));
+                live.insert(Pid::new(process), exits(process));
                 sink.attached(process);
                 if let Some(stacks) = &options.stacks {
                     stacks
@@ -2122,7 +2163,7 @@ struct Reader<'a> {
     sink: &'a mut dyn Sink,
     follow: bool,
 
-    live: BTreeSet<Pid>,
+    live: BTreeMap<Pid, Option<OwnedFd>>,
     first: Pid,
     end: Option<ProcessEnd>,
 
@@ -2177,6 +2218,8 @@ const TICK_MS: u16 = 100;
 
 const WAITING_TICK_MS: u16 = 10;
 
+const STATS_NS: u64 = 1_000_000_000;
+
 const MOST_DRAINED: usize = 4096;
 
 const SETTLED_NS: u64 = 5_000_000;
@@ -2194,6 +2237,7 @@ impl Reader<'_> {
         }
         let mut stopping = false;
         let mut last_tick = monotonic();
+        let mut last_stats = last_tick;
         loop {
             if stop.load(Ordering::Relaxed) && !stopping {
                 stopping = true;
@@ -2204,7 +2248,8 @@ impl Reader<'_> {
             let gone: Vec<Pid> = self
                 .live
                 .iter()
-                .copied()
+                .filter(|(_, exits)| exits.is_none())
+                .map(|(&pid, _)| pid)
                 .filter(|&pid| {
                     ended(pid.get())
                         && (!loaded.targets.holds(pid.get())
@@ -2229,7 +2274,10 @@ impl Reader<'_> {
             if now - last_tick >= u64::from(TICK_MS) * 1_000_000 {
                 last_tick = now;
                 self.release(Until::None);
-                self.report_lost(loaded, now);
+                if now - last_stats >= STATS_NS {
+                    last_stats = now;
+                    self.report_lost(loaded, now);
+                }
                 self.follow_budget(loaded)?;
                 self.sink.tick(now);
                 if self.sink.segment_due(now) {
@@ -2244,19 +2292,12 @@ impl Reader<'_> {
                 }
             }
 
-            let mut fds: Vec<_> = rings
-                .iter()
-                .map(|ring| nix::poll::PollFd::new(ring.as_fd(), nix::poll::PollFlags::POLLIN))
-                .collect();
             let tick = if self.pending.is_empty() && !self.merge.holds() {
                 TICK_MS
             } else {
                 WAITING_TICK_MS
             };
-            match nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(tick)) {
-                Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-                Err(error) => return Err(BpfError::System(error)),
-            }
+            wait(&rings, &mut self.live, tick)?;
         }
 
         self.release(Until::None);
@@ -2665,7 +2706,8 @@ impl Reader<'_> {
 
                 match &event {
                     TraceEvent::Spawn { child, thread, .. } if !*thread && self.follow => {
-                        self.live.insert(Pid::led_by(*child));
+                        let process = Pid::led_by(*child);
+                        self.live.insert(process, exits(process.get()));
                     }
 
                     TraceEvent::Exit { process, end, .. } => {
@@ -2699,6 +2741,34 @@ fn set_stack(event: &mut TraceEvent, unwound: Option<CallStack>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_traced_process_that_exits_wakes_the_reader_to_check_its_end() {
+        let mut running = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("start sleep");
+        let mut done = std::process::Command::new("true")
+            .spawn()
+            .expect("start true");
+        let (running_pid, done_pid) = (Pid::new(running.id()), Pid::new(done.id()));
+        let mut live = BTreeMap::from([
+            (running_pid, exits(running.id())),
+            (done_pid, exits(done.id())),
+        ]);
+        assert!(live.values().all(Option::is_some));
+
+        let began = std::time::Instant::now();
+        wait(&[] as &[OwnedFd], &mut live, 10_000).expect("poll");
+        let waited = began.elapsed();
+
+        assert!(waited < std::time::Duration::from_secs(5), "{waited:?}");
+        assert!(live[&done_pid].is_none() && ended(done.id()));
+        assert!(live[&running_pid].is_some() && !ended(running.id()));
+        let _ = running.kill();
+        let _ = running.wait();
+        let _ = done.wait();
+    }
 
     #[test]
     fn short_lists_attach_to_their_functions_and_the_rest_say_why_not() {

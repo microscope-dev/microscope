@@ -1,6 +1,6 @@
 #![allow(unsafe_code, reason = "perf events are system calls and shared memory")]
 
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nix::libc;
@@ -555,9 +555,9 @@ pub fn thread_cpu() -> std::time::Duration {
     )
 }
 
-pub fn readable(fd: &OwnedFd, timeout: std::time::Duration) -> bool {
+pub fn readable(fd: impl AsFd, timeout: std::time::Duration) -> bool {
     use rustix::event::{PollFd, PollFlags, Timespec};
-    let mut fds = [PollFd::new(fd, PollFlags::IN)];
+    let mut fds = [PollFd::new(&fd, PollFlags::IN)];
     let timeout = Timespec::try_from(timeout).ok();
 
     rustix::event::poll(&mut fds, timeout.as_ref()).is_ok_and(|ready| ready > 0)
@@ -570,14 +570,27 @@ pub fn wait_readable(fd: &OwnedFd) {
     while rustix::event::poll(&mut fds, None) == Err(rustix::io::Errno::INTR) {}
 }
 
-pub fn poll(rings: &[Ring], timeout: std::time::Duration) {
+pub fn poll<'a>(fds: impl IntoIterator<Item = BorrowedFd<'a>>, timeout: std::time::Duration) {
     use rustix::event::{PollFd, PollFlags, Timespec};
-    let mut fds: Vec<PollFd<'_>> = rings
-        .iter()
-        .map(|ring| PollFd::new(&ring.fd, PollFlags::IN))
+    let mut fds: Vec<PollFd<'_>> = fds
+        .into_iter()
+        .map(|fd| PollFd::from_borrowed_fd(fd, PollFlags::IN))
         .collect();
     let timeout = Timespec::try_from(timeout).ok();
     let _ = rustix::event::poll(&mut fds, timeout.as_ref());
+}
+
+pub fn handoff() -> std::io::Result<OwnedFd> {
+    use rustix::event::{EventfdFlags, eventfd};
+    Ok(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?)
+}
+
+pub fn signal(handoff: &OwnedFd) {
+    let _ = rustix::io::write(handoff, &1u64.to_ne_bytes());
+}
+
+pub fn clear(handoff: &OwnedFd) {
+    let _ = rustix::io::read(handoff, &mut [0; 8]);
 }
 
 pub struct Poller {

@@ -42,7 +42,7 @@ test-group = 'bpf-profiles'
 
 
 [[profile.default.overrides]]
-filter = '(binary(profiler) & test(/^(maximum_rate_keeps_at_least_99_percent_of_a_short_rust_burst|a_rolling_window_saves_on_a_trigger_and_keeps_only_its_last_span|segments_tile_a_recording_and_read_back_as_one|.*_save_asked_for_at_once_.*)$/)) | (binary(microscope) & test(/^backend::linux::perf::tests::a_reader_(that_falls_behind|far_behind)/)) | (binary(syscalls) & test(=bpf::a_burst_of_copied_stacks_loses_no_calls))'
+filter = '(binary(profiler) & test(/^(maximum_rate_keeps_at_least_99_percent_of_a_short_rust_burst|a_rolling_window_saves_on_a_trigger_and_keeps_only_its_last_span|segments_tile_a_recording_and_read_back_as_one|.*_save_asked_for_at_once_.*)$/)) | (binary(microscope) & test(/^backend::linux::perf::tests::(a_reader_(that_falls_behind|far_behind)|a_waiting_processor_wakes)/)) | (binary(syscalls) & test(=bpf::a_burst_of_copied_stacks_loses_no_calls))'
 threads-required = 'num-test-threads'
 priority = 100
 

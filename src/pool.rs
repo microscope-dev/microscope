@@ -26,6 +26,42 @@ static SMALL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
 static CLOCKS: Mutex<Vec<nix::time::ClockId>> = Mutex::new(Vec::new());
 
+static MEASURED: Mutex<Measured> = Mutex::new(Measured {
+    running: 0,
+    cpu: None,
+});
+
+struct Measured {
+    running: usize,
+    cpu: Option<Duration>,
+}
+
+fn measured() -> std::sync::MutexGuard<'static, Measured> {
+    MEASURED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+struct Running;
+
+impl Running {
+    fn start() -> Self {
+        let mut measured = measured();
+        measured.running += 1;
+        measured.cpu = None;
+        Self
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let mut measured = measured();
+        debug_assert!(measured.running > 0, "a pool job ends only after it starts");
+        measured.running -= 1;
+        measured.cpu = None;
+    }
+}
+
 fn register_worker() {
     let tid = nix::unistd::gettid().as_raw();
     let clock = nix::time::ClockId::from_raw((!tid << 3) | 6);
@@ -33,16 +69,26 @@ fn register_worker() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(clock);
+    measured().cpu = None;
 }
 
 pub fn cpu() -> Duration {
-    CLOCKS
+    let mut measured = measured();
+    if measured.running == 0
+        && let Some(cpu) = measured.cpu
+    {
+        return cpu;
+    }
+
+    let cpu = CLOCKS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .filter_map(|&clock| nix::time::clock_gettime(clock).ok())
         .map(Duration::from)
-        .sum()
+        .sum();
+    measured.cpu = (measured.running == 0).then_some(cpu);
+    cpu
 }
 
 pub fn resolve(
@@ -124,6 +170,7 @@ pub(crate) fn install<R: Send>(work: impl FnOnce() -> R + Send) -> Result<R, Job
         None => start(resolve_here(None, None)?)?,
     };
 
+    let _running = Running::start();
     Ok(pool.install(work))
 }
 
@@ -144,12 +191,48 @@ pub(crate) fn install_small<R: Send>(work: impl FnOnce() -> R + Send) -> Result<
         SMALL.get_or_init(|| pool)
     };
 
+    let _running = Running::start();
     Ok(pool.install(work))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn work_still_running_on_the_pool_is_counted() {
+        use std::sync::atomic::AtomicBool;
+
+        let before = cpu();
+        assert_eq!(cpu(), before);
+
+        let seen = AtomicBool::new(false);
+        let grew = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                install(|| {
+                    rayon::broadcast(|_| {
+                        while !seen.load(Ordering::Relaxed) {
+                            std::hint::spin_loop();
+                        }
+                    });
+                })
+                .expect("the pool");
+            });
+
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut grew = Duration::ZERO;
+            while grew < Duration::from_millis(20) && std::time::Instant::now() < deadline {
+                grew = cpu().saturating_sub(before);
+            }
+            seen.store(true, Ordering::Relaxed);
+            grew
+        });
+        assert!(grew >= Duration::from_millis(20), "{grew:?}");
+
+        let after = cpu();
+        assert!(after >= before + grew, "{after:?} {before:?} {grew:?}");
+    }
 
     #[test]
     fn the_first_source_that_says_wins() {

@@ -3,7 +3,7 @@ pub mod jit;
 mod lease;
 pub mod sys;
 
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 use std::sync::Mutex;
@@ -58,6 +58,9 @@ pub enum OpenError {
     )]
     RingBudget { pages: usize },
 
+    #[error("creating the perf reader's wakeup failed: {0}")]
+    Handoff(std::io::Error),
+
     #[error("reading the online CPUs failed: {0}")]
     Cpus(std::io::Error),
 
@@ -90,6 +93,7 @@ pub struct Events {
 
     reader_wait: Duration,
     reader_cpu: AtomicU64,
+    handed: OwnedFd,
 
     cpus: Vec<u32>,
 
@@ -323,6 +327,7 @@ impl Events {
             shortened: AtomicU64::new(0),
             reader_wait: reader_wait(options),
             reader_cpu: AtomicU64::new(0),
+            handed: sys::handoff().map_err(OpenError::Handoff)?,
             cpus,
             followers: Vec::new(),
             sideband,
@@ -409,6 +414,7 @@ impl Events {
                                 shortened: AtomicU64::new(0),
                                 reader_wait: reader_wait(options),
                                 reader_cpu: AtomicU64::new(0),
+                                handed: sys::handoff().map_err(OpenError::Handoff)?,
                                 cpus: cpus.to_vec(),
                                 followers: Vec::new(),
                                 sideband,
@@ -603,6 +609,7 @@ impl Events {
                         continue;
                     };
                     self.fall_behind(now_behind);
+                    let before = queue.bytes;
                     if shorten {
                         for ring in &self.rings {
                             drained.clear();
@@ -623,15 +630,21 @@ impl Events {
                             queue.drain_ring(ring, ring_bytes, block);
                         }
                     }
+                    let grew = queue.bytes > before;
                     drop(queue);
+                    if grew {
+                        sys::signal(&self.handed);
+                    }
                     let elapsed = sys::thread_cpu().saturating_sub(began);
                     self.reader_cpu.store(
                         u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
                         Ordering::Relaxed,
                     );
                     match &poller {
-                        Some(poller) => poller.wait(&self.rings, self.reader_wait),
-                        None => sys::poll(&self.rings, self.reader_wait),
+                        Some(poller) => poller.wait(&self.rings, READER_TICK),
+                        None => {
+                            sys::poll(self.rings.iter().map(|ring| ring.fd().as_fd()), READER_TICK);
+                        }
                     }
                 }
             });
@@ -719,11 +732,18 @@ impl Events {
         self.rings.iter().map(sys::Ring::untrusted).sum()
     }
 
-    pub fn wait(&self, timeout: Duration) {
+    pub fn wait(&self, timeout: Duration, exit: BorrowedFd<'_>) {
         if self.buffered.is_some() {
-            std::thread::sleep(timeout);
+            sys::poll([self.handed.as_fd(), exit], timeout);
+            sys::clear(&self.handed);
         } else {
-            sys::poll(&self.rings, timeout);
+            sys::poll(
+                self.rings
+                    .iter()
+                    .map(|ring| ring.fd().as_fd())
+                    .chain([exit]),
+                timeout,
+            );
         }
     }
 
@@ -816,6 +836,8 @@ impl Drop for StopReader<'_> {
 fn collection_buffer(options: &EventOptions) -> Option<Mutex<Queue>> {
     (!matches!(options.source, Source::Mappings)).then(Mutex::default)
 }
+
+const READER_TICK: Duration = Duration::from_millis(100);
 
 fn reader_wait(options: &EventOptions) -> Duration {
     match options.source {
@@ -1074,9 +1096,9 @@ pub struct Attached {
 #[derive(Debug)]
 pub struct ProcessWatch(OwnedFd);
 
-impl ProcessWatch {
-    pub fn exited(&self, timeout: Duration) -> bool {
-        sys::readable(&self.0, timeout)
+impl AsFd for ProcessWatch {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
     }
 }
 
@@ -1164,9 +1186,11 @@ impl Killer {
     pub fn kill(&self) {
         let _ = super::native::pidfd_send_signal(&self.0, super::signals::Signal::SIGKILL);
     }
+}
 
-    pub fn exited(&self, timeout: Duration) -> bool {
-        sys::readable(&self.0, timeout)
+impl AsFd for Killer {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
     }
 }
 
@@ -1930,6 +1954,26 @@ mod tests {
             "{spans:?}, though the program exited at {exited} and the test ended at {end}"
         );
         assert_eq!(events.behind(Some(end)), []);
+    }
+
+    #[test]
+    fn a_waiting_processor_wakes_when_the_reader_queues_samples() {
+        let (events, exit, gate, spinning) = spin_with_deep_copies();
+        let never = sys::handoff().expect("an eventfd");
+        let (waited, queued, status) = events.read_while(|| {
+            gate.open().expect("open the gate");
+            let began = std::time::Instant::now();
+            events.wait(Duration::from_secs(20), never.as_fd());
+            let (waited, queued) = (began.elapsed(), events.queued());
+            drop(spinning);
+            (waited, queued, exit.join())
+        });
+        let status = status
+            .expect("the launch thread ends")
+            .expect("the program exits");
+        assert!(status.success(), "{status}");
+        assert!(queued > 0, "woke after {waited:?} with nothing queued");
+        assert!(waited < Duration::from_secs(5), "waited {waited:?}");
     }
 
     fn until(what: &str, done: impl Fn() -> bool) {

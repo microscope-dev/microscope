@@ -20,7 +20,7 @@ pub const FEWEST_SHARE: f64 = 1.0 / 1_048_576.0;
 
 const HEADROOM: f64 = 0.9;
 
-const FEWEST_KEPT_A_SECOND: f64 = 2.0;
+const FEWEST_KEPT_A_SECOND: f64 = 10.0;
 
 const MOST_OWED: u32 = 4;
 
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fixed_cost_over_the_budget_still_keeps_two_samples_a_second() {
+    fn a_fixed_cost_over_the_budget_still_keeps_ten_samples_a_second() {
         let recorder = Recorder {
             fixed: 0.02,
             cost: 11e-6,
@@ -241,7 +241,7 @@ mod tests {
         let mut model = Model::new(BUDGET, None, 1);
         let (_, share) = recorder.run(&mut model, 10_000, 1.0);
         assert!(
-            (share * 10_000.0 / FEWEST_KEPT_A_SECOND - 1.0).abs() < 1e-6,
+            (share * 10_000.0 / 10.0 - 1.0).abs() < 1e-6,
             "share {share}"
         );
         let (_, share) = recorder.run(&mut model, 1 << 30, share);
