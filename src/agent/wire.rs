@@ -14,6 +14,7 @@ pub const SIGNATURE_HEADER: &str = "microscope-signature";
 pub const ENROLL_PATH: &str = "/api/agent/v1/enroll";
 pub const REFRESH_PATH: &str = "/api/agent/v1/refresh";
 pub const GOODBYE_PATH: &str = "/api/agent/v1/goodbye";
+pub const INGEST_PATH: &str = "/api/agent/v1/ingest";
 
 const CONTEXT: &[u8] = b"microscope agent request v1";
 const ED25519: &str = "ed25519";
@@ -294,6 +295,11 @@ pub struct TokenResponse {
     pub token: String,
     pub expires_in: u32,
     pub refresh_after: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IngestResponse {
+    pub last_chunk: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]

@@ -311,3 +311,80 @@ fn status_finds_the_state_directory_without_a_server() {
         Path::new("/x")
     );
 }
+
+#[test]
+fn record_config_reads_from_toml_and_env_overrides() {
+    let config = file(&format!(
+        r#"
+enroll = "{ENROLL}"
+
+[record]
+process = "my-app"
+service = "api"
+project = "prod-api"
+preset = "dev"
+time_unit = "ms"
+chunk_ms = 5000
+post_ms = 2000
+spool_mib = 64
+"#
+    ));
+    let loaded = load(Some(config.path()), &env(&[])).unwrap();
+    let rec = loaded.record.expect("record config");
+    assert_eq!(rec.process, "my-app");
+    assert_eq!(rec.service, "api");
+    assert_eq!(rec.project, "prod-api");
+    assert_eq!(rec.preset, crate::profiler::Preset::Development);
+    assert_eq!(rec.time_unit, microscope_data::object::TimeUnit::Ms);
+    assert_eq!(rec.chunk_ms, 5000);
+    assert_eq!(rec.post_ms, 2000);
+    assert_eq!(rec.spool_mib, 64);
+
+    let overridden = load(
+        Some(config.path()),
+        &env(&[
+            ("MICROSCOPE_RECORD_PROCESS", "worker"),
+            ("MICROSCOPE_RECORD_PRESET", "max"),
+            ("MICROSCOPE_RECORD_TIME_UNIT", "us"),
+            ("MICROSCOPE_RECORD_CHUNK_MS", "1500"),
+            ("MICROSCOPE_RECORD_POST_MS", "750"),
+            ("MICROSCOPE_RECORD_SPOOL_MIB", "128"),
+        ]),
+    )
+    .unwrap();
+    let rec = overridden.record.expect("overridden record config");
+    assert_eq!(rec.process, "worker");
+    assert_eq!(rec.service, "api");
+    assert_eq!(rec.project, "prod-api");
+    assert_eq!(rec.preset, crate::profiler::Preset::Maximum);
+    assert_eq!(rec.time_unit, microscope_data::object::TimeUnit::Us);
+    assert_eq!(rec.chunk_ms, 1500);
+    assert_eq!(rec.post_ms, 750);
+    assert_eq!(rec.spool_mib, 128);
+}
+
+#[test]
+fn record_config_rejects_invalid_values() {
+    let cases: &[(&str, &str)] = &[
+        ("MICROSCOPE_RECORD_PRESET", "turbo"),
+        ("MICROSCOPE_RECORD_TIME_UNIT", "hours"),
+        ("MICROSCOPE_RECORD_CHUNK_MS", "0"),
+        ("MICROSCOPE_RECORD_POST_MS", "abc"),
+        ("MICROSCOPE_RECORD_SPOOL_MIB", "0"),
+    ];
+    for &(key, value) in cases {
+        let err = load(
+            None,
+            &env(&[
+                ("MICROSCOPE_ENROLL", ENROLL),
+                ("MICROSCOPE_RECORD_PROCESS", "hot-calls"),
+                (key, value),
+            ]),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Record { .. }),
+            "{key}={value}: {err}"
+        );
+    }
+}

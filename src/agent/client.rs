@@ -4,18 +4,38 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
+use microscope_data::sanitize::EncodedPost;
 
 use super::{
     machine::Outcome,
     wire::{
-        ENROLL_PATH, EnrollKey, ErrorBody, ErrorCode, GOODBYE_PATH, KeyPair, PreviousRun,
-        REFRESH_PATH, SIGNATURE_HEADER, Server, TokenResponse, inventory_hash,
+        ENROLL_PATH, EnrollKey, ErrorBody, ErrorCode, GOODBYE_PATH, INGEST_PATH, IngestResponse,
+        KeyPair, PreviousRun, REFRESH_PATH, SIGNATURE_HEADER, Server, TokenResponse,
+        inventory_hash,
     },
 };
 
 pub const TIMEOUT: Duration = Duration::from_secs(5);
+pub const INGEST_TIMEOUT: Duration = Duration::from_secs(15);
 pub const GOODBYE_TIMEOUT: Duration = Duration::from_secs(2);
 const BODY_LIMIT: u64 = 64 * 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum IngestReply {
+    Accepted {
+        last_chunk: u64,
+    },
+    Overlap {
+        last_chunk: u64,
+    },
+    Unauthorized,
+    Refused {
+        status: u16,
+        retry_after: Option<Duration>,
+        message: String,
+    },
+    Unreachable(String),
+}
 
 #[derive(Debug)]
 pub enum Reply {
@@ -88,6 +108,7 @@ pub fn unix_now() -> i64 {
 
 pub struct Client {
     agent: ureq::Agent,
+    ingest: ureq::Agent,
     goodbye: ureq::Agent,
     server: Server,
     offset: i64,
@@ -134,10 +155,64 @@ impl Client {
     pub fn new(server: Server, ca_file: Option<&Path>) -> Result<Self> {
         Ok(Self {
             agent: agent(TIMEOUT, ca_file)?,
+            ingest: agent(INGEST_TIMEOUT, ca_file)?,
             goodbye: agent(GOODBYE_TIMEOUT, ca_file)?,
             server,
             offset: 0,
         })
+    }
+
+    pub fn ingest(&self, token: &str, post: &EncodedPost) -> IngestReply {
+        let authorization = format!("Bearer {token}");
+        let mut response = match self
+            .ingest
+            .post(self.server.url(INGEST_PATH))
+            .header("content-type", "application/octet-stream")
+            .header("authorization", &authorization)
+            .send(post.as_bytes())
+        {
+            Ok(response) => response,
+            Err(error) => return IngestReply::Unreachable(error.to_string()),
+        };
+
+        let status = response.status().as_u16();
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse().ok())
+            .map(Duration::from_secs);
+        let text = response
+            .body_mut()
+            .with_config()
+            .limit(BODY_LIMIT)
+            .read_to_string()
+            .unwrap_or_default();
+
+        match status {
+            200 | 201 => serde_json::from_str::<IngestResponse>(&text).map_or_else(
+                |error| IngestReply::Unreachable(format!("bad ingest answer: {error}")),
+                |body| IngestReply::Accepted {
+                    last_chunk: body.last_chunk,
+                },
+            ),
+            409 => serde_json::from_str::<IngestResponse>(&text).map_or_else(
+                |_| IngestReply::Refused {
+                    status,
+                    retry_after,
+                    message: text,
+                },
+                |body| IngestReply::Overlap {
+                    last_chunk: body.last_chunk,
+                },
+            ),
+            401 | 403 => IngestReply::Unauthorized,
+            _ => IngestReply::Refused {
+                status,
+                retry_after,
+                message: text,
+            },
+        }
     }
 
     #[must_use]

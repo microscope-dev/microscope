@@ -226,6 +226,9 @@ agent-dev SERVER="http://127.0.0.1:3000":
     cargo build --quiet --profile test --bin microscope
     export MICROSCOPE_ENROLL="${1%%://*}://{{dev_enroll_key}}@${1#*://}"
     export MICROSCOPE_STATE_DIR="$PWD/target/agent-dev" MICROSCOPE_CLOUD_METADATA=false
+    export MICROSCOPE_RECORD_PROCESS="${MICROSCOPE_RECORD_PROCESS:-microscope-services}"
+    export MICROSCOPE_RECORD_SERVICE="${MICROSCOPE_RECORD_SERVICE:-microscope-services}"
+    export MICROSCOPE_RECORD_PROJECT="${MICROSCOPE_RECORD_PROJECT:-services}"
     exec ./target/debug/microscope agent run --config /dev/null
 
 web-build: web-deps

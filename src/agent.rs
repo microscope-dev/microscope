@@ -7,9 +7,12 @@ pub mod host;
 pub mod inventory;
 pub mod machine;
 pub mod network;
+pub mod poster;
+pub mod recorder;
 pub mod run;
 #[cfg(test)]
 mod scratch;
+pub mod spool;
 pub mod store;
 pub mod wire;
 

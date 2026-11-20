@@ -4,14 +4,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use microscope_data::object::TimeUnit;
 use ring::digest::{SHA256, digest};
 use serde::Deserialize;
 
 use super::wire::{EnrollKey, EnrollKeyError, Server, ServerError};
+use crate::profiler::Preset;
 
 pub const DEFAULT_PATH: &str = "/etc/microscope/agent.toml";
 pub const DEFAULT_STATE_DIR: &str = "/var/lib/microscope/agent";
 const MAX_TAGS: usize = 32;
+pub const DEFAULT_CHUNK_MS: u64 = 5_000;
+pub const DEFAULT_POST_MS: u64 = 10_000;
+pub const DEFAULT_SPOOL_MIB: u32 = 256;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +31,32 @@ struct File {
     report_network: Option<bool>,
     #[serde(default)]
     limits: Limits,
+    record: Option<RecordFile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordFile {
+    process: Option<String>,
+    service: Option<String>,
+    project: Option<String>,
+    preset: Option<String>,
+    time_unit: Option<String>,
+    chunk_ms: Option<u64>,
+    post_ms: Option<u64>,
+    spool_mib: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordConfig {
+    pub process: String,
+    pub service: String,
+    pub project: String,
+    pub preset: Preset,
+    pub time_unit: TimeUnit,
+    pub chunk_ms: u64,
+    pub post_ms: u64,
+    pub spool_mib: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -49,6 +80,7 @@ pub struct Config {
     pub node: Option<String>,
     pub node_ips: Vec<IpAddr>,
     pub limits: Limits,
+    pub record: Option<RecordConfig>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +117,8 @@ pub enum ConfigError {
     Cpu,
     #[error("limits.memory_mib must be 16 to 65536")]
     Memory,
+    #[error("record.{name} is invalid: {value:?}")]
+    Record { name: &'static str, value: String },
 }
 
 pub trait Environment {
@@ -187,6 +221,8 @@ pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, Config
         return Err(ConfigError::Memory);
     }
 
+    let record = load_record(file.record, env)?;
+
     Ok(Config {
         path,
         fingerprint,
@@ -207,7 +243,121 @@ pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, Config
         node,
         node_ips,
         limits,
+        record,
     })
+}
+
+fn load_record(
+    file: Option<RecordFile>,
+    env: &dyn Environment,
+) -> Result<Option<RecordConfig>, ConfigError> {
+    let file = file.unwrap_or_default();
+    let process = name(
+        "record.process",
+        env.get("MICROSCOPE_RECORD_PROCESS").or(file.process),
+    )?;
+    let Some(process) = process else {
+        return Ok(None);
+    };
+    let service = name(
+        "record.service",
+        env.get("MICROSCOPE_RECORD_SERVICE").or(file.service),
+    )?
+    .unwrap_or_else(|| process.clone());
+    let project = name(
+        "record.project",
+        env.get("MICROSCOPE_RECORD_PROJECT").or(file.project),
+    )?
+    .unwrap_or_else(|| "default".to_owned());
+
+    let preset = match env
+        .get("MICROSCOPE_RECORD_PRESET")
+        .or(file.preset)
+        .as_deref()
+    {
+        None | Some("prod" | "production") => Preset::Production,
+        Some("dev" | "development") => Preset::Development,
+        Some("max" | "maximum") => Preset::Maximum,
+        Some(other) => {
+            return Err(ConfigError::Record {
+                name: "preset",
+                value: other.to_owned(),
+            });
+        }
+    };
+
+    let time_unit = match env
+        .get("MICROSCOPE_RECORD_TIME_UNIT")
+        .or(file.time_unit)
+        .as_deref()
+    {
+        None | Some("1us" | "us") => TimeUnit::Us,
+        Some("1ns" | "ns") => TimeUnit::Ns,
+        Some("1ms" | "ms") => TimeUnit::Ms,
+        Some(other) => {
+            return Err(ConfigError::Record {
+                name: "time_unit",
+                value: other.to_owned(),
+            });
+        }
+    };
+
+    let chunk_ms = parse_u64_range(
+        env.get("MICROSCOPE_RECORD_CHUNK_MS"),
+        file.chunk_ms,
+        DEFAULT_CHUNK_MS,
+        200..=60_000,
+        "chunk_ms",
+    )?;
+    let post_ms = parse_u64_range(
+        env.get("MICROSCOPE_RECORD_POST_MS"),
+        file.post_ms,
+        DEFAULT_POST_MS,
+        200..=300_000,
+        "post_ms",
+    )?;
+    let spool_mib = u32::try_from(parse_u64_range(
+        env.get("MICROSCOPE_RECORD_SPOOL_MIB"),
+        file.spool_mib.map(u64::from),
+        u64::from(DEFAULT_SPOOL_MIB),
+        1..=65_536,
+        "spool_mib",
+    )?)
+    .unwrap_or(DEFAULT_SPOOL_MIB);
+
+    Ok(Some(RecordConfig {
+        process,
+        service,
+        project,
+        preset,
+        time_unit,
+        chunk_ms,
+        post_ms,
+        spool_mib,
+    }))
+}
+
+fn parse_u64_range(
+    env_val: Option<String>,
+    file_val: Option<u64>,
+    default: u64,
+    range: std::ops::RangeInclusive<u64>,
+    field: &'static str,
+) -> Result<u64, ConfigError> {
+    let val = match env_val {
+        Some(text) => text.parse::<u64>().map_err(|_| ConfigError::Record {
+            name: field,
+            value: text,
+        })?,
+        None => file_val.unwrap_or(default),
+    };
+    if !range.contains(&val) {
+        return Err(ConfigError::Record {
+            name: field,
+            value: val.to_string(),
+        });
+    }
+    Ok(val)
 }
 
 fn name(name: &'static str, value: Option<String>) -> Result<Option<String>, ConfigError> {

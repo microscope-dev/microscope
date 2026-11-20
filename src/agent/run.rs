@@ -22,6 +22,7 @@ use super::{
     host::{self, Root},
     inventory,
     machine::{Action, Effect, Instant, Machine, State},
+    recorder::{self, Pipeline},
     store::{Enrollment, Status, Store, Stored},
     wire::{KeyPair, PreviousRun},
 };
@@ -87,6 +88,7 @@ struct Agent {
     status: Status,
     started: std::time::Instant,
     last_logged: Option<(&'static str, Option<String>)>,
+    pipeline: Option<Pipeline>,
 }
 
 fn log(message: &str) {
@@ -188,6 +190,16 @@ impl Agent {
             ..Status::default()
         };
 
+        let pipeline = if let Some(record) = config.record.as_ref() {
+            let host_name = config
+                .node
+                .clone()
+                .unwrap_or_else(|| recorder::host_name_from(Path::new("/")));
+            Some(Pipeline::start(&config, record, host_name, enrolled)?)
+        } else {
+            None
+        };
+
         Ok(Self {
             machine: Machine::new(Instant(Duration::ZERO), enrolled, config.server.loopback()),
             config,
@@ -202,6 +214,7 @@ impl Agent {
             status,
             started,
             last_logged: None,
+            pipeline,
         })
     }
 
@@ -256,6 +269,9 @@ impl Agent {
         let (outcome, error) = client::outcome(reply);
         if let Reply::Token(token) = reply {
             self.token = Some(token.token.clone());
+            if let Some(pipeline) = &self.pipeline {
+                pipeline.set_auth(token.agent_id, Some(token.token.clone()));
+            }
             self.status.last_refresh = Some(client::unix_now());
             if refreshing {
                 self.previous_run = None;
@@ -273,6 +289,9 @@ impl Agent {
         if self.machine.on(outcome, now, jitter()) == Effect::ForgetKey {
             self.key = None;
             self.token = None;
+            if let Some(pipeline) = &self.pipeline {
+                pipeline.set_auth(0, None);
+            }
             if let Err(store_error) = self.store.forget() {
                 log(&format!("cannot delete the key: {store_error}"));
             }
@@ -379,6 +398,8 @@ impl Agent {
             let watching = matches!(self.machine.state(), State::Blocked { .. } | State::Revoked);
             let wait = if watching {
                 wait.min(CONFIG_CHECK)
+            } else if self.pipeline.is_some() {
+                wait.min(Duration::from_millis(500))
             } else {
                 wait
             };
@@ -392,12 +413,22 @@ impl Agent {
                         self.reload(path);
                     }
                 }
-                None => {}
+                None => {
+                    if let Some(pipeline) = &self.pipeline
+                        && pipeline.take_need_token()
+                        && let Some(agent_id) = self.machine.agent_id()
+                    {
+                        self.refresh(agent_id);
+                    }
+                }
             }
         }
     }
 
     fn stop(&mut self) {
+        if let Some(mut pipeline) = self.pipeline.take() {
+            pipeline.stop();
+        }
         if let Some(token) = self.token.take() {
             match self.client.goodbye(&token) {
                 Reply::Done => {}
