@@ -544,15 +544,20 @@ pub fn monotonic() -> u64 {
 }
 
 pub fn thread_cpu() -> std::time::Duration {
-    nix::time::clock_gettime(nix::time::ClockId::CLOCK_THREAD_CPUTIME_ID).map_or(
-        std::time::Duration::ZERO,
-        |time| {
-            std::time::Duration::new(
-                u64::try_from(time.tv_sec()).unwrap_or(0),
-                u32::try_from(time.tv_nsec()).unwrap_or(0),
-            )
-        },
-    )
+    cpu_clock(nix::time::ClockId::CLOCK_THREAD_CPUTIME_ID)
+}
+
+pub fn process_cpu() -> std::time::Duration {
+    cpu_clock(nix::time::ClockId::CLOCK_PROCESS_CPUTIME_ID)
+}
+
+fn cpu_clock(clock: nix::time::ClockId) -> std::time::Duration {
+    nix::time::clock_gettime(clock).map_or(std::time::Duration::ZERO, |time| {
+        std::time::Duration::new(
+            u64::try_from(time.tv_sec()).unwrap_or(0),
+            u32::try_from(time.tv_nsec()).unwrap_or(0),
+        )
+    })
 }
 
 pub fn readable(fd: impl AsFd, timeout: std::time::Duration) -> bool {

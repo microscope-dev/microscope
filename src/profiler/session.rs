@@ -1213,7 +1213,7 @@ impl<'a> Pacer<'a> {
             syscalls,
             period: now,
             length: nanoseconds(budget.period) / u64::from(WARM_UP),
-            cpu: process_cpu(),
+            cpu: perf::sys::process_cpu(),
             loading: processor.loading(),
             processing: processor.processing(),
             kernel: Duration::ZERO,
@@ -1259,7 +1259,7 @@ impl<'a> Pacer<'a> {
     }
 
     fn next_period(&mut self, now: u64, shared: Shared, processor: &mut record::Processor) {
-        let cpu = process_cpu();
+        let cpu = perf::sys::process_cpu();
         let loading = processor.loading();
         let processing = processor.processing();
         let (calls, kernel) = self
@@ -1410,20 +1410,6 @@ fn percent(share: f64) -> String {
     } else {
         format!("{percent:.4}%")
     }
-}
-
-fn process_cpu() -> Duration {
-    use nix::sys::resource::{UsageWho, getrusage};
-    getrusage(UsageWho::RUSAGE_SELF).map_or(Duration::ZERO, |usage| {
-        let time = |time: nix::sys::time::TimeVal| {
-            Duration::new(
-                u64::try_from(time.tv_sec()).unwrap_or(0),
-                u32::try_from(time.tv_usec()).unwrap_or(0) * 1_000,
-            )
-        };
-
-        time(usage.user_time()) + time(usage.system_time())
-    })
 }
 
 fn perf_source(

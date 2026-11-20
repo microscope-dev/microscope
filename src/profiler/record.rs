@@ -379,7 +379,7 @@ impl Processor {
             off_cpu: off_cpu::OffCpu::default(),
             gaps: Vec::new(),
             gaps_end: 0,
-            began: thread_cpu(),
+            began: process_cpu(),
             setup: None,
             loading: std::time::Duration::ZERO,
             collection: std::time::Duration::ZERO,
@@ -2333,7 +2333,7 @@ impl Processor {
         for (kind, total) in [
             (
                 AccountKind::RecorderCpu,
-                self.cpu().saturating_sub(self.began),
+                process_cpu().saturating_sub(self.began),
             ),
             (AccountKind::RecorderLoading, self.loading),
             (AccountKind::RecorderSetup, self.setup.unwrap_or_default()),
@@ -2752,7 +2752,7 @@ impl Processor {
     }
 
     pub fn set_up(&mut self) {
-        let spent = self.cpu().saturating_sub(self.began);
+        let spent = process_cpu().saturating_sub(self.began);
         self.setup.get_or_insert(spent);
     }
 
@@ -2766,10 +2766,6 @@ impl Processor {
 
     pub const fn collection_cpu(&mut self, total: std::time::Duration) {
         self.collection = total;
-    }
-
-    pub fn cpu(&self) -> std::time::Duration {
-        self.own_cpu() + self.collection
     }
 
     fn own_cpu(&self) -> std::time::Duration {
@@ -3098,7 +3094,7 @@ pub fn truncation_counts(capture: &Capture) -> Vec<(Truncation, u64)> {
         .collect()
 }
 
-pub use crate::backend::perf::sys::thread_cpu;
+pub use crate::backend::perf::sys::{process_cpu, thread_cpu};
 
 #[cfg(debug_assertions)]
 const HOLD_LOADS: &str = "MICROSCOPE_TEST_HOLD_LOADS";
@@ -3305,17 +3301,23 @@ mod tests {
     }
 
     #[test]
-    fn the_loaders_work_is_counted_as_recording() {
+    fn the_recorder_cpu_counts_the_loaders_and_every_other_thread() {
         use rayon::prelude::*;
         let processor = Processor::new(DebugFileSearch::default(), 64);
-        let before = processor.cpu();
         let burn = |_| {
             let began = thread_cpu();
             while thread_cpu().saturating_sub(began) < std::time::Duration::from_millis(30) {}
         };
         crate::pool::install(|| (0..4).into_par_iter().for_each(burn)).expect("the pool");
-        let spent = processor.cpu().saturating_sub(before);
-        assert!(spent >= std::time::Duration::from_millis(110), "{spent:?}");
+        std::thread::spawn(move || burn(0))
+            .join()
+            .expect("the thread");
+
+        let profile = super::super::Profile {
+            capture: processor.finish(),
+        };
+        let (used, _) = profile.recorder_cpu();
+        assert!(used >= 140_000_000, "{used} ns");
     }
 
     fn mapping(step: u32, start: usize, pages: usize, image: u32) -> Mapped {
