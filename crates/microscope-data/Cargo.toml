@@ -28,6 +28,7 @@ serde_json = "1.0"
 thiserror = "2.0"
 twox-hash = { version = "2.1", default-features = false, features = ["std", "xxhash3_64", "xxhash3_128"] }
 zerocopy = { version = "0.8", features = ["alloc", "derive"] }
+zstd = "0.14"
 
 [dev-dependencies]
 microscope-test-strategies = { path = "../microscope-test-strategies" }

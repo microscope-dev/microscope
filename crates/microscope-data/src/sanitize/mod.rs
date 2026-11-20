@@ -1,6 +1,8 @@
 mod builtin;
+pub mod chunk;
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -8,6 +10,7 @@ use regex::bytes::{Captures, Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 pub use builtin::Builtin;
+pub use chunk::{EncodedPost, SanitizedChunk, encode_post, sanitize_chunk};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FieldClass {
@@ -55,6 +58,28 @@ impl FieldClass {
 
     const fn bit(self) -> u16 {
         1 << self as u16
+    }
+
+    #[must_use]
+    pub const fn number(self) -> u16 {
+        self as u16
+    }
+
+    #[must_use]
+    pub const fn from_number(number: u16) -> Option<Self> {
+        match number {
+            0 => Some(Self::ProcessName),
+            1 => Some(Self::ProcessArgs),
+            2 => Some(Self::ThreadName),
+            3 => Some(Self::ModulePath),
+            4 => Some(Self::SourcePath),
+            5 => Some(Self::SyscallPath),
+            6 => Some(Self::SyscallString),
+            7 => Some(Self::SyscallPayload),
+            8 => Some(Self::ZoneText),
+            9 => Some(Self::MarkerText),
+            _ => None,
+        }
     }
 }
 
@@ -252,22 +277,29 @@ pub enum Outcome<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Tally(Vec<u64>);
+pub struct Tally {
+    totals: Vec<u64>,
+    by_field: BTreeMap<(usize, FieldClass), u64>,
+}
 
 impl Tally {
-    fn fired(&mut self, rule: usize, times: u64) {
-        if self.0.len() <= rule {
-            self.0.resize(rule + 1, 0);
+    fn fired(&mut self, rule: usize, class: FieldClass, times: u64) {
+        if self.totals.len() <= rule {
+            self.totals.resize(rule + 1, 0);
         }
 
-        if let Some(count) = self.0.get_mut(rule) {
+        if let Some(count) = self.totals.get_mut(rule) {
             *count += times;
+        }
+
+        if times > 0 {
+            *self.by_field.entry((rule, class)).or_default() += times;
         }
     }
 
     pub fn merge(&mut self, other: &Self) {
-        for (rule, &times) in other.0.iter().enumerate() {
-            self.fired(rule, times);
+        for (&(rule, class), &times) in &other.by_field {
+            self.fired(rule, class, times);
         }
     }
 }
@@ -297,8 +329,20 @@ impl Sanitizer {
 
     pub fn fired<'a>(&'a self, tally: &'a Tally) -> impl Iterator<Item = (&'a str, u64)> {
         (self.rules.iter())
-            .zip(tally.0.iter().copied().chain(std::iter::repeat(0)))
+            .zip(tally.totals.iter().copied().chain(std::iter::repeat(0)))
             .map(|(rule, times)| (rule.name(), times))
+    }
+
+    pub fn fired_by_field<'a>(
+        &'a self,
+        tally: &'a Tally,
+    ) -> impl Iterator<Item = (&'a str, FieldClass, u64)> {
+        tally
+            .by_field
+            .iter()
+            .filter_map(|(&(rule, class), &times)| {
+                self.rules.get(rule).map(|rule| (rule.name(), class, times))
+            })
     }
 
     pub fn bytes(&self, class: FieldClass, value: &[u8], tally: &mut Tally) -> Outcome<Vec<u8>> {
@@ -322,7 +366,7 @@ impl Sanitizer {
 
             spans = merged(spans);
 
-            tally.fired(index, spans.len() as u64);
+            tally.fired(index, class, spans.len() as u64);
             match rule.action {
                 Action::DropRecord => return Outcome::DropRecord,
                 Action::DropField => return Outcome::DropField,

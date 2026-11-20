@@ -1332,6 +1332,11 @@ impl Remap {
     fn module(&self, id: u32) -> u32 {
         Self::get(&self.modules, id)
     }
+
+    #[must_use]
+    pub fn process(&self, id: u32) -> u32 {
+        Self::get(&self.processes, id)
+    }
 }
 
 trait Timed {

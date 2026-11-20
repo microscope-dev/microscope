@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod capture;
 pub mod image;
 pub mod model;
+pub mod object;
 pub mod sanitize;
 pub mod spans;
 pub mod syscalls;

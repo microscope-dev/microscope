@@ -830,6 +830,7 @@ dependencies = [
  "thiserror",
  "twox-hash",
  "zerocopy",
+ "zstd",
 ]
 
 [[package]]

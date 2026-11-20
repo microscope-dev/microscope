@@ -66,7 +66,7 @@ bpf-walk-timing = []
 self-probes = ["microscope-probes/enabled", "microscope-data/self-probes"]
 
 
-tools = ["dep:zstd"]
+tools = []
 
 
 
@@ -124,7 +124,7 @@ microscope-data = { path = "crates/microscope-data" }
 getrandom = "0.3"
 base64 = "0.22"
 ring = "0.17"
-zstd = { version = "0.14", optional = true }
+zstd = "0.14"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aya = "0.14"
