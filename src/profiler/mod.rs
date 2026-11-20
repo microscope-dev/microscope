@@ -95,6 +95,14 @@ impl Preset {
             Self::Maximum => StackCopy::Bytes(MAX_RATE_STACK_COPY),
         }
     }
+
+    #[must_use]
+    pub const fn ring_pages(self) -> usize {
+        match self {
+            Self::Production | Self::Development => 128,
+            Self::Maximum => 1024,
+        }
+    }
 }
 
 pub const SMALL_STACK_COPY: u32 = 512;
@@ -223,7 +231,7 @@ impl RecordOptions {
             function_period: 1024,
             kernel_stacks: false,
             max_frames: 512,
-            ring_pages: 128,
+            ring_pages: preset.ring_pages(),
             max_events: 65_536,
             off_cpu: preset.off_cpu(),
             budget: preset.budget(),
