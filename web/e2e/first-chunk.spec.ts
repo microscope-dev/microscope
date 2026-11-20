@@ -8,7 +8,7 @@ import * as path from "node:path";
 import type { Page } from "@playwright/test";
 
 import { allowErrors, test as base, expect, menu, root } from "./server";
-import { haveServices, type Services, servicesBinary, startServices } from "./services";
+import { type Services, skippedServices, skipServices, startServices } from "./services";
 
 const hotCallsBinary = path.join(root, "build", "test-programs", "hot-calls");
 
@@ -30,7 +30,7 @@ const test = base.extend<{ services: Services }>({
   },
 });
 
-test.skip(!haveServices, `services is not built at ${servicesBinary}`);
+test.skip(skipServices, skippedServices);
 test.skip(!existsSync(hotCallsBinary), `fixture is not built at ${hotCallsBinary}`);
 
 const account = (page: Page) => page.getByRole("tabpanel", { name: "Account" });

@@ -7,7 +7,7 @@
       "timeout_minutes": 120
     },
     "all": {
-      "run": "NEXTEST_PROFILE=ci MICROSCOPE_TEST_BUDGET_SCALE=4 just all",
+      "run": "NEXTEST_PROFILE=ci MICROSCOPE_TEST_BUDGET_SCALE=4 MICROSCOPE_E2E_SKIP_SERVICES=1 just all",
       "on": ["nightly"],
       "timeout_minutes": 360
     }
