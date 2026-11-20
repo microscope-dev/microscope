@@ -1085,13 +1085,32 @@ mod bpf {
         (ptrace, log(directory, &[filter]))
     }
     fn threads(trace: &str) -> BTreeSet<Vec<String>> {
+        // A result is aligned past the thread id, so its padding depends on how
+        // wide the id is; it goes with the id.
+        let padding = Regex::new(r"\) +=").expect("regex");
         let mut threads: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         for line in trace.lines() {
             let (thread, rest) = line.split_once(' ').unwrap_or(("", line));
-            threads.entry(thread).or_default().push(comparable(rest));
+            let rest = padding.replace(rest, ") =");
+            threads.entry(thread).or_default().push(comparable(&rest));
         }
 
         threads.into_values().collect()
+    }
+
+    #[test]
+    fn threads_compare_alike_whatever_the_width_of_their_ids() {
+        let trace = |tid: &str, other: &str| {
+            let pad = " ".repeat(8 - tid.len());
+            format!(
+                "{tid} getppid() = 1\n{other} exit(0){pad}                = ?\n\
+                 {tid} exit_group(0){pad}          = ?\n"
+            )
+        };
+        assert_eq!(
+            threads(&trace("4192564", "4192565")),
+            threads(&trace("50001", "50002")),
+        );
     }
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
@@ -1537,9 +1556,17 @@ mod bpf {
             unpathed(&log(&directory, &[filter]))
         };
 
-        let fentry = by("fentry", &["--syscall-filter", filter]);
-        let tracepoint = by("tp_btf", &[]);
-        assert_same(&comparable(&fentry), &comparable(&tracepoint), "by hook");
+        // Two runs interleave their threads as each was scheduled, so compare
+        // each thread's own calls.
+        let fentry = threads(&by("fentry", &["--syscall-filter", filter]));
+        let tracepoint = threads(&by("tp_btf", &[]));
+        assert_eq!(
+            fentry,
+            tracepoint,
+            "only fentry:\n{:#?}\nonly tp_btf:\n{:#?}",
+            fentry.difference(&tracepoint).collect::<Vec<_>>(),
+            tracepoint.difference(&fentry).collect::<Vec<_>>()
+        );
     }
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
@@ -2438,6 +2465,10 @@ mod bpf {
                 .per_call()
                 .iter()
                 .map(|(call, stats)| (call.display_name().into_owned(), stats.calls, stats.errors))
+                // pthread_join waits on a futex, finds the thread's id already
+                // changed, or finds the thread gone and makes no call, as each
+                // run happens to schedule it.
+                .filter(|(name, ..)| name != "futex")
                 .collect()
         };
 
