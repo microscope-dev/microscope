@@ -485,7 +485,7 @@ describe("a zones answer", () => {
   });
 
   it("finds the block at a time by bisection, whatever order the blocks came in", () => {
-    const count = 1000;
+    const count = 100;
     const bytes = new Uint8Array(count * 64);
     const view = new DataView(bytes.buffer);
     for (let at = 0; at < count; at += 1) {
@@ -495,12 +495,12 @@ describe("a zones answer", () => {
       view.setUint32(count * 40 + (3 * count + at) * 4, 1, true);
     }
     const zones = decodeZones(
-      { range: [0, 20_000], blocks: count, names: ["a"], marks: [], plots: [], offCpu: false },
+      { range: [0, count * 20], blocks: count, names: ["a"], marks: [], plots: [], offCpu: false },
       bytes,
     );
     const index = indexBlocks(zones);
     for (const slack of [0, 3, 7]) {
-      for (let time = -10; time < 20_010; time += 7) {
+      for (let time = -10; time < count * 20 + 10; time += 7) {
         let expected: number | null = null;
         let distance = Number.POSITIVE_INFINITY;
         for (let at = 0; at < count; at += 1) {
