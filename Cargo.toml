@@ -5,7 +5,7 @@ cargo-features = ["profile-rustflags"]
 [workspace]
 members = ["crates/microscope-data", "crates/microscope-test-strategies"]
 default-members = [".", "crates/microscope-data", "crates/microscope-test-strategies"]
-exclude = ["fuzz", "loom", "sdk", "tests/fixtures"]
+exclude = ["fuzz", "loom", "sdk", "target", "tests/fixtures"]
 resolver = "3"
 
 [workspace.lints.rust]
