@@ -166,5 +166,3 @@ microscope web rg-syscalls.usprof
 ```
 
 ![Syscall summary and latency heatmap in microscope web](docs/public/images/syscalls-heatmap.png)
-
-**Permissions:** Launching programs works unprivileged. Attaching to running processes follows `kernel.yama.ptrace_scope`. eBPF profiling and non-stopping syscall tracing require `CAP_BPF` and `CAP_PERFMON` (or pass `--syscall-engine ptrace` when launching).
