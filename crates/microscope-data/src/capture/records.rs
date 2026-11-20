@@ -490,6 +490,8 @@ pub enum AccountKind {
     RaisedSamples = 43,
 
     KeptSamples = 44,
+
+    SampledCpu = 45,
 }
 
 #[repr(C)]

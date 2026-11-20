@@ -2011,6 +2011,11 @@ impl Processor {
                 .filter(|share| share.from <= time)
                 .map(|share| (share.raised, share.kept))
         });
+
+        let counted = builder.account(AccountKind::Counted as u32);
+        if let Some(sampled) = builder.fit_samples(counted) {
+            builder.count(AccountKind::SampledCpu as u32, sampled);
+        }
     }
 
     fn sampled_interpreted(
@@ -4416,5 +4421,49 @@ mod tests {
         assert_eq!(weights(&capture), expected);
         assert_eq!(capture.account(AccountKind::RaisedSamples as u32), 510);
         assert_eq!(capture.account(AccountKind::KeptSamples as u32), 157);
+    }
+
+    #[test]
+    fn samples_add_up_to_the_cpu_time_the_events_counted() {
+        let recorded = |weight: Option<&str>| {
+            let mut processor = Processor::new(DebugFileSearch::default(), 64);
+            let builder = processor.builder();
+            if let Some(weight) = weight {
+                builder.setting("weight", weight);
+            }
+            let (first, second) = (
+                builder.thread(Pid::new(7), Tid::new(7), 0),
+                builder.thread(Pid::new(7), Tid::new(8), 0),
+            );
+            builder.sample(first, 100, 30, NONE, NONE);
+            builder.sample(first, 200, 70, NONE, NONE);
+            builder.sample(second, 300, 100, NONE, NONE);
+            processor.observe(
+                1_000,
+                perf::Counts {
+                    counted: 500,
+                    ..perf::Counts::default()
+                },
+            );
+            processor
+        };
+        let weights = |capture: &crate::capture::Capture| {
+            capture
+                .samples
+                .iter()
+                .map(|sample| sample.weight.get())
+                .collect::<Vec<_>>()
+        };
+
+        let mut processor = recorded(None);
+        assert_eq!(weights(&processor.snapshot()), [75, 175, 250]);
+        assert_eq!(weights(&processor.snapshot()), [75, 175, 250]);
+        let capture = processor.finish();
+        assert_eq!(weights(&capture), [75, 175, 250]);
+        assert_eq!(capture.account(AccountKind::SampledCpu as u32), 200);
+
+        let capture = recorded(Some("executions")).finish();
+        assert_eq!(weights(&capture), [30, 70, 100]);
+        assert_eq!(capture.account(AccountKind::SampledCpu as u32), 0);
     }
 }

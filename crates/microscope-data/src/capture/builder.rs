@@ -434,6 +434,23 @@ impl CaptureBuilder {
         }
     }
 
+    pub fn fit_samples(&mut self, total: u64) -> Option<u64> {
+        let timed = self
+            .settings
+            .get("weight")
+            .is_none_or(|unit| unit == "nanoseconds");
+        let sampled = self.sample_weight();
+        if !timed || sampled == 0 || total == 0 {
+            return None;
+        }
+
+        for sample in self.samples.iter_mut().flatten() {
+            let weight = u128::from(sample.weight.get()) * u128::from(total) / u128::from(sampled);
+            sample.weight = u64::try_from(weight).unwrap_or(u64::MAX).into();
+        }
+        Some(sampled)
+    }
+
     pub fn claim(&mut self, thread: u32, time: i64, task: u32) -> u64 {
         let mut claimed = 0;
 

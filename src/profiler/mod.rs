@@ -796,6 +796,17 @@ impl Profile {
     }
 
     #[must_use]
+    pub fn sampled_cpu(&self) -> u64 {
+        match self
+            .capture
+            .account(crate::capture::records::AccountKind::SampledCpu as u32)
+        {
+            0 => self.total_weight(),
+            sampled => sampled,
+        }
+    }
+
+    #[must_use]
     pub fn counted(&self) -> u64 {
         self.capture
             .account(crate::capture::records::AccountKind::Counted as u32)

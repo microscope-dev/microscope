@@ -1469,7 +1469,7 @@ const LEAST_JUDGED_CPU: u64 = 50_000_000;
 )]
 fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Write) -> Result<()> {
     let paused = !profile.gaps().is_empty();
-    let total = profile.total_weight();
+    let total = profile.sampled_cpu();
     let seconds = |value: u64| format!("{:.3} s", value as f64 / 1e9);
     let counted = profile.counted();
     let judged = profile.samples() >= FEWEST_JUDGED_SAMPLES
@@ -1490,9 +1490,9 @@ fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Wr
             )?;
             writeln!(
                 out,
-                "CPU time is sampled per thread: short-lived threads can exit before their \
-                 first sample. Try a higher --rate or --function SYMBOL --function-period 1; \
-                 repeating short-lived threads does not guarantee coverage."
+                "A thread is sampled each time it runs a full period on one CPU, so threads \
+                 that move between CPUs or exit early can go unsampled. Try a higher --rate or \
+                 --function SYMBOL --function-period 1."
             )?;
         } else {
             writeln!(
@@ -1504,7 +1504,8 @@ fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Wr
     } else if unit == "nanoseconds" && counted > total {
         writeln!(
             out,
-            "The samples cover {:.0}% of the {} of CPU time the program ran{}.",
+            "The samples reached {:.0}% of the {} of CPU time the program ran{}; totals are \
+             scaled to it, and each function's share comes from the samples.",
             total as f64 * 100.0 / counted as f64,
             seconds(counted),
             if paused { " while sampling was on" } else { "" }
@@ -1516,8 +1517,9 @@ fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Wr
         {
             writeln!(
                 out,
-                "Low coverage may mean CPU time was in the kernel or in short-lived threads; \
-                 record with --kernel-stacks, or raise --rate."
+                "A thread is sampled each time it runs a full period on one CPU, so threads \
+                 that move between CPUs, exit early, or run in the kernel are sampled less; \
+                 raise --rate, or record with --kernel-stacks."
             )?;
         }
     }
