@@ -922,6 +922,7 @@ pub fn compress_stream(raw: &[u8], zstd_level: i32) -> Result<(Codec, Vec<u8>), 
 
 #[derive(Debug)]
 pub struct DecodeBudget {
+    limit: usize,
     remaining: std::cell::Cell<usize>,
 }
 
@@ -929,8 +930,14 @@ impl DecodeBudget {
     #[must_use]
     pub const fn new(limit: usize) -> Self {
         Self {
+            limit,
             remaining: std::cell::Cell::new(limit),
         }
+    }
+
+    #[must_use]
+    pub const fn remaining(&self) -> usize {
+        self.remaining.get()
     }
 
     pub fn take(&self, bytes: usize) -> Result<(), ObjectError> {
@@ -941,6 +948,13 @@ impl DecodeBudget {
             .ok_or(ObjectError::Limit("object exceeds maximum decoded size"))?;
         self.remaining.set(next);
         Ok(())
+    }
+
+    /// Returns temporary per-page scratch capacity once page-local buffers are dropped.
+    /// Zstd decompression and final output row charges are never released.
+    pub fn release(&self, bytes: usize) {
+        let next = self.remaining.get().saturating_add(bytes).min(self.limit);
+        self.remaining.set(next);
     }
 }
 

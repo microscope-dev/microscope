@@ -3,7 +3,9 @@ mod encode_core;
 mod encode_events;
 mod encode_syscalls;
 
-pub use decode::{SharedSymbols, decode_event_bundle, decode_flame_tables, decode_tables};
+pub use decode::{
+    SharedSymbols, decode_event_bundle, decode_flame_tables, decode_tables, decode_tables_budgeted,
+};
 pub use encode_core::{encode_event_bundle, encode_tables};
 
 use std::collections::BTreeMap;

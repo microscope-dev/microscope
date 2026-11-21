@@ -2,8 +2,13 @@ use super::{Capture, CaptureBuilder};
 use crate::object::{
     ChunkData, DEFAULT_ZSTD_LEVEL, OBJECT_HEADER_LEN, OBJECT_MAGIC, OBJECT_VERSION, ObjectError,
     ObjectKind, ObjectLevel, ObjectReader, ObjectWriter, PartKind, PartSpec, Signal, TimeUnit,
-    decode_tables, encode_tables,
+    decode_tables_budgeted, encode_tables,
 };
+
+#[cfg(feature = "fuzzing")]
+const CAPTURE_DECODE_BUDGET_BYTES: usize = crate::object::MAX_DECOMPRESSED_OBJECT_BYTES;
+#[cfg(not(feature = "fuzzing"))]
+const CAPTURE_DECODE_BUDGET_BYTES: usize = 2 << 30;
 
 pub const FILE_MAGIC: [u8; 8] = OBJECT_MAGIC;
 pub const FILE_VERSION: u32 = OBJECT_VERSION;
@@ -149,7 +154,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
     let mut captures = Vec::with_capacity(part_count);
     for idx in 0..part_count {
         let sections = reader.part_sections(idx, None)?;
-        let chunk = decode_tables(&sections)?;
+        let chunk = decode_tables_budgeted(&sections, CAPTURE_DECODE_BUDGET_BYTES)?;
         captures.push(chunk.capture);
     }
 

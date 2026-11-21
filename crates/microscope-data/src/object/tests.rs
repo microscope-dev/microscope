@@ -290,6 +290,10 @@ fn rich_capture_round_trips_losslessly_at_1ns() {
     assert_eq!(metas[0].org_id, 42);
     assert_eq!(metas[0].project_id, 7);
 
+    if let Some(path) = std::env::var_os("WRITE_CHUNK_FUZZ_SEED") {
+        std::fs::write(path, &bytes).expect("write chunk fuzz seed");
+    }
+
     let reader = ObjectReader::open(&bytes).expect("open");
     assert_eq!(reader.kind, ObjectKind::Post);
     assert_eq!(reader.writer, 77);

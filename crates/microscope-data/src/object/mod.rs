@@ -19,8 +19,9 @@ pub use filter::{
 };
 pub use tables::{
     ChunkData, ChunkRow, DimensionRow, SanitizerCountRow, SharedSymbols, StringDecodeMap,
-    StringEncodeMap, decode_event_bundle, decode_flame_tables, decode_tables, encode_event_bundle,
-    encode_tables, merge_chunks, round_capture_times, shift_capture_times,
+    StringEncodeMap, decode_event_bundle, decode_flame_tables, decode_tables,
+    decode_tables_budgeted, encode_event_bundle, encode_tables, merge_chunks, round_capture_times,
+    shift_capture_times,
 };
 
 pub const OBJECT_MAGIC: [u8; 8] = *b"USCOPEOB";

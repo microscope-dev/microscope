@@ -40,11 +40,23 @@ pub struct SharedSymbols<'a> {
 }
 
 pub fn decode_tables(sections: &[RawSection<'_>]) -> Result<ChunkData, ObjectError> {
-    decode_selected(sections, None, |_| true)
+    decode_selected(sections, None, MAX_DECOMPRESSED_OBJECT_BYTES, |_| true)
+}
+
+pub fn decode_tables_budgeted(
+    sections: &[RawSection<'_>],
+    max_bytes: usize,
+) -> Result<ChunkData, ObjectError> {
+    decode_selected(sections, None, max_bytes, |_| true)
 }
 
 pub fn decode_flame_tables(sections: &[RawSection<'_>]) -> Result<ChunkData, ObjectError> {
-    decode_selected(sections, None, SectionKind::needed_for_flame)
+    decode_selected(
+        sections,
+        None,
+        MAX_DECOMPRESSED_OBJECT_BYTES,
+        SectionKind::needed_for_flame,
+    )
 }
 
 /// Decodes a per-machine Tier D event bundle referencing a `DetailPart`'s shared Tier A symbols.
@@ -54,9 +66,19 @@ pub fn decode_event_bundle(
     flame_only: bool,
 ) -> Result<ChunkData, ObjectError> {
     if flame_only {
-        decode_selected(sections, Some(shared), SectionKind::needed_for_flame)
+        decode_selected(
+            sections,
+            Some(shared),
+            MAX_DECOMPRESSED_OBJECT_BYTES,
+            SectionKind::needed_for_flame,
+        )
     } else {
-        decode_selected(sections, Some(shared), |_| true)
+        decode_selected(
+            sections,
+            Some(shared),
+            MAX_DECOMPRESSED_OBJECT_BYTES,
+            |_| true,
+        )
     }
 }
 
@@ -93,6 +115,7 @@ fn build_reset_bitmap(ranges: &[ThreadRange], total_rows: usize) -> Result<Vec<b
 fn decode_selected(
     sections: &[RawSection<'_>],
     shared: Option<&SharedSymbols<'_>>,
+    max_bytes: usize,
     include: impl Fn(SectionKind) -> bool,
 ) -> Result<ChunkData, ObjectError> {
     let mut by_kind: BTreeMap<SectionKind, RawSection<'_>> = BTreeMap::new();
@@ -108,7 +131,7 @@ fn decode_selected(
         }
     }
 
-    let budget = DecodeBudget::new(MAX_DECOMPRESSED_OBJECT_BYTES);
+    let budget = DecodeBudget::new(max_bytes);
     let mut capture = Capture::default();
     let mut chunks = Vec::new();
     let mut dimensions = Vec::new();
@@ -329,6 +352,7 @@ fn decode_selected(
 
         for page_idx in 0..r.page_count() {
             let p = r.read_page(page_idx)?;
+            let before_cols = budget.remaining();
             let n = p.rows as usize;
             let use_reset = p.optional_column(WHOLE_SECTION_GROUP, 4).is_some();
             if use_reset && resets_opt.is_none() {
@@ -364,6 +388,7 @@ fn decode_selected(
                 });
             }
             global_offset += n;
+            budget.release(before_cols.saturating_sub(budget.remaining()));
         }
         capture.samples = samples;
     }
@@ -472,6 +497,7 @@ fn decode_selected(
 
         for page_idx in 0..r.page_count() {
             let p = r.read_page(page_idx)?;
+            let before_cols = budget.remaining();
             let n = p.rows as usize;
             let use_reset = p.optional_column(WHOLE_SECTION_GROUP, 3).is_some();
             if use_reset && resets_opt.is_none() {
@@ -505,6 +531,7 @@ fn decode_selected(
                 });
             }
             global_offset += n;
+            budget.release(before_cols.saturating_sub(budget.remaining()));
         }
         capture.off_cpu = off_cpu;
     }
@@ -906,6 +933,7 @@ fn decode_syscalls(bytes: &[u8], budget: &DecodeBudget) -> Result<Vec<Syscall>, 
 
     for page_idx in 0..reader.page_count() {
         let page = reader.read_page(page_idx)?;
+        let before_cols = budget.remaining();
         let row_count = page.rows as usize;
         let order = read_u64_col(&page, WHOLE_SECTION_GROUP, 0, row_count)?;
         let exit_deltas = read_u64_col(&page, WHOLE_SECTION_GROUP, 1, row_count)?;
@@ -1034,6 +1062,7 @@ fn decode_syscalls(bytes: &[u8], budget: &DecodeBudget) -> Result<Vec<Syscall>, 
                 ));
             }
         }
+        budget.release(before_cols.saturating_sub(budget.remaining()));
     }
 
     Ok(syscalls)
