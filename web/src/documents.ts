@@ -50,7 +50,12 @@ export const KIND = {
   profileKernel: kind("profile-kernel"),
   profileZones: kind("profile-zones"),
   profileDetails: kind("profile-details"),
-  recordedFlame: kind("recorded-flame"),
+  fleetOverTime: kind("fleet-over-time"),
+  fleetFlame: kind("fleet-flame"),
+  fleetTree: kind("fleet-tree"),
+  fleetFunctions: kind("fleet-functions"),
+  fleetByMachine: kind("fleet-by-machine"),
+  fleetBreakdown: kind("fleet-breakdown"),
   settings: kind("settings"),
   keys: kind("keys"),
 } as const;

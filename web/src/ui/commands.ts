@@ -4,6 +4,13 @@ import { account } from "../account";
 import { type ActionName, action } from "../actions";
 import { breakpointAt, toggleBreakpoint } from "../breakpoints";
 import type { Connection } from "../connection";
+import {
+  activeView,
+  type DashboardsTab,
+  ensureSessionUrl,
+  openDashboards,
+  openSaveDashboardDialog,
+} from "../dashboards";
 import { documentsGroup, KIND } from "../documents";
 import { type Look, openMachines } from "../fleet";
 import { type At, inView, stringifySearch, type View, watching } from "../focus";
@@ -314,6 +321,44 @@ function machines(label: string, look: Partial<Look>, keys: Chord[] = []): Spec 
   };
 }
 
+function dashboardCommand(label: string, tabKind: DashboardsTab, keys: Chord[] = []): Spec {
+  return {
+    label,
+    menu: standalone ? "Dashboards" : null,
+    keys,
+    available: () =>
+      standalone
+        ? account.getState().now.kind === "in"
+          ? READY
+          : blocked("Sign in to view recorded dashboards")
+        : ABSENT,
+    run: () => openDashboards(tabKind),
+  };
+}
+
+async function copySessionUrl(): Promise<void> {
+  try {
+    const url = await ensureSessionUrl();
+    if (!url) {
+      return;
+    }
+    await navigator.clipboard.writeText(url);
+    flash("Copied link to this session.");
+  } catch {
+    flash("Could not copy session link.");
+  }
+}
+
+function fleetPane(kind: KindId, label: string): Spec {
+  return {
+    label,
+    menu: "View",
+    keys: [],
+    available: () => (activeView.getState().active ? READY : ABSENT),
+    run: () => showPane(kind),
+  };
+}
+
 function arrange(label: string, keys: Chord[], why: () => Why, run: () => void): Spec {
   return {
     label,
@@ -508,18 +553,42 @@ export const COMMANDS = registry({
   findMachine: machines("Find a machine…", { view: "list" }),
   addMachines: machines("Add machines…", { view: "add" }),
   enrollmentKeys: machines("Enrollment keys", { view: "keys" }),
-  dashboardsFlame: {
-    label: "Flame graph…",
+  dashboards: dashboardCommand("Dashboards…", "dashboards", [{ key: "d", alt: true, shift: true }]),
+  sessions: dashboardCommand("Sessions…", "sessions"),
+  saveDashboard: {
+    label: "Save as dashboard…",
     menu: standalone ? "Dashboards" : null,
     keys: [],
     available: () =>
       standalone
         ? account.getState().now.kind === "in"
-          ? READY
-          : blocked("Sign in to view recorded dashboards")
+          ? activeView.getState().active
+            ? READY
+            : blocked("Open a dashboard or session first")
+          : blocked("Sign in to save dashboards")
         : ABSENT,
-    run: () => showPane(KIND.recordedFlame),
+    run: () => openSaveDashboardDialog(),
   },
+  copySessionLink: {
+    label: "Copy link to this session",
+    menu: standalone ? "Dashboards" : null,
+    keys: [],
+    available: () =>
+      standalone
+        ? activeView.getState().active
+          ? READY
+          : blocked("Open a dashboard or session first")
+        : ABSENT,
+    run: () => {
+      void copySessionUrl();
+    },
+  },
+  fleetOverTime: fleetPane(KIND.fleetOverTime, "Over time"),
+  fleetFlame: fleetPane(KIND.fleetFlame, "Recorded flame graph"),
+  fleetTree: fleetPane(KIND.fleetTree, "Recorded call tree"),
+  fleetFunctions: fleetPane(KIND.fleetFunctions, "Recorded functions"),
+  fleetByMachine: fleetPane(KIND.fleetByMachine, "By machine"),
+  fleetBreakdown: fleetPane(KIND.fleetBreakdown, "Breakdown"),
   share: {
     label: "Share…",
     menu: "File",

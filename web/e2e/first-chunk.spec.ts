@@ -128,12 +128,19 @@ test("records a live process with the real agent and renders its hot function in
   const workload = spawn(workloadBinary, [], { stdio: "ignore" });
   const running = startAgent(enroll, state, processName, agentLog);
   try {
-    await menu(page, "Dashboards", "Flame graph…");
-    const flame = page.getByRole("tabpanel", { name: "Flame graph" });
-    await expect(flame.getByRole("combobox", { name: "Project" })).toBeVisible();
+    await menu(page, "Dashboards", "Dashboards…");
+    const dashDialog = page.getByRole("dialog", { name: "Dashboards" });
+    await expect(dashDialog).toBeVisible();
+    await dashDialog.getByTestId("dashboard-item-fleet-overview").click();
+    await expect(dashDialog).toBeHidden();
+
+    const scopeBar = page.getByTestId("scope-bar");
+    await expect(scopeBar).toBeVisible();
+    const flame = page.getByTestId("fleet-flame-pane");
+    await expect(flame).toBeVisible();
 
     await expect(async () => {
-      await flame.getByRole("button", { name: "Refresh" }).click();
+      await scopeBar.getByRole("button", { name: "Refresh" }).click();
       await expect(flame.getByRole("img", { name: "Flame graph" })).toBeVisible({
         timeout: 1_000,
       });

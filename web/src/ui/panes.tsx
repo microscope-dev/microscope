@@ -24,7 +24,12 @@ import { change, useLink, workbench } from "../workbench/store";
 import { AccountBody, ConnectBody } from "./Account";
 import { Breakpoints, BreakpointsBadge } from "./Breakpoints";
 import { Console } from "./Console";
-import { RecordedFlamePane } from "./dashboards/RecordedFlamePane";
+import { BreakdownPane } from "./dashboards/BreakdownPane";
+import { ByMachinePane } from "./dashboards/ByMachinePane";
+import { FleetFlamePane } from "./dashboards/FleetFlamePane";
+import { FleetFunctionsPane } from "./dashboards/FleetFunctionsPane";
+import { FleetTreePane } from "./dashboards/FleetTreePane";
+import { OverTimePane } from "./dashboards/OverTimePane";
 import {
   closeDocument,
   DisassemblyBody,
@@ -140,7 +145,12 @@ export const KINDS = kinds<Need>([
   view(KIND.record, "Record", () => StartBody, { needs: "control" }),
   view(KIND.settings, "Settings", () => SettingsBody, { needs: null }),
   view(KIND.keys, "Keyboard shortcuts", () => KeysBody, { needs: null }),
-  view(KIND.recordedFlame, "Flame graph", () => RecordedFlamePane, { needs: null }),
+  view(KIND.fleetOverTime, "Over time", () => OverTimePane, { needs: null }),
+  view(KIND.fleetFlame, "Flame graph", () => FleetFlamePane, { needs: null }),
+  view(KIND.fleetTree, "Call tree", () => FleetTreePane, { needs: null }),
+  view(KIND.fleetFunctions, "Functions", () => FleetFunctionsPane, { needs: null }),
+  view(KIND.fleetByMachine, "By machine", () => ByMachinePane, { needs: null }),
+  view(KIND.fleetBreakdown, "Breakdown", () => BreakdownPane, { needs: null }),
   profileKind(KIND.profile, (pane) => fileName(paneParams(pane).name) || "Profile"),
   profileKind(KIND.profileFlame, () => "Flame graph"),
   profileKind(KIND.profileTree, () => "Call tree"),
@@ -357,12 +367,46 @@ export function startLayout(): Layout {
       });
 }
 
-export type Wants = "session" | "start";
+export type Wants = "session" | "start" | "fleet";
+
+const FLEET_KINDS: ReadonlySet<KindId> = new Set([
+  KIND.fleetOverTime,
+  KIND.fleetFlame,
+  KIND.fleetTree,
+  KIND.fleetFunctions,
+  KIND.fleetByMachine,
+  KIND.fleetBreakdown,
+]);
+
+export function fleetOverviewLayout(): Layout {
+  return build({
+    axis: "column",
+    children: [
+      [0.34, [single(KIND.fleetOverTime)]],
+      [
+        0.66,
+        {
+          axis: "row",
+          children: [
+            [0.56, [single(KIND.fleetFlame), single(KIND.fleetTree), single(KIND.fleetFunctions)]],
+            [0.44, [single(KIND.fleetByMachine), single(KIND.fleetBreakdown)]],
+          ],
+        },
+      ],
+    ],
+  });
+}
 
 export function misplaced(layout: Layout, wants: Wants): boolean {
   const panes = Object.values(layout.panes);
+  if (panes.length === 0) {
+    return true;
+  }
   const session = panes.some((pane) => KINDS.get(pane.kind).needs === "session");
-  return panes.length === 0 || (wants === "session" ? !session : session);
+  if (wants === "fleet") {
+    return session || !panes.some((pane) => FLEET_KINDS.has(pane.kind));
+  }
+  return wants === "session" ? !session : session;
 }
 
 export function restoreLayout(): string | null {

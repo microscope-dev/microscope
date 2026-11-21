@@ -1,6 +1,7 @@
 import { createRouter, defineRoutes } from "@solidjs/router";
 
 import { type AppHistory, BASE_PREFIX, createBrowserHistory, HistoryContext } from "./history";
+import { DashboardRoute } from "./ui/dashboards/DashboardRoutes";
 import { Frame } from "./ui/Frame";
 import { Join } from "./ui/Join";
 import {
@@ -34,6 +35,7 @@ export const routes = defineRoutes([
   { path: "/reset-password", component: () => <EmailLink link="reset" /> },
   { path: "/signed-in", component: SignedIn },
   { path: "/sso", component: OrgSignIn },
+  { path: "/d/:dashboard", component: DashboardRoute },
   { path: "/profile/:profile", component: ProfileRoute },
   {
     path: "/s/:session",

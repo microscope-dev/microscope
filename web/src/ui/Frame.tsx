@@ -3,6 +3,7 @@ import type { JSX } from "@solidjs/web";
 import { createEffect, createMemo, onSettled, Show } from "solid-js";
 
 import { base, withinBase } from "../base";
+import { dashboardsWindow } from "../dashboards";
 import { machinesWindow } from "../fleet";
 import { toHref } from "../history";
 import { commandName } from "../model";
@@ -11,6 +12,8 @@ import { flash } from "../tab";
 import { isTextBox, keepsEscape } from "../workbench/keys";
 import { MenuBar } from "../workbench/MenuBar";
 import { COMMANDS, useCommands } from "./commands";
+import { DashboardsWindow } from "./dashboards/DashboardsWindow";
+import { ScopeBar } from "./dashboards/ScopeBar";
 import { MachinesWindow } from "./machines/MachinesWindow";
 import { People } from "./People";
 import { RunToolbar } from "./RunToolbar";
@@ -82,10 +85,12 @@ export function Frame(props: { children?: JSX.Element }) {
           <Show when={loaded()}>
             <RunToolbar />
           </Show>
+          <ScopeBar />
         </header>
         {props.children}
         <StatusBar />
         <MachinesWindow />
+        <DashboardsWindow />
       </div>
     </Show>
   );
@@ -97,6 +102,8 @@ function useKeys() {
     if (
       event.isComposing ||
       machinesWindow.getState().open ||
+      dashboardsWindow.getState().open ||
+      dashboardsWindow.getState().saveDialogOpen ||
       (event.key === "Escape" && keepsEscape(document.activeElement))
     ) {
       return;

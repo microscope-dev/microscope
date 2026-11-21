@@ -1,0 +1,207 @@
+import { createMemo, createSignal, Match, Show, Switch } from "solid-js";
+
+import {
+  dashboardsApi,
+  type FlameResponse,
+  markViewFetched,
+  setScopeSelection,
+} from "../../dashboards";
+import { type DiffMode, formatCount } from "../../profile/paint";
+import {
+  type CallTree,
+  findPath,
+  matching,
+  nameOf,
+  pathOf,
+  treeFromColumns,
+} from "../../profile/tree";
+import type { PaneProps } from "../../workbench/kinds";
+import { useLoaded } from "../Orgs";
+import { FlameGraph } from "../profile/FlameView";
+import { useTreeSearch } from "../profile/Search";
+import {
+  LinkToggle,
+  PaneAuthGate,
+  PaneEmptyState,
+  PaneLockedState,
+  usePaneScope,
+} from "./paneScope";
+
+interface LoadedFlame {
+  tree: CallTree;
+  unit: string;
+  blocks: number;
+  prunedBlocks: number;
+  truncated: boolean;
+  locked: boolean;
+  isDiff: boolean;
+}
+
+export function FleetFlamePane(props: PaneProps) {
+  const [search, setSearch] = createSignal("");
+  const [zoomPath, setZoomPath] = createSignal<string[] | null>(null);
+  const [invert, setInvert] = createSignal(false);
+  const [diffMode, setDiffMode] = createSignal<DiffMode>("time");
+
+  const ps = usePaneScope(() => props.pane);
+  const loadKey = createMemo(() => {
+    const base = ps.queryKey();
+    return base === "idle" ? "idle" : `${base}:inv=${invert() ? 1 : 0}`;
+  });
+
+  const loaded = useLoaded<LoadedFlame | null>(async () => {
+    if (loadKey() === "idle") {
+      return null;
+    }
+    const res: FlameResponse = await dashboardsApi.queryFlame(ps.scope(), ps.sessionId(), invert());
+    markViewFetched();
+    const isDiff = Array.isArray(res.baseTotal) && res.baseWeight !== undefined;
+    return {
+      tree: treeFromColumns({
+        own: Float64Array.from(res.own),
+        total: Float64Array.from(res.total),
+        key: Uint32Array.from(res.key),
+        depth: Uint32Array.from(res.depth),
+        keys: res.keys,
+        weight: res.weight,
+        samples: res.samples,
+        baseOwn: isDiff && res.baseOwn ? Float64Array.from(res.baseOwn) : null,
+        baseTotal: isDiff && res.baseTotal ? Float64Array.from(res.baseTotal) : null,
+        baseWeight: isDiff ? (res.baseWeight ?? 0) : null,
+      }),
+      unit: res.unit,
+      blocks: res.blocks,
+      prunedBlocks: res.prunedBlocks,
+      truncated: res.truncated,
+      locked: res.locked,
+      isDiff,
+    };
+  }, loadKey);
+
+  const current = loaded.data;
+  const tree = createMemo(() => current()?.tree ?? null);
+  const searched = useTreeSearch(tree, search);
+
+  const zoom = createMemo(() => {
+    const t = tree();
+    const path = zoomPath();
+    return t && path ? findPath(t, path) : null;
+  });
+
+  const selected = createMemo(() => {
+    const t = tree();
+    const sel = ps.scope().selection;
+    if (!t || sel?.kind !== "function") {
+      return null;
+    }
+    return matching(t, (candidate) => candidate === sel.name).nodes;
+  });
+
+  const onZoom = (zoomed: CallTree, node: number) => {
+    setZoomPath(pathOf(zoomed, node));
+    const name = nameOf(zoomed, node);
+    if (ps.linked() && name !== "") {
+      setScopeSelection({ kind: "function", name });
+    }
+  };
+
+  const onClear = () => {
+    setSearch("");
+    setZoomPath(null);
+    if (ps.linked()) {
+      setScopeSelection(null);
+    }
+  };
+
+  return (
+    <PaneAuthGate>
+      {() => (
+        <div class="pane grow" data-testid="fleet-flame-pane">
+          <div class="profile-details">
+            <input
+              type="search"
+              class="input profile-search"
+              placeholder="Search frames"
+              aria-label="Search frames"
+              value={search()}
+              onInput={(e) => setSearch(e.currentTarget.value)}
+            />
+            <button
+              type="button"
+              class={`tb ghost ${invert() ? "active" : ""}`}
+              onClick={() => {
+                setInvert((v) => !v);
+                setZoomPath(null);
+              }}
+            >
+              {invert() ? "Bottom-up" : "Top-down"}
+            </button>
+            <Show when={current()?.isDiff}>
+              <select
+                class="input compact"
+                aria-label="Diff mode"
+                value={diffMode()}
+                onChange={(e) => setDiffMode(e.currentTarget.value as DiffMode)}
+              >
+                <option value="time">Diff: time</option>
+                <option value="share">Diff: share</option>
+              </select>
+            </Show>
+            <Show when={search() !== "" || zoomPath() !== null}>
+              <button type="button" class="tb ghost" onClick={onClear}>
+                Clear
+              </button>
+            </Show>
+            <LinkToggle linked={ps.linked()} onToggle={ps.toggleLinked} />
+            <Show when={searched().note}>
+              {(note) => (
+                <span class="muted" data-testid="matched">
+                  {note()}
+                </span>
+              )}
+            </Show>
+            <Show when={current()}>
+              {(flame) => (
+                <span class="muted" data-testid="recorded-summary">
+                  {formatCount(flame().blocks, "block")} ·{" "}
+                  {formatCount(flame().tree.samples, "sample")}
+                  {flame().prunedBlocks > 0 ? ` · ${flame().prunedBlocks} pruned` : ""}
+                  {flame().truncated ? " · truncated" : ""}
+                </span>
+              )}
+            </Show>
+          </div>
+          <div class="pane-body">
+            <Switch fallback={<div class="empty muted">Reading the flame graph…</div>}>
+              <Match when={ps.locked() || current()?.locked}>
+                <PaneLockedState />
+              </Match>
+              <Match when={loaded.error()}>
+                {(err) => (
+                  <div class="empty error" role="alert">
+                    {err()}
+                  </div>
+                )}
+              </Match>
+              <Match when={current()}>
+                {(flame) => (
+                  <Show when={flame().tree.count > 0} fallback={<PaneEmptyState />}>
+                    <FlameGraph
+                      tree={flame().tree}
+                      zoom={zoom()}
+                      matched={searched().matched}
+                      selected={selected()}
+                      onZoom={onZoom}
+                      unit={flame().unit}
+                      mode={flame().isDiff ? diffMode() : undefined}
+                    />
+                  </Show>
+                )}
+              </Match>
+            </Switch>
+          </div>
+        </div>
+      )}
+    </PaneAuthGate>
+  );
+}

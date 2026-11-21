@@ -9,7 +9,9 @@ import { type Note, targetName } from "../model";
 import { validateProfileLook } from "../profile/look";
 import { useModel } from "../store";
 import { tab as tabState } from "../tab";
+import { standalone } from "../target";
 import { change, useLayout, workbench } from "../workbench/store";
+import { RecordedSessionRoute } from "./dashboards/DashboardRoutes";
 import { SessionLink } from "./Explorer";
 import { profileLayout, showPane, startLayout } from "./panes";
 import { PICKED, pickerSearch } from "./Picker";
@@ -203,38 +205,46 @@ export function SessionRoute(props: RouteSectionProps) {
   );
 
   const ended = createMemo(() => endedNotice(notices(), seen()?.program ?? null));
+  const recordedId = createMemo(() =>
+    standalone && /^\d+$/u.test(session()) && current() !== session() ? Number(session()) : null,
+  );
 
   return (
-    <Switch
-      fallback={
-        <Workbench focus={null} wants="session">
-          {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled notice, not a form output */}
-          <div class="workbench-notice" role="status" data-testid="session-ended">
-            <b>{followed() ? "This session ended." : "This session is not here."}</b>{" "}
-            {followed() ? "" : "It ended, or the link is wrong. "}
-            <Show when={ended()}>{(note) => <>{`${note().name} ${note().text}. `}</>}</Show>
-            <Show
-              when={current()}
-              fallback="Launch, attach, or open a core dump from the File menu."
-            >
-              {(id) => <SessionLink session={id()}>Go to {targetName(state())}</SessionLink>}
-            </Show>
-          </div>
-        </Workbench>
-      }
+    <Show
+      when={recordedId() === null}
+      fallback={<RecordedSessionRoute sessionId={recordedId() ?? 0} />}
     >
-      <Match when={!state() || current() === session()}>
-        <Show when={session()} keyed>
-          {props.children}
-        </Show>
-      </Match>
-      <Match when={state()?.busy}>
-        {(busy) => (
+      <Switch
+        fallback={
           <Workbench focus={null} wants="session">
-            <div class="workbench-notice muted">{busy()}…</div>
+            {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled notice, not a form output */}
+            <div class="workbench-notice" role="status" data-testid="session-ended">
+              <b>{followed() ? "This session ended." : "This session is not here."}</b>{" "}
+              {followed() ? "" : "It ended, or the link is wrong. "}
+              <Show when={ended()}>{(note) => <>{`${note().name} ${note().text}. `}</>}</Show>
+              <Show
+                when={current()}
+                fallback="Launch, attach, or open a core dump from the File menu."
+              >
+                {(id) => <SessionLink session={id()}>Go to {targetName(state())}</SessionLink>}
+              </Show>
+            </div>
           </Workbench>
-        )}
-      </Match>
-    </Switch>
+        }
+      >
+        <Match when={!state() || current() === session()}>
+          <Show when={session()} keyed>
+            {props.children}
+          </Show>
+        </Match>
+        <Match when={state()?.busy}>
+          {(busy) => (
+            <Workbench focus={null} wants="session">
+              <div class="workbench-notice muted">{busy()}…</div>
+            </Workbench>
+          )}
+        </Match>
+      </Switch>
+    </Show>
   );
 }
