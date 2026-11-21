@@ -236,6 +236,7 @@ impl SyscallCapture {
                     Loss::Unseen => (1, AccountKind::SyscallsUnseen),
                     Loss::Capped => (2, AccountKind::SyscallsCapped),
                     Loss::Overflowed => (3, AccountKind::SyscallsOverflowed),
+                    Loss::Skipped => (4, AccountKind::SyscallsSkipped),
                 };
                 note.extra = U64::new(extra);
                 self.builder.count(account as u32, *count);

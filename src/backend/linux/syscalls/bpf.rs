@@ -591,16 +591,6 @@ fn waits(call: SyscallId) -> u8 {
     }
 }
 
-fn call_program(name: &str) -> bool {
-    matches!(
-        name,
-        "sys_enter" | "sys_exit" | "walk_stack" | "exit_finish"
-    ) || name
-        .strip_prefix("enter_")
-        .or_else(|| name.strip_prefix("exit_"))
-        .is_some_and(|slot| slot.parse::<u8>().is_ok())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Record {
     Call(SyscallEvent),
@@ -1889,24 +1879,20 @@ impl Loaded {
             .collect()
     }
 
-    fn lost(&self) -> [u64; 4] {
-        let mut lost = [0; 4];
+    fn lost(&self) -> [u64; 5] {
+        let mut lost = [0; 5];
         if let Some(map) = self.ebpf.map("LOST")
             && let Ok(counts) = PerCpuArray::<_, u64>::try_from(map)
         {
-            for (index, count) in (0..).zip(&mut lost) {
+            for (index, count) in (0..4).zip(&mut lost) {
                 *count = counts
                     .get(&index, 0)
                     .map_or(0, |values| values.iter().sum());
             }
         }
 
-        lost[0] += self.skipped();
+        lost[4] = self.fdinfo_sum("recursion_misses:", |_| true);
         lost
-    }
-
-    fn skipped(&self) -> u64 {
-        self.fdinfo_sum("recursion_misses:", |name| !call_program(name))
     }
 
     fn fdinfo_sum(&self, field: &str, chosen: impl Fn(&str) -> bool) -> u64 {
@@ -2561,7 +2547,7 @@ struct Reader<'a> {
     mappings: Vec<perf::Events>,
     batch: Vec<Record>,
     perf: Vec<u8>,
-    lost: [u64; 4],
+    lost: [u64; 5],
 
     untrusted: u64,
 

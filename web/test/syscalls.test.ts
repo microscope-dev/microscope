@@ -138,13 +138,14 @@ describe("what a recording did not keep of its calls", () => {
 
 describe("a trace's losses", () => {
   it("warn only of those that leave the counts short", () => {
-    expect(lossNotes({ dropped: 0, unseen: 0, capped: 0, overflowed: 0 })).toEqual([]);
-    const notes = lossNotes({ dropped: 1200, unseen: 1, capped: 40, overflowed: 7 });
+    expect(lossNotes({ dropped: 0, unseen: 0, capped: 0, overflowed: 0, skipped: 0 })).toEqual([]);
+    const notes = lossNotes({ dropped: 1200, unseen: 1, capped: 40, overflowed: 7, skipped: 3 });
     expect(notes.map((note) => [note.text, note.warn ?? false])).toEqual([
       ["1,200 dropped", true],
       ["1 unseen", true],
       ["40 over the cap", false],
       ["7 not kept", false],
+      ["3 skipped on the host", true],
     ]);
   });
 });

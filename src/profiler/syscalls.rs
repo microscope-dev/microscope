@@ -80,6 +80,7 @@ impl Profile {
             unseen: account(AccountKind::SyscallsUnseen),
             capped: account(AccountKind::SyscallsCapped),
             overflowed: account(AccountKind::SyscallsOverflowed),
+            skipped: account(AccountKind::SyscallsSkipped),
         }
     }
 
@@ -359,6 +360,7 @@ impl Profile {
                     1 => Loss::Unseen,
                     2 => Loss::Capped,
                     3 => Loss::Overflowed,
+                    4 => Loss::Skipped,
                     _ => Loss::Dropped,
                 },
             },

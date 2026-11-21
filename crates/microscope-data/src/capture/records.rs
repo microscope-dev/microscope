@@ -492,6 +492,8 @@ pub enum AccountKind {
     KeptSamples = 44,
 
     SampledCpu = 45,
+
+    SyscallsSkipped = 46,
 }
 
 #[repr(C)]

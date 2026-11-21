@@ -221,10 +221,18 @@ pub enum Loss {
     Capped,
 
     Overflowed,
+
+    Skipped,
 }
 
 impl Loss {
-    pub const ALL: [Self; 4] = [Self::Dropped, Self::Unseen, Self::Capped, Self::Overflowed];
+    pub const ALL: [Self; 5] = [
+        Self::Dropped,
+        Self::Unseen,
+        Self::Capped,
+        Self::Overflowed,
+        Self::Skipped,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -233,6 +241,7 @@ pub struct Losses {
     pub unseen: u64,
     pub capped: u64,
     pub overflowed: u64,
+    pub skipped: u64,
 }
 
 impl Losses {
@@ -242,12 +251,13 @@ impl Losses {
             Loss::Unseen => self.unseen += count,
             Loss::Capped => self.capped += count,
             Loss::Overflowed => self.overflowed += count,
+            Loss::Skipped => self.skipped += count,
         }
     }
 
     #[must_use]
     pub const fn any(&self) -> bool {
-        self.dropped + self.unseen + self.capped + self.overflowed > 0
+        self.dropped + self.unseen + self.capped + self.overflowed + self.skipped > 0
     }
 }
 

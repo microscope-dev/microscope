@@ -72,8 +72,7 @@ export function lossNotes(lost: SyscallLosses): TraceNote[] {
   if (lost.dropped > 0) {
     notes.push({
       text: `${formatCount(lost.dropped)} dropped`,
-      title:
-        "Records the kernel had no room for, or program runs it skipped: some calls lack detail, and counts may be short.",
+      title: "Records the kernel had no room for: some calls lack detail, and counts may be short.",
       warn: true,
     });
   }
@@ -94,6 +93,14 @@ export function lossNotes(lost: SyscallLosses): TraceNote[] {
     notes.push({
       text: `${formatCount(lost.overflowed)} not kept`,
       title: "Calls that came while the kernel's ring was full: counted, but not kept.",
+    });
+  }
+  if (lost.skipped > 0) {
+    notes.push({
+      text: `${formatCount(lost.skipped)} skipped on the host`,
+      title:
+        "Times the kernel skipped microscope's programs, for any process on the host: some of this program's calls may be missing, and not counted.",
+      warn: true,
     });
   }
   return notes;

@@ -1329,7 +1329,8 @@ mod bpf {
         assert_eq!(profile.setting("syscall hook"), Some(hook));
         let trace = log(directory.path(), &[filter]);
         let context = format!("{mode}, {hook}:\n{truth}\n{trace}");
-        let lost = profile.syscalls().lost.dropped;
+        let lost = profile.syscalls().lost;
+        let lost = lost.dropped + lost.skipped;
         check_group_exits(mode, &truth, &trace, &context, workers, rounds, lost);
     }
     fn check_group_exits(
@@ -2746,7 +2747,10 @@ mod bpf {
                             && call.args[0] == 0)
                 })
                 .count();
-            found.push((byte, syscalls.lost.dropped + syscalls.lost.unseen));
+            found.push((
+                byte,
+                syscalls.lost.dropped + syscalls.lost.unseen + syscalls.lost.skipped,
+            ));
         }
 
         let read: usize = found.iter().map(|&(byte, _)| byte).sum();
@@ -3092,7 +3096,7 @@ mod bpf {
                 .iter()
                 .filter(|(outcome, _)| *outcome == Outcome::Unfinished)
                 .count();
-            let lost = syscalls.lost.dropped;
+            let lost = syscalls.lost.dropped + syscalls.lost.skipped;
             assert!(
                 returned <= ROUNDS && returned as u64 + lost >= ROUNDS as u64,
                 "{arguments:?}: {reads:#?}"
