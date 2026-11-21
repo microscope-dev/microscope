@@ -1,24 +1,23 @@
-import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { page } from "vitest/browser";
 
 import "../src/styles.css";
-import { createAppRouter } from "../src/router";
+import { AppRouter, createMemoryHistory } from "../src/router";
 import { SessionContext } from "../src/store";
 import { fakeServer } from "./fake-server";
 import { stoppedState } from "./pane";
+import { cleanup, render } from "./render";
 
 afterEach(cleanup);
 
 async function mountFrame() {
   const server = await fakeServer();
-  const router = createAppRouter(createMemoryHistory({ initialEntries: ["/"] }));
-  render(
+  const history = createMemoryHistory("/");
+  render(() => (
     <SessionContext value={server.session}>
-      <RouterProvider router={router} />
-    </SessionContext>,
-  );
+      <AppRouter history={history} />
+    </SessionContext>
+  ));
   return server;
 }
 

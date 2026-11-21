@@ -1,8 +1,10 @@
-import { Link, Outlet, useLocation } from "@tanstack/react-router";
-import { useCallback, useEffect } from "react";
+import { useLocation } from "@solidjs/router";
+import type { JSX } from "@solidjs/web";
+import { createEffect, createMemo, onSettled, Show } from "solid-js";
 
-import { base } from "../base";
+import { base, withinBase } from "../base";
 import { machinesWindow } from "../fleet";
+import { toHref } from "../history";
 import { commandName } from "../model";
 import { useModel } from "../store";
 import { flash } from "../tab";
@@ -16,9 +18,9 @@ import { Share } from "./Share";
 import { shown, Status } from "./Status";
 import { StatusBar } from "./StatusBar";
 
-const JOINING = { gridTemplateRows: "1fr" };
+const JOINING = { "grid-template-rows": "1fr" };
 
-export function Frame() {
+export function Frame(props: { children?: JSX.Element }) {
   const name = useModel((model) => commandName(model.state));
   const inferior = useModel((model) => model.state?.inferior.state);
 
@@ -28,84 +30,98 @@ export function Frame() {
   const location = useLocation();
   const { availability, run } = useCommands();
   useKeys();
-  const runFromMenu = useCallback(
-    (id: Parameters<typeof run>[0]) => {
-      const ran = run(id);
-      if (ran.state === "blocked") {
-        flash(ran.why);
-      }
+  const runFromMenu = (id: Parameters<typeof run>[0]) => {
+    const ran = run(id);
+    if (ran.state === "blocked") {
+      flash(ran.why);
+    }
+  };
+
+  createEffect(
+    () => [name(), inferior()] as const,
+    ([currentName, currentInferior]) => {
+      const state =
+        currentInferior === "stopped"
+          ? "stopped"
+          : currentInferior === "running"
+            ? "running"
+            : null;
+      document.title = currentName
+        ? `${currentName}${state ? ` · ${state}` : ""} · microscope`
+        : "microscope";
     },
-    [run],
   );
 
-  useEffect(() => {
-    const state = inferior === "stopped" ? "stopped" : inferior === "running" ? "running" : null;
-    document.title = name ? `${name}${state ? ` · ${state}` : ""} · microscope` : "microscope";
-  }, [name, inferior]);
+  const joining = createMemo(() => withinBase(location.pathname) === "/join");
 
-  if (location.pathname === "/join") {
-    return (
-      <div className="app" style={JOINING}>
-        <Outlet />
-      </div>
-    );
-  }
   return (
-    <div className="app">
-      <header className="frame-head">
-        <div className="menu-row">
-          <Link to="/" className="brand" aria-label="microscope home">
-            <img src={`${base}favicon.svg`} alt="" />
-            microscope
-          </Link>
-          <MenuBar registry={COMMANDS} availability={availability} run={runFromMenu} />
-          <div className="menu-row-end">
-            {!loaded && !quiet && <Status />}
-            <People />
-            <Share />
-          </div>
+    <Show
+      when={!joining()}
+      fallback={
+        <div class="app" style={JOINING}>
+          {props.children}
         </div>
-        {loaded && <RunToolbar />}
-      </header>
-      <Outlet />
-      <StatusBar />
-      <MachinesWindow />
-    </div>
+      }
+    >
+      <div class="app">
+        <header class="frame-head">
+          <div class="menu-row">
+            <a href={toHref("/")} class="brand" aria-label="microscope home">
+              <img src={`${base}favicon.svg`} alt="" />
+              microscope
+            </a>
+            <MenuBar registry={COMMANDS} availability={availability} run={runFromMenu} />
+            <div class="menu-row-end">
+              <Show when={!loaded() && !quiet()}>
+                <Status />
+              </Show>
+              <People />
+              <Share />
+            </div>
+          </div>
+          <Show when={loaded()}>
+            <RunToolbar />
+          </Show>
+        </header>
+        {props.children}
+        <StatusBar />
+        <MachinesWindow />
+      </div>
+    </Show>
   );
 }
 
 function useKeys() {
   const { run } = useCommands();
-  useEffect(() => {
-    const listener = (event: KeyboardEvent) => {
-      if (
-        event.isComposing ||
-        machinesWindow.getState().open ||
-        (event.key === "Escape" && keepsEscape(document.activeElement))
-      ) {
-        return;
-      }
-      const typing = isTextBox(document.activeElement);
-      const command = COMMANDS.match(event, typing);
-      if (command === null) {
-        if (typing && event.key === "Escape" && document.activeElement instanceof HTMLElement) {
-          const box = document.activeElement;
+  const listener = (event: KeyboardEvent) => {
+    if (
+      event.isComposing ||
+      machinesWindow.getState().open ||
+      (event.key === "Escape" && keepsEscape(document.activeElement))
+    ) {
+      return;
+    }
+    const typing = isTextBox(document.activeElement);
+    const command = COMMANDS.match(event, typing);
+    if (command === null) {
+      if (typing && event.key === "Escape" && document.activeElement instanceof HTMLElement) {
+        const box = document.activeElement;
 
-          setTimeout(() => box.blur(), 0);
-        }
-        return;
+        setTimeout(() => box.blur(), 0);
       }
-      const ran = run(command);
-      if (ran.state === "blocked") {
-        flash(ran.why);
-      }
+      return;
+    }
+    const ran = run(command);
+    if (ran.state === "blocked") {
+      flash(ran.why);
+    }
 
-      if (ran.state !== "absent" || /^F\d+$/u.test(event.key)) {
-        event.preventDefault();
-      }
-    };
-
+    if (ran.state !== "absent" || /^F\d+$/u.test(event.key)) {
+      event.preventDefault();
+    }
+  };
+  onSettled(() => {
     window.addEventListener("keydown", listener, { capture: true });
     return () => window.removeEventListener("keydown", listener, { capture: true });
-  }, [run]);
+  });
 }

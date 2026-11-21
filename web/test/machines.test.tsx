@@ -1,11 +1,4 @@
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRouter,
-  type RouterHistory,
-  RouterProvider,
-} from "@tanstack/react-router";
-import { cleanup, render } from "@testing-library/react";
+import { createRouter } from "@solidjs/router";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { type Locator, page, userEvent } from "vitest/browser";
 
@@ -21,8 +14,10 @@ import {
   setLook,
 } from "../src/fleet";
 import { directory } from "../src/orgs";
+import { type AppHistory, createMemoryHistory, HistoryContext } from "../src/router";
 import { COMMANDS } from "../src/ui/commands";
 import { MachinesWindow } from "../src/ui/machines/MachinesWindow";
+import { cleanup, render } from "./render";
 
 import "../src/styles.css";
 
@@ -67,19 +62,24 @@ function services(routes: Record<string, Route>) {
   return asked;
 }
 
-let history: RouterHistory | null = null;
+let history: AppHistory | null = null;
 
 const fragment = () => history?.location.hash.replace(/^#/u, "");
 
 const text = (locator: Locator) => locator.query()?.textContent ?? "";
 
 function mount(at = "/") {
-  history = createMemoryHistory({ initialEntries: [at] });
-  const router = createRouter({
-    routeTree: createRootRoute({ component: MachinesWindow }),
-    history,
+  const current = createMemoryHistory(at);
+  history = current;
+  const Router = createRouter({
+    routes: [{ path: "/", component: MachinesWindow }],
+    history: current,
   });
-  render(<RouterProvider router={router as never} />);
+  render(() => (
+    <HistoryContext value={current}>
+      <Router />
+    </HistoryContext>
+  ));
 }
 
 beforeAll(async () => {

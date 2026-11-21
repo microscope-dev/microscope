@@ -1,16 +1,16 @@
-import { type RefObject, useEffect, useLayoutEffect } from "react";
+import { createEffect, onSettled } from "solid-js";
 
 const CONTROLS = "input, select, textarea, button, [href], [tabindex]:not([tabindex='-1'])";
 
 export function useDialogFocus(
-  dialog: RefObject<HTMLElement | null>,
-  first?: RefObject<HTMLElement | null>,
+  dialog: () => HTMLElement | null | undefined,
+  first?: () => HTMLElement | null | undefined,
 ): void {
-  useLayoutEffect(() => {
+  onSettled(() => {
     const before = document.activeElement;
-    const element = dialog.current;
+    const element = dialog();
     if (element && !element.contains(document.activeElement)) {
-      (first?.current ?? element.querySelector<HTMLElement>(CONTROLS) ?? element).focus();
+      (first?.() ?? element.querySelector<HTMLElement>(CONTROLS) ?? element).focus();
     }
     return () => {
       const now = document.activeElement;
@@ -19,33 +19,36 @@ export function useDialogFocus(
         before.focus();
       }
     };
-  }, [dialog, first]);
+  });
 }
 
 export function useDismiss(
-  anchor: RefObject<HTMLElement | null>,
-  active: boolean,
+  anchor: () => HTMLElement | null | undefined,
+  active: () => boolean,
   away: () => void,
 ): void {
-  useEffect(() => {
-    if (!active) {
-      return;
+  const key = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      away();
     }
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        away();
+  };
+  const pointer = (event: PointerEvent) => {
+    if (!anchor()?.contains(event.target as Node)) {
+      away();
+    }
+  };
+  createEffect(
+    () => active(),
+    (isActive) => {
+      if (!isActive) {
+        return;
       }
-    };
-    const pointer = (event: PointerEvent) => {
-      if (!anchor.current?.contains(event.target as Node)) {
-        away();
-      }
-    };
-    window.addEventListener("keydown", key);
-    window.addEventListener("pointerdown", pointer);
-    return () => {
-      window.removeEventListener("keydown", key);
-      window.removeEventListener("pointerdown", pointer);
-    };
-  }, [anchor, active, away]);
+      window.addEventListener("keydown", key);
+      window.addEventListener("pointerdown", pointer);
+      return () => {
+        window.removeEventListener("keydown", key);
+        window.removeEventListener("pointerdown", pointer);
+      };
+    },
+  );
 }

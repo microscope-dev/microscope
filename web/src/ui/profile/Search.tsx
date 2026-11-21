@@ -1,4 +1,5 @@
-import { type ChangeEvent, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
+import type { JSX } from "@solidjs/web";
+import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
 
 import { type ProfileLook, transformed, withLook } from "../../profile/look";
 import { formatPercent, formatWeight } from "../../profile/paint";
@@ -17,160 +18,173 @@ const ACTIONS: { op: TransformOp; label: string; title: string }[] = [
   { op: "drop", label: "Drop", title: "Remove every stack through this function" },
 ];
 
-export function useFrameSearch(): [string, (text: string) => void] {
-  const { look } = useProfile();
-  const [typed, setTyped] = useState("");
-  const [seen, setSeen] = useState(look.fn);
-  if (seen !== look.fn) {
-    setSeen(look.fn);
-    if (look.fn !== undefined) {
-      setTyped("");
-    }
-  }
-  return [look.fn === undefined ? typed : "", setTyped];
+export function useFrameSearch(): [() => string, (text: string) => void] {
+  const focus = useProfile();
+  const [typed, setTyped] = createSignal("");
+  createEffect(
+    () => focus().look.fn,
+    (fn) => {
+      if (fn !== undefined) {
+        setTyped("");
+      }
+    },
+  );
+  const value = createMemo(() => (focus().look.fn === undefined ? typed() : ""));
+  return [value, setTyped];
 }
 
 export function useTreeSearch(
-  tree: CallTree | null,
-  search: string,
-): { matched: Set<number> | null; note: string | null } {
-  return useMemo(() => {
-    const needle = search.toLowerCase();
-    if (!tree || !needle) {
+  tree: () => CallTree | null,
+  search: () => string,
+): () => { matched: Set<number> | null; note: string | null } {
+  return createMemo(() => {
+    const current = tree();
+    const needle = search().toLowerCase();
+    if (!current || !needle) {
       return { matched: null, note: null };
     }
-    const found = matching(tree, (name) => name.toLowerCase().includes(needle));
+    const found = matching(current, (name) => name.toLowerCase().includes(needle));
     return {
       matched: found.nodes,
-      note: `matched ${formatPercent(found.weight, tree.weight)} of samples`,
+      note: `matched ${formatPercent(found.weight, current.weight)} of samples`,
     };
-  }, [tree, search]);
+  });
 }
 
-export function SearchRow({
-  search,
-  onSearch,
-  matched,
-  reset,
-}: {
+export function SearchRow(props: {
   search: string;
   onSearch: (text: string) => void;
-
   matched: string | null;
-
   reset: ((look: ProfileLook) => ProfileLook) | null;
 }) {
-  const { look, setLook } = useProfile();
-  const { fn } = look;
-  const searchBox = useRef<HTMLInputElement>(null);
-  const clear = useCallback(() => {
-    onSearch("");
-    setLook(
+  const focus = useProfile();
+  let searchBox: HTMLInputElement | undefined;
+  const clear = () => {
+    props.onSearch("");
+    const reset = props.reset;
+    focus().setLook(
       // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
       (prev) => withLook(reset ? reset(prev) : prev, "fn", undefined),
       true,
     );
-  }, [onSearch, setLook, reset]);
+  };
 
-  const clearAndFocus = useCallback(() => {
+  const clearAndFocus = () => {
     clear();
-    searchBox.current?.focus();
-  }, [clear]);
-  const edit = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      const text = event.target.value;
-      onSearch(text);
-      if (text === "" && (reset !== null || fn !== undefined)) {
-        clear();
-      } else if (fn !== undefined) {
-        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-        setLook((prev) => withLook(prev, "fn", undefined));
-      }
-    },
-    [reset, fn, onSearch, setLook, clear],
-  );
+    searchBox?.focus();
+  };
+  const edit = (event: InputEvent & { currentTarget: HTMLInputElement }) => {
+    const text = event.currentTarget.value;
+    const fn = focus().look.fn;
+    props.onSearch(text);
+    if (text === "" && (props.reset !== null || fn !== undefined)) {
+      clear();
+    } else if (fn !== undefined) {
+      // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+      focus().setLook((prev) => withLook(prev, "fn", undefined));
+    }
+  };
   return (
-    <div className="profile-details" data-testid={fn === undefined ? undefined : "details"}>
+    <div
+      class="profile-details"
+      data-testid={focus().look.fn === undefined ? undefined : "details"}
+    >
       <input
-        ref={searchBox}
+        ref={(node) => {
+          searchBox = node;
+        }}
         type="search"
-        className="input profile-search"
+        class="input profile-search"
         placeholder="Click or search for a frame"
         aria-label="Search frames"
-        title={fn}
-        value={fn ?? search}
-        onChange={edit}
+        title={focus().look.fn}
+        value={focus().look.fn ?? props.search}
+        onInput={edit}
       />
-      {search !== "" || fn !== undefined || reset !== null ? (
-        <button type="button" className="tb ghost" onClick={clearAndFocus}>
+      <Show when={props.search !== "" || focus().look.fn !== undefined || props.reset !== null}>
+        <button type="button" class="tb ghost" onClick={clearAndFocus}>
           Clear
         </button>
-      ) : null}
-      {fn === undefined ? (
-        matched ? (
-          <span className="muted" data-testid="matched">
-            {matched}
-          </span>
-        ) : null
-      ) : (
-        <Selected name={fn} />
-      )}
-      <span className="profile-options">
+      </Show>
+      <Show
+        when={focus().look.fn}
+        fallback={
+          <Show when={props.matched}>
+            {(matched) => (
+              <span class="muted" data-testid="matched">
+                {matched()}
+              </span>
+            )}
+          </Show>
+        }
+      >
+        {(fn) => <Selected name={fn()} />}
+      </Show>
+      <span class="profile-options">
         <Options />
       </span>
     </div>
   );
 }
 
-export function Selected({ name }: { name: string }) {
-  const { query, unit, setLook } = useProfile();
-  const answer = useAnswer("profileFunctions", query);
-  const functions = answer.data;
-  const costs = (functions?.rows ?? []).flatMap((row) => {
-    const key = functions?.keys[row.key];
-    return key?.name === name ? [{ row, key }] : [];
+export function Selected(props: { name: string }) {
+  const focus = useProfile();
+  const answer = useAnswer("profileFunctions", () => focus().query);
+  const functions = createMemo(() => answer().data);
+  const costs = createMemo(() => {
+    const data = functions();
+    return (data?.rows ?? []).flatMap((row) => {
+      const key = data?.keys[row.key];
+      return key?.name === props.name ? [{ row, key }] : [];
+    });
   });
-  const located = costs.find(({ key }) => key.file)?.key;
-  const weight = functions?.weight ?? 0;
-  const showCallers = useCallback(
-    () => setLook((look) => ({ ...withLook(look, "view", "functions"), fn: name }), true),
-    [setLook, name],
-  );
+  const located = createMemo(() => costs().find(({ key }) => key.file)?.key);
+  const weight = createMemo(() => functions()?.weight ?? 0);
+  const showCallers = () =>
+    focus().setLook((look) => ({ ...withLook(look, "view", "functions"), fn: props.name }), true);
   return (
     <>
-      {}
-      <span className="cost">
-        {located?.file ? (
-          <span className="muted mono">
-            {located.file.slice(located.file.lastIndexOf("/") + 1)}:{located.line}
-          </span>
-        ) : null}
-        {answer.error ? (
-          <span className="error">{answer.error.message}</span>
-        ) : functions ? (
-          costs.length === 0 ? (
-            <span className="muted">None of the selected samples ran this function.</span>
-          ) : (
-            costs.map(({ row, key }) => (
-              <span key={row.key} className="muted">
-                {costs.length > 1 ? `${key.module ?? "no module"}: ` : ""}
-                {formatWeight(row.total, unit)} · {formatPercent(row.total, weight)} total,{" "}
-                {formatPercent(row.own, weight)} own
-              </span>
-            ))
-          )
-        ) : (
-          <span className="muted">Loading cost…</span>
-        )}
+      <span class="cost">
+        <Show when={located()?.file}>
+          {(file) => (
+            <span class="muted mono">
+              {file().slice(file().lastIndexOf("/") + 1)}:{located()?.line}
+            </span>
+          )}
+        </Show>
+        <Switch fallback={<span class="muted">Loading cost…</span>}>
+          <Match when={answer().error}>
+            {(error) => <span class="error">{error().message}</span>}
+          </Match>
+          <Match when={functions()}>
+            <Show
+              when={costs().length > 0}
+              fallback={<span class="muted">None of the selected samples ran this function.</span>}
+            >
+              <For each={costs()} keyed={(item) => item.row.key}>
+                {(item) => (
+                  <span class="muted">
+                    {costs().length > 1 ? `${item().key.module ?? "no module"}: ` : ""}
+                    {formatWeight(item().row.total, focus().unit)} ·{" "}
+                    {formatPercent(item().row.total, weight())} total,{" "}
+                    {formatPercent(item().row.own, weight())} own
+                  </span>
+                )}
+              </For>
+            </Show>
+          </Match>
+        </Switch>
       </span>
-      {ACTIONS.map(({ op, label, title }) => (
-        <Action key={op} op={op} name={name} title={title}>
-          {label}
-        </Action>
-      ))}
+      <For each={ACTIONS}>
+        {(action) => (
+          <Action op={action.op} name={props.name} title={action.title}>
+            {action.label}
+          </Action>
+        )}
+      </For>
       <button
         type="button"
-        className="tb ghost"
+        class="tb ghost"
         title="Who calls this function, and what it calls"
         onClick={showCallers}
       >
@@ -180,29 +194,16 @@ export function Selected({ name }: { name: string }) {
   );
 }
 
-function Action({
-  op,
-  name,
-  title,
-  children,
-}: {
-  op: TransformOp;
-  name: string;
-  title: string;
-  children: ReactNode;
-}) {
-  const { setLook } = useProfile();
-  const apply = useCallback(
-    () =>
-      setLook((look) => {
-        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-        return withLook(transformed(look, { op, name }), "fn", undefined);
-      }, true),
-    [setLook, op, name],
-  );
+function Action(props: { op: TransformOp; name: string; title: string; children: JSX.Element }) {
+  const focus = useProfile();
+  const apply = () =>
+    focus().setLook((look) => {
+      // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+      return withLook(transformed(look, { op: props.op, name: props.name }), "fn", undefined);
+    }, true);
   return (
-    <button type="button" className="tb ghost" title={title} onClick={apply}>
-      {children}
+    <button type="button" class="tb ghost" title={props.title} onClick={apply}>
+      {props.children}
     </button>
   );
 }

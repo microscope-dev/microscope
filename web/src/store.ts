@@ -1,11 +1,11 @@
-import { createContext, useContext } from "react";
-import { createStore, type StoreApi, useStore } from "zustand";
+import { createContext, useContext } from "solid-js";
 
 import { Connection, type ConnectionOptions } from "./connection";
 import { initialModel, type Model, type ModelEvent, reduce } from "./model";
+import { createState, type Store, useSelector } from "./state";
 
 export interface Session {
-  store: StoreApi<Model>;
+  store: Store<Model>;
   connection: Connection;
 }
 
@@ -13,7 +13,7 @@ export function createSession(
   options: Omit<ConnectionOptions, "emit">,
   onEvent?: (event: ModelEvent) => void,
 ): Session {
-  const store = createStore<Model>(() => initialModel);
+  const store = createState<Model>(() => initialModel);
   const connection = new Connection({
     ...options,
     emit: (event) => {
@@ -34,14 +34,17 @@ function useSession(): Session {
   return session;
 }
 
-export function useModel<T>(select: (model: Model) => T): T {
-  return useStore(useSession().store, select);
+export function useModel<T>(
+  select: (model: Model) => T,
+  equals?: (a: T, b: T) => boolean,
+): () => T {
+  return useSelector(useSession().store, select, equals);
 }
 
 export function useConnection(): Connection {
   return useSession().connection;
 }
 
-export function useStoreApi(): StoreApi<Model> {
+export function useStoreApi(): Store<Model> {
   return useSession().store;
 }

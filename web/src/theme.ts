@@ -1,6 +1,6 @@
-import { useSyncExternalStore } from "react";
-import { createStore, useStore } from "zustand";
+import { createMemo, createSignal, onSettled } from "solid-js";
 
+import { createState, useSelector } from "./state";
 import { read, write } from "./storage";
 
 export type Theme = "system" | "light" | "dark";
@@ -13,24 +13,28 @@ export function savedTheme(): Theme {
   return read("microscope-theme", "system", isTheme);
 }
 
-const chosen = createStore(() => ({ theme: savedTheme() }));
+const chosen = createState(() => ({ theme: savedTheme() }));
 
-export function useChosenTheme(): Theme {
-  return useStore(chosen, (state) => state.theme);
+export function useChosenTheme(): () => Theme {
+  return useSelector(chosen, (state) => state.theme);
 }
 
 const systemDark = () => window.matchMedia("(prefers-color-scheme: dark)");
 
-function watchSystem(changed: () => void): () => void {
-  const query = systemDark();
-  query.addEventListener("change", changed);
-  return () => query.removeEventListener("change", changed);
-}
-
-export function useShownScheme(): "light" | "dark" {
+export function useShownScheme(): () => "light" | "dark" {
   const theme = useChosenTheme();
-  const dark = useSyncExternalStore(watchSystem, () => systemDark().matches);
-  return theme === "system" ? (dark ? "dark" : "light") : theme;
+  const [dark, setDark] = createSignal(systemDark().matches);
+  onSettled(() => {
+    const query = systemDark();
+    const changed = () => setDark(query.matches);
+    setDark(query.matches);
+    query.addEventListener("change", changed);
+    return () => query.removeEventListener("change", changed);
+  });
+  return createMemo(() => {
+    const selected = theme();
+    return selected === "system" ? (dark() ? "dark" : "light") : selected;
+  });
 }
 
 export function chooseTheme(theme: Theme): void {

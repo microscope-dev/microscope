@@ -1,18 +1,14 @@
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRouter,
-  RouterProvider,
-} from "@tanstack/react-router";
-import { cleanup, render } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { createRouter } from "@solidjs/router";
+import type { JSX } from "@solidjs/web";
 
 import { cache } from "../src/data";
+import { createMemoryHistory, HistoryContext } from "../src/history";
 import type { State } from "../src/protocol";
 import { SessionContext } from "../src/store";
 import { initialTab, tab } from "../src/tab";
 import { type Focus, FocusContext } from "../src/ui/Workspace";
 import { type FakeServer, fakeServer } from "./fake-server";
+import { cleanup, render } from "./render";
 
 export function stoppedState(changes: Partial<State> = {}): State {
   return {
@@ -41,13 +37,12 @@ export function stoppedState(changes: Partial<State> = {}): State {
 }
 
 export async function mountPane(
-  pane: ReactNode,
+  pane: () => JSX.Element,
   focus: Partial<Focus> = {},
   state: State = stoppedState(),
 ): Promise<FakeServer> {
   const server = await fakeServer();
   server.send({ type: "state", ...state });
-  // oxlint-disable-next-line react-perf/jsx-no-new-object-as-prop -- built once per mount, so stable across renders
   const shown: Focus = {
     session: "s1",
     state,
@@ -57,18 +52,24 @@ export async function mountPane(
     stale: null,
     ...focus,
   };
-  const root = createRootRoute({
-    component: () => <FocusContext value={shown}>{pane}</FocusContext>,
+  const history = createMemoryHistory("/");
+  const Router = createRouter({
+    routes: [
+      {
+        path: "/",
+        component: () => <FocusContext value={() => shown}>{pane()}</FocusContext>,
+        children: [{ path: "*all", component: () => null }],
+      },
+    ],
+    history,
   });
-  const router = createRouter({
-    routeTree: root,
-    history: createMemoryHistory({ initialEntries: ["/"] }),
-  });
-  render(
+  render(() => (
     <SessionContext value={server.session}>
-      <RouterProvider router={router as never} />
-    </SessionContext>,
-  );
+      <HistoryContext value={history}>
+        <Router />
+      </HistoryContext>
+    </SessionContext>
+  ));
   return server;
 }
 

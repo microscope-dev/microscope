@@ -1,4 +1,4 @@
-import { type ChangeEvent, type MouseEvent, useCallback, useMemo, useState } from "react";
+import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
 
 import type { Requested } from "../../data";
 import { formatDuringRow, withLook } from "../../profile/look";
@@ -18,54 +18,41 @@ const GROUPS: { group: SyscallGroup; label: string }[] = [
   { group: "site", label: "by call site" },
 ];
 
-export function Summary({
-  summary,
-  query,
-}: {
-  summary: Requested<SyscallSummary>;
-  query: SyscallQuery;
-}) {
-  const { look, setLook } = useProfile();
-  const group = look.sg ?? "syscall";
-  const regroup = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => {
-      const chosen = event.target.value as SyscallGroup;
-      setLook((prev) =>
-        withLook(
-          // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-          withLook(prev, "sc", undefined),
-          "sg",
-          chosen === "syscall" ? undefined : chosen,
-        ),
-      );
-    },
-    [setLook],
-  );
+export function Summary(props: { summary: Requested<SyscallSummary>; query: SyscallQuery }) {
+  const focus = useProfile();
+  const group = createMemo<SyscallGroup>(() => focus().look.sg ?? "syscall");
+  const regroup = (event: Event & { currentTarget: HTMLSelectElement }) => {
+    const chosen = event.currentTarget.value as SyscallGroup;
+    focus().setLook((prev) =>
+      withLook(
+        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+        withLook(prev, "sc", undefined),
+        "sg",
+        chosen === "syscall" ? undefined : chosen,
+      ),
+    );
+  };
   return (
-    <div className="syscalls-summary">
-      <div className="syscalls-split">
-        <div className="pane syscalls-table-pane">
-          <div className="pane-head">
-            <select
-              className="input profile-by"
-              aria-label="Group"
-              value={group}
-              onChange={regroup}
-            >
-              {GROUPS.map(({ group: each, label }) => (
-                <option key={each} value={each}>
-                  {label}
-                </option>
-              ))}
+    <div class="syscalls-summary">
+      <div class="syscalls-split">
+        <div class="pane syscalls-table-pane">
+          <div class="pane-head">
+            <select class="input profile-by" aria-label="Group" value={group()} onChange={regroup}>
+              <For each={GROUPS}>{(each) => <option value={each.group}>{each.label}</option>}</For>
             </select>
           </div>
-          {summary.data ? (
-            <Table rows={summary.data.rows} group={group} />
-          ) : summary.error ? null : (
-            <p className="muted pad">Reading the summary…</p>
-          )}
+          <Switch>
+            <Match when={props.summary.data}>
+              {(data) => <Table rows={data().rows} group={group()} />}
+            </Match>
+            <Match when={!props.summary.error}>
+              <p class="muted pad">Reading the summary…</p>
+            </Match>
+          </Switch>
         </div>
-        {look.sc && group === "syscall" ? <Detail call={look.sc} query={query} /> : null}
+        <Show when={group() === "syscall" ? focus().look.sc : undefined}>
+          {(call) => <Detail call={call()} query={props.query} />}
+        </Show>
       </div>
     </div>
   );
@@ -73,100 +60,99 @@ export function Summary({
 
 type Sort = "total" | "calls" | "errors" | "p99" | "name";
 
-function Table({ rows, group }: { rows: SyscallRow[]; group: SyscallGroup }) {
-  const selectable = group === "syscall";
-  const { look, setLook } = useProfile();
-  const [sort, setSort] = useState<Sort>("total");
-  const [open, setOpen] = useState<string | null>(null);
-  const sorted = useMemo(() => {
+function Table(props: { rows: SyscallRow[]; group: SyscallGroup }) {
+  const selectable = createMemo(() => props.group === "syscall");
+  const focus = useProfile();
+  const [sort, setSort] = createSignal<Sort>("total");
+  const [open, setOpen] = createSignal<string | null>(null);
+  const sorted = createMemo(() => {
+    const by = sort();
     const key = (row: SyscallRow): number | string =>
-      sort === "name"
+      by === "name"
         ? row.name
-        : sort === "calls"
+        : by === "calls"
           ? row.calls
-          : sort === "errors"
+          : by === "errors"
             ? row.errors
-            : sort === "p99"
+            : by === "p99"
               ? (row.p99Ns ?? 0)
               : row.totalNs;
-    return rows.toSorted((a, b) => {
+    return props.rows.toSorted((a, b) => {
       const [x, y] = [key(a), key(b)];
       return typeof x === "string" ? x.localeCompare(String(y)) : Number(y) - Number(x);
     });
-  }, [rows, sort]);
-  const toggle = useCallback((key: string) => setOpen((was) => (was === key ? null : key)), []);
-  const select = useCallback(
-    (key: string) => setLook((prev) => withLook(prev, "sc", prev.sc === key ? undefined : key)),
-    [setLook],
-  );
+  });
+  const toggle = (key: string) => setOpen((was) => (was === key ? null : key));
+  const select = (key: string) =>
+    focus().setLook((prev) => withLook(prev, "sc", prev.sc === key ? undefined : key));
   return (
-    <table className="syscalls-table" data-testid="syscall-table">
+    <table class="syscalls-table" data-testid="syscall-table">
       <thead>
         <tr>
-          <SortHeader column="name" numeric={false} sort={sort} setSort={setSort} />
-          <SortHeader column="calls" sort={sort} setSort={setSort} />
-          <SortHeader column="errors" sort={sort} setSort={setSort} />
-          <SortHeader column="total" sort={sort} setSort={setSort} />
-          <th className="num">p50</th>
-          <th className="num">p90</th>
-          <SortHeader column="p99" sort={sort} setSort={setSort} />
-          <th className="num">max</th>
-          <th className="num">bytes</th>
+          <SortHeader column="name" numeric={false} sort={sort()} setSort={setSort} />
+          <SortHeader column="calls" sort={sort()} setSort={setSort} />
+          <SortHeader column="errors" sort={sort()} setSort={setSort} />
+          <SortHeader column="total" sort={sort()} setSort={setSort} />
+          <th class="num">p50</th>
+          <th class="num">p90</th>
+          <SortHeader column="p99" sort={sort()} setSort={setSort} />
+          <th class="num">max</th>
+          <th class="num">bytes</th>
           {/* oxlint-disable-next-line jsx-a11y/control-has-associated-label -- each row's button names what it shows */}
           <th />
         </tr>
       </thead>
       <tbody>
-        {sorted.map((row) => (
-          <SummaryRow
-            key={row.key}
-            row={row}
-            group={group}
-            selected={selectable && look.sc === row.key}
-            open={open === row.key}
-            toggle={toggle}
-            select={selectable ? select : undefined}
-          />
-        ))}
+        <For each={sorted()} keyed={(row) => row.key}>
+          {(row) => (
+            <SummaryRow
+              row={row()}
+              group={props.group}
+              selected={selectable() && focus().look.sc === row().key}
+              open={open() === row().key}
+              toggle={toggle}
+              select={selectable() ? select : undefined}
+            />
+          )}
+        </For>
       </tbody>
     </table>
   );
 }
 
-function SortHeader({
-  column,
-  numeric = true,
-  sort,
-  setSort,
-}: {
+function SortHeader(props: {
   column: Sort;
-  numeric?: boolean;
+  numeric?: boolean | undefined;
   sort: Sort;
   setSort: (sort: Sort) => void;
 }) {
-  const click = useCallback(() => setSort(column), [setSort, column]);
   return (
     <th
-      className={numeric ? "num" : undefined}
-      aria-sort={sort === column ? (column === "name" ? "ascending" : "descending") : undefined}
+      class={props.numeric === false ? undefined : "num"}
+      aria-sort={
+        props.sort === props.column
+          ? props.column === "name"
+            ? "ascending"
+            : "descending"
+          : undefined
+      }
     >
-      <button type="button" className="sort" onClick={click}>
-        {column}
+      <button type="button" class="sort" onClick={() => props.setSort(props.column)}>
+        {props.column}
       </button>
     </th>
   );
 }
 
-const time = (value: number | null) => (value === null ? "–" : <Duration ns={value} />);
+function TimeCell(props: { value: number | null }) {
+  return (
+    <Show when={props.value === null ? null : { ns: props.value }} fallback="–">
+      {(shown) => <Duration ns={shown().ns} />}
+    </Show>
+  );
+}
 
-function SummaryRow({
-  row,
-  group,
-  selected,
-  open,
-  toggle,
-  select,
-}: {
+function SummaryRow(props: {
   row: SyscallRow;
   group: SyscallGroup;
   selected: boolean;
@@ -174,116 +160,119 @@ function SummaryRow({
   toggle: (key: string) => void;
   select: ((key: string) => void) | undefined;
 }) {
-  const pick = useCallback(() => select?.(row.key), [select, row.key]);
-  const pickName = useCallback(
-    (event: MouseEvent) => {
-      event.stopPropagation();
-      select?.(row.key);
-    },
-    [select, row.key],
-  );
-  const disclose = useCallback(
-    (event: MouseEvent) => {
-      event.stopPropagation();
-      toggle(row.key);
-    },
-    [toggle, row.key],
-  );
+  const pick = () => props.select?.(props.row.key);
+  const pickName = (event: MouseEvent) => {
+    event.stopPropagation();
+    props.select?.(props.row.key);
+  };
+  const disclose = (event: MouseEvent) => {
+    event.stopPropagation();
+    props.toggle(props.row.key);
+  };
   return (
     <>
-      <tr
-        className={selected ? "selected" : undefined}
-        onClick={select ? pick : undefined}
-        data-row={row.key}
-      >
-        <td className="mono name" title={row.name}>
-          {row.errnos.length > 0 ? (
+      <tr class={props.selected ? "selected" : undefined} onClick={pick} data-row={props.row.key}>
+        <td class="mono name" title={props.row.name}>
+          <Show when={props.row.errnos.length > 0}>
             <button
               type="button"
-              className="disclose"
-              aria-expanded={open}
+              class="disclose"
+              aria-expanded={props.open ? "true" : "false"}
               aria-label="Errors by errno"
               onClick={disclose}
             >
-              {open ? "▾" : "▸"}
+              {props.open ? "▾" : "▸"}
             </button>
-          ) : null}
-          {select ? (
+          </Show>
+          <Show when={props.select} fallback={props.row.name}>
             <button
               type="button"
-              className="link-button"
-              aria-pressed={selected}
+              class="link-button"
+              aria-pressed={props.selected ? "true" : "false"}
               onClick={pickName}
             >
-              {row.name}
+              {props.row.name}
             </button>
-          ) : (
-            row.name
-          )}
+          </Show>
         </td>
-        <td className="num">{formatCount(row.calls)}</td>
-        <td className={`num ${row.errors > 0 ? "error-text" : ""}`}>{formatCount(row.errors)}</td>
-        <td className="num">
-          <Duration ns={row.totalNs} />
+        <td class="num">{formatCount(props.row.calls)}</td>
+        <td class={`num ${props.row.errors > 0 ? "error-text" : ""}`}>
+          {formatCount(props.row.errors)}
         </td>
-        <td className="num">{time(row.p50Ns)}</td>
-        <td className="num">{time(row.p90Ns)}</td>
-        <td className="num">{time(row.p99Ns)}</td>
-        <td className="num">{row.timed > 0 ? <Duration ns={row.maxNs} /> : "–"}</td>
-        <td className="num">{row.bytes > 0 ? <Bytes bytes={row.bytes} /> : ""}</td>
+        <td class="num">
+          <Duration ns={props.row.totalNs} />
+        </td>
+        <td class="num">
+          <TimeCell value={props.row.p50Ns} />
+        </td>
+        <td class="num">
+          <TimeCell value={props.row.p90Ns} />
+        </td>
+        <td class="num">
+          <TimeCell value={props.row.p99Ns} />
+        </td>
+        <td class="num">
+          <Show when={props.row.timed > 0} fallback="–">
+            <Duration ns={props.row.maxNs} />
+          </Show>
+        </td>
+        <td class="num">
+          <Show when={props.row.bytes > 0}>
+            <Bytes bytes={props.row.bytes} />
+          </Show>
+        </td>
         <td>
-          <SamplesDuring during={formatDuringRow(group, row.key)} name={row.name} />
+          <SamplesDuring
+            during={formatDuringRow(props.group, props.row.key)}
+            name={props.row.name}
+          />
         </td>
       </tr>
-      {open
-        ? row.errnos.map((errno) => (
-            <tr key={errno.name} className="errno-row">
-              <td className="mono error-text">{errno.name}</td>
-              <td className="num">{formatCount(errno.count)}</td>
+      <Show when={props.open}>
+        <For each={props.row.errnos} keyed={(errno) => errno.name}>
+          {(errno) => (
+            <tr class="errno-row">
+              <td class="mono error-text">{errno().name}</td>
+              <td class="num">{formatCount(errno().count)}</td>
               {/* oxlint-disable-next-line jsx-a11y/control-has-associated-label -- an empty cell that fills the row */}
-              <td colSpan={8} />
+              <td colspan={8} />
             </tr>
-          ))
-        : null}
+          )}
+        </For>
+      </Show>
     </>
   );
 }
 
-export function SamplesDuring({
-  during,
-  name,
-  children = "samples",
-}: {
+export function SamplesDuring(props: {
   during: string;
   name: string;
-  children?: string;
+  children?: string | undefined;
 }) {
-  const { setLook, summary } = useProfile();
+  const focus = useProfile();
 
-  const kernel = sampledKernel(summary.settings);
-  const show = useCallback(
-    (event: MouseEvent) => {
-      event.stopPropagation();
-      setLook((prev) => {
-        const look = withLook(prev, "du", during);
-        return kernel ? look : withLook(look, "sk", "1");
-      }, true);
-    },
-    [setLook, during, kernel],
-  );
+  const kernel = createMemo(() => sampledKernel(focus().summary.settings));
+  const show = (event: MouseEvent) => {
+    event.stopPropagation();
+    const isKernel = kernel();
+    focus().setLook((prev) => {
+      const look = withLook(prev, "du", props.during);
+      return isKernel ? look : withLook(look, "sk", "1");
+    }, true);
+  };
   return (
     <button
       type="button"
-      className="link-button samples-during"
+      class="link-button samples-during"
       title={
-        kernel
+        kernel()
           ? "Keep only the samples taken during these calls"
           : "Keep only these calls' time, under the stacks that made them"
       }
-      aria-label={`Samples during ${name}`}
+      aria-label={`Samples during ${props.name}`}
       onClick={show}
     >
-      {children}
+      {props.children ?? "samples"}
     </button>
   );
 }

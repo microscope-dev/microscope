@@ -1,14 +1,15 @@
+import type { JSX } from "@solidjs/web";
 import {
-  type ChangeEvent,
-  type FormEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from "react";
-import { useStore } from "zustand";
+  createEffect,
+  createMemo,
+  createSignal,
+  createUniqueId,
+  For,
+  Match,
+  onSettled,
+  Show,
+  Switch,
+} from "solid-js";
 
 import {
   account,
@@ -36,6 +37,7 @@ import {
 import { useFeatures } from "../features";
 import { isPagePath } from "../focus";
 import { autofillAvailable, signInWithPasskey, supported } from "../passkeys";
+import { useSelector } from "../state";
 import { useModel } from "../store";
 import { parseJoinLink, remote, setRemote, standalone } from "../target";
 import { qrcodegen } from "../vendor/qrcodegen";
@@ -58,60 +60,82 @@ function disconnect() {
 
 export function ConnectBody() {
   const link = useModel((model) => model.link);
-  if (!standalone && link === "unauthorized") {
-    return (
-      <div className="pane-body pane-text">
-        <p>This browser has not joined this microscope session yet. Open a join link.</p>
-        <p className="muted">
-          <code>microscope web</code> prints one when it starts, and anyone in the session can make
-          one with Share.
-        </p>
-      </div>
-    );
-  }
   if (!standalone) {
     return (
-      <div className="pane-body pane-text">
-        <p>
-          This page came from <code>{window.location.origin}</code>, the <code>microscope web</code>{" "}
-          it debugs with
-          {link === "open" ? ", and is connected to it." : "."}
-        </p>
-      </div>
+      <Show
+        when={link() === "unauthorized"}
+        fallback={
+          <div class="pane-body pane-text">
+            <p>
+              This page came from <code>{window.location.origin}</code>, the{" "}
+              <code>microscope web</code> it debugs with
+              {link() === "open" ? ", and is connected to it." : "."}
+            </p>
+          </div>
+        }
+      >
+        <div class="pane-body pane-text">
+          <p>This browser has not joined this microscope session yet. Open a join link.</p>
+          <p class="muted">
+            <code>microscope web</code> prints one when it starts, and anyone in the session can
+            make one with Share.
+          </p>
+        </div>
+      </Show>
     );
   }
   const connected = remote();
-  if (!connected || link === "unauthorized") {
-    return (
-      <div className="pane-body pane-text">
-        {connected && <p className="error">{refused()}</p>}
-        <ConnectForm />
-      </div>
-    );
-  }
+  const status = createMemo(() => {
+    const current = link();
+    return current === "open" ||
+      current === "connecting" ||
+      current === "reconnecting" ||
+      current === "incompatible"
+      ? current
+      : null;
+  });
   return (
-    <div className="pane-body pane-text">
-      <p className={link === "unreachable" ? "error" : undefined}>
-        {link === "unreachable" ? (
-          <>
-            Can&apos;t reach the microscope at <code>{connected.server}</code>. It may have stopped;
-            this page keeps trying.
-          </>
-        ) : (
-          <>
-            {CONNECTION[link]} <code>{connected.server}</code>
-            {link === "connecting" || link === "reconnecting" ? "…" : "."}
-          </>
-        )}
-      </p>
-      <div className="actions">
-        <button type="button" className="button" onClick={disconnect}>
-          Disconnect
-        </button>
-      </div>
-      <h2>Connect to another</h2>
-      <ConnectForm />
-    </div>
+    <Show
+      when={connected && link() !== "unauthorized" ? connected : null}
+      fallback={
+        <div class="pane-body pane-text">
+          <Show when={connected}>
+            <p class="error">{refused()}</p>
+          </Show>
+          <ConnectForm />
+        </div>
+      }
+    >
+      {(target) => (
+        <div class="pane-body pane-text">
+          <p class={link() === "unreachable" ? "error" : undefined}>
+            <Show
+              when={link() === "unreachable"}
+              fallback={
+                <Show when={status()}>
+                  {(state) => (
+                    <>
+                      {CONNECTION[state()]} <code>{target().server}</code>
+                      {state() === "connecting" || state() === "reconnecting" ? "…" : "."}
+                    </>
+                  )}
+                </Show>
+              }
+            >
+              Can&apos;t reach the microscope at <code>{target().server}</code>. It may have
+              stopped; this page keeps trying.
+            </Show>
+          </p>
+          <div class="actions">
+            <button type="button" class="button" onClick={disconnect}>
+              Disconnect
+            </button>
+          </div>
+          <h2>Connect to another</h2>
+          <ConnectForm />
+        </div>
+      )}
+    </Show>
   );
 }
 
@@ -123,48 +147,45 @@ const CONNECTION: Record<"open" | "connecting" | "reconnecting" | "incompatible"
 };
 
 function ConnectForm() {
-  const id = useId();
-  const [link, setLink] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const connect = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      const joined = parseJoinLink(link);
-      if (!joined) {
-        setError("That is not a join link. One looks like http://127.0.0.1:7341/join#c-…");
-        return;
-      }
-      setRemote({ server: joined.server, token: joined.token });
+  const id = createUniqueId();
+  const [link, setLink] = createSignal("");
+  const [error, setError] = createSignal<string | null>(null);
+  const connect = (event: SubmitEvent) => {
+    event.preventDefault();
+    const joined = parseJoinLink(link());
+    if (!joined) {
+      setError("That is not a join link. One looks like http://127.0.0.1:7341/join#c-…");
+      return;
+    }
+    setRemote({ server: joined.server, token: joined.token });
 
-      window.location.assign(isPagePath(joined.to) ? joined.to : "/");
-    },
-    [link],
-  );
-  const edit = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    setLink(event.target.value);
+    window.location.assign(isPagePath(joined.to) ? joined.to : "/");
+  };
+  const edit = (event: InputEvent & { currentTarget: HTMLInputElement }) => {
+    setLink(event.currentTarget.value);
     setError(null);
-  }, []);
+  };
   return (
-    <form className="pane-form" onSubmit={connect}>
-      <div className="field">
-        <label htmlFor={id}>Join link</label>
+    <form class="pane-form" onSubmit={connect}>
+      <div class="field">
+        <label for={id}>Join link</label>
         <input
           id={id}
-          className="input"
-          value={link}
-          aria-invalid={error !== null}
-          data-autofocus
-          onChange={edit}
+          class="input"
+          value={link()}
+          aria-invalid={error() === null ? "false" : "true"}
+          data-autofocus=""
+          onInput={edit}
           placeholder="http://127.0.0.1:7341/join#c-…"
-          spellCheck={false}
+          spellcheck={false}
         />
-        <span className="note">
+        <span class="note">
           <code>microscope web</code> prints one when it starts, and Share makes more.
         </span>
       </div>
-      {error && <span className="error">{error}</span>}
-      <div className="actions">
-        <button type="submit" className="button primary" disabled={!link.trim()}>
+      <Show when={error()}>{(message) => <span class="error">{message()}</span>}</Show>
+      <div class="actions">
+        <button type="submit" class="button primary" disabled={!link().trim()}>
           Connect
         </button>
       </div>
@@ -184,119 +205,178 @@ type Step =
 export function AccountBody() {
   const now = useAccount();
   const notice = useNotice();
-  const [error, setError] = useState<string | null>(null);
-  const [everywhere, setEverywhere] = useState(false);
-  const [step, setStep] = useState<Step>({ kind: "sign-in" });
+  const [error, setError] = createSignal<string | null>(null);
+  const [everywhere, setEverywhere] = createSignal(false);
+  const [step, setStep] = createSignal<Step>({ kind: "sign-in" });
 
-  const go = useCallback((next: Step) => {
+  const go = (next: Step) => {
     account.setState({ notice: null });
     setStep(next);
-  }, []);
-  useEffect(() => {
+  };
+  onSettled(() => {
     void checkAccount();
-  }, []);
+  });
 
-  const [kind, setKind] = useState(now.kind);
-  if (kind !== now.kind) {
-    setKind(now.kind);
-    setStep({ kind: "sign-in" });
-  }
+  const accountKind = createMemo(() => now().kind);
+  createEffect(
+    () => accountKind(),
+    () => {
+      setStep({ kind: "sign-in" });
+    },
+    { defer: true },
+  );
 
-  const challenge = useStore(account, (state) => state.challenge);
-  useEffect(() => {
-    if (challenge !== null && now.kind === "out") {
-      account.setState({ challenge: null });
-      // oxlint-disable-next-line react/set-state-in-effect -- the challenge is taken from the account store once
-      setStep({ kind: "totp", challenge });
-    }
-  }, [challenge, now.kind]);
-  const outEverywhere = useCallback(() => {
+  const challenge = useSelector(account, (state) => state.challenge);
+  createEffect(
+    () => [challenge(), accountKind()] as const,
+    ([pending, kind]) => {
+      if (pending !== null && kind === "out") {
+        account.setState({ challenge: null });
+        setStep({ kind: "totp", challenge: pending });
+      }
+    },
+  );
+  const outEverywhere = () => {
     setError(null);
     signOutEverywhere()
       .catch((failure: Error) => setError(failure.message))
       .finally(() => setEverywhere(false));
-  }, []);
-  const out = useCallback(() => {
+  };
+  const out = () => {
     setError(null);
     signOut().catch((failure: Error) => setError(failure.message));
-  }, []);
-  const askEverywhere = useCallback(() => setEverywhere(true), []);
-  const cancelEverywhere = useCallback(() => setEverywhere(false), []);
+  };
+  const askEverywhere = () => setEverywhere(true);
+  const cancelEverywhere = () => setEverywhere(false);
 
-  const reset = useStore(account, (state) => state.reset);
+  const reset = useSelector(account, (state) => state.reset);
+  const heading = createMemo(() => {
+    const current = now();
+    return current.kind === "in" ? `Welcome, ${current.user.username}` : "Welcome to microscope";
+  });
+  const unavailable = createMemo(() => {
+    const current = now();
+    return current.kind === "unavailable" ? current : null;
+  });
+  const signedIn = createMemo(() => {
+    const current = now();
+    return current.kind === "in" ? current : null;
+  });
+  const sentStep = createMemo(() => {
+    const current = step();
+    return current.kind === "sent" ? current : null;
+  });
+  const codeStep = createMemo(() => {
+    const current = step();
+    return current.kind === "code" ? current : null;
+  });
+  const totpStep = createMemo(() => {
+    const current = step();
+    return current.kind === "totp" ? current : null;
+  });
+  const recoveryStep = createMemo(() => {
+    const current = step();
+    return current.kind === "recovery" ? current : null;
+  });
+  const forgotStep = createMemo(() => {
+    const current = step();
+    return current.kind === "forgot" ? current : null;
+  });
 
   return (
-    <div className="pane-body pane-text">
-      {notice &&
-        (notice.ok ? (
-          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result
-          <p role="status">{notice.text}</p>
-        ) : (
-          <div className="banner error" role="alert">
-            {notice.text}
-          </div>
-        ))}
-      <h1>{now.kind === "in" ? `Welcome, ${now.user.username}` : "Welcome to microscope"}</h1>
+    <div class="pane-body pane-text">
+      <Show when={notice()}>
+        {(current) => (
+          <Show
+            when={current().ok}
+            fallback={
+              <div class="banner error" role="alert">
+                {current().text}
+              </div>
+            }
+          >
+            {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result */}
+            <p role="status">{current().text}</p>
+          </Show>
+        )}
+      </Show>
+      <h1>{heading()}</h1>
       <Actions />
       <OrgLink />
-      {reset === null ? (
-        now.kind === "checking" ? (
-          <p className="muted">Checking whether you are signed in…</p>
-        ) : now.kind === "unavailable" ? (
-          <p className="muted">
-            Sign-in is unavailable ({now.why}). You can still connect without an account.
-          </p>
-        ) : now.kind === "in" ? (
-          <>
-            <p>
-              Signed in as <b>{now.user.username}</b> ({now.user.email}).
-            </p>
-            <p className="muted">Your programs, sessions, and profiles will show up here.</p>
-            {error && <span className="error">{error}</span>}
-            <div className="actions">
-              {everywhere ? (
-                <span className="confirm">
-                  <span>Sign out on every device?</span>
-                  <button type="button" className="button danger" onClick={outEverywhere}>
-                    Sign out everywhere
-                  </button>
-                  <button type="button" className="link-button" onClick={cancelEverywhere}>
-                    Cancel
-                  </button>
-                </span>
-              ) : (
+      <Show
+        when={reset()}
+        fallback={
+          <Switch
+            fallback={
+              <Switch fallback={<SignIn go={go} />}>
+                <Match when={step().kind === "sign-up"}>
+                  <SignUp go={go} />
+                </Match>
+                <Match when={sentStep()}>{(s) => <Sent email={s().email} go={go} />}</Match>
+                <Match when={codeStep()}>{(s) => <Code challenge={s().challenge} go={go} />}</Match>
+                <Match when={totpStep()}>{(s) => <Totp challenge={s().challenge} go={go} />}</Match>
+                <Match when={recoveryStep()}>
+                  {(s) => <Recovery challenge={s().challenge} go={go} />}
+                </Match>
+                <Match when={forgotStep()}>{(s) => <Forgot email={s().email} go={go} />}</Match>
+              </Switch>
+            }
+          >
+            <Match when={accountKind() === "checking"}>
+              <p class="muted">Checking whether you are signed in…</p>
+            </Match>
+            <Match when={unavailable()}>
+              {(current) => (
+                <p class="muted">
+                  Sign-in is unavailable ({current().why}). You can still connect without an
+                  account.
+                </p>
+              )}
+            </Match>
+            <Match when={signedIn()}>
+              {(current) => (
                 <>
-                  <button type="button" className="button" onClick={out}>
-                    Sign out
-                  </button>
-                  <button type="button" className="button" onClick={askEverywhere}>
-                    Sign out everywhere
-                  </button>
+                  <p>
+                    Signed in as <b>{current().user.username}</b> ({current().user.email}).
+                  </p>
+                  <p class="muted">Your programs, sessions, and profiles will show up here.</p>
+                  <Show when={error()}>{(message) => <span class="error">{message()}</span>}</Show>
+                  <div class="actions">
+                    <Show
+                      when={everywhere()}
+                      fallback={
+                        <>
+                          <button type="button" class="button" onClick={out}>
+                            Sign out
+                          </button>
+                          <button type="button" class="button" onClick={askEverywhere}>
+                            Sign out everywhere
+                          </button>
+                        </>
+                      }
+                    >
+                      <span class="confirm">
+                        <span>Sign out on every device?</span>
+                        <button type="button" class="button danger" onClick={outEverywhere}>
+                          Sign out everywhere
+                        </button>
+                        <button type="button" class="link-button" onClick={cancelEverywhere}>
+                          Cancel
+                        </button>
+                      </span>
+                    </Show>
+                  </div>
+                  <Organizations />
+                  <SignInMethods />
+                  <TwoFactor user={current().user} />
                 </>
               )}
-            </div>
-            <Organizations />
-            <SignInMethods />
-            <TwoFactor user={now.user} />
-          </>
-        ) : step.kind === "sign-up" ? (
-          <SignUp go={go} />
-        ) : step.kind === "sent" ? (
-          <Sent email={step.email} go={go} />
-        ) : step.kind === "code" ? (
-          <Code challenge={step.challenge} go={go} />
-        ) : step.kind === "totp" ? (
-          <Totp challenge={step.challenge} go={go} />
-        ) : step.kind === "recovery" ? (
-          <Recovery challenge={step.challenge} go={go} />
-        ) : step.kind === "forgot" ? (
-          <Forgot email={step.email} go={go} />
-        ) : (
-          <SignIn go={go} />
-        )
-      ) : (
-        <NewPassword token={reset} />
-      )}
+            </Match>
+          </Switch>
+        }
+      >
+        {(token) => <NewPassword token={token()} />}
+      </Show>
     </div>
   );
 }
@@ -307,56 +387,59 @@ const ACTIONS: readonly CommandId[] = ["launch", "attach", "core", "record"];
 
 function Actions() {
   const commands = useCommands();
-
-  useModel((model) => [model.hello?.role, model.link, model.state?.session].join());
-
-  const offered = ACTIONS.flatMap((id) => {
-    const availability = commands.availability(id);
-    return availability.state === "absent" ? [] : [{ id, availability }];
+  const signature = useModel((model) =>
+    [model.hello?.role, model.link, model.state?.session].join(),
+  );
+  const offered = createMemo(() => {
+    signature();
+    return ACTIONS.flatMap((id) => {
+      const availability = commands.availability(id);
+      return availability.state === "absent" ? [] : [{ id, availability }];
+    });
   });
-  if (offered.length === 0) {
-    return null;
-  }
   return (
-    <ul className="start-actions">
-      {offered.map(({ id, availability }) => (
-        <Action key={id} id={id} availability={availability} onRun={commands.run} />
-      ))}
-    </ul>
+    <Show when={offered().length > 0}>
+      <ul class="start-actions">
+        <For each={offered()} keyed={(item) => item.id}>
+          {(item) => (
+            <Action id={item().id} availability={item().availability} onRun={commands.run} />
+          )}
+        </For>
+      </ul>
+    </Show>
   );
 }
 
-function Action({
-  id,
-  availability,
-  onRun,
-}: {
+function Action(props: {
   id: CommandId;
   availability: Availability;
   onRun: (id: CommandId) => unknown;
 }) {
-  const onClick = useCallback(() => onRun(id), [onRun, id]);
-  const key = COMMANDS.describe(id) ?? COMMANDS.describe(id, true);
+  const onClick = () => props.onRun(props.id);
+  const key = createMemo(() => COMMANDS.describe(props.id) ?? COMMANDS.describe(props.id, true));
+  const blocked = createMemo(() =>
+    props.availability.state === "blocked" ? props.availability.why : undefined,
+  );
   return (
     <li>
       <button
         type="button"
-        className="button"
-        disabled={availability.state !== "ready"}
-        title={availability.state === "blocked" ? availability.why : undefined}
+        class="button"
+        disabled={props.availability.state !== "ready"}
+        title={blocked()}
         onClick={onClick}
       >
-        {COMMANDS.get(id).label}
+        {COMMANDS.get(props.id).label}
       </button>
-      {key && <kbd>{key}</kbd>}
-      {availability.state === "blocked" && <span className="muted">{availability.why}</span>}
+      <Show when={key()}>{(shortcut) => <kbd>{shortcut()}</kbd>}</Show>
+      <Show when={blocked()}>{(why) => <span class="muted">{why()}</span>}</Show>
     </li>
   );
 }
 
-function useSubmit(send: () => Promise<void>) {
+function useSubmit(send: () => Promise<unknown>) {
   const { working, error, run } = useRun();
-  const submit = (event: FormEvent) => {
+  const submit = (event: SubmitEvent) => {
     event.preventDefault();
     run(send);
   };
@@ -370,204 +453,216 @@ function Field(props: {
   note?: string;
   type?: "email" | "password";
   autoComplete: string;
-
   first?: boolean;
   code?: boolean;
 }) {
-  const id = useId();
-  const noteId = useId();
-  const { set } = props;
-  const edit = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => set(event.target.value),
-    [set],
-  );
+  const id = createUniqueId();
+  const noteId = createUniqueId();
+  const edit = (event: InputEvent & { currentTarget: HTMLInputElement }) =>
+    props.set(event.currentTarget.value);
   return (
-    <div className="field">
-      <label htmlFor={id}>{props.label}</label>
+    <div class="field">
+      <label for={id}>{props.label}</label>
       <input
         id={id}
-        className="input"
+        class="input"
         type={props.type}
-        autoComplete={props.autoComplete}
-        spellCheck={false}
-        data-autofocus={props.first || undefined}
+        autocomplete={props.autoComplete}
+        spellcheck={false}
+        data-autofocus={props.first ? "" : undefined}
         aria-describedby={props.note ? noteId : undefined}
-        {...(props.code ? { inputMode: "numeric", maxLength: 6, pattern: "[0-9]{6}" } : {})}
+        inputmode={props.code ? "numeric" : undefined}
+        maxlength={props.code ? 6 : undefined}
+        pattern={props.code ? "[0-9]{6}" : undefined}
         value={props.value}
-        onChange={edit}
+        onInput={edit}
       />
-      {props.note && (
-        <span id={noteId} className="note">
-          {props.note}
-        </span>
-      )}
+      <Show when={props.note}>
+        {(note) => (
+          <span id={noteId} class="note">
+            {note()}
+          </span>
+        )}
+      </Show>
     </div>
   );
 }
 
-function usePasskeySignIn(on: boolean) {
+function usePasskeySignIn(on: () => boolean) {
   const { working, error, run, fail } = useRun();
-  const autofill = useRef<AbortController | null>(null);
+  let autofill: AbortController | null = null;
 
-  useEffect(() => {
-    if (!on) {
-      return;
-    }
-    const controller = new AbortController();
-    autofill.current = controller;
-    autofillAvailable()
-      .then((available) =>
-        available ? signInWithPasskey({ autofill: true, signal: controller.signal }) : null,
-      )
-      .catch((failure: Error) => {
-        if (!controller.signal.aborted) {
-          fail(failure);
-        }
-      });
-    return () => controller.abort();
-  }, [on, fail]);
+  createEffect(
+    () => on(),
+    (enabled) => {
+      if (!enabled) {
+        return;
+      }
+      const controller = new AbortController();
+      autofill = controller;
+      autofillAvailable()
+        .then((available) =>
+          available ? signInWithPasskey({ autofill: true, signal: controller.signal }) : null,
+        )
+        .catch((failure: Error) => {
+          if (!controller.signal.aborted) {
+            fail(failure);
+          }
+        });
+      return () => {
+        controller.abort();
+      };
+    },
+  );
 
   const start = () => {
-    autofill.current?.abort();
+    autofill?.abort();
     run(signInWithPasskey);
   };
-  return { working, error: error?.message ?? null, start };
+  return {
+    working,
+    error: createMemo(() => error()?.message ?? null),
+    start,
+  };
 }
 
-function SignIn({ go }: { go: Go }) {
+function SignIn(props: { go: Go }) {
   const offered = useFeatures();
-  const passkeys = offered?.passkeys === true && supported();
+  const passkeys = createMemo(() => offered()?.passkeys === true && supported());
   const passkey = usePasskeySignIn(passkeys);
-  const [name, setName] = useState("");
-  const [password, setPassword] = useState("");
+  const [name, setName] = createSignal("");
+  const [password, setPassword] = createSignal("");
   const { working, error, submit } = useSubmit(async () => {
-    const signed = await signIn(name, password);
+    const signed = await signIn(name(), password());
     if ("challenge" in signed) {
-      go({ kind: signed.method === "totp" ? "totp" : "code", challenge: signed.challenge });
+      props.go({ kind: signed.method === "totp" ? "totp" : "code", challenge: signed.challenge });
     }
   });
 
-  const unconfirmed = error instanceof Refused && error.status === 403;
-  const forgot = useCallback(
-    () => go({ kind: "forgot", email: name.includes("@") ? name.trim() : "" }),
-    [go, name],
-  );
-  const toSignUp = useCallback(() => go({ kind: "sign-up" }), [go]);
+  const unconfirmed = createMemo(() => {
+    const current = error();
+    return current instanceof Refused && current.status === 403;
+  });
+  const forgot = () => {
+    const current = name();
+    props.go({ kind: "forgot", email: current.includes("@") ? current.trim() : "" });
+  };
+  const toSignUp = () => props.go({ kind: "sign-up" });
   return (
     <>
-      <form className="pane-form" onSubmit={submit}>
-        <p className="muted">Optional. A join link works without an account.</p>
+      <form class="pane-form" onSubmit={submit}>
+        <p class="muted">Optional. A join link works without an account.</p>
         <Field
           label="Username or email"
-          value={name}
+          value={name()}
           set={setName}
-          autoComplete={passkeys ? "username webauthn" : "username"}
+          autoComplete={passkeys() ? "username webauthn" : "username"}
           first
         />
         <Field
           label="Password"
           type="password"
-          value={password}
+          value={password()}
           set={setPassword}
           autoComplete="current-password"
         />
-        {error && <span className="error">{error.message}</span>}
-        <div className="actions">
+        <Show when={error()}>{(err) => <span class="error">{err().message}</span>}</Show>
+        <div class="actions">
           <button
             type="submit"
-            className="button primary"
-            disabled={working || !name.trim() || !password}
+            class="button primary"
+            disabled={working() || !name().trim() || !password()}
           >
             Sign in
           </button>
-          {offered?.email && (
-            <button type="button" className="link-button" onClick={forgot}>
+          <Show when={offered()?.email}>
+            <button type="button" class="link-button" onClick={forgot}>
               Forgot password?
             </button>
-          )}
-          <span className="muted">
+          </Show>
+          <span class="muted">
             No account?
-            <button type="button" className="link-button" onClick={toSignUp}>
+            <button type="button" class="link-button" onClick={toSignUp}>
               Create one
             </button>
           </span>
         </div>
       </form>
       <ContinueWith>
-        {passkeys && (
-          <button
-            type="button"
-            className="button"
-            disabled={passkey.working}
-            onClick={passkey.start}
-          >
+        <Show when={passkeys()}>
+          <button type="button" class="button" disabled={passkey.working()} onClick={passkey.start}>
             Sign in with a passkey
           </button>
-        )}
+        </Show>
       </ContinueWith>
-      {passkey.error && (
-        <span className="error" role="alert">
-          {passkey.error}
-        </span>
-      )}
-      {unconfirmed && (
-        <Resend email={name.includes("@") ? name : ""} go={go}>
+      <Show when={passkey.error()}>
+        {(message) => (
+          <span class="error" role="alert">
+            {message()}
+          </span>
+        )}
+      </Show>
+      <Show when={unconfirmed()}>
+        <Resend email={name().includes("@") ? name() : ""} go={props.go}>
           <h2>Confirm your email address</h2>
-          <p className="muted">
+          <p class="muted">
             Follow the link in the email sent when you signed up, or get a new one.
           </p>
         </Resend>
-      )}
+      </Show>
     </>
   );
 }
 
-function SignUp({ go }: { go: Go }) {
+function SignUp(props: { go: Go }) {
   const offered = useFeatures();
-  const [username, setUsername] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [username, setUsername] = createSignal("");
+  const [email, setEmail] = createSignal("");
+  const [password, setPassword] = createSignal("");
   const { working, error, submit } = useSubmit(async () => {
-    const confirming = offered?.email === true;
-    await signUp(username, email, password, confirming);
+    const confirming = offered()?.email === true;
+    const address = email();
+    await signUp(username(), address, password(), confirming);
     if (confirming) {
-      go({ kind: "sent", email });
+      props.go({ kind: "sent", email: address });
     }
   });
-  const toSignIn = useCallback(() => go({ kind: "sign-in" }), [go]);
+  const toSignIn = () => props.go({ kind: "sign-in" });
   return (
     <>
-      <form className="pane-form" onSubmit={submit}>
+      <form class="pane-form" onSubmit={submit}>
         <h2>Create an account</h2>
         <Field
           label="Username"
-          value={username}
+          value={username()}
           set={setUsername}
           autoComplete="username"
           note="3 to 32 letters, digits, _ or -."
           first
         />
-        <Field label="Email" type="email" value={email} set={setEmail} autoComplete="email" />
+        <Field label="Email" type="email" value={email()} set={setEmail} autoComplete="email" />
         <Field
           label="Password"
           type="password"
-          value={password}
+          value={password()}
           set={setPassword}
           autoComplete="new-password"
           note="At least 8 characters."
         />
-        {error && <span className="error">{error.message}</span>}
-        <div className="actions">
+        <Show when={error()}>{(err) => <span class="error">{err().message}</span>}</Show>
+        <div class="actions">
           <button
             type="submit"
-            className="button primary"
-            disabled={working || !offered || !username.trim() || !email.trim() || !password}
+            class="button primary"
+            disabled={
+              working() || !offered() || !username().trim() || !email().trim() || !password()
+            }
           >
             Create account
           </button>
-          <span className="muted">
+          <span class="muted">
             Have one?
-            <button type="button" className="link-button" onClick={toSignIn}>
+            <button type="button" class="link-button" onClick={toSignIn}>
               Sign in
             </button>
           </span>
@@ -578,81 +673,84 @@ function SignUp({ go }: { go: Go }) {
   );
 }
 
-function Sent({ email, go }: { email: string; go: Go }) {
+function Sent(props: { email: string; go: Go }) {
   return (
-    <Resend email={email} go={go} fixed>
+    <Resend email={props.email} go={props.go} fixed>
       <h2>Check your email</h2>
       <p>
-        A confirmation link is on its way to <b>{email}</b>. Follow it, then sign in here.
+        A confirmation link is on its way to <b>{props.email}</b>. Follow it, then sign in here.
       </p>
     </Resend>
   );
 }
 
-function Resend(props: { email: string; go: Go; fixed?: boolean; children: ReactNode }) {
-  const [email, setEmail] = useState(props.email);
-  const [sent, setSent] = useState(false);
+function Resend(props: { email: string; go: Go; fixed?: boolean; children: JSX.Element }) {
+  const [email, setEmail] = createSignal(() => props.email);
+  const [sent, setSent] = createSignal(false);
   const { working, error, submit } = useSubmit(async () => {
     setSent(false);
-    await resendConfirmation(email);
+    await resendConfirmation(email());
     setSent(true);
   });
-  const { go } = props;
-  const toSignIn = useCallback(() => go({ kind: "sign-in" }), [go]);
+  const toSignIn = () => props.go({ kind: "sign-in" });
   return (
-    <form className="pane-form" onSubmit={submit}>
+    <form class="pane-form" onSubmit={submit}>
       {props.children}
-      {!props.fixed && (
-        <Field label="Email" type="email" value={email} set={setEmail} autoComplete="email" />
-      )}
-      {sent && (
-        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result
-        <p role="status" className="muted">
-          If {email} still needs confirming, a new link is on its way.
+      <Show when={!props.fixed}>
+        <Field label="Email" type="email" value={email()} set={setEmail} autoComplete="email" />
+      </Show>
+      <Show when={sent()}>
+        {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result */}
+        <p role="status" class="muted">
+          If {email()} still needs confirming, a new link is on its way.
         </p>
-      )}
-      {error && <span className="error">{error.message}</span>}
-      <div className="actions">
-        <button type="submit" className="button" disabled={working || !email.trim()}>
+      </Show>
+      <Show when={error()}>{(err) => <span class="error">{err().message}</span>}</Show>
+      <div class="actions">
+        <button type="submit" class="button" disabled={working() || !email().trim()}>
           Send another link
         </button>
-        {props.fixed && (
-          <button type="button" className="button primary" onClick={toSignIn}>
+        <Show when={props.fixed}>
+          <button type="button" class="button primary" onClick={toSignIn}>
             Sign in
           </button>
-        )}
+        </Show>
       </div>
     </form>
   );
 }
 
 function Forgot(props: { email: string; go: Go }) {
-  const [email, setEmail] = useState(props.email);
-  const [sent, setSent] = useState<string | null>(null);
+  const [email, setEmail] = createSignal(() => props.email);
+  const [sent, setSent] = createSignal<string | null>(null);
   const { working, error, submit } = useSubmit(async () => {
     setSent(null);
-    await requestPasswordReset(email.trim());
-    setSent(email.trim());
+    const address = email().trim();
+    await requestPasswordReset(address);
+    setSent(address);
   });
-  const { go } = props;
-  const toSignIn = useCallback(() => go({ kind: "sign-in" }), [go]);
+  const toSignIn = () => props.go({ kind: "sign-in" });
   return (
-    <form className="pane-form" onSubmit={submit}>
+    <form class="pane-form" onSubmit={submit}>
       <h2>Reset your password</h2>
-      <p className="muted">We will email you a link to choose a new one.</p>
-      <Field label="Email" type="email" value={email} set={setEmail} autoComplete="email" first />
-      {sent && (
-        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result
-        <p role="status" className="muted">
-          If an account uses {sent}, a reset link is on its way.
-        </p>
-      )}
-      {error && <span className="error">{error.message}</span>}
-      <div className="actions">
-        <button type="submit" className="button primary" disabled={working || !email.trim()}>
-          {sent ? "Send another link" : "Send reset link"}
+      <p class="muted">We will email you a link to choose a new one.</p>
+      <Field label="Email" type="email" value={email()} set={setEmail} autoComplete="email" first />
+      <Show when={sent()}>
+        {(address) => (
+          <>
+            {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result */}
+            <p role="status" class="muted">
+              If an account uses {address()}, a reset link is on its way.
+            </p>
+          </>
+        )}
+      </Show>
+      <Show when={error()}>{(err) => <span class="error">{err().message}</span>}</Show>
+      <div class="actions">
+        <button type="submit" class="button primary" disabled={working() || !email().trim()}>
+          {sent() ? "Send another link" : "Send reset link"}
         </button>
-        <button type="button" className="link-button" onClick={toSignIn}>
+        <button type="button" class="link-button" onClick={toSignIn}>
           Back to sign in
         </button>
       </div>
@@ -662,28 +760,28 @@ function Forgot(props: { email: string; go: Go }) {
 
 const cancelReset = () => account.setState({ reset: null });
 
-function NewPassword({ token }: { token: string }) {
-  const [password, setPassword] = useState("");
-  const { working, error, submit } = useSubmit(() => resetPassword(token, password));
+function NewPassword(props: { token: string }) {
+  const [password, setPassword] = createSignal("");
+  const { working, error, submit } = useSubmit(() => resetPassword(props.token, password()));
   return (
-    <form className="pane-form" onSubmit={submit}>
+    <form class="pane-form" onSubmit={submit}>
       <h2>Choose a new password</h2>
-      <p className="muted">Changing it signs your account out on every device.</p>
+      <p class="muted">Changing it signs your account out on every device.</p>
       <Field
         label="New password"
         type="password"
-        value={password}
+        value={password()}
         set={setPassword}
         autoComplete="new-password"
         note="At least 8 characters."
         first
       />
-      {error && <span className="error">{error.message}</span>}
-      <div className="actions">
-        <button type="submit" className="button primary" disabled={working || !password}>
+      <Show when={error()}>{(err) => <span class="error">{err().message}</span>}</Show>
+      <div class="actions">
+        <button type="submit" class="button primary" disabled={working() || !password()}>
           Change password
         </button>
-        <button type="button" className="button" onClick={cancelReset}>
+        <button type="button" class="button" onClick={cancelReset}>
           Cancel
         </button>
       </div>
@@ -691,27 +789,27 @@ function NewPassword({ token }: { token: string }) {
   );
 }
 
-function Code({ challenge, go }: { challenge: string; go: Go }) {
-  const [code, setCode] = useState("");
+function Code(props: { challenge: string; go: Go }) {
+  const [code, setCode] = createSignal("");
   const { working, error, submit } = useSubmit(async () => {
-    await enterCode(challenge, code.trim());
+    await enterCode(props.challenge, code().trim());
   });
-  const startOver = useCallback(() => go({ kind: "sign-in" }), [go]);
+  const startOver = () => props.go({ kind: "sign-in" });
   return (
-    <form className="pane-form" onSubmit={submit}>
+    <form class="pane-form" onSubmit={submit}>
       <h2>Enter the code from your email</h2>
-      <p className="muted">The email also has a link, which signs in whichever device opens it.</p>
-      <Field label="Code" value={code} set={setCode} autoComplete="one-time-code" first code />
-      {error && <span className="error">{error.message}</span>}
-      <div className="actions">
+      <p class="muted">The email also has a link, which signs in whichever device opens it.</p>
+      <Field label="Code" value={code()} set={setCode} autoComplete="one-time-code" first code />
+      <Show when={error()}>{(err) => <span class="error">{err().message}</span>}</Show>
+      <div class="actions">
         <button
           type="submit"
-          className="button primary"
-          disabled={working || !/^\d{6}$/u.test(code.trim())}
+          class="button primary"
+          disabled={working() || !/^\d{6}$/u.test(code().trim())}
         >
           Sign in
         </button>
-        <button type="button" className="link-button" onClick={startOver}>
+        <button type="button" class="link-button" onClick={startOver}>
           Start over
         </button>
       </div>
@@ -719,72 +817,75 @@ function Code({ challenge, go }: { challenge: string; go: Go }) {
   );
 }
 
-function Totp({ challenge, go }: { challenge: string; go: Go }) {
-  const [code, setCode] = useState("");
+function Totp(props: { challenge: string; go: Go }) {
+  const [code, setCode] = createSignal("");
   const { working, error, submit } = useSubmit(async () => {
-    await enterTotp(challenge, code.trim());
+    await enterTotp(props.challenge, code().trim());
   });
-  const recover = useCallback(() => go({ kind: "recovery", challenge }), [go, challenge]);
-  const startOver = useCallback(() => go({ kind: "sign-in" }), [go]);
+  const recover = () => props.go({ kind: "recovery", challenge: props.challenge });
+  const startOver = () => props.go({ kind: "sign-in" });
 
-  const locked = error instanceof Refused && error.status === 429;
+  const locked = createMemo(() => {
+    const current = error();
+    return current instanceof Refused && current.status === 429;
+  });
   return (
-    <form className="pane-form" onSubmit={submit}>
+    <form class="pane-form" onSubmit={submit}>
       <h2>Enter the code from your authenticator app</h2>
-      <Field label="Code" value={code} set={setCode} autoComplete="one-time-code" first code />
-      {error && <span className="error">{error.message}</span>}
-      <div className="actions">
+      <Field label="Code" value={code()} set={setCode} autoComplete="one-time-code" first code />
+      <Show when={error()}>{(err) => <span class="error">{err().message}</span>}</Show>
+      <div class="actions">
         <button
           type="submit"
-          className={locked ? "button" : "button primary"}
-          disabled={working || !/^\d{6}$/u.test(code.trim())}
+          class={["button", { primary: !locked() }]}
+          disabled={working() || !/^\d{6}$/u.test(code().trim())}
         >
           Sign in
         </button>
-        {locked && (
-          <button type="button" className="button primary" onClick={recover}>
+        <Show when={locked()}>
+          <button type="button" class="button primary" onClick={recover}>
             Use a recovery code
           </button>
-        )}
-        <button type="button" className="link-button" onClick={startOver}>
+        </Show>
+        <button type="button" class="link-button" onClick={startOver}>
           Start over
         </button>
       </div>
-      {!locked && (
-        <p className="muted">
+      <Show when={!locked()}>
+        <p class="muted">
           Lost your device?
-          <button type="button" className="link-button" onClick={recover}>
+          <button type="button" class="link-button" onClick={recover}>
             Use a recovery code
           </button>
         </p>
-      )}
+      </Show>
     </form>
   );
 }
 
-function Recovery({ challenge, go }: { challenge: string; go: Go }) {
-  const [code, setCode] = useState("");
+function Recovery(props: { challenge: string; go: Go }) {
+  const [code, setCode] = createSignal("");
   const { working, error, submit } = useSubmit(async () => {
-    await enterRecoveryCode(challenge, code.trim());
+    await enterRecoveryCode(props.challenge, code().trim());
   });
-  const toApp = useCallback(() => go({ kind: "totp", challenge }), [go, challenge]);
+  const toApp = () => props.go({ kind: "totp", challenge: props.challenge });
   return (
-    <form className="pane-form" onSubmit={submit}>
+    <form class="pane-form" onSubmit={submit}>
       <h2>Enter a recovery code</h2>
       <Field
         label="Recovery code"
-        value={code}
+        value={code()}
         set={setCode}
         autoComplete="off"
         note="Each code works once. We email you when one is used."
         first
       />
-      {error && <span className="error">{error.message}</span>}
-      <div className="actions">
-        <button type="submit" className="button primary" disabled={working || !code.trim()}>
+      <Show when={error()}>{(err) => <span class="error">{err().message}</span>}</Show>
+      <div class="actions">
+        <button type="submit" class="button primary" disabled={working() || !code().trim()}>
           Sign in
         </button>
-        <button type="button" className="link-button" onClick={toApp}>
+        <button type="button" class="link-button" onClick={toApp}>
           Use the app instead
         </button>
       </div>
@@ -799,89 +900,116 @@ type Setup =
   | { kind: "codes"; codes: string[]; enabling: boolean }
   | { kind: "reauth"; action: "disable" | "codes" };
 
-function TwoFactor({ user }: { user: User }) {
+function TwoFactor(props: { user: User }) {
   const offered = useFeatures();
-  const [setup, setSetup] = useState<Setup>({ kind: "idle" });
-  const idle = useCallback(() => setSetup({ kind: "idle" }), []);
-  const enabling = setup.kind === "codes" && setup.enabling;
-  const saved = useCallback(() => {
+  const [setup, setSetup] = createSignal<Setup>({ kind: "idle" });
+  const idle = () => setSetup({ kind: "idle" });
+  const saved = () => {
+    const current = setup();
+    const enabling = current.kind === "codes" && current.enabling;
     idle();
     if (enabling) {
       void totpConfirmed();
     }
-  }, [idle, enabling]);
-  const newCodes = useCallback(() => setSetup({ kind: "reauth", action: "codes" }), []);
-  const turnOff = useCallback(() => setSetup({ kind: "reauth", action: "disable" }), []);
-  const start = useCallback(() => setSetup({ kind: "password" }), []);
+  };
+  const newCodes = () => setSetup({ kind: "reauth", action: "codes" });
+  const turnOff = () => setSetup({ kind: "reauth", action: "disable" });
+  const start = () => setSetup({ kind: "password" });
 
-  if (!offered || (!offered.totp && !user.totp_enabled)) {
-    return null;
-  }
+  const visible = createMemo(() => {
+    const current = offered();
+    return Boolean(current && (current.totp || props.user.totp_enabled));
+  });
+  const scanSetup = createMemo(() => {
+    const current = setup();
+    return current.kind === "scan" ? current : null;
+  });
+  const codesSetup = createMemo(() => {
+    const current = setup();
+    return current.kind === "codes" ? current : null;
+  });
+  const reauthSetup = createMemo(() => {
+    const current = setup();
+    return current.kind === "reauth" ? current : null;
+  });
+
   return (
-    <>
+    <Show when={visible()}>
       <h2>Two-factor authentication</h2>
-      {setup.kind === "password" ? (
-        <SetupPassword next={setSetup} cancel={idle} />
-      ) : setup.kind === "scan" ? (
-        <Scan secret={setup.secret} uri={setup.uri} next={setSetup} cancel={idle} />
-      ) : setup.kind === "codes" ? (
-        <RecoveryCodes codes={setup.codes} done={saved} />
-      ) : setup.kind === "reauth" ? (
-        <Reauthenticate action={setup.action} next={setSetup} cancel={idle} />
-      ) : user.totp_enabled ? (
-        <>
-          <p className="muted">On. Signing in takes your password and a code from your app.</p>
-          <div className="actions">
-            <button type="button" className="button" onClick={newCodes}>
-              New recovery codes
-            </button>
-            <button type="button" className="button" onClick={turnOff}>
-              Turn off
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <p className="muted">
-            Off. Turn it on, and signing in will take a code from an authenticator app as well as
-            your password.
-          </p>
-          <div className="actions">
-            <button type="button" className="button" onClick={start}>
-              Set up
-            </button>
-          </div>
-        </>
-      )}
-    </>
+      <Switch
+        fallback={
+          <Show
+            when={props.user.totp_enabled}
+            fallback={
+              <>
+                <p class="muted">
+                  Off. Turn it on, and signing in will take a code from an authenticator app as well
+                  as your password.
+                </p>
+                <div class="actions">
+                  <button type="button" class="button" onClick={start}>
+                    Set up
+                  </button>
+                </div>
+              </>
+            }
+          >
+            <p class="muted">On. Signing in takes your password and a code from your app.</p>
+            <div class="actions">
+              <button type="button" class="button" onClick={newCodes}>
+                New recovery codes
+              </button>
+              <button type="button" class="button" onClick={turnOff}>
+                Turn off
+              </button>
+            </div>
+          </Show>
+        }
+      >
+        <Match when={setup().kind === "password"}>
+          <SetupPassword next={setSetup} cancel={idle} />
+        </Match>
+        <Match when={scanSetup()}>
+          {(current) => (
+            <Scan secret={current().secret} uri={current().uri} next={setSetup} cancel={idle} />
+          )}
+        </Match>
+        <Match when={codesSetup()}>
+          {(current) => <RecoveryCodes codes={current().codes} done={saved} />}
+        </Match>
+        <Match when={reauthSetup()}>
+          {(current) => <Reauthenticate action={current().action} next={setSetup} cancel={idle} />}
+        </Match>
+      </Switch>
+    </Show>
   );
 }
 
 type Next = (setup: Setup) => void;
 
-function SetupPassword({ next, cancel }: { next: Next; cancel: () => void }) {
-  const [password, setPassword] = useState("");
+function SetupPassword(props: { next: Next; cancel: () => void }) {
+  const [password, setPassword] = createSignal("");
   const { working, error, submit } = useSubmit(async () => {
-    const { secret, uri } = await startTotpSetup(password);
-    next({ kind: "scan", secret, uri });
+    const { secret, uri } = await startTotpSetup(password());
+    props.next({ kind: "scan", secret, uri });
   });
   return (
-    <form className="pane-form" onSubmit={submit}>
+    <form class="pane-form" onSubmit={submit}>
       <Field
         label="Password"
         type="password"
-        value={password}
+        value={password()}
         set={setPassword}
         autoComplete="current-password"
         note="Enter your password to start."
         first
       />
-      {error && <span className="error">{error.message}</span>}
-      <div className="actions">
-        <button type="submit" className="button primary" disabled={working || !password}>
+      <Show when={error()}>{(err) => <span class="error">{err().message}</span>}</Show>
+      <div class="actions">
+        <button type="submit" class="button primary" disabled={working() || !password()}>
           Continue
         </button>
-        <button type="button" className="link-button" onClick={cancel}>
+        <button type="button" class="link-button" onClick={() => props.cancel()}>
           Cancel
         </button>
       </div>
@@ -890,45 +1018,45 @@ function SetupPassword({ next, cancel }: { next: Next; cancel: () => void }) {
 }
 
 function Scan(props: { secret: string; uri: string; next: Next; cancel: () => void }) {
-  const [code, setCode] = useState("");
+  const [code, setCode] = createSignal("");
   const { working, error, submit } = useSubmit(async () => {
-    const codes = await confirmTotpSetup(code.trim());
+    const codes = await confirmTotpSetup(code().trim());
     props.next({ kind: "codes", codes, enabling: true });
   });
   return (
-    <form className="pane-form" onSubmit={submit}>
-      <div className="totp-scan">
+    <form class="pane-form" onSubmit={submit}>
+      <div class="totp-scan">
         <Qr text={props.uri} />
-        <div className="totp-key">
+        <div class="totp-key">
           <span>
             Scan this with an authenticator app, such as 1Password or Google Authenticator.
           </span>
-          <span className="muted">Can&apos;t scan it? Enter this key:</span>
+          <span class="muted">Can&apos;t scan it? Enter this key:</span>
           <code data-testid="totp-secret">{props.secret.match(/.{1,4}/gu)?.join(" ")}</code>
-          <div className="actions">
+          <div class="actions">
             <Copy text={props.secret} label="Copy key" />
           </div>
         </div>
       </div>
       <Field
         label="Code from the app"
-        value={code}
+        value={code()}
         set={setCode}
         autoComplete="one-time-code"
         note="Turning it on signs you out everywhere else."
         first
         code
       />
-      {error && <span className="error">{error.message}</span>}
-      <div className="actions">
+      <Show when={error()}>{(err) => <span class="error">{err().message}</span>}</Show>
+      <div class="actions">
         <button
           type="submit"
-          className="button primary"
-          disabled={working || !/^\d{6}$/u.test(code.trim())}
+          class="button primary"
+          disabled={working() || !/^\d{6}$/u.test(code().trim())}
         >
           Turn on
         </button>
-        <button type="button" className="link-button" onClick={props.cancel}>
+        <button type="button" class="link-button" onClick={() => props.cancel()}>
           Cancel
         </button>
       </div>
@@ -936,86 +1064,91 @@ function Scan(props: { secret: string; uri: string; next: Next; cancel: () => vo
   );
 }
 
-function Qr({ text }: { text: string }) {
-  const qr = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.MEDIUM);
-  const quiet = 4;
-  let path = "";
-  for (let y = 0; y < qr.size; y++) {
-    for (let x = 0; x < qr.size; x++) {
-      if (qr.getModule(x, y)) {
-        path += `M${x + quiet} ${y + quiet}h1v1h-1z`;
+function Qr(props: { text: string }) {
+  const drawing = createMemo(() => {
+    const qr = qrcodegen.QrCode.encodeText(props.text, qrcodegen.QrCode.Ecc.MEDIUM);
+    const quiet = 4;
+    let path = "";
+    for (let y = 0; y < qr.size; y++) {
+      for (let x = 0; x < qr.size; x++) {
+        if (qr.getModule(x, y)) {
+          path += `M${x + quiet} ${y + quiet}h1v1h-1z`;
+        }
       }
     }
-  }
-  const side = qr.size + quiet * 2;
+    return { side: qr.size + quiet * 2, path };
+  });
   return (
     <svg
-      className="totp-qr"
-      viewBox={`0 0 ${side} ${side}`}
+      class="totp-qr"
+      viewBox={`0 0 ${drawing().side} ${drawing().side}`}
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an inline drawing, not an image file
       role="img"
       aria-label="QR code for your authenticator app"
-      shapeRendering="crispEdges"
+      shape-rendering="crispEdges"
     >
-      <rect width={side} height={side} fill="#fff" />
-      <path d={path} fill="#000" />
+      <rect width={drawing().side} height={drawing().side} fill="#fff" />
+      <path d={drawing().path} fill="#000" />
     </svg>
   );
 }
 
-function Copy({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = useCallback(() => {
-    void navigator.clipboard.writeText(text).then(() => setCopied(true));
-  }, [text]);
+function Copy(props: { text: string; label: string }) {
+  const [copied, setCopied] = createSignal(false);
+  const copy = () => {
+    void navigator.clipboard.writeText(props.text).then(() => setCopied(true));
+  };
   if (!navigator.clipboard) {
     return null;
   }
   return (
-    <button type="button" className="button" onClick={copy}>
-      {copied ? "Copied" : label}
+    <button type="button" class="button" onClick={copy}>
+      {copied() ? "Copied" : props.label}
     </button>
   );
 }
 
-function RecoveryCodes({ codes, done }: { codes: string[]; done: () => void }) {
-  const [saved, setSaved] = useState(false);
-  const text = `Microscope recovery codes. Each code works once.\n\n${codes.join("\n")}\n`;
-  const download = useCallback(() => {
-    const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+function RecoveryCodes(props: { codes: string[]; done: () => void }) {
+  const [saved, setSaved] = createSignal(false);
+  const text = createMemo(
+    () => `Microscope recovery codes. Each code works once.\n\n${props.codes.join("\n")}\n`,
+  );
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([text()], { type: "text/plain" }));
     const link = document.createElement("a");
     link.href = url;
     link.download = "microscope-recovery-codes.txt";
     link.click();
     URL.revokeObjectURL(url);
-  }, [text]);
-  const check = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setSaved(event.target.checked),
-    [],
-  );
+  };
+  const check = (event: Event & { currentTarget: HTMLInputElement }) =>
+    setSaved(event.currentTarget.checked);
   return (
-    <div className="pane-form">
+    <div class="pane-form">
       <p>
         <b>Save your recovery codes.</b> If you lose your authenticator, each of these signs you in
         once. This is the only time they are shown.
       </p>
-      <ul className="totp-codes" aria-label="Recovery codes">
-        {codes.map((code) => (
-          <li key={code}>{code}</li>
-        ))}
+      <ul class="totp-codes" aria-label="Recovery codes">
+        <For each={props.codes}>{(code) => <li>{code}</li>}</For>
       </ul>
-      <div className="actions">
-        <Copy text={text} label="Copy" />
-        <button type="button" className="button" onClick={download}>
+      <div class="actions">
+        <Copy text={text()} label="Copy" />
+        <button type="button" class="button" onClick={download}>
           Download .txt
         </button>
       </div>
-      <label className="check">
-        <input type="checkbox" checked={saved} onChange={check} />
-        I saved these codes somewhere safe
+      <label class="check">
+        <input type="checkbox" checked={saved()} onChange={check} />I saved these codes somewhere
+        safe
       </label>
-      <div className="actions">
-        <button type="button" className="button primary" disabled={!saved} onClick={done}>
+      <div class="actions">
+        <button
+          type="button"
+          class="button primary"
+          disabled={!saved()}
+          onClick={() => props.done()}
+        >
           Done
         </button>
       </div>
@@ -1024,21 +1157,20 @@ function RecoveryCodes({ codes, done }: { codes: string[]; done: () => void }) {
 }
 
 function Reauthenticate(props: { action: "disable" | "codes"; next: Next; cancel: () => void }) {
-  const [password, setPassword] = useState("");
-  const [code, setCode] = useState("");
+  const [password, setPassword] = createSignal("");
+  const [code, setCode] = createSignal("");
   const { working, error, submit } = useSubmit(async () => {
     if (props.action === "disable") {
-      await disableTotp(password, code.trim());
+      await disableTotp(password(), code().trim());
       props.cancel();
     } else {
-      const codes = await replaceRecoveryCodes(password, code.trim());
+      const codes = await replaceRecoveryCodes(password(), code().trim());
       props.next({ kind: "codes", codes, enabling: false });
     }
   });
-  const verb = props.action === "disable" ? "Turn off" : "Make new codes";
   return (
-    <form className="pane-form" onSubmit={submit}>
-      <p className="muted">
+    <form class="pane-form" onSubmit={submit}>
+      <p class="muted">
         {props.action === "disable"
           ? "Turning it off takes your password and a code."
           : "New recovery codes replace the old ones, which stop working."}
@@ -1046,27 +1178,27 @@ function Reauthenticate(props: { action: "disable" | "codes"; next: Next; cancel
       <Field
         label="Password"
         type="password"
-        value={password}
+        value={password()}
         set={setPassword}
         autoComplete="current-password"
         first
       />
       <Field
         label="Code from your app, or a recovery code"
-        value={code}
+        value={code()}
         set={setCode}
         autoComplete="one-time-code"
       />
-      {error && <span className="error">{error.message}</span>}
-      <div className="actions">
+      <Show when={error()}>{(err) => <span class="error">{err().message}</span>}</Show>
+      <div class="actions">
         <button
           type="submit"
-          className="button primary"
-          disabled={working || !password || !code.trim()}
+          class="button primary"
+          disabled={working() || !password() || !code().trim()}
         >
-          {verb}
+          {props.action === "disable" ? "Turn off" : "Make new codes"}
         </button>
-        <button type="button" className="link-button" onClick={props.cancel}>
+        <button type="button" class="link-button" onClick={() => props.cancel()}>
           Cancel
         </button>
       </div>

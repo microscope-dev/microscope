@@ -1,8 +1,7 @@
-import { createStore } from "zustand";
-
 import { Refused } from "./account";
 import { request } from "./orgs";
 import type { Passkey } from "./passkeys";
+import { createState } from "./state";
 
 export type Provider = "google" | "github" | "saml";
 
@@ -59,7 +58,7 @@ export const verify = (password: string) =>
 
 export type Asked = "methods" | "org-link";
 
-export const proving = createStore<{ retry: (() => Promise<void>) | null; asked: Asked | null }>(
+export const proving = createState<{ retry: (() => Promise<void>) | null; asked: Asked | null }>(
   () => ({ retry: null, asked: null }),
 );
 

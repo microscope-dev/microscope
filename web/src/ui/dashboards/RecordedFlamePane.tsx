@@ -1,4 +1,4 @@
-import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { createMemo, createSignal, For, Match, onSettled, Show, Switch } from "solid-js";
 
 import { checkAccount, useAccount } from "../../account";
 import { KIND } from "../../documents";
@@ -67,186 +67,224 @@ function showAccount() {
   showPane(KIND.account);
 }
 
+function retryProjects() {
+  void reload();
+}
+
 export function RecordedFlamePane() {
   const now = useAccount();
   const directory = useDirectory();
-  const [chosenId, setChosenId] = useState<number | null>(null);
-  const [search, setSearch] = useState("");
-  const [zoomPath, setZoomPath] = useState<string[] | null>(null);
-  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [chosenId, setChosenId] = createSignal<number | null>(null);
+  const [search, setSearch] = createSignal("");
+  const [zoomPath, setZoomPath] = createSignal<string[] | null>(null);
+  const [selectedName, setSelectedName] = createSignal<string | null>(null);
 
-  useEffect(() => {
+  onSettled(() => {
     void checkAccount();
-  }, []);
+  });
 
-  const projects = useMemo(() => {
-    const list = directory.projects ?? [];
+  const projects = createMemo(() => {
+    const list = directory().projects ?? [];
     return list.toSorted((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
-  }, [directory.projects]);
+  });
 
-  const activeProjectId = useMemo(() => {
-    if (chosenId !== null && projects.some((project) => project.id === chosenId)) {
-      return chosenId;
+  const activeProjectId = createMemo(() => {
+    const chosen = chosenId();
+    const list = projects();
+    if (chosen !== null && list.some((project) => project.id === chosen)) {
+      return chosen;
     }
-    return projects[0]?.id ?? null;
-  }, [chosenId, projects]);
+    return list[0]?.id ?? null;
+  });
 
-  const loadKey =
-    now.kind === "in" && activeProjectId !== null ? `project:${activeProjectId}` : "idle";
-  const loaded = useLoaded<LoadedFlame | null>(
-    () =>
-      now.kind === "in" && activeProjectId !== null
-        ? queryFlame(activeProjectId)
-        : Promise.resolve(null),
-    loadKey,
-  );
+  const loadKey = createMemo(() => {
+    const id = activeProjectId();
+    return now().kind === "in" && id !== null ? `project:${id}` : "idle";
+  });
+  const loaded = useLoaded<LoadedFlame | null>(() => {
+    const id = activeProjectId();
+    return now().kind === "in" && id !== null ? queryFlame(id) : Promise.resolve(null);
+  }, loadKey);
 
   const current = loaded.data;
-  const tree = current?.tree ?? null;
-  const { matched, note } = useTreeSearch(tree, search);
-  const zoom = useMemo(
-    () => (tree && zoomPath ? findPath(tree, zoomPath) : null),
-    [tree, zoomPath],
-  );
-  const selected = useMemo(
-    () => (tree && selectedName ? matching(tree, (name) => name === selectedName).nodes : null),
-    [tree, selectedName],
-  );
+  const tree = createMemo(() => current()?.tree ?? null);
+  const searched = useTreeSearch(tree, search);
+  const zoom = createMemo(() => {
+    const currentTree = tree();
+    const path = zoomPath();
+    return currentTree && path ? findPath(currentTree, path) : null;
+  });
+  const selected = createMemo(() => {
+    const currentTree = tree();
+    const name = selectedName();
+    return currentTree && name
+      ? matching(currentTree, (candidate) => candidate === name).nodes
+      : null;
+  });
 
-  const onProjectChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
-    setChosenId(Number(event.target.value));
+  const onProjectChange = (event: Event & { currentTarget: HTMLSelectElement }) => {
+    setChosenId(Number(event.currentTarget.value));
     setZoomPath(null);
     setSelectedName(null);
-  }, []);
-  const onSearchChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    setSearch(event.target.value);
+  };
+  const onSearchInput = (event: InputEvent & { currentTarget: HTMLInputElement }) => {
+    setSearch(event.currentTarget.value);
     setSelectedName(null);
-  }, []);
-  const onClear = useCallback(() => {
+  };
+  const onClear = () => {
     setSearch("");
     setZoomPath(null);
     setSelectedName(null);
-  }, []);
-  const onZoom = useCallback((zoomed: CallTree, node: number) => {
+  };
+  const onZoom = (zoomed: CallTree, node: number) => {
     setZoomPath(pathOf(zoomed, node));
     setSelectedName(nameOf(zoomed, node));
-  }, []);
-  const onRetryProjects = useCallback(() => {
-    void reload();
-  }, []);
+  };
 
-  if (now.kind !== "in") {
-    return (
-      <div className="pane-body pane-text">
-        {now.kind === "checking" ? (
-          <p className="muted">Checking whether you are signed in…</p>
-        ) : now.kind === "unavailable" ? (
-          <p className="muted">
-            Recorded dashboards need the services backend, which is unavailable ({now.why}).
-          </p>
-        ) : (
-          <>
-            <p>Sign in to view recorded flame graphs.</p>
-            <div className="actions">
-              <button type="button" className="button" onClick={showAccount}>
-                Sign in
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    );
-  }
+  const unavailable = createMemo(() => {
+    const accountNow = now();
+    return accountNow.kind === "unavailable" ? accountNow : null;
+  });
 
   return (
-    <div className="pane grow">
-      <div className="profile-details">
-        {projects.length > 0 ? (
-          <select
-            className="input compact"
-            aria-label="Project"
-            value={activeProjectId ?? ""}
-            onChange={onProjectChange}
+    <Show
+      when={now().kind === "in"}
+      fallback={
+        <div class="pane-body pane-text">
+          <Switch
+            fallback={
+              <>
+                <p>Sign in to view recorded flame graphs.</p>
+                <div class="actions">
+                  <button type="button" class="button" onClick={showAccount}>
+                    Sign in
+                  </button>
+                </div>
+              </>
+            }
           >
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {projectOptionLabel(project)}
-              </option>
-            ))}
-          </select>
-        ) : null}
-        <button
-          type="button"
-          className="tb ghost"
-          disabled={activeProjectId === null}
-          onClick={loaded.again}
-        >
-          Refresh
-        </button>
-        <input
-          type="search"
-          className="input profile-search"
-          placeholder="Search frames"
-          aria-label="Search frames"
-          value={search}
-          onChange={onSearchChange}
-        />
-        {search !== "" || zoomPath !== null || selectedName !== null ? (
-          <button type="button" className="tb ghost" onClick={onClear}>
-            Clear
+            <Match when={now().kind === "checking"}>
+              <p class="muted">Checking whether you are signed in…</p>
+            </Match>
+            <Match when={unavailable()}>
+              {(state) => (
+                <p class="muted">
+                  Recorded dashboards need the services backend, which is unavailable ({state().why}
+                  ).
+                </p>
+              )}
+            </Match>
+          </Switch>
+        </div>
+      }
+    >
+      <div class="pane grow">
+        <div class="profile-details">
+          <Show when={projects().length > 0}>
+            <select
+              class="input compact"
+              aria-label="Project"
+              value={activeProjectId() ?? ""}
+              onChange={onProjectChange}
+            >
+              <For each={projects()} keyed={(project) => project.id}>
+                {(project) => (
+                  <option value={project().id} selected={project().id === activeProjectId()}>
+                    {projectOptionLabel(project())}
+                  </option>
+                )}
+              </For>
+            </select>
+          </Show>
+          <button
+            type="button"
+            class="tb ghost"
+            disabled={activeProjectId() === null}
+            onClick={loaded.again}
+          >
+            Refresh
           </button>
-        ) : null}
-        {note ? (
-          <span className="muted" data-testid="matched">
-            {note}
-          </span>
-        ) : null}
-        {current ? (
-          <span className="muted" data-testid="recorded-summary">
-            {formatCount(current.blocks, "block")} · {formatCount(current.tree.samples, "sample")}
-            {current.truncated ? " · truncated" : ""}
-          </span>
-        ) : null}
-      </div>
-      <div className="pane-body">
-        {directory.projects === null ? (
-          directory.error ? (
-            <div className="empty error" role="alert">
-              <p>{directory.error}</p>
-              <div className="actions">
-                <button type="button" className="button" onClick={onRetryProjects}>
-                  Retry
-                </button>
+          <input
+            type="search"
+            class="input profile-search"
+            placeholder="Search frames"
+            aria-label="Search frames"
+            value={search()}
+            onInput={onSearchInput}
+          />
+          <Show when={search() !== "" || zoomPath() !== null || selectedName() !== null}>
+            <button type="button" class="tb ghost" onClick={onClear}>
+              Clear
+            </button>
+          </Show>
+          <Show when={searched().note}>
+            {(note) => (
+              <span class="muted" data-testid="matched">
+                {note()}
+              </span>
+            )}
+          </Show>
+          <Show when={current()}>
+            {(flame) => (
+              <span class="muted" data-testid="recorded-summary">
+                {formatCount(flame().blocks, "block")} ·{" "}
+                {formatCount(flame().tree.samples, "sample")}
+                {flame().truncated ? " · truncated" : ""}
+              </span>
+            )}
+          </Show>
+        </div>
+        <div class="pane-body">
+          <Switch fallback={<div class="empty muted">Reading the flame graph…</div>}>
+            <Match when={directory().projects === null}>
+              <Show
+                when={directory().error}
+                fallback={<div class="empty muted">Loading projects…</div>}
+              >
+                {(message) => (
+                  <div class="empty error" role="alert">
+                    <p>{message()}</p>
+                    <div class="actions">
+                      <button type="button" class="button" onClick={retryProjects}>
+                        Retry
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </Show>
+            </Match>
+            <Match when={projects().length === 0}>
+              <div class="empty muted">
+                No projects yet. Create a project to query recorded data.
               </div>
-            </div>
-          ) : (
-            <div className="empty muted">Loading projects…</div>
-          )
-        ) : projects.length === 0 ? (
-          <div className="empty muted">
-            No projects yet. Create a project to query recorded data.
-          </div>
-        ) : loaded.error ? (
-          <div className="empty error" role="alert">
-            {loaded.error}
-          </div>
-        ) : current ? (
-          current.tree.count === 0 ? (
-            <div className="empty muted">No recorded samples in this project yet.</div>
-          ) : (
-            <FlameGraph
-              tree={current.tree}
-              zoom={zoom}
-              matched={matched}
-              selected={selected}
-              onZoom={onZoom}
-              unit={current.unit}
-            />
-          )
-        ) : (
-          <div className="empty muted">Reading the flame graph…</div>
-        )}
+            </Match>
+            <Match when={loaded.error()}>
+              {(message) => (
+                <div class="empty error" role="alert">
+                  {message()}
+                </div>
+              )}
+            </Match>
+            <Match when={current()}>
+              {(flame) => (
+                <Show
+                  when={flame().tree.count > 0}
+                  fallback={<div class="empty muted">No recorded samples in this project yet.</div>}
+                >
+                  <FlameGraph
+                    tree={flame().tree}
+                    zoom={zoom()}
+                    matched={searched().matched}
+                    selected={selected()}
+                    onZoom={onZoom}
+                    unit={flame().unit}
+                  />
+                </Show>
+              )}
+            </Match>
+          </Switch>
+        </div>
       </div>
-    </div>
+    </Show>
   );
 }

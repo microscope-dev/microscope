@@ -1,4 +1,5 @@
-import { type ReactNode, useCallback, useState } from "react";
+import type { JSX } from "@solidjs/web";
+import { createMemo, createSignal, For, Show } from "solid-js";
 
 import { copyText } from "../../clipboard";
 import {
@@ -6,8 +7,8 @@ import {
   type Detail,
   ENVIRONMENT,
   fleetApi,
-  lookHash,
   HOME,
+  lookHash,
   memory,
   otherTags,
   sharedText,
@@ -40,203 +41,243 @@ const shortFingerprint = (fingerprint: string): string => {
   return hash && hash.length > 12 ? `${kind}:${hash.slice(0, 4)}…${hash.slice(-4)}` : fingerprint;
 };
 
-function Fact({ name, children }: { name: string; children: ReactNode }) {
+function Fact(props: { name: string; children: JSX.Element }) {
   return (
     <>
-      <dt>{name}</dt>
-      <dd>{children}</dd>
+      <dt>{props.name}</dt>
+      <dd>{props.children}</dd>
     </>
   );
 }
 
-function Where({ detail }: { detail: Detail }) {
-  const cloud = detail.inventory.cloud;
-  const node = detail.inventory.kubernetes?.node;
+function Where(props: { detail: Detail }) {
+  const cloud = createMemo(() => props.detail.inventory.cloud);
+  const node = createMemo(() => props.detail.inventory.kubernetes?.node);
+  const tags = createMemo(() => otherTags(props.detail.tags));
   return (
     <section>
       <h4>Where</h4>
       <dl>
-        <Fact name="Environment">{detail.tags[ENVIRONMENT] ?? "none"}</Fact>
-        {otherTags(detail.tags).map(([key, value]) => (
-          <Fact key={key} name={key}>
-            <span className="mono">{value}</span>
-          </Fact>
-        ))}
-        {node && (
-          <Fact name="Kubernetes node">
-            <span className="mono">{node}</span>
-          </Fact>
-        )}
-        {cloud && (
-          <Fact name={cloud.provider.toUpperCase()}>
-            {[cloud.zone ?? cloud.region, cloud.instance_type].filter(Boolean).join(" · ")}
-          </Fact>
-        )}
-        {cloud?.instance_id && (
-          <Fact name="Instance">
-            <span className="mono">{cloud.instance_id}</span>
-          </Fact>
-        )}
+        <Fact name="Environment">{props.detail.tags[ENVIRONMENT] ?? "none"}</Fact>
+        <For each={tags()}>
+          {([key, value]) => (
+            <Fact name={key}>
+              <span class="mono">{value}</span>
+            </Fact>
+          )}
+        </For>
+        <Show when={node()}>
+          {(nodeName) => (
+            <Fact name="Kubernetes node">
+              <span class="mono">{nodeName()}</span>
+            </Fact>
+          )}
+        </Show>
+        <Show when={cloud()}>
+          {(c) => (
+            <Fact name={c().provider.toUpperCase()}>
+              {[c().zone ?? c().region, c().instance_type].filter(Boolean).join(" · ")}
+            </Fact>
+          )}
+        </Show>
+        <Show when={cloud()?.instance_id}>
+          {(instanceId) => (
+            <Fact name="Instance">
+              <span class="mono">{instanceId()}</span>
+            </Fact>
+          )}
+        </Show>
       </dl>
     </section>
   );
 }
 
-function Network({ detail }: { detail: Detail }) {
-  const network = detail.inventory.network;
-  const primary = network?.primary;
-  const hidden = Object.entries(network?.hidden ?? {});
+function Network(props: { detail: Detail }) {
+  const network = createMemo(() => props.detail.inventory.network);
+  const primary = createMemo(() => network()?.primary);
+  const hidden = createMemo(() => Object.entries(network()?.hidden ?? {}));
   return (
     <section>
       <h4>Network</h4>
-      {network ? (
-        <dl>
-          {primary && (
-            <Fact name="Primary">
-              <span className="mono">{primary.address}</span>
-              {primary.interface && ` on ${primary.interface}`}
-            </Fact>
-          )}
-          {detail.egress_ip && (
-            <Fact name="Egress">
-              <span className="mono">{detail.egress_ip}</span>
-            </Fact>
-          )}
-          {network.interfaces.map((link) => (
-            <Fact key={link.name} name={link.name}>
-              <span className="mono">
-                {[link.mac, ...(link.addresses ?? [])].filter(Boolean).join(" · ") ||
-                  "no addresses"}
-              </span>
-              {link.state && link.state !== "up" && <span className="muted"> ({link.state})</span>}
-            </Fact>
-          ))}
-        </dl>
-      ) : (
-        <p className="muted">This machine&apos;s agent does not report its network.</p>
-      )}
-      {hidden.length > 0 && (
-        <p className="muted">
-          {hidden.map(([kind, count]) => `${count} ${HIDDEN_LABEL[kind] ?? kind}`).join(", ")} not
-          listed
+      <Show
+        when={network()}
+        fallback={<p class="muted">This machine&apos;s agent does not report its network.</p>}
+      >
+        {(net) => (
+          <dl>
+            <Show when={primary()}>
+              {(p) => (
+                <Fact name="Primary">
+                  <span class="mono">{p().address}</span>
+                  {p().interface ? ` on ${p().interface}` : ""}
+                </Fact>
+              )}
+            </Show>
+            <Show when={props.detail.egress_ip}>
+              {(egressIp) => (
+                <Fact name="Egress">
+                  <span class="mono">{egressIp()}</span>
+                </Fact>
+              )}
+            </Show>
+            <For each={net().interfaces}>
+              {(link) => (
+                <Fact name={link.name}>
+                  <span class="mono">
+                    {[link.mac, ...(link.addresses ?? [])].filter(Boolean).join(" · ") ||
+                      "no addresses"}
+                  </span>
+                  <Show when={link.state && link.state !== "up"}>
+                    <span class="muted"> ({link.state})</span>
+                  </Show>
+                </Fact>
+              )}
+            </For>
+          </dl>
+        )}
+      </Show>
+      <Show when={hidden().length > 0}>
+        <p class="muted">
+          {hidden()
+            .map(([kind, count]) => `${count} ${HIDDEN_LABEL[kind] ?? kind}`)
+            .join(", ")}{" "}
+          not listed
         </p>
-      )}
-      {network?.own_namespace && (
-        <p className="machines-warning-text">
+      </Show>
+      <Show when={network()?.own_namespace}>
+        <p class="machines-warning-text">
           The agent runs in its own network namespace, so these are not the host&apos;s addresses.
         </p>
-      )}
+      </Show>
     </section>
   );
 }
 
-function Host({ detail }: { detail: Detail }) {
-  const system = detail.inventory.system;
-  const capabilities = detail.inventory.capabilities;
-  const container = detail.inventory.container;
+function Host(props: { detail: Detail }) {
+  const osText = createMemo(() => {
+    const system = props.detail.inventory.system;
+    if (!system) {
+      return null;
+    }
+    return [system.os, system.kernel && `kernel ${system.kernel}`, system.arch]
+      .filter(Boolean)
+      .join(" · ");
+  });
+  const sizeText = createMemo(() => {
+    const system = props.detail.inventory.system;
+    if (!system || (!system.cpus && !system.memory_mib)) {
+      return null;
+    }
+    return [system.cpus && `${system.cpus} CPUs`, system.memory_mib && memory(system.memory_mib)]
+      .filter(Boolean)
+      .join(" · ");
+  });
+  const capabilities = createMemo(() => props.detail.inventory.capabilities);
+  const container = createMemo(() => props.detail.inventory.container);
   return (
     <section>
       <h4>Host</h4>
       <dl>
-        {system && (
-          <Fact name="OS">
-            {[system.os, system.kernel && `kernel ${system.kernel}`, system.arch]
-              .filter(Boolean)
-              .join(" · ")}
-          </Fact>
-        )}
-        {system && (system.cpus || system.memory_mib) && (
-          <Fact name="Size">
-            {[system.cpus && `${system.cpus} CPUs`, system.memory_mib && memory(system.memory_mib)]
-              .filter(Boolean)
-              .join(" · ")}
-          </Fact>
-        )}
-        {capabilities && (
-          <Fact name="Can record">
-            {capabilities.length === 0
-              ? "only its own processes"
-              : capabilities.map((name) => CAPABILITY_LABEL[name] ?? name).join(", ")}
-          </Fact>
-        )}
-        {container && (
-          <Fact name="Container">
-            {container.runtime}
-            {container.host_pids ? ", sees the host's processes" : ", sees only its own processes"}
-          </Fact>
-        )}
+        <Show when={osText() !== null}>
+          <Fact name="OS">{osText()}</Fact>
+        </Show>
+        <Show when={sizeText()}>{(size) => <Fact name="Size">{size()}</Fact>}</Show>
+        <Show when={capabilities()}>
+          {(caps) => (
+            <Fact name="Can record">
+              {caps().length === 0
+                ? "only its own processes"
+                : caps()
+                    .map((name) => CAPABILITY_LABEL[name] ?? name)
+                    .join(", ")}
+            </Fact>
+          )}
+        </Show>
+        <Show when={container()}>
+          {(c) => (
+            <Fact name="Container">
+              {c().runtime}
+              {c().host_pids ? ", sees the host's processes" : ", sees only its own processes"}
+            </Fact>
+          )}
+        </Show>
         <Fact name="Agent">
-          <span className="mono">{detail.agent_version}</span>
+          <span class="mono">{props.detail.agent_version}</span>
         </Fact>
       </dl>
     </section>
   );
 }
 
-function History({ detail, now }: { detail: Detail; now: number }) {
+function History(props: { detail: Detail; now: number }) {
+  const replacesText = createMemo(() => {
+    const replaced = props.detail.replaces;
+    if (!replaced) {
+      return "";
+    }
+    const when =
+      replaced.stopped_at === null
+        ? `was last seen ${ago(replaced.last_seen_at, props.now)}`
+        : `stopped ${ago(replaced.stopped_at, props.now)}`;
+    return ` Replaces ${replaced.hostname}, which ${when} on the same host.`;
+  });
   return (
     <section>
       <h4>History</h4>
       <p>
-        Enrolled {ago(detail.created_at, now)}
-        {detail.key ? ` with key ${detail.key.name}.` : "."}
-        {detail.replaces &&
-          ` Replaces ${detail.replaces.hostname}, which ${
-            detail.replaces.stopped_at === null
-              ? `was last seen ${ago(detail.replaces.last_seen_at, now)}`
-              : `stopped ${ago(detail.replaces.stopped_at, now)}`
-          } on the same host.`}
+        Enrolled {ago(props.detail.created_at, props.now)}
+        {props.detail.key ? ` with key ${props.detail.key.name}.` : "."}
+        {replacesText()}
       </p>
-      {detail.events.map((event) => (
-        <p key={event.kind}>
-          {EVENT_LABEL[event.kind] ?? event.kind}
-          {event.count > 1
-            ? `, ${event.count} times, last ${ago(event.last_at, now)}.`
-            : `, ${ago(event.last_at, now)}.`}
-        </p>
-      ))}
-      {detail.shares_host_ids.map((shared) => (
-        <p key={`${shared.kind} ${shared.source}`} className="machines-warning-text">
-          {sharedText(shared)}
-        </p>
-      ))}
+      <For each={props.detail.events}>
+        {(event) => (
+          <p>
+            {EVENT_LABEL[event.kind] ?? event.kind}
+            {event.count > 1
+              ? `, ${event.count} times, last ${ago(event.last_at, props.now)}.`
+              : `, ${ago(event.last_at, props.now)}.`}
+          </p>
+        )}
+      </For>
+      <For each={props.detail.shares_host_ids}>
+        {(shared) => <p class="machines-warning-text">{sharedText(shared)}</p>}
+      </For>
     </section>
   );
 }
 
 function Actions(props: { detail: Detail; owner: boolean; changed: () => void }) {
-  const { detail, owner, changed } = props;
-  const [asking, setAsking] = useState(false);
-  const [copied, setCopied] = useState<boolean | null>(null);
-  const revoke = useCallback(() => setAsking(true), []);
-  const cancel = useCallback(() => setAsking(false), []);
-  const revokeIt = useCallback(() => fleetApi.revoke(detail.id), [detail.id]);
-  const revoked = useCallback(() => {
+  const [asking, setAsking] = createSignal(false);
+  const [copied, setCopied] = createSignal<boolean | null>(null);
+  const revoke = () => setAsking(true);
+  const cancel = () => setAsking(false);
+  const revokeIt = () => fleetApi.revoke(props.detail.id);
+  const revoked = () => {
     setAsking(false);
-    changed();
-  }, [changed]);
-  const copy = useCallback(() => {
-    const link = `${window.location.origin}${window.location.pathname}${window.location.search}#${lookHash({ ...HOME, view: "list", machine: detail.id })}`;
+    props.changed();
+  };
+  const copy = () => {
+    const link = `${window.location.origin}${window.location.pathname}${window.location.search}#${lookHash({ ...HOME, view: "list", machine: props.detail.id })}`;
     void copyText(link).then(setCopied);
-  }, [detail.id]);
+  };
   return (
-    <div className="actions">
-      {detail.state !== "revoked" && (
-        <OwnerButton owner={owner} className="button danger" onClick={revoke}>
+    <div class="actions">
+      <Show when={props.detail.state !== "revoked"}>
+        <OwnerButton owner={props.owner} class="button danger" onClick={revoke}>
           Revoke
         </OwnerButton>
-      )}
-      <button type="button" className="button" onClick={copy}>
+      </Show>
+      <button type="button" class="button" onClick={copy}>
         Copy link
       </button>
-      {copied !== null && (
-        <output className={copied ? "muted" : "error"}>
-          {copied ? "Copied" : "Could not copy"}
+      <Show when={copied() !== null}>
+        <output class={copied() ? "muted" : "error"}>
+          {copied() ? "Copied" : "Could not copy"}
         </output>
-      )}
-      {asking && (
+      </Show>
+      <Show when={asking()}>
         <Ask
-          title={`Revoke ${detail.hostname}?`}
+          title={`Revoke ${props.detail.hostname}?`}
           verb="Revoke"
           danger
           act={revokeIt}
@@ -248,43 +289,44 @@ function Actions(props: { detail: Detail; owner: boolean; changed: () => void })
             enrollment key.
           </p>
         </Ask>
-      )}
+      </Show>
     </div>
   );
 }
 
 function Panel(props: { detail: Detail; owner: boolean; now: number; changed: () => void }) {
-  const { detail, now } = props;
-  const since =
-    detail.state === "revoked" && detail.revoked_at !== null
-      ? `revoked ${ago(detail.revoked_at, now)}`
-      : detail.state === "stopped" && detail.stopped_at !== null
-        ? `stopped ${ago(detail.stopped_at, now)}`
-        : `seen ${ago(detail.last_seen_at, now)}`;
+  const since = createMemo(() => {
+    const d = props.detail;
+    return d.state === "revoked" && d.revoked_at !== null
+      ? `revoked ${ago(d.revoked_at, props.now)}`
+      : d.state === "stopped" && d.stopped_at !== null
+        ? `stopped ${ago(d.stopped_at, props.now)}`
+        : `seen ${ago(d.last_seen_at, props.now)}`;
+  });
   return (
     <>
-      <h3 className="mono">{detail.hostname}</h3>
-      <p className="machines-status">
-        <Dot state={detail.state} />
-        {STATE_LABEL[detail.state]}, {since} · key{" "}
-        <span className="mono" title={detail.fingerprint}>
-          {shortFingerprint(detail.fingerprint)}
+      <h3 class="mono">{props.detail.hostname}</h3>
+      <p class="machines-status">
+        <Dot state={props.detail.state} />
+        {STATE_LABEL[props.detail.state]}, {since()} · key{" "}
+        <span class="mono" title={props.detail.fingerprint}>
+          {shortFingerprint(props.detail.fingerprint)}
         </span>
       </p>
-      {detail.warnings.length > 0 && (
-        <p className="machines-warnings">
-          {detail.warnings.map((warning) => (
-            <span key={warning} className={`machines-warning ${warning}`}>
-              {WARNING_LABEL[warning]}
-            </span>
-          ))}
+      <Show when={props.detail.warnings.length > 0}>
+        <p class="machines-warnings">
+          <For each={props.detail.warnings}>
+            {(warning) => (
+              <span class={`machines-warning ${warning}`}>{WARNING_LABEL[warning]}</span>
+            )}
+          </For>
         </p>
-      )}
-      <Where detail={detail} />
-      <Network detail={detail} />
-      <Host detail={detail} />
-      <History detail={detail} now={now} />
-      <Actions detail={detail} owner={props.owner} changed={props.changed} />
+      </Show>
+      <Where detail={props.detail} />
+      <Network detail={props.detail} />
+      <Host detail={props.detail} />
+      <History detail={props.detail} now={props.now} />
+      <Actions detail={props.detail} owner={props.owner} changed={props.changed} />
     </>
   );
 }
@@ -296,32 +338,33 @@ export function DetailPanel(props: {
   back: () => void;
   changed: () => void;
 }) {
-  const { id, changed } = props;
-  const loaded = useLoaded(() => fleetApi.machine(id), String(id));
-  const { again } = loaded;
-  const refresh = useCallback(() => {
-    again();
-    changed();
-  }, [again, changed]);
+  const loaded = useLoaded(
+    () => fleetApi.machine(props.id),
+    () => String(props.id),
+  );
+  const refresh = () => {
+    loaded.again();
+    props.changed();
+  };
   return (
-    <aside className="machines-detail" aria-label="Machine">
-      <button type="button" className="link-button machines-back" onClick={props.back}>
+    <aside class="machines-detail" aria-label="Machine">
+      <button type="button" class="link-button machines-back" onClick={() => props.back()}>
         Back to the list
       </button>
       <button
         type="button"
-        className="machines-detail-close"
+        class="machines-detail-close"
         aria-label="Close machine"
         title="Close"
-        onClick={props.back}
+        onClick={() => props.back()}
       >
         ×
       </button>
-      {loaded.data ? (
-        <Panel detail={loaded.data} owner={props.owner} now={props.now} changed={refresh} />
-      ) : (
-        <Loading error={loaded.error} what="this machine" />
-      )}
+      <Show when={loaded.data()} fallback={<Loading error={loaded.error()} what="this machine" />}>
+        {(detail) => (
+          <Panel detail={detail()} owner={props.owner} now={props.now} changed={refresh} />
+        )}
+      </Show>
     </aside>
   );
 }

@@ -1,8 +1,10 @@
-import { useNavigate } from "@tanstack/react-router";
-import { type KeyboardEvent, useCallback, useMemo, useState } from "react";
+import { useNavigate } from "@solidjs/router";
+import { createMemo, createSignal, For, Show, untrack } from "solid-js";
 
 import { assert } from "../assert";
+import { withinBase } from "../base";
 import { isPagePath } from "../focus";
+import { toHref } from "../history";
 import type { Person } from "../protocol";
 import { write } from "../storage";
 import { useConnection, useModel } from "../store";
@@ -17,118 +19,129 @@ export function hue(name: string): number {
   return hash % 360;
 }
 
-const NAME_FIELD = { width: 140, padding: "2px 6px" };
+const NAME_FIELD = { width: "140px", padding: "2px 6px" };
 
 export function People() {
   const people = useModel((model) => model.people);
   const me = useModel((model) => model.hello?.connection);
   const connection = useConnection();
-  const [editing, setEditing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const mine = people.find((person) => person.connection === me);
-  const onKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLInputElement>) => {
-      if (event.key === "Escape") {
-        setEditing(false);
+  const [editing, setEditing] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  const mine = createMemo(() => people().find((person) => person.connection === me()));
+  const others = createMemo(() => people().length - 1);
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      setEditing(false);
+    }
+    if (event.key === "Enter") {
+      const name = (event.currentTarget as HTMLInputElement).value.trim();
+      setEditing(false);
+      if (name) {
+        setError(null);
+        connection
+          .request("setName", { name })
+          .then(() => write("microscope-name", name))
+          .catch((failure: Error) => setError(failure.message));
       }
-      if (event.key === "Enter") {
-        const name = event.currentTarget.value.trim();
-        setEditing(false);
-        if (name) {
-          setError(null);
-          connection
-            .request("setName", { name })
-            .then(() => write("microscope-name", name))
-            .catch((failure: Error) => setError(failure.message));
-        }
-      }
-    },
-    [connection],
-  );
-  const stopEditing = useCallback(() => setEditing(false), []);
-  const startEditing = useCallback(() => setEditing(true), []);
-  if (people.length === 0) {
-    return null;
-  }
-  const others = people.length - 1;
+    }
+  };
+  const stopEditing = () => setEditing(false);
+  const startEditing = () => setEditing(true);
 
   return (
-    <div className="people">
-      <ul className="avatars" data-testid="people" aria-label="People in this session">
-        {people.map((person) => (
-          <Avatar key={person.connection} person={person} me={person.connection === me} />
-        ))}
-      </ul>
-      {editing && mine ? (
-        <input
-          className="input"
-          style={NAME_FIELD}
-          aria-label="Your name"
-          defaultValue={mine.name}
-          // oxlint-disable-next-line jsx-a11y/no-autofocus -- the field opens because the person asked to type
-          autoFocus
-          onKeyDown={onKeyDown}
-          onBlur={stopEditing}
-        />
-      ) : (
-        <button
-          type="button"
-          className="tb"
-          title="Change the name others see"
-          onClick={startEditing}
+    <Show when={people().length > 0}>
+      <div class="people">
+        <ul class="avatars" data-testid="people" aria-label="People in this session">
+          <For each={people()} keyed={(person) => person.connection}>
+            {(person) => <Avatar person={person()} me={person().connection === me()} />}
+          </For>
+        </ul>
+        <Show
+          when={editing() ? mine() : null}
+          fallback={
+            <button
+              type="button"
+              class="tb"
+              title="Change the name others see"
+              onClick={startEditing}
+            >
+              {mine()?.name ?? "you"}
+              <Show when={others() > 0}>
+                <span class="muted">+{others()}</span>
+              </Show>
+            </button>
+          }
         >
-          {mine?.name ?? "you"}
-          {others > 0 && <span className="muted">+{others}</span>}
-        </button>
-      )}
-      {error && (
-        <span className="pill warn" role="alert" title={error}>
-          {error.length > 60 ? `${error.slice(0, 60)}…` : error}
-        </span>
-      )}
-    </div>
+          {(current) => (
+            <input
+              class="input"
+              style={NAME_FIELD}
+              aria-label="Your name"
+              value={untrack(() => current().name)}
+              autofocus
+              ref={(node) => {
+                queueMicrotask(() => node.focus());
+              }}
+              onKeyDown={onKeyDown}
+              onBlur={stopEditing}
+            />
+          )}
+        </Show>
+        <Show when={error()}>
+          {(message) => (
+            <span class="pill warn" role="alert" title={message()}>
+              {message().length > 60 ? `${message().slice(0, 60)}…` : message()}
+            </span>
+          )}
+        </Show>
+      </div>
+    </Show>
   );
 }
 
-function Avatar({ person, me }: { person: Person; me: boolean }) {
-  const style = useMemo(() => ({ background: `hsl(${hue(person.name)} 55% 30%)` }), [person.name]);
-  const who = `${person.name}${me ? " (you)" : ""} · can ${person.role}`;
-  const url = person.focus?.url;
-  if (me || !isPagePath(url)) {
-    return (
-      <li className={`avatar ${person.role}`} style={style} title={who}>
-        {person.name.slice(0, 2)}
-      </li>
-    );
-  }
+function Avatar(props: { person: Person; me: boolean }) {
+  const style = createMemo(() => ({ background: `hsl(${hue(props.person.name)} 55% 30%)` }));
+  const who = createMemo(
+    () => `${props.person.name}${props.me ? " (you)" : ""} · can ${props.person.role}`,
+  );
+  const url = createMemo(() => {
+    const candidate = props.person.focus?.url;
+    return !props.me && isPagePath(candidate) ? candidate : null;
+  });
+
   return (
-    <li className={`avatar ${person.role}`} style={style}>
-      <AvatarLink
-        url={url}
-        name={person.name}
-        title={`${who}\nat ${person.focus?.label}; click to go there`}
-        label={`Go to ${person.name}'s focus, ${person.focus?.label}`}
-      />
-    </li>
+    <Show
+      when={url()}
+      fallback={
+        <li class={`avatar ${props.person.role}`} style={style()} title={who()}>
+          {props.person.name.slice(0, 2)}
+        </li>
+      }
+    >
+      {(target) => (
+        <li class={`avatar ${props.person.role}`} style={style()}>
+          <AvatarLink
+            url={target()}
+            name={props.person.name}
+            title={`${who()}\nat ${props.person.focus?.label}; click to go there`}
+            label={`Go to ${props.person.name}'s focus, ${props.person.focus?.label}`}
+          />
+        </li>
+      )}
+    </Show>
   );
 }
 
-function AvatarLink({
-  url,
-  name,
-  title,
-  label,
-}: {
-  url: string;
-  name: string;
-  title: string;
-  label: string;
-}) {
+function AvatarLink(props: { url: string; name: string; title: string; label: string }) {
   const navigate = useNavigate();
-  const onClick = useCallback(() => void navigate({ href: url }), [navigate, url]);
   return (
-    <button type="button" title={title} aria-label={label} onClick={onClick}>
-      {name.slice(0, 2)}
+    <button
+      type="button"
+      title={props.title}
+      aria-label={props.label}
+      onClick={() => navigate(toHref(withinBase(props.url)))}
+    >
+      {props.name.slice(0, 2)}
     </button>
   );
 }

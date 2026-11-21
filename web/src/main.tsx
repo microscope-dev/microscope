@@ -4,14 +4,12 @@ import "@fontsource/ibm-plex-sans/600.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/600.css";
 import "./styles.css";
-import { RouterProvider } from "@tanstack/react-router";
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
+import { render } from "@solidjs/web";
 
 import { withinBase } from "./base";
 import { browserAuthorized, browserConnect, leaveWhileCached } from "./connection";
 import { forgetting } from "./forget";
-import { createAppRouter } from "./router";
+import { AppRouter } from "./router";
 import { isString, read } from "./storage";
 import { createSession, SessionContext } from "./store";
 import { apply, savedTheme } from "./theme";
@@ -36,14 +34,14 @@ if (withinBase(window.location.pathname) !== "/join") {
   session.connection.start();
 }
 
-const router = createAppRouter();
 const root = document.querySelector("#root");
 if (root) {
-  createRoot(root).render(
-    <StrictMode>
+  render(
+    () => (
       <SessionContext value={session}>
-        <RouterProvider router={router} />
+        <AppRouter />
       </SessionContext>
-    </StrictMode>,
+    ),
+    root,
   );
 }

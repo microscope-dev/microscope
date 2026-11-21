@@ -9,7 +9,7 @@ import { mountPane, unmountPane } from "./pane";
 afterEach(unmountPane);
 
 it("continues once for a double click", async () => {
-  const server = await mountPane(<RunToolbar />);
+  const server = await mountPane(() => <RunToolbar />);
   tab.setState({ at: { stop: 1, thread: 1, frame: 0 } });
   const sent: string[] = [];
   server.onRequest((request) => sent.push(request.method));

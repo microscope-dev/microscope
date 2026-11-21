@@ -1,13 +1,4 @@
-import {
-  type ChangeEvent,
-  type FormEvent,
-  type KeyboardEvent,
-  type MouseEvent,
-  useCallback,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { createMemo, createSignal, For, Match, onSettled, Show, Switch, untrack } from "solid-js";
 
 import { assert } from "../assert";
 import { cache, useRequest } from "../data";
@@ -42,91 +33,101 @@ const STEPS: Record<string, bigint> = {
 };
 
 export function Memory() {
-  const { look } = useFocus();
-  const shown = look.mem ? parseTarget(look.mem) : null;
+  const focus = useFocus();
+  const keyedShown = createMemo(
+    () => {
+      const mem = focus().look.mem;
+      if (!mem) {
+        return null;
+      }
+      const target = parseTarget(mem);
+      return target ? { key: mem, target } : null;
+    },
+    { equals: (a, b) => a?.key === b?.key },
+  );
+
   return (
-    <div className="mem">
-      <div className="view-head">
+    <div class="mem">
+      <div class="view-head">
         <GoTo />
-        {shown && (
-          <span className="dim">
-            {hex(shown.address)}
-            {shown.bytes ? ` · ${shown.bytes} bytes` : ""}
-            {shown.text ? ` · string: ${shown.text} bytes` : ""}
-          </span>
-        )}
+        <Show when={keyedShown()}>
+          {(entry) => (
+            <span class="dim">
+              {hex(entry().target.address)}
+              {entry().target.bytes ? ` · ${entry().target.bytes} bytes` : ""}
+              {entry().target.text ? ` · string: ${entry().target.text} bytes` : ""}
+            </span>
+          )}
+        </Show>
       </div>
-      {shown ? (
-        <Dump key={look.mem} shown={shown} />
-      ) : (
-        <div className="empty center-message">
-          Type an address or an expression above, or open a value&apos;s memory from its row.
-        </div>
-      )}
+      <Show
+        when={keyedShown()}
+        keyed
+        fallback={
+          <div class="empty center-message">
+            Type an address or an expression above, or open a value&apos;s memory from its row.
+          </div>
+        }
+      >
+        {(entry) => <Dump shown={entry.target} />}
+      </Show>
     </div>
   );
 }
 
 function GoTo() {
-  const { at, stale } = useFocus();
+  const focus = useFocus();
   const look = useLook();
   const connection = useConnection();
-  const [text, setText] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [text, setText] = createSignal("");
+  const [error, setError] = createSignal<string | null>(null);
 
-  const latest = useRef(0);
-  const go = useCallback(
-    (mem: string) => {
-      look((current) => ({ ...current, mem, view: "memory" }), { replace: false });
-      setText("");
-    },
-    [look],
-  );
-  const submit = useCallback(
-    async (event: FormEvent) => {
-      event.preventDefault();
-      const wanted = text.trim();
-      const asked = ++latest.current;
-      setError(null);
-      const named = parseTarget(wanted);
-      if (named) {
-        go(targetText(named));
-        return;
-      }
-      if (!at || stale) {
-        setError("Expressions only work while the program is at the stop shown");
-        return;
-      }
-      const settled = await cache.get(connection, "evaluate", { ...at, expression: wanted })
-        .promise;
-      const row = settled.ok ? (settled.value as Row) : null;
-      if (asked !== latest.current) {
-        return;
-      }
-      if (!settled.ok) {
-        setError(settled.error.message);
-      } else if (row?.memory) {
-        go(rowTarget(row) ?? row.memory);
-      } else {
-        setError(`${wanted} has no address in memory`);
-      }
-    },
-    [text, at, stale, connection, go],
-  );
-  const edit = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setText(event.target.value),
-    [],
-  );
+  let latest = 0;
+
+  const go = (mem: string) => {
+    look((current) => ({ ...current, mem, view: "memory" }), { replace: false });
+    setText("");
+  };
+
+  const submit = async (event: SubmitEvent) => {
+    event.preventDefault();
+    const wanted = text().trim();
+    const asked = ++latest;
+    setError(null);
+    const named = parseTarget(wanted);
+    if (named) {
+      go(targetText(named));
+      return;
+    }
+    const { at, stale } = focus();
+    if (!at || stale) {
+      setError("Expressions only work while the program is at the stop shown");
+      return;
+    }
+    const settled = await cache.get(connection, "evaluate", { ...at, expression: wanted }).promise;
+    const row = settled.ok ? (settled.value as Row) : null;
+    if (asked !== latest) {
+      return;
+    }
+    if (!settled.ok) {
+      setError(settled.error.message);
+    } else if (row?.memory) {
+      go(rowTarget(row) ?? row.memory);
+    } else {
+      setError(`${wanted} has no address in memory`);
+    }
+  };
+
   return (
-    <form className="goto" onSubmit={submit}>
+    <form class="goto" onSubmit={(event) => void submit(event)}>
       <input
-        className="input quiet"
+        class="input quiet"
         aria-label="Go to memory"
         placeholder="0xaddress or an expression"
-        value={text}
-        onChange={edit}
+        value={text()}
+        onInput={(event) => setText(event.currentTarget.value)}
       />
-      {error && <span className="error">{error}</span>}
+      <Show when={error()}>{(err) => <span class="error">{err()}</span>}</Show>
     </form>
   );
 }
@@ -136,307 +137,373 @@ interface Selection {
   to: bigint;
 }
 
-function Dump({ shown }: { shown: Target }) {
+function Dump(props: { shown: Target }) {
   const focus = useFocus();
-  const { at } = focus;
-  const why = hidden(focus, "Bytes");
-  const [moved, setMoved] = useState(0);
-  const value = shown.bytes
-    ? { from: shown.address, to: shown.address + BigInt(shown.bytes - 1) }
-    : null;
-  assert(
-    value === null || value.from <= value.to,
-    `value at ${hex(shown.address)} ends before it starts`,
-  );
+  const why = createMemo(() => hidden(focus(), "Bytes"));
+  const [moved, setMoved] = createSignal(0);
 
-  const string =
-    value && shown.text ? { from: value.from, to: value.from + BigInt(shown.text - 1) } : null;
-  const [selection, setSelection] = useState<Selection | null>(string ?? value);
-  const [editing, setEditing] = useState<bigint | null>(null);
+  const value = createMemo(() => {
+    const shown = props.shown;
+    const range = shown.bytes
+      ? { from: shown.address, to: shown.address + BigInt(shown.bytes - 1) }
+      : null;
+    assert(
+      range === null || range.from <= range.to,
+      `value at ${hex(shown.address)} ends before it starts`,
+    );
+    return range;
+  });
 
-  const [cursor, setCursor] = useState<bigint>(shown.address);
-  const body = useRef<HTMLDivElement>(null);
+  const initialSelection = untrack(() => {
+    const range = value();
+    const shown = props.shown;
+    const string =
+      range && shown.text ? { from: range.from, to: range.from + BigInt(shown.text - 1) } : null;
+    return string ?? range;
+  });
 
-  const first = rowStart(shown.address) + BigInt(moved * ROW);
+  const [selection, setSelection] = createSignal<Selection | null>(initialSelection);
+  const [editing, setEditing] = createSignal<bigint | null>(null);
+  const [cursor, setCursor] = createSignal<bigint>(untrack(() => props.shown.address));
+  let body: HTMLDivElement | undefined;
+
   const last = END - BigInt(ROWS * ROW);
-  const start = first < 0n ? 0n : first > last ? last : first;
-  assert(moved % ROWS === 0, `memory moved ${moved} rows, not a page`);
-  assert(start % BigInt(ROW) === 0n, `memory starts mid-row at ${hex(start)}`);
-  const read = useRequest(
-    "readMemory",
-    why === null && at ? { stop: at.stop, address: hex(start), count: ROWS * ROW } : null,
-  );
-  const data = read.data;
-  const rows = useMemo(() => (data ? dumpRows(start, data.bytes, ROWS) : []), [start, data]);
-  const readable = useMemo(
-    (): bigint[] =>
-      rows.flatMap((row) =>
-        row.bytes.flatMap((byte, column) => (byte === null ? [] : [row.address + BigInt(column)])),
-      ),
-    [rows],
-  );
-  const choose = useCallback(
-    (address: bigint, extend: boolean) => {
-      assert(readable.includes(address), `chose unread byte ${hex(address)}`);
-      setCursor(address);
-      setSelection((current) =>
-        extend && current
-          ? {
-              from: address < current.from ? address : current.from,
-              to: address > current.to ? address : current.to,
-            }
-          : { from: address, to: address },
-      );
-    },
-    [readable],
+  const start = createMemo(() => {
+    const currentMoved = moved();
+    const first = rowStart(props.shown.address) + BigInt(currentMoved * ROW);
+    const bounded = first < 0n ? 0n : first > last ? last : first;
+    assert(currentMoved % ROWS === 0, `memory moved ${currentMoved} rows, not a page`);
+    assert(bounded % BigInt(ROW) === 0n, `memory starts mid-row at ${hex(bounded)}`);
+    return bounded;
+  });
+
+  const read = useRequest("readMemory", () => {
+    const at = focus().at;
+    return why() === null && at
+      ? { stop: at.stop, address: hex(start()), count: ROWS * ROW }
+      : null;
+  });
+
+  const rows = createMemo(() => {
+    const data = read().data;
+    if (!data) {
+      return [];
+    }
+    const built = dumpRows(start(), data.bytes, ROWS);
+    assert(built.length === ROWS, `memory shows ${built.length} rows, not ${ROWS}`);
+    assert(built[0]?.address === start(), `memory rows do not start at ${hex(start())}`);
+    return built;
+  });
+
+  const readable = createMemo((): bigint[] =>
+    rows().flatMap((row) =>
+      row.bytes.flatMap((byte, column) => (byte === null ? [] : [row.address + BigInt(column)])),
+    ),
   );
 
-  const focusByte = useCallback(
-    (address: bigint) =>
-      body.current?.querySelector<HTMLElement>(`[data-address="${address}"]`)?.focus(),
-    [],
-  );
-  const walk = useCallback(
-    (address: bigint, event: KeyboardEvent) => {
-      const step = STEPS[event.key];
-      if (step === undefined) {
-        return;
-      }
-      event.preventDefault();
-      const next = address + step;
-      if (readable.includes(next)) {
-        choose(next, event.shiftKey);
-        focusByte(next);
-      }
-    },
-    [readable, choose, focusByte],
-  );
-  const edit = useCallback((address: bigint) => setEditing(address), []);
-  const doneEditing = useCallback(
-    (address: bigint) => {
-      setEditing(null);
+  const stop = createMemo(() => {
+    const currentReadable = readable();
+    const currentCursor = cursor();
+    return currentReadable.includes(currentCursor) ? currentCursor : currentReadable[0];
+  });
 
-      requestAnimationFrame(() => focusByte(address));
-    },
-    [focusByte],
-  );
-  const earlier = useCallback(() => setMoved(moved - ROWS), [moved]);
-  const later = useCallback(() => setMoved(moved + ROWS), [moved]);
+  const choose = (address: bigint, extend: boolean) => {
+    assert(readable().includes(address), `chose unread byte ${hex(address)}`);
+    setCursor(address);
+    setSelection((current) =>
+      extend && current
+        ? {
+            from: address < current.from ? address : current.from,
+            to: address > current.to ? address : current.to,
+          }
+        : { from: address, to: address },
+    );
+  };
 
-  if (why) {
-    return <div className="empty center-message">{why}</div>;
-  }
-  if (read.error) {
-    return <div className="empty center-message error">{read.error.message}</div>;
-  }
-  if (!data) {
-    return <div className="empty center-message">Reading memory…</div>;
-  }
-  assert(rows.length === ROWS, `memory shows ${rows.length} rows, not ${ROWS}`);
-  assert(rows[0]?.address === start, `memory rows do not start at ${hex(start)}`);
+  const focusByte = (address: bigint) =>
+    body?.querySelector<HTMLElement>(`[data-address="${address}"]`)?.focus();
 
-  const stop = readable.includes(cursor) ? cursor : readable[0];
+  const walk = (address: bigint, event: KeyboardEvent) => {
+    const step = STEPS[event.key];
+    if (step === undefined) {
+      return;
+    }
+    event.preventDefault();
+    const next = address + step;
+    if (readable().includes(next)) {
+      choose(next, event.shiftKey);
+      focusByte(next);
+    }
+  };
+
+  const edit = (address: bigint) => setEditing(address);
+
+  const doneEditing = (address: bigint) => {
+    setEditing(null);
+    requestAnimationFrame(() => focusByte(address));
+  };
+
+  const earlier = () => setMoved((current) => current - ROWS);
+  const later = () => setMoved((current) => current + ROWS);
+
   const within = (range: Selection | null, address: bigint) =>
     range !== null && address >= range.from && address <= range.to;
 
   return (
-    <>
-      <div className="mem-pages">
-        <button type="button" className="button small" disabled={start === 0n} onClick={earlier}>
-          ↑ Earlier
-        </button>
-        <button type="button" className="button small" disabled={start === last} onClick={later}>
-          Later ↓
-        </button>
-        {data.unreadable && (
-          <span className="dim">Nothing can be read from {data.unreadable} on.</span>
+    <Switch fallback={<div class="empty center-message">Reading memory…</div>}>
+      <Match when={why()}>{(reason) => <div class="empty center-message">{reason()}</div>}</Match>
+      <Match when={read().error}>
+        {(err) => <div class="empty center-message error">{err().message}</div>}
+      </Match>
+      <Match when={read().data}>
+        {(data) => (
+          <>
+            <div class="mem-pages">
+              <button
+                type="button"
+                class="button small"
+                disabled={start() === 0n}
+                onClick={earlier}
+              >
+                ↑ Earlier
+              </button>
+              <button
+                type="button"
+                class="button small"
+                disabled={start() === last}
+                onClick={later}
+              >
+                Later ↓
+              </button>
+              <Show when={data().unreadable}>
+                {(unreadable) => (
+                  <span class="dim">Nothing can be read from {unreadable()} on.</span>
+                )}
+              </Show>
+            </div>
+            <div
+              ref={(node) => {
+                body = node;
+              }}
+              class={["mem-body", { stale: !read().current }]}
+              data-testid="memory"
+            >
+              <For each={rows()} keyed={(row) => String(row.address)}>
+                {(row) => (
+                  <div class="mem-row">
+                    <span class="mem-address">{row().address.toString(16).padStart(12, "0")}</span>
+                    <span class="mem-bytes">
+                      <For each={row().bytes} keyed={false}>
+                        {(byte, column) => {
+                          const address = createMemo(() => row().address + BigInt(column));
+                          return (
+                            <Show
+                              when={editing() === address()}
+                              fallback={
+                                <ByteCell
+                                  address={address()}
+                                  byte={byte()}
+                                  inValue={within(value(), address())}
+                                  selected={within(selection(), address())}
+                                  tabbable={address() === stop()}
+                                  onSelect={choose}
+                                  onEdit={edit}
+                                  onWalk={walk}
+                                />
+                              }
+                            >
+                              <ByteEditor address={address()} onDone={doneEditing} />
+                            </Show>
+                          );
+                        }}
+                      </For>
+                    </span>
+                    <span class="mem-text">{row().bytes.map(printable).join("")}</span>
+                  </div>
+                )}
+              </For>
+            </div>
+            <Readings rows={rows()} selection={selection()} />
+          </>
         )}
-      </div>
-      <div ref={body} className={`mem-body ${read.current ? "" : "stale"}`} data-testid="memory">
-        {rows.map((row) => (
-          <div key={String(row.address)} className="mem-row">
-            <span className="mem-address">{row.address.toString(16).padStart(12, "0")}</span>
-            <span className="mem-bytes">
-              {row.bytes.map((byte, column) => {
-                const address = row.address + BigInt(column);
-                if (editing === address) {
-                  return (
-                    <ByteEditor key={String(address)} address={address} onDone={doneEditing} />
-                  );
-                }
-                return (
-                  <ByteCell
-                    key={String(address)}
-                    address={address}
-                    byte={byte}
-                    className={`${within(value, address) ? "in-value" : ""} ${within(selection, address) ? "selected" : ""}`}
-                    tabbable={address === stop}
-                    onSelect={choose}
-                    onEdit={edit}
-                    onWalk={walk}
-                  />
-                );
-              })}
-            </span>
-            <span className="mem-text">{row.bytes.map(printable).join("")}</span>
-          </div>
-        ))}
-      </div>
-      <Readings rows={rows} selection={selection} />
-    </>
+      </Match>
+    </Switch>
   );
 }
 
-function ByteCell({
-  address,
-  byte,
-  className,
-  tabbable,
-  onSelect,
-  onEdit,
-  onWalk,
-}: {
+function ByteCell(props: {
   address: bigint;
   byte: number | null;
-  className: string;
+  inValue: boolean;
+  selected: boolean;
   tabbable: boolean;
   onSelect(address: bigint, extend: boolean): void;
   onEdit(address: bigint): void;
   onWalk(address: bigint, event: KeyboardEvent): void;
 }) {
-  const { stale } = useFocus();
+  const focus = useFocus();
   const control = useModel(controls);
-  const select = useCallback(
-    (event: MouseEvent) => onSelect(address, event.shiftKey),
-    [onSelect, address],
+
+  const select = (event: MouseEvent) => props.onSelect(props.address, event.shiftKey);
+
+  const edit = () => {
+    if (control() && !focus().stale) {
+      props.onEdit(props.address);
+    }
+  };
+
+  const key = (event: KeyboardEvent) => {
+    if (event.key === "Enter" || event.key === "F2") {
+      event.preventDefault();
+      edit();
+    } else {
+      props.onWalk(props.address, event);
+    }
+  };
+
+  const text = createMemo(() =>
+    props.byte === null ? "" : props.byte.toString(16).padStart(2, "0"),
   );
-  const edit = useCallback(
-    () => control && !stale && onEdit(address),
-    [control, stale, onEdit, address],
-  );
-  const key = useCallback(
-    (event: KeyboardEvent) => {
-      if (event.key === "Enter" || event.key === "F2") {
-        event.preventDefault();
-        edit();
-      } else {
-        onWalk(address, event);
-      }
-    },
-    [edit, onWalk, address],
-  );
-  if (byte === null) {
-    return <span className="byte unread">??</span>;
-  }
-  const text = byte.toString(16).padStart(2, "0");
+
   return (
-    <button
-      type="button"
-      className={`byte ${className}`}
-      data-address={String(address)}
-      aria-label={`${text} at ${hex(address)}`}
-      tabIndex={tabbable ? 0 : -1}
-      onClick={select}
-      onDoubleClick={edit}
-      onKeyDown={key}
-    >
-      {text}
-    </button>
+    <Show when={props.byte !== null} fallback={<span class="byte unread">??</span>}>
+      <button
+        type="button"
+        class={["byte", { "in-value": props.inValue, selected: props.selected }]}
+        data-address={String(props.address)}
+        aria-label={`${text()} at ${hex(props.address)}`}
+        tabindex={props.tabbable ? 0 : -1}
+        onClick={select}
+        onDblClick={edit}
+        onKeyDown={key}
+      >
+        {text()}
+      </button>
+    </Show>
   );
 }
 
-function ByteEditor({ address, onDone }: { address: bigint; onDone(address: bigint): void }) {
-  const { at } = useFocus();
+function ByteEditor(props: { address: bigint; onDone(address: bigint): void }) {
+  const focus = useFocus();
   const connection = useConnection();
-  const [error, setError] = useState<string | null>(null);
-  const finish = useCallback(() => onDone(address), [onDone, address]);
-  const submit = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      const bytes = String(new FormData(event.currentTarget).get("bytes") ?? "").replaceAll(
-        /\s/gu,
-        "",
-      );
-      if (!at || !/^([0-9a-f]{2})+$/iu.test(bytes)) {
-        setError("pairs of hexadecimal digits");
-        return;
-      }
-      connection
-        .request("writeMemory", { stop: at.stop, address: hex(address), bytes })
-        .then(finish)
-        .catch((failure: Error) => setError(failure.message));
-    },
-    [at, connection, address, finish],
-  );
-  const escape = useCallback(
-    (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        finish();
-      }
-    },
-    [finish],
-  );
-  const blur = useCallback(() => error === null && finish(), [error, finish]);
+  const [error, setError] = createSignal<string | null>(null);
+  let input: HTMLInputElement | undefined;
+
+  onSettled(() => {
+    input?.focus();
+  });
+
+  const finish = () => props.onDone(props.address);
+
+  const submit = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
+    event.preventDefault();
+    const bytes = String(new FormData(event.currentTarget).get("bytes") ?? "").replaceAll(
+      /\s/gu,
+      "",
+    );
+    const at = focus().at;
+    if (!at || !/^([0-9a-f]{2})+$/iu.test(bytes)) {
+      setError("pairs of hexadecimal digits");
+      return;
+    }
+    connection
+      .request("writeMemory", { stop: at.stop, address: hex(props.address), bytes })
+      .then(finish)
+      .catch((failure: Error) => setError(failure.message));
+  };
+
+  const escape = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      finish();
+    }
+  };
+
+  const blur = () => {
+    if (error() === null) {
+      finish();
+    }
+  };
+
   return (
-    <form className="byte-edit" onSubmit={submit}>
+    <form class="byte-edit" onSubmit={submit}>
       <input
-        className="input"
+        ref={(node) => {
+          input = node;
+        }}
+        class="input"
         name="bytes"
-        aria-label={`New byte at ${hex(address)}`}
+        aria-label={`New byte at ${hex(props.address)}`}
         title="Hex bytes, such as 0a ff. Extra bytes overwrite the ones after it."
-        aria-invalid={error !== null}
-        // oxlint-disable-next-line jsx-a11y/no-autofocus -- the person asked to edit this byte
-        autoFocus
+        aria-invalid={error() === null ? "false" : "true"}
+        autofocus
         onKeyDown={escape}
         onBlur={blur}
       />
-      {error && <span className="error">{error}</span>}
+      <Show when={error()}>{(err) => <span class="error">{err()}</span>}</Show>
     </form>
   );
 }
 
-function Readings({
-  rows,
-  selection,
-}: {
-  rows: ReturnType<typeof dumpRows>;
-  selection: Selection | null;
-}) {
-  if (!selection) {
-    return (
-      <div className="mem-selection dim" data-testid="selection">
-        Click a byte, or shift-click to select several. The arrow keys move, and Enter edits.
-      </div>
+function Readings(props: { rows: ReturnType<typeof dumpRows>; selection: Selection | null }) {
+  const summary = createMemo(() => {
+    const selection = props.selection;
+    if (!selection) {
+      return null;
+    }
+    assert(
+      selection.from <= selection.to,
+      `selection ${hex(selection.from)} ends before it starts`,
     );
-  }
-  assert(selection.from <= selection.to, `selection ${hex(selection.from)} ends before it starts`);
-  const bytes: (number | null)[] = [];
-  for (const row of rows) {
-    for (const [column, byte] of row.bytes.entries()) {
-      const address = row.address + BigInt(column);
-      if (address >= selection.from && address <= selection.to) {
-        bytes.push(byte);
+    const bytes: (number | null)[] = [];
+    for (const row of props.rows) {
+      for (const [column, byte] of row.bytes.entries()) {
+        const address = row.address + BigInt(column);
+        if (address >= selection.from && address <= selection.to) {
+          bytes.push(byte);
+        }
       }
     }
-  }
-  const count = Number(selection.to - selection.from) + 1;
-  assert(bytes.length <= count, `${bytes.length} bytes shown of a ${count} byte selection`);
-  const whole = bytes.length === count && bytes.every((byte) => byte !== null);
+    const count = Number(selection.to - selection.from) + 1;
+    assert(bytes.length <= count, `${bytes.length} bytes shown of a ${count} byte selection`);
+    const whole = bytes.length === count && bytes.every((byte) => byte !== null);
+    return {
+      from: selection.from,
+      count,
+      readings: whole ? readAs(bytes as number[]) : null,
+    };
+  });
+
   return (
-    <div className="mem-selection" data-testid="selection">
-      <span className="dim">
-        {count} {count === 1 ? "byte" : "bytes"} at {hex(selection.from)}
-      </span>
-      {whole ? (
-        readAs(bytes as number[]).map((reading) => (
-          <span key={reading.as} className="reading">
-            <span className="dim">{reading.as}</span> {reading.text}
+    <Show
+      when={summary()}
+      fallback={
+        <div class="mem-selection dim" data-testid="selection">
+          Click a byte, or shift-click to select several. The arrow keys move, and Enter edits.
+        </div>
+      }
+    >
+      {(info) => (
+        <div class="mem-selection" data-testid="selection">
+          <span class="dim">
+            {info().count} {info().count === 1 ? "byte" : "bytes"} at {hex(info().from)}
           </span>
-        ))
-      ) : (
-        <span className="dim">not all of it is shown or readable</span>
+          <Show
+            when={info().readings}
+            fallback={<span class="dim">not all of it is shown or readable</span>}
+          >
+            {(readings) => (
+              <For each={readings()} keyed={(reading) => reading.as}>
+                {(reading) => (
+                  <span class="reading">
+                    <span class="dim">{reading().as}</span> {reading().text}
+                  </span>
+                )}
+              </For>
+            )}
+          </Show>
+        </div>
       )}
-    </div>
+    </Show>
   );
 }

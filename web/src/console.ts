@@ -1,8 +1,7 @@
-import { createStore } from "zustand";
-
 import type { ActionName } from "./actions";
 import { assert } from "./assert";
 import type { ConsoleResult, Inferior } from "./protocol";
+import { createState } from "./state";
 import { read, write } from "./storage";
 
 export interface Entry {
@@ -30,7 +29,7 @@ const KEY = "microscope-console-history";
 const isLines = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((line) => typeof line === "string");
 
-export const consoleStore = createStore<ConsoleState>(() => ({
+export const consoleStore = createState<ConsoleState>(() => ({
   entries: [],
   history: read(KEY, [], isLines),
 }));

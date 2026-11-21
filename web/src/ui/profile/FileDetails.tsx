@@ -1,13 +1,5 @@
-import {
-  type KeyboardEvent,
-  type MouseEvent,
-  type ReactNode,
-  useCallback,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import type { JSX } from "@solidjs/web";
+import { createMemo, createSignal, createUniqueId, For, Match, Show, Switch } from "solid-js";
 
 import { copyText } from "../../clipboard";
 import {
@@ -46,517 +38,560 @@ const BOTH: Tab[] = ["metadata", "samples"];
 const METADATA_ONLY: Tab[] = ["metadata"];
 
 export function FileDetails() {
-  const { profile, summary } = useProfile();
-  const info = useModel((model) => model.profiles.find((each) => each.id === profile));
-  const answer = useAnswer("profileInspect", { profile, revision: info?.revision ?? 0 });
+  const focus = useProfile();
+  const info = useModel((model) => model.profiles.find((each) => each.id === focus().profile));
+  const answer = useAnswer("profileInspect", () => ({
+    profile: focus().profile,
+    revision: info()?.revision ?? 0,
+  }));
 
-  const tabs = summary.samples > 0 ? BOTH : METADATA_ONLY;
-  const [tab, setTab] = useState<Tab>("metadata");
-  const chosen = useRef<HTMLButtonElement>(null);
-  const choose = useCallback((event: MouseEvent<HTMLButtonElement>) => {
+  const tabs = createMemo(() => (focus().summary.samples > 0 ? BOTH : METADATA_ONLY));
+  const [tab, setTab] = createSignal<Tab>("metadata");
+  const tabButtons = new Map<Tab, HTMLButtonElement>();
+  const choose = (event: MouseEvent & { currentTarget: HTMLButtonElement }) => {
     setTab(event.currentTarget.dataset.tab as Tab);
-  }, []);
-  const arrows = useCallback(
-    (event: KeyboardEvent) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
-        return;
-      }
-      event.preventDefault();
-      const step = event.key === "ArrowRight" ? 1 : -1;
-      setTab((now) => tabs[(tabs.indexOf(now) + step + tabs.length) % tabs.length] ?? now);
+  };
+  const arrows = (event: KeyboardEvent) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+    event.preventDefault();
+    const list = tabs();
+    const step = event.key === "ArrowRight" ? 1 : -1;
+    const next = list[(list.indexOf(tab()) + step + list.length) % list.length] ?? tab();
+    setTab(next);
+    requestAnimationFrame(() => tabButtons.get(next)?.focus());
+  };
 
-      requestAnimationFrame(() => chosen.current?.focus());
-    },
-    [tabs],
-  );
-
-  const inspection = answer.data;
+  const inspection = createMemo(() => answer().data);
   return (
-    <section className="details" aria-labelledby="details-title">
-      <div className="details-head">
-        <h1 id="details-title">{summary.name}</h1>
-        {tabs.length > 1 ? (
-          <div className="segmented" role="tablist" aria-label="File details">
-            {tabs.map((each) => (
-              <button
-                key={each}
-                type="button"
-                role="tab"
-                id={`details-${each}`}
-                data-tab={each}
-                aria-selected={tab === each}
-                aria-controls="details-panel"
-                tabIndex={tab === each ? 0 : -1}
-                ref={tab === each ? chosen : undefined}
-                onClick={choose}
-                onKeyDown={arrows}
-              >
-                {NAMES[each]}
-              </button>
-            ))}
+    <section class="details" aria-labelledby="details-title">
+      <div class="details-head">
+        <h1 id="details-title">{focus().summary.name}</h1>
+        <Show when={tabs().length > 1}>
+          <div class="segmented" role="tablist" aria-label="File details">
+            <For each={tabs()}>
+              {(each) => (
+                <button
+                  type="button"
+                  role="tab"
+                  id={`details-${each}`}
+                  data-tab={each}
+                  aria-selected={tab() === each ? "true" : "false"}
+                  aria-controls="details-panel"
+                  tabindex={tab() === each ? 0 : -1}
+                  ref={(node) => {
+                    tabButtons.set(each, node);
+                  }}
+                  onClick={choose}
+                  onKeyDown={arrows}
+                >
+                  {NAMES[each]}
+                </button>
+              )}
+            </For>
           </div>
-        ) : null}
-        {info ? <Download info={info} /> : null}
+        </Show>
+        <Show when={info()}>{(current) => <Download info={current()} />}</Show>
       </div>
       <div
-        className="details-body"
+        class="details-body"
         id="details-panel"
-        role={tabs.length > 1 ? "tabpanel" : undefined}
-        aria-labelledby={tabs.length > 1 ? `details-${tab}` : undefined}
+        role={tabs().length > 1 ? "tabpanel" : undefined}
+        aria-labelledby={tabs().length > 1 ? `details-${tab()}` : undefined}
       >
-        {answer.error ? (
-          <span className="error">Could not read its details: {answer.error.message}</span>
-        ) : inspection === undefined ? (
-          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled span, not a form output
-          <span className="muted" role="status">
-            Reading the profile…
-          </span>
-        ) : tab === "metadata" ? (
-          <Metadata summary={summary} inspection={inspection} />
-        ) : (
-          <Samples summary={summary} inspection={inspection} />
-        )}
+        <Switch>
+          <Match when={answer().error}>
+            {(error) => <span class="error">Could not read its details: {error().message}</span>}
+          </Match>
+          <Match when={inspection() === undefined}>
+            {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled span, not a form output */}
+            <span class="muted" role="status">
+              Reading the profile…
+            </span>
+          </Match>
+          <Match when={tab() === "metadata" ? inspection() : undefined}>
+            {(data) => <Metadata summary={focus().summary} inspection={data()} />}
+          </Match>
+          <Match when={inspection()}>
+            {(data) => <Samples summary={focus().summary} inspection={data()} />}
+          </Match>
+        </Switch>
       </div>
     </section>
   );
 }
 
-function Metadata({
-  summary,
-  inspection,
-}: {
-  summary: ProfileSummary;
-  inspection: ProfileInspection;
-}) {
-  const recorder = summary.settings.find((each) => each.name === "recorder")?.value;
-  const file = inspection.file;
-  const tableBytes = inspection.tables.reduce((sum, table) => sum + table.bytes, 0);
-  const mostTable = largest(
-    inspection.tables.map((table) => table.bytes),
-    1,
+function Metadata(props: { summary: ProfileSummary; inspection: ProfileInspection }) {
+  const recorder = createMemo(
+    () => props.summary.settings.find((each) => each.name === "recorder")?.value,
   );
-  const cpu = recorderBreakdown(
-    summary.recorderCpu,
-    summary.recorderLoading,
-    inspection.recorderSetup,
-    inspection.recorderFinishing,
+  const file = createMemo(() => props.inspection.file);
+  const fileBytes = createMemo(() => {
+    const current = file();
+    return current && current.bytes !== null ? { bytes: current.bytes } : null;
+  });
+  const tableBytes = createMemo(() =>
+    props.inspection.tables.reduce((sum, table) => sum + table.bytes, 0),
+  );
+  const mostTable = createMemo(() =>
+    largest(
+      props.inspection.tables.map((table) => table.bytes),
+      1,
+    ),
+  );
+  const cpu = createMemo(() =>
+    recorderBreakdown(
+      props.summary.recorderCpu,
+      props.summary.recorderLoading,
+      props.inspection.recorderSetup,
+      props.inspection.recorderFinishing,
+    ),
   );
   return (
     <>
-      {summary.command ? <Command command={summary.command} /> : null}
-      {inspection.processes.length > 1 ? (
-        <Section title={`Processes, ${inspection.processes.length}`}>
-          <table className="details-table">
+      <Show when={props.summary.command}>{(command) => <Command command={command()} />}</Show>
+      <Show when={props.inspection.processes.length > 1}>
+        <Section title={`Processes, ${props.inspection.processes.length}`}>
+          <table class="details-table">
             <thead>
               <tr>
-                <th className="n">PID</th>
+                <th class="n">PID</th>
                 <th>Name</th>
                 <th>Command</th>
               </tr>
             </thead>
             <tbody>
-              {inspection.processes.map((process, row) => (
-                // oxlint-disable-next-line react/no-array-index-key -- a pid may be reused
-                <tr key={row}>
-                  <td className="n">{process.pid}</td>
-                  <td>{process.name}</td>
-                  <td className="mono wrap">
-                    {process.command ? commandLine(process.command) : ""}
-                  </td>
-                </tr>
-              ))}
+              <For each={props.inspection.processes} keyed={false}>
+                {(process) => (
+                  <tr>
+                    <td class="n">{process().pid}</td>
+                    <td>{process().name}</td>
+                    <td class="mono wrap">
+                      <Show when={process().command}>{(cmd) => <>{commandLine(cmd())}</>}</Show>
+                    </td>
+                  </tr>
+                )}
+              </For>
             </tbody>
           </table>
         </Section>
-      ) : null}
-      <div className="details-columns">
+      </Show>
+      <div class="details-columns">
         <Section title="Recording">
           <Facts>
-            <Fact name="Recorded" value={formatDuration(summary.duration)} />
-            <Fact name="Threads" value={formatCount(summary.threads.length)} />
-            {summary.syscalls > 0 ? (
-              <Fact name="System calls" value={formatCount(summary.syscalls)} />
-            ) : null}
-            {recordingSettings(summary.settings).map(({ name, value }) => (
-              <Fact key={name} name={name.charAt(0).toUpperCase() + name.slice(1)} value={value} />
-            ))}
+            <Fact name="Recorded" value={formatDuration(props.summary.duration)} />
+            <Fact name="Threads" value={formatCount(props.summary.threads.length)} />
+            <Show when={props.summary.syscalls > 0}>
+              <Fact name="System calls" value={formatCount(props.summary.syscalls)} />
+            </Show>
+            <For each={recordingSettings(props.summary.settings)} keyed={(each) => each.name}>
+              {(each) => (
+                <Fact
+                  name={each().name.charAt(0).toUpperCase() + each().name.slice(1)}
+                  value={each().value}
+                />
+              )}
+            </For>
           </Facts>
         </Section>
-        <div className="details-stack">
+        <div class="details-stack">
           <Section title="File">
             <Facts>
-              {file === null ? <Fact name="Source" value="a live recording" /> : null}
-              {file !== null && file.bytes !== null ? (
-                <Fact name="Size" value={formatBytes(file.bytes)} />
-              ) : null}
-              {file === null ? null : <Fact name="Chunks" value={formatCount(file.chunks)} />}
-              {file?.truncated ? (
+              <Show when={file() === null}>
+                <Fact name="Source" value="a live recording" />
+              </Show>
+              <Show when={fileBytes()}>
+                {(size) => <Fact name="Size" value={formatBytes(size().bytes)} />}
+              </Show>
+              <Show when={file()}>
+                {(current) => <Fact name="Chunks" value={formatCount(current().chunks)} />}
+              </Show>
+              <Show when={file()?.truncated}>
                 <Fact name="Truncated" value="yes, only complete chunks were read" warn />
-              ) : null}
-              {recorder ? <Fact name="Recorder" value={recorder} /> : null}
+              </Show>
+              <Show when={recorder()}>{(name) => <Fact name="Recorder" value={name()} />}</Show>
             </Facts>
           </Section>
-          {summary.recorderCpu > 0 ? (
+          <Show when={props.summary.recorderCpu > 0}>
             <Section title="microscope's CPU">
-              <table className="details-table">
+              <table class="details-table">
                 <tbody>
-                  {cpu.map(([what, nanoseconds]) => (
-                    <tr key={what}>
-                      <th scope="row">{what}</th>
-                      <td className="n">{formatDuration(nanoseconds)}</td>
-                      <Bar value={nanoseconds} of={summary.recorderCpu} kind="context" />
-                    </tr>
-                  ))}
+                  <For each={cpu()} keyed={([what]) => what}>
+                    {(entry) => (
+                      <tr>
+                        <th scope="row">{entry()[0]}</th>
+                        <td class="n">{formatDuration(entry()[1])}</td>
+                        <Bar value={entry()[1]} of={props.summary.recorderCpu} kind="context" />
+                      </tr>
+                    )}
+                  </For>
                   <tr>
                     <th scope="row">Total</th>
-                    <td className="n">{formatDuration(summary.recorderCpu)}</td>
+                    <td class="n">{formatDuration(props.summary.recorderCpu)}</td>
                   </tr>
                 </tbody>
               </table>
             </Section>
-          ) : null}
+          </Show>
         </div>
       </div>
-      {inspection.modules.length > 0 ? (
-        <Section title={`Modules, ${inspection.modules.length}`}>
-          <table className="details-table">
+      <Show when={props.inspection.modules.length > 0}>
+        <Section title={`Modules, ${props.inspection.modules.length}`}>
+          <table class="details-table">
             <thead>
               <tr>
                 <th>Path</th>
-                <th className="n">Size</th>
+                <th class="n">Size</th>
                 <th>Build ID</th>
-                <th className="n">Frames</th>
+                <th class="n">Frames</th>
               </tr>
             </thead>
             <tbody>
-              {inspection.modules.map((module, row) => (
-                // oxlint-disable-next-line react/no-array-index-key -- two builds may share a path
-                <tr key={row}>
-                  <td className="mono wrap">{module.path}</td>
-                  <td className="n">{formatBytes(module.size)}</td>
-                  <td className={module.buildId ? "mono wrap" : "muted"}>
-                    {module.buildId ?? "none"}
-                  </td>
-                  <td className="n">{formatCount(module.frames)}</td>
-                </tr>
-              ))}
+              <For each={props.inspection.modules} keyed={false}>
+                {(module) => (
+                  <tr>
+                    <td class="mono wrap">{module().path}</td>
+                    <td class="n">{formatBytes(module().size)}</td>
+                    <td class={module().buildId ? "mono wrap" : "muted"}>
+                      {module().buildId ?? "none"}
+                    </td>
+                    <td class="n">{formatCount(module().frames)}</td>
+                  </tr>
+                )}
+              </For>
             </tbody>
           </table>
         </Section>
-      ) : null}
-      {inspection.tables.length > 0 ? (
+      </Show>
+      <Show when={props.inspection.tables.length > 0}>
         <Section title="Bytes by table">
-          <table className="details-table">
+          <table class="details-table">
             <tbody>
-              {inspection.tables.map((table) => (
-                <tr key={table.name}>
-                  <th scope="row">{table.name}</th>
-                  <td className="n">{formatBytes(table.bytes)}</td>
-                  <td className="n">{formatPercent(table.bytes, tableBytes)}</td>
-                  <Bar value={table.bytes} of={mostTable} kind="context" />
-                </tr>
-              ))}
+              <For each={props.inspection.tables} keyed={(table) => table.name}>
+                {(table) => (
+                  <tr>
+                    <th scope="row">{table().name}</th>
+                    <td class="n">{formatBytes(table().bytes)}</td>
+                    <td class="n">{formatPercent(table().bytes, tableBytes())}</td>
+                    <Bar value={table().bytes} of={mostTable()} kind="context" />
+                  </tr>
+                )}
+              </For>
             </tbody>
           </table>
         </Section>
-      ) : null}
+      </Show>
     </>
   );
 }
 
-function Command({ command }: { command: ProfileCommand }) {
+function Command(props: { command: ProfileCommand }) {
   return (
     <Section title="Command">
-      <CommandBlock command={command} />
+      <CommandBlock command={props.command} />
     </Section>
   );
 }
 
-export function CommandBlock({ command }: { command: ProfileCommand }) {
-  const [copied, setCopied] = useState<"copied" | "failed" | null>(null);
-  const block = useRef<HTMLDivElement>(null);
-  const copy = useCallback(async () => {
-    if (await copyText(commandLine(command))) {
+export function CommandBlock(props: { command: ProfileCommand }) {
+  const [copied, setCopied] = createSignal<"copied" | "failed" | null>(null);
+  let block: HTMLDivElement | undefined;
+  const copy = async () => {
+    if (await copyText(commandLine(props.command))) {
       setCopied("copied");
       return;
     }
 
-    if (block.current) {
-      window.getSelection()?.selectAllChildren(block.current);
+    if (block) {
+      window.getSelection()?.selectAllChildren(block);
     }
     setCopied("failed");
-  }, [command]);
+  };
 
-  const lines = command.arguments?.map(shellQuote) ?? [command.text];
+  const lines = createMemo(() => props.command.arguments?.map(shellQuote) ?? [props.command.text]);
   return (
     <>
-      <div className="details-command">
-        <div className="details-lines" ref={block} data-testid="command">
-          {lines.map((line, index) => (
-            // oxlint-disable-next-line react/no-array-index-key -- a command's arguments may repeat
-            <div key={index} className={index > 0 ? "argument" : undefined}>
-              {line}
-              {index < lines.length - 1 ? <span className="muted"> \</span> : null}
-            </div>
-          ))}
+      <div class="details-command">
+        <div
+          class="details-lines"
+          ref={(node) => {
+            block = node;
+          }}
+          data-testid="command"
+        >
+          <For each={lines()} keyed={false}>
+            {(line, index) => (
+              <div class={index > 0 ? "argument" : undefined}>
+                {line()}
+                <Show when={index < lines().length - 1}>
+                  <span class="muted"> \</span>
+                </Show>
+              </div>
+            )}
+          </For>
         </div>
-        <button type="button" className="tb ghost" onClick={copy}>
-          {copied === "copied" ? "Copied" : copied === "failed" ? "Selected, copy it" : "Copy"}
+        <button type="button" class="tb ghost" onClick={() => void copy()}>
+          {copied() === "copied" ? "Copied" : copied() === "failed" ? "Selected, copy it" : "Copy"}
         </button>
       </div>
-      {command.arguments ? null : (
-        <span className="muted">
+      <Show when={!props.command.arguments}>
+        <span class="muted">
           This recording kept the command as one line, so where each argument ends is unknown.
         </span>
-      )}
+      </Show>
     </>
   );
 }
 
-function Samples({
-  summary,
-  inspection,
-}: {
-  summary: ProfileSummary;
-  inspection: ProfileInspection;
-}) {
-  const cut = summary.truncations.reduce((sum, each) => sum + each.count, 0);
-  const nanoseconds = summary.unit === "nanoseconds";
-  const busiest = largest(
-    summary.threads.map((thread) => thread.weight + thread.blocked + thread.preempted),
-    1,
+function Samples(props: { summary: ProfileSummary; inspection: ProfileInspection }) {
+  const cut = createMemo(() =>
+    props.summary.truncations.reduce((sum, each) => sum + each.count, 0),
   );
-  const bin = summary.duration / Math.max(inspection.overTime.length, 1);
-  const binLabels = useMemo(
-    () =>
-      inspection.overTime.map(
-        (_, index) =>
-          `${formatInstant(index * bin, bin / 10, summary.duration)} – ${formatInstant((index + 1) * bin, bin / 10, summary.duration)}`,
-      ),
-    [inspection.overTime, bin, summary.duration],
+  const nanoseconds = createMemo(() => props.summary.unit === "nanoseconds");
+  const busiest = createMemo(() =>
+    largest(
+      props.summary.threads.map((thread) => thread.weight + thread.blocked + thread.preempted),
+      1,
+    ),
   );
+  const bin = createMemo(
+    () => props.summary.duration / Math.max(props.inspection.overTime.length, 1),
+  );
+  const binLabels = createMemo(() => {
+    const step = bin();
+    return props.inspection.overTime.map(
+      (_, index) =>
+        `${formatInstant(index * step, step / 10, props.summary.duration)} – ${formatInstant((index + 1) * step, step / 10, props.summary.duration)}`,
+    );
+  });
   return (
     <>
-      <div className="details-columns">
+      <div class="details-columns">
         <Section title="Totals">
           <Facts>
-            <Fact name="Samples" value={formatCount(summary.samples)} />
-            {inspection.counted > 0 ? (
+            <Fact name="Samples" value={formatCount(props.summary.samples)} />
+            <Show when={props.inspection.counted > 0}>
               <Fact
-                name={nanoseconds ? "CPU sampled" : "Sampled"}
-                value={`${formatWeight(summary.weight, summary.unit)} of ${formatWeight(inspection.counted, summary.unit)}, ${formatPercent(summary.weight, inspection.counted)}`}
+                name={nanoseconds() ? "CPU sampled" : "Sampled"}
+                value={`${formatWeight(props.summary.weight, props.summary.unit)} of ${formatWeight(props.inspection.counted, props.summary.unit)}, ${formatPercent(props.summary.weight, props.inspection.counted)}`}
               />
-            ) : null}
-            <Fact name="Lost" value={formatCount(summary.lost)} warn={summary.lost > 0} />
+            </Show>
+            <Fact
+              name="Lost"
+              value={formatCount(props.summary.lost)}
+              warn={props.summary.lost > 0}
+            />
             <Fact
               name="Throttled"
-              value={formatCount(summary.throttles)}
-              warn={summary.throttles > 0}
+              value={formatCount(props.summary.throttles)}
+              warn={props.summary.throttles > 0}
             />
             <Fact
               name="Stacks cut short"
-              value={`${formatCount(cut)}, ${formatPercent(cut, summary.samples)}`}
-              warn={cut > 0}
+              value={`${formatCount(cut())}, ${formatPercent(cut(), props.summary.samples)}`}
+              warn={cut() > 0}
             />
-            {inspection.shortened > 0 ? (
-              <Fact name="Copies shortened" value={formatCount(inspection.shortened)} warn />
-            ) : null}
-            <Fact name="Distinct stacks" value={formatCount(inspection.distinctStacks)} />
+            <Show when={props.inspection.shortened > 0}>
+              <Fact name="Copies shortened" value={formatCount(props.inspection.shortened)} warn />
+            </Show>
+            <Fact name="Distinct stacks" value={formatCount(props.inspection.distinctStacks)} />
             <Fact
               name="Frames"
-              value={`${formatCount(inspection.frames)}, ${formatCount(inspection.framesWithLines)} with lines`}
+              value={`${formatCount(props.inspection.frames)}, ${formatCount(props.inspection.framesWithLines)} with lines`}
             />
-            {inspection.stackBytes > 0 ? (
-              <Fact name="Stack copied" value={formatBytes(inspection.stackBytes)} />
-            ) : null}
+            <Show when={props.inspection.stackBytes > 0}>
+              <Fact name="Stack copied" value={formatBytes(props.inspection.stackBytes)} />
+            </Show>
           </Facts>
         </Section>
         <Section title="How stacks ended">
-          <table className="details-table">
+          <table class="details-table">
             <tbody>
               <Ending
                 what="Reached the outermost frame"
-                count={Math.max(summary.samples - cut, 0)}
-                samples={summary.samples}
+                count={Math.max(props.summary.samples - cut(), 0)}
+                samples={props.summary.samples}
                 kind="main"
               />
-              {summary.truncations.map(({ what, count }) => (
-                <Ending
-                  key={what}
-                  what={what.charAt(0).toUpperCase() + what.slice(1)}
-                  count={count}
-                  samples={summary.samples}
-                  kind="warn"
-                />
-              ))}
+              <For each={props.summary.truncations} keyed={(each) => each.what}>
+                {(each) => (
+                  <Ending
+                    what={each().what.charAt(0).toUpperCase() + each().what.slice(1)}
+                    count={each().count}
+                    samples={props.summary.samples}
+                    kind="warn"
+                  />
+                )}
+              </For>
             </tbody>
           </table>
         </Section>
       </div>
-      {inspection.overTime.length > 0 ? (
-        <Section title={`Samples over time, ${formatDuration(bin)} bins`}>
+      <Show when={props.inspection.overTime.length > 0}>
+        <Section title={`Samples over time, ${formatDuration(bin())} bins`}>
           <Histogram
-            counts={inspection.overTime}
-            labels={binLabels}
-            samples={summary.samples}
+            counts={props.inspection.overTime}
+            labels={binLabels()}
+            samples={props.summary.samples}
             filled
           >
-            <div className="details-ticks">
-              {timeTicks([0, summary.duration], CHART_WIDTH).map(({ at, label }) => (
-                <Tick key={label} at={at} label={label} />
-              ))}
+            <div class="details-ticks">
+              <For
+                each={timeTicks([0, props.summary.duration], CHART_WIDTH)}
+                keyed={(t) => t.label}
+              >
+                {(tick) => <Tick at={tick().at} label={tick().label} />}
+              </For>
             </div>
           </Histogram>
         </Section>
-      ) : null}
-      <Depths depths={inspection.depths} samples={summary.samples} />
-      {summary.threads.length > 0 ? (
-        <Section title={`Threads, ${summary.threads.length}`}>
-          <table className="details-table">
+      </Show>
+      <Depths depths={props.inspection.depths} samples={props.summary.samples} />
+      <Show when={props.summary.threads.length > 0}>
+        <Section title={`Threads, ${props.summary.threads.length}`}>
+          <table class="details-table">
             <thead>
               <tr>
-                <th className="n">TID</th>
+                <th class="n">TID</th>
                 <th>Name</th>
-                <th className="n">{nanoseconds ? "On CPU" : "Samples"}</th>
-                <th className="n">Off CPU</th>
+                <th class="n">{nanoseconds() ? "On CPU" : "Samples"}</th>
+                <th class="n">Off CPU</th>
                 <th aria-label="On and off CPU" />
               </tr>
             </thead>
             <tbody>
-              {summary.threads.map((thread) => (
-                <tr key={thread.row}>
-                  <td className="n">{thread.tid}</td>
-                  <td>{thread.name ?? ""}</td>
-                  <td className="n">
-                    {nanoseconds ? formatDuration(thread.weight) : formatCount(thread.samples)}
-                  </td>
-                  <td className="n">{formatDuration(thread.blocked + thread.preempted)}</td>
-                  <Bar
-                    value={nanoseconds ? thread.weight : 0}
-                    rest={thread.blocked + thread.preempted}
-                    of={busiest}
-                    kind="main"
-                  />
-                </tr>
-              ))}
+              <For each={props.summary.threads} keyed={(thread) => thread.row}>
+                {(thread) => (
+                  <tr>
+                    <td class="n">{thread().tid}</td>
+                    <td>{thread().name ?? ""}</td>
+                    <td class="n">
+                      {nanoseconds()
+                        ? formatDuration(thread().weight)
+                        : formatCount(thread().samples)}
+                    </td>
+                    <td class="n">{formatDuration(thread().blocked + thread().preempted)}</td>
+                    <Bar
+                      value={nanoseconds() ? thread().weight : 0}
+                      rest={thread().blocked + thread().preempted}
+                      of={busiest()}
+                      kind="main"
+                    />
+                  </tr>
+                )}
+              </For>
             </tbody>
           </table>
         </Section>
-      ) : null}
+      </Show>
     </>
   );
 }
 
-function Ending({
-  what,
-  count,
-  samples,
-  kind,
-}: {
-  what: string;
-  count: number;
-  samples: number;
-  kind: BarKind;
-}) {
+function Ending(props: { what: string; count: number; samples: number; kind: BarKind }) {
   return (
     <tr>
-      <th scope="row">{what}</th>
-      <td className="n">{formatCount(count)}</td>
-      <td className="n">{formatPercent(count, samples)}</td>
-      <Bar value={count} of={samples} kind={kind} />
+      <th scope="row">{props.what}</th>
+      <td class="n">{formatCount(props.count)}</td>
+      <td class="n">{formatPercent(props.count, props.samples)}</td>
+      <Bar value={props.count} of={props.samples} kind={props.kind} />
     </tr>
   );
 }
 
-function Depths({ depths, samples }: { depths: number[]; samples: number }) {
-  const median = medianDepth(depths);
-
-  const first = (depths[0] ?? 0) > 0 ? 0 : 1;
-  const counts = useMemo(() => depths.slice(first), [depths, first]);
-  const labels = useMemo(
-    () => counts.map((_, index) => formatCount(index + first, "frame")),
-    [counts, first],
-  );
-  if (median === null) {
-    return null;
-  }
+function Depths(props: { depths: number[]; samples: number }) {
+  const median = createMemo(() => medianDepth(props.depths));
+  const first = createMemo(() => ((props.depths[0] ?? 0) > 0 ? 0 : 1));
+  const counts = createMemo(() => props.depths.slice(first()));
+  const labels = createMemo(() => {
+    const start = first();
+    return counts().map((_, index) => formatCount(index + start, "frame"));
+  });
+  const marked = createMemo(() => {
+    const current = median();
+    return current === null ? null : { median: current, at: current - first() };
+  });
   return (
-    <Section title="Samples by stack depth, in frames">
-      <Histogram counts={counts} labels={labels} marked={median - first} samples={samples}>
-        <div className="details-axis">
-          <span>{first}</span>
-          <span>median {median}</span>
-          <span>{depths.length - 1}</span>
-        </div>
-      </Histogram>
-    </Section>
+    <Show when={marked()}>
+      {(current) => (
+        <Section title="Samples by stack depth, in frames">
+          <Histogram
+            counts={counts()}
+            labels={labels()}
+            marked={current().at}
+            samples={props.samples}
+          >
+            <div class="details-axis">
+              <span>{first()}</span>
+              <span>median {current().median}</span>
+              <span>{props.depths.length - 1}</span>
+            </div>
+          </Histogram>
+        </Section>
+      )}
+    </Show>
   );
 }
 
-function Histogram({
-  counts,
-  labels,
-  samples,
-  marked,
-  filled = false,
-  children,
-}: {
+function Histogram(props: {
   counts: number[];
   labels: string[];
   samples: number;
-  marked?: number;
-
-  filled?: boolean;
-  children: ReactNode;
+  marked?: number | undefined;
+  filled?: boolean | undefined;
+  children: JSX.Element;
 }) {
-  const [shown, setShown] = useState<number | null>(null);
-  const show = useCallback(
-    (event: { currentTarget: HTMLElement }) => setShown(Number(event.currentTarget.dataset.bar)),
-    [],
-  );
-  const hide = useCallback(() => setShown(null), []);
-  const most = largest(counts, 1);
-  const count = shown === null ? 0 : (counts[shown] ?? 0);
+  const [shown, setShown] = createSignal<number | null>(null);
+  const show = (event: { currentTarget: HTMLElement }) =>
+    setShown(Number(event.currentTarget.dataset.bar));
+  const hide = () => setShown(null);
+  const most = createMemo(() => largest(props.counts, 1));
+  const count = createMemo(() => {
+    const at = shown();
+    return at === null ? 0 : (props.counts[at] ?? 0);
+  });
+  const readout = createMemo(() => {
+    const at = shown();
+    if (at === null) {
+      return null;
+    }
+    return `${props.labels[at] ?? ""}: ${formatCount(count(), "sample")}, ${formatPercent(count(), props.samples)}`;
+  });
   return (
     <>
       <div
-        className={filled ? "details-histogram filled" : "details-histogram"}
-        onPointerLeave={hide}
+        class={props.filled ? "details-histogram filled" : "details-histogram"}
+        onPointerOut={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            hide();
+          }
+        }}
       >
-        {counts.map((each, index) => (
-          <Column
-            // oxlint-disable-next-line react/no-array-index-key -- a bar's place is its identity
-            key={index}
-            index={index}
-            count={each}
-            most={most}
-            label={labels[index] ?? ""}
-            marked={index === marked}
-            onShow={show}
-            onHide={hide}
-          />
-        ))}
+        <For each={props.counts} keyed={false}>
+          {(each, index) => (
+            <Column
+              index={index}
+              count={each()}
+              most={most()}
+              label={props.labels[index] ?? ""}
+              marked={index === props.marked}
+              onShow={show}
+              onHide={hide}
+            />
+          )}
+        </For>
       </div>
-      {children}
+      {props.children}
       {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a readout, not a form's result */}
-      <span className="muted details-readout" role="status">
-        {shown === null
-          ? null
-          : `${labels[shown] ?? ""}: ${formatCount(count, "sample")}, ${formatPercent(count, samples)}`}
+      <span class="muted details-readout" role="status">
+        <Show when={readout()}>{(text) => <>{text()}</>}</Show>
       </span>
     </>
   );
 }
 
-function Column({
-  index,
-  count,
-  most,
-  label,
-  marked,
-  onShow,
-  onHide,
-}: {
+function Column(props: {
   index: number;
   count: number;
   most: number;
@@ -565,64 +600,52 @@ function Column({
   onShow(event: { currentTarget: HTMLElement }): void;
   onHide(): void;
 }) {
-  const style = useMemo(() => ({ height: share(count, most) }), [count, most]);
   return (
     <button
       type="button"
-      className={marked ? "marked" : undefined}
-      aria-label={`${label}: ${formatCount(count, "sample")}`}
-      data-bar={index}
-      onPointerEnter={onShow}
-      onFocus={onShow}
-      onBlur={onHide}
+      class={props.marked ? "marked" : undefined}
+      aria-label={`${props.label}: ${formatCount(props.count, "sample")}`}
+      data-bar={props.index}
+      onPointerEnter={(event) => props.onShow(event)}
+      onFocus={(event) => props.onShow(event)}
+      onBlur={() => props.onHide()}
     >
-      <i style={style} />
+      <i style={{ height: share(props.count, props.most) }} />
     </button>
   );
 }
 
-function Tick({ at, label }: { at: number; label: string }) {
-  const style = useMemo(() => ({ left: `${at * 100}%` }), [at]);
-  return <span style={style}>{label}</span>;
+function Tick(props: { at: number; label: string }) {
+  return <span style={{ left: `${props.at * 100}%` }}>{props.label}</span>;
 }
 
-function Fact({ name, value, warn = false }: { name: string; value: string; warn?: boolean }) {
+function Fact(props: { name: string; value: string; warn?: boolean | undefined }) {
   return (
     <tr>
-      <th scope="row">{name}</th>
-      <td className={warn ? "warn wrap" : "wrap"}>{value}</td>
+      <th scope="row">{props.name}</th>
+      <td class={props.warn ? "warn wrap" : "wrap"}>{props.value}</td>
     </tr>
   );
 }
 
-function Facts({ children }: { children: ReactNode }) {
+function Facts(props: { children: JSX.Element }) {
   return (
-    <table className="details-table">
-      <tbody>{children}</tbody>
+    <table class="details-table">
+      <tbody>{props.children}</tbody>
     </table>
   );
 }
 
 type BarKind = "main" | "context" | "warn";
 
-function Bar({
-  value,
-  rest = 0,
-  of,
-  kind,
-}: {
-  value: number;
-  rest?: number;
-  of: number;
-  kind: BarKind;
-}) {
-  const first = useMemo(() => ({ width: share(value, of) }), [value, of]);
-  const second = useMemo(() => ({ width: share(rest, of) }), [rest, of]);
+function Bar(props: { value: number; rest?: number | undefined; of: number; kind: BarKind }) {
   return (
-    <td className="details-bar" aria-hidden="true">
+    <td class="details-bar" aria-hidden="true">
       <div>
-        <i className={kind} style={first} />
-        {rest > 0 ? <i className="context" style={second} /> : null}
+        <i class={props.kind} style={{ width: share(props.value, props.of) }} />
+        <Show when={(props.rest ?? 0) > 0}>
+          <i class="context" style={{ width: share(props.rest ?? 0, props.of) }} />
+        </Show>
       </div>
     </td>
   );
@@ -632,12 +655,12 @@ function share(part: number, of: number): string {
   return `${(Math.max(part, 0) / Math.max(of, 1)) * 100}%`;
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  const heading = useId();
+function Section(props: { title: string; children: JSX.Element }) {
+  const heading = createUniqueId();
   return (
-    <section className="details-section" aria-labelledby={heading}>
-      <h2 id={heading}>{title}</h2>
-      {children}
+    <section class="details-section" aria-labelledby={heading}>
+      <h2 id={heading}>{props.title}</h2>
+      {props.children}
     </section>
   );
 }
@@ -662,25 +685,27 @@ async function saveProfile(info: ProfileInfo) {
   URL.revokeObjectURL(link.href);
 }
 
-function Download({ info }: { info: ProfileInfo }) {
-  const [failure, setFailure] = useState<string | null>(null);
-  const download = useCallback(() => {
+function Download(props: { info: ProfileInfo }) {
+  const [failure, setFailure] = createSignal<string | null>(null);
+  const download = () => {
     setFailure(null);
-    saveProfile(info).catch((error: unknown) => {
+    saveProfile(props.info).catch((error: unknown) => {
       setFailure(error instanceof Error ? error.message : String(error));
     });
-  }, [info]);
+  };
   return (
     <>
       <button
         type="button"
-        className="tb ghost"
-        title={`Download ${fileName(info)} to open later with microscope web`}
+        class="tb ghost"
+        title={`Download ${fileName(props.info)} to open later with microscope web`}
         onClick={download}
       >
         Download
       </button>
-      {failure ? <span className="error">Could not download it: {failure}</span> : null}
+      <Show when={failure()}>
+        {(message) => <span class="error">Could not download it: {message()}</span>}
+      </Show>
     </>
   );
 }

@@ -1,4 +1,3 @@
-import { render } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { type Locator, page, userEvent } from "vitest/browser";
 
@@ -11,6 +10,7 @@ import { OrgBody, ProjectsBody } from "../src/ui/Orgs";
 import { OrgLink, orgLink } from "../src/ui/SingleSignOn";
 import type { PaneId } from "../src/workbench/layout";
 import { mountPane, unmountPane } from "./pane";
+import { render } from "./render";
 
 const ME: User = { id: 1, username: "ana", email: "ana@example.com", totp_enabled: false };
 
@@ -62,8 +62,7 @@ const inAcme = { id: 7, name: "acme" };
 
 const text = (locator: Locator) => locator.query()?.textContent ?? "";
 
-const orgPane = (org: Org) => (
-  // oxlint-disable-next-line react-perf/jsx-no-new-object-as-prop -- built from the test's org
+const orgPane = (org: Org) => () => (
   <OrgBody id={"p1" as PaneId} pane={{ kind: KIND.org, key: String(org.id), params: null }} />
 );
 
@@ -82,7 +81,7 @@ it("lists the person's own projects first, then each organization's, with their 
     "GET /api/projects": [200, projects],
     "GET /api/users/me/invitations": [200, []],
   });
-  render(<ProjectsBody />);
+  render(() => <ProjectsBody />);
   const own = page.getByRole("list", { name: "Your projects" });
   await expect.poll(() => text(own)).toMatch(/mine\s*Admin/u);
   await expect.element(own.getByRole("button", { name: "Rename" })).toBeVisible();
@@ -106,7 +105,7 @@ it("asks an owner whose new project it is, and shows services' reason when it re
         ? [409, { error: "a project of that name exists" }]
         : [201, { id: 3, name: "x", org: null, permission: "admin" }],
   });
-  render(<ProjectsBody />);
+  render(() => <ProjectsBody />);
   await expect.element(page.getByText("None of your own yet.")).toBeVisible();
   await userEvent.click(page.getByRole("button", { name: "New project" }));
   await expect.element(page.getByLabelText("Owner")).toHaveValue("");
@@ -257,7 +256,7 @@ it("lets a person accept an invitation from their Account pane", async () => {
       return [200, acme("member")];
     },
   });
-  await mountPane(<AccountBody />);
+  await mountPane(() => <AccountBody />);
   const invitations = page.getByRole("list", { name: "Invitations" });
   await expect.poll(() => text(invitations)).toContain("acme invites you as a member (from bo)");
   await expect.element(page.getByText(/^You are not in any organization/u)).toBeVisible();
@@ -278,7 +277,7 @@ const showSignInMethods = async (providers: unknown, identities: unknown[], pass
     "GET /api/features": [200, { email: false, totp: true, sso: providers, passkeys }],
     "GET /api/users/me/identities": [200, { has_password: true, identities, passkeys: [] }],
   });
-  await mountPane(<AccountBody />);
+  await mountPane(() => <AccountBody />);
   return asked;
 };
 
@@ -334,7 +333,7 @@ const showPasskeys = async (has_password: boolean, passkeys: unknown[]) => {
     ],
     "GET /api/users/me/identities": [200, { has_password, identities: [], passkeys }],
   });
-  await mountPane(<AccountBody />);
+  await mountPane(() => <AccountBody />);
 };
 
 it("lists passkeys, and keeps the last way in", async () => {
@@ -410,7 +409,7 @@ it("adds a passkey once the person proves who they are, sending what the device 
       },
     } as unknown as Credential);
   });
-  await mountPane(<AccountBody />);
+  await mountPane(() => <AccountBody />);
 
   await userEvent.click(page.getByRole("button", { name: "Add a passkey" }));
   await userEvent.fill(page.getByLabelText("Passkey name"), " Mac ");
@@ -453,7 +452,7 @@ const showTwoFactor = async (totp: boolean, user: User) => {
     "GET /api/users/me": [200, user],
   });
   account.setState({ now: { kind: "in", user } });
-  await mountPane(<AccountBody />);
+  await mountPane(() => <AccountBody />);
   return asked;
 };
 
@@ -485,7 +484,7 @@ const showSignedOut = async (email: boolean) => {
     ],
   });
   account.setState({ now: { kind: "out" } });
-  await mountPane(<AccountBody />);
+  await mountPane(() => <AccountBody />);
   return asked;
 };
 
@@ -518,7 +517,7 @@ it("a reset link for another account leaves this browser signed in as it was", a
     "POST /api/password-resets/complete": [204],
   });
   account.setState({ reset: "ab".repeat(32) });
-  await mountPane(<AccountBody />);
+  await mountPane(() => <AccountBody />);
   await userEvent.fill(page.getByLabelText("New password"), "a whole new password");
   await userEvent.click(page.getByRole("button", { name: "Change password" }));
   await expect
@@ -548,7 +547,7 @@ it("an account without a password proves who it is by signing in again", async (
     ],
     "DELETE /api/users/me/identities/4": [403, { error: "confirm it is you first" }],
   });
-  await mountPane(<AccountBody />);
+  await mountPane(() => <AccountBody />);
   const row = page.getByRole("listitem").filter({ hasText: "GitHub" });
   await userEvent.click(row.getByRole("button", { name: "Disconnect" }));
   await userEvent.click(row.getByRole("button", { name: "Disconnect" }));
@@ -575,7 +574,7 @@ it("says what went wrong when services cannot be asked", async () => {
     "GET /api/projects": [200, []],
     "GET /api/users/me/invitations": [200, []],
   });
-  render(<ProjectsBody />);
+  render(() => <ProjectsBody />);
   await expect
     .element(page.getByRole("alert"))
     .toHaveTextContent("Could not load your projects: database is down.");
@@ -610,7 +609,7 @@ it("shows the next person only their own projects, even while the last person's 
     }),
   );
   account.setState({ now: { kind: "in", user: ME }, notice: null });
-  render(<ProjectsBody />);
+  render(() => <ProjectsBody />);
   await vi.waitFor(() => expect(held.length).toBeGreaterThan(0));
 
   await checkAccount();
@@ -652,7 +651,7 @@ it("checks a second organization's sign-in link afresh, never showing the first'
     String(input) === "/api/sso/saml/b" ? new Promise(() => {}) : answered(input, init),
   );
   orgLink.setState({ key: "a" });
-  const shown = render(<OrgLink />);
+  const shown = render(() => <OrgLink />);
   await expect.element(page.getByRole("heading", { name: "acme" })).toBeVisible();
 
   orgLink.setState({ key: "b" });

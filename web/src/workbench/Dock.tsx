@@ -1,16 +1,4 @@
-import {
-  type ChangeEvent,
-  type KeyboardEvent,
-  memo,
-  type PointerEvent,
-  type RefObject,
-  useCallback,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { createMemo, createSignal, For, onSettled, Show } from "solid-js";
 
 import { classOf } from "./classes";
 import { DockContext, type DockSetup, useDock } from "./context";
@@ -32,58 +20,77 @@ const LEAST = { width: 200, height: 120 } as const;
 
 const narrowQuery = () => window.matchMedia(`(max-width: ${NARROW - 1}px)`);
 
-export function useNarrow(): boolean {
-  return useSyncExternalStore(
-    (changed) => {
-      const query = narrowQuery();
-      query.addEventListener("change", changed);
-      return () => query.removeEventListener("change", changed);
-    },
-    () => narrowQuery().matches,
-  );
+export function useNarrow(): () => boolean {
+  const [narrow, setNarrow] = createSignal(narrowQuery().matches);
+  onSettled(() => {
+    const query = narrowQuery();
+    const changed = () => setNarrow(query.matches);
+    setNarrow(query.matches);
+    query.addEventListener("change", changed);
+    return () => query.removeEventListener("change", changed);
+  });
+  return narrow;
 }
 
-export function Dock({ setup }: { setup: DockSetup }) {
+export function Dock(props: { setup: DockSetup }) {
   const root = useLayout((layout) => layout.root);
   const maximized = useLayout((layout) => layout.maximized);
   const focused = useLayout((layout) => layout.focused);
 
   const stacked = useLayout((layout) => layout.floating.map((window) => window.group.id).join(" "));
-  const windows = stacked === "" ? [] : (stacked.split(" ") as GroupId[]);
+  const windows = createMemo(() => {
+    const value = stacked();
+    return value === "" ? [] : (value.split(" ") as GroupId[]);
+  });
+  const sortedWindows = createMemo(() => windows().toSorted());
   const narrow = useNarrow();
-  const element = useRef<HTMLDivElement>(null);
-  const size = useSize(element);
+  let element: HTMLDivElement | undefined;
+  const size = useSize(() => element);
 
   return (
-    <DockContext value={setup}>
-      <div className={css("dock")} data-part="dock" ref={element}>
-        {narrow ? (
-          <div className={`${css("dock-tree")} ${css("dock-narrow")}`} data-part="tree">
+    <DockContext value={props.setup}>
+      <div
+        class={css("dock")}
+        data-part="dock"
+        ref={(el) => {
+          element = el;
+        }}
+      >
+        <Show
+          when={narrow()}
+          fallback={
+            <>
+              <div class={css("dock-tree")} data-part="tree">
+                <Show when={maximized()} fallback={<NodeView node={root()} />}>
+                  {(id) => <GroupView id={id()} />}
+                </Show>
+              </div>
+              <Show when={size()}>
+                {(bounds) => (
+                  <For each={sortedWindows()}>
+                    {(id) => (
+                      <FloatingWindow id={id} bounds={bounds()} layer={windows().indexOf(id) + 1} />
+                    )}
+                  </For>
+                )}
+              </Show>
+            </>
+          }
+        >
+          <div class={[css("dock-tree"), css("dock-narrow")]} data-part="tree">
             <PanePicker />
-            <GroupView id={focused} />
+            <GroupView id={focused()} />
           </div>
-        ) : (
-          <>
-            <div className={css("dock-tree")} data-part="tree">
-              {maximized ? <GroupView id={maximized} /> : <NodeView node={root} />}
-            </div>
-            {size &&
-              windows
-                .toSorted()
-                .map((id) => (
-                  <FloatingWindow key={id} id={id} bounds={size} layer={windows.indexOf(id) + 1} />
-                ))}
-          </>
-        )}
+        </Show>
       </div>
     </DockContext>
   );
 }
 
-function useSize(element: RefObject<HTMLDivElement | null>) {
-  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
-  useLayoutEffect(() => {
-    const box = element.current;
+function useSize(element: () => HTMLDivElement | undefined) {
+  const [size, setSize] = createSignal<{ width: number; height: number } | null>(null);
+  onSettled(() => {
+    const box = element();
     if (!box) {
       return;
     }
@@ -92,150 +99,160 @@ function useSize(element: RefObject<HTMLDivElement | null>) {
     const observer = new ResizeObserver(measure);
     observer.observe(box);
     return () => observer.disconnect();
-  }, [element]);
+  });
   return size;
 }
 
-const FloatingWindow = memo(function FloatingWindow({
-  id,
-  bounds,
-  layer,
-}: {
+function FloatingWindow(props: {
   id: GroupId;
   bounds: { width: number; height: number };
   layer: number;
 }) {
-  const found = useLayout((layout) => layout.floating.find((window) => window.group.id === id));
-  return found ? <WindowFrame id={id} placed={found.rect} bounds={bounds} layer={layer} /> : null;
-});
+  const found = useLayout((layout) =>
+    layout.floating.find((window) => window.group.id === props.id),
+  );
+  return (
+    <Show when={found()}>
+      {(win) => (
+        <WindowFrame id={props.id} placed={win().rect} bounds={props.bounds} layer={props.layer} />
+      )}
+    </Show>
+  );
+}
 
-function WindowFrame({
-  id,
-  placed,
-  bounds,
-  layer,
-}: {
+function WindowFrame(props: {
   id: GroupId;
-
   placed: Rect;
   bounds: { width: number; height: number };
   layer: number;
 }) {
   const { kinds } = useDock();
   const title = useLayout((layout) => {
-    const group = groups(layout).find((candidate) => candidate.id === id);
+    const group = groups(layout).find((candidate) => candidate.id === props.id);
     const pane = group?.active ? layout.panes[group.active] : undefined;
     return pane ? kinds.get(pane.kind).title(pane) : "";
   });
-  const element = useRef<HTMLDivElement>(null);
-  const rect = useMemo(() => keepOnScreen(placed, { x: 0, y: 0, ...bounds }), [placed, bounds]);
-  const style = useMemo(
-    () => ({ left: rect.x, top: rect.y, width: rect.width, height: rect.height, zIndex: layer }),
-    [rect, layer],
-  );
+  let element: HTMLDivElement | undefined;
+  const rect = createMemo(() => keepOnScreen(props.placed, { x: 0, y: 0, ...props.bounds }));
+  const style = createMemo(() => {
+    const r = rect();
+    return {
+      left: `${r.x}px`,
+      top: `${r.y}px`,
+      width: `${r.width}px`,
+      height: `${r.height}px`,
+      "z-index": props.layer,
+    };
+  });
 
-  const resizeKey = useCallback(
-    (event: KeyboardEvent<HTMLButtonElement>) => {
-      if (event.altKey || event.ctrlKey || event.metaKey) {
-        return;
-      }
-      const step = event.shiftKey ? 64 : 16;
-      const delta = {
-        ArrowLeft: [-step, 0],
-        ArrowRight: [step, 0],
-        ArrowUp: [0, -step],
-        ArrowDown: [0, step],
-      }[event.key];
-      if (delta) {
-        event.preventDefault();
-        change((layout) => reframe(layout, id, grown(rect, delta[0] ?? 0, delta[1] ?? 0, bounds)));
-      }
-    },
-    [id, rect, bounds],
-  );
-
-  const gripDown = useCallback(
-    (event: PointerEvent<HTMLButtonElement>) => {
-      const box = element.current;
-      if (!box) {
-        return;
-      }
-      const sized = (at: globalThis.PointerEvent) =>
-        grown(rect, at.clientX - event.clientX, at.clientY - event.clientY, bounds);
-      const resize = (to: Rect) => {
-        box.style.width = `${to.width}px`;
-        box.style.height = `${to.height}px`;
-      };
-      const tracked = trackPointer(event, {
-        move: (moved) => resize(sized(moved)),
-        up: (released) => change((layout) => reframe(layout, id, sized(released))),
-        cancel: () => resize(rect),
-      });
-      if (tracked) {
-        event.preventDefault();
-
-        event.currentTarget.focus();
-      }
-    },
-    [id, rect, bounds],
-  );
-
-  const raise = useCallback(() => {
+  const raise = () => {
     const { layout } = workbench.getState();
-    if (layout.floating.at(-1)?.group.id !== id) {
-      change((now) => reframe(now, id, placed));
+    if (layout.floating.at(-1)?.group.id !== props.id) {
+      change((now) => reframe(now, props.id, props.placed));
     }
-  }, [id, placed]);
-  const press = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const target = event.target as Element;
-      if (
-        !target.closest("button") &&
-        (target.closest("[data-part=window-bar]") ||
-          target.matches(`[data-group="${id}"] > [role="tablist"]`))
-      ) {
-        pressWindow(event, id, event.currentTarget, rect);
-      }
-    },
-    [id, rect],
-  );
-  const dockRight = useCallback(() => {
-    rememberSize(workbench.getState().layout, id);
-    change((layout) => dock(layout, id, { type: "edge", side: "right" }));
-  }, [id]);
+  };
+
+  onSettled(() => {
+    const box = element;
+    if (!box) {
+      return;
+    }
+    box.addEventListener("pointerdown", raise, { capture: true });
+    return () => box.removeEventListener("pointerdown", raise, { capture: true });
+  });
+
+  const resizeKey = (event: KeyboardEvent) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    const step = event.shiftKey ? 64 : 16;
+    const delta = {
+      ArrowLeft: [-step, 0],
+      ArrowRight: [step, 0],
+      ArrowUp: [0, -step],
+      ArrowDown: [0, step],
+    }[event.key];
+    if (delta) {
+      event.preventDefault();
+      change((layout) =>
+        reframe(layout, props.id, grown(rect(), delta[0] ?? 0, delta[1] ?? 0, props.bounds)),
+      );
+    }
+  };
+
+  const gripDown = (event: PointerEvent & { currentTarget: HTMLButtonElement }) => {
+    const box = element;
+    if (!box) {
+      return;
+    }
+    const startRect = rect();
+    const bounds = props.bounds;
+    const sized = (at: PointerEvent) =>
+      grown(startRect, at.clientX - event.clientX, at.clientY - event.clientY, bounds);
+    const resize = (to: Rect) => {
+      box.style.width = `${to.width}px`;
+      box.style.height = `${to.height}px`;
+    };
+    const tracked = trackPointer(event, {
+      move: (moved) => resize(sized(moved)),
+      up: (released) => change((layout) => reframe(layout, props.id, sized(released))),
+      cancel: () => resize(startRect),
+    });
+    if (tracked) {
+      event.preventDefault();
+      event.currentTarget.focus();
+    }
+  };
+
+  const press = (event: PointerEvent & { currentTarget: HTMLDivElement }) => {
+    const target = event.target as Element;
+    if (
+      !target.closest("button") &&
+      (target.closest("[data-part=window-bar]") ||
+        target.matches(`[data-group="${props.id}"] > [role="tablist"]`))
+    ) {
+      pressWindow(event, props.id, event.currentTarget, rect());
+    }
+  };
+
+  const dockRight = () => {
+    rememberSize(workbench.getState().layout, props.id);
+    change((layout) => dock(layout, props.id, { type: "edge", side: "right" }));
+  };
 
   return (
     <div
-      ref={element}
-      className={css("dock-window")}
+      ref={(el) => {
+        element = el;
+      }}
+      class={css("dock-window")}
       data-part="window"
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a <dialog> is hidden until opened and brings its own focus handling; this window is always shown
       role="dialog"
-      aria-label={title}
-      style={style}
-      onPointerDownCapture={raise}
+      aria-label={title()}
+      style={style()}
       onPointerDown={press}
     >
-      <div className={css("window-bar")} data-part="window-bar">
-        <span className={css("window-title")}>{title}</span>
+      <div class={css("window-bar")} data-part="window-bar">
+        <span class={css("window-title")}>{title()}</span>
         <button
           type="button"
-          className={css("window-dock")}
+          class={css("window-dock")}
           data-part="window-dock"
           title="Dock this window on the right"
-          aria-label={`Dock ${title}`}
+          aria-label={`Dock ${title()}`}
           onClick={dockRight}
         >
           Dock
         </button>
       </div>
-      <GroupView id={id} />
+      <GroupView id={props.id} />
       <button
         type="button"
-        className={css("window-grip")}
+        class={css("window-grip")}
         data-part="window-grip"
         data-keys="escape"
-        aria-label={`Resize ${title}`}
+        aria-label={`Resize ${title()}`}
         title="Resize with arrow keys; hold Shift for larger steps"
         onKeyDown={resizeKey}
         onPointerDown={gripDown}
@@ -263,30 +280,28 @@ function PanePicker() {
       })
       .join("\u0001"),
   );
+  const items = createMemo(() => {
+    const raw = options();
+    return raw === ""
+      ? []
+      : raw.split("\u0001").map((entry) => entry.split("\u0000") as [string, string]);
+  });
   const shown = useLayout(
     (layout) => groups(layout).find((group) => group.id === layout.focused)?.active ?? "",
   );
-  const choose = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => {
-      const pane = event.target.value as PaneId;
-      change((layout) => activate(layout, pane));
-      const found = workbench.getState().layout.panes[pane];
-      if (found) {
-        kinds.get(found.kind).chosen?.(found);
-      }
-    },
-    [kinds],
-  );
+  const choose = (event: Event & { currentTarget: HTMLSelectElement }) => {
+    const pane = event.currentTarget.value as PaneId;
+    change((layout) => activate(layout, pane));
+    const found = workbench.getState().layout.panes[pane];
+    if (found) {
+      kinds.get(found.kind).chosen?.(found);
+    }
+  };
   return (
-    <select className={css("pane-picker")} aria-label="Pane" value={shown} onChange={choose}>
-      {options.split("\u0001").map((option) => {
-        const [pane, title] = option.split("\u0000");
-        return (
-          <option key={pane} value={pane}>
-            {title}
-          </option>
-        );
-      })}
+    <select class={css("pane-picker")} aria-label="Pane" value={shown()} onChange={choose}>
+      <For each={items()} keyed={([pane]) => pane}>
+        {(entry) => <option value={entry()[0]}>{entry()[1]}</option>}
+      </For>
     </select>
   );
 }

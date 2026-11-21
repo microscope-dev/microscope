@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { createMemo, For, Show } from "solid-js";
 
 import { assert } from "../assert";
 import { openingFrame } from "../follow";
@@ -8,75 +8,68 @@ import { useGo } from "./navigation";
 import { useFocus } from "./Workspace";
 
 export function Threads() {
-  const { state, at, stale } = useFocus();
+  const focus = useFocus();
   const go = useGo();
-  const inferior = state.inferior;
-  const stopping = inferior.state === "stopped" ? inferior.thread : null;
-
-  const shown = at?.task ? null : (at?.thread ?? stopping);
-
-  const choosable = at !== null && stale === null;
-  const choose = useCallback(
-    (thread: number) => {
-      assert(at !== null, `thread ${thread} chosen with no stop`);
-      go({ stop: at.stop, thread, frame: openingFrame(state, at.stop, thread) });
-    },
-    [at, go, state],
-  );
+  const inferior = createMemo(() => focus().state.inferior);
+  const stopping = createMemo(() => {
+    const current = inferior();
+    return current.state === "stopped" ? current.thread : null;
+  });
+  const shown = createMemo(() => {
+    const currentAt = focus().at;
+    return currentAt?.task ? null : (currentAt?.thread ?? stopping());
+  });
+  const choosable = createMemo(() => focus().at !== null && focus().stale === null);
+  const choose = (thread: number) => {
+    const { at, state } = focus();
+    assert(at !== null, `thread ${thread} chosen with no stop`);
+    go({ stop: at.stop, thread, frame: openingFrame(state, at.stop, thread) });
+  };
 
   return (
-    <div className={`pane-body ${stale ? "stale" : ""}`}>
-      {state.threads.length === 0 ? (
-        <div className="empty">{emptyThreads(inferior)}</div>
-      ) : (
-        <ul className="rows" data-testid="threads">
-          {state.threads.map((thread) => (
-            <ThreadRow
-              key={thread.id}
-              thread={thread}
-              shown={thread.id === shown}
-              stopping={thread.id === stopping}
-              choosable={choosable}
-              onChoose={choose}
-            />
-          ))}
+    <div class={["pane-body", { stale: Boolean(focus().stale) }]}>
+      <Show
+        when={focus().state.threads.length > 0}
+        fallback={<div class="empty">{emptyThreads(inferior())}</div>}
+      >
+        <ul class="rows" data-testid="threads">
+          <For each={focus().state.threads} keyed={(thread) => thread.id}>
+            {(thread) => (
+              <ThreadRow
+                thread={thread()}
+                shown={thread().id === shown()}
+                stopping={thread().id === stopping()}
+                choosable={choosable()}
+                onChoose={choose}
+              />
+            )}
+          </For>
         </ul>
-      )}
+      </Show>
     </div>
   );
 }
 
-function ThreadRow({
-  thread,
-  shown,
-  stopping,
-  choosable,
-  onChoose,
-}: {
+function ThreadRow(props: {
   thread: Thread;
   shown: boolean;
   stopping: boolean;
   choosable: boolean;
   onChoose: (thread: number) => void;
 }) {
-  const onClick = useCallback(() => onChoose(thread.id), [onChoose, thread.id]);
   return (
     <li>
       <button
         type="button"
-        className={`row button-row ${shown ? "selected" : ""}`}
-        disabled={!choosable}
-        aria-current={shown ? "true" : undefined}
-        onClick={onClick}
+        class={["row button-row", { selected: props.shown }]}
+        disabled={!props.choosable}
+        aria-current={props.shown ? "true" : undefined}
+        onClick={() => props.onChoose(props.thread.id)}
       >
-        <span>{threadLabel(thread.id, thread.name)}</span>
-        {thread.labels.map((label) => (
-          <span key={label} className="dim">
-            {label}
-          </span>
-        ))}
-        <span className="end">
-          {stopping ? "◂ stopped here" : thread.stopped ? "stopped" : "running"}
+        <span>{threadLabel(props.thread.id, props.thread.name)}</span>
+        <For each={props.thread.labels}>{(label) => <span class="dim">{label}</span>}</For>
+        <span class="end">
+          {props.stopping ? "◂ stopped here" : props.thread.stopped ? "stopped" : "running"}
         </span>
       </button>
     </li>

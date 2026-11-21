@@ -1,20 +1,29 @@
-import { useLocation, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useLocation, useNavigate, useParams } from "@solidjs/router";
+import type { JSX } from "@solidjs/web";
 import {
   createContext,
-  type ReactNode,
+  createEffect,
+  createMemo,
+  onSettled,
+  Show,
+  untrack,
   useContext,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+} from "solid-js";
 
 import { assert } from "../assert";
 import { useRequest } from "../data";
 import { KIND } from "../documents";
-import { type At, followedLook, type Look, parseAt } from "../focus";
+import {
+  type At,
+  followedLook,
+  type Look,
+  parseAt,
+  parseSearch,
+  stopPath,
+  validateLook,
+} from "../focus";
 import { follow, latestStop } from "../follow";
+import { toHref } from "../history";
 import type { Backtrace, State } from "../protocol";
 import { frameAt } from "../stack";
 import { useConnection, useModel } from "../store";
@@ -32,8 +41,8 @@ import {
   misplaced,
   restoreLayout,
   showPane,
-  type Wants,
   startLayout,
+  type Wants,
 } from "./panes";
 
 export interface Focus {
@@ -48,215 +57,272 @@ export interface Focus {
   stale: "running" | "passed" | "disconnected" | null;
 }
 
-export const FocusContext = createContext<Focus | null>(null);
+export const FocusContext = createContext<() => Focus | null>(() => null);
 
-export function useFocus(): Focus {
-  const focus = useContext(FocusContext);
-  if (!focus) {
-    throw new Error("panes need a focus");
-  }
-  return focus;
+export function useFocus(): () => Focus {
+  const read = useContext(FocusContext);
+  return () => {
+    const focus = read();
+    if (!focus) {
+      throw new Error("panes need a focus");
+    }
+    return focus;
+  };
 }
 
-function useAt(): At | null {
-  const params = useParams({ strict: false }) as {
-    stop?: string;
-    thread?: string;
-    task?: string;
-    frame?: string;
-  };
-  const { stop, thread, task, frame } = params;
-  return useMemo(
-    () =>
-      stop !== undefined && frame !== undefined && (thread !== undefined || task !== undefined)
-        ? parseAt({ stop, thread, task, frame })
-        : null,
-    [stop, thread, task, frame],
-  );
+function useAt(): () => At | null {
+  const params = useParams();
+  return createMemo(() => {
+    const { stop, thread, task, frame } = params;
+    return stop !== undefined && frame !== undefined && (thread !== undefined || task !== undefined)
+      ? parseAt({ stop, thread, task, frame })
+      : null;
+  });
 }
 
 export function Workspace() {
-  const { session } = useParams({ from: "/s/$session" });
-  const look = useSearch({ from: "/s/$session" });
+  const params = useParams();
+  const location = useLocation();
+  const session = createMemo(() => params.session ?? "");
+  const look = createMemo(() => validateLook(parseSearch(location.search)));
   const state = useModel((model) => model.state);
   const link = useModel((model) => model.link);
   const at = useAt();
   useFollowing(session, at, look);
-  const trace = useRequest(
-    "backtrace",
-    at && state?.session === session
-      ? { stop: at.stop, thread: at.thread, task: at.task ?? null }
-      : null,
-  ).data;
+  const traceRequest = useRequest("backtrace", () => {
+    const currentAt = at();
+    const currentState = state();
+    return currentAt && currentState?.session === session()
+      ? { stop: currentAt.stop, thread: currentAt.thread, task: currentAt.task ?? null }
+      : null;
+  });
+  const trace = createMemo(() => traceRequest().data);
   usePresence(at, trace);
-  const frames = trace?.frames.length ?? 0;
-  useEffect(() => {
-    tab.setState({ frames });
-  }, [frames]);
+  const frames = createMemo(() => trace()?.frames.length ?? 0);
+  createEffect(
+    () => frames(),
+    (count) => {
+      tab.setState({ frames: count });
+    },
+  );
 
-  const focus = useMemo((): Focus | null => {
-    if (!state) {
+  const focus = createMemo((): Focus | null => {
+    const currentState = state();
+    if (!currentState) {
       return null;
     }
-    const inferior = state.inferior;
+    const currentAt = at();
+    const inferior = currentState.inferior;
     const stale =
-      link === "open"
-        ? at && inferior.state === "running"
+      link() === "open"
+        ? currentAt && inferior.state === "running"
           ? "running"
-          : at && (inferior.state !== "stopped" || inferior.stop !== at.stop)
+          : currentAt && (inferior.state !== "stopped" || inferior.stop !== currentAt.stop)
             ? "passed"
             : null
         : "disconnected";
-    return { session, state, at, look, trace, stale };
-  }, [session, state, at, look, trace, link]);
+    return {
+      session: session(),
+      state: currentState,
+      at: currentAt,
+      look: look(),
+      trace: trace(),
+      stale,
+    };
+  });
 
-  return <Workbench focus={focus} wants="session" />;
+  return <Workbench focus={focus()} wants="session" />;
 }
 
-export function Workbench({
-  focus,
-  wants,
-  start = wants === "session" ? debugLayout : startLayout,
-  children,
-}: {
+export function Workbench(props: {
   focus: Focus | null;
   wants: Wants;
-
   start?: () => Layout;
-  children?: ReactNode;
+  children?: JSX.Element;
 }) {
-  useArranged(wants, start);
-  useMirror(focus);
+  useArranged(
+    () => props.wants,
+    () => props.start ?? (props.wants === "session" ? debugLayout : startLayout),
+  );
+  useMirror(() => props.focus);
   useConnectWhenRefused();
+  const focus = createMemo(() => props.focus);
   return (
     <FocusContext value={focus}>
-      {focus && <Documents />}
-      <div className="workbench">
-        {children}
+      <Show when={focus()}>
+        <Documents />
+      </Show>
+      <div class="workbench">
+        {props.children}
         <Dock setup={DOCK} />
       </div>
-      {focus && <Palette />}
+      <Show when={focus()}>
+        <Palette />
+      </Show>
     </FocusContext>
   );
 }
 
-function useArranged(wants: Wants, start: () => Layout) {
-  const [refused] = useState(restoreLayout);
-  const arranged = useRef<Wants | null>(null);
-  // oxlint-disable-next-line react/refs -- arranged during render, before the panes render
-  if (arranged.current !== wants) {
-    // oxlint-disable-next-line react/refs -- as above
-    arranged.current = wants;
+function useArranged(wants: () => Wants, start: () => () => Layout) {
+  const refused = restoreLayout();
+  let arranged: Wants | null = null;
+
+  const ensure = (wanted: Wants, makeStart: () => Layout) => {
+    if (arranged === wanted) {
+      return;
+    }
+    arranged = wanted;
     const current = workbench.getState().layout;
-    if (misplaced(current, wants)) {
-      if (wants === "start" && !misplaced(current, "session")) {
+    if (misplaced(current, wanted)) {
+      if (wanted === "start" && !misplaced(current, "session")) {
         setAside(current);
       }
-      const back = wants === "session" ? setAsideLayout(KINDS) : null;
-      workbench.setState({ layout: back ?? start() });
+      const back = wanted === "session" ? setAsideLayout(KINDS) : null;
+      workbench.setState({ layout: back ?? makeStart() });
     }
-  }
-  useEffect(() => {
+  };
+
+  ensure(untrack(wants), untrack(start));
+
+  createEffect(
+    () => [wants(), start()] as const,
+    ([wanted, makeStart]) => {
+      ensure(wanted, makeStart);
+    },
+  );
+
+  onSettled(() => {
     if (refused) {
       flash(`The saved layout can't be used (${refused}), so the default layout is shown`);
     }
-  }, [refused]);
-  useEffect(keepSaving, []);
+    return keepSaving();
+  });
 }
 
 function useConnectWhenRefused() {
   const link = useModel((model) => model.link);
-  useEffect(() => {
-    const refused = link === "unauthorized" || link === "unreachable";
-    const timer = refused
-      ? setTimeout(() => showPane(KIND.connect), link === "unreachable" ? UNREACHABLE_FOR_MS : 0)
-      : null;
-    return () => {
-      if (timer !== null) {
-        clearTimeout(timer);
-      }
-    };
-  }, [link]);
+  createEffect(
+    () => link(),
+    (current) => {
+      const refused = current === "unauthorized" || current === "unreachable";
+      const timer = refused
+        ? setTimeout(
+            () => showPane(KIND.connect),
+            current === "unreachable" ? UNREACHABLE_FOR_MS : 0,
+          )
+        : null;
+      return () => {
+        if (timer !== null) {
+          clearTimeout(timer);
+        }
+      };
+    },
+  );
 }
 
 const UNREACHABLE_FOR_MS = 1000;
 
-function useFollowing(session: string, at: At | null, look: Look) {
+function useFollowing(session: () => string, at: () => At | null, look: () => Look) {
   const state = useModel((model) => model.state);
   const pinned = useTab((current) => current.pinned);
   const navigate = useNavigate();
 
-  const followed = useRef<number | undefined>(state ? latestStop(state) : undefined);
-  const lookRef = useRef(look);
-  useLayoutEffect(() => {
-    lookRef.current = look;
-  });
-  const stop = at?.stop;
-  const thread = at?.thread;
-  const frame = at?.frame;
+  let followed: number | undefined;
+  let initialized = false;
+  let latestLook: Look = {};
 
-  useEffect(() => {
-    if (!state || state.session !== session) {
-      return;
-    }
-    let where: At | null = null;
-    if (stop !== undefined) {
-      assert(thread !== undefined, `stop ${stop} shown without a thread`);
-      assert(frame !== undefined, `stop ${stop} shown without a frame`);
-      where = { stop, thread, frame };
-    }
-    const move = follow(state, where, followed.current, pinned);
+  createEffect(
+    () => look(),
+    (next) => {
+      latestLook = next;
+    },
+  );
 
-    if (state.inferior.state !== "running") {
-      followed.current = latestStop(state);
-    }
-    const search = followedLook(lookRef.current);
-    if (move?.to === "stop") {
-      void navigate({
-        to: "/s/$session/stop/$stop/t/$thread/f/$frame",
-        params: {
-          session,
-          stop: String(move.at.stop),
-          thread: String(move.at.thread),
-          frame: String(move.at.frame),
-        },
-        search,
-        replace: true,
-      });
-    } else if (move?.to === "session") {
-      void navigate({ to: "/s/$session", params: { session }, search, replace: true });
-    }
-  }, [state, session, stop, thread, frame, pinned, navigate]);
+  createEffect(
+    () => {
+      const currentAt = at();
+      return {
+        state: state(),
+        session: session(),
+        stop: currentAt?.stop,
+        thread: currentAt?.thread,
+        frame: currentAt?.frame,
+        pinned: pinned(),
+      };
+    },
+    ({ state: currentState, session: currentSession, stop, thread, frame, pinned: isPinned }) => {
+      if (!initialized) {
+        initialized = true;
+        followed = currentState ? latestStop(currentState) : undefined;
+      }
+      if (!currentState || currentState.session !== currentSession) {
+        return;
+      }
+      let where: At | null = null;
+      if (stop !== undefined) {
+        assert(thread !== undefined, `stop ${stop} shown without a thread`);
+        assert(frame !== undefined, `stop ${stop} shown without a frame`);
+        where = { stop, thread, frame };
+      }
+      const move = follow(currentState, where, followed, isPinned);
+
+      if (currentState.inferior.state !== "running") {
+        followed = latestStop(currentState);
+      }
+      const search = followedLook(latestLook) as Record<string, unknown>;
+      if (move?.to === "stop") {
+        navigate(toHref(stopPath(currentSession, move.at), search), { replace: true });
+      } else if (move?.to === "session") {
+        navigate(toHref(`/s/${currentSession}`, search), { replace: true });
+      }
+    },
+  );
 }
 
-function useMirror(focus: Focus | null) {
-  const session = focus?.session ?? null;
-  const at = focus?.at ?? null;
-  const look = focus?.look ?? NO_LOOK;
-  useEffect(() => {
-    tab.setState({ session, at, look });
-  }, [session, at, look]);
+function useMirror(focus: () => Focus | null) {
+  createEffect(
+    () => {
+      const current = focus();
+      return {
+        session: current?.session ?? null,
+        at: current?.at ?? null,
+        look: current?.look ?? NO_LOOK,
+      };
+    },
+    ({ session, at, look }) => {
+      tab.setState({ session, at, look });
+    },
+  );
 }
 
 const NO_LOOK: Look = {};
 
-function usePresence(at: At | null, trace: Backtrace | undefined) {
+function usePresence(at: () => At | null, trace: () => Backtrace | undefined) {
   const connection = useConnection();
   const open = useModel((model) => model.link === "open");
   const location = useLocation();
-  const url = location.href;
-  const frame = frameAt(trace, at);
-  const label = at
-    ? `stop #${at.stop}, frame ${at.frame}${frame ? `, ${frame.name}` : ""}`
-    : "the session";
 
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      void connection.request("setFocus", { focus: { url, label } }).catch(() => {});
-    }, 150);
-    return () => clearTimeout(timer);
-  }, [connection, open, url, label]);
+  createEffect(
+    () => {
+      const currentAt = at();
+      const frame = frameAt(trace(), currentAt);
+      const label = currentAt
+        ? `stop #${currentAt.stop}, frame ${currentAt.frame}${frame ? `, ${frame.name}` : ""}`
+        : "the session";
+      return {
+        open: open(),
+        url: `${location.pathname}${location.search}${location.hash}`,
+        label,
+      };
+    },
+    ({ open: isOpen, url, label }) => {
+      if (!isOpen) {
+        return;
+      }
+      const timer = setTimeout(() => {
+        void connection.request("setFocus", { focus: { url, label } }).catch(() => {});
+      }, 150);
+      return () => clearTimeout(timer);
+    },
+  );
 }

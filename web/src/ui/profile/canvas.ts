@@ -1,26 +1,30 @@
-import { useCallback, useState } from "react";
+import { createEffect, createSignal } from "solid-js";
 
 import { assert } from "../../assert";
 
 export const NAMES = 180;
-export const NAMES_STYLE = { width: NAMES };
+export const NAMES_STYLE = { width: `${NAMES}px` };
 
-export function useWidth(): [(element: HTMLElement | null) => (() => void) | undefined, number] {
-  const [width, setWidth] = useState(0);
-  const measure = useCallback((element: HTMLElement | null) => {
-    if (!element) {
-      return;
-    }
-    const observer = new ResizeObserver(() => setWidth(element.clientWidth));
-    observer.observe(element);
-    setWidth(element.clientWidth);
-    return () => observer.disconnect();
-  }, []);
-  return [measure, width];
+export function useWidth(): [(element: HTMLElement | null) => void, () => number] {
+  const [element, setElement] = createSignal<HTMLElement | null>(null);
+  const [width, setWidth] = createSignal(0);
+  createEffect(
+    () => element(),
+    (current) => {
+      if (!current) {
+        return;
+      }
+      const observer = new ResizeObserver(() => setWidth(current.clientWidth));
+      observer.observe(current);
+      setWidth(current.clientWidth);
+      return () => observer.disconnect();
+    },
+  );
+  return [(node) => setElement(node), width];
 }
 
 export function prepare(
-  element: HTMLCanvasElement | null,
+  element: HTMLCanvasElement | null | undefined,
   width: number,
   height: number,
 ): CanvasRenderingContext2D | null {

@@ -1,16 +1,8 @@
-import {
-  createRootRoute,
-  createRoute,
-  createRouter,
-  type RouterHistory,
-} from "@tanstack/react-router";
+import { createRouter, defineRoutes } from "@solidjs/router";
 
-import { base } from "./base";
-import { parseSearch, stringifySearch, validateLook } from "./focus";
-import { validateProfileLook } from "./profile/look";
+import { type AppHistory, BASE_PREFIX, createBrowserHistory, HistoryContext } from "./history";
 import { Frame } from "./ui/Frame";
 import { Join } from "./ui/Join";
-import { pickerSearch } from "./ui/Picker";
 import {
   EmailLink,
   Home,
@@ -22,118 +14,49 @@ import {
 } from "./ui/Routes";
 import { Workspace } from "./ui/Workspace";
 
-const rootRoute = createRootRoute({ component: Frame });
+export {
+  type AppHistory,
+  createBrowserHistory,
+  createMemoryHistory,
+  type HistoryAction,
+  HistoryContext,
+  type HistoryLocation,
+  toHref,
+  useHistory,
+} from "./history";
 
-const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: Home });
-
-const joinRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/join",
-  validateSearch: (search: Record<string, unknown>): { to?: string } =>
-    typeof search.to === "string" ? { to: search.to } : {},
-  component: Join,
-});
-
-const pickRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/pick",
-  validateSearch: pickerSearch,
-  component: Pick,
-});
-
-const confirmEmailRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/confirm-email",
-  component: () => <EmailLink link="confirm" />,
-});
-
-const loginLinkRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/login-link",
-  component: () => <EmailLink link="login" />,
-});
-
-const resetPasswordRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/reset-password",
-  component: () => <EmailLink link="reset" />,
-});
-
-const signedInRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/signed-in",
-  component: SignedIn,
-});
-
-const orgSignInRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/sso",
-  component: OrgSignIn,
-});
-
-const sessionRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/s/$session",
-  validateSearch: validateLook,
-  component: SessionRoute,
-});
-
-const sessionIndexRoute = createRoute({
-  getParentRoute: () => sessionRoute,
-  path: "/",
-  component: Workspace,
-});
-
-const liveRoute = createRoute({
-  getParentRoute: () => sessionRoute,
-  path: "/live",
-  component: Workspace,
-});
-
-const stopRoute = createRoute({
-  getParentRoute: () => sessionRoute,
-  path: "/stop/$stop/t/$thread/f/$frame",
-  component: Workspace,
-});
-
-const taskRoute = createRoute({
-  getParentRoute: () => sessionRoute,
-  path: "/stop/$stop/task/$task/f/$frame",
-  component: Workspace,
-});
-
-const profileRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/profile/$profile",
-  validateSearch: validateProfileLook,
-  component: ProfileRoute,
-});
-
-const routeTree = rootRoute.addChildren([
-  homeRoute,
-  joinRoute,
-  pickRoute,
-  confirmEmailRoute,
-  loginLinkRoute,
-  resetPasswordRoute,
-  signedInRoute,
-  orgSignInRoute,
-  profileRoute,
-  sessionRoute.addChildren([sessionIndexRoute, liveRoute, stopRoute, taskRoute]),
+export const routes = defineRoutes([
+  { path: "/", component: Home },
+  { path: "/join", component: Join },
+  { path: "/pick", component: Pick },
+  { path: "/confirm-email", component: () => <EmailLink link="confirm" /> },
+  { path: "/login-link", component: () => <EmailLink link="login" /> },
+  { path: "/reset-password", component: () => <EmailLink link="reset" /> },
+  { path: "/signed-in", component: SignedIn },
+  { path: "/sso", component: OrgSignIn },
+  { path: "/profile/:profile", component: ProfileRoute },
+  {
+    path: "/s/:session",
+    component: SessionRoute,
+    children: [
+      { path: "/", component: Workspace },
+      { path: "/live", component: Workspace },
+      { path: "/stop/:stop/t/:thread/f/:frame", component: Workspace },
+      { path: "/stop/:stop/task/:task/f/:frame", component: Workspace },
+    ],
+  },
 ]);
 
-export function createAppRouter(history?: RouterHistory) {
-  return createRouter({
-    routeTree,
-    parseSearch,
-    stringifySearch,
-    ...(base === "/" ? {} : { basepath: base.slice(0, -1) }),
-    ...(history ? { history } : {}),
+export function AppRouter(props: { history?: AppHistory }) {
+  const history = props.history ?? createBrowserHistory();
+  const Router = createRouter({
+    routes,
+    ...(BASE_PREFIX === "" ? {} : { base: BASE_PREFIX }),
+    history,
   });
-}
-
-declare module "@tanstack/react-router" {
-  interface Register {
-    router: ReturnType<typeof createAppRouter>;
-  }
+  return (
+    <HistoryContext value={history}>
+      <Router>{(section) => <Frame>{section.children}</Frame>}</Router>
+    </HistoryContext>
+  );
 }

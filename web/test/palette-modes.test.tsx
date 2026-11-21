@@ -10,7 +10,7 @@ afterEach(unmountPane);
 const results = () => page.getByRole("listbox", { name: "Results" });
 
 it("says what to type to go to a line", async () => {
-  await mountPane(<Palette />);
+  await mountPane(() => <Palette />);
   tab.setState({ palette: "line" });
   await expect.element(results()).toHaveTextContent("Type file:line.");
   await userEvent.keyboard("12");
@@ -18,11 +18,11 @@ it("says what to type to go to a line", async () => {
 });
 
 it("says the calls are on their way, and when the stop has passed", async () => {
-  await mountPane(<Palette />);
+  await mountPane(() => <Palette />);
   tab.setState({ palette: "calls" });
   await expect.element(results()).toHaveTextContent("Reading the calls on this line…");
   unmountPane();
-  await mountPane(<Palette />, { stale: "passed" });
+  await mountPane(() => <Palette />, { stale: "passed" });
   tab.setState({ palette: "calls" });
   await expect
     .element(results())
@@ -43,7 +43,7 @@ it("says why a pending breakpoint shows nothing", async () => {
       },
     ],
   });
-  await mountPane(<Palette />, { state }, state);
+  await mountPane(() => <Palette />, { state }, state);
   tab.setState({ palette: "all" });
   await userEvent.keyboard("later_fn");
   await userEvent.click(page.getByRole("option", { name: /later_fn/u }));
@@ -57,7 +57,7 @@ it("marks the characters that matched, past ones that are not one code unit", as
       { id: 2, name: "İworker", stopped: true, labels: [] },
     ],
   });
-  await mountPane(<Palette />, { state }, state);
+  await mountPane(() => <Palette />, { state }, state);
   tab.setState({ palette: "all" });
   await userEvent.keyboard("work");
   for (const name of ["thread 1 (😀worker)", "thread 2 (İworker)"]) {

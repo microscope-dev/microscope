@@ -1,24 +1,21 @@
-import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@solidjs/router";
+import type { JSX } from "@solidjs/web";
 import {
-  type ChangeEvent,
-  type CSSProperties,
-  type Dispatch,
-  type FormEvent,
-  type KeyboardEvent,
-  type MouseEvent,
-  type ReactNode,
-  type SetStateAction,
-  type SyntheticEvent,
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+  createEffect,
+  createMemo,
+  createSignal,
+  createUniqueId,
+  For,
+  Match,
+  onSettled,
+  type Setter,
+  Show,
+  Switch,
+} from "solid-js";
 
 import { assert } from "../assert";
 import { KIND } from "../documents";
+import { toHref } from "../history";
 import { targetName } from "../model";
 import type { PathEntry, Process, RecordPreset, SyscallsEngine, SyscallsLevel } from "../protocol";
 import { RequestError } from "../protocol";
@@ -50,84 +47,93 @@ interface Pending {
 
 const done = (pane: PaneId) => change((layout) => close(layout, pane));
 
-export function StartBody({ id, pane }: PaneProps) {
+export function StartBody(props: PaneProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const state = useModel((model) => model.state);
-  const [busy, setBusy] = useState<Pending | null>(null);
-  const [working, setWorking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const current = targetName(state);
+  const [busy, setBusy] = createSignal<Pending | null>(null);
+  const [working, setWorking] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  const current = createMemo(() => targetName(state()));
+  const conflict = createMemo(() => {
+    const pending = busy();
+    const name = current();
+    return pending && name ? { pending, name } : null;
+  });
 
-  const pathname = location.pathname;
-  const submit = useCallback(
-    async (pending: Pending, replace = false) => {
-      setError(null);
-      setWorking(true);
-      try {
-        await pending.send(replace);
-        setBusy(null);
-        done(id);
+  const submit = async (pending: Pending, replace = false) => {
+    setError(null);
+    setWorking(true);
+    try {
+      await pending.send(replace);
+      setBusy(null);
+      done(props.id);
 
-        if (!pathname.startsWith("/s/")) {
-          void navigate({ to: "/" });
-        }
-      } catch (failure) {
-        if (failure instanceof RequestError && failure.kind === "busy") {
-          setBusy(pending);
-        } else {
-          setBusy(null);
-          setError(failure instanceof Error ? failure.message : String(failure));
-        }
-      } finally {
-        setWorking(false);
+      if (!location.pathname.startsWith("/s/")) {
+        navigate(toHref("/"));
       }
-    },
-    [id, pathname, navigate],
-  );
-  const submitForm = useCallback((pending: Pending) => void submit(pending), [submit]);
-  const form = { working, submit: submitForm };
-  const replace = useCallback(() => {
-    assert(busy !== null, "replacing a session with nothing to start");
-    void submit(busy, true);
-  }, [busy, submit]);
-  const cancel = useCallback(() => setBusy(null), []);
-  const edited = useCallback(() => setError(null), []);
-  const recording = useCallback(() => done(id), [id]);
+    } catch (failure) {
+      if (failure instanceof RequestError && failure.kind === "busy") {
+        setBusy(pending);
+      } else {
+        setBusy(null);
+        setError(failure instanceof Error ? failure.message : String(failure));
+      }
+    } finally {
+      setWorking(false);
+    }
+  };
+  const submitForm = (pending: Pending) => {
+    void submit(pending);
+  };
+  const replace = () => {
+    const pending = busy();
+    assert(pending !== null, "replacing a session with nothing to start");
+    void submit(pending, true);
+  };
+  const cancel = () => setBusy(null);
+  const edited = () => setError(null);
+  const recording = () => done(props.id);
 
   return (
-    <div className="pane-body start-pane" onInput={edited}>
-      {busy && current && (
-        <div className="banner" role="alert">
-          <span>
-            <b>End the {current} session?</b> {busy.describe} stops debugging {current}: a launched
-            program is killed, an attached one keeps running. Links to it will say the session
-            ended.
-          </span>
-          <div className="actions">
-            <button type="button" className="button primary" disabled={working} onClick={replace}>
-              End it and continue
-            </button>
-            <button type="button" className="button" onClick={cancel}>
-              Cancel
-            </button>
+    <div class="pane-body start-pane" onInput={edited}>
+      <Show when={conflict()}>
+        {(item) => (
+          <div class="banner" role="alert">
+            <span>
+              <b>End the {item().name} session?</b> {item().pending.describe} stops debugging{" "}
+              {item().name}: a launched program is killed, an attached one keeps running. Links to
+              it will say the session ended.
+            </span>
+            <div class="actions">
+              <button type="button" class="button primary" disabled={working()} onClick={replace}>
+                End it and continue
+              </button>
+              <button type="button" class="button" onClick={cancel}>
+                Cancel
+              </button>
+            </div>
           </div>
-        </div>
-      )}
-      {error && (
-        <div className="banner error" role="alert">
-          {error}
-        </div>
-      )}
-      {pane.kind === KIND.launch ? (
-        <LaunchForm {...form} />
-      ) : pane.kind === KIND.attach ? (
-        <AttachForm {...form} />
-      ) : pane.kind === KIND.core ? (
-        <CoreForm {...form} />
-      ) : (
-        <RecordForm onRecording={recording} />
-      )}
+        )}
+      </Show>
+      <Show when={error()}>
+        {(message) => (
+          <div class="banner error" role="alert">
+            {message()}
+          </div>
+        )}
+      </Show>
+      <Switch fallback={<RecordForm onRecording={recording} />}>
+        <Match when={props.pane.kind === KIND.launch}>
+          <LaunchForm working={working()} submit={submitForm} />
+        </Match>
+        <Match when={props.pane.kind === KIND.attach}>
+          <AttachForm working={working()} submit={submitForm} />
+        </Match>
+        <Match when={props.pane.kind === KIND.core}>
+          <CoreForm working={working()} submit={submitForm} />
+        </Match>
+      </Switch>
     </div>
   );
 }
@@ -137,58 +143,63 @@ interface FormProps {
   submit(pending: Pending): void;
 }
 
-function LaunchForm({ working, submit }: FormProps) {
+function LaunchForm(props: FormProps) {
   const connection = useConnection();
-  const [recent, setRecent] = useState(() => read("microscope-recent", [], isRecentLaunches));
-  const [form, setForm] = useState<RecentLaunch>(
-    () => recent[0] ?? { program: "", arguments: "", cwd: "", environment: "" },
+  const initialRecent = read("microscope-recent", [], isRecentLaunches);
+  const [recent, setRecent] = createSignal(initialRecent);
+  const [form, setForm] = createSignal<RecentLaunch>(
+    initialRecent[0] ?? { program: "", arguments: "", cwd: "", environment: "" },
   );
-  const [stopAtEntry, setStopAtEntry] = useState(false);
-  const words = splitWords(form.arguments);
-  const environment = parseEnvironment(form.environment);
-  const valid = form.program.trim() !== "" && words.ok && environment.ok;
-  const fields = useLaunchFields(setForm);
+  const [stopAtEntry, setStopAtEntry] = createSignal(false);
+  const words = createMemo(() => splitWords(form().arguments));
+  const environment = createMemo(() => parseEnvironment(form().environment));
+  const wordsNote = createMemo(() => {
+    const parsed = words();
+    return parsed.ok ? undefined : parsed.error;
+  });
+  const environmentNote = createMemo(() => {
+    const parsed = environment();
+    return parsed.ok ? "NAME=VALUE, one per line" : parsed.error;
+  });
+  const valid = createMemo(() => form().program.trim() !== "" && words().ok && environment().ok);
+  const fields = launchFields(setForm);
 
-  const launch = useCallback(
-    (run: boolean, event: SyntheticEvent) => {
-      event.preventDefault();
-      if (!valid || !words.ok || !environment.ok) {
-        return;
-      }
-      const program = form.program.trim();
-      submit({
-        describe: `Launching ${program}`,
-        send: async (replace) => {
-          await connection.request("launch", {
-            program,
-            arguments: words.words,
-            cwd: form.cwd.trim() || null,
-            environment: environment.pairs,
-            stopAtEntry,
-            run,
-            replace,
-          });
+  const launch = (run: boolean, event: Event) => {
+    event.preventDefault();
+    const currentWords = words();
+    const currentEnv = environment();
+    const currentForm = form();
+    if (!valid() || !currentWords.ok || !currentEnv.ok) {
+      return;
+    }
+    const program = currentForm.program.trim();
+    props.submit({
+      describe: `Launching ${program}`,
+      send: async (replace) => {
+        await connection.request("launch", {
+          program,
+          arguments: currentWords.words,
+          cwd: currentForm.cwd.trim() || null,
+          environment: currentEnv.pairs,
+          stopAtEntry: stopAtEntry(),
+          run,
+          replace,
+        });
 
-          setRecent(rememberLaunch(form));
-        },
-      });
-    },
-    [valid, words, environment, form, submit, connection, stopAtEntry],
-  );
-  const load = useCallback((event: FormEvent) => launch(false, event), [launch]);
-  const loadAndRun = useCallback((event: MouseEvent) => launch(true, event), [launch]);
-  const toggleStop = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setStopAtEntry(event.target.checked),
-    [],
-  );
+        setRecent(rememberLaunch(currentForm));
+      },
+    });
+  };
+  const load = (event: SubmitEvent) => launch(false, event);
+  const loadAndRun = (event: MouseEvent) => launch(true, event);
 
   return (
-    <form className="card-body" style={NO_PADDING} onSubmit={load}>
+    <form class="card-body" style={NO_PADDING} onSubmit={load}>
       <Field label="Program" note="A path on the machine microscope runs on. Tab completes it.">
         {(id) => (
           <PathInput
             id={id}
-            value={form.program}
+            value={form().program}
             onChange={fields.program}
             autoFocus
             placeholder="./build/app"
@@ -196,111 +207,113 @@ function LaunchForm({ working, submit }: FormProps) {
           />
         )}
       </Field>
-      <Field label="Arguments" note={words.ok ? undefined : words.error}>
+      <Field label="Arguments" note={wordsNote()}>
         {(id) => (
           <input
             id={id}
-            className="input"
-            value={form.arguments}
-            aria-invalid={!words.ok}
-            onChange={fields.arguments}
+            class="input"
+            value={form().arguments}
+            aria-invalid={words().ok ? "false" : "true"}
+            onInput={fields.arguments}
             placeholder="--port 7000"
-            spellCheck={false}
+            spellcheck={false}
           />
         )}
       </Field>
-      <div className="two">
+      <div class="two">
         <Field label="Working directory" note="Leave empty to use microscope's directory.">
           {(id) => (
             <PathInput
               id={id}
-              value={form.cwd}
+              value={form().cwd}
               onChange={fields.cwd}
               placeholder="."
               onlyDirectories
             />
           )}
         </Field>
-        <Field
-          label="Environment"
-          note={environment.ok ? "NAME=VALUE, one per line" : environment.error}
-        >
+        <Field label="Environment" note={environmentNote()}>
           {(id) => (
             <textarea
               id={id}
-              className="input"
-              value={form.environment}
-              aria-invalid={!environment.ok}
-              onChange={fields.environment}
+              class="input"
+              value={form().environment}
+              aria-invalid={environment().ok ? "false" : "true"}
+              onInput={fields.environment}
               placeholder="RUST_LOG=debug"
-              spellCheck={false}
+              spellcheck={false}
             />
           )}
         </Field>
       </div>
-      <label className="check">
-        <input type="checkbox" checked={stopAtEntry} onChange={toggleStop} />
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={stopAtEntry()}
+          onChange={(event) => setStopAtEntry(event.currentTarget.checked)}
+        />
         Stop at the first instruction when it starts
       </label>
-      <div className="actions">
-        <button type="submit" className="button primary" disabled={!valid || working}>
+      <div class="actions">
+        <button type="submit" class="button primary" disabled={!valid() || props.working}>
           Load
         </button>
-        <button type="button" className="button" disabled={!valid || working} onClick={loadAndRun}>
+        <button
+          type="button"
+          class="button"
+          disabled={!valid() || props.working}
+          onClick={loadAndRun}
+        >
           Load and run
         </button>
-        <span className="muted">Load waits for F5 before the program starts.</span>
+        <span class="muted">Load waits for F5 before the program starts.</span>
       </div>
-      {recent.length > 0 && (
-        <div className="field">
-          <span className="label">Recent</span>
-          <div className="recent">
-            {recent.map((item) => (
-              <RecentChip key={`${item.program} ${item.arguments}`} item={item} onPick={setForm} />
-            ))}
+      <Show when={recent().length > 0}>
+        <div class="field">
+          <span class="label">Recent</span>
+          <div class="recent">
+            <For each={recent()} keyed={(item) => `${item.program} ${item.arguments}`}>
+              {(item) => <RecentChip item={item()} onPick={setForm} />}
+            </For>
           </div>
         </div>
-      )}
+      </Show>
     </form>
   );
 }
 
-function RecentChip({ item, onPick }: { item: RecentLaunch; onPick(item: RecentLaunch): void }) {
-  const onClick = useCallback(() => onPick(item), [onPick, item]);
+function RecentChip(props: { item: RecentLaunch; onPick(item: RecentLaunch): void }) {
   return (
     <button
       type="button"
-      className="chip"
-      title={`${item.program} ${item.arguments}`}
-      onClick={onClick}
+      class="chip"
+      title={`${props.item.program} ${props.item.arguments}`}
+      onClick={() => props.onPick(props.item)}
     >
-      {item.program.slice(item.program.lastIndexOf("/") + 1)}
-      {item.arguments && ` ${item.arguments}`}
+      {props.item.program.slice(props.item.program.lastIndexOf("/") + 1)}
+      {props.item.arguments && ` ${props.item.arguments}`}
     </button>
   );
 }
 
-function useLaunchFields(setForm: Dispatch<SetStateAction<RecentLaunch>>) {
-  return useMemo(
-    () => ({
-      program: (program: string) => setForm((before) => ({ ...before, program })),
-      arguments: (event: ChangeEvent<HTMLInputElement>) => {
-        const value = event.target.value;
-        setForm((before) => ({ ...before, arguments: value }));
-      },
-      cwd: (cwd: string) => setForm((before) => ({ ...before, cwd })),
-      environment: (event: ChangeEvent<HTMLTextAreaElement>) => {
-        const value = event.target.value;
-        setForm((before) => ({ ...before, environment: value }));
-      },
-    }),
-    [setForm],
-  );
+function launchFields(setForm: Setter<RecentLaunch>) {
+  return {
+    program: (program: string) => setForm((before) => ({ ...before, program })),
+    arguments: (event: InputEvent & { currentTarget: HTMLInputElement }) => {
+      const value = event.currentTarget.value;
+      setForm((before) => ({ ...before, arguments: value }));
+    },
+    cwd: (cwd: string) => setForm((before) => ({ ...before, cwd })),
+    environment: (event: InputEvent & { currentTarget: HTMLTextAreaElement }) => {
+      const value = event.currentTarget.value;
+      setForm((before) => ({ ...before, environment: value }));
+    },
+  };
 }
 
-const NO_PADDING = { padding: 0 };
+const NO_PADDING = { padding: "0" };
 
-const ELLIPSIS: CSSProperties = { overflow: "hidden", textOverflow: "ellipsis" };
+const ELLIPSIS: JSX.CSSProperties = { overflow: "hidden", "text-overflow": "ellipsis" };
 
 const PRESETS: { preset: RecordPreset; label: string }[] = [
   { preset: "development", label: "Development: 999 Hz, deep stacks" },
@@ -338,111 +351,99 @@ const PRESET_LEVELS: Readonly<Record<RecordPreset, SyscallsLevel>> = {
   maximum: "full",
 };
 
-function RecordForm({ onRecording }: { onRecording(): void }) {
+function RecordForm(props: { onRecording(): void }) {
   const connection = useConnection();
   const navigate = useNavigate();
-  const [form, setForm] = useState<RecentLaunch>({
+  const [form, setForm] = createSignal<RecentLaunch>({
     program: "",
     arguments: "",
     cwd: "",
     environment: "",
   });
-  const [preset, setPreset] = useState<RecordPreset>("development");
-  const [function_, setFunction] = useState("");
-  const [window_, setWindow] = useState("");
+  const [preset, setPreset] = createSignal<RecordPreset>("development");
+  const [function_, setFunction] = createSignal("");
+  const [window_, setWindow] = createSignal("");
 
-  const [level, setLevel] = useState<SyscallsLevel | null>(null);
-  const [engine, setEngine] = useState<SyscallsEngine>("bpf");
-  const shownLevel = level ?? PRESET_LEVELS[preset];
+  const [level, setLevel] = createSignal<SyscallsLevel | null>(null);
+  const [engine, setEngine] = createSignal<SyscallsEngine>("bpf");
+  const shownLevel = createMemo(() => level() ?? PRESET_LEVELS[preset()]);
 
-  const counting = engine === "ptrace" && shownLevel === "counts";
-  const [working, setWorking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const words = splitWords(form.arguments);
-  const environment = parseEnvironment(form.environment);
-  const seconds = window_.trim() === "" ? null : Number(window_);
-  const validWindow = seconds === null || (Number.isFinite(seconds) && seconds > 0);
-  const valid =
-    form.program.trim() !== "" && words.ok && environment.ok && validWindow && !counting;
-  const fields = useLaunchFields(setForm);
+  const counting = createMemo(() => engine() === "ptrace" && shownLevel() === "counts");
+  const [working, setWorking] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  const words = createMemo(() => splitWords(form().arguments));
+  const environment = createMemo(() => parseEnvironment(form().environment));
+  const wordsNote = createMemo(() => {
+    const parsed = words();
+    return parsed.ok ? undefined : parsed.error;
+  });
+  const environmentNote = createMemo(() => {
+    const parsed = environment();
+    return parsed.ok ? "NAME=VALUE, one per line" : parsed.error;
+  });
+  const seconds = createMemo(() => (window_().trim() === "" ? null : Number(window_())));
+  const validWindow = createMemo(() => {
+    const value = seconds();
+    return value === null || (Number.isFinite(value) && value > 0);
+  });
+  const valid = createMemo(
+    () =>
+      form().program.trim() !== "" &&
+      words().ok &&
+      environment().ok &&
+      validWindow() &&
+      !counting(),
+  );
+  const fields = launchFields(setForm);
 
-  const record = useCallback(
-    async (event: FormEvent) => {
-      event.preventDefault();
-      if (!valid || !words.ok || !environment.ok) {
-        return;
-      }
-      setError(null);
-      setWorking(true);
-      try {
-        const started = await connection.request("recordProfile", {
-          program: form.program.trim(),
-          arguments: words.words,
-          cwd: form.cwd.trim() || null,
-          environment: environment.pairs,
-          preset,
-          function: function_.trim() || null,
-          window: seconds,
-          syscalls: level,
-          syscallEngine: engine,
-        });
-        onRecording();
-        void navigate({ to: "/profile/$profile", params: { profile: started.profile } });
-      } catch (failure) {
-        setError(failure instanceof Error ? failure.message : String(failure));
-      } finally {
-        setWorking(false);
-      }
-    },
-    [
-      valid,
-      words,
-      environment,
-      connection,
-      form,
-      preset,
-      function_,
-      seconds,
-      level,
-      engine,
-      onRecording,
-      navigate,
-    ],
-  );
-  const submit = useCallback((event: FormEvent) => void record(event), [record]);
-  const chooseEngine = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => setEngine(event.target.value as SyscallsEngine),
-    [],
-  );
-  const chooseLevel = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => setLevel(event.target.value as SyscallsLevel),
-    [],
-  );
-  const choosePreset = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => setPreset(event.target.value as RecordPreset),
-    [],
-  );
-  const typeFunction = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setFunction(event.target.value),
-    [],
-  );
-  const typeWindow = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setWindow(event.target.value),
-    [],
-  );
+  const record = async (event: SubmitEvent) => {
+    event.preventDefault();
+    const currentWords = words();
+    const currentEnv = environment();
+    const currentForm = form();
+    if (!valid() || !currentWords.ok || !currentEnv.ok) {
+      return;
+    }
+    setError(null);
+    setWorking(true);
+    try {
+      const started = await connection.request("recordProfile", {
+        program: currentForm.program.trim(),
+        arguments: currentWords.words,
+        cwd: currentForm.cwd.trim() || null,
+        environment: currentEnv.pairs,
+        preset: preset(),
+        function: function_().trim() || null,
+        window: seconds(),
+        syscalls: level(),
+        syscallEngine: engine(),
+      });
+      props.onRecording();
+      navigate(toHref(`/profile/${started.profile}`));
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setWorking(false);
+    }
+  };
+  const submit = (event: SubmitEvent) => {
+    void record(event);
+  };
 
   return (
-    <form className="card-body" style={NO_PADDING} onSubmit={submit}>
-      {error && (
-        <div className="banner error" role="alert">
-          {error}
-        </div>
-      )}
+    <form class="card-body" style={NO_PADDING} onSubmit={submit}>
+      <Show when={error()}>
+        {(message) => (
+          <div class="banner error" role="alert">
+            {message()}
+          </div>
+        )}
+      </Show>
       <Field label="Program">
         {(id) => (
           <PathInput
             id={id}
-            value={form.program}
+            value={form().program}
             onChange={fields.program}
             autoFocus
             placeholder="./build/app"
@@ -450,55 +451,59 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
           />
         )}
       </Field>
-      <Field label="Arguments" note={words.ok ? undefined : words.error}>
+      <Field label="Arguments" note={wordsNote()}>
         {(id) => (
           <input
             id={id}
-            className="input"
-            value={form.arguments}
-            aria-invalid={!words.ok}
-            onChange={fields.arguments}
-            spellCheck={false}
+            class="input"
+            value={form().arguments}
+            aria-invalid={words().ok ? "false" : "true"}
+            onInput={fields.arguments}
+            spellcheck={false}
           />
         )}
       </Field>
-      <div className="two">
+      <div class="two">
         <Field label="Working directory" note="Leave empty to use microscope's directory.">
           {(id) => (
             <PathInput
               id={id}
-              value={form.cwd}
+              value={form().cwd}
               onChange={fields.cwd}
               placeholder="."
               onlyDirectories
             />
           )}
         </Field>
-        <Field
-          label="Environment"
-          note={environment.ok ? "NAME=VALUE, one per line" : environment.error}
-        >
+        <Field label="Environment" note={environmentNote()}>
           {(id) => (
             <textarea
               id={id}
-              className="input"
-              value={form.environment}
-              aria-invalid={!environment.ok}
-              onChange={fields.environment}
-              spellCheck={false}
+              class="input"
+              value={form().environment}
+              aria-invalid={environment().ok ? "false" : "true"}
+              onInput={fields.environment}
+              spellcheck={false}
             />
           )}
         </Field>
       </div>
-      <div className="two">
+      <div class="two">
         <Field label="Preset">
           {(id) => (
-            <select id={id} className="input" value={preset} onChange={choosePreset}>
-              {PRESETS.map((each) => (
-                <option key={each.preset} value={each.preset}>
-                  {each.label}
-                </option>
-              ))}
+            <select
+              id={id}
+              class="input"
+              value={preset()}
+              onChange={(event) => setPreset(event.currentTarget.value as RecordPreset)}
+            >
+              <For each={PRESETS}>
+                {(each) => (
+                  <option value={each.preset} selected={preset() === each.preset}>
+                    {each.label}
+                  </option>
+                )}
+              </For>
             </select>
           )}
         </Field>
@@ -506,49 +511,58 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
           {(id) => (
             <input
               id={id}
-              className="input"
-              value={window_}
-              onChange={typeWindow}
+              class="input"
+              value={window_()}
+              onInput={(event) => setWindow(event.currentTarget.value)}
               placeholder="all"
-              inputMode="decimal"
-              aria-invalid={!validWindow}
+              inputmode="decimal"
+              aria-invalid={validWindow() ? "false" : "true"}
             />
           )}
         </Field>
       </div>
-      <div className="two">
+      <div class="two">
         <Field
           label="System calls"
           note={
-            counting
+            counting()
               ? "ptrace cannot count calls without stopping each one: record calls, or use BPF."
-              : LEVELS.find((each) => each.level === shownLevel)?.note
+              : LEVELS.find((each) => each.level === shownLevel())?.note
           }
         >
           {(id) => (
             <select
               id={id}
-              className="input"
-              value={shownLevel}
-              aria-invalid={counting}
-              onChange={chooseLevel}
+              class="input"
+              value={shownLevel()}
+              aria-invalid={counting() ? "true" : "false"}
+              onChange={(event) => setLevel(event.currentTarget.value as SyscallsLevel)}
             >
-              {LEVELS.map((each) => (
-                <option key={each.level} value={each.level}>
-                  {each.label}
-                </option>
-              ))}
+              <For each={LEVELS}>
+                {(each) => (
+                  <option value={each.level} selected={shownLevel() === each.level}>
+                    {each.label}
+                  </option>
+                )}
+              </For>
             </select>
           )}
         </Field>
-        <Field label="Engine" note={ENGINES.find((each) => each.engine === engine)?.note}>
+        <Field label="Engine" note={ENGINES.find((each) => each.engine === engine())?.note}>
           {(id) => (
-            <select id={id} className="input" value={engine} onChange={chooseEngine}>
-              {ENGINES.map((each) => (
-                <option key={each.engine} value={each.engine}>
-                  {each.label}
-                </option>
-              ))}
+            <select
+              id={id}
+              class="input"
+              value={engine()}
+              onChange={(event) => setEngine(event.currentTarget.value as SyscallsEngine)}
+            >
+              <For each={ENGINES}>
+                {(each) => (
+                  <option value={each.engine} selected={engine() === each.engine}>
+                    {each.label}
+                  </option>
+                )}
+              </For>
             </select>
           )}
         </Field>
@@ -557,33 +571,33 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
         {(id) => (
           <input
             id={id}
-            className="input"
-            value={function_}
-            onChange={typeFunction}
+            class="input"
+            value={function_()}
+            onInput={(event) => setFunction(event.currentTarget.value)}
             placeholder="app::handle"
-            spellCheck={false}
+            spellcheck={false}
           />
         )}
       </Field>
-      <div className="actions">
-        <button type="submit" className="button primary" disabled={!valid || working}>
+      <div class="actions">
+        <button type="submit" class="button primary" disabled={!valid() || working()}>
           Record
         </button>
-        <span className="muted">The profile opens as it is recorded.</span>
+        <span class="muted">The profile opens as it is recorded.</span>
       </div>
     </form>
   );
 }
 
-export function AttachForm({ working, submit }: FormProps) {
+export function AttachForm(props: FormProps) {
   const connection = useConnection();
-  const [processes, setProcesses] = useState<Process[] | null>(null);
-  const [scope, setScope] = useState<number | null>(null);
-  const [filter, setFilter] = useState("");
-  const [selected, setSelected] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [processes, setProcesses] = createSignal<Process[] | null>(null);
+  const [scope, setScope] = createSignal<number | null>(null);
+  const [filter, setFilter] = createSignal("");
+  const [selected, setSelected] = createSignal(0);
+  const [error, setError] = createSignal<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = async () => {
     try {
       const answer = await connection.request("processes");
       setError(null);
@@ -592,117 +606,123 @@ export function AttachForm({ working, submit }: FormProps) {
     } catch (failure) {
       setError((failure as Error).message);
     }
-  }, [connection]);
-  useEffect(() => {
+  };
+  onSettled(() => {
     void refresh();
-    // oxlint-disable-next-line react-hooks/exhaustive-deps -- list once on opening
-  }, []);
+  });
 
-  const shown = useMemo(() => {
-    const words = filter.toLowerCase().split(/\s+/u).filter(Boolean);
-    const matching = (processes ?? []).filter((process) =>
+  const shown = createMemo(() => {
+    const words = filter().toLowerCase().split(/\s+/u).filter(Boolean);
+    const matching = (processes() ?? []).filter((process) =>
       words.every((word) => `${process.pid} ${process.command}`.toLowerCase().includes(word)),
     );
 
     const named = (process: Process) => (words.includes(String(process.pid)) ? 0 : 1);
     return matching.toSorted((a, b) => named(a) - named(b));
-  }, [processes, filter]);
-  const choice = shown[Math.min(selected, shown.length - 1)];
+  });
+  const choice = createMemo(() => {
+    const list = shown();
+    return list[Math.min(selected(), list.length - 1)];
+  });
+  const restrictedScope = createMemo(() => {
+    const current = scope();
+    return current !== null && current > 0 ? current : null;
+  });
 
-  const attach = useCallback(
-    (process: Process | undefined) => {
-      if (!process) {
-        return;
-      }
-      submit({
-        describe: `Attaching to process ${process.pid}`,
-        send: (replace) => connection.request("attach", { pid: process.pid, replace }),
-      });
-    },
-    [submit, connection],
-  );
-  const attachChoice = useCallback(() => attach(choice), [attach, choice]);
-  const select = useCallback(
-    (process: Process) => {
-      const index = shown.indexOf(process);
-      assert(index >= 0, `process ${process.pid} is not in the ${shown.length} shown`);
-      setSelected(index);
-    },
-    [shown],
-  );
-  const type = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    setFilter(event.target.value);
+  const attach = (process: Process | undefined) => {
+    if (!process) {
+      return;
+    }
+    props.submit({
+      describe: `Attaching to process ${process.pid}`,
+      send: (replace) => connection.request("attach", { pid: process.pid, replace }),
+    });
+  };
+  const attachChoice = () => attach(choice());
+  const select = (process: Process) => {
+    const list = shown();
+    const index = list.indexOf(process);
+    assert(index >= 0, `process ${process.pid} is not in the ${list.length} shown`);
+    setSelected(index);
+  };
+  const type = (event: InputEvent & { currentTarget: HTMLInputElement }) => {
+    setFilter(event.currentTarget.value);
     setSelected(0);
-  }, []);
-  const key = useCallback(
-    (event: KeyboardEvent) => {
-      if (event.key === "ArrowDown" && shown.length > 0) {
-        event.preventDefault();
-        setSelected(Math.min(selected + 1, shown.length - 1));
-      } else if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setSelected(Math.max(selected - 1, 0));
-      } else if (event.key === "Enter") {
-        event.preventDefault();
-        attach(choice);
-      }
-    },
-    [shown, selected, attach, choice],
-  );
+  };
+  const key = (event: KeyboardEvent) => {
+    const list = shown();
+    if (event.key === "ArrowDown" && list.length > 0) {
+      event.preventDefault();
+      setSelected(Math.min(selected() + 1, list.length - 1));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSelected(Math.max(selected() - 1, 0));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      attach(choice());
+    }
+  };
 
   return (
-    <div className="card-body" style={NO_PADDING}>
-      {scope !== null && scope > 0 && (
-        <div className="banner">
-          The kernel&apos;s <code>ptrace_scope</code> is {scope}, so attaching to a process that
-          microscope did not start may be refused. A program can allow it with{" "}
-          <code>prctl(PR_SET_PTRACER, …)</code>, or{" "}
-          <code>sudo sysctl kernel.yama.ptrace_scope=0</code> allows it until reboot.
-        </div>
-      )}
+    <div class="card-body" style={NO_PADDING}>
+      <Show when={restrictedScope()}>
+        {(currentScope) => (
+          <div class="banner">
+            The kernel&apos;s <code>ptrace_scope</code> is {currentScope()}, so attaching to a
+            process that microscope did not start may be refused. A program can allow it with{" "}
+            <code>prctl(PR_SET_PTRACER, …)</code>, or{" "}
+            <code>sudo sysctl kernel.yama.ptrace_scope=0</code> allows it until reboot.
+          </div>
+        )}
+      </Show>
       <Field label="Process" note="Your processes, newest first. Type to filter; Enter attaches.">
         {(id) => (
           <input
             id={id}
-            className="input"
-            value={filter}
-
+            class="input"
+            value={filter()}
             data-autofocus
             placeholder="kvstore"
-            onChange={type}
+            onInput={type}
             onKeyDown={key}
           />
         )}
       </Field>
-      {error && <div className="banner error">{error}</div>}
+      <Show when={error()}>{(message) => <div class="banner error">{message()}</div>}</Show>
       {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a list to filter and pick from, not a <select> */}
-      <div className="process-list" role="listbox" aria-label="Processes">
-        {processes === null ? (
-          <div className="empty">{error ? "Could not list processes." : "Listing processes…"}</div>
-        ) : shown.length === 0 ? (
-          <div className="empty">No process matches.</div>
-        ) : (
-          shown.map((process) => (
-            <ProcessOption
-              key={process.pid}
-              process={process}
-              chosen={process === choice}
-              onSelect={select}
-              onAttach={attach}
-            />
-          ))
-        )}
+      <div class="process-list" role="listbox" aria-label="Processes">
+        <Switch
+          fallback={
+            <For each={shown()} keyed={(process) => process.pid}>
+              {(process) => (
+                <ProcessOption
+                  process={process()}
+                  chosen={process() === choice()}
+                  onSelect={select}
+                  onAttach={attach}
+                />
+              )}
+            </For>
+          }
+        >
+          <Match when={processes() === null}>
+            <div class="empty">{error() ? "Could not list processes." : "Listing processes…"}</div>
+          </Match>
+          <Match when={shown().length === 0}>
+            <div class="empty">No process matches.</div>
+          </Match>
+        </Switch>
       </div>
-      <div className="actions">
+      <div class="actions">
         <button
           type="button"
-          className="button primary"
-          disabled={!choice || working}
+          class="button primary"
+          disabled={!choice() || props.working}
           onClick={attachChoice}
         >
-          {choice ? `Attach to ${choice.pid}` : "Attach"}
+          {choice() ? `Attach to ${choice()?.pid}` : "Attach"}
         </button>
-        <button type="button" className="button" onClick={refresh}>
+        <button type="button" class="button" onClick={() => void refresh()}>
           Refresh
         </button>
       </div>
@@ -710,85 +730,81 @@ export function AttachForm({ working, submit }: FormProps) {
   );
 }
 
-function ProcessOption({
-  process,
-  chosen,
-  onSelect,
-  onAttach,
-}: {
+function ProcessOption(props: {
   process: Process;
   chosen: boolean;
   onSelect(process: Process): void;
   onAttach(process: Process): void;
 }) {
-  const select = useCallback(() => onSelect(process), [onSelect, process]);
-  const attach = useCallback(() => onAttach(process), [onAttach, process]);
-  const key = useCallback(
-    (event: KeyboardEvent) => event.key === "Enter" && onAttach(process),
-    [onAttach, process],
-  );
   return (
     <div
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an option of the list above
       role="option"
-      tabIndex={-1}
-      aria-selected={chosen}
-      className={`row ${chosen ? "selected" : ""}`}
-      onClick={select}
-      onDoubleClick={attach}
-      onKeyDown={key}
+      tabindex={-1}
+      aria-selected={props.chosen ? "true" : "false"}
+      class={["row", { selected: props.chosen }]}
+      onClick={() => props.onSelect(props.process)}
+      onDblClick={() => props.onAttach(props.process)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          props.onAttach(props.process);
+        }
+      }}
     >
-      <span className="pid">{process.pid}</span>
-      <span title={process.command} style={ELLIPSIS}>
-        {process.command}
+      <span class="pid">{props.process.pid}</span>
+      <span title={props.process.command} style={ELLIPSIS}>
+        {props.process.command}
       </span>
     </div>
   );
 }
 
-function CoreForm({ working, submit }: FormProps) {
+function CoreForm(props: FormProps) {
   const connection = useConnection();
-  const [core, setCore] = useState("");
-  const [executable, setExecutable] = useState("");
-  const open = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      const path = core.trim();
-      if (!path) {
-        return;
-      }
-      submit({
-        describe: `Opening ${path}`,
-        send: (replace) =>
-          connection.request("openCore", {
-            core: path,
-            executable: executable.trim() || null,
-            replace,
-          }),
-      });
-    },
-    [core, executable, submit, connection],
-  );
+  const [core, setCore] = createSignal("");
+  const [executable, setExecutable] = createSignal("");
+  const open = (event: SubmitEvent) => {
+    event.preventDefault();
+    const path = core().trim();
+    if (!path) {
+      return;
+    }
+    props.submit({
+      describe: `Opening ${path}`,
+      send: (replace) =>
+        connection.request("openCore", {
+          core: path,
+          executable: executable().trim() || null,
+          replace,
+        }),
+    });
+  };
   return (
-    <form className="card-body" style={NO_PADDING} onSubmit={open}>
+    <form class="card-body" style={NO_PADDING} onSubmit={open}>
       <Field label="Core dump">
         {(id) => (
-          <PathInput id={id} value={core} onChange={setCore} placeholder="./core.41870" autoFocus />
+          <PathInput
+            id={id}
+            value={core()}
+            onChange={setCore}
+            placeholder="./core.41870"
+            autoFocus
+          />
         )}
       </Field>
       <Field label="Executable" note="Leave empty to use the program recorded in the dump.">
         {(id) => (
           <PathInput
             id={id}
-            value={executable}
+            value={executable()}
             onChange={setExecutable}
             placeholder="./build/app"
             onlyExecutables
           />
         )}
       </Field>
-      <div className="actions">
-        <button type="submit" className="button primary" disabled={!core.trim() || working}>
+      <div class="actions">
+        <button type="submit" class="button primary" disabled={!core().trim() || props.working}>
           Open
         </button>
       </div>
@@ -796,34 +812,22 @@ function CoreForm({ working, submit }: FormProps) {
   );
 }
 
-function Field({
-  label,
-  note,
-  children,
-}: {
+function Field(props: {
   label: string;
   note?: string | undefined;
-  children: (id: string) => ReactNode;
+  children: (id: string) => JSX.Element;
 }) {
-  const id = useId();
+  const id = createUniqueId();
   return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      {children(id)}
-      {note && <span className="note">{note}</span>}
+    <div class="field">
+      <label for={id}>{props.label}</label>
+      {props.children(id)}
+      <Show when={props.note}>{(note) => <span class="note">{note()}</span>}</Show>
     </div>
   );
 }
 
-export function PathInput({
-  id,
-  value,
-  onChange,
-  placeholder,
-  autoFocus = false,
-  onlyExecutables = false,
-  onlyDirectories = false,
-}: {
+export function PathInput(props: {
   id: string;
   value: string;
   onChange(value: string): void;
@@ -834,154 +838,171 @@ export function PathInput({
 }) {
   const connection = useConnection();
 
-  const [completion, setCompletion] = useState<{ text: string; entries: PathEntry[] } | null>(null);
-  const [open, setOpen] = useState(false);
-  const [selected, setSelected] = useState(0);
+  const [completion, setCompletion] = createSignal<{ text: string; entries: PathEntry[] } | null>(
+    null,
+  );
+  const [open, setOpen] = createSignal(false);
+  const [selected, setSelected] = createSignal(0);
+  const [tabbed, setTabbed] = createSignal(false);
+  const [picked, setPicked] = createSignal(false);
+  const listId = createUniqueId();
+  let input: HTMLInputElement | undefined;
 
-  const [tabbed, setTabbed] = useState(false);
-
-  const [picked, setPicked] = useState(false);
-  const listId = useId();
-  const input = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    let current = true;
-    const complete = async () => {
-      try {
-        const answer = await connection.request("completePath", { text: value });
-        if (current) {
-          const entries = answer.entries.filter(
-            (entry) =>
-              entry.kind === "directory" ||
-              (!onlyDirectories && (!onlyExecutables || entry.kind === "executable")),
-          );
-          setCompletion({ text: value, entries });
-
-          setSelected((index) => Math.min(index, Math.max(entries.length - 1, 0)));
-        }
-      } catch {
-        if (current) {
-          setCompletion({ text: value, entries: [] });
-        }
-      }
-    };
-    const timer = setTimeout(() => void complete(), 60);
-    return () => {
-      current = false;
-      clearTimeout(timer);
-    };
-  }, [value, open, connection, onlyExecutables, onlyDirectories]);
-
-  const accept = useCallback(
-    (entry: PathEntry | undefined) => {
-      if (!entry) {
+  createEffect(
+    () =>
+      [
+        props.value,
+        open(),
+        props.onlyExecutables ?? false,
+        props.onlyDirectories ?? false,
+      ] as const,
+    ([value, isOpen, onlyExecutables, onlyDirectories]) => {
+      if (!isOpen) {
         return;
       }
-      onChange(entry.text);
-      setSelected(0);
-      setPicked(false);
-
-      setOpen(entry.kind === "directory");
+      let current = true;
+      const complete = async () => {
+        try {
+          const answer = await connection.request("completePath", { text: value });
+          if (current) {
+            const entries = answer.entries.filter(
+              (entry) =>
+                entry.kind === "directory" ||
+                (!onlyDirectories && (!onlyExecutables || entry.kind === "executable")),
+            );
+            setCompletion({ text: value, entries });
+            setSelected((index) => Math.min(index, Math.max(entries.length - 1, 0)));
+          }
+        } catch {
+          if (current) {
+            setCompletion({ text: value, entries: [] });
+          }
+        }
+      };
+      const timer = setTimeout(() => void complete(), 60);
+      return () => {
+        current = false;
+        clearTimeout(timer);
+      };
     },
-    [onChange],
   );
-  const current = completion?.text === value ? completion.entries : null;
-  const shown = useMemo(() => (open && current ? current.slice(0, 50) : []), [open, current]);
-  assert(selected >= 0, `suggestion ${selected} selected`);
 
-  const completes = picked || (value !== "" && !value.endsWith("/"));
-
-  useEffect(() => {
-    if (tabbed && current) {
-      // oxlint-disable-next-line react/set-state-in-effect -- a Tab pressed early waits here for the suggestions
-      setTabbed(false);
-      if (current.length > 0) {
-        accept(current[0]);
-      } else if (input.current) {
-        focusAfter(input.current);
-      }
+  const accept = (entry: PathEntry | undefined) => {
+    if (!entry) {
+      return;
     }
-  }, [tabbed, current, accept]);
+    props.onChange(entry.text);
+    setSelected(0);
+    setPicked(false);
+    setOpen(entry.kind === "directory");
+  };
 
-  const type = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      onChange(event.target.value);
-      setOpen(true);
-      setTabbed(false);
-      setSelected(0);
-      setPicked(false);
-    },
-    [onChange],
+  const current = createMemo(() => {
+    const completed = completion();
+    return completed?.text === props.value ? completed.entries : null;
+  });
+  const shown = createMemo(() => {
+    const entries = current();
+    return open() && entries ? entries.slice(0, 50) : [];
+  });
+  const completes = createMemo(
+    () => picked() || (props.value !== "" && !props.value.endsWith("/")),
   );
-  const focus = useCallback(() => setOpen(true), []);
 
-  const dismiss = useCallback(() => {
+  createEffect(
+    () => selected(),
+    (index) => {
+      assert(index >= 0, `suggestion ${index} selected`);
+    },
+  );
+
+  createEffect(
+    () => [tabbed(), current()] as const,
+    ([wasTabbed, entries]) => {
+      if (wasTabbed && entries) {
+        setTabbed(false);
+        if (entries.length > 0) {
+          accept(entries[0]);
+        } else if (input) {
+          focusAfter(input);
+        }
+      }
+    },
+  );
+
+  const type = (event: InputEvent & { currentTarget: HTMLInputElement }) => {
+    props.onChange(event.currentTarget.value);
+    setOpen(true);
+    setTabbed(false);
+    setSelected(0);
+    setPicked(false);
+  };
+  const focus = () => setOpen(true);
+  const dismiss = () => {
     setOpen(false);
     setTabbed(false);
-  }, []);
-  const key = useCallback(
-    (event: KeyboardEvent) => {
-      const tab = event.key === "Tab" && !event.shiftKey && completes;
-      if (tab && open && current === null) {
-        event.preventDefault();
-        setTabbed(true);
-      } else if (tab && shown.length > 0) {
-        event.preventDefault();
-        accept(shown[selected]);
-      } else if (event.key === "ArrowDown" && shown.length > 0) {
-        event.preventDefault();
-        setSelected(Math.min(selected + 1, shown.length - 1));
-        setPicked(true);
-      } else if (event.key === "ArrowUp" && shown.length > 0) {
-        event.preventDefault();
-        setSelected(Math.max(selected - 1, 0));
-        setPicked(true);
-      } else if (event.key === "Escape") {
-        dismiss();
-      } else if (event.key === "Enter" && shown.length > 0 && shown[selected]?.text !== value) {
-        event.preventDefault();
-        accept(shown[selected]);
-      }
-    },
-    [completes, open, current, shown, selected, accept, value, dismiss],
-  );
+  };
+  const key = (event: KeyboardEvent) => {
+    const tab = event.key === "Tab" && !event.shiftKey && completes();
+    const list = shown();
+    const currentIndex = selected();
+    if (tab && open() && current() === null) {
+      event.preventDefault();
+      setTabbed(true);
+    } else if (tab && list.length > 0) {
+      event.preventDefault();
+      accept(list[currentIndex]);
+    } else if (event.key === "ArrowDown" && list.length > 0) {
+      event.preventDefault();
+      setSelected(Math.min(currentIndex + 1, list.length - 1));
+      setPicked(true);
+    } else if (event.key === "ArrowUp" && list.length > 0) {
+      event.preventDefault();
+      setSelected(Math.max(currentIndex - 1, 0));
+      setPicked(true);
+    } else if (event.key === "Escape") {
+      dismiss();
+    } else if (
+      event.key === "Enter" &&
+      list.length > 0 &&
+      list[currentIndex]?.text !== props.value
+    ) {
+      event.preventDefault();
+      accept(list[currentIndex]);
+    }
+  };
 
   return (
-    <div className="combo">
+    <div class="combo">
       <input
-        ref={input}
-        id={id}
-        className="input"
-        value={value}
-        placeholder={placeholder}
-
-        data-autofocus={autoFocus || undefined}
-        spellCheck={false}
-        autoComplete="off"
+        ref={(node) => {
+          input = node;
+        }}
+        id={props.id}
+        class="input"
+        value={props.value}
+        placeholder={props.placeholder}
+        data-autofocus={props.autoFocus || undefined}
+        spellcheck={false}
+        autocomplete="off"
         role="combobox"
-        aria-expanded={shown.length > 0}
+        aria-expanded={shown().length > 0 ? "true" : "false"}
         aria-controls={listId}
-        onChange={type}
+        onInput={type}
         onFocus={focus}
         onBlur={dismiss}
         onKeyDown={key}
       />
-      {shown.length > 0 && (
-        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a combobox's suggestions, not a <select>
-        <div className="suggestions" id={listId} role="listbox">
-          {shown.map((entry, index) => (
-            <Suggestion
-              key={entry.text}
-              entry={entry}
-              selected={index === selected}
-              onAccept={accept}
-            />
-          ))}
+      <Show when={shown().length > 0}>
+        {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a combobox's suggestions, not a <select> */}
+        <div class="suggestions" id={listId} role="listbox">
+          <For each={shown()} keyed={(entry) => entry.text}>
+            {(entry, index) => (
+              <Suggestion entry={entry()} selected={index() === selected()} onAccept={accept} />
+            )}
+          </For>
         </div>
-      )}
+      </Show>
     </div>
   );
 }
@@ -1000,32 +1021,27 @@ function focusAfter(from: HTMLElement) {
   }
 }
 
-function Suggestion({
-  entry,
-  selected,
-  onAccept,
-}: {
+function Suggestion(props: {
   entry: PathEntry;
   selected: boolean;
   onAccept(entry: PathEntry): void;
 }) {
-  const choose = useCallback(
-    (event: MouseEvent) => {
-      event.preventDefault();
-      onAccept(entry);
-    },
-    [onAccept, entry],
-  );
+  const choose = (event: MouseEvent) => {
+    event.preventDefault();
+    props.onAccept(props.entry);
+  };
   return (
     <div
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a combobox's suggestion, not an <option>
       role="option"
-      tabIndex={-1}
-      aria-selected={selected}
+      tabindex={-1}
+      aria-selected={props.selected ? "true" : "false"}
       onMouseDown={choose}
     >
-      <span>{entry.text.slice(entry.text.lastIndexOf("/", entry.text.length - 2) + 1)}</span>
-      <span className="kind">{entry.kind}</span>
+      <span>
+        {props.entry.text.slice(props.entry.text.lastIndexOf("/", props.entry.text.length - 2) + 1)}
+      </span>
+      <span class="kind">{props.entry.kind}</span>
     </div>
   );
 }

@@ -8,7 +8,7 @@ afterEach(unmountPane);
 
 it("shows each thread's runtime labels beside its name", async () => {
   await mountPane(
-    <Threads />,
+    () => <Threads />,
     {},
     stoppedState({
       threads: [

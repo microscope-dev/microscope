@@ -1,13 +1,15 @@
+import type { JSX } from "@solidjs/web";
 import {
   createContext,
-  type FormEvent,
-  type KeyboardEvent,
-  type ReactNode,
-  useCallback,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  Show,
+  Switch,
+  untrack,
   useContext,
-  useMemo,
-  useState,
-} from "react";
+} from "solid-js";
 
 import { assert } from "../assert";
 import { useRequest } from "../data";
@@ -26,34 +28,32 @@ const PAGE = 100;
 interface Expansion {
   isOpen(key: string): boolean;
   toggle(key: string): void;
-
-  remember: boolean;
+  readonly remember: boolean;
 }
 
 const ExpansionContext = createContext<Expansion | null>(null);
 
-export function LinkedExpansion({ children }: { children: ReactNode }) {
-  const { look } = useFocus();
+export function LinkedExpansion(props: { children: JSX.Element }) {
+  const focus = useFocus();
   const change = useLook();
-  const open = look.x;
-  const expansion = useMemo(
-    (): Expansion => ({
-      isOpen: (key) => open?.includes(key) ?? false,
-      toggle: (key) => change((current) => withOpen(current, toggled(current.x, key))),
-      remember: true,
-    }),
-    [open, change],
-  );
-  return <ExpansionContext value={expansion}>{children}</ExpansionContext>;
+  const expansion: Expansion = {
+    isOpen: (key) => focus().look.x?.includes(key) ?? false,
+    toggle: (key) => change((current) => withOpen(current, toggled(current.x, key))),
+    remember: true,
+  };
+  return <ExpansionContext value={expansion}>{props.children}</ExpansionContext>;
 }
 
-export function Earlier({ children, when }: { children: ReactNode; when: boolean }) {
-  const expansion = useExpansion();
-  const forgetting = useMemo(() => ({ ...expansion, remember: false }), [expansion]);
-  if (!when) {
-    return children;
-  }
-  return <ExpansionContext value={forgetting}>{children}</ExpansionContext>;
+export function Earlier(props: { children: JSX.Element; when: boolean }) {
+  const parent = useExpansion();
+  const expansion: Expansion = {
+    isOpen: (key) => parent.isOpen(key),
+    toggle: (key) => parent.toggle(key),
+    get remember() {
+      return !props.when && parent.remember;
+    },
+  };
+  return <ExpansionContext value={expansion}>{props.children}</ExpansionContext>;
 }
 
 function withOpen<T extends { x?: string[] }>(look: T, x: string[] | undefined): T {
@@ -61,17 +61,14 @@ function withOpen<T extends { x?: string[] }>(look: T, x: string[] | undefined):
   return (x ? { ...rest, x } : rest) as T;
 }
 
-export function LocalExpansion({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState<string[] | undefined>();
-  const expansion = useMemo(
-    (): Expansion => ({
-      isOpen: (key) => open?.includes(key) ?? false,
-      toggle: (key) => setOpen((current) => toggled(current, key)),
-      remember: false,
-    }),
-    [open],
-  );
-  return <ExpansionContext value={expansion}>{children}</ExpansionContext>;
+export function LocalExpansion(props: { children: JSX.Element }) {
+  const [open, setOpen] = createSignal<string[] | undefined>();
+  const expansion: Expansion = {
+    isOpen: (key) => open()?.includes(key) ?? false,
+    toggle: (key) => setOpen((current) => toggled(current, key)),
+    remember: false,
+  };
+  return <ExpansionContext value={expansion}>{props.children}</ExpansionContext>;
 }
 
 function useExpansion(): Expansion {
@@ -82,32 +79,26 @@ function useExpansion(): Expansion {
   return expansion;
 }
 
-export function RowList({
-  rows,
-  parent,
-  depth,
-}: {
-  rows: readonly Row[];
-  parent: string;
-  depth: number;
-}) {
-  const seen = new Map<string, number>();
+export function RowList(props: { rows: readonly Row[]; parent: string; depth: number }) {
+  const items = createMemo(() => {
+    const seen = new Map<string, number>();
+    return props.rows.map((row) => {
+      const occurrence = (seen.get(row.name) ?? 0) + 1;
+      seen.set(row.name, occurrence);
+      return { key: `${row.name}~${occurrence}`, row, occurrence };
+    });
+  });
   return (
-    <>
-      {rows.map((row) => {
-        const occurrence = (seen.get(row.name) ?? 0) + 1;
-        seen.set(row.name, occurrence);
-        return (
-          <ValueRow
-            key={`${row.name}~${occurrence}`}
-            row={row}
-            parent={parent}
-            depth={depth}
-            occurrence={occurrence}
-          />
-        );
-      })}
-    </>
+    <For each={items()} keyed={(item) => item.key}>
+      {(item) => (
+        <ValueRow
+          row={item().row}
+          parent={props.parent}
+          depth={props.depth}
+          occurrence={item().occurrence}
+        />
+      )}
+    </For>
   );
 }
 
@@ -118,305 +109,350 @@ interface ValueRowProps {
   parent: string;
   depth: number;
 
-  actions?: ReactNode;
+  actions?: JSX.Element;
 
   missing?: Missing | undefined;
 
   occurrence?: number;
 }
 
-export function ValueRow({ row, parent, depth, actions, missing, occurrence = 1 }: ValueRowProps) {
-  const { at, stale } = useFocus();
+export function ValueRow(props: ValueRowProps) {
+  const focus = useFocus();
   const expansion = useExpansion();
-  assert(occurrence >= 1, `value row occurrence ${occurrence}`);
-  assert(depth >= 0, `value row at depth ${depth}`);
-  const key = childKey(parent, row.name, occurrence);
-  assert(
-    key.startsWith(parent) && key.charAt(parent.length) === "/",
-    "row path outside its parent",
-  );
-  const open = row.children !== null && expansion.isOpen(key);
-  let was: string | undefined;
-  if (expansion.remember && at && !stale && !row.truncated && !missing) {
-    was = recall.before(at.stop, key);
-    recall.note(at.stop, key, row.text);
-  }
-  const changed = was !== undefined && was !== row.text;
-  const indent = useIndent(depth);
-  const toggle = useCallback(() => expansion.toggle(key), [expansion, key]);
+  const key = createMemo(() => {
+    const occurrence = props.occurrence ?? 1;
+    assert(occurrence >= 1, `value row occurrence ${occurrence}`);
+    assert(props.depth >= 0, `value row at depth ${props.depth}`);
+    const result = childKey(props.parent, props.row.name, occurrence);
+    assert(
+      result.startsWith(props.parent) && result.charAt(props.parent.length) === "/",
+      "row path outside its parent",
+    );
+    return result;
+  });
+  const open = createMemo(() => props.row.children !== null && expansion.isOpen(key()));
+  const history = createMemo(() => {
+    const { at, stale } = focus();
+    let was: string | undefined;
+    if (expansion.remember && at && !stale && !props.row.truncated && !props.missing) {
+      const currentKey = key();
+      was = recall.before(at.stop, currentKey);
+      recall.note(at.stop, currentKey, props.row.text);
+    }
+    return { was, changed: was !== undefined && was !== props.row.text };
+  });
+  const indent = useIndent(() => props.depth);
+  const toggle = () => expansion.toggle(key());
 
   return (
-    <li className="value">
-      <div className={`value-row ${row.truncated ? "truncated" : ""}`} style={indent}>
-        {row.children ? (
+    <li class="value">
+      <div class={["value-row", { truncated: props.row.truncated }]} style={indent()}>
+        <Show when={props.row.children} fallback={<span class="twist" />}>
           <button
             type="button"
-            className="twist"
-            aria-label={`${open ? "Close" : "Open"} ${row.name}`}
-            aria-expanded={open}
+            class="twist"
+            aria-label={`${open() ? "Close" : "Open"} ${props.row.name}`}
+            aria-expanded={open() ? "true" : "false"}
             onClick={toggle}
           >
-            {open ? "▾" : "▸"}
+            {open() ? "▾" : "▸"}
           </button>
-        ) : (
-          <span className="twist" />
-        )}
-        <span className="value-name" title={row.path ?? row.name}>
-          {row.name}
+        </Show>
+        <span class="value-name" title={props.row.path ?? props.row.name}>
+          {props.row.name}
         </span>
-        <ValueText row={row} missing={missing} changed={changed} was={was} />
-        {row.type && <span className="value-type">{row.type}</span>}
-        <RowActions row={row} />
-        {actions}
+        <ValueText
+          row={props.row}
+          missing={props.missing}
+          changed={history().changed}
+          was={history().was}
+        />
+        <Show when={props.row.type}>{(type) => <span class="value-type">{type()}</span>}</Show>
+        <RowActions row={props.row} />
+        {props.actions}
       </div>
-      {open && row.children && (
-        <ul className="value-list">
-          <ChildRows of={row.children} parent={key} depth={depth + 1} />
-        </ul>
-      )}
+      <Show when={open() ? props.row.children : null}>
+        {(children) => (
+          <ul class="value-list">
+            <ChildRows of={children()} parent={key()} depth={props.depth + 1} />
+          </ul>
+        )}
+      </Show>
     </li>
   );
 }
 
-function RowActions({ row }: { row: Row }) {
-  const { at, stale } = useFocus();
+function RowActions(props: { row: Row }) {
+  const focus = useFocus();
   const control = useModel(controls);
   const connection = useConnection();
   const look = useLook();
-  const path = row.path;
-  const pinDrawing = useCallback(() => {
+  const pinDrawing = () => {
+    const path = props.row.path;
     assert(path !== null, "drawing a row with no path");
     look(pin({ path, renderer: null }), { replace: false });
-  }, [look, path]);
-  const showMemory = useCallback(() => {
-    const memory = rowTarget(row);
+  };
+  const showMemory = () => {
+    const memory = rowTarget(props.row);
     assert(memory !== null, "showing the memory of a row with none");
     look((current) => ({ ...current, mem: memory, view: "memory" }), { replace: false });
-  }, [look, row]);
+  };
 
   const watching = useModel(
     (model) =>
       model.state?.watchpoints.find(
         (watchpoint) =>
-          row.memory !== null &&
-          BigInt(watchpoint.address) === BigInt(row.memory) &&
-          watchpoint.bytes === row.memoryBytes,
+          props.row.memory !== null &&
+          BigInt(watchpoint.address) === BigInt(props.row.memory) &&
+          watchpoint.bytes === props.row.memoryBytes,
       )?.id ?? null,
   );
-  const watch = useCallback(() => {
-    assert(row.path !== null, "watching a row with no path");
+  const watch = () => {
+    const path = props.row.path;
+    assert(path !== null, "watching a row with no path");
+    const currentWatching = watching();
     const done =
-      watching === null
+      currentWatching === null
         ? connection
-            .request("addWatchpoint", { ...at, target: row.path, access: "change" })
-            .then(() => flash(`Stopping when ${row.path} changes`))
+            .request("addWatchpoint", { ...focus().at, target: path, access: "change" })
+            .then(() => flash(`Stopping when ${path} changes`))
         : connection
-            .request("removeWatchpoint", { id: watching })
-            .then(() => flash(`No longer watching ${row.path}`));
+            .request("removeWatchpoint", { id: currentWatching })
+            .then(() => flash(`No longer watching ${path}`));
     done.catch((failure: Error) => flash(failure.message));
-  }, [connection, at, row.path, watching]);
-  const drawable = path !== null && at !== null ? path : null;
-  const draw = (drawable !== null || row.memory !== null) && (
-    <>
-      {drawable !== null && row.drawings.length > 0 && (
-        <button
-          type="button"
-          className="link-button"
-          aria-label={`Draw ${row.name}`}
-          title={`Draw with ${row.drawings.join(", ")}`}
-          onClick={pinDrawing}
-        >
-          Draw
-        </button>
-      )}
-      <DrawAs name={row.name} path={drawable} memory={row.memory ? showMemory : null} />
-    </>
+  };
+  const drawable = createMemo(() =>
+    props.row.path !== null && focus().at !== null ? props.row.path : null,
   );
-  if (!row.memory) {
-    return draw ? <span className="row-actions">{draw}</span> : null;
-  }
-  const watchable = control && at && !stale && row.path !== null && row.stored;
+  const hasDraw = createMemo(() => drawable() !== null || props.row.memory !== null);
+  const watchable = createMemo(() => {
+    const { at, stale } = focus();
+    return Boolean(control() && at && !stale && props.row.path !== null && props.row.stored);
+  });
+
   return (
-    <span className="row-actions">
-      {watchable && (
-        <button
-          type="button"
-          className="icon"
-          aria-label={`Watch ${row.name} for changes`}
-          aria-pressed={watching !== null}
-          title={watching === null ? "Stop when this value changes" : "Stop watching this value"}
-          onClick={watch}
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <path
-              d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8Z"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.3"
-              strokeLinejoin="round"
-            />
-            <circle cx="8" cy="8" r="2" fill="currentColor" />
-          </svg>
-        </button>
-      )}
-      {draw}
-    </span>
+    <Show when={Boolean(props.row.memory) || hasDraw()}>
+      <span class="row-actions">
+        <Show when={Boolean(props.row.memory) && watchable()}>
+          <button
+            type="button"
+            class="icon"
+            aria-label={`Watch ${props.row.name} for changes`}
+            aria-pressed={watching() === null ? "false" : "true"}
+            title={
+              watching() === null ? "Stop when this value changes" : "Stop watching this value"
+            }
+            onClick={watch}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path
+                d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8Z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linejoin="round"
+              />
+              <circle cx="8" cy="8" r="2" fill="currentColor" />
+            </svg>
+          </button>
+        </Show>
+        <Show when={hasDraw()}>
+          <Show when={drawable() !== null && props.row.drawings.length > 0}>
+            <button
+              type="button"
+              class="link-button"
+              aria-label={`Draw ${props.row.name}`}
+              title={`Draw with ${props.row.drawings.join(", ")}`}
+              onClick={pinDrawing}
+            >
+              Draw
+            </button>
+          </Show>
+          <DrawAs
+            name={props.row.name}
+            path={drawable()}
+            memory={props.row.memory ? showMemory : null}
+          />
+        </Show>
+      </span>
+    </Show>
   );
 }
 
-function ValueText({
-  row,
-  missing,
-  changed,
-  was,
-}: {
+function ValueText(props: {
   row: Row;
   missing: Missing | undefined;
   changed: boolean;
   was: string | undefined;
 }) {
-  const { at, stale } = useFocus();
+  const focus = useFocus();
   const control = useModel(controls);
   const connection = useConnection();
-  const [editing, setEditing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const editable = row.editable && row.path !== null && control && at !== null && !stale;
-  const path = row.path;
-  const submit = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      const value = new FormData(event.currentTarget).get("value");
-      if (typeof value !== "string" || value.trim() === "") {
-        return;
-      }
-      assert(at !== null && path !== null, "editing a value with no stop or path");
-      setError(null);
-      connection
-        .request("setValue", { ...at, path, value })
-        .then(() => setEditing(false))
-        .catch((failure: Error) => setError(failure.message));
-    },
-    [at, path, connection],
-  );
-  const escape = useCallback((event: KeyboardEvent) => {
+  const [editing, setEditing] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  const editable = createMemo(() => {
+    const { at, stale } = focus();
+    return props.row.editable && props.row.path !== null && control() && at !== null && !stale;
+  });
+  const submit = (event: SubmitEvent) => {
+    event.preventDefault();
+    const value = new FormData(event.currentTarget as HTMLFormElement).get("value");
+    if (typeof value !== "string" || value.trim() === "") {
+      return;
+    }
+    const currentAt = focus().at;
+    const path = props.row.path;
+    assert(currentAt !== null && path !== null, "editing a value with no stop or path");
+    setError(null);
+    connection
+      .request("setValue", { ...currentAt, path, value })
+      .then(() => setEditing(false))
+      .catch((failure: Error) => setError(failure.message));
+  };
+  const escape = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
       event.stopPropagation();
       setEditing(false);
     }
-  }, []);
-  const blur = useCallback(() => !error && setEditing(false), [error]);
-  const edit = useCallback(() => setEditing(true), []);
-  const editByKey = useCallback((event: KeyboardEvent) => {
+  };
+  const blur = () => {
+    if (!error()) {
+      setEditing(false);
+    }
+  };
+  const edit = () => setEditing(true);
+  const editByKey = (event: KeyboardEvent) => {
     if (event.key === "Enter" || event.key === "F2") {
       event.preventDefault();
       setEditing(true);
     }
-  }, []);
+  };
+  const textClass = createMemo(
+    () =>
+      `value-text ${props.missing === "failed" ? "error" : (props.missing ?? "")} ${props.changed ? "changed" : ""}`,
+  );
 
-  if (editing && at && row.path) {
-    return (
-      <form className="value-edit" onSubmit={submit}>
-        <input
-          className="input"
-          name="value"
-          aria-label={`New value of ${row.name}`}
-          defaultValue={row.text}
-          // oxlint-disable-next-line jsx-a11y/no-autofocus -- the person asked to edit this value
-          autoFocus
-          onKeyDown={escape}
-          onBlur={blur}
-        />
-        {error && <span className="error">{error}</span>}
-      </form>
-    );
-  }
-  const className = `value-text ${missing === "failed" ? "error" : (missing ?? "")} ${changed ? "changed" : ""}`;
-  if (!editable) {
-    return (
-      <span className={className} title={changed ? `was ${was}` : (row.detail ?? row.text)}>
-        {row.text}
-        {changed && <span className="was"> was {was}</span>}
-      </span>
-    );
-  }
   return (
-    <button
-      type="button"
-      className={`${className} editable`}
-      title={`${row.detail ? `${row.detail}\n\n` : ""}${changed ? `was ${was}; ` : ""}double-click to change`}
-      onDoubleClick={edit}
-      onKeyDown={editByKey}
+    <Switch
+      fallback={
+        <button
+          type="button"
+          class={`${textClass()} editable`}
+          title={`${props.row.detail ? `${props.row.detail}\n\n` : ""}${props.changed ? `was ${props.was}; ` : ""}double-click to change`}
+          onDblClick={edit}
+          onKeyDown={editByKey}
+        >
+          {props.row.text}
+          <Show when={props.changed}>
+            <span class="was"> was {props.was}</span>
+          </Show>
+        </button>
+      }
     >
-      {row.text}
-      {changed && <span className="was"> was {was}</span>}
-    </button>
+      <Match when={editing() && focus().at !== null && props.row.path !== null}>
+        <form class="value-edit" onSubmit={submit}>
+          <input
+            class="input"
+            name="value"
+            aria-label={`New value of ${props.row.name}`}
+            value={untrack(() => props.row.text)}
+            autofocus
+            ref={(node) => {
+              queueMicrotask(() => node.focus());
+            }}
+            onKeyDown={escape}
+            onBlur={blur}
+          />
+          <Show when={error()}>{(message) => <span class="error">{message()}</span>}</Show>
+        </form>
+      </Match>
+      <Match when={!editable()}>
+        <span
+          class={textClass()}
+          title={props.changed ? `was ${props.was}` : (props.row.detail ?? props.row.text)}
+        >
+          {props.row.text}
+          <Show when={props.changed}>
+            <span class="was"> was {props.was}</span>
+          </Show>
+        </span>
+      </Match>
+    </Switch>
   );
 }
 
-function ChildRows({ of, parent, depth }: { of: Children; parent: string; depth: number }) {
-  const [pages, setPages] = useState(1);
-  const known = of.indexed !== null || of.named !== null;
-  const total = (of.indexed ?? 0) + (of.named ?? 0);
-  const shown = Math.min(pages * PAGE, known ? total : PAGE);
-  const starts = Array.from({ length: Math.ceil(shown / PAGE) }, (_, index) => index * PAGE);
-  const more = useMemo(() => ({ marginLeft: 6 + depth * 14 }), [depth]);
-  const showMore = useCallback(() => setPages(pages + 1), [pages]);
+function ChildRows(props: { of: Children; parent: string; depth: number }) {
+  const [pages, setPages] = createSignal(1);
+  const known = createMemo(() => props.of.indexed !== null || props.of.named !== null);
+  const total = createMemo(() => (props.of.indexed ?? 0) + (props.of.named ?? 0));
+  const shown = createMemo(() => Math.min(pages() * PAGE, known() ? total() : PAGE));
+  const starts = createMemo(() =>
+    Array.from({ length: Math.ceil(shown() / PAGE) }, (_, index) => index * PAGE),
+  );
+  const more = createMemo(() => ({ "margin-left": `${6 + props.depth * 14}px` }));
+  const showMore = () => setPages((current) => current + 1);
   return (
     <>
-      {starts.map((start) => (
-        <ChildPage key={start} handle={of.handle} start={start} parent={parent} depth={depth} />
-      ))}
-      {known && shown < total && (
-        <li className="value">
-          <button type="button" className="more" style={more} onClick={showMore}>
-            Show {Math.min(PAGE, total - shown)} more of {total.toLocaleString()}
+      <For each={starts()}>
+        {(start) => (
+          <ChildPage
+            handle={props.of.handle}
+            start={start}
+            parent={props.parent}
+            depth={props.depth}
+          />
+        )}
+      </For>
+      <Show when={known() && shown() < total()}>
+        <li class="value">
+          <button type="button" class="more" style={more()} onClick={showMore}>
+            Show {Math.min(PAGE, total() - shown())} more of {total().toLocaleString()}
           </button>
         </li>
-      )}
+      </Show>
     </>
   );
 }
 
-function ChildPage({
-  handle,
-  start,
-  parent,
-  depth,
-}: {
-  handle: number;
-  start: number;
-  parent: string;
-  depth: number;
-}) {
-  const { data, error, current } = useRequest("children", { handle, start, count: PAGE });
-  const indent = useIndent(depth);
-  if (error) {
-    return (
-      <li className="value">
-        <div className="value-row" style={indent}>
-          <span className="value-text error">{error.message}</span>
-        </div>
-      </li>
-    );
-  }
-  if (!data) {
-    return (
-      <li className="value">
-        <div className="value-row dim" style={indent}>
-          …
-        </div>
-      </li>
-    );
-  }
+function ChildPage(props: { handle: number; start: number; parent: string; depth: number }) {
+  const result = useRequest("children", () => ({
+    handle: props.handle,
+    start: props.start,
+    count: PAGE,
+  }));
+  const indent = useIndent(() => props.depth);
   return (
-    <Earlier when={!current}>
-      <RowList rows={data.rows} parent={parent} depth={depth} />
-    </Earlier>
+    <Switch
+      fallback={
+        <li class="value">
+          <div class="value-row dim" style={indent()}>
+            …
+          </div>
+        </li>
+      }
+    >
+      <Match when={result().error}>
+        {(err) => (
+          <li class="value">
+            <div class="value-row" style={indent()}>
+              <span class="value-text error">{err().message}</span>
+            </div>
+          </li>
+        )}
+      </Match>
+      <Match when={result().data}>
+        {(data) => (
+          <Earlier when={!result().current}>
+            <RowList rows={data().rows} parent={props.parent} depth={props.depth} />
+          </Earlier>
+        )}
+      </Match>
+    </Switch>
   );
 }
 
-function useIndent(depth: number) {
-  return useMemo(() => ({ paddingLeft: 6 + depth * 14 }), [depth]);
+function useIndent(depth: () => number) {
+  return createMemo(() => ({ "padding-left": `${6 + depth() * 14}px` }));
 }
 
 export function messageRow(name: string, text: string): Row {

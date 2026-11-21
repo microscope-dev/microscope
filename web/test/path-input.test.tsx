@@ -1,5 +1,4 @@
-import { cleanup, render } from "@testing-library/react";
-import { useState } from "react";
+import { createSignal } from "solid-js";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -7,17 +6,17 @@ import type { PathEntry } from "../src/protocol";
 import { SessionContext } from "../src/store";
 import { PathInput } from "../src/ui/Picker";
 import { type FakeServer, fakeServer } from "./fake-server";
+import { cleanup, render } from "./render";
 
 function Field() {
-  const [value, setValue] = useState("");
+  const [value, setValue] = createSignal("");
   return (
     <>
-      <PathInput id="program" value={value} onChange={setValue} />
-      {}
+      <PathInput id="program" value={value()} onChange={setValue} />
       <button type="button" disabled>
         Off
       </button>
-      <span tabIndex={-1}>Not in the tab order</span>
+      <span tabindex={-1}>Not in the tab order</span>
       <input type="hidden" />
       <button type="button">Next</button>
     </>
@@ -26,11 +25,11 @@ function Field() {
 
 async function mount(): Promise<FakeServer> {
   const server = await fakeServer();
-  render(
+  render(() => (
     <SessionContext value={server.session}>
       <Field />
-    </SessionContext>,
-  );
+    </SessionContext>
+  ));
   await userEvent.click(field());
   return server;
 }

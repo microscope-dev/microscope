@@ -1,5 +1,3 @@
-import type { PointerEvent as ReactPointerEvent } from "react";
-
 export interface Gesture {
   readonly move: (event: PointerEvent) => void;
 
@@ -16,7 +14,7 @@ interface Tracked {
 
 let current: Tracked | null = null;
 
-export function trackPointer(event: ReactPointerEvent<Element>, gesture: Gesture): boolean {
+export function trackPointer(event: PointerEvent, gesture: Gesture): boolean {
   if (event.button !== 0 || current) {
     return false;
   }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { createEffect, createMemo, Match, Show, Switch } from "solid-js";
 
 import { assert } from "../assert";
 import {
@@ -36,41 +36,51 @@ export interface Shown {
   selection: { line: number; end: number } | null;
 }
 
-export function useShown(): Shown | null {
-  const { look } = useFocus();
+export function useShown(): () => Shown | null {
+  const focus = useFocus();
   const paths = useLinkPaths();
   const own = useOwnSource();
-  const named = look.src ? parsePlace(look.src) : null;
-  if (named) {
-    assert(named.line >= 1, `link selects from line ${named.line}`);
-    assert(named.line <= named.end, `link selects lines ${named.line}-${named.end}`);
-    const path = paths.recorded(named.path);
-    return path
-      ? { path, line: named.line, selection: { line: named.line, end: named.end } }
-      : null;
-  }
-  return own;
+  return createMemo(() => {
+    const { look } = focus();
+    const named = look.src ? parsePlace(look.src) : null;
+    if (named) {
+      assert(named.line >= 1, `link selects from line ${named.line}`);
+      assert(named.line <= named.end, `link selects lines ${named.line}-${named.end}`);
+      const path = paths.recorded(named.path);
+      return path
+        ? { path, line: named.line, selection: { line: named.line, end: named.end } }
+        : null;
+    }
+    return own();
+  });
 }
 
-function useOwnSource(): Shown | null {
-  const { at, trace, state } = useFocus();
-  const sources = useRequest("sources", state.session ? undefined : null).data;
-  const frame = frameAt(trace, at);
-  if (frame?.source) {
-    return { path: frame.source.path, line: frame.source.line, selection: null };
-  }
-  if (!at && sources?.entry) {
-    return { path: sources.entry.path, line: sources.entry.line, selection: null };
-  }
-  return null;
+function useOwnSource(): () => Shown | null {
+  const focus = useFocus();
+  const sources = useRequest("sources", () => (focus().state.session ? undefined : null));
+  return createMemo(() => {
+    const { at, trace } = focus();
+    const frame = frameAt(trace, at);
+    if (frame?.source) {
+      return { path: frame.source.path, line: frame.source.line, selection: null };
+    }
+    const entry = sources().data?.entry;
+    if (!at && entry) {
+      return { path: entry.path, line: entry.line, selection: null };
+    }
+    return null;
+  });
 }
 
-function useView(): { view: View; sourceless: boolean } {
-  const { at, trace, look } = useFocus();
+function useView(): () => { view: View; sourceless: boolean } {
+  const focus = useFocus();
   const shown = useShown();
-  const frame = frameAt(trace, at);
-  const sourceless = !shown && frame !== undefined && !frame.source;
-  return { view: look.view ?? (sourceless ? "disassembly" : "source"), sourceless };
+  return createMemo(() => {
+    const { at, trace, look } = focus();
+    const frame = frameAt(trace, at);
+    const sourceless = !shown() && frame !== undefined && !frame.source;
+    return { view: look.view ?? (sourceless ? "disassembly" : "source"), sourceless };
+  });
 }
 
 const documents: {
@@ -88,142 +98,210 @@ export const closeDocument = (path: string) => documents.close(path);
 export const showView = (view: View) => documents.view(view);
 
 export function Documents() {
-  const { at, look: current } = useFocus();
+  const focus = useFocus();
   const shown = useShown();
   const own = useOwnSource();
-  const { view } = useView();
+  const viewState = useView();
   const files = useTab((state) => state.files);
   const look = useLook();
   const paths = useLinkPaths();
-
-  const path = shown?.path;
-  const line = shown?.line ?? null;
-
-  const stop = at?.stop;
   const asked = useTab((state) => state.asked);
 
-  const unasked = useRef<string | null>(null);
-  useLayoutEffect(() => {
-    const skip = unasked.current === `${path}:${line}:${stop}:${asked}`;
-    unasked.current = null;
-    if (path && !skip) {
-      openFile(path);
-    }
-  }, [path, line, stop, asked]);
+  let unasked: string | null = null;
 
-  const open = path !== undefined && files.includes(path);
-  const place =
-    current.src ??
-    (path && formatPlace({ path: paths.link(path), line: line ?? 1, end: line ?? 1 }));
-  useEffect(() => {
-    tab.setState({ shown: path && open ? { path, line } : null });
-    if (path && open && place) {
-      shownAt(path, place);
-    }
-  }, [path, line, open, place]);
+  const openTrigger = createMemo(
+    () => ({
+      path: shown()?.path,
+      line: shown()?.line ?? null,
+      stop: focus().at?.stop,
+      asked: asked(),
+    }),
+    {
+      equals: (a, b) =>
+        a.path === b.path && a.line === b.line && a.stop === b.stop && a.asked === b.asked,
+    },
+  );
 
-  useLayoutEffect(() => {
-    change((layout) => arrange(layout, files, open && path ? path : null, view));
-  }, [files, path, open, view]);
-
-  useLayoutEffect(() => {
-    documents.show = (chosen) => {
-      const where = tab.getState().places[chosen];
-      look(
-        (prev) =>
-          chosen === own?.path
-            ? inView(followedLook(prev), "source")
-            : showingSource(
-                prev,
-                where ?? formatPlace({ path: paths.link(chosen), line: 1, end: 1 }),
-              ),
-        { replace: false, ask: true },
-      );
-    };
-
-    documents.close = (closed) => {
-      const index = files.indexOf(closed);
-      assert(index >= 0, `closing a file not among the ${files.length} open`);
-      const neighbor = files[index + 1] ?? files[index - 1];
-      closeFile(closed);
-      if (closed !== path) {
-        return;
+  createEffect(
+    () => openTrigger(),
+    ({ path, line, stop, asked: askedCount }) => {
+      const skip = unasked === `${path}:${line}:${stop}:${askedCount}`;
+      unasked = null;
+      if (path && !skip) {
+        openFile(path);
       }
-      if (neighbor) {
-        documents.show(neighbor);
-      } else if (current.src) {
-        unasked.current = `${own?.path}:${own?.line ?? null}:${stop}:${asked}`;
-        look(({ src: _src, ...rest }) => rest, { replace: false });
+    },
+  );
+
+  const shownInfo = createMemo(
+    () => {
+      const currentShown = shown();
+      const path = currentShown?.path;
+      const line = currentShown?.line ?? null;
+      const open = path !== undefined && files().includes(path);
+      const place =
+        focus().look.src ??
+        (path && formatPlace({ path: paths.link(path), line: line ?? 1, end: line ?? 1 }));
+      return { path, line, open, place };
+    },
+    {
+      equals: (a, b) =>
+        a.path === b.path && a.line === b.line && a.open === b.open && a.place === b.place,
+    },
+  );
+
+  createEffect(
+    () => shownInfo(),
+    ({ path, line, open, place }) => {
+      tab.setState({ shown: path && open ? { path, line } : null });
+      if (path && open && place) {
+        shownAt(path, place);
       }
-    };
-    documents.view = (chosen) => look((prev) => inView(prev, chosen), { replace: false });
-  });
+    },
+  );
+
+  const arranged = createMemo(
+    () => {
+      const path = shown()?.path;
+      const currentFiles = files();
+      const open = path !== undefined && currentFiles.includes(path);
+      return { files: currentFiles, active: open && path ? path : null, view: viewState().view };
+    },
+    {
+      equals: (a, b) => a.files === b.files && a.active === b.active && a.view === b.view,
+    },
+  );
+
+  createEffect(
+    () => arranged(),
+    ({ files: currentFiles, active, view }) => {
+      change((layout) => arrange(layout, currentFiles, active, view));
+    },
+  );
+
+  documents.show = (chosen) => {
+    const where = tab.getState().places[chosen];
+    const currentOwn = own();
+    look(
+      (prev) =>
+        chosen === currentOwn?.path
+          ? inView(followedLook(prev), "source")
+          : showingSource(
+              prev,
+              where ?? formatPlace({ path: paths.link(chosen), line: 1, end: 1 }),
+            ),
+      { replace: false, ask: true },
+    );
+  };
+
+  documents.close = (closed) => {
+    const currentFiles = files();
+    const index = currentFiles.indexOf(closed);
+    assert(index >= 0, `closing a file not among the ${currentFiles.length} open`);
+    const neighbor = currentFiles[index + 1] ?? currentFiles[index - 1];
+    closeFile(closed);
+    if (closed !== shown()?.path) {
+      return;
+    }
+    if (neighbor) {
+      documents.show(neighbor);
+    } else if (focus().look.src) {
+      const currentOwn = own();
+      unasked = `${currentOwn?.path}:${currentOwn?.line ?? null}:${focus().at?.stop}:${asked()}`;
+      look(({ src: _src, ...rest }) => rest, { replace: false });
+    }
+  };
+
+  documents.view = (chosen) => look((prev) => inView(prev, chosen), { replace: false });
+
   return null;
 }
 
-export function SourceBody({ pane }: PaneProps) {
-  const { at, stale } = useFocus();
+export function SourceBody(props: PaneProps) {
+  const focus = useFocus();
   const shown = useShown();
-  const path = pane.key;
-  const lastLine = tab.getState().shown?.line ?? null;
-  const fileShown = useMemo(
-    () => (shown?.path === path ? shown : { path, line: lastLine, selection: null }),
-    [shown, path, lastLine],
-  );
+  const path = createMemo(() => props.pane.key);
+  const lastLine = useTab((state) => state.shown?.line ?? null);
+  const fileShown = createMemo(() => {
+    const currentShown = shown();
+    const currentPath = path();
+    return currentShown?.path === currentPath
+      ? currentShown
+      : { path: currentPath, line: lastLine(), selection: null };
+  });
+
   return (
-    <div className="document">
+    <div class="document">
       <Banner />
-      {stale === "running" && at && (
-        <div className="view-note">Showing stop #{at.stop} · program running</div>
-      )}
-      {path === "" ? <Nothing /> : <SourceFile shown={fileShown} />}
+      <Show when={focus().stale === "running" && focus().at ? focus().at : null}>
+        {(at) => <div class="view-note">Showing stop #{at().stop} · program running</div>}
+      </Show>
+      <Show when={path() !== ""} fallback={<Nothing />}>
+        <SourceFile shown={fileShown()} />
+      </Show>
     </div>
   );
 }
 
 function Nothing() {
-  const { at, trace, state, stale } = useFocus();
+  const focus = useFocus();
   const shown = useShown();
-  const frame = frameAt(trace, at);
-  return (
-    <div className="empty center-message">
-      {shown
-        ? "No file open."
-        : at && frame && !frame.source
-          ? `${frame.name} has no source${frame.address ? `: it is at ${frame.address}` : ""}${frame.module ? ` in ${frame.module}` : ""}.`
-          : at && !trace
-            ? stale === "passed"
-              ? unreached(state, at.stop)
-                ? `This session has not reached stop #${at.stop}.`
-                : `Stop #${at.stop} has passed.`
-              : "Reading the stack…"
-            : state.inferior.state === "notStarted"
-              ? "Press F5 to run the program."
-              : "No source to show."}
-    </div>
-  );
+  const message = createMemo(() => {
+    const { at, trace, state, stale } = focus();
+    const frame = frameAt(trace, at);
+    if (shown()) {
+      return "No file open.";
+    }
+    if (at && frame && !frame.source) {
+      return `${frame.name} has no source${frame.address ? `: it is at ${frame.address}` : ""}${frame.module ? ` in ${frame.module}` : ""}.`;
+    }
+    if (at && !trace) {
+      if (stale === "passed") {
+        return unreached(state, at.stop)
+          ? `This session has not reached stop #${at.stop}.`
+          : `Stop #${at.stop} has passed.`;
+      }
+      return "Reading the stack…";
+    }
+    if (state.inferior.state === "notStarted") {
+      return "Press F5 to run the program.";
+    }
+    return "No source to show.";
+  });
+
+  return <div class="empty center-message">{message()}</div>;
 }
 
 export function DisassemblyBody() {
-  const { at, trace } = useFocus();
-  const { sourceless } = useView();
-  const frame = frameAt(trace, at);
+  const focus = useFocus();
+  const viewState = useView();
+  const frame = createMemo(() => {
+    const { trace, at } = focus();
+    return frameAt(trace, at);
+  });
+
   return (
-    <div className="document">
+    <div class="document">
       <Banner />
-      {sourceless && frame && (
-        <div className="view-note" data-testid="no-source">
-          {frame.name} has no source: showing its instructions
-        </div>
-      )}
+      <Show when={viewState().sourceless ? frame() : null}>
+        {(currentFrame) => (
+          <div class="view-note" data-testid="no-source">
+            {currentFrame().name} has no source: showing its instructions
+          </div>
+        )}
+      </Show>
       <Disassembly />
     </div>
   );
 }
 
 export function DrawingsBadge() {
-  const drawings = useCards().length;
-  return drawings > 0 ? <span className="badge">{drawings}</span> : null;
+  const cards = useCards();
+  return (
+    <Show when={cards().length > 0}>
+      <span class="badge">{cards().length}</span>
+    </Show>
+  );
 }
 
 export function breakpointLines(
@@ -257,104 +335,123 @@ export function breakpointLines(
   return lines;
 }
 
-function SourceFile({ shown }: { shown: Shown }) {
-  const { at, trace, state, stale } = useFocus();
+function SourceFile(props: { shown: Shown }) {
+  const focus = useFocus();
   const connection = useConnection();
   const control = useModel(controls);
   const paths = useLinkPaths();
   const look = useLook();
-  const source = useRequest("source", { path: shown.path });
+  const source = useRequest("source", () => ({ path: props.shown.path }));
 
-  const live = at && !stale ? at : null;
-  const frame = frameAt(trace, at);
-  const frameSource = frame?.source?.path === shown.path ? frame.source : null;
+  const live = createMemo(() => {
+    const { at, stale } = focus();
+    return at && !stale ? at : null;
+  });
+  const frame = createMemo(() => {
+    const { trace, at } = focus();
+    return frameAt(trace, at);
+  });
+  const frameSource = createMemo(() => {
+    const currentFrame = frame();
+    return currentFrame?.source?.path === props.shown.path ? currentFrame.source : null;
+  });
   const inline = useInlineValues(
     live,
-    shown.path,
-    source.data?.path === shown.path ? source.data.text : undefined,
-    live ? (frameSource?.line ?? null) : null,
-    frameSource?.first ?? null,
+    () => props.shown.path,
+    () => {
+      const data = source().data;
+      return data?.path === props.shown.path ? data.text : undefined;
+    },
+    () => (live() ? (frameSource()?.line ?? null) : null),
+    () => frameSource()?.first ?? null,
   );
 
-  const marks = useMemo((): Marks => {
+  const marks = createMemo((): Marks => {
+    const { at, trace, state } = focus();
+    const currentFrame = frame();
+    const currentShown = props.shown;
     const innermost = trace?.frames[0];
+    const text = at ? stopNote(state, at) : null;
     return {
-      breakpoints: breakpointLines(state.breakpoints, shown.path),
-      breakable: new Set(source.data?.breakable ?? []),
-      pc: innermost?.source?.path === shown.path ? innermost.source.line : null,
+      breakpoints: breakpointLines(state.breakpoints, currentShown.path),
+      breakable: new Set(source().data?.breakable ?? []),
+      pc: innermost?.source?.path === currentShown.path ? innermost.source.line : null,
       frame:
-        frame && frame.index > 0 && frame.source?.path === shown.path ? frame.source.line : null,
-      selection: shown.selection,
-      inline,
-      note: (() => {
-        const text = at ? stopNote(state, at) : null;
-        return text && frame?.source?.path === shown.path
-          ? { line: frame.source.line, text }
-          : null;
-      })(),
+        currentFrame && currentFrame.index > 0 && currentFrame.source?.path === currentShown.path
+          ? currentFrame.source.line
+          : null,
+      selection: currentShown.selection,
+      inline: inline(),
+      note:
+        text && currentFrame?.source?.path === currentShown.path
+          ? { line: currentFrame.source.line, text }
+          : null,
     };
-  }, [trace, frame, at, state, shown, source.data, inline]);
+  });
 
-  const toggle = useCallback(
-    (line: number) => {
-      if (!control) {
-        return;
-      }
-      const existing = breakpointAt(state.breakpoints, shown.path, line);
-      void toggleBreakpoint(connection, existing, `${shown.path}:${line}`);
-    },
-    [control, state.breakpoints, shown.path, connection],
-  );
-  const select = useCallback(
-    (line: number, extend: boolean) => {
-      const from = extend && shown.selection ? Math.min(shown.selection.line, line) : line;
-      const to = extend && shown.selection ? Math.max(shown.selection.end, line) : line;
-      look((current) =>
-        showingSource(current, formatPlace({ path: paths.link(shown.path), line: from, end: to })),
-      );
-    },
-    [shown.selection, shown.path, look, paths],
-  );
-  const moveCursor = useCallback(
-    (line: number) => tab.setState({ cursor: { path: shown.path, line } }),
-    [shown.path],
-  );
-  const hover = useMemo(
-    () =>
-      live
-        ? (expression: string) =>
-            cache
-              .get(connection, "evaluate", { ...live, expression })
-              .promise.then((settled) =>
-                settled.ok
-                  ? { text: (settled.value as Row).text, type: (settled.value as Row).type }
-                  : null,
-              )
-        : undefined,
-    [live, connection],
-  );
+  const toggle = (line: number) => {
+    if (!control()) {
+      return;
+    }
+    const path = props.shown.path;
+    const existing = breakpointAt(focus().state.breakpoints, path, line);
+    void toggleBreakpoint(connection, existing, `${path}:${line}`);
+  };
 
-  if (source.error) {
-    return (
-      <div className="empty center-message">
-        Cannot show {shown.path}: {source.error.message}
-      </div>
+  const select = (line: number, extend: boolean) => {
+    const currentShown = props.shown;
+    const from =
+      extend && currentShown.selection ? Math.min(currentShown.selection.line, line) : line;
+    const to = extend && currentShown.selection ? Math.max(currentShown.selection.end, line) : line;
+    look((current) =>
+      showingSource(
+        current,
+        formatPlace({ path: paths.link(currentShown.path), line: from, end: to }),
+      ),
     );
-  }
-  if (!source.data || source.data.path !== shown.path) {
-    return <div className="empty center-message">Reading {fileName(shown.path)}…</div>;
-  }
+  };
+
+  const moveCursor = (line: number) => tab.setState({ cursor: { path: props.shown.path, line } });
+
+  const hover = createMemo(() => {
+    const currentLive = live();
+    return currentLive
+      ? (expression: string) =>
+          cache
+            .get(connection, "evaluate", { ...currentLive, expression })
+            .promise.then((settled) =>
+              settled.ok
+                ? { text: (settled.value as Row).text, type: (settled.value as Row).type }
+                : null,
+            )
+      : undefined;
+  });
 
   return (
-    <SourceView
-      path={shown.path}
-      text={source.data.text}
-      marks={marks}
-      reveal={shown.line}
-      onGutter={toggle}
-      onLineNumber={select}
-      onCursor={moveCursor}
-      onHover={hover}
-    />
+    <Switch
+      fallback={<div class="empty center-message">Reading {fileName(props.shown.path)}…</div>}
+    >
+      <Match when={source().error}>
+        {(err) => (
+          <div class="empty center-message">
+            Cannot show {props.shown.path}: {err().message}
+          </div>
+        )}
+      </Match>
+      <Match when={source().data?.path === props.shown.path ? source().data : null}>
+        {(data) => (
+          <SourceView
+            path={props.shown.path}
+            text={data().text}
+            marks={marks()}
+            reveal={props.shown.line}
+            onGutter={toggle}
+            onLineNumber={select}
+            onCursor={moveCursor}
+            onHover={hover()}
+          />
+        )}
+      </Match>
+    </Switch>
   );
 }

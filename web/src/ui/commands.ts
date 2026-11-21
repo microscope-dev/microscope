@@ -1,5 +1,4 @@
-import { useNavigate } from "@tanstack/react-router";
-import { useCallback } from "react";
+import { type Location, type Navigator, useLocation, useNavigate } from "@solidjs/router";
 
 import { account } from "../account";
 import { type ActionName, action } from "../actions";
@@ -7,7 +6,7 @@ import { breakpointAt, toggleBreakpoint } from "../breakpoints";
 import type { Connection } from "../connection";
 import { documentsGroup, KIND } from "../documents";
 import { type Look, openMachines } from "../fleet";
-import { type At, inView, type View, watching } from "../focus";
+import { type At, inView, stringifySearch, type View, watching } from "../focus";
 import type { Model } from "../model";
 import type { ProfileView } from "../profile/look";
 import { useConnection, useStoreApi } from "../store";
@@ -65,7 +64,8 @@ interface Context {
 
   current: TabState;
   connection: Connection;
-  navigate: ReturnType<typeof useNavigate>;
+  navigate: Navigator;
+  location: Location;
 }
 
 type Spec = Command<Context>;
@@ -99,8 +99,9 @@ function show(view: View, label: string, letter: string): Spec {
     menu: "Go",
     keys: [{ key: letter, alt: true }],
     available: ({ current }) => (current.session ? READY : ABSENT),
-    run: ({ current, navigate }) => {
-      void navigate({ to: ".", search: inView(current.look, view) });
+    run: ({ current, navigate, location }) => {
+      const query = stringifySearch(inView(current.look, view) as Record<string, unknown>);
+      navigate(`${location.pathname}${query}`);
     },
   };
 }
@@ -413,7 +414,7 @@ export const COMMANDS = registry({
     menu: "Edit",
     keys: [{ key: "w" }],
     available: always,
-    run: ({ current, navigate }) => {
+    run: ({ current, navigate, location }) => {
       const expression = window.getSelection()?.toString().trim() ?? "";
       if (!expression || expression.includes("\n")) {
         flash("Select an expression in the source, then press w to watch it");
@@ -421,7 +422,9 @@ export const COMMANDS = registry({
       }
       const look = watching(current.look, expression);
       if (look !== current.look) {
-        void navigate({ to: ".", search: look, replace: true });
+        navigate(`${location.pathname}${stringifySearch(look as Record<string, unknown>)}`, {
+          replace: true,
+        });
       }
       flash(`Watching ${expression}`);
     },
@@ -435,8 +438,9 @@ export const COMMANDS = registry({
     menu: "Go",
     keys: [{ key: "Escape" }],
     available: ({ current }) => (current.look.view && current.session ? READY : ABSENT),
-    run: ({ current, navigate }) => {
-      void navigate({ to: ".", search: inView(current.look, "source"), replace: true });
+    run: ({ current, navigate, location }) => {
+      const query = stringifySearch(inView(current.look, "source") as Record<string, unknown>);
+      navigate(`${location.pathname}${query}`, { replace: true });
     },
   },
   threads: debugPane(KIND.threads, "Threads", 1),
@@ -695,27 +699,25 @@ export function useCommands(): Commands {
   const store = useStoreApi();
   const connection = useConnection();
   const navigate = useNavigate();
-  const context = useCallback(
-    (): Context => ({ model: store.getState(), current: tab.getState(), connection, navigate }),
-    [store, connection, navigate],
-  );
-  const availability = useCallback(
-    (id: CommandId) => COMMANDS.get(id).available(context()),
-    [context],
-  );
-  const run = useCallback(
-    (id: CommandId) => {
-      const now = context();
-      const command = COMMANDS.get(id);
-      const available = command.available(now);
-      if (available.state === "ready") {
-        tab.setState({ flash: null });
-        command.run(now);
-      }
-      return available;
-    },
-    [context],
-  );
+  const location = useLocation();
+  const context = (): Context => ({
+    model: store.getState(),
+    current: tab.getState(),
+    connection,
+    navigate,
+    location,
+  });
+  const availability = (id: CommandId) => COMMANDS.get(id).available(context());
+  const run = (id: CommandId) => {
+    const now = context();
+    const command = COMMANDS.get(id);
+    const available = command.available(now);
+    if (available.state === "ready") {
+      tab.setState({ flash: null });
+      command.run(now);
+    }
+    return available;
+  };
   return { availability, run };
 }
 

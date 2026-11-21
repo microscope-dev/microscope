@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useRef } from "react";
+import { createContext, createMemo, useContext } from "solid-js";
 
 import { type Requested, useRequest } from "../../data";
 import type { ProfileLook } from "../../profile/look";
@@ -25,34 +25,38 @@ export interface ProfileFocus {
   setLook(change: (look: ProfileLook) => ProfileLook, push?: boolean, carry?: boolean): void;
 }
 
-export const ProfileContext = createContext<ProfileFocus | null>(null);
+export const ProfileContext = createContext<() => ProfileFocus | null>(() => null);
 
-export function useProfile(): ProfileFocus {
-  const focus = useContext(ProfileContext);
-  if (!focus) {
-    throw new Error("profile views need a ProfileContext");
-  }
-  return focus;
+export function useProfile(): () => ProfileFocus {
+  const read = useContext(ProfileContext);
+  return () => {
+    const focus = read();
+    if (!focus) {
+      throw new Error("profile views need a ProfileContext");
+    }
+    return focus;
+  };
 }
 
 export function useAnswer<M extends Method>(
   method: M,
-  params: (ParamsOf<M> extends undefined ? undefined : ParamsOf<M>) | null,
-): Requested<Results[M]> {
+  params: () => (ParamsOf<M> extends undefined ? undefined : ParamsOf<M>) | null,
+): () => Requested<Results[M]> {
   const open = useModel((model) => model.link === "open");
-  const answer = useRequest(method, open ? params : null);
-  const kept = useRef<Results[M] | undefined>(undefined);
-  if (answer.data !== undefined) {
-    // oxlint-disable-next-line react/refs -- keeps the last answer without a second render
-    kept.current = answer.data;
-  }
-  return answer.data === undefined && answer.error === undefined
-    ? // oxlint-disable-next-line react/refs -- keeps the last answer without a second render
-      { ...answer, data: kept.current }
-    : answer;
+  const answer = useRequest(method, () => (open() ? params() : null));
+  let kept: Results[M] | undefined;
+  return createMemo(() => {
+    const current = answer();
+    if (current.data !== undefined) {
+      kept = current.data;
+    }
+    return current.data === undefined && current.error === undefined
+      ? { ...current, data: kept }
+      : current;
+  });
 }
 
-export function useDisconnected(): boolean {
+export function useDisconnected(): () => boolean {
   return useModel((model) => model.link === "reconnecting");
 }
 
@@ -66,11 +70,15 @@ export interface Fetched {
   current: boolean;
 }
 
-export function useTree(query: ProfileQuery): Fetched {
+export function useTree(query: () => ProfileQuery): () => Fetched {
   const answer = useAnswer("profileTree", query);
-  const tree = useMemo(
-    () => (answer.data ? decodeTree(answer.data, answer.data.payload) : null),
-    [answer.data],
-  );
-  return { tree, error: answer.error, current: answer.current };
+  const data = createMemo(() => answer().data);
+  const tree = createMemo(() => {
+    const got = data();
+    return got ? decodeTree(got, got.payload) : null;
+  });
+  return createMemo(() => {
+    const current = answer();
+    return { tree: tree(), error: current.error, current: current.current };
+  });
 }

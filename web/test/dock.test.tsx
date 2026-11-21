@@ -1,4 +1,4 @@
-import { cleanup, render } from "@testing-library/react";
+import { untrack } from "solid-js";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -9,15 +9,17 @@ import { kinds, type PaneKind, type PaneProps } from "../src/workbench/kinds";
 import { build, type KindId, type Pane } from "../src/workbench/layout";
 import { workbench } from "../src/workbench/store";
 import { useVisible } from "../src/workbench/visible";
+import { cleanup, render } from "./render";
 
 afterEach(cleanup);
 
 const renders = new Map<string, number>();
 
-function Counting({ pane }: PaneProps) {
-  renders.set(pane.key, (renders.get(pane.key) ?? 0) + 1);
+function Counting(props: PaneProps) {
+  const key = untrack(() => props.pane.key);
+  renders.set(key, (renders.get(key) ?? 0) + 1);
   const visible = useVisible();
-  return <p>{`${pane.key} ${visible ? "shown" : "hidden"}`}</p>;
+  return <p>{`${props.pane.key} ${visible() ? "shown" : "hidden"}`}</p>;
 }
 
 function Throwing(): never {
@@ -46,18 +48,18 @@ const pane = (kindId: string, key: string): Pane => ({ kind: kindId as KindId, k
 const DOCK_BOX = { display: "flex", width: "900px", height: "500px" };
 const SETUP: DockSetup = {
   kinds: KINDS,
-  useMissing: (need) => (need === "stop" ? "The program is not stopped." : null),
+  useMissing: (need) => () => (need() === "stop" ? "The program is not stopped." : null),
 };
 
 async function mount(shape: Parameters<typeof build>[0]) {
   await page.viewport(1000, 600);
   renders.clear();
   workbench.setState({ layout: build(shape) });
-  render(
+  render(() => (
     <div style={DOCK_BOX}>
       <Dock setup={SETUP} />
-    </div>,
-  );
+    </div>
+  ));
 }
 
 const tab = (name: string) => page.getByRole("tab", { name, exact: true });

@@ -1,14 +1,13 @@
 import {
-  type MouseEvent as ReactMouseEvent,
-  memo,
-  type PointerEvent,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onSettled,
+  Show,
+  untrack,
+} from "solid-js";
 
 import { assert } from "../../assert";
 import { blockedIn, kernelLines, stepAt, waitAt } from "../../profile/kernel";
@@ -45,6 +44,7 @@ import type {
   ProfileSummary,
   ProfileWait,
 } from "../../protocol";
+import { shallowEqual } from "../../state";
 import { useShownScheme } from "../../theme";
 import { NAMES, NAMES_STYLE, prepare, useWidth } from "./canvas";
 import { type ProfileFocus, token, useAnswer, useProfile } from "./context";
@@ -140,305 +140,431 @@ interface Hit {
   step: ProfileMarker | null;
 }
 
-function useSettled<T>(value: T, wait: number): T {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(value), wait);
-    return () => clearTimeout(timer);
-  }, [value, wait]);
-  return settled;
+function useSettled<T>(value: () => T, wait: number): () => T {
+  const [settled, setSettled] = createSignal<{ current: T }>({ current: untrack(value) });
+  createEffect(
+    () => value(),
+    (next) => {
+      const timer = setTimeout(() => setSettled({ current: next }), wait);
+      return () => clearTimeout(timer);
+    },
+  );
+  return () => settled().current;
+}
+
+function menu(event: MouseEvent) {
+  if (event.ctrlKey) {
+    event.preventDefault();
+  }
 }
 
 export function Lanes() {
-  const { profile, summary, query, look, setLook } = useProfile();
+  const focus = useProfile();
   const [measure, width] = useWidth();
-  const box = useRef<HTMLDivElement | null>(null);
-  const canvas = useRef<HTMLCanvasElement>(null);
+  let box: HTMLDivElement | undefined;
+  let canvas: HTMLCanvasElement | undefined;
   const scheme = useShownScheme();
-  const plot = Math.max(width - NAMES, 0);
-  const total = Math.max(summary.duration, 1);
+  const summary = createMemo(() => focus().summary);
+  const profileId = createMemo(() => focus().profile);
+  const lookSrc = createMemo(() => focus().look.src);
+  const lookLanes = createMemo(() => focus().look.lanes);
+  const lookZs = createMemo(() => focus().look.zs);
+  const lookZb = createMemo(() => focus().look.zb);
+  const lookZi = createMemo(() => focus().look.zi);
+  const lookRange = createMemo(() => focus().look.range);
+  const lookTh = createMemo(() => focus().look.th);
+  const lookTk = createMemo(() => focus().look.tk);
+  const queryRevision = createMemo(() => focus().query.revision ?? 0);
+  const behind = createMemo(() => summary().behind);
+  const budgetChanges = createMemo(() => summary().budgetChanges);
 
-  const [view, setView] = useState<[number, number]>([0, total]);
-  const whole = view[0] <= 0 && view[1] >= total;
+  const plot = createMemo(() => Math.max(width() - NAMES, 0));
+  const total = createMemo(() => Math.max(summary().duration, 1));
 
-  const shownView = useMemo<[number, number]>(
-    () => (whole ? [0, total] : [Math.round(view[0]), Math.round(Math.min(view[1], total))]),
-    [whole, view, total],
+  const [view, setView] = createSignal<[number, number]>([0, untrack(total)]);
+  const whole = createMemo(() => view()[0] <= 0 && view()[1] >= total());
+
+  const shownView = createMemo<[number, number]>(
+    () => {
+      const currentTotal = total();
+      const currentView = view();
+      return whole()
+        ? [0, currentTotal]
+        : [Math.round(currentView[0]), Math.round(Math.min(currentView[1], currentTotal))];
+    },
+    { equals: (a, b) => a[0] === b[0] && a[1] === b[1] },
   );
   const asked = useSettled(shownView, SETTLE);
-  const span = Math.max(shownView[1] - shownView[0], 1);
+  const span = createMemo(() => Math.max(shownView()[1] - shownView()[0], 1));
 
-  const byTask = look.src === "waits" || look.lanes === "tasks";
-  const buckets = Math.max(1, Math.min(2048, Math.floor(plot / 2)));
-  const timelineParams = useMemo(() => {
-    const {
-      range: _range,
-      threads: _threads,
-      tasks: _tasks,
-      zones: _zones,
-      base: _base,
-      ...rest
-    } = query;
-    return plot > 0 ? { ...rest, range: asked, buckets, taskLanes: byTask } : null;
-  }, [query, buckets, plot, byTask, asked]);
+  const byTask = createMemo(() => lookSrc() === "waits" || lookLanes() === "tasks");
+  const buckets = createMemo(() => Math.max(1, Math.min(2048, Math.floor(plot() / 2))));
+  const timelineParams = createMemo(
+    () => {
+      const {
+        range: _range,
+        threads: _threads,
+        tasks: _tasks,
+        zones: _zones,
+        base: _base,
+        ...rest
+      } = focus().query;
+      return plot() > 0
+        ? { ...rest, range: asked(), buckets: buckets(), taskLanes: byTask() }
+        : null;
+    },
+    { equals: shallowEqual },
+  );
   const timeline = useAnswer("profileTimeline", timelineParams);
+  const timelineData = createMemo(() => timeline().data);
 
-  const zoned = !byTask && (summary.zoneSites.length > 0 || summary.probes.events > 0);
+  const zoned = createMemo(
+    () => !byTask() && (summary().zoneSites.length > 0 || summary().probes.events > 0),
+  );
 
-  const zonesParams = useMemo(() => {
-    const band = look.zs && look.zb ? parseBand(look.zb) : null;
-    return zoned && plot > 0
-      ? {
-          profile,
-          revision: query.revision ?? 0,
-          range: asked,
-          width: Math.round(plot),
-          site: look.zs ?? null,
-          band,
-        }
-      : null;
-  }, [zoned, plot, profile, query.revision, asked, look.zs, look.zb]);
+  const zonesParams = createMemo(
+    () => {
+      const zs = lookZs();
+      const zb = lookZb();
+      const band = zs && zb ? parseBand(zb) : null;
+      return zoned() && plot() > 0
+        ? {
+            profile: profileId(),
+            revision: queryRevision(),
+            range: asked(),
+            width: Math.round(plot()),
+            site: zs ?? null,
+            band,
+          }
+        : null;
+    },
+    { equals: shallowEqual },
+  );
   const zones = useAnswer("profileZones", zonesParams);
-  const blocks = useMemo(
-    () => (zones.data ? decodeZones(zones.data, zones.data.payload) : null),
-    [zones.data],
-  );
-  const index = useMemo(() => (blocks ? indexBlocks(blocks) : null), [blocks]);
-  const marks = useMemo(() => zones.data?.marks ?? [], [zones.data]);
-  const plots = useMemo(() => zones.data?.plots ?? [], [zones.data]);
+  const zonesData = createMemo(() => zones().data);
+  const blocks = createMemo(() => {
+    const data = zonesData();
+    return data ? decodeZones(data, data.payload) : null;
+  });
+  const index = createMemo(() => {
+    const current = blocks();
+    return current ? indexBlocks(current) : null;
+  });
+  const marks = createMemo(() => zonesData()?.marks ?? []);
+  const plots = createMemo(() => zonesData()?.plots ?? []);
 
-  const [othersOpen, setOthersOpen] = useState(false);
-  const lanes = useMemo(() => {
-    const all = rows(summary, look.src, look.lanes);
-    return othersOpen ? all.flatMap((row) => [row, ...(row.others ?? [])]) : all;
-  }, [summary, look.src, look.lanes, othersOpen]);
-  const chosen = (byTask ? look.tk : look.th)?.join(",");
-  const selected = useMemo(() => (chosen ? new Set(chosen.split(",")) : null), [chosen]);
+  const [othersOpen, setOthersOpen] = createSignal(false);
+  const lanes = createMemo(() => {
+    const all = rows(summary(), lookSrc(), lookLanes());
+    return othersOpen() ? all.flatMap((row) => [row, ...(row.others ?? [])]) : all;
+  });
+  const chosen = createMemo(() => (byTask() ? lookTk() : lookTh())?.join(","));
+  const selected = createMemo(() => {
+    const text = chosen();
+    return text ? new Set(text.split(",")) : null;
+  });
 
-  const [depths, setDepths] = useState<ReadonlyMap<number, number>>(() => new Map());
-  const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(() => new Set());
-
-  const [merged, setMerged] = useState(index);
-  if (merged !== index) {
-    setMerged(index);
-    const deeper = [...(index?.depths ?? [])].filter(
-      ([thread, depth]) => depth > (depths.get(thread) ?? 0),
-    );
-    if (deeper.length > 0) {
-      setDepths(new Map([...depths, ...deeper]));
+  let seenDepths = new Map<number, number>();
+  const depths = createMemo<ReadonlyMap<number, number>>(() => {
+    const current = index();
+    if (!current) {
+      return seenDepths;
     }
-  }
-  const shownRows = useMemo(
-    () =>
-      lanes.map((row) => {
-        const depth = byTask ? 0 : (depths.get(row.lane) ?? 0);
-        return collapsed.has(row.lane) ? Math.min(depth, 1) : depth;
-      }),
-    [lanes, byTask, depths, collapsed],
-  );
+    const deeper = [...current.depths].filter(
+      ([thread, depth]) => depth > (seenDepths.get(thread) ?? 0),
+    );
+    if (deeper.length === 0) {
+      return seenDepths;
+    }
+    seenDepths = new Map([...seenDepths, ...deeper]);
+    return seenDepths;
+  });
+  const [collapsed, setCollapsed] = createSignal<ReadonlySet<number>>(new Set());
 
-  const kernel = !byTask && summary.syscalls > 0;
-  const head = kernel ? STRIP + KERNEL : STRIP;
-  const laid = useMemo(() => layLanes(shownRows, head, ROW), [shownRows, head]);
-  const answered = useMemo(
+  const shownRows = createMemo(() => {
+    const taskMode = byTask();
+    const currentDepths = depths();
+    const currentCollapsed = collapsed();
+    return lanes().map((row) => {
+      const depth = taskMode ? 0 : (currentDepths.get(row.lane) ?? 0);
+      return currentCollapsed.has(row.lane) ? Math.min(depth, 1) : depth;
+    });
+  });
+
+  const kernel = createMemo(() => !byTask() && summary().syscalls > 0);
+  const head = createMemo(() => (kernel() ? STRIP + KERNEL : STRIP));
+  const laid = createMemo(() => layLanes(shownRows(), head(), ROW));
+  const answered = createMemo(
     () =>
       new Map(
-        (timeline.data?.lanes ?? []).map((lane) => [
-          (byTask ? lane.task : lane.thread) ?? -1,
+        (timelineData()?.lanes ?? []).map((lane) => [
+          (byTask() ? lane.task : lane.thread) ?? -1,
           lane,
         ]),
       ),
-    [timeline.data, byTask],
   );
-  const laneOf = useMemo(() => new Map(lanes.map((row, at) => [row.lane, at])), [lanes]);
-  const height = laid.height;
+  const laneOf = createMemo(() => new Map(lanes().map((row, at) => [row.lane, at])));
+  const height = createMemo(() => laid().height);
 
-  const range = useMemo(() => rangeOf({ range: look.range }), [look.range]);
-  const instance = useMemo(() => (look.zi ? parseInstance(look.zi) : null), [look.zi]);
-  const [dragging, setDragging] = useState<[number, number] | null>(null);
-  const [pointer, setPointer] = useState<{ time: number; x: number; y: number } | null>(null);
-  const [hit, setHit] = useState<Hit | null>(null);
+  const range = createMemo(() => rangeOf({ range: lookRange() }), {
+    equals: (a, b) => a === b || (a !== null && b !== null && a[0] === b[0] && a[1] === b[1]),
+  });
+  const instance = createMemo(() => {
+    const zi = lookZi();
+    return zi ? parseInstance(zi) : null;
+  });
+  const [dragging, setDragging] = createSignal<[number, number] | null>(null);
+  const [pointer, setPointer] = createSignal<{ time: number; x: number; y: number } | null>(null);
+  const [hit, setHit] = createSignal<Hit | null>(null);
 
-  const pressed = useRef<{
+  let pressed: {
     x: number;
     view: [number, number];
     moved: boolean;
     pan: boolean;
-  } | null>(null);
-  const [panning, setPanning] = useState(false);
+  } | null = null;
+  const [panning, setPanning] = createSignal(false);
 
-  const rulerFrom = useRef<number | null>(null);
+  let rulerFrom: number | null = null;
 
-  const latest = useRef({ view: shownView, total, plot });
-  useLayoutEffect(() => {
-    latest.current = { view: shownView, total, plot };
-  });
-  const wanted = useRef<[number, number] | null>(null);
-  const frame = useRef(0);
-  const show = useCallback((next: [number, number]) => {
-    wanted.current = next;
-    if (frame.current !== 0) {
+  let wanted: [number, number] | null = null;
+  let frame = 0;
+  const show = (next: [number, number]) => {
+    wanted = next;
+    if (frame !== 0) {
       return;
     }
-    frame.current = requestAnimationFrame(() => {
-      frame.current = 0;
-      const chosenView = wanted.current;
-      wanted.current = null;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      const chosenView = wanted;
+      wanted = null;
       if (chosenView) {
         setView(chosenView);
       }
     });
-  }, []);
-  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+  };
+  onCleanup(() => cancelAnimationFrame(frame));
 
-  useEffect(() => {
-    if (!instance) {
-      return;
-    }
-    const [start, end] = instance.span;
-    const now = latest.current;
-    const per = (now.view[1] - now.view[0]) / Math.max(now.plot, 1);
-    if (start < now.view[0] || end > now.view[1] || (end - start) / per < 4) {
-      const margin = Math.max((end - start) / 3, 1000);
-      const from = Math.max(start - margin, 0);
-      setView([from, Math.min(Math.max(end + margin, from + 1000), now.total)]);
-    }
-    setCollapsed((was) => {
-      if (!was.has(instance.thread)) {
-        return was;
+  createEffect(
+    () => instance(),
+    (currentInstance) => {
+      if (!currentInstance) {
+        return;
       }
-      const next = new Set(was);
-      next.delete(instance.thread);
-      return next;
-    });
-  }, [instance]);
+      const [start, end] = currentInstance.span;
+      const [currentView, currentPlot, currentTotal] = untrack(() => [
+        shownView(),
+        plot(),
+        total(),
+      ]);
+      const per = (currentView[1] - currentView[0]) / Math.max(currentPlot, 1);
+      if (start < currentView[0] || end > currentView[1] || (end - start) / per < 4) {
+        const margin = Math.max((end - start) / 3, 1000);
+        const from = Math.max(start - margin, 0);
+        setView([from, Math.min(Math.max(end + margin, from + 1000), currentTotal)]);
+      }
+      setCollapsed((was) => {
+        if (!was.has(currentInstance.thread)) {
+          return was;
+        }
+        const next = new Set(was);
+        next.delete(currentInstance.thread);
+        return next;
+      });
+    },
+  );
 
-  const scrolledTo = useRef<string | null>(null);
-  useLayoutEffect(() => {
-    const element = box.current;
-    const drawn = canvas.current;
-    const lane = instance ? laneOf.get(instance.thread) : undefined;
-    if (!look.zi || look.zi === scrolledTo.current || !element || !drawn || lane === undefined) {
+  let scrolledTo: string | null = null;
+  createEffect(
+    () => ({
+      zi: focus().look.zi,
+      instance: instance(),
+      laneOf: laneOf(),
+      laid: laid(),
+      shownRows: shownRows(),
+      head: head(),
+    }),
+    ({
+      zi,
+      instance: currentInstance,
+      laneOf: lanesMap,
+      laid: layout,
+      shownRows: rowsShown,
+      head: headHeight,
+    }) => {
+      const element = box;
+      const drawn = canvas;
+      const lane = currentInstance ? lanesMap.get(currentInstance.thread) : undefined;
+      if (!zi || zi === scrolledTo || !element || !drawn || lane === undefined) {
+        return;
+      }
+      scrolledTo = zi;
+      const ruler = element.querySelector(".timeline-ruler")?.getBoundingClientRect().height ?? 0;
+      const top =
+        drawn.getBoundingClientRect().top -
+        element.getBoundingClientRect().top +
+        element.scrollTop +
+        (layout.tops[lane] ?? 0);
+      const bottom = top + headHeight + (rowsShown[lane] ?? 0) * ROW;
+      if (top < element.scrollTop + ruler || bottom > element.scrollTop + element.clientHeight) {
+        element.scrollTop = top - ruler;
+      }
+    },
+  );
+
+  const wheel = (event: WheelEvent) => {
+    const currentView = shownView();
+    const currentPlot = plot();
+    const currentTotal = total();
+    const sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+    if (!event.ctrlKey && !event.metaKey && !sideways) {
       return;
     }
-    scrolledTo.current = look.zi;
-    const ruler = element.querySelector(".timeline-ruler")?.getBoundingClientRect().height ?? 0;
-    const top =
-      drawn.getBoundingClientRect().top -
-      element.getBoundingClientRect().top +
-      element.scrollTop +
-      (laid.tops[lane] ?? 0);
-    const bottom = top + head + (shownRows[lane] ?? 0) * ROW;
-    if (top < element.scrollTop + ruler || bottom > element.scrollTop + element.clientHeight) {
-      element.scrollTop = top - ruler;
+    event.preventDefault();
+    const from = wanted ?? currentView;
+    const per = (from[1] - from[0]) / Math.max(currentPlot, 1);
+    if (sideways) {
+      show(panned(from, event.deltaX * per, currentTotal));
+      return;
     }
-  }, [look.zi, instance, laneOf, laid, shownRows, head]);
+    const left = canvas?.getBoundingClientRect().left ?? 0;
+    const x = Math.min(Math.max(event.clientX - left, 0), currentPlot);
+    show(zoomed(from, from[0] + x * per, Math.exp(event.deltaY * 0.002), currentTotal));
+  };
 
-  useEffect(() => {
-    const element = box.current;
+  onSettled(() => {
+    const element = box;
     if (!element) {
       return;
     }
-    const wheel = (event: WheelEvent) => {
-      const now = latest.current;
-      const sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY);
-      if (!event.ctrlKey && !event.metaKey && !sideways) {
-        return;
-      }
-      event.preventDefault();
-      const from = wanted.current ?? now.view;
-      const per = (from[1] - from[0]) / Math.max(now.plot, 1);
-      if (sideways) {
-        show(panned(from, event.deltaX * per, now.total));
-        return;
-      }
-      const left = canvas.current?.getBoundingClientRect().left ?? 0;
-      const x = Math.min(Math.max(event.clientX - left, 0), now.plot);
-      show(zoomed(from, from[0] + x * per, Math.exp(event.deltaY * 0.002), now.total));
-    };
     element.addEventListener("wheel", wheel, { passive: false });
     return () => element.removeEventListener("wheel", wheel);
-  }, [show]);
+  });
 
-  const palette = useMemo(() => {
-    const names = blocks?.names ?? [];
+  const palette = createMemo(() => {
+    const names = blocks()?.names ?? [];
     const sites = names.map((name) => name.split("=")[0] ?? name);
-    const dark = scheme === "dark";
+    const dark = scheme() === "dark";
     return {
       sites,
-
       fills: sites.map((site) =>
         dark ? `oklch(0.5 0.13 ${hue(site)})` : `oklch(0.8 0.13 ${hue(site)})`,
       ),
     };
-  }, [blocks, scheme]);
+  });
 
-  useEffect(() => {
-    const element = canvas.current;
-    const context = prepare(element, plot, Math.max(height, 1));
+  const paintState = createMemo(
+    () => ({
+      timelineData: timelineData(),
+      answered: answered(),
+      kernel: kernel(),
+      head: head(),
+      asked: asked(),
+      blocks: blocks(),
+      index: index(),
+      marks: marks(),
+      lanes: lanes(),
+      laid: laid(),
+      laneOf: laneOf(),
+      shownRows: shownRows(),
+      selected: selected(),
+      plot: plot(),
+      height: height(),
+      span: span(),
+      shownView: shownView(),
+      range: range(),
+      instance: instance(),
+      dragging: dragging(),
+      zs: lookZs(),
+      palette: palette(),
+      behind: behind(),
+      budgetChanges: budgetChanges(),
+      scheme: scheme(),
+    }),
+    { equals: shallowEqual },
+  );
+
+  createEffect(paintState, (s) => {
+    const element = canvas;
+    const context = prepare(element, s.plot, Math.max(s.height, 1));
     if (!element || !context) {
       return;
     }
-    element.dataset.scheme = scheme;
-    const x = (time: number) => ((time - shownView[0]) * plot) / span;
+    element.dataset.scheme = s.scheme;
+    const x = (time: number) => ((time - s.shownView[0]) * s.plot) / s.span;
     context.font = `11px ${token("--mono")}`;
     context.textBaseline = "middle";
 
     context.fillStyle = token("--line");
-    for (const { at } of timeTicks(shownView, plot)) {
+    for (const { at } of timeTicks(s.shownView, s.plot)) {
       if (at > 0 && at < 1) {
-        context.fillRect(Math.round(at * plot), 0, 1, height);
+        context.fillRect(Math.round(at * s.plot), 0, 1, s.height);
       }
     }
 
-    const marked = dragging ?? (instance ? instance.span : range);
+    const marked = s.dragging ?? (s.instance ? s.instance.span : s.range);
     if (marked) {
       const [from, to] = [x(marked[0]), x(marked[1])];
 
-      const light = scheme === "light";
+      const light = s.scheme === "light";
       context.fillStyle = token(light ? "--accent" : "--accent-soft");
       context.globalAlpha = light ? 0.12 : 0.6;
-      context.fillRect(0, 0, Math.max(from, 0), height);
-      context.fillRect(to, 0, Math.max(plot - to, 0), height);
+      context.fillRect(0, 0, Math.max(from, 0), s.height);
+      context.fillRect(to, 0, Math.max(s.plot - to, 0), s.height);
       context.globalAlpha = 1;
     }
 
-    const sliced = timeline.data?.range ?? asked;
-    paintCpu(context, { answered, rows: lanes, tops: laid.tops, selected, x, range: sliced });
-    if (kernel) {
-      paintKernel(context, { answered, rows: lanes, tops: laid.tops, selected, x, range: sliced });
+    const sliced = s.timelineData?.range ?? s.asked;
+    paintCpu(context, {
+      answered: s.answered,
+      rows: s.lanes,
+      tops: s.laid.tops,
+      selected: s.selected,
+      x,
+      range: sliced,
+    });
+    if (s.kernel) {
+      paintKernel(context, {
+        answered: s.answered,
+        rows: s.lanes,
+        tops: s.laid.tops,
+        selected: s.selected,
+        x,
+        range: sliced,
+      });
     }
 
-    if (blocks && index) {
+    if (s.blocks && s.index) {
+      const currentBlocks = s.blocks;
       const folded = token("--line-strong");
       const flagged = token("--changed");
       const found = token("--accent");
       const ink = token("--ink");
       const glyph = context.measureText("0").width;
-      const lit = (at: number) => !look.zs || blocks.chosen[at] === 1;
-      for (let at = 0; at < blocks.count; at += 1) {
-        const thread = blocks.thread[at] ?? 0;
-        const lane = laneOf.get(thread);
-        const depth = blocks.depth[at] ?? 0;
-        if (lane === undefined || depth >= (shownRows[lane] ?? 0)) {
+      const lit = (at: number) => !s.zs || currentBlocks.chosen[at] === 1;
+      for (let at = 0; at < s.blocks.count; at += 1) {
+        const thread = s.blocks.thread[at] ?? 0;
+        const lane = s.laneOf.get(thread);
+        const depth = s.blocks.depth[at] ?? 0;
+        if (lane === undefined || depth >= (s.shownRows[lane] ?? 0)) {
           continue;
         }
-        const top = (laid.tops[lane] ?? 0) + head + depth * ROW;
-        const start = blocks.start[at] ?? 0;
-        const end = blocks.end[at] ?? 0;
+        const top = (s.laid.tops[lane] ?? 0) + s.head + depth * ROW;
+        const start = s.blocks.start[at] ?? 0;
+        const end = s.blocks.end[at] ?? 0;
         const from = x(start);
         const to = x(end);
-        if (to < 0 || from > plot) {
+        if (to < 0 || from > s.plot) {
           continue;
         }
         const wide = Math.max(to - from, 1);
-        const name = blocks.name[at] ?? 0;
-        const label = blocks.names[name] ?? "";
-        const many = (blocks.zones[at] ?? 1) > 1;
-        const fill = many && label === "zones" ? folded : (palette.fills[name] ?? folded);
+        const name = s.blocks.name[at] ?? 0;
+        const label = s.blocks.names[name] ?? "";
+        const many = (s.blocks.zones[at] ?? 1) > 1;
+        const fill = many && label === "zones" ? folded : (s.palette.fills[name] ?? folded);
         const dim = lit(at) ? 1 : 0.3;
-        const covered = blocks.covered[at] ?? 0;
-        const running = onCpu(blocks, at);
+        const covered = s.blocks.covered[at] ?? 0;
+        const running = onCpu(s.blocks, at);
         context.fillStyle = fill;
         if (many) {
           context.globalAlpha = dim * (0.25 + (0.75 * covered) / Math.max(end - start, 1));
@@ -450,7 +576,7 @@ export function Lanes() {
           context.globalAlpha = dim * 0.2;
           context.fillRect(from, top + 1, wide, ROW - 2);
           paintRunning(context, {
-            lane: answered.get(thread),
+            lane: s.answered.get(thread),
             range: sliced,
             span: [start, end],
             share: running,
@@ -465,22 +591,22 @@ export function Lanes() {
           context.strokeRect(from + 0.5, top + 1.5, Math.max(wide - 1, 1), ROW - 3);
         }
         context.globalAlpha = dim;
-        if (look.zs && dim === 1) {
+        if (s.zs && dim === 1) {
           context.strokeStyle = found;
           context.lineWidth = 1.5;
           context.strokeRect(from + 0.75, top + 1.75, Math.max(wide - 1.5, 1), ROW - 3.5);
-        } else if ((blocks.flags[at] ?? 0) !== 0) {
+        } else if ((s.blocks.flags[at] ?? 0) !== 0) {
           context.strokeStyle = flagged;
           context.lineWidth = 1;
           context.setLineDash([3, 2]);
           context.strokeRect(from + 0.5, top + 1.5, Math.max(wide - 1, 1), ROW - 3);
           context.setLineDash([]);
         }
-        const room = Math.min(to, plot) - Math.max(from, 0) - 6;
+        const room = Math.min(to, s.plot) - Math.max(from, 0) - 6;
         const text =
           room > 16
             ? many
-              ? fitting([formatCount(blocks.zones[at] ?? 0, "zone")], room, glyph)
+              ? fitting([formatCount(s.blocks.zones[at] ?? 0, "zone")], room, glyph)
               : fitting(zoneLabels(label, end - start, running), room, glyph)
             : null;
         if (text) {
@@ -491,34 +617,34 @@ export function Lanes() {
       }
       context.globalAlpha = 1;
 
-      for (const mark of marks) {
-        const lane = laneOf.get(mark.thread);
+      for (const mark of s.marks) {
+        const lane = s.laneOf.get(mark.thread);
         if (lane === undefined) {
           continue;
         }
         context.fillStyle =
           mark.kind === "trigger" ? flagged : mark.kind === "frame" ? folded : found;
-        const at = Math.min(Math.max(x(mark.time) - 0.5, 0), plot - 1.5);
-        context.fillRect(at, (laid.tops[lane] ?? 0) + 1, 1.5, 6);
+        const at = Math.min(Math.max(x(mark.time) - 0.5, 0), s.plot - 1.5);
+        context.fillRect(at, (s.laid.tops[lane] ?? 0) + 1, 1.5, 6);
       }
     }
 
     context.fillStyle = token("--line");
     context.globalAlpha = 0.7;
-    for (const [from, to] of summary.behind) {
-      context.fillRect(x(from), 0, Math.max(x(to) - x(from), 1), height);
+    for (const [from, to] of s.behind) {
+      context.fillRect(x(from), 0, Math.max(x(to) - x(from), 1), s.height);
     }
     context.globalAlpha = 1;
 
     context.strokeStyle = token("--changed");
     context.lineWidth = 1;
     context.setLineDash([2, 3]);
-    for (const step of summary.budgetChanges) {
+    for (const step of s.budgetChanges) {
       const at = Math.round(x(step.time)) + 0.5;
-      if (at >= 0 && at <= plot) {
+      if (at >= 0 && at <= s.plot) {
         context.beginPath();
         context.moveTo(at, 0);
-        context.lineTo(at, height);
+        context.lineTo(at, s.height);
         context.stroke();
       }
     }
@@ -529,458 +655,407 @@ export function Lanes() {
       const wide = Math.max(to - from, 3);
       context.fillStyle = token("--accent");
       context.fillRect((from + to) / 2 - wide / 2, 0, wide, 2);
-      context.fillRect((from + to) / 2 - wide / 2, height - 2, wide, 2);
+      context.fillRect((from + to) / 2 - wide / 2, s.height - 2, wide, 2);
     }
-    const lane = instance ? laneOf.get(instance.thread) : undefined;
-    if (instance && lane !== undefined && blocks) {
-      for (let at = 0; at < blocks.count; at += 1) {
+    const lane = s.instance ? s.laneOf.get(s.instance.thread) : undefined;
+    if (s.instance && lane !== undefined && s.blocks) {
+      for (let at = 0; at < s.blocks.count; at += 1) {
         if (
-          blocks.thread[at] === instance.thread &&
-          blocks.start[at] === instance.span[0] &&
-          blocks.end[at] === instance.span[1] &&
-          (blocks.depth[at] ?? 0) < (shownRows[lane] ?? 0)
+          s.blocks.thread[at] === s.instance.thread &&
+          s.blocks.start[at] === s.instance.span[0] &&
+          s.blocks.end[at] === s.instance.span[1] &&
+          (s.blocks.depth[at] ?? 0) < (s.shownRows[lane] ?? 0)
         ) {
-          const top = (laid.tops[lane] ?? 0) + head + (blocks.depth[at] ?? 0) * ROW;
-          const from = x(instance.span[0]);
+          const top = (s.laid.tops[lane] ?? 0) + s.head + (s.blocks.depth[at] ?? 0) * ROW;
+          const from = x(s.instance.span[0]);
           context.strokeStyle = token("--ink");
           context.lineWidth = 2;
-          context.strokeRect(from, top + 1, Math.max(x(instance.span[1]) - from, 2), ROW - 2);
+          context.strokeRect(from, top + 1, Math.max(x(s.instance.span[1]) - from, 2), ROW - 2);
         }
       }
     }
-  }, [
-    timeline.data,
-    answered,
-    kernel,
-    head,
-    asked,
-    blocks,
-    index,
-    marks,
-    lanes,
-    laid,
-    laneOf,
-    shownRows,
-    selected,
-    plot,
-    height,
-    span,
-    shownView,
-    range,
-    instance,
-    dragging,
-    look.zs,
-    palette,
-    summary.behind,
-    summary.budgetChanges,
-    scheme,
-  ]);
+  });
 
-  const at = useCallback(
-    (px: number, py: number): Hit | null => {
-      if (px < 0 || px >= plot || py < 0 || py >= height) {
-        return null;
-      }
-      const time = shownView[0] + (px * span) / Math.max(plot, 1);
-      const lane = laneAt(laid.tops, py);
-      const row = lanes[lane];
-      if (!row) {
-        return null;
-      }
-      const inside = py - (laid.tops[lane] ?? 0);
-      const slack = (2 * span) / Math.max(plot, 1);
-      const step = stepAt(summary.budgetChanges, time, slack);
-      const none = { block: null, mark: null, kernel: null, wait: null, step };
-      if (inside >= STRIP && inside < head) {
-        const calls = row.others ? undefined : answered.get(row.lane);
-        const sliced = timeline.data?.range ?? asked;
-        return {
-          ...none,
-          time,
-          lane,
-          kernel: calls ? kernelLines(calls, sliced, time, slack) : null,
-          wait: calls ? waitAt(calls, time, slack) : null,
-        };
-      }
-      if (inside < STRIP) {
-        let mark: ProfileMark | null = null;
-        for (const each of marks) {
-          if (
-            each.thread === row.lane &&
-            Math.abs(each.time - time) <= slack * 2 &&
-            (!mark || Math.abs(each.time - time) < Math.abs(mark.time - time))
-          ) {
-            mark = each;
-          }
-        }
-        return { ...none, time, lane, mark };
-      }
-      const depth = Math.floor((inside - head) / ROW);
-      const block = blocks && index ? blockAt(blocks, index, row.lane, depth, time, slack) : null;
-      return { ...none, time, lane, block };
-    },
-    [
-      plot,
-      height,
-      shownView,
-      span,
-      laid,
-      lanes,
-      marks,
-      blocks,
-      index,
-      head,
-      answered,
-      timeline.data,
-      asked,
-      summary.budgetChanges,
-    ],
-  );
-
-  const canvasLeft = useCallback(() => canvas.current?.getBoundingClientRect().left ?? 0, []);
-  const local = useCallback((event: { clientX: number; clientY: number }) => {
-    const bounds = canvas.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
-    return [event.clientX - bounds.left, event.clientY - bounds.top] as const;
-  }, []);
-
-  const press = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const body = event.currentTarget;
-      const bounds = body.getBoundingClientRect();
-
-      const scrollbar =
-        event.clientX - bounds.left >= body.clientLeft + body.clientWidth ||
-        event.clientY - bounds.top >= body.clientTop + body.clientHeight;
-      const target = event.target as Element;
-      if (
-        event.button !== 0 ||
-        scrollbar ||
-        target.closest(".lane-names, .timeline-ruler, .plot-name")
-      ) {
-        return;
-      }
-      body.setPointerCapture(event.pointerId);
-      pressed.current = {
-        x: event.clientX,
-        view: shownView,
-        moved: false,
-        pan: event.ctrlKey || event.metaKey,
+  const at = (px: number, py: number): Hit | null => {
+    const currentPlot = plot();
+    const currentHeight = height();
+    if (px < 0 || px >= currentPlot || py < 0 || py >= currentHeight) {
+      return null;
+    }
+    const currentView = shownView();
+    const currentSpan = span();
+    const currentLaid = laid();
+    const currentLanes = lanes();
+    const time = currentView[0] + (px * currentSpan) / Math.max(currentPlot, 1);
+    const lane = laneAt(currentLaid.tops, py);
+    const row = currentLanes[lane];
+    if (!row) {
+      return null;
+    }
+    const inside = py - (currentLaid.tops[lane] ?? 0);
+    const slack = (2 * currentSpan) / Math.max(currentPlot, 1);
+    const step = stepAt(focus().summary.budgetChanges, time, slack);
+    const none = { block: null, mark: null, kernel: null, wait: null, step };
+    const currentHead = head();
+    if (inside >= STRIP && inside < currentHead) {
+      const calls = row.others ? undefined : answered().get(row.lane);
+      const sliced = timeline().data?.range ?? asked();
+      return {
+        ...none,
+        time,
+        lane,
+        kernel: calls ? kernelLines(calls, sliced, time, slack) : null,
+        wait: calls ? waitAt(calls, time, slack) : null,
       };
-    },
-    [shownView],
-  );
-  const select = useCallback(
-    (block: number, zoom: boolean) => {
-      assert(blocks, "a zone was chosen with none drawn");
-      const zone: [number, number] = [blocks.start[block] ?? 0, blocks.end[block] ?? 0];
-      if ((blocks.zones[block] ?? 1) > 1 || zoom) {
-        const margin = (zone[1] - zone[0]) / 20;
-        show([Math.max(zone[0] - margin, 0), Math.min(zone[1] + margin, total)]);
-        if ((blocks.zones[block] ?? 1) > 1) {
-          return;
+    }
+    if (inside < STRIP) {
+      let mark: ProfileMark | null = null;
+      for (const each of marks()) {
+        if (
+          each.thread === row.lane &&
+          Math.abs(each.time - time) <= slack * 2 &&
+          (!mark || Math.abs(each.time - time) < Math.abs(mark.time - time))
+        ) {
+          mark = each;
         }
       }
-      if (zone[1] <= zone[0]) {
-        return;
-      }
-      const chosenOne: Instance = { thread: blocks.thread[block] ?? 0, span: zone };
-      const site = palette.sites[blocks.name[block] ?? 0] ?? "";
-      setLook((prev) => {
-        const again = prev.zi === `${chosenOne.thread}:${formatRange(zone)}` && !zoom;
-        const next = withInstance(prev, again ? null : chosenOne);
+      return { ...none, time, lane, mark };
+    }
+    const depth = Math.floor((inside - currentHead) / ROW);
+    const currentBlocks = blocks();
+    const currentIndex = index();
+    const block =
+      currentBlocks && currentIndex
+        ? blockAt(currentBlocks, currentIndex, row.lane, depth, time, slack)
+        : null;
+    return { ...none, time, lane, block };
+  };
 
-        return prev.zs === site ? next : withLook(clearBand(next), "zs", site);
-      }, true);
-    },
-    [blocks, palette, setLook, show, total],
-  );
+  const canvasLeft = () => canvas?.getBoundingClientRect().left ?? 0;
+  const local = (event: { clientX: number; clientY: number }) => {
+    const bounds = canvas?.getBoundingClientRect() ?? { left: 0, top: 0 };
+    return [event.clientX - bounds.left, event.clientY - bounds.top] as const;
+  };
 
-  const chooseRange = useCallback(
-    (from: number, to: number) => {
-      const [start, end] = [Math.min(from, to), Math.max(from, to)];
-      const chosenRange =
-        ((end - start) * plot) / span >= 3 ? formatRange([start, end]) : undefined;
-      setLook((prev) => withInstance(withLook(prev, "range", chosenRange), null), true);
-    },
-    [plot, span, setLook],
-  );
-  const release = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const was = pressed.current;
-      pressed.current = null;
-      setPanning(false);
-      setDragging(null);
-      if (was?.moved && !was.pan) {
-        chooseRange(
-          timeAt(was.view, plot, was.x - canvasLeft()),
-          timeAt(was.view, plot, event.clientX - canvasLeft()),
-        );
+  const press = (event: PointerEvent & { currentTarget: HTMLDivElement }) => {
+    const body = event.currentTarget;
+    const bounds = body.getBoundingClientRect();
+
+    const scrollbar =
+      event.clientX - bounds.left >= body.clientLeft + body.clientWidth ||
+      event.clientY - bounds.top >= body.clientTop + body.clientHeight;
+    const target = event.target as Element;
+    if (
+      event.button !== 0 ||
+      scrollbar ||
+      target.closest(".lane-names, .timeline-ruler, .plot-name")
+    ) {
+      return;
+    }
+    body.setPointerCapture(event.pointerId);
+    pressed = {
+      x: event.clientX,
+      view: shownView(),
+      moved: false,
+      pan: event.ctrlKey || event.metaKey,
+    };
+  };
+  const select = (block: number, zoom: boolean) => {
+    const currentBlocks = blocks();
+    assert(currentBlocks, "a zone was chosen with none drawn");
+    const zone: [number, number] = [currentBlocks.start[block] ?? 0, currentBlocks.end[block] ?? 0];
+    if ((currentBlocks.zones[block] ?? 1) > 1 || zoom) {
+      const margin = (zone[1] - zone[0]) / 20;
+      show([Math.max(zone[0] - margin, 0), Math.min(zone[1] + margin, total())]);
+      if ((currentBlocks.zones[block] ?? 1) > 1) {
         return;
       }
-      if (!was || was.moved) {
-        return;
-      }
-      const found = at(...local(event));
-      if (found?.block !== null && found?.block !== undefined) {
-        select(found.block, false);
-      } else if (found?.wait) {
-        chooseRange(found.wait.start, found.wait.end);
-      } else {
-        setLook((prev) => {
-          const { range: _range, ...rest } = prev;
-          return prev.range ? rest : prev;
-        }, true);
-      }
-    },
-    [at, local, select, chooseRange, plot, canvasLeft, setLook],
-  );
-  const doubleClick = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
-      const found = at(...local(event));
-      if (found?.block !== null && found?.block !== undefined) {
-        select(found.block, true);
-      }
-    },
-    [at, local, select],
-  );
-  const hover = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const held = pressed.current;
-      if (held) {
-        const by = event.clientX - held.x;
-        if (held.moved || Math.abs(by) >= DRAG) {
-          if (!held.moved) {
-            held.moved = true;
-            setPanning(held.pan);
-          }
-          setHit(null);
-          if (held.pan) {
-            const per = (held.view[1] - held.view[0]) / Math.max(plot, 1);
-            show(panned(held.view, -by * per, total));
-            return;
-          }
-          const [from, to] = [
-            timeAt(held.view, plot, held.x - canvasLeft()),
-            timeAt(held.view, plot, event.clientX - canvasLeft()),
-          ];
-          setDragging([Math.min(from, to), Math.max(from, to)]);
-          setPointer({ time: to, x: event.clientX, y: event.clientY });
-          return;
-        }
-      }
-      const [px, py] = local(event);
-      const found = at(px, py);
-      setHit(found);
-      setPointer(
-        px >= 0 && px < plot
-          ? {
-              time: shownView[0] + (px * span) / Math.max(plot, 1),
-              x: event.clientX,
-              y: event.clientY,
-            }
-          : null,
-      );
-    },
-    [plot, show, total, local, at, shownView, span, canvasLeft],
-  );
-  const leave = useCallback(() => {
-    setHit(null);
-    setPointer(null);
-  }, []);
-  const cancel = useCallback(() => {
-    pressed.current = null;
+    }
+    if (zone[1] <= zone[0]) {
+      return;
+    }
+    const chosenOne: Instance = { thread: currentBlocks.thread[block] ?? 0, span: zone };
+    const site = palette().sites[currentBlocks.name[block] ?? 0] ?? "";
+    focus().setLook((prev) => {
+      const again = prev.zi === `${chosenOne.thread}:${formatRange(zone)}` && !zoom;
+      const next = withInstance(prev, again ? null : chosenOne);
+
+      return prev.zs === site ? next : withLook(clearBand(next), "zs", site);
+    }, true);
+  };
+
+  const chooseRange = (from: number, to: number) => {
+    const [start, end] = [Math.min(from, to), Math.max(from, to)];
+    const chosenRange =
+      ((end - start) * plot()) / span() >= 3 ? formatRange([start, end]) : undefined;
+    focus().setLook((prev) => withInstance(withLook(prev, "range", chosenRange), null), true);
+  };
+  const release = (event: PointerEvent) => {
+    const was = pressed;
+    pressed = null;
     setPanning(false);
     setDragging(null);
-  }, []);
-
-  useEffect(() => {
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && (pressed.current || rulerFrom.current !== null)) {
-        event.preventDefault();
-        pressed.current = null;
-        rulerFrom.current = null;
-        setPanning(false);
-        setDragging(null);
+    if (was?.moved && !was.pan) {
+      const left = canvasLeft();
+      chooseRange(
+        timeAt(was.view, plot(), was.x - left),
+        timeAt(was.view, plot(), event.clientX - left),
+      );
+      return;
+    }
+    if (!was || was.moved) {
+      return;
+    }
+    const found = at(...local(event));
+    if (found?.block !== null && found?.block !== undefined) {
+      select(found.block, false);
+    } else if (found?.wait) {
+      chooseRange(found.wait.start, found.wait.end);
+    } else {
+      focus().setLook((prev) => {
+        const { range: _range, ...rest } = prev;
+        return prev.range ? rest : prev;
+      }, true);
+    }
+  };
+  const doubleClick = (event: MouseEvent) => {
+    const found = at(...local(event));
+    if (found?.block !== null && found?.block !== undefined) {
+      select(found.block, true);
+    }
+  };
+  const hover = (event: PointerEvent) => {
+    const held = pressed;
+    const currentPlot = plot();
+    if (held) {
+      const by = event.clientX - held.x;
+      if (held.moved || Math.abs(by) >= DRAG) {
+        if (!held.moved) {
+          held.moved = true;
+          setPanning(held.pan);
+        }
+        setHit(null);
+        if (held.pan) {
+          const per = (held.view[1] - held.view[0]) / Math.max(currentPlot, 1);
+          show(panned(held.view, -by * per, total()));
+          return;
+        }
+        const left = canvasLeft();
+        const [from, to] = [
+          timeAt(held.view, currentPlot, held.x - left),
+          timeAt(held.view, currentPlot, event.clientX - left),
+        ];
+        setDragging([Math.min(from, to), Math.max(from, to)]);
+        setPointer({ time: to, x: event.clientX, y: event.clientY });
+        return;
       }
-    };
+    }
+    const [px, py] = local(event);
+    const found = at(px, py);
+    setHit(found);
+    setPointer(
+      px >= 0 && px < currentPlot
+        ? {
+            time: shownView()[0] + (px * span()) / Math.max(currentPlot, 1),
+            x: event.clientX,
+            y: event.clientY,
+          }
+        : null,
+    );
+  };
+  const leave = () => {
+    setHit(null);
+    setPointer(null);
+  };
+  const cancel = () => {
+    pressed = null;
+    setPanning(false);
+    setDragging(null);
+  };
+
+  const escape = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && (pressed || rulerFrom !== null)) {
+      event.preventDefault();
+      pressed = null;
+      rulerFrom = null;
+      setPanning(false);
+      setDragging(null);
+    }
+  };
+  onSettled(() => {
     window.addEventListener("keydown", escape, { capture: true });
     return () => window.removeEventListener("keydown", escape, { capture: true });
-  }, []);
+  });
 
-  const menu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (event.ctrlKey) {
-      event.preventDefault();
+  const rulerTime = (event: PointerEvent) => {
+    const left = canvas?.getBoundingClientRect().left ?? 0;
+    const currentPlot = plot();
+    const px = Math.min(Math.max(event.clientX - left, 0), currentPlot);
+    return shownView()[0] + (px * span()) / Math.max(currentPlot, 1);
+  };
+  const rulerDown = (event: PointerEvent & { currentTarget: HTMLDivElement }) => {
+    if (event.button !== 0) {
+      return;
     }
-  }, []);
-
-  const rulerTime = useCallback(
-    (event: PointerEvent<HTMLElement>) => {
-      const left = canvas.current?.getBoundingClientRect().left ?? 0;
-      const px = Math.min(Math.max(event.clientX - left, 0), plot);
-      return shownView[0] + (px * span) / Math.max(plot, 1);
-    },
-    [plot, shownView, span],
-  );
-  const rulerDown = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) {
-        return;
-      }
-      event.currentTarget.setPointerCapture(event.pointerId);
-      rulerFrom.current = rulerTime(event);
-    },
-    [rulerTime],
-  );
-  const rulerMove = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const from = rulerFrom.current;
-      const to = rulerTime(event);
-      setPointer({ time: to, x: event.clientX, y: event.clientY });
-      if (from !== null) {
-        setDragging([Math.min(from, to), Math.max(from, to)]);
-      }
-    },
-    [rulerTime],
-  );
-  const rulerUp = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const from = rulerFrom.current;
-      rulerFrom.current = null;
-      setDragging(null);
-      if (from === null) {
-        return;
-      }
-      chooseRange(from, rulerTime(event));
-    },
-    [rulerTime, chooseRange],
-  );
-  const rulerCancel = useCallback(() => {
-    rulerFrom.current = null;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    rulerFrom = rulerTime(event);
+  };
+  const rulerMove = (event: PointerEvent) => {
+    const from = rulerFrom;
+    const to = rulerTime(event);
+    setPointer({ time: to, x: event.clientX, y: event.clientY });
+    if (from !== null) {
+      setDragging([Math.min(from, to), Math.max(from, to)]);
+    }
+  };
+  const rulerUp = (event: PointerEvent) => {
+    const from = rulerFrom;
+    rulerFrom = null;
     setDragging(null);
-  }, []);
+    if (from === null) {
+      return;
+    }
+    chooseRange(from, rulerTime(event));
+  };
+  const rulerCancel = () => {
+    rulerFrom = null;
+    setDragging(null);
+  };
 
-  const toggle = useCallback(
-    (id: string) =>
-      setLook((prev) => {
-        const key = byTask ? "tk" : "th";
-        const ids = new Set(prev[key] ?? []);
-        if (!ids.delete(id)) {
-          ids.add(id);
-        }
-        return withLook(prev, key, ids.size > 0 ? [...ids].toSorted() : undefined);
-      }),
-    [setLook, byTask],
-  );
-  const expand = useCallback(
-    (thread: number) =>
-      setCollapsed((was) => {
-        const next = new Set(was);
-        if (!next.delete(thread)) {
-          next.add(thread);
-        }
-        return next;
-      }),
-    [],
-  );
+  const toggle = (id: string) =>
+    focus().setLook((prev) => {
+      const key = byTask() ? "tk" : "th";
+      const ids = new Set(prev[key] ?? []);
+      if (!ids.delete(id)) {
+        ids.add(id);
+      }
+      return withLook(prev, key, ids.size > 0 ? [...ids].toSorted() : undefined);
+    });
+  const expand = (thread: number) =>
+    setCollapsed((was) => {
+      const next = new Set(was);
+      if (!next.delete(thread)) {
+        next.add(thread);
+      }
+      return next;
+    });
 
-  const flipOthers = useCallback(() => setOthersOpen((was) => !was), []);
+  const flipOthers = () => setOthersOpen((was) => !was);
 
-  const ref = useCallback(
-    (element: HTMLDivElement | null) => {
-      box.current = element;
-      return measure(element);
-    },
-    [measure],
-  );
-  const plotStyle = useMemo(() => ({ width: plot }), [plot]);
-  const canvasStyle = useMemo(() => ({ width: plot, height }), [plot, height]);
-
-  const kernelLanes = kernel ? answered : NO_LANES;
-  const tip =
-    hit && !panning
-      ? tipLines(hit, { blocks, index, summary, span, plot, answered: kernelLanes })
+  const tip = createMemo(() => {
+    const currentHit = hit();
+    return currentHit && !panning()
+      ? tipLines(currentHit, {
+          blocks: blocks(),
+          index: index(),
+          summary: focus().summary,
+          span: span(),
+          plot: plot(),
+          answered: kernel() ? answered() : NO_LANES,
+        })
       : null;
-  const tipStyle = useMemo(
-    () => (pointer ? { left: pointer.x + 12, top: pointer.y + 16 } : undefined),
-    [pointer],
-  );
+  });
+
+  const marked = createMemo(() => dragging() ?? instance()?.span ?? range());
+  const rulerPointer = createMemo(() => (dragging() ? null : (pointer()?.time ?? null)));
+  const cursorPointer = createMemo(() => (dragging() || panning() ? null : pointer()));
+  const tipStyle = createMemo(() => {
+    const current = pointer();
+    return current ? { left: `${current.x + 12}px`, top: `${current.y + 16}px` } : undefined;
+  });
 
   return (
     <div
-      className={`profile-timeline ${panning ? "panning" : ""}`}
-      ref={ref}
+      class={`profile-timeline ${panning() ? "panning" : ""}`}
+      ref={(node) => {
+        box = node;
+        measure(node);
+      }}
       data-testid="timeline"
       onPointerDown={press}
       onPointerUp={release}
       onPointerCancel={cancel}
       onPointerMove={hover}
-      onPointerLeave={leave}
-      onDoubleClick={doubleClick}
+      onPointerOut={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          leave();
+        }
+      }}
+      onDblClick={doubleClick}
       onContextMenu={menu}
     >
       <Ruler
-        view={shownView}
-        plot={plot}
-        marked={dragging ?? (instance ? instance.span : range)}
-        pointer={pointer && !dragging ? pointer.time : null}
+        view={shownView()}
+        plot={plot()}
+        marked={marked()}
+        pointer={rulerPointer()}
         onPointerDown={rulerDown}
         onPointerMove={rulerMove}
         onPointerUp={rulerUp}
         onPointerCancel={rulerCancel}
       />
-      <div className="timeline-body">
-        <div className="lane-names" style={NAMES_STYLE}>
-          {lanes.map((row, lane) => (
-            <LaneName
-              key={row.id}
-              row={row}
-              selected={selected?.has(row.id) ?? false}
-              toggle={toggle}
-              depth={byTask ? 0 : (depths.get(row.lane) ?? 0)}
-              open={row.others ? othersOpen : !collapsed.has(row.lane)}
-              expand={row.others ? flipOthers : expand}
-              rows={shownRows[lane] ?? 0}
-              kernel={kernel}
-            />
-          ))}
+      <div class="timeline-body">
+        <div class="lane-names" style={NAMES_STYLE}>
+          <For each={lanes()} keyed={(row) => row.id}>
+            {(row, lane) => (
+              <LaneName
+                row={row()}
+                selected={selected()?.has(row().id) ?? false}
+                toggle={toggle}
+                depth={byTask() ? 0 : (depths().get(row().lane) ?? 0)}
+                open={row().others ? othersOpen() : !collapsed().has(row().lane)}
+                expand={row().others ? flipOthers : expand}
+                rows={shownRows()[lane()] ?? 0}
+                kernel={kernel()}
+              />
+            )}
+          </For>
         </div>
-        {timeline.error ? (
-          <div className="empty error" style={plotStyle}>
-            {timeline.error.message}
-          </div>
-        ) : (
-          <div className="timeline-plot" style={plotStyle}>
+        <Show
+          when={!timeline().error}
+          fallback={
+            <div class="empty error" style={{ width: `${plot()}px` }}>
+              {timeline().error?.message}
+            </div>
+          }
+        >
+          <div class="timeline-plot" style={{ width: `${plot()}px` }}>
             <canvas
-              ref={canvas}
-              className={`lanes ${zonesParams && !zones.current ? "stale" : ""}`}
-              style={canvasStyle}
+              ref={(node) => {
+                canvas = node;
+              }}
+              class={`lanes ${zonesParams() && !zones().current ? "stale" : ""}`}
+              style={{ width: `${plot()}px`, height: `${height()}px` }}
               // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
               role="img"
-              aria-label={`CPU${zoned ? " and zones" : ""} over ${formatDuration(span)}`}
+              aria-label={`CPU${zoned() ? " and zones" : ""} over ${formatDuration(span())}`}
             />
-            {pointer !== null && !dragging && !panning ? (
-              <Cursor x={((pointer.time - shownView[0]) * plot) / span} height={height} />
-            ) : null}
+            <Show when={cursorPointer()}>
+              {(current) => (
+                <Cursor
+                  x={((current().time - shownView()[0]) * plot()) / span()}
+                  height={height()}
+                />
+              )}
+            </Show>
+          </div>
+        </Show>
+      </div>
+      <Show when={zones().error}>
+        {(error) => <div class="empty error">{error().message}</div>}
+      </Show>
+      <For each={plots()} keyed={(series) => series.name}>
+        {(series) => (
+          <PlotLane series={series()} origin={shownView()[0]} span={span()} width={plot()} />
+        )}
+      </For>
+      <Show when={tip()}>
+        {(lines) => (
+          <div class="lanes-tip" style={tipStyle()} data-testid="zone-tip">
+            <For each={lines()}>{(line) => <div>{line}</div>}</For>
           </div>
         )}
-      </div>
-      {zones.error ? <div className="empty error">{zones.error.message}</div> : null}
-      {plots.map((series) => (
-        <PlotLane
-          key={series.name}
-          series={series}
-          origin={shownView[0]}
-          span={span}
-          width={plot}
-        />
-      ))}
-      {tip ? (
-        <div className="lanes-tip" style={tipStyle} data-testid="zone-tip">
-          {tip.map((line) => (
-            <div key={line}>{line}</div>
-          ))}
-        </div>
-      ) : null}
+      </Show>
     </div>
   );
 }
@@ -1268,150 +1343,154 @@ const pillWidth = (label: string) => label.length * LETTER + 12;
 
 const MEASURED = 72;
 
-function Ruler({
-  view,
-  plot,
-  marked,
-  pointer,
-  ...handlers
-}: {
+function Ruler(props: {
   view: [number, number];
   plot: number;
   marked: readonly [number, number] | null;
   pointer: number | null;
-  onPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
-  onPointerMove: (event: PointerEvent<HTMLDivElement>) => void;
-  onPointerUp: (event: PointerEvent<HTMLDivElement>) => void;
+  onPointerDown: (event: PointerEvent & { currentTarget: HTMLDivElement }) => void;
+  onPointerMove: (event: PointerEvent) => void;
+  onPointerUp: (event: PointerEvent) => void;
   onPointerCancel: () => void;
 }) {
-  const span = Math.max(view[1] - view[0], 1);
-  const marks = timeTicks(view, plot);
-  const resolution = span / Math.max(plot, 1);
-  const pixel = (time: number) => ((time - view[0]) * plot) / span;
-  const instant = (time: number) => formatInstant(time, resolution, view[1]);
-  const pills: { id: "from" | "to" | "at"; x: number; label: string; width: number }[] = [];
-  const taken: [number, number][] = [];
-  let measure: { x: number; width: number; label: string | null } | null = null;
-  if (marked && marked[1] >= view[0] && marked[0] <= view[1]) {
-    const [left, right] = [pixel(marked[0]), pixel(marked[1])];
-    const [start, end] = [instant(marked[0]), instant(marked[1])];
-    const [before, after] = [pillWidth(start), pillWidth(end)];
+  const layout = createMemo(() => {
+    const view = props.view;
+    const plot = props.plot;
+    const marked = props.marked;
+    const pointer = props.pointer;
+    const span = Math.max(view[1] - view[0], 1);
+    const marks = timeTicks(view, plot);
+    const resolution = span / Math.max(plot, 1);
+    const pixel = (time: number) => ((time - view[0]) * plot) / span;
+    const instant = (time: number) => formatInstant(time, resolution, view[1]);
+    const pills: { id: "from" | "to" | "at"; x: number; label: string; width: number }[] = [];
+    const taken: [number, number][] = [];
+    let measure: { x: number; width: number; label: string | null } | null = null;
+    if (marked && marked[1] >= view[0] && marked[0] <= view[1]) {
+      const [left, right] = [pixel(marked[0]), pixel(marked[1])];
+      const [start, end] = [instant(marked[0]), instant(marked[1])];
+      const [before, after] = [pillWidth(start), pillWidth(end)];
 
-    let [from, to] = [Math.max(left, before), Math.min(right, plot - after)];
-    if (to < from) {
-      [from, to] = from > left ? [from, from] : [to, to];
+      let [from, to] = [Math.max(left, before), Math.min(right, plot - after)];
+      if (to < from) {
+        [from, to] = from > left ? [from, from] : [to, to];
+      }
+      pills.push(
+        { id: "from", x: from, label: start, width: before },
+        { id: "to", x: to, label: end, width: after },
+      );
+      taken.push([from - before, to + after]);
+      if (right - left >= MEASURED) {
+        measure = {
+          x: Math.max(left, 0),
+          width: Math.min(right, plot) - Math.max(left, 0),
+          label: formatInstant(marked[1] - marked[0], resolution, span),
+        };
+      }
     }
-    pills.push(
-      { id: "from", x: from, label: start, width: before },
-      { id: "to", x: to, label: end, width: after },
+    if (pointer !== null) {
+      const label = instant(pointer);
+      const width = pillWidth(label);
+      const x = Math.min(Math.max(pixel(pointer), width / 2), plot - width / 2);
+
+      for (let at = pills.length - 1; at >= 0; at -= 1) {
+        const pill = pills[at];
+        if (!pill) {
+          continue;
+        }
+        const middle = pill.x + (pill.id === "from" ? -pill.width / 2 : pill.width / 2);
+        if (Math.abs(middle - x) < (pill.width + width) / 2) {
+          pills.splice(at, 1);
+        }
+      }
+      pills.push({ id: "at", x, label, width });
+      taken.push([x - width / 2, x + width / 2]);
+
+      if (measure && Math.abs(x - (measure.x + measure.width / 2)) < (width + LABEL) / 2) {
+        measure = { ...measure, label: null };
+      }
+    }
+
+    const covered = (x: number, label: string, index: number) => {
+      const width = label.length * LETTER + 8;
+      const left = index === 0 ? x : index === marks.length - 1 ? x - width : x - width / 2;
+      return taken.some(([from, to]) => left < to + 4 && left + width > from - 4);
+    };
+    const visibleMarks = marks.flatMap(({ at, label }, index) =>
+      covered(at * plot, label, index)
+        ? []
+        : [
+            {
+              at,
+              x: at * plot,
+              label,
+              className: index === 0 ? "first" : index === marks.length - 1 ? "last" : undefined,
+            },
+          ],
     );
-    taken.push([from - before, to + after]);
-    if (right - left >= MEASURED) {
-      measure = {
-        x: Math.max(left, 0),
-        width: Math.min(right, plot) - Math.max(left, 0),
-        label: formatInstant(marked[1] - marked[0], resolution, span),
-      };
-    }
-  }
-  if (pointer !== null) {
-    const label = instant(pointer);
-    const width = pillWidth(label);
-    const x = Math.min(Math.max(pixel(pointer), width / 2), plot - width / 2);
+    return { visibleMarks, measure, pills };
+  });
 
-    for (let at = pills.length - 1; at >= 0; at -= 1) {
-      const pill = pills[at];
-      if (!pill) {
-        continue;
-      }
-      const middle = pill.x + (pill.id === "from" ? -pill.width / 2 : pill.width / 2);
-      if (Math.abs(middle - x) < (pill.width + width) / 2) {
-        pills.splice(at, 1);
-      }
-    }
-    pills.push({ id: "at", x, label, width });
-    taken.push([x - width / 2, x + width / 2]);
-
-    if (measure && Math.abs(x - (measure.x + measure.width / 2)) < (width + LABEL) / 2) {
-      measure = { ...measure, label: null };
-    }
-  }
-
-  const covered = (x: number, label: string, index: number) => {
-    const width = label.length * LETTER + 8;
-    const left = index === 0 ? x : index === marks.length - 1 ? x - width : x - width / 2;
-    return taken.some(([from, to]) => left < to + 4 && left + width > from - 4);
-  };
-  const marksStyle = useMemo(() => ({ width: plot }), [plot]);
   return (
-    <div className="timeline-ruler" data-testid="ruler">
-      <div className="ruler-gap" style={NAMES_STYLE} />
+    <div class="timeline-ruler" data-testid="ruler">
+      <div class="ruler-gap" style={NAMES_STYLE} />
       <div
-        className="ruler-marks"
-        style={marksStyle}
+        class="ruler-marks"
+        style={{ width: `${props.plot}px` }}
         title="Drag to select a range; click to clear it"
-        {...handlers}
+        onPointerDown={(event) => props.onPointerDown(event)}
+        onPointerMove={(event) => props.onPointerMove(event)}
+        onPointerUp={(event) => props.onPointerUp(event)}
+        onPointerCancel={() => props.onPointerCancel()}
       >
-        {marks.map(({ at, label }, index) =>
-          covered(at * plot, label, index) ? null : (
-            <RulerMark
-              key={at}
-              x={at * plot}
-              label={label}
-              className={index === 0 ? "first" : index === marks.length - 1 ? "last" : undefined}
-            />
-          ),
-        )}
-        {measure ? <Measured {...measure} /> : null}
-        {pills.map((pill) => (
-          <RulerMark key={pill.id} x={pill.x} label={pill.label} className={`marker ${pill.id}`} />
-        ))}
+        <For each={layout().visibleMarks} keyed={(mark) => mark.at}>
+          {(mark) => <RulerMark x={mark().x} label={mark().label} className={mark().className} />}
+        </For>
+        <Show when={layout().measure}>
+          {(m) => <Measured x={m().x} width={m().width} label={m().label} />}
+        </Show>
+        <For each={layout().pills} keyed={(pill) => pill.id}>
+          {(pill) => (
+            <RulerMark x={pill().x} label={pill().label} className={`marker ${pill().id}`} />
+          )}
+        </For>
       </div>
     </div>
   );
 }
 
-function Measured({ x, width, label }: { x: number; width: number; label: string | null }) {
-  const style = useMemo(() => ({ left: x, width }), [x, width]);
+function Measured(props: { x: number; width: number; label: string | null }) {
   return (
-    <div className="ruler-measure" style={style} data-testid="range-length">
-      {label === null ? null : <span>{label}</span>}
+    <div
+      class="ruler-measure"
+      style={{ left: `${props.x}px`, width: `${props.width}px` }}
+      data-testid="range-length"
+    >
+      <Show when={props.label !== null}>
+        <span>{props.label}</span>
+      </Show>
     </div>
   );
 }
 
-const RulerMark = memo(function RulerMark({
-  x,
-  label,
-  className,
-}: {
-  x: number;
-  label: string;
-  className?: string | undefined;
-}) {
-  const style = useMemo(() => ({ left: x }), [x]);
+function RulerMark(props: { x: number; label: string; className?: string | undefined }) {
   return (
-    <span className={className} style={style}>
-      {label}
+    <span class={props.className} style={{ left: `${props.x}px` }}>
+      {props.label}
     </span>
   );
-});
-
-function Cursor({ x, height }: { x: number; height: number }) {
-  const style = useMemo(() => ({ left: Math.round(x), height }), [x, height]);
-  return <div className="timeline-cursor" style={style} />;
 }
 
-const LaneName = memo(function LaneName({
-  row,
-  selected,
-  toggle,
-  depth,
-  open,
-  expand,
-  rows: shown,
-  kernel,
-}: {
+function Cursor(props: { x: number; height: number }) {
+  return (
+    <div
+      class="timeline-cursor"
+      style={{ left: `${Math.round(props.x)}px`, height: `${props.height}px` }}
+    />
+  );
+}
+
+function LaneName(props: {
   row: Row;
   selected: boolean;
   toggle: (id: string) => void;
@@ -1421,104 +1500,99 @@ const LaneName = memo(function LaneName({
   rows: number;
   kernel: boolean;
 }) {
-  const click = useCallback(() => toggle(row.id), [toggle, row.id]);
-  const flip = useCallback(() => expand(row.lane), [expand, row.lane]);
-  const style = useMemo(() => ({ height: shown * ROW }), [shown]);
-  if (row.others) {
-    return (
-      <button
-        type="button"
-        className="lane-name lane-others"
-        aria-expanded={open}
-        aria-label={row.label}
-        title={row.title}
-        onClick={flip}
-      >
-        {open ? "▾" : "▸"} {row.label}
-      </button>
-    );
-  }
-
-  const calls = kernel ? <div className="lane-kernel" aria-hidden="true" /> : null;
   return (
-    <>
+    <Show
+      when={!props.row.others}
+      fallback={
+        <button
+          type="button"
+          class="lane-name lane-others"
+          aria-expanded={props.open ? "true" : "false"}
+          aria-label={props.row.label}
+          title={props.row.title}
+          onClick={() => props.expand(props.row.lane)}
+        >
+          {props.open ? "▾" : "▸"} {props.row.label}
+        </button>
+      }
+    >
       <button
         type="button"
-        className={`lane-name ${selected ? "selected" : ""} ${row.nested ? "nested" : ""}`}
-        aria-pressed={selected}
-        title={row.title}
-        onClick={click}
+        class={`lane-name ${props.selected ? "selected" : ""} ${props.row.nested ? "nested" : ""}`}
+        aria-pressed={props.selected ? "true" : "false"}
+        title={props.row.title}
+        onClick={() => props.toggle(props.row.id)}
       >
-        {row.label} {row.dim ? <span className="dim">{row.dim}</span> : null}
+        {props.row.label}{" "}
+        <Show when={props.row.dim}>{(dim) => <span class="dim">{dim()}</span>}</Show>
       </button>
-      {calls}
-      {shown > 0 ? (
-        <div className="lane-zones" style={style}>
-          {depth > 1 ? (
+      <Show when={props.kernel}>
+        <div class="lane-kernel" aria-hidden="true" />
+      </Show>
+      <Show when={props.rows > 0}>
+        <div class="lane-zones" style={{ height: `${props.rows * ROW}px` }}>
+          <Show when={props.depth > 1}>
             <button
               type="button"
-              className="lane-chevron"
-              aria-expanded={open}
-              aria-label={`${open ? "Hide" : "Show"} ${row.label} ${row.dim ?? ""}'s nested zones`}
-              onClick={flip}
+              class="lane-chevron"
+              aria-expanded={props.open ? "true" : "false"}
+              aria-label={`${props.open ? "Hide" : "Show"} ${props.row.label} ${props.row.dim ?? ""}'s nested zones`}
+              onClick={() => props.expand(props.row.lane)}
             >
-              {open ? "▾" : `▸ +${depth - 1}`}
+              {props.open ? "▾" : `▸ +${props.depth - 1}`}
             </button>
-          ) : null}
+          </Show>
         </div>
-      ) : null}
-    </>
+      </Show>
+    </Show>
   );
-});
+}
 
-function PlotLane({
-  series,
-  origin,
-  span,
-  width,
-}: {
-  series: ProfilePlot;
-  origin: number;
-  span: number;
-  width: number;
-}) {
-  let [low, high] = [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
-  for (const bin of series.bins) {
-    low = Math.min(low, bin[3] ?? low);
-    high = Math.max(high, bin[4] ?? high);
-  }
-  if (series.held !== null) {
-    low = Math.min(low, series.held);
-    high = Math.max(high, series.held);
-  }
-  const extent = Number.isFinite(low) ? `${formatValue(low)} – ${formatValue(high)}` : "";
+function PlotLane(props: { series: ProfilePlot; origin: number; span: number; width: number }) {
+  const bounds = createMemo(() => {
+    let low = Number.POSITIVE_INFINITY;
+    let high = Number.NEGATIVE_INFINITY;
+    for (const bin of props.series.bins) {
+      low = Math.min(low, bin[3] ?? low);
+      high = Math.max(high, bin[4] ?? high);
+    }
+    if (props.series.held !== null) {
+      low = Math.min(low, props.series.held);
+      high = Math.max(high, props.series.held);
+    }
+    return {
+      low,
+      high,
+      extent: Number.isFinite(low) ? `${formatValue(low)} – ${formatValue(high)}` : "",
+    };
+  });
   return (
-    <div className="plot-lane">
-      <div className="plot-name" style={NAMES_STYLE}>
-        <div>{series.name}</div>
-        <div className="dim">
-          {extent}
-          {series.unshown > 0 ? ` · ${formatCount(series.unshown)} not finite` : ""}
+    <div class="plot-lane">
+      <div class="plot-name" style={NAMES_STYLE}>
+        <div>{props.series.name}</div>
+        <div class="dim">
+          {bounds().extent}
+          {props.series.unshown > 0 ? ` · ${formatCount(props.series.unshown)} not finite` : ""}
         </div>
       </div>
       <svg
-        width={width}
+        width={props.width}
         height={PLOT}
         // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an inline drawing, not an image file
         role="img"
-        aria-label={`Plot ${series.name}, ${formatCount(series.values, "value")}${extent ? ` from ${extent}` : ""}`}
+        aria-label={`Plot ${props.series.name}, ${formatCount(props.series.values, "value")}${bounds().extent ? ` from ${bounds().extent}` : ""}`}
       >
         <path
           d={plotPath(
-            series.bins,
-            origin,
-            span,
-            width,
+            props.series.bins,
+            props.origin,
+            props.span,
+            props.width,
             PLOT,
-            low,
-            high,
-            series.held,
-            series.continues,
+            bounds().low,
+            bounds().high,
+            props.series.held,
+            props.series.continues,
           )}
         />
       </svg>

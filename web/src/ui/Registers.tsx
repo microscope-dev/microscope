@@ -1,3 +1,5 @@
+import { createMemo, For, Match, Show, Switch } from "solid-js";
+
 import { assert } from "../assert";
 import { useRequest } from "../data";
 import type { At } from "../focus";
@@ -26,43 +28,52 @@ function row(register: Register, innermost: boolean): Row {
 
 export function Registers() {
   const focus = useFocus();
-  const why = hidden(focus, "Registers");
-  assert(why !== null || focus.at !== null, "registers shown with no stop");
-  const registers = useRequest("registers", why === null ? (focus.at as At) : null);
+  const why = createMemo(() => hidden(focus(), "Registers"));
+  const registers = useRequest("registers", () => {
+    const current = focus();
+    const reason = why();
+    assert(reason !== null || current.at !== null, "registers shown with no stop");
+    return reason === null ? (current.at as At) : null;
+  });
 
-  let body: React.ReactNode;
-  if (why) {
-    body = <div className="empty">{why}</div>;
-  } else if (registers.error) {
-    body = <div className={errorClass(registers.error)}>{registers.error.message}</div>;
-  } else if (registers.data) {
-    const at = focus.at;
-    assert(at !== null, "registers listed with no stop");
-    body = (
-      <ul className="value-list" data-testid="registers">
-        {registers.data.registers.map((register) => (
-          <ValueRow
-            key={register.name}
-            row={row(register, at.frame === 0)}
-
-            parent={`registers@${at.frame}`}
-            depth={0}
-            missing={register.value === null ? "absent" : undefined}
-          />
-        ))}
-      </ul>
-    );
-  } else {
-    body = <div className="empty">Reading registers…</div>;
-  }
   return (
-    <div className="pane-body registers">
-      <LinkedExpansion>{body}</LinkedExpansion>
+    <div class="pane-body registers">
+      <LinkedExpansion>
+        <Switch fallback={<div class="empty">Reading registers…</div>}>
+          <Match when={why()}>{(reason) => <div class="empty">{reason()}</div>}</Match>
+          <Match when={registers().error}>
+            {(err) => <div class={errorClass(err())}>{err().message}</div>}
+          </Match>
+          <Match when={registers().data}>
+            {(data) => {
+              const frame = createMemo(() => {
+                const at = focus().at;
+                assert(at !== null, "registers listed with no stop");
+                return at.frame;
+              });
+              return (
+                <ul class="value-list" data-testid="registers">
+                  <For each={data().registers} keyed={(register) => register.name}>
+                    {(register) => (
+                      <ValueRow
+                        row={row(register(), frame() === 0)}
+                        parent={`registers@${frame()}`}
+                        depth={0}
+                        missing={register().value === null ? "absent" : undefined}
+                      />
+                    )}
+                  </For>
+                </ul>
+              );
+            }}
+          </Match>
+        </Switch>
+      </LinkedExpansion>
     </div>
   );
 }
 
 export function RegistersBadge() {
-  const at = useFocus().at;
-  return at ? <span className="count">frame {at.frame}</span> : null;
+  const focus = useFocus();
+  return <Show when={focus().at}>{(at) => <span class="count">frame {at().frame}</span>}</Show>;
 }

@@ -1,6 +1,7 @@
-import { Link } from "@tanstack/react-router";
-import { type ReactNode, useCallback, useMemo } from "react";
+import type { JSX } from "@solidjs/web";
+import { createMemo, For, Show } from "solid-js";
 
+import { toHref } from "../history";
 import { targetName } from "../model";
 import { useModel } from "../store";
 import { remote, standalone } from "../target";
@@ -13,68 +14,72 @@ export function ExplorerBody() {
   const state = useModel((model) => model.state);
   const profiles = useModel((model) => model.profiles);
   const server = standalone ? remote()?.server : window.location.origin;
-  const debugging = targetName(state);
+  const debugging = createMemo(() => targetName(state()));
+  const session = createMemo(() => {
+    const id = state()?.session;
+    const name = debugging();
+    return id && name ? { id, name } : null;
+  });
 
   return (
-    <div className="pane-body pane-text explorer">
+    <div class="pane-body pane-text explorer">
       <h2>Connection</h2>
-      {server ? (
-        <p>
-          <code>{server}</code>{" "}
-          <span className="muted">
-            {link === "open"
-              ? `· connected${role ? `, can ${role}` : ""}`
-              : link === "unauthorized"
-                ? "· refused this page's link"
-                : link === "unreachable"
-                  ? "· can't be reached, still trying"
-                  : `· ${link}`}
-          </span>
-        </p>
-      ) : (
-        <p className="muted">Not connected to a microscope.</p>
-      )}
+      <Show when={server} fallback={<p class="muted">Not connected to a microscope.</p>}>
+        {(origin) => (
+          <p>
+            <code>{origin()}</code>{" "}
+            <span class="muted">
+              {link() === "open"
+                ? `· connected${role() ? `, can ${role()}` : ""}`
+                : link() === "unauthorized"
+                  ? "· refused this page's link"
+                  : link() === "unreachable"
+                    ? "· can't be reached, still trying"
+                    : `· ${link()}`}
+            </span>
+          </p>
+        )}
+      </Show>
 
       <h2>Session</h2>
-      {state?.session && debugging ? (
-        <p>
-          <SessionLink session={state.session}>{debugging}</SessionLink>
-        </p>
-      ) : (
-        <p className="muted">Nothing is being debugged.</p>
-      )}
+      <Show when={session()} fallback={<p class="muted">Nothing is being debugged.</p>}>
+        {(current) => (
+          <p>
+            <SessionLink session={current().id}>{current().name}</SessionLink>
+          </p>
+        )}
+      </Show>
 
       <h2>Profiles</h2>
-      {profiles.length === 0 ? (
-        <p className="muted">This microscope serves no profiles.</p>
-      ) : (
-        <ul className="rows">
-          {profiles.map((profile) => (
-            <li key={profile.id}>
-              <ProfileButton id={profile.id} name={profile.name} />{" "}
-              {profile.recording && <span className="muted">recording</span>}
-            </li>
-          ))}
+      <Show
+        when={profiles().length > 0}
+        fallback={<p class="muted">This microscope serves no profiles.</p>}
+      >
+        <ul class="rows">
+          <For each={profiles()} keyed={(profile) => profile.id}>
+            {(profile) => (
+              <li>
+                <ProfileButton id={profile().id} name={profile().name} />{" "}
+                <Show when={profile().recording}>
+                  <span class="muted">recording</span>
+                </Show>
+              </li>
+            )}
+          </For>
         </ul>
-      )}
+      </Show>
     </div>
   );
 }
 
-export function SessionLink({ session, children }: { session: string; children: ReactNode }) {
-  const params = useMemo(() => ({ session }), [session]);
-  return (
-    <Link to="/s/$session" params={params}>
-      {children}
-    </Link>
-  );
+export function SessionLink(props: { session: string; children: JSX.Element }) {
+  return <a href={toHref(`/s/${props.session}`)}>{props.children}</a>;
 }
 
-function ProfileButton({ id, name }: { id: string; name: string }) {
-  const onClick = useCallback(() => showProfile(id, name), [id, name]);
+function ProfileButton(props: { id: string; name: string }) {
   return (
-    <button type="button" className="link-button" onClick={onClick}>
-      {fileName(name)}
+    <button type="button" class="link-button" onClick={() => showProfile(props.id, props.name)}>
+      {fileName(props.name)}
     </button>
   );
 }

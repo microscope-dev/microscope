@@ -1,4 +1,3 @@
-import { useCallback } from "react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -11,21 +10,20 @@ afterEach(unmountPane);
 
 function Palette() {
   const { run } = useCommands();
-  const openPalette = useCallback(() => run("palette"), [run]);
   return (
-    <button type="button" onClick={openPalette}>
+    <button type="button" onClick={() => run("palette")}>
       Open the palette
     </button>
   );
 }
 
 it("clears what a refused command said once another runs", async () => {
-  await mountPane(
+  await mountPane(() => (
     <>
       <Palette />
       <StatusBar />
-    </>,
-  );
+    </>
+  ));
   tab.setState({ session: "s1" });
   flash("this is the innermost frame");
   const said = page.getByText("this is the innermost frame");

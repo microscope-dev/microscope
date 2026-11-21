@@ -7,7 +7,7 @@ import { mountPane, unmountPane } from "./pane";
 afterEach(unmountPane);
 
 it("selects and writes bytes from the keyboard, and shows a failed write", async () => {
-  const server = await mountPane(<Memory />, { look: { mem: "0x1000:2" } });
+  const server = await mountPane(() => <Memory />, { look: { mem: "0x1000:2" } });
   server.answer(await server.next("readMemory"), {
     address: "0x1000",
     bytes: "0102030405060708090a0b0c0d0e0f10".repeat(16),
@@ -42,7 +42,7 @@ it("selects and writes bytes from the keyboard, and shows a failed write", async
 });
 
 it("keeps every arrow key pressed faster than the page draws", async () => {
-  const server = await mountPane(<Memory />, { look: { mem: "0x1000:2" } });
+  const server = await mountPane(() => <Memory />, { look: { mem: "0x1000:2" } });
   server.answer(await server.next("readMemory"), {
     address: "0x1000",
     bytes: "00".repeat(256),
@@ -59,7 +59,7 @@ it("keeps every arrow key pressed faster than the page draws", async () => {
 });
 
 it("shows the last page of the address space without running past its end", async () => {
-  const server = await mountPane(<Memory />, { look: { mem: "0xffffffffffffffff:1" } });
+  const server = await mountPane(() => <Memory />, { look: { mem: "0xffffffffffffffff:1" } });
   const asked = await server.next("readMemory");
   expect(asked.params).toMatchObject({ address: "0xffffffffffffff00", count: 256 });
   server.answer(asked, {
@@ -77,7 +77,7 @@ const byte = (offset: number) =>
 const classes = (offset: number) => (byte(offset).element() as HTMLElement).className.split(/\s+/u);
 
 it("selects a character array's string and marks the rest of the array", async () => {
-  const server = await mountPane(<Memory />, { look: { mem: "0x1000:16:7" } });
+  const server = await mountPane(() => <Memory />, { look: { mem: "0x1000:16:7" } });
 
   server.answer(await server.next("readMemory"), {
     address: "0x1000",

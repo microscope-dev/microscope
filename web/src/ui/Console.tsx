@@ -1,16 +1,4 @@
-import {
-  type ChangeEvent,
-  type FormEvent,
-  type KeyboardEvent,
-  type MouseEvent,
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from "react";
-import { useStore } from "zustand";
-import type { StoreApi } from "zustand";
+import { createEffect, createMemo, createSignal, createUniqueId, For, Show } from "solid-js";
 
 import { action } from "../actions";
 import { assert } from "../assert";
@@ -29,6 +17,7 @@ import {
 import type { At, Look } from "../focus";
 import type { Model } from "../model";
 import type { Completion } from "../protocol";
+import { type Store, useSelector } from "../state";
 import { useConnection, useStoreApi } from "../store";
 import { useLook } from "./navigation";
 import { useFollowBottom } from "./scroll";
@@ -36,40 +25,53 @@ import { LocalExpansion, ValueRow } from "./ValueTree";
 import { useFocus } from "./Workspace";
 
 export function Console() {
-  const entries = useStore(consoleStore, (state) => state.entries);
+  const entries = useSelector(consoleStore, (state) => state.entries);
 
-  const { ref, onScroll } = useFollowBottom<HTMLDivElement>(entries, entries.length);
+  const { ref, onScroll } = useFollowBottom<HTMLDivElement>(entries, () => entries().length);
 
   return (
     <>
-      <div className="pane-body console" ref={ref} onScroll={onScroll} data-testid="console">
-        {entries.length === 0 ? (
-          <div className="empty">
-            Expressions and microscope&apos;s commands run in the frame shown, and next, step,
-            continue, and finish run the program. Tab completes; ↑ and ↓ recall; help lists the
-            commands.
-          </div>
-        ) : (
+      <div class="pane-body console" ref={ref} onScroll={onScroll} data-testid="console">
+        <Show
+          when={entries().length > 0}
+          fallback={
+            <div class="empty">
+              Expressions and microscope&apos;s commands run in the frame shown, and next, step,
+              continue, and finish run the program. Tab completes; ↑ and ↓ recall; help lists the
+              commands.
+            </div>
+          }
+        >
           <LocalExpansion>
-            <ul className="console-entries">
-              {entries.map((entry) => (
-                <li key={entry.id} className="console-entry">
-                  <div className="console-line">
-                    <span className="prompt">›</span> {entry.line}
-                  </div>
-                  {entry.error !== undefined && <pre className="error">{entry.error}</pre>}
-                  {entry.said !== undefined && <div className="console-said">{entry.said}</div>}
-                  {typeof entry.result?.output === "string" && <pre>{entry.result.output}</pre>}
-                  {entry.result?.row && (
-                    <ul className="value-list">
-                      <ValueRow row={entry.result.row} parent={`c${entry.id}`} depth={0} />
-                    </ul>
-                  )}
-                </li>
-              ))}
+            <ul class="console-entries">
+              <For each={entries()} keyed={(entry) => entry.id}>
+                {(entry) => (
+                  <li class="console-entry">
+                    <div class="console-line">
+                      <span class="prompt">›</span> {entry().line}
+                    </div>
+                    <Show when={entry().error !== undefined}>
+                      <pre class="error">{entry().error}</pre>
+                    </Show>
+                    <Show when={entry().said !== undefined}>
+                      <div class="console-said">{entry().said}</div>
+                    </Show>
+                    <Show when={typeof entry().result?.output === "string"}>
+                      <pre>{entry().result?.output}</pre>
+                    </Show>
+                    <Show when={entry().result?.row}>
+                      {(row) => (
+                        <ul class="value-list">
+                          <ValueRow row={row()} parent={`c${entry().id}`} depth={0} />
+                        </ul>
+                      )}
+                    </Show>
+                  </li>
+                )}
+              </For>
             </ul>
           </LocalExpansion>
-        )}
+        </Show>
       </div>
       <ConsoleInput />
     </>
@@ -84,22 +86,33 @@ interface Choices {
 }
 
 function ConsoleInput() {
-  const { at, stale } = useFocus();
+  const focus = useFocus();
   const connection = useConnection();
   const store = useStoreApi();
   const look = useLook();
-  const history = useStore(consoleStore, (state) => state.history);
-  const [text, setText] = useState("");
-  const [recalled, setRecalled] = useState<number | null>(null);
-  const [choices, setChoices] = useState<Choices | null>(null);
-  const field = useRef<HTMLInputElement>(null);
-  const list = useId();
+  const history = useSelector(consoleStore, (state) => state.history);
+  const [text, setText] = createSignal("");
+  const [recalled, setRecalled] = createSignal<number | null>(null);
+  const [choices, setChoices] = createSignal<Choices | null>(null);
+  let field: HTMLInputElement | undefined;
+  const list = createUniqueId();
 
-  const frame = at && !stale ? at : null;
+  const frame = createMemo(() => {
+    const { at, stale } = focus();
+    return at && !stale ? at : null;
+  });
 
-  const run = useCallback(() => {
-    const typed = text.trim();
+  const active = createMemo(() => choices()?.active ?? null);
 
+  const placeholder = createMemo(() => {
+    const current = frame();
+    return current
+      ? `an expression or command, in frame ${current.frame}`
+      : "a command; expressions need a stop";
+  });
+
+  const run = () => {
+    const typed = text().trim();
     const last = consoleStore.getState().entries.at(-1)?.line;
     const line = typed || (last !== undefined && repeats(last) ? last : "");
     if (!line) {
@@ -108,37 +121,35 @@ function ConsoleInput() {
     setText("");
     setRecalled(null);
     setChoices(null);
-    runLine(line, { store, connection, at, frame, look });
-  }, [text, at, frame, store, connection, look]);
+    runLine(line, { store, connection, at: focus().at, frame: frame(), look });
+  };
 
-  const insert = useCallback(
-    (start: number, label: string, cursor: number) => {
-      const before = Array.from(text.slice(0, cursor));
-      const replaced = before.slice(0, start).join("") + label;
-      setText(replaced + text.slice(cursor));
-      requestAnimationFrame(() =>
-        field.current?.setSelectionRange(replaced.length, replaced.length),
-      );
-    },
-    [text],
-  );
+  const insert = (start: number, label: string, cursor: number) => {
+    const current = text();
+    const before = Array.from(current.slice(0, cursor));
+    const replaced = before.slice(0, start).join("") + label;
+    setText(replaced + current.slice(cursor));
+    requestAnimationFrame(() => field?.setSelectionRange(replaced.length, replaced.length));
+  };
 
-  const take = useCallback(
-    (item: Completion) => {
-      if (choices) {
-        insert(choices.start, item.label, field.current?.selectionStart ?? text.length);
-        setChoices(null);
-      }
-    },
-    [choices, insert, text.length],
-  );
+  const take = (item: Completion) => {
+    const current = choices();
+    if (current) {
+      insert(current.start, item.label, field?.selectionStart ?? text().length);
+      setChoices(null);
+    }
+  };
 
-  const complete = useCallback(() => {
-    const cursor = field.current?.selectionStart ?? text.length;
+  const complete = () => {
+    const currentText = text();
+    const currentFrame = frame();
+    const cursor = field?.selectionStart ?? currentText.length;
     const ask = async () => {
       const { start, items } = await connection.request(
         "complete",
-        frame ? { text: text.slice(0, cursor), ...frame } : { text: text.slice(0, cursor) },
+        currentFrame
+          ? { text: currentText.slice(0, cursor), ...currentFrame }
+          : { text: currentText.slice(0, cursor) },
       );
       if (items.length === 0) {
         setChoices(null);
@@ -149,7 +160,7 @@ function ConsoleInput() {
         setChoices(null);
         return;
       }
-      const typed = Array.from(text.slice(0, cursor)).slice(start).join("");
+      const typed = Array.from(currentText.slice(0, cursor)).slice(start).join("");
       const shared = commonPrefix(items.map((item) => item.label));
       if (shared.length > typed.length) {
         insert(start, shared, cursor);
@@ -157,128 +168,125 @@ function ConsoleInput() {
       setChoices({ start, items: items.slice(0, 60), active: null });
     };
     ask().catch(() => setChoices(null));
-  }, [text, frame, connection, insert]);
+  };
 
-  const recall = useCallback(
-    (step: -1 | 1) => {
-      if (history.length === 0) {
-        return;
-      }
-      const index =
-        recalled === null
-          ? step < 0
-            ? history.length - 1
-            : null
-          : recalled + step >= history.length
-            ? null
-            : Math.max(0, recalled + step);
-      const recalledLine = index === null ? "" : history[index];
-      assert(recalledLine !== undefined, `recalled line ${index} of ${history.length}`);
-      setRecalled(index);
-      setText(recalledLine);
-    },
-    [history, recalled],
-  );
+  const recall = (step: -1 | 1) => {
+    const lines = history();
+    if (lines.length === 0) {
+      return;
+    }
+    const currentRecalled = recalled();
+    const index =
+      currentRecalled === null
+        ? step < 0
+          ? lines.length - 1
+          : null
+        : currentRecalled + step >= lines.length
+          ? null
+          : Math.max(0, currentRecalled + step);
+    const recalledLine = index === null ? "" : lines[index];
+    assert(recalledLine !== undefined, `recalled line ${index} of ${lines.length}`);
+    setRecalled(index);
+    setText(recalledLine);
+  };
 
-  const walk = useCallback(
-    (step: -1 | 1) => {
-      if (!choices) {
-        return;
-      }
-      const count = choices.items.length;
-      assert(count >= 2, `choices kept for ${count} completions`);
-      const active =
-        choices.active === null
-          ? step > 0
-            ? 0
-            : count - 1
-          : (choices.active + step + count) % count;
-      assert(active >= 0 && active < count, `active completion ${active} of ${count}`);
-      setChoices({ ...choices, active });
-    },
-    [choices],
-  );
+  const walk = (step: -1 | 1) => {
+    const current = choices();
+    if (!current) {
+      return;
+    }
+    const count = current.items.length;
+    assert(count >= 2, `choices kept for ${count} completions`);
+    const next =
+      current.active === null
+        ? step > 0
+          ? 0
+          : count - 1
+        : (current.active + step + count) % count;
+    assert(next >= 0 && next < count, `active completion ${next} of ${count}`);
+    setChoices({ ...current, active: next });
+  };
 
-  const submit = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      run();
-    },
-    [run],
-  );
+  const submit = (event: SubmitEvent) => {
+    event.preventDefault();
+    run();
+  };
 
-  const edit = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    setText(event.target.value);
+  const edit = (event: InputEvent & { currentTarget: HTMLInputElement }) => {
+    setText(event.currentTarget.value);
     setChoices(null);
-  }, []);
+  };
 
-  const active = choices?.active ?? null;
-  const key = useCallback(
-    (event: KeyboardEvent) => {
-      if (event.key === "l" && event.ctrlKey && !event.altKey && !event.metaKey) {
-        event.preventDefault();
-        clearConsole();
-      } else if (event.key === "Tab" && choices) {
-        event.preventDefault();
-        walk(event.shiftKey ? -1 : 1);
-      } else if (event.key === "Tab" && !event.shiftKey) {
-        event.preventDefault();
-        complete();
-      } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-        event.preventDefault();
-        const step = event.key === "ArrowUp" ? -1 : 1;
-        if (choices) {
-          walk(step);
-        } else {
-          recall(step);
-        }
-      } else if (event.key === "Enter" && choices && active !== null) {
-        event.preventDefault();
-        const item = choices.items[active];
-        assert(item !== undefined, `active completion ${active} of ${choices.items.length}`);
-        take(item);
-      } else if (event.key === "Escape" && choices) {
-        event.stopPropagation();
-        setChoices(null);
+  const key = (event: KeyboardEvent) => {
+    const currentChoices = choices();
+    const currentActive = active();
+    if (event.key === "l" && event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      clearConsole();
+    } else if (event.key === "Tab" && currentChoices) {
+      event.preventDefault();
+      walk(event.shiftKey ? -1 : 1);
+    } else if (event.key === "Tab" && !event.shiftKey) {
+      event.preventDefault();
+      complete();
+    } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      event.preventDefault();
+      const step = event.key === "ArrowUp" ? -1 : 1;
+      if (currentChoices) {
+        walk(step);
+      } else {
+        recall(step);
       }
-    },
-    [complete, choices, walk, recall, active, take],
-  );
+    } else if (event.key === "Enter" && currentChoices && currentActive !== null) {
+      event.preventDefault();
+      const item = currentChoices.items[currentActive];
+      assert(
+        item !== undefined,
+        `active completion ${currentActive} of ${currentChoices.items.length}`,
+      );
+      take(item);
+    } else if (event.key === "Escape" && currentChoices) {
+      event.stopPropagation();
+      setChoices(null);
+    }
+  };
+
   return (
-    <form className="console-input" onSubmit={submit}>
-      {choices && (
-        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- the input's own completions popup, which a select cannot be
-        <div className="completions" id={list} role="listbox" aria-label="Completions">
-          {choices.items.map((item, index) => (
-            <Choice
-              key={item.label}
-              id={`${list}-${index}`}
-              item={item}
-              active={index === active}
-              take={take}
-            />
-          ))}
-        </div>
-      )}
-      <span className="prompt" aria-hidden="true">
+    <form class="console-input" onSubmit={submit}>
+      <Show when={choices()}>
+        {(current) => (
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- the input's own completions popup, which a select cannot be
+          <div class="completions" id={list} role="listbox" aria-label="Completions">
+            <For each={current().items} keyed={(item) => item.label}>
+              {(item, index) => (
+                <Choice
+                  id={`${list}-${index()}`}
+                  item={item()}
+                  active={index() === active()}
+                  take={take}
+                />
+              )}
+            </For>
+          </div>
+        )}
+      </Show>
+      <span class="prompt" aria-hidden="true">
         ›
       </span>
       <input
-        ref={field}
-        className="input quiet"
+        ref={(node) => {
+          field = node;
+        }}
+        class="input quiet"
         aria-label="Console"
-        aria-controls={choices ? list : undefined}
-        aria-activedescendant={active === null ? undefined : `${list}-${active}`}
+        aria-controls={choices() ? list : undefined}
+        aria-activedescendant={active() === null ? undefined : `${list}-${active()}`}
         data-autofocus
-        placeholder={
-          frame
-            ? `an expression or command, in frame ${frame.frame}`
-            : "a command; expressions need a stop"
-        }
-        value={text}
-        autoComplete="off"
-        spellCheck={false}
-        onChange={edit}
+        placeholder={placeholder()}
+        value={text()}
+        autocomplete="off"
+        spellcheck={false}
+        onInput={edit}
         onKeyDown={key}
       />
     </form>
@@ -286,7 +294,7 @@ function ConsoleInput() {
 }
 
 interface Context {
-  store: StoreApi<Model>;
+  store: Store<Model>;
   connection: Connection;
 
   at: At | null;
@@ -412,7 +420,7 @@ function showingCode(current: Look, address: string | null): Look {
   return { ...kept, ...(address === null ? {} : { asm: address }), view: "disassembly" };
 }
 
-function follow(store: StoreApi<Model>, id: number, send: () => Promise<unknown>): Promise<null> {
+function follow(store: Store<Model>, id: number, send: () => Promise<unknown>): Promise<null> {
   const before = store.getState().state?.inferior;
   let settled = false;
   const unsubscribe = store.subscribe((model) => {
@@ -437,44 +445,43 @@ function follow(store: StoreApi<Model>, id: number, send: () => Promise<unknown>
   );
 }
 
-function Choice({
-  id,
-  item,
-  active,
-  take,
-}: {
+function Choice(props: {
   id: string;
   item: Completion;
   active: boolean;
   take: (item: Completion) => void;
 }) {
-  const option = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (active) {
-      option.current?.scrollIntoView({ block: "nearest" });
-    }
-  }, [active]);
+  let option: HTMLDivElement | undefined;
 
-  const press = useCallback(
-    (event: MouseEvent) => {
-      event.preventDefault();
-      take(item);
+  createEffect(
+    () => props.active,
+    (isActive) => {
+      if (isActive) {
+        option?.scrollIntoView({ block: "nearest" });
+      }
     },
-    [take, item],
   );
+
+  const press = (event: MouseEvent) => {
+    event.preventDefault();
+    props.take(props.item);
+  };
+
   return (
     <div
-      ref={option}
-      id={id}
+      ref={(node) => {
+        option = node;
+      }}
+      id={props.id}
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an entry of the completions popup
       role="option"
-      aria-selected={active}
-      tabIndex={-1}
-      className={active ? "on" : ""}
+      aria-selected={props.active ? "true" : "false"}
+      tabindex={-1}
+      class={{ on: props.active }}
       onMouseDown={press}
     >
-      {item.label}
-      <span className="dim"> {item.kind}</span>
+      {props.item.label}
+      <span class="dim"> {props.item.kind}</span>
     </div>
   );
 }

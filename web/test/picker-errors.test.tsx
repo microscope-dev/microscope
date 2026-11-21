@@ -1,12 +1,11 @@
-import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
-import { createAppRouter } from "../src/router";
+import { AppRouter, createMemoryHistory } from "../src/router";
 import { SessionContext } from "../src/store";
 import { fakeServer } from "./fake-server";
 import { stoppedState } from "./pane";
+import { cleanup, render } from "./render";
 
 afterEach(cleanup);
 
@@ -22,12 +21,12 @@ async function failedLaunch() {
       threads: [],
     }),
   });
-  const router = createAppRouter(createMemoryHistory({ initialEntries: ["/pick"] }));
-  render(
+  const history = createMemoryHistory("/pick");
+  render(() => (
     <SessionContext value={server.session}>
-      <RouterProvider router={router} />
-    </SessionContext>,
-  );
+      <AppRouter history={history} />
+    </SessionContext>
+  ));
   const program = page.getByRole("combobox", { name: "Program" });
   await userEvent.fill(program, "/nope");
   await userEvent.click(page.getByRole("button", { name: "Load", exact: true }));

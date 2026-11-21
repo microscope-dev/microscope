@@ -1,16 +1,15 @@
-import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
+import type { JSX } from "@solidjs/web";
 import {
-  type CSSProperties,
-  Fragment,
-  type KeyboardEvent,
-  type MouseEvent,
-  type RefObject,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  Repeat,
+  Show,
+  Switch,
+  untrack,
+} from "solid-js";
 
 import {
   type CodeRow,
@@ -32,109 +31,142 @@ import {
 } from "../../profile/code";
 import { formatCount, formatPercent, largest } from "../../profile/paint";
 import type { ProfileCode, ProfileSourceFile, ProfileToken } from "../../protocol";
+import { createVirtualizer, type SolidVirtualizer } from "../../virtual";
 import { fileName } from "../paths";
 import { type Painted, paintLines } from "../source/languages";
 import { useAnswer, useProfile } from "./context";
 import { ownTone, Share, Unanswered } from "./parts";
 import { COLUMN_HELP } from "./TreeView";
 
-export function SourceLines({ name }: { name: string }) {
-  const { query } = useProfile();
-  const answer = useAnswer(
-    "profileLines",
-    useMemo(() => ({ ...query, function: name }), [query, name]),
+export function SourceLines(props: { name: string }) {
+  const focus = useProfile();
+  const answer = useAnswer("profileLines", () => ({ ...focus().query, function: props.name }));
+  let body: HTMLDivElement | undefined;
+  useHottestInView(
+    () => body,
+    () => props.name,
+    () => answer().current,
   );
-  const body = useRef<HTMLDivElement>(null);
-  useHottestInView(body, name, answer.current);
-  const files = answer.data?.files;
-  const painted = useMemo(
-    () => files?.map((file) => (file.text ? paintLines(file.path ?? "", file.text) : [])),
-    [files],
+  const files = createMemo(() => answer().data?.files);
+  const painted = createMemo(() =>
+    files()?.map((file) => (file.text ? paintLines(file.path ?? "", file.text) : [])),
   );
-  if (answer.error || !files) {
-    return <Unanswered error={answer.error} reading={`Reading the source lines of ${name}…`} />;
-  }
-  if (files.length === 0) {
-    return <div className="empty">No selected sample has a source line in {name}.</div>;
-  }
-  const weight = answer.data?.weight ?? 0;
-  let most = 0;
-  for (const file of files) {
-    most = largest(
-      file.lines.map(([, , total]) => total),
-      most,
-    );
-  }
+  const weight = createMemo(() => answer().data?.weight ?? 0);
+  const most = createMemo(() => {
+    let highest = 0;
+    for (const file of files() ?? []) {
+      highest = largest(
+        file.lines.map(([, , total]) => total),
+        highest,
+      );
+    }
+    return highest;
+  });
+
   return (
-    <div
-      ref={body}
-      className={`pane-body annotated ${answer.current ? "" : "stale"}`}
-      data-testid="source-lines"
-    >
-      {files.map((file, fileAt) => {
-        const costs = new Map(file.lines.map(([line, own, total]) => [line, [own, total]]));
-        return (
-          <div key={file.path ?? ""} className="annotated-file">
-            <div className="annotated-head mono">{file.path ?? "no file"}</div>
-            {file.text ? (
-              file.text.map((text, at) => {
-                const line = file.first + at;
-                const cost = costs.get(line);
+    <Switch>
+      <Match when={answer().error || !files()}>
+        <Unanswered error={answer().error} reading={`Reading the source lines of ${props.name}…`} />
+      </Match>
+      <Match when={files()?.length === 0}>
+        <div class="empty">No selected sample has a source line in {props.name}.</div>
+      </Match>
+      <Match when={files()}>
+        {(shownFiles) => (
+          <div
+            ref={(node) => {
+              body = node;
+            }}
+            class={`pane-body annotated ${answer().current ? "" : "stale"}`}
+            data-testid="source-lines"
+          >
+            <For each={shownFiles()} keyed={(file) => file.path ?? ""}>
+              {(file, fileAt) => {
+                const costs = createMemo(
+                  () => new Map(file().lines.map(([line, own, total]) => [line, [own, total]])),
+                );
                 return (
-                  <div
-                    key={line}
-                    className={`row annotated-row ${cost ? "hot" : ""} ${hottest(cost?.[1], most)}`}
-                  >
-                    <Costs own={cost?.[0]} total={cost?.[1]} weight={weight} />
-                    <span className="line-number">{line}</span>
-                    <code>
-                      <Tokens runs={painted?.[fileAt]?.[at]} text={text} />
-                    </code>
+                  <div class="annotated-file">
+                    <div class="annotated-head mono">{file().path ?? "no file"}</div>
+                    <Show when={file().text} fallback={<div class="empty">{file().unread}</div>}>
+                      {(lines) => (
+                        <For each={lines()} keyed={false}>
+                          {(text, at) => {
+                            const line = createMemo(() => file().first + at);
+                            const cost = createMemo(() => costs().get(line()));
+                            return (
+                              <div
+                                class={`row annotated-row ${cost() ? "hot" : ""} ${hottest(cost()?.[1], most())}`}
+                              >
+                                <Costs own={cost()?.[0]} total={cost()?.[1]} weight={weight()} />
+                                <span class="line-number">{line()}</span>
+                                <code>
+                                  <Tokens runs={painted()?.[fileAt()]?.[at]} text={text()} />
+                                </code>
+                              </div>
+                            );
+                          }}
+                        </For>
+                      )}
+                    </Show>
                   </div>
                 );
-              })
-            ) : (
-              <div className="empty">{file.unread}</div>
-            )}
+              }}
+            </For>
           </div>
-        );
-      })}
-    </div>
+        )}
+      </Match>
+    </Switch>
   );
 }
 
-export function Code({ name }: { name: string }) {
-  const { query } = useProfile();
-  const answer = useAnswer(
-    "profileCode",
-    useMemo(() => ({ ...query, function: name }), [query, name]),
-  );
+export function Code(props: { name: string }) {
+  const focus = useProfile();
+  const answer = useAnswer("profileCode", () => ({ ...focus().query, function: props.name }));
 
-  const answered = useRef(name);
-  if (answer.current) {
-    // oxlint-disable-next-line react/refs -- follows the answer without a second render
-    answered.current = name;
-  }
-  // oxlint-disable-next-line react/refs -- follows the answer without a second render
-  const shownName = answered.current;
-  const code = answer.data;
-  if (answer.error || !code) {
-    return <Unanswered error={answer.error} reading={`Reading the instructions of ${name}…`} />;
-  }
-  if (code.unavailable) {
-    return <div className="empty">{code.unavailable}</div>;
-  }
-  if (code.blocks.length === 0 && code.unplaced.length === 0) {
-    return <div className="empty">No selected sample ran an instruction of {name}.</div>;
-  }
+  let answered = untrack(() => props.name);
+  const shownName = createMemo(() => {
+    if (answer().current) {
+      answered = props.name;
+    }
+    return answered;
+  });
+  const code = createMemo(() => answer().data);
+  const splitKey = createMemo(() => {
+    const current = code();
+    if (
+      answer().error ||
+      !current ||
+      current.unavailable ||
+      (current.blocks.length === 0 && current.unplaced.length === 0)
+    ) {
+      return null;
+    }
+    return `${shownName()}\n${current.blocks[0]?.symbol ?? ""}`;
+  });
+
+  const emptyCode = createMemo(() => {
+    const current = code();
+    return current !== undefined && current.blocks.length === 0 && current.unplaced.length === 0;
+  });
 
   return (
-    <Split
-      key={`${shownName}\n${code.blocks[0]?.symbol ?? ""}`}
-      name={shownName}
-      code={code}
-      current={answer.current}
-    />
+    <Switch>
+      <Match when={answer().error || !code()}>
+        <Unanswered error={answer().error} reading={`Reading the instructions of ${props.name}…`} />
+      </Match>
+      <Match when={code()?.unavailable}>{(reason) => <div class="empty">{reason()}</div>}</Match>
+      <Match when={emptyCode()}>
+        <div class="empty">No selected sample ran an instruction of {props.name}.</div>
+      </Match>
+      <Match when={splitKey()} keyed>
+        {(_key) => (
+          <Show when={code()}>
+            {(current) => <Split name={shownName()} code={current()} current={answer().current} />}
+          </Show>
+        )}
+      </Match>
+    </Switch>
   );
 }
 
@@ -144,109 +176,122 @@ interface Chosen {
   row: number | null;
 }
 
-function Split({ name, code, current }: { name: string; code: ProfileCode; current: boolean }) {
-  const rows = useMemo(() => codeRows(code), [code]);
-  const tree = useMemo(() => inlineTree(rows), [rows]);
+function Split(props: { name: string; code: ProfileCode; current: boolean }) {
+  const rows = createMemo(() => codeRows(props.code));
+  const tree = createMemo(() => inlineTree(rows()));
 
-  const opening = useMemo(
-    () =>
-      openingLine(tree, rows, code.files, code.inlined_into ? code.functions.indexOf(name) : -1),
-    [tree, rows, code.files, code.inlined_into, code.functions, name],
+  const opening = createMemo(() =>
+    openingLine(
+      tree(),
+      rows(),
+      props.code.files,
+      props.code.inlined_into ? props.code.functions.indexOf(props.name) : -1,
+    ),
   );
-  const [open, setOpen] = useState<ReadonlySet<string>>(
-    () => new Set(opening ? linesAbove(opening) : []),
+  const [open, setOpen] = createSignal<ReadonlySet<string>>(
+    untrack(() => {
+      const first = opening();
+      return new Set(first ? linesAbove(first) : []);
+    }),
   );
-  const [chosen, setChosen] = useState<Chosen | null>(null);
-  const source = useRef<HTMLDivElement>(null);
-  const listing = useRef<HTMLDivElement>(null);
+  const [chosen, setChosen] = createSignal<Chosen | null>(null);
+  const [source, setSource] = createSignal<HTMLDivElement | null>(null);
+  const [listing, setListing] = createSignal<HTMLDivElement | null>(null);
 
-  const entries = useMemo(() => sourceEntries(tree, code.files, open), [tree, code.files, open]);
-  const tints = useMemo(() => tintsOf(tree, open), [tree, open]);
-  const from = useMemo(() => inlinedFrom(tree, code.files), [tree, code.files]);
-  const line = (chosen ? tree.lines.get(chosen.line) : undefined) ?? opening;
-  const runs = useMemo(() => runsOf(line?.rows ?? []), [line]);
-  const run = chosen?.run ?? hottestRun(rows, runs);
-  const shown = chosen?.row ?? runs[run]?.[0];
-  const selected = useMemo(() => new Set(line?.rows), [line]);
-  const paint = useMemo(() => painter(code.files), [code.files]);
+  const entries = createMemo(() => sourceEntries(tree(), props.code.files, open()));
+  const tints = createMemo(() => tintsOf(tree(), open()));
+  const from = createMemo(() => inlinedFrom(tree(), props.code.files));
+  const line = createMemo(() => {
+    const picked = chosen();
+    return (picked ? tree().lines.get(picked.line) : undefined) ?? opening();
+  });
+  const runs = createMemo(() => runsOf(line()?.rows ?? []));
+  const run = createMemo(() => chosen()?.run ?? hottestRun(rows(), runs()));
+  const shown = createMemo(() => chosen()?.row ?? runs()[run()]?.[0]);
+  const selected = createMemo(() => new Set(line()?.rows));
+  const paint = createMemo(() => painter(props.code.files));
 
-  const entryOf = useMemo(
+  const entryOf = createMemo(
     () =>
       new Map(
-        entries.flatMap((entry, at) => (entry.kind === "line" ? [[entry.line.key, at]] : [])),
+        entries().flatMap((entry, at) => (entry.kind === "line" ? [[entry.line.key, at]] : [])),
       ),
-    [entries],
   );
-  const coded = useMemo(
-    () => entries.flatMap((entry) => (entry.kind === "line" ? [entry.line] : [])),
-    [entries],
+  const coded = createMemo(() =>
+    entries().flatMap((entry) => (entry.kind === "line" ? [entry.line] : [])),
   );
 
-  const items = useMemo(
-    () =>
-      rows.flatMap((row, index): Item[] =>
-        row.symbol !== null && code.blocks.length > 1
-          ? [{ symbol: row.symbol }, { row: index }]
-          : [{ row: index }],
-      ),
-    [rows, code.blocks.length],
+  const items = createMemo(() =>
+    rows().flatMap((row, index): Item[] =>
+      row.symbol !== null && props.code.blocks.length > 1
+        ? [{ symbol: row.symbol }, { row: index }]
+        : [{ row: index }],
+    ),
   );
-  const itemOf = useMemo(() => {
+  const itemOf = createMemo(() => {
     const at: number[] = [];
-    for (const [item, each] of items.entries()) {
+    for (const [item, each] of items().entries()) {
       if ("row" in each) {
         at[each.row] = item;
       }
     }
     return at;
-  }, [items]);
-  const sourceList = usePane(entries.length, source);
-  const listingList = usePane(items.length, listing);
-  const longestSource = useMemo(
-    () => longest(entries.map((entry) => entryText(entry, code))),
-    [entries, code],
+  });
+  const sourceList = usePane(() => entries().length, source);
+  const listingList = usePane(() => items().length, listing);
+  const longestSource = createMemo(() =>
+    longest(entries().map((entry) => entryText(entry, props.code))),
   );
-  const longestListing = useMemo(
-    () =>
-      longest(
-        rows.map(
-          ({ instruction }) =>
-            instruction.tokens.map(([, text]) => text).join("") +
-            (instruction.target ? ` <${instruction.target}>` : ""),
-        ),
+  const longestListing = createMemo(() =>
+    longest(
+      rows().map(
+        ({ instruction }) =>
+          instruction.tokens.map(([, text]) => text).join("") +
+          (instruction.target ? ` <${instruction.target}>` : ""),
       ),
-    [rows],
+    ),
   );
 
-  const brackets = useMemo(() => {
+  const brackets = createMemo(() => {
     const firsts: number[] = [];
     const holds = new Set<number>();
-    for (const [index, function_] of from.entries()) {
+    const currentFrom = from();
+    const currentSelected = selected();
+    for (const [index, function_] of currentFrom.entries()) {
       const first =
-        index > 0 && from[index - 1] === function_ ? (firsts[index - 1] ?? index) : index;
+        index > 0 && currentFrom[index - 1] === function_ ? (firsts[index - 1] ?? index) : index;
       firsts.push(first);
-      if (function_ !== null && selected.has(index)) {
+      if (function_ !== null && currentSelected.has(index)) {
         holds.add(first);
       }
     }
     return { firsts, holds };
-  }, [from, selected]);
-  const bracketed = from.some((function_) => function_ !== null);
+  });
+  const bracketed = createMemo(() => from().some((function_) => function_ !== null));
 
-  const lineKey = line?.key;
-  useEffect(() => {
-    reveal(source.current, lineKey === undefined ? -1 : (entryOf.get(lineKey) ?? -1));
-    if (shown !== undefined) {
-      reveal(listing.current, itemOf[shown] ?? -1);
-    }
-  }, [lineKey, shown, entryOf, itemOf]);
+  createEffect(
+    () => ({
+      lineKey: line()?.key,
+      shown: shown(),
+      entryOf: entryOf(),
+      itemOf: itemOf(),
+      sourceEl: source(),
+      listingEl: listing(),
+    }),
+    ({ lineKey, shown: shownRow, entryOf: entriesMap, itemOf: itemsMap, sourceEl, listingEl }) => {
+      reveal(sourceEl, lineKey === undefined ? -1 : (entriesMap.get(lineKey) ?? -1));
+      if (shownRow !== undefined) {
+        reveal(listingEl, itemsMap[shownRow] ?? -1);
+      }
+    },
+  );
 
-  const choose = useCallback((to: TreeLine, at: number | null, row: number | null) => {
+  const choose = (to: TreeLine, at: number | null, row: number | null) => {
     const above = linesAbove(to);
     setOpen((was) => (above.every((key) => was.has(key)) ? was : new Set([...was, ...above])));
     setChosen({ line: to.key, run: at, row });
-  }, []);
-  const toggle = useCallback((key: string) => {
+  };
+  const toggle = (key: string) => {
     setOpen((was) => {
       const now = new Set(was);
       if (!now.delete(key)) {
@@ -254,268 +299,331 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
       }
       return now;
     });
-  }, []);
+  };
 
-  const step = useCallback(
-    (by: number) => {
-      if (line && runs.length > 0) {
-        setChosen({ line: line.key, run: (run + by + runs.length) % runs.length, row: null });
-      }
-    },
-    [line, run, runs.length],
-  );
-  const previous = useCallback(() => step(-1), [step]);
-  const next = useCallback(() => step(1), [step]);
+  const step = (by: number) => {
+    const currentLine = line();
+    const currentRuns = runs();
+    if (currentLine && currentRuns.length > 0) {
+      setChosen({
+        line: currentLine.key,
+        run: (run() + by + currentRuns.length) % currentRuns.length,
+        row: null,
+      });
+    }
+  };
+  const previous = () => step(-1);
+  const next = () => step(1);
 
-  const keys = useCallback(
-    (event: KeyboardEvent<HTMLDivElement>) => {
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        const at = line ? coded.indexOf(line) : -1;
-        const to = coded[at + (event.key === "ArrowDown" ? 1 : -1)];
-        if (to && at >= 0) {
-          choose(to, null, null);
-        }
-      } else if (event.key === "Enter" && line && line.inlined.length > 0) {
-        event.preventDefault();
-        toggle(line.key);
-      } else if (event.key === "]" || event.key === "ArrowRight") {
-        event.preventDefault();
-        step(1);
-      } else if (event.key === "[" || event.key === "ArrowLeft") {
-        event.preventDefault();
-        step(-1);
+  const keys = (event: KeyboardEvent) => {
+    const currentLine = line();
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const lines = coded();
+      const at = currentLine ? lines.indexOf(currentLine) : -1;
+      const to = lines[at + (event.key === "ArrowDown" ? 1 : -1)];
+      if (to && at >= 0) {
+        choose(to, null, null);
       }
-    },
-    [coded, line, choose, toggle, step],
-  );
+    } else if (event.key === "Enter" && currentLine && currentLine.inlined.length > 0) {
+      event.preventDefault();
+      toggle(currentLine.key);
+    } else if (event.key === "]" || event.key === "ArrowRight") {
+      event.preventDefault();
+      step(1);
+    } else if (event.key === "[" || event.key === "ArrowLeft") {
+      event.preventDefault();
+      step(-1);
+    }
+  };
 
-  const pickLine = useCallback(
-    (event: MouseEvent<HTMLDivElement>) => {
-      const target = event.target as Element;
-      const opener = target.closest<HTMLElement>("[data-toggle]")?.dataset.toggle;
-      if (opener !== undefined) {
-        toggle(opener);
-        return;
-      }
-      const picked = tree.lines.get(target.closest<HTMLElement>("[data-line]")?.dataset.line ?? "");
-      if (picked) {
-        choose(picked, null, null);
-      }
-    },
-    [tree, choose, toggle],
-  );
+  const pickLine = (event: MouseEvent) => {
+    const target = event.target as Element;
+    const opener = target.closest<HTMLElement>("[data-toggle]")?.dataset.toggle;
+    if (opener !== undefined) {
+      toggle(opener);
+      return;
+    }
+    const picked = tree().lines.get(target.closest<HTMLElement>("[data-line]")?.dataset.line ?? "");
+    if (picked) {
+      choose(picked, null, null);
+    }
+  };
 
-  const indexOf = useMemo(
-    () => new Map(rows.map((row, index) => [row.instruction.address, index])),
-    [rows],
+  const indexOf = createMemo(
+    () => new Map(rows().map((row, index) => [row.instruction.address, index])),
   );
 
-  const pickRow = useCallback(
-    (event: MouseEvent<HTMLDivElement>) => {
-      const target = event.target as Element;
-      const jump = target.closest<HTMLElement>("[data-jump]");
-      const row = target.closest<HTMLElement>("[data-row]");
-      const index = jump ? indexOf.get(Number(jump.dataset.jump)) : Number(row?.dataset.row);
-      const path = index === undefined ? undefined : tree.paths[index];
-      const to = path?.[ownCodeAt(path, code.files)];
-      if (index === undefined || !to) {
-        return;
-      }
-      const at = runsOf(to.rows).findIndex(([first, last]) => index >= first && index <= last);
-      choose(to, at, index);
-    },
-    [indexOf, tree, code.files, choose],
+  const pickRow = (event: MouseEvent) => {
+    const target = event.target as Element;
+    const jump = target.closest<HTMLElement>("[data-jump]");
+    const row = target.closest<HTMLElement>("[data-row]");
+    const index = jump ? indexOf().get(Number(jump.dataset.jump)) : Number(row?.dataset.row);
+    const path = index === undefined ? undefined : tree().paths[index];
+    const to = path?.[ownCodeAt(path, props.code.files)];
+    if (index === undefined || !to) {
+      return;
+    }
+    const at = runsOf(to.rows).findIndex(([first, last]) => index >= first && index <= last);
+    choose(to, at, index);
+  };
+
+  const counted = createMemo(() =>
+    runs().reduce((sum, [first, last]) => sum + last - first + 1, 0),
   );
+  const clicked = createMemo(() => {
+    const picked = chosen();
+    return picked?.row === null || picked === null ? undefined : rows()[picked.row];
+  });
 
-  const counted = runs.reduce((sum, [first, last]) => sum + last - first + 1, 0);
-  const clicked = chosen?.row === null || chosen === null ? undefined : rows[chosen.row];
-
-  const lineDigits = useMemo(() => {
-    const widest = Math.max(1, ...[...tree.lines.values()].map((each) => each.line));
-    return { "--digits": String(widest).length } as CSSProperties;
-  }, [tree]);
-  const offsetDigits = useMemo(() => {
-    const most = rows.reduce((widest, row) => Math.max(widest, row.offset), 0);
-    return { "--digits": most.toString(16).length + 1 } as CSSProperties;
-  }, [rows]);
+  const lineDigits = createMemo<JSX.CSSProperties>(() => {
+    const widest = Math.max(1, ...[...tree().lines.values()].map((each) => each.line));
+    return { "--digits": String(widest).length };
+  });
+  const offsetDigits = createMemo<JSX.CSSProperties>(() => {
+    const most = rows().reduce((widest, row) => Math.max(widest, row.offset), 0);
+    return { "--digits": most.toString(16).length + 1 };
+  });
 
   return (
-    <div className={`code-split ${current ? "" : "stale"}`} data-testid="code">
-      <div className="code-split-head">
-        <span>{code.files[0]?.path ?? "no source"}</span>
-        <span className="muted end">{code.module}</span>
+    <div class={`code-split ${props.current ? "" : "stale"}`} data-testid="code">
+      <div class="code-split-head">
+        <span>{props.code.files[0]?.path ?? "no source"}</span>
+        <span class="muted end">{props.code.module}</span>
       </div>
-      {code.inlined_into ? (
-        <div className="code-split-note">
-          {name} has no code of its own. Every sample ran it inlined into {code.inlined_into}, shown
-          here.
-        </div>
-      ) : null}
-      <div className="code-split-panes">
+      <Show when={props.code.inlined_into}>
+        {(into) => (
+          <div class="code-split-note">
+            {props.name} has no code of its own. Every sample ran it inlined into {into()}, shown
+            here.
+          </div>
+        )}
+      </Show>
+      <div class="code-split-panes">
         <div
-          ref={source}
-          className="code-split-pane"
-          style={lineDigits}
+          ref={(node) => setSource(node)}
+          class="code-split-pane"
+          style={lineDigits()}
           // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- rows of costs and code a select cannot hold
           role="listbox"
           aria-label="Source"
-          tabIndex={0}
+          tabindex={0}
           onClick={pickLine}
           onKeyDown={keys}
         >
           <CostHead />
-          <Sizer text={longestSource} />
-          {entries.length > 0 ? (
-            <>
-              <Gap list={sourceList} side="before" />
-              {sourceList.getVirtualItems().map(({ index: at }) => {
-                const entry = entries[at];
-                return entry ? (
-                  <SourceRow
-                    key={entry.kind === "line" ? entry.line.key : `${entry.kind} ${at}`}
-                    entry={entry}
-                    code={code}
-                    chosen={entry.kind === "line" && entry.line === line}
-                    open={open}
-                    tints={tints}
-                    paint={paint}
-                  />
-                ) : null;
-              })}
-              <Gap list={sourceList} side="after" />
-            </>
-          ) : (
-            <div className="empty">
-              {code.unlined ?? code.files[0]?.unread ?? "The instructions have no source lines."}
-            </div>
-          )}
+          <Sizer text={longestSource()} />
+          <Show
+            when={entries().length > 0}
+            fallback={
+              <div class="empty">
+                {props.code.unlined ??
+                  props.code.files[0]?.unread ??
+                  "The instructions have no source lines."}
+              </div>
+            }
+          >
+            <Gap list={sourceList} side="before" />
+            <For
+              each={sourceList.items()}
+              keyed={(item) => {
+                const entry = entries()[item.index];
+                return entry?.kind === "line"
+                  ? entry.line.key
+                  : `${entry?.kind ?? "none"} ${item.index}`;
+              }}
+            >
+              {(item) => (
+                <Show when={entries()[item().index]}>
+                  {(entry) => (
+                    <SourceRow
+                      entry={entry()}
+                      code={props.code}
+                      chosen={
+                        entry().kind === "line" &&
+                        (entry() as { kind: "line"; line: TreeLine }).line === line()
+                      }
+                      open={open()}
+                      tints={tints()}
+                      paint={paint()}
+                    />
+                  )}
+                </Show>
+              )}
+            </For>
+            <Gap list={sourceList} side="after" />
+          </Show>
         </div>
         <div
-          ref={listing}
-          className="code-split-pane"
-          style={offsetDigits}
+          ref={(node) => setListing(node)}
+          class="code-split-pane"
+          style={offsetDigits()}
           // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- rows of costs and code a select cannot hold
           role="listbox"
           aria-label="Assembly"
-          aria-multiselectable
-          tabIndex={0}
+          aria-multiselectable="true"
+          tabindex={0}
           onClick={pickRow}
           onKeyDown={keys}
         >
-          <CostHead from={bracketed} />
-          <Sizer text={longestListing} from={bracketed} />
+          <CostHead from={bracketed()} />
+          <Sizer text={longestListing()} from={bracketed()} />
           <Gap list={listingList} side="before" />
-          {listingList.getVirtualItems().map(({ index: item }) => {
-            const each = items[item];
-            if (each && "symbol" in each) {
+          <For
+            each={listingList.items()}
+            keyed={(item) => {
+              const each = items()[item.index];
+              if (each && "symbol" in each) {
+                return `symbol ${item.index}`;
+              }
+              const row = rows()[each?.row ?? -1];
+              return row ? row.instruction.address : `empty ${item.index}`;
+            }}
+          >
+            {(item) => {
+              const each = createMemo(() => items()[item().index]);
+              const symbol = createMemo(() => {
+                const current = each();
+                return current && "symbol" in current ? current.symbol : undefined;
+              });
+              const rowEntry = createMemo(() => {
+                const current = each();
+                if (!current || !("row" in current)) {
+                  return;
+                }
+                const row = rows()[current.row];
+                return row ? { index: current.row, row } : undefined;
+              });
               return (
-                <div key={`symbol ${item}`} className="annotated-head">
-                  {each.symbol}
-                </div>
+                <Switch>
+                  <Match when={symbol()}>
+                    {(name) => <div class="annotated-head">{name()}</div>}
+                  </Match>
+                  <Match when={rowEntry()}>
+                    {(entry) => {
+                      const index = createMemo(() => entry().index);
+                      const row = createMemo(() => entry().row);
+                      const instruction = createMemo(() => row().instruction);
+                      const path = createMemo(() => tree().paths[index()] ?? []);
+                      const tint = createMemo(() => tintOfPath(path(), open(), tints()));
+                      const unsourced = createMemo(() => shownLine(path(), open())?.line === 0);
+                      const jump = createMemo(() => {
+                        const target = row().jump;
+                        return target === null ? null : { target };
+                      });
+                      return (
+                        <div
+                          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
+                          role="option"
+                          aria-selected={selected().has(index()) ? "true" : "false"}
+                          data-row={index()}
+                          data-tint={tint()}
+                          style={tinted(tint())}
+                          class={`code-row ${row().leads ? "leads" : ""} ${index() === shown() ? "shown" : ""} ${unsourced() ? "unsourced" : ""}`}
+                        >
+                          <span class="pin">
+                            <Costs
+                              own={instruction().own > 0 ? instruction().own : undefined}
+                              total={instruction().total > 0 ? instruction().total : undefined}
+                              weight={props.code.weight}
+                            />
+                            <Show when={bracketed()}>
+                              <Bracket
+                                code={props.code}
+                                from={from()}
+                                index={index()}
+                                holds={brackets().holds.has(brackets().firsts[index()] ?? -1)}
+                              />
+                            </Show>
+                            <span class="offset">+{row().offset.toString(16)}</span>
+                          </span>
+                          <code class="text">
+                            <Show
+                              when={jump()}
+                              fallback={
+                                <>
+                                  <AsmTokens tokens={instruction().tokens} />
+                                  <Show when={instruction().target}>
+                                    {(target) => (
+                                      <span class="asm-target"> &lt;{target()}&gt;</span>
+                                    )}
+                                  </Show>
+                                </>
+                              }
+                            >
+                              {(jumped) => (
+                                <>
+                                  <AsmTokens tokens={instruction().tokens.slice(0, -1)} />
+                                  <button
+                                    type="button"
+                                    class="asm-target"
+                                    data-jump={jumped().target}
+                                  >
+                                    +
+                                    {(
+                                      rows()[indexOf().get(jumped().target) ?? index()]?.offset ?? 0
+                                    ).toString(16)}
+                                  </button>
+                                </>
+                              )}
+                            </Show>
+                          </code>
+                        </div>
+                      );
+                    }}
+                  </Match>
+                </Switch>
               );
-            }
-            const index = each?.row ?? -1;
-            const row = rows[index];
-            if (!row) {
-              return null;
-            }
-            const instruction = row.instruction;
-            const path = tree.paths[index] ?? [];
-            const tint = tintOfPath(path, open, tints);
-            const unsourced = shownLine(path, open)?.line === 0;
-            return (
-              <div
-                key={instruction.address}
-                // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
-                role="option"
-                aria-selected={selected.has(index)}
-                data-row={index}
-                data-tint={tint}
-                style={tinted(tint)}
-                className={`code-row ${row.leads ? "leads" : ""} ${index === shown ? "shown" : ""} ${unsourced ? "unsourced" : ""}`}
-              >
-                <span className="pin">
-                  <Costs
-                    own={instruction.own > 0 ? instruction.own : undefined}
-                    total={instruction.total > 0 ? instruction.total : undefined}
-                    weight={code.weight}
-                  />
-                  {bracketed ? (
-                    <Bracket
-                      code={code}
-                      from={from}
-                      index={index}
-                      holds={brackets.holds.has(brackets.firsts[index] ?? -1)}
-                    />
-                  ) : null}
-                  <span className="offset">+{row.offset.toString(16)}</span>
-                </span>
-                <code className="text">
-                  {row.jump === null ? (
-                    <>
-                      <AsmTokens tokens={instruction.tokens} />
-                      {instruction.target ? (
-                        <span className="asm-target"> &lt;{instruction.target}&gt;</span>
-                      ) : null}
-                    </>
-                  ) : (
-                    <>
-                      {}
-                      <AsmTokens tokens={instruction.tokens.slice(0, -1)} />
-                      <button type="button" className="asm-target" data-jump={row.jump}>
-                        +{(rows[indexOf.get(row.jump) ?? index]?.offset ?? 0).toString(16)}
-                      </button>
-                    </>
-                  )}
-                </code>
-              </div>
-            );
-          })}
+            }}
+          </For>
           <Gap list={listingList} side="after" />
-          {code.blocks.map((block) =>
-            block.stopped ? (
-              <div key={block.symbol} className="empty">
-                {block.stopped}
-              </div>
-            ) : null,
-          )}
-          {code.unplaced.length > 0 ? (
-            <div className="empty">
-              {formatCount(code.unplaced.length, "sampled address", "sampled addresses")}{" "}
-              {code.unplaced.length === 1 ? "lies" : "lie"} outside every decoded instruction.
+          <For each={props.code.blocks} keyed={(block) => block.symbol}>
+            {(block) => (
+              <Show when={block().stopped}>
+                {(stopped) => <div class="empty">{stopped()}</div>}
+              </Show>
+            )}
+          </For>
+          <Show when={props.code.unplaced.length > 0}>
+            <div class="empty">
+              {formatCount(props.code.unplaced.length, "sampled address", "sampled addresses")}{" "}
+              {props.code.unplaced.length === 1 ? "lies" : "lie"} outside every decoded instruction.
             </div>
-          ) : null}
+          </Show>
         </div>
       </div>
-      <div className="code-split-foot">
+      <div class="code-split-foot">
         <span>
-          {line ? whereOf(code, line) : "no line"} · {formatCount(counted, "instruction")} in{" "}
-          {formatCount(runs.length, "run")}
+          <Show when={line()} fallback="no line">
+            {(current) => <>{whereOf(props.code, current())}</>}
+          </Show>{" "}
+          · {formatCount(counted(), "instruction")} in {formatCount(runs().length, "run")}
         </span>
-        {clicked ? (
-          <span className="muted chain" title={chainOf(code, clicked, false)}>
-            {chainOf(code, clicked, true)}
-          </span>
-        ) : null}
-        <span className="end">
+        <Show when={clicked()}>
+          {(current) => (
+            <span class="muted chain" title={chainOf(props.code, current(), false)}>
+              {chainOf(props.code, current(), true)}
+            </span>
+          )}
+        </Show>
+        <span class="end">
           <button
             type="button"
-            className="tb ghost"
+            class="tb ghost"
             aria-label="Previous run"
-            disabled={runs.length < 2}
+            disabled={runs().length < 2}
             onClick={previous}
           >
             ‹
           </button>
           <span data-testid="run">
-            {runs.length > 0 ? `run ${run + 1} of ${runs.length}` : "no run"}
+            {runs().length > 0 ? `run ${run() + 1} of ${runs().length}` : "no run"}
           </span>
           <button
             type="button"
-            className="tb ghost"
+            class="tb ghost"
             aria-label="Next run"
-            disabled={runs.length < 2}
+            disabled={runs().length < 2}
             onClick={next}
           >
             ›
@@ -541,18 +649,11 @@ function painter(
   };
 }
 
-function tinted(tint: number | undefined): CSSProperties | undefined {
-  return tint === undefined ? undefined : ({ "--tint": tint } as CSSProperties);
+function tinted(tint: number | undefined): JSX.CSSProperties | undefined {
+  return tint === undefined ? undefined : { "--tint": tint };
 }
 
-function SourceRow({
-  entry,
-  code,
-  chosen,
-  open,
-  tints,
-  paint,
-}: {
+function SourceRow(props: {
   entry: SourceEntry;
   code: ProfileCode;
   chosen: boolean;
@@ -560,186 +661,227 @@ function SourceRow({
   tints: ReadonlyMap<string, number>;
   paint: (file: number, number: number) => Painted | undefined;
 }) {
-  if (entry.kind === "call") {
-    const full = code.functions[entry.call.function] ?? "?";
-    const at = entry.call.at;
-    const path = code.files[entry.call.lines[0]?.file ?? -1]?.path;
-    const total = entry.call.lines.reduce((sum, each) => sum + each.total, 0);
-    return (
-      <div
-        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
-        role="option"
-        aria-selected={false}
-        aria-disabled
-        className="code-row code-call nocode"
-      >
-        <span className="pin">
-          <Costs own={undefined} total={total > 0 ? total : undefined} weight={code.weight} />
-          <span className="line-number" />
-          <span className="inline-toggle" />
-        </span>
-        <code className="text">
-          <Indent depth={entry.depth} />
-          <span className="tk-f" title={full}>
-            {at ? shortName(full) : full}
-          </span>
-          {path ? <span className="muted"> {fileName(path)}</span> : null}
-          {at ? <span className="muted"> · inlined at line {at.line}</span> : null}
-        </code>
-      </div>
-    );
-  }
-
-  if (entry.kind === "gap") {
-    return (
-      <div className="code-row nocode" aria-hidden="true">
-        <span className="pin">
-          <Costs own={undefined} total={undefined} weight={code.weight} />
-          <span className="line-number" />
-          <span className="inline-toggle" />
-        </span>
-        <code className="text muted">
-          <Indent depth={entry.depth} />⋯ {formatCount(entry.count, "line")}
-        </code>
-      </div>
-    );
-  }
-
-  if (entry.kind === "text") {
-    const shownFile = code.files[entry.file];
-    return (
-      <div
-        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
-        role="option"
-        aria-selected={false}
-        aria-disabled
-        className="code-row nocode"
-      >
-        <span className="pin">
-          <Costs own={undefined} total={undefined} weight={code.weight} />
-          <span className="line-number">{entry.number}</span>
-          <span className="inline-toggle" />
-        </span>
-        <code className="text">
-          <Indent depth={entry.depth} />
-          <Tokens
-            runs={paint(entry.file, entry.number)}
-            text={shownFile?.text?.[entry.number - shownFile.first] ?? ""}
-          />
-        </code>
-      </div>
-    );
-  }
-
-  const line = entry.line;
-  const tint = tints.get(line.key);
-  const opened = open.has(line.key);
-  const shownFile = line.file === null ? undefined : code.files[line.file];
-  const text = shownFile?.text?.[line.line - shownFile.first];
   return (
-    <div
-      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
-      role="option"
-      aria-selected={chosen}
-      data-line={line.key}
-      data-tint={tint}
-      style={tinted(tint)}
-      className={`code-row ${line.line === 0 ? "unsourced" : ""}`}
-    >
-      <span className="pin">
-        <Costs
-          own={line.own > 0 ? line.own : undefined}
-          total={line.total > 0 ? line.total : undefined}
-          weight={code.weight}
-        />
-        <span className="line-number">{line.line > 0 ? line.line : ""}</span>
-        {line.inlined.length > 0 ? (
-          <button
-            type="button"
-            className="inline-toggle"
-            data-toggle={line.key}
-            aria-expanded={opened}
-            aria-label={`${opened ? "Hide" : "Show"} the code inlined at line ${line.line}`}
-          >
-            {opened ? "▾" : "▸"}
-          </button>
-        ) : (
-          <span className="inline-toggle" />
-        )}
-      </span>
-      <code className="text">
-        <Indent depth={entry.depth} />
-        {line.line === 0 ? (
-          <span className="unsourced-note">
-            no associated source line · {formatCount(line.rows.length, "instruction")}
-          </span>
-        ) : text !== undefined && line.file !== null ? (
-          <Tokens runs={paint(line.file, line.line)} text={text} />
-        ) : (
-          <span className="muted" title={shownFile?.unread ?? undefined}>
-            {shownFile?.path ? `${fileName(shownFile.path)}:${line.line}` : `line ${line.line}`}
-          </span>
-        )}
-        {line.inlined.length > 0 && !opened ? (
-          <span className="muted inlines">
-            {"  inlines "}
-            {line.inlined.slice(0, INLINES_NAMED).map((call, at) => (
-              <Fragment key={call.key}>
-                {at > 0 ? ", " : null}
-                <span title={code.functions[call.function]}>
-                  {shortName(code.functions[call.function] ?? "?")}
+    <Switch>
+      <Match when={props.entry.kind === "call" ? props.entry : undefined}>
+        {(entry) => {
+          const full = createMemo(() => props.code.functions[entry().call.function] ?? "?");
+          const at = createMemo(() => entry().call.at);
+          const path = createMemo(() => props.code.files[entry().call.lines[0]?.file ?? -1]?.path);
+          const total = createMemo(() =>
+            entry().call.lines.reduce((sum, each) => sum + each.total, 0),
+          );
+          return (
+            <div
+              // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
+              role="option"
+              aria-selected="false"
+              aria-disabled="true"
+              class="code-row code-call nocode"
+            >
+              <span class="pin">
+                <Costs
+                  own={undefined}
+                  total={total() > 0 ? total() : undefined}
+                  weight={props.code.weight}
+                />
+                <span class="line-number" />
+                <span class="inline-toggle" />
+              </span>
+              <code class="text">
+                <Indent depth={entry().depth} />
+                <span class="tk-f" title={full()}>
+                  {at() ? shortName(full()) : full()}
                 </span>
-              </Fragment>
-            ))}
-            {line.inlined.length > INLINES_NAMED
-              ? ` +${line.inlined.length - INLINES_NAMED}`
-              : null}
-          </span>
-        ) : null}
-      </code>
-    </div>
+                <Show when={path()}>
+                  {(filePath) => <span class="muted"> {fileName(filePath())}</span>}
+                </Show>
+                <Show when={at()}>
+                  {(place) => <span class="muted"> · inlined at line {place().line}</span>}
+                </Show>
+              </code>
+            </div>
+          );
+        }}
+      </Match>
+      <Match when={props.entry.kind === "gap" ? props.entry : undefined}>
+        {(entry) => (
+          <div class="code-row nocode" aria-hidden="true">
+            <span class="pin">
+              <Costs own={undefined} total={undefined} weight={props.code.weight} />
+              <span class="line-number" />
+              <span class="inline-toggle" />
+            </span>
+            <code class="text muted">
+              <Indent depth={entry().depth} />⋯ {formatCount(entry().count, "line")}
+            </code>
+          </div>
+        )}
+      </Match>
+      <Match when={props.entry.kind === "text" ? props.entry : undefined}>
+        {(entry) => {
+          const shownFile = createMemo(() => props.code.files[entry().file]);
+          const lineText = createMemo(() => {
+            const file = shownFile();
+            return file?.text?.[entry().number - file.first] ?? "";
+          });
+          return (
+            <div
+              // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
+              role="option"
+              aria-selected="false"
+              aria-disabled="true"
+              class="code-row nocode"
+            >
+              <span class="pin">
+                <Costs own={undefined} total={undefined} weight={props.code.weight} />
+                <span class="line-number">{entry().number}</span>
+                <span class="inline-toggle" />
+              </span>
+              <code class="text">
+                <Indent depth={entry().depth} />
+                <Tokens runs={props.paint(entry().file, entry().number)} text={lineText()} />
+              </code>
+            </div>
+          );
+        }}
+      </Match>
+      <Match when={props.entry.kind === "line" ? props.entry : undefined}>
+        {(entry) => {
+          const line = createMemo(() => entry().line);
+          const tint = createMemo(() => props.tints.get(line().key));
+          const opened = createMemo(() => props.open.has(line().key));
+          const shownFile = createMemo(() => {
+            const file = line().file;
+            return file === null ? undefined : props.code.files[file];
+          });
+          const text = createMemo(() => {
+            const file = shownFile();
+            return file?.text?.[line().line - file.first];
+          });
+          const fallbackLabel = createMemo(() => {
+            const path = shownFile()?.path;
+            return path ? `${fileName(path)}:${line().line}` : `line ${line().line}`;
+          });
+          const lined = createMemo(() => {
+            const file = line().file;
+            const content = text();
+            return file !== null && content !== undefined ? { file, content } : undefined;
+          });
+          return (
+            <div
+              // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
+              role="option"
+              aria-selected={props.chosen ? "true" : "false"}
+              data-line={line().key}
+              data-tint={tint()}
+              style={tinted(tint())}
+              class={`code-row ${line().line === 0 ? "unsourced" : ""}`}
+            >
+              <span class="pin">
+                <Costs
+                  own={line().own > 0 ? line().own : undefined}
+                  total={line().total > 0 ? line().total : undefined}
+                  weight={props.code.weight}
+                />
+                <span class="line-number">{line().line > 0 ? line().line : ""}</span>
+                <Show when={line().inlined.length > 0} fallback={<span class="inline-toggle" />}>
+                  <button
+                    type="button"
+                    class="inline-toggle"
+                    data-toggle={line().key}
+                    aria-expanded={opened() ? "true" : "false"}
+                    aria-label={`${opened() ? "Hide" : "Show"} the code inlined at line ${line().line}`}
+                  >
+                    {opened() ? "▾" : "▸"}
+                  </button>
+                </Show>
+              </span>
+              <code class="text">
+                <Indent depth={entry().depth} />
+                <Switch
+                  fallback={
+                    <span class="muted" title={shownFile()?.unread ?? undefined}>
+                      {fallbackLabel()}
+                    </span>
+                  }
+                >
+                  <Match when={line().line === 0}>
+                    <span class="unsourced-note">
+                      no associated source line · {formatCount(line().rows.length, "instruction")}
+                    </span>
+                  </Match>
+                  <Match when={lined()}>
+                    {(shown) => (
+                      <Tokens
+                        runs={props.paint(shown().file, line().line)}
+                        text={shown().content}
+                      />
+                    )}
+                  </Match>
+                </Switch>
+                <Show when={line().inlined.length > 0 && !opened()}>
+                  <span class="muted inlines">
+                    {"  inlines "}
+                    <For each={line().inlined.slice(0, INLINES_NAMED)} keyed={(call) => call.key}>
+                      {(call, at) => (
+                        <>
+                          {at() > 0 ? ", " : null}
+                          <span title={props.code.functions[call().function]}>
+                            {shortName(props.code.functions[call().function] ?? "?")}
+                          </span>
+                        </>
+                      )}
+                    </For>
+                    {line().inlined.length > INLINES_NAMED
+                      ? ` +${line().inlined.length - INLINES_NAMED}`
+                      : null}
+                  </span>
+                </Show>
+              </code>
+            </div>
+          );
+        }}
+      </Match>
+    </Switch>
   );
 }
 
 const INLINES_NAMED = 3;
 
-function Indent({ depth }: { depth: number }) {
-  return depth > 0 ? (
-    <span className="code-indent" aria-hidden="true">
-      {Array.from({ length: depth }, (_, at) => (
-        <span key={at} />
-      ))}
-    </span>
-  ) : null;
+function Indent(props: { depth: number }) {
+  return (
+    <Show when={props.depth > 0}>
+      <span class="code-indent" aria-hidden="true">
+        <Repeat count={props.depth}>{() => <span />}</Repeat>
+      </span>
+    </Show>
+  );
 }
 
-function Bracket({
-  code,
-  from,
-  index,
-  holds,
-}: {
+function Bracket(props: {
   code: ProfileCode;
   from: readonly (number | null)[];
   index: number;
   holds: boolean;
 }) {
-  const inlined = from[index] ?? null;
-  if (inlined === null) {
-    return <span className="inlined-from" />;
-  }
-  const before = from[index - 1] === inlined;
-  const after = from[index + 1] === inlined;
-  const part = before && after ? "middle" : before ? "end" : after ? "start" : "one";
-  const full = code.functions[inlined] ?? "?";
+  const inlined = createMemo(() => props.from[props.index] ?? null);
+  const before = createMemo(() => props.from[props.index - 1] === inlined());
+  const after = createMemo(() => props.from[props.index + 1] === inlined());
+  const part = createMemo(() =>
+    before() && after() ? "middle" : before() ? "end" : after() ? "start" : "one",
+  );
+  const full = createMemo(() => props.code.functions[inlined() ?? -1] ?? "?");
   return (
-    <span
-      className={`inlined-from ${holds ? "holds" : ""}`}
-      data-bracket={part}
-      title={before ? undefined : full}
-    >
-      {before ? null : shortName(full)}
-    </span>
+    <Show when={inlined() !== null} fallback={<span class="inlined-from" />}>
+      <span
+        class={`inlined-from ${props.holds ? "holds" : ""}`}
+        data-bracket={part()}
+        title={before() ? undefined : full()}
+      >
+        {before() ? null : shortName(full())}
+      </span>
+    </Show>
   );
 }
 
@@ -775,43 +917,47 @@ function chainOf(code: ProfileCode, row: CodeRow, short: boolean): string {
   return `+${row.offset.toString(16)} ${where.join(" ← ")}`;
 }
 
-function Tokens({ runs, text }: { runs: Painted | undefined; text: string }) {
-  if (!runs) {
-    return text;
-  }
-  return runs.map(([part, token], at) =>
-    token ? (
-      // oxlint-disable-next-line react/no-array-index-key -- runs are a line's text in order, never reordered
-      <span key={at} className={token}>
-        {part}
-      </span>
-    ) : (
-      // oxlint-disable-next-line react/no-array-index-key -- runs are a line's text in order, never reordered
-      <Fragment key={at}>{part}</Fragment>
-    ),
+function Tokens(props: { runs: Painted | undefined; text: string }) {
+  return (
+    <Show when={props.runs} fallback={props.text}>
+      {(runs) => (
+        <For each={runs()} keyed={false}>
+          {(run) => (
+            <Show when={run()[1]} fallback={run()[0]}>
+              {(token) => <span class={token()}>{run()[0]}</span>}
+            </Show>
+          )}
+        </For>
+      )}
+    </Show>
   );
 }
 
-function AsmTokens({ tokens }: { tokens: readonly ProfileToken[] }) {
-  return tokens.map(([kind, text], at) => (
-    // oxlint-disable-next-line react/no-array-index-key -- an instruction's pieces in order, never reordered
-    <span key={at} className={`tk-${kind}`}>
-      {text}
-    </span>
-  ));
+function AsmTokens(props: { tokens: readonly ProfileToken[] }) {
+  return (
+    <For each={props.tokens} keyed={false}>
+      {(token) => <span class={`tk-${token()[0]}`}>{token()[1]}</span>}
+    </For>
+  );
 }
 
-function CostHead({ from = false }: { from?: boolean }) {
+const COST_COLUMNS = ["own", "total"] as const;
+
+function CostHead(props: { from?: boolean | undefined }) {
   return (
-    <div className="code-row code-head" aria-hidden="true">
-      <span className="pin">
-        {(["own", "total"] as const).map((column) => (
-          <span key={column} className="percent" title={COLUMN_HELP[column]}>
-            <span className="hover-help">{column}</span>
-          </span>
-        ))}
-        {from ? <span className="inlined-from">inlined from</span> : null}
-        <span className="line-number" />
+    <div class="code-row code-head" aria-hidden="true">
+      <span class="pin">
+        <For each={COST_COLUMNS}>
+          {(column) => (
+            <span class="percent" title={COLUMN_HELP[column]}>
+              <span class="hover-help">{column}</span>
+            </span>
+          )}
+        </For>
+        <Show when={props.from}>
+          <span class="inlined-from">inlined from</span>
+        </Show>
+        <span class="line-number" />
       </span>
     </div>
   );
@@ -821,44 +967,42 @@ const ROW = 20;
 
 type Item = { row: number } | { symbol: string };
 
-function usePane(count: number, pane: RefObject<HTMLDivElement | null>) {
-  // oxlint-disable-next-line react/incompatible-library -- the app is not built with the React Compiler
-  return useVirtualizer({
-    count,
-    getScrollElement: () => pane.current,
-    estimateSize: () => ROW,
-    overscan: 30,
-    scrollMargin: ROW,
+function usePane(count: () => number, pane: () => HTMLDivElement | null) {
+  return createVirtualizer<HTMLDivElement, Element>(() => {
+    const element = pane();
+    return {
+      count: count(),
+      getScrollElement: () => element,
+      estimateSize: () => ROW,
+      overscan: 30,
+      scrollMargin: ROW,
+    };
   });
 }
 
-function Gap({
-  list,
-  side,
-}: {
-  list: Virtualizer<HTMLDivElement, Element>;
-  side: "before" | "after";
-}) {
-  const drawn = list.getVirtualItems();
-  const height =
-    side === "before"
+function Gap(props: { list: SolidVirtualizer<HTMLDivElement, Element>; side: "before" | "after" }) {
+  const height = createMemo(() => {
+    const drawn = props.list.items();
+    return props.side === "before"
       ? (drawn[0]?.start ?? ROW) - ROW
-      : list.getTotalSize() - ((drawn.at(-1)?.end ?? ROW) - ROW);
-  const style = useMemo(() => ({ height }), [height]);
-  return <div style={style} aria-hidden="true" />;
+      : props.list.totalSize() - ((drawn.at(-1)?.end ?? ROW) - ROW);
+  });
+  return <div style={{ height: `${height()}px` }} aria-hidden="true" />;
 }
 
-function Sizer({ text, from = false }: { text: string; from?: boolean }) {
+function Sizer(props: { text: string; from?: boolean | undefined }) {
   return (
-    <div className="code-row code-sizer" aria-hidden="true">
-      <span className="pin">
-        <span className="percent" />
-        <span className="percent" />
-        {from ? <span className="inlined-from" /> : null}
-        <span className="line-number" />
-        <span className="inline-toggle" />
+    <div class="code-row code-sizer" aria-hidden="true">
+      <span class="pin">
+        <span class="percent" />
+        <span class="percent" />
+        <Show when={props.from}>
+          <span class="inlined-from" />
+        </Show>
+        <span class="line-number" />
+        <span class="inline-toggle" />
       </span>
-      <code className="text" data-text={text} />
+      <code class="text" data-text={props.text} />
     </div>
   );
 }
@@ -884,25 +1028,17 @@ function reveal(pane: HTMLElement | null, index: number): void {
   }
 }
 
-function Costs({
-  own,
-  total,
-  weight,
-}: {
-  own: number | undefined;
-  total: number | undefined;
-  weight: number;
-}) {
-  const share = (part: number | undefined) => (part ?? 0) / Math.max(weight, 1);
+function Costs(props: { own: number | undefined; total: number | undefined; weight: number }) {
+  const share = (part: number | undefined) => (part ?? 0) / Math.max(props.weight, 1);
   const text = (part: number | undefined) =>
-    part === undefined ? "" : formatPercent(part, weight);
+    part === undefined ? "" : formatPercent(part, props.weight);
   return (
     <>
-      <Share share={share(own)} tone={ownTone(share(own), "plain")}>
-        {text(own)}
+      <Share share={share(props.own)} tone={ownTone(share(props.own), "plain")}>
+        {text(props.own)}
       </Share>
-      <Share share={share(total)} tone="dim">
-        {text(total)}
+      <Share share={share(props.total)} tone="dim">
+        {text(props.total)}
       </Share>
     </>
   );
@@ -912,12 +1048,19 @@ function hottest(total: number | undefined, most: number): string {
   return most > 0 && total === most ? "hottest" : "";
 }
 
-function useHottestInView(body: RefObject<HTMLDivElement | null>, name: string, current: boolean) {
-  const shown = useRef<string | null>(null);
-  useEffect(() => {
-    if (current && shown.current !== name) {
-      shown.current = name;
-      body.current?.querySelector(".hottest")?.scrollIntoView({ block: "center" });
-    }
-  });
+function useHottestInView(
+  body: () => HTMLDivElement | undefined,
+  name: () => string,
+  current: () => boolean,
+) {
+  let shown: string | null = null;
+  createEffect(
+    () => ({ name: name(), current: current() }),
+    ({ name: currentName, current: isCurrent }) => {
+      if (isCurrent && shown !== currentName) {
+        shown = currentName;
+        body()?.querySelector(".hottest")?.scrollIntoView({ block: "center" });
+      }
+    },
+  );
 }

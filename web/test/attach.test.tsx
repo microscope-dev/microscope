@@ -1,10 +1,10 @@
-import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
 import { SessionContext } from "../src/store";
 import { AttachForm } from "../src/ui/Picker";
 import { fakeServer } from "./fake-server";
+import { cleanup, render } from "./render";
 
 afterEach(cleanup);
 
@@ -12,11 +12,11 @@ const ignore = () => {};
 
 it("says the list failed, and a later Refresh clears the error", async () => {
   const server = await fakeServer();
-  render(
+  render(() => (
     <SessionContext value={server.session}>
       <AttachForm working={false} submit={ignore} />
-    </SessionContext>,
-  );
+    </SessionContext>
+  ));
   server.send({
     type: "error",
     id: (await server.next("processes")).id,
@@ -37,11 +37,11 @@ it("says the list failed, and a later Refresh clears the error", async () => {
 
 it("chooses the first process after ArrowDown in an empty list", async () => {
   const server = await fakeServer();
-  render(
+  render(() => (
     <SessionContext value={server.session}>
       <AttachForm working={false} submit={ignore} />
-    </SessionContext>,
-  );
+    </SessionContext>
+  ));
   server.answer(await server.next("processes"), {
     processes: [{ pid: 41, command: "kvstore" }],
     ptraceScope: null,
@@ -68,11 +68,11 @@ it("chooses the first process after ArrowDown in an empty list", async () => {
 
 it("puts the process whose pid was typed ahead of newer ones that only mention it", async () => {
   const server = await fakeServer();
-  render(
+  render(() => (
     <SessionContext value={server.session}>
       <AttachForm working={false} submit={ignore} />
-    </SessionContext>,
-  );
+    </SessionContext>
+  ));
   server.answer(await server.next("processes"), {
     processes: [
       { pid: 9041, command: "bash -c 'kill 41'" },

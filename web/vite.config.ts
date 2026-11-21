@@ -1,9 +1,9 @@
-import react from "@vitejs/plugin-react";
+import solid from "@solidjs/vite-plugin";
 import { playwright } from "@vitest/browser-playwright";
 import type { ProxyOptions } from "vite";
 import { defineConfig } from "vitest/config";
 
-import { fromServices, toServices } from "./dev-cookies";
+import { fromServices, toServices } from "./dev-cookies.ts";
 
 const services = process.env.MICROSCOPE_SERVICES_URL ?? "http://127.0.0.1:8080";
 
@@ -30,7 +30,7 @@ function budgetScale(): number {
 }
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [solid()],
 
   base: "./",
   build: {

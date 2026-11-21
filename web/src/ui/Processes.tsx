@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { createMemo, createSignal, For, Show } from "solid-js";
 
 import { assert } from "../assert";
 import { controls } from "../model";
@@ -42,119 +42,151 @@ export function showsProcesses(group: Group | null | undefined): group is Group 
 }
 
 export function Processes() {
-  const { state } = useFocus();
+  const focus = useFocus();
   const control = useModel(controls);
   const connection = useConnection();
-  const [busy, setBusy] = useState(false);
-  const group = state.group;
-  const ask = useCallback(
-    (method: "selectMember" | "detachMember", member: number) => {
-      setBusy(true);
-      void connection
-        .request(method, { member })
-        .catch((failure: Error) => flash(failure.message))
-        .finally(() => setBusy(false));
-    },
-    [connection],
-  );
-  const selectedNumber = group?.selected;
-  const detach = useCallback(() => {
+  const [busy, setBusy] = createSignal(false);
+
+  const ask = (method: "selectMember" | "detachMember", member: number) => {
+    setBusy(true);
+    void connection
+      .request(method, { member })
+      .catch((failure: Error) => flash(failure.message))
+      .finally(() => setBusy(false));
+  };
+
+  const split = createMemo(() => {
+    const group = focus().state.group;
+    if (!showsProcesses(group)) {
+      return null;
+    }
+    const selected = group.members.find((member) => member.number === group.selected);
+    const active: Member[] = [];
+    const other: Member[] = [];
+    for (const member of group.members) {
+      const visible =
+        member.state === "running" ||
+        member.state === "stopped" ||
+        member.number === 1 ||
+        member.number === group.selected ||
+        member.number === group.stopped;
+      (visible ? active : other).push(member);
+    }
+    return { group, selected, active, other };
+  });
+
+  const detach = () => {
+    const selectedNumber = split()?.group.selected;
     assert(selectedNumber !== undefined, "detaching with no group");
     ask("detachMember", selectedNumber);
-  }, [ask, selectedNumber]);
-  if (!showsProcesses(group)) {
-    return (
-      <div className="pane-body">
-        <div className="empty">This session debugs one process.</div>
-      </div>
-    );
-  }
-  const selected = group.members.find((member) => member.number === group.selected);
-  const active: Member[] = [];
-  const other: Member[] = [];
-  for (const member of group.members) {
-    const visible =
-      member.state === "running" ||
-      member.state === "stopped" ||
-      member.number === 1 ||
-      member.number === group.selected ||
-      member.number === group.stopped;
-    (visible ? active : other).push(member);
-  }
-  const row = (member: Member) => (
-    <ProcessRow
-      key={member.number}
-      member={member}
-      on={member.number === group.selected}
-      stoppedHere={member.number === group.stopped}
-      disabled={!control || busy}
-      onAsk={ask}
-    />
-  );
+  };
+
+  const detachable = createMemo(() => {
+    const current = split()?.selected;
+    return control() && current && current.number !== 1 && current.state === "stopped"
+      ? current
+      : null;
+  });
 
   return (
-    <nav className="pane-body processes" aria-label="Processes" data-testid="processes">
-      <ul>{active.map((member) => row(member))}</ul>
-      {control && selected && selected.number !== 1 && selected.state === "stopped" && (
-        <button
-          type="button"
-          className="button small"
-          disabled={busy}
-          title="Stop debugging this process and let it run. The others stay attached."
-          onClick={detach}
-        >
-          Detach [{selected.number}]
-        </button>
+    <Show
+      when={split()}
+      fallback={
+        <div class="pane-body">
+          <div class="empty">This session debugs one process.</div>
+        </div>
+      }
+    >
+      {(data) => (
+        <nav class="pane-body processes" aria-label="Processes" data-testid="processes">
+          <ul>
+            <For each={data().active} keyed={(member) => member.number}>
+              {(member) => (
+                <ProcessRow
+                  member={member()}
+                  on={member().number === data().group.selected}
+                  stoppedHere={member().number === data().group.stopped}
+                  disabled={!control() || busy()}
+                  onAsk={ask}
+                />
+              )}
+            </For>
+          </ul>
+          <Show when={detachable()}>
+            {(selected) => (
+              <button
+                type="button"
+                class="button small"
+                disabled={busy()}
+                title="Stop debugging this process and let it run. The others stay attached."
+                onClick={detach}
+              >
+                Detach [{selected().number}]
+              </button>
+            )}
+          </Show>
+          <Show when={data().other.length > 0}>
+            <details>
+              <summary>Other processes ({data().other.length})</summary>
+              <ul>
+                <For each={data().other} keyed={(member) => member.number}>
+                  {(member) => (
+                    <ProcessRow
+                      member={member()}
+                      on={member().number === data().group.selected}
+                      stoppedHere={member().number === data().group.stopped}
+                      disabled={!control() || busy()}
+                      onAsk={ask}
+                    />
+                  )}
+                </For>
+              </ul>
+            </details>
+          </Show>
+        </nav>
       )}
-      {other.length > 0 && (
-        <details>
-          <summary>Other processes ({other.length})</summary>
-          <ul>{other.map((member) => row(member))}</ul>
-        </details>
-      )}
-    </nav>
+    </Show>
   );
 }
 
-function ProcessRow({
-  member,
-  on,
-  stoppedHere,
-  disabled,
-  onAsk,
-}: {
+function ProcessRow(props: {
   member: Member;
   on: boolean;
   stoppedHere: boolean;
   disabled: boolean;
   onAsk: (method: "selectMember", member: number) => void;
 }) {
-  const debugged = member.state === "running" || member.state === "stopped";
-  const onClick = useCallback(
-    () => !on && onAsk("selectMember", member.number),
-    [on, onAsk, member.number],
+  const debugged = createMemo(
+    () => props.member.state === "running" || props.member.state === "stopped",
   );
+  const onClick = () => {
+    if (!props.on) {
+      props.onAsk("selectMember", props.member.number);
+    }
+  };
   return (
     <li>
       <button
         type="button"
-        className={`process ${on ? "on" : ""}`}
-        aria-pressed={on}
-        disabled={disabled || !debugged}
+        class={["process", { on: props.on }]}
+        aria-pressed={props.on ? "true" : "false"}
+        disabled={props.disabled || !debugged()}
         title={[
-          `[${member.number}] process ${member.pid ?? "not started"}`,
-          member.command,
-          joinedText(member),
-          member.description,
+          `[${props.member.number}] process ${props.member.pid ?? "not started"}`,
+          props.member.command,
+          joinedText(props.member),
+          props.member.description,
         ]
           .filter(Boolean)
           .join("\n")}
         onClick={onClick}
       >
-        <span className="number">[{member.number}]</span> {memberName(member)}
-        <span className="muted"> · {joinedText(member)} · </span>
-        <span className={`state ${member.state}`}>{STATES[member.state]}</span>
-        {stoppedHere && <span> ◂ stopped here</span>}
+        <span class="number">[{props.member.number}]</span> {memberName(props.member)}
+        <span class="muted"> · {joinedText(props.member)} · </span>
+        <span class={`state ${props.member.state}`}>{STATES[props.member.state]}</span>
+        <Show when={props.stoppedHere}>
+          <span> ◂ stopped here</span>
+        </Show>
       </button>
     </li>
   );
@@ -162,5 +194,9 @@ function ProcessRow({
 
 export function ProcessesBadge() {
   const count = useModel((model) => model.state?.group?.members.length ?? 0);
-  return count > 1 ? <span className="count">{count}</span> : null;
+  return (
+    <Show when={count() > 1}>
+      <span class="count">{count()}</span>
+    </Show>
+  );
 }

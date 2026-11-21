@@ -9,19 +9,19 @@ afterEach(unmountPane);
 
 function Before() {
   return (
-    <button type="button" className="button">
+    <button type="button" class="button">
       Before
     </button>
   );
 }
 
 it("gives focus back when the palette closes", async () => {
-  await mountPane(
+  await mountPane(() => (
     <>
       <Before />
       <Palette />
-    </>,
-  );
+    </>
+  ));
   const before = page.getByRole("button", { name: "Before" });
   await expect.element(before).toBeVisible();
   (before.element() as HTMLElement).focus();

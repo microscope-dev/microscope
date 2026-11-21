@@ -8,14 +8,14 @@ import "../src/styles.css";
 
 afterEach(unmountPane);
 
-const COLUMN = { width: 260 };
+const COLUMN = { width: "260px" };
 
 it("wraps a long refusal instead of widening the pane", async () => {
-  const server = await mountPane(
+  const server = await mountPane(() => (
     <div style={COLUMN} data-testid="column">
       <Breakpoints />
-    </div>,
-  );
+    </div>
+  ));
   const location = "a".repeat(200);
   await userEvent.fill(page.getByRole("textbox", { name: "Add a breakpoint" }), location);
   await userEvent.keyboard("{Enter}");
