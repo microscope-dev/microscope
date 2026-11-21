@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { createSignal, onSettled } from "solid-js";
 
 import { request } from "./orgs";
 import type { Providers } from "./sso";
@@ -14,9 +14,9 @@ export interface Features {
 
 export const features = () => request<Features>("GET", "/api/features");
 
-export function useFeatures(): Features | null {
-  const [offered, setOffered] = useState<Features | null>(null);
-  useEffect(() => {
+export function useFeatures(): () => Features | null {
+  const [offered, setOffered] = createSignal<Features | null>(null);
+  onSettled(() => {
     let live = true;
     features().then(
       (answer) => live && setOffered(answer),
@@ -25,6 +25,6 @@ export function useFeatures(): Features | null {
     return () => {
       live = false;
     };
-  }, []);
+  });
   return offered;
 }

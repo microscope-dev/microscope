@@ -30,7 +30,7 @@ const RULES: readonly Rule[] = [
   },
   {
     from: /^src\/workbench\//u,
-    to: /^src\/(?!workbench\/|assert$)/u,
+    to: /^src\/(?!workbench\/|assert$|state$)/u,
     why: "the workbench is the frame every pane builds on, so it knows nothing of what panes show",
   },
 ];

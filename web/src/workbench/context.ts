@@ -1,4 +1,4 @@
-import { createContext, useContext } from "react";
+import { createContext, useContext } from "solid-js";
 
 import { assert } from "../assert";
 import type { Kinds } from "./kinds";
@@ -6,7 +6,7 @@ import type { Kinds } from "./kinds";
 export interface DockSetup {
   readonly kinds: Kinds<string>;
 
-  useMissing(need: string | null): string | null;
+  useMissing(need: () => string | null): () => string | null;
 }
 
 export const DockContext = createContext<DockSetup | null>(null);

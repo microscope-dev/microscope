@@ -1,4 +1,4 @@
-import { type ChangeEvent, type FormEvent, useCallback, useId, useState } from "react";
+import { createSignal, createUniqueId, For, Show } from "solid-js";
 
 import { isString, read, write } from "../storage";
 import { useConnection, useModel } from "../store";
@@ -9,15 +9,19 @@ import { workbench } from "../workbench/store";
 import { COMMANDS } from "./commands";
 import { applyLayout, KINDS } from "./panes";
 
+const THEME_LABELS: Record<Theme, string> = {
+  system: "The system's",
+  light: "Light",
+  dark: "Dark",
+};
+
 export function SettingsBody() {
   const theme = useChosenTheme();
   return (
-    <div className="pane-body pane-text settings">
+    <div class="pane-body pane-text settings">
       <h2>Theme</h2>
-      <div className="segmented" role="radiogroup" aria-label="Theme">
-        {THEMES.map((each) => (
-          <ThemeButton key={each} theme={each} checked={theme === each} />
-        ))}
+      <div class="segmented" role="radiogroup" aria-label="Theme">
+        <For each={THEMES}>{(each) => <ThemeButton theme={each} checked={theme() === each} />}</For>
       </div>
       <h2>Your name</h2>
       <YourName />
@@ -27,64 +31,56 @@ export function SettingsBody() {
   );
 }
 
-function ThemeButton({ theme, checked }: { theme: Theme; checked: boolean }) {
-  const onClick = useCallback(() => chooseTheme(theme), [theme]);
+function ThemeButton(props: { theme: Theme; checked: boolean }) {
   return (
     <button
       type="button"
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a segmented control of three choices
       role="radio"
-      aria-checked={checked}
-      onClick={onClick}
+      aria-checked={props.checked ? "true" : "false"}
+      onClick={() => chooseTheme(props.theme)}
     >
-      {{ system: "The system's", light: "Light", dark: "Dark" }[theme]}
+      {THEME_LABELS[props.theme]}
     </button>
   );
 }
 
 function YourName() {
-  const id = useId();
+  const id = createUniqueId();
   const connection = useConnection();
   const open = useModel((model) => model.link === "open");
   const me = useModel(
     (model) => model.people.find((person) => person.connection === model.hello?.connection)?.name,
   );
-  const [name, setName] = useState(() => read("microscope-name", "", isString));
-  const [error, setError] = useState<string | null>(null);
-  const submit = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      const chosen = name.trim();
-      write("microscope-name", chosen);
-      setError(null);
-      if (open && chosen) {
-        connection
-          .request("setName", { name: chosen })
-          .then(() => flash(`Others see you as ${chosen}`))
-          .catch((failure: Error) => setError(failure.message));
-      }
-    },
-    [name, open, connection],
-  );
-  const edit = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setName(event.target.value),
-    [],
-  );
+  const [name, setName] = createSignal(read("microscope-name", "", isString));
+  const [error, setError] = createSignal<string | null>(null);
+  const submit = (event: SubmitEvent) => {
+    event.preventDefault();
+    const chosen = name().trim();
+    write("microscope-name", chosen);
+    setError(null);
+    if (open() && chosen) {
+      connection
+        .request("setName", { name: chosen })
+        .then(() => flash(`Others see you as ${chosen}`))
+        .catch((failure: Error) => setError(failure.message));
+    }
+  };
   return (
-    <form className="pane-form" onSubmit={submit}>
-      <div className="field">
-        <label htmlFor={id}>Name others see in a session</label>
+    <form class="pane-form" onSubmit={submit}>
+      <div class="field">
+        <label for={id}>Name others see in a session</label>
         <input
           id={id}
-          className="input"
-          value={name}
-          placeholder={me ?? "your name"}
-          onChange={edit}
+          class="input"
+          value={name()}
+          placeholder={me() ?? "your name"}
+          onInput={(event) => setName(event.currentTarget.value)}
         />
       </div>
-      {error && <span className="error">{error}</span>}
-      <div className="actions">
-        <button type="submit" className="button" disabled={!name.trim()}>
+      <Show when={error()}>{(message) => <span class="error">{message()}</span>}</Show>
+      <div class="actions">
+        <button type="submit" class="button" disabled={!name().trim()}>
           Use this name
         </button>
       </div>
@@ -93,41 +89,35 @@ function YourName() {
 }
 
 function Layouts() {
-  const id = useId();
-  const [names, setNames] = useState(layoutNames);
-  const [name, setName] = useState("");
-  const save = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      saveNamed(name.trim(), workbench.getState().layout);
-      setNames(layoutNames());
-      setName("");
-    },
-    [name],
-  );
-  const edit = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setName(event.target.value),
-    [],
-  );
-  const deleted = useCallback(() => setNames(layoutNames()), []);
+  const id = createUniqueId();
+  const [names, setNames] = createSignal(layoutNames());
+  const [name, setName] = createSignal("");
+  const save = (event: SubmitEvent) => {
+    event.preventDefault();
+    saveNamed(name().trim(), workbench.getState().layout);
+    setNames(layoutNames());
+    setName("");
+  };
+  const deleted = () => setNames(layoutNames());
   return (
     <>
-      {names.length === 0 ? (
-        <p className="muted">No layouts are saved yet.</p>
-      ) : (
-        <ul className="rows">
-          {names.map((saved) => (
-            <LayoutRow key={saved} saved={saved} onDeleted={deleted} />
-          ))}
+      <Show when={names().length > 0} fallback={<p class="muted">No layouts are saved yet.</p>}>
+        <ul class="rows">
+          <For each={names()}>{(saved) => <LayoutRow saved={saved} onDeleted={deleted} />}</For>
         </ul>
-      )}
-      <form className="pane-form" onSubmit={save}>
-        <div className="field">
-          <label htmlFor={id}>Save this layout as</label>
-          <input id={id} className="input" value={name} onChange={edit} />
+      </Show>
+      <form class="pane-form" onSubmit={save}>
+        <div class="field">
+          <label for={id}>Save this layout as</label>
+          <input
+            id={id}
+            class="input"
+            value={name()}
+            onInput={(event) => setName(event.currentTarget.value)}
+          />
         </div>
-        <div className="actions">
-          <button type="submit" className="button" disabled={!name.trim()}>
+        <div class="actions">
+          <button type="submit" class="button" disabled={!name().trim()}>
             Save
           </button>
         </div>
@@ -136,26 +126,26 @@ function Layouts() {
   );
 }
 
-function LayoutRow({ saved, onDeleted }: { saved: string; onDeleted: () => void }) {
-  const open = useCallback(() => {
-    const loaded = loadNamed(saved, KINDS);
+function LayoutRow(props: { saved: string; onDeleted: () => void }) {
+  const open = () => {
+    const loaded = loadNamed(props.saved, KINDS);
     if (loaded.ok) {
       applyLayout(loaded.layout);
     } else {
-      flash(`The layout ${saved} can't be opened: ${loaded.why}`);
+      flash(`The layout ${props.saved} can't be opened: ${loaded.why}`);
     }
-  }, [saved]);
-  const remove = useCallback(() => {
-    deleteNamed(saved);
-    onDeleted();
-  }, [saved, onDeleted]);
+  };
+  const remove = () => {
+    deleteNamed(props.saved);
+    props.onDeleted();
+  };
   return (
-    <li className="layout-row">
-      <span>{saved}</span>
-      <button type="button" className="link-button" onClick={open}>
+    <li class="layout-row">
+      <span>{props.saved}</span>
+      <button type="button" class="link-button" onClick={open}>
         Open
       </button>
-      <button type="button" className="link-button" onClick={remove}>
+      <button type="button" class="link-button" onClick={remove}>
         Delete
       </button>
     </li>
@@ -165,9 +155,9 @@ function LayoutRow({ saved, onDeleted }: { saved: string; onDeleted: () => void 
 export function KeysBody() {
   const commands = COMMANDS.ids.filter((id) => COMMANDS.get(id).keys.length > 0);
   return (
-    <div className="pane-body pane-text">
-      <p className="muted">Function keys work everywhere; letters only outside text boxes.</p>
-      <table className="table">
+    <div class="pane-body pane-text">
+      <p class="muted">Function keys work everywhere; letters only outside text boxes.</p>
+      <table class="table">
         <thead>
           <tr>
             <th>Command</th>
@@ -176,15 +166,21 @@ export function KeysBody() {
           </tr>
         </thead>
         <tbody>
-          {commands.map((command) => (
-            <tr key={command}>
-              <td>{COMMANDS.get(command).label}</td>
-              <td>{COMMANDS.describe(command) && <kbd>{COMMANDS.describe(command)}</kbd>}</td>
-              <td>
-                {COMMANDS.describe(command, true) && <kbd>{COMMANDS.describe(command, true)}</kbd>}
-              </td>
-            </tr>
-          ))}
+          <For each={commands}>
+            {(command) => (
+              <tr>
+                <td>{COMMANDS.get(command).label}</td>
+                <td>
+                  <Show when={COMMANDS.describe(command)}>{(text) => <kbd>{text()}</kbd>}</Show>
+                </td>
+                <td>
+                  <Show when={COMMANDS.describe(command, true)}>
+                    {(text) => <kbd>{text()}</kbd>}
+                  </Show>
+                </td>
+              </tr>
+            )}
+          </For>
         </tbody>
       </table>
     </div>

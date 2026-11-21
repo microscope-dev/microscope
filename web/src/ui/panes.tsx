@@ -1,4 +1,4 @@
-import { useContext } from "react";
+import { createComponent, createMemo, Show, useContext } from "solid-js";
 
 import { DOCUMENT_KINDS, documentsGroup, KIND, single, sourcePane } from "../documents";
 import type { View } from "../focus";
@@ -57,16 +57,20 @@ export type Need = "session" | "connection" | "control";
 
 type Kind = PaneKind<Need>;
 
+function deferred(get: () => Kind["Body"]): Kind["Body"] {
+  return (props) => createComponent(get(), props);
+}
+
 function view(
   id: (typeof KIND)[keyof typeof KIND],
   title: string,
-  Body: Kind["Body"],
+  Body: () => Kind["Body"],
   more: Partial<Kind> = {},
 ): Kind {
   return {
     id,
     title: () => title,
-    Body,
+    Body: deferred(Body),
     needs: "session",
     keepAlive: true,
     closable: () => true,
@@ -75,25 +79,27 @@ function view(
 }
 
 export const KINDS = kinds<Need>([
-  view(KIND.threads, "Threads", Threads, {
-    Badge: ThreadsBadge,
+  view(KIND.threads, "Threads", () => Threads, {
+    Badge: deferred(() => ThreadsBadge),
   }),
-  view(KIND.tasks, "Tasks", Tasks, { Badge: TasksBadge }),
-  view(KIND.processes, "Processes", Processes, { Badge: ProcessesBadge }),
-  view(KIND.stack, "Call Stack", Stack, { Badge: StackBadge }),
-  view(KIND.breakpoints, "Breakpoints", Breakpoints, { Badge: BreakpointsBadge }),
-  view(KIND.stops, "Stops", Stops),
-  view(KIND.watch, "Watch", Watch, { Badge: WatchBadge }),
-  view(KIND.variables, "Variables", Variables),
-  view(KIND.registers, "Registers", Registers, { Badge: RegistersBadge }),
-  view(KIND.console, "Console", Console),
-  view(KIND.output, "Output", Output, { Badge: OutputBadge }),
-  view(KIND.signals, "Signals", Signals),
-  view(KIND.modules, "Modules", Modules),
+  view(KIND.tasks, "Tasks", () => Tasks, { Badge: deferred(() => TasksBadge) }),
+  view(KIND.processes, "Processes", () => Processes, { Badge: deferred(() => ProcessesBadge) }),
+  view(KIND.stack, "Call Stack", () => Stack, { Badge: deferred(() => StackBadge) }),
+  view(KIND.breakpoints, "Breakpoints", () => Breakpoints, {
+    Badge: deferred(() => BreakpointsBadge),
+  }),
+  view(KIND.stops, "Stops", () => Stops),
+  view(KIND.watch, "Watch", () => Watch, { Badge: deferred(() => WatchBadge) }),
+  view(KIND.variables, "Variables", () => Variables),
+  view(KIND.registers, "Registers", () => Registers, { Badge: deferred(() => RegistersBadge) }),
+  view(KIND.console, "Console", () => Console),
+  view(KIND.output, "Output", () => Output, { Badge: deferred(() => OutputBadge) }),
+  view(KIND.signals, "Signals", () => Signals),
+  view(KIND.modules, "Modules", () => Modules),
   {
     id: KIND.source,
     title: (pane) => (pane.key === "" ? "Source" : fileName(pane.key)),
-    Body: SourceBody,
+    Body: deferred(() => SourceBody),
     needs: "session",
 
     keepAlive: false,
@@ -101,40 +107,40 @@ export const KINDS = kinds<Need>([
     chosen: (pane) => (pane.key === "" ? showView("source") : showDocument(pane.key)),
     close: (_, pane) => closeDocument(pane.key),
   },
-  view(KIND.disassembly, "Disassembly", DisassemblyBody, {
+  view(KIND.disassembly, "Disassembly", () => DisassemblyBody, {
     chosen: () => showView("disassembly"),
     close: closesView("disassembly"),
   }),
-  view(KIND.memory, "Memory", Memory, {
+  view(KIND.memory, "Memory", () => Memory, {
     chosen: () => showView("memory"),
     close: closesView("memory"),
   }),
-  view(KIND.drawings, "Drawings", Drawings, {
-    Badge: DrawingsBadge,
+  view(KIND.drawings, "Drawings", () => Drawings, {
+    Badge: deferred(() => DrawingsBadge),
 
     keepAlive: false,
     chosen: () => showView("drawings"),
     close: closesView("drawings"),
   }),
-  view(KIND.explorer, "Explorer", ExplorerBody, { needs: null }),
-  view(KIND.connect, "Connect", ConnectBody, { needs: null }),
-  view(KIND.account, "Account", AccountBody, { needs: null }),
-  view(KIND.projects, "Projects", ProjectsBody, { needs: null }),
+  view(KIND.explorer, "Explorer", () => ExplorerBody, { needs: null }),
+  view(KIND.connect, "Connect", () => ConnectBody, { needs: null }),
+  view(KIND.account, "Account", () => AccountBody, { needs: null }),
+  view(KIND.projects, "Projects", () => ProjectsBody, { needs: null }),
   {
     id: KIND.org,
     title: (pane) => orgName(pane) || "Organization",
-    Body: OrgBody,
+    Body: deferred(() => OrgBody),
     needs: null,
     keepAlive: true,
     closable: () => true,
   },
-  view(KIND.launch, "Launch", StartBody, { needs: "control" }),
-  view(KIND.attach, "Attach", StartBody, { needs: "control" }),
-  view(KIND.core, "Core dump", StartBody, { needs: "control" }),
-  view(KIND.record, "Record", StartBody, { needs: "control" }),
-  view(KIND.settings, "Settings", SettingsBody, { needs: null }),
-  view(KIND.keys, "Keyboard shortcuts", KeysBody, { needs: null }),
-  view(KIND.recordedFlame, "Flame graph", RecordedFlamePane, { needs: null }),
+  view(KIND.launch, "Launch", () => StartBody, { needs: "control" }),
+  view(KIND.attach, "Attach", () => StartBody, { needs: "control" }),
+  view(KIND.core, "Core dump", () => StartBody, { needs: "control" }),
+  view(KIND.record, "Record", () => StartBody, { needs: "control" }),
+  view(KIND.settings, "Settings", () => SettingsBody, { needs: null }),
+  view(KIND.keys, "Keyboard shortcuts", () => KeysBody, { needs: null }),
+  view(KIND.recordedFlame, "Flame graph", () => RecordedFlamePane, { needs: null }),
   profileKind(KIND.profile, (pane) => fileName(paneParams(pane).name) || "Profile"),
   profileKind(KIND.profileFlame, () => "Flame graph"),
   profileKind(KIND.profileTree, () => "Call tree"),
@@ -148,8 +154,8 @@ function profileKind(id: KindId, title: Kind["title"]): Kind {
   return {
     id,
     title,
-    Body: ProfilePaneBody,
-    ...(id === KIND.profile ? {} : { Badge: ProfileBadge }),
+    Body: deferred(() => ProfilePaneBody),
+    ...(id === KIND.profile ? {} : { Badge: deferred(() => ProfileBadge) }),
     needs: "connection",
 
     keepAlive: false,
@@ -157,14 +163,14 @@ function profileKind(id: KindId, title: Kind["title"]): Kind {
   };
 }
 
-function ProfileBadge({ pane }: PaneProps) {
-  const link = paneParams(pane).link;
+function ProfileBadge(props: PaneProps) {
+  const link = createMemo(() => paneParams(props.pane).link);
   const name = useLink(link, (value) => {
     const held = value as { name?: unknown } | null | undefined;
     return typeof held?.name === "string" ? held.name : "";
   });
 
-  return name ? <span className="muted"> {fileName(name)}</span> : null;
+  return <Show when={name()}>{(shown) => <span class="muted"> {fileName(shown())}</span>}</Show>;
 }
 
 export const DOCK = { kinds: KINDS, useMissing };
@@ -180,45 +186,48 @@ function closesView(shown: View): (id: PaneId) => void {
 
 function ThreadsBadge() {
   const focus = useContext(FocusContext);
-  const count = focus?.state.threads.length ?? 0;
-  return count > 0 ? <span className="count">{count}</span> : null;
+  const count = createMemo(() => focus()?.state.threads.length ?? 0);
+  return <Show when={count() > 0}>{(n) => <span class="count">{n()}</span>}</Show>;
 }
 
-export function useMissing(need: string | null): string | null {
+export function useMissing(need: () => string | null): () => string | null {
   const focus = useContext(FocusContext);
   const link = useModel((model) => model.link);
   const role = useModel((model) => model.hello?.role ?? null);
   const debugging = useModel((model) => model.state?.session ?? null);
-  const connection =
-    link === "open"
-      ? null
-      : link === "unauthorized"
-        ? standalone && !remote()
-          ? "Not connected to a microscope. Connect with a join link from the File menu."
-          : "microscope refused this page's link. Open a new join link."
-        : link === "incompatible"
-          ? "This page is from another version of microscope. Reload to update it."
-          : link === "unreachable"
-            ? "Can't reach microscope. It may have stopped; this page keeps trying."
-            : "Connecting to microscope…";
-  switch (need) {
-    case "session":
-      if (focus) {
+  return createMemo(() => {
+    const currentLink = link();
+    const connection =
+      currentLink === "open"
+        ? null
+        : currentLink === "unauthorized"
+          ? standalone && !remote()
+            ? "Not connected to a microscope. Connect with a join link from the File menu."
+            : "microscope refused this page's link. Open a new join link."
+          : currentLink === "incompatible"
+            ? "This page is from another version of microscope. Reload to update it."
+            : currentLink === "unreachable"
+              ? "Can't reach microscope. It may have stopped; this page keeps trying."
+              : "Connecting to microscope…";
+    switch (need()) {
+      case "session":
+        if (focus()) {
+          return null;
+        }
+        return (
+          connection ??
+          (debugging()
+            ? "Open the session from Explorer to see this."
+            : "Nothing is being debugged. Launch, attach, or open a core dump from the File menu.")
+        );
+      case "connection":
+        return connection;
+      case "control":
+        return connection ?? (role() === "control" ? null : "This link can only view the session.");
+      default:
         return null;
-      }
-      return (
-        connection ??
-        (debugging
-          ? "Open the session from Explorer to see this."
-          : "Nothing is being debugged. Launch, attach, or open a core dump from the File menu.")
-      );
-    case "connection":
-      return connection;
-    case "control":
-      return connection ?? (role === "control" ? null : "This link can only view the session.");
-    default:
-      return null;
-  }
+    }
+  });
 }
 
 export function showPane(kind: KindId): void {

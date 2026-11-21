@@ -7,7 +7,7 @@ import { mountPane, unmountPane } from "./pane";
 afterEach(unmountPane);
 
 it("keeps the link for the access chosen last", async () => {
-  const server = await mountPane(<Share />);
+  const server = await mountPane(() => <Share />);
   await userEvent.click(page.getByRole("button", { name: "Share" }));
   await expect.element(page.getByText("Making a link…")).toBeVisible();
   const viewing = await server.next("share");
@@ -29,7 +29,7 @@ it("keeps the link for the access chosen last", async () => {
 });
 
 it("shows a failure in place of the link it was making", async () => {
-  const server = await mountPane(<Share />);
+  const server = await mountPane(() => <Share />);
   await userEvent.click(page.getByRole("button", { name: "Share" }));
   await expect.element(page.getByText("Making a link…")).toBeVisible();
   server.send({

@@ -1,7 +1,6 @@
-import { createStore, useStore } from "zustand";
-
 import { assert } from "./assert";
 import { request, type Role } from "./orgs";
+import { createState, useSelector } from "./state";
 
 export type MachineState = "live" | "quiet" | "stopped" | "revoked";
 
@@ -365,15 +364,15 @@ export interface WindowState {
   pushed: boolean;
 }
 
-export const machinesWindow = createStore<WindowState>(() => ({
+export const machinesWindow = createState<WindowState>(() => ({
   open: false,
   look: HOME,
   waiting: null,
   pushed: false,
 }));
 
-export function useMachinesWindow<T>(pick: (window: WindowState) => T): T {
-  return useStore(machinesWindow, pick);
+export function useMachinesWindow<T>(pick: (window: WindowState) => T): () => T {
+  return useSelector(machinesWindow, pick);
 }
 
 export function openMachines(look: Partial<Look>): void {

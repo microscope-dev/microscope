@@ -1,5 +1,6 @@
-import { createStore, useStore } from "zustand";
+import { createMemo } from "solid-js";
 
+import { createState, useSelector } from "../state";
 import {
   emptyLayout,
   type GroupId,
@@ -26,20 +27,28 @@ export interface Workbench {
   readonly closed: readonly Closed[];
 }
 
-export const workbench = createStore<Workbench>(() => ({ layout: emptyLayout(), closed: [] }));
+export const workbench = createState<Workbench>(() => ({ layout: emptyLayout(), closed: [] }));
 
 export function resetWorkbench(layout: Layout = emptyLayout()): void {
   workbench.setState({ layout, closed: [] }, true);
 }
 
-export function useLayout<T>(select: (layout: Layout) => T): T {
-  return useStore(workbench, (state) => select(state.layout));
+export function useLayout<T>(
+  select: (layout: Layout) => T,
+  equals?: (a: T, b: T) => boolean,
+): () => T {
+  return useSelector(workbench, (state) => select(state.layout), equals);
 }
 
-export function useLink<T>(link: LinkId | null, select: (value: Json | undefined) => T): T {
-  return useStore(workbench, (state) =>
-    select(link === null ? undefined : state.layout.links[link]),
-  );
+export function useLink<T>(
+  link: () => LinkId | null,
+  select: (value: Json | undefined) => T,
+): () => T {
+  return createMemo(() => {
+    const id = link();
+    const layout = workbench.read().layout;
+    return select(id === null ? undefined : layout.links[id]);
+  });
 }
 
 export function change(by: (layout: Layout) => Layout): void {

@@ -1,10 +1,9 @@
-import type { StoreApi } from "zustand";
-
 import { assert } from "./assert";
 import { clearConsole } from "./console";
 import { type Cache, cache } from "./data";
 import { latestStop } from "./follow";
 import type { Model } from "./model";
+import type { Store } from "./state";
 import { read, write } from "./storage";
 import { initialTab, isKeptFiles, type KeptFiles, tab } from "./tab";
 import { type Recall, recall } from "./tree";
@@ -93,7 +92,7 @@ export function forget(before: Marks, after: Marks, answers: Cache, values: Reca
 
 const keptFiles = (session: string) => `microscope-files-${session}`;
 
-export function forgetting(store: StoreApi<Model>): () => void {
+export function forgetting(store: Store<Model>): () => void {
   let before = marks(store.getState());
   const forgets = store.subscribe((model) => {
     const after = marks(model);

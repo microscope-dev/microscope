@@ -1,7 +1,8 @@
-import { useShallow } from "zustand/react/shallow";
+import { Show } from "solid-js";
 
 import type { Model } from "../model";
 import { commandName } from "../model";
+import { shallowEqual } from "../state";
 import { useModel } from "../store";
 import { threadLabel } from "./names";
 
@@ -60,7 +61,7 @@ export function shown(model: Model): Shown {
 }
 
 export function Status() {
-  const { pill, label, detail } = useModel(useShallow(shown));
+  const status = useModel(shown, shallowEqual);
   const program = useModel((model) => commandName(model.state));
   const command = useModel((model) => {
     const target = model.state?.target;
@@ -68,20 +69,24 @@ export function Status() {
   });
   return (
     // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled block, not a form output
-    <div className="status" role="status" data-testid="status">
-      {program && (
-        <span className="program" title={command}>
-          {program}
-        </span>
-      )}
-      <span className={`pill ${pill}`} data-state={pill}>
-        {label}
+    <div class="status" role="status" data-testid="status">
+      <Show when={program()}>
+        {(name) => (
+          <span class="program" title={command()}>
+            {name()}
+          </span>
+        )}
+      </Show>
+      <span class={`pill ${status().pill}`} data-state={status().pill}>
+        {status().label}
       </span>
-      {detail && (
-        <span className="detail" title={detail}>
-          {detail}
-        </span>
-      )}
+      <Show when={status().detail}>
+        {(detail) => (
+          <span class="detail" title={detail()}>
+            {detail()}
+          </span>
+        )}
+      </Show>
     </div>
   );
 }

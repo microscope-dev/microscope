@@ -1,5 +1,4 @@
-import { cleanup, render } from "@testing-library/react";
-import { useCallback, useState } from "react";
+import { createSignal, Show } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -12,6 +11,7 @@ import { buildPicture } from "../src/visualize/draw";
 import { closeImages, type Picture, validate } from "../src/visualize/picture";
 import { READY_TIMEOUT } from "../src/visualize/sandbox";
 import { type FakeServer, fakeServer } from "./fake-server";
+import { cleanup, render } from "./render";
 import {
   context,
   framePage,
@@ -24,7 +24,7 @@ import {
 
 const focus = vi.hoisted(() => ({ current: null as unknown }));
 const looked = vi.hoisted(() => [] as unknown[]);
-vi.mock("../src/ui/Workspace", () => ({ useFocus: () => focus.current }));
+vi.mock("../src/ui/Workspace", () => ({ useFocus: () => () => focus.current }));
 vi.mock("../src/ui/navigation", async (original) => ({
   ...(await original<typeof import("../src/ui/navigation")>()),
   useLook: () => (change: unknown) => looked.push(change),
@@ -277,11 +277,11 @@ const at = { stop: 3, thread: 1, frame: 0 };
 async function drawings(look: Look): Promise<FakeServer> {
   const server = await fakeServer();
   focus.current = { session: "s1", state: {}, at, look, trace: undefined, stale: null } as Focus;
-  render(
+  render(() => (
     <SessionContext value={server.session}>
       <Drawings />
-    </SessionContext>,
-  );
+    </SessionContext>
+  ));
   return server;
 }
 
@@ -343,11 +343,11 @@ describe("a card", () => {
   it("offers renderers in a menu the arrow keys move through and Escape closes", async () => {
     const server = await fakeServer();
     focus.current = { session: "s1", state: {}, at, look: {}, trace: undefined, stale: null };
-    render(
+    render(() => (
       <SessionContext value={server.session}>
         <DrawAs name="board" path="board" memory={null} />
-      </SessionContext>,
-    );
+      </SessionContext>
+    ));
     const button = page.getByRole("button", { name: "Draw board as…" });
     await userEvent.click(button);
     server.answer(await server.next("renderers"), {
@@ -380,23 +380,23 @@ describe("a card", () => {
     const server = await fakeServer();
     focus.current = { session: "s1", state: {}, at, look: {}, trace: undefined, stale: null };
     function Part() {
-      const [open, setOpen] = useState(false);
-      const openPart = useCallback(() => setOpen(true), []);
-      const closePart = useCallback(() => setOpen(false), []);
+      const [open, setOpen] = createSignal(false);
       return (
         <>
-          <button type="button" onClick={openPart}>
+          <button type="button" onClick={() => setOpen(true)}>
             square
           </button>
-          {open && <Selected at={at} path="board[3]" onClose={closePart} />}
+          <Show when={open()}>
+            <Selected at={at} path="board[3]" onClose={() => setOpen(false)} />
+          </Show>
         </>
       );
     }
-    render(
+    render(() => (
       <SessionContext value={server.session}>
         <Part />
-      </SessionContext>,
-    );
+      </SessionContext>
+    ));
     const square = page.getByRole("button", { name: "square" });
     await userEvent.click(square);
     const dialog = page.getByRole("dialog", { name: "Part board[3]" });

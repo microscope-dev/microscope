@@ -1,13 +1,4 @@
-import {
-  Fragment,
-  type KeyboardEvent,
-  memo,
-  type PointerEvent,
-  type RefObject,
-  useCallback,
-  useMemo,
-  useRef,
-} from "react";
+import { createMemo, For, Show } from "solid-js";
 
 import { assert } from "../assert";
 import { classOf } from "./classes";
@@ -34,57 +25,101 @@ export const LEAST = 120;
 
 const STEP = 16;
 
-export const NodeView = memo(function NodeView({ node }: { node: Node }) {
-  return node.type === "group" ? <GroupView id={node.id} /> : <SplitView id={node.id} />;
-});
+export function NodeView(props: { node: Node }) {
+  return (
+    <Show when={props.node.type === "group"} fallback={<SplitView id={(props.node as Split).id} />}>
+      <GroupView id={(props.node as Node & { type: "group" }).id} />
+    </Show>
+  );
+}
 
 function splitIn(layout: Layout, id: SplitId): Split | null {
   return splits(layout.root).find((split) => split.id === id) ?? null;
 }
 
-const SplitView = memo(function SplitView({ id }: { id: SplitId }) {
-  const split = useLayout((layout) => splitIn(layout, id));
-
+function SplitView(props: { id: SplitId }) {
+  const split = useLayout((layout) => splitIn(layout, props.id));
   const hidden = useLayout((layout) => layout.hidden.join(" "));
-  const box = useRef<HTMLDivElement>(null);
-  if (!split) {
-    return null;
-  }
+  let box: HTMLDivElement | undefined;
 
-  const shown = split.children.flatMap((child, index) =>
-    hidden.split(" ").includes(child.node.id) ? [] : [index],
-  );
-  const scale = 1 / shown.reduce((sum, index) => sum + (split.children[index] as Child).weight, 0);
+  const shown = createMemo(() => {
+    const current = split();
+    if (!current) {
+      return [] as number[];
+    }
+    const hiddenIds = hidden().split(" ");
+    return current.children.flatMap((child, index) =>
+      hiddenIds.includes(child.node.id) ? [] : [index],
+    );
+  });
+
+  const scale = createMemo(() => {
+    const current = split();
+    if (!current) {
+      return 1;
+    }
+    const total = shown().reduce(
+      (sum, index) => sum + (current.children[index] as Child).weight,
+      0,
+    );
+    return total > 0 ? 1 / total : 1;
+  });
+
+  const entries = createMemo(() => {
+    const current = split();
+    if (!current) {
+      return [];
+    }
+    const visible = shown();
+    return visible.map((index, at) => {
+      const child = current.children[index] as Child;
+      return {
+        id: child.node.id,
+        index,
+        at,
+        previous: visible[at - 1],
+        child,
+      };
+    });
+  });
+
   return (
-    <div className={`${css("split")} ${css(`split-${split.axis}`)}`} ref={box} data-split={id}>
-      {shown.map((index, at) => {
-        const child = split.children[index] as Child;
-        const previous = shown[at - 1];
-        return (
-          <Fragment key={child.node.id}>
-            {previous !== undefined && (
-              <Separator
-                split={split}
-                before={previous}
-                after={index}
-                at={at}
-                scale={scale}
-                box={box}
-              />
+    <Show when={split()}>
+      {(currentSplit) => (
+        <div
+          class={[css("split"), css(`split-${currentSplit().axis}`)]}
+          ref={(el) => {
+            box = el;
+          }}
+          data-split={props.id}
+        >
+          <For each={entries()} keyed={(entry) => entry.id}>
+            {(entry) => (
+              <>
+                <Show when={entry().previous !== undefined}>
+                  <Separator
+                    split={currentSplit()}
+                    before={entry().previous as number}
+                    after={entry().index}
+                    at={entry().at}
+                    scale={scale()}
+                    box={() => box}
+                  />
+                </Show>
+                <SplitChild node={entry().child.node} grow={entry().child.weight * scale()} />
+              </>
             )}
-            <SplitChild node={child.node} grow={child.weight * scale} />
-          </Fragment>
-        );
-      })}
-    </div>
+          </For>
+        </div>
+      )}
+    </Show>
   );
-});
+}
 
-function SplitChild({ node, grow }: { node: Node; grow: number }) {
-  const style = useMemo(() => ({ flexGrow: grow }), [grow]);
+function SplitChild(props: { node: Node; grow: number }) {
   return (
-    <div className={css("split-child")} data-part="split-child" style={style}>
-      <NodeView node={node} />
+    <div class={css("split-child")} data-part="split-child" style={{ "flex-grow": props.grow }}>
+      <NodeView node={props.node} />
     </div>
   );
 }
@@ -101,118 +136,121 @@ interface Measure {
   after: HTMLElement;
 }
 
-function Separator({
-  split,
-  before: beforeIndex,
-  after: afterIndex,
-  at,
-  scale,
-  box,
-}: {
+function Separator(props: {
   split: Split;
   before: number;
   after: number;
   at: number;
 
   scale: number;
-  box: RefObject<HTMLDivElement | null>;
+  box: () => HTMLDivElement | undefined;
 }) {
   const { kinds } = useDock();
-  const row = split.axis === "row";
-  const first = split.children[beforeIndex];
-  const second = split.children[afterIndex];
-  assert(first && second, `separator ${beforeIndex}-${afterIndex} of ${split.children.length}`);
-  const shared = first.weight + second.weight;
+  const row = createMemo(() => props.split.axis === "row");
+  const pair = createMemo(() => {
+    const first = props.split.children[props.before];
+    const second = props.split.children[props.after];
+    assert(
+      first && second,
+      `separator ${props.before}-${props.after} of ${props.split.children.length}`,
+    );
+    return { first, second, shared: first.weight + second.weight };
+  });
   const panes = useLayout((layout) => layout.panes);
   const name = (node: Node): string => {
     const group = node.type === "group" ? node : leftmost(node);
-    const pane = group.active ? panes[group.active] : undefined;
+    const pane = group.active ? panes()[group.active] : undefined;
     return pane ? kinds.get(pane.kind).title(pane) : "panes";
   };
 
-  const down = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const measured = measure(box, at, row);
-      const place = (pointer: globalThis.PointerEvent) =>
-        shares(
-          measured,
-          shared,
-          settle(measured, row ? pointer.clientX : pointer.clientY, pointer.altKey),
-        );
-      const show = ([a, b]: readonly [number, number]) => {
-        measured.before.style.flexGrow = String(a * scale);
-        measured.after.style.flexGrow = String(b * scale);
-      };
-      const tracked = trackPointer(event, {
-        move: (moved) => show(place(moved)),
-        up: (released) => commit(split, beforeIndex, afterIndex, place(released)),
-        cancel: () => show([first.weight, second.weight]),
-      });
-      if (tracked) {
-        event.preventDefault();
-
-        event.currentTarget.focus();
-      }
-    },
-    [box, at, row, shared, scale, split, beforeIndex, afterIndex, first, second],
-  );
-  const even = useCallback(() => evenOut(split), [split]);
-
-  const key = useCallback(
-    (event: KeyboardEvent<HTMLDivElement>) => {
-      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
-        return;
-      }
-      if (event.key === "Enter") {
-        event.preventDefault();
-        evenOut(split);
-        return;
-      }
-      const step = event.shiftKey ? STEP * 4 : STEP;
-      const moves: Record<string, (measured: Measure, position: number) => number> = row
-        ? {
-            ArrowLeft: (_, position) => position - step,
-            ArrowRight: (_, position) => position + step,
-          }
-        : {
-            ArrowUp: (_, position) => position - step,
-            ArrowDown: (_, position) => position + step,
-          };
-      moves.Home = (measured) => measured.from;
-      moves.End = (measured) => measured.to;
-      const by = moves[event.key];
-      if (!by) {
-        return;
-      }
+  const down = (event: PointerEvent & { currentTarget: HTMLDivElement }) => {
+    const isRow = row();
+    const { first, second, shared } = pair();
+    const scale = props.scale;
+    const split = props.split;
+    const beforeIndex = props.before;
+    const afterIndex = props.after;
+    const measured = measure(props.box(), props.at, isRow);
+    const place = (pointer: PointerEvent) =>
+      shares(
+        measured,
+        shared,
+        settle(measured, isRow ? pointer.clientX : pointer.clientY, pointer.altKey),
+      );
+    const show = ([a, b]: readonly [number, number]) => {
+      measured.before.style.flexGrow = String(a * scale);
+      measured.after.style.flexGrow = String(b * scale);
+    };
+    const tracked = trackPointer(event, {
+      move: (moved) => show(place(moved)),
+      up: (released) => commit(split, beforeIndex, afterIndex, place(released)),
+      cancel: () => show([first.weight, second.weight]),
+    });
+    if (tracked) {
       event.preventDefault();
-      const measured = measure(box, at, row);
-      const position = measured.from + (measured.to - measured.from) * (first.weight / shared);
-      commit(split, beforeIndex, afterIndex, shares(measured, shared, by(measured, position)));
-    },
-    [split, row, box, at, first, shared, beforeIndex, afterIndex],
-  );
+      event.currentTarget.focus();
+    }
+  };
+  const even = () => evenOut(props.split);
+
+  const key = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      evenOut(props.split);
+      return;
+    }
+    const isRow = row();
+    const step = event.shiftKey ? STEP * 4 : STEP;
+    const moves: Record<string, (measured: Measure, position: number) => number> = isRow
+      ? {
+          ArrowLeft: (_, position) => position - step,
+          ArrowRight: (_, position) => position + step,
+        }
+      : {
+          ArrowUp: (_, position) => position - step,
+          ArrowDown: (_, position) => position + step,
+        };
+    moves.Home = (measured) => measured.from;
+    moves.End = (measured) => measured.to;
+    const by = moves[event.key];
+    if (!by) {
+      return;
+    }
+    event.preventDefault();
+    const { first, shared } = pair();
+    const measured = measure(props.box(), props.at, isRow);
+    const position = measured.from + (measured.to - measured.from) * (first.weight / shared);
+    commit(
+      props.split,
+      props.before,
+      props.after,
+      shares(measured, shared, by(measured, position)),
+    );
+  };
 
   return (
     <div
-      className={css("separator-bar")}
+      class={css("separator-bar")}
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a focusable separator that resizes is a widget, which <hr> is not
       role="separator"
-      aria-orientation={row ? "vertical" : "horizontal"}
-      aria-label={`Resize ${name(first.node)} and ${name(second.node)}`}
+      aria-orientation={row() ? "vertical" : "horizontal"}
+      aria-label={`Resize ${name(pair().first.node)} and ${name(pair().second.node)}`}
       aria-valuemin={0}
       aria-valuemax={100}
-      aria-valuenow={Math.round((100 * first.weight) / shared)}
-      tabIndex={0}
+      aria-valuenow={Math.round((100 * pair().first.weight) / pair().shared)}
+      tabindex={0}
       data-keys="escape"
       onPointerDown={down}
-      onDoubleClick={even}
+      onDblClick={even}
       onKeyDown={key}
     />
   );
 }
 
-function measure(box: RefObject<HTMLDivElement | null>, at: number, row: boolean): Measure {
-  const element = box.current;
+function measure(element: HTMLDivElement | undefined, at: number, row: boolean): Measure {
   assert(element, "a separator outside its split");
   const children = [...element.children].filter(
     (child) => (child as HTMLElement).dataset.part === "split-child",

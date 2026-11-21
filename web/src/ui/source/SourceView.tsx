@@ -19,7 +19,7 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { createEffect, createMemo, createSignal, onSettled } from "solid-js";
 
 import { assert } from "../../assert";
 import { PENDING } from "../../breakpoints";
@@ -254,34 +254,16 @@ function cursorReporter(report: (line: number) => void): Extension {
   );
 }
 
-export function SourceView({
-  path,
-  text,
-  marks,
-  reveal,
-  onGutter,
-  onLineNumber,
-  onCursor,
-  onHover,
-}: SourceViewProps) {
-  const parent = useRef<HTMLDivElement>(null);
-  const view = useRef<EditorView | null>(null);
-  const languageSlot = useRef(new Compartment());
+export function SourceView(props: SourceViewProps) {
+  let parent: HTMLDivElement | undefined;
+  const [view, setView] = createSignal<EditorView | null>(null);
+  const languageSlot = new Compartment();
+  let revealedIn: string | null = null;
 
-  const revealedIn = useRef<string | null>(null);
-
-  const handlers = useRef({ onGutter, onLineNumber, onCursor, onHover });
-
-  const shownPath = useRef(path);
-  useLayoutEffect(() => {
-    handlers.current = { onGutter, onLineNumber, onCursor, onHover };
-    shownPath.current = path;
-  });
-
-  useEffect(() => {
-    assert(parent.current !== null, "source view mounted without its element");
+  onSettled(() => {
+    assert(parent !== undefined, "source view mounted without its element");
     const editor = new EditorView({
-      parent: parent.current,
+      parent,
       state: EditorState.create({
         doc: "",
         extensions: [
@@ -311,7 +293,7 @@ export function SourceView({
               ),
             domEventHandlers: {
               mousedown: (current, block) => {
-                handlers.current.onGutter(current.state.doc.lineAt(block.from).number);
+                props.onGutter(current.state.doc.lineAt(block.from).number);
                 return true;
               },
             },
@@ -319,7 +301,7 @@ export function SourceView({
           lineNumbers({
             domEventHandlers: {
               mousedown: (current, block, event) => {
-                handlers.current.onLineNumber(
+                props.onLineNumber(
                   current.state.doc.lineAt(block.from).number,
                   (event as MouseEvent).shiftKey,
                 );
@@ -328,14 +310,14 @@ export function SourceView({
             },
           }),
           highlighting,
-          languageSlot.current.of([]),
-          cursorReporter((line) => handlers.current.onCursor(line)),
+          languageSlot.of([]),
+          cursorReporter((line) => props.onCursor(line)),
           hoverTooltip(
             async (current, position) => {
-              const evaluate = handlers.current.onHover;
+              const evaluate = props.onHover;
               const line = current.state.doc.lineAt(position);
               const found = evaluate
-                ? expressionAt(line.text, position - line.from, shownPath.current)
+                ? expressionAt(line.text, position - line.from, props.path)
                 : null;
               if (!evaluate || !found) {
                 return null;
@@ -359,52 +341,83 @@ export function SourceView({
         ],
       }),
     });
-    view.current = editor;
+    setView(editor);
     return () => {
       editor.destroy();
-      view.current = null;
+      setView(null);
     };
-  }, []);
+  });
 
-  useEffect(() => {
-    const editor = view.current;
-    assert(editor !== null, "new text for a source view with no editor");
-    editor.dispatch({
-      changes: { from: 0, to: editor.state.doc.length, insert: text },
-      effects: languageSlot.current.reconfigure(language(path)),
-    });
-  }, [path, text]);
+  const path = createMemo(() => props.path);
+  const text = createMemo(() => props.text);
+  const marks = createMemo(() => props.marks);
+  const reveal = createMemo(() => props.reveal);
 
-  useEffect(() => {
-    assert(view.current !== null, "new marks for a source view with no editor");
-    view.current.dispatch({ effects: setMarks.of(marks) });
-  }, [marks]);
+  createEffect(
+    () => [view(), path(), text()] as const,
+    ([editor, currentPath, currentText]) => {
+      if (!editor) {
+        return;
+      }
+      editor.dispatch({
+        changes: { from: 0, to: editor.state.doc.length, insert: currentText },
+        effects: languageSlot.reconfigure(language(currentPath)),
+      });
+    },
+  );
 
-  useEffect(() => {
-    const editor = view.current;
-    assert(editor !== null, "revealing a line in a source view with no editor");
+  createEffect(
+    () => [view(), marks()] as const,
+    ([editor, currentMarks]) => {
+      if (!editor) {
+        return;
+      }
+      editor.dispatch({ effects: setMarks.of(currentMarks) });
+    },
+  );
 
-    if (!text || reveal === null || reveal < 1 || reveal > editor.state.doc.lines) {
-      return;
-    }
-    const line = editor.state.doc.line(reveal);
+  createEffect(
+    () => [view(), reveal(), text()] as const,
+    ([editor, currentReveal, currentText]) => {
+      if (!editor) {
+        return;
+      }
+      if (
+        !currentText ||
+        currentReveal === null ||
+        currentReveal < 1 ||
+        currentReveal > editor.state.doc.lines
+      ) {
+        return;
+      }
+      const line = editor.state.doc.line(currentReveal);
 
-    const shown = revealedIn.current === text;
-    revealedIn.current = text;
-    const block = editor.lineBlockAt(line.from);
-    const { top, bottom } = editor.scrollDOM.getBoundingClientRect();
-    const height = bottom - top;
-    const scrolled = editor.scrollDOM.scrollTop;
-    if (
-      shown &&
-      height > 0 &&
-      block.top >= scrolled + 20 &&
-      block.bottom <= scrolled + height - 20
-    ) {
-      return;
-    }
-    editor.dispatch({ effects: EditorView.scrollIntoView(line.from, { y: "center" }) });
-  }, [reveal, text]);
+      const shown = revealedIn === currentText;
+      revealedIn = currentText;
+      const block = editor.lineBlockAt(line.from);
+      const { top, bottom } = editor.scrollDOM.getBoundingClientRect();
+      const height = bottom - top;
+      const scrolled = editor.scrollDOM.scrollTop;
+      if (
+        shown &&
+        height > 0 &&
+        block.top >= scrolled + 20 &&
+        block.bottom <= scrolled + height - 20
+      ) {
+        return;
+      }
+      editor.dispatch({ effects: EditorView.scrollIntoView(line.from, { y: "center" }) });
+    },
+  );
 
-  return <div className="source-view" ref={parent} data-testid="source" data-path={path} />;
+  return (
+    <div
+      class="source-view"
+      ref={(node) => {
+        parent = node;
+      }}
+      data-testid="source"
+      data-path={props.path}
+    />
+  );
 }

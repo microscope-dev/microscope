@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { createMemo, For, Show } from "solid-js";
 
 import { type ActionName, action, continueLabel } from "../actions";
 import { useModel } from "../store";
@@ -21,44 +21,56 @@ export function RunToolbar() {
   const control = useModel((model) => model.hello?.role === "control");
 
   return (
-    <div className="toolbar" role="toolbar" aria-label="Run">
-      {!control && hello && (
-        <span className="pill idle" title="This link can watch the session but not run or stop it">
+    <div class="toolbar" role="toolbar" aria-label="Run">
+      <Show when={!control() && hello()}>
+        <span class="pill idle" title="This link can watch the session but not run or stop it">
           View only
         </span>
-      )}
-      {control && BUTTONS.map((button) => <ActionButton key={button.name} {...button} />)}
-      <span className="separator" />
+      </Show>
+      <Show when={control()}>
+        <For each={BUTTONS}>
+          {(button) => (
+            <ActionButton name={button.name} glyph={button.glyph} label={button.label} />
+          )}
+        </For>
+      </Show>
+      <span class="separator" />
       <Status />
     </div>
   );
 }
 
-function ActionButton({ name, glyph, label }: { name: ActionName; glyph: string; label?: string }) {
+function ActionButton(props: { name: ActionName; glyph: string; label?: string | undefined }) {
   const { run } = useCommands();
   const at = useTab((current) => current.at);
   const why = useModel((model) => {
-    const current = action(name, model, at);
+    const current = action(props.name, model, at());
     return current.enabled ? null : current.reason;
   });
   const running = useModel((model) => model.state?.inferior.state === "running");
-  const text = useModel((model) => label ?? continueLabel(model));
-  const key = COMMANDS.describe(name);
-  const onClick = useCallback(() => run(name), [run, name]);
-  const primary =
-    (name === "continue" || name === "pause") && why === null && (name === "pause" || !running);
+  const text = useModel((model) => props.label ?? continueLabel(model));
+  const key = createMemo(() => COMMANDS.describe(props.name));
+  const onClick = () => run(props.name);
+  const primary = createMemo(
+    () =>
+      (props.name === "continue" || props.name === "pause") &&
+      why() === null &&
+      (props.name === "pause" || !running()),
+  );
   return (
     <button
       type="button"
-      className={`tb ${primary ? "primary" : ""}`}
-      disabled={why !== null}
-      title={`${text}${key ? ` (${key})` : ""}${why === null ? "" : `: ${why}`}`}
-      data-action={name}
+      class={["tb", { primary: primary() }]}
+      disabled={why() !== null}
+      title={`${text()}${key() ? ` (${key()})` : ""}${why() === null ? "" : `: ${why()}`}`}
+      data-action={props.name}
       onClick={onClick}
     >
-      <span className="glyph">{glyph}</span>
-      <span className={name === "continue" || name === "pause" ? "" : "label"}>{text}</span>
-      {key && <span className="hint">{key}</span>}
+      <span class="glyph">{props.glyph}</span>
+      <span class={props.name === "continue" || props.name === "pause" ? "" : "label"}>
+        {text()}
+      </span>
+      <Show when={key()}>{(hint) => <span class="hint">{hint()}</span>}</Show>
     </button>
   );
 }

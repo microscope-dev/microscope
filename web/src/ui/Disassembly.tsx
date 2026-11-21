@@ -1,7 +1,6 @@
-import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { JSX } from "@solidjs/web";
+import { createEffect, createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
 
-import { assert } from "../assert";
 import { toggleBreakpoint } from "../breakpoints";
 import { useRequest } from "../data";
 import { type Look, stringifySearch } from "../focus";
@@ -9,78 +8,79 @@ import { controls } from "../model";
 import type { Breakpoint, Disassembled, Instruction, SourceLine, Syntax } from "../protocol";
 import { isString, read, write } from "../storage";
 import { useConnection, useModel } from "../store";
+import { createVirtualizer } from "../virtual";
 import { useLook, useShowSource } from "./navigation";
 import { fileName } from "./paths";
 import { errorClass, hidden } from "./Values";
 import { useFocus } from "./Workspace";
 
-function useSyntax(): [Syntax, (syntax: Syntax) => void] {
-  const [syntax, setSyntax] = useState<Syntax>(() =>
+function useSyntax(): [() => Syntax, (syntax: Syntax) => void] {
+  const [syntax, setSyntax] = createSignal<Syntax>(
     read(
       "microscope-syntax",
       "intel",
       (value): value is Syntax => isString(value) && value === "att",
     ),
   );
-  const choose = useCallback((chosen: Syntax) => {
+  const choose = (chosen: Syntax) => {
     setSyntax(chosen);
     write("microscope-syntax", chosen);
-  }, []);
+  };
   return [syntax, choose];
 }
 
 export function Disassembly() {
   const focus = useFocus();
-  const { at, look } = focus;
   const [syntax, setSyntax] = useSyntax();
-  const why = hidden(focus, "Instructions");
-  const answer = useRequest(
-    "disassemble",
-    why === null && at ? { ...at, address: look.asm ?? null, syntax } : null,
-  );
-  const disassembled = answer.data;
-  const body = useRef<HTMLDivElement>(null);
-
-  let content: React.ReactNode;
-  if (why) {
-    content = <div className="empty center-message">{why}</div>;
-  } else if (answer.error) {
-    content = (
-      <div className={`${errorClass(answer.error)} center-message`}>{answer.error.message}</div>
-    );
-  } else if (disassembled) {
-    content = (
-      <Lines
-        disassembled={disassembled}
-        body={body}
-        current={answer.current}
-        innermost={at?.frame === 0}
-      />
-    );
-  } else {
-    content = <div className="empty center-message">Disassembling…</div>;
-  }
+  const why = createMemo(() => hidden(focus(), "Instructions"));
+  const answer = useRequest("disassemble", () => {
+    const current = focus();
+    return why() === null && current.at
+      ? { ...current.at, address: current.look.asm ?? null, syntax: syntax() }
+      : null;
+  });
+  const disassembled = createMemo(() => answer().data);
+  const [body, setBody] = createSignal<HTMLDivElement | null>(null);
 
   return (
-    <div className="asm" data-testid="disassembly">
-      <div className="view-head">
-        <span className="asm-function" data-testid="disassembly-function">
-          {disassembled?.function ?? (look.asm ? "no function" : "")}
+    <div class="asm" data-testid="disassembly">
+      <div class="view-head">
+        <span class="asm-function" data-testid="disassembly-function">
+          {disassembled()?.function ?? (focus().look.asm ? "no function" : "")}
         </span>
-        {look.asm && <span className="dim">{look.asm}</span>}
-        <fieldset className="segmented small" aria-label="Syntax">
-          {SYNTAXES.map((choice) => (
-            <SyntaxButton
-              key={choice}
-              syntax={choice}
-              pressed={syntax === choice}
-              choose={setSyntax}
-            />
-          ))}
+        <Show when={focus().look.asm}>{(asm) => <span class="dim">{asm()}</span>}</Show>
+        <fieldset class="segmented small" aria-label="Syntax">
+          <For each={SYNTAXES}>
+            {(choice) => (
+              <SyntaxButton syntax={choice} pressed={syntax() === choice} choose={setSyntax} />
+            )}
+          </For>
         </fieldset>
       </div>
-      <div className={`asm-body ${answer.current ? "" : "stale"}`} ref={body}>
-        {content}
+      <div
+        class={["asm-body", { stale: !answer().current }]}
+        ref={(node) => {
+          setBody(node);
+        }}
+      >
+        <Switch fallback={<div class="empty center-message">Disassembling…</div>}>
+          <Match when={why()}>
+            {(reason) => <div class="empty center-message">{reason()}</div>}
+          </Match>
+          <Match when={answer().error}>
+            {(err) => <div class={[errorClass(err()), "center-message"]}>{err().message}</div>}
+          </Match>
+          <Match when={disassembled()}>
+            {(data) => (
+              <Lines
+                disassembled={data()}
+                body={body}
+                current={answer().current}
+                innermost={focus().at?.frame === 0}
+              />
+            )}
+          </Match>
+        </Switch>
       </div>
     </div>
   );
@@ -88,19 +88,18 @@ export function Disassembly() {
 
 const SYNTAXES = ["intel", "att"] as const;
 
-function SyntaxButton({
-  syntax,
-  pressed,
-  choose,
-}: {
+function SyntaxButton(props: {
   syntax: Syntax;
   pressed: boolean;
   choose: (syntax: Syntax) => void;
 }) {
-  const click = useCallback(() => choose(syntax), [choose, syntax]);
   return (
-    <button type="button" aria-pressed={pressed} onClick={click}>
-      {syntax === "intel" ? "Intel" : "AT&T"}
+    <button
+      type="button"
+      aria-pressed={props.pressed ? "true" : "false"}
+      onClick={() => props.choose(props.syntax)}
+    >
+      {props.syntax === "intel" ? "Intel" : "AT&T"}
     </button>
   );
 }
@@ -112,24 +111,19 @@ type Line =
   | { kind: "source"; key: string; source: SourceLine }
   | { kind: "instruction"; key: string; instruction: Instruction };
 
-function Lines({
-  disassembled,
-  body,
-  current,
-  innermost,
-}: {
+function Lines(props: {
   disassembled: Disassembled;
-  body: React.RefObject<HTMLDivElement | null>;
+  body: () => HTMLDivElement | null;
   current: boolean;
   innermost: boolean;
 }) {
-  const lines = useMemo(() => {
-    const built: Line[] = disassembled.notes.map((note, index) => ({
+  const lines = createMemo(() => {
+    const built: Line[] = props.disassembled.notes.map((note, index) => ({
       kind: "note",
       key: `note:${index}`,
       note,
     }));
-    for (const instruction of disassembled.instructions) {
+    for (const instruction of props.disassembled.instructions) {
       if (instruction.source) {
         built.push({
           kind: "source",
@@ -140,183 +134,215 @@ function Lines({
       built.push({ kind: "instruction", key: instruction.address, instruction });
     }
     return built;
-  }, [disassembled]);
-  // oxlint-disable-next-line react/incompatible-library -- the app is not built with the React Compiler
-  const rows = useVirtualizer({
-    count: lines.length,
-    getScrollElement: () => body.current,
-    estimateSize: () => LINE,
-    overscan: 40,
   });
 
-  const marked = current ? disassembled.marked : undefined;
-  useEffect(() => {
-    const index = marked
-      ? lines.findIndex((line) => line.kind === "instruction" && line.key === marked)
-      : -1;
-    if (index >= 0) {
-      rows.scrollToIndex(index, { align: "center" });
-    } else if (current) {
-      rows.scrollToOffset(0);
-    }
-  }, [marked, current, lines, rows]);
+  const rows = createVirtualizer(() => {
+    const element = props.body();
+    return {
+      count: lines().length,
+      getScrollElement: () => element,
+      estimateSize: () => LINE,
+      overscan: 40,
+    };
+  });
 
-  const start = disassembled.function ? disassembled.instructions[0]?.address : undefined;
-  const size = rows.getTotalSize();
-  const sized = useMemo(() => ({ height: size }), [size]);
+  const scrollTarget = createMemo(() => ({
+    marked: props.current ? props.disassembled.marked : undefined,
+    current: props.current,
+    lines: lines(),
+  }));
+
+  createEffect(
+    () => scrollTarget(),
+    ({ marked, current, lines: list }) => {
+      const index = marked
+        ? list.findIndex((line) => line.kind === "instruction" && line.key === marked)
+        : -1;
+      if (index >= 0) {
+        rows.scrollToIndex(index, { align: "center" });
+      } else if (current) {
+        rows.scrollToOffset(0);
+      }
+    },
+  );
+
+  const start = createMemo(() =>
+    props.disassembled.function ? props.disassembled.instructions[0]?.address : undefined,
+  );
+
+  const rendered = createMemo(() => {
+    const list = lines();
+    return rows.items().flatMap((item) => {
+      const line = list[item.index];
+      return line ? [{ key: line.key, start: item.start, line }] : [];
+    });
+  });
+
   return (
-    <div className="asm-lines" style={sized}>
-      {rows.getVirtualItems().map((item) => {
-        const line = lines[item.index];
-        assert(line !== undefined, "virtual row past the listing's lines");
-        return (
-          <Slot key={line.key} start={item.start}>
-            {line.kind === "note" ? (
-              <div className="asm-note">{line.note}</div>
-            ) : line.kind === "source" ? (
-              <SourceHead source={line.source} />
-            ) : (
-              <Row
-                instruction={line.instruction}
-                start={start}
-                marked={line.instruction.address === disassembled.marked}
-                innermost={innermost}
-              />
-            )}
+    <div class="asm-lines" style={{ height: `${rows.totalSize()}px` }}>
+      <For each={rendered()} keyed={(entry) => entry.key}>
+        {(entry) => (
+          <Slot start={entry().start}>
+            <Switch>
+              <Match when={entry().line.kind === "note" ? entry().line : null}>
+                {(line) => (
+                  <div class="asm-note">{(line() as Extract<Line, { kind: "note" }>).note}</div>
+                )}
+              </Match>
+              <Match when={entry().line.kind === "source" ? entry().line : null}>
+                {(line) => (
+                  <SourceHead source={(line() as Extract<Line, { kind: "source" }>).source} />
+                )}
+              </Match>
+              <Match when={entry().line.kind === "instruction" ? entry().line : null}>
+                {(line) => (
+                  <Row
+                    instruction={(line() as Extract<Line, { kind: "instruction" }>).instruction}
+                    start={start()}
+                    marked={
+                      (line() as Extract<Line, { kind: "instruction" }>).instruction.address ===
+                      props.disassembled.marked
+                    }
+                    innermost={props.innermost}
+                  />
+                )}
+              </Match>
+            </Switch>
           </Slot>
-        );
-      })}
+        )}
+      </For>
     </div>
   );
 }
 
-function Slot({ start, children }: { start: number; children: React.ReactNode }) {
-  const style = useMemo(() => ({ transform: `translateY(${start}px)` }), [start]);
+function Slot(props: { start: number; children: JSX.Element }) {
   return (
-    <div className="asm-slot" style={style}>
-      {children}
+    <div class="asm-slot" style={{ transform: `translateY(${props.start}px)` }}>
+      {props.children}
     </div>
   );
 }
 
-function Row({
-  instruction,
-  start,
-  marked,
-  innermost,
-}: {
+function Row(props: {
   instruction: Instruction;
   start: string | undefined;
   marked: boolean;
   innermost: boolean;
 }) {
-  const offset = start ? BigInt(instruction.address) - BigInt(start) : null;
+  const offset = createMemo(() =>
+    props.start ? BigInt(props.instruction.address) - BigInt(props.start) : null,
+  );
   return (
     <div
-      className={`asm-row ${marked ? (innermost ? "pc" : "frame") : ""}`}
-      data-address={instruction.address}
-      aria-current={marked ? "true" : undefined}
+      class={["asm-row", props.marked ? (props.innermost ? "pc" : "frame") : ""]}
+      data-address={props.instruction.address}
+      aria-current={props.marked ? "true" : undefined}
     >
-      <Gutter address={instruction.address} />
-      <span className="asm-mark" aria-hidden="true">
-        {marked ? "▶" : ""}
+      <Gutter address={props.instruction.address} />
+      <span class="asm-mark" aria-hidden="true">
+        {props.marked ? "▶" : ""}
       </span>
-      <span className="asm-address">{instruction.address}</span>
-      <span className="asm-offset">
-        {offset === null ? (instruction.symbol ?? "") : `+${offset}`}
+      <span class="asm-address">{props.instruction.address}</span>
+      <span class="asm-offset">
+        {offset() === null ? (props.instruction.symbol ?? "") : `+${offset()}`}
       </span>
-      <span className="asm-bytes">{instruction.bytes}</span>
-      <span className="asm-text">
-        {instruction.invalid ? (
-          <span className="error">{instruction.invalid}</span>
-        ) : (
-          instruction.tokens.map((token, index) => (
-            // oxlint-disable-next-line react/no-array-index-key -- tokens repeat, and never move
-            <span key={index} className={`tk-${token.kind}`}>
-              {token.text}
-            </span>
-          ))
-        )}
-        {instruction.target?.name && <Target {...instruction.target} />}
-        {instruction.comment && <span className="asm-comment"> ; {instruction.comment}</span>}
+      <span class="asm-bytes">{props.instruction.bytes}</span>
+      <span class="asm-text">
+        <Show
+          when={props.instruction.invalid}
+          fallback={
+            <For each={props.instruction.tokens} keyed={false}>
+              {(token) => <span class={`tk-${token().kind}`}>{token().text}</span>}
+            </For>
+          }
+        >
+          {(invalid) => <span class="error">{invalid()}</span>}
+        </Show>
+        <Show when={props.instruction.target?.name ? props.instruction.target : null}>
+          {(target) => <Target address={target().address} name={target().name} />}
+        </Show>
+        <Show when={props.instruction.comment}>
+          {(comment) => <span class="asm-comment"> ; {comment()}</span>}
+        </Show>
       </span>
     </div>
   );
 }
 
-function SourceHead({ source }: { source: SourceLine }) {
+function SourceHead(props: { source: SourceLine }) {
   const showSource = useShowSource();
-  const text = useRequest("source", { path: source.path }).data;
-  const line = text?.path === source.path ? text.text.split("\n")[source.line - 1] : undefined;
-  const place = `${fileName(source.path)}:${source.line}`;
-  const show = useCallback(
-    () => showSource(source.path, source.line),
-    [showSource, source.path, source.line],
-  );
+  const request = useRequest("source", () => ({ path: props.source.path }));
+  const line = createMemo(() => {
+    const text = request().data;
+    return text?.path === props.source.path
+      ? text.text.split("\n")[props.source.line - 1]
+      : undefined;
+  });
+  const place = createMemo(() => `${fileName(props.source.path)}:${props.source.line}`);
   return (
     <button
       type="button"
-      className="asm-source"
-      aria-label={`Show the source at ${place}`}
-      onClick={show}
+      class="asm-source"
+      aria-label={`Show the source at ${place()}`}
+      onClick={() => showSource(props.source.path, props.source.line)}
     >
-      <span className="asm-place">{place}</span>
-      <span className="asm-line">{line?.trim()}</span>
+      <span class="asm-place">{place()}</span>
+      <span class="asm-line">{line()?.trim()}</span>
     </button>
   );
 }
 
-function Target({ address, name }: { address: string; name: string | null }) {
+function Target(props: { address: string; name: string | null }) {
   const look = useLook();
-  const { look: current } = useFocus();
-  const there = useCallback(
-    (from: Look): Look => ({ ...from, asm: address, view: "disassembly" }),
-    [address],
-  );
-  const follow = useCallback(
-    (event: React.MouseEvent) => {
-      if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-        event.preventDefault();
-        look(there, { replace: false });
-      }
-    },
-    [look, there],
-  );
+  const focus = useFocus();
+  const there = (from: Look): Look => ({ ...from, asm: props.address, view: "disassembly" });
+  const follow = (event: MouseEvent) => {
+    if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      event.preventDefault();
+      look(there, { replace: false });
+    }
+  };
   return (
     <a
-      className="asm-target"
-
-      href={window.location.pathname + stringifySearch({ ...there(current) })}
-      title={address}
+      class="asm-target"
+      href={window.location.pathname + stringifySearch({ ...there(focus().look) })}
+      title={props.address}
       onClick={follow}
     >
-      {name}
+      {props.name}
     </a>
   );
 }
 
-function Gutter({ address }: { address: string }) {
-  const { state } = useFocus();
+function Gutter(props: { address: string }) {
+  const focus = useFocus();
   const control = useModel(controls);
   const connection = useConnection();
-  const existing = state.breakpoints.find((breakpoint: Breakpoint) =>
-    breakpoint.places.some((place) => place.address === address),
+  const existing = createMemo(() =>
+    focus().state.breakpoints.find((breakpoint: Breakpoint) =>
+      breakpoint.places.some((place) => place.address === props.address),
+    ),
   );
-  const toggle = useCallback(() => {
-    void toggleBreakpoint(connection, existing, address);
-  }, [connection, existing, address]);
-  const dot = <span className={existing ? "dot plain" : "dot none"} aria-hidden="true" />;
-  if (!control) {
-    return <span className="asm-gutter">{dot}</span>;
-  }
+  const toggle = () => {
+    void toggleBreakpoint(connection, existing(), props.address);
+  };
   return (
-    <button
-      type="button"
-      className="asm-gutter"
-      aria-label={`${existing ? "Remove the breakpoint" : "Breakpoint"} at ${address}`}
-      onClick={toggle}
+    <Show
+      when={control()}
+      fallback={
+        <span class="asm-gutter">
+          <span class={existing() ? "dot plain" : "dot none"} aria-hidden="true" />
+        </span>
+      }
     >
-      {dot}
-    </button>
+      <button
+        type="button"
+        class="asm-gutter"
+        aria-label={`${existing() ? "Remove the breakpoint" : "Breakpoint"} at ${props.address}`}
+        onClick={toggle}
+      >
+        <span class={existing() ? "dot plain" : "dot none"} aria-hidden="true" />
+      </button>
+    </Show>
   );
 }

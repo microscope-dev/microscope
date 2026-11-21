@@ -22,9 +22,9 @@ const entry = (stop: number): StopEntry => ({
 const state = stoppedState({ stops: [entry(1), entry(2)] });
 
 it.each([
-  [<Stack key="stack" />, "This session has not reached stop #9."],
-  [<Variables key="variables" />, "Values hidden: the session has not reached stop #9."],
-  [<Registers key="registers" />, "Registers hidden: the session has not reached stop #9."],
+  [() => <Stack />, "This session has not reached stop #9."],
+  [() => <Variables />, "Values hidden: the session has not reached stop #9."],
+  [() => <Registers />, "Registers hidden: the session has not reached stop #9."],
 ])("says a stop not reached yet has not been reached", async (pane, text) => {
   await mountPane(pane, { at: { stop: 9, thread: 1, frame: 0 }, stale: "passed" }, state);
   await expect.element(page.getByText(text)).toBeVisible();
@@ -32,7 +32,11 @@ it.each([
 });
 
 it("says a stop the session has left has passed", async () => {
-  await mountPane(<Stack />, { at: { stop: 1, thread: 1, frame: 0 }, stale: "passed" }, state);
+  await mountPane(
+    () => <Stack />,
+    { at: { stop: 1, thread: 1, frame: 0 }, stale: "passed" },
+    state,
+  );
   await expect
     .element(page.getByText("Stop #1 has passed, so its stack is no longer available."))
     .toBeVisible();

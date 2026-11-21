@@ -1,16 +1,10 @@
-import { Navigate, Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type RouteSectionProps, useLocation, useNavigate, useParams } from "@solidjs/router";
+import { createEffect, createMemo, createSignal, Match, onSettled, Show, Switch } from "solid-js";
 
 import { followEmailLink, followSignIn } from "../account";
 import { documentsGroup, KIND } from "../documents";
+import { parseSearch } from "../focus";
+import { toHref } from "../history";
 import { type Note, targetName } from "../model";
 import { validateProfileLook } from "../profile/look";
 import { useModel } from "../store";
@@ -18,7 +12,7 @@ import { tab as tabState } from "../tab";
 import { change, useLayout, workbench } from "../workbench/store";
 import { SessionLink } from "./Explorer";
 import { profileLayout, showPane, startLayout } from "./panes";
-import { PICKED } from "./Picker";
+import { PICKED, pickerSearch } from "./Picker";
 import { lookOf, profileOf, showAddress, shownProfilePane, viewOpen } from "./profile/link";
 import { orgLink } from "./SingleSignOn";
 import { Workbench } from "./Workspace";
@@ -29,109 +23,141 @@ export function Home() {
   );
   const session = useModel((model) => model.state?.session ?? null);
   const busy = useModel((model) => model.state?.busy ?? null);
-  const profile = useModel((model) => (busy ? undefined : model.profiles.at(-1)));
-  const start = useMemo(
-    () => (profile ? () => profileLayout(profile.id, profile.name, {}) : startLayout),
-    [profile],
-  );
-  if (session) {
-    return <ToSession session={session} />;
-  }
-  if (loading) {
-    return <div className="page muted">Connecting to microscope…</div>;
-  }
+  const profile = useModel((model) => (model.state?.busy ? undefined : model.profiles.at(-1)));
+  const start = createMemo(() => {
+    const current = profile();
+    return current ? () => profileLayout(current.id, current.name, {}) : startLayout;
+  });
+
   return (
-    <Workbench focus={null} wants="start" start={start}>
-      {busy && <div className="workbench-notice muted">{busy}…</div>}
-    </Workbench>
+    <Switch
+      fallback={
+        <Workbench focus={null} wants="start" start={start()}>
+          <Show when={busy()}>{(text) => <div class="workbench-notice muted">{text()}…</div>}</Show>
+        </Workbench>
+      }
+    >
+      <Match when={session()}>{(id) => <ToSession session={id()} />}</Match>
+      <Match when={loading()}>
+        <div class="page muted">Connecting to microscope…</div>
+      </Match>
+    </Switch>
   );
 }
 
-function ToSession({ session }: { session: string }) {
-  const params = useMemo(() => ({ session }), [session]);
-  return <Navigate to="/s/$session" params={params} replace />;
+function ToSession(props: { session: string }) {
+  const navigate = useNavigate();
+  createEffect(
+    () => props.session,
+    (id) => {
+      navigate(toHref(`/s/${id}`), { replace: true });
+    },
+  );
+  return null;
 }
 
 export function Pick() {
-  const { tab } = useSearch({ from: "/pick" });
+  const location = useLocation();
+  const tabName = createMemo(() => pickerSearch(parseSearch(location.search)).tab);
   const navigate = useNavigate();
-  useLayoutEffect(() => {
-    showPane(PICKED[tab ?? "launch"]);
-    void navigate({ to: "/", replace: true });
-  }, [tab, navigate]);
+  createEffect(
+    () => tabName(),
+    (chosen) => {
+      showPane(PICKED[chosen ?? "launch"]);
+      navigate(toHref("/"), { replace: true });
+    },
+  );
   return <Workbench focus={null} wants="start" />;
 }
 
-export function EmailLink({ link }: { link: "confirm" | "login" | "reset" }) {
+export function EmailLink(props: { link: "confirm" | "login" | "reset" }) {
   const navigate = useNavigate();
-  useLayoutEffect(() => {
-    followEmailLink(link);
-    showPane(KIND.account);
-    void navigate({ to: "/", replace: true });
-  }, [link, navigate]);
+  createEffect(
+    () => props.link,
+    (kind) => {
+      followEmailLink(kind);
+      showPane(KIND.account);
+      navigate(toHref("/"), { replace: true });
+    },
+  );
   return <Workbench focus={null} wants="start" />;
 }
 
 export function SignedIn() {
   const navigate = useNavigate();
-  useLayoutEffect(() => {
+  onSettled(() => {
     followSignIn();
     showPane(KIND.account);
-    void navigate({ to: "/", replace: true });
-  }, [navigate]);
+    navigate(toHref("/"), { replace: true });
+  });
   return <Workbench focus={null} wants="start" />;
 }
 
 export function OrgSignIn() {
   const navigate = useNavigate();
-  useLayoutEffect(() => {
+  onSettled(() => {
     orgLink.setState({ key: new URLSearchParams(window.location.hash.slice(1)).get("key") });
     showPane(KIND.account);
-    void navigate({ to: "/", replace: true });
-  }, [navigate]);
+    navigate(toHref("/"), { replace: true });
+  });
   return <Workbench focus={null} wants="start" />;
 }
 
 export function ProfileRoute() {
-  const { profile } = useParams({ from: "/profile/$profile" });
+  const params = useParams();
+  const location = useLocation();
+  const profile = createMemo(() => params.profile ?? "");
+  const look = createMemo(() => validateProfileLook(parseSearch(location.search)));
+  const name = useModel(
+    (model) => model.profiles.find((each) => each.id === profile())?.name ?? "",
+  );
 
-  const search = useSearch({ from: "/profile/$profile" });
-  const look = useMemo(() => validateProfileLook(search), [search]);
-  const name = useModel((model) => model.profiles.find((each) => each.id === profile)?.name ?? "");
-
-  useLayoutEffect(() => {
-    change((layout) =>
-      showAddress(layout, profile, name, look, documentsGroup(layout, tabState.getState().files)),
-    );
-  }, [profile, name, look]);
+  createEffect(
+    () => [profile(), name(), look()] as const,
+    ([id, profileName, currentLook]) => {
+      change((layout) =>
+        showAddress(
+          layout,
+          id,
+          profileName,
+          currentLook,
+          documentsGroup(layout, tabState.getState().files),
+        ),
+      );
+    },
+  );
 
   const navigate = useNavigate();
-  const view = look.view ?? null;
-  const open = useLayout((layout) => viewOpen(layout, profile, view));
-  const was = useRef({ profile, view, open });
-  useEffect(() => {
-    const before = was.current;
-    was.current = { profile, view, open };
-    if (before.profile !== profile || before.view !== view || !before.open || open) {
-      return;
-    }
-    const layout = workbench.getState().layout;
-    const next = shownProfilePane(layout);
-    const pane = next ? layout.panes[next] : undefined;
-    const shown = next ? lookOf(layout, next) : null;
-    const of = pane ? profileOf(layout, pane) : null;
-    if (shown && of) {
-      void navigate({
-        to: "/profile/$profile",
-        params: { profile: of },
-        search: shown,
-        replace: true,
-      });
-    } else {
-      void navigate({ to: "/", replace: true });
-    }
-  }, [profile, view, open, navigate]);
-  const start = useCallback(() => profileLayout(profile, name, look), [profile, name, look]);
+  const view = createMemo(() => look().view ?? null);
+  const open = useLayout((layout) => viewOpen(layout, profile(), view()));
+  let was: { profile: string; view: string | null; open: boolean } | null = null;
+  createEffect(
+    () => ({ profile: profile(), view: view(), open: open() }),
+    (next) => {
+      const before = was;
+      was = next;
+      if (
+        !before ||
+        before.profile !== next.profile ||
+        before.view !== next.view ||
+        !before.open ||
+        next.open
+      ) {
+        return;
+      }
+      const layout = workbench.getState().layout;
+      const shownPane = shownProfilePane(layout);
+      const pane = shownPane ? layout.panes[shownPane] : undefined;
+      const shown = shownPane ? lookOf(layout, shownPane) : null;
+      const of = pane ? profileOf(layout, pane) : null;
+      if (shown && of) {
+        navigate(toHref(`/profile/${of}`, shown as Record<string, unknown>), { replace: true });
+      } else {
+        navigate(toHref("/"), { replace: true });
+      }
+    },
+  );
+  const start = () => profileLayout(profile(), name(), look());
   return <Workbench focus={null} wants="start" start={start} />;
 }
 
@@ -143,57 +169,72 @@ export function endedNotice(notices: readonly Note[], program: string | null): N
   return notices.findLast((notice) => notice.text === text || notice.text.startsWith(`${text}, `));
 }
 
-export function SessionRoute() {
-  const { session } = useParams({ from: "/s/$session" });
+export function SessionRoute(props: RouteSectionProps) {
+  const params = useParams();
+  const session = createMemo(() => params.session ?? "");
   const state = useModel((model) => model.state);
   const notices = useModel((model) => model.notices);
   const navigate = useNavigate();
 
-  const [seen, setSeen] = useState<{ program: string | null }>();
-  const current = state?.session ?? null;
-  if (current === session) {
-    const program = targetName(state);
-    if (seen === undefined || seen.program !== program) {
-      setSeen({ program });
-    }
-  }
-  const followed = seen !== undefined;
+  const [seen, setSeen] = createSignal<{ program: string | null }>();
+  const current = createMemo(() => state()?.session ?? null);
 
-  useEffect(() => {
-    if (followed && current && current !== session) {
-      void navigate({ to: "/s/$session", params: { session: current }, replace: true });
-    }
-  }, [followed, current, session, navigate]);
+  createEffect(
+    () => [current(), session(), state()] as const,
+    ([currentId, routeSession, currentState]) => {
+      if (currentId === routeSession && currentState) {
+        const program = targetName(currentState);
+        setSeen((previous) =>
+          previous !== undefined && previous.program === program ? previous : { program },
+        );
+      }
+    },
+  );
 
-  if (!state || current === session) {
-    return (
-      <Fragment key={session}>
-        <Outlet />
-      </Fragment>
-    );
-  }
-  if (state.busy) {
-    return (
-      <Workbench focus={null} wants="session">
-        <div className="workbench-notice muted">{state.busy}…</div>
-      </Workbench>
-    );
-  }
-  const ended = endedNotice(notices, seen?.program ?? null);
+  const followed = createMemo(() => seen() !== undefined || current() === session());
+
+  createEffect(
+    () => [seen() !== undefined, current(), session()] as const,
+    ([wasSeen, currentId, routeSession]) => {
+      if (wasSeen && currentId && currentId !== routeSession) {
+        navigate(toHref(`/s/${currentId}`), { replace: true });
+      }
+    },
+  );
+
+  const ended = createMemo(() => endedNotice(notices(), seen()?.program ?? null));
+
   return (
-    <Workbench focus={null} wants="session">
-      {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled notice, not a form output */}
-      <div className="workbench-notice" role="status" data-testid="session-ended">
-        {}
-        <b>{followed ? "This session ended." : "This session is not here."}</b>{" "}
-        {followed ? "" : "It ended, or the link is wrong. "}
-        {ended ? `${ended.name} ${ended.text}. ` : ""}
-        {current ? (
-          <SessionLink session={current}>Go to {targetName(state)}</SessionLink>
-        ) : (
-          "Launch, attach, or open a core dump from the File menu."
+    <Switch
+      fallback={
+        <Workbench focus={null} wants="session">
+          {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled notice, not a form output */}
+          <div class="workbench-notice" role="status" data-testid="session-ended">
+            <b>{followed() ? "This session ended." : "This session is not here."}</b>{" "}
+            {followed() ? "" : "It ended, or the link is wrong. "}
+            <Show when={ended()}>{(note) => <>{`${note().name} ${note().text}. `}</>}</Show>
+            <Show
+              when={current()}
+              fallback="Launch, attach, or open a core dump from the File menu."
+            >
+              {(id) => <SessionLink session={id()}>Go to {targetName(state())}</SessionLink>}
+            </Show>
+          </div>
+        </Workbench>
+      }
+    >
+      <Match when={!state() || current() === session()}>
+        <Show when={session()} keyed>
+          {props.children}
+        </Show>
+      </Match>
+      <Match when={state()?.busy}>
+        {(busy) => (
+          <Workbench focus={null} wants="session">
+            <div class="workbench-notice muted">{busy()}…</div>
+          </Workbench>
         )}
-      </div>
-    </Workbench>
+      </Match>
+    </Switch>
   );
 }

@@ -1,13 +1,4 @@
-import { useRouter } from "@tanstack/react-router";
-import {
-  type ChangeEvent,
-  type KeyboardEvent,
-  type RefObject,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { createEffect, createMemo, createSignal, For, onSettled, Show, untrack } from "solid-js";
 
 import { checkAccount, useAccount } from "../../account";
 import {
@@ -24,6 +15,7 @@ import {
   useMachinesWindow,
   type View,
 } from "../../fleet";
+import { useHistory } from "../../history";
 import { useDirectory } from "../../orgs";
 import { standalone } from "../../target";
 import { isTextBox } from "../../workbench/keys";
@@ -48,23 +40,26 @@ const SEARCH_DELAY_MS = 250;
 
 const OVERVIEW_EVERY_MS = 60_000;
 
+interface FieldRef {
+  current: HTMLInputElement | undefined;
+}
+
 function useUrl() {
-  const router = useRouter();
+  const history = useHistory();
   const open = useMachinesWindow((window) => window.open);
   const look = useMachinesWindow((window) => window.look);
-  const written = useRef<string | null>(null);
+  let written: string | null = null;
 
-  useEffect(() => {
-    const history = router.history;
+  onSettled(() => {
     const here = () => `${history.location.pathname}${history.location.search}`;
     const fromUrl = (moved: boolean) => {
       const parsed = parseLook(history.location.hash);
       if (parsed) {
-        written.current = lookHash(parsed);
+        written = lookHash(parsed);
         const now = machinesWindow.getState();
         machinesWindow.setState(now.open ? { look: parsed } : { waiting: parsed, pushed: false });
       } else if (moved && machinesWindow.getState().open) {
-        written.current = null;
+        written = null;
         closeMachines();
         forgetPushed();
       }
@@ -73,174 +68,207 @@ function useUrl() {
     return history.subscribe(({ action }) => {
       if (action.type === "PUSH" || action.type === "REPLACE") {
         const state = machinesWindow.getState();
-        if (state.open && written.current !== null && parseLook(history.location.hash) === null) {
-          history.replace(`${here()}#${written.current}`, history.location.state);
+        if (state.open && written !== null && parseLook(history.location.hash) === null) {
+          history.replace(`${here()}#${written}`, history.location.state);
         }
         return;
       }
       fromUrl(true);
     });
-  }, [router]);
+  });
 
-  useEffect(() => {
-    const history = router.history;
-    const here = `${history.location.pathname}${history.location.search}`;
-    if (open) {
-      const hash = lookHash(look);
-      if (hash === written.current && parseLook(history.location.hash) !== null) {
-        return;
+  createEffect(
+    () => [open(), look()] as const,
+    ([isOpen, currentLook]) => {
+      const here = `${history.location.pathname}${history.location.search}`;
+      if (isOpen) {
+        const hash = lookHash(currentLook);
+        if (hash === written && parseLook(history.location.hash) !== null) {
+          return;
+        }
+        const state = machinesWindow.getState();
+        written = hash;
+        if (parseLook(history.location.hash) === null && !state.pushed) {
+          machinesWindow.setState({ pushed: true });
+          history.push(`${here}#${hash}`);
+        } else {
+          history.replace(`${here}#${hash}`, history.location.state);
+        }
+      } else if (written !== null) {
+        written = null;
+        const pushed = machinesWindow.getState().pushed;
+        machinesWindow.setState({ pushed: false });
+        if (pushed && history.canGoBack()) {
+          history.back();
+        } else if (parseLook(history.location.hash) !== null) {
+          history.replace(here, history.location.state);
+        }
       }
-      const state = machinesWindow.getState();
-      written.current = hash;
-      if (parseLook(history.location.hash) === null && !state.pushed) {
-        machinesWindow.setState({ pushed: true });
-        history.push(`${here}#${hash}`);
-      } else {
-        history.replace(`${here}#${hash}`, history.location.state);
-      }
-    } else if (written.current !== null) {
-      written.current = null;
-      const pushed = machinesWindow.getState().pushed;
-      machinesWindow.setState({ pushed: false });
-      if (pushed && history.canGoBack()) {
-        history.back();
-      } else if (parseLook(history.location.hash) !== null) {
-        history.replace(here, history.location.state);
-      }
-    }
-  }, [router, open, look]);
+    },
+  );
 }
 
 function useSignedIn() {
   const now = useAccount();
   const open = useMachinesWindow((window) => window.open);
   const waiting = useMachinesWindow((window) => window.waiting);
-  useEffect(() => {
-    if ((open || waiting) && now.kind === "checking") {
-      void checkAccount();
-    }
-  }, [open, waiting, now.kind]);
-  useEffect(() => {
-    if (now.kind === "in" && waiting) {
-      openMachines(waiting);
-    }
-    if (now.kind !== "in" && now.kind !== "checking" && open) {
-      closeMachines();
-    }
-  }, [now.kind, waiting, open]);
+  createEffect(
+    () => [open(), waiting(), now().kind] as const,
+    ([isOpen, pending, kind]) => {
+      if ((isOpen || pending) && kind === "checking") {
+        void checkAccount();
+      }
+    },
+  );
+  createEffect(
+    () => [now().kind, waiting(), open()] as const,
+    ([kind, pending, isOpen]) => {
+      if (kind === "in" && pending) {
+        openMachines(pending);
+      }
+      if (kind !== "in" && kind !== "checking" && isOpen) {
+        closeMachines();
+      }
+    },
+  );
 }
 
-function Search({ look, field }: { look: Look; field: RefObject<HTMLInputElement | null> }) {
-  const [text, setText] = useState(look.q);
-  const [shown, setShown] = useState(look.q);
-  if (look.q !== shown) {
-    setShown(look.q);
-    setText(look.q);
-  }
-  useEffect(() => {
-    if (text === look.q) {
-      return;
-    }
-    const typedOver = machinesWindow.getState().look.machine;
-    const timer = setTimeout(() => {
-      setShown(text);
-      const picked = machinesWindow.getState().look.machine !== typedOver;
-      setLook({
-        q: text,
-        ...(picked ? {} : { machine: null }),
-        ...(look.view === "list" ? {} : { view: "list" }),
-      });
-    }, SEARCH_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [text, look.q, look.view]);
-  const type = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setText(event.target.value),
-    [],
+function Search(props: { look: Look; field: FieldRef }) {
+  const initialQ = untrack(() => props.look.q);
+  const [text, setText] = createSignal(initialQ);
+  let shown = initialQ;
+
+  createEffect(
+    () => props.look.q,
+    (q) => {
+      if (q !== shown) {
+        shown = q;
+        setText(q);
+      }
+    },
   );
-  const finding = look.view === "list" && look.machine === null;
-  const [focusFirst] = useState(finding);
-  useEffect(() => {
+
+  const pending = createMemo(() => ({ text: text(), q: props.look.q, view: props.look.view }), {
+    equals: (a, b) => a.text === b.text && a.q === b.q && a.view === b.view,
+  });
+
+  createEffect(
+    () => pending(),
+    ({ text: currentText, q, view }) => {
+      if (currentText === q) {
+        return;
+      }
+      const typedOver = machinesWindow.getState().look.machine;
+      const timer = setTimeout(() => {
+        shown = currentText;
+        const picked = machinesWindow.getState().look.machine !== typedOver;
+        setLook({
+          q: currentText,
+          ...(picked ? {} : { machine: null }),
+          ...(view === "list" ? {} : { view: "list" }),
+        });
+      }, SEARCH_DELAY_MS);
+      return () => clearTimeout(timer);
+    },
+  );
+
+  const focusFirst = untrack(() => props.look.view === "list" && props.look.machine === null);
+  onSettled(() => {
     if (focusFirst) {
-      field.current?.focus();
+      props.field.current?.focus();
     }
-  }, [focusFirst, field]);
+    return () => {
+      props.field.current = undefined;
+    };
+  });
+
   return (
     <input
-      ref={field}
-      className="input machines-search"
+      ref={(node) => {
+        props.field.current = node;
+      }}
+      class="input machines-search"
       type="search"
       aria-label="Find a machine"
       placeholder="Find a machine by hostname, IP, MAC, or instance id"
-      value={text}
-      onChange={type}
+      value={text()}
+      onInput={(event) => setText(event.currentTarget.value)}
     />
   );
 }
 
-function Tab({ view, label, chosen }: { view: View; label: string; chosen: boolean }) {
-  const pick = useCallback(() => setLook({ view, machine: null }), [view]);
-  const key = useCallback(
-    (event: KeyboardEvent<HTMLButtonElement>) => {
-      if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") {
-        return;
-      }
-      event.preventDefault();
-      const at = TABS.findIndex((tab) => tab.view === view);
-      const next = TABS[(at + (event.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length];
-      if (next) {
-        setLook({ view: next.view, machine: null });
-        requestAnimationFrame(() =>
-          document.querySelector<HTMLElement>(`[data-machines-tab="${next.view}"]`)?.focus(),
-        );
-      }
-    },
-    [view],
-  );
+function Tab(props: { view: View; label: string; chosen: boolean }) {
+  const pick = () => setLook({ view: props.view, machine: null });
+  const key = (event: KeyboardEvent) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") {
+      return;
+    }
+    event.preventDefault();
+    const at = TABS.findIndex((tab) => tab.view === props.view);
+    const next = TABS[(at + (event.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length];
+    if (next) {
+      setLook({ view: next.view, machine: null });
+      requestAnimationFrame(() =>
+        document.querySelector<HTMLElement>(`[data-machines-tab="${next.view}"]`)?.focus(),
+      );
+    }
+  };
   return (
     <button
       type="button"
       role="tab"
-      className="machines-tab"
-      aria-selected={chosen}
-      tabIndex={chosen ? 0 : -1}
-      data-machines-tab={view}
+      class="machines-tab"
+      aria-selected={props.chosen ? "true" : "false"}
+      tabindex={props.chosen ? 0 : -1}
+      data-machines-tab={props.view}
       onClick={pick}
       onKeyDown={key}
     >
-      {label}
+      {props.label}
     </button>
   );
 }
 
-function OrgPicker({ look }: { look: Look }) {
+function OrgPicker(props: { look: Look }) {
   const directory = useDirectory();
-  const orgs = directory.orgs ?? [];
-  const pick = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) =>
-      setLook({
-        ...HOME,
-        view: look.view === "newkey" || look.view === "add" ? look.view : "overview",
-        org: event.target.value === "" ? null : Number(event.target.value),
-      }),
-    [look.view],
+  const orgs = createMemo(() => directory().orgs ?? []);
+  let select: HTMLSelectElement | undefined;
+  createEffect(
+    () => [orgs(), props.look.org] as const,
+    ([, org]) => {
+      if (select) {
+        select.value = org === null ? "" : String(org);
+      }
+    },
   );
-  if (orgs.length === 0) {
-    return null;
-  }
+  const pick = (event: Event & { currentTarget: HTMLSelectElement }) =>
+    setLook({
+      ...HOME,
+      view:
+        props.look.view === "newkey" || props.look.view === "add" ? props.look.view : "overview",
+      org: event.currentTarget.value === "" ? null : Number(event.currentTarget.value),
+    });
   return (
-    <select
-      className="machines-org"
-      aria-label="Organization"
-      value={look.org ?? ""}
-      onChange={pick}
-    >
-      <option value="">Personal</option>
-      {orgs.map((org) => (
-        <option key={org.id} value={org.id}>
-          {org.name}
-        </option>
-      ))}
-    </select>
+    <Show when={orgs().length > 0}>
+      <select
+        ref={(node) => {
+          select = node;
+        }}
+        class="machines-org"
+        aria-label="Organization"
+        value={props.look.org ?? ""}
+        onChange={pick}
+      >
+        <option value="">Personal</option>
+        <For each={orgs()}>
+          {(org) => (
+            <option value={org.id} selected={props.look.org === org.id}>
+              {org.name}
+            </option>
+          )}
+        </For>
+      </select>
+    </Show>
   );
 }
 
@@ -252,134 +280,192 @@ function summary(live: number, groups: number, computedAt: number, now: number):
 }
 
 const newKeyBack = () => setLook({ view: "keys", machine: null });
+const openAdd = () => setLook({ view: "add", machine: null });
+const openNewKey = () => setLook({ view: "newkey", machine: null });
+const backToOverview = () => setLook({ view: "overview", machine: null });
 
-function Body({ look, field }: { look: Look; field: RefObject<HTMLInputElement | null> }) {
+function Body(props: { look: Look; field: FieldRef }) {
   const now = useNow(5_000);
   const overview = useLoaded(
-    () => fleetApi.overview(look.org, look.split),
-    `${look.org}:${look.split}`,
-    String(look.org),
+    () => fleetApi.overview(props.look.org, props.look.split),
+    () => `${props.look.org}:${props.look.split}`,
+    () => String(props.look.org),
   );
-  const keysWanted =
-    look.view === "keys" || look.view === "add" || look.view === "newkey" || look.view === "list";
+  const keysWanted = createMemo(
+    () =>
+      props.look.view === "keys" ||
+      props.look.view === "add" ||
+      props.look.view === "newkey" ||
+      props.look.view === "list",
+  );
   const keys = useLoaded(
-    () => (keysWanted ? fleetApi.keys(look.org) : Promise.resolve(null)),
-    `${look.org}:${keysWanted}`,
+    () => (keysWanted() ? fleetApi.keys(props.look.org) : Promise.resolve(null)),
+    () => `${props.look.org}:${keysWanted()}`,
   );
-  const againOverview = overview.again;
-  const againKeys = keys.again;
-  useEffect(() => {
-    const timer = setInterval(againOverview, OVERVIEW_EVERY_MS);
+  onSettled(() => {
+    const timer = setInterval(overview.again, OVERVIEW_EVERY_MS);
     return () => clearInterval(timer);
-  }, [againOverview]);
-  const changed = useCallback(() => {
-    againOverview();
-    againKeys();
-  }, [againOverview, againKeys]);
-  const add = useCallback(() => setLook({ view: "add", machine: null }), []);
-  const newKey = useCallback(() => setLook({ view: "newkey", machine: null }), []);
-  const back = useCallback(() => setLook({ view: "overview", machine: null }), []);
-
-  const data = overview.data;
-  const empty =
-    data !== null &&
-    data.total.live + data.total.quiet + data.total.stopped + data.total.revoked === 0;
-  const skipToAdd = empty && look.q === "" && (look.view === "overview" || look.view === "list");
-  useEffect(() => {
-    if (skipToAdd) {
-      setLook({ view: "add", machine: null });
+  });
+  const changed = () => {
+    overview.again();
+    keys.again();
+  };
+  const leaveAdding = () => {
+    if (props.look.view === "newkey") {
+      newKeyBack();
+    } else {
+      backToOverview();
     }
-  }, [skipToAdd]);
+  };
 
-  if (!data || skipToAdd) {
-    return <Retry error={overview.error} again={againOverview} />;
-  }
-  const owner = data.role === "owner";
-  const adding = look.view === "add" || look.view === "newkey";
+  const empty = createMemo(() => {
+    const data = overview.data();
+    return (
+      data !== null &&
+      data.total.live + data.total.quiet + data.total.stopped + data.total.revoked === 0
+    );
+  });
+  const skipToAdd = createMemo(
+    () =>
+      empty() &&
+      props.look.q === "" &&
+      (props.look.view === "overview" || props.look.view === "list"),
+  );
+  createEffect(
+    () => skipToAdd(),
+    (shouldSkip) => {
+      if (shouldSkip) {
+        setLook({ view: "add", machine: null });
+      }
+    },
+  );
+
+  const readyData = createMemo(() => (skipToAdd() ? null : overview.data()));
+  const adding = createMemo(() => props.look.view === "add" || props.look.view === "newkey");
 
   return (
-    <>
-      {adding ? (
-        empty && look.view === "add" ? null : (
-          <div className="machines-bar">
-            <button
-              type="button"
-              className="link-button"
-              onClick={look.view === "newkey" ? newKeyBack : back}
+    <Show when={readyData()} fallback={<Retry error={overview.error()} again={overview.again} />}>
+      {(data) => {
+        const owner = createMemo(() => data().role === "owner");
+        return (
+          <>
+            <Show
+              when={adding()}
+              fallback={
+                <div class="machines-bar">
+                  <div class="machines-tabs" role="tablist" aria-label="Views">
+                    <For each={TABS}>
+                      {(tab) => (
+                        <Tab
+                          view={tab.view}
+                          label={tab.label}
+                          chosen={tabOf(props.look.view) === tab.view}
+                        />
+                      )}
+                    </For>
+                  </div>
+                  <Show
+                    when={props.look.view === "keys"}
+                    fallback={
+                      <OwnerButton owner={owner()} onClick={openAdd}>
+                        Add machines
+                      </OwnerButton>
+                    }
+                  >
+                    <OwnerButton owner={owner()} onClick={openNewKey}>
+                      New key
+                    </OwnerButton>
+                  </Show>
+                </div>
+              }
             >
-              {look.view === "newkey" ? "Back to enrollment keys" : "Back to machines"}
-            </button>
-          </div>
-        )
-      ) : (
-        <div className="machines-bar">
-          <div className="machines-tabs" role="tablist" aria-label="Views">
-            {TABS.map((tab) => (
-              <Tab
-                key={tab.view}
-                view={tab.view}
-                label={tab.label}
-                chosen={tabOf(look.view) === tab.view}
-              />
-            ))}
-          </div>
-          {look.view === "keys" ? (
-            <OwnerButton owner={owner} onClick={newKey}>
-              New key
-            </OwnerButton>
-          ) : (
-            <OwnerButton owner={owner} onClick={add}>
-              Add machines
-            </OwnerButton>
-          )}
-        </div>
-      )}
-      {(look.view === "overview" || look.view === "list") && (
-        <div className="machines-find">
-          {look.view === "list" && <Search look={look} field={field} />}
-          <span className="muted machines-summary">
-            {summary(data.total.live, data.groups.length, data.computed_at, now)}
-          </span>
-        </div>
-      )}
-      <div
-        className="machines-view"
-        role={adding ? undefined : "tabpanel"}
-        aria-label={adding ? undefined : TABS.find((tab) => tab.view === tabOf(look.view))?.label}
-      >
-        {look.view === "overview" && <OverviewView overview={data} />}
-        {look.view === "list" && (
-          <ListView look={look} overview={data} keys={keys.data} now={now} changed={changed} />
-        )}
-        {look.view === "keys" &&
-          (keys.data ? (
-            <KeysView keys={keys.data} owner={owner} now={now} changed={changed} />
-          ) : (
-            <Retry error={keys.error} again={againKeys} what="enrollment keys" />
-          ))}
-        {adding &&
-          (keys.data ? (
-            <AddView
-              key={`${look.view}:${look.org}`}
-              overview={data}
-              keys={keys.data}
-              install={look.view === "add"}
-              changed={changed}
-            />
-          ) : (
-            <Retry error={keys.error} again={againKeys} what="enrollment keys" />
-          ))}
-      </div>
-    </>
+              <Show when={!(empty() && props.look.view === "add")}>
+                <div class="machines-bar">
+                  <button type="button" class="link-button" onClick={leaveAdding}>
+                    {props.look.view === "newkey" ? "Back to enrollment keys" : "Back to machines"}
+                  </button>
+                </div>
+              </Show>
+            </Show>
+            <Show when={props.look.view === "overview" || props.look.view === "list"}>
+              <div class="machines-find">
+                <Show when={props.look.view === "list"}>
+                  <Search look={props.look} field={props.field} />
+                </Show>
+                <span class="muted machines-summary">
+                  {summary(data().total.live, data().groups.length, data().computed_at, now())}
+                </span>
+              </div>
+            </Show>
+            <div
+              class="machines-view"
+              role={adding() ? undefined : "tabpanel"}
+              aria-label={
+                adding()
+                  ? undefined
+                  : TABS.find((tab) => tab.view === tabOf(props.look.view))?.label
+              }
+            >
+              <Show when={props.look.view === "overview"}>
+                <OverviewView overview={data()} />
+              </Show>
+              <Show when={props.look.view === "list"}>
+                <ListView
+                  look={props.look}
+                  overview={data()}
+                  keys={keys.data()}
+                  now={now()}
+                  changed={changed}
+                />
+              </Show>
+              <Show when={props.look.view === "keys"}>
+                <Show
+                  when={keys.data()}
+                  fallback={
+                    <Retry error={keys.error()} again={keys.again} what="enrollment keys" />
+                  }
+                >
+                  {(keyList) => (
+                    <KeysView keys={keyList()} owner={owner()} now={now()} changed={changed} />
+                  )}
+                </Show>
+              </Show>
+              <Show when={adding()}>
+                <Show
+                  when={keys.data()}
+                  fallback={
+                    <Retry error={keys.error()} again={keys.again} what="enrollment keys" />
+                  }
+                >
+                  {(keyList) => (
+                    <Show when={`${props.look.view}:${props.look.org}`} keyed>
+                      <AddView
+                        overview={data()}
+                        keys={keyList()}
+                        install={props.look.view === "add"}
+                        changed={changed}
+                      />
+                    </Show>
+                  )}
+                </Show>
+              </Show>
+            </div>
+          </>
+        );
+      }}
+    </Show>
   );
 }
 
-function Open({ look }: { look: Look }) {
-  const dialog = useRef<HTMLDivElement>(null);
-  const field = useRef<HTMLInputElement>(null);
-  useDialogFocus(dialog, look.view === "list" && look.machine === null ? field : undefined);
+function Open(props: { look: Look }) {
+  let dialog: HTMLDivElement | undefined;
+  const field: FieldRef = { current: undefined };
+  useDialogFocus(
+    () => dialog,
+    () => (props.look.view === "list" && props.look.machine === null ? field.current : undefined),
+  );
   const now = useAccount();
-  const key = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+  const key = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
       event.preventDefault();
       closeMachines();
@@ -391,43 +477,42 @@ function Open({ look }: { look: Look }) {
         setLook({ view: "list", machine: null });
       }
     }
-  }, []);
-  const title =
-    look.view === "add"
+  };
+  const title = createMemo(() =>
+    props.look.view === "add"
       ? "Add machines"
-      : look.view === "newkey"
+      : props.look.view === "newkey"
         ? "New enrollment key"
-        : "Machines";
+        : "Machines",
+  );
   return (
-    <div className="overlay machines-overlay">
-      {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape and / anywhere in the window */}
+    <div class="overlay machines-overlay">
+      {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
       <div
-        className="machines"
-        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an overlay the page draws, not a <dialog>
+        class="machines"
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-label={title()}
         data-keys="escape"
-        ref={dialog}
+        ref={(node) => {
+          dialog = node;
+        }}
         onKeyDown={key}
       >
-        <header className="machines-head">
-          <h2>{title}</h2>
-          <OrgPicker look={look} />
-          <button
-            type="button"
-            className="machines-close"
-            aria-label="Close"
-            onClick={closeMachines}
-          >
+        <header class="machines-head">
+          <h2>{title()}</h2>
+          <OrgPicker look={props.look} />
+          <button type="button" class="machines-close" aria-label="Close" onClick={closeMachines}>
             ×
           </button>
         </header>
-        {now.kind === "in" ? (
-          <Body look={look} field={field} />
-        ) : (
-          <p className="muted machines-loading">Checking whether you are signed in…</p>
-        )}
+        <Show
+          when={now().kind === "in"}
+          fallback={<p class="muted machines-loading">Checking whether you are signed in…</p>}
+        >
+          <Body look={props.look} field={field} />
+        </Show>
       </div>
     </div>
   );
@@ -445,5 +530,9 @@ function Hosted() {
   useSignedIn();
   const open = useMachinesWindow((window) => window.open);
   const look = useMachinesWindow((window) => window.look);
-  return open ? <Open look={look} /> : null;
+  return (
+    <Show when={open()}>
+      <Open look={look()} />
+    </Show>
+  );
 }

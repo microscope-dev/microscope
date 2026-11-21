@@ -1,4 +1,4 @@
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 
 import { assert } from "../assert";
 import { classOf } from "./classes";
@@ -29,33 +29,39 @@ interface Props<Id extends string> {
 
 export const MENU_BAR = "menu-bar";
 
-export function MenuBar<Id extends string>({ registry, availability, run }: Props<Id>) {
-  const [open, setOpen] = useState<Menu | null>(null);
-  const bar = useRef<HTMLDivElement>(null);
-  const menus = MENUS.filter((menu) => registry.ids.some((id) => registry.get(id).menu === menu));
+export function MenuBar<Id extends string>(props: Props<Id>) {
+  const [open, setOpen] = createSignal<Menu | null>(null);
+  let bar: HTMLDivElement | undefined;
+  const menus = createMemo(() =>
+    MENUS.filter((menu) => props.registry.ids.some((id) => props.registry.get(id).menu === menu)),
+  );
 
-  useEffect(() => {
-    if (!open) {
-      return;
+  const pointer = (event: PointerEvent) => {
+    if (!bar?.contains(event.target as Node)) {
+      setOpen(null);
     }
-    const pointer = (event: PointerEvent) => {
-      if (!bar.current?.contains(event.target as Node)) {
-        setOpen(null);
-      }
-    };
-    window.addEventListener("pointerdown", pointer);
-    return () => window.removeEventListener("pointerdown", pointer);
-  }, [open]);
+  };
 
-  const button = (menu: Menu) =>
-    bar.current?.querySelector<HTMLElement>(`[data-menu="${menu}"]`) ?? null;
+  createEffect(
+    () => open(),
+    (current) => {
+      if (!current) {
+        return;
+      }
+      window.addEventListener("pointerdown", pointer);
+      return () => window.removeEventListener("pointerdown", pointer);
+    },
+  );
+
+  const button = (menu: Menu) => bar?.querySelector<HTMLElement>(`[data-menu="${menu}"]`) ?? null;
   const items = () => [
-    ...(bar.current?.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]') ?? []),
+    ...(bar?.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]') ?? []),
   ];
   const neighbor = (menu: Menu, by: number): Menu => {
-    const index = menus.indexOf(menu);
+    const list = menus();
+    const index = list.indexOf(menu);
     assert(index >= 0, `menu ${menu} is not on the bar`);
-    return menus[(index + by + menus.length) % menus.length] as Menu;
+    return list[(index + by + list.length) % list.length] as Menu;
   };
   const show = (menu: Menu, focusItem: "first" | "last" | null) => {
     setOpen(menu);
@@ -76,9 +82,9 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
   const onBar = (menu: Menu) => (event: KeyboardEvent) => {
     const moves: Record<string, () => void> = {
       ArrowRight: () =>
-        open ? show(neighbor(menu, 1), "first") : button(neighbor(menu, 1))?.focus(),
+        open() ? show(neighbor(menu, 1), "first") : button(neighbor(menu, 1))?.focus(),
       ArrowLeft: () =>
-        open ? show(neighbor(menu, -1), "first") : button(neighbor(menu, -1))?.focus(),
+        open() ? show(neighbor(menu, -1), "first") : button(neighbor(menu, -1))?.focus(),
       ArrowDown: () => show(menu, "first"),
       Enter: () => show(menu, "first"),
       " ": () => show(menu, "first"),
@@ -92,14 +98,8 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
       move();
     }
   };
-  const onButtonClick = (menu: Menu) => () => (open === menu ? setOpen(null) : show(menu, null));
-  const onButtonEnter = (menu: Menu) => () => open && open !== menu && show(menu, null);
-  const onItemClick = (id: Id, now: Availability) => () => {
-    if (now.state === "ready") {
-      setOpen(null);
-      run(id);
-    }
-  };
+  const onButtonClick = (menu: Menu) => () => (open() === menu ? setOpen(null) : show(menu, null));
+  const onButtonEnter = (menu: Menu) => () => open() && open() !== menu && show(menu, null);
   const onMenu = (menu: Menu) => (event: KeyboardEvent) => {
     const listed = items();
     const index = listed.indexOf(document.activeElement as HTMLElement);
@@ -124,55 +124,78 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
   };
 
   return (
-    <div className={css("menu-bar")} role="menubar" aria-label="Menus" ref={bar} data-keys="escape">
-      {menus.map((menu, index) => (
-        <div key={menu} className={css("menu-anchor")}>
-          <button
-            type="button"
-            role="menuitem"
-            id={index === 0 ? MENU_BAR : undefined}
-            className={`${css("menu-button")} ${open === menu ? css("on") : ""}`}
-            aria-haspopup="menu"
-            aria-expanded={open === menu}
-            data-menu={menu}
-            tabIndex={index === 0 ? 0 : -1}
-            onClick={onButtonClick(menu)}
-            onPointerEnter={onButtonEnter(menu)}
-            onKeyDown={onBar(menu)}
-          >
-            {menu}
-          </button>
-          {open === menu && (
-            // oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- its items take the focus, as a menu's do
-            <div className={css("menu")} role="menu" aria-label={menu} onKeyDown={onMenu(menu)}>
-              {registry.ids
-                .filter((id) => registry.get(id).menu === menu)
-                .map((id) => {
-                  const command = registry.get(id);
-                  const now = availability(id);
-                  const key = registry.describe(id) ?? registry.describe(id, true);
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      role="menuitem"
-                      className={css("menu-item")}
-                      tabIndex={-1}
-                      aria-disabled={now.state !== "ready"}
-                      aria-label={command.label}
-                      aria-keyshortcuts={registry.aria(id) ?? undefined}
-                      title={now.state === "blocked" ? now.why : undefined}
-                      onClick={onItemClick(id, now)}
-                    >
-                      <span>{command.label}</span>
-                      {key && <kbd>{key}</kbd>}
-                    </button>
-                  );
-                })}
+    <div
+      class={css("menu-bar")}
+      role="menubar"
+      aria-label="Menus"
+      ref={(el) => {
+        bar = el;
+      }}
+      data-keys="escape"
+    >
+      <For each={menus()}>
+        {(menu, index) => {
+          const menuIds = createMemo(() =>
+            props.registry.ids.filter((id) => props.registry.get(id).menu === menu),
+          );
+          return (
+            <div class={css("menu-anchor")}>
+              <button
+                type="button"
+                role="menuitem"
+                id={index() === 0 ? MENU_BAR : undefined}
+                class={[css("menu-button"), { [css("on")]: open() === menu }]}
+                aria-haspopup="menu"
+                aria-expanded={open() === menu ? "true" : "false"}
+                data-menu={menu}
+                tabindex={index() === 0 ? 0 : -1}
+                onClick={onButtonClick(menu)}
+                onPointerEnter={onButtonEnter(menu)}
+                onKeyDown={onBar(menu)}
+              >
+                {menu}
+              </button>
+              <Show when={open() === menu}>
+                {/* oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- its items take the focus, as a menu's do */}
+                <div class={css("menu")} role="menu" aria-label={menu} onKeyDown={onMenu(menu)}>
+                  <For each={menuIds()}>
+                    {(id) => {
+                      const command = createMemo(() => props.registry.get(id));
+                      const now = createMemo(() => props.availability(id));
+                      const key = createMemo(
+                        () => props.registry.describe(id) ?? props.registry.describe(id, true),
+                      );
+                      return (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          class={css("menu-item")}
+                          tabindex={-1}
+                          aria-disabled={now().state === "ready" ? "false" : "true"}
+                          aria-label={command().label}
+                          aria-keyshortcuts={props.registry.aria(id) ?? undefined}
+                          title={
+                            now().state === "blocked" ? (now() as { why: string }).why : undefined
+                          }
+                          onClick={() => {
+                            if (props.availability(id).state === "ready") {
+                              setOpen(null);
+                              props.run(id);
+                            }
+                          }}
+                        >
+                          <span>{command().label}</span>
+                          <Show when={key()}>{(shortcut) => <kbd>{shortcut()}</kbd>}</Show>
+                        </button>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
             </div>
-          )}
-        </div>
-      ))}
+          );
+        }}
+      </For>
     </div>
   );
 }

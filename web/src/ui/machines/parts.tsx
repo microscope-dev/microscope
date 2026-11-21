@@ -1,13 +1,5 @@
-import {
-  type ChangeEvent,
-  type FormEvent,
-  type KeyboardEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import type { JSX } from "@solidjs/web";
+import { createEffect, createMemo, createSignal, For, onSettled, Show } from "solid-js";
 
 import type { MachineState, Warning } from "../../fleet";
 import { useDialogFocus } from "../dialog";
@@ -30,33 +22,36 @@ export const WARNING_LABEL: Record<Warning, string> = {
   not_on_host_network: "not on the host's network",
 };
 
-export function Dot({ state }: { state: MachineState }) {
-  return <span className={`machine-dot ${state}`} aria-hidden="true" />;
+export function Dot(props: { state: MachineState }) {
+  return <span class={`machine-dot ${props.state}`} aria-hidden="true" />;
 }
 
-export function useNow(everyMs: number): number {
-  const [now, setNow] = useState(() => Date.now() / 1000);
-  useEffect(() => {
+export function useNow(everyMs: number): () => number {
+  const [now, setNow] = createSignal(Date.now() / 1000);
+  onSettled(() => {
     const timer = setInterval(() => setNow(Date.now() / 1000), everyMs);
     return () => clearInterval(timer);
-  }, [everyMs]);
+  });
   return now;
 }
 
 export function OwnerButton(props: {
   owner: boolean;
-  className?: string;
+  class?: string;
   onClick: () => void;
-  children: ReactNode;
+  children: JSX.Element;
 }) {
-  const { owner, onClick } = props;
-  const click = useCallback(() => owner && onClick(), [owner, onClick]);
+  const click = () => {
+    if (props.owner) {
+      props.onClick();
+    }
+  };
   return (
     <button
       type="button"
-      className={props.className ?? "button"}
-      aria-disabled={!owner}
-      title={owner ? undefined : OWNERS_ONLY}
+      class={props.class ?? "button"}
+      aria-disabled={props.owner ? "false" : "true"}
+      title={props.owner ? undefined : OWNERS_ONLY}
       onClick={click}
     >
       {props.children}
@@ -72,89 +67,95 @@ export function Ask(props: {
   done: () => void;
   cancel: () => void;
   typeToConfirm?: string;
-  children: ReactNode;
+  children: JSX.Element;
 }) {
-  const dialog = useRef<HTMLDivElement>(null);
-  const keep = useRef<HTMLButtonElement>(null);
-  const field = useRef<HTMLInputElement>(null);
-  const { typeToConfirm } = props;
-  useDialogFocus(dialog, typeToConfirm === undefined ? keep : field);
-  const { working, error, run } = useAction();
-  const { act, done, cancel } = props;
-  const [typed, setTyped] = useState("");
-  const type = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setTyped(event.target.value),
-    [],
+  let dialog: HTMLDivElement | undefined;
+  let keep: HTMLButtonElement | undefined;
+  let field: HTMLInputElement | undefined;
+  useDialogFocus(
+    () => dialog,
+    () => (props.typeToConfirm === undefined ? keep : field),
   );
-  const ready = typeToConfirm === undefined || typed === typeToConfirm;
-  const confirm = useCallback(() => {
-    if (!ready) {
+  const { working, error, run } = useAction();
+  const [typed, setTyped] = createSignal("");
+  const ready = createMemo(
+    () => props.typeToConfirm === undefined || typed() === props.typeToConfirm,
+  );
+  const confirm = () => {
+    if (!ready()) {
       return;
     }
     run(async () => {
-      await act();
-      done();
+      await props.act();
+      props.done();
     });
-  }, [ready, run, act, done]);
-  const submit = useCallback(
-    (event: FormEvent) => {
+  };
+  const submit = (event: SubmitEvent) => {
+    event.preventDefault();
+    confirm();
+  };
+  const key = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
       event.preventDefault();
-      confirm();
-    },
-    [confirm],
-  );
-  const key = useCallback(
-    (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        cancel();
-      }
-    },
-    [cancel],
-  );
+      event.stopPropagation();
+      props.cancel();
+    }
+  };
   return (
-    <div className="machines-ask-scrim">
-      {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape anywhere in the dialog cancels it */}
+    <div class="machines-ask-scrim">
+      {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
       <div
-        className="machines-ask"
+        class="machines-ask"
         role="alertdialog"
         aria-modal="true"
         aria-label={props.title}
-        ref={dialog}
+        ref={(node) => {
+          dialog = node;
+        }}
         onKeyDown={key}
       >
         <h3>{props.title}</h3>
         {props.children}
-        {typeToConfirm !== undefined && (
-          <form className="field" onSubmit={submit}>
-            <label htmlFor="machines-ask-typed">
-              Type <span className="mono">{typeToConfirm}</span> to confirm
+        <Show when={props.typeToConfirm !== undefined}>
+          <form class="field" onSubmit={submit}>
+            <label for="machines-ask-typed">
+              Type <span class="mono">{props.typeToConfirm}</span> to confirm
             </label>
             <input
               id="machines-ask-typed"
-              ref={field}
-              className="input mono"
-              value={typed}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={type}
+              ref={(node) => {
+                field = node;
+              }}
+              class="input mono"
+              value={typed()}
+              autocomplete="off"
+              spellcheck={false}
+              onInput={(event) => setTyped(event.currentTarget.value)}
             />
           </form>
-        )}
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-        <div className="actions end">
-          <button type="button" className="button" ref={keep} onClick={cancel}>
+        </Show>
+        <Show when={error()}>
+          {(message) => (
+            <p class="error" role="alert">
+              {message()}
+            </p>
+          )}
+        </Show>
+        <div class="actions end">
+          <button
+            type="button"
+            class="button"
+            ref={(node) => {
+              keep = node;
+            }}
+            onClick={() => props.cancel()}
+          >
             Cancel
           </button>
           <button
             type="button"
-            className={props.danger ? "button danger" : "button"}
-            disabled={working || !ready}
+            class={props.danger ? "button danger" : "button"}
+            disabled={working() || !ready()}
             onClick={confirm}
           >
             {props.verb}
@@ -175,36 +176,52 @@ export function Chip(props: {
   pick: (value: string) => void;
   clear?: (() => void) | undefined;
 }) {
-  const { pick, clear } = props;
-  const change = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => pick(event.target.value),
-    [pick],
+  let select: HTMLSelectElement | undefined;
+  const options = createMemo(() => {
+    const listed = props.options.includes(ANY) ? props.options : [ANY, ...props.options];
+    return listed.includes(props.value) ? listed : [...listed, props.value];
+  });
+  createEffect(
+    () => [options(), props.value] as const,
+    ([, value]) => {
+      if (select) {
+        select.value = value;
+      }
+    },
   );
-  const listed = props.options.includes(ANY) ? props.options : [ANY, ...props.options];
-  const options = listed.includes(props.value) ? listed : [...listed, props.value];
   return (
-    <span className={`machines-chip${clear ? " set" : ""}`}>
+    <span class={`machines-chip${props.clear ? " set" : ""}`}>
       <label>
         <span>{props.label}</span>
-        <select value={props.value} onChange={change}>
-          {options.map((option) => (
-            <option key={option} value={option}>
-              {props.names ? props.names(option) : option}
-            </option>
-          ))}
+        <select
+          ref={(node) => {
+            select = node;
+          }}
+          value={props.value}
+          onChange={(event) => props.pick(event.currentTarget.value)}
+        >
+          <For each={options()}>
+            {(option) => (
+              <option value={option} selected={option === props.value}>
+                {props.names ? props.names(option) : option}
+              </option>
+            )}
+          </For>
         </select>
       </label>
-      {clear && (
-        <button
-          type="button"
-          className="machines-chip-clear"
-          aria-label={`Clear ${props.label}`}
-          title={`Clear ${props.label}`}
-          onClick={clear}
-        >
-          ×
-        </button>
-      )}
+      <Show when={props.clear}>
+        {(clear) => (
+          <button
+            type="button"
+            class="machines-chip-clear"
+            aria-label={`Clear ${props.label}`}
+            title={`Clear ${props.label}`}
+            onClick={() => clear()()}
+          >
+            ×
+          </button>
+        )}
+      </Show>
     </span>
   );
 }

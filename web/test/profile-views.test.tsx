@@ -1,5 +1,5 @@
-import { act, cleanup, render } from "@testing-library/react";
-import { type ReactNode, useMemo, useState } from "react";
+import type { JSX } from "@solidjs/web";
+import { createMemo, createSignal } from "solid-js";
 import { afterEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -28,6 +28,7 @@ import { KernelPane } from "../src/ui/profile/SyscallsView";
 import { TreeView } from "../src/ui/profile/TreeView";
 import { ZonesPane } from "../src/ui/profile/ZonesPane";
 import { POLL } from "./fake-server";
+import { act, cleanup, render } from "./render";
 
 interface Asked {
   id: number;
@@ -156,62 +157,50 @@ function summaryOf(change: Partial<ProfileSummary> = {}): ProfileSummary {
   };
 }
 
-const HARNESS_SIZE = { width: 900, height: 800, display: "grid" };
-const WIDE = { width: 5000 };
+const HARNESS_SIZE = { width: "900px", height: "800px", display: "grid" };
+const WIDE = { width: "5000px" };
 
-const SECOND_WIDE = { width: 1180 };
+const SECOND_WIDE = { width: "1180px" };
 
-const SECOND_WIDE_SHORT = { width: 1180, height: 400, display: "flex" };
+const SECOND_WIDE_SHORT = { width: "1180px", height: "400px", display: "flex" };
 
-const NAMES_WIDE = { width: 150 };
+const NAMES_WIDE = { width: "150px" };
 const NO_LOOK: ProfileLook = {};
 
 let changeLook: (change: (look: ProfileLook) => ProfileLook) => void = () => {};
 
-function Harness({
-  summary,
-  initial,
-  children,
-}: {
-  summary: ProfileSummary;
-  initial: ProfileLook;
-  children: ReactNode;
-}) {
-  const [look, setLook] = useState(initial);
-  // oxlint-disable-next-line react/globals -- lets a test change the look from outside
+function Harness(props: { summary: ProfileSummary; initial: ProfileLook; children: JSX.Element }) {
+  const [look, setLook] = createSignal(props.initial);
   changeLook = (change) => act(() => setLook(change));
-  const focus = useMemo<ProfileFocus>(
-    () => ({
-      profile: summary.id,
-      summary,
-      look,
-      query: { ...queryOf(summary.id, look), revision: 0 },
-      unit: summary.unit,
-      setLook: (change) => setLook(change),
-    }),
-    [summary, look],
-  );
+  const focus = createMemo<ProfileFocus>(() => ({
+    profile: props.summary.id,
+    summary: props.summary,
+    look: look(),
+    query: { ...queryOf(props.summary.id, look()), revision: 0 },
+    unit: props.summary.unit,
+    setLook: (change) => setLook(change),
+  }));
   return (
-    <ProfileContext value={focus}>
-      <output data-testid="look">{JSON.stringify(look)}</output>
-      <div style={HARNESS_SIZE}>{children}</div>
+    <ProfileContext value={() => focus()}>
+      <output data-testid="look">{JSON.stringify(look())}</output>
+      <div style={HARNESS_SIZE}>{props.children}</div>
     </ProfileContext>
   );
 }
 
 async function mount(
-  view: ReactNode,
+  view: () => JSX.Element,
   { summary = summaryOf(), look = NO_LOOK }: { summary?: ProfileSummary; look?: ProfileLook } = {},
 ): Promise<Server> {
   const server = new Server();
   await server.open();
-  render(
+  render(() => (
     <SessionContext value={server.session}>
       <Harness summary={summary} initial={look}>
-        {view}
+        {view()}
       </Harness>
-    </SessionContext>,
-  );
+    </SessionContext>
+  ));
   return server;
 }
 
@@ -266,7 +255,7 @@ afterEach(() => {
 });
 
 it("walks a call tree with the arrow keys and selects with Enter", async () => {
-  const server = await mount(<TreeView />);
+  const server = await mount(() => <TreeView />);
   server.answer(await server.next("profileTree"), ...TREE);
   const tree = page.getByRole("tree", { name: "Call tree" });
   await expect.element(tree.getByRole("treeitem").first()).toBeVisible();
@@ -304,7 +293,7 @@ it("walks a call tree with the arrow keys and selects with Enter", async () => {
 });
 
 it("names each row's shares for those who cannot see the columns", async () => {
-  const server = await mount(<TreeView />);
+  const server = await mount(() => <TreeView />);
   server.answer(await server.next("profileTree"), ...TREE);
   await expect
     .element(page.getByRole("treeitem", { name: "main, 0.00% own, 83.3% total" }))
@@ -338,7 +327,7 @@ function markedNames(): (string | null)[] {
 }
 
 it("draws each share as a bar, bolds large own time, and searches as the flame graph does", async () => {
-  const server = await mount(<TreeView />);
+  const server = await mount(() => <TreeView />);
   server.answer(await server.next("profileTree"), ...TREE);
   await expect.element(treeRow(/^main,/u)).toBeVisible();
 
@@ -377,7 +366,7 @@ const HIDDEN = treeOf([
 ]);
 
 it("opens the callers of what a search matches, and leaves them as they are after", async () => {
-  const server = await mount(<TreeView />);
+  const server = await mount(() => <TreeView />);
   server.answer(await server.next("profileTree"), ...HIDDEN);
   const tree = page.getByRole("tree", { name: "Call tree" });
   const deep = treeRow(/^deep,/u);
@@ -407,7 +396,7 @@ const TALL = treeOf([
   ["b", 0, 1, 2],
   ["target", 1, 1, 3],
 ]);
-const SHORT = { display: "flex", flexDirection: "column", height: 300 } as const;
+const SHORT = { display: "flex", "flex-direction": "column", height: "300px" } as const;
 
 function scrolledInto(container: Element, row: Element): boolean {
   const outer = container.getBoundingClientRect();
@@ -416,11 +405,11 @@ function scrolledInto(container: Element, row: Element): boolean {
 }
 
 it("scrolls to the first match of each search, but not as rows open and close after", async () => {
-  const server = await mount(
+  const server = await mount(() => (
     <div style={SHORT}>
       <TreeView />
-    </div>,
-  );
+    </div>
+  ));
   server.answer(await server.next("profileTree"), ...TALL);
   const tree = page.getByRole("tree", { name: "Call tree" });
   await expect.element(treeRow(/^f0,/u)).toBeVisible();
@@ -454,7 +443,7 @@ it("scrolls to the first match of each search, but not as rows open and close af
 });
 
 it("says it is reading a call tree, and why it could not", async () => {
-  const server = await mount(<TreeView />);
+  const server = await mount(() => <TreeView />);
   await expect.element(page.getByText("Reading the call tree…")).toBeVisible();
   server.fail(await server.next("profileTree"), "the profile is cut short");
   await expect.element(page.getByText("the profile is cut short")).toBeVisible();
@@ -462,7 +451,7 @@ it("says it is reading a call tree, and why it could not", async () => {
 
 it("walks the functions with the arrow keys, same-named functions included", async () => {
   const errors = vi.spyOn(console, "error");
-  const server = await mount(<FunctionsView />);
+  const server = await mount(() => <FunctionsView />);
   await expect.element(page.getByText("Reading functions…")).toBeVisible();
   server.answer(await server.next("profileFunctions"), {
     weight: 10,
@@ -488,7 +477,7 @@ it("walks the functions with the arrow keys, same-named functions included", asy
 });
 
 it("finds functions by name, and bolds the ones whose own time is hot", async () => {
-  const server = await mount(<FunctionsView />);
+  const server = await mount(() => <FunctionsView />);
   server.answer(await server.next("profileFunctions"), {
     weight: 10,
     rows: [
@@ -534,7 +523,7 @@ it("finds functions by name, and bolds the ones whose own time is hot", async ()
 });
 
 it("orders functions by own until asked to order them by total", async () => {
-  const server = await mount(<FunctionsView />);
+  const server = await mount(() => <FunctionsView />);
   server.answer(await server.next("profileFunctions"), {
     weight: 10,
     rows: [
@@ -558,7 +547,7 @@ it("orders functions by own until asked to order them by total", async () => {
 });
 
 it("says when no function was sampled", async () => {
-  const server = await mount(<FunctionsView />);
+  const server = await mount(() => <FunctionsView />);
   server.answer(await server.next("profileFunctions"), {
     weight: 0,
     rows: [],
@@ -577,7 +566,7 @@ const file = (hottest: number) => ({
 });
 
 it("brings each function's own hottest line into view once its lines arrive", async () => {
-  const server = await mount(<FunctionsView />, { look: { fn: "first", ann: "lines" } });
+  const server = await mount(() => <FunctionsView />, { look: { fn: "first", ann: "lines" } });
   await expect.element(page.getByText("Reading the source lines of first…")).toBeVisible();
   server.answer(await server.next("profileLines"), { weight: 10, files: [file(1)] });
   await expect.element(page.getByText("line 300")).toBeInTheDocument();
@@ -605,7 +594,7 @@ const colored = (token: string) =>
   );
 
 it("colors each file's source lines in that file's language, as the debugger does", async () => {
-  const server = await mount(<FunctionsView />, { look: { fn: "spin", ann: "lines" } });
+  const server = await mount(() => <FunctionsView />, { look: { fn: "spin", ann: "lines" } });
   server.answer(await server.next("profileLines"), {
     weight: 10,
     files: [
@@ -621,7 +610,7 @@ it("colors each file's source lines in that file's language, as the debugger doe
 });
 
 it("draws a line's and an instruction's shares as bars, bold where own time is hot", async () => {
-  const server = await mount(<FunctionsView />, { look: { fn: "spin", ann: "lines" } });
+  const server = await mount(() => <FunctionsView />, { look: { fn: "spin", ann: "lines" } });
   server.answer(await server.next("profileLines"), {
     weight: 10,
     files: [
@@ -814,7 +803,7 @@ const pieces = (row: number) =>
   );
 
 it("nests inlined code under the line it was inlined at, brackets it, and steps a line's runs", async () => {
-  const server = await mount(<FunctionsView />, { look: { fn: "scan", ann: "code" } });
+  const server = await mount(() => <FunctionsView />, { look: { fn: "scan", ann: "code" } });
   server.answer(await server.next("profileCode"), SPLIT);
 
   await expect.element(page.getByText("return table[i];")).toBeVisible();
@@ -897,7 +886,7 @@ it("nests inlined code under the line it was inlined at, brackets it, and steps 
 });
 
 it("marks code with no associated source line as not code, in both panes, and gives it no tint", async () => {
-  const server = await mount(<FunctionsView />, { look: { fn: "scan", ann: "code" } });
+  const server = await mount(() => <FunctionsView />, { look: { fn: "scan", ann: "code" } });
   const [first, ...rest] = SPLIT.blocks[0].instructions;
   server.answer(await server.next("profileCode"), {
     ...SPLIT,
@@ -933,7 +922,7 @@ it("marks code with no associated source line as not code, in both panes, and gi
 
 it("draws only the rows near view of a long file and listing, opening on the far line", async () => {
   const count = 3000;
-  const server = await mount(<FunctionsView />, { look: { fn: "big", ann: "code" } });
+  const server = await mount(() => <FunctionsView />, { look: { fn: "big", ann: "code" } });
   server.answer(await server.next("profileCode"), {
     ...SPLIT,
     blocks: [
@@ -990,7 +979,7 @@ it("draws only the rows near view of a long file and listing, opening on the far
 });
 
 it("shows an inlined function's code where it was inlined, opening on its own line", async () => {
-  const server = await mount(<FunctionsView />, { look: { fn: "step", ann: "code" } });
+  const server = await mount(() => <FunctionsView />, { look: { fn: "step", ann: "code" } });
   server.answer(await server.next("profileCode"), { ...SPLIT, inlined_into: "scan" });
   await expect
     .element(
@@ -1005,7 +994,7 @@ it("shows an inlined function's code where it was inlined, opening on its own li
 });
 
 it("forgets the line it chose once another function's code arrives", async () => {
-  const server = await mount(<FunctionsView />, { look: { fn: "scan", ann: "code" } });
+  const server = await mount(() => <FunctionsView />, { look: { fn: "scan", ann: "code" } });
   server.answer(await server.next("profileCode"), SPLIT);
   await expect.element(page.getByText("return table[i];")).toBeVisible();
   await userEvent.click(lineRow(3) as HTMLElement);
@@ -1021,7 +1010,7 @@ it("forgets the line it chose once another function's code arrives", async () =>
 });
 
 it("says it is reading a flame graph, and reads a function's cost from the server", async () => {
-  const server = await mount(<FlameView />, { look: { fn: "leaf" } });
+  const server = await mount(() => <FlameView />, { look: { fn: "leaf" } });
   await expect.element(page.getByText("Reading the flame graph…")).toBeVisible();
   server.answer(await server.next("profileTree"), ...TREE);
   server.answer(await server.next("profileFunctions"), {
@@ -1051,7 +1040,7 @@ function mouseAt(target: Element, type: string, x: number, y: number): void {
 const tip = () => document.querySelector("[data-testid=flame-tip] .mono")?.textContent;
 
 it("forgets the frame it hovered once another tree arrives", async () => {
-  const server = await mount(<FlameView />);
+  const server = await mount(() => <FlameView />);
   server.answer(await server.next("profileTree"), ...TREE);
   const canvas = page.getByRole("img", { name: "Flame graph" });
   await expect.element(canvas).toBeVisible();
@@ -1063,7 +1052,7 @@ it("forgets the frame it hovered once another tree arrives", async () => {
 });
 
 it("puts a clicked frame in the search, and Clear or typing lets it go", async () => {
-  const server = await mount(<FlameView />);
+  const server = await mount(() => <FlameView />);
   server.answer(await server.next("profileTree"), ...TREE);
   const canvas = page.getByRole("img", { name: "Flame graph" });
   const search = page.getByRole("searchbox", { name: "Search frames" });
@@ -1104,7 +1093,7 @@ it("puts a clicked frame in the search, and Clear or typing lets it go", async (
 
 it("lets go of the selection once Focus, Merge, or Drop reshapes the graph", async () => {
   for (const action of ["Focus", "Merge", "Drop"]) {
-    const server = await mount(<FlameView />, { look: { fn: "work" } });
+    const server = await mount(() => <FlameView />, { look: { fn: "work" } });
     server.answer(await server.next("profileTree"), ...TREE);
     const search = page.getByRole("searchbox", { name: "Search frames" });
     await expect.element(search).toHaveValue("work");
@@ -1126,9 +1115,11 @@ function settled(): Promise<void> {
 
 it("paints the lanes again when they change, not when a function is chosen", async () => {
   const server = await mount(
-    <div style={WIDE}>
-      <Lanes />
-    </div>,
+    () => (
+      <div style={WIDE}>
+        <Lanes />
+      </div>
+    ),
     { summary: summaryOf({}) },
   );
   const asked = await server.next("profileTimeline");
@@ -1165,9 +1156,11 @@ it("draws a lane per thread for hundreds of threads", async () => {
   }));
   const summary = summaryOf({ threads });
   const server = await mount(
-    <div style={WIDE}>
-      <Lanes />
-    </div>,
+    () => (
+      <div style={WIDE}>
+        <Lanes />
+      </div>
+    ),
     { summary },
   );
   const asked = await server.next("profileTimeline");
@@ -1214,9 +1207,11 @@ function pointerAt(target: Element, type: string, x: number): void {
 
 it("marks round times, the pointer's time, and a range's ends and length", async () => {
   const server = await mount(
-    <div style={SECOND_WIDE}>
-      <Lanes />
-    </div>,
+    () => (
+      <div style={SECOND_WIDE}>
+        <Lanes />
+      </div>
+    ),
     { summary: summaryOf({}) },
   );
   await server.next("profileTimeline");
@@ -1298,10 +1293,12 @@ it("names the lanes it cuts samples to with the other chips, not over the lanes"
     { ...thread, row: 1, tid: 11, name: "worker" },
   ];
   await mount(
-    <>
-      <Lanes />
-      <LaneChip />
-    </>,
+    () => (
+      <>
+        <Lanes />
+        <LaneChip />
+      </>
+    ),
     { summary: summaryOf({ threads }) },
   );
 
@@ -1317,7 +1314,7 @@ it("names the lanes it cuts samples to with the other chips, not over the lanes"
 });
 
 it("sets how frames are drawn from Options, and puts it away on Escape or a press outside", async () => {
-  await mount(<Options />, { look: { tf: ["focus:main"] } });
+  await mount(() => <Options />, { look: { tf: ["focus:main"] } });
   const button = page.getByRole("button", { name: "Options", exact: true });
   await button.click();
   const options = page.getByRole("dialog", { name: "Options" });
@@ -1350,13 +1347,13 @@ it("sets how frames are drawn from Options, and puts it away on Escape or a pres
 });
 
 it("offers no Options for a trace of system calls alone", async () => {
-  await mount(<Options />, { summary: summaryOf({ samples: 0, syscalls: 10 }) });
+  await mount(() => <Options />, { summary: summaryOf({ samples: 0, syscalls: 10 }) });
   await expect.element(page.getByText("Reading…")).not.toBeInTheDocument();
   expect(document.body.textContent).not.toContain("Options");
 });
 
 it("says why the timeline could not be read", async () => {
-  const server = await mount(<Lanes />, { summary: summaryOf({}) });
+  const server = await mount(() => <Lanes />, { summary: summaryOf({}) });
   server.fail(await server.next("profileTimeline"), "the timeline is cut short");
   await expect.element(page.getByText("the timeline is cut short")).toBeVisible();
 });
@@ -1415,9 +1412,11 @@ async function zonedLanes(look: ProfileLook = NO_LOOK, offCpu = false): Promise<
     zoneSites: [DRAIN, { ...DRAIN, name: "parse", count: 1, total: 50e6, longest: 50e6 }],
   });
   const server = await mount(
-    <div style={SECOND_WIDE}>
-      <Lanes />
-    </div>,
+    () => (
+      <div style={SECOND_WIDE}>
+        <Lanes />
+      </div>
+    ),
     { summary, look },
   );
   server.answer(await server.next("profileTimeline"), { range: [0, 1e9], lanes: [] });
@@ -1438,7 +1437,7 @@ const lanesCanvas = () => page.getByRole("img", { name: /^CPU and zones over/u }
 
 it("says why the zones could not be read, and still draws the samples", async () => {
   const summary = summaryOf({ threads: ZONED_THREADS, zoneSites: [DRAIN] });
-  const server = await mount(<Lanes />, { summary });
+  const server = await mount(() => <Lanes />, { summary });
   server.answer(await server.next("profileTimeline"), { range: [0, 1e9], lanes: [] });
   server.fail(await server.next("profileZones"), "the zones are cut short");
   await expect.element(page.getByText("the zones are cut short")).toBeVisible();
@@ -1448,9 +1447,11 @@ it("says why the zones could not be read, and still draws the samples", async ()
 it("waits on no zones in a box too narrow to draw them", async () => {
   const summary = summaryOf({ threads: ZONED_THREADS, zoneSites: [DRAIN] });
   const server = await mount(
-    <div style={NAMES_WIDE}>
-      <Lanes />
-    </div>,
+    () => (
+      <div style={NAMES_WIDE}>
+        <Lanes />
+      </div>
+    ),
     { summary },
   );
   await settled();
@@ -1470,7 +1471,7 @@ it("puts a range's ends side by side where it is too near an edge for both", asy
 });
 
 it("asks for no zones in a recording without any, nor of task lanes", async () => {
-  const server = await mount(<Lanes />, {
+  const server = await mount(() => <Lanes />, {
     summary: summaryOf({ threads: ZONED_THREADS }),
   });
   await server.next("profileTimeline");
@@ -1524,7 +1525,7 @@ it("puts threads with zones first, and folds the rest into a lane that opens to 
 
 it("folds no lane when every thread has zones, or none does", async () => {
   const both = ZONED_THREADS.map((thread) => ({ ...thread, zones: 1 }));
-  await mount(<Lanes />, {
+  await mount(() => <Lanes />, {
     summary: summaryOf({ threads: both, zoneSites: [DRAIN] }),
   });
   await expect.element(page.getByRole("button", { name: "main 10" })).toBeVisible();
@@ -1533,7 +1534,7 @@ it("folds no lane when every thread has zones, or none does", async () => {
   cleanup();
 
   const neither = ZONED_THREADS.map((thread) => ({ ...thread, zones: 0 }));
-  await mount(<Lanes />, { summary: summaryOf({ threads: neither }) });
+  await mount(() => <Lanes />, { summary: summaryOf({ threads: neither }) });
   await expect.element(page.getByRole("button", { name: "main 10" })).toBeVisible();
   await expect.element(page.getByRole("button", { name: "worker 11" })).toBeVisible();
   expect(document.body.textContent).not.toContain("without zones");
@@ -1635,9 +1636,11 @@ it("outlines the chosen site's zones even where they fold, and asks for them by 
   });
   const summary = summaryOf({ threads: ZONED_THREADS, zoneSites: [DRAIN] });
   const server = await mount(
-    <div style={SECOND_WIDE}>
-      <Lanes />
-    </div>,
+    () => (
+      <div style={SECOND_WIDE}>
+        <Lanes />
+      </div>
+    ),
     { summary, look: { zs: "drain", zb: "1000-2000" } },
   );
   server.answer(await server.next("profileTimeline"), { range: [0, 1e9], lanes: [] });
@@ -1695,9 +1698,11 @@ it("scrolls a zone chosen elsewhere into view, once, so the lanes scroll away fr
     preempted: 0,
   }));
   const server = await mount(
-    <div style={SECOND_WIDE_SHORT}>
-      <Lanes />
-    </div>,
+    () => (
+      <div style={SECOND_WIDE_SHORT}>
+        <Lanes />
+      </div>
+    ),
     { summary: summaryOf({ threads, zoneSites: [DRAIN] }) },
   );
   server.answer(await server.next("profileTimeline"), { range: [0, 1e9], lanes: [] });
@@ -1987,7 +1992,7 @@ it("lists sites by total, and sorts them by another column", async () => {
       { ...DRAIN, name: "many", count: 50, total: 100, longest: 10 },
     ],
   });
-  await mount(<ZonesPane />, { summary });
+  await mount(() => <ZonesPane />, { summary });
   expect(listedSites()).toEqual(["few", "many"]);
   await page.getByRole("button", { name: "count", exact: true }).click();
   expect(listedSites()).toEqual(["many", "few"]);
@@ -1998,13 +2003,13 @@ it("lists sites by total, and sorts them by another column", async () => {
 });
 
 it("says a recording has no zones", async () => {
-  await mount(<ZonesPane />);
+  await mount(() => <ZonesPane />);
   await expect.element(page.getByText("This recording has no zones.")).toBeVisible();
 });
 
 it("picks a band from the histogram, scopes the views to it, compares it, and lets it go", async () => {
   vi.spyOn(Element.prototype, "setPointerCapture").mockImplementation(() => {});
-  const server = await mount(<ZonesPane />, {
+  const server = await mount(() => <ZonesPane />, {
     summary: summaryOf({ zoneSites: [DRAIN_SITE] }),
     look: { zs: "drain", th: ["0"] },
   });
@@ -2045,7 +2050,7 @@ it("picks a band from the histogram, scopes the views to it, compares it, and le
 });
 
 it("selects one of the longest, ranks it, and never touches the threads", async () => {
-  const server = await mount(<ZonesPane />, {
+  const server = await mount(() => <ZonesPane />, {
     summary: summaryOf({
       zoneSites: [DRAIN_SITE, { ...DRAIN_SITE, name: "parse" }],
       threads: ZONED_THREADS,
@@ -2073,7 +2078,7 @@ it("selects one of the longest, ranks it, and never touches the threads", async 
 });
 
 it("says why a site could not be measured, and when none of its zones are in the range", async () => {
-  const server = await mount(<ZonesPane />, {
+  const server = await mount(() => <ZonesPane />, {
     summary: summaryOf({ zoneSites: [DRAIN_SITE] }),
     look: { zs: "drain" },
   });
@@ -2106,7 +2111,7 @@ it("says why a site could not be measured, and when none of its zones are in the
 });
 
 it("offers no zone scope of waits, which zones never hold", async () => {
-  const server = await mount(<ZonesPane />, {
+  const server = await mount(() => <ZonesPane />, {
     summary: summaryOf({ zoneSites: [DRAIN_SITE] }),
     look: { zs: "drain", zb: "100-199", src: "waits" },
   });
@@ -2149,7 +2154,7 @@ const sorting = (column: string) =>
   page.getByRole("button", { name: column, exact: true }).element().closest("th")?.ariaSort;
 
 it("selects a call from its name's button, and sorts by a column it names", async () => {
-  const server = await mount(<KernelPane />, { summary: traced() });
+  const server = await mount(() => <KernelPane />, { summary: traced() });
   server.answer(await server.next("syscallSummary"), SUMMARY);
   const call = page.getByRole("button", { name: "read", exact: true });
   await expect.element(call).toHaveAttribute("aria-pressed", "false");
@@ -2168,7 +2173,7 @@ it("selects a call from its name's button, and sorts by a column it names", asyn
 });
 
 it("says it is reading a call's detail, and why it could not", async () => {
-  const server = await mount(<KernelPane />, { summary: traced(), look: { sc: "read" } });
+  const server = await mount(() => <KernelPane />, { summary: traced(), look: { sc: "read" } });
   server.answer(await server.next("syscallSummary"), SUMMARY);
   const detail = page.getByTestId("syscall-detail");
   await expect.element(detail.getByText("Reading read's calls…")).toBeVisible();
@@ -2180,7 +2185,7 @@ it("says it is reading a call's detail, and why it could not", async () => {
 });
 
 it("reads a click on a heat map's top edge as its highest row, in the slice clicked", async () => {
-  const server = await mount(<KernelPane />, { summary: traced(), look: { sc: "read" } });
+  const server = await mount(() => <KernelPane />, { summary: traced(), look: { sc: "read" } });
   server.answer(await server.next("syscallSummary"), SUMMARY);
 
   server.answer(await server.next("syscallHeatmap"), {
@@ -2203,7 +2208,7 @@ it("reads a click on a heat map's top edge as its highest row, in the slice clic
 });
 
 it("draws a heat map's cells of failed calls in the error color, however few failed", async () => {
-  const server = await mount(<KernelPane />, { summary: traced(), look: { sc: "read" } });
+  const server = await mount(() => <KernelPane />, { summary: traced(), look: { sc: "read" } });
   server.answer(await server.next("syscallSummary"), SUMMARY);
 
   server.answer(await server.next("syscallHeatmap"), {
@@ -2231,7 +2236,7 @@ it("draws a heat map's cells of failed calls in the error color, however few fai
 });
 
 it("says it is reading the log, and why a call could not be read", async () => {
-  const server = await mount(<KernelPane />, { summary: traced(), look: { st: "log" } });
+  const server = await mount(() => <KernelPane />, { summary: traced(), look: { st: "log" } });
   await expect.element(page.getByText("Reading calls…")).toBeVisible();
   server.answer(await server.next("syscallLog"), {
     total: 1,
@@ -2254,7 +2259,7 @@ it("says it is reading the log, and why a call could not be read", async () => {
 });
 
 it("says why the log could not be read", async () => {
-  const server = await mount(<KernelPane />, { summary: traced(), look: { st: "log" } });
+  const server = await mount(() => <KernelPane />, { summary: traced(), look: { st: "log" } });
   server.fail(await server.next("syscallLog"), "the log is cut short");
   await expect.element(page.getByText("the log is cut short")).toBeVisible();
 });
@@ -2264,7 +2269,7 @@ for (const [tab, method, reading, empty] of [
   ["network", "syscallNetwork", "Reading sockets…", "No socket was used."],
 ] as const) {
   it(`says it is reading ${tab}, and why it could not, rather than that there are none`, async () => {
-    const server = await mount(<KernelPane />, { summary: traced(), look: { st: tab } });
+    const server = await mount(() => <KernelPane />, { summary: traced(), look: { st: tab } });
     await expect.element(page.getByText(reading)).toBeVisible();
     await expect.element(page.getByText(empty)).not.toBeInTheDocument();
     server.fail(await server.next(method), `the ${tab} are cut short`);
@@ -2275,7 +2280,7 @@ for (const [tab, method, reading, empty] of [
 
 it("says it is reading blocked threads, and why it could not", async () => {
   const summary = traced();
-  const server = await mount(<KernelPane />, { summary, look: { st: "processes" } });
+  const server = await mount(() => <KernelPane />, { summary, look: { st: "processes" } });
   server.send({
     type: "profiles",
     profiles: [{ id: summary.id, name: "live", recording: true, revision: 0, ended: null }],
@@ -2287,7 +2292,7 @@ it("says it is reading blocked threads, and why it could not", async () => {
 
 it("keeps its tabs at every level, and says what a level left out and the flag that keeps it", async () => {
   const off = summaryOf({ syscalls: 0, settings: [{ name: "syscalls", value: "off" }] });
-  const server = await mount(<KernelPane />, { summary: off });
+  const server = await mount(() => <KernelPane />, { summary: off });
   await expect.element(page.getByRole("tab", { name: "Syscalls" })).toBeVisible();
   const said = page.getByTestId("syscalls-unkept");
   await expect
@@ -2305,7 +2310,7 @@ it("keeps its tabs at every level, and says what a level left out and the flag t
   cleanup();
 
   const counts = summaryOf({ syscalls: 4, settings: [{ name: "syscalls", value: "counts" }] });
-  const counted = await mount(<KernelPane />, { summary: counts });
+  const counted = await mount(() => <KernelPane />, { summary: counts });
   counted.answer(await counted.next("syscallSummary"), SUMMARY);
   await expect
     .element(page.getByTestId("syscalls-unkept"))
@@ -2315,7 +2320,7 @@ it("keeps its tabs at every level, and says what a level left out and the flag t
   await expect.element(page.getByRole("button", { name: "read", exact: true })).toBeVisible();
   cleanup();
 
-  const kept = await mount(<KernelPane />, { summary: traced() });
+  const kept = await mount(() => <KernelPane />, { summary: traced() });
   kept.answer(await kept.next("syscallSummary"), SUMMARY);
   await expect.element(page.getByRole("button", { name: "read", exact: true })).toBeVisible();
   await expect.element(page.getByTestId("syscalls-unkept")).not.toBeInTheDocument();
@@ -2337,14 +2342,21 @@ async function mountPage(
     });
   }
   function Page() {
-    const [look, setLook] = useState<ProfileLook>({});
-    return <Profile view={view} profile={summary.id} look={look} setLook={setLook} />;
+    const [look, setLook] = createSignal<ProfileLook>({});
+    return (
+      <Profile
+        view={view}
+        profile={summary.id}
+        look={look()}
+        setLook={(change) => setLook(change)}
+      />
+    );
   }
-  render(
+  render(() => (
     <SessionContext value={server.session}>
       <Page />
-    </SessionContext>,
-  );
+    </SessionContext>
+  ));
   return server;
 }
 

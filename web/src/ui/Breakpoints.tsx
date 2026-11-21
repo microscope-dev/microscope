@@ -1,11 +1,4 @@
-import {
-  type ChangeEvent,
-  type FormEvent,
-  type KeyboardEvent,
-  useCallback,
-  useMemo,
-  useState,
-} from "react";
+import { createMemo, createSignal, For, Match, onSettled, Show, Switch, untrack } from "solid-js";
 
 import { assert } from "../assert";
 import { firstBreakpointPlace, knownBreakpointPlaces, PENDING } from "../breakpoints";
@@ -19,40 +12,41 @@ import { fileName } from "./paths";
 import { useFocus } from "./Workspace";
 
 export function Breakpoints() {
-  const { state } = useFocus();
+  const focus = useFocus();
   const control = useModel(controls);
   const editing = useTab((current) => current.editing);
-  const breakpoints = state.breakpoints;
+  const breakpoints = createMemo(() => focus().state.breakpoints);
+  const watchpoints = createMemo(() => focus().state.watchpoints);
 
   return (
-    <div className="pane-body">
-      <ul className="rows" data-testid="breakpoints">
-        {breakpoints.map((breakpoint) =>
-          editing === breakpoint.id ? (
-            <BreakpointEditor key={breakpoint.id} breakpoint={breakpoint} close={stopEditing} />
-          ) : (
-            <Row
-              key={breakpoint.id}
-              breakpoint={breakpoint}
-              control={control}
-              edit={editBreakpoint}
-            />
-          ),
-        )}
+    <div class="pane-body">
+      <ul class="rows" data-testid="breakpoints">
+        <For each={breakpoints()} keyed={(breakpoint) => breakpoint.id}>
+          {(breakpoint) => (
+            <Show
+              when={editing() === breakpoint().id}
+              fallback={<Row breakpoint={breakpoint()} control={control()} edit={editBreakpoint} />}
+            >
+              <BreakpointEditor breakpoint={breakpoint()} close={stopEditing} />
+            </Show>
+          )}
+        </For>
       </ul>
-      {state.watchpoints.length > 0 && (
-        <ul className="rows" data-testid="watchpoints">
-          {state.watchpoints.map((watchpoint) => (
-            <WatchRow key={watchpoint.id} watchpoint={watchpoint} control={control} />
-          ))}
+      <Show when={watchpoints().length > 0}>
+        <ul class="rows" data-testid="watchpoints">
+          <For each={watchpoints()} keyed={(watchpoint) => watchpoint.id}>
+            {(watchpoint) => <WatchRow watchpoint={watchpoint()} control={control()} />}
+          </For>
         </ul>
-      )}
-      {control && <Adder />}
-      {control && <WatchAdder />}
-      <Exceptions control={control} />
-      {!control && breakpoints.length + state.watchpoints.length === 0 && (
-        <div className="empty">No breakpoints.</div>
-      )}
+      </Show>
+      <Show when={control()}>
+        <Adder />
+        <WatchAdder />
+      </Show>
+      <Exceptions control={control()} />
+      <Show when={!control() && breakpoints().length + watchpoints().length === 0}>
+        <div class="empty">No breakpoints.</div>
+      </Show>
     </div>
   );
 }
@@ -64,7 +58,11 @@ export function BreakpointsBadge() {
   const count = useModel(
     (model) => (model.state?.breakpoints.length ?? 0) + (model.state?.watchpoints.length ?? 0),
   );
-  return count > 0 ? <span className="count">{count}</span> : null;
+  return (
+    <Show when={count() > 0}>
+      <span class="count">{count()}</span>
+    </Show>
+  );
 }
 
 export function placeLabel(breakpoint: Breakpoint): string {
@@ -129,202 +127,179 @@ function conditionText(conditions: Conditions): string {
     .join(" · ");
 }
 
-function Row({
-  breakpoint,
-  control,
-  edit,
-}: {
-  breakpoint: Breakpoint;
-  control: boolean;
-  edit(id: number): void;
-}) {
+function Row(props: { breakpoint: Breakpoint; control: boolean; edit(id: number): void }) {
   const connection = useConnection();
   const showBreakpoint = useShowBreakpoint();
-  const [error, setError] = useState<string | null>(null);
-  const show = useCallback(() => showBreakpoint(breakpoint), [showBreakpoint, breakpoint]);
-  const editThis = useCallback(() => edit(breakpoint.id), [edit, breakpoint.id]);
-  const remove = useCallback(
-    () =>
-      connection
-        .request("removeBreakpoint", { id: breakpoint.id })
-        .catch((failure: Error) => setError(failure.message)),
-    [connection, breakpoint.id],
+  const [error, setError] = createSignal<string | null>(null);
+  const show = () => showBreakpoint(props.breakpoint);
+  const editThis = () => props.edit(props.breakpoint.id);
+  const remove = () =>
+    connection
+      .request("removeBreakpoint", { id: props.breakpoint.id })
+      .catch((failure: Error) => setError(failure.message));
+  const place = createMemo(() => firstBreakpointPlace(props.breakpoint));
+  const pending = createMemo(() => props.breakpoint.places.length === 0);
+  const kind = createMemo(() =>
+    props.breakpoint.logMessage ? "log" : props.breakpoint.condition ? "conditional" : "plain",
   );
-  const place = firstBreakpointPlace(breakpoint);
-  const pending = breakpoint.places.length === 0;
-  const kind = breakpoint.logMessage ? "log" : breakpoint.condition ? "conditional" : "plain";
-  const detail = conditionText(breakpoint);
+  const detail = createMemo(() => conditionText(props.breakpoint));
 
   return (
-    <li className="breakpoint" data-breakpoint={breakpoint.id}>
-      <div className="row">
-        <span className={`dot ${kind} ${pending ? "pending" : ""}`} aria-hidden="true" />
+    <li class="breakpoint" data-breakpoint={props.breakpoint.id}>
+      <div class="row">
+        <span class={["dot", kind(), { pending: pending() }]} aria-hidden="true" />
         <button
           type="button"
-          className="link-row"
-          title={breakpointTitle(breakpoint)}
-          disabled={pending && !place?.path}
+          class="link-row"
+          title={breakpointTitle(props.breakpoint)}
+          disabled={pending() && !place()?.path}
           onClick={show}
         >
-          {placeLabel(breakpoint)}
+          {placeLabel(props.breakpoint)}
         </button>
-        {place?.function && <span className="dim fn-name">{place.function}</span>}
-        <span className="end" title="Hits in this process, including those that did not stop">
-          {breakpoint.hits} {breakpoint.hits === 1 ? "hit" : "hits"}
+        <Show when={place()?.function}>{(fn) => <span class="dim fn-name">{fn()}</span>}</Show>
+        <span class="end" title="Hits in this process, including those that did not stop">
+          {props.breakpoint.hits} {props.breakpoint.hits === 1 ? "hit" : "hits"}
         </span>
-        {control && (
-          <>
-            <button
-              type="button"
-              className="icon"
-              title="Edit its condition"
-              aria-label={`Edit breakpoint ${breakpoint.id}`}
-              onClick={editThis}
-            >
-              ✎
-            </button>
-            <button
-              type="button"
-              className="icon"
-              title="Remove it"
-              aria-label={`Remove breakpoint ${breakpoint.id}`}
-              onClick={remove}
-            >
-              ×
-            </button>
-          </>
-        )}
+        <Show when={props.control}>
+          <button
+            type="button"
+            class="icon"
+            title="Edit its condition"
+            aria-label={`Edit breakpoint ${props.breakpoint.id}`}
+            onClick={editThis}
+          >
+            ✎
+          </button>
+          <button
+            type="button"
+            class="icon"
+            title="Remove it"
+            aria-label={`Remove breakpoint ${props.breakpoint.id}`}
+            onClick={remove}
+          >
+            ×
+          </button>
+        </Show>
       </div>
-      {breakpoint.pending ? (
-        <div className="row sub">{breakpoint.pending.message}</div>
-      ) : (
-        pending && <div className="row sub">{PENDING}</div>
-      )}
-      {detail && <div className="row sub">{detail}</div>}
-      {error && <div className="row sub error">{error}</div>}
+      <Show
+        when={props.breakpoint.pending}
+        fallback={
+          <Show when={pending()}>
+            <div class="row sub">{PENDING}</div>
+          </Show>
+        }
+      >
+        {(reason) => <div class="row sub">{reason().message}</div>}
+      </Show>
+      <Show when={detail()}>{(text) => <div class="row sub">{text()}</div>}</Show>
+      <Show when={error()}>{(message) => <div class="row sub error">{message()}</div>}</Show>
     </li>
   );
 }
 
-function BreakpointEditor({ breakpoint, close }: { breakpoint: Breakpoint; close(): void }) {
+function BreakpointEditor(props: { breakpoint: Breakpoint; close(): void }) {
   const connection = useConnection();
-  const save = useCallback(
-    (conditions: Conditions) =>
-      connection.request("editBreakpoint", {
-        id: breakpoint.id,
-        condition: conditions.condition,
-        hitCondition: conditions.hitCondition,
-        logMessage: conditions.logMessage ?? null,
-      }),
-    [connection, breakpoint.id],
-  );
+  const save = (conditions: Conditions) =>
+    connection.request("editBreakpoint", {
+      id: props.breakpoint.id,
+      condition: conditions.condition,
+      hitCondition: conditions.hitCondition,
+      logMessage: conditions.logMessage ?? null,
+    });
   return (
     <ConditionEditor
-      title={placeLabel(breakpoint)}
-      initial={breakpoint}
-      close={close}
+      title={placeLabel(props.breakpoint)}
+      initial={props.breakpoint}
+      close={props.close}
       save={save}
     />
   );
 }
 
-function ConditionEditor({
-  title,
-  initial,
-  save,
-  close,
-}: {
+function ConditionEditor(props: {
   title: string;
   initial: Conditions;
   save(conditions: Conditions): Promise<unknown>;
   close(): void;
 }) {
-  const logs = initial.logMessage !== undefined;
-  const [condition, setCondition] = useState(initial.condition ?? "");
-  const [hits, setHits] = useState(initial.hitCondition ?? "");
-  const [message, setMessage] = useState(initial.logMessage ?? "");
-  const [error, setError] = useState<string | null>(null);
+  const logs = createMemo(() => props.initial.logMessage !== undefined);
+  const [condition, setCondition] = createSignal(untrack(() => props.initial.condition ?? ""));
+  const [hits, setHits] = createSignal(untrack(() => props.initial.hitCondition ?? ""));
+  const [message, setMessage] = createSignal(untrack(() => props.initial.logMessage ?? ""));
+  const [error, setError] = createSignal<string | null>(null);
+  let first: HTMLInputElement | undefined;
 
-  const submit = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      setError(null);
-      const conditions: Conditions = {
-        condition: condition.trim() || null,
-        hitCondition: hits.trim() || null,
-      };
-      if (logs) {
-        conditions.logMessage = message.trim() || null;
-      }
-      save(conditions)
-        .then(close)
-        .catch((failure: Error) => setError(failure.message));
-    },
-    [condition, hits, logs, message, save, close],
-  );
-  const escape = useCallback(
-    (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        close();
-      }
-    },
-    [close],
-  );
-  const editCondition = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setCondition(event.target.value),
-    [],
-  );
-  const editHits = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setHits(event.target.value),
-    [],
-  );
-  const editMessage = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setMessage(event.target.value),
-    [],
-  );
+  onSettled(() => {
+    first?.focus();
+  });
+
+  const submit = (event: SubmitEvent) => {
+    event.preventDefault();
+    setError(null);
+    const conditions: Conditions = {
+      condition: condition().trim() || null,
+      hitCondition: hits().trim() || null,
+    };
+    if (logs()) {
+      conditions.logMessage = message().trim() || null;
+    }
+    props
+      .save(conditions)
+      .then(() => props.close())
+      .catch((failure: Error) => setError(failure.message));
+  };
+
+  const escape = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      props.close();
+    }
+  };
 
   return (
-    <li className="editor">
+    <li class="editor">
       {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape anywhere in the form closes it */}
-      <form className="editor-form" onSubmit={submit} onKeyDown={escape}>
-        <div className="editor-title">{title}</div>
+      <form class="editor-form" onSubmit={submit} onKeyDown={escape}>
+        <div class="editor-title">{props.title}</div>
         <label>
           <span>Stop if</span>
           <input
-            className="input"
-            value={condition}
+            ref={(node) => {
+              first = node;
+            }}
+            class="input"
+            value={condition()}
             placeholder="an expression, such as n > 3"
-            // oxlint-disable-next-line jsx-a11y/no-autofocus -- the editor opens because the person asked to type
-            autoFocus
-            onChange={editCondition}
+            autofocus
+            onInput={(event) => setCondition(event.currentTarget.value)}
           />
         </label>
         <label>
           <span>Hits</span>
           <input
-            className="input"
-            value={hits}
+            class="input"
+            value={hits()}
             placeholder=">=5, ==3, or %10"
-            onChange={editHits}
+            onInput={(event) => setHits(event.currentTarget.value)}
           />
         </label>
-        {logs && (
+        <Show when={logs()}>
           <label>
             <span>Log</span>
             <input
-              className="input"
-              value={message}
+              class="input"
+              value={message()}
               placeholder="a message with {expressions}, instead of stopping"
-              onChange={editMessage}
+              onInput={(event) => setMessage(event.currentTarget.value)}
             />
           </label>
-        )}
-        {error && <div className="error">{error}</div>}
-        <div className="actions">
-          <button type="submit" className="button primary small">
+        </Show>
+        <Show when={error()}>{(err) => <div class="error">{err()}</div>}</Show>
+        <div class="actions">
+          <button type="submit" class="button primary small">
             Save
           </button>
-          <button type="button" className="button small" onClick={close}>
+          <button type="button" class="button small" onClick={() => props.close()}>
             Cancel
           </button>
         </div>
@@ -335,37 +310,30 @@ function ConditionEditor({
 
 function Adder() {
   const connection = useConnection();
-  const [text, setText] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const add = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      const location = text.trim();
-      if (!location) {
-        return;
-      }
-      setError(null);
-      connection
-        .request("addBreakpoint", { location })
-        .then(() => setText(""))
-        .catch((failure: Error) => setError(failure.message));
-    },
-    [text, connection],
-  );
-  const edit = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setText(event.target.value),
-    [],
-  );
+  const [text, setText] = createSignal("");
+  const [error, setError] = createSignal<string | null>(null);
+  const add = (event: SubmitEvent) => {
+    event.preventDefault();
+    const location = text().trim();
+    if (!location) {
+      return;
+    }
+    setError(null);
+    connection
+      .request("addBreakpoint", { location })
+      .then(() => setText(""))
+      .catch((failure: Error) => setError(failure.message));
+  };
   return (
-    <form className="adder" onSubmit={add}>
+    <form class="adder" onSubmit={add}>
       <input
-        className="input quiet"
+        class="input quiet"
         aria-label="Add a breakpoint"
         placeholder="+ breakpoint at function, file:line, or 0xaddress"
-        value={text}
-        onChange={edit}
+        value={text()}
+        onInput={(event) => setText(event.currentTarget.value)}
       />
-      {error && <div className="error">{error}</div>}
+      <Show when={error()}>{(err) => <div class="error">{err()}</div>}</Show>
     </form>
   );
 }
@@ -377,193 +345,186 @@ const ACCESS: Record<WatchAccess, string> = {
   read: "read",
 };
 
-function WatchRow({ watchpoint, control }: { watchpoint: Watchpoint; control: boolean }) {
-  const connection = useConnection();
+const ACCESS_KEYS = Object.keys(ACCESS) as WatchAccess[];
 
-  const [editing, setEditing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const label = watchpoint.expression ?? `${watchpoint.address}:${watchpoint.bytes}`;
-  const detail = conditionText(watchpoint);
-  const initial = useMemo(
-    () => ({ condition: watchpoint.condition, hitCondition: watchpoint.hitCondition }),
-    [watchpoint.condition, watchpoint.hitCondition],
+function WatchRow(props: { watchpoint: Watchpoint; control: boolean }) {
+  const connection = useConnection();
+  const [editing, setEditing] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  const label = createMemo(
+    () => props.watchpoint.expression ?? `${props.watchpoint.address}:${props.watchpoint.bytes}`,
   );
-  const open = useCallback(() => setEditing(true), []);
-  const close = useCallback(() => setEditing(false), []);
-  const save = useCallback(
-    (conditions: Conditions) =>
-      connection.request("editWatchpoint", {
-        id: watchpoint.id,
-        condition: conditions.condition,
-        hitCondition: conditions.hitCondition,
-      }),
-    [connection, watchpoint.id],
-  );
-  const remove = useCallback(
-    () =>
-      connection
-        .request("removeWatchpoint", { id: watchpoint.id })
-        .catch((failure: Error) => setError(failure.message)),
-    [connection, watchpoint.id],
-  );
-  if (editing) {
-    return (
+  const detail = createMemo(() => conditionText(props.watchpoint));
+  const initial = createMemo(() => ({
+    condition: props.watchpoint.condition,
+    hitCondition: props.watchpoint.hitCondition,
+  }));
+  const open = () => setEditing(true);
+  const close = () => setEditing(false);
+  const save = (conditions: Conditions) =>
+    connection.request("editWatchpoint", {
+      id: props.watchpoint.id,
+      condition: conditions.condition,
+      hitCondition: conditions.hitCondition,
+    });
+  const remove = () =>
+    connection
+      .request("removeWatchpoint", { id: props.watchpoint.id })
+      .catch((failure: Error) => setError(failure.message));
+
+  return (
+    <Show
+      when={editing()}
+      fallback={
+        <li class="breakpoint" data-watchpoint={props.watchpoint.id}>
+          <div class="row">
+            <span class="dot watch" aria-hidden="true" />
+            <span
+              class="watch-target"
+              title={`${props.watchpoint.bytes} bytes at ${props.watchpoint.address}${props.watchpoint.scope ? `; ${props.watchpoint.scope}` : ""}`}
+            >
+              {label()}
+            </span>
+            <span class="dim">{ACCESS[props.watchpoint.access]}</span>
+            <span class="end">
+              {props.watchpoint.hits} {props.watchpoint.hits === 1 ? "hit" : "hits"}
+            </span>
+            <Show when={props.control}>
+              <button
+                type="button"
+                class="icon"
+                title="Edit its condition"
+                aria-label={`Edit watchpoint ${props.watchpoint.id}`}
+                onClick={open}
+              >
+                ✎
+              </button>
+              <button
+                type="button"
+                class="icon"
+                title="Remove it"
+                aria-label={`Remove watchpoint ${props.watchpoint.id}`}
+                onClick={remove}
+              >
+                ×
+              </button>
+            </Show>
+          </div>
+          <Show when={detail()}>{(text) => <div class="row sub">{text()}</div>}</Show>
+          <Show when={error()}>{(err) => <div class="row sub error">{err()}</div>}</Show>
+        </li>
+      }
+    >
       <ConditionEditor
-        title={watchpoint.expression ?? watchpoint.address}
-        initial={initial}
+        title={props.watchpoint.expression ?? props.watchpoint.address}
+        initial={initial()}
         close={close}
         save={save}
       />
-    );
-  }
-  return (
-    <li className="breakpoint" data-watchpoint={watchpoint.id}>
-      <div className="row">
-        <span className="dot watch" aria-hidden="true" />
-        <span
-          className="watch-target"
-          title={`${watchpoint.bytes} bytes at ${watchpoint.address}${watchpoint.scope ? `; ${watchpoint.scope}` : ""}`}
-        >
-          {label}
-        </span>
-        <span className="dim">{ACCESS[watchpoint.access]}</span>
-        <span className="end">
-          {watchpoint.hits} {watchpoint.hits === 1 ? "hit" : "hits"}
-        </span>
-        {control && (
-          <>
-            <button
-              type="button"
-              className="icon"
-              title="Edit its condition"
-              aria-label={`Edit watchpoint ${watchpoint.id}`}
-              onClick={open}
-            >
-              ✎
-            </button>
-            <button
-              type="button"
-              className="icon"
-              title="Remove it"
-              aria-label={`Remove watchpoint ${watchpoint.id}`}
-              onClick={remove}
-            >
-              ×
-            </button>
-          </>
-        )}
-      </div>
-      {detail && <div className="row sub">{detail}</div>}
-      {error && <div className="row sub error">{error}</div>}
-    </li>
+    </Show>
   );
 }
 
 function WatchAdder() {
-  const { at, stale } = useFocus();
+  const focus = useFocus();
   const connection = useConnection();
-  const [text, setText] = useState("");
-  const [access, setAccess] = useState<WatchAccess>("change");
-  const [error, setError] = useState<string | null>(null);
-  const add = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      const target = text.trim();
-      if (!target) {
-        return;
-      }
-      setError(null);
-      const frame = at && !stale ? at : {};
-      connection
-        .request("addWatchpoint", { ...frame, target, access })
-        .then(() => setText(""))
-        .catch((failure: Error) => setError(failure.message));
-    },
-    [text, at, stale, connection, access],
-  );
-  const edit = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setText(event.target.value),
-    [],
-  );
-  const choose = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => setAccess(event.target.value as WatchAccess),
-    [],
-  );
+  const [text, setText] = createSignal("");
+  const [access, setAccess] = createSignal<WatchAccess>("change");
+  const [error, setError] = createSignal<string | null>(null);
+  const add = (event: SubmitEvent) => {
+    event.preventDefault();
+    const target = text().trim();
+    if (!target) {
+      return;
+    }
+    setError(null);
+    const { at, stale } = focus();
+    const frame = at && !stale ? at : {};
+    connection
+      .request("addWatchpoint", { ...frame, target, access: access() })
+      .then(() => setText(""))
+      .catch((failure: Error) => setError(failure.message));
+  };
   return (
-    <form className="adder watch-adder" onSubmit={add}>
+    <form class="adder watch-adder" onSubmit={add}>
       <input
-        className="input quiet"
+        class="input quiet"
         aria-label="Add a watchpoint"
         placeholder="+ watch an expression, or 0xaddress:bytes"
-        value={text}
-        onChange={edit}
+        value={text()}
+        onInput={(event) => setText(event.currentTarget.value)}
       />
-      <select className="input quiet" aria-label="Stop on" value={access} onChange={choose}>
-        {(Object.keys(ACCESS) as WatchAccess[]).map((key) => (
-          <option key={key} value={key}>
-            {ACCESS[key]}
-          </option>
-        ))}
+      <select
+        class="input quiet"
+        aria-label="Stop on"
+        value={access()}
+        onChange={(event) => setAccess(event.currentTarget.value as WatchAccess)}
+      >
+        <For each={ACCESS_KEYS}>{(key) => <option value={key}>{ACCESS[key]}</option>}</For>
       </select>
-      {error && <div className="error">{error}</div>}
+      <Show when={error()}>{(err) => <div class="error">{err()}</div>}</Show>
     </form>
   );
 }
 
-function Exceptions({ control }: { control: boolean }) {
+function Exceptions(props: { control: boolean }) {
   const session = useModel((model) => model.state?.session);
-  const exceptions = useRequest("exceptions", session ? undefined : null);
-  const [error, setError] = useState<string | null>(null);
-  const filters = exceptions.data?.filters;
-  if (exceptions.error) {
-    return <div className="error">Exceptions: {exceptions.error.message}</div>;
-  }
-  if (!filters) {
-    return null;
-  }
-  const on = filters.filter((filter) => filter.on).length;
+  const exceptions = useRequest("exceptions", () => (session() ? undefined : null));
+  const [error, setError] = createSignal<string | null>(null);
+  const filters = createMemo(() => exceptions().data?.filters);
+  const onCount = createMemo(() => filters()?.filter((filter) => filter.on).length ?? 0);
+
   return (
-    <details className="exceptions" data-testid="exceptions">
-      <summary>
-        Exceptions{" "}
-        <span className="count">
-          {on} of {filters.length} on
-        </span>
-      </summary>
-      {error && <div className="error">{error}</div>}
-      <ul className="rows">
-        {filters.map((filter) => (
-          <FilterRow key={filter.id} filter={filter} control={control} fail={setError} />
-        ))}
-      </ul>
-    </details>
+    <Switch>
+      <Match when={exceptions().error}>
+        {(err) => <div class="error">Exceptions: {err().message}</div>}
+      </Match>
+      <Match when={filters()}>
+        {(list) => (
+          <details class="exceptions" data-testid="exceptions">
+            <summary>
+              Exceptions{" "}
+              <span class="count">
+                {onCount()} of {list().length} on
+              </span>
+            </summary>
+            <Show when={error()}>{(err) => <div class="error">{err()}</div>}</Show>
+            <ul class="rows">
+              <For each={list()} keyed={(filter) => filter.id}>
+                {(filter) => (
+                  <FilterRow filter={filter()} control={props.control} fail={setError} />
+                )}
+              </For>
+            </ul>
+          </details>
+        )}
+      </Match>
+    </Switch>
   );
 }
 
-function FilterRow({
-  filter,
-  control,
-  fail,
-}: {
+function FilterRow(props: {
   filter: ExceptionFilter;
   control: boolean;
   fail: (error: string | null) => void;
 }) {
   const connection = useConnection();
-  const toggle = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      fail(null);
-      connection
-        .request("setException", { id: filter.id, on: event.target.checked })
-        .catch((failure: Error) => fail(failure.message));
-    },
-    [fail, connection, filter.id],
-  );
+  const toggle = (event: Event & { currentTarget: HTMLInputElement }) => {
+    props.fail(null);
+    connection
+      .request("setException", { id: props.filter.id, on: event.currentTarget.checked })
+      .catch((failure: Error) => props.fail(failure.message));
+  };
   return (
-    <li className="row" title={filter.description}>
+    <li class="row" title={props.filter.description}>
       <label>
-        <input type="checkbox" checked={filter.on} disabled={!control} onChange={toggle} />{" "}
-        {filter.label}
+        <input
+          type="checkbox"
+          checked={props.filter.on}
+          disabled={!props.control}
+          onChange={toggle}
+        />{" "}
+        {props.filter.label}
       </label>
     </li>
   );

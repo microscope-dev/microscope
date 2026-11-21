@@ -1,20 +1,22 @@
 import {
-  type KeyboardEvent as ReactKeyboardEvent,
-  type RefObject,
-  type UIEvent,
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+  createEffect,
+  createMemo,
+  createSignal,
+  createUniqueId,
+  For,
+  Match,
+  onSettled,
+  Show,
+  Switch,
+  untrack,
+} from "solid-js";
 
 import { assert } from "../assert";
 import { copyText } from "../clipboard";
 import { useRequest } from "../data";
 import { type At, drawing, formatPinned, type Look, type Pinned, parsePinned } from "../focus";
 import type { Drawing, Row } from "../protocol";
+import { shallowEqual } from "../state";
 import { flash } from "../tab";
 import { serverUrl } from "../target";
 import { useShownScheme } from "../theme";
@@ -65,23 +67,27 @@ export function sandbox(): Sandbox {
   return shared;
 }
 
-export function useCards(): Card[] {
+export function useCards(): () => Card[] {
   const focus = useFocus();
-  const why = hidden(focus);
-  assert(why !== null || focus.at !== null, "values shown with no stop");
-  const scopes = useRequest("scopes", why === null ? focus.at : null);
-  const pins = focus.look.d;
+  const why = createMemo(() => hidden(focus()));
+  const scopes = useRequest("scopes", () => {
+    const current = focus();
+    const reason = why();
+    assert(reason !== null || current.at !== null, "values shown with no stop");
+    return reason === null ? current.at : null;
+  });
 
-  const last = useRef<Card[]>([]);
-  return useMemo(() => {
-    // oxlint-disable-next-line react/refs -- the cards keep what they drew while values are hidden
-    if ((why !== null || scopes.data === undefined) && last.current.length > 0) {
-      // oxlint-disable-next-line react/refs -- the cards keep what they drew while values are hidden
-      return last.current;
+  let last: Card[] = [];
+  return createMemo(() => {
+    const data = scopes().data;
+    const pins = focus().look.d;
+    const reason = why();
+    if ((reason !== null || data === undefined) && last.length > 0) {
+      return last;
     }
     const cards: Card[] = [];
     const seen = new Set<string>();
-    for (const scope of scopes.data?.scopes ?? []) {
+    for (const scope of data?.scopes ?? []) {
       if (scope.key === "statics") {
         continue;
       }
@@ -119,36 +125,43 @@ export function useCards(): Card[] {
       });
     });
     assert(seen.size === cards.length, `${cards.length} cards for ${seen.size} keys`);
-    // oxlint-disable-next-line react/refs -- the cards keep what they drew while values are hidden
-    last.current = cards;
+    last = cards;
     return cards;
-  }, [scopes.data, pins, why]);
+  });
 }
 
 export function Drawings() {
   const focus = useFocus();
   const cards = useCards();
-  const why = hidden(focus, "Drawings");
-  if (cards.length === 0) {
-    return (
-      <div className="drawings">
-        <div className="empty center-message">
-          {why ?? (
-            <>
-              No value here has a drawing. Draw one from its row, or give its type a{" "}
-              <code>visualize</code> in a view.
-            </>
-          )}
-        </div>
-      </div>
-    );
-  }
+  const why = createMemo(() => hidden(focus(), "Drawings"));
+
   return (
-    <div className="drawings" data-testid="drawings">
-      {cards.map((card) => (
-        <DrawingCard key={card.key} card={card} />
-      ))}
-    </div>
+    <Show
+      when={cards().length > 0}
+      fallback={
+        <div class="drawings">
+          <div class="empty center-message">
+            <Show
+              when={why()}
+              fallback={
+                <>
+                  No value here has a drawing. Draw one from its row, or give its type a{" "}
+                  <code>visualize</code> in a view.
+                </>
+              }
+            >
+              {(reason) => <>{reason()}</>}
+            </Show>
+          </div>
+        </div>
+      }
+    >
+      <div class="drawings" data-testid="drawings">
+        <For each={cards()} keyed={(card) => card.key}>
+          {(card) => <DrawingCard card={card()} />}
+        </For>
+      </div>
+    </Show>
   );
 }
 
@@ -246,51 +259,69 @@ function partPath(path: string, select: string): string {
   return select.startsWith("[") ? `${whole}${select}` : `${whole}.${select}`;
 }
 
-function DrawingCard({ card }: { card: Card }) {
+function DrawingCard(props: { card: Card }) {
   const focus = useFocus();
-  const { at, stale } = focus;
-  const live = at !== null && stale === null ? at : null;
+  const live = createMemo(() => {
+    const { at, stale } = focus();
+    return at !== null && stale === null ? at : null;
+  });
   const look = useLook();
   const theme = useShownScheme();
-  const id = useId();
-  const holder = useRef<HTMLDivElement>(null);
-  const body = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const { shown, draw, fail } = useDrawQueue(id, holder, body);
-
-  const evaluated = useRequest(
-    "evaluate",
-    card.offered === null && card.chosen === null && live
-      ? { ...live, expression: card.path }
-      : null,
-  );
-  const offered = card.offered ?? evaluated.data?.drawings ?? null;
-  const tabKey = `${focus.session}~${card.path}`;
-  const [tab, setTabState] = useState<string | null>(() => tabs.get(tabKey) ?? null);
-  const setTab = useCallback(
-    (name: string) => {
-      tabs.set(tabKey, name);
-      setTabState(name);
-    },
-    [tabKey],
-  );
-  const renderer =
-    card.chosen ?? (tab !== null && offered?.includes(tab) ? tab : (offered?.[0] ?? null));
-
-  const asked = useRequest(
-    "draw",
-    live && renderer !== null && visible ? { ...live, path: card.path, renderer } : null,
-  );
-  const code = useRequest(
-    "renderer",
-    asked.data && asked.current ? { digest: asked.data.renderer.digest } : null,
+  const id = createUniqueId();
+  let holder: HTMLElement | undefined;
+  let body: HTMLDivElement | undefined;
+  const [visible, setVisible] = createSignal(false);
+  const [selected, setSelected] = createSignal<string | null>(null);
+  const { shown, draw, fail } = useDrawQueue(
+    id,
+    () => holder ?? null,
+    () => body ?? null,
   );
 
-  useEffect(() => {
-    const element = holder.current;
-    assert(element !== null, "drawing card mounted without its element");
-    if (reveal === card.key) {
+  const evaluated = useRequest("evaluate", () => {
+    const currentLive = live();
+    return props.card.offered === null && props.card.chosen === null && currentLive
+      ? { ...currentLive, expression: props.card.path }
+      : null;
+  });
+  const offered = createMemo(() => props.card.offered ?? evaluated().data?.drawings ?? null);
+  const tabKey = createMemo(() => `${focus().session}~${props.card.path}`);
+  const [tab, setTabState] = createSignal<string | null>(untrack(() => tabs.get(tabKey()) ?? null));
+  const setTab = (name: string) => {
+    tabs.set(tabKey(), name);
+    setTabState(name);
+  };
+  const renderer = createMemo(() => {
+    const currentTab = tab();
+    const currentOffered = offered();
+    return (
+      props.card.chosen ??
+      (currentTab !== null && currentOffered?.includes(currentTab)
+        ? currentTab
+        : (currentOffered?.[0] ?? null))
+    );
+  });
+
+  const asked = useRequest("draw", () => {
+    const currentLive = live();
+    const currentRenderer = renderer();
+    return currentLive && currentRenderer !== null && visible()
+      ? { ...currentLive, path: props.card.path, renderer: currentRenderer }
+      : null;
+  });
+  const code = useRequest("renderer", () => {
+    const currentAsked = asked();
+    return currentAsked.data && currentAsked.current
+      ? { digest: currentAsked.data.renderer.digest }
+      : null;
+  });
+
+  const cardKey = createMemo(() => props.card.key);
+
+  createEffect(cardKey, (key) => {
+    const element = holder;
+    assert(element !== undefined, "drawing card mounted without its element");
+    if (reveal === key) {
       reveal = null;
       element.scrollIntoView({ block: "nearest" });
     }
@@ -299,295 +330,371 @@ function DrawingCard({ card }: { card: Card }) {
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [card.key]);
+  });
 
-  useEffect(() => () => shared?.release(id), [id]);
+  onSettled(() => () => shared?.release(id));
 
-  const stop = live?.stop ?? null;
-  const drawingData = asked.current ? asked.data : undefined;
-  const source = code.current ? code.data : undefined;
-
-  let problem: string | undefined;
-  if (evaluated.error) {
-    problem = `Cannot evaluate ${card.path}: ${evaluated.error.message}`;
-  } else if (asked.error) {
-    problem = asked.error.message;
-  } else if (drawingData && code.error) {
-    problem = `Cannot load renderer ${drawingData.renderer.name}: ${code.error.message}`;
-  }
-  useEffect(() => {
-    if (stop === null) {
-      return;
-    }
-    if (problem !== undefined) {
-      fail(stop, problem);
-      return;
-    }
-    if (!drawingData) {
-      return;
-    }
-    if (drawingData.problem !== null || drawingData.inputs === null) {
-      fail(stop, `Cannot draw: ${drawingData.problem ?? "no inputs"}`);
-      return;
-    }
-    if (!source) {
-      return;
-    }
-    let inputs: Inputs;
-    try {
-      inputs = decodeInputs(drawingData.inputs, drawingData.payload ?? new Uint8Array());
-    } catch (error) {
-      fail(stop, `Cannot draw: ${error instanceof DecodeError ? error.message : String(error)}`);
-      return;
-    }
-    draw({
-      stop,
-      key: `${focus.session}~${card.path}~${drawingData.renderer.name}`,
-      source,
-      renderer: drawingData.renderer,
-      inputs,
-      paths: inputPaths(drawingData.inputs),
-    });
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- a new theme draws again, in its colors
-  }, [stop, drawingData, source, problem, theme, card.path, focus.session, draw, fail]);
-
-  const picture = shown && "picture" in shown ? shown.picture : null;
-  useEffect(() => {
-    const element = body.current;
-    assert(element !== null, "drawing card mounted without its body");
-    element.replaceChildren();
-    if (picture) {
-      element.append(buildPicture(picture, (path) => setSelected(path)));
-    }
-  }, [picture]);
-  const [table, setTable] = useState(false);
-  const inputs = shown?.inputs ?? null;
-  const rows = useMemo(() => (inputs === null ? null : inputRows(inputs)), [inputs]);
-
-  const dim = shown !== null && (stale !== null || shown.stop !== at?.stop);
-  const origin = shown && "renderer" in shown ? shown.renderer.origin : null;
-  const remove = useMemo(
-    () =>
-      card.pinned === null
-        ? null
-        : () =>
-            look((current) => {
-              const d = (current.d ?? []).filter((_, index) => index !== card.pinned);
-              const { d: _d, ...rest } = current;
-              return d.length > 0 ? { ...rest, d } : rest;
-            }),
-    [card.pinned, look],
+  const drawInput = createMemo(
+    () => {
+      const stop = live()?.stop ?? null;
+      const currentAsked = asked();
+      const currentCode = code();
+      const currentEvaluated = evaluated();
+      const drawingData = currentAsked.current ? currentAsked.data : undefined;
+      const source = currentCode.current ? currentCode.data : undefined;
+      let problem: string | undefined;
+      if (currentEvaluated.error) {
+        problem = `Cannot evaluate ${props.card.path}: ${currentEvaluated.error.message}`;
+      } else if (currentAsked.error) {
+        problem = currentAsked.error.message;
+      } else if (drawingData && currentCode.error) {
+        problem = `Cannot load renderer ${drawingData.renderer.name}: ${currentCode.error.message}`;
+      }
+      return {
+        stop,
+        drawingData,
+        source,
+        problem,
+        theme: theme(),
+        path: props.card.path,
+        session: focus().session,
+      };
+    },
+    { equals: shallowEqual },
   );
-  const toggleTable = useCallback(() => setTable(!table), [table]);
-  const copy = useCallback(() => {
-    if (rows) {
-      void copyCsv(rows);
+
+  createEffect(
+    () => drawInput(),
+    ({ stop, drawingData, source, problem, path, session }) => {
+      if (stop === null) {
+        return;
+      }
+      if (problem !== undefined) {
+        fail(stop, problem);
+        return;
+      }
+      if (!drawingData) {
+        return;
+      }
+      if (drawingData.problem !== null || drawingData.inputs === null) {
+        fail(stop, `Cannot draw: ${drawingData.problem ?? "no inputs"}`);
+        return;
+      }
+      if (!source) {
+        return;
+      }
+      let inputs: Inputs;
+      try {
+        inputs = decodeInputs(drawingData.inputs, drawingData.payload ?? new Uint8Array());
+      } catch (error) {
+        fail(stop, `Cannot draw: ${error instanceof DecodeError ? error.message : String(error)}`);
+        return;
+      }
+      draw({
+        stop,
+        key: `${session}~${path}~${drawingData.renderer.name}`,
+        source,
+        renderer: drawingData.renderer,
+        inputs,
+        paths: inputPaths(drawingData.inputs),
+      });
+    },
+  );
+
+  const picture = createMemo(() => {
+    const current = shown();
+    return current && "picture" in current ? current.picture : null;
+  });
+
+  createEffect(
+    () => picture(),
+    (pic) => {
+      const element = body;
+      assert(element !== undefined, "drawing card mounted without its body");
+      element.replaceChildren();
+      if (pic) {
+        element.append(buildPicture(pic, (path) => setSelected(path)));
+      }
+    },
+  );
+
+  const [table, setTable] = createSignal(false);
+  const inputs = createMemo(() => shown()?.inputs ?? null);
+  const rows = createMemo(() => {
+    const current = inputs();
+    return current === null ? null : inputRows(current);
+  });
+
+  const dim = createMemo(() => {
+    const current = shown();
+    const { at, stale } = focus();
+    return current !== null && (stale !== null || current.stop !== at?.stop);
+  });
+  const origin = createMemo(() => {
+    const current = shown();
+    return current && "renderer" in current ? current.renderer.origin : null;
+  });
+  const remove = () => {
+    const pinned = props.card.pinned;
+    if (pinned === null) {
+      return;
     }
-  }, [rows]);
-  const deselect = useCallback(() => setSelected(null), []);
+    look((current) => {
+      const d = (current.d ?? []).filter((_, index) => index !== pinned);
+      const { d: _d, ...rest } = current;
+      return d.length > 0 ? { ...rest, d } : rest;
+    });
+  };
+  const toggleTable = () => setTable((open) => !open);
+  const copy = () => {
+    const current = rows();
+    if (current) {
+      void copyCsv(current);
+    }
+  };
+  const deselect = () => setSelected(null);
+
+  const problemText = createMemo(() => {
+    const current = shown();
+    return current && "problem" in current ? current.problem : null;
+  });
+  const liveJob = createMemo(() => {
+    const current = shown();
+    return current && "live" in current ? current.live : null;
+  });
+  const liveDigest = createMemo(() => liveJob()?.source.digest ?? null);
+  const tabsOffered = createMemo(() => {
+    const list = offered();
+    return list && list.length > 1 && props.card.chosen === null ? list : null;
+  });
+  const selectedTarget = createMemo(() => {
+    const at = live();
+    const part = selected();
+    return at && part !== null ? { at, select: part } : null;
+  });
 
   return (
     <section
-      ref={holder}
-      className={`drawing ${dim ? "stale" : ""}`}
-      aria-label={`Drawing of ${card.path}${card.chosen === null ? "" : ` as ${card.chosen}`}`}
+      ref={(node) => {
+        holder = node;
+      }}
+      class={["drawing", { stale: dim() }]}
+      aria-label={`Drawing of ${props.card.path}${props.card.chosen === null ? "" : ` as ${props.card.chosen}`}`}
     >
-      <header className="drawing-head">
-        <span className="drawing-path">{card.path}</span>
-        {offered && offered.length > 1 && card.chosen === null ? (
-          <fieldset className="segmented small" aria-label={`Drawings of ${card.path}`}>
-            {offered.map((name) => (
-              <RendererTab key={name} name={name} pressed={name === renderer} choose={setTab} />
-            ))}
-          </fieldset>
-        ) : (
-          <span className="drawing-renderer">{renderer ?? "…"}</span>
-        )}
-        {origin && <span className="muted">{originLabel(origin)}</span>}
-        <span className="drawing-end">
-          {shown && <span className="muted">stop #{shown.stop}</span>}
-          {rows && (
-            <>
-              <button
-                type="button"
-                className="link-button"
-                aria-pressed={table}
-                onClick={toggleTable}
-              >
-                Table
-              </button>
-              <button type="button" className="link-button" onClick={copy}>
-                Copy CSV
-              </button>
-            </>
+      <header class="drawing-head">
+        <span class="drawing-path">{props.card.path}</span>
+        <Show
+          when={tabsOffered()}
+          fallback={<span class="drawing-renderer">{renderer() ?? "…"}</span>}
+        >
+          {(names) => (
+            <fieldset class="segmented small" aria-label={`Drawings of ${props.card.path}`}>
+              <For each={names()}>
+                {(name) => (
+                  <RendererTab name={name} pressed={name === renderer()} choose={setTab} />
+                )}
+              </For>
+            </fieldset>
           )}
-          <DrawAs name={card.path} path={card.path} memory={null} />
-          {remove && (
+        </Show>
+        <Show when={origin()}>{(src) => <span class="muted">{originLabel(src())}</span>}</Show>
+        <span class="drawing-end">
+          <Show when={shown()}>
+            {(current) => <span class="muted">stop #{current().stop}</span>}
+          </Show>
+          <Show when={rows()}>
             <button
               type="button"
-              className="icon"
-              aria-label={`Stop drawing ${card.path}`}
+              class="link-button"
+              aria-pressed={table() ? "true" : "false"}
+              onClick={toggleTable}
+            >
+              Table
+            </button>
+            <button type="button" class="link-button" onClick={copy}>
+              Copy CSV
+            </button>
+          </Show>
+          <DrawAs name={props.card.path} path={props.card.path} memory={null} />
+          <Show when={props.card.pinned !== null}>
+            <button
+              type="button"
+              class="icon"
+              aria-label={`Stop drawing ${props.card.path}`}
               title="Remove"
               onClick={remove}
             >
               ×
             </button>
-          )}
+          </Show>
         </span>
       </header>
-      {offered !== null && offered.length === 0 && card.chosen === null ? (
-        <div className="drawing-problem">
-          No view draws {card.path}. Choose a renderer from Draw as…, the pencil.
-        </div>
-      ) : shown && "problem" in shown ? (
-        <div className="drawing-problem" role="alert">
-          {shown.problem}
-        </div>
-      ) : null}
-      <div ref={body} className="drawing-body" hidden={!picture} />
-      {shown && "live" in shown && (
-        <LiveDrawing
-          key={shown.live.source.digest}
-          card={id}
-          job={shown.live}
-          active={visible}
-          sandbox={sandbox}
-          onSelect={setSelected}
-        />
-      )}
-      {picture?.caption !== undefined && <div className="drawing-caption">{picture.caption}</div>}
-      {!shown && <div className="drawing-wait muted">{live ? "Drawing…" : hidden(focus)}</div>}
-      {table && rows && <InputTable rows={rows} label={`Inputs of ${card.path}`} />}
-      {selected !== null && live && (
-        <Selected at={live} path={partPath(card.path, selected)} onClose={deselect} />
-      )}
+      <Switch>
+        <Match when={offered()?.length === 0 && props.card.chosen === null}>
+          <div class="drawing-problem">
+            No view draws {props.card.path}. Choose a renderer from Draw as…, the pencil.
+          </div>
+        </Match>
+        <Match when={problemText()}>
+          {(problem) => (
+            <div class="drawing-problem" role="alert">
+              {problem()}
+            </div>
+          )}
+        </Match>
+      </Switch>
+      <div
+        ref={(node) => {
+          body = node;
+        }}
+        class="drawing-body"
+        hidden={!picture()}
+      />
+      <Show when={liveDigest()} keyed>
+        {(_digest) => (
+          <Show when={liveJob()}>
+            {(job) => (
+              <LiveDrawing
+                card={id}
+                job={job()}
+                active={visible()}
+                sandbox={sandbox}
+                onSelect={setSelected}
+              />
+            )}
+          </Show>
+        )}
+      </Show>
+      <Show when={picture()?.caption !== undefined}>
+        <div class="drawing-caption">{picture()?.caption}</div>
+      </Show>
+      <Show when={!shown()}>
+        <div class="drawing-wait muted">{live() ? "Drawing…" : hidden(focus())}</div>
+      </Show>
+      <Show when={table() ? rows() : null}>
+        {(currentRows) => (
+          <InputTable rows={currentRows()} label={`Inputs of ${props.card.path}`} />
+        )}
+      </Show>
+      <Show when={selectedTarget()}>
+        {(current) => (
+          <Selected
+            at={current().at}
+            path={partPath(props.card.path, current().select)}
+            onClose={deselect}
+          />
+        )}
+      </Show>
     </section>
   );
 }
 
-function RendererTab({
-  name,
-  pressed,
-  choose,
-}: {
-  name: string;
-  pressed: boolean;
-  choose: (name: string) => void;
-}) {
-  const click = useCallback(() => choose(name), [choose, name]);
+function RendererTab(props: { name: string; pressed: boolean; choose: (name: string) => void }) {
   return (
-    <button type="button" aria-pressed={pressed} onClick={click}>
-      {name}
+    <button
+      type="button"
+      aria-pressed={props.pressed ? "true" : "false"}
+      onClick={() => props.choose(props.name)}
+    >
+      {props.name}
     </button>
   );
 }
 
 function useDrawQueue(
   id: string,
-  holder: RefObject<HTMLElement | null>,
-  body: RefObject<HTMLElement | null>,
-): { shown: Shown | null; draw(job: Job): void; fail(stop: number, problem: string): void } {
-  const [shown, setShown] = useState<Shown | null>(null);
+  holder: () => HTMLElement | null,
+  body: () => HTMLElement | null,
+): {
+  shown: () => Shown | null;
+  draw(job: Job): void;
+  fail(stop: number, problem: string): void;
+} {
+  const [shown, setShown] = createSignal<Shown | null>(null);
 
-  const current = useRef<Shown | null>(null);
-  const wanted = useRef<Job | null>(null);
-  const busy = useRef(false);
-  const frame = useRef<number | null>(null);
-  const latest = useRef(-1);
-  const mounted = useRef(true);
+  let current: Shown | null = null;
+  let wanted: Job | null = null;
+  let busy = false;
+  let frame: number | null = null;
+  let latest = -1;
+  let mounted = true;
+  let started: Job | null = null;
+  let startedWidth = 0;
 
-  const started = useRef<Job | null>(null);
-  const startedWidth = useRef(0);
+  const show = (next: Shown) => {
+    if (mounted && next.stop >= latest) {
+      latest = next.stop;
+      free(current);
+      current = next;
+      setShown(next);
+    } else {
+      free(next);
+    }
+  };
 
-  const queue = useMemo(() => {
-    const show = (next: Shown) => {
-      if (mounted.current && next.stop >= latest.current) {
-        latest.current = next.stop;
-
-        free(current.current);
-        current.current = next;
-        setShown(next);
-      } else {
-        free(next);
-      }
-    };
-    const pump = () => {
-      if (busy.current || frame.current !== null || wanted.current === null) {
+  const pump = () => {
+    if (busy || frame !== null || wanted === null) {
+      return;
+    }
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      const job = wanted;
+      wanted = null;
+      if (job === null || !mounted) {
         return;
       }
-      frame.current = requestAnimationFrame(() => {
-        frame.current = null;
-        const job = wanted.current;
-        wanted.current = null;
-        if (job === null || !mounted.current) {
-          return;
-        }
-        assert(!busy.current, `card ${id} starts a draw with one running`);
-        busy.current = true;
-        started.current = job;
-        startedWidth.current = offeredWidth(holder.current, body.current);
-        const context = contextFor(
-          previousInputs(job.key, job.stop),
-          job.paths,
-          startedWidth.current,
-        );
-        const finish = async () => {
-          const outcome = await sandbox().draw(id, job.source, job.inputs, context);
-          assert(busy.current, `card ${id} finished a draw it did not start`);
-          busy.current = false;
-          show(shownFor(job, outcome));
-          pump();
-        };
-        void finish();
-      });
-    };
-    return {
-      pump,
-      draw: (job: Job) => {
-        wanted.current = job;
+      assert(!busy, `card ${id} starts a draw with one running`);
+      busy = true;
+      started = job;
+      startedWidth = offeredWidth(holder(), body());
+      const context = contextFor(previousInputs(job.key, job.stop), job.paths, startedWidth);
+      const finish = async () => {
+        const outcome = await sandbox().draw(id, job.source, job.inputs, context);
+        assert(busy, `card ${id} finished a draw it did not start`);
+        busy = false;
+        show(shownFor(job, outcome));
         pump();
-      },
-      fail: (stop: number, problem: string) => {
-        wanted.current = null;
-        show({ stop, problem, inputs: null });
-      },
-    };
-    // oxlint-disable-next-line react/preserve-manual-memoization -- the elements are read when a draw starts, not when the queue is made
-  }, [id, holder, body]);
+      };
+      void finish();
+    });
+  };
 
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      if (frame.current !== null) {
-        cancelAnimationFrame(frame.current);
-        frame.current = null;
-      }
-      free(current.current);
-      current.current = null;
-    };
-  }, []);
+  const draw = (job: Job) => {
+    wanted = job;
+    pump();
+  };
 
-  useEffect(() => {
-    const element = holder.current;
+  const fail = (stop: number, problem: string) => {
+    wanted = null;
+    show({ stop, problem, inputs: null });
+  };
+
+  onSettled(() => {
+    mounted = true;
+    const element = holder();
     assert(element !== null, "draw queue mounted without its card element");
     const observer = new ResizeObserver(() => {
-      const job = started.current;
-      const width = offeredWidth(holder.current, body.current);
-      if (
-        job !== null &&
-        wanted.current === null &&
-        Math.abs(width - startedWidth.current) >= RESIZED
-      ) {
-        wanted.current = job;
-        queue.pump();
+      const job = started;
+      const width = offeredWidth(holder(), body());
+      if (job !== null && wanted === null && Math.abs(width - startedWidth) >= RESIZED) {
+        wanted = job;
+        pump();
       }
     });
     observer.observe(element);
-    return () => observer.disconnect();
-  }, [holder, body, queue]);
+    return () => {
+      observer.disconnect();
+      mounted = false;
+      if (frame !== null) {
+        cancelAnimationFrame(frame);
+        frame = null;
+      }
+      free(current);
+      current = null;
+    };
+  });
 
-  return { shown, draw: queue.draw, fail: queue.fail };
+  return { shown, draw, fail };
 }
 
 function free(shown: Shown | null): void {
@@ -609,38 +716,42 @@ const ROW = 22;
 const SHOWN_ROWS = 14;
 
 const MOST_HEIGHT = 4_000_000;
-const TABLE_STYLE = { maxHeight: ROW * (SHOWN_ROWS + 1) };
-const ROW_STYLE = { height: ROW };
+const TABLE_STYLE = { "max-height": `${ROW * (SHOWN_ROWS + 1)}px` };
+const ROW_STYLE = { height: `${ROW}px` };
 
-function InputTable({ rows, label }: { rows: InputRows; label: string }) {
-  const [scrolled, setScrolled] = useState(0);
-  const height = Math.min(rows.count * ROW, MOST_HEIGHT);
-  const shownCount = Math.min(rows.count, SHOWN_ROWS + 2);
-  const room = Math.max(0, height - shownCount * ROW);
-  const top = Math.max(0, Math.min(scrolled, room));
-  const first =
-    rows.count * ROW <= MOST_HEIGHT
-      ? Math.floor(top / ROW)
-      : Math.round((top / Math.max(1, room)) * (rows.count - shownCount));
-  assert(
-    first <= rows.count - shownCount,
-    `table starts at row ${first} of ${rows.count}, showing ${shownCount}`,
-  );
-  const shown: number[] = [];
-  for (let index = first; index < Math.min(rows.count, first + shownCount); index++) {
-    shown.push(index);
-  }
-  const before = rows.count * ROW <= MOST_HEIGHT ? first * ROW : top;
-  const after = Math.max(0, height - before - shown.length * ROW);
-  const beforeStyle = useMemo(() => ({ height: before }), [before]);
-  const afterStyle = useMemo(() => ({ height: after }), [after]);
-  const scroll = useCallback(
-    (event: UIEvent<HTMLDivElement>) => setScrolled(event.currentTarget.scrollTop),
-    [],
-  );
+function InputTable(props: { rows: InputRows; label: string }) {
+  const [scrolled, setScrolled] = createSignal(0);
+
+  const layout = createMemo(() => {
+    const count = props.rows.count;
+    const height = Math.min(count * ROW, MOST_HEIGHT);
+    const shownCount = Math.min(count, SHOWN_ROWS + 2);
+    const room = Math.max(0, height - shownCount * ROW);
+    const top = Math.max(0, Math.min(scrolled(), room));
+    const first =
+      count * ROW <= MOST_HEIGHT
+        ? Math.floor(top / ROW)
+        : Math.round((top / Math.max(1, room)) * (count - shownCount));
+    assert(
+      first <= count - shownCount,
+      `table starts at row ${first} of ${count}, showing ${shownCount}`,
+    );
+    const shown: number[] = [];
+    for (let index = first; index < Math.min(count, first + shownCount); index++) {
+      shown.push(index);
+    }
+    const before = count * ROW <= MOST_HEIGHT ? first * ROW : top;
+    const after = Math.max(0, height - before - shown.length * ROW);
+    return { shown, before, after };
+  });
+
   return (
-    <div className="drawing-table" style={TABLE_STYLE} onScroll={scroll}>
-      <table aria-label={label} aria-rowcount={rows.count + 1}>
+    <div
+      class="drawing-table"
+      style={TABLE_STYLE}
+      onScroll={(event) => setScrolled(event.currentTarget.scrollTop)}
+    >
+      <table aria-label={props.label} aria-rowcount={props.rows.count + 1}>
         <thead>
           <tr>
             <th>path</th>
@@ -648,17 +759,23 @@ function InputTable({ rows, label }: { rows: InputRows; label: string }) {
           </tr>
         </thead>
         <tbody>
-          {before > 0 && <tr style={beforeStyle} />}
-          {shown.map((index) => {
-            const [path, value] = rows.row(index);
-            return (
-              <tr key={index} aria-rowindex={index + 2} style={ROW_STYLE}>
-                <td>{path}</td>
-                <td>{value}</td>
-              </tr>
-            );
-          })}
-          {after > 0 && <tr style={afterStyle} />}
+          <Show when={layout().before > 0}>
+            <tr style={{ height: `${layout().before}px` }} />
+          </Show>
+          <For each={layout().shown}>
+            {(index) => {
+              const pair = createMemo(() => props.rows.row(index));
+              return (
+                <tr aria-rowindex={index + 2} style={ROW_STYLE}>
+                  <td>{pair()[0]}</td>
+                  <td>{pair()[1]}</td>
+                </tr>
+              );
+            }}
+          </For>
+          <Show when={layout().after > 0}>
+            <tr style={{ height: `${layout().after}px` }} />
+          </Show>
         </tbody>
       </table>
     </div>
@@ -669,166 +786,176 @@ function originLabel(origin: string): string {
   return origin === "built-in" ? "built-in" : (origin.split("/").at(-1) ?? origin);
 }
 
-export function Selected({ at, path, onClose }: { at: At; path: string; onClose(): void }) {
-  const value = useRequest("evaluate", { ...at, expression: path });
+export function Selected(props: { at: At; path: string; onClose(): void }) {
+  const value = useRequest("evaluate", () => ({ ...props.at, expression: props.path }));
   const look = useLook();
-  const row: Row | undefined = value.data;
-  const dialog = useRef<HTMLDivElement>(null);
-  const opener = useRef<Element | null>(null);
-  useEffect(() => {
-    opener.current = document.activeElement;
-    dialog.current?.focus();
-  }, []);
-  const close = useCallback(() => {
-    const back = opener.current;
-    onClose();
+  const row = createMemo((): Row | undefined => value().data);
+  let dialog: HTMLDivElement | undefined;
+  let opener: Element | null = null;
+
+  onSettled(() => {
+    opener = document.activeElement;
+    dialog?.focus();
+  });
+
+  const close = () => {
+    const back = opener;
+    props.onClose();
     if ((back instanceof HTMLElement || back instanceof SVGElement) && back.isConnected) {
       back.focus();
     }
-  }, [onClose]);
-  const escape = useCallback(
-    (event: ReactKeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
-    },
-    [close],
-  );
-  const watch = useCallback(() => {
+  };
+
+  const escape = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    }
+  };
+
+  const watch = () => {
+    const path = props.path;
     look((current) => ({ ...current, w: [...(current.w ?? []), path] }));
     flash(`Watching ${path}`);
-  }, [look, path]);
+  };
+
   return (
     // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape anywhere in the dialog closes it
     <div
-      ref={dialog}
-      className="drawing-selected"
+      ref={(node) => {
+        dialog = node;
+      }}
+      class="drawing-selected"
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a non-modal panel in the card, which a dialog element would not be
       role="dialog"
-      aria-label={`Part ${path}`}
-      tabIndex={-1}
-
+      aria-label={`Part ${props.path}`}
+      tabindex={-1}
       data-keys="escape"
       onKeyDown={escape}
     >
-      <div className="drawing-selected-head">
-        <span className="drawing-path">{path}</span>
-        <button type="button" className="link-button" onClick={watch}>
+      <div class="drawing-selected-head">
+        <span class="drawing-path">{props.path}</span>
+        <button type="button" class="link-button" onClick={watch}>
           Watch
         </button>
-        <button type="button" className="icon" aria-label="Close" onClick={close}>
+        <button type="button" class="icon" aria-label="Close" onClick={close}>
           ×
         </button>
       </div>
       <LocalExpansion>
-        <ul className="value-list">
-          {value.error ? (
-            <li className="empty error">{value.error.message}</li>
-          ) : row ? (
-            <ValueRow row={row} parent="drawing" depth={0} />
-          ) : (
-            <li className="empty">Reading…</li>
-          )}
+        <ul class="value-list">
+          <Switch fallback={<li class="empty">Reading…</li>}>
+            <Match when={value().error}>
+              {(err) => <li class="empty error">{err().message}</li>}
+            </Match>
+            <Match when={row()}>
+              {(item) => <ValueRow row={item()} parent="drawing" depth={0} />}
+            </Match>
+          </Switch>
         </ul>
       </LocalExpansion>
     </div>
   );
 }
 
-export function DrawAs({
-  name,
-  path,
-  memory,
-}: {
-  name: string;
-  path: string | null;
-  memory: (() => void) | null;
-}) {
-  const [open, setOpen] = useState(false);
-  const renderers = useRequest("renderers", open && path !== null ? undefined : null);
+export function DrawAs(props: { name: string; path: string | null; memory: (() => void) | null }) {
+  const [open, setOpen] = createSignal(false);
+  const renderers = useRequest("renderers", () =>
+    open() && props.path !== null ? undefined : null,
+  );
   const look = useLook();
-  const anchor = useRef<HTMLSpanElement>(null);
-  const button = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-  const loaded = renderers.data !== undefined || memory !== null;
-  const close = useCallback(() => {
+  let anchor: HTMLSpanElement | undefined;
+  let button: HTMLButtonElement | undefined;
+  let menu: HTMLDivElement | undefined;
+  const loaded = createMemo(() => renderers().data !== undefined || props.memory !== null);
+
+  const close = () => {
     setOpen(false);
-    button.current?.focus();
-  }, []);
-  const choose = useCallback(
-    (pinned: Pinned) => {
+    button?.focus();
+  };
+
+  const choose = (pinned: Pinned) => {
+    close();
+    look(pin(pinned), { replace: false });
+  };
+
+  createEffect(
+    () => open() && loaded(),
+    (ready) => {
+      if (ready) {
+        menu?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+      }
+    },
+  );
+
+  const pointer = (event: PointerEvent) => {
+    if (!anchor?.contains(event.target as Node)) {
+      setOpen(false);
+    }
+  };
+
+  createEffect(
+    () => open(),
+    (isOpen) => {
+      if (!isOpen) {
+        return;
+      }
+      window.addEventListener("pointerdown", pointer);
+      return () => window.removeEventListener("pointerdown", pointer);
+    },
+  );
+
+  const move = (event: KeyboardEvent) => {
+    const all = [...(menu?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
+    const at = all.indexOf(document.activeElement as HTMLElement);
+    const to =
+      event.key === "ArrowDown"
+        ? (at + 1) % all.length
+        : event.key === "ArrowUp"
+          ? (at - 1 + all.length) % all.length
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? all.length - 1
+              : null;
+    if (event.key === "Escape") {
+      event.preventDefault();
       close();
-      look(pin(pinned), { replace: false });
-    },
-    [close, look],
-  );
-
-  useEffect(() => {
-    if (open && loaded) {
-      menu.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+    } else if (event.key === "Tab") {
+      setOpen(false);
+    } else if (to !== null && all.length > 0) {
+      event.preventDefault();
+      all[to]?.focus();
     }
-  }, [open, loaded, menu]);
+  };
 
-  useEffect(() => {
-    if (!open) {
-      return;
+  const toggle = () => setOpen((current) => !current);
+
+  const escape = (event: KeyboardEvent) => {
+    if (open() && event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
     }
-    const pointer = (event: PointerEvent) => {
-      if (!anchor.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    window.addEventListener("pointerdown", pointer);
-    return () => window.removeEventListener("pointerdown", pointer);
-  }, [open]);
+  };
 
-  const move = useCallback(
-    (event: ReactKeyboardEvent) => {
-      const all = [...(menu.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
-      const at = all.indexOf(document.activeElement as HTMLElement);
-      const to =
-        event.key === "ArrowDown"
-          ? (at + 1) % all.length
-          : event.key === "ArrowUp"
-            ? (at - 1 + all.length) % all.length
-            : event.key === "Home"
-              ? 0
-              : event.key === "End"
-                ? all.length - 1
-                : null;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      } else if (event.key === "Tab") {
-        setOpen(false);
-      } else if (to !== null && all.length > 0) {
-        event.preventDefault();
-        all[to]?.focus();
-      }
-    },
-    [close],
-  );
-  const toggle = useCallback(() => setOpen(!open), [open]);
-  const escape = useCallback(
-    (event: ReactKeyboardEvent) => {
-      if (open && event.key === "Escape") {
-        event.preventDefault();
-        setOpen(false);
-      }
-    },
-    [open],
-  );
+  const targetPath = createMemo(() => (props.path === null ? null : { path: props.path }));
 
   return (
-    <span className="anchor" ref={anchor}>
+    <span
+      class="anchor"
+      ref={(node) => {
+        anchor = node;
+      }}
+    >
       <button
-        ref={button}
+        ref={(node) => {
+          button = node;
+        }}
         type="button"
-        className="icon"
+        class="icon"
         aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={`Draw ${path ?? name} as…`}
+        aria-expanded={open() ? "true" : "false"}
+        aria-label={`Draw ${props.path ?? props.name} as…`}
         title="Draw as…"
         onClick={toggle}
         onKeyDown={escape}
@@ -838,74 +965,85 @@ export function DrawAs({
             d="M10.5 2.5l3 3L5.5 13.5H2.5v-3l8-8ZM9 4l3 3"
             fill="none"
             stroke="currentColor"
-            strokeWidth="1.3"
-            strokeLinejoin="round"
+            stroke-width="1.3"
+            stroke-linejoin="round"
           />
         </svg>
       </button>
-      {open && (
-        // oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- focus stays on its items
+      <Show when={open()}>
+        {/* oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- focus stays on its items */}
         <div
-          ref={menu}
-          className="popover menu"
+          ref={(node) => {
+            menu = node;
+          }}
+          class="popover menu"
           role="menu"
-          aria-label={`Draw ${path ?? name} as`}
-
+          aria-label={`Draw ${props.path ?? props.name} as`}
           data-keys="escape"
           onKeyDown={move}
         >
-          {memory && <MemoryItem show={memory} close={close} />}
-          {path !== null && renderers.error && (
-            <div className="empty error">{renderers.error.message}</div>
-          )}
-          {path !== null && !renderers.data && !renderers.error && (
-            <div className="empty">Reading…</div>
-          )}
-          {path !== null &&
-            renderers.data?.renderers.map((renderer) => (
-              <RendererItem
-                key={renderer.name}
-                path={path}
-                name={renderer.name}
-                origin={renderer.origin}
-                choose={choose}
-              />
-            ))}
+          <Show when={props.memory}>{(show) => <MemoryItem show={show()} close={close} />}</Show>
+          <Show when={targetPath()}>
+            {(target) => (
+              <>
+                <Show when={renderers().error}>
+                  {(err) => <div class="empty error">{err().message}</div>}
+                </Show>
+                <Show when={!renderers().data && !renderers().error}>
+                  <div class="empty">Reading…</div>
+                </Show>
+                <Show when={renderers().data?.renderers}>
+                  {(list) => (
+                    <For each={list()} keyed={(renderer) => renderer.name}>
+                      {(renderer) => (
+                        <RendererItem
+                          path={target().path}
+                          name={renderer().name}
+                          origin={renderer().origin}
+                          choose={choose}
+                        />
+                      )}
+                    </For>
+                  )}
+                </Show>
+              </>
+            )}
+          </Show>
         </div>
-      )}
+      </Show>
     </span>
   );
 }
 
-function MemoryItem({ show, close }: { show: () => void; close: () => void }) {
-  const click = useCallback(() => {
-    close();
-    show();
-  }, [close, show]);
+function MemoryItem(props: { show: () => void; close: () => void }) {
+  const click = () => {
+    props.close();
+    props.show();
+  };
   return (
-    <button type="button" role="menuitem" tabIndex={-1} className="menu-item" onClick={click}>
+    <button type="button" role="menuitem" tabindex={-1} class="menu-item" onClick={click}>
       <span>Memory</span>
-      <span className="muted">hex</span>
+      <span class="muted">hex</span>
     </button>
   );
 }
 
-function RendererItem({
-  path,
-  name,
-  origin,
-  choose,
-}: {
+function RendererItem(props: {
   path: string;
   name: string;
   origin: string;
   choose: (pinned: Pinned) => void;
 }) {
-  const click = useCallback(() => choose({ path, renderer: name }), [choose, path, name]);
   return (
-    <button type="button" role="menuitem" tabIndex={-1} className="menu-item" onClick={click}>
-      <span>{name}</span>
-      <span className="muted">{originLabel(origin)}</span>
+    <button
+      type="button"
+      role="menuitem"
+      tabindex={-1}
+      class="menu-item"
+      onClick={() => props.choose({ path: props.path, renderer: props.name })}
+    >
+      <span>{props.name}</span>
+      <span class="muted">{originLabel(props.origin)}</span>
     </button>
   );
 }

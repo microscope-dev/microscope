@@ -17,7 +17,7 @@ const option = (name: string) => page.getByRole("option", { name: new RegExp(`^$
 const entries = () => page.getByTestId("console").getByRole("listitem");
 
 async function completeVa() {
-  const server = await mountPane(<Console />);
+  const server = await mountPane(() => <Console />);
   await userEvent.type(field(), "va");
   await userEvent.keyboard("{Tab}");
   server.answer(await server.next("complete"), {
@@ -44,7 +44,7 @@ it("walks the completions with the arrow keys and takes one with Enter", async (
 });
 
 it("cycles the open completions with Tab and Shift+Tab, and Enter only fills the field", async () => {
-  const server = await mountPane(<Console />);
+  const server = await mountPane(() => <Console />);
   await userEvent.type(field(), "dis");
   await userEvent.keyboard("{Tab}");
   server.answer(await server.next("complete"), {
@@ -101,7 +101,7 @@ const at = (stop: number, line: number): Extract<Inferior, { state: "stopped" }>
 });
 
 it("steps with n, as the toolbar does, and says where the program stopped", async () => {
-  const server = await mountPane(<Console />);
+  const server = await mountPane(() => <Console />);
   await type("n");
   const step = await server.next("step");
   expect(step.params).toEqual({ stop: 1, thread: 1, task: null, frame: 0, kind: "over" });
@@ -112,7 +112,7 @@ it("steps with n, as the toolbar does, and says where the program stopped", asyn
 });
 
 it("says the program runs until it stops", async () => {
-  const server = await mountPane(<Console />);
+  const server = await mountPane(() => <Console />);
   await type("c");
   const going = await server.next("continue");
   expect(going.params).toEqual({ stop: 1 });
@@ -125,7 +125,7 @@ it("says the program runs until it stops", async () => {
 });
 
 it("repeats the last step on an empty line, and nothing else", async () => {
-  const server = await mountPane(<Console />);
+  const server = await mountPane(() => <Console />);
   await type("s");
   server.answer(await server.next("step"), null);
   await type("");
@@ -143,7 +143,7 @@ it("repeats the last step on an empty line, and nothing else", async () => {
 
 it("refuses a step while the program runs, without asking microscope", async () => {
   const server = await mountPane(
-    <Console />,
+    () => <Console />,
     {},
     stoppedState({ inferior: { state: "running", pid: 100 } }),
   );
@@ -155,19 +155,19 @@ it("refuses a step while the program runs, without asking microscope", async () 
 
 it("starts a program with run, and continue from not started", async () => {
   const notStarted = stoppedState({ inferior: { state: "notStarted" } });
-  const server = await mountPane(<Console />, { at: null }, notStarted);
+  const server = await mountPane(() => <Console />, { at: null }, notStarted);
   await type("r");
   expect((await server.next("continue")).params).toEqual({ stop: null });
 });
 
 it("finishes the frame shown", async () => {
-  const server = await mountPane(<Console />, { at: { stop: 1, thread: 1, frame: 2 } });
+  const server = await mountPane(() => <Console />, { at: { stop: 1, thread: 1, frame: 2 } });
   await type("finish");
   expect((await server.next("step")).params).toMatchObject({ kind: "out", frame: 2 });
 });
 
 it("advances the thread shown to a location", async () => {
-  const server = await mountPane(<Console />, { at: { stop: 1, thread: 1, frame: 1 } });
+  const server = await mountPane(() => <Console />, { at: { stop: 1, thread: 1, frame: 1 } });
   await type("until basic.c:9");
   const advance = await server.next("advance");
   expect(advance.params).toEqual({
@@ -183,14 +183,14 @@ it("advances the thread shown to a location", async () => {
 });
 
 it("says how to use until without a location", async () => {
-  const server = await mountPane(<Console />);
+  const server = await mountPane(() => <Console />);
   await type("until");
   await expect.element(entries().first()).toMatchTextContent("until runs to a location");
   expect(server.requests.map((request) => request.method)).not.toContain("advance");
 });
 
 it("steps into the call it names, and lists the line's calls when it names none", async () => {
-  const server = await mountPane(<Console />);
+  const server = await mountPane(() => <Console />);
   const calls = {
     calls: [
       { call: "0x401020", callee: "hash", target: "0x401100" },
@@ -213,7 +213,7 @@ it("steps into the call it names, and lists the line's calls when it names none"
 });
 
 it("clears with cls and with Ctrl+L", async () => {
-  const server = await mountPane(<Console />);
+  const server = await mountPane(() => <Console />);
   await type("p x");
   server.answer(await server.next("console"), { output: "1", row: null });
   await expect.poll(() => entries().all().length).toBe(1);
@@ -228,7 +228,7 @@ it("clears with cls and with Ctrl+L", async () => {
 });
 
 it("adds the page's run-control commands to help", async () => {
-  const server = await mountPane(<Console />);
+  const server = await mountPane(() => <Console />);
   await type("help");
   server.answer(await server.next("console"), { output: "print, p  Print a value", row: null });
   await expect.element(entries().first()).toMatchTextContent("print, p");
@@ -236,7 +236,7 @@ it("adds the page's run-control commands to help", async () => {
 });
 
 it("shows a function's code in Disassembly instead of listing it", async () => {
-  const server = await mountPane(<Console />);
+  const server = await mountPane(() => <Console />);
   await type("disas table_find");
   const resolve = await server.next("resolve");
   expect(resolve.params).toEqual({ name: "table_find" });

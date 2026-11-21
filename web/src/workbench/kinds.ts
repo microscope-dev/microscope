@@ -1,4 +1,4 @@
-import type { ComponentType } from "react";
+import type { Component } from "solid-js";
 
 import { assert } from "../assert";
 import type { KindId, Pane, PaneId } from "./layout";
@@ -12,9 +12,9 @@ export interface PaneKind<Need extends string> {
   readonly id: KindId;
 
   title(pane: Pane): string;
-  readonly Body: ComponentType<PaneProps>;
+  readonly Body: Component<PaneProps>;
 
-  readonly Badge?: ComponentType<PaneProps>;
+  readonly Badge?: Component<PaneProps>;
 
   readonly needs: Need | null;
 

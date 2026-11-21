@@ -1,11 +1,4 @@
-import {
-  type CSSProperties,
-  type PointerEvent,
-  useCallback,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { createMemo, createSignal, For, Show } from "solid-js";
 
 import {
   formatBand,
@@ -33,105 +26,105 @@ const ORDERS: { order: Order; label: string }[] = [
 ];
 
 export function ZonesPane() {
-  const { summary, look, setLook } = useProfile();
-  const [order, setOrder] = useState<Order>("total");
-  const sites = useMemo(
-    () => summary.zoneSites.toSorted((a, b) => b[order] - a[order] || a.name.localeCompare(b.name)),
-    [summary.zoneSites, order],
+  const focus = useProfile();
+  const [order, setOrder] = createSignal<Order>("total");
+  const sites = createMemo(() => {
+    const by = order();
+    return focus().summary.zoneSites.toSorted(
+      (a, b) => b[by] - a[by] || a.name.localeCompare(b.name),
+    );
+  });
+  const chosen = createMemo(() =>
+    focus().summary.zoneSites.find((site) => site.name === focus().look.zs),
   );
-  const chosen = summary.zoneSites.find((site) => site.name === look.zs);
-  const choose = useCallback(
-    (name: string) =>
-      setLook((prev) => {
-        const rest = withoutSite(prev);
-        return prev.zs === name ? rest : { ...rest, zs: name };
-      }, true),
-    [setLook],
-  );
+  const choose = (name: string) =>
+    focus().setLook((prev) => {
+      const rest = withoutSite(prev);
+      return prev.zs === name ? rest : { ...rest, zs: name };
+    }, true);
   return (
-    <aside className="pane zones-pane" data-testid="zones-pane" aria-label="Zones">
-      <div className="pane-body">
-        {sites.length === 0 ? (
-          <div className="muted">This recording has no zones.</div>
-        ) : (
-          <div className="zone-sites-list">
-            <table className="zone-sites">
+    <aside class="pane zones-pane" data-testid="zones-pane" aria-label="Zones">
+      <div class="pane-body">
+        <Show
+          when={sites().length > 0}
+          fallback={<div class="muted">This recording has no zones.</div>}
+        >
+          <div class="zone-sites-list">
+            <table class="zone-sites">
               <thead>
                 <tr>
                   <th>zone</th>
-                  {ORDERS.map(({ order: each, label }) => (
-                    <th key={each} aria-sort={order === each ? "descending" : "none"}>
-                      <OrderButton order={each} label={label} setOrder={setOrder} />
-                    </th>
-                  ))}
+                  <For each={ORDERS}>
+                    {(each) => (
+                      <th aria-sort={order() === each.order ? "descending" : "none"}>
+                        <OrderButton order={each.order} label={each.label} setOrder={setOrder} />
+                      </th>
+                    )}
+                  </For>
                 </tr>
               </thead>
               <tbody>
-                {sites.map((site) => (
-                  <SiteRow
-                    key={`${site.label}:${site.name}`}
-                    site={site}
-                    chosen={site.name === look.zs}
-                    choose={choose}
-                  />
-                ))}
+                <For each={sites()} keyed={(site) => `${site.label}:${site.name}`}>
+                  {(site) => (
+                    <SiteRow
+                      site={site()}
+                      chosen={site().name === focus().look.zs}
+                      choose={choose}
+                    />
+                  )}
+                </For>
               </tbody>
             </table>
           </div>
-        )}
-        {chosen ? <ZoneStats key={chosen.name} site={chosen} /> : null}
+        </Show>
+        <Show when={chosen()?.name} keyed>
+          {(_name) => <Show when={chosen()}>{(site) => <ZoneStats site={site()} />}</Show>}
+        </Show>
       </div>
     </aside>
   );
 }
 
-function OrderButton({
-  order,
-  label,
-  setOrder,
-}: {
-  order: Order;
-  label: string;
-  setOrder: (order: Order) => void;
-}) {
-  const click = useCallback(() => setOrder(order), [setOrder, order]);
+function OrderButton(props: { order: Order; label: string; setOrder: (order: Order) => void }) {
   return (
-    <button type="button" className="link-button" onClick={click}>
-      {label}
+    <button type="button" class="link-button" onClick={() => props.setOrder(props.order)}>
+      {props.label}
     </button>
   );
 }
 
-function SiteRow({
-  site,
-  chosen,
-  choose,
-}: {
+function SiteRow(props: {
   site: ProfileZoneSite;
   chosen: boolean;
   choose: (name: string) => void;
 }) {
-  const click = useCallback(() => choose(site.name), [choose, site.name]);
   return (
-    <tr className={chosen ? "selected" : undefined}>
+    <tr class={props.chosen ? "selected" : undefined}>
       <td>
-        <button type="button" className="link-button" aria-pressed={chosen} onClick={click}>
-          {site.name}
+        <button
+          type="button"
+          class="link-button"
+          aria-pressed={props.chosen ? "true" : "false"}
+          onClick={() => props.choose(props.site.name)}
+        >
+          {props.site.name}
         </button>
-        {site.label ? <span className="dim"> label</span> : null}
-        {site.flagged > 0 ? (
-          <span className="warn" title="Zones whose begin or end was not seen, or did not nest">
+        <Show when={props.site.label}>
+          <span class="dim"> label</span>
+        </Show>
+        <Show when={props.site.flagged > 0}>
+          <span class="warn" title="Zones whose begin or end was not seen, or did not nest">
             {" "}
-            {formatCount(site.flagged)} flagged
+            {formatCount(props.site.flagged)} flagged
           </span>
-        ) : null}
+        </Show>
       </td>
-      <td>{formatCount(site.count)}</td>
+      <td>{formatCount(props.site.count)}</td>
       <td>
-        <Duration ns={site.total} />
+        <Duration ns={props.site.total} />
       </td>
       <td>
-        <Duration ns={site.longest} />
+        <Duration ns={props.site.longest} />
       </td>
     </tr>
   );
@@ -155,280 +148,327 @@ const SCOPES: { zf: ProfileLook["zf"]; label: string; title: string }[] = [
   },
 ];
 
-function ZoneStats({ site }: { site: ProfileZoneSite }) {
-  const { profile, query, look, setLook, summary } = useProfile();
-  const range = useMemo(() => rangeOf({ range: look.range }), [look.range]);
-  const band = useMemo(() => (look.zb ? parseBand(look.zb) : null), [look.zb]);
-  const instance = useMemo(() => (look.zi ? parseInstance(look.zi) : null), [look.zi]);
-  const length = instance ? instance.span[1] - instance.span[0] : null;
-  const params = useMemo(
-    () => ({
-      profile,
-      revision: query.revision ?? 0,
-      name: site.name,
-      ...(range ? { range } : {}),
-      ...(query.threads ? { threads: query.threads } : {}),
-      ...(band ? { band } : {}),
-      ...(length === null ? {} : { rankOf: length }),
-    }),
-    [profile, query.revision, site.name, range, query.threads, band, length],
-  );
+function ZoneStats(props: { site: ProfileZoneSite }) {
+  const focus = useProfile();
+  const range = createMemo(() => rangeOf({ range: focus().look.range }));
+  const band = createMemo(() => {
+    const zb = focus().look.zb;
+    return zb ? parseBand(zb) : null;
+  });
+  const instance = createMemo(() => {
+    const zi = focus().look.zi;
+    return zi ? parseInstance(zi) : null;
+  });
+  const length = createMemo(() => {
+    const current = instance();
+    return current ? current.span[1] - current.span[0] : null;
+  });
+  const params = createMemo(() => {
+    const current = focus();
+    const currentRange = range();
+    const currentBand = band();
+    const currentLength = length();
+    return {
+      profile: current.profile,
+      revision: current.query.revision ?? 0,
+      name: props.site.name,
+      ...(currentRange ? { range: currentRange } : {}),
+      ...(current.query.threads ? { threads: current.query.threads } : {}),
+      ...(currentBand ? { band: currentBand } : {}),
+      ...(currentLength === null ? {} : { rankOf: currentLength }),
+    };
+  });
   const answer = useAnswer("profileZoneStats", params);
-  const stats = answer.data;
-  const waits = look.src === "waits";
+  const waits = createMemo(() => focus().look.src === "waits");
+  const selectedSpan = (thread: number, start: number, end: number) => {
+    const current = instance();
+    return (
+      current !== null &&
+      current.thread === thread &&
+      current.span[0] === start &&
+      current.span[1] === end
+    );
+  };
+  const rankedLength = createMemo(() => {
+    const current = length();
+    return instance() && current !== null ? { ns: current } : null;
+  });
 
-  const rootByValue = useCallback(
-    () =>
-      setLook((prev) => withLook(prev, "bl", prev.bl === site.name ? undefined : site.name), true),
-    [setLook, site.name],
-  );
-  const compare = useCallback(
-    () =>
-      setLook((prev) => {
-        const { bp: _bp, br: _br, dm: _dm, ...rest } = prev;
-        return withLook(rest, "bz", prev.bz === "rest" ? undefined : "rest");
-      }, true),
-    [setLook],
-  );
-  const clearBand = useCallback(
-    () =>
-      setLook((prev) => {
-        const { zb: _zb, bz: _bz, zf, ...rest } = prev;
-        return zf === "all" ? { ...rest, zf } : rest;
-      }, true),
-    [setLook],
-  );
+  const rootByValue = () =>
+    focus().setLook(
+      (prev) => withLook(prev, "bl", prev.bl === props.site.name ? undefined : props.site.name),
+      true,
+    );
+  const compare = () =>
+    focus().setLook((prev) => {
+      const { bp: _bp, br: _br, dm: _dm, ...rest } = prev;
+      return withLook(rest, "bz", prev.bz === "rest" ? undefined : "rest");
+    }, true);
+  const clearBand = () =>
+    focus().setLook((prev) => {
+      const { zb: _zb, bz: _bz, zf, ...rest } = prev;
+      return zf === "all" ? { ...rest, zf } : rest;
+    }, true);
 
-  if (answer.error) {
-    return <div className="empty error">{answer.error.message}</div>;
-  }
-  if (!stats) {
-    return <div className="muted">Measuring {site.name}…</div>;
-  }
   return (
-    <div className={`zone-stats ${answer.current ? "" : "stale"}`} data-testid="zone-stats">
-      <dl>
-        {(
-          [
-            ["count", formatCount(stats.count)],
-            ["total", <Duration key="total" ns={stats.total} />],
-            ["mean", <Duration key="mean" ns={stats.count > 0 ? stats.total / stats.count : 0} />],
-            ["median", <Duration key="median" ns={stats.median} />],
-            ["p90", <Duration key="p90" ns={stats.p90} />],
-            ["p99", <Duration key="p99" ns={stats.p99} />],
-            ["max", <Duration key="max" ns={stats.max} />],
-            ["flagged", formatCount(stats.flagged)],
-          ] as const
-        ).map(([term, value]) => (
-          <div key={term}>
-            <dt>{term}</dt>
-            <dd>{value}</dd>
-          </div>
-        ))}
-      </dl>
-      {stats.count === 0 ? (
-        <div className="muted">{emptyWhy(range !== null, query.threads?.length ?? 0)}</div>
-      ) : (
-        <Histogram stats={stats} band={band} length={length} name={site.name} />
-      )}
-      {band ? (
-        <div className="zone-band" data-testid="zone-band">
-          <span>
-            Band {formatDuration(band[0])} – {formatDuration(band[1])}:{" "}
-            {formatCount(stats.banded[0])} of {formatCount(stats.count)},{" "}
-            <Duration ns={stats.banded[1]} />
-          </span>
-          <button type="button" className="tb ghost" onClick={clearBand}>
-            Clear band
-          </button>
-        </div>
-      ) : (
-        <div className="muted zone-hint">Drag across the histogram to pick a band of lengths.</div>
-      )}
-      {instance && length !== null && stats.count > 0 ? (
-        <div className="zone-rank" data-testid="zone-rank">
-          The zone selected is p{Math.round((100 * stats.shorter) / stats.count)} of{" "}
-          {formatCount(stats.count)}: {formatDuration(length)}
-        </div>
-      ) : null}
-      <div className="zone-scope">
-        <fieldset className="segmented" aria-label="Samples the views read">
-          {SCOPES.map(({ zf, label, title }) => (
-            <ScopeButton
-              key={label}
-              zf={zf}
-              label={label}
-              title={waits ? "Zones scope CPU samples, not waits" : title}
-              disabled={waits || (zf === "band" && !band)}
-            />
-          ))}
-        </fieldset>
-        <button
-          type="button"
-          className="tb ghost"
-          aria-pressed={look.bz === "rest"}
-          disabled={waits || !band}
-          title={
-            band
-              ? "A diff of the band's samples against the rest of this site's"
-              : "Pick a band first"
-          }
-          onClick={compare}
-        >
-          Compare the band with the rest
-        </button>
-      </div>
-      <div className="pane-head">{band ? "Longest in the band" : "Longest"}</div>
-      {stats.longest.length === 0 ? (
-        <div className="muted">None.</div>
-      ) : (
-        <ul className="zone-longest">
-          {stats.longest.map((zone) => (
-            <li key={`${zone.thread}:${zone.start}`}>
-              <ZoneSpan
-                thread={zone.thread}
-                start={zone.start}
-                end={zone.end}
-                chosen={
-                  instance?.thread === zone.thread &&
-                  instance.span[0] === zone.start &&
-                  instance.span[1] === zone.end
-                }
-              />{" "}
-              {zone.value !== null && zone.value !== undefined ? `${site.name}=${zone.value} ` : ""}
-              <span className="dim">
-                {threadName(summary.threads, zone.thread)} at{" "}
-                {formatInstant(zone.start, Math.max(zone.end - zone.start, 1) / 10)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {site.label ? (
-        <>
-          <div className="pane-head">
-            Values
-            <button
-              type="button"
-              className="tb ghost"
-              aria-pressed={look.bl === site.name}
-              title="Group stacks by this label's value"
-              onClick={rootByValue}
+    <Show
+      when={!answer().error}
+      fallback={<div class="empty error">{answer().error?.message}</div>}
+    >
+      <Show when={answer().data} fallback={<div class="muted">Measuring {props.site.name}…</div>}>
+        {(stats) => (
+          <div class={`zone-stats ${answer().current ? "" : "stale"}`} data-testid="zone-stats">
+            <dl>
+              <div>
+                <dt>count</dt>
+                <dd>{formatCount(stats().count)}</dd>
+              </div>
+              <div>
+                <dt>total</dt>
+                <dd>
+                  <Duration ns={stats().total} />
+                </dd>
+              </div>
+              <div>
+                <dt>mean</dt>
+                <dd>
+                  <Duration ns={stats().count > 0 ? stats().total / stats().count : 0} />
+                </dd>
+              </div>
+              <div>
+                <dt>median</dt>
+                <dd>
+                  <Duration ns={stats().median} />
+                </dd>
+              </div>
+              <div>
+                <dt>p90</dt>
+                <dd>
+                  <Duration ns={stats().p90} />
+                </dd>
+              </div>
+              <div>
+                <dt>p99</dt>
+                <dd>
+                  <Duration ns={stats().p99} />
+                </dd>
+              </div>
+              <div>
+                <dt>max</dt>
+                <dd>
+                  <Duration ns={stats().max} />
+                </dd>
+              </div>
+              <div>
+                <dt>flagged</dt>
+                <dd>{formatCount(stats().flagged)}</dd>
+              </div>
+            </dl>
+            <Show
+              when={stats().count > 0}
+              fallback={
+                <div class="muted">
+                  {emptyWhy(range() !== null, focus().query.threads?.length ?? 0)}
+                </div>
+              }
             >
-              By {site.name}
-            </button>
-          </div>
-          <ul className="zone-values">
-            {stats.values.map((value) => {
-              const label = `${site.name}=${value.value}`;
-              return (
-                <li key={value.value}>
-                  <LabelValue label={label} on={(look.lb ?? []).includes(label)} />{" "}
-                  <span className="dim">
-                    {formatDuration(value.total)} in {formatCount(value.count)}
+              <Histogram stats={stats()} band={band()} length={length()} name={props.site.name} />
+            </Show>
+            <Show
+              when={band()}
+              fallback={
+                <div class="muted zone-hint">
+                  Drag across the histogram to pick a band of lengths.
+                </div>
+              }
+            >
+              {(currentBand) => (
+                <div class="zone-band" data-testid="zone-band">
+                  <span>
+                    Band {formatDuration(currentBand()[0])} – {formatDuration(currentBand()[1])}:{" "}
+                    {formatCount(stats().banded[0])} of {formatCount(stats().count)},{" "}
+                    <Duration ns={stats().banded[1]} />
                   </span>
-                </li>
-              );
-            })}
-          </ul>
-        </>
-      ) : null}
-    </div>
+                  <button type="button" class="tb ghost" onClick={clearBand}>
+                    Clear band
+                  </button>
+                </div>
+              )}
+            </Show>
+            <Show when={stats().count > 0 ? rankedLength() : null}>
+              {(shown) => (
+                <div class="zone-rank" data-testid="zone-rank">
+                  The zone selected is p{Math.round((100 * stats().shorter) / stats().count)} of{" "}
+                  {formatCount(stats().count)}: {formatDuration(shown().ns)}
+                </div>
+              )}
+            </Show>
+            <div class="zone-scope">
+              <fieldset class="segmented" aria-label="Samples the views read">
+                <For each={SCOPES}>
+                  {(scope) => (
+                    <ScopeButton
+                      zf={scope.zf}
+                      label={scope.label}
+                      title={waits() ? "Zones scope CPU samples, not waits" : scope.title}
+                      disabled={waits() || (scope.zf === "band" && !band())}
+                    />
+                  )}
+                </For>
+              </fieldset>
+              <button
+                type="button"
+                class="tb ghost"
+                aria-pressed={focus().look.bz === "rest" ? "true" : "false"}
+                disabled={waits() || !band()}
+                title={
+                  band()
+                    ? "A diff of the band's samples against the rest of this site's"
+                    : "Pick a band first"
+                }
+                onClick={compare}
+              >
+                Compare the band with the rest
+              </button>
+            </div>
+            <div class="pane-head">{band() ? "Longest in the band" : "Longest"}</div>
+            <Show when={stats().longest.length > 0} fallback={<div class="muted">None.</div>}>
+              <ul class="zone-longest">
+                <For each={stats().longest} keyed={(zone) => `${zone.thread}:${zone.start}`}>
+                  {(zone) => (
+                    <li>
+                      <ZoneSpan
+                        thread={zone().thread}
+                        start={zone().start}
+                        end={zone().end}
+                        chosen={selectedSpan(zone().thread, zone().start, zone().end)}
+                      />{" "}
+                      {zone().value !== null && zone().value !== undefined
+                        ? `${props.site.name}=${zone().value} `
+                        : ""}
+                      <span class="dim">
+                        {threadName(focus().summary.threads, zone().thread)} at{" "}
+                        {formatInstant(zone().start, Math.max(zone().end - zone().start, 1) / 10)}
+                      </span>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
+            <Show when={props.site.label}>
+              <div class="pane-head">
+                Values
+                <button
+                  type="button"
+                  class="tb ghost"
+                  aria-pressed={focus().look.bl === props.site.name ? "true" : "false"}
+                  title="Group stacks by this label's value"
+                  onClick={rootByValue}
+                >
+                  By {props.site.name}
+                </button>
+              </div>
+              <ul class="zone-values">
+                <For each={stats().values} keyed={(value) => value.value}>
+                  {(value) => {
+                    const label = createMemo(() => `${props.site.name}=${value().value}`);
+                    return (
+                      <li>
+                        <LabelValue
+                          label={label()}
+                          on={(focus().look.lb ?? []).includes(label())}
+                        />{" "}
+                        <span class="dim">
+                          {formatDuration(value().total)} in {formatCount(value().count)}
+                        </span>
+                      </li>
+                    );
+                  }}
+                </For>
+              </ul>
+            </Show>
+          </div>
+        )}
+      </Show>
+    </Show>
   );
 }
 
-function ScopeButton({
-  zf,
-  label,
-  title,
-  disabled,
-}: {
+function ScopeButton(props: {
   zf: ProfileLook["zf"];
   label: string;
   title: string;
   disabled: boolean;
 }) {
-  const { look, setLook } = useProfile();
-  const pick = useCallback(() => setLook((prev) => withLook(prev, "zf", zf), true), [setLook, zf]);
+  const focus = useProfile();
+  const pick = () => focus().setLook((prev) => withLook(prev, "zf", props.zf), true);
   return (
     <button
       type="button"
-      title={title}
-      aria-pressed={look.zf === zf}
-      disabled={disabled}
+      title={props.title}
+      aria-pressed={focus().look.zf === props.zf ? "true" : "false"}
+      disabled={props.disabled}
       onClick={pick}
     >
-      {label}
+      {props.label}
     </button>
   );
 }
 
-function Histogram({
-  stats,
-  band,
-  length,
-  name,
-}: {
+function Histogram(props: {
   stats: ProfileZoneStats;
   band: [number, number] | null;
   length: number | null;
   name: string;
 }) {
-  const { setLook } = useProfile();
-  const spans = useMemo(() => bucketSpans(stats.histogram, stats.max), [stats]);
-  const most = useMemo(
-    () =>
-      largest(
-        stats.histogram.map(([, count = 0]) => count),
-        1,
-      ),
-    [stats],
+  const focus = useProfile();
+  const spans = createMemo(() => bucketSpans(props.stats.histogram, props.stats.max));
+  const most = createMemo(() =>
+    largest(
+      props.stats.histogram.map(([, count = 0]) => count),
+      1,
+    ),
   );
-  const bars = useRef<HTMLDivElement>(null);
+  let bars: HTMLDivElement | undefined;
 
-  const drag = useRef<[number, number] | null>(null);
-  const [dragging, setDragging] = useState<[number, number] | null>(null);
-  const bucket = useCallback(
-    (event: PointerEvent<HTMLElement>) => {
-      const bounds = bars.current?.getBoundingClientRect();
-      if (!bounds || spans.length === 0) {
-        return 0;
-      }
-      const fraction = (event.clientX - bounds.left) / Math.max(bounds.width, 1);
-      return Math.min(Math.max(Math.floor(fraction * spans.length), 0), spans.length - 1);
-    },
-    [spans.length],
-  );
-  const down = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) {
-        return;
-      }
-      event.currentTarget.setPointerCapture(event.pointerId);
-      const at = bucket(event);
-      drag.current = [at, at];
-      setDragging(drag.current);
-    },
-    [bucket],
-  );
-  const move = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      if (drag.current) {
-        drag.current = [drag.current[0], bucket(event)];
-        setDragging(drag.current);
-      }
-    },
-    [bucket],
-  );
-  const up = useCallback(() => {
-    const was = drag.current;
-    drag.current = null;
+  let drag: [number, number] | null = null;
+  const [dragging, setDragging] = createSignal<[number, number] | null>(null);
+  const bucket = (event: PointerEvent) => {
+    const bounds = bars?.getBoundingClientRect();
+    const currentSpans = spans();
+    if (!bounds || currentSpans.length === 0) {
+      return 0;
+    }
+    const fraction = (event.clientX - bounds.left) / Math.max(bounds.width, 1);
+    return Math.min(
+      Math.max(Math.floor(fraction * currentSpans.length), 0),
+      currentSpans.length - 1,
+    );
+  };
+  const down = (event: PointerEvent & { currentTarget: HTMLDivElement }) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const at = bucket(event);
+    drag = [at, at];
+    setDragging(drag);
+  };
+  const move = (event: PointerEvent) => {
+    if (drag) {
+      drag = [drag[0], bucket(event)];
+      setDragging(drag);
+    }
+  };
+  const up = () => {
+    const was = drag;
+    drag = null;
     setDragging(null);
     if (!was) {
       return;
     }
-    const picked = bandOf(spans, was[0], was[1]);
-    setLook((prev) => {
+    const picked = bandOf(spans(), was[0], was[1]);
+    focus().setLook((prev) => {
       const same = prev.zb === formatBand(picked);
       const { zb: _zb, bz: _bz, ...rest } = prev;
 
@@ -438,131 +478,120 @@ function Histogram({
       }
       return { ...rest, zb: formatBand(picked) };
     }, true);
-  }, [spans, setLook]);
-  const cancel = useCallback(() => {
-    drag.current = null;
-    setDragging(null);
-  }, []);
-
-  const picking = dragging ? [Math.min(...dragging), Math.max(...dragging)] : null;
-  const marked = (at: number) => {
-    const [low, high] = spans[at] ?? [0, 0];
-    if (picking) {
-      return at >= (picking[0] ?? 0) && at <= (picking[1] ?? 0);
-    }
-    return band ? high >= band[0] && low <= band[1] : null;
   };
-  const rank =
-    length === null ? -1 : spans.findIndex(([low, high]) => length >= low && length <= high);
+  const cancel = () => {
+    drag = null;
+    setDragging(null);
+  };
+
+  const picking = createMemo(() => {
+    const current = dragging();
+    return current ? [Math.min(...current), Math.max(...current)] : null;
+  });
+  const marked = (at: number) => {
+    const [low, high] = spans()[at] ?? [0, 0];
+    const currentPicking = picking();
+    if (currentPicking) {
+      return at >= (currentPicking[0] ?? 0) && at <= (currentPicking[1] ?? 0);
+    }
+    return props.band ? high >= props.band[0] && low <= props.band[1] : null;
+  };
+  const rank = createMemo(() => {
+    const currentLength = props.length;
+    return currentLength === null
+      ? -1
+      : spans().findIndex(([low, high]) => currentLength >= low && currentLength <= high);
+  });
   return (
     <>
       <div
-        className="zone-histogram"
-        ref={bars}
+        class="zone-histogram"
+        ref={(node) => {
+          bars = node;
+        }}
         // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a chart of bars, not an image file
         role="img"
-        aria-label={`Lengths of ${name}${band ? `, band ${formatDuration(band[0])} – ${formatDuration(band[1])}` : ""}`}
+        aria-label={`Lengths of ${props.name}${props.band ? `, band ${formatDuration(props.band[0])} – ${formatDuration(props.band[1])}` : ""}`}
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}
         onPointerCancel={cancel}
       >
-        {stats.histogram.map(([low = 0, count = 0], at) => (
-          <Bar
-            key={low}
-            low={low}
-            count={count}
-            most={most}
-            state={marked(at)}
-            here={at === rank}
-          />
-        ))}
+        <For each={props.stats.histogram} keyed={([low = 0]) => low}>
+          {(entry, at) => (
+            <Bar
+              low={entry()[0] ?? 0}
+              count={entry()[1] ?? 0}
+              most={most()}
+              state={marked(at())}
+              here={at() === rank()}
+            />
+          )}
+        </For>
       </div>
-      <div className="zone-axis muted">
-        <span>{formatDuration(stats.min)}</span>
-        <span>{formatDuration(stats.max)}</span>
+      <div class="zone-axis muted">
+        <span>{formatDuration(props.stats.min)}</span>
+        <span>{formatDuration(props.stats.max)}</span>
       </div>
     </>
   );
 }
 
-function Bar({
-  low,
-  count,
-  most,
-  state,
-  here,
-}: {
+function Bar(props: {
   low: number;
   count: number;
   most: number;
-
   state: boolean | null;
   here: boolean;
 }) {
-  const style = useMemo(
-    () => ({ "--share": String(count / most) }) as CSSProperties,
-    [count, most],
+  const kind = createMemo(() =>
+    props.state === null ? "" : props.state ? " banded" : " unbanded",
   );
-  const kind = state === null ? "" : state ? " banded" : " unbanded";
   return (
     <span
-      className={`bar${kind}${here ? " here" : ""}`}
-      style={style}
-      title={`${formatCount(count)} from ${formatDuration(low)}`}
+      class={`bar${kind()}${props.here ? " here" : ""}`}
+      style={{ "--share": String(props.count / props.most) }}
+      title={`${formatCount(props.count)} from ${formatDuration(props.low)}`}
     />
   );
 }
 
-function ZoneSpan({
-  thread,
-  start,
-  end,
-  chosen,
-}: {
-  thread: number;
-  start: number;
-  end: number;
-  chosen: boolean;
-}) {
-  const { setLook } = useProfile();
-  const select = useCallback(() => {
-    const instance: Instance = { thread, span: [start, end] };
-    setLook((prev) => withInstance(prev, chosen ? null : instance), true);
-  }, [setLook, thread, start, end, chosen]);
+function ZoneSpan(props: { thread: number; start: number; end: number; chosen: boolean }) {
+  const focus = useProfile();
+  const select = () => {
+    const instance: Instance = { thread: props.thread, span: [props.start, props.end] };
+    focus().setLook((prev) => withInstance(prev, props.chosen ? null : instance), true);
+  };
   return (
     <button
       type="button"
-      className="link-button"
-      aria-pressed={chosen}
+      class="link-button"
+      aria-pressed={props.chosen ? "true" : "false"}
       title="Select this zone: the views read its span"
       onClick={select}
     >
-      {formatDuration(end - start)}
+      {formatDuration(props.end - props.start)}
     </button>
   );
 }
 
-function LabelValue({ label, on }: { label: string; on: boolean }) {
-  const { setLook } = useProfile();
-  const toggle = useCallback(
-    () =>
-      setLook((prev) => {
-        const kept = (prev.lb ?? []).filter((each) => each !== label);
-        const next = on ? kept : [...kept, label];
-        return withLook(prev, "lb", next.length > 0 ? next : undefined);
-      }, true),
-    [setLook, label, on],
-  );
+function LabelValue(props: { label: string; on: boolean }) {
+  const focus = useProfile();
+  const toggle = () =>
+    focus().setLook((prev) => {
+      const kept = (prev.lb ?? []).filter((each) => each !== props.label);
+      const next = props.on ? kept : [...kept, props.label];
+      return withLook(prev, "lb", next.length > 0 ? next : undefined);
+    }, true);
   return (
     <button
       type="button"
-      className="link-button"
-      aria-pressed={on}
+      class="link-button"
+      aria-pressed={props.on ? "true" : "false"}
       title="Keep only samples with this label"
       onClick={toggle}
     >
-      {label}
+      {props.label}
     </button>
   );
 }

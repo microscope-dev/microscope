@@ -1,15 +1,19 @@
-import { useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@solidjs/router";
+import type { JSX } from "@solidjs/web";
 import {
-  type ChangeEvent,
-  memo,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  onSettled,
+  Show,
+  Switch,
+} from "solid-js";
 
+import { withinBase } from "../../base";
+import { parseSearch } from "../../focus";
+import { toHref } from "../../history";
 import {
   cleared,
   duringLabel,
@@ -67,343 +71,392 @@ import { ZonesPane } from "./ZonesPane";
 
 const sameLook = (a: ProfileLook, b: ProfileLook) => JSON.stringify(a) === JSON.stringify(b);
 
-export function ProfilePaneBody({ id, pane }: PaneProps) {
-  const view = viewOf(pane) ?? null;
-  const { link, own } = useMemo(() => paneParams(pane), [pane]);
-  const held = useLink(link, (value) => value);
-  const linked = useMemo(() => readLink(held), [held]);
-  const look = useMemo<ProfileLook>(
-    () => ({ ...linked?.look, ...own, ...(view === null ? {} : { view }) }),
-    [linked, own, view],
+export function ProfilePaneBody(props: PaneProps) {
+  const view = createMemo(() => viewOf(props.pane) ?? null);
+  const params = createMemo(() => paneParams(props.pane));
+  const held = useLink(
+    () => params().link,
+    (value) => value,
   );
-  const profile = linked?.profile ?? "";
+  const linked = createMemo(() => readLink(held()));
+  const look = createMemo<ProfileLook>(() => {
+    const currentView = view();
+    return {
+      ...linked()?.look,
+      ...params().own,
+      ...(currentView === null ? {} : { view: currentView }),
+    };
+  });
+  const profile = createMemo(() => linked()?.profile ?? "");
   const navigate = useNavigate();
-  const router = useRouter();
+  const location = useLocation();
 
-  const inSession = useRouterState({
-    select: (state) => state.location.pathname.startsWith("/s/"),
-  });
-  const addressed = useRouterState({
-    select: (state) => state.location.pathname === `/profile/${profile}`,
-  });
-  const focused = useLayout((layout) => leadingPane(layout) === id);
-  const leads = focused && !inSession;
+  const pathname = createMemo(() => withinBase(location.pathname));
+  const inSession = createMemo(() => pathname().startsWith("/s/"));
+  const addressed = createMemo(() => pathname() === `/profile/${profile()}`);
+  const focused = useLayout((layout) => leadingPane(layout) === props.id);
+  const leads = createMemo(() => focused() && !inSession());
 
-  const search = useRouterState({
-    select: (state) => (leads ? (state.location.search as Record<string, unknown>) : null),
-  });
+  const search = createMemo(() => (leads() ? parseSearch(location.search) : null));
 
-  const setLook = useCallback(
-    (by: (look: ProfileLook) => ProfileLook, push = false, carry = false) => {
-      const layout = workbench.getState().layout;
-      const now = lookOf(layout, id);
-      if (!now) {
+  const setLook = (by: (look: ProfileLook) => ProfileLook, push = false, carry = false) => {
+    const layout = workbench.getState().layout;
+    const now = lookOf(layout, props.id);
+    if (!now) {
+      return;
+    }
+    const next = by(now);
+    const leading =
+      leadingPane(layout) === props.id && !withinBase(location.pathname).startsWith("/s/");
+    change((each) => storeLook(each, props.id, next, carry).layout);
+    if (leading) {
+      navigate(toHref(`/profile/${profile()}`, next as Record<string, unknown>), {
+        replace: !push,
+      });
+    }
+  };
+
+  let led = false;
+  createEffect(
+    () => ({
+      linked: linked(),
+      leads: leads(),
+      addressed: addressed(),
+      search: search(),
+      look: look(),
+      profile: profile(),
+    }),
+    ({
+      linked: currentLinked,
+      leads: isLeading,
+      addressed: isAddressed,
+      search: currentSearch,
+      look: currentLook,
+      profile: currentProfile,
+    }) => {
+      const took = isLeading && !led;
+      led = isLeading;
+      if (!currentLinked || !currentSearch) {
         return;
       }
-      const next = by(now);
-      const leading =
-        leadingPane(layout) === id && !router.state.location.pathname.startsWith("/s/");
-      change((each) => storeLook(each, id, next, carry).layout);
-      if (leading) {
-        void navigate({
-          to: "/profile/$profile",
-          params: { profile },
-          search: next,
-          replace: !push,
+      const kept = validateProfileLook(currentSearch);
+      const dropped = Object.keys(currentSearch).some((key) => !(key in kept));
+      const stale = took && !sameLook(kept, currentLook);
+      if (isLeading && (!isAddressed || stale || dropped)) {
+        const shown = !isAddressed || took ? currentLook : kept;
+        navigate(toHref(`/profile/${currentProfile}`, shown as Record<string, unknown>), {
+          replace: true,
         });
       }
     },
-    [id, navigate, profile, router],
   );
 
-  const led = useRef(false);
-  useEffect(() => {
-    const took = leads && !led.current;
-    led.current = leads;
-    if (!linked || !search) {
-      return;
+  const offer = (summary: ProfileSummary, live: boolean) => {
+    const link = params().link;
+    if (link !== null) {
+      change((layout) => arrange(layout, link, summary, live));
     }
-    const kept = validateProfileLook(search);
-    const dropped = Object.keys(search).some((key) => !(key in kept));
-    const stale = took && !sameLook(kept, look);
-    if (leads && (!addressed || stale || dropped)) {
-      const shown = !addressed || took ? look : kept;
-      void navigate({ to: "/profile/$profile", params: { profile }, search: shown, replace: true });
-    }
-  }, [linked, leads, addressed, search, look, navigate, profile]);
+  };
 
-  const offer = useCallback(
-    (summary: ProfileSummary, live: boolean) => {
-      if (link !== null) {
-        change((layout) => arrange(layout, link, summary, live));
-      }
-    },
-    [link],
-  );
-
-  if (!linked) {
-    return <div className="page muted">This pane has lost its profile. Close it.</div>;
-  }
   return (
-    <Profile
-      view={view}
-      profile={profile}
-      look={look}
-      setLook={setLook}
-      leads={leads}
-      onSummary={offer}
-    />
+    <Show
+      when={linked()}
+      fallback={<div class="page muted">This pane has lost its profile. Close it.</div>}
+    >
+      <Profile
+        view={view()}
+        profile={profile()}
+        look={look()}
+        setLook={setLook}
+        leads={leads()}
+        onSummary={offer}
+      />
+    </Show>
   );
 }
 
-const ViewBody = memo(function ViewBody({ view }: { view: ProfileView }) {
-  return view === "zones" ? (
-    <ZonesPane />
-  ) : view === "details" ? (
-    <FileDetails />
-  ) : (
-    <div className="profile-view">
-      {view === "kernel" ? (
-        <KernelPane />
-      ) : view === "functions" ? (
-        <FunctionsView />
-      ) : view === "tree" ? (
-        <TreeView />
-      ) : (
-        <FlameView />
-      )}
-    </div>
+function ViewBody(props: { view: ProfileView }) {
+  return (
+    <Switch
+      fallback={
+        <div class="profile-view">
+          <Switch fallback={<FlameView />}>
+            <Match when={props.view === "kernel"}>
+              <KernelPane />
+            </Match>
+            <Match when={props.view === "functions"}>
+              <FunctionsView />
+            </Match>
+            <Match when={props.view === "tree"}>
+              <TreeView />
+            </Match>
+          </Switch>
+        </div>
+      }
+    >
+      <Match when={props.view === "zones"}>
+        <ZonesPane />
+      </Match>
+      <Match when={props.view === "details"}>
+        <FileDetails />
+      </Match>
+    </Switch>
   );
-});
+}
 
 const MISSING_CARD = { width: "min(560px, 100%)" };
-const NO_MARGIN = { margin: 0 };
+const NO_MARGIN = { margin: "0" };
 
 interface FrameProps {
   profile: string;
   look: ProfileLook;
   setLook: ProfileFocus["setLook"];
-
-  leads?: boolean;
+  leads?: boolean | undefined;
 }
 
-function ProfileFrame({
-  profile,
-  look,
-  setLook,
-  leads = true,
-  onSummary,
-  children,
-}: FrameProps & {
-  onSummary?: ((summary: ProfileSummary, live: boolean) => void) | undefined;
-  children: ReactNode;
-}) {
-  const info = useModel((model) => model.profiles.find((each) => each.id === profile));
+function ProfileFrame(
+  props: FrameProps & {
+    onSummary?: ((summary: ProfileSummary, live: boolean) => void) | undefined;
+    children: JSX.Element;
+  },
+) {
+  const info = useModel((model) => model.profiles.find((each) => each.id === props.profile));
 
-  const revision = info?.revision ?? 0;
-  const summary = useAnswer("profile", { profile, revision });
+  const revision = createMemo(() => info()?.revision ?? 0);
+  const summary = useAnswer("profile", () => ({
+    profile: props.profile,
+    revision: revision(),
+  }));
   const disconnected = useDisconnected();
-  const live = info?.recording ?? false;
-  useEffect(() => {
-    if (summary.data && onSummary) {
-      onSummary(summary.data, live);
-    }
-  }, [summary.data, onSummary, live]);
+  const live = createMemo(() => info()?.recording ?? false);
 
-  const root = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const escape = (event: KeyboardEvent) => {
-      const target = event.target as Element;
-      const inside = root.current?.contains(target) ?? false;
-      if (
-        event.key !== "Escape" ||
-        event.defaultPrevented ||
-        !(inside || (leads && target.contains(root.current))) ||
-        target.closest("input, textarea, select, [role=dialog]")
-      ) {
-        return;
+  createEffect(
+    () => ({ data: summary().data, live: live() }),
+    ({ data, live: isLive }) => {
+      if (data && props.onSummary) {
+        props.onSummary(data, isLive);
       }
-      if (cleared(look) !== look) {
-        event.preventDefault();
-        setLook(cleared, true);
-      }
-    };
+    },
+  );
+
+  let root: HTMLDivElement | undefined;
+  const escape = (event: KeyboardEvent) => {
+    const target = event.target as Element;
+    const inside = root?.contains(target) ?? false;
+    const leads = props.leads ?? true;
+    if (
+      event.key !== "Escape" ||
+      event.defaultPrevented ||
+      !(inside || (leads && root !== undefined && target.contains(root))) ||
+      target.closest("input, textarea, select, [role=dialog]")
+    ) {
+      return;
+    }
+    if (cleared(props.look) !== props.look) {
+      event.preventDefault();
+      props.setLook(cleared, true);
+    }
+  };
+  onSettled(() => {
     document.addEventListener("keydown", escape);
     return () => document.removeEventListener("keydown", escape);
-  }, [leads, look, setLook]);
-  const focus = useMemo<ProfileFocus | null>(
-    () =>
-      summary.data
-        ? {
-            profile,
-            summary: summary.data,
-            look,
-            query: { ...queryOf(profile, look), revision },
-            unit: look.src === "waits" ? "nanoseconds" : summary.data.unit,
-            setLook,
-          }
-        : null,
-    [profile, summary.data, look, setLook, revision],
-  );
+  });
 
-  if (summary.error) {
-    const missing = !info && summary.error.kind === "invalid";
-    return (
-      <div className="page">
-        <div className="card" style={MISSING_CARD} data-testid="profile-missing">
-          <div className="card-head">
-            <h1>{missing ? "No such profile" : "Could not read the profile"}</h1>
-          </div>
-          <div className="card-body">
-            <p style={NO_MARGIN}>{summary.error.message}.</p>
-            {missing ? (
-              <p className="muted" style={NO_MARGIN}>
-                Serve it with <code>microscope web PROFILE.usprof</code>.
-              </p>
-            ) : null}
-          </div>
-        </div>
-      </div>
-    );
-  }
-  if (!focus) {
-    return <div className="page muted">Reading the profile…</div>;
-  }
+  const focus = createMemo<ProfileFocus | null>(() => {
+    const data = summary().data;
+    if (!data) {
+      return null;
+    }
+    return {
+      profile: props.profile,
+      summary: data,
+      look: props.look,
+      query: { ...queryOf(props.profile, props.look), revision: revision() },
+      unit: props.look.src === "waits" ? "nanoseconds" : data.unit,
+      setLook: props.setLook,
+    };
+  });
+
   return (
-    <ProfileContext.Provider value={focus}>
-      <div className="profile" data-testid="profile" ref={root}>
-        {disconnected ? (
-          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result
-          <div className="profile-untimed profile-disconnected" role="status">
-            Disconnected. This pane keeps what it last read until microscope answers again.
+    <Switch fallback={<div class="page muted">Reading the profile…</div>}>
+      <Match when={summary().error}>
+        {(error) => {
+          const missing = createMemo(() => !info() && error().kind === "invalid");
+          return (
+            <div class="page">
+              <div class="card" style={MISSING_CARD} data-testid="profile-missing">
+                <div class="card-head">
+                  <h1>{missing() ? "No such profile" : "Could not read the profile"}</h1>
+                </div>
+                <div class="card-body">
+                  <p style={NO_MARGIN}>{error().message}.</p>
+                  <Show when={missing()}>
+                    <p class="muted" style={NO_MARGIN}>
+                      Serve it with <code>microscope web PROFILE.usprof</code>.
+                    </p>
+                  </Show>
+                </div>
+              </div>
+            </div>
+          );
+        }}
+      </Match>
+      <Match when={focus()}>
+        <ProfileContext value={focus}>
+          <div
+            class="profile"
+            data-testid="profile"
+            ref={(node) => {
+              root = node;
+            }}
+          >
+            <Show when={disconnected()}>
+              {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result */}
+              <div class="profile-untimed profile-disconnected" role="status">
+                Disconnected. This pane keeps what it last read until microscope answers again.
+              </div>
+            </Show>
+            {props.children}
           </div>
-        ) : null}
-        {children}
-      </div>
-    </ProfileContext.Provider>
+        </ProfileContext>
+      </Match>
+    </Switch>
   );
 }
 
-export function Profile({
-  view = null,
-  onSummary,
-  ...frame
-}: FrameProps & {
-  view?: ProfileView | null;
-  onSummary?: ((summary: ProfileSummary, live: boolean) => void) | undefined;
-}) {
+export function Profile(
+  props: FrameProps & {
+    view?: ProfileView | null | undefined;
+    onSummary?: ((summary: ProfileSummary, live: boolean) => void) | undefined;
+  },
+) {
   return (
-    <ProfileFrame {...frame} onSummary={onSummary}>
-      {view === null ? <Overview /> : <ViewBody view={view} />}
+    <ProfileFrame
+      profile={props.profile}
+      look={props.look}
+      setLook={props.setLook}
+      leads={props.leads}
+      onSummary={props.onSummary}
+    >
+      <Show when={props.view} fallback={<Overview />}>
+        {(view) => <ViewBody view={view()} />}
+      </Show>
     </ProfileFrame>
   );
 }
 
-const Overview = memo(function Overview() {
-  const { profile, summary } = useProfile();
-  const info = useModel((model) => model.profiles.find((each) => each.id === profile));
+function Overview() {
+  const focus = useProfile();
+  const info = useModel((model) => model.profiles.find((each) => each.id === focus().profile));
+  const recordingInfo = createMemo(() => {
+    const current = info();
+    return current && (current.recording || current.ended) ? current : undefined;
+  });
   return (
     <>
-      <Accounting summary={summary} />
-      {info && (info.recording || info.ended) ? <Recording info={info} /> : null}
+      <Accounting summary={focus().summary} />
+      <Show when={recordingInfo()}>{(current) => <Recording info={current()} />}</Show>
       <ProfileHead />
       <Lanes />
     </>
   );
-});
+}
 
 function ProfileHead() {
-  const { summary, look, setLook } = useProfile();
-  const range = rangeOf(look);
-  const snapshots = summary.snapshots > 0;
-
-  const sampled = summary.samples > 0 || summary.syscalls === 0;
-  const zoned = summary.zoneSites.length > 0;
-  const showZones = useCallback(
-    () => setLook((prev) => withLook(prev, "view", "zones"), true),
-    [setLook],
-  );
-  const showDetails = useCallback(
-    () => setLook((prev) => withLook(prev, "view", "details"), true),
-    [setLook],
-  );
+  const focus = useProfile();
+  const range = createMemo(() => rangeOf(focus().look));
+  const snapshots = createMemo(() => focus().summary.snapshots > 0);
+  const sampled = createMemo(() => focus().summary.samples > 0 || focus().summary.syscalls === 0);
+  const zoned = createMemo(() => focus().summary.zoneSites.length > 0);
+  const showZones = () => focus().setLook((prev) => withLook(prev, "view", "zones"), true);
+  const showDetails = () => focus().setLook((prev) => withLook(prev, "view", "details"), true);
 
   return (
-    <div className="profile-head">
-      <button type="button" className="tb ghost" onClick={showDetails}>
+    <div class="profile-head">
+      <button type="button" class="tb ghost" onClick={showDetails}>
         File details
       </button>
-      {snapshots ? (
-        <div className="segmented">
-          {SOURCES.map(([src, label, title]) => (
-            <LookButton
-              key={label}
-              field="src"
-              value={src}
-              title={title}
-              pressed={look.src === src}
-            >
-              {label}
-            </LookButton>
-          ))}
+      <Show when={snapshots()}>
+        <div class="segmented">
+          <For each={SOURCES}>
+            {([src, label, title]) => (
+              <LookButton field="src" value={src} title={title} pressed={focus().look.src === src}>
+                {label}
+              </LookButton>
+            )}
+          </For>
         </div>
-      ) : null}
-      {snapshots && look.src !== "waits" ? (
-        <div className="segmented" title="What the timeline has a lane for">
-          {LANES.map(([lanes, label]) => (
-            <LookButton key={label} field="lanes" value={lanes} pressed={look.lanes === lanes}>
-              {label}
-            </LookButton>
-          ))}
+      </Show>
+      <Show when={snapshots() && focus().look.src !== "waits"}>
+        <div class="segmented" title="What the timeline has a lane for">
+          <For each={LANES}>
+            {([lanes, label]) => (
+              <LookButton field="lanes" value={lanes} pressed={focus().look.lanes === lanes}>
+                {label}
+              </LookButton>
+            )}
+          </For>
         </div>
-      ) : null}
-      {zoned ? (
+      </Show>
+      <Show when={zoned()}>
         <button
           type="button"
-          className="tb ghost"
+          class="tb ghost"
           title="Every zone site, and one's lengths"
           onClick={showZones}
         >
           Zones
         </button>
-      ) : null}
-      <div className="profile-query">
-        {range && !look.zi ? (
-          <ClearChip field="range" label={formatSpan(range)} title="Samples in this time range" />
-        ) : null}
+      </Show>
+      <div class="profile-query">
+        <Show when={focus().look.zi ? undefined : range()}>
+          {(currentRange) => (
+            <ClearChip
+              field="range"
+              label={formatSpan(currentRange())}
+              title="Samples in this time range"
+            />
+          )}
+        </Show>
         <ZoneChips />
         <LaneChip />
-        {(look.lb ?? []).map((label) => (
-          <LabelChip key={label} label={label} />
-        ))}
-        {(look.tf ?? []).map((entry, index) => (
-          <TransformChip key={entry} entry={entry} index={index} />
-        ))}
-        {look.sf ? (
-          <ClearChip
-            field="sf"
-            label={`syscalls: ${look.sf}`}
-            title="System calls this selection keeps, in strace's -e syntax"
-            removeLabel="Remove the system call filter"
-          />
-        ) : null}
-        {look.sl ? (
-          <ClearChip
-            field="sl"
-            label={`syscalls ${bucketLabel(Number(look.sl))}`}
-            title="System calls of this latency"
-            removeLabel="Remove the latency band"
-          />
-        ) : null}
-        {look.du ? (
-          <ClearChip
-            field="du"
-            label={`during ${duringLabel(look.du)}`}
-            title="Samples taken while their thread was in these system calls"
-            removeLabel="Keep samples outside these calls too"
-          />
-        ) : null}
-        {sampled && look.bz !== "rest" ? <Compare /> : null}
+        <For each={focus().look.lb ?? []}>{(label) => <LabelChip label={label} />}</For>
+        <For each={focus().look.tf ?? []}>
+          {(entry, index) => <TransformChip entry={entry} index={index()} />}
+        </For>
+        <Show when={focus().look.sf}>
+          {(sf) => (
+            <ClearChip
+              field="sf"
+              label={`syscalls: ${sf()}`}
+              title="System calls this selection keeps, in strace's -e syntax"
+              removeLabel="Remove the system call filter"
+            />
+          )}
+        </Show>
+        <Show when={focus().look.sl}>
+          {(sl) => (
+            <ClearChip
+              field="sl"
+              label={`syscalls ${bucketLabel(Number(sl()))}`}
+              title="System calls of this latency"
+              removeLabel="Remove the latency band"
+            />
+          )}
+        </Show>
+        <Show when={focus().look.du}>
+          {(du) => (
+            <ClearChip
+              field="du"
+              label={`during ${duringLabel(du())}`}
+              title="Samples taken while their thread was in these system calls"
+              removeLabel="Keep samples outside these calls too"
+            />
+          )}
+        </Show>
+        <Show when={sampled() && focus().look.bz !== "rest"}>
+          <Compare />
+        </Show>
       </div>
     </div>
   );
@@ -425,408 +478,452 @@ const DIFF_MEASURES = [
 ] as const;
 
 function ZoneChips() {
-  const { summary, look, setLook } = useProfile();
-  const instance = look.zi ? parseInstance(look.zi) : null;
-  const scope = scopeOf(look);
-  const dropSite = useCallback(() => setLook(withoutSite, true), [setLook]);
-  const dropInstance = useCallback(
-    () => setLook((prev) => withInstance(prev, null), true),
-    [setLook],
-  );
-  const dropScope = useCallback(
-    () =>
-      // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-      setLook((prev) => withLook(withLook(prev, "zf", undefined), "bz", undefined), true),
-    [setLook],
-  );
-  const dropRest = useCallback(
+  const focus = useProfile();
+  const instance = createMemo(() => {
+    const zi = focus().look.zi;
+    return zi ? parseInstance(zi) : null;
+  });
+  const scope = createMemo(() => scopeOf(focus().look));
+  const dropSite = () => focus().setLook(withoutSite, true);
+  const dropInstance = () => focus().setLook((prev) => withInstance(prev, null), true);
+  const dropScope = () =>
     // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-    () => setLook((prev) => withLook(withLook(prev, "bz", undefined), "dm", undefined), true),
-    [setLook],
-  );
-  const band = look.zb ? parseBand(look.zb) : null;
-  const banded = band ? ` ${formatDuration(band[0])} – ${formatDuration(band[1])}` : "";
+    focus().setLook((prev) => withLook(withLook(prev, "zf", undefined), "bz", undefined), true);
+  const dropRest = () =>
+    // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+    focus().setLook((prev) => withLook(withLook(prev, "bz", undefined), "dm", undefined), true);
+  const banded = createMemo(() => {
+    const zb = focus().look.zb;
+    const band = zb ? parseBand(zb) : null;
+    return band ? ` ${formatDuration(band[0])} – ${formatDuration(band[1])}` : "";
+  });
   return (
     <>
-      {look.zs ? (
-        <Chip
-          label={`zone: ${look.zs}${banded}`}
-          title="The zone site chosen; removing it clears the zone selection"
-          remove={dropSite}
-        />
-      ) : null}
-      {instance ? (
-        <Chip
-          label={`${formatDuration(instance.span[1] - instance.span[0])}, ${threadName(summary.threads, instance.thread)}`}
-          title="Samples of the threads selected during this zone"
-          remove={dropInstance}
-        />
-      ) : null}
-      {scope && look.bz !== "rest" ? (
-        <Chip
-          label={scope.band ? "inside the band" : "inside every one"}
-          title="Samples inside these zones, nested ones included"
-          remove={dropScope}
-        />
-      ) : null}
-      {scope && look.bz === "rest" ? (
-        <>
+      <Show when={focus().look.zs}>
+        {(zs) => (
           <Chip
-            label="the band vs the rest"
-            title="Red grew and blue shrank in the band's zones against the site's others"
-            remove={dropRest}
+            label={`zone: ${zs()}${banded()}`}
+            title="The zone site chosen; removing it clears the zone selection"
+            remove={dropSite}
           />
-          <DiffMeasure />
-        </>
-      ) : null}
+        )}
+      </Show>
+      <Show when={instance()}>
+        {(current) => (
+          <Chip
+            label={`${formatDuration(current().span[1] - current().span[0])}, ${threadName(focus().summary.threads, current().thread)}`}
+            title="Samples of the threads selected during this zone"
+            remove={dropInstance}
+          />
+        )}
+      </Show>
+      <Show when={focus().look.bz === "rest" ? undefined : scope()}>
+        {(currentScope) => (
+          <Chip
+            label={currentScope().band ? "inside the band" : "inside every one"}
+            title="Samples inside these zones, nested ones included"
+            remove={dropScope}
+          />
+        )}
+      </Show>
+      <Show when={scope() && focus().look.bz === "rest"}>
+        <Chip
+          label="the band vs the rest"
+          title="Red grew and blue shrank in the band's zones against the site's others"
+          remove={dropRest}
+        />
+        <DiffMeasure />
+      </Show>
     </>
   );
 }
 
 function DiffMeasure() {
-  const { look } = useProfile();
+  const focus = useProfile();
   return (
-    <div className="segmented" title="What the change column compares">
-      {DIFF_MEASURES.map(([dm, label, title]) => (
-        <LookButton key={label} field="dm" value={dm} title={title} pressed={look.dm === dm}>
-          {label}
-        </LookButton>
-      ))}
+    <div class="segmented" title="What the change column compares">
+      <For each={DIFF_MEASURES}>
+        {([dm, label, title]) => (
+          <LookButton field="dm" value={dm} title={title} pressed={focus().look.dm === dm}>
+            {label}
+          </LookButton>
+        )}
+      </For>
     </div>
   );
 }
 
-function LabelChip({ label }: { label: string }) {
-  const { setLook } = useProfile();
-  const remove = useCallback(
-    () =>
-      setLook((prev) => {
-        const kept = (prev.lb ?? []).filter((each) => each !== label);
-        return withLook(prev, "lb", kept.length > 0 ? kept : undefined);
-      }),
-    [setLook, label],
-  );
-  return <Chip label={label} title="Samples with this label" remove={remove} />;
+function LabelChip(props: { label: string }) {
+  const focus = useProfile();
+  const remove = () =>
+    focus().setLook((prev) => {
+      const kept = (prev.lb ?? []).filter((each) => each !== props.label);
+      return withLook(prev, "lb", kept.length > 0 ? kept : undefined);
+    });
+  return <Chip label={props.label} title="Samples with this label" remove={remove} />;
 }
 
-function TransformChip({ entry, index }: { entry: string; index: number }) {
-  const { setLook } = useProfile();
-  const remove = useCallback(
-    () => setLook((prev) => untransformed(prev, index), true),
-    [setLook, index],
-  );
-  const transform = parseTransform(entry);
+function TransformChip(props: { entry: string; index: number }) {
+  const focus = useProfile();
+  const remove = () => focus().setLook((prev) => untransformed(prev, props.index), true);
+  const transform = createMemo(() => {
+    const parsed = parseTransform(props.entry);
+    return parsed && parsed.op !== "collapseCycles" ? parsed : undefined;
+  });
 
-  return transform && transform.op !== "collapseCycles" ? (
-    <Chip
-      label={`${transform.op} ${transform.name}`}
-      title="Remove this transform"
-      remove={remove}
-    />
-  ) : null;
+  return (
+    <Show when={transform()}>
+      {(current) => (
+        <Chip
+          label={`${current().op} ${current().name}`}
+          title="Remove this transform"
+          remove={remove}
+        />
+      )}
+    </Show>
+  );
 }
 
 function Compare() {
-  const { profile, look, setLook } = useProfile();
+  const focus = useProfile();
   const profiles = useModel((model) => model.profiles);
-  const others = profiles.filter((each) => each.id !== profile);
-  const baseRange = look.br ? parseRange(look.br) : null;
+  const others = createMemo(() => profiles().filter((each) => each.id !== focus().profile));
+  const baseRange = createMemo(() => {
+    const br = focus().look.br;
+    return br ? parseRange(br) : null;
+  });
 
-  const removeBase = useCallback(
-    () =>
-      setLook(
-        (prev) =>
-          // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-          withLook(withLook(withLook(prev, "bp", undefined), "br", undefined), "dm", undefined),
-        true,
-      ),
-    [setLook],
-  );
-  const chooseBase = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => {
-      const chosen = event.target.value;
-      setLook(
-        (prev) =>
-          chosen === "range"
-            ? // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-              withLook(withLook(prev, "br", prev.range), "range", undefined)
-            : withLook(prev, "bp", chosen || undefined),
-        true,
-      );
-    },
-    [setLook],
-  );
+  const removeBase = () =>
+    focus().setLook(
+      (prev) =>
+        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+        withLook(withLook(withLook(prev, "bp", undefined), "br", undefined), "dm", undefined),
+      true,
+    );
+  const chooseBase = (event: Event & { currentTarget: HTMLSelectElement }) => {
+    const chosen = event.currentTarget.value;
+    event.currentTarget.value = "";
+    focus().setLook(
+      (prev) =>
+        chosen === "range"
+          ? // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+            withLook(withLook(prev, "br", prev.range), "range", undefined)
+          : withLook(prev, "bp", chosen || undefined),
+      true,
+    );
+  };
 
-  if (look.bp || baseRange) {
+  const diffLabel = createMemo(() => {
+    const bp = focus().look.bp;
+    const br = baseRange();
     const of =
-      look.bp && look.bp !== profile
-        ? (others.find((each) => each.id === look.bp)?.name ?? look.bp)
+      bp && bp !== focus().profile
+        ? (others().find((each) => each.id === bp)?.name ?? bp)
         : "this profile";
-    const during = baseRange ? ` ${formatSpan(baseRange)}` : "";
-    return (
-      <>
+    const during = br ? ` ${formatSpan(br)}` : "";
+    return `diff with ${of}${during}`;
+  });
+
+  return (
+    <Switch>
+      <Match when={focus().look.bp || baseRange()}>
         <Chip
-          label={`diff with ${of}${during}`}
+          label={diffLabel()}
           title="Red grew and blue shrank against this base"
           remove={removeBase}
         />
         <DiffMeasure />
-      </>
-    );
-  }
-  if (!look.range && others.length === 0) {
-    return null;
-  }
-  return (
-    <select className="input profile-by" aria-label="Compare with" value="" onChange={chooseBase}>
-      <option value="">no diff</option>
-      {look.range ? <option value="range">diff with the selected range</option> : null}
-      {others.map((each) => (
-        <option key={each.id} value={each.id}>
-          diff with {each.name}
-        </option>
-      ))}
-    </select>
+      </Match>
+      <Match when={focus().look.range || others().length > 0}>
+        <select class="input profile-by" aria-label="Compare with" value="" onChange={chooseBase}>
+          <option value="">no diff</option>
+          <Show when={focus().look.range}>
+            <option value="range">diff with the selected range</option>
+          </Show>
+          <For each={others()} keyed={(each) => each.id}>
+            {(each) => <option value={each().id}>diff with {each().name}</option>}
+          </For>
+        </select>
+      </Match>
+    </Switch>
   );
 }
 
-function Recording({ info }: { info: ProfileInfo }) {
+function Recording(props: { info: ProfileInfo }) {
   const connection = useConnection();
   const control = useModel((model) => model.hello?.role === "control");
-  const [failure, setFailure] = useState<string | null>(null);
-  const stop = useCallback(() => {
+  const [failure, setFailure] = createSignal<string | null>(null);
+  const stop = () => {
     void connection
-      .request("stopRecording", { profile: info.id })
+      .request("stopRecording", { profile: props.info.id })
       .catch((error: Error) => setFailure(error.message));
-  }, [connection, info.id]);
+  };
   return (
-    <div className="profile-recording" data-testid="recording">
-      {info.recording ? (
-        <span className="pill running">Recording {info.name}</span>
-      ) : (
-        <span className="muted">
-          {info.name} ended: {info.ended}
-        </span>
-      )}
-      {info.recording && control ? (
-        <button type="button" className="tb ghost" onClick={stop}>
+    <div class="profile-recording" data-testid="recording">
+      <Show
+        when={props.info.recording}
+        fallback={
+          <span class="muted">
+            {props.info.name} ended: {props.info.ended}
+          </span>
+        }
+      >
+        <span class="pill running">Recording {props.info.name}</span>
+      </Show>
+      <Show when={props.info.recording && control()}>
+        <button type="button" class="tb ghost" onClick={stop}>
           Stop
         </button>
-      ) : null}
-      {failure ? <span className="error">{failure}</span> : null}
+      </Show>
+      <Show when={failure()}>{(message) => <span class="error">{message()}</span>}</Show>
     </div>
   );
 }
 
-function Stat({
-  label,
-  title,
-  warn = false,
-  children,
-}: {
+function Stat(props: {
   label: string;
-  title?: string;
-  warn?: boolean;
-  children: ReactNode;
+  title?: string | undefined;
+  warn?: boolean | undefined;
+  children: JSX.Element;
 }) {
   return (
-    <div className="stat" title={title}>
-      <span className="stat-label">{label}</span>
-      <span className={warn ? "stat-value warn" : "stat-value"}>{children}</span>
+    <div class="stat" title={props.title}>
+      <span class="stat-label">{props.label}</span>
+      <span class={props.warn ? "stat-value warn" : "stat-value"}>{props.children}</span>
     </div>
   );
 }
 
-function Program({ summary }: { summary: ProfileSummary }) {
-  const [open, setOpen] = useState(false);
-  const anchor = useRef<HTMLDivElement>(null);
-  const toggle = useCallback(() => setOpen((was) => !was), []);
-  const away = useCallback(() => setOpen(false), []);
-  useDismiss(anchor, open, away);
-  const { command } = summary;
-  const program = command?.arguments?.[0] ?? command?.text.split(" ")[0] ?? summary.program;
-  if (!program) {
-    return null;
-  }
-
-  const name = program.slice(program.lastIndexOf("/") + 1);
+function Program(props: { summary: ProfileSummary }) {
+  const [open, setOpen] = createSignal(false);
+  let anchor: HTMLDivElement | undefined;
+  const toggle = () => setOpen((was) => !was);
+  const away = () => setOpen(false);
+  useDismiss(() => anchor, open, away);
+  const program = createMemo(
+    () =>
+      props.summary.command?.arguments?.[0] ??
+      props.summary.command?.text.split(" ")[0] ??
+      props.summary.program,
+  );
+  const name = createMemo(() => {
+    const full = program();
+    return full ? full.slice(full.lastIndexOf("/") + 1) : "";
+  });
   return (
-    <div className="stat anchor" ref={anchor}>
-      <span className="stat-label">Program</span>
-      {command ? (
-        <button
-          type="button"
-          className="stat-value stat-program"
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          title="Show the whole command"
-          onClick={toggle}
-        >
-          {name}
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <path
-              d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8Z"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.3"
-              strokeLinejoin="round"
-            />
-            <circle cx="8" cy="8" r="2" fill="currentColor" />
-          </svg>
-        </button>
-      ) : (
-        <span className="stat-value">{name}</span>
-      )}
-      {open && command ? <CommandPopover command={command} /> : null}
-    </div>
+    <Show when={program()}>
+      <div
+        class="stat anchor"
+        ref={(node) => {
+          anchor = node;
+        }}
+      >
+        <span class="stat-label">Program</span>
+        <Show when={props.summary.command} fallback={<span class="stat-value">{name()}</span>}>
+          {(command) => (
+            <>
+              <button
+                type="button"
+                class="stat-value stat-program"
+                aria-haspopup="dialog"
+                aria-expanded={open() ? "true" : "false"}
+                title="Show the whole command"
+                onClick={toggle}
+              >
+                {name()}
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                  <path
+                    d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8Z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.3"
+                    stroke-linejoin="round"
+                  />
+                  <circle cx="8" cy="8" r="2" fill="currentColor" />
+                </svg>
+              </button>
+              <Show when={open()}>
+                <CommandPopover command={command()} />
+              </Show>
+            </>
+          )}
+        </Show>
+      </div>
+    </Show>
   );
 }
 
-function CommandPopover({ command }: { command: ProfileCommand }) {
-  const dialog = useRef<HTMLDivElement>(null);
-  useDialogFocus(dialog);
+function CommandPopover(props: { command: ProfileCommand }) {
+  let dialog: HTMLDivElement | undefined;
+  useDialogFocus(() => dialog);
   return (
     <div
-      className="popover command-popover"
+      class="popover command-popover"
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a popover, not a modal <dialog>
       role="dialog"
       aria-label="Command"
-      tabIndex={-1}
-      ref={dialog}
+      tabindex={-1}
+      ref={(node) => {
+        dialog = node;
+      }}
     >
-      <CommandBlock command={command} />
+      <CommandBlock command={props.command} />
     </div>
   );
 }
 
-function Accounting({ summary }: { summary: ProfileSummary }) {
-  const truncated = summary.truncations.reduce((sum, each) => sum + each.count, 0);
-  const setting = (name: string) => summary.settings.find((each) => each.name === name)?.value;
-  const source = setting("source");
-  const rate = source?.match(/^CPU time at (\d+ Hz)$/u)?.[1];
-  const kernel = sampledKernel(summary.settings);
-  const behind = summary.behind.reduce((sum, [from, to]) => sum + (to - from), 0);
-  const span = Math.max(summary.duration, 1);
-  const offCpu = summary.threads.reduce((sum, each) => sum + each.blocked + each.preempted, 0);
-  const cpu = summary.unit === "nanoseconds";
-  const busy = summary.weight / span;
-  const by = tracedBy(summary.settings);
-  const vdso =
-    "Calls through the vDSO, such as clock_gettime, never enter the kernel and are not traced";
-  const probesLost =
-    summary.probes.overwritten +
-    summary.probes.noRing +
-    summary.probes.interrupted +
-    summary.probes.malformed;
-  const sampled = summary.samples > 0 || summary.syscalls === 0;
+const VDSO =
+  "Calls through the vDSO, such as clock_gettime, never enter the kernel and are not traced";
+
+function Accounting(props: { summary: ProfileSummary }) {
+  const truncated = createMemo(() =>
+    props.summary.truncations.reduce((sum, each) => sum + each.count, 0),
+  );
+  const source = createMemo(
+    () => props.summary.settings.find((each) => each.name === "source")?.value,
+  );
+  const rate = createMemo(() => source()?.match(/^CPU time at (\d+ Hz)$/u)?.[1]);
+  const kernel = createMemo(() => sampledKernel(props.summary.settings));
+  const behind = createMemo(() =>
+    props.summary.behind.reduce((sum, [from, to]) => sum + (to - from), 0),
+  );
+  const span = createMemo(() => Math.max(props.summary.duration, 1));
+  const offCpu = createMemo(() =>
+    props.summary.threads.reduce((sum, each) => sum + each.blocked + each.preempted, 0),
+  );
+  const cpu = createMemo(() => props.summary.unit === "nanoseconds");
+  const busy = createMemo(() => props.summary.weight / span());
+  const by = createMemo(() => tracedBy(props.summary.settings));
+  const probesLost = createMemo(
+    () =>
+      props.summary.probes.overwritten +
+      props.summary.probes.noRing +
+      props.summary.probes.interrupted +
+      props.summary.probes.malformed,
+  );
+  const sampled = createMemo(() => props.summary.samples > 0 || props.summary.syscalls === 0);
+  const notes = createMemo(() => [
+    ...lossNotes(props.summary.syscallsLost),
+    ...traceNotes(props.summary.settings),
+  ]);
 
   return (
-    <div className="profile-accounting" data-testid="accounting">
-      <Program summary={summary} />
-      {sampled && source ? (
-        <Stat label="Sampling" title={kernel ? `${source}, kernel too` : source}>
-          {rate ?? source}
-          {kernel ? " + kernel" : ""}
-        </Stat>
-      ) : null}
+    <div class="profile-accounting" data-testid="accounting">
+      <Program summary={props.summary} />
+      <Show when={sampled() && source()}>
+        {(src) => (
+          <Stat label="Sampling" title={kernel() ? `${src()}, kernel too` : src()}>
+            {rate() ?? src()}
+            {kernel() ? " + kernel" : ""}
+          </Stat>
+        )}
+      </Show>
       <Stat label="Ran for" title="How long the recording ran">
-        {formatDuration(summary.duration)}
+        {formatDuration(props.summary.duration)}
       </Stat>
-      {summary.threads.length > 0 ? (
-        <Stat label="Threads">{formatCount(summary.threads.length)}</Stat>
-      ) : null}
-      {sampled && cpu ? (
-        <>
+      <Show when={props.summary.threads.length > 0}>
+        <Stat label="Threads">{formatCount(props.summary.threads.length)}</Stat>
+      </Show>
+      <Switch>
+        <Match when={sampled() && cpu()}>
           <Stat
             label="Cores busy"
-            title={`On average ${busy.toFixed(1)} CPUs ran the program at once${summary.threads.length > 0 ? `, of ${summary.threads.length} threads` : ""}`}
+            title={`On average ${busy().toFixed(1)} CPUs ran the program at once${props.summary.threads.length > 0 ? `, of ${props.summary.threads.length} threads` : ""}`}
           >
-            ≈{busy.toFixed(1)}
-            {summary.threads.length > 0 ? <ShareBar share={busy / summary.threads.length} /> : null}
+            ≈{busy().toFixed(1)}
+            <Show when={props.summary.threads.length > 0}>
+              <ShareBar share={busy() / props.summary.threads.length} />
+            </Show>
           </Stat>
           <Stat label="On CPU" title="CPU time sampled, every thread's added up">
-            {formatDuration(summary.weight)}
+            {formatDuration(props.summary.weight)}
           </Stat>
-        </>
-      ) : sampled ? (
-        <Stat label="Sampled">{formatWeight(summary.weight, summary.unit)}</Stat>
-      ) : null}
-      {offCpu > 0 ? (
+        </Match>
+        <Match when={sampled()}>
+          <Stat label="Sampled">{formatWeight(props.summary.weight, props.summary.unit)}</Stat>
+        </Match>
+      </Switch>
+      <Show when={offCpu() > 0}>
         <Stat label="Off CPU" title="Time the threads spent blocked or preempted, added up">
-          {formatDuration(offCpu)}
+          {formatDuration(offCpu())}
         </Stat>
-      ) : null}
-      {summary.syscalls > 0 ? (
+      </Show>
+      <Show when={props.summary.syscalls > 0}>
         <Stat
           label="Calls traced"
-          title={by.title ? `${by.title}\n${vdso}` : vdso}
-          warn={by.warn ?? false}
+          title={by().title ? `${by().title}\n${VDSO}` : VDSO}
+          warn={by().warn ?? false}
         >
-          {formatCount(summary.syscalls)}
-          {by.text}
+          {formatCount(props.summary.syscalls)}
+          {by().text}
         </Stat>
-      ) : null}
-      {summary.throttles > 0 ? (
+      </Show>
+      <Show when={props.summary.throttles > 0}>
         <Stat label="Throttled" warn>
-          {formatCount(summary.throttles)}
+          {formatCount(props.summary.throttles)}
         </Stat>
-      ) : null}
-      {truncated > 0 ? (
+      </Show>
+      <Show when={truncated() > 0}>
         <Stat
           label="Cut short"
-          title={summary.truncations.map((each) => `${each.what}: ${each.count}`).join("\n")}
+          title={props.summary.truncations.map((each) => `${each.what}: ${each.count}`).join("\n")}
           warn
         >
-          {formatPercent(truncated, summary.samples)}
+          {formatPercent(truncated(), props.summary.samples)}
         </Stat>
-      ) : null}
-      {summary.behind.length > 0 ? (
+      </Show>
+      <Show when={props.summary.behind.length > 0}>
         <Stat
           label="Paused to catch up"
-          title={`Sampling was off ${formatCount(summary.behind.length, "time")} while microscope caught up on the samples it had read; a lower --rate or --stack-bytes keeps more`}
+          title={`Sampling was off ${formatCount(props.summary.behind.length, "time")} while microscope caught up on the samples it had read; a lower --rate or --stack-bytes keeps more`}
           warn
         >
-          {formatPercent(behind, span)}
+          {formatPercent(behind(), span())}
         </Stat>
-      ) : null}
-      {summary.probes.events > 0 || probesLost > 0 || summary.probeProblems.length > 0 ? (
+      </Show>
+      <Show
+        when={
+          props.summary.probes.events > 0 ||
+          probesLost() > 0 ||
+          props.summary.probeProblems.length > 0
+        }
+      >
         <Stat
           label="Probe events"
           title={[
-            `${formatCount(summary.probes.overwritten, "record")} overwritten before microscope read them`,
-            `${formatCount(summary.probes.noRing, "event")} had no ring buffer to go to`,
-            `${formatCount(summary.probes.interrupted, "event")} dropped by a signal handler`,
-            `${formatCount(summary.probes.malformed, "record")} broke the probes ABI`,
-            ...summary.probeProblems.map((problem) => problem.text),
+            `${formatCount(props.summary.probes.overwritten, "record")} overwritten before microscope read them`,
+            `${formatCount(props.summary.probes.noRing, "event")} had no ring buffer to go to`,
+            `${formatCount(props.summary.probes.interrupted, "event")} dropped by a signal handler`,
+            `${formatCount(props.summary.probes.malformed, "record")} broke the probes ABI`,
+            ...props.summary.probeProblems.map((problem) => problem.text),
           ].join("\n")}
-          warn={probesLost > 0 || summary.probeProblems.length > 0}
+          warn={probesLost() > 0 || props.summary.probeProblems.length > 0}
         >
-          {formatCount(summary.probes.events)}, lost {formatCount(probesLost)}
+          {formatCount(props.summary.probes.events)}, lost {formatCount(probesLost())}
         </Stat>
-      ) : null}
-      {summary.snapshots > 0 ? (
+      </Show>
+      <Show when={props.summary.snapshots > 0}>
         <Stat
           label="Task snapshots"
           title={[
-            `${formatPercent(summary.taskSamples, summary.samples)} of samples have a known task`,
-            ...summary.snapshotProblems.map(
+            `${formatPercent(props.summary.taskSamples, props.summary.samples)} of samples have a known task`,
+            ...props.summary.snapshotProblems.map(
               (problem) => `${formatDuration(problem.time)}: ${problem.text}`,
             ),
           ].join("\n")}
-          warn={summary.snapshotProblems.length > 0}
+          warn={props.summary.snapshotProblems.length > 0}
         >
-          {formatCount(summary.snapshots)}, stopped {formatPercent(summary.snapshotPause, span)}
+          {formatCount(props.summary.snapshots)}, stopped{" "}
+          {formatPercent(props.summary.snapshotPause, span())}
         </Stat>
-      ) : null}
-      {[...lossNotes(summary.syscallsLost), ...traceNotes(summary.settings)].map((note) => (
-        <span
-          key={note.text}
-          className={note.warn ? "stat-note warn" : "stat-note"}
-          title={note.title}
-        >
-          {note.text}
-        </span>
-      ))}
+      </Show>
+      <For each={notes()} keyed={(note) => note.text}>
+        {(note) => (
+          <span class={note().warn ? "stat-note warn" : "stat-note"} title={note().title}>
+            {note().text}
+          </span>
+        )}
+      </For>
     </div>
   );
 }

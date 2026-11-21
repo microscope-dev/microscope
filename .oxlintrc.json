@@ -8,8 +8,6 @@
     "import",
     "promise",
     "node",
-    "react",
-    "react-perf",
     "jsx-a11y"
   ],
   "categories": {
@@ -39,8 +37,7 @@
     "import/no-unassigned-import": ["error", { "allow": ["**/*.css", "@fontsource/**"] }],
 
     "jsx-a11y/no-autofocus": ["error", { "ignoreNonDOM": true }],
-
-    "react/react-in-jsx-scope": "off",
+    "jsx-a11y/label-has-associated-control": "off",
 
     "max-lines": "off",
     "max-lines-per-function": "off",

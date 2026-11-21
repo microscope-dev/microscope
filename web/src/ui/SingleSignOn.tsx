@@ -1,14 +1,14 @@
+import type { JSX } from "@solidjs/web";
 import {
-  type ChangeEvent,
-  type FocusEvent,
-  type FormEvent,
-  type ReactNode,
-  useCallback,
-  useId,
-  useRef,
-  useState,
-} from "react";
-import { createStore, useStore } from "zustand";
+  children,
+  createMemo,
+  createSignal,
+  createUniqueId,
+  For,
+  Match,
+  Show,
+  Switch,
+} from "solid-js";
 
 import { checkAccount, Refused, useAccount } from "../account";
 import { assert } from "../assert";
@@ -42,99 +42,136 @@ import {
   startUrl,
   verify,
 } from "../sso";
+import { createState, useSelector } from "../state";
 import { Confirm, Loading, useAction, useLoaded } from "./Orgs";
 
-function useProviders(): Providers | null {
-  return useFeatures()?.sso ?? null;
+function useProviders(): () => Providers | null {
+  const offered = useFeatures();
+  return createMemo(() => offered()?.sso ?? null);
 }
 
-function usePasskeys(): boolean {
-  return useFeatures()?.passkeys === true && supported();
+function usePasskeys(): () => boolean {
+  const offered = useFeatures();
+  return createMemo(() => offered()?.passkeys === true && supported());
 }
 
-export function ContinueWith({ children }: { children?: ReactNode }) {
+export function ContinueWith(props: { children?: JSX.Element }) {
   const offered = useProviders();
-  if (!children && (!offered || (!offered.google && !offered.github))) {
-    return null;
-  }
+  const resolved = children(() => props.children);
+  const visible = createMemo(
+    () => resolved.toArray().length > 0 || Boolean(offered()?.google || offered()?.github),
+  );
   return (
-    <div className="actions continue-with">
-      {children}
-      {offered?.google && (
-        <a className="button" href={startUrl("google")}>
-          Continue with Google
-        </a>
-      )}
-      {offered?.github && (
-        <a className="button" href={startUrl("github")}>
-          Continue with GitHub
-        </a>
-      )}
-    </div>
+    <Show when={visible()}>
+      <div class="actions continue-with">
+        {resolved()}
+        <Show when={offered()?.google}>
+          <a class="button" href={startUrl("google")} target="_self">
+            Continue with Google
+          </a>
+        </Show>
+        <Show when={offered()?.github}>
+          <a class="button" href={startUrl("github")} target="_self">
+            Continue with GitHub
+          </a>
+        </Show>
+      </div>
+    </Show>
   );
 }
 
-export const orgLink = createStore<{ key: string | null }>(() => ({ key: null }));
+export const orgLink = createState<{ key: string | null }>(() => ({ key: null }));
 
 function closeOrgLink() {
   orgLink.setState({ key: null });
 }
 
 export function OrgLink() {
-  const key = useStore(orgLink, (state) => state.key);
+  const key = useSelector(orgLink, (state) => state.key);
   const now = useAccount();
-  const about = useLoaded(() => (key ? samlLink(key) : Promise.resolve(null)), key ?? "");
+  const about = useLoaded(
+    () => {
+      const currentKey = key();
+      return currentKey ? samlLink(currentKey) : Promise.resolve(null);
+    },
+    () => key() ?? "",
+  );
   const { working, error, run } = useAction();
-  const connectOrg = useCallback(() => {
-    assert(key !== null, "connecting an organization with no sign-in link");
-    run(() => proven("org-link", () => connectSaml(key)));
-  }, [run, key]);
-  if (!key || now.kind === "checking" || now.kind === "unavailable") {
-    return null;
-  }
-  if (about.error) {
-    return (
-      <div className="banner error" role="alert">
-        This single sign-on link does not work: {about.error}.{" "}
-        <button type="button" className="link-button" onClick={closeOrgLink}>
-          Dismiss
-        </button>
-      </div>
-    );
-  }
-  if (!about.data) {
-    return <p className="muted">Checking the sign-in link…</p>;
-  }
-  const org = about.data.org_name;
+  const connectOrg = () => {
+    const currentKey = key();
+    assert(currentKey !== null, "connecting an organization with no sign-in link");
+    run(() => proven("org-link", () => connectSaml(currentKey)));
+  };
+  const activeKey = createMemo(() => {
+    const currentKey = key();
+    const kind = now().kind;
+    return currentKey && kind !== "checking" && kind !== "unavailable" ? currentKey : null;
+  });
   return (
-    <section aria-label={`Sign in to ${org}`}>
-      <h2>{org}</h2>
-      {now.kind === "in" ? (
-        <p>Connect {org}&apos;s single sign-on to your account to sign in with it from now on.</p>
-      ) : (
-        <p>{org} signs its members in with its own identity provider.</p>
+    <Show when={activeKey()}>
+      {(currentKey) => (
+        <Switch fallback={<p class="muted">Checking the sign-in link…</p>}>
+          <Match when={about.error()}>
+            {(message) => (
+              <div class="banner error" role="alert">
+                This single sign-on link does not work: {message()}.{" "}
+                <button type="button" class="link-button" onClick={closeOrgLink}>
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </Match>
+          <Match when={about.data()}>
+            {(data) => (
+              <section aria-label={`Sign in to ${data().org_name}`}>
+                <h2>{data().org_name}</h2>
+                <Show
+                  when={now().kind === "in"}
+                  fallback={
+                    <p>{data().org_name} signs its members in with its own identity provider.</p>
+                  }
+                >
+                  <p>
+                    Connect {data().org_name}&apos;s single sign-on to your account to sign in with
+                    it from now on.
+                  </p>
+                </Show>
+                <div class="actions">
+                  <Show
+                    when={now().kind === "in"}
+                    fallback={
+                      <a class="button primary" href={samlStartUrl(currentKey())} target="_self">
+                        Sign in with {data().org_name}
+                      </a>
+                    }
+                  >
+                    <button
+                      type="button"
+                      class="button primary"
+                      disabled={working()}
+                      onClick={connectOrg}
+                    >
+                      Connect {data().org_name}
+                    </button>
+                  </Show>
+                  <button type="button" class="link-button" onClick={closeOrgLink}>
+                    Not now
+                  </button>
+                </div>
+                <Show when={error()}>
+                  {(message) => (
+                    <span class="error" role="alert">
+                      {message()}
+                    </span>
+                  )}
+                </Show>
+                <ProveItsYou asked="org-link" />
+              </section>
+            )}
+          </Match>
+        </Switch>
       )}
-      <div className="actions">
-        {now.kind === "in" ? (
-          <button type="button" className="button primary" disabled={working} onClick={connectOrg}>
-            Connect {org}
-          </button>
-        ) : (
-          <a className="button primary" href={samlStartUrl(key)}>
-            Sign in with {org}
-          </a>
-        )}
-        <button type="button" className="link-button" onClick={closeOrgLink}>
-          Not now
-        </button>
-      </div>
-      {error && (
-        <span className="error" role="alert">
-          {error}
-        </span>
-      )}
-      <ProveItsYou asked="org-link" />
-    </section>
+    </Show>
   );
 }
 
@@ -156,409 +193,429 @@ function used(passkey: Passkey): string {
 export function SignInMethods() {
   const offered = useProviders();
   const passkeys = usePasskeys();
-  const methods = useLoaded(identities, "");
+  const methods = useLoaded(identities, () => "");
   const { working, error, run } = useAction();
-  const [naming, setNaming] = useState<string | null>(null);
-  const nameId = useId();
+  const [naming, setNaming] = createSignal<string | null>(null);
+  const nameId = createUniqueId();
   const known = methods.data;
-  const ways = known
-    ? known.identities.length + known.passkeys.length + (known.has_password ? 1 : 0)
-    : 0;
-  const unconnected = (["google", "github"] as const).filter(
-    (provider) =>
-      offered?.[provider] && !known?.identities.some((each) => each.provider === provider),
-  );
-  const nothing =
-    (!known && !methods.error) ||
-    (known?.identities.length === 0 &&
-      known.passkeys.length === 0 &&
-      !offered?.google &&
-      !offered?.github &&
-      !passkeys);
-  const again = methods.again;
-  const add = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      const name = naming?.trim() ?? "";
-      run(() =>
-        proven("methods", async () => {
-          await addPasskey(name);
-          setNaming(null);
-          again();
-        }),
-      );
-    },
-    [naming, run, again],
-  );
-  const rename = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setNaming(event.target.value),
-    [],
-  );
-  const stopNaming = useCallback(() => setNaming(null), []);
-  const startNaming = useCallback(() => setNaming(deviceName()), []);
-  if (nothing) {
-    return null;
-  }
+  const ways = createMemo(() => {
+    const current = known();
+    return current
+      ? current.identities.length + current.passkeys.length + (current.has_password ? 1 : 0)
+      : 0;
+  });
+  const unconnected = createMemo(() => {
+    const providers = offered();
+    const current = known();
+    return (["google", "github"] as const).filter(
+      (provider) =>
+        providers?.[provider] && !current?.identities.some((each) => each.provider === provider),
+    );
+  });
+  const nothing = createMemo(() => {
+    const current = known();
+    const providers = offered();
+    return (
+      (!current && !methods.error()) ||
+      (current?.identities.length === 0 &&
+        current.passkeys.length === 0 &&
+        !providers?.google &&
+        !providers?.github &&
+        !passkeys())
+    );
+  });
+  const add = (event: SubmitEvent) => {
+    event.preventDefault();
+    const name = naming()?.trim() ?? "";
+    run(() =>
+      proven("methods", async () => {
+        await addPasskey(name);
+        setNaming(null);
+        methods.again();
+      }),
+    );
+  };
+  const rename = (event: InputEvent & { currentTarget: HTMLInputElement }) =>
+    setNaming(event.currentTarget.value);
+  const stopNaming = () => setNaming(null);
+  const startNaming = () => setNaming(deviceName());
   return (
-    <>
+    <Show when={!nothing()}>
       <h2>Sign-in methods</h2>
-      {known ? (
-        <ul className="roster" aria-label="Sign-in methods">
-          {known.has_password && (
-            <li>
-              <span className="name">Password</span>
-            </li>
-          )}
-          {known.identities.map((identity) => (
-            <li key={identity.id}>
-              <span className="name">{describe(identity)}</span>
-              <span className="muted">{identity.email}</span>
-              {}
-              {ways > 1 && (
-                <span className="end">
-                  <Forget
-                    label="Disconnect"
-                    question={`Stop signing in with ${describe(identity)}?`}
-                    id={identity.id}
-                    forget={disconnect}
-                    again={again}
-                  />
-                </span>
+      <Show
+        when={known()}
+        fallback={<Loading error={methods.error()} what="your sign-in methods" />}
+      >
+        {(current) => (
+          <ul class="roster" aria-label="Sign-in methods">
+            <Show when={current().has_password}>
+              <li>
+                <span class="name">Password</span>
+              </li>
+            </Show>
+            <For each={current().identities} keyed={(identity) => identity.id}>
+              {(identity) => (
+                <li>
+                  <span class="name">{describe(identity())}</span>
+                  <span class="muted">{identity().email}</span>
+                  <Show when={ways() > 1}>
+                    <span class="end">
+                      <Forget
+                        label="Disconnect"
+                        question={`Stop signing in with ${describe(identity())}?`}
+                        id={identity().id}
+                        forget={disconnect}
+                        again={methods.again}
+                      />
+                    </span>
+                  </Show>
+                </li>
               )}
-            </li>
-          ))}
-          {known.passkeys.map((passkey) => (
-            <li key={`passkey-${passkey.id}`}>
-              <span className="name">Passkey: {passkey.name}</span>
-              <span className="muted">{used(passkey)}</span>
-              {ways > 1 && (
-                <span className="end">
-                  <Forget
-                    label="Remove"
-                    question={`Stop signing in with ${passkey.name}?`}
-                    id={passkey.id}
-                    forget={removePasskey}
-                    again={again}
-                  />
-                </span>
+            </For>
+            <For each={current().passkeys} keyed={(passkey) => passkey.id}>
+              {(passkey) => (
+                <li>
+                  <span class="name">Passkey: {passkey().name}</span>
+                  <span class="muted">{used(passkey())}</span>
+                  <Show when={ways() > 1}>
+                    <span class="end">
+                      <Forget
+                        label="Remove"
+                        question={`Stop signing in with ${passkey().name}?`}
+                        id={passkey().id}
+                        forget={removePasskey}
+                        again={methods.again}
+                      />
+                    </span>
+                  </Show>
+                </li>
               )}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <Loading error={methods.error} what="your sign-in methods" />
-      )}
-      {naming !== null && (
-        <form className="pane-form" aria-label="Add a passkey" onSubmit={add}>
-          <div className="field">
-            <label htmlFor={nameId}>Passkey name</label>
+            </For>
+          </ul>
+        )}
+      </Show>
+      <Show when={naming() !== null}>
+        <form class="pane-form" aria-label="Add a passkey" onSubmit={add}>
+          <div class="field">
+            <label for={nameId}>Passkey name</label>
             <input
               id={nameId}
-              className="input"
-              maxLength={64}
-              data-autofocus
-              value={naming}
-              onChange={rename}
+              class="input"
+              maxlength={64}
+              data-autofocus=""
+              value={naming() ?? ""}
+              onInput={rename}
             />
           </div>
-          <div className="actions">
-            <button type="submit" className="button primary" disabled={working || !naming.trim()}>
+          <div class="actions">
+            <button
+              type="submit"
+              class="button primary"
+              disabled={working() || !(naming() ?? "").trim()}
+            >
               Add passkey
             </button>
-            <button type="button" className="link-button" onClick={stopNaming}>
+            <button type="button" class="link-button" onClick={stopNaming}>
               Cancel
             </button>
           </div>
         </form>
-      )}
-      {(unconnected.length > 0 || (passkeys && naming === null)) && (
-        <div className="actions">
-          {passkeys && naming === null && (
-            <button type="button" className="button" onClick={startNaming}>
+      </Show>
+      <Show when={unconnected().length > 0 || (passkeys() && naming() === null)}>
+        <div class="actions">
+          <Show when={passkeys() && naming() === null}>
+            <button type="button" class="button" onClick={startNaming}>
               Add a passkey
             </button>
-          )}
-          {unconnected.map((provider) => (
-            <ConnectButton key={provider} provider={provider} working={working} run={run} />
-          ))}
+          </Show>
+          <For each={unconnected()}>
+            {(provider) => <ConnectButton provider={provider} working={working()} run={run} />}
+          </For>
         </div>
-      )}
-      {error && (
-        <span className="error" role="alert">
-          {error}
-        </span>
-      )}
+      </Show>
+      <Show when={error()}>
+        {(message) => (
+          <span class="error" role="alert">
+            {message()}
+          </span>
+        )}
+      </Show>
       <ProveItsYou asked="methods" />
-    </>
+    </Show>
   );
 }
 
-function Forget({
-  label,
-  question,
-  id,
-  forget,
-  again,
-}: {
+function Forget(props: {
   label: string;
   question: string;
   id: number;
   forget: (id: number) => Promise<unknown>;
   again: () => void;
 }) {
-  const act = useCallback(
-    () =>
-      proven("methods", async () => {
-        await forget(id);
-        again();
-      }),
-    [forget, id, again],
-  );
-  return <Confirm label={label} question={question} act={act} />;
+  const act = () =>
+    proven("methods", async () => {
+      await props.forget(props.id);
+      props.again();
+    });
+  return <Confirm label={props.label} question={props.question} act={act} />;
 }
 
-function ConnectButton({
-  provider,
-  working,
-  run,
-}: {
+function ConnectButton(props: {
   provider: "google" | "github";
   working: boolean;
   run: (send: () => Promise<unknown>) => void;
 }) {
-  const onClick = useCallback(
-    () => run(() => proven("methods", () => connect(provider))),
-    [run, provider],
-  );
+  const onClick = () => props.run(() => proven("methods", () => connect(props.provider)));
   return (
-    <button type="button" className="button" disabled={working} onClick={onClick}>
-      Connect {PROVIDER_LABEL[provider]}
+    <button type="button" class="button" disabled={props.working} onClick={onClick}>
+      Connect {PROVIDER_LABEL[props.provider]}
     </button>
   );
 }
 
-function ProveItsYou({ asked }: { asked: "methods" | "org-link" }) {
-  const retry = useStore(proving, (state) => (state.asked === asked ? state.retry : null));
-  return retry && <Prove retry={retry} />;
+function ProveItsYou(props: { asked: "methods" | "org-link" }) {
+  const retry = useSelector(proving, (state) => (state.asked === props.asked ? state.retry : null));
+  return <Show when={retry()}>{(fn) => <Prove retry={() => fn()()} />}</Show>;
 }
 
 function stopProving() {
   proving.setState({ retry: null, asked: null });
 }
 
-function selectAll(event: FocusEvent<HTMLInputElement>) {
-  event.target.select();
+function selectAll(event: FocusEvent & { currentTarget: HTMLInputElement }) {
+  event.currentTarget.select();
 }
 
-function Prove({ retry }: { retry: () => Promise<void> }) {
+function Prove(props: { retry: () => Promise<void> }) {
   const now = useAccount();
-  const methods = useLoaded(identities, "");
-  const [password, setPassword] = useState("");
+  const methods = useLoaded(identities, () => "");
+  const [password, setPassword] = createSignal("");
   const { working, error, run } = useAction();
-  const id = useId();
+  const id = createUniqueId();
   const known = methods.data;
-  const again = (["google", "github"] as const).filter((provider) =>
-    known?.identities.some((each) => each.provider === provider),
-  );
-  const submit = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      run(async () => {
-        await verify(password).catch((failure: Error) => {
-          if (failure instanceof Refused && failure.status === 401) {
-            void checkAccount();
-          }
-          throw failure;
-        });
-        stopProving();
-        await retry();
-      });
-    },
-    [run, password, retry],
-  );
-
-  const passkey = useCallback(
-    () =>
-      run(async () => {
-        const user = await signInWithPasskey();
-        if (user && now.kind === "in" && user.id === now.user.id) {
-          stopProving();
-          await retry();
-        } else if (user) {
-          stopProving();
+  const again = createMemo(() => {
+    const current = known();
+    return (["google", "github"] as const).filter((provider) =>
+      current?.identities.some((each) => each.provider === provider),
+    );
+  });
+  const submit = (event: SubmitEvent) => {
+    event.preventDefault();
+    run(async () => {
+      await verify(password()).catch((failure: Error) => {
+        if (failure instanceof Refused && failure.status === 401) {
+          void checkAccount();
         }
-      }),
-    [run, now, retry],
-  );
-  const type = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setPassword(event.target.value),
-    [],
-  );
-  const byPasskey = (known?.passkeys.length ?? 0) > 0 && supported();
-  const cancel = (
-    <button type="button" className="link-button" onClick={stopProving}>
-      Cancel
-    </button>
-  );
-  const heading = <h2>Confirm it&apos;s you</h2>;
+        throw failure;
+      });
+      stopProving();
+      await props.retry();
+    });
+  };
+  const passkey = () =>
+    run(async () => {
+      const user = await signInWithPasskey();
+      const current = now();
+      if (user && current.kind === "in" && user.id === current.user.id) {
+        stopProving();
+        await props.retry();
+      } else if (user) {
+        stopProving();
+      }
+    });
+  const type = (event: InputEvent & { currentTarget: HTMLInputElement }) =>
+    setPassword(event.currentTarget.value);
+  const byPasskey = createMemo(() => (known()?.passkeys.length ?? 0) > 0 && supported());
   return (
     <section aria-label="Confirm it's you">
-      {known === null ? (
-        <div className="pane-form">
-          {heading}
-          <Loading error={methods.error} what="your sign-in methods" />
-        </div>
-      ) : known.has_password ? (
-        <form className="pane-form" onSubmit={submit}>
-          {heading}
-          <p className="muted">Changing how you sign in takes your password.</p>
-          <div className="field">
-            <label htmlFor={id}>Password</label>
-            <input
-              id={id}
-              className="input"
-              type="password"
-              autoComplete="current-password"
-              data-autofocus
-              value={password}
-              onChange={type}
-            />
+      <Show
+        when={known()}
+        fallback={
+          <div class="pane-form">
+            <h2>Confirm it&apos;s you</h2>
+            <Loading error={methods.error()} what="your sign-in methods" />
           </div>
-          {error && (
-            <span className="error" role="alert">
-              {error}
-            </span>
-          )}
-          <div className="actions">
-            <button type="submit" className="button primary" disabled={working || !password}>
-              Confirm
-            </button>
-            {cancel}
-          </div>
-        </form>
-      ) : (
-        <div className="pane-form">
-          {heading}
-          <p className="muted">
-            {again.length > 0 || byPasskey
-              ? "Sign in again to change how you sign in."
-              : "Sign out, then sign in again with your organization's link."}
-          </p>
-          {error && (
-            <span className="error" role="alert">
-              {error}
-            </span>
-          )}
-          <div className="actions">
-            {byPasskey && (
-              <button type="button" className="button primary" disabled={working} onClick={passkey}>
-                Sign in again with a passkey
-              </button>
-            )}
-            {again.map((provider) => (
-              <a key={provider} className="button primary" href={startUrl(provider)}>
-                Sign in again with {PROVIDER_LABEL[provider]}
-              </a>
-            ))}
-            {cancel}
-          </div>
-        </div>
-      )}
+        }
+      >
+        {(current) => (
+          <Show
+            when={current().has_password}
+            fallback={
+              <div class="pane-form">
+                <h2>Confirm it&apos;s you</h2>
+                <p class="muted">
+                  {again().length > 0 || byPasskey()
+                    ? "Sign in again to change how you sign in."
+                    : "Sign out, then sign in again with your organization's link."}
+                </p>
+                <Show when={error()}>
+                  {(message) => (
+                    <span class="error" role="alert">
+                      {message()}
+                    </span>
+                  )}
+                </Show>
+                <div class="actions">
+                  <Show when={byPasskey()}>
+                    <button
+                      type="button"
+                      class="button primary"
+                      disabled={working()}
+                      onClick={passkey}
+                    >
+                      Sign in again with a passkey
+                    </button>
+                  </Show>
+                  <For each={again()}>
+                    {(provider) => (
+                      <a class="button primary" href={startUrl(provider)} target="_self">
+                        Sign in again with {PROVIDER_LABEL[provider]}
+                      </a>
+                    )}
+                  </For>
+                  <button type="button" class="link-button" onClick={stopProving}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            }
+          >
+            <form class="pane-form" onSubmit={submit}>
+              <h2>Confirm it&apos;s you</h2>
+              <p class="muted">Changing how you sign in takes your password.</p>
+              <div class="field">
+                <label for={id}>Password</label>
+                <input
+                  id={id}
+                  class="input"
+                  type="password"
+                  autocomplete="current-password"
+                  data-autofocus=""
+                  value={password()}
+                  onInput={type}
+                />
+              </div>
+              <Show when={error()}>
+                {(message) => (
+                  <span class="error" role="alert">
+                    {message()}
+                  </span>
+                )}
+              </Show>
+              <div class="actions">
+                <button type="submit" class="button primary" disabled={working() || !password()}>
+                  Confirm
+                </button>
+                <button type="button" class="link-button" onClick={stopProving}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </Show>
+        )}
+      </Show>
     </section>
   );
 }
 
-function Copyable({ label, value, note }: { label: string; value: string; note?: ReactNode }) {
-  const id = useId();
-  const noteId = useId();
-  const [copied, setCopied] = useState(false);
-  const field = useRef<HTMLInputElement>(null);
-  const copy = useCallback(
-    () =>
-      navigator.clipboard.writeText(value).then(
-        () => setCopied(true),
-        () => field.current?.focus(),
-      ),
-    [value],
-  );
+function Copyable(props: { label: string; value: string; note?: JSX.Element }) {
+  const id = createUniqueId();
+  const noteId = createUniqueId();
+  const [copied, setCopied] = createSignal(false);
+  let field: HTMLInputElement | undefined;
+  const copy = () =>
+    navigator.clipboard.writeText(props.value).then(
+      () => setCopied(true),
+      () => field?.focus(),
+    );
   return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      <div className="link-field">
+    <div class="field">
+      <label for={id}>{props.label}</label>
+      <div class="link-field">
         <input
-          ref={field}
+          ref={(el) => {
+            field = el;
+          }}
           id={id}
-          readOnly
-          value={value}
-          aria-describedby={note ? noteId : undefined}
+          readonly
+          value={props.value}
+          aria-describedby={props.note ? noteId : undefined}
           onFocus={selectAll}
         />
         <button type="button" onClick={copy}>
-          {copied ? "Copied" : "Copy"}
+          {copied() ? "Copied" : "Copy"}
         </button>
       </div>
-      {note && (
-        <span id={noteId} className="note">
-          {note}
-        </span>
-      )}
+      <Show when={props.note}>
+        {(note) => (
+          <span id={noteId} class="note">
+            {note()}
+          </span>
+        )}
+      </Show>
     </div>
   );
 }
 
-export function OrgSingleSignOn({ org }: { org: Org }) {
+export function OrgSingleSignOn(props: { org: Org }) {
   const offered = useProviders();
 
   const loaded = useLoaded(
-    () => loadOrgSso(org.id).then((settings) => ({ settings })),
-    String(org.id),
+    () => loadOrgSso(props.org.id).then((settings) => ({ settings })),
+    () => String(props.org.id),
   );
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = createSignal(false);
   const { working, error, run } = useAction();
-  const again = loaded.again;
-  const setUp = useCallback(
-    () =>
-      run(async () => {
-        await createOrgSso(org.id);
-        again();
-      }),
-    [run, org.id, again],
-  );
-  if (!offered?.saml) {
-    return null;
-  }
+  const setUp = () =>
+    run(async () => {
+      await createOrgSso(props.org.id);
+      loaded.again();
+    });
   return (
-    <>
+    <Show when={offered()?.saml}>
       <h2>Single sign-on</h2>
-      {loaded.data === null ? (
-        <Loading error={loaded.error} what="single sign-on" />
-      ) : loaded.data.settings ? (
-        <Connection
-          org={org}
-          settings={loaded.data.settings}
-          editing={editing || loaded.data.settings.idp === null}
-          edit={setEditing}
-          changed={loaded.again}
-        />
-      ) : (
-        <>
-          <p className="muted">
-            Let {org.name}&apos;s members sign in with your identity provider, such as Okta, Entra
-            ID, or Google Workspace. Anyone who signs in through it joins {org.name}.
-          </p>
-          <div className="actions">
-            <button type="button" className="button" disabled={working} onClick={setUp}>
-              Set up single sign-on
-            </button>
-          </div>
-          {error && (
-            <span className="error" role="alert">
-              {error}
-            </span>
-          )}
-        </>
-      )}
-    </>
+      <Show
+        when={loaded.data()}
+        fallback={<Loading error={loaded.error()} what="single sign-on" />}
+      >
+        {(result) => (
+          <Show
+            when={result().settings}
+            fallback={
+              <>
+                <p class="muted">
+                  Let {props.org.name}&apos;s members sign in with your identity provider, such as
+                  Okta, Entra ID, or Google Workspace. Anyone who signs in through it joins{" "}
+                  {props.org.name}.
+                </p>
+                <div class="actions">
+                  <button type="button" class="button" disabled={working()} onClick={setUp}>
+                    Set up single sign-on
+                  </button>
+                </div>
+                <Show when={error()}>
+                  {(message) => (
+                    <span class="error" role="alert">
+                      {message()}
+                    </span>
+                  )}
+                </Show>
+              </>
+            }
+          >
+            {(settings) => (
+              <Connection
+                org={props.org}
+                settings={settings()}
+                editing={editing() || settings().idp === null}
+                edit={setEditing}
+                changed={loaded.again}
+              />
+            )}
+          </Show>
+        )}
+      </Show>
+    </Show>
   );
 }
 
@@ -569,87 +626,91 @@ function Connection(props: {
   edit: (editing: boolean) => void;
   changed: () => void;
 }) {
-  const { org, settings, edit, changed } = props;
-  const saved = useCallback(() => {
-    edit(false);
-    changed();
-  }, [edit, changed]);
-  const stopEditing = useCallback(() => edit(false), [edit]);
-  const startEditing = useCallback(() => edit(true), [edit]);
-  const remove = useCallback(async () => {
-    await removeOrgSso(org.id);
-    changed();
-  }, [org.id, changed]);
+  const saved = () => {
+    props.edit(false);
+    props.changed();
+  };
+  const stopEditing = () => props.edit(false);
+  const startEditing = () => props.edit(true);
+  const remove = async () => {
+    await removeOrgSso(props.org.id);
+    props.changed();
+  };
   return (
     <>
-      {settings.idp ? (
-        <>
-          <p>
-            Members sign in at this link. Anyone your identity provider signs in joins {org.name} as
-            a member.
+      <Show
+        when={props.settings.idp}
+        fallback={
+          <p class="muted">
+            Add an application to your identity provider with these values, then enter what it gives
+            you below.
           </p>
-          <Copyable label="Sign-in link" value={settings.sign_in_url} />
-        </>
-      ) : (
-        <p className="muted">
-          Add an application to your identity provider with these values, then enter what it gives
-          you below.
+        }
+      >
+        <p>
+          Members sign in at this link. Anyone your identity provider signs in joins{" "}
+          {props.org.name} as a member.
         </p>
-      )}
-      <details className="disclosure" open={!settings.idp}>
+        <Copyable label="Sign-in link" value={props.settings.sign_in_url} />
+      </Show>
+      <details class="disclosure" open={!props.settings.idp}>
         <summary>For your identity provider</summary>
-        <div className="pane-form">
-          <Copyable label="Entity ID (audience)" value={settings.sp.entity_id} />
-          <Copyable label="ACS URL (reply URL)" value={settings.sp.acs_url} />
-          <Copyable label="Metadata URL" value={settings.sp.metadata_url} />
+        <div class="pane-form">
+          <Copyable label="Entity ID (audience)" value={props.settings.sp.entity_id} />
+          <Copyable label="ACS URL (reply URL)" value={props.settings.sp.acs_url} />
+          <Copyable label="Metadata URL" value={props.settings.sp.metadata_url} />
           <Copyable
             label="Name ID format"
-            value={settings.sp.name_id_format}
+            value={props.settings.sp.name_id_format}
             note="Send each person's email address as the Name ID. In Google Workspace, that is Primary email."
           />
-          <p className="muted">
+          <p class="muted">
             Optional: map each person&apos;s first and last name to attributes named{" "}
             <code>firstName</code> and <code>lastName</code>, and Microscope will use them.
           </p>
         </div>
       </details>
-      {props.editing ? (
+      <Show
+        when={props.editing}
+        fallback={
+          <Show when={props.settings.idp}>
+            {(idp) => (
+              <ul class="roster" aria-label="Identity provider">
+                <li>
+                  <span class="name">{idp().entity_id}</span>
+                  <span class="muted">
+                    {idp().certificates.length === 1
+                      ? "1 certificate"
+                      : `${idp().certificates.length} certificates`}
+                  </span>
+                  <span class="end">
+                    <button type="button" class="button small" onClick={startEditing}>
+                      Edit
+                    </button>
+                  </span>
+                </li>
+              </ul>
+            )}
+          </Show>
+        }
+      >
         <IdpForm
-          org={org}
-          settings={settings}
+          org={props.org}
+          settings={props.settings}
           done={saved}
-          cancel={settings.idp ? stopEditing : null}
-          abandon={settings.idp ? null : remove}
+          cancel={props.settings.idp ? stopEditing : null}
+          abandon={props.settings.idp ? null : remove}
         />
-      ) : (
-        settings.idp && (
-          <ul className="roster" aria-label="Identity provider">
-            <li>
-              <span className="name">{settings.idp.entity_id}</span>
-              <span className="muted">
-                {settings.idp.certificates.length === 1
-                  ? "1 certificate"
-                  : `${settings.idp.certificates.length} certificates`}
-              </span>
-              <span className="end">
-                <button type="button" className="button small" onClick={startEditing}>
-                  Edit
-                </button>
-              </span>
-            </li>
-          </ul>
-        )
-      )}
-      {}
-      {settings.idp && (
-        <div className="actions">
+      </Show>
+      <Show when={props.settings.idp}>
+        <div class="actions">
           <Confirm
             label="Turn off single sign-on"
-            question={`Stop signing members in through ${org.name}'s identity provider? They keep their accounts.`}
+            question={`Stop signing members in through ${props.org.name}'s identity provider? They keep their accounts.`}
             act={remove}
           />
         </div>
-      )}
+      </Show>
     </>
   );
 }
@@ -658,127 +719,125 @@ function IdpForm(props: {
   org: Org;
   settings: OrgSso;
   done: () => void;
-
   cancel: (() => void) | null;
-
   abandon: (() => Promise<unknown>) | null;
 }) {
-  const idp = props.settings.idp;
-  const [entityId, setEntityId] = useState(idp?.entity_id ?? "");
-  const [ssoUrl, setSsoUrl] = useState(idp?.sso_url ?? "");
-  const [certificate, setCertificate] = useState(idp?.certificates[0] ?? "");
-  const [next, setNext] = useState(idp?.certificates[1] ?? "");
+  const [entityId, setEntityId] = createSignal(() => props.settings.idp?.entity_id ?? "");
+  const [ssoUrl, setSsoUrl] = createSignal(() => props.settings.idp?.sso_url ?? "");
+  const [certificate, setCertificate] = createSignal(
+    () => props.settings.idp?.certificates[0] ?? "",
+  );
+  const [next, setNext] = createSignal(() => props.settings.idp?.certificates[1] ?? "");
   const { working, error, run } = useAction();
-  const ids = { entity: useId(), url: useId(), cert: useId(), next: useId(), nextNote: useId() };
-  const orgId = props.org.id;
-  const done = props.done;
-  const submit = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      run(async () => {
-        await configureOrgSso(orgId, {
-          idp_entity_id: entityId,
-          idp_sso_url: ssoUrl,
-          certificates: [certificate, next].filter((each) => each.trim()),
-        });
-        done();
+  const ids = {
+    entity: createUniqueId(),
+    url: createUniqueId(),
+    cert: createUniqueId(),
+    next: createUniqueId(),
+    nextNote: createUniqueId(),
+  };
+  const submit = (event: SubmitEvent) => {
+    event.preventDefault();
+    run(async () => {
+      await configureOrgSso(props.org.id, {
+        idp_entity_id: entityId(),
+        idp_sso_url: ssoUrl(),
+        certificates: [certificate(), next()].filter((each) => each.trim()),
       });
-    },
-    [run, orgId, entityId, ssoUrl, certificate, next, done],
-  );
-  const typeUrl = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setSsoUrl(event.target.value),
-    [],
-  );
-  const typeEntity = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setEntityId(event.target.value),
-    [],
-  );
-  const typeCertificate = useCallback(
-    (event: ChangeEvent<HTMLTextAreaElement>) => setCertificate(event.target.value),
-    [],
-  );
-  const typeNext = useCallback(
-    (event: ChangeEvent<HTMLTextAreaElement>) => setNext(event.target.value),
-    [],
-  );
+      props.done();
+    });
+  };
+  const typeUrl = (event: InputEvent & { currentTarget: HTMLInputElement }) =>
+    setSsoUrl(event.currentTarget.value);
+  const typeEntity = (event: InputEvent & { currentTarget: HTMLInputElement }) =>
+    setEntityId(event.currentTarget.value);
+  const typeCertificate = (event: InputEvent & { currentTarget: HTMLTextAreaElement }) =>
+    setCertificate(event.currentTarget.value);
+  const typeNext = (event: InputEvent & { currentTarget: HTMLTextAreaElement }) =>
+    setNext(event.currentTarget.value);
   return (
-    <form className="pane-form" onSubmit={submit} aria-label="Identity provider">
-      <div className="field">
-        <label htmlFor={ids.url}>Single sign-on URL</label>
+    <form class="pane-form" onSubmit={submit} aria-label="Identity provider">
+      <div class="field">
+        <label for={ids.url}>Single sign-on URL</label>
         <input
           id={ids.url}
-          className="input"
+          class="input"
           type="url"
-          spellCheck={false}
+          spellcheck={false}
           placeholder="https://"
-          value={ssoUrl}
-          onChange={typeUrl}
+          value={ssoUrl()}
+          onInput={typeUrl}
         />
       </div>
-      <div className="field">
-        <label htmlFor={ids.entity}>Identity provider entity ID (issuer)</label>
+      <div class="field">
+        <label for={ids.entity}>Identity provider entity ID (issuer)</label>
         <input
           id={ids.entity}
-          className="input"
-          spellCheck={false}
-          value={entityId}
-          onChange={typeEntity}
+          class="input"
+          spellcheck={false}
+          value={entityId()}
+          onInput={typeEntity}
         />
       </div>
-      <div className="field">
-        <label htmlFor={ids.cert}>Signing certificate</label>
+      <div class="field">
+        <label for={ids.cert}>Signing certificate</label>
         <textarea
           id={ids.cert}
-          className="input"
+          class="input"
           rows={4}
-          spellCheck={false}
+          spellcheck={false}
           placeholder="-----BEGIN CERTIFICATE-----"
-          value={certificate}
-          onChange={typeCertificate}
+          value={certificate()}
+          onInput={typeCertificate}
         />
       </div>
-      <div className="field">
-        <label htmlFor={ids.next}>Next signing certificate</label>
+      <div class="field">
+        <label for={ids.next}>Next signing certificate</label>
         <textarea
           id={ids.next}
-          className="input"
+          class="input"
           rows={2}
-          spellCheck={false}
+          spellcheck={false}
           aria-describedby={ids.nextNote}
-          value={next}
-          onChange={typeNext}
+          value={next()}
+          onInput={typeNext}
         />
-        <span id={ids.nextNote} className="note">
+        <span id={ids.nextNote} class="note">
           Optional. While your identity provider rotates its certificate, either one signs in.
         </span>
       </div>
-      {error && (
-        <span className="error" role="alert">
-          {error}
-        </span>
-      )}
-      <div className="actions">
+      <Show when={error()}>
+        {(message) => (
+          <span class="error" role="alert">
+            {message()}
+          </span>
+        )}
+      </Show>
+      <div class="actions">
         <button
           type="submit"
-          className="button primary"
-          disabled={working || !entityId.trim() || !ssoUrl.trim() || !certificate.trim()}
+          class="button primary"
+          disabled={working() || !entityId().trim() || !ssoUrl().trim() || !certificate().trim()}
         >
           Save
         </button>
-        {props.cancel && (
-          <button type="button" className="link-button" onClick={props.cancel}>
-            Cancel
-          </button>
-        )}
-        {props.abandon && (
-          <Confirm
-            label="Cancel setup"
-            question="Cancel setting up single sign-on? The values you gave your identity provider stop working."
-            act={props.abandon}
-            keep="Keep setting up"
-          />
-        )}
+        <Show when={props.cancel}>
+          {(cancel) => (
+            <button type="button" class="link-button" onClick={() => cancel()()}>
+              Cancel
+            </button>
+          )}
+        </Show>
+        <Show when={props.abandon}>
+          {(abandon) => (
+            <Confirm
+              label="Cancel setup"
+              question="Cancel setting up single sign-on? The values you gave your identity provider stop working."
+              act={() => abandon()()}
+              keep="Keep setting up"
+            />
+          )}
+        </Show>
       </div>
     </form>
   );

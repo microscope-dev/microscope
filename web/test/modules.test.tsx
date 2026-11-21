@@ -7,7 +7,7 @@ import { mountPane, unmountPane } from "./pane";
 afterEach(unmountPane);
 
 it("names what a module's row does not know", async () => {
-  const server = await mountPane(<Modules />);
+  const server = await mountPane(() => <Modules />);
   server.answer(await server.next("modules"), {
     modules: [
       {

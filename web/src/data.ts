@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { isServer } from "@solidjs/web";
+import { createEffect, createMemo, createSignal } from "solid-js";
 
 import { assert } from "./assert";
 import type { Connection } from "./connection";
@@ -18,6 +19,7 @@ const LIMIT = 400;
 export class Cache {
   readonly #entries = new Map<string, Entry>();
   readonly #listeners = new Set<() => void>();
+  readonly #versionSignal = isServer ? null : createSignal(0, { ownedWrite: true });
 
   #version = 0;
 
@@ -26,13 +28,21 @@ export class Cache {
     return () => this.#listeners.delete(listener);
   };
 
-  readonly version = (): number => this.#version;
+  readonly version = (): number => {
+    this.#versionSignal?.[0]();
+    return this.#version;
+  };
 
   #forgot(): void {
     this.#version += 1;
+    this.#versionSignal?.[1](this.#version);
     for (const listener of this.#listeners) {
       listener();
     }
+  }
+
+  peek(method: Method, params: unknown): Entry | undefined {
+    return this.#entries.get(cacheKey(method, params));
   }
 
   get(connection: Connection, method: Method, params: unknown): Entry {
@@ -117,58 +127,74 @@ export interface Requested<T> {
 
 export function useRequest<M extends Method>(
   method: M,
-  params: (ParamsOf<M> extends undefined ? undefined : ParamsOf<M>) | null,
+  params: () => (ParamsOf<M> extends undefined ? undefined : ParamsOf<M>) | null,
   source: Cache = cache,
-): Requested<Results[M]> {
+): () => Requested<Results[M]> {
   const connection = useConnection();
   const visible = useVisible();
-  const key = params === null ? null : cacheKey(method, params);
 
-  const version = useSyncExternalStore(source.subscribe, source.version);
-  const [shown, setShown] = useState<{ key: string | null; settled?: Settled }>(() => {
-    if (key === null || !visible) {
-      return { key: null };
-    }
-    const settled = source.get(connection, method, params).settled;
-    return settled ? { key, settled } : { key: null };
-  });
+  const request = createMemo(
+    () => {
+      const wanted = params();
+      const key = wanted === null ? null : cacheKey(method, wanted);
+      return { wanted, key, visible: visible(), version: source.version() };
+    },
+    {
+      equals: (a, b) => a.key === b.key && a.visible === b.visible && a.version === b.version,
+    },
+  );
 
-  const asked = useRef(params);
-  // oxlint-disable-next-line react/refs -- the effect reads the latest parameters but reruns only when the key changes
-  asked.current = params;
+  const [arrived, setArrived] = createSignal<{
+    key: string;
+    version: number;
+    settled: Settled;
+  } | null>(null);
 
-  useEffect(() => {
-    const wanted = asked.current;
-    if (!visible) {
-      return;
-    }
+  createEffect(
+    () => request(),
+    ({ wanted, key, visible: isVisible, version }) => {
+      if (!isVisible || key === null || wanted === null) {
+        return;
+      }
+      let live = true;
+      const entry = source.get(connection, method, wanted);
+      if (!entry.settled) {
+        void (async () => {
+          const settled = await entry.promise;
+          if (live) {
+            setArrived({ key, version, settled });
+          }
+        })();
+      }
+      return () => {
+        live = false;
+      };
+    },
+  );
+
+  let kept: { key: string; version: number; settled: Settled } | null = null;
+
+  return createMemo(() => {
+    const { key, wanted, visible: isVisible, version } = request();
+    const latest = arrived();
     if (key === null || wanted === null) {
-      setShown({ key: null });
-      return;
+      kept = null;
+      return { data: undefined, error: undefined, current: false };
     }
-    let live = true;
-    const entry = source.get(connection, method, wanted);
-    if (entry.settled) {
-      setShown({ key, settled: entry.settled });
-    } else {
-      void (async () => {
-        const settled = await entry.promise;
-        if (live) {
-          setShown({ key, settled });
-        }
-      })();
+    if (latest && latest.key === key && latest.version === version) {
+      kept = latest;
+    } else if (isVisible && (kept?.key !== key || kept.version !== version)) {
+      const cached = source.peek(method, wanted)?.settled;
+      if (cached) {
+        kept = { key, version, settled: cached };
+      }
     }
-    return () => {
-      live = false;
+    const settled = kept?.settled;
+    const current = kept !== null && kept.key === key && kept.version === version;
+    return {
+      data: settled?.ok ? (settled.value as Results[M]) : undefined,
+      error: current && settled && !settled.ok ? settled.error : undefined,
+      current,
     };
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- a new version means answers were forgotten, so ask again
-  }, [key, connection, method, source, version, visible]);
-
-  const current = shown.key === key && key !== null;
-  const settled = shown.settled;
-  return {
-    data: settled?.ok ? (settled.value as Results[M]) : undefined,
-    error: current && settled && !settled.ok ? settled.error : undefined,
-    current: current && settled !== undefined,
-  };
+  });
 }

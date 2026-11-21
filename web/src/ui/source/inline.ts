@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { createEffect, createMemo, createSignal } from "solid-js";
 
 import { assert } from "../../assert";
 import { cache } from "../../data";
@@ -47,73 +47,82 @@ export function shownInline(row: Row): boolean {
 }
 
 export function useInlineValues(
-  at: At | null,
-  path: string,
-  text: string | undefined,
-  line: number | null,
-  first: number | null,
-): Map<number, InlineValue[]> {
+  at: () => At | null,
+  path: () => string,
+  text: () => string | undefined,
+  line: () => number | null,
+  first: () => number | null,
+): () => Map<number, InlineValue[]> {
   const connection = useConnection();
 
   const writes = useModel((model) => model.state?.writes);
-  const wanted = useMemo(
-    () =>
-      at && text && line ? inlineExpressions(text, line, first, path) : new Map<number, string[]>(),
-    [at, path, text, line, first],
-  );
+  const wanted = createMemo(() => {
+    const currentAt = at();
+    const currentText = text();
+    const currentLine = line();
+    return currentAt && currentText && currentLine
+      ? inlineExpressions(currentText, currentLine, first(), path())
+      : new Map<number, string[]>();
+  });
 
-  const [values, setValues] = useState<{
+  const [values, setValues] = createSignal<{
     at: At | null;
     writes: number | undefined;
     rows: Map<string, Row>;
   }>({ at: null, writes: undefined, rows: new Map() });
 
-  useEffect(() => {
-    if (!at || writes === undefined) {
-      return;
-    }
-    let live = true;
-    const expressions = [...wanted.values()].flat();
-    const load = async () => {
-      const settled = await Promise.all(
-        expressions.map((expression) =>
-          cache
-            .get(connection, "evaluate", { ...at, expression })
-            .promise.then((outcome) => [expression, outcome] as const),
-        ),
-      );
-      if (!live) {
+  createEffect(
+    () => [at(), wanted(), writes()] as const,
+    ([currentAt, currentWanted, currentWrites]) => {
+      if (!currentAt || currentWrites === undefined) {
         return;
       }
-      const rows = new Map<string, Row>();
-      for (const [expression, outcome] of settled) {
-        if (outcome.ok) {
-          rows.set(expression, outcome.value as Row);
+      let live = true;
+      const expressions = [...currentWanted.values()].flat();
+      const load = async () => {
+        const settled = await Promise.all(
+          expressions.map((expression) =>
+            cache
+              .get(connection, "evaluate", { ...currentAt, expression })
+              .promise.then((outcome) => [expression, outcome] as const),
+          ),
+        );
+        if (!live) {
+          return;
         }
-      }
-      setValues({ at, writes, rows });
-    };
-    void load();
-    return () => {
-      live = false;
-    };
-  }, [at, wanted, connection, writes]);
+        const rows = new Map<string, Row>();
+        for (const [expression, outcome] of settled) {
+          if (outcome.ok) {
+            rows.set(expression, outcome.value as Row);
+          }
+        }
+        setValues({ at: currentAt, writes: currentWrites, rows });
+      };
+      void load();
+      return () => {
+        live = false;
+      };
+    },
+  );
 
-  return useMemo(() => {
+  return createMemo(() => {
     const shown = new Map<number, InlineValue[]>();
-    if (!at || values.at !== at || values.writes !== writes) {
+    const currentAt = at();
+    const currentWrites = writes();
+    const currentValues = values();
+    if (!currentAt || currentValues.at !== currentAt || currentValues.writes !== currentWrites) {
       return shown;
     }
-    for (const [number, expressions] of wanted) {
+    for (const [number, expressions] of wanted()) {
       const parts: InlineValue[] = [];
       for (const expression of expressions) {
-        const row = values.rows.get(expression);
+        const row = currentValues.rows.get(expression);
         if (!row || !shownInline(row)) {
           continue;
         }
         const key = `inline/${expression}`;
-        const was = recall.before(at.stop, key);
-        recall.note(at.stop, key, row.text);
+        const was = recall.before(currentAt.stop, key);
+        recall.note(currentAt.stop, key, row.text);
         parts.push({
           text: `${expression} = ${row.text}`,
           changed: was !== undefined && was !== row.text,
@@ -124,5 +133,5 @@ export function useInlineValues(
       }
     }
     return shown;
-  }, [at, values, wanted, writes]);
+  });
 }

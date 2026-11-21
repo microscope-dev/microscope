@@ -1,12 +1,12 @@
-import { type ChangeEvent, type KeyboardEvent, useCallback, useMemo, useState } from "react";
+import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
 
 import {
   ago,
   clearFilters,
   day,
   type EnrollmentKey,
-  fleetApi,
   filtered,
+  fleetApi,
   type Look,
   type Machine,
   type Overview,
@@ -23,162 +23,148 @@ const STATE_CHOICES: readonly StateChoice[] = ["live", "quiet", "stopped", "revo
 
 const NONE = "";
 
+const tagValueName = (value: string) => (value === ANY ? "any" : value === NONE ? "none" : value);
+
 function TagChip(props: { look: Look; name: string; value: string; values: string[] | undefined }) {
-  const { look, name } = props;
-  const pick = useCallback(
-    (value: string) => {
-      const others = Object.entries(look.tags).filter(([other]) => other !== name);
-      setLook({
-        tags: Object.fromEntries(value === ANY ? others : [...others, [name, value]]),
-        machine: null,
-      });
-    },
-    [look.tags, name],
-  );
-  const options = useMemo(() => [ANY, NONE, ...(props.values ?? [])], [props.values]);
-  const clear = useCallback(() => pick(ANY), [pick]);
-  const names = useCallback(
-    (value: string) => (value === ANY ? "any" : value === NONE ? "none" : value),
-    [],
-  );
+  const pick = (value: string) => {
+    const others = Object.entries(props.look.tags).filter(([other]) => other !== props.name);
+    setLook({
+      tags: Object.fromEntries(value === ANY ? others : [...others, [props.name, value]]),
+      machine: null,
+    });
+  };
+  const options = createMemo(() => [ANY, NONE, ...(props.values ?? [])]);
+  const clear = () => pick(ANY);
   return (
     <Chip
-      label={name}
+      label={props.name}
       value={props.value}
-      options={options}
-      names={names}
+      options={options()}
+      names={tagValueName}
       pick={pick}
       clear={clear}
     />
   );
 }
 
-function AddTag({ look, overview }: { look: Look; overview: Overview }) {
-  const choices = Object.entries(overview.tags).filter(([name]) => !(name in look.tags));
-  const pick = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => {
-      const choice = event.target.value;
-      const at = choice.indexOf("=");
-      if (at > 0) {
-        setLook({
-          tags: { ...look.tags, [choice.slice(0, at)]: choice.slice(at + 1) },
-          machine: null,
-        });
-      }
-    },
-    [look.tags],
+function AddTag(props: { look: Look; overview: Overview }) {
+  const choices = createMemo(() =>
+    Object.entries(props.overview.tags).filter(([name]) => !(name in props.look.tags)),
   );
-  if (choices.length === 0) {
-    return null;
-  }
+  const pick = (event: Event & { currentTarget: HTMLSelectElement }) => {
+    const choice = event.currentTarget.value;
+    event.currentTarget.value = "";
+    const at = choice.indexOf("=");
+    if (at > 0) {
+      setLook({
+        tags: { ...props.look.tags, [choice.slice(0, at)]: choice.slice(at + 1) },
+        machine: null,
+      });
+    }
+  };
   return (
-    <label className="machines-chip add">
-      <span className="visually-hidden">Add tag filter</span>
-      <select value="" onChange={pick}>
-        <option value="">Add tag filter</option>
-        {choices.map(([name, values]) => (
-          <optgroup key={name} label={name}>
-            {values.map((value) => (
-              <option key={value} value={`${name}=${value}`}>
-                {value}
-              </option>
-            ))}
-            <option value={`${name}=`}>no {name}</option>
-          </optgroup>
-        ))}
-      </select>
-    </label>
+    <Show when={choices().length > 0}>
+      <label class="machines-chip add">
+        <span class="visually-hidden">Add tag filter</span>
+        <select value="" onChange={pick}>
+          <option value="">Add tag filter</option>
+          <For each={choices()}>
+            {([name, values]) => (
+              <optgroup label={name}>
+                <For each={values}>
+                  {(value) => <option value={`${name}=${value}`}>{value}</option>}
+                </For>
+                <option value={`${name}=`}>no {name}</option>
+              </optgroup>
+            )}
+          </For>
+        </select>
+      </label>
+    </Show>
   );
 }
 
+const pickState = (value: string) => setLook({ state: value as StateChoice, machine: null });
+const pickEnvironment = (value: string) =>
+  setLook({ environment: value === ANY ? null : value, machine: null });
+const pickVersion = (value: string) =>
+  setLook({ version: value === ANY ? null : value, machine: null });
+const pickKey = (value: string) =>
+  setLook({ key: value === ANY ? null : Number(value), machine: null });
+const clearState = () => setLook({ state: null, machine: null });
+const clearEnvironment = () => pickEnvironment(ANY);
+const clearVersion = () => pickVersion(ANY);
+const clearKey = () => pickKey(ANY);
+const stateName = (value: string) =>
+  value === ANY ? "any" : STATE_LABEL[value as keyof typeof STATE_LABEL];
+
 function Chips(props: { look: Look; overview: Overview; keys: EnrollmentKey[] | null }) {
-  const { look, overview, keys } = props;
-  const state = useCallback(
-    (value: string) => setLook({ state: value as StateChoice, machine: null }),
-    [],
-  );
-  const environment = useCallback(
-    (value: string) => setLook({ environment: value === ANY ? null : value, machine: null }),
-    [],
-  );
-  const version = useCallback(
-    (value: string) => setLook({ version: value === ANY ? null : value, machine: null }),
-    [],
-  );
-  const key = useCallback(
-    (value: string) => setLook({ key: value === ANY ? null : Number(value), machine: null }),
-    [],
-  );
-  const keyIds = useMemo(() => (keys ?? []).map((each) => String(each.id)), [keys]);
-  const keyName = useCallback(
-    (value: string) =>
-      value === ANY
-        ? ANY
-        : (keys?.find((each) => String(each.id) === value)?.name ?? `enrollment key ${value}`),
-    [keys],
-  );
-  const clearState = useCallback(() => setLook({ state: null, machine: null }), []);
-  const clearEnvironment = useCallback(() => environment(ANY), [environment]);
-  const clearVersion = useCallback(() => version(ANY), [version]);
-  const clearKey = useCallback(() => key(ANY), [key]);
-  const stateName = useCallback(
-    (value: string) => (value === ANY ? "any" : STATE_LABEL[value as keyof typeof STATE_LABEL]),
-    [],
-  );
+  const keyIds = createMemo(() => (props.keys ?? []).map((each) => String(each.id)));
+  const keyName = (value: string) =>
+    value === ANY
+      ? ANY
+      : (props.keys?.find((each) => String(each.id) === value)?.name ?? `enrollment key ${value}`);
+  const tagEntries = createMemo(() => Object.entries(props.look.tags));
   return (
-    <div className="machines-chips">
+    <div class="machines-chips">
       <Chip
         label="State"
-        value={shownState(look)}
+        value={shownState(props.look)}
         options={STATE_CHOICES}
         names={stateName}
-        pick={state}
-        clear={look.state === null ? undefined : clearState}
+        pick={pickState}
+        clear={props.look.state === null ? undefined : clearState}
       />
       <Chip
         label="Environment"
-        value={look.environment ?? ANY}
-        options={overview.environments}
-        pick={environment}
-        clear={look.environment === null ? undefined : clearEnvironment}
+        value={props.look.environment ?? ANY}
+        options={props.overview.environments}
+        pick={pickEnvironment}
+        clear={props.look.environment === null ? undefined : clearEnvironment}
       />
       <Chip
         label="Version"
-        value={look.version ?? ANY}
-        options={overview.versions}
-        pick={version}
-        clear={look.version === null ? undefined : clearVersion}
+        value={props.look.version ?? ANY}
+        options={props.overview.versions}
+        pick={pickVersion}
+        clear={props.look.version === null ? undefined : clearVersion}
       />
-      {keys !== null && (keys.length > 0 || look.key !== null) && (
+      <Show when={props.keys !== null && (props.keys.length > 0 || props.look.key !== null)}>
         <Chip
           label="Enrollment key"
-          value={look.key === null ? ANY : String(look.key)}
-          options={keyIds}
+          value={props.look.key === null ? ANY : String(props.look.key)}
+          options={keyIds()}
           names={keyName}
-          pick={key}
-          clear={look.key === null ? undefined : clearKey}
+          pick={pickKey}
+          clear={props.look.key === null ? undefined : clearKey}
         />
-      )}
-      {Object.entries(look.tags).map(([name, value]) => (
-        <TagChip key={name} look={look} name={name} value={value} values={overview.tags[name]} />
-      ))}
-      <AddTag look={look} overview={overview} />
+      </Show>
+      <For each={tagEntries()}>
+        {([name, value]) => (
+          <TagChip look={props.look} name={name} value={value} values={props.overview.tags[name]} />
+        )}
+      </For>
+      <AddTag look={props.look} overview={props.overview} />
     </div>
   );
 }
 
-function Marked({ text, query }: { text: string; query: string }) {
-  const q = query.trim().toLowerCase();
-  const at = q === "" ? -1 : text.toLowerCase().indexOf(q);
-  if (at === -1) {
-    return text;
-  }
+function Marked(props: { text: string; query: string }) {
+  const match = createMemo(() => {
+    const q = props.query.trim().toLowerCase();
+    const at = q === "" ? -1 : props.text.toLowerCase().indexOf(q);
+    return at === -1 ? null : { at, length: q.length };
+  });
   return (
-    <>
-      {text.slice(0, at)}
-      <mark>{text.slice(at, at + q.length)}</mark>
-      {text.slice(at + q.length)}
-    </>
+    <Show when={match()} fallback={props.text}>
+      {(found) => (
+        <>
+          {props.text.slice(0, found().at)}
+          <mark>{props.text.slice(found().at, found().at + found().length)}</mark>
+          {props.text.slice(found().at + found().length)}
+        </>
+      )}
+    </Show>
   );
 }
 
@@ -192,7 +178,7 @@ function seen(machine: Machine, now: number): string {
   return ago(machine.last_seen_at, now);
 }
 
-function walk(event: KeyboardEvent<HTMLButtonElement>) {
+function walk(event: KeyboardEvent & { currentTarget: HTMLButtonElement }) {
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
     return;
   }
@@ -208,89 +194,98 @@ function walk(event: KeyboardEvent<HTMLButtonElement>) {
   ]?.focus();
 }
 
-function Row({ machine, look, now }: { machine: Machine; look: Look; now: number }) {
-  const chosen = look.machine === machine.id;
-  const open = useCallback(
-    () => setLook({ machine: chosen ? null : machine.id }),
-    [chosen, machine.id],
-  );
+function Row(props: { machine: Machine; look: Look; now: number }) {
+  const chosen = createMemo(() => props.look.machine === props.machine.id);
+  const open = () => setLook({ machine: chosen() ? null : props.machine.id });
   return (
     <li>
       <button
         type="button"
-        className={`machines-row${chosen ? " chosen" : ""}`}
-        aria-current={chosen}
-        aria-label={`${machine.hostname}, ${STATE_LABEL[machine.state].toLowerCase()}`}
-        data-machine={machine.id}
+        class={`machines-row${chosen() ? " chosen" : ""}`}
+        aria-current={chosen() ? "true" : "false"}
+        aria-label={`${props.machine.hostname}, ${STATE_LABEL[props.machine.state].toLowerCase()}`}
+        data-machine={props.machine.id}
         onClick={open}
         onKeyDown={walk}
       >
-        <span className="machines-host">
-          <Dot state={machine.state} />
-          <span className="mono">
-            <Marked text={machine.hostname} query={look.q} />
+        <span class="machines-host">
+          <Dot state={props.machine.state} />
+          <span class="mono">
+            <Marked text={props.machine.hostname} query={props.look.q} />
           </span>
-          {machine.matched && <span className="machines-matched">matched {machine.matched}</span>}
+          <Show when={props.machine.matched}>
+            {(matched) => <span class="machines-matched">matched {matched()}</span>}
+          </Show>
         </span>
-        <span className="mono">
-          {machine.primary_ip ? <Marked text={machine.primary_ip} query={look.q} /> : ""}
+        <span class="mono">
+          <Show when={props.machine.primary_ip} fallback="">
+            {(ip) => <Marked text={ip()} query={props.look.q} />}
+          </Show>
         </span>
-        <span>{machine.tags.environment ?? ""}</span>
-        <span className="mono">{tagText(machine.tags)}</span>
-        <span className="mono">{machine.agent_version}</span>
-        <span>{seen(machine, now)}</span>
-        <span className="machines-warnings">
-          {machine.warnings.map((warning) => (
-            <span key={warning} className={`machines-warning ${warning}`}>
-              {WARNING_LABEL[warning]}
-            </span>
-          ))}
+        <span>{props.machine.tags.environment ?? ""}</span>
+        <span class="mono">{tagText(props.machine.tags)}</span>
+        <span class="mono">{props.machine.agent_version}</span>
+        <span>{seen(props.machine, props.now)}</span>
+        <span class="machines-warnings">
+          <For each={props.machine.warnings}>
+            {(warning) => (
+              <span class={`machines-warning ${warning}`}>{WARNING_LABEL[warning]}</span>
+            )}
+          </For>
         </span>
       </button>
     </li>
   );
 }
 
-function Empty({ look }: { look: Look }) {
-  const clear = useCallback(() => setLook({ ...clearFilters(look), machine: null }), [look]);
-  const everything = useCallback(() => setLook({ state: "any" }), []);
-  const q = look.q.trim();
+const showEveryState = () => setLook({ state: "any" });
+
+function Empty(props: { look: Look }) {
+  const clear = () => setLook({ ...clearFilters(props.look), machine: null });
+  const q = createMemo(() => props.look.q.trim());
+  const isFiltered = createMemo(() => filtered(props.look));
   return (
-    <div className="machines-empty">
+    <div class="machines-empty">
       <p>
-        {q === ""
-          ? filtered(look)
+        {q() === ""
+          ? isFiltered()
             ? "No machine matches these filters."
             : "No machines are live right now."
-          : `No machine has ${q} in its hostname, addresses, MACs, or instance id.`}
+          : `No machine has ${q()} in its hostname, addresses, MACs, or instance id.`}
       </p>
-      {filtered(look) ? (
-        <button type="button" className="button" onClick={clear}>
+      <Show
+        when={isFiltered()}
+        fallback={
+          <Show when={q() === ""}>
+            <button type="button" class="button" onClick={showEveryState}>
+              Show machines in every state
+            </button>
+          </Show>
+        }
+      >
+        <button type="button" class="button" onClick={clear}>
           Clear filters
         </button>
-      ) : (
-        q === "" && (
-          <button type="button" className="button" onClick={everything}>
-            Show machines in every state
-          </button>
-        )
-      )}
+      </Show>
     </div>
   );
 }
 
-function useMachines(look: Look) {
-  const key = JSON.stringify([
-    look.org,
-    look.q.trim(),
-    look.state,
-    look.environment,
-    look.tags,
-    look.version,
-    look.key,
-  ]);
-  const first = useLoaded(() => fleetApi.machines(look, null), key);
-  const [more, setMore] = useState<{
+function useMachines(look: () => Look) {
+  const key = createMemo(() => {
+    const current = look();
+    return JSON.stringify([
+      current.org,
+      current.q.trim(),
+      current.state,
+      current.environment,
+      current.tags,
+      current.version,
+      current.key,
+    ]);
+  });
+  const first = useLoaded(() => fleetApi.machines(look(), null), key);
+  const [more, setMore] = createSignal<{
     key: string;
     machines: Machine[];
     next: string | null;
@@ -301,31 +296,47 @@ function useMachines(look: Look) {
     next: null,
     error: null,
   });
-  const extra = more.key === key ? more : null;
-  const next = extra ? extra.next : (first.data?.next ?? null);
-  const showMore = useCallback(() => {
-    if (next === null) {
+  const extra = createMemo(() => {
+    const current = more();
+    return current.key === key() ? current : null;
+  });
+  const next = createMemo(() => {
+    const currentExtra = extra();
+    return currentExtra ? currentExtra.next : (first.data()?.next ?? null);
+  });
+  const showMore = () => {
+    const cursor = next();
+    if (cursor === null) {
       return;
     }
-    fleetApi.machines(look, next).then(
+    const currentLook = look();
+    const currentKey = key();
+    void fleetApi.machines(currentLook, cursor).then(
       (page) =>
         setMore((before) => ({
-          key,
-          machines: [...(before.key === key ? before.machines : []), ...page.machines],
+          key: currentKey,
+          machines: [...(before.key === currentKey ? before.machines : []), ...page.machines],
           next: page.next,
           error: null,
         })),
-      (error: Error) => setMore((before) => ({ ...before, key, error: error.message })),
+      (err: Error) => setMore((before) => ({ ...before, key: currentKey, error: err.message })),
     );
-  }, [look, key, next]);
+  };
+  const machines = createMemo(() => {
+    const data = first.data();
+    return data ? [...data.machines, ...(extra()?.machines ?? [])] : null;
+  });
+  const error = createMemo(() => first.error() ?? extra()?.error ?? null);
   return {
-    machines: first.data ? [...first.data.machines, ...(extra?.machines ?? [])] : null,
-    error: first.error ?? extra?.error ?? null,
+    machines,
+    error,
     next,
     showMore,
     again: first.again,
   };
 }
+
+const closeDetail = () => setLook({ machine: null });
 
 export function ListView(props: {
   look: Look;
@@ -334,74 +345,79 @@ export function ListView(props: {
   now: number;
   changed: () => void;
 }) {
-  const { look, overview, now, changed } = props;
-  const { machines, error, next, showMore, again } = useMachines(look);
-  const back = useCallback(() => setLook({ machine: null }), []);
-  const refresh = useCallback(() => {
+  const { machines, error, next, showMore, again } = useMachines(() => props.look);
+  const refresh = () => {
     again();
-    changed();
-  }, [again, changed]);
+    props.changed();
+  };
   return (
-    <div className={`machines-split${look.machine === null ? "" : " has-detail"}`}>
-      <div className="machines-list">
-        <Chips look={look} overview={overview} keys={props.keys} />
-        {machines === null ? (
-          <Retry error={error} again={again} />
-        ) : machines.length === 0 ? (
-          <Empty look={look} />
-        ) : (
-          <div className="machines-rows list">
-            <div className="machines-row head" aria-hidden="true">
-              <span>Hostname</span>
-              <span>Primary IP</span>
-              <span>Env</span>
-              <span>Tags</span>
-              <span>Version</span>
-              <span>Last seen</span>
-              <span />
+    <div class={`machines-split${props.look.machine === null ? "" : " has-detail"}`}>
+      <div class="machines-list">
+        <Chips look={props.look} overview={props.overview} keys={props.keys} />
+        <Switch
+          fallback={
+            <div class="machines-rows list">
+              <div class="machines-row head" aria-hidden="true">
+                <span>Hostname</span>
+                <span>Primary IP</span>
+                <span>Env</span>
+                <span>Tags</span>
+                <span>Version</span>
+                <span>Last seen</span>
+                <span />
+              </div>
+              <ul aria-label="Machines">
+                <For each={machines() ?? []}>
+                  {(machine) => <Row machine={machine} look={props.look} now={props.now} />}
+                </For>
+              </ul>
+              <Show when={error()}>
+                {(message) => (
+                  <p class="error" role="alert">
+                    Could not load more machines: {message()}.
+                  </p>
+                )}
+              </Show>
+              <Show when={next() !== null}>
+                <button type="button" class="button" onClick={showMore}>
+                  Show more
+                </button>
+              </Show>
             </div>
-            <ul aria-label="Machines">
-              {machines.map((machine) => (
-                <Row key={machine.id} machine={machine} look={look} now={now} />
-              ))}
-            </ul>
-            {error && (
-              <p className="error" role="alert">
-                Could not load more machines: {error}.
-              </p>
-            )}
-            {next !== null && (
-              <button type="button" className="button" onClick={showMore}>
-                Show more
-              </button>
-            )}
-          </div>
-        )}
+          }
+        >
+          <Match when={machines() === null}>
+            <Retry error={error()} again={again} />
+          </Match>
+          <Match when={machines()?.length === 0}>
+            <Empty look={props.look} />
+          </Match>
+        </Switch>
       </div>
-      {look.machine !== null && (
-        <DetailPanel
-          key={look.machine}
-          id={look.machine}
-          owner={overview.role === "owner"}
-          now={now}
-          back={back}
-          changed={refresh}
-        />
-      )}
+      <Show when={props.look.machine} keyed>
+        {(id) => (
+          <DetailPanel
+            id={id}
+            owner={props.overview.role === "owner"}
+            now={props.now}
+            back={closeDetail}
+            changed={refresh}
+          />
+        )}
+      </Show>
     </div>
   );
 }
 
 export function Retry(props: { error: string | null; again: () => void; what?: string }) {
-  const { error, again } = props;
   return (
-    <div className="machines-loading">
-      <Loading error={error} what={props.what ?? "machines"} />
-      {error && (
-        <button type="button" className="button" onClick={again}>
+    <div class="machines-loading">
+      <Loading error={props.error} what={props.what ?? "machines"} />
+      <Show when={props.error}>
+        <button type="button" class="button" onClick={() => props.again()}>
           Try again
         </button>
-      )}
+      </Show>
     </div>
   );
 }

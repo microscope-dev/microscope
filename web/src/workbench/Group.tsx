@@ -1,13 +1,5 @@
-import {
-  type ComponentType,
-  type KeyboardEvent,
-  memo,
-  type MouseEvent,
-  type PointerEvent,
-  useCallback,
-  useEffect,
-  useRef,
-} from "react";
+import { Dynamic } from "@solidjs/web";
+import { type Component, createEffect, createMemo, For, Show } from "solid-js";
 
 import { assert } from "../assert";
 import { classOf } from "./classes";
@@ -35,124 +27,135 @@ function groupIn(layout: Layout, id: GroupId) {
   return groups(layout).find((group) => group.id === id) ?? null;
 }
 
-export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
-  const group = useLayout((layout) => groupIn(layout, id));
+export function GroupView(props: { id: GroupId }) {
+  const group = useLayout((layout) => groupIn(layout, props.id));
   const panes = useLayout((layout) => layout.panes);
-  const focused = useLayout((layout) => layout.focused === id);
+  const focused = useLayout((layout) => layout.focused === props.id);
   const { kinds } = useDock();
-  const strip = useRef<HTMLDivElement>(null);
-  const active = group?.active ?? null;
+  let strip: HTMLDivElement | undefined;
+  const active = createMemo(() => group()?.active ?? null);
 
-  useEffect(() => {
-    if (active) {
-      const shown = document.querySelector<HTMLElement>(`#${tabId(active)}`);
-      if (shown && strip.current?.contains(shown)) {
-        const box = strip.current.getBoundingClientRect();
-        const at = shown.getBoundingClientRect();
-        if (at.left < box.left) {
-          strip.current.scrollLeft -= box.left - at.left;
-        } else if (at.right > box.right) {
-          strip.current.scrollLeft += at.right - box.right;
+  createEffect(
+    () => active(),
+    (current) => {
+      if (current && strip) {
+        const shown = document.querySelector<HTMLElement>(`#${tabId(current)}`);
+        if (shown && strip.contains(shown)) {
+          const box = strip.getBoundingClientRect();
+          const at = shown.getBoundingClientRect();
+          if (at.left < box.left) {
+            strip.scrollLeft -= box.left - at.left;
+          } else if (at.right > box.right) {
+            strip.scrollLeft += at.right - box.right;
+          }
         }
       }
-    }
-  }, [active]);
-
-  const focus = useCallback(() => {
-    if (!focused && active) {
-      change((layout) => activate(layout, active));
-    }
-  }, [focused, active]);
-
-  const walk = useCallback(
-    (event: KeyboardEvent) => {
-      if (!group || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
-        return;
-      }
-      const index = group.active === null ? -1 : group.tabs.indexOf(group.active);
-      if (event.key === "Delete" && group.active) {
-        event.preventDefault();
-        closeTab(kinds, group.active);
-        return;
-      }
-      const next = {
-        ArrowLeft: index - 1,
-        ArrowRight: index + 1,
-        Home: 0,
-        End: group.tabs.length - 1,
-      }[event.key];
-      if (next === undefined) {
-        return;
-      }
-      event.preventDefault();
-      const pane = group.tabs[(next + group.tabs.length) % group.tabs.length];
-      assert(pane !== undefined, `tab ${next} of ${group.tabs.length}`);
-      chooseTab(kinds, pane);
-      document.querySelector<HTMLElement>(`#${tabId(pane)}`)?.focus();
     },
-    [group, kinds],
   );
 
-  if (!group) {
-    return null;
-  }
+  const focus = () => {
+    const current = active();
+    if (!focused() && current) {
+      change((layout) => activate(layout, current));
+    }
+  };
+
+  const walk = (event: KeyboardEvent) => {
+    const currentGroup = group();
+    if (!currentGroup || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    const index =
+      currentGroup.active === null ? -1 : currentGroup.tabs.indexOf(currentGroup.active);
+    if (event.key === "Delete" && currentGroup.active) {
+      event.preventDefault();
+      closeTab(kinds, currentGroup.active);
+      return;
+    }
+    const next = {
+      ArrowLeft: index - 1,
+      ArrowRight: index + 1,
+      Home: 0,
+      End: currentGroup.tabs.length - 1,
+    }[event.key];
+    if (next === undefined) {
+      return;
+    }
+    event.preventDefault();
+    const pane = currentGroup.tabs[(next + currentGroup.tabs.length) % currentGroup.tabs.length];
+    assert(pane !== undefined, `tab ${next} of ${currentGroup.tabs.length}`);
+    chooseTab(kinds, pane);
+    document.querySelector<HTMLElement>(`#${tabId(pane)}`)?.focus();
+  };
 
   return (
-    <section
-      className={`${css("group")} ${focused ? css("focused") : ""}`}
-      data-group={id}
-
-      data-focused={focused || undefined}
-    >
-      {/* oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- its tabs take the focus, one at a time, as a tab list's do */}
-      <div
-        className={css("group-tabs")}
-        ref={strip}
-        role="tablist"
-        aria-label="Panes"
-        onKeyDown={walk}
-        onFocus={focus}
-      >
-        {group.tabs.map((pane) => {
-          const found = panes[pane];
-          assert(found, `group ${id} lists ${pane}, which is no pane`);
-          return (
-            <Tab
-              key={pane}
-              pane={pane}
-              found={found}
-              title={kinds.get(found.kind).title(found)}
-              shown={pane === group.active}
-            />
-          );
-        })}
-      </div>
-      {group.tabs.map((pane) => {
-        const found = panes[pane];
-        assert(found, `group ${id} lists ${pane}, which is no pane`);
-        const shown = pane === group.active;
-        if (!shown && !kinds.get(found.kind).keepAlive) {
-          return null;
-        }
-        return (
-          // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- focus coming from inside marks the group as the one being worked in
+    <Show when={group()}>
+      {(currentGroup) => (
+        <section
+          class={[css("group"), { [css("focused")]: focused() }]}
+          data-group={props.id}
+          data-focused={focused() || undefined}
+        >
+          {/* oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- its tabs take the focus, one at a time, as a tab list's do */}
           <div
-            key={pane}
-            className={css("group-panel")}
-            role="tabpanel"
-            id={panelId(pane)}
-            aria-label={kinds.get(found.kind).title(found)}
-            tabIndex={-1}
-            hidden={!shown}
-            onFocus={focus}
+            class={css("group-tabs")}
+            ref={(el) => {
+              strip = el;
+            }}
+            role="tablist"
+            aria-label="Panes"
+            onKeyDown={walk}
+            onFocusIn={focus}
           >
-            <PaneHost id={pane} pane={found} visible={shown} />
+            <For each={currentGroup().tabs}>
+              {(pane) => {
+                const found = createMemo(() => {
+                  const entry = panes()[pane];
+                  assert(entry, `group ${props.id} lists ${pane}, which is no pane`);
+                  return entry;
+                });
+                return (
+                  <Tab
+                    pane={pane}
+                    found={found()}
+                    title={kinds.get(found().kind).title(found())}
+                    shown={pane === currentGroup().active}
+                  />
+                );
+              }}
+            </For>
           </div>
-        );
-      })}
-    </section>
+          <For each={currentGroup().tabs}>
+            {(pane) => {
+              const found = createMemo(() => {
+                const entry = panes()[pane];
+                assert(entry, `group ${props.id} lists ${pane}, which is no pane`);
+                return entry;
+              });
+              const shown = createMemo(() => pane === currentGroup().active);
+              const keep = createMemo(() => shown() || kinds.get(found().kind).keepAlive);
+              return (
+                <Show when={keep()}>
+                  <div
+                    class={css("group-panel")}
+                    role="tabpanel"
+                    id={panelId(pane)}
+                    aria-label={kinds.get(found().kind).title(found())}
+                    tabindex={-1}
+                    hidden={!shown()}
+                    onFocusIn={focus}
+                  >
+                    <PaneHost id={pane} pane={found()} visible={shown()} />
+                  </div>
+                </Show>
+              );
+            }}
+          </For>
+        </section>
+      )}
+    </Show>
   );
-});
+}
 
 function readsFocusedLink(layout: Layout, pane: PaneId, found: Pane): boolean {
   const link = linkOf(found);
@@ -164,43 +167,27 @@ function readsFocusedLink(layout: Layout, pane: PaneId, found: Pane): boolean {
   return lead !== pane && leading !== undefined && linkOf(leading) === link;
 }
 
-function Tab({
-  pane,
-  found,
-  title,
-  shown,
-}: {
-  pane: PaneId;
-  found: Pane;
-  title: string;
-  shown: boolean;
-}) {
+function Tab(props: { pane: PaneId; found: Pane; title: string; shown: boolean }) {
   const { kinds } = useDock();
-  const kind = kinds.get(found.kind);
-  const Badge = kind.Badge;
-  const linked = useLayout((layout) => readsFocusedLink(layout, pane, found));
+  const kind = createMemo(() => kinds.get(props.found.kind));
+  const linked = useLayout((layout) => readsFocusedLink(layout, props.pane, props.found));
 
-  const choose = useCallback(() => chooseTab(kinds, pane), [kinds, pane]);
-  const shut = useCallback(() => closeTab(kinds, pane), [kinds, pane]);
-  const press = useCallback(
-    (event: PointerEvent<HTMLElement>) => pressTab(event, pane, title),
-    [pane, title],
-  );
-  const auxClick = useCallback(
-    (event: MouseEvent) => {
-      if (event.button === 1) {
-        shut();
-      }
-    },
-    [shut],
-  );
+  const choose = () => chooseTab(kinds, props.pane);
+  const shut = () => closeTab(kinds, props.pane);
+  const press = (event: PointerEvent & { currentTarget: HTMLElement }) =>
+    pressTab(event, props.pane, props.title);
+  const auxClick = (event: MouseEvent) => {
+    if (event.button === 1) {
+      shut();
+    }
+  };
 
   return (
     // oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- pointer handling shared by the two buttons inside, which carry the roles and keys
     <div
-      className={`${css("group-tab")} ${shown ? css("on") : ""} ${linked ? css("linked") : ""}`}
+      class={[css("group-tab"), { [css("on")]: props.shown, [css("linked")]: linked() }]}
       data-part="tab"
-      data-linked={linked || undefined}
+      data-linked={linked() || undefined}
       onPointerDown={press}
       onMouseDown={noAutoscroll}
       onAuxClick={auxClick}
@@ -208,29 +195,33 @@ function Tab({
       <button
         type="button"
         role="tab"
-        id={tabId(pane)}
-        aria-selected={shown}
-        aria-controls={panelId(pane)}
-        tabIndex={shown ? 0 : -1}
-        title={found.key || title}
+        id={tabId(props.pane)}
+        aria-selected={props.shown ? "true" : "false"}
+        aria-controls={panelId(props.pane)}
+        tabindex={props.shown ? 0 : -1}
+        title={props.found.key || props.title}
         onClick={choose}
       >
-        <span className={css("tab-title")} data-part="tab-title">
-          {title}
+        <span class={css("tab-title")} data-part="tab-title">
+          {props.title}
         </span>
-        {Badge && <TabBadge Badge={Badge} id={pane} pane={found} needs={kind.needs} />}
+        <Show when={kind().Badge}>
+          {(Badge) => (
+            <TabBadge Badge={Badge()} id={props.pane} pane={props.found} needs={kind().needs} />
+          )}
+        </Show>
       </button>
-      {kind.closable(found) && (
+      <Show when={kind().closable(props.found)}>
         <button
           type="button"
-          className={css("group-close")}
-          tabIndex={-1}
-          aria-label={`Close ${title}`}
+          class={css("group-close")}
+          tabindex={-1}
+          aria-label={`Close ${props.title}`}
           onClick={shut}
         >
           ×
         </button>
-      )}
+      </Show>
     </div>
   );
 }
@@ -241,18 +232,17 @@ function noAutoscroll(event: MouseEvent) {
   }
 }
 
-function TabBadge({
-  Badge,
-  id,
-  pane,
-  needs,
-}: {
-  Badge: ComponentType<PaneProps>;
+function TabBadge(props: {
+  Badge: Component<PaneProps>;
   id: PaneId;
   pane: Pane;
   needs: string | null;
 }) {
   const { useMissing } = useDock();
-  // oxlint-disable-next-line react/hooks -- the dock hands down one hook for its whole life
-  return useMissing(needs) === null ? <Badge id={id} pane={pane} /> : null;
+  const missing = useMissing(() => props.needs);
+  return (
+    <Show when={missing() === null}>
+      <Dynamic component={props.Badge} id={props.id} pane={props.pane} />
+    </Show>
+  );
 }

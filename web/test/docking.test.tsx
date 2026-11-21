@@ -1,6 +1,4 @@
-import { cleanup, render } from "@testing-library/react";
 import * as fc from "fast-check";
-import { act } from "react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -27,21 +25,20 @@ import {
 import { workbench } from "../src/workbench/store";
 import { closeTab, reopenTab } from "../src/workbench/tabs";
 import { readGroups } from "./driver/layout";
+import { act, cleanup, render } from "./render";
 
 afterEach(cleanup);
-
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const KIND: PaneKind<string> = {
   id: "plain" as KindId,
   title: (pane) => pane.key,
-  Body: ({ pane }) => <p>{pane.key}</p>,
+  Body: (props) => <p>{props.pane.key}</p>,
   needs: null,
   keepAlive: true,
   closable: () => true,
 };
 const KINDS = kinds([KIND]);
-const SETUP = { kinds: KINDS, useMissing: () => null };
+const SETUP = { kinds: KINDS, useMissing: () => () => null };
 const DOCK_BOX = { display: "flex", width: "900px", height: "500px" };
 
 const pane = (key: string): Pane => ({ kind: KIND.id, key, params: null });
@@ -67,11 +64,11 @@ const START = () =>
 async function mount(layout: Layout = START()) {
   await page.viewport(1000, 600);
   workbench.setState({ layout, closed: [] });
-  render(
+  render(() => (
     <div style={DOCK_BOX}>
       <Dock setup={SETUP} />
-    </div>,
-  );
+    </div>
+  ));
 }
 
 const tabOf = (title: string) =>
@@ -284,8 +281,8 @@ it("resizes a floating window by keyboard and cancels an interrupted pointer res
   const grip = document.querySelector("[data-part=window-grip]") as HTMLElement;
   const before = window.getBoundingClientRect();
   act(() => grip.focus());
-  await act(() => userEvent.keyboard("{ArrowLeft}"));
-  await act(() => userEvent.keyboard("{ArrowUp}"));
+  await userEvent.keyboard("{ArrowLeft}");
+  await userEvent.keyboard("{ArrowUp}");
   const resized = window.getBoundingClientRect();
   expect(resized.width).toBe(before.width - 16);
   expect(resized.height).toBe(before.height - 16);

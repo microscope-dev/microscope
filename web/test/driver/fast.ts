@@ -1,17 +1,16 @@
-import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { cleanup, render } from "@testing-library/react";
-import { createElement } from "react";
+import { createComponent } from "solid-js";
 import { expect, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
 import "../../src/styles.css";
 import { cache } from "../../src/data";
 import { forgetting } from "../../src/forget";
-import { createAppRouter } from "../../src/router";
+import { AppRouter, createMemoryHistory } from "../../src/router";
 import { SessionContext } from "../../src/store";
 import { initialTab, tab } from "../../src/tab";
 import { resetWorkbench } from "../../src/workbench/store";
 import { fakeServer, POLL } from "../fake-server";
+import { cleanup, render } from "../render";
 import { readGroups } from "./layout";
 import { type Script, ScriptedDebugger } from "./scripted";
 import { parseChord, toKeyboard, type User, type ValuePane } from "./user";
@@ -26,18 +25,20 @@ export async function openPage(
   const server = await fakeServer();
   forgetting(server.session.store);
   const scripted = new ScriptedDebugger(server, script);
-  const router = createAppRouter(createMemoryHistory({ initialEntries: ["/"] }));
+  const history = createMemoryHistory("/");
 
   await page.viewport(1440, 900);
   const container = document.createElement("div");
   document.body.append(container);
   container.style.height = "100vh";
   render(
-    createElement(
-      SessionContext,
-      { value: server.session },
-      createElement(RouterProvider, { router }),
-    ),
+    () =>
+      createComponent(SessionContext, {
+        value: server.session,
+        get children() {
+          return createComponent(AppRouter, { history });
+        },
+      }),
     { container },
   );
   return { user: new FastUser(), debugger: scripted };

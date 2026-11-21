@@ -1,5 +1,3 @@
-import type { PointerEvent as ReactPointerEvent } from "react";
-
 import { classOf } from "./classes";
 import { type Drop, type Measured, type MeasuredGroup, type Point, resolveDrop } from "./drop";
 import { trackPointer } from "./gesture";
@@ -54,12 +52,16 @@ interface Drag {
   highlight: HTMLElement | null;
 }
 
-export function pressTab(event: ReactPointerEvent<HTMLElement>, pane: PaneId, title: string): void {
+export function pressTab(
+  event: PointerEvent & { currentTarget: HTMLElement },
+  pane: PaneId,
+  title: string,
+): void {
   press(event, { type: "tab", pane, title });
 }
 
 export function pressWindow(
-  event: ReactPointerEvent<HTMLElement>,
+  event: PointerEvent & { currentTarget: HTMLElement },
   group: GroupId,
   element: HTMLElement,
   rect: Rect,
@@ -84,7 +86,7 @@ export function rememberSize(layout: Layout, window: GroupId): void {
   }
 }
 
-function press(event: ReactPointerEvent<HTMLElement>, source: Source): void {
+function press(event: PointerEvent & { currentTarget: HTMLElement }, source: Source): void {
   const dockElement = event.currentTarget.closest<HTMLElement>("[data-part=dock]");
   if (!dockElement) {
     return;

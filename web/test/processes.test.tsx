@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import type { JSX } from "@solidjs/web";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -23,10 +23,10 @@ function member(changes: Partial<Member> & { number: number }): Member {
   };
 }
 
-const NARROW: CSSProperties = {
+const NARROW: JSX.CSSProperties = {
   width: "390px",
   display: "flex",
-  flexDirection: "column",
+  "flex-direction": "column",
   height: "200px",
 };
 
@@ -47,7 +47,7 @@ const two: Group = {
 
 it("says so while the program has one process", async () => {
   await mountPane(
-    <Processes />,
+    () => <Processes />,
     {},
     stoppedState({ group: { ...two, members: [member({ number: 1 })], selected: 1 } }),
   );
@@ -56,7 +56,7 @@ it("says so while the program has one process", async () => {
 });
 
 it("lists each process, how it joined, and where it is, and selects one", async () => {
-  const server = await mountPane(<Processes />, {}, stoppedState({ group: two }));
+  const server = await mountPane(() => <Processes />, {}, stoppedState({ group: two }));
   const child = page.getByRole("button", { name: /\[2\] tree/u });
   await expect.element(child).toHaveAttribute("aria-pressed", "true");
   expect(child.element().textContent).toContain("forked by [1]");
@@ -84,10 +84,18 @@ it.each([1440, 390])("folds a long process history and stays within a %ipx pane"
     }),
   );
   const server = await mountPane(
-    // oxlint-disable-next-line react-perf/jsx-no-new-object-as-prop -- the width is the test's parameter
-    <div style={{ width: `${width}px`, display: "flex", flexDirection: "column", height: "400px" }}>
-      <Processes />
-    </div>,
+    () => (
+      <div
+        style={{
+          width: `${width}px`,
+          display: "flex",
+          "flex-direction": "column",
+          height: "400px",
+        }}
+      >
+        <Processes />
+      </div>
+    ),
     {},
     stoppedState({ group: { ...two, members: [...two.members.slice(0, 2), ...history] } }),
   );
@@ -115,9 +123,11 @@ it("lists many selectable processes without folding them into history", async ()
     member({ number: index + 1, state: index % 2 ? "running" : "stopped" }),
   );
   const server = await mountPane(
-    <div style={NARROW}>
-      <Processes />
-    </div>,
+    () => (
+      <div style={NARROW}>
+        <Processes />
+      </div>
+    ),
     {},
     stoppedState({ group: { members, selected: 1, stopped: 1 } }),
   );
@@ -130,7 +140,11 @@ it("lists many selectable processes without folding them into history", async ()
 });
 
 it("keeps a selected exited process outside the folded entries", async () => {
-  await mountPane(<Processes />, {}, stoppedState({ group: { ...two, selected: 3, stopped: 3 } }));
+  await mountPane(
+    () => <Processes />,
+    {},
+    stoppedState({ group: { ...two, selected: 3, stopped: 3 } }),
+  );
   const selected = page.getByRole("button", { name: /\[3\] tree/u });
   await expect.element(selected).toHaveAttribute("aria-pressed", "true");
   await expect.element(selected).toBeDisabled();

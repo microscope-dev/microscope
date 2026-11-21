@@ -1,8 +1,9 @@
-import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useLocation, useNavigate } from "@solidjs/router";
+import { createEffect, createMemo, createSignal, Show } from "solid-js";
 
 import { tradeOnce } from "../connection";
-import { isPagePath } from "../focus";
+import { isPagePath, parseSearch } from "../focus";
+import { toHref } from "../history";
 import { useConnection } from "../store";
 
 let token: string | null = null;
@@ -17,57 +18,63 @@ function join(): Promise<boolean> {
 }
 
 const CARD = { width: "min(560px, 100%)" };
-const NO_MARGIN = { margin: 0 };
+const NO_MARGIN = { margin: "0" };
 
 export function Join() {
   const connection = useConnection();
   const navigate = useNavigate();
-  const { to } = useSearch({ from: "/join" });
-  const [failed, setFailed] = useState<"refused" | "unreachable" | null>(null);
-  const [tries, setTries] = useState(0);
+  const location = useLocation();
+  const to = createMemo(() => {
+    const target = parseSearch(location.search).to;
+    return typeof target === "string" ? target : undefined;
+  });
+  const [failed, setFailed] = createSignal<"refused" | "unreachable" | null>(null);
+  const [tries, setTries] = createSignal(0);
 
-  useEffect(() => {
-    const attempt = async () => {
-      if (!(await join())) {
-        setFailed("refused");
-        return;
-      }
-      connection.start();
-
-      void navigate({ href: isPagePath(to) ? to : "/", replace: true });
-    };
-    attempt().catch(() => setFailed("unreachable"));
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- each try trades again
-  }, [connection, navigate, to, tries]);
-  const retry = useCallback(() => {
+  createEffect(
+    () => [to(), tries()] as const,
+    ([target]) => {
+      const attempt = async () => {
+        if (!(await join())) {
+          setFailed("refused");
+          return;
+        }
+        connection.start();
+        navigate(isPagePath(target) ? toHref(target) : toHref("/"), { replace: true });
+      };
+      attempt().catch(() => setFailed("unreachable"));
+    },
+  );
+  const retry = () => {
     setFailed(null);
     setTries((count) => count + 1);
-  }, []);
+  };
 
-  if (failed) {
-    return (
-      <div className="page">
-        <div className="card" style={CARD}>
-          <div className="card-head">
-            <h1>{failed === "refused" ? "Open a join link" : "Could not join"}</h1>
-          </div>
-          <div className="card-body">
-            <p style={NO_MARGIN}>
-              {failed === "refused"
-                ? "This link is not for this microscope, or it has expired. microscope web prints one when it starts, and Share makes more."
-                : "Could not reach microscope to use this link. Check that it is running, then try again."}
-            </p>
-            {failed === "unreachable" && (
-              <div className="actions">
-                <button type="button" className="button primary" onClick={retry}>
-                  Try again
-                </button>
-              </div>
-            )}
+  return (
+    <Show when={failed()} fallback={<div class="page muted">Joining…</div>}>
+      {(reason) => (
+        <div class="page">
+          <div class="card" style={CARD}>
+            <div class="card-head">
+              <h1>{reason() === "refused" ? "Open a join link" : "Could not join"}</h1>
+            </div>
+            <div class="card-body">
+              <p style={NO_MARGIN}>
+                {reason() === "refused"
+                  ? "This link is not for this microscope, or it has expired. microscope web prints one when it starts, and Share makes more."
+                  : "Could not reach microscope to use this link. Check that it is running, then try again."}
+              </p>
+              <Show when={reason() === "unreachable"}>
+                <div class="actions">
+                  <button type="button" class="button primary" onClick={retry}>
+                    Try again
+                  </button>
+                </div>
+              </Show>
+            </div>
           </div>
         </div>
-      </div>
-    );
-  }
-  return <div className="page muted">Joining…</div>;
+      )}
+    </Show>
+  );
 }

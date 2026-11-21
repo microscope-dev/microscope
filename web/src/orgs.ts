@@ -1,7 +1,7 @@
-import { useEffect } from "react";
-import { createStore, useStore } from "zustand";
+import { createEffect, createMemo } from "solid-js";
 
 import { type Account, account, failure, useAccount } from "./account";
+import { createState } from "./state";
 
 export type Permission = "none" | "read" | "write" | "admin";
 
@@ -151,7 +151,7 @@ export interface Directory {
 
 const EMPTY: Directory = { user: null, orgs: null, projects: null, invitations: null, error: null };
 
-export const directory = createStore<Directory>(() => EMPTY);
+export const directory = createState<Directory>(() => EMPTY);
 
 let asked = 0;
 let inFlight: Promise<void> | null = null;
@@ -207,13 +207,16 @@ export function reload(): Promise<void> {
   return loading;
 }
 
-export function useDirectory(): Directory {
-  const user = signedInAs(useAccount());
-  useEffect(() => {
-    void (inFlight ?? reload());
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- asks again only for another person
-  }, [user]);
-  return useStore(directory);
+export function useDirectory(): () => Directory {
+  const accountNow = useAccount();
+  const user = createMemo(() => signedInAs(accountNow()));
+  createEffect(
+    () => user(),
+    () => {
+      void (inFlight ?? reload());
+    },
+  );
+  return () => directory.read();
 }
 
 export function orgLabel(org: { id: number; name: string }, orgs: readonly Org[] | null): string {

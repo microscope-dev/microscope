@@ -1,7 +1,6 @@
-import { createStore, useStore } from "zustand";
-
 import { assert } from "./assert";
 import type { At, Look } from "./focus";
+import { createState, useSelector } from "./state";
 
 export interface TabState {
   session: string | null;
@@ -49,10 +48,10 @@ export const initialTab: TabState = {
   share: false,
 };
 
-export const tab = createStore<TabState>(() => initialTab);
+export const tab = createState<TabState>(() => initialTab);
 
-export function useTab<T>(select: (state: TabState) => T): T {
-  return useStore(tab, select);
+export function useTab<T>(select: (state: TabState) => T): () => T {
+  return useSelector(tab, select);
 }
 
 const FILES = 8;

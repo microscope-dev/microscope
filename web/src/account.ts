@@ -1,5 +1,4 @@
-import { createStore, useStore } from "zustand";
-
+import { createState, useSelector } from "./state";
 import { standalone } from "./target";
 
 export interface User {
@@ -212,19 +211,19 @@ interface AccountState {
   reset: string | null;
 }
 
-export const account = createStore<AccountState>(() => ({
+export const account = createState<AccountState>(() => ({
   now: { kind: "checking" },
   notice: null,
   challenge: null,
   reset: null,
 }));
 
-export function useAccount(): Account {
-  return useStore(account, (state) => state.now);
+export function useAccount(): () => Account {
+  return useSelector(account, (state) => state.now);
 }
 
-export function useNotice(): Notice | null {
-  return useStore(account, (state) => state.notice);
+export function useNotice(): () => Notice | null {
+  return useSelector(account, (state) => state.notice);
 }
 
 let asking: Promise<void> | null = null;

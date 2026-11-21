@@ -1,5 +1,4 @@
-import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useMemo } from "react";
+import { type Navigator, useNavigate } from "@solidjs/router";
 
 import { useRequest } from "../data";
 import {
@@ -10,8 +9,9 @@ import {
   linkPath,
   recordedPath,
   showingSource,
-  taskSegment,
+  stopPath,
 } from "../focus";
+import { toHref } from "../history";
 import { useModel } from "../store";
 import { asked } from "../tab";
 import { useFocus } from "./Workspace";
@@ -23,10 +23,8 @@ export interface Moving {
 
 export type Go = (at: At | null, look?: Look, options?: Moving) => void;
 
-type Navigate = ReturnType<typeof useNavigate>;
-
 export function go(
-  navigate: Navigate,
+  navigate: Navigator,
   session: string,
   current: Look,
   at: At | null,
@@ -35,80 +33,50 @@ export function go(
 ): void {
   const search = look ?? followedLook(current);
   const replace = options?.replace ?? false;
-  const going =
-    at === null
-      ? navigate({ to: "/s/$session", params: { session }, search, replace })
-      : at.task
-        ? navigate({
-            to: "/s/$session/stop/$stop/task/$task/f/$frame",
-            params: {
-              session,
-              stop: String(at.stop),
-              task: taskSegment(at.task),
-              frame: String(at.frame),
-            },
-            search,
-            replace,
-          })
-        : navigate({
-            to: "/s/$session/stop/$stop/t/$thread/f/$frame",
-            params: {
-              session,
-              stop: String(at.stop),
-              thread: String(at.thread),
-              frame: String(at.frame),
-            },
-            search,
-            replace,
-          });
+  const path = at === null ? `/s/${session}` : stopPath(session, at);
+  navigate(toHref(path, search as Record<string, unknown>), { replace });
 
   if (!look || options?.ask) {
-    void going.then(asked);
+    queueMicrotask(asked);
   }
 }
 
 export function useGo(): Go {
   const navigate = useNavigate();
-  const { session, look: current } = useFocus();
-  return useCallback(
-    (at, look, options) => go(navigate, session, current, at, look, options),
-    [navigate, session, current],
-  );
+  const focus = useFocus();
+  return (at, look, options) => {
+    const current = focus();
+    go(navigate, current.session, current.look, at, look, options);
+  };
 }
 
 export function useLook(): (change: (look: Look) => Look, options?: Moving) => void {
   const goTo = useGo();
-  const { at, look } = useFocus();
-  return useCallback(
-    (change, options) => goTo(at, change(look), { ...options, replace: options?.replace ?? true }),
-    [goTo, at, look],
-  );
+  const focus = useFocus();
+  return (change, options) => {
+    const current = focus();
+    goTo(current.at, change(current.look), { ...options, replace: options?.replace ?? true });
+  };
 }
 
 export function useShowSource(): (path: string, line: number, end?: number) => void {
   const look = useLook();
   const paths = useLinkPaths();
-  return useCallback(
-    (path, line, end) => {
-      look(
-        (current) =>
-          showingSource(current, formatPlace({ path: paths.link(path), line, end: end ?? line })),
-        { replace: false, ask: true },
-      );
-    },
-    [look, paths],
-  );
+  return (path, line, end) => {
+    look(
+      (current) =>
+        showingSource(current, formatPlace({ path: paths.link(path), line, end: end ?? line })),
+      { replace: false, ask: true },
+    );
+  };
 }
 
 export function useLinkPaths() {
   const cwd = useModel((model) => model.hello?.cwd);
   const session = useModel((model) => model.state?.session);
-  const files = useRequest("sources", session ? undefined : null).data?.files;
-  return useMemo(
-    () => ({
-      link: (path: string) => linkPath(path, cwd, files),
-      recorded: (path: string) => recordedPath(path, cwd, files),
-    }),
-    [cwd, files],
-  );
+  const sources = useRequest("sources", () => (session() ? undefined : null));
+  return {
+    link: (path: string) => linkPath(path, cwd(), sources().data?.files),
+    recorded: (path: string) => recordedPath(path, cwd(), sources().data?.files),
+  };
 }

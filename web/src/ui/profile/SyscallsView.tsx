@@ -1,4 +1,13 @@
-import { type ChangeEvent, type FormEvent, useCallback, useMemo, useState } from "react";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  Show,
+  Switch,
+  untrack,
+} from "solid-js";
 
 import { type SyscallTab, syscallQueryOf, withLook } from "../../profile/look";
 import { formatCount } from "../../profile/paint";
@@ -19,13 +28,13 @@ const TABS: { tab: SyscallTab | undefined; label: string }[] = [
 
 export function KernelPane() {
   return (
-    <div className="kernel" data-testid="kernel">
-      <div className="segmented kernel-tabs" role="tablist" aria-label="Kernel data">
+    <div class="kernel" data-testid="kernel">
+      <div class="segmented kernel-tabs" role="tablist" aria-label="Kernel data">
         <button type="button" role="tab" id="kernel-syscalls" aria-selected="true">
           Syscalls
         </button>
       </div>
-      <div className="kernel-body" role="tabpanel" aria-labelledby="kernel-syscalls">
+      <div class="kernel-body" role="tabpanel" aria-labelledby="kernel-syscalls">
         <SyscallsView />
       </div>
     </div>
@@ -33,128 +42,145 @@ export function KernelPane() {
 }
 
 function SyscallsView() {
-  const { summary, look } = useProfile();
-  const missing = unkept(summary.settings);
+  const focus = useProfile();
+  const missing = createMemo(() => unkept(focus().summary.settings));
   return (
-    <div className="syscalls" data-testid="syscalls">
-      {missing && summary.syscalls === 0 ? (
-        <>
-          <div className="syscalls-bar">
-            <Tabs tab={look.st} />
-          </div>
-          <Unkept {...missing} />
-        </>
-      ) : (
-        <Calls missing={missing} />
-      )}
+    <div class="syscalls" data-testid="syscalls">
+      <Show
+        when={focus().summary.syscalls === 0 ? missing() : null}
+        fallback={<Calls missing={missing()} />}
+      >
+        {(item) => (
+          <>
+            <div class="syscalls-bar">
+              <Tabs tab={focus().look.st} />
+            </div>
+            <Unkept text={item().text} flag={item().flag} />
+          </>
+        )}
+      </Show>
     </div>
   );
 }
 
-function Tabs({ tab: shown }: { tab: SyscallTab | undefined }) {
+function Tabs(props: { tab: SyscallTab | undefined }) {
   return (
-    <div className="segmented">
-      {TABS.map(({ tab, label }) => (
-        <LookButton key={label} field="st" value={tab} pressed={shown === tab}>
-          {label}
-        </LookButton>
-      ))}
+    <div class="segmented">
+      <For each={TABS}>
+        {(item) => (
+          <LookButton field="st" value={item.tab} pressed={props.tab === item.tab}>
+            {item.label}
+          </LookButton>
+        )}
+      </For>
     </div>
   );
 }
 
 type Missing = NonNullable<ReturnType<typeof unkept>>;
 
-function Unkept({ text, flag }: Missing) {
+function Unkept(props: Missing) {
   return (
-    <p className="profile-untimed muted" data-testid="syscalls-unkept">
-      {text} Record with <code>{flag}</code> to keep each call.
+    <p class="profile-untimed muted" data-testid="syscalls-unkept">
+      {props.text} Record with <code>{props.flag}</code> to keep each call.
     </p>
   );
 }
 
-function Calls({ missing }: { missing: Missing | null }) {
-  const { profile, look, query } = useProfile();
-  const base = useMemo(
-    () => syscallQueryOf(profile, look, query.revision ?? 0),
-    [profile, look, query.revision],
+function Calls(props: { missing: Missing | null }) {
+  const focus = useProfile();
+  const base = createMemo(() =>
+    syscallQueryOf(focus().profile, focus().look, focus().query.revision ?? 0),
   );
-  const summary = useAnswer("syscallSummary", { ...base, group: look.sg ?? "syscall" });
+  const summary = useAnswer("syscallSummary", () => ({
+    ...base(),
+    group: focus().look.sg ?? ("syscall" as const),
+  }));
+  const logKey = createMemo(() => JSON.stringify(base()));
   return (
     <>
-      <div className="syscalls-bar">
-        <FilterBar error={summary.error?.message} />
-        <Tabs tab={look.st} />
-        {summary.data ? (
-          <span className="muted syscalls-counts" data-testid="syscall-counts">
-            {formatCount(summary.data.calls)} of {formatCount(summary.data.total, "call")} ·{" "}
-            {formatCount(summary.data.errors)} failed
-            {summary.data.engine ? ` · ${summary.data.engine}` : ""}
-            {lossNotes(summary.data.lost).map((note) => (
-              <span key={note.text} className={note.warn ? "warn" : undefined} title={note.title}>
-                {" "}
-                · {note.text}
-              </span>
-            ))}
-          </span>
-        ) : null}
+      <div class="syscalls-bar">
+        <FilterBar error={summary().error?.message} />
+        <Tabs tab={focus().look.st} />
+        <Show when={summary().data}>
+          {(data) => (
+            <span class="muted syscalls-counts" data-testid="syscall-counts">
+              {formatCount(data().calls)} of {formatCount(data().total, "call")} ·{" "}
+              {formatCount(data().errors)} failed
+              {data().engine ? ` · ${data().engine}` : ""}
+              <For each={lossNotes(data().lost)} keyed={(note) => note.text}>
+                {(note) => (
+                  <span class={note().warn ? "warn" : undefined} title={note().title}>
+                    {" "}
+                    · {note().text}
+                  </span>
+                )}
+              </For>
+            </span>
+          )}
+        </Show>
         <SamplesDuring during="all" name="the selected calls">
           Samples during these calls
         </SamplesDuring>
       </div>
-      {missing ? <Unkept {...missing} /> : null}
-      <div className="syscalls-body">
-        {look.st === "log" ? (
-          <Log key={JSON.stringify(base)} query={base} />
-        ) : look.st === "files" ? (
-          <Files query={base} />
-        ) : look.st === "network" ? (
-          <Network query={base} />
-        ) : look.st === "processes" ? (
-          <Processes query={base} />
-        ) : (
-          <Summary summary={summary} query={base} />
-        )}
+      <Show when={props.missing}>
+        {(current) => <Unkept text={current().text} flag={current().flag} />}
+      </Show>
+      <div class="syscalls-body">
+        <Switch fallback={<Summary summary={summary()} query={base()} />}>
+          <Match when={focus().look.st === "log"}>
+            <Show when={logKey()} keyed>
+              {(_key) => <Log query={base()} />}
+            </Show>
+          </Match>
+          <Match when={focus().look.st === "files"}>
+            <Files query={base()} />
+          </Match>
+          <Match when={focus().look.st === "network"}>
+            <Network query={base()} />
+          </Match>
+          <Match when={focus().look.st === "processes"}>
+            <Processes query={base()} />
+          </Match>
+        </Switch>
       </div>
     </>
   );
 }
 
-function FilterBar({ error }: { error: string | undefined }) {
-  const { look, setLook } = useProfile();
-  const [text, setText] = useState(look.sf ?? "");
+function FilterBar(props: { error: string | undefined }) {
+  const focus = useProfile();
+  const [text, setText] = createSignal(untrack(() => focus().look.sf ?? ""));
 
-  const [applied, setApplied] = useState(look.sf);
-  if (applied !== look.sf) {
-    setApplied(look.sf);
-    setText(look.sf ?? "");
-  }
-  const apply = useCallback(
-    (event: FormEvent) => {
-      event.preventDefault();
-      setLook((prev) => withLook(prev, "sf", text.trim() || undefined), true);
+  createEffect(
+    () => focus().look.sf,
+    (sf) => {
+      setText(sf ?? "");
     },
-    [setLook, text],
   );
-  const edit = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setText(event.target.value),
-    [],
-  );
+  const apply = (event: SubmitEvent) => {
+    event.preventDefault();
+    focus().setLook((prev) => withLook(prev, "sf", text().trim() || undefined), true);
+  };
+  const edit = (event: InputEvent & { currentTarget: HTMLInputElement }) =>
+    setText(event.currentTarget.value);
   return (
-    <form className="syscalls-filter" onSubmit={apply}>
+    <form class="syscalls-filter" onSubmit={apply}>
       <input
-        className="input mono"
+        class="input mono"
         aria-label="Selection"
         placeholder="trace=%file status=failed"
-        value={text}
-        onChange={edit}
-        aria-invalid={error ? true : undefined}
+        value={text()}
+        onInput={edit}
+        aria-invalid={props.error ? "true" : undefined}
       />
-      {error ? (
-        <span className="error-text" role="alert">
-          {error}
-        </span>
-      ) : null}
+      <Show when={props.error}>
+        {(message) => (
+          <span class="error-text" role="alert">
+            {message()}
+          </span>
+        )}
+      </Show>
     </form>
   );
 }

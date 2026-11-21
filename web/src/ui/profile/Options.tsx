@@ -1,4 +1,5 @@
-import { type ChangeEvent, type ReactNode, useCallback, useRef, useState } from "react";
+import type { JSX } from "@solidjs/web";
+import { createMemo, createSignal, For, Show } from "solid-js";
 
 import { type ProfileLook, transformed, withLook } from "../../profile/look";
 import type { ProfileGranularity, ProfileSummary } from "../../protocol";
@@ -17,190 +18,181 @@ const GRANULARITIES: { by: ProfileGranularity; label: string }[] = [
 const sampled = (summary: ProfileSummary) => summary.samples > 0 || summary.syscalls === 0;
 
 export function Options() {
-  const { summary } = useProfile();
-  const [open, setOpen] = useState(false);
-  const anchor = useRef<HTMLDivElement>(null);
-  const toggle = useCallback(() => setOpen((was) => !was), []);
-  const away = useCallback(() => setOpen(false), []);
-  useDismiss(anchor, open, away);
+  const focus = useProfile();
+  const [open, setOpen] = createSignal(false);
+  let anchor: HTMLDivElement | undefined;
+  const toggle = () => setOpen((was) => !was);
+  const away = () => setOpen(false);
+  useDismiss(() => anchor, open, away);
 
-  if (!sampled(summary) && summary.snapshots === 0 && summary.labelKeys.length === 0) {
-    return null;
-  }
   return (
-    <div className="anchor" ref={anchor}>
-      <button
-        type="button"
-        className="tb ghost"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={toggle}
+    <Show
+      when={
+        sampled(focus().summary) ||
+        focus().summary.snapshots > 0 ||
+        focus().summary.labelKeys.length > 0
+      }
+    >
+      <div
+        class="anchor"
+        ref={(node) => {
+          anchor = node;
+        }}
       >
-        Options
-      </button>
-      {open ? <Popover /> : null}
-    </div>
+        <button
+          type="button"
+          class="tb ghost"
+          aria-haspopup="dialog"
+          aria-expanded={open() ? "true" : "false"}
+          onClick={toggle}
+        >
+          Options
+        </button>
+        <Show when={open()}>
+          <Popover />
+        </Show>
+      </div>
+    </Show>
   );
 }
 
 function Popover() {
-  const { summary, look, setLook } = useProfile();
-  const dialog = useRef<HTMLDivElement>(null);
-  useDialogFocus(dialog);
-  const snapshots = summary.snapshots > 0;
+  const focus = useProfile();
+  let dialog: HTMLDivElement | undefined;
+  useDialogFocus(() => dialog);
+  const snapshots = createMemo(() => focus().summary.snapshots > 0);
+  const isSampled = createMemo(() => sampled(focus().summary));
 
-  const framesBy = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => {
-      const by = event.target.value as ProfileGranularity;
-      setLook((prev) => withLook(prev, "by", by === "function" ? undefined : by));
-    },
-    [setLook],
-  );
-  const rootByLabel = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) =>
-      setLook((prev) => withLook(prev, "bl", event.target.value || undefined)),
-    [setLook],
-  );
-  const collapsed = (look.tf ?? []).includes(COLLAPSE_CYCLES);
-  const collapseCycles = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      const on = event.target.checked;
-      setLook((prev) => {
-        if (on) {
-          return transformed(prev, { op: "collapseCycles", name: "" });
-        }
-
-        const kept = (prev.tf ?? []).filter((entry) => entry !== COLLAPSE_CYCLES);
-        return withLook(prev, "tf", kept.length > 0 ? kept : undefined);
-      }, true);
-    },
-    [setLook],
-  );
+  const framesBy = (event: Event & { currentTarget: HTMLSelectElement }) => {
+    const by = event.currentTarget.value as ProfileGranularity;
+    focus().setLook((prev) => withLook(prev, "by", by === "function" ? undefined : by));
+  };
+  const rootByLabel = (event: Event & { currentTarget: HTMLSelectElement }) =>
+    focus().setLook((prev) => withLook(prev, "bl", event.currentTarget.value || undefined));
+  const collapsed = createMemo(() => (focus().look.tf ?? []).includes(COLLAPSE_CYCLES));
+  const collapseCycles = (event: Event & { currentTarget: HTMLInputElement }) => {
+    const on = event.currentTarget.checked;
+    focus().setLook((prev) => {
+      if (on) {
+        return transformed(prev, { op: "collapseCycles", name: "" });
+      }
+      const kept = (prev.tf ?? []).filter((entry) => entry !== COLLAPSE_CYCLES);
+      return withLook(prev, "tf", kept.length > 0 ? kept : undefined);
+    }, true);
+  };
 
   return (
     <div
-      ref={dialog}
-      className="popover profile-options"
+      ref={(node) => {
+        dialog = node;
+      }}
+      class="popover profile-options"
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a popover, not a modal <dialog>
       role="dialog"
       aria-label="Options"
-
       data-keys="escape"
     >
-      {sampled(summary) ? (
-        <label className="options-field">
+      <Show when={isSampled()}>
+        <label class="options-field">
           Frames
-          <select className="input" value={look.by ?? "function"} onChange={framesBy}>
-            {GRANULARITIES.map(({ by, label }) => (
-              <option key={by} value={by}>
-                {label}
-              </option>
-            ))}
+          <select class="input" value={focus().look.by ?? "function"} onChange={framesBy}>
+            <For each={GRANULARITIES}>
+              {(item) => <option value={item.by}>{item.label}</option>}
+            </For>
           </select>
         </label>
-      ) : null}
-      {summary.labelKeys.length > 0 ? (
-        <label className="options-field">
+      </Show>
+      <Show when={focus().summary.labelKeys.length > 0}>
+        <label class="options-field">
           Root by label
-          <select className="input" value={look.bl ?? ""} onChange={rootByLabel}>
+          <select class="input" value={focus().look.bl ?? ""} onChange={rootByLabel}>
             <option value="">none</option>
-            {summary.labelKeys.map((key) => (
-              <option key={key} value={key}>
-                {key}
-              </option>
-            ))}
+            <For each={focus().summary.labelKeys}>
+              {(key) => <option value={key}>{key}</option>}
+            </For>
           </select>
         </label>
-      ) : null}
-      {sampled(summary) ? (
-        <>
-          <LookCheck field="invert" checked={look.invert === "1"} on="1" off={undefined}>
-            Inverted
-          </LookCheck>
+      </Show>
+      <Show when={isSampled()}>
+        <LookCheck field="invert" checked={focus().look.invert === "1"} on="1" off={undefined}>
+          Inverted
+        </LookCheck>
+        <LookCheck
+          field="native"
+          title="Show each async task's frames as a stack of its own"
+          checked={focus().look.native !== "1"}
+          on={undefined}
+          off="1"
+        >
+          Async stacks
+        </LookCheck>
+        <Show
+          when={
+            focus().summary.syscalls > 0 &&
+            focus().summary.unit === "nanoseconds" &&
+            focus().look.src !== "waits"
+          }
+        >
           <LookCheck
-            field="native"
-            title="Show each async task's frames as a stack of its own"
-            checked={look.native !== "1"}
-            on={undefined}
-            off="1"
+            field="sk"
+            title="Show the time each system call spent off its CPU under the code that made it"
+            checked={focus().look.sk === "1"}
+            on="1"
+            off={undefined}
           >
-            Async stacks
+            System calls as leaves
           </LookCheck>
-          {summary.syscalls > 0 && summary.unit === "nanoseconds" && look.src !== "waits" ? (
-            <LookCheck
-              field="sk"
-              title="Show the time each system call spent off its CPU under the code that made it"
-              checked={look.sk === "1"}
-              on="1"
-              off={undefined}
-            >
-              System calls as leaves
-            </LookCheck>
-          ) : null}
-          {summary.interpreted ? (
-            <LookCheck
-              field="py"
-              title="Show Python frames only, without the interpreter's frames"
-              checked={look.py === "1"}
-              on="1"
-              off={undefined}
-            >
-              Python stacks
-            </LookCheck>
-          ) : null}
-        </>
-      ) : null}
-      {snapshots ? (
+        </Show>
+        <Show when={focus().summary.interpreted}>
+          <LookCheck
+            field="py"
+            title="Show Python frames only, without the interpreter's frames"
+            checked={focus().look.py === "1"}
+            on="1"
+            off={undefined}
+          >
+            Python stacks
+          </LookCheck>
+        </Show>
+      </Show>
+      <Show when={snapshots()}>
         <LookCheck
           field="bt"
           title="Group stacks by the task they ran or waited in"
-          checked={look.bt === "1"}
+          checked={focus().look.bt === "1"}
           on="1"
           off={undefined}
         >
           By task
         </LookCheck>
-      ) : null}
-      {sampled(summary) ? (
-        <label
-          className="check"
-          title="Merge recursive calls, direct or indirect, into the first call"
-        >
-          <input type="checkbox" checked={collapsed} onChange={collapseCycles} />
+      </Show>
+      <Show when={isSampled()}>
+        <label class="check" title="Merge recursive calls, direct or indirect, into the first call">
+          <input type="checkbox" checked={collapsed()} onChange={collapseCycles} />
           Collapse recursion
         </label>
-      ) : null}
+      </Show>
     </div>
   );
 }
 
-function LookCheck<K extends keyof ProfileLook>({
-  field,
-  title,
-  checked,
-  on,
-  off,
-  children,
-}: {
+function LookCheck<K extends keyof ProfileLook>(props: {
   field: K;
-  title?: string;
+  title?: string | undefined;
   checked: boolean;
   on: ProfileLook[K] | undefined;
   off: ProfileLook[K] | undefined;
-  children: ReactNode;
+  children: JSX.Element;
 }) {
-  const { setLook } = useProfile();
-  const toggle = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      const value = event.target.checked ? on : off;
-      setLook((prev) => withLook(prev, field, value));
-    },
-    [setLook, field, on, off],
-  );
+  const focus = useProfile();
+  const toggle = (event: Event & { currentTarget: HTMLInputElement }) => {
+    const value = event.currentTarget.checked ? props.on : props.off;
+    focus().setLook((prev) => withLook(prev, props.field, value));
+  };
   return (
-    <label className="check" title={title}>
-      <input type="checkbox" checked={checked} onChange={toggle} />
-      {children}
+    <label class="check" title={props.title}>
+      <input type="checkbox" checked={props.checked} onChange={toggle} />
+      {props.children}
     </label>
   );
 }

@@ -23,7 +23,7 @@ function token(name: string): string {
 }
 
 it("dims a watch hidden while the program runs, saying why once", async () => {
-  await mountPane(<Watch />, { look: { w: ["count", "limit"] }, stale: "running" });
+  await mountPane(() => <Watch />, { look: { w: ["count", "limit"] }, stale: "running" });
   await expect
     .element(page.getByText("The program is running; values appear when it stops."))
     .toBeVisible();
@@ -34,7 +34,7 @@ it("dims a watch hidden while the program runs, saying why once", async () => {
 });
 
 it("marks a watch red only when it failed", async () => {
-  const server = await mountPane(<Watch />, { look: { w: ["nope"] } });
+  const server = await mountPane(() => <Watch />, { look: { w: ["nope"] } });
   server.send({
     type: "error",
     id: (await server.next("evaluate")).id,
@@ -45,7 +45,7 @@ it("marks a watch red only when it failed", async () => {
 });
 
 it("dims an outer frame's register that was not saved", async () => {
-  const server = await mountPane(<Registers />, { at: { stop: 1, thread: 1, frame: 1 } });
+  const server = await mountPane(() => <Registers />, { at: { stop: 1, thread: 1, frame: 1 } });
   server.answer(await server.next("registers"), {
     registers: [{ name: "rbx", value: null, bits: 64, role: null }],
   });
