@@ -1005,4 +1005,66 @@ mod tests {
         assert!(times.contains(&(wall_base + 2_000_000_000)), "{times:?}");
         assert!(times.contains(&(wall_base + 9_000_000_000)), "{times:?}");
     }
+
+    #[test]
+    fn spool_shrinks_batch_when_merged_strings_exceed_page_raw_limit() {
+        use crate::capture::CaptureBuilder;
+        use crate::model::Pid;
+
+        let scratch = Scratch::new();
+        let dir = scratch.path().join("spool");
+        let policy = Sanitizer::new(&Builtin::DEFAULT, Vec::new(), HashKey::new(b"test-key"));
+        let wall_base = 1_770_000_000_000_000_000_i64;
+
+        let make_chunk = |num: u64, fill: char| {
+            let mut b = CaptureBuilder::new();
+            let big = std::iter::repeat_n(fill, 18 * 1024 * 1024).collect::<String>();
+            b.setting(&format!("note_{num}"), &big);
+            let _p = b.process(Pid::new(100), wall_base);
+            sanitize_chunk(
+                ChunkData {
+                    capture: b.finish(),
+                    chunks: vec![ChunkRow {
+                        agent: 7,
+                        number: num,
+                        start: wall_base + i64::try_from(num).expect("i64") * 1_000_000_000,
+                        end: wall_base + (i64::try_from(num).expect("i64") + 1) * 1_000_000_000,
+                        sampled_ns: 1_000_000_000,
+                        preset: 0,
+                        time_unit: TimeUnit::Us,
+                        policy: 0,
+                        rules: "default".into(),
+                    }],
+                    dimensions: vec![DimensionRow {
+                        process: microscope_data::capture::records::NONE,
+                        name: "microscope.project".into(),
+                        value: "alpha".into(),
+                    }],
+                    sanitizer_counts: Vec::new(),
+                },
+                TimeUnit::Us,
+                &policy,
+            )
+        };
+
+        let c1 = make_chunk(1, 'a');
+        let c2 = make_chunk(2, 'b');
+
+        let mut spool = Spool::open(&dir, 64 * 1024 * 1024).expect("open");
+        spool.push(1, &c1, 7, wall_base).expect("push 1");
+        spool.push(2, &c2, 7, wall_base).expect("push 2");
+
+        let batch = spool
+            .peek_batch(MAX_POST_BYTES, 7, wall_base + 5_000_000_000, &policy)
+            .expect("peek")
+            .expect("batch");
+        assert_eq!(batch.chunk_count, 1);
+        assert_eq!(batch.first_chunk, 1);
+        assert_eq!(batch.last_chunk, 1);
+
+        let reader = ObjectReader::open(batch.post.as_bytes()).expect("open post");
+        let sections = reader.part_sections(0, None).expect("sections");
+        let decoded = decode_tables(&sections).expect("decode shrunken batch");
+        assert_eq!(decoded.chunks.len(), 1);
+    }
 }

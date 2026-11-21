@@ -221,8 +221,6 @@ impl Folded {
         calls
     }
 
-    /// Collapses per-thread syscall stats into per-process rows (`Tid(0)` -> `NONE` on wire).
-    /// Used at the `prod` preset so thread churn does not multiply `SyscallStats` cardinality.
     #[must_use]
     pub fn collapse_to_process(&self) -> Self {
         let mut collapsed = Self::default();

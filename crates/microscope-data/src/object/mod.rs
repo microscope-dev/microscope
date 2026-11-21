@@ -18,10 +18,10 @@ pub use filter::{
     filter_key_process_name,
 };
 pub use tables::{
-    ChunkData, ChunkRow, DimensionRow, SanitizerCountRow, SharedSymbols, StringDecodeMap,
-    StringEncodeMap, decode_event_bundle, decode_flame_tables, decode_tables,
-    decode_tables_budgeted, encode_event_bundle, encode_tables, merge_chunks, round_capture_times,
-    shift_capture_times,
+    ChunkData, ChunkRow, DimensionRow, FlameBundle, SanitizerCountRow, SharedSymbols,
+    StringDecodeMap, StringEncodeMap, decode_event_bundle, decode_flame_bundle,
+    decode_flame_tables, decode_tables, decode_tables_budgeted, encode_event_bundle, encode_tables,
+    merge_chunks, round_capture_times, shift_capture_times,
 };
 
 pub const OBJECT_MAGIC: [u8; 8] = *b"USCOPEOB";
@@ -535,10 +535,6 @@ pub struct PartSpec {
     pub sections: Vec<EncodedSection>,
 }
 
-/// Compact binary encoding of a part's section index for Postgres `blocks.section_index BYTEA`.
-///
-/// Format: `version (1 B = 1) | part_index (varint) | count (varint) | entries...`
-/// Each entry: `kind (u16 LE) | key (varint) | offset_delta (varint) | stored_len (varint) | rows (varint) | checksum (u64 LE)`
 #[must_use]
 pub fn encode_section_index(part_index: u32, sections: &[SectionMeta]) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + sections.len() * 24);
@@ -697,9 +693,6 @@ impl ObjectWriter {
         self.flushed_len.saturating_add(self.bytes.len() as u64)
     }
 
-    /// Appends a self-contained checkpoint footer (`PartList` + `USCOPEOC` trailer) covering all
-    /// parts written so far. Used by appendable `ObjectKind::Capture` files so a `SIGKILL`
-    /// mid-write recovers every previously checkpointed part.
     pub fn write_checkpoint(&mut self) -> Result<(), ObjectError> {
         let list_off = self.current_offset()?;
         let footer = self.build_footer_with_magic(list_off, CHECKPOINT_MAGIC)?;
@@ -707,7 +700,6 @@ impl ObjectWriter {
         Ok(())
     }
 
-    /// Appends the finalized object footer (`PartList` + `USCOPEOE` trailer) for streaming writers.
     pub fn write_final_footer(&mut self) -> Result<(), ObjectError> {
         let list_off = self.current_offset()?;
         let footer = self.build_footer_with_magic(list_off, TRAILER_MAGIC)?;
@@ -715,7 +707,6 @@ impl ObjectWriter {
         Ok(())
     }
 
-    /// Drains all buffered bytes written since the last call, advancing the logical file offset.
     pub fn take_bytes(&mut self) -> Result<Vec<u8>, ObjectError> {
         let next = self.current_offset()?;
         self.flushed_len = next;
@@ -857,6 +848,14 @@ impl ObjectWriter {
         let mut footer = Vec::with_capacity(stored_list.len() + TRAILER_LEN);
         footer.extend_from_slice(&stored_list);
         footer.extend_from_slice(trailer.as_bytes());
+        let final_len = list_off
+            .checked_add(
+                u64::try_from(footer.len()).map_err(|_| ObjectError::Limit("footer overflow"))?,
+            )
+            .ok_or(ObjectError::Limit("object exceeds maximum size"))?;
+        if final_len > MAX_OBJECT_BYTES as u64 {
+            return Err(ObjectError::Limit("object exceeds maximum size"));
+        }
         Ok(footer)
     }
 
@@ -902,8 +901,6 @@ impl<'a> ObjectReader<'a> {
         Self::open_inner(bytes, false)
     }
 
-    /// Opens a potentially truncated checkpointed capture object (recovering up to the last
-    /// intact checkpoint trailer when EOF does not end with a complete trailer).
     pub fn open_recoverable(bytes: &'a [u8]) -> Result<Self, ObjectError> {
         Self::open_inner(bytes, true)
     }
@@ -1078,8 +1075,6 @@ fn recover_last_checkpoint(
     key_seed: u64,
     kind: ObjectKind,
 ) -> Result<Vec<PartMeta>, ObjectError> {
-    // Scan backwards for the last intact `USCOPEOC` checkpoint trailer whose list checksum
-    // and part/section checksums all verify.
     let mut search_end = bytes.len();
     while search_end >= OBJECT_HEADER_LEN + TRAILER_LEN {
         let Some(pos) = memchr::memmem::rfind(&bytes[..search_end], &CHECKPOINT_MAGIC) else {
@@ -1091,8 +1086,6 @@ fn recover_last_checkpoint(
             && let Ok(trailer) = ObjectTrailer::read_from_bytes(trailer_slice)
             && let Ok(parts) = decode_trailer_parts(bytes, trailer_start, &trailer, key_seed, kind)
         {
-            // Verify every section checksum in the recovered checkpoint so garbage bytes
-            // can never masquerade as valid data.
             let mut all_ok = true;
             for part in &parts {
                 for sec in &part.sections {
@@ -1125,8 +1118,6 @@ fn recover_last_checkpoint(
     Err(ObjectError::Truncated)
 }
 
-/// Verifies a section stored inside a byte slice (e.g., from a 1-RTT ranged S3 GET) using its
-/// keyed `XxHash3` trailer and catalog metadata, with zero footer reads.
 pub fn verify_section_slice<'a>(
     slice: &'a [u8],
     slice_base_offset: u64,

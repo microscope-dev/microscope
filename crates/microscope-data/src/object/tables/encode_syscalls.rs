@@ -13,9 +13,6 @@ use crate::capture::Capture;
 use crate::capture::records::{Syscall, UNSEEN, captures as parse_captures};
 use crate::syscalls::{Capture as ArgCapture, CaptureState, ReadAt};
 
-/// Encodes `Syscalls` paged by time (`DEFAULT_PAGE_ROWS`), with two column-group frames per page:
-/// - Frame 0: core timing/thread/result/stack/outcome columns
-/// - Frame 1: syscall argument columns (`args[0..arg_count]`), skippable by list views
 #[expect(
     clippy::too_many_lines,
     reason = "encodes paged grouped syscall columns with core vs args framing"
@@ -79,10 +76,17 @@ pub(super) fn encode_syscalls(
                 None
             };
             let t = raw_t.map_or(prev_exit, |rt| {
-                min_t = min_t.min(rt);
-                max_t = max_t.max(rt);
-                time_unit.to_units(rt)
+                let u = time_unit.to_units(rt);
+                let decoded_t = time_unit.to_nanos(u);
+                min_t = min_t.min(decoded_t);
+                max_t = max_t.max(decoded_t);
+                u
             });
+            if call.entered.get() != UNSEEN {
+                let decoded_entered = time_unit.to_nanos(time_unit.to_units(call.entered.get()));
+                min_t = min_t.min(decoded_entered);
+                max_t = max_t.max(decoded_entered);
+            }
             exit_times.push(t);
             prev_exit = t;
         }
@@ -101,7 +105,6 @@ pub(super) fn encode_syscalls(
             .map(|gk| group_index.get(gk).copied().unwrap_or(0))
             .collect();
 
-        // Frame 0: core columns (order, exit_times, duration, thread, ret, stack, cap_len, outcome, flags, unseen).
         add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 0, &order)?;
         let exit_deltas = delta_encode_i64(&exit_times, first_time);
         if time_unit == TimeUnit::Ns {
@@ -212,8 +215,6 @@ pub(super) fn encode_syscalls(
             }
         }
 
-        // Frame 1: syscall arguments (separate zstd frame when section is large enough to
-        // benefit from skipping `args`, or same frame for tiny sections to avoid frame overhead).
         let split_args_frame = page_rows.len() >= 1024 && !pending_args.is_empty();
         if split_args_frame {
             w.next_frame()?;
@@ -239,47 +240,17 @@ pub(super) fn encode_syscalls(
     w.finish_paged(key)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "encodes grouped syscall capture blobs and note blobs"
-)]
-pub(super) fn encode_syscall_blobs(
-    capture: &Capture,
-    zstd_level: i32,
-    key: u64,
-) -> Result<EncodedSection, ObjectError> {
-    let mut call_counts = Vec::with_capacity(capture.syscalls.len());
-    let mut call_arg_order = Vec::new();
-    let mut by_arg: BTreeMap<(u8, u16, u8), Vec<ArgCapture>> = BTreeMap::new();
-    let mut total_captures = 0_usize;
+const SYSCALL_BLOBS_PAGE_BYTES: usize = 16 * 1024 * 1024;
 
-    for call in &capture.syscalls {
-        let bytes = capture.blob(call.captures.get(), call.captures_len.get());
-        if bytes.is_empty() {
-            call_counts.push(0_u64);
-            continue;
-        }
-        let parsed = parse_captures(bytes)
-            .ok_or_else(|| ObjectError::Capture("malformed syscall capture bytes".into()))?;
-        let nr = u16::try_from(call.number.get())
-            .map_err(|_| ObjectError::Layout("syscall number exceeds u16".into()))?;
-        call_counts.push(parsed.len() as u64);
-        total_captures += parsed.len();
-        for cap in parsed {
-            let gk = (call.abi, nr, cap.arg);
-            call_arg_order.push(gk);
-            by_arg.entry(gk).or_default().push(cap);
-        }
-    }
-
-    let mut note_blobs: Vec<&[u8]> = Vec::new();
-    for note in &capture.syscall_notes {
-        let bytes = capture.blob(note.blob.get(), note.blob_len.get());
-        if !bytes.is_empty() {
-            note_blobs.push(bytes);
-        }
-    }
-
+fn flush_syscall_blob_page(
+    w: &mut SectionWriter,
+    call_start: usize,
+    call_end: usize,
+    call_counts: &mut Vec<u64>,
+    call_arg_order: &mut Vec<(u8, u16, u8)>,
+    by_arg: &mut BTreeMap<(u8, u16, u8), Vec<ArgCapture>>,
+    page_notes: &mut Vec<&[u8]>,
+) -> Result<(), ObjectError> {
     let group_index: BTreeMap<(u8, u16, u8), u64> = by_arg
         .keys()
         .enumerate()
@@ -289,19 +260,12 @@ pub(super) fn encode_syscall_blobs(
         .iter()
         .map(|gk| group_index.get(gk).copied().unwrap_or(0))
         .collect();
+    let page_captures = call_arg_order.len();
 
-    let mut w = SectionWriter::new(
-        SectionKind::SyscallBlobs,
-        TABLE_VERSION,
-        TimeUnit::Ns,
-        count_u32(total_captures)?,
-        0,
-        zstd_level,
-    );
-    add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 0, &call_counts)?;
-    add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 1, &order)?;
+    add_plain_u64_col(w, WHOLE_SECTION_GROUP, 0, call_counts)?;
+    add_plain_u64_col(w, WHOLE_SECTION_GROUP, 1, &order)?;
 
-    for ((abi, nr, arg), caps) in &by_arg {
+    for ((abi, nr, arg), caps) in by_arg.iter() {
         let g = w.add_group(*abi, *arg, *nr, count_u32(caps.len())?)?;
         let mut headers = Vec::with_capacity(caps.len());
         let mut wanted = Vec::with_capacity(caps.len());
@@ -330,8 +294,8 @@ pub(super) fn encode_syscall_blobs(
             NO_KEY_COLUMN,
             &encode_dict_u64(&headers),
         )?;
-        add_plain_u64_col(&mut w, g, 1, &wanted)?;
-        add_plain_u64_col(&mut w, g, 2, &lengths)?;
+        add_plain_u64_col(w, g, 1, &wanted)?;
+        add_plain_u64_col(w, g, 2, &lengths)?;
 
         let first_len = caps.first().map_or(0, |c| c.bytes.len());
         let fixed_words = first_len > 0
@@ -350,23 +314,152 @@ pub(super) fn encode_syscall_blobs(
         }
     }
 
-    if !note_blobs.is_empty() {
-        let g = w.add_group(0, NOTE_BLOBS_ARGUMENT, 0, count_u32(note_blobs.len())?)?;
-        let lengths: Vec<u64> = note_blobs.iter().map(|b| b.len() as u64).collect();
-        let mut joined = Vec::with_capacity(note_blobs.iter().map(|b| b.len()).sum());
-        for blob in &note_blobs {
+    if !page_notes.is_empty() {
+        let g = w.add_group(0, NOTE_BLOBS_ARGUMENT, 0, count_u32(page_notes.len())?)?;
+        let lengths: Vec<u64> = page_notes.iter().map(|b| b.len() as u64).collect();
+        let mut joined = Vec::with_capacity(page_notes.iter().map(|b| b.len()).sum());
+        for blob in page_notes.iter() {
             joined.extend_from_slice(blob);
         }
-        add_plain_u64_col(&mut w, g, 0, &lengths)?;
+        add_plain_u64_col(w, g, 0, &lengths)?;
         w.add_column(g, 1, Coding::Bytes, NO_KEY_COLUMN, &joined)?;
     }
 
-    w.finish(key)
+    let min_k = i64::try_from(call_start)
+        .map_err(|_| ObjectError::Limit("syscall call index exceeds i64"))?;
+    let max_k = i64::try_from(call_end)
+        .map_err(|_| ObjectError::Limit("syscall call index exceeds i64"))?;
+    w.finish_page(min_k, max_k, count_u32(page_captures)?)?;
+
+    call_counts.clear();
+    call_arg_order.clear();
+    by_arg.clear();
+    page_notes.clear();
+    Ok(())
 }
 
-/// Encodes `SyscallStats` sorted by `(abi, number, process, thread)` using sparse 40-bit
-/// histograms, and reorders `SyscallErrnos` in lockstep so `errnos..errnos + errno_count`
-/// remains exact.
+#[expect(
+    clippy::too_many_lines,
+    reason = "encodes paged grouped syscall capture blobs and note blobs"
+)]
+pub(super) fn encode_syscall_blobs(
+    capture: &Capture,
+    zstd_level: i32,
+    key: u64,
+) -> Result<EncodedSection, ObjectError> {
+    let mut parsed_calls: Vec<(u8, u16, Vec<ArgCapture>, usize)> =
+        Vec::with_capacity(capture.syscalls.len());
+    let mut total_captures = 0_usize;
+
+    for call in &capture.syscalls {
+        let bytes = capture.blob(call.captures.get(), call.captures_len.get());
+        if bytes.is_empty() {
+            parsed_calls.push((call.abi, 0, Vec::new(), 10));
+            continue;
+        }
+        let parsed = parse_captures(bytes)
+            .ok_or_else(|| ObjectError::Capture("malformed syscall capture bytes".into()))?;
+        let nr = u16::try_from(call.number.get())
+            .map_err(|_| ObjectError::Layout("syscall number exceeds u16".into()))?;
+        let est_bytes: usize = parsed
+            .iter()
+            .map(|cap| cap.bytes.len().saturating_add(48))
+            .sum::<usize>()
+            .saturating_add(16);
+        total_captures = total_captures.saturating_add(parsed.len());
+        parsed_calls.push((call.abi, nr, parsed, est_bytes));
+    }
+
+    let mut note_blobs: Vec<&[u8]> = Vec::new();
+    for note in &capture.syscall_notes {
+        let bytes = capture.blob(note.blob.get(), note.blob_len.get());
+        if !bytes.is_empty() {
+            note_blobs.push(bytes);
+        }
+    }
+
+    let mut w = SectionWriter::new(
+        SectionKind::SyscallBlobs,
+        TABLE_VERSION,
+        TimeUnit::Ns,
+        count_u32(total_captures)?,
+        0,
+        zstd_level,
+    );
+
+    let mut call_counts = Vec::new();
+    let mut call_arg_order = Vec::new();
+    let mut by_arg: BTreeMap<(u8, u16, u8), Vec<ArgCapture>> = BTreeMap::new();
+    let mut page_notes: Vec<&[u8]> = Vec::new();
+    let mut page_bytes = 0_usize;
+    let mut page_call_start = 0_usize;
+    let mut emitted_any = false;
+
+    for (call_idx, (abi, nr, parsed, est_bytes)) in parsed_calls.into_iter().enumerate() {
+        if !call_counts.is_empty()
+            && (page_bytes.saturating_add(est_bytes) > SYSCALL_BLOBS_PAGE_BYTES
+                || call_counts.len() >= DEFAULT_PAGE_ROWS)
+        {
+            flush_syscall_blob_page(
+                &mut w,
+                page_call_start,
+                call_idx,
+                &mut call_counts,
+                &mut call_arg_order,
+                &mut by_arg,
+                &mut page_notes,
+            )?;
+            page_call_start = call_idx;
+            page_bytes = 0;
+            emitted_any = true;
+        }
+        call_counts.push(parsed.len() as u64);
+        for cap in parsed {
+            let gk = (abi, nr, cap.arg);
+            call_arg_order.push(gk);
+            by_arg.entry(gk).or_default().push(cap);
+        }
+        page_bytes = page_bytes.saturating_add(est_bytes);
+    }
+
+    let total_calls = capture.syscalls.len();
+    for blob in note_blobs {
+        let est_bytes = blob.len().saturating_add(16);
+        if (!call_counts.is_empty() || !page_notes.is_empty())
+            && page_bytes.saturating_add(est_bytes) > SYSCALL_BLOBS_PAGE_BYTES
+        {
+            flush_syscall_blob_page(
+                &mut w,
+                page_call_start,
+                total_calls,
+                &mut call_counts,
+                &mut call_arg_order,
+                &mut by_arg,
+                &mut page_notes,
+            )?;
+            page_call_start = total_calls;
+            page_bytes = 0;
+            emitted_any = true;
+        }
+        page_notes.push(blob);
+        page_bytes = page_bytes.saturating_add(est_bytes);
+    }
+
+    if !call_counts.is_empty() || !page_notes.is_empty() || !emitted_any {
+        flush_syscall_blob_page(
+            &mut w,
+            page_call_start,
+            total_calls,
+            &mut call_counts,
+            &mut call_arg_order,
+            &mut by_arg,
+            &mut page_notes,
+        )?;
+    }
+
+    w.finish_paged(key)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "encodes sorted sparse syscall stats and paired errnos together"
@@ -471,7 +564,6 @@ pub(super) fn encode_syscall_stats_and_errnos(
                 }
             }
             if reordered_counts.is_empty() {
-                // Fallback if errnos exist without stat ranges pointing into them.
                 for e in &capture.syscall_errnos {
                     reordered_counts.push(e.count.get());
                     reordered_errnos.push(u64::from(e.errno.get()));

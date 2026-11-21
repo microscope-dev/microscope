@@ -1,10 +1,12 @@
 mod decode;
+mod decode_syscalls;
 mod encode_core;
 mod encode_events;
 mod encode_syscalls;
 
 pub use decode::{
-    SharedSymbols, decode_event_bundle, decode_flame_tables, decode_tables, decode_tables_budgeted,
+    FlameBundle, SharedSymbols, decode_event_bundle, decode_flame_bundle, decode_flame_tables,
+    decode_tables, decode_tables_budgeted,
 };
 pub use encode_core::{encode_event_bundle, encode_tables};
 
@@ -79,8 +81,6 @@ impl ChunkData {
     }
 }
 
-/// Maps byte offsets in a NUL-terminated string pool to dense string codes
-/// (`0 = NONE`, `id + 1 = string index id`).
 pub struct StringEncodeMap {
     offset_to_id: HashMap<u32, u32>,
     count: u32,
@@ -141,8 +141,6 @@ impl StringEncodeMap {
     }
 }
 
-/// Maps dense string codes (`0 = NONE`, `id + 1 = string index id`) back to byte offsets
-/// in the decoded NUL-terminated `capture.strings` pool.
 pub struct StringDecodeMap {
     offsets: Vec<u32>,
 }

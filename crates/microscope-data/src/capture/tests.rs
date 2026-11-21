@@ -469,7 +469,6 @@ fn a_truncated_tail_recovers_earlier_checkpointed_chunks() {
     let whole = file::read(&bytes).expect("the file");
     assert_eq!((whole.chunks, whole.truncated), (3, false));
 
-    // Appending incomplete bytes past the last checkpoint simulates SIGKILL mid-chunk.
     let mut partial = bytes;
     partial.extend_from_slice(&[0xaa; 37]);
     let read = file::read(&partial).expect("the chunks, found via checkpoint recovery");

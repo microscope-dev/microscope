@@ -121,6 +121,9 @@ pub fn encode_post(
         sections,
     })?;
     let (bytes, _) = object.finish()?;
+    let reader = crate::object::ObjectReader::open(&bytes)?;
+    let raw_sections = reader.part_sections(0, None)?;
+    let _ = decode_tables(&raw_sections)?;
 
     Ok(EncodedPost {
         bytes,
@@ -821,33 +824,27 @@ pub fn sanitize_chunk(
     }
 }
 
-/// Fast-path zero-decode server-side re-sanitization for an incoming `USCOPEOB v2` post part.
-///
-/// Inspects only `Strings` and `SyscallBlobs` against every `FieldClass` in `sanitizer`. When the
-/// agent already sanitized the chunk under a compatible policy and zero rules fire, ALL sections
-/// (including `Samples`, `OffCpu`, `Stacks`, `Syscalls`, `SyscallStats`, etc.) are passed through
-/// verbatim with zero decompression or re-encoding!
-///
-/// If ANY rule fires on any string or blob byte (for example a stale agent policy or an
-/// unsanitized client), falls back to full `decode_tables` + `sanitize_chunk` + `encode_tables` so
-/// field-class sanitization and `SanitizerCounts` accounting are 100% exact.
-///
-/// Returns `(sections, verbatim_passthrough)`.
 #[expect(
     clippy::too_many_lines,
-    reason = "probes Strings and SyscallBlobs before choosing verbatim passthrough vs full fallback"
+    reason = "probes Strings and decoded SyscallBlobs payloads before choosing verbatim passthrough vs full fallback"
 )]
 pub fn re_sanitize_sections_verbatim(
     raw_sections: &[RawSection<'_>],
     sanitizer: &Sanitizer,
     zstd_level: i32,
 ) -> Result<(Vec<EncodedSection>, bool), ObjectError> {
+    const NOTE_BLOBS_ARGUMENT: u8 = u8::MAX;
+
     let budget = DecodeBudget::new(MAX_DECOMPRESSED_OBJECT_BYTES);
     let mut needs_rewrite = false;
 
     for sec in raw_sections {
         if sec.kind == SectionKind::Strings {
             let reader = SectionReader::open_budgeted(sec.bytes, SectionKind::Strings, &budget)?;
+            if reader.page_count() != 1 {
+                needs_rewrite = true;
+                break;
+            }
             let page = reader.read_page(0)?;
             let pool = &page
                 .column(crate::object::codec::WHOLE_SECTION_GROUP, 0)?
@@ -867,7 +864,7 @@ pub fn re_sanitize_sections_verbatim(
                         "string pool is not valid UTF-8".into(),
                     ));
                 };
-                if text.starts_with('[')
+                if text.trim_start().starts_with('[')
                     && let Ok(args) = serde_json::from_str::<Vec<String>>(text)
                 {
                     let changed = match sanitizer.args(&args, &mut probe) {
@@ -898,33 +895,83 @@ pub fn re_sanitize_sections_verbatim(
         } else if sec.kind == SectionKind::SyscallBlobs {
             let reader =
                 SectionReader::open_budgeted(sec.bytes, SectionKind::SyscallBlobs, &budget)?;
-            let page = reader.read_page(0)?;
             let mut probe = Tally::default();
-            for group_idx in 0..page.groups.len() {
-                let g = u16::try_from(group_idx)
-                    .map_err(|_| ObjectError::Limit("blob group overflow"))?;
-                if let Ok(col) = page.column(g, 0)
-                    && !col.data.is_empty()
-                {
-                    for class in [
-                        FieldClass::SyscallPayload,
-                        FieldClass::SyscallPath,
-                        FieldClass::SyscallString,
-                    ] {
-                        let changed = match sanitizer.bytes(class, &col.data, &mut probe) {
-                            Outcome::Kept => false,
-                            Outcome::Replaced(out) => out != col.data,
-                            Outcome::DropField | Outcome::DropRecord => true,
+            'blob_pages: for page_idx in 0..reader.page_count() {
+                let page = reader.read_page(page_idx)?;
+                let before = budget.remaining();
+                for (gi, entry) in page.groups.iter().enumerate() {
+                    let g =
+                        u16::try_from(gi).map_err(|_| ObjectError::Limit("blob group overflow"))?;
+                    let m = entry.rows.get() as usize;
+                    let (lengths_col_id, data_col_id, classes): (u8, u8, &[FieldClass]) =
+                        if entry.argument == NOTE_BLOBS_ARGUMENT {
+                            (0, 1, &[FieldClass::SyscallPayload])
+                        } else {
+                            (
+                                2,
+                                3,
+                                &[
+                                    FieldClass::SyscallPayload,
+                                    FieldClass::SyscallPath,
+                                    FieldClass::SyscallString,
+                                ],
+                            )
                         };
-                        if changed {
-                            needs_rewrite = true;
-                            break;
+                    let lengths = page
+                        .column(g, lengths_col_id)?
+                        .decode_u64(m, Some(&budget))?;
+                    let data_col = page.column(g, data_col_id)?;
+                    let decoded_words;
+                    let data: &[u8] = match data_col.coding {
+                        crate::object::Coding::Bytes => &data_col.data,
+                        crate::object::Coding::Words if entry.argument != NOTE_BLOBS_ARGUMENT => {
+                            let stride = usize::try_from(lengths.first().copied().unwrap_or(0))
+                                .map_err(|_| ObjectError::Limit("blob length overflow"))?;
+                            if lengths.iter().any(|&l| l != stride as u64) {
+                                return Err(ObjectError::Layout(
+                                    "word-coded blob group has varying lengths".into(),
+                                ));
+                            }
+                            budget.take(m.saturating_mul(stride))?;
+                            decoded_words =
+                                crate::object::codec::decode_words(&data_col.data, m, stride)?;
+                            &decoded_words
+                        }
+                        _ => {
+                            return Err(ObjectError::Layout(
+                                "unexpected coding for syscall blob bytes".into(),
+                            ));
+                        }
+                    };
+                    let mut off = 0_usize;
+                    for len_u64 in lengths {
+                        let len = usize::try_from(len_u64)
+                            .map_err(|_| ObjectError::Limit("blob length overflow"))?;
+                        let end = off
+                            .checked_add(len)
+                            .ok_or(ObjectError::Limit("blob data offset overflow"))?;
+                        let slice = data.get(off..end).ok_or(ObjectError::Truncated)?;
+                        off = end;
+                        if slice.is_empty() {
+                            continue;
+                        }
+                        for &class in classes {
+                            let changed = match sanitizer.bytes(class, slice, &mut probe) {
+                                Outcome::Kept => false,
+                                Outcome::Replaced(out) => out != slice,
+                                Outcome::DropField | Outcome::DropRecord => true,
+                            };
+                            if changed {
+                                needs_rewrite = true;
+                                break 'blob_pages;
+                            }
                         }
                     }
+                    if off != data.len() {
+                        return Err(ObjectError::Layout("unconsumed syscall blob data".into()));
+                    }
                 }
-                if needs_rewrite {
-                    break;
-                }
+                budget.release(before.saturating_sub(budget.remaining()));
             }
         }
         if needs_rewrite {
@@ -955,8 +1002,6 @@ pub fn re_sanitize_sections_verbatim(
     Ok((sections, false))
 }
 
-/// Decodes ONLY the small metadata sections (`Strings`, `Chunk`, `Dimensions`) of a post part
-/// without touching heavy event tables (`Samples`, `OffCpu`, `Stacks`, `Syscalls`, etc.).
 pub fn decode_post_metadata(
     raw_sections: &[RawSection<'_>],
 ) -> Result<(Vec<crate::object::ChunkRow>, Vec<DimensionRow>), ObjectError> {

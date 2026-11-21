@@ -384,7 +384,6 @@ fn time_rounding_and_org_mismatch_and_keyed_checksum_checks() {
         .expect("add part");
     let (mut bytes, metas) = writer.finish().expect("finish");
 
-    // 1-RTT section slice verification with zero footer read.
     let first_sec = &metas[0].sections[0];
     let start = usize::try_from(first_sec.offset).expect("off");
     let end = start + first_sec.stored_len as usize;
@@ -396,7 +395,6 @@ fn time_rounding_and_org_mismatch_and_keyed_checksum_checks() {
         first_sec.stored_len as usize
     );
 
-    // Wrong org_id, project_id, part_index, or key_seed must fail keyed checksum.
     assert!(matches!(
         verify_section_slice(slice, first_sec.offset, first_sec, key_seed, 11, 77, 0),
         Err(ObjectError::Checksum { what: "section" })
@@ -509,7 +507,6 @@ fn sanitize_chunk_scrubs_every_planted_secret_before_encoding() {
     );
     assert!(all_strings.contains("hot_loop"));
 
-    // Clean post passes through verbatim on server re-sanitization with zero re-encoding.
     let post_sections = reader.part_sections(0, None).expect("post sections");
     let (resan, verbatim) =
         crate::sanitize::re_sanitize_sections_verbatim(&post_sections, &policy, DEFAULT_ZSTD_LEVEL)
@@ -521,7 +518,6 @@ fn sanitize_chunk_scrubs_every_planted_secret_before_encoding() {
         assert_eq!(got.bytes, want.bytes);
     }
 
-    // Metadata-only decode returns chunks and dimensions without touching heavy event sections.
     let (meta_chunks, meta_dims) =
         crate::sanitize::decode_post_metadata(&post_sections).expect("meta decode");
     assert_eq!(meta_chunks.len(), 1);
@@ -531,7 +527,6 @@ fn sanitize_chunk_scrubs_every_planted_secret_before_encoding() {
             .any(|d| d.name == "service.name" && d.value == "payments")
     );
 
-    // Dirty post with an unsanitized secret triggers fallback full re-sanitization and scrubs it.
     let dirty = ChunkData {
         capture: build_rich_capture(),
         chunks: decoded.chunks,
@@ -670,7 +665,6 @@ fn binary_fuse8_zero_false_negatives_and_low_fpr() {
             let false_positives = (0..probes)
                 .filter(|&p| decoded.contains(filter_key_function_name(&format!("absent_{p}"))))
                 .count();
-            // 8-bit filter theoretical FPR is 1/256 ≈ 0.39%; allow generous 1.2% margin.
             assert!(
                 false_positives < probes * 12 / 1000,
                 "too many false positives for count={count}: {false_positives}/{probes}"
@@ -691,14 +685,12 @@ fn paged_off_cpu_and_syscalls_round_trip_beyond_single_page() {
     let f1 = b.frame(FrameKind::Native, module, 0x100, 0);
     let stack = b.stack(&[f1]);
 
-    // Exceed DEFAULT_PAGE_ROWS (131_072) to force multiple pages on OffCpu.
     let n_off = DEFAULT_PAGE_ROWS + 5_000;
     for i in 0..n_off {
         let time = 10_000 + i64::try_from(i).expect("i") * 1_003;
         b.off_cpu(t1, time, 500 + (i as u64 % 97), i % 2 == 0, 0);
     }
 
-    // Add >= 1024 syscalls so the split args column-group frame is exercised.
     for i in 0..1_200_usize {
         let entered = 10_000 + i64::try_from(i).expect("i") * 2_000;
         b.syscall(
@@ -747,7 +739,6 @@ fn paged_off_cpu_and_syscalls_round_trip_beyond_single_page() {
     assert_eq!(off_reader.page_count(), 2);
     assert_eq!(off_reader.pages_overlapping(0, 15_000).len(), 1);
 
-    // Syscalls section should allow reading only the core frame (frame 0) without args (frame 1).
     let sys_sec = sections
         .iter()
         .find(|s| s.kind == SectionKind::Syscalls)
@@ -831,13 +822,11 @@ fn recoverable_reader_handles_checkpoints_and_rejects_corrupt_trailer() {
     assert!(!r_full.truncated);
     assert_eq!(r_full.parts().len(), 2);
 
-    // Truncate in the middle of part 2: must recover checkpoint 1 cleanly.
     let cut = len_after_cp1 + 5;
     let r_trunc = ObjectReader::open_recoverable(&full[..cut]).expect("recover cp1");
     assert!(r_trunc.truncated);
     assert_eq!(r_trunc.parts().len(), 1);
 
-    // Flip a byte in the final trailer checksum (magic still intact): must return Err!
     let mut bad = full;
     let checksum_byte = bad.len() - 10;
     bad[checksum_byte] ^= 0x01;
@@ -869,7 +858,6 @@ fn binned_2b_extremes_and_malformed_inputs() {
     let decoded = decode_binned_2b(&classes, &mantissa, values.len()).expect("decode extremes");
     assert_eq!(decoded, values);
 
-    // Class >= 252 encodes width 65 and must be rejected.
     assert!(decode_binned_2b(&[252], &[], 1).is_err());
     assert!(decode_binned_2b(&[255], &[0; 16], 1).is_err());
 }
@@ -898,7 +886,6 @@ proptest! {
     fn bp_tree_forest_round_trip(
         parents in prop::collection::vec(0_u32..32, 0..120),
     ) {
-        // Build a valid DAG/forest where parent < i or NONE.
         let valid_parents: Vec<u32> = parents
             .iter()
             .enumerate()
@@ -918,7 +905,6 @@ proptest! {
         let decoded = decode_bp_tree(&bp, valid_parents.len()).expect("decode bp");
         prop_assert_eq!(&decoded, &dfs_parents);
 
-        // Verify tree isomorphism: every old edge (i -> p) matches (old_to_dfs[i] -> old_to_dfs[p]).
         for (old, &old_p) in valid_parents.iter().enumerate() {
             let new_i = old_to_dfs[old] as usize;
             let expected_p = if old_p == NONE {
@@ -1088,16 +1074,23 @@ fn event_bundle_round_trips_with_shared_tier_a_symbols() {
         shared_strings.push(0);
     }
 
-    let bundle_secs =
-        super::encode_event_bundle(&data, &shared_strings, TimeUnit::Ns, DEFAULT_ZSTD_LEVEL, 9)
-            .expect("encode bundle");
-    // Must not duplicate shared symbol or stack sections.
+    let shared_proc_ids: Vec<u32> = (0..capture.processes.len())
+        .map(|i| u32::try_from(i).expect("u32"))
+        .collect();
+    let bundle_secs = super::encode_event_bundle(
+        &data,
+        &shared_strings,
+        &shared_proc_ids,
+        TimeUnit::Ns,
+        DEFAULT_ZSTD_LEVEL,
+        9,
+    )
+    .expect("encode bundle");
     for sec in &bundle_secs {
         assert!(!matches!(
             sec.kind,
             SectionKind::Strings
                 | SectionKind::Modules
-                | SectionKind::Processes
                 | SectionKind::Frames
                 | SectionKind::FrameSymbols
                 | SectionKind::Lines
@@ -1144,6 +1137,16 @@ fn event_bundle_round_trips_with_shared_tier_a_symbols() {
     let flame = super::decode_event_bundle(&raw, &shared, true).expect("decode flame bundle");
     assert_eq!(flame.capture.samples.len(), capture.samples.len());
     assert!(flame.capture.syscalls.is_empty());
+
+    let tight_budget = DecodeBudget::new(64 * 1024);
+    let light_flame =
+        super::decode_flame_bundle(&raw, &shared, &tight_budget).expect("decode light flame");
+    assert_eq!(light_flame.samples.len(), capture.samples.len());
+    for (got, expected) in light_flame.samples.iter().zip(&capture.samples) {
+        assert_eq!(got.time, expected.time);
+        assert_eq!(got.weight, expected.weight);
+        assert_eq!(got.stack, expected.stack);
+    }
 }
 
 #[test]
@@ -1187,8 +1190,6 @@ fn object_reader_rejects_overlapping_parts_and_multipart_posts() {
     let (bytes, _) = writer.finish().expect("finish wal");
     assert!(ObjectReader::open(&bytes).is_ok());
 
-    // Tamper the compressed PartList by decompressing, making part 1 overlap part 0, recompressing,
-    // and updating the trailer length and checksum.
     let len = bytes.len();
     let trailer_start = len - TRAILER_LEN;
     let list_off = usize::try_from(u64::from_le_bytes(
@@ -1212,8 +1213,6 @@ fn object_reader_rejects_overlapping_parts_and_multipart_posts() {
     let mut raw_list =
         zstd::bulk::decompress(&bytes[list_off..list_off + list_len], list_uncompressed)
             .expect("decompress list");
-    // PartListHeader (16) + PartEntry 0 (64) + SectionEntry 0 (40) = PartEntry 1 at offset 120.
-    // PartEntry.byte_start is at offset +32 within PartEntry (org_id, project_id, starts_at, ends_at).
     raw_list[120 + 32..120 + 40].copy_from_slice(&(OBJECT_HEADER_LEN as u64).to_le_bytes());
     let recompressed = zstd::bulk::compress(&raw_list, DEFAULT_ZSTD_LEVEL).expect("recompress");
     let mut overlapping = bytes[..list_off].to_vec();
@@ -1232,7 +1231,22 @@ fn object_reader_rejects_overlapping_parts_and_multipart_posts() {
 
 #[test]
 fn decode_tables_enforces_cumulative_decompression_budget() {
-    let mut strings = vec![b'a'; 48 * 1024 * 1024];
+    let mut oversized = vec![b'a'; 33 * 1024 * 1024];
+    oversized.push(0);
+    let mut sw_over = SectionWriter::new(
+        SectionKind::Strings,
+        1,
+        TimeUnit::Ns,
+        1,
+        0,
+        DEFAULT_ZSTD_LEVEL,
+    );
+    sw_over
+        .add_column(WHOLE_SECTION_GROUP, 0, Coding::Bytes, 0, &oversized)
+        .expect("oversized col");
+    assert!(matches!(sw_over.finish(0), Err(ObjectError::Limit(_))));
+
+    let mut strings = vec![b'a'; 24 * 1024 * 1024];
     strings.push(0);
     let rows = 200_000_u32;
     let varint_zeros = vec![0_u8; rows as usize];
@@ -1291,7 +1305,7 @@ fn decode_tables_enforces_cumulative_decompression_budget() {
     let reader = ObjectReader::open(&bytes).expect("open");
     let raw_sections = reader.part_sections(0, None).expect("sections");
     assert!(matches!(
-        decode_tables(&raw_sections),
+        super::decode_tables_budgeted(&raw_sections, 32 * 1024 * 1024),
         Err(ObjectError::Limit(_))
     ));
 }
@@ -1334,7 +1348,6 @@ fn decode_tables_enforces_budget_on_repeated_string_references() {
         .expect("strings col");
     let strings_sec = sw.finish(0).expect("strings section");
 
-    // In v2, dense string IDs are 1-based (0 = NONE, 1 = string index 0).
     let rows = 80_u32;
     let zeros = vec![0_u8; rows as usize];
     let ones = vec![1_u8; rows as usize];
@@ -1373,4 +1386,615 @@ fn decode_tables_enforces_budget_on_repeated_string_references() {
         decode_tables(&raw_sections),
         Err(ObjectError::Limit(_))
     ));
+}
+
+#[test]
+fn verbatim_resanitize_detects_secrets_in_syscall_capture_blobs() {
+    use super::RawSection;
+    use crate::sanitize::re_sanitize_sections_verbatim;
+
+    let sanitizer = Sanitizer::new(&Builtin::DEFAULT, Vec::new(), HashKey::new(b"test-key"));
+    let secret_payload = b"Authorization: Bearer ghp_123456789012345678901234567890123456  ";
+    assert_eq!(secret_payload.len() % 8, 0);
+
+    let mut builder = CaptureBuilder::new();
+    let proc_id = builder.process(Pid::new(10), 1_000);
+    builder.process_name(proc_id, "app");
+    let thread_id = builder.thread(Pid::new(10), Tid::new(10), 1_000);
+    builder.thread_name(thread_id, "main");
+
+    let mut cap = builder.finish();
+    let mut blob = Vec::new();
+    blob.extend_from_slice(&[1_u8, 0, 0, 0]);
+    blob.extend_from_slice(&0_u32.to_le_bytes());
+    blob.extend_from_slice(
+        &u32::try_from(secret_payload.len())
+            .expect("u32")
+            .to_le_bytes(),
+    );
+    blob.extend_from_slice(secret_payload);
+    let cap_len = u32::try_from(blob.len()).expect("u32");
+    let ret_len = i64::try_from(secret_payload.len()).expect("i64");
+    cap.syscall_blobs = blob;
+    cap.syscalls.push(Syscall {
+        entered: 1_100.into(),
+        exited: 1_200.into(),
+        ret: ret_len.into(),
+        args: [
+            1.into(),
+            0.into(),
+            (secret_payload.len() as u64).into(),
+            0.into(),
+            0.into(),
+            0.into(),
+        ],
+        thread: thread_id.into(),
+        number: 1.into(),
+        stack: NONE.into(),
+        captures: 0.into(),
+        captures_len: cap_len.into(),
+        abi: 0,
+        outcome: 0,
+        flags: 0,
+        reserved: 0,
+    });
+
+    let data = ChunkData {
+        capture: cap,
+        chunks: vec![ChunkRow {
+            agent: 1,
+            number: 1,
+            start: 1_000,
+            end: 2_000,
+            sampled_ns: 0,
+            preset: 1,
+            time_unit: TimeUnit::Ns,
+            policy: 1,
+            rules: String::new(),
+        }],
+        dimensions: Vec::new(),
+        sanitizer_counts: Vec::new(),
+    };
+    let encoded = encode_tables(&data, TimeUnit::Ns, DEFAULT_ZSTD_LEVEL, 0).expect("encode");
+    let raw: Vec<RawSection<'_>> = encoded
+        .iter()
+        .map(|s| RawSection {
+            kind: s.kind,
+            rows: s.rows,
+            key: s.key,
+            checksum: 0,
+            bytes: &s.bytes,
+        })
+        .collect();
+    let (resanitized, verbatim) =
+        re_sanitize_sections_verbatim(&raw, &sanitizer, DEFAULT_ZSTD_LEVEL).expect("resanitize");
+    assert!(
+        !verbatim,
+        "secret in Words-coded syscall capture blob must trigger rewrite"
+    );
+    let raw_after: Vec<RawSection<'_>> = resanitized
+        .iter()
+        .map(|s| RawSection {
+            kind: s.kind,
+            rows: s.rows,
+            key: s.key,
+            checksum: 0,
+            bytes: &s.bytes,
+        })
+        .collect();
+    let decoded = decode_tables(&raw_after).expect("decode after rewrite");
+    assert!(
+        !decoded
+            .capture
+            .syscall_blobs
+            .windows(b"ghp_12345678".len())
+            .any(|w| w == b"ghp_12345678")
+    );
+}
+
+#[test]
+fn verbatim_resanitize_detects_secrets_in_syscall_note_blobs() {
+    use super::RawSection;
+    use crate::sanitize::re_sanitize_sections_verbatim;
+
+    let sanitizer = Sanitizer::new(&Builtin::DEFAULT, Vec::new(), HashKey::new(b"test-key"));
+    let mut builder2 = CaptureBuilder::new();
+    let proc2 = builder2.process(Pid::new(20), 1_000);
+    builder2.process_name(proc2, "app2");
+    let thread2 = builder2.thread(Pid::new(20), Tid::new(20), 1_000);
+    builder2.thread_name(thread2, "main");
+    let mut cap2 = builder2.finish();
+    let note_secret = b"token=ghp_123456789012345678901234567890123456";
+    cap2.syscall_blobs = note_secret.to_vec();
+    cap2.syscall_notes.push(SyscallNote {
+        time: 1_500.into(),
+        value: 0.into(),
+        extra: 0.into(),
+        thread: thread2.into(),
+        process: proc2.into(),
+        text: NONE.into(),
+        stack: NONE.into(),
+        blob: 0.into(),
+        blob_len: u32::try_from(note_secret.len()).expect("u32").into(),
+        calls: 0.into(),
+        kind: 1,
+        flags: 0,
+        reserved: [0; 10],
+    });
+    let data2 = ChunkData {
+        capture: cap2,
+        chunks: vec![ChunkRow {
+            agent: 1,
+            number: 1,
+            start: 1_000,
+            end: 2_000,
+            sampled_ns: 0,
+            preset: 1,
+            time_unit: TimeUnit::Ns,
+            policy: 1,
+            rules: String::new(),
+        }],
+        dimensions: Vec::new(),
+        sanitizer_counts: Vec::new(),
+    };
+    let encoded2 = encode_tables(&data2, TimeUnit::Ns, DEFAULT_ZSTD_LEVEL, 0).expect("encode2");
+    let raw2: Vec<RawSection<'_>> = encoded2
+        .iter()
+        .map(|s| RawSection {
+            kind: s.kind,
+            rows: s.rows,
+            key: s.key,
+            checksum: 0,
+            bytes: &s.bytes,
+        })
+        .collect();
+    let (resanitized2, verbatim2) =
+        re_sanitize_sections_verbatim(&raw2, &sanitizer, DEFAULT_ZSTD_LEVEL).expect("resanitize2");
+    assert!(
+        !verbatim2,
+        "secret in syscall note blob must trigger rewrite"
+    );
+    let raw_after2: Vec<RawSection<'_>> = resanitized2
+        .iter()
+        .map(|s| RawSection {
+            kind: s.kind,
+            rows: s.rows,
+            key: s.key,
+            checksum: 0,
+            bytes: &s.bytes,
+        })
+        .collect();
+    let decoded2 = decode_tables(&raw_after2).expect("decode2");
+    assert!(
+        !decoded2
+            .capture
+            .syscall_blobs
+            .windows(b"ghp_12345678".len())
+            .any(|w| w == b"ghp_12345678")
+    );
+}
+
+#[test]
+fn large_syscall_blobs_over_32_mib_page_and_round_trip_in_usprof() {
+    let mut builder = CaptureBuilder::new();
+    let proc_id = builder.process(Pid::new(1), 1_000);
+    builder.process_name(proc_id, "big-blobs");
+    let thread_id = builder.thread(Pid::new(1), Tid::new(1), 1_000);
+    builder.thread_name(thread_id, "main");
+    let mut cap = builder.finish();
+
+    let chunk_payload = vec![b'A'; 100 * 1024];
+    let call_count = 330_usize;
+    cap.syscall_blobs
+        .reserve(call_count * (chunk_payload.len() + 12));
+    for i in 0..call_count {
+        let start = u32::try_from(cap.syscall_blobs.len()).expect("u32");
+        cap.syscall_blobs.extend_from_slice(&[1_u8, 0, 0, 0]);
+        cap.syscall_blobs.extend_from_slice(&0_u32.to_le_bytes());
+        cap.syscall_blobs.extend_from_slice(
+            &u32::try_from(chunk_payload.len())
+                .expect("u32")
+                .to_le_bytes(),
+        );
+        cap.syscall_blobs.extend_from_slice(&chunk_payload);
+        let len = u32::try_from(cap.syscall_blobs.len()).expect("u32") - start;
+        let idx_i64 = i64::try_from(i).expect("i64");
+        let ret_i64 = i64::try_from(chunk_payload.len()).expect("i64");
+        cap.syscalls.push(Syscall {
+            entered: (1_000 + idx_i64 * 10).into(),
+            exited: (1_005 + idx_i64 * 10).into(),
+            ret: ret_i64.into(),
+            args: [
+                1.into(),
+                0.into(),
+                (chunk_payload.len() as u64).into(),
+                0.into(),
+                0.into(),
+                0.into(),
+            ],
+            thread: thread_id.into(),
+            number: 1.into(),
+            stack: NONE.into(),
+            captures: start.into(),
+            captures_len: len.into(),
+            abi: 0,
+            outcome: 0,
+            flags: 0,
+            reserved: 0,
+        });
+    }
+
+    let mut encoded_bytes = Vec::new();
+    crate::capture::file::write(&cap, &mut encoded_bytes)
+        .expect("write >32 MiB syscall_blobs capture");
+    let reopened =
+        crate::capture::file::read(&encoded_bytes).expect("reopen >32 MiB syscall_blobs capture");
+    assert_eq!(reopened.capture.syscalls.len(), cap.syscalls.len());
+    assert_eq!(
+        reopened.capture.syscall_blobs.len(),
+        cap.syscall_blobs.len()
+    );
+    assert_eq!(reopened.capture.syscall_blobs, cap.syscall_blobs);
+}
+
+#[test]
+fn quantized_page_bounds_match_decoded_timestamps() {
+    let mut builder = CaptureBuilder::new();
+    let proc_id = builder.process(Pid::new(1), 1_000);
+    builder.process_name(proc_id, "q");
+    let thread_id = builder.thread(Pid::new(1), Tid::new(1), 1_000);
+    builder.thread_name(thread_id, "main");
+    let frame = builder.frame(FrameKind::Native, NONE, 0x1000, 0);
+    let stack = builder.stack(&[frame]);
+    let total = super::DEFAULT_PAGE_ROWS + 8;
+    for i in 0..total {
+        let ts = 1_999_i64 + i64::try_from(i).expect("i64") * 1_000;
+        builder.sample(thread_id, ts, 100, stack, NONE);
+        builder.off_cpu(thread_id, ts, 100, false, 0);
+    }
+    let cap = builder.finish();
+    let data = ChunkData {
+        capture: cap,
+        chunks: Vec::new(),
+        dimensions: Vec::new(),
+        sanitizer_counts: Vec::new(),
+    };
+    let sections = encode_tables(&data, TimeUnit::Us, DEFAULT_ZSTD_LEVEL, 0).expect("encode");
+
+    let samples_sec = sections
+        .iter()
+        .find(|sec| sec.kind == SectionKind::Samples)
+        .expect("samples");
+    let reader = SectionReader::open(&samples_sec.bytes, SectionKind::Samples).expect("open");
+    assert_eq!(reader.page_count(), 2);
+    assert_eq!(reader.pages_overlapping(1_000, 1_000), vec![0]);
+
+    let offcpu_sec = sections
+        .iter()
+        .find(|sec| sec.kind == SectionKind::OffCpu)
+        .expect("offcpu");
+    let off_reader = SectionReader::open(&offcpu_sec.bytes, SectionKind::OffCpu).expect("open");
+    assert_eq!(off_reader.page_count(), 2);
+    assert_eq!(off_reader.pages_overlapping(1_000, 1_000), vec![0]);
+}
+
+#[test]
+fn event_bundle_preserves_machine_local_process_subset() {
+    use super::RawSection;
+
+    let mut builder = CaptureBuilder::new();
+    let p0 = builder.process(Pid::new(100), 1_000);
+    builder.process_name(p0, "alpha");
+    let p1 = builder.process(Pid::new(200), 1_000);
+    builder.process_name(p1, "beta-idle");
+    let p2 = builder.process(Pid::new(300), 1_000);
+    builder.process_name(p2, "gamma-other-machine");
+    let t0 = builder.thread(Pid::new(100), Tid::new(100), 1_000);
+    builder.thread_name(t0, "main");
+    let frame = builder.frame(FrameKind::Native, NONE, 0x1000, 0);
+    let stack = builder.stack(&[frame]);
+    builder.sample(t0, 2_000, 500, stack, NONE);
+    let shared_cap = builder.finish();
+
+    let mut local_builder = CaptureBuilder::new();
+    let lp0 = local_builder.process(Pid::new(100), 1_000);
+    local_builder.process_name(lp0, "alpha");
+    let lp1 = local_builder.process(Pid::new(200), 1_000);
+    local_builder.process_name(lp1, "beta-idle");
+    let lt0 = local_builder.thread(Pid::new(100), Tid::new(100), 1_000);
+    local_builder.thread_name(lt0, "main");
+    let lframe = local_builder.frame(FrameKind::Native, NONE, 0x1000, 0);
+    let lstack = local_builder.stack(&[lframe]);
+    local_builder.sample(lt0, 2_000, 500, lstack, NONE);
+    let local_cap = local_builder.finish();
+
+    let data = ChunkData {
+        capture: local_cap,
+        chunks: Vec::new(),
+        dimensions: vec![DimensionRow {
+            process: 1,
+            name: "service.name".into(),
+            value: "idle-svc".into(),
+        }],
+        sanitizer_counts: Vec::new(),
+    };
+    let mut shared_strings = shared_cap.strings.clone();
+    for extra in ["service.name", "idle-svc"] {
+        shared_strings.extend_from_slice(extra.as_bytes());
+        shared_strings.push(0);
+    }
+
+    let bundle_secs = super::encode_event_bundle(
+        &data,
+        &shared_strings,
+        &[0, 1],
+        TimeUnit::Ns,
+        DEFAULT_ZSTD_LEVEL,
+        7,
+    )
+    .expect("encode");
+    let raw: Vec<RawSection<'_>> = bundle_secs
+        .iter()
+        .map(|s| RawSection {
+            kind: s.kind,
+            rows: s.rows,
+            key: s.key,
+            checksum: 0,
+            bytes: &s.bytes,
+        })
+        .collect();
+    let shared = super::SharedSymbols {
+        strings: &shared_strings,
+        modules: &shared_cap.modules,
+        processes: &shared_cap.processes,
+        frames: &shared_cap.frames,
+        frame_symbols: &shared_cap.frame_symbols,
+        lines: &shared_cap.lines,
+        functions: &shared_cap.functions,
+        stacks: &shared_cap.stacks,
+        sites: &shared_cap.sites,
+    };
+
+    let decoded = super::decode_event_bundle(&raw, &shared, false).expect("decode");
+    assert_eq!(decoded.capture.processes.len(), 2);
+    assert_eq!(decoded.capture.processes[0].pid.get(), 100);
+    assert_eq!(decoded.capture.processes[1].pid.get(), 200);
+    assert_eq!(decoded.capture.threads[0].process.get(), 0);
+    assert_eq!(decoded.dimensions[0].process, 1);
+}
+
+#[test]
+fn verbatim_resanitize_detects_leading_whitespace_json_argv() {
+    use super::RawSection;
+    use crate::sanitize::re_sanitize_sections_verbatim;
+
+    let sanitizer = Sanitizer::new(&Builtin::DEFAULT, Vec::new(), HashKey::new(b"test-key"));
+    let mut builder = CaptureBuilder::new();
+    builder.setting(
+        "arguments",
+        "  [\"/usr/bin/app\", \"--password\", \"hunter2\"]",
+    );
+    let _proc = builder.process(Pid::new(1), 1_000);
+    let data = ChunkData {
+        capture: builder.finish(),
+        chunks: vec![ChunkRow {
+            agent: 1,
+            number: 1,
+            start: 1_000,
+            end: 2_000,
+            sampled_ns: 0,
+            preset: 0,
+            time_unit: TimeUnit::Ns,
+            policy: 1,
+            rules: String::new(),
+        }],
+        dimensions: Vec::new(),
+        sanitizer_counts: Vec::new(),
+    };
+    let encoded = encode_tables(&data, TimeUnit::Ns, DEFAULT_ZSTD_LEVEL, 0).expect("encode");
+    let raw: Vec<RawSection<'_>> = encoded
+        .iter()
+        .map(|s| RawSection {
+            kind: s.kind,
+            rows: s.rows,
+            key: s.key,
+            checksum: 0,
+            bytes: &s.bytes,
+        })
+        .collect();
+    let (resanitized, verbatim) =
+        re_sanitize_sections_verbatim(&raw, &sanitizer, DEFAULT_ZSTD_LEVEL).expect("resanitize");
+    assert!(
+        !verbatim,
+        "leading whitespace argv JSON must trigger rewrite"
+    );
+    let raw_after: Vec<RawSection<'_>> = resanitized
+        .iter()
+        .map(|s| RawSection {
+            kind: s.kind,
+            rows: s.rows,
+            key: s.key,
+            checksum: 0,
+            bytes: &s.bytes,
+        })
+        .collect();
+    let decoded = decode_tables(&raw_after).expect("decode");
+    assert!(
+        !decoded
+            .capture
+            .strings
+            .windows(b"hunter2".len())
+            .any(|w| w == b"hunter2")
+    );
+}
+
+#[test]
+fn encode_post_rejects_compressed_tables_exceeding_decode_budget() {
+    let mut builder = CaptureBuilder::new();
+    let proc_id = builder.process(Pid::new(1), 1_000);
+    let mut cap = builder.finish();
+    cap.syscall_stats.resize(
+        700_000,
+        SyscallStat {
+            calls: 1.into(),
+            errors: 0.into(),
+            timed: 0.into(),
+            total_ns: 0.into(),
+            min_ns: 0.into(),
+            max_ns: 0.into(),
+            bytes: 0.into(),
+            log2_ns: [0.into(); crate::syscalls::stats::BUCKETS],
+            process: proc_id.into(),
+            thread: NONE.into(),
+            number: 1.into(),
+            errnos: 0.into(),
+            errno_count: 0.into(),
+            abi: 0,
+            reserved: [0; 3],
+        },
+    );
+    let policy = Sanitizer::new(&Builtin::DEFAULT, Vec::new(), HashKey::new(b"test-key"));
+    let sanitized = sanitize_chunk(
+        ChunkData {
+            capture: cap,
+            chunks: vec![ChunkRow {
+                agent: 1,
+                number: 1,
+                start: 1_000,
+                end: 2_000,
+                sampled_ns: 0,
+                preset: 0,
+                time_unit: TimeUnit::Ns,
+                policy: 1,
+                rules: String::new(),
+            }],
+            dimensions: Vec::new(),
+            sanitizer_counts: Vec::new(),
+        },
+        TimeUnit::Ns,
+        &policy,
+    );
+    assert!(matches!(
+        encode_post(&[sanitized], 1, 2_000, DEFAULT_ZSTD_LEVEL),
+        Err(ObjectError::Limit(_))
+    ));
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "verifies legacy missing-section fallback and explicit empty process membership"
+)]
+fn event_bundle_without_process_membership_section_remains_compatible() {
+    use super::{RawSection, SharedSymbols, decode_event_bundle, encode_event_bundle};
+
+    let mut b = CaptureBuilder::new();
+    let p0 = b.process(Pid::new(100), 1_000);
+    b.process_name(p0, "alpha");
+    let p1 = b.process(Pid::new(200), 1_000);
+    b.process_name(p1, "beta");
+    let t1 = b.thread(Pid::new(200), Tid::new(201), 1_000);
+    let f = b.frame(FrameKind::Native, NONE, 0x1000, 0);
+    let s = b.stack(&[f]);
+    b.sample(t1, 1_500, 10, s, NONE);
+    let cap = b.finish();
+
+    let shared = SharedSymbols {
+        strings: &cap.strings,
+        modules: &cap.modules,
+        processes: &cap.processes,
+        frames: &cap.frames,
+        frame_symbols: &cap.frame_symbols,
+        lines: &cap.lines,
+        functions: &cap.functions,
+        stacks: &cap.stacks,
+        sites: &cap.sites,
+    };
+    let data = ChunkData {
+        capture: cap.clone(),
+        chunks: vec![ChunkRow {
+            agent: 1,
+            number: 1,
+            start: 1_000,
+            end: 2_000,
+            sampled_ns: 1_000,
+            preset: 0,
+            time_unit: TimeUnit::Ns,
+            policy: 0,
+            rules: String::new(),
+        }],
+        dimensions: Vec::new(),
+        sanitizer_counts: Vec::new(),
+    };
+
+    let encoded = encode_event_bundle(
+        &data,
+        &cap.strings,
+        &[p1],
+        TimeUnit::Ns,
+        DEFAULT_ZSTD_LEVEL,
+        7,
+    )
+    .expect("encode bundle");
+    let raw_without_processes: Vec<RawSection<'_>> = encoded
+        .iter()
+        .filter(|sec| sec.kind != SectionKind::Processes)
+        .map(|sec| RawSection {
+            kind: sec.kind,
+            rows: sec.rows,
+            key: sec.key,
+            checksum: 0,
+            bytes: &sec.bytes,
+        })
+        .collect();
+
+    let decoded =
+        decode_event_bundle(&raw_without_processes, &shared, false).expect("legacy bundle decode");
+    assert_eq!(decoded.capture.processes.len(), 2);
+    assert_eq!(decoded.capture.threads.len(), 1);
+    assert_eq!(decoded.capture.threads[0].process.get(), p1);
+
+    let empty_data = ChunkData {
+        capture: CaptureBuilder::new().finish(),
+        chunks: vec![ChunkRow {
+            agent: 2,
+            number: 1,
+            start: 1_000,
+            end: 2_000,
+            sampled_ns: 0,
+            preset: 0,
+            time_unit: TimeUnit::Ns,
+            policy: 0,
+            rules: String::new(),
+        }],
+        dimensions: Vec::new(),
+        sanitizer_counts: Vec::new(),
+    };
+    let encoded_empty = encode_event_bundle(
+        &empty_data,
+        &cap.strings,
+        &[],
+        TimeUnit::Ns,
+        DEFAULT_ZSTD_LEVEL,
+        8,
+    )
+    .expect("encode empty bundle");
+    assert!(
+        encoded_empty
+            .iter()
+            .any(|sec| sec.kind == SectionKind::Processes && sec.rows == 0)
+    );
+    let raw_empty: Vec<RawSection<'_>> = encoded_empty
+        .iter()
+        .map(|sec| RawSection {
+            kind: sec.kind,
+            rows: sec.rows,
+            key: sec.key,
+            checksum: 0,
+            bytes: &sec.bytes,
+        })
+        .collect();
+    let decoded_empty =
+        decode_event_bundle(&raw_empty, &shared, false).expect("decode empty bundle");
+    assert!(decoded_empty.capture.processes.is_empty());
 }

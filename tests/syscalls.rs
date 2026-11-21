@@ -1853,7 +1853,6 @@ mod bpf {
     fn a_counting_recording_counts_each_threads_calls() {
         let directory = ScratchDir::new("syscalls-record-threads");
 
-        // At `prod` (`SyscallLevel::Counts`), stats aggregate per process (`thread = Tid(0)`).
         let prod = record_load(
             directory.path(),
             "prod.usprof",
@@ -1882,7 +1881,6 @@ mod bpf {
         assert_eq!(prod_total, Some(prod_count));
         let _ = prod_proc;
 
-        // At `dev` (`SyscallLevel::Calls`), per-thread stats remain intact (including capped counts).
         let dev = record_load(
             directory.path(),
             "dev.usprof",

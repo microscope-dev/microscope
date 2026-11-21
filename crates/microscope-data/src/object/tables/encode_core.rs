@@ -11,12 +11,6 @@ use super::{
 use crate::capture::Capture;
 use crate::capture::records::{FrameKind, ThreadRange};
 
-/// Encodes only the per-machine event and metadata sections of `data`.
-///
-/// Omits `Strings`, `Modules`, `Processes`, `Frames`, `FrameSymbols`, `Lines`, `Functions`,
-/// `Stacks`, and `Sites`, which live once in the enclosing `DetailPart`'s Tier A shared tables.
-/// `data.capture` must already have its symbol/stack IDs remapped into Tier A, and all strings
-/// must already exist in `shared_strings`.
 #[expect(
     clippy::too_many_lines,
     reason = "encodes per-machine event bundle referencing shared Tier A symbols"
@@ -24,11 +18,11 @@ use crate::capture::records::{FrameKind, ThreadRange};
 pub fn encode_event_bundle(
     data: &ChunkData,
     shared_strings: &[u8],
+    shared_process_ids: &[u32],
     time_unit: TimeUnit,
     zstd_level: i32,
     key: u64,
 ) -> Result<Vec<EncodedSection>, ObjectError> {
-    // Map every string offset in `data.capture.strings` to its dense ID in `shared_strings` by text.
     let shared_text_to_id = {
         let mut map = foldhash::HashMap::default();
         let mut id = 0_u32;
@@ -76,13 +70,26 @@ pub fn encode_event_bundle(
         Ok(u64::from(id) + 1)
     };
 
-    // Stacks are already in shared DFS order, so pass identity remap.
     let identity_stacks: Vec<u32> = (0..data.capture.stacks.len())
         .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
         .collect();
 
     let capture = &data.capture;
     let mut sections = Vec::new();
+
+    {
+        let mut w = SectionWriter::new(
+            SectionKind::Processes,
+            TABLE_VERSION,
+            TimeUnit::Ns,
+            count_u32(shared_process_ids.len())?,
+            0,
+            zstd_level,
+        );
+        let ids: Vec<u64> = shared_process_ids.iter().map(|&id| u64::from(id)).collect();
+        add_delta_u64_col(&mut w, WHOLE_SECTION_GROUP, 0, &ids)?;
+        sections.push(w.finish(key)?);
+    }
 
     if !capture.settings.is_empty() {
         let mut w = SectionWriter::new(
@@ -402,8 +409,6 @@ pub fn encode_tables(
     let (all_strings, chunk_rules, dim_strings, count_rules) = intern_extra_strings(data);
     let str_map = StringEncodeMap::from_pool(&all_strings)?;
 
-    // Build DFS preorder for Stacks once so all stack references across Samples, TaskWaits,
-    // Syscalls, and SyscallNotes remap consistently.
     let raw_parents: Vec<u32> = capture.stacks.iter().map(|s| s.parent.get()).collect();
     let (dfs_parents, old_to_dfs, dfs_to_old) = forest_to_dfs(&raw_parents);
 
@@ -1033,10 +1038,10 @@ fn encode_samples(
         let mut prev = base;
         for (local_idx, row) in slice.iter().enumerate() {
             let global_idx = start + local_idx;
-            let raw_t = row.time.get();
-            min_t = min_t.min(raw_t);
-            max_t = max_t.max(raw_t);
-            let t = time_unit.to_units(raw_t);
+            let t = time_unit.to_units(row.time.get());
+            let decoded_t = time_unit.to_nanos(t);
+            min_t = min_t.min(decoded_t);
+            max_t = max_t.max(decoded_t);
             let is_reset = local_idx == 0
                 || resets
                     .as_ref()
@@ -1116,11 +1121,10 @@ fn encode_off_cpu(
             let global_idx = start + local_idx;
             let raw_t = row.time.get();
             let end_ns = raw_t.saturating_add_unsigned(row.duration.get());
-            min_t = min_t.min(raw_t);
-            max_t = max_t.max(end_ns);
-
             let s = time_unit.to_units(raw_t);
             let e = time_unit.to_units(end_ns).max(s);
+            min_t = min_t.min(time_unit.to_nanos(s));
+            max_t = max_t.max(time_unit.to_nanos(e));
             let dur = e.abs_diff(s);
             let is_reset = local_idx == 0
                 || resets
