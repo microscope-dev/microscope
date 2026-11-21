@@ -2,44 +2,32 @@ use std::collections::BTreeMap;
 
 use super::super::codec::{
     Coding, NO_KEY_COLUMN, SectionWriter, WHOLE_SECTION_GROUP, delta_by_key_encode_u64,
-    delta_encode_i64, delta_encode_u64, encode_dict_u64, encode_words, zigzag_encode,
+    delta_encode_i64, encode_dict_u64, encode_sparse_histograms, encode_words, zigzag_encode,
 };
-use super::super::{EncodedSection, ObjectError, SectionKind, TimeUnit};
-use super::{NOTE_BLOBS_ARGUMENT, TABLE_VERSION, add_u64_col, count_u32, syscall_arg_count};
+use super::super::{DEFAULT_PAGE_ROWS, EncodedSection, ObjectError, SectionKind, TimeUnit};
+use super::{
+    NOTE_BLOBS_ARGUMENT, TABLE_VERSION, add_delta_u64_col, add_plain_u64_col, add_u64_col,
+    count_u32, remap_stack, syscall_arg_count,
+};
 use crate::capture::Capture;
 use crate::capture::records::{Syscall, UNSEEN, captures as parse_captures};
 use crate::syscalls::{Capture as ArgCapture, CaptureState, ReadAt};
 
+/// Encodes `Syscalls` paged by time (`DEFAULT_PAGE_ROWS`), with two column-group frames per page:
+/// - Frame 0: core timing/thread/result/stack/outcome columns
+/// - Frame 1: syscall argument columns (`args[0..arg_count]`), skippable by list views
 #[expect(
     clippy::too_many_lines,
-    reason = "encodes grouped syscall columns per abi and number"
+    reason = "encodes paged grouped syscall columns with core vs args framing"
 )]
 pub(super) fn encode_syscalls(
     capture: &Capture,
+    old_to_dfs: &[u32],
     time_unit: TimeUnit,
     zstd_level: i32,
     key: u64,
 ) -> Result<EncodedSection, ObjectError> {
-    let mut by_kind: BTreeMap<(u8, u16), Vec<&Syscall>> = BTreeMap::new();
-    let mut keys_per_row = Vec::with_capacity(capture.syscalls.len());
-    for call in &capture.syscalls {
-        let nr = u16::try_from(call.number.get())
-            .map_err(|_| ObjectError::Layout("syscall number exceeds u16".into()))?;
-        let gk = (call.abi, nr);
-        keys_per_row.push(gk);
-        by_kind.entry(gk).or_default().push(call);
-    }
-
-    let group_index: BTreeMap<(u8, u16), u64> = by_kind
-        .keys()
-        .enumerate()
-        .map(|(idx, &gk)| (gk, idx as u64))
-        .collect();
-    let order: Vec<u64> = keys_per_row
-        .iter()
-        .map(|gk| group_index.get(gk).copied().unwrap_or(0))
-        .collect();
-
+    let total = capture.syscalls.len();
     let first_time = capture
         .syscalls
         .iter()
@@ -55,135 +43,189 @@ pub(super) fn encode_syscalls(
         })
         .unwrap_or(0);
 
-    let mut exit_times = Vec::with_capacity(capture.syscalls.len());
-    let mut prev_exit = first_time;
-    for call in &capture.syscalls {
-        let t = if call.exited.get() != UNSEEN {
-            time_unit.to_units(call.exited.get())
-        } else if call.entered.get() != UNSEEN {
-            time_unit.to_units(call.entered.get())
-        } else {
-            prev_exit
-        };
-        exit_times.push(t);
-        prev_exit = t;
-    }
-
     let mut w = SectionWriter::new(
         SectionKind::Syscalls,
         TABLE_VERSION,
         time_unit,
-        count_u32(capture.syscalls.len())?,
+        count_u32(total)?,
         first_time,
         zstd_level,
     );
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        0,
-        Coding::Order,
-        NO_KEY_COLUMN,
-        false,
-        &order,
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        1,
-        Coding::Delta,
-        NO_KEY_COLUMN,
-        true,
-        &delta_encode_i64(&exit_times, first_time),
-    )?;
 
-    for ((abi, nr), rows) in by_kind {
-        let g = w.add_group(abi, u8::MAX, nr, count_u32(rows.len())?)?;
-        let arg_count = syscall_arg_count(abi, u32::from(nr));
+    let mut page_start = 0_usize;
+    while page_start < total {
+        let page_end = (page_start + DEFAULT_PAGE_ROWS).min(total);
+        let page_rows = &capture.syscalls[page_start..page_end];
 
-        let mut durations = Vec::with_capacity(rows.len());
-        let mut threads_u32 = Vec::with_capacity(rows.len());
-        let mut threads = Vec::with_capacity(rows.len());
-        let mut rets = Vec::with_capacity(rows.len());
-        let mut stacks = Vec::with_capacity(rows.len());
-        let mut cap_lens = Vec::with_capacity(rows.len());
-        let mut outcomes = Vec::with_capacity(rows.len());
-        let mut flags = Vec::with_capacity(rows.len());
-        let mut unseen = Vec::with_capacity(rows.len());
-        let mut any_unseen = false;
-        let mut args: Vec<Vec<u64>> = (0..arg_count)
-            .map(|_| Vec::with_capacity(rows.len()))
+        let mut by_kind: BTreeMap<(u8, u16), Vec<&Syscall>> = BTreeMap::new();
+        let mut keys_per_row = Vec::with_capacity(page_rows.len());
+        let mut min_t = i64::MAX;
+        let mut max_t = i64::MIN;
+        let mut exit_times = Vec::with_capacity(page_rows.len());
+        let mut prev_exit = first_time;
+
+        for call in page_rows {
+            let nr = u16::try_from(call.number.get())
+                .map_err(|_| ObjectError::Layout("syscall number exceeds u16".into()))?;
+            let gk = (call.abi, nr);
+            keys_per_row.push(gk);
+            by_kind.entry(gk).or_default().push(call);
+
+            let raw_t = if call.exited.get() != UNSEEN {
+                Some(call.exited.get())
+            } else if call.entered.get() != UNSEEN {
+                Some(call.entered.get())
+            } else {
+                None
+            };
+            let t = raw_t.map_or(prev_exit, |rt| {
+                min_t = min_t.min(rt);
+                max_t = max_t.max(rt);
+                time_unit.to_units(rt)
+            });
+            exit_times.push(t);
+            prev_exit = t;
+        }
+        if min_t > max_t {
+            min_t = 0;
+            max_t = 0;
+        }
+
+        let group_index: BTreeMap<(u8, u16), u64> = by_kind
+            .keys()
+            .enumerate()
+            .map(|(idx, &gk)| (gk, idx as u64))
+            .collect();
+        let order: Vec<u64> = keys_per_row
+            .iter()
+            .map(|gk| group_index.get(gk).copied().unwrap_or(0))
             .collect();
 
-        for call in &rows {
-            let entered = call.entered.get();
-            let exited = call.exited.get();
-            let mask = u8::from(entered == UNSEEN) | (u8::from(exited == UNSEEN) << 1);
-            any_unseen |= mask != 0;
-            unseen.push(u64::from(mask));
-            let dur = if mask == 0 {
-                time_unit
-                    .to_units(exited)
-                    .wrapping_sub(time_unit.to_units(entered))
-            } else {
-                0
-            };
-            durations.push(zigzag_encode(dur));
-            let tid = call.thread.get();
-            threads_u32.push(tid);
-            threads.push(u64::from(tid));
-            rets.push(call.ret.get().cast_unsigned());
-            stacks.push(u64::from(call.stack.get()));
-            cap_lens.push(u64::from(call.captures_len.get()));
-            outcomes.push(u64::from(call.outcome));
-            flags.push(u64::from(call.flags));
-            for (i, col) in args.iter_mut().enumerate() {
-                if let Some(arg) = call.args.get(i) {
-                    col.push(arg.get());
-                }
-            }
+        // Frame 0: core columns (order, exit_times, duration, thread, ret, stack, cap_len, outcome, flags, unseen).
+        add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 0, &order)?;
+        let exit_deltas = delta_encode_i64(&exit_times, first_time);
+        if time_unit == TimeUnit::Ns {
+            w.add_binned_2b(WHOLE_SECTION_GROUP, 1, &exit_deltas)?;
+        } else {
+            add_u64_col(
+                &mut w,
+                WHOLE_SECTION_GROUP,
+                1,
+                Coding::VarintPlain,
+                NO_KEY_COLUMN,
+                &exit_deltas,
+            )?;
         }
 
-        add_u64_col(&mut w, g, 0, Coding::Plain, NO_KEY_COLUMN, true, &durations)?;
-        add_u64_col(&mut w, g, 1, Coding::Plain, NO_KEY_COLUMN, false, &threads)?;
-        add_u64_col(
-            &mut w,
-            g,
-            2,
-            Coding::DeltaByKey,
-            1,
-            false,
-            &delta_by_key_encode_u64(&rets, &threads_u32),
-        )?;
-        add_u64_col(
-            &mut w,
-            g,
-            3,
-            Coding::DeltaByKey,
-            1,
-            false,
-            &delta_by_key_encode_u64(&stacks, &threads_u32),
-        )?;
-        add_u64_col(&mut w, g, 4, Coding::Plain, NO_KEY_COLUMN, false, &cap_lens)?;
-        add_u64_col(&mut w, g, 5, Coding::Plain, NO_KEY_COLUMN, false, &outcomes)?;
-        add_u64_col(&mut w, g, 6, Coding::Plain, NO_KEY_COLUMN, false, &flags)?;
-        if any_unseen {
-            add_u64_col(&mut w, g, 7, Coding::Plain, NO_KEY_COLUMN, false, &unseen)?;
-        }
-        for (i, col) in args.iter().enumerate() {
-            let col_id = u8::try_from(10 + i).unwrap_or(15);
+        let mut pending_args: Vec<(u16, Vec<u32>, Vec<Vec<u64>>)> =
+            Vec::with_capacity(by_kind.len());
+
+        for ((abi, nr), rows) in by_kind {
+            let g = w.add_group(abi, u8::MAX, nr, count_u32(rows.len())?)?;
+            let arg_count = syscall_arg_count(abi, u32::from(nr));
+
+            let mut durations = Vec::with_capacity(rows.len());
+            let mut threads_u32 = Vec::with_capacity(rows.len());
+            let mut threads = Vec::with_capacity(rows.len());
+            let mut rets = Vec::with_capacity(rows.len());
+            let mut stacks = Vec::with_capacity(rows.len());
+            let mut cap_lens = Vec::with_capacity(rows.len());
+            let mut outcomes = Vec::with_capacity(rows.len());
+            let mut flags = Vec::with_capacity(rows.len());
+            let mut unseen = Vec::with_capacity(rows.len());
+            let mut any_unseen = false;
+            let mut args: Vec<Vec<u64>> = (0..arg_count)
+                .map(|_| Vec::with_capacity(rows.len()))
+                .collect();
+
+            for call in &rows {
+                let entered = call.entered.get();
+                let exited = call.exited.get();
+                let mask = u8::from(entered == UNSEEN) | (u8::from(exited == UNSEEN) << 1);
+                any_unseen |= mask != 0;
+                unseen.push(u64::from(mask));
+                let dur = if mask == 0 {
+                    time_unit
+                        .to_units(exited)
+                        .wrapping_sub(time_unit.to_units(entered))
+                } else {
+                    0
+                };
+                durations.push(zigzag_encode(dur));
+                let tid = call.thread.get();
+                threads_u32.push(tid);
+                threads.push(u64::from(tid));
+                rets.push(call.ret.get().cast_unsigned());
+                stacks.push(u64::from(remap_stack(call.stack.get(), old_to_dfs)));
+                cap_lens.push(u64::from(call.captures_len.get()));
+                outcomes.push(u64::from(call.outcome));
+                flags.push(u64::from(call.flags));
+                for (i, col) in args.iter_mut().enumerate() {
+                    if let Some(arg) = call.args.get(i) {
+                        col.push(arg.get());
+                    }
+                }
+            }
+
+            if time_unit == TimeUnit::Ns {
+                w.add_binned_2b(g, 0, &durations)?;
+            } else {
+                add_plain_u64_col(&mut w, g, 0, &durations)?;
+            }
+            add_plain_u64_col(&mut w, g, 1, &threads)?;
             add_u64_col(
                 &mut w,
                 g,
-                col_id,
-                Coding::DeltaByKey,
+                2,
+                Coding::VarintDeltaByKey,
                 1,
-                false,
-                &delta_by_key_encode_u64(col, &threads_u32),
+                &delta_by_key_encode_u64(&rets, &threads_u32),
             )?;
+            add_u64_col(
+                &mut w,
+                g,
+                3,
+                Coding::VarintDeltaByKey,
+                1,
+                &delta_by_key_encode_u64(&stacks, &threads_u32),
+            )?;
+            add_plain_u64_col(&mut w, g, 4, &cap_lens)?;
+            add_plain_u64_col(&mut w, g, 5, &outcomes)?;
+            add_plain_u64_col(&mut w, g, 6, &flags)?;
+            if any_unseen {
+                add_plain_u64_col(&mut w, g, 7, &unseen)?;
+            }
+
+            if !args.is_empty() {
+                pending_args.push((g, threads_u32, args));
+            }
         }
+
+        // Frame 1: syscall arguments (separate zstd frame when section is large enough to
+        // benefit from skipping `args`, or same frame for tiny sections to avoid frame overhead).
+        let split_args_frame = page_rows.len() >= 1024 && !pending_args.is_empty();
+        if split_args_frame {
+            w.next_frame()?;
+        }
+        for (g, threads_u32, args) in pending_args {
+            for (i, col) in args.iter().enumerate() {
+                let col_id = u8::try_from(10 + i).unwrap_or(15);
+                add_u64_col(
+                    &mut w,
+                    g,
+                    col_id,
+                    Coding::VarintDeltaByKey,
+                    1,
+                    &delta_by_key_encode_u64(col, &threads_u32),
+                )?;
+            }
+        }
+
+        w.finish_page(min_t, max_t, count_u32(page_rows.len())?)?;
+        page_start = page_end;
     }
 
-    w.finish(key)
+    w.finish_paged(key)
 }
 
 #[expect(
@@ -245,24 +287,8 @@ pub(super) fn encode_syscall_blobs(
         0,
         zstd_level,
     );
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        0,
-        Coding::Plain,
-        NO_KEY_COLUMN,
-        false,
-        &call_counts,
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        1,
-        Coding::Order,
-        NO_KEY_COLUMN,
-        false,
-        &order,
-    )?;
+    add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 0, &call_counts)?;
+    add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 1, &order)?;
 
     for ((abi, nr, arg), caps) in &by_arg {
         let g = w.add_group(*abi, *arg, *nr, count_u32(caps.len())?)?;
@@ -289,13 +315,12 @@ pub(super) fn encode_syscall_blobs(
         w.add_column(
             g,
             0,
-            Coding::Dictionary,
+            Coding::DictVarint,
             NO_KEY_COLUMN,
-            0,
             &encode_dict_u64(&headers),
         )?;
-        add_u64_col(&mut w, g, 1, Coding::Plain, NO_KEY_COLUMN, false, &wanted)?;
-        add_u64_col(&mut w, g, 2, Coding::Plain, NO_KEY_COLUMN, false, &lengths)?;
+        add_plain_u64_col(&mut w, g, 1, &wanted)?;
+        add_plain_u64_col(&mut w, g, 2, &lengths)?;
 
         let first_len = caps.first().map_or(0, |c| c.bytes.len());
         let fixed_words = first_len > 0
@@ -304,13 +329,13 @@ pub(super) fn encode_syscall_blobs(
         if fixed_words {
             let refs: Vec<&[u8]> = caps.iter().map(|c| c.bytes.as_ref()).collect();
             let transposed = encode_words(&refs, first_len);
-            w.add_column(g, 3, Coding::Words, NO_KEY_COLUMN, 0, &transposed)?;
+            w.add_column(g, 3, Coding::Words, NO_KEY_COLUMN, &transposed)?;
         } else {
             let mut joined = Vec::with_capacity(caps.iter().map(|c| c.bytes.len()).sum());
             for cap in caps {
                 joined.extend_from_slice(&cap.bytes);
             }
-            w.add_column(g, 3, Coding::Bytes, NO_KEY_COLUMN, 0, &joined)?;
+            w.add_column(g, 3, Coding::Bytes, NO_KEY_COLUMN, &joined)?;
         }
     }
 
@@ -321,219 +346,167 @@ pub(super) fn encode_syscall_blobs(
         for blob in &note_blobs {
             joined.extend_from_slice(blob);
         }
-        add_u64_col(&mut w, g, 0, Coding::Plain, NO_KEY_COLUMN, false, &lengths)?;
-        w.add_column(g, 1, Coding::Bytes, NO_KEY_COLUMN, 0, &joined)?;
+        add_plain_u64_col(&mut w, g, 0, &lengths)?;
+        w.add_column(g, 1, Coding::Bytes, NO_KEY_COLUMN, &joined)?;
     }
 
     w.finish(key)
 }
 
+/// Encodes `SyscallStats` sorted by `(abi, number, process, thread)` using sparse 40-bit
+/// histograms, and reorders `SyscallErrnos` in lockstep so `errnos..errnos + errno_count`
+/// remains exact.
 #[expect(
     clippy::too_many_lines,
-    reason = "encodes syscall stat summary columns and histogram buckets"
+    reason = "encodes sorted sparse syscall stats and paired errnos together"
 )]
-pub(super) fn encode_syscall_stats(
+pub(super) fn encode_syscall_stats_and_errnos(
     capture: &Capture,
     zstd_level: i32,
     key: u64,
-) -> Result<EncodedSection, ObjectError> {
-    let mut w = SectionWriter::new(
-        SectionKind::SyscallStats,
-        TABLE_VERSION,
-        TimeUnit::Ns,
-        count_u32(capture.syscall_stats.len())?,
-        0,
-        zstd_level,
-    );
-    let calls: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| r.calls.get())
-        .collect();
-    let errors: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| r.errors.get())
-        .collect();
-    let timed: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| r.timed.get())
-        .collect();
-    let total_ns: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| r.total_ns.get())
-        .collect();
-    let min_ns: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| r.min_ns.get())
-        .collect();
-    let max_ns: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| r.max_ns.get())
-        .collect();
-    let bytes: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| r.bytes.get())
-        .collect();
-    let procs: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| u64::from(r.process.get()))
-        .collect();
-    let threads: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| u64::from(r.thread.get()))
-        .collect();
-    let nums: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| u64::from(r.number.get()))
-        .collect();
-    let ecounts: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| u64::from(r.errno_count.get()))
-        .collect();
-    let abis: Vec<u64> = capture
-        .syscall_stats
-        .iter()
-        .map(|r| u64::from(r.abi))
-        .collect();
+) -> Result<(Option<EncodedSection>, Option<EncodedSection>), ObjectError> {
+    let stats_section = if capture.syscall_stats.is_empty() {
+        None
+    } else {
+        let mut order: Vec<usize> = (0..capture.syscall_stats.len()).collect();
+        order.sort_by_key(|&i| {
+            let r = &capture.syscall_stats[i];
+            (r.abi, r.number.get(), r.process.get(), r.thread.get())
+        });
 
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        0,
-        Coding::Plain,
-        NO_KEY_COLUMN,
-        false,
-        &calls,
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        1,
-        Coding::Plain,
-        NO_KEY_COLUMN,
-        false,
-        &errors,
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        2,
-        Coding::Plain,
-        NO_KEY_COLUMN,
-        false,
-        &timed,
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        3,
-        Coding::Plain,
-        NO_KEY_COLUMN,
-        false,
-        &total_ns,
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        4,
-        Coding::Plain,
-        NO_KEY_COLUMN,
-        false,
-        &min_ns,
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        5,
-        Coding::Plain,
-        NO_KEY_COLUMN,
-        false,
-        &max_ns,
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        6,
-        Coding::Plain,
-        NO_KEY_COLUMN,
-        false,
-        &bytes,
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        7,
-        Coding::Delta,
-        NO_KEY_COLUMN,
-        false,
-        &delta_encode_u64(&procs),
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        8,
-        Coding::Delta,
-        NO_KEY_COLUMN,
-        false,
-        &delta_encode_u64(&threads),
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        9,
-        Coding::Plain,
-        NO_KEY_COLUMN,
-        false,
-        &nums,
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        10,
-        Coding::Plain,
-        NO_KEY_COLUMN,
-        false,
-        &ecounts,
-    )?;
-    add_u64_col(
-        &mut w,
-        WHOLE_SECTION_GROUP,
-        11,
-        Coding::Plain,
-        NO_KEY_COLUMN,
-        false,
-        &abis,
-    )?;
+        let mut w = SectionWriter::new(
+            SectionKind::SyscallStats,
+            TABLE_VERSION,
+            TimeUnit::Ns,
+            count_u32(order.len())?,
+            0,
+            zstd_level,
+        );
 
-    for bucket in 0..crate::syscalls::stats::BUCKETS {
-        let vals: Vec<u64> = capture
-            .syscall_stats
-            .iter()
-            .map(|r| r.log2_ns.get(bucket).map_or(0, |v| v.get()))
-            .collect();
-        if vals.iter().any(|&v| v != 0) {
-            let col_id = u8::try_from(12 + bucket).unwrap_or(u8::MAX);
-            add_u64_col(
-                &mut w,
-                WHOLE_SECTION_GROUP,
-                col_id,
-                Coding::Plain,
-                NO_KEY_COLUMN,
-                false,
-                &vals,
-            )?;
+        let mut calls = Vec::with_capacity(order.len());
+        let mut errors = Vec::with_capacity(order.len());
+        let mut timed = Vec::with_capacity(order.len());
+        let mut total_ns = Vec::with_capacity(order.len());
+        let mut min_ns = Vec::with_capacity(order.len());
+        let mut max_ns = Vec::with_capacity(order.len());
+        let mut bytes = Vec::with_capacity(order.len());
+        let mut procs = Vec::with_capacity(order.len());
+        let mut threads = Vec::with_capacity(order.len());
+        let mut nums = Vec::with_capacity(order.len());
+        let mut ecounts = Vec::with_capacity(order.len());
+        let mut abis = Vec::with_capacity(order.len());
+        let mut hists = Vec::with_capacity(order.len());
+
+        for &idx in &order {
+            let r = &capture.syscall_stats[idx];
+            calls.push(r.calls.get());
+            errors.push(r.errors.get());
+            timed.push(r.timed.get());
+            total_ns.push(r.total_ns.get());
+            min_ns.push(r.min_ns.get());
+            max_ns.push(r.max_ns.get());
+            bytes.push(r.bytes.get());
+            procs.push(u64::from(r.process.get()));
+            threads.push(u64::from(r.thread.get()));
+            nums.push(u64::from(r.number.get()));
+            ecounts.push(u64::from(r.errno_count.get()));
+            abis.push(u64::from(r.abi));
+            let mut h = [0_u64; crate::syscalls::stats::BUCKETS];
+            for (slot, val) in h.iter_mut().zip(&r.log2_ns) {
+                *slot = val.get();
+            }
+            hists.push(h);
         }
-    }
 
-    w.finish(key)
+        add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 0, &calls)?;
+        add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 1, &errors)?;
+        add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 2, &timed)?;
+        add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 3, &total_ns)?;
+        add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 4, &min_ns)?;
+        add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 5, &max_ns)?;
+        add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 6, &bytes)?;
+        add_delta_u64_col(&mut w, WHOLE_SECTION_GROUP, 7, &procs)?;
+        add_delta_u64_col(&mut w, WHOLE_SECTION_GROUP, 8, &threads)?;
+        add_delta_u64_col(&mut w, WHOLE_SECTION_GROUP, 9, &nums)?;
+        add_plain_u64_col(&mut w, WHOLE_SECTION_GROUP, 10, &ecounts)?;
+        add_delta_u64_col(&mut w, WHOLE_SECTION_GROUP, 11, &abis)?;
+        w.add_column(
+            WHOLE_SECTION_GROUP,
+            12,
+            Coding::SparseHistogram40,
+            NO_KEY_COLUMN,
+            &encode_sparse_histograms(&hists),
+        )?;
+
+        let stats_sec = w.finish(key)?;
+
+        let errnos_sec = if capture.syscall_errnos.is_empty() {
+            None
+        } else {
+            let mut reordered_counts = Vec::with_capacity(capture.syscall_errnos.len());
+            let mut reordered_errnos = Vec::with_capacity(capture.syscall_errnos.len());
+            for &idx in &order {
+                let r = &capture.syscall_stats[idx];
+                let start = r.errnos.get() as usize;
+                let count = r.errno_count.get() as usize;
+                if let Some(slice) = capture
+                    .syscall_errnos
+                    .get(start..start.saturating_add(count))
+                {
+                    for e in slice {
+                        reordered_counts.push(e.count.get());
+                        reordered_errnos.push(u64::from(e.errno.get()));
+                    }
+                }
+            }
+            if reordered_counts.is_empty() {
+                // Fallback if errnos exist without stat ranges pointing into them.
+                for e in &capture.syscall_errnos {
+                    reordered_counts.push(e.count.get());
+                    reordered_errnos.push(u64::from(e.errno.get()));
+                }
+            }
+            let mut ew = SectionWriter::new(
+                SectionKind::SyscallErrnos,
+                TABLE_VERSION,
+                TimeUnit::Ns,
+                count_u32(reordered_counts.len())?,
+                0,
+                zstd_level,
+            );
+            add_plain_u64_col(&mut ew, WHOLE_SECTION_GROUP, 0, &reordered_counts)?;
+            add_plain_u64_col(&mut ew, WHOLE_SECTION_GROUP, 1, &reordered_errnos)?;
+            Some(ew.finish(key)?)
+        };
+
+        return Ok((Some(stats_sec), errnos_sec));
+    };
+
+    let errnos_sec = if capture.syscall_errnos.is_empty() {
+        None
+    } else {
+        let mut ew = SectionWriter::new(
+            SectionKind::SyscallErrnos,
+            TABLE_VERSION,
+            TimeUnit::Ns,
+            count_u32(capture.syscall_errnos.len())?,
+            0,
+            zstd_level,
+        );
+        let counts: Vec<u64> = capture
+            .syscall_errnos
+            .iter()
+            .map(|r| r.count.get())
+            .collect();
+        let errnos: Vec<u64> = capture
+            .syscall_errnos
+            .iter()
+            .map(|r| u64::from(r.errno.get()))
+            .collect();
+        add_plain_u64_col(&mut ew, WHOLE_SECTION_GROUP, 0, &counts)?;
+        add_plain_u64_col(&mut ew, WHOLE_SECTION_GROUP, 1, &errnos)?;
+        Some(ew.finish(key)?)
+    };
+
+    Ok((stats_section, errnos_sec))
 }

@@ -126,7 +126,7 @@ fn chunks_of_one_recording_merge_by_identity() {
 
     let mut bytes = Vec::new();
     let mut writer = file::Writer::new(&mut bytes).expect("header");
-    writer.chunk(&capture.seal().expect("seal")).expect("chunk");
+    writer.chunk(&capture).expect("chunk");
 
     let later = {
         let mut capture = sample_capture(0);
@@ -147,7 +147,7 @@ fn chunks_of_one_recording_merge_by_identity() {
         capture
     };
 
-    writer.chunk(&later.seal().expect("seal")).expect("chunk");
+    writer.chunk(&later).expect("chunk");
     writer.finish().expect("index");
     let read = file::read(&bytes).expect("read the file");
     assert_eq!((read.chunks, read.truncated), (2, false));
@@ -445,7 +445,7 @@ fn file_of(captures: &[Capture]) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut writer = file::Writer::new(&mut bytes).expect("header");
     for capture in captures {
-        writer.chunk(&capture.seal().expect("seal")).expect("chunk");
+        writer.chunk(capture).expect("chunk");
     }
 
     writer.finish().expect("index");
@@ -457,29 +457,24 @@ fn chunks_whose_weights_add_up_past_a_count_are_refused() {
     let half = weighing(u64::MAX / 2 + 1, 0);
     let bytes = file_of(&[half.clone(), half]);
     assert!(
-        matches!(file::read(&bytes), Err(file::FileError::Chunk(_))),
+        matches!(file::read(&bytes), Err(file::FileError::Object(_))),
         "the merged weight overflows"
     );
 }
 
 #[test]
-fn a_damaged_index_is_passed_over_for_the_chunks() {
+fn a_truncated_tail_recovers_earlier_checkpointed_chunks() {
     let captures: Vec<Capture> = (1..=3).map(|weight| weighing(weight, 0)).collect();
     let bytes = file_of(&captures);
     let whole = file::read(&bytes).expect("the file");
     assert_eq!((whole.chunks, whole.truncated), (3, false));
-    let entries = bytes.len() - 16 - 3 * 16;
 
-    let mut moved = bytes.clone();
-    moved[entries + 16] ^= 0x40;
-    let mut doubled = bytes;
-    doubled.copy_within(entries..entries + 16, entries + 32);
-
-    for damaged in [moved, doubled] {
-        let read = file::read(&damaged).expect("the chunks, found by scanning");
-        assert_eq!((read.chunks, read.truncated), (3, true));
-        assert_eq!(read.capture, whole.capture);
-    }
+    // Appending incomplete bytes past the last checkpoint simulates SIGKILL mid-chunk.
+    let mut partial = bytes;
+    partial.extend_from_slice(&[0xaa; 37]);
+    let read = file::read(&partial).expect("the chunks, found via checkpoint recovery");
+    assert_eq!((read.chunks, read.truncated), (3, true));
+    assert_eq!(read.capture, whole.capture);
 }
 
 #[test]

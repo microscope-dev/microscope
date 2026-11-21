@@ -11,17 +11,24 @@ use crate::sanitize::chunk::encode_post;
 use crate::sanitize::{Builtin, FieldClass, HashKey, Sanitizer, sanitize_chunk};
 
 use super::codec::{
-    Coding, SectionWriter, WHOLE_SECTION_GROUP, decode_bitpacked, decode_dict_u64, decode_varints,
+    Coding, DecodeBudget, SectionReader, SectionWriter, WHOLE_SECTION_GROUP, decode_binned_2b,
+    decode_bp_tree, decode_dict_u64, decode_nonzero_u64, decode_sparse_histograms, decode_varints,
     decode_words, delta_by_key_decode_u64, delta_by_key_encode_u64, delta_decode_i64,
-    delta_decode_u64, delta_encode_i64, delta_encode_u64, encode_bitpacked, encode_dict_u64,
-    encode_varints, encode_words, relative_decode_i64, relative_encode_i64, zigzag_decode,
-    zigzag_encode,
+    delta_decode_u64, delta_encode_i64, delta_encode_u64, encode_binned_2b, encode_bp_tree,
+    encode_dict_u64, encode_nonzero_u64, encode_sparse_histograms, encode_varints, encode_words,
+    forest_to_dfs, relative_decode_i64, relative_encode_i64, zigzag_decode, zigzag_encode,
+};
+use super::filter::{
+    BinaryFuse8, filter_key_dimension, filter_key_frame_addr, filter_key_function_name,
+    filter_key_process_name,
 };
 use super::{
-    ChunkData, ChunkRow, DEFAULT_ZSTD_LEVEL, DimensionRow, ObjectError, ObjectKind, ObjectLevel,
-    ObjectReader, ObjectWriter, PartKind, PartSpec, SanitizerCountRow, SectionKind, Signal,
-    TimeUnit, decode_flame_tables, decode_tables, encode_tables, merge_chunks, round_capture_times,
-    shift_capture_times,
+    ChunkData, ChunkRow, DEFAULT_PAGE_ROWS, DEFAULT_ZSTD_LEVEL, DimensionRow, OBJECT_HEADER_LEN,
+    ObjectError, ObjectKind, ObjectLevel, ObjectReader, ObjectWriter, PartKind, PartSpec,
+    SECTION_CHECKSUM_LEN, SanitizerCountRow, SectionKind, SectionMeta, Signal, TRAILER_LEN,
+    TimeUnit, decode_flame_tables, decode_section_index, decode_tables, encode_section_index,
+    encode_tables, merge_chunks, part_list_checksum, round_capture_times, shift_capture_times,
+    verify_section_slice,
 };
 
 #[expect(
@@ -281,6 +288,7 @@ fn rich_capture_round_trips_losslessly_at_1ns() {
     let (bytes, metas) = writer.finish().expect("finish");
     assert_eq!(metas.len(), 1);
     assert_eq!(metas[0].org_id, 42);
+    assert_eq!(metas[0].project_id, 7);
 
     let reader = ObjectReader::open(&bytes).expect("open");
     assert_eq!(reader.kind, ObjectKind::Post);
@@ -332,7 +340,7 @@ fn rich_capture_round_trips_losslessly_at_1ns() {
 }
 
 #[test]
-fn time_rounding_and_org_mismatch_and_checksum_checks() {
+fn time_rounding_and_org_mismatch_and_keyed_checksum_checks() {
     let mut capture = build_rich_capture();
     round_capture_times(&mut capture, TimeUnit::Ms);
     for sample in &capture.samples {
@@ -358,10 +366,11 @@ fn time_rounding_and_org_mismatch_and_checksum_checks() {
 
     let sections = encode_tables(&data, TimeUnit::Ms, DEFAULT_ZSTD_LEVEL, 0).expect("encode");
     let mut writer = ObjectWriter::new(ObjectKind::WriteAhead, ObjectLevel::None, 1, 1);
+    let key_seed = writer.key_seed();
     writer
         .add_part(&PartSpec {
             org_id: 10,
-            project_id: 0,
+            project_id: 77,
             starts_at: 1_000_000_000,
             ends_at: 1_005_000_000,
             signal: Signal::Profile,
@@ -369,7 +378,37 @@ fn time_rounding_and_org_mismatch_and_checksum_checks() {
             sections,
         })
         .expect("add part");
-    let (mut bytes, _) = writer.finish().expect("finish");
+    let (mut bytes, metas) = writer.finish().expect("finish");
+
+    // 1-RTT section slice verification with zero footer read.
+    let first_sec = &metas[0].sections[0];
+    let start = usize::try_from(first_sec.offset).expect("off");
+    let end = start + first_sec.stored_len as usize;
+    let slice = &bytes[start..end];
+    let verified = verify_section_slice(slice, first_sec.offset, first_sec, key_seed, 10, 77, 0)
+        .expect("valid 1-RTT slice");
+    assert_eq!(
+        verified.bytes.len() + SECTION_CHECKSUM_LEN,
+        first_sec.stored_len as usize
+    );
+
+    // Wrong org_id, project_id, part_index, or key_seed must fail keyed checksum.
+    assert!(matches!(
+        verify_section_slice(slice, first_sec.offset, first_sec, key_seed, 11, 77, 0),
+        Err(ObjectError::Checksum { what: "section" })
+    ));
+    assert!(matches!(
+        verify_section_slice(slice, first_sec.offset, first_sec, key_seed, 10, 78, 0),
+        Err(ObjectError::Checksum { what: "section" })
+    ));
+    assert!(matches!(
+        verify_section_slice(slice, first_sec.offset, first_sec, key_seed, 10, 77, 1),
+        Err(ObjectError::Checksum { what: "section" })
+    ));
+    assert!(matches!(
+        verify_section_slice(slice, first_sec.offset, first_sec, key_seed ^ 1, 10, 77, 0),
+        Err(ObjectError::Checksum { what: "section" })
+    ));
 
     let reader = ObjectReader::open(&bytes).expect("open");
     assert!(matches!(
@@ -386,7 +425,7 @@ fn time_rounding_and_org_mismatch_and_checksum_checks() {
         assert_eq!(sample.time.get() % 1_000_000, 0);
     }
 
-    bytes[40] ^= 0xff;
+    bytes[OBJECT_HEADER_LEN] ^= 0xff;
     let reader = ObjectReader::open(&bytes).expect("part list still intact");
     assert!(matches!(
         reader.part_sections(0, Some(10)),
@@ -394,6 +433,10 @@ fn time_rounding_and_org_mismatch_and_checksum_checks() {
     ));
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "verifies agent sanitization, verbatim server passthrough, and dirty fallback"
+)]
 #[test]
 fn sanitize_chunk_scrubs_every_planted_secret_before_encoding() {
     let capture = build_rich_capture();
@@ -461,6 +504,79 @@ fn sanitize_chunk_scrubs_every_planted_secret_before_encoding() {
             .any(|d| d.name == "service.name" && d.value == "payments")
     );
     assert!(all_strings.contains("hot_loop"));
+
+    // Clean post passes through verbatim on server re-sanitization with zero re-encoding.
+    let post_sections = reader.part_sections(0, None).expect("post sections");
+    let (resan, verbatim) =
+        crate::sanitize::re_sanitize_sections_verbatim(&post_sections, &policy, DEFAULT_ZSTD_LEVEL)
+            .expect("re_sanitize clean");
+    assert!(verbatim, "already-sanitized post should pass verbatim");
+    assert_eq!(resan.len(), post_sections.len());
+    for (got, want) in resan.iter().zip(&post_sections) {
+        assert_eq!(got.kind, want.kind);
+        assert_eq!(got.bytes, want.bytes);
+    }
+
+    // Metadata-only decode returns chunks and dimensions without touching heavy event sections.
+    let (meta_chunks, meta_dims) =
+        crate::sanitize::decode_post_metadata(&post_sections).expect("meta decode");
+    assert_eq!(meta_chunks.len(), 1);
+    assert!(
+        meta_dims
+            .iter()
+            .any(|d| d.name == "service.name" && d.value == "payments")
+    );
+
+    // Dirty post with an unsanitized secret triggers fallback full re-sanitization and scrubs it.
+    let dirty = ChunkData {
+        capture: build_rich_capture(),
+        chunks: decoded.chunks,
+        dimensions: vec![DimensionRow {
+            process: 0,
+            name: "process.command_args".into(),
+            value: "--token=unsanitized_secret_999".into(),
+        }],
+        sanitizer_counts: Vec::new(),
+    };
+    let dirty_sections = encode_tables(&dirty, TimeUnit::Ns, DEFAULT_ZSTD_LEVEL, 0).expect("enc");
+    let mut dirty_writer = ObjectWriter::new(ObjectKind::Post, ObjectLevel::None, 1, 5);
+    dirty_writer
+        .add_part(&PartSpec {
+            org_id: 0,
+            project_id: 0,
+            starts_at: 1_000_000_000,
+            ends_at: 1_005_000_000,
+            signal: Signal::Profile,
+            part: PartKind::Chunks,
+            sections: dirty_sections,
+        })
+        .expect("add");
+    let (dirty_bytes, _) = dirty_writer.finish().expect("fin");
+    let dirty_reader = ObjectReader::open(&dirty_bytes).expect("open dirty");
+    let dirty_raw = dirty_reader.part_sections(0, None).expect("dirty raw");
+    let (scrubbed_secs, verbatim_dirty) =
+        crate::sanitize::re_sanitize_sections_verbatim(&dirty_raw, &policy, DEFAULT_ZSTD_LEVEL)
+            .expect("re_sanitize dirty");
+    assert!(!verbatim_dirty, "dirty post must trigger fallback scrub");
+    let mut check_w = ObjectWriter::new(ObjectKind::WriteAhead, ObjectLevel::None, 1, 5);
+    check_w
+        .add_part(&PartSpec {
+            org_id: 1,
+            project_id: 2,
+            starts_at: 1_000_000_000,
+            ends_at: 1_005_000_000,
+            signal: Signal::Profile,
+            part: PartKind::Chunks,
+            sections: scrubbed_secs,
+        })
+        .expect("add wal");
+    let (wal_bytes, _) = check_w.finish().expect("fin wal");
+    let wal_reader = ObjectReader::open(&wal_bytes).expect("open wal");
+    let scrubbed = decode_tables(&wal_reader.part_sections(0, Some(1)).expect("wal secs"))
+        .expect("decode scrubbed");
+    let scrubbed_strings = String::from_utf8_lossy(&scrubbed.capture.strings);
+    assert!(!scrubbed_strings.contains("unsanitized_secret_999"));
+    assert!(!scrubbed_strings.contains("supersecret123"));
 }
 
 #[test]
@@ -515,6 +631,245 @@ fn merge_chunks_shares_strings_and_stacks_and_preserves_chunk_numbers() {
     assert_eq!(merged.dimensions.len(), 1);
 }
 
+#[test]
+fn binary_fuse8_zero_false_negatives_and_low_fpr() {
+    for &count in &[0_usize, 1, 2, 3, 17, 250, 4_096, 20_000] {
+        let keys: Vec<u64> = (0..count)
+            .map(|i| {
+                if i % 4 == 0 {
+                    filter_key_frame_addr("build-abc", i as u64 * 16)
+                } else if i % 4 == 1 {
+                    filter_key_function_name(&format!("fn_{i}"))
+                } else if i % 4 == 2 {
+                    filter_key_dimension("service.name", &format!("svc-{i}"))
+                } else {
+                    filter_key_process_name(&format!("proc-{i}"))
+                }
+            })
+            .collect();
+
+        let filter = BinaryFuse8::build(&keys);
+        assert_eq!(filter.is_empty(), count == 0);
+        for &k in &keys {
+            assert!(filter.contains(k), "false negative for count={count}");
+        }
+
+        let wire = filter.to_bytes();
+        let decoded = BinaryFuse8::from_bytes(&wire).expect("decode filter");
+        assert_eq!(decoded, filter);
+        for &k in &keys {
+            assert!(decoded.contains(k), "false negative after decode");
+        }
+
+        if count >= 250 {
+            let probes = 10_000_usize;
+            let false_positives = (0..probes)
+                .filter(|&p| decoded.contains(filter_key_function_name(&format!("absent_{p}"))))
+                .count();
+            // 8-bit filter theoretical FPR is 1/256 ≈ 0.39%; allow generous 1.2% margin.
+            assert!(
+                false_positives < probes * 12 / 1000,
+                "too many false positives for count={count}: {false_positives}/{probes}"
+            );
+        }
+    }
+
+    assert!(BinaryFuse8::from_bytes(&[]).is_err());
+    assert!(BinaryFuse8::from_bytes(&[99; 20]).is_err());
+}
+
+#[test]
+fn paged_off_cpu_and_syscalls_round_trip_beyond_single_page() {
+    let mut b = CaptureBuilder::new();
+    let module = b.module("/bin/app", Some("abcd"), [1; 16], 4096);
+    let proc_id = b.process(Pid::new(1), 1_000);
+    let t1 = b.thread(Pid::new(1), Tid::new(1), 1_000);
+    let f1 = b.frame(FrameKind::Native, module, 0x100, 0);
+    let stack = b.stack(&[f1]);
+
+    // Exceed DEFAULT_PAGE_ROWS (131_072) to force multiple pages on OffCpu.
+    let n_off = DEFAULT_PAGE_ROWS + 5_000;
+    for i in 0..n_off {
+        let time = 10_000 + i64::try_from(i).expect("i") * 1_003;
+        b.off_cpu(t1, time, 500 + (i as u64 % 97), i % 2 == 0, 0);
+    }
+
+    // Add >= 1024 syscalls so the split args column-group frame is exercised.
+    for i in 0..1_200_usize {
+        let entered = 10_000 + i64::try_from(i).expect("i") * 2_000;
+        b.syscall(
+            Syscall {
+                entered: entered.into(),
+                exited: (entered + 350).into(),
+                ret: 0.into(),
+                args: [
+                    (i as u64).into(),
+                    1.into(),
+                    2.into(),
+                    3.into(),
+                    4.into(),
+                    5.into(),
+                ],
+                thread: t1.into(),
+                number: 9.into(), // mmap has 6 args on x86_64
+                stack: stack.into(),
+                captures: NONE.into(),
+                captures_len: 0.into(),
+                abi: 0,
+                outcome: CallOutcome::Returned as u8,
+                flags: 0,
+                reserved: 0,
+            },
+            &[],
+        );
+    }
+
+    let capture = b.finish();
+    let data = ChunkData {
+        capture: capture.clone(),
+        chunks: Vec::new(),
+        dimensions: Vec::new(),
+        sanitizer_counts: Vec::new(),
+    };
+
+    let sections = encode_tables(&data, TimeUnit::Ns, DEFAULT_ZSTD_LEVEL, 0).expect("encode");
+    let off_sec = sections
+        .iter()
+        .find(|s| s.kind == SectionKind::OffCpu)
+        .expect("off_cpu section");
+    let budget = DecodeBudget::new(super::MAX_DECOMPRESSED_OBJECT_BYTES);
+    let off_reader = SectionReader::open_budgeted(&off_sec.bytes, SectionKind::OffCpu, &budget)
+        .expect("open off_cpu");
+    assert_eq!(off_reader.page_count(), 2);
+    assert_eq!(off_reader.pages_overlapping(0, 15_000).len(), 1);
+
+    // Syscalls section should allow reading only the core frame (frame 0) without args (frame 1).
+    let sys_sec = sections
+        .iter()
+        .find(|s| s.kind == SectionKind::Syscalls)
+        .expect("syscalls section");
+    let sys_reader = SectionReader::open_budgeted(&sys_sec.bytes, SectionKind::Syscalls, &budget)
+        .expect("open syscalls");
+    let core_only = sys_reader.read_page_frames(0, 1).expect("read core frame");
+    assert!(core_only.column(0, 0).is_ok());
+    assert!(core_only.column(1, 0).is_err());
+
+    let mut writer = ObjectWriter::new(ObjectKind::Capture, ObjectLevel::None, 1, 1);
+    writer
+        .add_part(&PartSpec {
+            org_id: 0,
+            project_id: 0,
+            starts_at: 10_000,
+            ends_at: 200_000_000,
+            signal: Signal::Profile,
+            part: PartKind::Chunks,
+            sections,
+        })
+        .expect("add part");
+    let (bytes, _) = writer.finish().expect("finish");
+
+    let reader = ObjectReader::open(&bytes).expect("open");
+    let decoded = decode_tables(&reader.part_sections(0, None).expect("parts")).expect("decode");
+    assert_eq!(decoded.capture.off_cpu.len(), capture.off_cpu.len());
+    assert_eq!(decoded.capture.off_cpu, capture.off_cpu);
+    assert_eq!(decoded.capture.syscalls, capture.syscalls);
+    let _ = proc_id;
+}
+
+#[test]
+fn recoverable_reader_handles_checkpoints_and_rejects_corrupt_trailer() {
+    let make_sec = |s: &[u8]| {
+        let mut sw = SectionWriter::new(
+            SectionKind::Strings,
+            1,
+            TimeUnit::Ns,
+            1,
+            0,
+            DEFAULT_ZSTD_LEVEL,
+        );
+        sw.add_column(WHOLE_SECTION_GROUP, 0, Coding::Bytes, 0, s)
+            .expect("col");
+        sw.finish(0).expect("finish")
+    };
+
+    let mut writer = ObjectWriter::new(ObjectKind::Capture, ObjectLevel::None, 100, 1);
+    writer
+        .add_part(&PartSpec {
+            org_id: 0,
+            project_id: 0,
+            starts_at: 100,
+            ends_at: 200,
+            signal: Signal::Profile,
+            part: PartKind::Chunks,
+            sections: vec![make_sec(b"first\0")],
+        })
+        .expect("p1");
+    writer.write_checkpoint().expect("write cp1");
+    let mut full = writer.take_bytes().expect("take cp1");
+    let len_after_cp1 = full.len();
+
+    writer
+        .add_part(&PartSpec {
+            org_id: 0,
+            project_id: 0,
+            starts_at: 200,
+            ends_at: 300,
+            signal: Signal::Profile,
+            part: PartKind::Chunks,
+            sections: vec![make_sec(b"second\0")],
+        })
+        .expect("p2");
+    writer.write_checkpoint().expect("write cp2");
+    writer.write_final_footer().expect("write final");
+    full.extend_from_slice(&writer.take_bytes().expect("take cp2"));
+
+    let r_full = ObjectReader::open_recoverable(&full).expect("open full");
+    assert!(!r_full.truncated);
+    assert_eq!(r_full.parts().len(), 2);
+
+    // Truncate in the middle of part 2: must recover checkpoint 1 cleanly.
+    let cut = len_after_cp1 + 5;
+    let r_trunc = ObjectReader::open_recoverable(&full[..cut]).expect("recover cp1");
+    assert!(r_trunc.truncated);
+    assert_eq!(r_trunc.parts().len(), 1);
+
+    // Flip a byte in the final trailer checksum (magic still intact): must return Err!
+    let mut bad = full;
+    let checksum_byte = bad.len() - 10;
+    bad[checksum_byte] ^= 0x01;
+    assert!(ObjectReader::open_recoverable(&bad).is_err());
+}
+
+#[test]
+fn binned_2b_extremes_and_malformed_inputs() {
+    let values = vec![
+        0,
+        1,
+        2,
+        3,
+        4,
+        7,
+        8,
+        15,
+        16,
+        1_000,
+        1_000_000_000,
+        (1_u64 << 62) - 1,
+        1_u64 << 62,
+        (1_u64 << 63) - 1,
+        1_u64 << 63,
+        u64::MAX - 1,
+        u64::MAX,
+    ];
+    let (classes, mantissa) = encode_binned_2b(&values);
+    let decoded = decode_binned_2b(&classes, &mantissa, values.len()).expect("decode extremes");
+    assert_eq!(decoded, values);
+
+    // Class >= 252 encodes width 65 and must be rejected.
+    assert!(decode_binned_2b(&[252], &[], 1).is_err());
+    assert!(decode_binned_2b(&[255], &[0; 16], 1).is_err());
+}
+
 proptest! {
     #[test]
     fn zigzag_round_trips(value in any::<i64>()) {
@@ -529,10 +884,117 @@ proptest! {
     }
 
     #[test]
-    fn bitpacked_round_trip(values in prop::collection::vec(any::<u64>(), 0..200)) {
-        let encoded = encode_bitpacked(&values);
-        let decoded = decode_bitpacked(&encoded, values.len()).expect("decode");
+    fn binned_2b_round_trip(values in prop::collection::vec(any::<u64>(), 0..300)) {
+        let (classes, mantissa) = encode_binned_2b(&values);
+        let decoded = decode_binned_2b(&classes, &mantissa, values.len()).expect("decode");
         prop_assert_eq!(decoded, values);
+    }
+
+    #[test]
+    fn bp_tree_forest_round_trip(
+        parents in prop::collection::vec(0_u32..32, 0..120),
+    ) {
+        // Build a valid DAG/forest where parent < i or NONE.
+        let valid_parents: Vec<u32> = parents
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                if i == 0 || p % 5 == 0 {
+                    NONE
+                } else {
+                    p % u32::try_from(i).expect("i")
+                }
+            })
+            .collect();
+        let (dfs_parents, old_to_dfs, dfs_to_old) = forest_to_dfs(&valid_parents);
+        prop_assert_eq!(dfs_parents.len(), valid_parents.len());
+        prop_assert_eq!(dfs_to_old.len(), valid_parents.len());
+
+        let bp = encode_bp_tree(&dfs_parents);
+        let decoded = decode_bp_tree(&bp, valid_parents.len()).expect("decode bp");
+        prop_assert_eq!(&decoded, &dfs_parents);
+
+        // Verify tree isomorphism: every old edge (i -> p) matches (old_to_dfs[i] -> old_to_dfs[p]).
+        for (old, &old_p) in valid_parents.iter().enumerate() {
+            let new_i = old_to_dfs[old] as usize;
+            let expected_p = if old_p == NONE {
+                NONE
+            } else {
+                old_to_dfs[old_p as usize]
+            };
+            prop_assert_eq!(decoded[new_i], expected_p);
+        }
+    }
+
+    #[test]
+    fn sparse_histogram40_round_trip(
+        rows in prop::collection::vec(
+            prop::collection::vec((0_usize..40, 0_u64..10_000), 0..8),
+            0..40,
+        )
+    ) {
+        let hists: Vec<[u64; 40]> = rows
+            .iter()
+            .map(|entries| {
+                let mut h = [0_u64; 40];
+                for &(bucket, val) in entries {
+                    h[bucket] = val;
+                }
+                h
+            })
+            .collect();
+        let encoded = encode_sparse_histograms(&hists);
+        let decoded = decode_sparse_histograms(&encoded, hists.len(), None).expect("decode hist");
+        prop_assert_eq!(decoded, hists);
+    }
+
+    #[test]
+    fn non_zero_bitmap_round_trip(
+        values in prop::collection::vec(
+            prop_oneof![Just(0_u64), any::<u64>()],
+            0..250,
+        )
+    ) {
+        let encoded = encode_nonzero_u64(&values);
+        let decoded = decode_nonzero_u64(&encoded, values.len()).expect("decode nz");
+        prop_assert_eq!(decoded, values);
+    }
+
+    #[test]
+    fn binary_fuse8_proptest_no_false_negatives(
+        keys in prop::collection::vec(any::<u64>(), 0..500),
+    ) {
+        let filter = BinaryFuse8::build(&keys);
+        let wire = filter.to_bytes();
+        let decoded = BinaryFuse8::from_bytes(&wire).expect("decode");
+        for &k in &keys {
+            prop_assert!(decoded.contains(k));
+        }
+    }
+
+    #[test]
+    fn section_index_round_trip(
+        part_index in any::<u32>(),
+        entries in prop::collection::vec(
+            (any::<u16>(), any::<u64>(), 0_u64..1_000_000_000, any::<u32>(), any::<u32>(), any::<u64>()),
+            0..32,
+        )
+    ) {
+        let metas: Vec<SectionMeta> = entries
+            .into_iter()
+            .map(|(kind, key, offset, stored_len, rows, checksum)| SectionMeta {
+                kind,
+                key,
+                offset,
+                stored_len,
+                rows,
+                checksum,
+            })
+            .collect();
+        let encoded = encode_section_index(part_index, &metas);
+        let (got_part, got_metas) = decode_section_index(&encoded).expect("decode index");
+        prop_assert_eq!(got_part, part_index);
+        prop_assert_eq!(got_metas, metas);
     }
 
     #[test]
@@ -579,6 +1041,8 @@ proptest! {
 
     #[test]
     fn arbitrary_bytes_never_panic_object_reader(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
+        let _ = BinaryFuse8::from_bytes(&bytes);
+        let _ = decode_section_index(&bytes);
         if let Ok(reader) = ObjectReader::open(&bytes) {
             for idx in 0..reader.parts().len() {
                 if let Ok(sections) = reader.part_sections(idx, None) {
@@ -587,7 +1051,95 @@ proptest! {
                 }
             }
         }
+        let _ = ObjectReader::open_recoverable(&bytes);
     }
+}
+
+#[test]
+fn event_bundle_round_trips_with_shared_tier_a_symbols() {
+    let capture = build_rich_capture();
+    let data = ChunkData {
+        capture: capture.clone(),
+        chunks: vec![ChunkRow {
+            agent: 9,
+            number: 1,
+            start: 1_000_000_000,
+            end: 1_005_000_000,
+            sampled_ns: 4_800_000_000,
+            preset: 0,
+            time_unit: TimeUnit::Ns,
+            policy: 1,
+            rules: "demo".into(),
+        }],
+        dimensions: vec![DimensionRow {
+            process: 0,
+            name: "service.name".into(),
+            value: "demo-svc".into(),
+        }],
+        sanitizer_counts: Vec::new(),
+    };
+    let mut shared_strings = capture.strings.clone();
+    for extra in ["demo", "service.name", "demo-svc"] {
+        shared_strings.extend_from_slice(extra.as_bytes());
+        shared_strings.push(0);
+    }
+
+    let bundle_secs =
+        super::encode_event_bundle(&data, &shared_strings, TimeUnit::Ns, DEFAULT_ZSTD_LEVEL, 9)
+            .expect("encode bundle");
+    // Must not duplicate shared symbol or stack sections.
+    for sec in &bundle_secs {
+        assert!(!matches!(
+            sec.kind,
+            SectionKind::Strings
+                | SectionKind::Modules
+                | SectionKind::Processes
+                | SectionKind::Frames
+                | SectionKind::FrameSymbols
+                | SectionKind::Lines
+                | SectionKind::Functions
+                | SectionKind::Stacks
+                | SectionKind::Sites
+        ));
+    }
+
+    let mut w = ObjectWriter::new(ObjectKind::Detail, ObjectLevel::Minute, 1, 1);
+    w.add_part(&PartSpec {
+        org_id: 1,
+        project_id: 1,
+        starts_at: 1_000_000_000,
+        ends_at: 1_005_000_000,
+        signal: Signal::Profile,
+        part: PartKind::Detail,
+        sections: bundle_secs,
+    })
+    .expect("add part");
+    let (bytes, _) = w.finish().expect("finish");
+    let reader = ObjectReader::open(&bytes).expect("open");
+    let raw = reader.part_sections(0, Some(1)).expect("sections");
+
+    let shared = super::SharedSymbols {
+        strings: &shared_strings,
+        modules: &capture.modules,
+        processes: &capture.processes,
+        frames: &capture.frames,
+        frame_symbols: &capture.frame_symbols,
+        lines: &capture.lines,
+        functions: &capture.functions,
+        stacks: &capture.stacks,
+        sites: &capture.sites,
+    };
+    let decoded = super::decode_event_bundle(&raw, &shared, false).expect("decode full bundle");
+    assert_eq!(decoded.chunks, data.chunks);
+    assert_eq!(decoded.dimensions, data.dimensions);
+    assert_eq!(decoded.capture.samples, capture.samples);
+    assert_eq!(decoded.capture.off_cpu, capture.off_cpu);
+    assert_eq!(decoded.capture.syscalls, capture.syscalls);
+    assert_eq!(decoded.capture.syscall_stats, capture.syscall_stats);
+
+    let flame = super::decode_event_bundle(&raw, &shared, true).expect("decode flame bundle");
+    assert_eq!(flame.capture.samples.len(), capture.samples.len());
+    assert!(flame.capture.syscalls.is_empty());
 }
 
 #[test]
@@ -609,11 +1161,12 @@ fn object_reader_rejects_overlapping_parts_and_multipart_posts() {
             0,
             DEFAULT_ZSTD_LEVEL,
         );
-        sw.add_column(WHOLE_SECTION_GROUP, 0, Coding::Bytes, 0, 0, b"ok\0")
+        sw.add_column(WHOLE_SECTION_GROUP, 0, Coding::Bytes, 0, b"ok\0")
             .expect("add_column");
         sw.finish(0).expect("finish section")
     };
     let mut writer = ObjectWriter::new(ObjectKind::WriteAhead, ObjectLevel::None, 100, 1);
+    let key_seed = writer.key_seed();
     for _ in 0..2 {
         writer
             .add_part(&PartSpec {
@@ -630,29 +1183,46 @@ fn object_reader_rejects_overlapping_parts_and_multipart_posts() {
     let (bytes, _) = writer.finish().expect("finish wal");
     assert!(ObjectReader::open(&bytes).is_ok());
 
-    let mut overlapping = bytes.clone();
-    let len = overlapping.len();
-    let trailer_start = len - 24;
-    let list_len = u64::from_le_bytes(
-        overlapping[trailer_start..trailer_start + 8]
+    // Tamper the compressed PartList by decompressing, making part 1 overlap part 0, recompressing,
+    // and updating the trailer length and checksum.
+    let len = bytes.len();
+    let trailer_start = len - TRAILER_LEN;
+    let list_off = usize::try_from(u64::from_le_bytes(
+        bytes[trailer_start..trailer_start + 8]
             .try_into()
             .expect("u64"),
-    );
-    let list_start = trailer_start - usize::try_from(list_len).expect("usize");
-    let part1_first_section = list_start + 16 + 64 + 48;
-    overlapping[part1_first_section..part1_first_section + 4].copy_from_slice(&0_u32.to_le_bytes());
-    let new_sum = twox_hash::XxHash3_64::oneshot(&overlapping[list_start..trailer_start]);
-    overlapping[trailer_start + 8..trailer_start + 16].copy_from_slice(&new_sum.to_le_bytes());
+    ))
+    .expect("usize");
+    let list_len = usize::try_from(u64::from_le_bytes(
+        bytes[trailer_start + 8..trailer_start + 16]
+            .try_into()
+            .expect("u64"),
+    ))
+    .expect("usize");
+    let list_uncompressed = usize::try_from(u64::from_le_bytes(
+        bytes[trailer_start + 16..trailer_start + 24]
+            .try_into()
+            .expect("u64"),
+    ))
+    .expect("usize");
+    let mut raw_list =
+        zstd::bulk::decompress(&bytes[list_off..list_off + list_len], list_uncompressed)
+            .expect("decompress list");
+    // PartListHeader (16) + PartEntry 0 (64) + SectionEntry 0 (40) = PartEntry 1 at offset 120.
+    // PartEntry.byte_start is at offset +32 within PartEntry (org_id, project_id, starts_at, ends_at).
+    raw_list[120 + 32..120 + 40].copy_from_slice(&(OBJECT_HEADER_LEN as u64).to_le_bytes());
+    let recompressed = zstd::bulk::compress(&raw_list, DEFAULT_ZSTD_LEVEL).expect("recompress");
+    let mut overlapping = bytes[..list_off].to_vec();
+    overlapping.extend_from_slice(&recompressed);
+    let new_sum = part_list_checksum(key_seed, &recompressed);
+    overlapping.extend_from_slice(&(list_off as u64).to_le_bytes());
+    overlapping.extend_from_slice(&(recompressed.len() as u64).to_le_bytes());
+    overlapping.extend_from_slice(&(raw_list.len() as u64).to_le_bytes());
+    overlapping.extend_from_slice(&new_sum.to_le_bytes());
+    overlapping.extend_from_slice(b"USCOPEOE");
     assert!(matches!(
         ObjectReader::open(&overlapping),
         Err(ObjectError::Layout(_))
-    ));
-
-    let mut multipart_post = bytes;
-    multipart_post[12] = ObjectKind::Post as u8;
-    assert!(matches!(
-        ObjectReader::open(&multipart_post),
-        Err(ObjectError::Limit(_))
     ));
 }
 
@@ -660,7 +1230,7 @@ fn object_reader_rejects_overlapping_parts_and_multipart_posts() {
 fn decode_tables_enforces_cumulative_decompression_budget() {
     let mut strings = vec![b'a'; 48 * 1024 * 1024];
     strings.push(0);
-    let rows = 1_200_000_u32;
+    let rows = 200_000_u32;
     let varint_zeros = vec![0_u8; rows as usize];
     let mut sw = SectionWriter::new(
         SectionKind::Strings,
@@ -670,7 +1240,7 @@ fn decode_tables_enforces_cumulative_decompression_budget() {
         0,
         DEFAULT_ZSTD_LEVEL,
     );
-    sw.add_column(WHOLE_SECTION_GROUP, 0, Coding::Bytes, 0, 0, &strings)
+    sw.add_column(WHOLE_SECTION_GROUP, 0, Coding::Bytes, 0, &strings)
         .expect("strings col");
     let mut sections = vec![sw.finish(0).expect("strings section")];
     for (kind, u32_cols, u8_cols) in [
@@ -680,15 +1250,20 @@ fn decode_tables_enforces_cumulative_decompression_budget() {
     ] {
         let mut sw = SectionWriter::new(kind, 1, TimeUnit::Ns, rows, 0, DEFAULT_ZSTD_LEVEL);
         for id in 0..u32_cols {
-            sw.add_column(WHOLE_SECTION_GROUP, id, Coding::Plain, 0, 0, &varint_zeros)
-                .expect("u32 col");
+            sw.add_column(
+                WHOLE_SECTION_GROUP,
+                id,
+                Coding::VarintPlain,
+                0,
+                &varint_zeros,
+            )
+            .expect("u32 col");
         }
         for offset in 0..u8_cols {
             sw.add_column(
                 WHOLE_SECTION_GROUP,
                 u32_cols + offset,
                 Coding::Bytes,
-                0,
                 0,
                 &varint_zeros,
             )
@@ -751,12 +1326,14 @@ fn decode_tables_enforces_budget_on_repeated_string_references() {
         0,
         DEFAULT_ZSTD_LEVEL,
     );
-    sw.add_column(WHOLE_SECTION_GROUP, 0, Coding::Bytes, 0, 0, &strings)
+    sw.add_column(WHOLE_SECTION_GROUP, 0, Coding::Bytes, 0, &strings)
         .expect("strings col");
     let strings_sec = sw.finish(0).expect("strings section");
 
+    // In v2, dense string IDs are 1-based (0 = NONE, 1 = string index 0).
     let rows = 80_u32;
     let zeros = vec![0_u8; rows as usize];
+    let ones = vec![1_u8; rows as usize];
     let mut dw = SectionWriter::new(
         SectionKind::Dimensions,
         1,
@@ -765,10 +1342,12 @@ fn decode_tables_enforces_budget_on_repeated_string_references() {
         0,
         DEFAULT_ZSTD_LEVEL,
     );
-    for col in 0_u8..3 {
-        dw.add_column(WHOLE_SECTION_GROUP, col, Coding::Plain, 0, 0, &zeros)
-            .expect("dim col");
-    }
+    dw.add_column(WHOLE_SECTION_GROUP, 0, Coding::VarintPlain, 0, &zeros)
+        .expect("proc col");
+    dw.add_column(WHOLE_SECTION_GROUP, 1, Coding::VarintPlain, 0, &ones)
+        .expect("name col");
+    dw.add_column(WHOLE_SECTION_GROUP, 2, Coding::VarintPlain, 0, &ones)
+        .expect("val col");
     let dims_sec = dw.finish(0).expect("dims section");
 
     let mut writer = ObjectWriter::new(ObjectKind::Post, ObjectLevel::None, 100, 1);

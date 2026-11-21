@@ -4,9 +4,10 @@ use crate::capture::Capture;
 use crate::capture::records::{FrameKind, NONE, captures as parse_captures};
 use crate::image::{StrId, Strings, StringsBuilder};
 use crate::object::{
-    ChunkData, DEFAULT_ZSTD_LEVEL, DimensionRow, ObjectError, ObjectKind, ObjectLevel,
-    ObjectWriter, PartKind, PartSpec, SanitizerCountRow, Signal, TimeUnit, encode_tables,
-    merge_chunks, round_capture_times,
+    ChunkData, DEFAULT_ZSTD_LEVEL, DecodeBudget, DimensionRow, EncodedSection,
+    MAX_DECOMPRESSED_OBJECT_BYTES, ObjectError, ObjectKind, ObjectLevel, ObjectWriter, PartKind,
+    PartSpec, RawSection, SanitizerCountRow, SectionKind, SectionReader, Signal, TimeUnit,
+    decode_tables, encode_tables, merge_chunks, round_capture_times,
 };
 use crate::syscalls::{Abi, CaptureState, ReadAt, SyscallId, specs};
 
@@ -818,4 +819,157 @@ pub fn sanitize_chunk(
         },
         time_unit,
     }
+}
+
+/// Fast-path zero-decode server-side re-sanitization for an incoming `USCOPEOB v2` post part.
+///
+/// Inspects only `Strings` and `SyscallBlobs` against every `FieldClass` in `sanitizer`. When the
+/// agent already sanitized the chunk under a compatible policy and zero rules fire, ALL sections
+/// (including `Samples`, `OffCpu`, `Stacks`, `Syscalls`, `SyscallStats`, etc.) are passed through
+/// verbatim with zero decompression or re-encoding!
+///
+/// If ANY rule fires on any string or blob byte (for example a stale agent policy or an
+/// unsanitized client), falls back to full `decode_tables` + `sanitize_chunk` + `encode_tables` so
+/// field-class sanitization and `SanitizerCounts` accounting are 100% exact.
+///
+/// Returns `(sections, verbatim_passthrough)`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "probes Strings and SyscallBlobs before choosing verbatim passthrough vs full fallback"
+)]
+pub fn re_sanitize_sections_verbatim(
+    raw_sections: &[RawSection<'_>],
+    sanitizer: &Sanitizer,
+    zstd_level: i32,
+) -> Result<(Vec<EncodedSection>, bool), ObjectError> {
+    let budget = DecodeBudget::new(MAX_DECOMPRESSED_OBJECT_BYTES);
+    let mut needs_rewrite = false;
+
+    for sec in raw_sections {
+        if sec.kind == SectionKind::Strings {
+            let reader = SectionReader::open_budgeted(sec.bytes, SectionKind::Strings, &budget)?;
+            let page = reader.read_page(0)?;
+            let pool = &page
+                .column(crate::object::codec::WHOLE_SECTION_GROUP, 0)?
+                .data;
+            if !crate::image::valid_pool(pool, true) {
+                return Err(ObjectError::Capture(
+                    "string pool is not NUL-terminated UTF-8".into(),
+                ));
+            }
+            let mut probe = Tally::default();
+            for raw_str in pool.split(|&b| b == 0) {
+                if raw_str.is_empty() {
+                    continue;
+                }
+                let Ok(text) = std::str::from_utf8(raw_str) else {
+                    return Err(ObjectError::Capture(
+                        "string pool is not valid UTF-8".into(),
+                    ));
+                };
+                if text.starts_with('[')
+                    && let Ok(args) = serde_json::from_str::<Vec<String>>(text)
+                {
+                    let changed = match sanitizer.args(&args, &mut probe) {
+                        Outcome::Kept => false,
+                        Outcome::Replaced(out) => out != args,
+                        Outcome::DropField | Outcome::DropRecord => true,
+                    };
+                    if changed {
+                        needs_rewrite = true;
+                        break;
+                    }
+                }
+                for class in FieldClass::ALL {
+                    let changed = match sanitizer.text(class, text, &mut probe) {
+                        Outcome::Kept => false,
+                        Outcome::Replaced(out) => out != text,
+                        Outcome::DropField | Outcome::DropRecord => true,
+                    };
+                    if changed {
+                        needs_rewrite = true;
+                        break;
+                    }
+                }
+                if needs_rewrite {
+                    break;
+                }
+            }
+        } else if sec.kind == SectionKind::SyscallBlobs {
+            let reader =
+                SectionReader::open_budgeted(sec.bytes, SectionKind::SyscallBlobs, &budget)?;
+            let page = reader.read_page(0)?;
+            let mut probe = Tally::default();
+            for group_idx in 0..page.groups.len() {
+                let g = u16::try_from(group_idx)
+                    .map_err(|_| ObjectError::Limit("blob group overflow"))?;
+                if let Ok(col) = page.column(g, 0)
+                    && !col.data.is_empty()
+                {
+                    for class in [
+                        FieldClass::SyscallPayload,
+                        FieldClass::SyscallPath,
+                        FieldClass::SyscallString,
+                    ] {
+                        let changed = match sanitizer.bytes(class, &col.data, &mut probe) {
+                            Outcome::Kept => false,
+                            Outcome::Replaced(out) => out != col.data,
+                            Outcome::DropField | Outcome::DropRecord => true,
+                        };
+                        if changed {
+                            needs_rewrite = true;
+                            break;
+                        }
+                    }
+                }
+                if needs_rewrite {
+                    break;
+                }
+            }
+        }
+        if needs_rewrite {
+            break;
+        }
+    }
+
+    if !needs_rewrite {
+        let verbatim = raw_sections
+            .iter()
+            .map(|sec| EncodedSection {
+                kind: sec.kind,
+                rows: sec.rows,
+                key: sec.key,
+                bytes: sec.bytes.to_vec(),
+            })
+            .collect();
+        return Ok((verbatim, true));
+    }
+
+    let decoded = decode_tables(raw_sections)?;
+    let time_unit = decoded
+        .chunks
+        .first()
+        .map_or(TimeUnit::Ns, |row| row.time_unit);
+    let scrubbed = sanitize_chunk(decoded, time_unit, sanitizer);
+    let sections = encode_tables(scrubbed.data(), time_unit, zstd_level, 0)?;
+    Ok((sections, false))
+}
+
+/// Decodes ONLY the small metadata sections (`Strings`, `Chunk`, `Dimensions`) of a post part
+/// without touching heavy event tables (`Samples`, `OffCpu`, `Stacks`, `Syscalls`, etc.).
+pub fn decode_post_metadata(
+    raw_sections: &[RawSection<'_>],
+) -> Result<(Vec<crate::object::ChunkRow>, Vec<DimensionRow>), ObjectError> {
+    let subset: Vec<RawSection<'_>> = raw_sections
+        .iter()
+        .copied()
+        .filter(|sec| {
+            matches!(
+                sec.kind,
+                SectionKind::Strings | SectionKind::Chunk | SectionKind::Dimensions
+            )
+        })
+        .collect();
+    let decoded = decode_tables(&subset)?;
+    Ok((decoded.chunks, decoded.dimensions))
 }

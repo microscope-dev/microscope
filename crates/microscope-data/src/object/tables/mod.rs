@@ -3,10 +3,12 @@ mod encode_core;
 mod encode_events;
 mod encode_syscalls;
 
-pub use decode::{decode_flame_tables, decode_tables};
-pub use encode_core::encode_tables;
+pub use decode::{SharedSymbols, decode_event_bundle, decode_flame_tables, decode_tables};
+pub use encode_core::{encode_event_bundle, encode_tables};
 
 use std::collections::BTreeMap;
+
+use foldhash::HashMap;
 
 use crate::capture::records::{NONE, UNSEEN};
 use crate::capture::{Capture, CaptureBuilder};
@@ -15,12 +17,11 @@ use crate::syscalls::specs;
 use crate::syscalls::{Abi, SyscallId};
 
 use super::codec::{
-    Coding, FLAG_BIT_PACKED, SectionReader, SectionWriter, decode_dict_u64_budgeted, decode_ints,
-    delta_decode_i64, delta_decode_u64_in_place, encode_ints, relative_decode_i64, zigzag_decode,
+    Coding, PageReader, SectionWriter, delta_decode_i64, encode_varints, relative_decode_i64,
 };
-use super::{MAX_ROWS, ObjectError, TimeUnit};
+use super::{MAX_TOTAL_ROWS, ObjectError, TimeUnit};
 
-const TABLE_VERSION: u8 = 1;
+const TABLE_VERSION: u8 = 2;
 const NOTE_BLOBS_ARGUMENT: u8 = u8::MAX;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +74,106 @@ impl ChunkData {
         }
 
         self.capture.span()
+    }
+}
+
+/// Maps byte offsets in a NUL-terminated string pool to dense string codes
+/// (`0 = NONE`, `id + 1 = string index id`).
+pub struct StringEncodeMap {
+    offset_to_id: HashMap<u32, u32>,
+    count: u32,
+}
+
+impl StringEncodeMap {
+    pub fn from_pool(pool: &[u8]) -> Result<Self, ObjectError> {
+        let mut offset_to_id = HashMap::default();
+        let mut count = 0_u32;
+        let mut at = 0_usize;
+        while at < pool.len() {
+            let off = u32::try_from(at)
+                .map_err(|_| ObjectError::Limit("string pool offset exceeds u32"))?;
+            offset_to_id.insert(off, count);
+            count = count
+                .checked_add(1)
+                .ok_or(ObjectError::Limit("string count exceeds u32"))?;
+            let rel = memchr::memchr(0, &pool[at..])
+                .ok_or_else(|| ObjectError::Capture("string pool is not NUL-terminated".into()))?;
+            at += rel + 1;
+        }
+        Ok(Self {
+            offset_to_id,
+            count,
+        })
+    }
+
+    pub(super) const fn from_raw_map(offset_to_id: HashMap<u32, u32>, count: u32) -> Self {
+        Self {
+            offset_to_id,
+            count,
+        }
+    }
+
+    #[must_use]
+    pub const fn count(&self) -> u32 {
+        self.count
+    }
+
+    pub fn encode_ref(&self, offset: u32) -> Result<u64, ObjectError> {
+        if offset == NONE {
+            return Ok(0);
+        }
+        let &id = self.offset_to_id.get(&offset).ok_or_else(|| {
+            ObjectError::Capture(format!("string offset {offset} not found in pool"))
+        })?;
+        Ok(u64::from(id) + 1)
+    }
+
+    pub fn encode_refs<I>(&self, offsets: I) -> Result<Vec<u64>, ObjectError>
+    where
+        I: IntoIterator<Item = u32>,
+    {
+        offsets
+            .into_iter()
+            .map(|off| self.encode_ref(off))
+            .collect()
+    }
+}
+
+/// Maps dense string codes (`0 = NONE`, `id + 1 = string index id`) back to byte offsets
+/// in the decoded NUL-terminated `capture.strings` pool.
+pub struct StringDecodeMap {
+    offsets: Vec<u32>,
+}
+
+impl StringDecodeMap {
+    pub fn from_pool(pool: &[u8]) -> Result<Self, ObjectError> {
+        let mut offsets = Vec::new();
+        let mut at = 0_usize;
+        while at < pool.len() {
+            let off = u32::try_from(at)
+                .map_err(|_| ObjectError::Limit("string pool offset exceeds u32"))?;
+            offsets.push(off);
+            let rel = memchr::memchr(0, &pool[at..])
+                .ok_or_else(|| ObjectError::Capture("string pool is not NUL-terminated".into()))?;
+            at += rel + 1;
+        }
+        Ok(Self { offsets })
+    }
+
+    pub fn decode_ref(&self, code: u64) -> Result<u32, ObjectError> {
+        if code == 0 {
+            return Ok(NONE);
+        }
+        let idx = usize::try_from(code - 1)
+            .map_err(|_| ObjectError::Capture("dense string id overflow".into()))?;
+        self.offsets
+            .get(idx)
+            .copied()
+            .ok_or_else(|| ObjectError::Capture("dense string id out of bounds".into()))
+    }
+
+    pub fn decode_refs(&self, codes: &[u64]) -> Result<Vec<u32>, ObjectError> {
+        codes.iter().map(|&c| self.decode_ref(c)).collect()
     }
 }
 
@@ -326,7 +427,7 @@ pub fn syscall_arg_count(abi: u8, number: u32) -> usize {
 }
 
 fn count_u32(len: usize) -> Result<u32, ObjectError> {
-    if len > MAX_ROWS {
+    if len > MAX_TOTAL_ROWS {
         return Err(ObjectError::Limit("table row count exceeds limit"));
     }
 
@@ -337,185 +438,150 @@ fn u32_from_u64(value: u64, what: &str) -> Result<u32, ObjectError> {
     u32::try_from(value).map_err(|_| ObjectError::Layout(format!("{what} exceeds u32")))
 }
 
-fn u8_from_u64(value: u64, what: &str) -> Result<u8, ObjectError> {
-    u8::try_from(value).map_err(|_| ObjectError::Layout(format!("{what} exceeds u8")))
-}
-
 fn add_u64_col(
     writer: &mut SectionWriter,
     group: u16,
     col: u8,
     coding: Coding,
     key: u8,
-    bit_packed: bool,
     values: &[u64],
 ) -> Result<(), ObjectError> {
-    let flags = if bit_packed { FLAG_BIT_PACKED } else { 0 };
-    let encoded = encode_ints(values, bit_packed);
-    writer.add_column(group, col, coding, key, flags, &encoded)
+    if coding == Coding::VarintPlain
+        && let Some(&first) = values.first()
+        && values.iter().all(|&v| v == first)
+    {
+        return writer.add_constant(group, col, first);
+    }
+    let encoded = encode_varints(values);
+    writer.add_column(group, col, coding, key, &encoded)
+}
+
+fn add_delta_u64_col(
+    writer: &mut SectionWriter,
+    group: u16,
+    col: u8,
+    values: &[u64],
+) -> Result<(), ObjectError> {
+    writer.add_u64_smart(group, col, values, true)
+}
+
+fn add_plain_u64_col(
+    writer: &mut SectionWriter,
+    group: u16,
+    col: u8,
+    values: &[u64],
+) -> Result<(), ObjectError> {
+    writer.add_u64_smart(group, col, values, false)
 }
 
 fn read_u64_col(
-    reader: &SectionReader<'_, '_>,
+    page: &PageReader<'_>,
     group: u16,
     col: u8,
     count: usize,
 ) -> Result<Vec<u64>, ObjectError> {
-    reader.charge(count.saturating_mul(size_of::<u64>()))?;
-    let slice = reader.column(group, col)?;
-    let raw = slice.decompress()?;
-    match slice.coding {
-        Coding::Dictionary => decode_dict_u64_budgeted(&raw, count, reader.budget()),
-        Coding::Plain
-        | Coding::Delta
-        | Coding::DeltaByKey
-        | Coding::Relative
-        | Coding::String
-        | Coding::Order => decode_ints(&raw, count, slice.bit_packed()),
-        Coding::Bytes | Coding::Words => Err(ObjectError::Layout("expected integer column".into())),
-    }
+    page.column(group, col)?
+        .decode_raw_u64(count, page.budget())
 }
 
 fn read_delta_u64_col(
-    reader: &SectionReader<'_, '_>,
+    page: &PageReader<'_>,
     group: u16,
     col: u8,
     count: usize,
 ) -> Result<Vec<u64>, ObjectError> {
-    reader.charge(count.saturating_mul(size_of::<u64>()))?;
-    let slice = reader.column(group, col)?;
-    let raw = slice.decompress()?;
-    let mut ints = match slice.coding {
-        Coding::Dictionary => decode_dict_u64_budgeted(&raw, count, reader.budget())?,
-        _ => decode_ints(&raw, count, slice.bit_packed())?,
-    };
-    match slice.coding {
-        Coding::Delta => {
-            delta_decode_u64_in_place(&mut ints);
-            Ok(ints)
-        }
-        Coding::Plain | Coding::String | Coding::Dictionary | Coding::Order => Ok(ints),
-        _ => Err(ObjectError::Layout(
-            "unexpected coding for unsigned column".into(),
-        )),
-    }
+    page.column(group, col)?.decode_u64(count, page.budget())
 }
 
 fn read_u32_col(
-    reader: &SectionReader<'_, '_>,
+    page: &PageReader<'_>,
     group: u16,
     col: u8,
     count: usize,
 ) -> Result<Vec<u32>, ObjectError> {
-    reader.charge(count.saturating_mul(size_of::<u32>()))?;
-    read_delta_u64_col(reader, group, col, count)?
-        .into_iter()
-        .map(|v| u32_from_u64(v, "u32 column"))
-        .collect()
+    page.column(group, col)?.decode_u32(count, page.budget())
 }
 
 fn read_u8_col(
-    reader: &SectionReader<'_, '_>,
+    page: &PageReader<'_>,
     group: u16,
     col: u8,
     count: usize,
 ) -> Result<Vec<u8>, ObjectError> {
-    reader.charge(count.saturating_mul(size_of::<u8>()))?;
-    read_delta_u64_col(reader, group, col, count)?
-        .into_iter()
-        .map(|v| u8_from_u64(v, "u8 column"))
-        .collect()
+    page.column(group, col)?.decode_u8(count, page.budget())
+}
+
+fn read_string_col(
+    page: &PageReader<'_>,
+    group: u16,
+    col: u8,
+    count: usize,
+    strings: &StringDecodeMap,
+) -> Result<Vec<u32>, ObjectError> {
+    let codes = page.column(group, col)?.decode_u64(count, page.budget())?;
+    strings.decode_refs(&codes)
 }
 
 fn read_time_col(
-    reader: &SectionReader<'_, '_>,
+    page: &PageReader<'_>,
+    time_unit: TimeUnit,
+    base_time: i64,
     group: u16,
     col: u8,
     count: usize,
 ) -> Result<Vec<i64>, ObjectError> {
-    reader.charge(count.saturating_mul(size_of::<u64>() + size_of::<i64>()))?;
-    let slice = reader.column(group, col)?;
-    let raw = slice.decompress()?;
-    let ints = decode_ints(&raw, count, slice.bit_packed())?;
-    let mut units = match slice.coding {
-        Coding::Delta => delta_decode_i64(&ints, reader.base_time),
-        Coding::Plain => ints.into_iter().map(zigzag_decode).collect(),
-        _ => {
-            return Err(ObjectError::Layout(
-                "unexpected coding for time column".into(),
-            ));
-        }
-    };
-    for slot in &mut units {
-        *slot = reader.time_unit.to_nanos(*slot);
-    }
-    Ok(units)
+    let raw = page
+        .column(group, col)?
+        .decode_raw_u64(count, page.budget())?;
+    let units = delta_decode_i64(&raw, base_time);
+    Ok(units.into_iter().map(|u| time_unit.to_nanos(u)).collect())
+}
+
+fn read_time_units_col(
+    page: &PageReader<'_>,
+    base_time: i64,
+    group: u16,
+    col: u8,
+    count: usize,
+) -> Result<Vec<i64>, ObjectError> {
+    let raw = page
+        .column(group, col)?
+        .decode_raw_u64(count, page.budget())?;
+    Ok(delta_decode_i64(&raw, base_time))
 }
 
 fn read_relative_time_col(
-    reader: &SectionReader<'_, '_>,
+    page: &PageReader<'_>,
+    time_unit: TimeUnit,
     group: u16,
     col: u8,
-    anchor_units: &[i64],
+    anchors_units: &[i64],
 ) -> Result<Vec<i64>, ObjectError> {
-    reader.charge(
-        anchor_units
-            .len()
-            .saturating_mul(size_of::<u64>() + size_of::<i64>()),
-    )?;
-    let slice = reader.column(group, col)?;
-    let raw = slice.decompress()?;
-    let ints = decode_ints(&raw, anchor_units.len(), slice.bit_packed())?;
-    let mut units = match slice.coding {
-        Coding::Relative => relative_decode_i64(&ints, anchor_units)?,
-        Coding::Delta => delta_decode_i64(&ints, reader.base_time),
-        Coding::Plain => ints.into_iter().map(zigzag_decode).collect(),
-        _ => {
-            return Err(ObjectError::Layout(
-                "unexpected coding for relative time column".into(),
-            ));
-        }
-    };
-    for slot in &mut units {
-        *slot = reader.time_unit.to_nanos(*slot);
-    }
-    Ok(units)
+    let raw = page
+        .column(group, col)?
+        .decode_raw_u64(anchors_units.len(), page.budget())?;
+    let units = relative_decode_i64(&raw, anchors_units)?;
+    Ok(units.into_iter().map(|u| time_unit.to_nanos(u)).collect())
 }
 
-type InternedExtraStrings = (Vec<u8>, Vec<u32>, Vec<(u32, u32)>, Vec<u32>);
+type InternedStrings = (Vec<u8>, Vec<u32>, Vec<(u32, u32)>, Vec<u32>);
 
-fn intern_extra_strings(data: &ChunkData) -> InternedExtraStrings {
+fn intern_extra_strings(data: &ChunkData) -> InternedStrings {
     let mut strings = StringsBuilder::default();
-    let existing = Strings(&data.capture.strings);
-    let mut offset = 0;
-    while offset < data.capture.strings.len() {
-        let id = u32::try_from(offset).unwrap_or(NONE);
-        let text = existing.get(StrId(id));
+    let base_pool = Strings(&data.capture.strings);
+    let mut at = 0_usize;
+    while at < data.capture.strings.len() {
+        let text = base_pool.get(StrId(u32::try_from(at).unwrap_or(0)));
         let _ = strings.push(text);
-        offset += text.len() + 1;
+        at += text.len() + 1;
     }
 
-    let mut raw = data.capture.strings.clone();
     let mut push = |text: &str| -> u32 {
-        let clean = text.split('\0').next().unwrap_or_default();
-        if let Some(id) = strings.push(clean) {
-            let start = id.0 as usize;
-            if start >= raw.len() {
-                let new_id = u32::try_from(raw.len()).unwrap_or(NONE);
-                raw.extend_from_slice(clean.as_bytes());
-                raw.push(0);
-                return new_id;
-            }
-            if raw.get(start..start + clean.len()) == Some(clean.as_bytes())
-                && raw.get(start + clean.len()) == Some(&0)
-            {
-                return id.0;
-            }
+        if text.is_empty() {
+            NONE
+        } else {
+            strings.push(text).map_or(NONE, |StrId(id)| id)
         }
-        let new_id = u32::try_from(raw.len()).unwrap_or(NONE);
-        raw.extend_from_slice(clean.as_bytes());
-        raw.push(0);
-        new_id
     };
 
     let chunk_rules: Vec<u32> = data.chunks.iter().map(|c| push(&c.rules)).collect();
@@ -527,8 +593,16 @@ fn intern_extra_strings(data: &ChunkData) -> InternedExtraStrings {
     let count_rules: Vec<u32> = data
         .sanitizer_counts
         .iter()
-        .map(|c| push(&c.rule))
+        .map(|s| push(&s.rule))
         .collect();
 
-    (raw, chunk_rules, dim_strings, count_rules)
+    (strings.into_bytes(), chunk_rules, dim_strings, count_rules)
+}
+
+pub(super) fn remap_stack(old_id: u32, old_to_dfs: &[u32]) -> u32 {
+    if old_id == NONE {
+        NONE
+    } else {
+        old_to_dfs.get(old_id as usize).copied().unwrap_or(NONE)
+    }
 }

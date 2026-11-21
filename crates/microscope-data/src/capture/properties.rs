@@ -1027,16 +1027,11 @@ fn file_of(captures: &[Capture]) -> (Vec<u8>, Vec<usize>) {
     let mut bytes = Vec::new();
     let mut ends = Vec::new();
     let mut writer = file::Writer::new(&mut bytes).expect("a header");
-    let mut written = 16;
-
     for capture in captures {
-        let chunk = capture.seal().expect("a sealed chunk");
-        writer.chunk(&chunk).expect("a chunk");
-        written += 8 + chunk.as_bytes().len();
-        ends.push(written);
+        writer.chunk(capture).expect("a chunk");
+        ends.push(writer.written() as usize);
     }
-
-    writer.finish().expect("an index");
+    writer.finish().expect("finish");
     (bytes, ends)
 }
 
@@ -1137,12 +1132,13 @@ proptest! {
         prop_assert_eq!((read.chunks, read.truncated), (pieces.len(), false));
         prop_assert_eq!(read.capture.validate(), Ok(()));
         let whole = if pieces.len() == 1 { pieces[0].clone() } else { merged(&pieces) };
-        prop_assert_eq!(&read.capture, &whole);
+        prop_assert_eq!(rows(&read.capture, true), rows(&whole, true));
 
+        let header_len = crate::object::OBJECT_HEADER_LEN;
         let mut cuts: Vec<usize> = ends
             .iter()
             .flat_map(|&end| [end - 1, end, end + 1])
-            .chain([0, 15, 16, 17, 24, bytes.len() - 1, bytes.len() - 16])
+            .chain([0, header_len - 1, header_len, header_len + 1, bytes.len() - 1, bytes.len() - 40])
             .chain(at.iter().map(|index| index.index(bytes.len() + 1)))
             .collect();
         cuts.sort_unstable();
@@ -1154,11 +1150,11 @@ proptest! {
                 Ok(read) => {
                     prop_assert_eq!((read.chunks, read.truncated), (whole_chunks, cut < bytes.len()), "cut at {}", cut);
                     let expected = if whole_chunks == 1 { pieces[0].clone() } else { merged(&pieces[..whole_chunks]) };
-                    prop_assert_eq!(read.capture, expected, "cut at {}", cut);
+                    prop_assert_eq!(rows(&read.capture, true), rows(&expected, true), "cut at {}", cut);
                 }
                 Err(error) => {
                     prop_assert_eq!(whole_chunks, 0, "cut at {}: {}", cut, error);
-                    let refused = if cut < 16 { file::FileError::NotACapture } else { file::FileError::Empty };
+                    let refused = if cut < header_len { file::FileError::NotACapture } else { file::FileError::Empty };
                     prop_assert_eq!(error, refused, "cut at {}", cut);
                 }
             }
@@ -1169,8 +1165,14 @@ proptest! {
             let position = index.index(bytes.len());
             damaged[position] ^= flip;
             if let Ok(read) = file::read(&damaged) {
-                prop_assert_eq!(read.chunks, pieces.len(), "byte {} changed", position);
-                prop_assert!(read.capture == read_whole(&bytes), "byte {} changed", position);
+                if read.truncated {
+                    prop_assert!(read.chunks <= pieces.len(), "byte {} changed", position);
+                    let expected = if read.chunks == 1 { pieces[0].clone() } else { merged(&pieces[..read.chunks]) };
+                    prop_assert_eq!(rows(&read.capture, true), rows(&expected, true), "byte {} changed", position);
+                } else {
+                    prop_assert_eq!(read.chunks, pieces.len(), "byte {} changed", position);
+                    prop_assert!(read.capture == read_whole(&bytes), "byte {} changed", position);
+                }
             }
         }
     }

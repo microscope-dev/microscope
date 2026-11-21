@@ -707,11 +707,23 @@ impl SyscallTrace {
     }
 
     pub(super) fn cut(&self, samples: &Capture) -> Capture {
-        cut(&self.shared, self.stacks.as_ref(), samples, Taken::Span)
+        cut(
+            &self.shared,
+            self.stacks.as_ref(),
+            samples,
+            Taken::Span,
+            self.level == SyscallLevel::Counts,
+        )
     }
 
     pub(super) fn live(&self, samples: &Capture) -> Capture {
-        cut(&self.shared, self.stacks.as_ref(), samples, Taken::Live)
+        cut(
+            &self.shared,
+            self.stacks.as_ref(),
+            samples,
+            Taken::Live,
+            self.level == SyscallLevel::Counts,
+        )
     }
 
     pub(super) fn merge(self, samples: &Capture) -> Result<Capture, String> {
@@ -725,6 +737,7 @@ impl SyscallTrace {
             self.stacks.as_ref(),
             samples,
             Taken::Rest,
+            self.level == SyscallLevel::Counts,
         ))
     }
 }
@@ -833,6 +846,7 @@ fn cut(
     stacks: Option<&SharedStacks>,
     samples: &Capture,
     taken: Taken,
+    per_process: bool,
 ) -> Capture {
     let (start, stop) = samples.span();
     let (start, stop) = (start.cast_unsigned(), stop.cast_unsigned());
@@ -903,7 +917,12 @@ fn cut(
         }
 
         if !counted.by_call.is_empty() {
-            capture.counted(&counted);
+            if per_process {
+                let collapsed = counted.collapse_to_process();
+                capture.counted(&collapsed);
+            } else {
+                capture.counted(&counted);
+            }
         }
 
         if taken == Taken::Live {
@@ -973,8 +992,57 @@ mod tests {
         samples.setting("start", "5000000000");
         samples.setting("end", "9000000000");
 
-        let capture = cut(&shared, None, &samples.finish(), Taken::Rest);
+        let capture = cut(&shared, None, &samples.finish(), Taken::Rest, false);
         assert_eq!(capture.span(), (5_000_000_000, 9_000_000_000));
+    }
+
+    #[test]
+    fn prod_counts_collapse_threads_to_per_process_rows() {
+        let mut folded = Folded::default();
+        let call = SyscallId::new(crate::syscalls::Abi::X86_64, 0);
+        let pid = crate::model::Pid::new(42);
+        let mut s1 = crate::syscalls::stats::SyscallStats::default();
+        s1.add(Outcome::Returned(10), Some(100), 10);
+        let mut s2 = crate::syscalls::stats::SyscallStats::default();
+        s2.add(Outcome::Returned(20), Some(300), 20);
+        folded
+            .by_call
+            .insert((pid, crate::model::Tid::new(42), call), s1);
+        folded
+            .by_call
+            .insert((pid, crate::model::Tid::new(43), call), s2);
+
+        let shared = Mutex::new(Shared {
+            events: VecDeque::new(),
+            counted: VecDeque::from([(100, folded)]),
+            settings: Vec::new(),
+            window: None,
+            flushing: false,
+            last_flush: 0,
+            trigger: None,
+            saving: None,
+            quiet_until: 0,
+            blocked: Vec::new(),
+            blocked_at: 0,
+        });
+        let samples = CaptureBuilder::new().finish();
+
+        let prod = cut(&shared, None, &samples, Taken::Live, true);
+        assert_eq!(prod.syscall_stats.len(), 1);
+        assert_eq!(
+            prod.syscall_stats[0].thread.get(),
+            crate::capture::records::NONE
+        );
+        assert_eq!(prod.syscall_stats[0].calls.get(), 2);
+        assert_eq!(prod.syscall_stats[0].bytes.get(), 30);
+
+        let dev = cut(&shared, None, &samples, Taken::Live, false);
+        assert_eq!(dev.syscall_stats.len(), 2);
+        assert!(
+            dev.syscall_stats
+                .iter()
+                .all(|s| s.thread.get() != crate::capture::records::NONE)
+        );
     }
 
     #[test]

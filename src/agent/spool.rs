@@ -329,7 +329,6 @@ impl Spool {
             while chunks.len() > 1 {
                 if let Ok(post) = encode_post(&chunks, agent_id, created_at, DEFAULT_ZSTD_LEVEL)
                     && post.as_bytes().len() <= limit
-                    && post_decodes_within_limits(&post)
                 {
                     let first_chunk = numbers.first().copied().unwrap_or(0);
                     let last_chunk = numbers.last().copied().unwrap_or(0);
@@ -347,7 +346,6 @@ impl Spool {
 
             if let Ok(post) = encode_post(&chunks, agent_id, created_at, DEFAULT_ZSTD_LEVEL)
                 && post.as_bytes().len() <= limit
-                && post_decodes_within_limits(&post)
             {
                 let first_chunk = numbers.first().copied().unwrap_or(0);
                 let last_chunk = numbers.last().copied().unwrap_or(0);
@@ -481,13 +479,6 @@ fn write_owner(dir: &Path, owner: &SpoolOwner) -> io::Result<()> {
         |id| format!("{}\n{id}\n", owner.server),
     );
     write_atomic(dir, OWNER_FILE, content.as_bytes())
-}
-
-fn post_decodes_within_limits(post: &EncodedPost) -> bool {
-    ObjectReader::open(post.as_bytes())
-        .and_then(|reader| reader.part_sections(0, None))
-        .and_then(|sections| decode_tables(&sections))
-        .is_ok()
 }
 
 fn normalize_project_dimension(data: &mut ChunkData) -> Option<String> {

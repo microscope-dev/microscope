@@ -1,12 +1,12 @@
 use super::{Capture, CaptureBuilder};
-use crate::image::{AlignedBytes, ImageError};
+use crate::object::{
+    ChunkData, DEFAULT_ZSTD_LEVEL, OBJECT_HEADER_LEN, OBJECT_MAGIC, OBJECT_VERSION, ObjectError,
+    ObjectKind, ObjectLevel, ObjectReader, ObjectWriter, PartKind, PartSpec, Signal, TimeUnit,
+    decode_tables, encode_tables,
+};
 
-pub const FILE_MAGIC: [u8; 8] = *b"USCOPEPF";
-
-pub const FILE_VERSION: u32 = 1;
-const INDEX_MAGIC: [u8; 8] = *b"USCOPEIX";
-const END_MAGIC: [u8; 8] = *b"USCOPEND";
-const HEADER: usize = 16;
+pub const FILE_MAGIC: [u8; 8] = OBJECT_MAGIC;
+pub const FILE_VERSION: u32 = OBJECT_VERSION;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FileError {
@@ -19,57 +19,80 @@ pub enum FileError {
     #[error("the capture holds no complete chunk")]
     Empty,
 
-    #[error("a chunk of the capture is damaged: {0}")]
-    Chunk(ImageError),
+    #[error("the capture is damaged: {0}")]
+    Object(#[from] ObjectError),
 }
 
-#[derive(Debug)]
 pub struct Writer<W: std::io::Write> {
     out: W,
-    written: u64,
-    chunks: Vec<(u64, u64)>,
+    writer: ObjectWriter,
+}
+
+impl<W: std::io::Write + std::fmt::Debug> std::fmt::Debug for Writer<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Writer")
+            .field("out", &self.out)
+            .field("parts", &self.writer.part_count())
+            .finish()
+    }
 }
 
 impl<W: std::io::Write> Writer<W> {
     pub fn new(mut out: W) -> std::io::Result<Self> {
-        out.write_all(&FILE_MAGIC)?;
-        out.write_all(&FILE_VERSION.to_le_bytes())?;
-        out.write_all(&0_u32.to_le_bytes())?;
-        Ok(Self {
-            out,
-            written: HEADER as u64,
-            chunks: Vec::new(),
-        })
+        let mut writer = ObjectWriter::new(ObjectKind::Capture, ObjectLevel::None, 0, 0);
+        let header = writer
+            .take_bytes()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        out.write_all(&header)?;
+        Ok(Self { out, writer })
     }
 
-    pub fn chunk(&mut self, chunk: &AlignedBytes) -> std::io::Result<()> {
-        let bytes = chunk.as_bytes();
-        let length = bytes.len() as u64;
-        self.out.write_all(&length.to_le_bytes())?;
-        self.out.write_all(bytes)?;
-        self.chunks.push((self.written + 8, length));
-        self.written += 8 + length;
+    #[must_use]
+    pub const fn written(&self) -> u64 {
+        self.writer.written_bytes()
+    }
+
+    pub fn chunk(&mut self, capture: &Capture) -> std::io::Result<()> {
+        let (starts_at, ends_at) = capture.span();
+        let data = ChunkData {
+            capture: capture.clone(),
+            chunks: Vec::new(),
+            dimensions: Vec::new(),
+            sanitizer_counts: Vec::new(),
+        };
+        let sections = encode_tables(&data, TimeUnit::Ns, DEFAULT_ZSTD_LEVEL, 0)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        self.writer
+            .add_part(&PartSpec {
+                org_id: 0,
+                project_id: 0,
+                starts_at,
+                ends_at,
+                signal: Signal::Profile,
+                part: PartKind::Chunks,
+                sections,
+            })
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        self.writer
+            .write_checkpoint()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let pending = self
+            .writer
+            .take_bytes()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        self.out.write_all(&pending)?;
         self.out.flush()
     }
 
     pub fn finish(mut self) -> std::io::Result<W> {
-        let mut index = Vec::with_capacity(12 + 16 * self.chunks.len());
-        index.extend_from_slice(&INDEX_MAGIC);
-        index.extend_from_slice(
-            &u32::try_from(self.chunks.len())
-                .unwrap_or(u32::MAX)
-                .to_le_bytes(),
-        );
-
-        for (offset, length) in &self.chunks {
-            index.extend_from_slice(&offset.to_le_bytes());
-            index.extend_from_slice(&length.to_le_bytes());
-        }
-
-        let length = index.len() as u64;
-        index.extend_from_slice(&length.to_le_bytes());
-        index.extend_from_slice(&END_MAGIC);
-        self.out.write_all(&index)?;
+        self.writer
+            .write_final_footer()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let pending = self
+            .writer
+            .take_bytes()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        self.out.write_all(&pending)?;
         self.out.flush()?;
         Ok(self.out)
     }
@@ -77,11 +100,8 @@ impl<W: std::io::Write> Writer<W> {
 
 pub fn write(capture: &Capture, out: impl std::io::Write) -> std::io::Result<()> {
     let _span = crate::span!("capture write");
-    let chunk = capture
-        .seal()
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut writer = Writer::new(out)?;
-    writer.chunk(&chunk)?;
+    writer.chunk(capture)?;
     writer.finish()?;
     Ok(())
 }
@@ -89,15 +109,13 @@ pub fn write(capture: &Capture, out: impl std::io::Write) -> std::io::Result<()>
 #[derive(Debug)]
 pub struct Read {
     pub capture: Capture,
-
     pub chunks: usize,
-
     pub truncated: bool,
 }
 
 pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
     let _span = crate::span!("capture read");
-    if bytes.len() < HEADER || bytes.first_chunk::<8>() != Some(&FILE_MAGIC) {
+    if bytes.len() < OBJECT_HEADER_LEN || bytes.first_chunk::<8>() != Some(&FILE_MAGIC) {
         return Err(FileError::NotACapture);
     }
 
@@ -111,23 +129,28 @@ pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
         return Err(FileError::Version(version));
     }
 
-    let (spans, truncated) =
-        index(bytes).map_or_else(|| (scan(bytes), true), |spans| (spans, false));
-    let mut captures = Vec::with_capacity(spans.len());
+    if bytes.get(12).copied() != Some(ObjectKind::Capture as u8) {
+        return Err(FileError::NotACapture);
+    }
 
-    for (offset, length) in &spans {
-        let (Ok(offset), Ok(length)) = (usize::try_from(*offset), usize::try_from(*length)) else {
-            return Err(FileError::Chunk(ImageError::TooLarge));
-        };
+    let reader = match ObjectReader::open_recoverable(bytes) {
+        Ok(reader) => reader,
+        Err(ObjectError::Truncated) => return Err(FileError::Empty),
+        Err(ObjectError::BadMagic) => return Err(FileError::NotACapture),
+        Err(ObjectError::UnsupportedVersion(v)) => return Err(FileError::Version(v)),
+        Err(error) => return Err(FileError::Object(error)),
+    };
 
-        let chunk = bytes
-            .get(offset..offset.saturating_add(length))
-            .ok_or(FileError::Chunk(ImageError::Truncated))?;
+    let part_count = reader.parts().len();
+    if part_count == 0 {
+        return Err(FileError::Empty);
+    }
 
-        let mut aligned =
-            AlignedBytes::zeroed(chunk.len()).ok_or(FileError::Chunk(ImageError::TooLarge))?;
-        aligned.as_mut_bytes().copy_from_slice(chunk);
-        captures.push(Capture::from_chunk(aligned.as_bytes()).map_err(FileError::Chunk)?);
+    let mut captures = Vec::with_capacity(part_count);
+    for idx in 0..part_count {
+        let sections = reader.part_sections(idx, None)?;
+        let chunk = decode_tables(&sections)?;
+        captures.push(chunk.capture);
     }
 
     let chunks = captures.len();
@@ -143,116 +166,21 @@ pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
 
             builder
                 .finish_read()
-                .map_err(|error| FileError::Chunk(ImageError::Malformed(error)))?
+                .map_err(|error| FileError::Object(ObjectError::Capture(error)))?
         }
     };
 
     Ok(Read {
         capture,
         chunks,
-        truncated,
+        truncated: reader.truncated,
     })
 }
 
-fn index(bytes: &[u8]) -> Option<Vec<(u64, u64)>> {
-    let end = bytes.len().checked_sub(16)?;
-    let (length, magic) = bytes.get(end..)?.split_first_chunk::<8>()?;
-    if magic != END_MAGIC {
-        return None;
-    }
-
-    let length = usize::try_from(u64::from_le_bytes(*length)).ok()?;
-    let start = end.checked_sub(length)?;
-    let index = bytes.get(start..end)?;
-    let (magic, rest) = index.split_first_chunk::<8>()?;
-    let (count, entries) = rest.split_first_chunk::<4>()?;
-    if *magic != INDEX_MAGIC {
-        return None;
-    }
-
-    let count = u32::from_le_bytes(*count) as usize;
-    if index.len() != 12 + 16 * count {
-        return None;
-    }
-
-    let spans: Vec<(u64, u64)> = entries
-        .as_chunks::<16>()
-        .0
-        .iter()
-        .map(|entry| {
-            let (offset, length) = entry.split_at(8);
-            Some((
-                u64::from_le_bytes(*offset.first_chunk::<8>()?),
-                u64::from_le_bytes(*length.first_chunk::<8>()?),
-            ))
-        })
-        .collect::<Option<_>>()?;
-
-    let mut next = Some(HEADER as u64);
-    for &(offset, length) in &spans {
-        if next.and_then(|next| next.checked_add(8)) != Some(offset) {
-            return None;
-        }
-
-        next = offset.checked_add(length);
-    }
-
-    (next == Some(start as u64)).then_some(spans)
-}
-
-fn scan(bytes: &[u8]) -> Vec<(u64, u64)> {
-    let mut spans = Vec::new();
-    let mut position = HEADER;
-
-    while let Some(length) = bytes
-        .get(position..)
-        .and_then(<[u8]>::first_chunk::<8>)
-        .map(|length| u64::from_le_bytes(*length))
-    {
-        let start = position + 8;
-        let Some(end) = usize::try_from(length)
-            .ok()
-            .and_then(|length| start.checked_add(length))
-            .filter(|end| *end <= bytes.len())
-        else {
-            break;
-        };
-
-        if bytes.get(start..start + 8) != Some(&b"USCOPECP"[..]) {
-            break;
-        }
-
-        spans.push((start as u64, length));
-        position = end;
-    }
-
-    spans
-}
-
 #[cfg(any(test, feature = "fuzzing"))]
-#[allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "a fuzz oracle panics on what it finds"
-)]
+#[allow(clippy::expect_used, reason = "a fuzz oracle panics on what it finds")]
 pub fn fuzz(data: &[u8]) {
-    let mut bytes = data.to_vec();
-    let mut at = HEADER;
-    while let Some(length) = bytes.get(at..).and_then(<[u8]>::first_chunk::<8>) {
-        let start = at + 8;
-        let Some(end) = usize::try_from(u64::from_le_bytes(*length))
-            .ok()
-            .and_then(|length| start.checked_add(length))
-            .filter(|&end| end <= bytes.len() && end - start >= 8)
-        else {
-            break;
-        };
-
-        crate::image::container::reseal(&mut bytes[start..end]);
-        at = end;
-    }
-
-    let Ok(first) = read(&bytes) else {
+    let Ok(first) = read(data) else {
         return;
     };
 

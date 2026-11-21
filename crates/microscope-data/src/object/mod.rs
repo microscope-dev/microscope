@@ -1,4 +1,5 @@
 pub mod codec;
+pub mod filter;
 pub mod tables;
 #[cfg(test)]
 mod tests;
@@ -9,38 +10,49 @@ use zerocopy::little_endian::{I64, U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 pub use codec::{
-    Codec, Coding, ColumnEntry, DecodeBudget, GroupEntry, SectionHeader, SectionReader,
+    Codec, Coding, DecodeBudget, GroupEntry, PageEntry, PageReader, SectionHeader, SectionReader,
     SectionWriter,
 };
+pub use filter::{
+    BinaryFuse8, filter_key_dimension, filter_key_frame_addr, filter_key_function_name,
+    filter_key_process_name,
+};
 pub use tables::{
-    ChunkData, ChunkRow, DimensionRow, SanitizerCountRow, decode_flame_tables, decode_tables,
+    ChunkData, ChunkRow, DimensionRow, SanitizerCountRow, SharedSymbols, StringDecodeMap,
+    StringEncodeMap, decode_event_bundle, decode_flame_tables, decode_tables, encode_event_bundle,
     encode_tables, merge_chunks, round_capture_times, shift_capture_times,
 };
 
 pub const OBJECT_MAGIC: [u8; 8] = *b"USCOPEOB";
 pub const PART_LIST_MAGIC: [u8; 8] = *b"USCOPEPL";
 pub const TRAILER_MAGIC: [u8; 8] = *b"USCOPEOE";
-pub const OBJECT_VERSION: u32 = 1;
+pub const CHECKPOINT_MAGIC: [u8; 8] = *b"USCOPEOC";
+pub const OBJECT_VERSION: u32 = 2;
 
-pub const OBJECT_HEADER_LEN: usize = 32;
+pub const OBJECT_HEADER_LEN: usize = 48;
 pub const SECTION_HEADER_LEN: usize = 24;
+pub const PAGE_ENTRY_LEN: usize = 28;
 pub const GROUP_ENTRY_LEN: usize = 8;
-pub const COLUMN_ENTRY_LEN: usize = 12;
+pub const SECTION_CHECKSUM_LEN: usize = 8;
 pub const PART_LIST_HEADER_LEN: usize = 16;
 pub const PART_ENTRY_LEN: usize = 64;
 pub const SECTION_ENTRY_LEN: usize = 40;
-pub const TRAILER_LEN: usize = 24;
+pub const TRAILER_LEN: usize = 40;
 
-pub const MAX_OBJECT_BYTES: usize = 64 << 20;
+pub const MAX_OBJECT_BYTES: usize = 256 << 20;
 pub const MAX_PARTS: usize = 16_384;
 pub const MAX_SECTIONS: usize = 65_536;
+pub const MAX_PAGES: usize = 4_096;
 pub const MAX_GROUPS: usize = 4_096;
 pub const MAX_COLUMNS: usize = 16_384;
-pub const MAX_ROWS: usize = 4_000_000;
-pub const MAX_COLUMN_RAW_BYTES: usize = 32 << 20;
-pub const MAX_DECOMPRESSED_OBJECT_BYTES: usize = 128 << 20;
+pub const MAX_ROWS_PER_PAGE: usize = 262_144;
+pub const MAX_TOTAL_ROWS: usize = 64_000_000;
+pub const MAX_PAGE_RAW_BYTES: usize = 32 << 20;
+pub const MAX_PART_LIST_RAW_BYTES: usize = 32 << 20;
+pub const MAX_DECOMPRESSED_OBJECT_BYTES: usize = 256 << 20;
 
 pub const DEFAULT_ZSTD_LEVEL: i32 = 3;
+pub const DEFAULT_PAGE_ROWS: usize = 131_072;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ObjectError {
@@ -68,6 +80,9 @@ pub enum ObjectError {
     #[error("organization mismatch: expected {expected}, found {found}")]
     OrgMismatch { expected: u64, found: u64 },
 
+    #[error("project mismatch: expected {expected}, found {found}")]
+    ProjectMismatch { expected: u64, found: u64 },
+
     #[error("invalid layout: {0}")]
     Layout(String),
 
@@ -85,6 +100,7 @@ pub enum ObjectKind {
     WriteAhead = 2,
     Sums = 3,
     Detail = 4,
+    Capture = 5,
 }
 
 impl ObjectKind {
@@ -95,6 +111,7 @@ impl ObjectKind {
             2 => Some(Self::WriteAhead),
             3 => Some(Self::Sums),
             4 => Some(Self::Detail),
+            5 => Some(Self::Capture),
             _ => None,
         }
     }
@@ -270,8 +287,12 @@ pub enum SectionKind {
     FunctionIndex = 67,
     CallSums = 68,
     ZoneSums = 69,
+    SanitizerSums = 70,
     MachineIndex = 80,
     ProcessTree = 81,
+    ProcessDimensions = 82,
+    AgentDirectory = 83,
+    Filter = 90,
 }
 
 impl SectionKind {
@@ -316,8 +337,12 @@ impl SectionKind {
             67 => Some(Self::FunctionIndex),
             68 => Some(Self::CallSums),
             69 => Some(Self::ZoneSums),
+            70 => Some(Self::SanitizerSums),
             80 => Some(Self::MachineIndex),
             81 => Some(Self::ProcessTree),
+            82 => Some(Self::ProcessDimensions),
+            83 => Some(Self::AgentDirectory),
+            90 => Some(Self::Filter),
             _ => None,
         }
     }
@@ -353,9 +378,11 @@ pub struct ObjectHeader {
     pub version: U32,
     pub kind: u8,
     pub level: u8,
-    pub reserved: U16,
+    pub flags: U16,
     pub created_at: I64,
     pub writer: U64,
+    pub key_seed: U64,
+    pub reserved: U64,
 }
 
 #[repr(C)]
@@ -405,7 +432,9 @@ pub struct SectionEntry {
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct ObjectTrailer {
+    pub list_off: U64,
     pub list_len: U64,
+    pub list_uncompressed_len: U64,
     pub list_checksum: U64,
     pub magic: [u8; 8],
 }
@@ -416,19 +445,49 @@ const _: () = assert!(size_of::<PartEntry>() == PART_ENTRY_LEN);
 const _: () = assert!(size_of::<SectionEntry>() == SECTION_ENTRY_LEN);
 const _: () = assert!(size_of::<ObjectTrailer>() == TRAILER_LEN);
 
+#[must_use]
+pub fn derive_key_seed(kind: ObjectKind, level: ObjectLevel, created_at: i64, writer: u64) -> u64 {
+    let mut buf = [0_u8; 26];
+    buf[0..8].copy_from_slice(&OBJECT_MAGIC);
+    buf[8] = kind as u8;
+    buf[9] = level as u8;
+    buf[10..18].copy_from_slice(&created_at.to_le_bytes());
+    buf[18..26].copy_from_slice(&writer.to_le_bytes());
+    XxHash3_64::oneshot(&buf)
+}
+
+#[must_use]
+pub fn section_checksum(
+    key_seed: u64,
+    org_id: u64,
+    project_id: u64,
+    part_index: u32,
+    kind: u16,
+    section_key: u64,
+    section_body: &[u8],
+) -> u64 {
+    let mut ctx = [0_u8; 38];
+    ctx[0..8].copy_from_slice(&key_seed.to_le_bytes());
+    ctx[8..16].copy_from_slice(&org_id.to_le_bytes());
+    ctx[16..24].copy_from_slice(&project_id.to_le_bytes());
+    ctx[24..28].copy_from_slice(&part_index.to_le_bytes());
+    ctx[28..30].copy_from_slice(&kind.to_le_bytes());
+    ctx[30..38].copy_from_slice(&section_key.to_le_bytes());
+    let derived_seed = XxHash3_64::oneshot(&ctx);
+    XxHash3_64::oneshot_with_seed(derived_seed, section_body)
+}
+
+#[must_use]
+pub fn part_list_checksum(key_seed: u64, stored_list: &[u8]) -> u64 {
+    XxHash3_64::oneshot_with_seed(key_seed ^ 0x504c_5f43_484b_0002, stored_list)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedSection {
     pub kind: SectionKind,
     pub rows: u32,
     pub key: u64,
     pub bytes: Vec<u8>,
-}
-
-impl EncodedSection {
-    #[must_use]
-    pub fn checksum(&self) -> u64 {
-        XxHash3_64::oneshot(&self.bytes)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -443,6 +502,7 @@ pub struct SectionMeta {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartMeta {
+    pub part_index: u32,
     pub org_id: u64,
     pub project_id: u64,
     pub starts_at: i64,
@@ -474,11 +534,97 @@ pub struct PartSpec {
     pub sections: Vec<EncodedSection>,
 }
 
+/// Compact binary encoding of a part's section index for Postgres `blocks.section_index BYTEA`.
+///
+/// Format: `version (1 B = 1) | part_index (varint) | count (varint) | entries...`
+/// Each entry: `kind (u16 LE) | key (varint) | offset_delta (varint) | stored_len (varint) | rows (varint) | checksum (u64 LE)`
+#[must_use]
+pub fn encode_section_index(part_index: u32, sections: &[SectionMeta]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + sections.len() * 24);
+    out.push(1_u8);
+    codec::write_varint(u64::from(part_index), &mut out);
+    codec::write_varint(sections.len() as u64, &mut out);
+    let mut prev_offset = 0_u64;
+    for sec in sections {
+        out.extend_from_slice(&sec.kind.to_le_bytes());
+        codec::write_varint(sec.key, &mut out);
+        let delta = sec.offset.wrapping_sub(prev_offset);
+        codec::write_varint(codec::zigzag_encode(delta.cast_signed()), &mut out);
+        prev_offset = sec.offset;
+        codec::write_varint(u64::from(sec.stored_len), &mut out);
+        codec::write_varint(u64::from(sec.rows), &mut out);
+        out.extend_from_slice(&sec.checksum.to_le_bytes());
+    }
+    out
+}
+
+pub fn decode_section_index(bytes: &[u8]) -> Result<(u32, Vec<SectionMeta>), ObjectError> {
+    let mut at = 0_usize;
+    let version = *bytes.get(at).ok_or(ObjectError::Truncated)?;
+    at += 1;
+    if version != 1 {
+        return Err(ObjectError::UnknownValue {
+            what: "section_index version",
+            value: u64::from(version),
+        });
+    }
+    let part_index = u32::try_from(codec::read_varint(bytes, &mut at)?)
+        .map_err(|_| ObjectError::Limit("part_index exceeds u32"))?;
+    let count = usize::try_from(codec::read_varint(bytes, &mut at)?)
+        .map_err(|_| ObjectError::Limit("section_index count overflow"))?;
+    if count > MAX_SECTIONS {
+        return Err(ObjectError::Limit("too many sections in section_index"));
+    }
+
+    let mut sections = Vec::with_capacity(count);
+    let mut prev_offset = 0_u64;
+    for _ in 0..count {
+        let kind_bytes: [u8; 2] = bytes
+            .get(at..at + 2)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(ObjectError::Truncated)?;
+        at += 2;
+        let kind = u16::from_le_bytes(kind_bytes);
+        let key = codec::read_varint(bytes, &mut at)?;
+        let delta_raw = codec::read_varint(bytes, &mut at)?;
+        let offset = prev_offset.wrapping_add(codec::zigzag_decode(delta_raw).cast_unsigned());
+        prev_offset = offset;
+        let stored_len = u32::try_from(codec::read_varint(bytes, &mut at)?)
+            .map_err(|_| ObjectError::Limit("stored_len exceeds u32"))?;
+        let rows = u32::try_from(codec::read_varint(bytes, &mut at)?)
+            .map_err(|_| ObjectError::Limit("rows exceeds u32"))?;
+        let chk_bytes: [u8; 8] = bytes
+            .get(at..at + 8)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(ObjectError::Truncated)?;
+        at += 8;
+        let checksum = u64::from_le_bytes(chk_bytes);
+        sections.push(SectionMeta {
+            kind,
+            key,
+            offset,
+            stored_len,
+            rows,
+            checksum,
+        });
+    }
+
+    if at != bytes.len() {
+        return Err(ObjectError::Layout(
+            "trailing bytes in section_index".into(),
+        ));
+    }
+
+    Ok((part_index, sections))
+}
+
 pub struct ObjectWriter {
     kind: ObjectKind,
     level: ObjectLevel,
     created_at: i64,
     writer: u64,
+    key_seed: u64,
+    flushed_len: u64,
     bytes: Vec<u8>,
     parts: Vec<PartEntry>,
     sections: Vec<SectionEntry>,
@@ -488,14 +634,28 @@ pub struct ObjectWriter {
 impl ObjectWriter {
     #[must_use]
     pub fn new(kind: ObjectKind, level: ObjectLevel, created_at: i64, writer: u64) -> Self {
+        let key_seed = derive_key_seed(kind, level, created_at, writer);
+        Self::with_key_seed(kind, level, created_at, writer, key_seed)
+    }
+
+    #[must_use]
+    pub fn with_key_seed(
+        kind: ObjectKind,
+        level: ObjectLevel,
+        created_at: i64,
+        writer: u64,
+        key_seed: u64,
+    ) -> Self {
         let header = ObjectHeader {
             magic: OBJECT_MAGIC,
             version: OBJECT_VERSION.into(),
             kind: kind as u8,
             level: level as u8,
-            reserved: 0.into(),
+            flags: 0.into(),
             created_at: created_at.into(),
             writer: writer.into(),
+            key_seed: key_seed.into(),
+            reserved: 0.into(),
         };
         let mut bytes = Vec::with_capacity(4096);
         bytes.extend_from_slice(header.as_bytes());
@@ -504,6 +664,8 @@ impl ObjectWriter {
             level,
             created_at,
             writer,
+            key_seed,
+            flushed_len: 0,
             bytes,
             parts: Vec::new(),
             sections: Vec::new(),
@@ -511,15 +673,64 @@ impl ObjectWriter {
         }
     }
 
+    #[must_use]
+    pub const fn key_seed(&self) -> u64 {
+        self.key_seed
+    }
+
+    fn current_offset(&self) -> Result<u64, ObjectError> {
+        let pending = u64::try_from(self.bytes.len())
+            .map_err(|_| ObjectError::Limit("object offset overflow"))?;
+        self.flushed_len
+            .checked_add(pending)
+            .ok_or(ObjectError::Limit("object offset overflow"))
+    }
+
+    #[must_use]
+    pub const fn part_count(&self) -> usize {
+        self.parts.len()
+    }
+
+    #[must_use]
+    pub const fn written_bytes(&self) -> u64 {
+        self.flushed_len.saturating_add(self.bytes.len() as u64)
+    }
+
+    /// Appends a self-contained checkpoint footer (`PartList` + `USCOPEOC` trailer) covering all
+    /// parts written so far. Used by appendable `ObjectKind::Capture` files so a `SIGKILL`
+    /// mid-write recovers every previously checkpointed part.
+    pub fn write_checkpoint(&mut self) -> Result<(), ObjectError> {
+        let list_off = self.current_offset()?;
+        let footer = self.build_footer_with_magic(list_off, CHECKPOINT_MAGIC)?;
+        self.bytes.extend_from_slice(&footer);
+        Ok(())
+    }
+
+    /// Appends the finalized object footer (`PartList` + `USCOPEOE` trailer) for streaming writers.
+    pub fn write_final_footer(&mut self) -> Result<(), ObjectError> {
+        let list_off = self.current_offset()?;
+        let footer = self.build_footer_with_magic(list_off, TRAILER_MAGIC)?;
+        self.bytes.extend_from_slice(&footer);
+        Ok(())
+    }
+
+    /// Drains all buffered bytes written since the last call, advancing the logical file offset.
+    pub fn take_bytes(&mut self) -> Result<Vec<u8>, ObjectError> {
+        let next = self.current_offset()?;
+        self.flushed_len = next;
+        Ok(std::mem::take(&mut self.bytes))
+    }
+
     pub fn add_part(&mut self, spec: &PartSpec) -> Result<(), ObjectError> {
         if self.parts.len() >= MAX_PARTS {
             return Err(ObjectError::Limit("too many parts"));
         }
 
+        let part_index =
+            u32::try_from(self.parts.len()).map_err(|_| ObjectError::Limit("too many parts"))?;
         let first_section = u32::try_from(self.sections.len())
             .map_err(|_| ObjectError::Limit("too many sections"))?;
-        let byte_start = u64::try_from(self.bytes.len())
-            .map_err(|_| ObjectError::Limit("object offset overflow"))?;
+        let byte_start = self.current_offset()?;
         let mut section_metas = Vec::with_capacity(spec.sections.len());
 
         for section in &spec.sections {
@@ -527,12 +738,25 @@ impl ObjectWriter {
                 return Err(ObjectError::Limit("too many sections"));
             }
 
-            let offset = u64::try_from(self.bytes.len())
-                .map_err(|_| ObjectError::Limit("object offset overflow"))?;
-            let stored_len = u32::try_from(section.bytes.len())
+            let offset = self.current_offset()?;
+            let checksum = section_checksum(
+                self.key_seed,
+                spec.org_id,
+                spec.project_id,
+                part_index,
+                section.kind as u16,
+                section.key,
+                &section.bytes,
+            );
+            let total_len = section
+                .bytes
+                .len()
+                .checked_add(SECTION_CHECKSUM_LEN)
+                .ok_or(ObjectError::Limit("section exceeds length"))?;
+            let stored_len = u32::try_from(total_len)
                 .map_err(|_| ObjectError::Limit("section exceeds u32 length"))?;
-            let checksum = section.checksum();
             self.bytes.extend_from_slice(&section.bytes);
+            self.bytes.extend_from_slice(&checksum.to_le_bytes());
             self.sections.push(SectionEntry {
                 offset: offset.into(),
                 stored_len: stored_len.into(),
@@ -552,8 +776,7 @@ impl ObjectWriter {
             });
         }
 
-        let byte_end = u64::try_from(self.bytes.len())
-            .map_err(|_| ObjectError::Limit("object offset overflow"))?;
+        let byte_end = self.current_offset()?;
         let byte_len = byte_end - byte_start;
         let section_count = u32::try_from(spec.sections.len())
             .map_err(|_| ObjectError::Limit("too many sections"))?;
@@ -572,6 +795,7 @@ impl ObjectWriter {
             reserved: [0; 6],
         });
         self.part_metas.push(PartMeta {
+            part_index,
             org_id: spec.org_id,
             project_id: spec.project_id,
             starts_at: spec.starts_at,
@@ -585,8 +809,15 @@ impl ObjectWriter {
         Ok(())
     }
 
-    pub fn finish(mut self) -> Result<(Vec<u8>, Vec<PartMeta>), ObjectError> {
-        let list_start = self.bytes.len();
+    pub fn build_footer(&self, list_off: u64) -> Result<Vec<u8>, ObjectError> {
+        self.build_footer_with_magic(list_off, TRAILER_MAGIC)
+    }
+
+    fn build_footer_with_magic(
+        &self,
+        list_off: u64,
+        magic: [u8; 8],
+    ) -> Result<Vec<u8>, ObjectError> {
         let list_header = PartListHeader {
             magic: PART_LIST_MAGIC,
             parts: u32::try_from(self.parts.len())
@@ -596,20 +827,42 @@ impl ObjectWriter {
                 .map_err(|_| ObjectError::Limit("too many sections"))?
                 .into(),
         };
-        self.bytes.extend_from_slice(list_header.as_bytes());
-        self.bytes.extend_from_slice(self.parts.as_bytes());
-        self.bytes.extend_from_slice(self.sections.as_bytes());
+        let mut raw_list = Vec::with_capacity(
+            PART_LIST_HEADER_LEN
+                + self.parts.len() * PART_ENTRY_LEN
+                + self.sections.len() * SECTION_ENTRY_LEN,
+        );
+        raw_list.extend_from_slice(list_header.as_bytes());
+        raw_list.extend_from_slice(self.parts.as_bytes());
+        raw_list.extend_from_slice(self.sections.as_bytes());
 
-        let list_bytes = self.bytes.get(list_start..).ok_or(ObjectError::Truncated)?;
-        let list_len = u64::try_from(list_bytes.len())
-            .map_err(|_| ObjectError::Limit("part list too large"))?;
-        let list_checksum = XxHash3_64::oneshot(list_bytes);
-        let trailer = ObjectTrailer {
-            list_len: list_len.into(),
-            list_checksum: list_checksum.into(),
-            magic: TRAILER_MAGIC,
+        let (codec, stored_list) = codec::compress_stream(&raw_list, DEFAULT_ZSTD_LEVEL)?;
+        let list_uncompressed_len = match codec {
+            Codec::Raw => 0_u64,
+            Codec::Zstd => u64::try_from(raw_list.len())
+                .map_err(|_| ObjectError::Limit("part list too large"))?,
         };
-        self.bytes.extend_from_slice(trailer.as_bytes());
+        let list_len = u64::try_from(stored_list.len())
+            .map_err(|_| ObjectError::Limit("part list too large"))?;
+        let list_checksum = part_list_checksum(self.key_seed, &stored_list);
+        let trailer = ObjectTrailer {
+            list_off: list_off.into(),
+            list_len: list_len.into(),
+            list_uncompressed_len: list_uncompressed_len.into(),
+            list_checksum: list_checksum.into(),
+            magic,
+        };
+
+        let mut footer = Vec::with_capacity(stored_list.len() + TRAILER_LEN);
+        footer.extend_from_slice(&stored_list);
+        footer.extend_from_slice(trailer.as_bytes());
+        Ok(footer)
+    }
+
+    pub fn finish(mut self) -> Result<(Vec<u8>, Vec<PartMeta>), ObjectError> {
+        let list_off = self.current_offset()?;
+        let footer = self.build_footer(list_off)?;
+        self.bytes.extend_from_slice(&footer);
 
         debug_assert_eq!(self.bytes.get(..8), Some(OBJECT_MAGIC.as_slice()));
         debug_assert_eq!(self.kind as u8, self.bytes[12]);
@@ -621,6 +874,10 @@ impl ObjectWriter {
         debug_assert_eq!(
             u64::from_le_bytes(self.bytes[24..32].try_into().unwrap_or_default()),
             self.writer
+        );
+        debug_assert_eq!(
+            u64::from_le_bytes(self.bytes[32..40].try_into().unwrap_or_default()),
+            self.key_seed
         );
 
         Ok((self.bytes, self.part_metas))
@@ -634,16 +891,28 @@ pub struct ObjectReader<'a> {
     pub level: ObjectLevel,
     pub created_at: i64,
     pub writer: u64,
+    pub key_seed: u64,
     parts: Vec<PartMeta>,
+    pub truncated: bool,
 }
 
 impl<'a> ObjectReader<'a> {
     pub fn open(bytes: &'a [u8]) -> Result<Self, ObjectError> {
+        Self::open_inner(bytes, false)
+    }
+
+    /// Opens a potentially truncated checkpointed capture object (recovering up to the last
+    /// intact checkpoint trailer when EOF does not end with a complete trailer).
+    pub fn open_recoverable(bytes: &'a [u8]) -> Result<Self, ObjectError> {
+        Self::open_inner(bytes, true)
+    }
+
+    fn open_inner(bytes: &'a [u8], allow_recovery: bool) -> Result<Self, ObjectError> {
         if bytes.len() > MAX_OBJECT_BYTES {
             return Err(ObjectError::Limit("object exceeds maximum size"));
         }
 
-        if bytes.len() < OBJECT_HEADER_LEN + PART_LIST_HEADER_LEN + TRAILER_LEN {
+        if bytes.len() < OBJECT_HEADER_LEN {
             return Err(ObjectError::Truncated);
         }
 
@@ -662,7 +931,7 @@ impl<'a> ObjectReader<'a> {
             return Err(ObjectError::UnsupportedVersion(version));
         }
 
-        if header.reserved.get() != 0 {
+        if header.flags.get() != 0 || header.reserved.get() != 0 {
             return Err(ObjectError::NonZeroReserved("object header"));
         }
 
@@ -676,51 +945,37 @@ impl<'a> ObjectReader<'a> {
                 what: "object level",
                 value: u64::from(header.level),
             })?;
+        let key_seed = header.key_seed.get();
 
-        let trailer_start = bytes.len() - TRAILER_LEN;
-        let trailer = ObjectTrailer::read_from_bytes(
-            bytes.get(trailer_start..).ok_or(ObjectError::Truncated)?,
-        )
-        .map_err(|_| ObjectError::Truncated)?;
-        if trailer.magic != TRAILER_MAGIC {
-            return Err(ObjectError::BadMagic);
-        }
-
-        let list_len = usize::try_from(trailer.list_len.get())
-            .map_err(|_| ObjectError::Limit("part list length overflow"))?;
-        if list_len < PART_LIST_HEADER_LEN
-            || list_len > trailer_start.saturating_sub(OBJECT_HEADER_LEN)
-        {
+        if bytes.len() < OBJECT_HEADER_LEN + PART_LIST_HEADER_LEN + TRAILER_LEN {
             return Err(ObjectError::Truncated);
         }
 
-        let list_start = trailer_start - list_len;
-        let list_bytes = bytes
-            .get(list_start..trailer_start)
-            .ok_or(ObjectError::Truncated)?;
-        if XxHash3_64::oneshot(list_bytes) != trailer.list_checksum.get() {
-            return Err(ObjectError::Checksum { what: "part list" });
-        }
+        let trailer_start = bytes.len() - TRAILER_LEN;
+        let eof_trailer = ObjectTrailer::read_from_bytes(
+            bytes.get(trailer_start..).ok_or(ObjectError::Truncated)?,
+        )
+        .map_err(|_| ObjectError::Truncated)?;
 
-        let max_parts = if kind == ObjectKind::Post {
-            1
+        let (parts, truncated) = if eof_trailer.magic == TRAILER_MAGIC {
+            let parts = decode_trailer_parts(bytes, trailer_start, &eof_trailer, key_seed, kind)?;
+            (parts, false)
+        } else if allow_recovery {
+            let parts = recover_last_checkpoint(bytes, key_seed, kind)?;
+            (parts, true)
         } else {
-            MAX_PARTS
+            return Err(ObjectError::BadMagic);
         };
-        let parts = parse_part_list_bounded(list_bytes, list_start as u64, max_parts)?;
-        if kind == ObjectKind::Post && parts.len() != 1 {
-            return Err(ObjectError::Layout(format!(
-                "post object must have 1 part, got {}",
-                parts.len()
-            )));
-        }
+
         Ok(Self {
             bytes,
             kind,
             level,
             created_at: header.created_at.get(),
             writer: header.writer.get(),
+            key_seed,
             parts,
+            truncated,
         })
     }
 
@@ -749,21 +1004,136 @@ impl<'a> ObjectReader<'a> {
 
         let mut out = Vec::with_capacity(part.sections.len());
         for entry in &part.sections {
-            out.push(self.read_section(entry)?);
+            out.push(verify_section_slice(
+                self.bytes,
+                0,
+                entry,
+                self.key_seed,
+                part.org_id,
+                part.project_id,
+                part.part_index,
+            )?);
         }
 
         Ok(out)
     }
 
-    pub fn read_section(&self, entry: &SectionMeta) -> Result<RawSection<'a>, ObjectError> {
-        read_section_from_slice(self.bytes, 0, entry)
+    pub fn read_section(
+        &self,
+        part: &PartMeta,
+        entry: &SectionMeta,
+    ) -> Result<RawSection<'a>, ObjectError> {
+        verify_section_slice(
+            self.bytes,
+            0,
+            entry,
+            self.key_seed,
+            part.org_id,
+            part.project_id,
+            part.part_index,
+        )
     }
 }
 
-pub fn read_section_from_slice<'a>(
+fn decode_trailer_parts(
+    bytes: &[u8],
+    trailer_start: usize,
+    trailer: &ObjectTrailer,
+    key_seed: u64,
+    kind: ObjectKind,
+) -> Result<Vec<PartMeta>, ObjectError> {
+    let list_off = usize::try_from(trailer.list_off.get())
+        .map_err(|_| ObjectError::Limit("part list offset overflow"))?;
+    let list_len = usize::try_from(trailer.list_len.get())
+        .map_err(|_| ObjectError::Limit("part list length overflow"))?;
+    let list_end = list_off
+        .checked_add(list_len)
+        .ok_or(ObjectError::Limit("part list end overflow"))?;
+    if list_off < OBJECT_HEADER_LEN || list_end != trailer_start {
+        return Err(ObjectError::Truncated);
+    }
+
+    let stored_list = bytes
+        .get(list_off..list_end)
+        .ok_or(ObjectError::Truncated)?;
+    let parts = parse_stored_part_list(
+        stored_list,
+        trailer.list_uncompressed_len.get(),
+        trailer.list_checksum.get(),
+        key_seed,
+        list_off as u64,
+        MAX_PARTS,
+    )?;
+    if kind == ObjectKind::Post && parts.is_empty() {
+        return Err(ObjectError::Layout(
+            "post object must have at least 1 part".into(),
+        ));
+    }
+    Ok(parts)
+}
+
+fn recover_last_checkpoint(
+    bytes: &[u8],
+    key_seed: u64,
+    kind: ObjectKind,
+) -> Result<Vec<PartMeta>, ObjectError> {
+    // Scan backwards for the last intact `USCOPEOC` checkpoint trailer whose list checksum
+    // and part/section checksums all verify.
+    let mut search_end = bytes.len();
+    while search_end >= OBJECT_HEADER_LEN + TRAILER_LEN {
+        let Some(pos) = memchr::memmem::rfind(&bytes[..search_end], &CHECKPOINT_MAGIC) else {
+            break;
+        };
+        if let Some(trailer_start) = pos.checked_sub(TRAILER_LEN - TRAILER_MAGIC.len())
+            && trailer_start >= OBJECT_HEADER_LEN
+            && let Some(trailer_slice) = bytes.get(trailer_start..trailer_start + TRAILER_LEN)
+            && let Ok(trailer) = ObjectTrailer::read_from_bytes(trailer_slice)
+            && let Ok(parts) = decode_trailer_parts(bytes, trailer_start, &trailer, key_seed, kind)
+        {
+            // Verify every section checksum in the recovered checkpoint so garbage bytes
+            // can never masquerade as valid data.
+            let mut all_ok = true;
+            for part in &parts {
+                for sec in &part.sections {
+                    if verify_section_slice(
+                        bytes,
+                        0,
+                        sec,
+                        key_seed,
+                        part.org_id,
+                        part.project_id,
+                        part.part_index,
+                    )
+                    .is_err()
+                    {
+                        all_ok = false;
+                        break;
+                    }
+                }
+                if !all_ok {
+                    break;
+                }
+            }
+            if all_ok {
+                return Ok(parts);
+            }
+        }
+        search_end = pos;
+    }
+
+    Err(ObjectError::Truncated)
+}
+
+/// Verifies a section stored inside a byte slice (e.g., from a 1-RTT ranged S3 GET) using its
+/// keyed `XxHash3` trailer and catalog metadata, with zero footer reads.
+pub fn verify_section_slice<'a>(
     slice: &'a [u8],
     slice_base_offset: u64,
     entry: &SectionMeta,
+    key_seed: u64,
+    org_id: u64,
+    project_id: u64,
+    part_index: u32,
 ) -> Result<RawSection<'a>, ObjectError> {
     let kind = SectionKind::from_number(entry.kind).ok_or_else(|| ObjectError::UnknownValue {
         what: "section kind",
@@ -778,8 +1148,23 @@ pub fn read_section_from_slice<'a>(
     let end = start
         .checked_add(entry.stored_len as usize)
         .ok_or(ObjectError::Limit("section end overflow"))?;
-    let bytes = slice.get(start..end).ok_or(ObjectError::Truncated)?;
-    if XxHash3_64::oneshot(bytes) != entry.checksum {
+    let full = slice.get(start..end).ok_or(ObjectError::Truncated)?;
+    if full.len() < SECTION_HEADER_LEN + SECTION_CHECKSUM_LEN {
+        return Err(ObjectError::Truncated);
+    }
+
+    let body_len = full.len() - SECTION_CHECKSUM_LEN;
+    let body = full.get(..body_len).ok_or(ObjectError::Truncated)?;
+    let trailer_bytes: [u8; 8] = full
+        .get(body_len..)
+        .and_then(|s| s.try_into().ok())
+        .ok_or(ObjectError::Truncated)?;
+    let trailer_checksum = u64::from_le_bytes(trailer_bytes);
+
+    let computed = section_checksum(
+        key_seed, org_id, project_id, part_index, entry.kind, entry.key, body,
+    );
+    if computed != trailer_checksum || computed != entry.checksum {
         return Err(ObjectError::Checksum { what: "section" });
     }
 
@@ -787,13 +1172,33 @@ pub fn read_section_from_slice<'a>(
         kind,
         key: entry.key,
         rows: entry.rows,
-        checksum: entry.checksum,
-        bytes,
+        checksum: computed,
+        bytes: body,
     })
 }
 
-pub fn list_range(bytes: &[u8]) -> Result<(u64, u64), ObjectError> {
-    if bytes.len() < OBJECT_HEADER_LEN + TRAILER_LEN {
+pub fn parse_object_header(bytes: &[u8]) -> Result<ObjectHeader, ObjectError> {
+    let header = ObjectHeader::read_from_bytes(
+        bytes
+            .get(..OBJECT_HEADER_LEN)
+            .ok_or(ObjectError::Truncated)?,
+    )
+    .map_err(|_| ObjectError::Truncated)?;
+    if header.magic != OBJECT_MAGIC {
+        return Err(ObjectError::BadMagic);
+    }
+    let version = header.version.get();
+    if version != OBJECT_VERSION {
+        return Err(ObjectError::UnsupportedVersion(version));
+    }
+    if header.flags.get() != 0 || header.reserved.get() != 0 {
+        return Err(ObjectError::NonZeroReserved("object header"));
+    }
+    Ok(header)
+}
+
+pub fn parse_trailer(bytes: &[u8]) -> Result<ObjectTrailer, ObjectError> {
+    if bytes.len() < TRAILER_LEN {
         return Err(ObjectError::Truncated);
     }
     let trailer_start = bytes.len() - TRAILER_LEN;
@@ -803,40 +1208,39 @@ pub fn list_range(bytes: &[u8]) -> Result<(u64, u64), ObjectError> {
     if trailer.magic != TRAILER_MAGIC {
         return Err(ObjectError::BadMagic);
     }
-    let list_len = trailer.list_len.get();
-    let list_len_usize =
-        usize::try_from(list_len).map_err(|_| ObjectError::Limit("part list length overflow"))?;
-    let list_start = trailer_start
-        .checked_sub(list_len_usize)
-        .ok_or(ObjectError::Truncated)?;
-    if list_start < OBJECT_HEADER_LEN {
-        return Err(ObjectError::Truncated);
+    Ok(trailer)
+}
+
+pub fn parse_stored_part_list(
+    stored_list: &[u8],
+    uncompressed_len: u64,
+    expected_checksum: u64,
+    key_seed: u64,
+    data_end: u64,
+    max_parts: usize,
+) -> Result<Vec<PartMeta>, ObjectError> {
+    if part_list_checksum(key_seed, stored_list) != expected_checksum {
+        return Err(ObjectError::Checksum { what: "part list" });
     }
-    Ok((list_start as u64, list_len))
-}
 
-pub fn verify_part_list_org(
-    list_bytes: &[u8],
-    expected_org: u64,
-    expected_byte_start: u64,
-    expected_byte_len: u64,
-) -> Result<PartMeta, ObjectError> {
-    let parts = parse_part_list(list_bytes, u64::MAX)?;
-    parts
-        .into_iter()
-        .find(|part| {
-            part.org_id == expected_org
-                && part.byte_start == expected_byte_start
-                && part.byte_len == expected_byte_len
-        })
-        .ok_or(ObjectError::OrgMismatch {
-            expected: expected_org,
-            found: 0,
-        })
-}
+    let raw = if uncompressed_len == 0 {
+        if stored_list.len() > MAX_PART_LIST_RAW_BYTES {
+            return Err(ObjectError::Limit("part list exceeds maximum size"));
+        }
+        std::borrow::Cow::Borrowed(stored_list)
+    } else {
+        let expected = usize::try_from(uncompressed_len)
+            .map_err(|_| ObjectError::Limit("part list uncompressed length overflow"))?;
+        if expected > MAX_PART_LIST_RAW_BYTES {
+            return Err(ObjectError::Limit("part list exceeds maximum size"));
+        }
+        let budget = DecodeBudget::new(MAX_PART_LIST_RAW_BYTES);
+        let decompressed =
+            codec::decompress_exact_budgeted(Codec::Zstd, stored_list, expected, &budget)?;
+        std::borrow::Cow::Owned(decompressed)
+    };
 
-pub fn parse_part_list(list_bytes: &[u8], data_end: u64) -> Result<Vec<PartMeta>, ObjectError> {
-    parse_part_list_bounded(list_bytes, data_end, MAX_PARTS)
+    parse_part_list_bounded(&raw, data_end, max_parts)
 }
 
 #[expect(
@@ -899,7 +1303,8 @@ fn parse_part_list_bounded(
 
     let mut out = Vec::with_capacity(part_count);
     let mut prev_end_sec = 0_usize;
-    for part in part_entries {
+    let mut prev_part_end = OBJECT_HEADER_LEN as u64;
+    for (idx, part) in part_entries.iter().enumerate() {
         if part.reserved != [0; 6] {
             return Err(ObjectError::NonZeroReserved("part entry"));
         }
@@ -918,11 +1323,12 @@ fn parse_part_list_bounded(
         let byte_end = byte_start
             .checked_add(byte_len)
             .ok_or(ObjectError::Limit("part byte range overflow"))?;
-        if byte_start < OBJECT_HEADER_LEN as u64 || byte_end > data_end {
+        if byte_start < prev_part_end || byte_end > data_end {
             return Err(ObjectError::Layout(
-                "part byte range is out of bounds".into(),
+                "part byte range is out of bounds or overlaps previous part".into(),
             ));
         }
+        prev_part_end = byte_end;
 
         let first = part.first_section.get() as usize;
         let count = part.section_count.get() as usize;
@@ -966,7 +1372,10 @@ fn parse_part_list_bounded(
             });
         }
 
+        let part_index =
+            u32::try_from(idx).map_err(|_| ObjectError::Limit("part index overflow"))?;
         out.push(PartMeta {
+            part_index,
             org_id: part.org_id.get(),
             project_id: part.project_id.get(),
             starts_at: part.starts_at.get(),

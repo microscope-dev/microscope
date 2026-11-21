@@ -7,48 +7,12 @@ pub mod records;
 #[cfg(test)]
 mod tests;
 
-use zerocopy::{FromBytes as _, IntoBytes as _};
+use zerocopy::IntoBytes as _;
 
-use crate::TargetDescription;
-use crate::image::container::{self, Format, TableBytes, Tables};
-use crate::image::{AlignedBytes, ImageError, Limits, StrId, Strings};
+use crate::image::{StrId, Strings};
 
 pub use builder::CaptureBuilder;
 pub use records::*;
-
-#[derive(Debug)]
-pub struct CaptureFormat;
-
-pub const CAPTURE_REVISION: u32 = 12;
-
-impl Format for CaptureFormat {
-    type Kind = CaptureTable;
-    const MAGIC: [u8; 8] = *b"USCOPECP";
-    const REVISION: u32 = CAPTURE_REVISION;
-    const KINDS: usize = CaptureTable::COUNT;
-
-    fn fingerprint() -> u64 {
-        static FINGERPRINT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-        *FINGERPRINT
-            .get_or_init(|| twox_hash::XxHash3_64::oneshot(records::schema_text().as_bytes()))
-    }
-
-    fn kind(number: u32) -> Option<CaptureTable> {
-        CaptureTable::from_number(number)
-    }
-
-    fn number(kind: CaptureTable) -> u32 {
-        kind as u32
-    }
-
-    fn index(kind: CaptureTable) -> usize {
-        kind.index()
-    }
-
-    fn stride(kind: CaptureTable) -> usize {
-        records::stride(kind)
-    }
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Capture {
@@ -82,8 +46,6 @@ pub struct Capture {
     pub syscall_stats: Vec<SyscallStat>,
     pub syscall_errnos: Vec<SyscallErrno>,
 }
-
-pub const LIMITS: Limits = Limits { bytes: 16 << 30 };
 
 impl Capture {
     #[must_use]
@@ -289,61 +251,6 @@ impl Capture {
         self.tables()
             .into_iter()
             .map(|(kind, _, _, bytes)| (kind, bytes.len() as u64))
-    }
-
-    pub fn seal(&self) -> Result<AlignedBytes, ImageError> {
-        let mut tables = Tables::<CaptureFormat>::new();
-        for (kind, stride, count, bytes) in self.tables() {
-            tables.add(kind, stride, count, TableBytes::Borrowed(bytes));
-        }
-
-        tables.seal(TargetDescription::X86_64)
-    }
-
-    pub fn from_chunk(bytes: &[u8]) -> Result<Self, ImageError> {
-        let placed = container::structure::<CaptureFormat, { CaptureTable::COUNT }>(bytes, LIMITS)?;
-        let table = |kind: CaptureTable| match placed.get(kind.index()) {
-            Some(Some(placed)) => bytes
-                .get(placed.offset..placed.offset + placed.length)
-                .ok_or(ImageError::Truncated),
-            Some(None) => Ok(&[][..]),
-            None => Err(ImageError::Layout),
-        };
-
-        let capture = Self {
-            strings: table(CaptureTable::Strings)?.to_vec(),
-            settings: rows_of(table(CaptureTable::Settings)?)?,
-            modules: rows_of(table(CaptureTable::Modules)?)?,
-            processes: rows_of(table(CaptureTable::Processes)?)?,
-            threads: rows_of(table(CaptureTable::Threads)?)?,
-            mappings: rows_of(table(CaptureTable::Mappings)?)?,
-            frames: rows_of(table(CaptureTable::Frames)?)?,
-            stacks: rows_of(table(CaptureTable::Stacks)?)?,
-            samples: rows_of(table(CaptureTable::Samples)?)?,
-            sample_ranges: rows_of(table(CaptureTable::SampleRanges)?)?,
-            frame_symbols: rows_of(table(CaptureTable::FrameSymbols)?)?,
-            lines: rows_of(table(CaptureTable::Lines)?)?,
-            functions: rows_of(table(CaptureTable::Functions)?)?,
-            accounting: rows_of(table(CaptureTable::Accounting)?)?,
-            off_cpu: rows_of(table(CaptureTable::OffCpu)?)?,
-            off_cpu_ranges: rows_of(table(CaptureTable::OffCpuRanges)?)?,
-            sites: rows_of(table(CaptureTable::Sites)?)?,
-            zones: rows_of(table(CaptureTable::Zones)?)?,
-            zone_ranges: rows_of(table(CaptureTable::ZoneRanges)?)?,
-            plots: rows_of(table(CaptureTable::Plots)?)?,
-            markers: rows_of(table(CaptureTable::Markers)?)?,
-            tasks: rows_of(table(CaptureTable::Tasks)?)?,
-            task_waits: rows_of(table(CaptureTable::TaskWaits)?)?,
-            gaps: rows_of(table(CaptureTable::Gaps)?)?,
-            syscalls: rows_of(table(CaptureTable::Syscalls)?)?,
-            syscall_blobs: table(CaptureTable::SyscallBlobs)?.to_vec(),
-            syscall_notes: rows_of(table(CaptureTable::SyscallNotes)?)?,
-            syscall_stats: rows_of(table(CaptureTable::SyscallStats)?)?,
-            syscall_errnos: rows_of(table(CaptureTable::SyscallErrnos)?)?,
-        };
-
-        capture.validate().map_err(ImageError::Malformed)?;
-        Ok(capture)
     }
 
     #[expect(
@@ -755,12 +662,4 @@ fn grouped<T>(
 fn rows<T>(rows: &[T], start: u32, count: u32) -> &[T] {
     let start = start as usize;
     &rows[start..start + count as usize]
-}
-
-fn rows_of<T: zerocopy::FromBytes + zerocopy::Immutable + Copy>(
-    bytes: &[u8],
-) -> Result<Vec<T>, ImageError> {
-    <[T]>::ref_from_bytes(bytes)
-        .map(<[T]>::to_vec)
-        .map_err(|_| ImageError::Layout)
 }

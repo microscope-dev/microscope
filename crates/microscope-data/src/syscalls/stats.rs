@@ -220,6 +220,21 @@ impl Folded {
 
         calls
     }
+
+    /// Collapses per-thread syscall stats into per-process rows (`Tid(0)` -> `NONE` on wire).
+    /// Used at the `prod` preset so thread churn does not multiply `SyscallStats` cardinality.
+    #[must_use]
+    pub fn collapse_to_process(&self) -> Self {
+        let mut collapsed = Self::default();
+        for (&(process, _, call), stats) in &self.by_call {
+            collapsed
+                .by_call
+                .entry((process, Tid::new(0), call))
+                .or_default()
+                .merge(stats);
+        }
+        collapsed
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +242,45 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    #[test]
+    fn collapse_to_process_merges_threads_into_tid_zero() {
+        let mut folded = Folded::default();
+        let call = SyscallId::new(crate::syscalls::Abi::X86_64, 0);
+        let pid1 = Pid::new(100);
+        let pid2 = Pid::new(200);
+
+        let mut s1 = SyscallStats::default();
+        s1.add(Outcome::Returned(64), Some(1_000), 64);
+        let mut s2 = SyscallStats::default();
+        s2.add(Outcome::Failed(Errno(11)), Some(2_000), 0);
+        let mut s3 = SyscallStats::default();
+        s3.add(Outcome::Returned(32), Some(500), 32);
+
+        folded.by_call.insert((pid1, Tid::new(101), call), s1);
+        folded.by_call.insert((pid1, Tid::new(102), call), s2);
+        folded.by_call.insert((pid2, Tid::new(201), call), s3);
+
+        let collapsed = folded.collapse_to_process();
+        assert_eq!(collapsed.by_call.len(), 2);
+        let p1 = collapsed
+            .by_call
+            .get(&(pid1, Tid::new(0), call))
+            .expect("pid1 collapsed");
+        assert_eq!(p1.calls, 2);
+        assert_eq!(p1.errors, 1);
+        assert_eq!(p1.errors_by_errno.get(&11), Some(&1));
+        assert_eq!(p1.bytes, 64);
+        assert_eq!(p1.min_ns, 1_000);
+        assert_eq!(p1.max_ns, 2_000);
+
+        let p2 = collapsed
+            .by_call
+            .get(&(pid2, Tid::new(0), call))
+            .expect("pid2 collapsed");
+        assert_eq!(p2.calls, 1);
+        assert_eq!(p2.bytes, 32);
+    }
 
     #[test]
     fn buckets_split_at_powers_of_two() {
