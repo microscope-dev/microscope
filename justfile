@@ -80,12 +80,12 @@ vet:
 
 [doc("Builds the native test fixtures and runs the Rust test suite.")]
 test *ARGS: cache-warm
-    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MIMALLOC_ALLOW_THP=0 MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --test-threads "$test_threads" "$@"
+    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MIMALLOC_ALLOW_THP=0 MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/nextest.sh --features {{test_features}} --test-threads "$test_threads" "$@"
     if (( $# == 0 )); then CARGO_TARGET_DIR="$PWD/target/sdk-probes" cargo test --quiet --manifest-path sdk/rust-probes/Cargo.toml --features c; fi
 
 [doc("Runs the unit tests with CASES cases for each property test.")]
 props CASES="10000" *ARGS: cache-warm
-    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; PROPTEST_CASES="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --profile props --test-threads "$test_threads" --lib --bins "${@:2}"
+    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; PROPTEST_CASES="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/nextest.sh --features {{test_features}} --profile props --test-threads "$test_threads" --lib --bins "${@:2}"
 
 [doc("Runs the BPF engine's tests through the microscope-bpf wrapper.")]
 [script]
@@ -97,7 +97,7 @@ test-bpf LAUNCHER="/run/wrappers/bin/microscope-bpf" *ARGS: build-test-programs
         exit 1
     fi
     ulimit -c 0
-    MICROSCOPE_BPF_LAUNCHER="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --run-ignored only --test syscalls --test python --test node --test profiler_kernel -E 'test(/(^|::)bpf::/) | binary(profiler_kernel)' "${@:2}"
+    MICROSCOPE_BPF_LAUNCHER="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/nextest.sh --features {{test_features}} --run-ignored only --test syscalls --test python --test node --test profiler_kernel -E 'test(/(^|::)bpf::/) | binary(profiler_kernel)' "${@:2}"
 
 [script]
 test-bpf-if-installed LAUNCHER="/run/wrappers/bin/microscope-bpf":
@@ -184,10 +184,10 @@ cache-warm: build-test-programs
 
 tokio *ARGS:
     ./scripts/build-test-programs.sh tokio
-    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --test-threads "$test_threads" --test tokio "$@"
+    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/nextest.sh --features {{test_features}} --test-threads "$test_threads" --test tokio "$@"
 
 node *ARGS: cache-warm
-    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --test-threads "$test_threads" --test node "$@"
+    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/nextest.sh --features {{test_features}} --test-threads "$test_threads" --test node "$@"
 
 [doc("Runs the test suite COUNT times under CPU load, then the soak if SOAK_MINUTES is set.")]
 [script]
