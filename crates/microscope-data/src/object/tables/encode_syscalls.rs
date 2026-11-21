@@ -7,7 +7,7 @@ use super::super::codec::{
 use super::super::{DEFAULT_PAGE_ROWS, EncodedSection, ObjectError, SectionKind, TimeUnit};
 use super::{
     NOTE_BLOBS_ARGUMENT, TABLE_VERSION, add_delta_u64_col, add_plain_u64_col, add_u64_col,
-    count_u32, remap_stack, syscall_arg_count,
+    count_u32, remap_stack,
 };
 use crate::capture::Capture;
 use crate::capture::records::{Syscall, UNSEEN, captures as parse_captures};
@@ -122,7 +122,18 @@ pub(super) fn encode_syscalls(
 
         for ((abi, nr), rows) in by_kind {
             let g = w.add_group(abi, u8::MAX, nr, count_u32(rows.len())?)?;
-            let arg_count = syscall_arg_count(abi, u32::from(nr));
+            let arg_count = rows
+                .iter()
+                .filter_map(|call| {
+                    call.args
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find(|(_, v)| v.get() != 0)
+                        .map(|(idx, _)| idx + 1)
+                })
+                .max()
+                .unwrap_or(0);
 
             let mut durations = Vec::with_capacity(rows.len());
             let mut threads_u32 = Vec::with_capacity(rows.len());

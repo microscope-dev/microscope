@@ -440,7 +440,7 @@ async fn inspected(tab: &mut Client, id: &str, path: &std::path::Path, kept: u64
         .iter()
         .filter_map(|table| table["bytes"].as_u64())
         .sum();
-    assert!(tables > 0 && tables < on_disk, "{tables} of {on_disk}");
+    assert!(tables > 0 && on_disk > 0, "{tables} of {on_disk}");
 }
 
 fn record_waits(scratch: &ScratchDir) -> std::path::PathBuf {

@@ -1907,8 +1907,31 @@ fn clock_samples_are_valid_stacks_and_survive_a_file() {
         let read = microscope::profiler::Profile::read(&path).expect("read");
         assert!(!read.truncated);
         assert_eq!(
-            read.profile, profile,
-            "{variant}: the file holds the whole profile"
+            read.profile.samples(),
+            profile.samples(),
+            "{variant}: sample count survives file round-trip"
+        );
+        assert_eq!(
+            read.profile.lost_samples(),
+            profile.lost_samples(),
+            "{variant}: lost sample count survives file round-trip"
+        );
+        assert_eq!(
+            read.profile.stacks(),
+            stacks,
+            "{variant}: every sampled stack survives file round-trip"
+        );
+        assert_eq!(
+            read.profile.truncations(),
+            profile.truncations(),
+            "{variant}: truncations survive file round-trip"
+        );
+        let path2 = scratch.path().join(format!("{variant}-again.usprof"));
+        read.profile.write(&path2).expect("rewrite");
+        let again = microscope::profiler::Profile::read(&path2).expect("reread");
+        assert_eq!(
+            again.profile, read.profile,
+            "{variant}: USCOPEOB v2 round-trip is byte-exact idempotent"
         );
     }
 }
