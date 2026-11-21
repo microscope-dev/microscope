@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
+import { createMemo, For, Match, Show, Switch } from "solid-js";
 
 import {
   addScopeFilter,
@@ -16,6 +16,7 @@ import {
   PaneAuthGate,
   PaneEmptyState,
   PaneLockedState,
+  updatePaneParams,
   usePaneScope,
 } from "./paneScope";
 
@@ -30,11 +31,11 @@ const BASE_DIMENSIONS = [
 ];
 
 export function BreakdownPane(props: PaneProps) {
-  const initialDim = () => {
+  const dimension = createMemo(() => {
     const p = props.pane.params as { dimension?: string } | null;
     return p?.dimension ?? "service.name";
-  };
-  const [dimension, setDimension] = createSignal(initialDim());
+  });
+  const setDimension = (next: string) => updatePaneParams(props.id, { dimension: next });
   const barDims = useActiveView((v) => v.dimensions);
 
   const dimOptions = createMemo(() => {
@@ -48,7 +49,10 @@ export function BreakdownPane(props: PaneProps) {
     return [...set];
   });
 
-  const ps = usePaneScope(() => props.pane);
+  const ps = usePaneScope(
+    () => props.id,
+    () => props.pane,
+  );
   const loadKey = createMemo(() => {
     const base = ps.queryKey();
     return base === "idle" ? "idle" : `${base}:dim=${dimension()}`;

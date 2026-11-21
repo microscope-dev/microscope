@@ -7,12 +7,72 @@ import {
   normalizeScope,
   scopeKey,
   useActiveView,
+  type TimeRange,
   type ViewScope,
 } from "../../dashboards";
 import { KIND } from "../../documents";
 import { openMachines } from "../../fleet";
-import type { Pane } from "../../workbench/layout";
+import type { Json, Pane, PaneId } from "../../workbench/layout";
+import { change } from "../../workbench/store";
 import { showPane } from "../panes";
+
+export function updatePaneParams(id: PaneId, patch: Record<string, Json | undefined>): void {
+  change((layout) => {
+    const existing = layout.panes[id];
+    if (!existing) {
+      return layout;
+    }
+    const base: Record<string, Json> =
+      existing.params !== null &&
+      typeof existing.params === "object" &&
+      !Array.isArray(existing.params)
+        ? { ...(existing.params as Record<string, Json>) }
+        : {};
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) {
+        delete base[key];
+      } else {
+        base[key] = value;
+      }
+    }
+    return {
+      ...layout,
+      panes: {
+        ...layout.panes,
+        [id]: { ...existing, params: base },
+      },
+    };
+  });
+}
+
+function freezeTimeRangeNow(range: TimeRange, nowNs: number): TimeRange {
+  if (range.kind !== "relative") {
+    return range;
+  }
+  return {
+    kind: "absolute",
+    start_time: nowNs - range.duration_secs * 1_000_000_000,
+    end_time: nowNs + 60_000_000_000,
+  };
+}
+
+function freezeScopeNow(scope: ViewScope): ViewScope {
+  const nowNs = Date.now() * 1_000_000;
+  const compare =
+    scope.compare && scope.compare.kind === "custom" && scope.compare.time_range
+      ? {
+          ...scope.compare,
+          time_range: freezeTimeRangeNow(scope.compare.time_range, nowNs),
+        }
+      : scope.compare;
+  return {
+    ...scope,
+    filters: [...scope.filters],
+    project_ids: [...scope.project_ids],
+    time_range: freezeTimeRangeNow(scope.time_range, nowNs),
+    compare: compare ?? null,
+  };
+}
 
 export interface PaneScopeResult {
   scope: () => ViewScope;
@@ -26,7 +86,7 @@ export interface PaneScopeResult {
   signedIn: () => boolean;
 }
 
-export function usePaneScope(pane: () => Pane): PaneScopeResult {
+export function usePaneScope(id: () => PaneId, pane: () => Pane): PaneScopeResult {
   const now = useAccount();
   const barScope = useActiveView((v) => v.scope);
   const barSessionId = useActiveView((v) => v.sessionId);
@@ -34,12 +94,12 @@ export function usePaneScope(pane: () => Pane): PaneScopeResult {
   const barLocked = useActiveView((v) => v.locked);
   const barActive = useActiveView((v) => v.active);
 
-  const initialUnlinked = () => {
+  const [localRev, setLocalRev] = createSignal(0);
+
+  const local = createMemo<ViewScope | null>(() => {
     const params = pane().params as { unlinkedScope?: Partial<ViewScope> } | null;
     return params?.unlinkedScope ? normalizeScope(params.unlinkedScope) : null;
-  };
-  const [local, setLocal] = createSignal<ViewScope | null>(initialUnlinked());
-  const [localRev, setLocalRev] = createSignal(0);
+  });
 
   const linked = createMemo(() => local() === null);
   const scope = createMemo(() => local() ?? (barActive() ? barScope() : DEFAULT_SCOPE));
@@ -50,18 +110,17 @@ export function usePaneScope(pane: () => Pane): PaneScopeResult {
 
   const toggleLinked = () => {
     if (local() === null) {
-      setLocal({
-        ...barScope(),
-        filters: [...barScope().filters],
-        project_ids: [...barScope().project_ids],
-      });
+      const copy = freezeScopeNow(barScope());
+      updatePaneParams(id(), { unlinkedScope: copy as unknown as Json });
     } else {
-      setLocal(null);
+      updatePaneParams(id(), { unlinkedScope: undefined });
     }
+    setLocalRev((r) => r + 1);
   };
 
   const setLocalScope = (updater: (prev: ViewScope) => ViewScope) => {
-    setLocal((prev) => updater(prev ?? barScope()));
+    const next = updater(local() ?? barScope());
+    updatePaneParams(id(), { unlinkedScope: next as unknown as Json });
     setLocalRev((r) => r + 1);
   };
 

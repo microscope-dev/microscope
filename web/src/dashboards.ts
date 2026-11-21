@@ -74,6 +74,7 @@ export interface SessionRecord {
   keptAt: number | null;
   pinStatus: "none" | "pinned" | "cap_exceeded";
   pinnedBytes: number;
+  pinAttempt?: string;
   expiresAt: number | null;
   lastOpenedAt: number;
   createdAt: number;
@@ -300,7 +301,7 @@ export const dashboardsApi = {
   }) => request<SessionRecord>("POST", "/api/sessions", body),
   updateSession: (
     id: number,
-    body: { name?: string; layout?: unknown; scope?: ViewScope; notes?: string },
+    body: { name?: string; layout?: unknown; scope?: ViewScope; notes?: string; pin?: boolean },
   ) => request<SessionRecord>("PATCH", `/api/sessions/${id}`, body),
   pinEstimate: (id: number) => request<PinEstimate>("GET", `/api/sessions/${id}/pin-estimate`),
   keepSession: (id: number, body: { name?: string; pin?: boolean }) =>
@@ -606,6 +607,11 @@ export function useActiveView<T>(pick: (state: ActiveViewState) => T): () => T {
 let onMoveToSession: ((sessionId: number) => void) | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let currentLayoutSerializer: (() => unknown) | null = null;
+let pendingCreate: Promise<SessionRecord | null> | null = null;
+let saveChain: Promise<void> = Promise.resolve();
+let viewDirty = false;
+let wantMoveToSession = false;
+let viewMutationSeq = 0;
 
 export function registerViewHooks(hooks: {
   moveToSession: (sessionId: number) => void;
@@ -623,11 +629,72 @@ export function registerViewHooks(hooks: {
   };
 }
 
-export function clearActiveView(): void {
+export function setPendingSessionCreation(
+  promise: Promise<SessionRecord | null>,
+  isCancelled: () => boolean,
+): void {
+  pendingCreate = promise;
+  const finish = async () => {
+    const session = await promise;
+    if (pendingCreate === promise) {
+      pendingCreate = null;
+    }
+    if (isCancelled() || !session) {
+      return;
+    }
+    activeView.setState({
+      sessionId: session.id,
+      expiresAt: session.expiresAt,
+    });
+    if (viewDirty || wantMoveToSession) {
+      await flushSessionSaveNow(wantMoveToSession);
+    }
+  };
+  void finish();
+}
+
+export function flushActiveViewSave(keepPendingCreate = false): void {
+  const cur = activeView.getState();
+  const shouldFlush =
+    viewDirty && cur.active && cur.isOwner && account.getState().now.kind === "in";
+  const snapshot = shouldFlush
+    ? {
+        sessionId: cur.sessionId,
+        scope: cur.scope,
+        layout: currentLayoutSerializer ? currentLayoutSerializer() : undefined,
+        pending: pendingCreate,
+      }
+    : null;
   if (saveTimer !== null) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
+  viewDirty = false;
+  wantMoveToSession = false;
+  if (!keepPendingCreate) {
+    pendingCreate = null;
+  }
+  if (snapshot !== null) {
+    void enqueueSave(async () => {
+      let sid = snapshot.sessionId;
+      if (sid === null && snapshot.pending !== null) {
+        const created = await snapshot.pending;
+        sid = created?.id ?? null;
+      }
+      if (sid === null) {
+        return;
+      }
+      await dashboardsApi.updateSession(sid, {
+        scope: snapshot.scope,
+        ...(snapshot.layout === undefined ? {} : { layout: snapshot.layout }),
+        pin: false,
+      });
+    });
+  }
+}
+
+export function clearActiveView(): void {
+  flushActiveViewSave();
   activeView.setState({ ...INACTIVE_VIEW });
 }
 
@@ -639,6 +706,24 @@ export function markViewFetched(): void {
   activeView.setState({ lastFetchedAt: Date.now() });
 }
 
+export function markViewLayoutDirty(): void {
+  const cur = activeView.getState();
+  if (!cur.active || !cur.isOwner) {
+    return;
+  }
+  viewDirty = true;
+  viewMutationSeq += 1;
+  const shouldMove = cur.mode === "dashboard" && !cur.movedToSession;
+  if (shouldMove) {
+    wantMoveToSession = true;
+    if (cur.sessionId !== null) {
+      void flushSessionSaveNow(true);
+    }
+  } else {
+    scheduleSessionSave();
+  }
+}
+
 export function updateViewScope(
   updater: (prev: ViewScope) => ViewScope,
   options?: { persist?: boolean },
@@ -648,92 +733,169 @@ export function updateViewScope(
     return;
   }
   const nextScope = updater(cur.scope);
-  const shouldMove = cur.mode === "dashboard" && cur.sessionId !== null && !cur.movedToSession;
+  const shouldMove = options?.persist !== false && cur.mode === "dashboard" && !cur.movedToSession;
   activeView.setState({
     scope: nextScope,
     revision: cur.revision + 1,
-    ...(shouldMove ? { mode: "session", movedToSession: true } : {}),
   });
   if (options?.persist !== false) {
+    viewDirty = true;
+    viewMutationSeq += 1;
     if (shouldMove) {
-      flushSessionSaveNow();
+      wantMoveToSession = true;
+      if (cur.sessionId !== null) {
+        void flushSessionSaveNow(true);
+      }
     } else {
       scheduleSessionSave();
     }
   }
-  if (shouldMove && cur.sessionId !== null && onMoveToSession) {
-    onMoveToSession(cur.sessionId);
-  }
 }
 
-function flushSessionSaveNow(): void {
+function enqueueSave(task: () => Promise<void>): Promise<void> {
+  const next = saveChain.then(task, task);
+  saveChain = next.catch(() => {});
+  return next;
+}
+
+function flushSessionSaveNow(
+  moveAfterSave: boolean,
+  expectedSessionId?: number | null,
+): Promise<void> {
   if (saveTimer !== null) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  const cur = activeView.getState();
-  if (
-    !cur.active ||
-    cur.sessionId === null ||
-    !cur.isOwner ||
-    account.getState().now.kind !== "in"
-  ) {
-    return;
-  }
-  const layout = currentLayoutSerializer ? currentLayoutSerializer() : undefined;
-  void dashboardsApi
-    .updateSession(cur.sessionId, {
+  const boundSessionId =
+    expectedSessionId === undefined ? activeView.getState().sessionId : expectedSessionId;
+  return enqueueSave(async () => {
+    if (pendingCreate !== null) {
+      await pendingCreate;
+    }
+    const cur = activeView.getState();
+    if (
+      !cur.active ||
+      cur.sessionId === null ||
+      (boundSessionId !== null && cur.sessionId !== boundSessionId) ||
+      !cur.isOwner ||
+      account.getState().now.kind !== "in"
+    ) {
+      return;
+    }
+    const seqBefore = viewMutationSeq;
+    const layout = currentLayoutSerializer ? currentLayoutSerializer() : undefined;
+    const saved = await dashboardsApi.updateSession(cur.sessionId, {
       scope: cur.scope,
       ...(layout === undefined ? {} : { layout }),
-    })
-    .catch(() => {});
+      pin: false,
+    });
+    if (viewMutationSeq === seqBefore) {
+      viewDirty = false;
+    }
+    const latest = activeView.getState();
+    if (!latest.active || latest.sessionId !== cur.sessionId) {
+      return;
+    }
+    const shouldMove = (moveAfterSave || wantMoveToSession) && !latest.movedToSession;
+    const patch: Partial<ActiveViewState> = {
+      expiresAt: saved.expiresAt,
+      ...(viewMutationSeq === seqBefore
+        ? { scope: normalizeScope({ ...saved.scope, org_id: saved.orgId }) }
+        : {}),
+      ...(shouldMove ? { mode: "session", movedToSession: true } : {}),
+    };
+    activeView.setState(patch);
+    if (shouldMove) {
+      wantMoveToSession = false;
+      onMoveToSession?.(cur.sessionId);
+    }
+  });
 }
 
 export function scheduleSessionSave(): void {
   if (saveTimer !== null) {
     clearTimeout(saveTimer);
   }
+  const scheduledSessionId = activeView.getState().sessionId;
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    flushSessionSaveNow();
+    void flushSessionSaveNow(false, scheduledSessionId);
   }, 350);
 }
 
 export async function ensureSessionUrl(): Promise<string | null> {
-  const cur = activeView.getState();
-  if (!cur.active) {
-    return null;
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
   }
-  let sid = cur.sessionId;
-  if (sid === null && currentLayoutSerializer) {
-    const created = await dashboardsApi.createSession({
-      org_id: cur.orgId,
-      project_id: cur.projectId,
-      source_builtin: cur.builtin ? cur.dashboardId : null,
-      source_dashboard_id: !cur.builtin && cur.dashboardId ? Number(cur.dashboardId) : null,
-      layout: currentLayoutSerializer(),
-      scope: cur.scope,
-    });
-    sid = created.id;
-    activeView.setState({
-      sessionId: created.id,
-      mode: "session",
-      movedToSession: true,
-      expiresAt: created.expiresAt,
-      keptAt: created.keptAt,
-    });
-    onMoveToSession?.(created.id);
-  } else if (sid !== null && cur.isOwner && currentLayoutSerializer) {
-    await dashboardsApi.updateSession(sid, {
-      scope: cur.scope,
-      layout: currentLayoutSerializer(),
-    });
-    if (cur.mode === "dashboard" && !cur.movedToSession) {
-      activeView.setState({ mode: "session", movedToSession: true });
-      onMoveToSession?.(sid);
+  let resolvedUrl: string | null = null;
+  await enqueueSave(async () => {
+    if (pendingCreate !== null) {
+      await pendingCreate;
     }
-  }
-  return sid === null ? null : `${window.location.origin}/s/${sid}`;
+    const cur = activeView.getState();
+    if (!cur.active) {
+      resolvedUrl = null;
+      return;
+    }
+    let sid = cur.sessionId;
+    if (sid === null && currentLayoutSerializer) {
+      const seqBefore = viewMutationSeq;
+      const created = await dashboardsApi.createSession({
+        org_id: cur.orgId,
+        project_id: cur.projectId,
+        source_builtin: cur.builtin ? cur.dashboardId : null,
+        source_dashboard_id: !cur.builtin && cur.dashboardId ? Number(cur.dashboardId) : null,
+        layout: currentLayoutSerializer(),
+        scope: cur.scope,
+      });
+      sid = created.id;
+      if (viewMutationSeq === seqBefore) {
+        viewDirty = false;
+      }
+      wantMoveToSession = false;
+      const latest = activeView.getState();
+      if (latest.active) {
+        activeView.setState({
+          sessionId: created.id,
+          mode: "session",
+          movedToSession: true,
+          expiresAt: created.expiresAt,
+          keptAt: created.keptAt,
+          ...(viewMutationSeq === seqBefore
+            ? { scope: normalizeScope({ ...created.scope, org_id: created.orgId }) }
+            : {}),
+        });
+        onMoveToSession?.(created.id);
+      }
+    } else if (sid !== null && cur.isOwner && currentLayoutSerializer) {
+      const seqBefore = viewMutationSeq;
+      const saved = await dashboardsApi.updateSession(sid, {
+        scope: cur.scope,
+        layout: currentLayoutSerializer(),
+        pin: false,
+      });
+      if (viewMutationSeq === seqBefore) {
+        viewDirty = false;
+      }
+      wantMoveToSession = false;
+      const latest = activeView.getState();
+      if (latest.active && latest.sessionId === sid) {
+        const shouldMove = latest.mode === "dashboard" && !latest.movedToSession;
+        activeView.setState({
+          ...(shouldMove ? { mode: "session", movedToSession: true } : {}),
+          ...(viewMutationSeq === seqBefore
+            ? { scope: normalizeScope({ ...saved.scope, org_id: saved.orgId }) }
+            : {}),
+        });
+        if (shouldMove) {
+          onMoveToSession?.(sid);
+        }
+      }
+    }
+    resolvedUrl = sid === null ? null : `${window.location.origin}/s/${sid}`;
+  });
+  return resolvedUrl;
 }
 
 export function addScopeFilter(dimension: string, value: string): void {
@@ -790,6 +952,7 @@ export function formatDimensionLabel(dim: string): string {
     case "service.version":
       return "version";
     case "host.name":
+    case "host.id":
       return "machine";
     case "process.name":
       return "process";

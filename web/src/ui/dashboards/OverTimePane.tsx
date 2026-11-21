@@ -14,6 +14,7 @@ import {
   PaneAuthGate,
   PaneEmptyState,
   PaneLockedState,
+  updatePaneParams,
   usePaneScope,
 } from "./paneScope";
 
@@ -36,17 +37,41 @@ const GROUP_OPTIONS = [
   { value: "total", label: "Total" },
 ];
 
+function svgXFromPointer(
+  svg: SVGSVGElement,
+  clientX: number,
+  clientY: number,
+  viewW: number,
+  viewH: number,
+): number {
+  const ctm = svg.getScreenCTM();
+  if (ctm) {
+    const pt = svg.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    return pt.matrixTransform(ctm.inverse()).x;
+  }
+  const rect = svg.getBoundingClientRect();
+  const scale = Math.min(rect.width / viewW, rect.height / viewH);
+  const renderedW = viewW * scale;
+  const offsetX = rect.left + (rect.width - renderedW) / 2;
+  return (clientX - offsetX) / Math.max(scale, 1e-6);
+}
+
 export function OverTimePane(props: PaneProps) {
-  const initialGroup = () => {
+  const groupBy = createMemo(() => {
     const p = props.pane.params as { groupBy?: string } | null;
     return p?.groupBy ?? "service.version";
-  };
-  const [groupBy, setGroupBy] = createSignal(initialGroup());
+  });
+  const setGroupBy = (next: string) => updatePaneParams(props.id, { groupBy: next });
   const [hoverIdx, setHoverIdx] = createSignal<number | null>(null);
-  const [dragStart, setDragStart] = createSignal<number | null>(null);
-  const [dragEnd, setDragEnd] = createSignal<number | null>(null);
+  const [dragStartNs, setDragStartNs] = createSignal<number | null>(null);
+  const [dragEndNs, setDragEndNs] = createSignal<number | null>(null);
 
-  const ps = usePaneScope(() => props.pane);
+  const ps = usePaneScope(
+    () => props.id,
+    () => props.pane,
+  );
   const loadKey = createMemo(() => {
     const base = ps.queryKey();
     return base === "idle" ? "idle" : `${base}:g=${groupBy()}`;
@@ -65,7 +90,8 @@ export function OverTimePane(props: PaneProps) {
 
   const chart = createMemo(() => {
     const res = data();
-    if (!res || res.timestampsNs.length === 0 || res.series.length === 0) {
+    const hasCompare = (res?.compareSeries?.[0]?.values.length ?? 0) > 0;
+    if (!res || res.timestampsNs.length === 0 || (res.series.length === 0 && !hasCompare)) {
       return null;
     }
     const n = res.timestampsNs.length;
@@ -98,7 +124,19 @@ export function OverTimePane(props: PaneProps) {
     const cmpVals = res.compareSeries?.[0]?.values ?? [];
     const maxVal = Math.max(...running, ...cmpVals, 0.001);
 
-    const xOf = (i: number) => (n <= 1 ? padL + plotW / 2 : padL + (i / (n - 1)) * plotW);
+    const bucketNs = Math.max(res.bucketNs || 60_000_000_000, 1);
+    const firstTs = res.timestampsNs[0] ?? 0;
+    const lastTs = res.timestampsNs.at(-1) ?? firstTs;
+    const span = Math.max(lastTs - firstTs, 0);
+
+    const xOfTime = (ts: number) => {
+      if (span <= 0) {
+        return padL + plotW / 2;
+      }
+      const clamped = Math.max(firstTs, Math.min(lastTs, ts));
+      return padL + ((clamped - firstTs) / span) * plotW;
+    };
+    const xOf = (i: number) => xOfTime(res.timestampsNs[i] ?? firstTs);
     const yOf = (v: number) => padT + plotH - (v / maxVal) * plotH;
 
     const areas = stacked.map((layer) => {
@@ -118,12 +156,9 @@ export function OverTimePane(props: PaneProps) {
         ? `M ${cmpVals.map((v, i) => `${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" L ")}`
         : null;
 
-    const firstTs = res.timestampsNs[0] ?? 0;
-    const lastTs = res.timestampsNs.at(-1) ?? firstTs;
-    const span = Math.max(lastTs - firstTs, 1);
     const deploys = res.deploys.map((d) => ({
       ...d,
-      x: n <= 1 ? padL + plotW / 2 : padL + ((d.timeNs - firstTs) / span) * plotW,
+      x: xOfTime(d.timeNs),
     }));
 
     return {
@@ -137,6 +172,10 @@ export function OverTimePane(props: PaneProps) {
       plotH,
       maxVal,
       n,
+      firstTs,
+      lastTs,
+      span,
+      bucketNs,
       areas,
       compareLine,
       deploys,
@@ -144,57 +183,67 @@ export function OverTimePane(props: PaneProps) {
       series: res.series,
       unit: res.unit,
       xOf,
+      xOfTime,
     };
   });
 
-  const indexFromPointer = (event: PointerEvent & { currentTarget: SVGSVGElement }) => {
+  const timeFromPointer = (event: PointerEvent & { currentTarget: SVGSVGElement }) => {
     const c = chart();
     if (!c) {
       return null;
     }
-    const rect = event.currentTarget.getBoundingClientRect();
-    const relX = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * c.w;
-    const frac = Math.max(0, Math.min(1, (relX - c.padL) / Math.max(c.plotW, 1)));
-    return Math.round(frac * Math.max(c.n - 1, 0));
+    const svgX = svgXFromPointer(event.currentTarget, event.clientX, event.clientY, c.w, c.h);
+    const frac = Math.max(0, Math.min(1, (svgX - c.padL) / Math.max(c.plotW, 1)));
+    const ts = c.span <= 0 ? c.firstTs : Math.round(c.firstTs + frac * c.span);
+    let nearest = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < c.timestamps.length; i += 1) {
+      const dist = Math.abs((c.timestamps[i] ?? 0) - ts);
+      if (dist < bestDist) {
+        bestDist = dist;
+        nearest = i;
+      }
+    }
+    return { ts, bucketTs: c.timestamps[nearest] ?? ts, nearest };
   };
 
   const onPointerDown = (event: PointerEvent & { currentTarget: SVGSVGElement }) => {
-    const idx = indexFromPointer(event);
-    if (idx !== null) {
-      setDragStart(idx);
-      setDragEnd(idx);
+    const hit = timeFromPointer(event);
+    if (hit !== null) {
+      setDragStartNs(hit.bucketTs);
+      setDragEndNs(hit.bucketTs);
     }
   };
 
   const onPointerMove = (event: PointerEvent & { currentTarget: SVGSVGElement }) => {
-    const idx = indexFromPointer(event);
-    setHoverIdx(idx);
-    if (dragStart() !== null && idx !== null) {
-      setDragEnd(idx);
+    const hit = timeFromPointer(event);
+    setHoverIdx(hit ? hit.nearest : null);
+    if (dragStartNs() !== null && hit !== null) {
+      setDragEndNs(hit.bucketTs);
     }
   };
 
   const onPointerUp = () => {
-    const s = dragStart();
-    const e = dragEnd();
+    const s = dragStartNs();
+    const e = dragEndNs();
     const c = chart();
-    setDragStart(null);
-    setDragEnd(null);
+    setDragStartNs(null);
+    setDragEndNs(null);
     if (s !== null && e !== null && s !== e && c) {
-      const lo = Math.min(s, e);
-      const hi = Math.max(s, e);
-      const startTime = c.timestamps[lo] ?? 0;
-      const endTime = (c.timestamps[hi] ?? startTime) + 60_000_000_000;
-      if (ps.linked()) {
-        updateViewScope((prev) => ({
-          ...prev,
-          time_range: { kind: "absolute", start_time: startTime, end_time: endTime },
-        }));
-      } else {
-        ps.setLocalScope((prev) => ({
-          ...prev,
-          time_range: { kind: "absolute", start_time: startTime, end_time: endTime },
-        }));
+      const startTime = Math.min(s, e);
+      const endTime = Math.max(s, e) + c.bucketNs;
+      if (endTime > startTime) {
+        if (ps.linked()) {
+          updateViewScope((prev) => ({
+            ...prev,
+            time_range: { kind: "absolute", start_time: startTime, end_time: endTime },
+          }));
+        } else {
+          ps.setLocalScope((prev) => ({
+            ...prev,
+            time_range: { kind: "absolute", start_time: startTime, end_time: endTime },
+          }));
+        }
       }
     }
   };
@@ -352,13 +401,13 @@ export function OverTimePane(props: PaneProps) {
                         )}
                       </For>
 
-                      <Show when={dragStart() !== null && dragEnd() !== null}>
+                      <Show when={dragStartNs() !== null && dragEndNs() !== null}>
                         <rect
-                          x={c().xOf(Math.min(dragStart() ?? 0, dragEnd() ?? 0))}
+                          x={c().xOfTime(Math.min(dragStartNs() ?? 0, dragEndNs() ?? 0))}
                           y={c().padT}
                           width={Math.max(
-                            c().xOf(Math.max(dragStart() ?? 0, dragEnd() ?? 0)) -
-                              c().xOf(Math.min(dragStart() ?? 0, dragEnd() ?? 0)),
+                            c().xOfTime(Math.max(dragStartNs() ?? 0, dragEndNs() ?? 0)) -
+                              c().xOfTime(Math.min(dragStartNs() ?? 0, dragEndNs() ?? 0)),
                             2,
                           )}
                           height={c().plotH}

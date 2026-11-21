@@ -145,7 +145,7 @@ export function Workbench(props: {
     () => props.start ?? (props.wants === "session" ? debugLayout : startLayout),
   );
   useMirror(() => props.focus);
-  useConnectWhenRefused();
+  useConnectWhenRefused(() => props.wants);
   const focus = createMemo(() => props.focus);
   return (
     <FocusContext value={focus}>
@@ -199,11 +199,14 @@ function useArranged(wants: () => Wants, start: () => () => Layout) {
   });
 }
 
-function useConnectWhenRefused() {
+function useConnectWhenRefused(wants: () => Wants) {
   const link = useModel((model) => model.link);
   createEffect(
-    () => link(),
-    (current) => {
+    () => [link(), wants()] as const,
+    ([current, wanted]) => {
+      if (wanted === "fleet") {
+        return;
+      }
       const refused = current === "unauthorized" || current === "unreachable";
       const timer = refused
         ? setTimeout(

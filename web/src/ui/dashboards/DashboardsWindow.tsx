@@ -145,27 +145,77 @@ function SessionDetail(props: {
 }) {
   const [name, setName] = createSignal(props.session.name ?? "");
   const [notes, setNotes] = createSignal(props.session.notes);
-  const [estimate, setEstimate] = createSignal<PinEstimate | null>(null);
+  const [estimate, setEstimate] = createSignal<{ sessionId: number; data: PinEstimate } | null>(
+    null,
+  );
+  const [pendingNotesOnConfirm, setPendingNotesOnConfirm] = createSignal(false);
+  const [estimateFailedForSave, setEstimateFailedForSave] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [err, setErr] = createSignal<string | null>(null);
+  let estSeq = 0;
+  let lastSessionId = props.session.id;
 
   createEffect(
     () => props.session.id,
-    () => {
+    (id) => {
+      if (id === lastSessionId) {
+        return;
+      }
+      lastSessionId = id;
+      estSeq += 1;
       setName(props.session.name ?? "");
       setNotes(props.session.notes);
       setEstimate(null);
+      setPendingNotesOnConfirm(false);
+      setEstimateFailedForSave(false);
+      setBusy(false);
       setErr(null);
     },
   );
 
-  const saveMeta = async () => {
+  const requestEstimate = async (fromSave = false) => {
+    const reqSessionId = props.session.id;
+    const reqSeq = ++estSeq;
     setBusy(true);
     setErr(null);
+    setEstimateFailedForSave(false);
+    try {
+      const est = await dashboardsApi.pinEstimate(reqSessionId);
+      if (reqSeq !== estSeq || props.session.id !== reqSessionId) {
+        return;
+      }
+      setPendingNotesOnConfirm(fromSave);
+      setEstimate({ sessionId: reqSessionId, data: est });
+    } catch (e) {
+      if (reqSeq !== estSeq || props.session.id !== reqSessionId) {
+        return;
+      }
+      setEstimate(null);
+      setEstimateFailedForSave(fromSave);
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (reqSeq === estSeq && props.session.id === reqSessionId) {
+        setBusy(false);
+      }
+    }
+  };
+
+  const saveMeta = async (skipEstimate = false) => {
+    const trimmed = name().trim();
+    const firstTimeNaming =
+      props.session.name === null && props.session.pinStatus === "none" && trimmed !== "";
+    if (!skipEstimate && firstTimeNaming) {
+      await requestEstimate(true);
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setEstimateFailedForSave(false);
     try {
       await dashboardsApi.updateSession(props.session.id, {
-        name: name().trim(),
+        name: trimmed,
         notes: notes(),
+        pin: false,
       });
       props.onChanged();
       flash("Session updated.");
@@ -176,34 +226,51 @@ function SessionDetail(props: {
     }
   };
 
-  const requestEstimate = async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      const est = await dashboardsApi.pinEstimate(props.session.id);
-      setEstimate(est);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const confirmKeep = async (pin: boolean) => {
+    const current = estimate();
+    if (!current || current.sessionId !== props.session.id) {
+      setEstimate(null);
+      return;
+    }
+    const targetId = current.sessionId;
+    const targetName = name().trim();
+    const targetNotes = notes();
+    const shouldPatchNotes = pendingNotesOnConfirm() || targetNotes !== props.session.notes;
     setBusy(true);
     setErr(null);
     try {
-      await dashboardsApi.keepSession(props.session.id, {
-        ...(name().trim() === "" ? {} : { name: name().trim() }),
+      if (shouldPatchNotes) {
+        await dashboardsApi.updateSession(targetId, {
+          notes: targetNotes,
+          pin: false,
+        });
+      }
+      const kept = await dashboardsApi.keepSession(targetId, {
+        ...(targetName === "" ? {} : { name: targetName }),
         pin,
       });
-      setEstimate(null);
+      if (props.session.id === targetId) {
+        setEstimate(null);
+        setPendingNotesOnConfirm(false);
+      }
       props.onChanged();
-      flash(pin ? "Session kept and pinned." : "Session kept.");
+      if (kept.pinAttempt === "cap_exceeded" && kept.pinStatus === "pinned") {
+        flash("Pin cap exceeded — kept existing pinned data.");
+      } else if (kept.pinStatus === "cap_exceeded") {
+        flash("Pin cap exceeded — session kept without pinning.");
+      } else if (kept.pinStatus === "pinned") {
+        flash("Session kept and pinned.");
+      } else {
+        flash("Session kept.");
+      }
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      if (props.session.id === targetId) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
     } finally {
-      setBusy(false);
+      if (props.session.id === targetId) {
+        setBusy(false);
+      }
     }
   };
 
@@ -320,7 +387,7 @@ function SessionDetail(props: {
         </div>
       </Show>
 
-      <Show when={estimate()}>
+      <Show when={estimate()?.sessionId === props.session.id ? estimate()?.data : null}>
         {(est) => (
           <div class="dash-pin-confirm">
             <p>
@@ -353,9 +420,23 @@ function SessionDetail(props: {
 
       <Show when={err()}>
         {(msg) => (
-          <p class="error" role="alert">
-            {msg()}
-          </p>
+          <div class="dash-error-block">
+            <p class="error" role="alert">
+              {msg()}
+            </p>
+            <Show when={estimateFailedForSave()}>
+              <div class="actions">
+                <button
+                  type="button"
+                  class="button"
+                  disabled={busy()}
+                  onClick={() => void saveMeta(true)}
+                >
+                  Save name without pinning
+                </button>
+              </div>
+            </Show>
+          </div>
         )}
       </Show>
     </div>
@@ -385,6 +466,21 @@ function OpenDashboardsWindow() {
     () => dashboardsApi.listSessions(org()),
     sessKey,
   );
+  const [cachedSessions, setCachedSessions] = createSignal<SessionsListResponse | null>(null);
+  createEffect(
+    () => org(),
+    () => {
+      setCachedSessions(null);
+    },
+  );
+  createEffect(
+    () => sessData.data(),
+    (d) => {
+      if (d) {
+        setCachedSessions(d);
+      }
+    },
+  );
 
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -399,7 +495,7 @@ function OpenDashboardsWindow() {
   });
 
   const filteredSessions = createMemo(() => {
-    const list = sessData.data()?.sessions ?? [];
+    const list = (sessData.data() ?? cachedSessions())?.sessions ?? [];
     const term = q().trim().toLowerCase();
     return term === ""
       ? list

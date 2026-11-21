@@ -24,6 +24,7 @@ import {
   PaneAuthGate,
   PaneEmptyState,
   PaneLockedState,
+  updatePaneParams,
   usePaneScope,
 } from "./paneScope";
 
@@ -40,10 +41,26 @@ interface LoadedFlame {
 export function FleetFlamePane(props: PaneProps) {
   const [search, setSearch] = createSignal("");
   const [zoomPath, setZoomPath] = createSignal<string[] | null>(null);
-  const [invert, setInvert] = createSignal(false);
-  const [diffMode, setDiffMode] = createSignal<DiffMode>("time");
+  const invert = createMemo(() => {
+    const p = props.pane.params as { invert?: boolean } | null;
+    return p?.invert === true;
+  });
+  const diffMode = createMemo<DiffMode>(() => {
+    const p = props.pane.params as { diffMode?: string } | null;
+    return p?.diffMode === "share" ? "share" : "time";
+  });
+  const setInvert = (next: boolean | ((v: boolean) => boolean)) => {
+    const val = typeof next === "function" ? next(invert()) : next;
+    updatePaneParams(props.id, { invert: val });
+  };
+  const setDiffMode = (next: DiffMode) => {
+    updatePaneParams(props.id, { diffMode: next });
+  };
 
-  const ps = usePaneScope(() => props.pane);
+  const ps = usePaneScope(
+    () => props.id,
+    () => props.pane,
+  );
   const loadKey = createMemo(() => {
     const base = ps.queryKey();
     return base === "idle" ? "idle" : `${base}:inv=${invert() ? 1 : 0}`;

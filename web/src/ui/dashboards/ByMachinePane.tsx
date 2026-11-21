@@ -4,7 +4,7 @@ import {
   type ByMachineResponse,
   dashboardsApi,
   markViewFetched,
-  setSingleScopeFilter,
+  updateViewScope,
 } from "../../dashboards";
 import type { PaneProps } from "../../workbench/kinds";
 import { useLoaded } from "../Orgs";
@@ -21,7 +21,10 @@ function formatMachineMetric(val: number, unit: string): string {
 }
 
 export function ByMachinePane(props: PaneProps) {
-  const ps = usePaneScope(() => props.pane);
+  const ps = usePaneScope(
+    () => props.id,
+    () => props.pane,
+  );
   const loadKey = createMemo(() => ps.queryKey());
 
   const loaded = useLoaded<ByMachineResponse | null>(async () => {
@@ -92,9 +95,21 @@ export function ByMachinePane(props: PaneProps) {
                               type="button"
                               class="fleet-machine-row"
                               data-testid="machine-heatmap-row"
-                              onClick={() =>
-                                ps.linked() && setSingleScopeFilter("host.name", machine.hostname)
-                              }
+                              onClick={() => {
+                                if (!ps.linked()) {
+                                  return;
+                                }
+                                updateViewScope((prev) => ({
+                                  ...prev,
+                                  filters: [
+                                    ...prev.filters.filter(
+                                      (f) =>
+                                        f.dimension !== "host.name" && f.dimension !== "host.id",
+                                    ),
+                                    { dimension: "host.id", value: String(machine.machineId) },
+                                  ],
+                                }));
+                              }}
                             >
                               <span class="fleet-machine-name">
                                 {machine.hostname}

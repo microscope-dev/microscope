@@ -6,9 +6,12 @@ import {
   activeView,
   clearActiveView,
   dashboardsApi,
+  flushActiveViewSave,
+  markViewLayoutDirty,
   normalizeScope,
   registerViewHooks,
   searchToScope,
+  setPendingSessionCreation,
   useActiveView,
 } from "../../dashboards";
 import { KIND } from "../../documents";
@@ -18,12 +21,19 @@ import { workbench } from "../../workbench/store";
 import { fleetOverviewLayout, showPane } from "../panes";
 import { Workbench } from "../Workspace";
 
+let applyingLayout = false;
+
 function applySavedLayout(raw: unknown): void {
-  const parsed = loadLayout(JSON.stringify(raw));
-  if (parsed.ok) {
-    workbench.setState({ layout: parsed.layout });
-  } else {
-    workbench.setState({ layout: fleetOverviewLayout() });
+  applyingLayout = true;
+  try {
+    const parsed = loadLayout(JSON.stringify(raw));
+    if (parsed.ok) {
+      workbench.setState({ layout: parsed.layout });
+    } else {
+      workbench.setState({ layout: fleetOverviewLayout() });
+    }
+  } finally {
+    applyingLayout = false;
   }
 }
 
@@ -35,6 +45,16 @@ function useViewLifecycle(preserveOnSessionMove: boolean) {
         navigate(toHref(`/s/${sessionId}`), { replace: false });
       },
       serializeLayout: () => JSON.parse(saveLayout(workbench.getState().layout)) as unknown,
+    }),
+  );
+  onCleanup(
+    workbench.subscribe((state, prev) => {
+      if (applyingLayout || state.layout === prev.layout) {
+        return;
+      }
+      if (activeView.getState().active) {
+        markViewLayoutDirty();
+      }
     }),
   );
   onCleanup(() => {
@@ -67,6 +87,7 @@ export function DashboardRoute() {
       if (kind !== "in") {
         return;
       }
+      flushActiveViewSave(true);
       let cancelled = false;
       activeView.setState({ loading: true, error: null });
       const load = async () => {
@@ -75,6 +96,7 @@ export function DashboardRoute() {
           if (cancelled) {
             return;
           }
+          flushActiveViewSave();
           const baseScope = normalizeScope({ ...record.scope, org_id: record.orgId });
           const effectiveScope = searchToScope(location.search, baseScope);
           applySavedLayout(record.layout);
@@ -103,24 +125,17 @@ export function DashboardRoute() {
             movedToSession: false,
             revision: activeView.getState().revision + 1,
           });
-          try {
-            const session = await dashboardsApi.createSession({
+          const createPromise = dashboardsApi
+            .createSession({
               org_id: record.orgId,
               project_id: record.projectId,
               source_builtin: record.builtin ? record.id : null,
               source_dashboard_id: record.builtin ? null : Number(record.id),
               layout: record.layout,
               scope: effectiveScope,
-            });
-            if (!cancelled) {
-              activeView.setState({
-                sessionId: session.id,
-                expiresAt: session.expiresAt,
-              });
-            }
-          } catch {
-            activeView.setState({ sessionId: null });
-          }
+            })
+            .catch(() => null);
+          setPendingSessionCreation(createPromise, () => cancelled);
         } catch (err: unknown) {
           if (!cancelled) {
             activeView.setState({
@@ -131,9 +146,9 @@ export function DashboardRoute() {
         }
       };
       void load();
-      onCleanup(() => {
+      return () => {
         cancelled = true;
-      });
+      };
     },
   );
 
@@ -194,6 +209,7 @@ export function RecordedSessionRoute(props: { sessionId: number }) {
       if (cur.active && cur.sessionId === id && cur.movedToSession) {
         return;
       }
+      flushActiveViewSave(true);
       let cancelled = false;
       activeView.setState({ loading: true, error: null });
       const load = async () => {
@@ -202,6 +218,7 @@ export function RecordedSessionRoute(props: { sessionId: number }) {
           if (cancelled) {
             return;
           }
+          flushActiveViewSave();
           const scope = normalizeScope({ ...session.scope, org_id: session.orgId });
           applySavedLayout(session.layout);
           activeView.setState({
@@ -242,9 +259,9 @@ export function RecordedSessionRoute(props: { sessionId: number }) {
         }
       };
       void load();
-      onCleanup(() => {
+      return () => {
         cancelled = true;
-      });
+      };
     },
   );
 

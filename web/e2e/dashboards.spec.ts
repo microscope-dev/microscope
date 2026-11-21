@@ -208,25 +208,57 @@ test("opens Fleet overview on live agent data, narrows scope into a session, and
     await expect(alice).toHaveURL(/\/s\/\d+$/u, { timeout: 10_000 });
     await expect(scopeBar.getByTestId("scope-filter-chip")).toContainText("service=hot-calls");
 
-    const sessionUrl = alice.url();
+    await alice.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            (window as unknown as { copiedLink?: string }).copiedLink = text;
+            await Promise.resolve();
+          },
+        },
+      });
+    });
+    await scopeBar.getByRole("button", { name: "Copy link" }).click();
+    await expect
+      .poll(() =>
+        alice.evaluate(() => (window as unknown as { copiedLink?: string }).copiedLink ?? ""),
+      )
+      .toMatch(/\/s\/\d+$/u);
+    const sessionUrl = await alice.evaluate(
+      () => (window as unknown as { copiedLink?: string }).copiedLink ?? "",
+    );
     const sessionId = Number(/\/s\/(\d+)$/u.exec(sessionUrl)?.[1] ?? "0");
     expect(sessionId).toBeGreaterThan(0);
 
-    await expect(async () => {
-      const saved = await alice.evaluate(async (id) => {
-        const r = await fetch(`/api/sessions/${id}`);
-        return r.json() as Promise<{ scope: { filters: { dimension: string; value: string }[] } }>;
-      }, sessionId);
-      expect(saved.scope.filters).toContainEqual({
-        dimension: "service.name",
-        value: "hot-calls",
-      });
-    }).toPass({ timeout: 5_000 });
+    const saved = await alice.evaluate(async (id) => {
+      const r = await fetch(`/api/sessions/${id}`);
+      return r.json() as Promise<{
+        scope: {
+          filters: { dimension: string; value: string }[];
+          time_range: { kind: string; start_time?: number; end_time?: number };
+        };
+      }>;
+    }, sessionId);
+    expect(saved.scope.filters).toContainEqual({
+      dimension: "service.name",
+      value: "hot-calls",
+    });
+    expect(saved.scope.time_range.kind).toBe("absolute");
+    expect(typeof saved.scope.time_range.start_time).toBe("number");
+    expect(typeof saved.scope.time_range.end_time).toBe("number");
 
     await bob.goto(sessionUrl);
     const bobScopeBar = bob.getByTestId("scope-bar");
     await expect(bobScopeBar).toBeVisible({ timeout: 10_000 });
     await expect(bobScopeBar.getByTestId("scope-filter-chip")).toContainText("service=hot-calls");
+    const bobSession = await bob.evaluate(async (id) => {
+      const r = await fetch(`/api/sessions/${id}`);
+      return r.json() as Promise<{
+        scope: { time_range: { kind: string; start_time?: number; end_time?: number } };
+      }>;
+    }, sessionId);
+    expect(bobSession.scope.time_range).toEqual(saved.scope.time_range);
     const bobFlame = bob.getByTestId("fleet-flame-pane");
     await expect(bobFlame.getByRole("img", { name: "Flame graph" })).toBeVisible({
       timeout: 15_000,

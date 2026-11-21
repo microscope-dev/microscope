@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 
 import {
   activeView,
@@ -88,6 +88,21 @@ function onCopyLink() {
   void copyCurrentSessionLink();
 }
 
+function setMachineFilter(hostname: string | null) {
+  updateViewScope((prev) => {
+    const rest = prev.filters.filter(
+      (f) => f.dimension !== "host.name" && f.dimension !== "host.id",
+    );
+    return {
+      ...prev,
+      filters:
+        hostname === null || hostname === ""
+          ? rest
+          : [...rest, { dimension: "host.name", value: hostname }],
+    };
+  });
+}
+
 export function ScopeBar() {
   const isActive = useActiveView((v) => v.active);
   const title = useActiveView((v) => v.title);
@@ -104,6 +119,7 @@ export function ScopeBar() {
   const [addDim, setAddDim] = createSignal("k8s.pod.name");
   const [addVal, setAddVal] = createSignal("");
   const [nowSec, setNowSec] = createSignal(Math.floor(Date.now() / 1000));
+  let dimsReqSeq = 0;
 
   createEffect(
     () => [isActive(), scope().refresh] as const,
@@ -114,12 +130,12 @@ export function ScopeBar() {
       const tick = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 5_000);
       const ms = REFRESH_MS[refresh];
       const timer = ms === null ? null : setInterval(() => bumpViewRevision(), ms);
-      onCleanup(() => {
+      return () => {
         clearInterval(tick);
         if (timer !== null) {
           clearInterval(timer);
         }
-      });
+      };
     },
   );
 
@@ -133,20 +149,46 @@ export function ScopeBar() {
         sessionId(),
         revision(),
       ] as const,
-    ([active]) => {
+    ([active, orgId]) => {
+      const reqSeq = ++dimsReqSeq;
       if (!active) {
         return;
       }
+      let cancelled = false;
       const cur = activeView.getState();
+      if (cur.dimensions && cur.dimensions.orgId !== orgId) {
+        activeView.setState({ dimensions: null });
+      }
+      const reqScope = cur.scope;
+      const reqSession = cur.sessionId;
       const loadDims = async () => {
         try {
-          const res = await dashboardsApi.queryDimensions(cur.scope, cur.sessionId);
-          activeView.setState({ dimensions: res });
+          const res = await dashboardsApi.queryDimensions(reqScope, reqSession);
+          const latest = activeView.getState();
+          if (
+            !cancelled &&
+            reqSeq === dimsReqSeq &&
+            latest.active &&
+            latest.scope.org_id === orgId
+          ) {
+            activeView.setState({ dimensions: res });
+          }
         } catch {
-          activeView.setState({ dimensions: null });
+          const latest = activeView.getState();
+          if (
+            !cancelled &&
+            reqSeq === dimsReqSeq &&
+            latest.active &&
+            latest.scope.org_id === orgId
+          ) {
+            activeView.setState({ dimensions: null });
+          }
         }
       };
       void loadDims();
+      return () => {
+        cancelled = true;
+      };
     },
   );
 
@@ -179,6 +221,26 @@ export function ScopeBar() {
 
   const currentVal = (dimension: string) =>
     scope().filters.find((f) => f.dimension === dimension)?.value ?? "";
+
+  const currentMachineName = createMemo(() => {
+    const byName = currentVal("host.name");
+    if (byName !== "") {
+      return byName;
+    }
+    const byId = currentVal("host.id");
+    if (byId !== "") {
+      return dims()?.machines.find((item) => String(item.id) === byId)?.hostname ?? "";
+    }
+    return "";
+  });
+
+  const filterDisplayValue = (dimension: string, value: string): string => {
+    if (dimension === "host.id") {
+      const m = dims()?.machines.find((item) => String(item.id) === value);
+      return m ? `${m.hostname} (#${value})` : `#${value}`;
+    }
+    return value;
+  };
 
   const rangeValue = createMemo(() => {
     const tr = scope().time_range;
@@ -286,9 +348,9 @@ export function ScopeBar() {
           <select
             class="scope-select"
             aria-label="Machine filter"
-            value={currentVal("host.name")}
+            value={currentMachineName()}
             disabled={locked()}
-            onChange={(e) => setSingleScopeFilter("host.name", e.currentTarget.value || null)}
+            onChange={(e) => setMachineFilter(e.currentTarget.value || null)}
           >
             <option value="">machine: all</option>
             <For each={machines()}>{(v) => <option value={v}>{v}</option>}</For>
@@ -298,7 +360,8 @@ export function ScopeBar() {
             {(filter) => (
               <span class="scope-chip" data-testid="scope-filter-chip">
                 <span>
-                  {formatDimensionLabel(filter.dimension)}={filter.value}
+                  {formatDimensionLabel(filter.dimension)}=
+                  {filterDisplayValue(filter.dimension, filter.value)}
                 </span>
                 <button
                   type="button"

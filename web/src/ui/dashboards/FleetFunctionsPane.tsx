@@ -15,6 +15,7 @@ import {
   PaneAuthGate,
   PaneEmptyState,
   PaneLockedState,
+  updatePaneParams,
   usePaneScope,
 } from "./paneScope";
 
@@ -31,8 +32,15 @@ type SortCol = "total" | "self" | "delta";
 
 export function FleetFunctionsPane(props: PaneProps) {
   const [filter, setFilter] = createSignal("");
-  const [sortBy, setSortBy] = createSignal<SortCol>("total");
-  const ps = usePaneScope(() => props.pane);
+  const sortBy = createMemo<SortCol>(() => {
+    const p = props.pane.params as { sortBy?: string } | null;
+    return p?.sortBy === "self" || p?.sortBy === "delta" ? p.sortBy : "total";
+  });
+  const setSortBy = (next: SortCol) => updatePaneParams(props.id, { sortBy: next });
+  const ps = usePaneScope(
+    () => props.id,
+    () => props.pane,
+  );
   const loadKey = createMemo(() => ps.queryKey());
 
   const loaded = useLoaded<{

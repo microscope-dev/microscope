@@ -15,13 +15,24 @@ import {
   PaneAuthGate,
   PaneEmptyState,
   PaneLockedState,
+  updatePaneParams,
   usePaneScope,
 } from "./paneScope";
 
 export function FleetTreePane(props: PaneProps) {
   const [expanded, setExpanded] = createSignal<Set<number>>(new Set());
-  const [invert, setInvert] = createSignal(false);
-  const ps = usePaneScope(() => props.pane);
+  const invert = createMemo(() => {
+    const p = props.pane.params as { invert?: boolean } | null;
+    return p?.invert === true;
+  });
+  const setInvert = (next: boolean | ((v: boolean) => boolean)) => {
+    const val = typeof next === "function" ? next(invert()) : next;
+    updatePaneParams(props.id, { invert: val });
+  };
+  const ps = usePaneScope(
+    () => props.id,
+    () => props.pane,
+  );
   const loadKey = createMemo(() => {
     const base = ps.queryKey();
     return base === "idle" ? "idle" : `${base}:tree=${invert() ? 1 : 0}`;
