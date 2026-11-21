@@ -2338,13 +2338,13 @@ mod bpf {
                 let (streamed, first, last) =
                     by_process.entry(call.process).or_insert((0, u64::MAX, 0));
                 *streamed += 1;
-                *first = (*first).min(call.time());
+                *first = (*first).min(call.entered.unwrap_or_else(|| call.time()));
                 *last = (*last).max(call.time());
             }
         }
 
         for (process, (streamed, first, last)) in &by_process {
-            let seconds = (last - first) / 1_000_000_000 + 2;
+            let seconds = last / 1_000_000_000 - first / 1_000_000_000 + 1;
             assert!(
                 (1_200..=500 * seconds).contains(streamed),
                 "{process:?} streamed {streamed} in {seconds} s: {by_process:?}"

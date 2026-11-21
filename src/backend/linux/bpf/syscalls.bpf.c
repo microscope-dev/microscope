@@ -526,6 +526,19 @@ static __always_inline int admitted(struct config *settings, u32 tgid, u64 now)
 	return kept && counted_in(kept, (now / 1000000000ULL) & 0xffffffffULL, settings->cap);
 }
 
+static __always_inline void streamed(struct config *settings, u32 tgid, struct entry *entry,
+				     u64 now)
+{
+	if ((settings->flags & CONFIG_STREAM) && !sampled_in(settings->sample))
+		entry->flags |= CALL_SAMPLED_OUT;
+	if ((settings->flags & CONFIG_CAP_STREAM) && sent(settings, entry->flags) &&
+	    !admitted(settings, tgid, now)) {
+		entry->flags |= CALL_SAMPLED_OUT;
+		entry->capped = 1;
+		lost_as(LOSS_CAPPED);
+	}
+}
+
 static __always_inline int exemplary(struct config *settings, u32 tgid, u32 slot, u32 err, u64 now)
 {
 	if (!settings->examples)
@@ -1404,14 +1417,7 @@ static __always_inline int on_enter(void *ctx, struct pt_regs *regs, u64 id, int
 	entry.known = 1;
 	entry.session = settings->session;
 	entry.entered = bpf_ktime_get_ns();
-	if ((settings->flags & CONFIG_STREAM) && !sampled_in(settings->sample))
-		entry.flags |= CALL_SAMPLED_OUT;
-	if ((settings->flags & CONFIG_CAP_STREAM) && sent(settings, entry.flags) &&
-	    !admitted(settings, tgid, entry.entered)) {
-		entry.flags |= CALL_SAMPLED_OUT;
-		entry.capped = 1;
-		lost_as(LOSS_CAPPED);
-	}
+	streamed(settings, tgid, &entry, entry.entered);
 	struct entry *held = bpf_task_storage_get(&ENTRIES, bpf_get_current_task_btf(), 0,
 						  BPF_LOCAL_STORAGE_GET_F_CREATE);
 	if (!held) {
@@ -1545,6 +1551,7 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret, int
 		if (spec->forks && ret == 0)
 			return 0;
 		read_args(regs, entry.abi, entry.args);
+		streamed(settings, tgid, &entry, now);
 	}
 	if (!spec || !spec->selected)
 		return 0;
