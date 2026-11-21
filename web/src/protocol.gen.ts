@@ -356,7 +356,7 @@ export type SyscallSummaryQuery = { group: SyscallGroup, filter: string, latency
 
 export type SyscallSummary = { total: number, calls: number, errors: number, lost: SyscallLosses, counted: boolean, engine: string | null, processes: number, rows: Array<SyscallRow>, };
 
-export type SyscallLosses = { dropped: number, unseen: number, capped: number, overflowed: number, skipped: number, };
+export type SyscallLosses = { dropped: number, unseen: number, capped: number, overflowed: number, };
 
 export type SyscallRow = { key: string, name: string, calls: number, errors: number, timed: number, totalNs: number, p50Ns: number | null, p90Ns: number | null, p99Ns: number | null, maxNs: number, bytes: number, errnos: Array<SyscallCount>, };
 

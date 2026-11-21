@@ -74,7 +74,6 @@ pub struct SyscallLosses {
     pub unseen: u64,
     pub capped: u64,
     pub overflowed: u64,
-    pub skipped: u64,
 }
 
 impl From<microscope::syscalls::Losses> for SyscallLosses {
@@ -84,7 +83,6 @@ impl From<microscope::syscalls::Losses> for SyscallLosses {
             unseen: lost.unseen,
             capped: lost.capped,
             overflowed: lost.overflowed,
-            skipped: lost.skipped,
         }
     }
 }

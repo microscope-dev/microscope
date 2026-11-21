@@ -189,10 +189,6 @@ fn trace_notes(profile: &Profile, lost: Losses, out: &mut impl Write) -> Result<
             lost.overflowed,
             "calls came while the kernel's ring was full: counted, but not kept",
         ),
-        (
-            lost.skipped,
-            "times the kernel skipped microscope's programs, for any process on the host: some of this program's calls may be missing, and not counted",
-        ),
     ] {
         if count > 0 {
             writeln!(out, "{count} {says}.")?;
