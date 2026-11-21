@@ -1852,44 +1852,73 @@ mod bpf {
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_counting_recording_counts_each_threads_calls() {
         let directory = ScratchDir::new("syscalls-record-threads");
-        let profile = record_load(
+
+        // At `prod` (`SyscallLevel::Counts`), stats aggregate per process (`thread = Tid(0)`).
+        let prod = record_load(
             directory.path(),
             "prod.usprof",
             &["--preset", "prod"],
             3,
             100,
         );
-        let syscalls = profile.syscalls();
-        let reads: BTreeMap<_, u64> = syscalls
+        let prod_syscalls = prod.syscalls();
+        let prod_reads: BTreeMap<_, u64> = prod_syscalls
             .counted
             .by_call
             .iter()
             .filter(|((_, _, call), _)| call.name() == Some("read"))
             .map(|(&(process, thread, _), stats)| ((process, thread), stats.calls))
             .collect();
+        assert_eq!(prod_reads.len(), 1, "{prod_reads:?}");
+        let (&(prod_proc, prod_tid), &prod_count) = prod_reads.iter().next().expect("one row");
+        assert_eq!(prod_tid.get(), 0, "prod stats collapse to process level");
+        assert!(prod_count >= 300, "{prod_reads:?}");
+        let prod_total = prod_syscalls
+            .stats()
+            .per_call()
+            .into_iter()
+            .find(|(call, _)| call.name() == Some("read"))
+            .map(|(_, stats)| stats.calls);
+        assert_eq!(prod_total, Some(prod_count));
+        let _ = prod_proc;
 
-        let processes: BTreeSet<_> = reads.keys().map(|&(process, _)| process).collect();
-        assert_eq!(processes.len(), 1, "{reads:?}");
+        // At `dev` (`SyscallLevel::Calls`), per-thread stats remain intact (including capped counts).
+        let dev = record_load(
+            directory.path(),
+            "dev.usprof",
+            &["--preset", "dev", "--syscall-cap", "1"],
+            3,
+            100,
+        );
+        let dev_syscalls = dev.syscalls();
+        let dev_stats = dev_syscalls.stats();
+        let dev_reads: BTreeMap<_, u64> = dev_stats
+            .by_call
+            .iter()
+            .filter(|((_, _, call), _)| call.name() == Some("read"))
+            .map(|(&(process, thread, _), stats)| ((process, thread), stats.calls))
+            .collect();
+        let processes: BTreeSet<_> = dev_reads.keys().map(|&(process, _)| process).collect();
+        assert_eq!(processes.len(), 1, "{dev_reads:?}");
         let process = processes.into_iter().next().expect("one process");
-        let workers: Vec<u64> = reads
+        let workers: Vec<u64> = dev_reads
             .iter()
             .filter(|&(&(_, thread), _)| thread.get() != process.get())
             .map(|(_, &count)| count)
             .collect();
-        assert_eq!(workers, [100, 100], "{reads:?}");
+        assert_eq!(workers, [100, 100], "{dev_reads:?}");
         assert!(
-            reads
+            dev_reads
                 .get(&(process, microscope::syscalls::Tid::new(process.get())))
                 .is_some_and(|&count| count >= 100),
-            "{reads:?}"
+            "{dev_reads:?}"
         );
-
-        let total = syscalls.stats().per_call();
-        let read = total
-            .iter()
+        let dev_total = dev_stats
+            .per_call()
+            .into_iter()
             .find(|(call, _)| call.name() == Some("read"))
             .map(|(_, stats)| stats.calls);
-        assert_eq!(read, Some(reads.values().sum()));
+        assert_eq!(dev_total, Some(dev_reads.values().sum()));
     }
 
     #[test]
