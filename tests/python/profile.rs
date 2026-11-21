@@ -726,6 +726,33 @@ print('TRACE CALLS OK')
     );
 }
 
+fn blocked_after_sdk_wait(profile: &Profile, sdk_tid: u32, report: &str) -> u64 {
+    let intervals = profile.off_cpu();
+    let sdk_wait_start = intervals
+        .iter()
+        .filter(|interval| interval.tid == sdk_tid)
+        .max_by_key(|interval| interval.duration)
+        .map_or_else(
+            || panic!("no off-CPU interval for microscope-sdk\n{report}"),
+            |interval| interval.time,
+        );
+    let blocked: u64 = intervals
+        .iter()
+        .filter(|interval| interval.tid != sdk_tid && !interval.preempted)
+        .map(|interval| {
+            let end = interval.time.saturating_add_unsigned(interval.duration);
+            let start = interval.time.max(sdk_wait_start);
+            end.saturating_sub(start).max(0).cast_unsigned()
+        })
+        .sum();
+    assert!(
+        blocked < 100_000_000,
+        "blocked {blocked} ns while computing (sdk wait began at {sdk_wait_start}):\n\
+         {intervals:?}\n{report}"
+    );
+    blocked
+}
+
 #[test]
 fn the_sdk_threads_waiting_is_counted_apart() {
     let scratch = crate::support::ScratchDir::new("python-sdk-thread");
@@ -769,6 +796,17 @@ while time.monotonic() < end:
         sdk.as_os_str(),
     ]);
     let report = microscope(&["report".as_ref(), output.as_os_str()]);
+    let profile = Profile::read(&output).expect("read the profile").profile;
+    let threads = profile.threads();
+    let sdk_thread = threads
+        .iter()
+        .find(|thread| thread.name.as_deref() == Some("microscope-sdk"))
+        .unwrap_or_else(|| panic!("no microscope-sdk thread in {threads:?}\n{report}"));
+    let program_blocked: u64 = threads
+        .iter()
+        .filter(|thread| thread.tid != sdk_thread.tid)
+        .map(|thread| thread.blocked)
+        .sum();
 
     let seconds = |prefix: &str| {
         report
@@ -778,18 +816,29 @@ while time.monotonic() < end:
             .and_then(|seconds| seconds.parse::<f64>().ok())
             .unwrap_or_else(|| panic!("no {prefix:?} in {report}"))
     };
-    let blocked = report
+    let off_cpu_line = report
         .lines()
         .find(|line| {
             !line.starts_with("microscope's")
                 && (line.contains(" were off their CPUs for ")
                     || line.contains(" was off its CPU for "))
         })
-        .and_then(|line| line.split(": ").nth(1))
+        .unwrap_or_else(|| panic!("no time off the CPU in {report}"));
+    assert!(
+        off_cpu_line.starts_with("0 threads ") || off_cpu_line.starts_with("1 thread "),
+        "{report}"
+    );
+    let blocked = off_cpu_line
+        .split(": ")
+        .nth(1)
         .and_then(|rest| rest.split(' ').next())
         .and_then(|seconds| seconds.parse::<f64>().ok())
-        .unwrap_or_else(|| panic!("no time off the CPU in {report}"));
-    assert!(blocked < 0.1, "{report}");
+        .unwrap_or_else(|| panic!("no blocked time in {report}"));
+    let report_ms = (blocked * 1_000.0).round();
+    let profile_ms = f64::from(u32::try_from(program_blocked / 1_000_000).expect("milliseconds"));
+    assert!((report_ms - profile_ms).abs() <= 2.0, "{report}");
+
+    let _ = blocked_after_sdk_wait(&profile, sdk_thread.tid, &report);
     assert!(
         seconds("microscope's SDK thread was off its CPU for ") > 0.3,
         "{report}"
