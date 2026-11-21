@@ -200,3 +200,6 @@ path = "fuzz_targets/chunk.rs"
 test = false
 doc = false
 bench = false
+
+[patch.crates-io]
+aya = { path = "../vendor/aya" }
