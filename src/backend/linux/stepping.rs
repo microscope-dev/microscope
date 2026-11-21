@@ -19,7 +19,6 @@ use crate::{
 
 use super::activation::{Activation, StackPosition, StackView};
 use super::awaits::Followed;
-use super::breakpoints::install_plan_breakpoint;
 use super::frames::{
     DwarfCallerProvider, RoleCallerProvider, StackRoot, code_instance_is_active,
     frame_lookup_address, make_presentation, presentation_visible_count, selected_code_instance,
@@ -195,7 +194,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     ActiveKind::Step { start, .. }
                         if !start.plan_addresses.is_empty()
                             || start.resume_guard.is_some()
-                            || start.escape.is_some()
+                            || !start.escape.is_empty()
                 )
             });
         if uses_plan_breakpoints {
@@ -263,15 +262,16 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(false);
         }
 
-        let execution = self.active_execution()?;
-        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        install_plan_breakpoint(&self.ptrace, inferior, candidate, execution)?;
+        let mut escape = BTreeSet::from([candidate]);
         if let Some(target) = call_out {
-            install_plan_breakpoint(&self.ptrace, inferior, target, execution)?;
+            escape.insert(target);
         }
 
+        let execution = self.active_execution()?;
+        self.install_additional_plan_breakpoints(execution, &escape)?;
+
         if let Some(start) = self.active_step_mut() {
-            start.escape = Some(candidate);
+            start.escape = escape;
         }
 
         self.continue_thread(pid)?;
@@ -781,6 +781,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(start) = self.active_step_mut() {
             start.running_on = true;
             start.plan_addresses.clear();
+            start.escape.clear();
         }
 
         Ok(())

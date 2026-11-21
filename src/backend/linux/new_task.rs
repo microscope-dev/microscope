@@ -42,6 +42,21 @@ pub(super) enum NewTask {
     Entered,
 }
 
+impl NewTask {
+    pub(super) fn owns(&self, address: VirtualAddress) -> bool {
+        match self {
+            Self::Watching(starters) => starters.contains_key(&address),
+            Self::Starting {
+                starters,
+                returns_to,
+                ..
+            } => starters.contains_key(&address) || *returns_to == address,
+            Self::Started { entries, .. } => entries.contains(&address),
+            Self::Entered => false,
+        }
+    }
+}
+
 impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn task_starters(&self) -> BTreeMap<VirtualAddress, Starter> {
         let mut starters = BTreeMap::new();

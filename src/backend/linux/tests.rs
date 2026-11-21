@@ -8683,3 +8683,165 @@ fn a_handed_over_child_is_not_taken_for_a_lost_one_as_its_parent_exits() {
         Session::Draining { .. }
     ));
 }
+
+struct FixedCfaUnwindInfo;
+
+impl UnwindInfo for FixedCfaUnwindInfo {
+    fn cfa(
+        &self,
+        _address: ImageAddress,
+        _registers: &RegisterFile,
+        _memory: &mut dyn MemoryReader,
+    ) -> std::result::Result<VirtualAddress, UnwindTermination> {
+        Ok(VirtualAddress::new(0x7000))
+    }
+
+    fn unwind(
+        &self,
+        _address: ImageAddress,
+        _registers: &RegisterFile,
+        _memory: &mut dyn MemoryReader,
+    ) -> std::result::Result<crate::unwind::UnwindStep, UnwindTermination> {
+        Err(UnwindTermination::Complete)
+    }
+}
+
+fn escape_step_harness(sites: &[u64]) -> WatchHarness {
+    let mut harness = watch_harness(2);
+    let leader = harness.threads[0];
+    let sibling = harness.threads[1];
+    let execution = ExecutionId::new(2);
+    let escape = sites
+        .iter()
+        .copied()
+        .map(VirtualAddress::new)
+        .collect::<BTreeSet<_>>();
+
+    let controller = &mut harness.controller;
+    let unwind: Arc<dyn UnwindInfo> = Arc::new(FixedCfaUnwindInfo);
+    controller.main.unwind = Arc::clone(&unwind);
+    if let Some(main) = controller.modules.get_mut(&controller.main.id) {
+        main.unwind = unwind;
+    }
+    let inferior = controller.session.inferior_mut().expect("inferior");
+    for &site in &escape {
+        controller
+            .ptrace
+            .install_breakpoint(
+                leader,
+                &mut inferior.breakpoints,
+                site,
+                BreakpointOwner::Plan(execution),
+            )
+            .expect("escape site");
+    }
+    inferior.plan_sites.insert(execution, escape.clone());
+    inferior.run = RunPhase::running(ActiveExecution {
+        id: execution,
+        kind: step_execution(
+            leader,
+            StepKind::IntoSource,
+            StepStart {
+                escape,
+                ..StepStart::default()
+            },
+        ),
+        scope: ResumeScope::Process(process_id(inferior.tgid)),
+        resume_threads: BTreeSet::from([leader, sibling]),
+    });
+
+    for pid in [leader, sibling] {
+        let thread = harness.thread(pid);
+        thread.state = NativeThreadState::Running;
+        thread.reason = None;
+    }
+
+    harness.trace().take_actions();
+    harness
+}
+
+#[test]
+fn reaching_an_escape_site_removes_its_breakpoints_before_single_stepping() {
+    let site = 0x30;
+    let call_out = 0x40;
+    let mut harness = escape_step_harness(&[site, call_out]);
+    let leader = harness.threads[0];
+
+    harness.hit_at(leader, site).expect("escape hit");
+
+    let inferior = harness.controller.session.inferior().expect("inferior");
+    assert!(
+        !inferior
+            .breakpoints
+            .contains_key(&VirtualAddress::new(site)),
+        "the reached escape site was left installed"
+    );
+    assert!(
+        !inferior
+            .breakpoints
+            .contains_key(&VirtualAddress::new(call_out)),
+        "the companion escape site was left installed"
+    );
+    assert!(inferior.run.barrier().is_none());
+    assert_eq!(harness.thread(leader).trap, AtTrap::Clear);
+    assert_eq!(harness.thread(leader).state, NativeThreadState::Running);
+
+    assert_eq!(
+        harness.trace().take_actions(),
+        [
+            format!("set_registers {leader} rip={site:#x}"),
+            format!("remove_site {site:#x}"),
+            format!("remove_site {call_out:#x}"),
+            format!("step {leader}"),
+        ]
+    );
+}
+
+#[test]
+fn reaching_an_escape_site_during_a_sibling_barrier_clears_traps_and_resumes_stepping() {
+    let site = 0x30;
+    let mut harness = escape_step_harness(&[site]);
+    let leader = harness.threads[0];
+    let sibling = harness.threads[1];
+
+    harness.hit_at(sibling, site).expect("sibling hit");
+    assert!(
+        harness
+            .controller
+            .session
+            .inferior()
+            .expect("inferior")
+            .run
+            .barrier()
+            .is_some(),
+        "sibling hit starts a repair barrier"
+    );
+    harness.trace().take_actions();
+
+    harness
+        .hit_at(leader, site)
+        .expect("stepping thread hits escape site during barrier");
+
+    let inferior = harness.controller.session.inferior().expect("inferior");
+    assert!(
+        !inferior
+            .breakpoints
+            .contains_key(&VirtualAddress::new(site)),
+        "the escape site stayed installed after the stepping thread reached it"
+    );
+    assert!(inferior.run.barrier().is_none());
+    assert_eq!(harness.thread(leader).trap, AtTrap::Clear);
+    assert_eq!(harness.thread(sibling).trap, AtTrap::Clear);
+    assert_eq!(harness.thread(leader).state, NativeThreadState::Running);
+    assert_eq!(harness.thread(sibling).state, NativeThreadState::Running);
+
+    assert_eq!(
+        harness.trace().take_actions(),
+        [
+            format!("set_registers {leader} rip={site:#x}"),
+            format!("remove_site {site:#x}"),
+            format!("step {leader}"),
+            format!("continue {sibling} None"),
+        ]
+    );
+}

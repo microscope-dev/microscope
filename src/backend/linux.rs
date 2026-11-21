@@ -510,7 +510,7 @@ struct StepStart {
 
     following: bool,
 
-    escape: Option<VirtualAddress>,
+    escape: BTreeSet<VirtualAddress>,
 
     loops: Option<loops::StepLoops>,
 
@@ -541,6 +541,20 @@ impl StepStart {
             .chain(&starters)
             .copied()
             .collect()
+    }
+
+    fn owns_plan_site(&self, address: VirtualAddress) -> bool {
+        self.plan_addresses.contains(&address)
+            || self.panic_guards.contains(&address)
+            || self.targets.contains(&address)
+            || self.escape.contains(&address)
+            || self
+                .resume_guard
+                .is_some_and(|guard| guard.address == address)
+            || self
+                .new_task
+                .as_ref()
+                .is_some_and(|task| task.owns(address))
     }
 }
 

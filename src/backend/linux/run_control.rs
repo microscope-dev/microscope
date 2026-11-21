@@ -949,7 +949,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.mark_epilogue_return_for_retirement(address);
         self.mark_return_guard_for_retirement(pid, address)?;
-        self.repair_when_alone(pid, address)
+        self.go_on_without_plan(pid, address, Some(kind))
     }
 
     fn step_runs_to_guard(&self) -> bool {
@@ -1312,11 +1312,52 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(true);
         }
 
-        if let Some(start) = self.active_step_mut() {
-            start.escape = None;
+        self.retire_escape(address)?;
+        self.reach_resume_guard(pid, address)
+    }
+
+    fn retire_escape(&mut self, address: VirtualAddress) -> Result<()> {
+        let Some((execution, retired)) = self
+            .session
+            .inferior_mut()
+            .and_then(|inferior| inferior.run.execution_mut())
+            .and_then(|active| match &mut active.kind {
+                ActiveKind::Step { start, .. } if start.escape.contains(&address) => {
+                    let escape = std::mem::take(&mut start.escape);
+                    let retired = escape
+                        .into_iter()
+                        .filter(|site| !start.owns_plan_site(*site))
+                        .collect::<Vec<_>>();
+                    Some((active.id, retired))
+                }
+                _ => None,
+            })
+        else {
+            return Ok(());
+        };
+
+        let owner = BreakpointOwner::Plan(execution);
+        for site in retired {
+            let planted = self.session.inferior().is_some_and(|inferior| {
+                inferior
+                    .breakpoints
+                    .get(&site)
+                    .is_some_and(|breakpoint| breakpoint.owners.contains(&owner))
+            });
+            if planted {
+                self.remove_breakpoint_owner(site, owner)?;
+            }
+
+            if let Some(sites) = self
+                .session
+                .inferior_mut()
+                .and_then(|inferior| inferior.plan_sites.get_mut(&execution))
+            {
+                sites.remove(&site);
+            }
         }
 
-        self.reach_resume_guard(pid, address)
+        Ok(())
     }
 
     fn reach_resume_guard(&mut self, pid: Pid, address: VirtualAddress) -> Result<bool> {
@@ -1331,12 +1372,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .resume_guard
                     .filter(|guard| guard.address == address)
                     .map(|guard| {
-                        (
-                            active.id,
-                            *kind,
-                            guard,
-                            start.plan_addresses.contains(&address),
-                        )
+                        let planned = start.plan_addresses.contains(&address)
+                            || start.panic_guards.contains(&address)
+                            || start.targets.contains(&address)
+                            || start.escape.contains(&address)
+                            || start
+                                .new_task
+                                .as_ref()
+                                .is_some_and(|task| task.owns(address));
+                        (active.id, *kind, guard, planned)
                     }),
                 _ => None,
             })
@@ -1362,6 +1406,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.remove_breakpoint_owner(address, BreakpointOwner::Plan(execution))?;
+        if let Some(sites) = self
+            .session
+            .inferior_mut()
+            .and_then(|inferior| inferior.plan_sites.get_mut(&execution))
+        {
+            sites.remove(&address);
+        }
+
         let trapped = matches!(
             self.session
                 .inferior()
@@ -1379,6 +1431,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             self.repair_when_alone(pid, address)?;
+        } else if self.barrier_active() {
+            if guard.call {
+                self.note_step_progress(pid);
+            }
+            self.finish_barrier_if_ready()?;
         } else if guard.call {
             self.complete_user_step(pid, kind)?;
         } else {
